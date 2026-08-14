@@ -136,8 +136,9 @@ Numbered walkthrough (job/file names are exact):
     blue/green flip entirely — a single `up -d --remove-orphans` on the requested tag) against an
     already-built GHCR image; `deploy.yml` ("Deploy CDK Stack to AWS") is a **dead** workflow — the
     CDK tree it deployed (`src/cqc_lem/aws/`) was deleted in #973, and the `_CI/bootstrap.sh` /
-    `_CI/deploy.sh` it sources are guarded on a directory that no longer exists, so a dispatch
-    assumes the AWS role and then does nothing. Never part of the live deploy graph; removing it
+    `_CI/deploy.sh` it sources both guard on `[[ -d "aws" ]]` — a repo-ROOT `aws/` that has never
+    existed under that name — so a dispatch has always assumed the AWS role and then done nothing.
+    Restoring the tree would not revive it. Never part of the live deploy graph; removing it
     needs the owner (the pipeline credential has no `workflows` permission).
 
 ## Rubric scorecard (current state)
