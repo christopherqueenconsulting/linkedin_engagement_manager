@@ -487,10 +487,15 @@ that ceiling and drags the acceptance rate the outreach features are judged on.
   `ago` is required too. If LinkedIn ever stops writing "Sent", every row reads unreadable and the
   lane withdraws **nothing**; the run report's `unreadable` count (and one run-level warning when
   EVERY row is undated) is what makes that visible instead of silent.
-- **OFF until someone turns it on** (`STALE_INVITE_WITHDRAWAL_ENABLED`, default false). These
+- **ON by default since #1006 grounded it** (`STALE_INVITE_WITHDRAWAL_ENABLED`, default true;
+  `false` — or any unrecognised value — still silences the beat). It shipped OFF because the
   selectors were written from the invitation manager as documented, not from a live grounding run,
   and an ungrounded Selenium lane that silently matches nothing is exactly how the catch-up lane
-  (#792/#964) spent months doing nothing. Ground it first:
+  (#792/#964) spent months doing nothing. The 2026-08-07 run closed that gap end to end: rows and
+  their "Sent … ago" stamps read (43/43 dated, 0 unreadable), the list turned out to load on SCROLL
+  rather than through a pager, and ONE owner-authorised real withdrawal proved the confirm dialog
+  (a native `<dialog data-testid="dialog">` whose confirm button names the invitee). Re-ground it
+  whenever the page moves:
   `python -m scripts.linkedin_live_validation --sent-invites` — strictly read-only, it resolves rows
   and describes them, **nothing is withdrawn by running it**. Zero rows has THREE readings and the
   probe separates them, because an account with nothing outstanding and a rotated row anchor report
