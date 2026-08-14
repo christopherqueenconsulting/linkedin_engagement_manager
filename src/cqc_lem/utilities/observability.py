@@ -1137,6 +1137,10 @@ def track_avatar_likeness_probe(
             per-post ``posts.avatar_media`` flag. A checked-negative on a ``"false"`` frame
             is the base-Flux fallback doing its job, not a likeness defect, so the two must never
             share one rate.
+        **extra: Extra properties for this one event, applied LAST — so a call site can add a
+            property or override a declared one. Nothing a dashboard or alert FILTERS on may
+            arrive this way: `_emit` applies it after the coercions, so the string contract
+            cannot see it.
     """
     _emit(EVENTS["avatar_likeness_probe"],
           {**dict(verdict or {}), "user_id": user_id, "post_id": post_id,
