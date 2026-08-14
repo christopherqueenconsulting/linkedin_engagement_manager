@@ -160,11 +160,12 @@ embedding-first against `POST_EMBEDDING_SIMILARITY_MAX` and degrades to today's 
 the embedding endpoint is unavailable — never to "nothing is similar". The ceiling default, 0.78, is
 calibrated on the scorecard above: 0.657 is the highest score a post nobody calls a duplicate
 reached, 0.832 the lowest of the reworded pair, and the margin is deliberately on the safe side
-because a false positive is not free: it spends a regeneration, and on a re-score it also holds the
-post at PENDING. Over the ceiling takes the same one-retry-then-keep path the lexical gate always
-took — a draft still over after the retry SHIPS, with a warning naming the measure — and the
-`similarity` finding names which measure fired wherever the gate runs with a post history (the
-edit & re-score endpoint). Whether generation should hold too is #1452. Five posts from one account
+because a false positive is not free: it spends a regeneration, and it holds the post at PENDING.
+Over the ceiling takes the same one-retry path the lexical gate always took; **#1452** settled where
+the still-over draft lands — it is kept, but HELD at PENDING with the `similarity` finding naming
+which measure fired, rather than auto-published. The verdict the review gate reached is recorded on
+`posts.gate_reason` and re-read by the generation-time gate pass, so the hold adds no second
+embedding call. Five posts from one account
 SIZES the gap rather than settling the number — retune with the env knob as `content_quality_scores`
 fills out. Posture: `docs/content-core.md`.
 
