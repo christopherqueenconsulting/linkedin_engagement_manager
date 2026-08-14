@@ -268,6 +268,25 @@ class TestTheProjectFloorIsNotQuietlyLowered:
         )
         assert project["informational"] is False, "the floor only means something if it is enforced"
 
+    def test_the_threshold_cannot_hollow_out_the_floor(self):
+        """The number that actually gates is `target - threshold`, not `target`.
+
+        Codecov passes a project status whose coverage is below `target` but within `threshold`, so
+        raising the threshold walks the floor back exactly as far as lowering the target would —
+        without touching the number the test above guards. 93% - 1% = 92% is the effective floor
+        #1488 chose, and it is what the "a PR may lose ~3 points of the 95.06% baseline" reasoning
+        in `codecov.yml` and `tests/README.md` is computed from.
+        """
+        project = _load(_CODECOV)["coverage"]["status"]["project"]["default"]
+        target = float(str(project["target"]).rstrip("%"))
+        threshold = float(str(project.get("threshold", 0)).rstrip("%"))
+        assert target - threshold >= 92, (
+            f"the effective project floor is {target - threshold}% (target {target}%, threshold "
+            f"{threshold}%), below the 92% #1488 set. Widening the threshold lowers the floor just "
+            "as much as lowering the target does — take it to an issue and write the reason into "
+            "codecov.yml, same as any other cut."
+        )
+
     def test_the_component_floor_is_still_the_ratcheted_one(self):
         """#1488 raised the per-component target 80% -> 90% in the same pass.
 

@@ -47,7 +47,9 @@ coverage:
         # goes red — enough to absorb run-to-run flake and a restructure slice moving a module,
         # tight enough that a genuine regression shows up in the PR that caused it. Raise it as
         # the baseline rises; never lower it. Lowering needs a reason written here, and
-        # tests/unit/test_codecov_upload_contract.py holds the floor so it cannot move silently.
+        # tests/unit/test_codecov_upload_contract.py holds the floor so it cannot move silently —
+        # BOTH numbers, because the floor that actually gates is `target - threshold` (92%) and
+        # widening the threshold walks it back exactly as far as cutting the target would.
         target: 93%
         threshold: 1%
         informational: false

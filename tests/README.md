@@ -147,9 +147,10 @@ measurement is why it was not.
 So a PR may lose ~3 points of project coverage before the enforced status goes red — enough to
 absorb run-to-run flake and a restructure slice moving a module between packages, tight enough that
 a genuine regression surfaces in the PR that caused it. Both floors are ratchets: raise them as the
-baseline rises, never lower them. `tests/unit/test_codecov_upload_contract.py` asserts both, so
-walking either back means moving the assertion in the same commit and writing the reason into
-`codecov.yml`.
+baseline rises, never lower them. `tests/unit/test_codecov_upload_contract.py` asserts both — plus
+the **effective** project floor, `target - threshold` = 92%, since widening the threshold lowers the
+floor exactly as much as cutting the target does — so walking any of them back means moving the
+assertion in the same commit and writing the reason into `codecov.yml`.
 
 A general `Test Suite` workflow used to run alongside them, invoking pytest **three times** in one
 job — `tests/unit`, then `tests/integration`, then `pytest tests/` with coverage, which re-ran both.
