@@ -7,6 +7,7 @@ to every caller's `except mysql.connector.Error`. These pin the port down before
 
 from unittest.mock import patch
 
+import mysql.connector
 import pytest
 
 from cqc_lem.platform.db import connection as db
@@ -91,3 +92,33 @@ class TestGetDbConnection:
             connect.return_value = mock_database_connection["connection"]
             assert db.get_db_connection() is mock_database_connection["connection"]
         assert connect.call_args.kwargs["port"] == db.DEFAULT_MYSQL_PORT
+
+
+class TestUnitLaneNeverOpensASocket:
+    """The lane-wide guard (`_no_real_mysql`, tests/unit/conftest.py) that #1496 added.
+
+    A unit test that forgets to stub a database collaborator used to reach a real connector call:
+    in CI that raised the `TypeError` this file exists for, and on a dev box running the compose
+    stack it reached the LIVE database. Neither is a unit test.
+    """
+
+    def test_an_unmocked_connection_fails_as_a_connector_error(self, monkeypatch):
+        monkeypatch.setattr(db, "MYSQL_PORT", None)
+        # mysql.connector.Error is what every repository reader already answers with its own
+        # fallback, so the guard leaves the code under test on the branch CI always took.
+        with pytest.raises(mysql.connector.Error):
+            db.get_db_connection()
+
+    def test_the_guard_is_not_a_typeerror(self, monkeypatch):
+        """The distinction #1319/#1496 turned on.
+
+        A TypeError escapes `except mysql.connector.Error` and surfaces as a captured production
+        exception instead of a handled connection failure.
+        """
+        monkeypatch.setattr(db, "MYSQL_PORT", None)
+        try:
+            db.get_db_connection()
+        except mysql.connector.Error:
+            pass
+        except TypeError as err:  # pragma: no cover - the failure this asserts against
+            pytest.fail(f"the unit lane produced an unhandleable {err!r}")

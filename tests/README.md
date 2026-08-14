@@ -256,12 +256,13 @@ coverage. Two things keep it there:
 
 ### 1. The unit lane is hermetic (`tests/unit/conftest.py`)
 
-Two autouse guards make un-mocked external I/O fail *instantly* instead of dialling out:
+Autouse guards make un-mocked external I/O fail *instantly* instead of dialling out:
 
 | Guard | What it does | Why |
 |---|---|---|
 | `_no_real_llm_calls` | Raises `APIConnectionError` from the shared `ai.client.client` | A few tests never mocked the client. Each one spent ~1.3s in httpx connect + the OpenAI SDK's retry back-off before the production `except` branch ran. Four carousel tests alone cost 12.8s. |
 | `_no_real_redis` | Makes `redis.Redis.from_url` raise, so `_redis_client()` returns `None` | CI has no Redis in the unit lane, so those call sites already took the fails-open branch. On a dev box running the compose stack the same tests would connect to the live broker and read/write real 429-breaker keys. |
+| `_no_real_mysql` | Makes `mysql.connector.connect` raise `InterfaceError`, the `mysql.connector.Error` every reader already handles | A test that forgot to stub a DB collaborator opened a real connector call: in CI that raised `TypeError: int() ... not 'NoneType'` (unset `MYSQL_PORT`), which is *not* a `mysql.connector.Error`, so it escaped every `except` and was captured as a production defect (#1496). On a dev box it reached the compose stack's live database. |
 
 Both guards reproduce the behaviour the tests already had in CI — they only remove the waiting and
 the dev-box non-determinism. A test that wants a *working* LLM/Redis handle patches it itself; that

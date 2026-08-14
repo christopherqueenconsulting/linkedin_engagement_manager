@@ -139,6 +139,41 @@ def _no_real_celery_broker():
 
 
 @pytest.fixture(autouse=True)
+def _no_real_mysql():
+    """Fail un-mocked MySQL connections with the error CI already produced (issue #1496).
+
+    There is no MySQL in the unit lane, so an un-mocked `get_db_connection()` was always going to
+    fail in CI — but it failed as `TypeError: int() argument ... not 'NoneType'`, because an unset
+    `MYSQL_PORT` reached the connector as `None`. That is not a `mysql.connector.Error`, so it
+    escaped every caller's `except`, surfaced as a 500 through the API middleware, and was captured
+    into production error tracking as a real defect (`update_linkedin_password` →
+    `count_auth_factors`). #1486 fixed the port resolution; this stops the unit lane opening the
+    socket at all.
+
+    On a dev box the same call reaches the compose stack's LIVE database — measured, with the
+    request answering `1045 Access denied` after a real round trip — so the guard also pins local
+    behaviour to CI's, the same contract as `_no_real_redis`.
+
+    The error raised is a `mysql.connector.Error`, which is what every reader in
+    `platform/db/repositories/` already answers with its own fallback, so the code under test takes
+    the identical branch. Tests that want a working handle keep patching `mysql.connector.connect`
+    (`mock_database_connection`) or `get_db_connection` (the `fake_cursor` factory) themselves;
+    those patches nest inside this one and win.
+    """
+    import mysql.connector
+
+    def _blocked(*_args, **_kwargs):
+        raise mysql.connector.errors.InterfaceError(
+            "MySQL blocked in unit tests by tests/unit/conftest.py. Patch get_db_connection with "
+            "the fake_cursor factory, or state the fixture (e.g. `signed_in`) whose collaborators "
+            "this test forgot to stub."
+        )
+
+    with patch("mysql.connector.connect", side_effect=_blocked):
+        yield
+
+
+@pytest.fixture(autouse=True)
 def _no_real_selenium():
     """Fail un-mocked Grid readiness checks instantly instead of polling for the full 60s.
 
