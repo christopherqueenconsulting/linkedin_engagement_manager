@@ -888,7 +888,7 @@ class LLMClient:
         # succeeds; `--hourly` uses it to pin the adversarial reviewer to a DIFFERENT member.
         self.last_model: Optional[str] = None
 
-    def classify(self, prompt: str) -> Optional[str]:
+    def classify(self, prompt: str, max_tokens: int = 4000) -> Optional[str]:
         if not self.api_key:
             return None
         try:
@@ -898,7 +898,7 @@ class LLMClient:
                 model=self.model,
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.2,
-                max_tokens=4000,
+                max_tokens=max_tokens,
             )
             self.last_model = getattr(response, "model", None)
             return response.choices[0].message.content
@@ -929,15 +929,33 @@ def deterministic_flags(issues: list[Issue], milestones: list[dict],
 
 def run_triage(triaged: list[Issue], milestones: list[dict], all_labels: list[str],
                llm: LLMClient) -> tuple[list[TriageDecision], list[dict], Optional[str]]:
-    """Run the LLM prompt and parse the plan."""
+    """Run the LLM prompt and parse the plan.
+
+    A batch of many issues in one JSON response can legitimately need more than the 4000-token
+    default (observed live 2026-08-14: a 3-issue batch still truncated mid-string) — scale the
+    output budget with batch size, floored at 4000 and capped at 16000 so a pathological batch
+    can't run away. One retry on a truncated/invalid response: a fresh sample from the SAME prompt
+    is cheap relative to losing the whole hour's admissions, and this is the same
+    budget-capped-retry shape `MODE=fix`/`depfix`/`docfix` already use elsewhere in this pipeline —
+    never unbounded.
+    """
     if not triaged:
         return [], [], None
     prompt = build_prompt(triaged, milestones, all_labels)
-    raw = llm.classify(prompt)
-    if raw is None:
-        return [], [], None
-    decisions, proposed = parse_llm_plan(raw, triaged, milestones)
-    return decisions, proposed, raw
+    max_tokens = min(16000, max(4000, 800 * len(triaged)))
+    max_attempts = 2
+    for attempt in range(max_attempts):
+        raw = llm.classify(prompt, max_tokens=max_tokens)
+        if raw is None:
+            return [], [], None
+        try:
+            decisions, proposed = parse_llm_plan(raw, triaged, milestones)
+        except ValueError:
+            if attempt == max_attempts - 1:
+                raise  # re-raises the ValueError just caught — never a bare/None raise
+            continue
+        return decisions, proposed, raw
+    raise AssertionError("unreachable: the loop above always returns or re-raises")
 
 
 class TriageLockBusy(RuntimeError):

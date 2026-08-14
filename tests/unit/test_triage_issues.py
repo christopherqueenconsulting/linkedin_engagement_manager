@@ -191,6 +191,51 @@ class TestParseLLMPlan:
             mod.parse_llm_plan("not json", [], [])
 
 
+class TestRunTriage:
+    """Live incident 2026-08-14: a 3-issue hourly batch still truncated at the 4000-token default
+    and crashed the whole run with no retry — see `run_triage`'s docstring."""
+
+    def _valid_plan(self, number: int) -> str:
+        return json.dumps({
+            "issues": [{"number": number, "priority": "priority:low", "milestone_title": "",
+                        "flow": "needs-human", "topical_labels": [], "reason": "r"}],
+            "proposed_milestones": [],
+        })
+
+    def test_max_tokens_scales_with_batch_size_within_the_cap(self, mod):
+        issues = [_issue(mod, number=i) for i in range(1, 30)]  # 29 issues
+        llm = MagicMock()
+        llm.classify.return_value = json.dumps({"issues": [], "proposed_milestones": []})
+        mod.run_triage(issues, [], [], llm)
+        _args, kwargs = llm.classify.call_args
+        assert kwargs["max_tokens"] == 16000  # 800 * 29 = 23200, capped at 16000
+
+    def test_max_tokens_floors_at_4000_for_a_small_batch(self, mod):
+        issues = [_issue(mod, number=1)]
+        llm = MagicMock()
+        llm.classify.return_value = self._valid_plan(1)
+        mod.run_triage(issues, [], [], llm)
+        _args, kwargs = llm.classify.call_args
+        assert kwargs["max_tokens"] == 4000
+
+    def test_a_truncated_response_is_retried_once_and_recovers(self, mod):
+        issue = _issue(mod, number=1)
+        llm = MagicMock()
+        llm.classify.side_effect = ["not json, truncated mid-str", self._valid_plan(1)]
+        decisions, _proposed, raw = mod.run_triage([issue], [], [], llm)
+        assert len(decisions) == 1
+        assert raw == self._valid_plan(1)
+        assert llm.classify.call_count == 2
+
+    def test_two_truncated_responses_in_a_row_still_raise(self, mod):
+        issue = _issue(mod, number=1)
+        llm = MagicMock()
+        llm.classify.side_effect = ["not json", "still not json"]
+        with pytest.raises(ValueError):
+            mod.run_triage([issue], [], [], llm)
+        assert llm.classify.call_count == 2  # bounded — never a third attempt
+
+
 class TestPromptBuild:
     def test_prompt_includes_milestones_and_issues(self, mod):
         issue = _issue(mod, number=1, title="x", body="y", labels=["bug"])
@@ -295,11 +340,12 @@ class TestMainDryRun:
         gh.list_labels.return_value = labels
 
         monkeypatch.setattr(mod, "GitHubClient", lambda repo: gh)
-        monkeypatch.setattr(mod, "LLMClient", lambda **kw: MagicMock(classify=lambda p: json.dumps({
-            "issues": [{"number": 1, "priority": "priority:high", "milestone_title": "M16",
-                        "flow": "agent:ready", "topical_labels": [], "reason": "r"}],
-            "proposed_milestones": []
-        })))
+        monkeypatch.setattr(mod, "LLMClient", lambda **kw: MagicMock(
+            classify=lambda p, max_tokens=4000: json.dumps({
+                "issues": [{"number": 1, "priority": "priority:high", "milestone_title": "M16",
+                            "flow": "agent:ready", "topical_labels": [], "reason": "r"}],
+                "proposed_milestones": []
+            })))
 
         monkeypatch.setenv("LITELLM_MASTER_KEY", "test")
         rc = mod.main(["--repo", "owner/repo", "--report-dir", "/tmp/lem-test-triage"])
@@ -724,7 +770,7 @@ def _hourly_llm_factory(calls, planner_json, reviewer_json):
         client.last_model = model
         is_planner = model == "lem-medium"
 
-        def classify(prompt):
+        def classify(prompt, max_tokens=4000):
             calls.append(("planner" if is_planner else "reviewer", prompt))
             return planner_json() if is_planner else reviewer_json()
 
