@@ -121,6 +121,43 @@ class TestDegreeBadgeIsReadFromWhatThePageWrites:
         debug.assert_called_once()
 
 
+# The live 2026-08-14 grab (#1031: `--profile-scrape` against a 3rd-degree profile, run against the
+# deployed build carrying #1025). The badge is a `<p>` leaf — NOT the `<span>` the earlier fixture
+# assumed — its classes are hashed, and the top card writes `· 3rd` while the "key signals" block
+# below it writes `· 3rd+` and other people's `· 2nd`. Pinned because the tag was the one part of the
+# shape the chain was never grounded on.
+LIVE_TOP_CARD_HTML = """
+<html><head><title>Bill Gates | LinkedIn</title></head><body>
+<main>
+  <div class="_648bd2fe"><h1 class="_46e0469d">Bill Gates</h1>
+    <p class="d3e5c957 _797b549d d820e14d _648bd2fe _46e0469d">{degree}</p></div>
+  <section><p class="d3e5c957 b52885fd _81da398e f12aed22">· 3rd+</p>
+    <p class="d3e5c957 b52885fd _81da398e f12aed22">· 2nd</p></section>
+</main></body></html>
+"""
+
+
+class TestTheLiveBadgeShapeStaysGrounded:
+    """#1031's report, turned into a test that fails if the chain drifts off the live shape."""
+
+    def test_the_third_degree_top_card_the_live_probe_read_does_not_block_the_invite(self):
+        from cqc_lem.app.engagement import invites as ra
+        driver = _DomDriver(LIVE_TOP_CARD_HTML.format(degree="· 3rd"))
+        with patch(f"{_ZW}.log_warning") as warn:
+            assert ra._profile_is_first_degree(driver) is False
+        warn.assert_not_called()
+
+    def test_the_top_cards_badge_is_the_one_read_not_the_signals_blocks(self):
+        from cqc_lem.app.engagement import invites as ra
+        driver = _DomDriver(LIVE_TOP_CARD_HTML.format(degree="· 3rd"))
+        assert (ra._degree_badge_texts(driver) or [""])[0] == "· 3rd"
+
+    def test_a_first_degree_badge_in_the_live_shape_still_blocks_the_invite(self):
+        from cqc_lem.app.engagement import invites as ra
+        driver = _DomDriver(LIVE_TOP_CARD_HTML.format(degree="· 1st"))
+        assert ra._profile_is_first_degree(driver) is True
+
+
 # A 2nd-degree profile as `<main>` actually renders it: the top card's badge first, then the
 # mutual-connection highlight — which carries SOMEBODY ELSE's `1st`. Reading "any badge under
 # main" makes this profile look already-connected and cancels the invite (#1012's mistake in a

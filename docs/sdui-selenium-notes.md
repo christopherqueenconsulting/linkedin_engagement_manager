@@ -243,6 +243,14 @@ against the page's own degree LINE (whole-line, never `\b1st\b`, which would fir
 "1st place, 2026 awards"); re-ground with `scripts/linkedin_live_validation.py --profile-scrape`
 against a 2nd/3rd-degree profile and read `degree_anchors` in the report.
 
+**Confirmed live 2026-08-14** (#1031, `--profile-scrape` against a 3rd-degree profile, deployed
+build `v0.149.0`): `state: ok`, `degree_grounded: true`, and the union XPath matched five badges —
+`· 3rd` (the top card) plus `· 3rd+` and `· 2nd` further down. Two details the earlier grab did not
+pin: the badge renders as a **`<p>`** leaf, not a `<span>`, and every one of its classes is hashed
+(`d3e5c957 _797b549d …`) — so the tag is as unusable an anchor as the class is. The chain leads with
+a tag-agnostic leaf XPath for that reason, and `tests/unit/app/test_sdui_zero_walk_tripwires.py`
+(`TestTheLiveBadgeShapeStaysGrounded`) pins this exact DOM.
+
 **The FIRST badge is the profile's; every later one names somebody else.** A text anchor is far
 broader than the class anchor it replaced, and a profile page is full of other people's badges —
 the "People also viewed" rail outside `<main>`, mutual-connection highlights inside it. So both
