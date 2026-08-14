@@ -123,11 +123,42 @@ def _otlp_resource():
     return Resource.create(attrs)
 
 
+def _running_under_pytest() -> bool:
+    """True when the importing process is pytest — the ONE definition of that question.
+
+    A test run reaches the real PostHog project through the process ENVIRONMENT, not just a `.env`
+    file: `lem-agentd` loads `agent-pipeline/secrets.env` (which legitimately holds
+    `POSTHOG_API_KEY` for the pipeline's own telemetry) as a systemd `EnvironmentFile`, and every
+    pytest it spawns inherits it. `tests/conftest.py` also calls `load_dotenv()`, so a checkout
+    whose `.env` carries a real key does the same thing.
+
+    Both of LEM's PostHog hops read that key at import, so both have to refuse here. Issue #1451
+    closed the `$exception` half in `observability.py` — a mocked DB cursor raising
+    `mysql.connector.Error("db down")` had real production code catch it, call `log_error(exc=...)`
+    and publish a genuine grouped exception that the daily error→issue cron filed as a GitHub issue
+    (#1460). This handler is the other half: with a key present the suite shipped every ERROR
+    record it provoked ("SMTP send failed for test@example.com") into PostHog Logs, where prod runs
+    at `POSTHOG_LOG_LEVEL=WARNING` and the fixture noise buries the real warnings triage reads.
+
+    Guarding here rather than by removing the key: the pipeline needs that key for its own
+    telemetry, so the fix has to hold regardless of what the environment supplies.
+
+    `sys.modules` rather than `PYTEST_CURRENT_TEST`, which pytest sets per-test — it is unset during
+    collection and at module import, which is exactly when this runs.
+    """
+    return "pytest" in sys.modules
+
+
 def _build_posthog_handler(level: int) -> Optional[logging.Handler]:
-    """Build an OTLP-backed LoggingHandler that ships logs to PostHog Logs."""
+    """Build an OTLP-backed LoggingHandler that ships logs to PostHog Logs.
+
+    Returns None — no handler, nothing exported — when there is no key, or under pytest whatever
+    the key says (see `_running_under_pytest`). The refusal lives in the builder rather than at the
+    single call site below so a future second caller inherits it instead of re-opening the leak.
+    """
     api_key = os.getenv("POSTHOG_API_KEY", "")
     host = os.getenv("POSTHOG_HOST", "https://us.i.posthog.com").rstrip("/")
-    if not api_key:
+    if not api_key or _running_under_pytest():
         return None
 
     from opentelemetry._logs import set_logger_provider

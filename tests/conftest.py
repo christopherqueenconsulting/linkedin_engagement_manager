@@ -61,6 +61,10 @@ importlib.import_module("cqc_lem.utilities.db")
 # pipeline spent capacity on defects that did not exist.
 # `observability.py` refuses under pytest on its own; this is the belt to that braces, and the
 # discoverable half — a guard in the test tree is where someone looks for one.
+#
+# The SDK is only half of it: `logger._build_posthog_handler` opens a SECOND hop, an OTLP exporter
+# into PostHog Logs, off the same key (#1460). That one refuses under pytest inside the builder —
+# there is nothing to disable from here, because a handler that is never built exports nothing.
 _posthog = importlib.import_module("posthog")
 _posthog.disabled = True
 

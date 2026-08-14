@@ -15,7 +15,7 @@ answer different questions, and adding them double-counts every request.
 With no `POSTHOG_API_KEY` the SDK is disabled at import, so every function here is a no-op in local
 dev — a call site should never guard itself on the key. Under pytest it is disabled REGARDLESS of the
 key, because a test run can inherit the production key without anyone intending it; see
-`_running_under_pytest` below.
+`logger._running_under_pytest`, which the OTLP logs hop reads too.
 """
 
 import contextvars
@@ -40,7 +40,7 @@ from cqc_lem.utilities.experiments import (
     COST_ROUTING_ARM,
     POST_MEDIA_VARIANT,
 )
-from cqc_lem.utilities.logger import log_debug, log_warning
+from cqc_lem.utilities.logger import _running_under_pytest, log_debug, log_warning
 
 posthog.api_key = os.getenv("POSTHOG_API_KEY", "")
 posthog.host = os.getenv("POSTHOG_HOST", "https://us.i.posthog.com")
@@ -51,30 +51,10 @@ def _posthog_on_error(e, items) -> None:
 posthog.on_error = _posthog_on_error
 
 
-def _running_under_pytest() -> bool:
-    """True when this import is happening inside a pytest process.
-
-    A test run reaches the real project through the process ENVIRONMENT, not just a `.env` file:
-    `lem-agentd` loads `agent-pipeline/secrets.env` (which legitimately holds `POSTHOG_API_KEY` for
-    the pipeline's own telemetry) as a systemd `EnvironmentFile`, and every pytest it spawns
-    inherits it. `tests/conftest.py` also calls `load_dotenv()`, so a checkout whose `.env` carries
-    a real key does the same thing. Both paths end at the module-level `os.getenv` above.
-
-    The consequence is not cosmetic. Tests mock a DB cursor with `mysql.connector.Error("boom")`,
-    real production code catches it and calls `log_error(exc=...)`, and that publishes a genuine
-    `$exception` to the production project. Fixture messages ("boom", "db down", "fail") became
-    error-tracking groups; the daily error→issue cron filed them as GitHub issues; the agent
-    pipeline then spent capacity on defects that never existed, while real errors sank in the
-    queue. Once test data lands it is indistinguishable from production data.
-
-    Guarding here rather than by removing the key: the pipeline needs that key for its own
-    telemetry, so the fix has to hold regardless of what the environment supplies.
-
-    `sys.modules` rather than `PYTEST_CURRENT_TEST`, which pytest sets per-test — it is unset during
-    collection and at module import, which is exactly when this runs.
-    """
-    return "pytest" in sys.modules
-
+# `_running_under_pytest` is imported from `logger` rather than defined twice: the SDK hop here and
+# the OTLP logs hop there both read POSTHOG_API_KEY at import, so they answer the same question and
+# a second copy could only drift (#1451 fixed this half, #1460 the other). logger imports nothing
+# from this module at import time, so the direction is safe.
 
 # Disable PostHog when no key configured (local dev without key), and ALWAYS under pytest.
 if not posthog.api_key or _running_under_pytest():

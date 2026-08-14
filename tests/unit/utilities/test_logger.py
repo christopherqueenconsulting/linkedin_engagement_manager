@@ -22,11 +22,23 @@ def _fresh_logger_module():
 # _build_posthog_handler (OTLP-based PostHog Logs integration)
 # ---------------------------------------------------------------------------
 
+_LOG = "cqc_lem.utilities.logger"
+
+
+def _not_under_pytest():
+    """Answer the pytest guard as production does, so the BUILDER's own behaviour stays testable.
+
+    Every test below that wants a real handler has to say so explicitly — which is the point: the
+    suite cannot build one by accident (see TestTestSuiteNeverShipsLogsToPostHog).
+    """
+    return patch(f"{_LOG}._running_under_pytest", return_value=False)
+
+
 class TestBuildPostHogHandler:
     def test_returns_none_when_no_api_key(self):
         from cqc_lem.utilities.logger import _build_posthog_handler
 
-        with patch.dict(os.environ, {"POSTHOG_API_KEY": ""}, clear=False):
+        with _not_under_pytest(), patch.dict(os.environ, {"POSTHOG_API_KEY": ""}, clear=False):
             result = _build_posthog_handler(logging.ERROR)
 
         assert result is None
@@ -37,7 +49,7 @@ class TestBuildPostHogHandler:
         from cqc_lem.utilities.logger import _build_posthog_handler
 
         env = {"POSTHOG_API_KEY": "phc_testtoken", "POSTHOG_HOST": "https://us.i.posthog.com"}
-        with patch.dict(os.environ, env, clear=False):
+        with _not_under_pytest(), patch.dict(os.environ, env, clear=False):
             result = _build_posthog_handler(logging.ERROR)
 
         assert isinstance(result, LoggingHandler)
@@ -46,7 +58,7 @@ class TestBuildPostHogHandler:
         from cqc_lem.utilities.logger import _build_posthog_handler
 
         env = {"POSTHOG_API_KEY": "phc_testtoken", "POSTHOG_HOST": "https://us.i.posthog.com"}
-        with patch.dict(os.environ, env, clear=False):
+        with _not_under_pytest(), patch.dict(os.environ, env, clear=False):
             result = _build_posthog_handler(logging.WARNING)
 
         assert result is not None
@@ -69,12 +81,49 @@ class TestBuildPostHogHandler:
             captured_exporter.append(self)
             original_init(self, *args, **kwargs)
 
-        with patch.dict(os.environ, env, clear=False), \
+        with _not_under_pytest(), patch.dict(os.environ, env, clear=False), \
              patch.object(OTLPLogExporter, "__init__", capturing_init):
             _build_posthog_handler(logging.ERROR)
 
         assert captured_exporter, "OTLPLogExporter was not instantiated"
         assert captured_exporter[0]._endpoint == "https://eu.i.posthog.com/i/v1/logs"
+
+
+class TestTestSuiteNeverShipsLogsToPostHog:
+    """Issue #1460: the OTLP hop is the OTHER way a test run reached the production project.
+
+    #1451 stopped the suite publishing `$exception` events, but `_build_posthog_handler` still
+    keyed on `POSTHOG_API_KEY` alone — and the pipeline hands every pytest it spawns a real key
+    through the process environment. Prod reads PostHog Logs at WARNING, so fixture records
+    ("SMTP send failed for test@example.com") landed alongside real production warnings and were
+    indistinguishable from them once ingested.
+
+    These assert the guard itself. Without them it is one deletion away from restoring the leak,
+    and on CI — where no key is configured — nothing else in the suite would fail.
+    """
+
+    def test_no_handler_is_built_even_with_a_key_configured(self):
+        from cqc_lem.utilities.logger import _build_posthog_handler
+
+        env = {"POSTHOG_API_KEY": "phc_realkey", "POSTHOG_HOST": "https://us.i.posthog.com"}
+        with patch.dict(os.environ, env, clear=False):
+            assert _build_posthog_handler(logging.ERROR) is None
+
+    def test_the_guard_answers_true_under_pytest(self):
+        from cqc_lem.utilities.logger import _running_under_pytest
+
+        assert _running_under_pytest() is True
+
+    def test_observability_reads_the_same_guard(self):
+        # ONE definition, imported — a second copy could drift and reopen half the leak.
+        from cqc_lem.utilities import logger as log_mod, observability as obs
+
+        assert obs._running_under_pytest is log_mod._running_under_pytest
+
+    def test_no_otlp_handler_is_attached_to_the_live_logger(self):
+        from cqc_lem.utilities import logger as mod
+
+        assert "LoggingHandler" not in [type(h).__name__ for h in mod.logger.handlers]
 
 
 # ---------------------------------------------------------------------------
@@ -272,16 +321,14 @@ class TestLoggerConfiguration:
         assert handler.maxBytes == 250_000_000
         assert handler.backupCount == 10
 
-    def test_logger_has_posthog_handler_when_key_configured(self):
+    def test_logger_has_no_posthog_handler_under_pytest(self):
         from cqc_lem.utilities import logger as mod
 
-        # LoggingHandler is present when POSTHOG_API_KEY is set in environment
-        api_key = os.getenv("POSTHOG_API_KEY", "")
+        # A configured POSTHOG_API_KEY used to be enough to attach the OTLP handler, which is how
+        # the suite shipped its fixture ERRORs into production Logs (#1460). Under pytest the
+        # handler is absent whatever the key says.
         handler_types = [type(h).__name__ for h in mod.logger.handlers]
-        if api_key:
-            assert "LoggingHandler" in handler_types
-        else:
-            assert "LoggingHandler" not in handler_types
+        assert "LoggingHandler" not in handler_types
 
     def test_logger_has_stream_handler(self):
         from cqc_lem.utilities import logger as mod
@@ -297,11 +344,13 @@ class TestLoggerConfiguration:
     def test_posthog_handler_level_matches_env(self):
         from cqc_lem.utilities import logger as mod
 
-        ph_handlers = [h for h in mod.logger.handlers if type(h).__name__ == "LoggingHandler"]
-        if not ph_handlers:
-            return  # no key configured — handler absent, nothing to assert
+        # This used to read the level off the ATTACHED handler and return early when there wasn't
+        # one. Since #1460 there is never one under pytest, so that early return became permanent
+        # and the test asserted nothing on any run. The wiring is still worth pinning, in the one
+        # place that survives the guard: POSTHOG_LOG_LEVEL is what the module hands the builder,
+        # and test_handler_respects_requested_level proves the builder honours what it is given.
         expected = getattr(logging, os.getenv("POSTHOG_LOG_LEVEL", "ERROR").upper(), logging.ERROR)
-        assert ph_handlers[0].level == expected
+        assert mod._POSTHOG_MIN_LEVEL == expected
 
 
 # ---------------------------------------------------------------------------
@@ -445,7 +494,8 @@ def test_otlp_resource_defaults_when_env_absent():
 def test_posthog_handler_provider_carries_the_resource():
     """The LoggerProvider must be built WITH the resource (regression: was LoggerProvider())."""
     import cqc_lem.utilities.logger as mod
-    with patch.dict(os.environ, {"POSTHOG_API_KEY": "phc_x"}, clear=False), \
+    with _not_under_pytest(), \
+         patch.dict(os.environ, {"POSTHOG_API_KEY": "phc_x"}, clear=False), \
          patch("opentelemetry.sdk._logs.LoggerProvider") as LP, \
          patch("opentelemetry.sdk._logs.LoggingHandler"), \
          patch("opentelemetry.sdk._logs.export.BatchLogRecordProcessor"), \
