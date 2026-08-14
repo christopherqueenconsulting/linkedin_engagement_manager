@@ -948,10 +948,18 @@ def probe_comment_outcome(driver, post_url: str, our_slug: str, comment_text: st
     _load_comment_thread(driver)
 
     items = _comment_items(driver)
+    # SILENT: the probe's product is this report, so a miss here must not write
+    # `Selector miss: Comment sort control` into production's error tracking. Four grounding runs on
+    # 2026-08-14 did exactly that (#1117) — a diagnostic that files defects is a diagnostic nobody
+    # can run. Tolerated positionally for an image that predates the keyword.
+    try:
+        sort_label = _comment_sort_label(driver, wait, warn_on_miss=False)
+    except TypeError:
+        sort_label = _comment_sort_label(driver, wait)
     reading = {"post_url": post_url, "our_slug": our_slug,
                "rendered_comments": len(items),
                "authors": [a for (_tb, _c, a) in items][:20],
-               "sort_label": _comment_sort_label(driver, wait)}
+               "sort_label": sort_label}
     reading["sort_control_found"] = bool(reading["sort_label"])
     ours = _find_our_comment(items, our_slug, comment_text)
     reading["found_most_relevant"] = ours is not None and reading["sort_label"] == "most relevant"

@@ -84,6 +84,45 @@ written from what the evidence *rules out*, not from a positive sighting, so the
 probe run is what closes this section — either `feed_sort` grades `ok`, or `sort_candidates` finally
 shows the element and the chain gets a precise route.
 
+## A short comment thread has NO sort control — the miss was never drift (#1117, follow-up of #818)
+
+Live-grounded 2026-08-14 with four `--comment-outcome-url` runs against posts that had actually
+emitted `Selector miss: Comment sort control` in production (pulled from the warning's own `url`
+attribute in PostHog Logs). Threads of 1 and 2 rendered comments. Every run graded `drift` and
+returned the *same* single candidate from the evidence scan's header pass:
+
+```json
+{"tag": "button", "data_testid": "", "role": "", "has_popup": "", "text": "",
+ "aria_label": "Open control menu for post by <post author>", "reason": "header"}
+```
+
+Nothing anywhere in the main column named a sort — no `keyword` row on any of the four. Read that
+literally: **LinkedIn renders no comment sort control on a short thread**, because there is nothing
+to sort. This is the opposite of the home-feed finding above; the two surfaces drifted differently
+and only the feed's is a rotation.
+
+The chain is not rotted, and the production data says so from the other side: over the same period
+`_COMMENT_SORT_LOCATORS` read `most relevant` on **21 of 22** checked readings.
+
+What changed in response:
+
+- **The evidence scan is the cross-check now, not the rendered thread.** `_read_comment_outcome`
+  reads the label with `warn_on_miss=False` and `_report_sort_control_miss` picks the level from
+  what the scan found: a `keyword` row means the page still NAMES a sort the chain cannot reach —
+  drift, and it warns — while a `header`/`unanchored`/empty scan is an affordance LinkedIn did not
+  render, and logs DEBUG. The `sdui_selector_evidence` event is emitted either way, so a surface
+  never looks un-drifted because its evidence was dropped.
+- Before this, 21 warnings and 2 grouped `$exception`s over 10 days were filed against working
+  behaviour — a rendered thread was too weak a cross-check (#1063) once it turned out a normal
+  1-comment revisit has no control to find.
+- `probe_comment_outcome` reads the label silently too. The four runs above each wrote a
+  `Selector miss` warning into production error tracking; a diagnostic that files defects is a
+  diagnostic nobody can afford to run.
+
+**Still open on #1117:** `visible_most_relevant` stays NULL on these readings, so a thread LinkedIn
+never offered to sort is excluded from the denominator exactly like an unreadable one. That is the
+starved denominator #818 is about, and it is a measurement decision, not a locator one.
+
 ## The Catch-up feed is full SDUI — no `data-view-name`, no `<li>` cards
 
 Live-grounded 2026-08-03 (`/mynetwork/catch-up/all/`, user 1): each card is a
