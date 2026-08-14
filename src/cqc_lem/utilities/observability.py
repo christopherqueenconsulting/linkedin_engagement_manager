@@ -356,6 +356,15 @@ EVENTS = {spec.event: spec for spec in (
         label("surface"), label("verdict"), items("issues"), prop("attempt_count"),
         flag("checked"), flag("acceptable"), prop("user_id"), prop("post_id"),
     )),
+    # What ONE steered slop-lint regeneration did (issue #1434). `outcome` is the measurement: the
+    # finished corpus only ever keeps the last draft, so without this the clear-rate of a retry —
+    # and how often it trades one HARD check for another — is unknowable. Check NAMES only; the
+    # violations' evidence is draft text.
+    EventSpec("slop_retry", (
+        prop("user_id"), label("surface"), label("outcome"), prop("attempt"), prop("max_attempts"),
+        items("before_checks"), items("after_checks"), prop("hard_before"), prop("hard_after"),
+        prop("warn_before"), prop("warn_after"),
+    )),
     EventSpec("motion_prompt_check", (
         prop("user_id"), prop("post_id"), label("surface"), text("model"), label("verdict"),
         flag("enforced"), prop("attempt"), prop("checked"), prop("passes"), prop("chars"),
@@ -1519,6 +1528,37 @@ def track_image_gate_verdict(
                                          "attempt_count": attempt_count, "checked": checked,
                                          "acceptable": acceptable, "user_id": user_id,
                                          "post_id": post_id})
+
+
+def track_slop_retry(
+    surface: str,
+    outcome: str,
+    before: Optional[dict] = None,
+    after: Optional[dict] = None,
+    attempt: int = 1,
+    max_attempts: int = 2,
+    user_id: Optional[int] = None,
+) -> None:
+    """Emit ONE `slop_retry` event per steered slop-lint regeneration (issue #1434).
+
+    `outcome` is `slop_lint.retry_outcome`'s verdict on the pair of reports, and it is the whole
+    reason the event exists: a finished draft only records the checks that were STILL firing when
+    the budget ran out, so the clear-rate of the retry — and how often a full-draft rewrite trades
+    one HARD check for a different one — cannot be recovered from the corpus afterwards.
+
+    Only check NAMES cross the wire. A violation's `evidence` is an excerpt of the draft, i.e. user
+    content, and the counts plus the names answer every question this measurement was raised to ask.
+    """
+    before, after = dict(before or {}), dict(after or {})
+    _emit(EVENTS["slop_retry"], {
+        "user_id": user_id, "surface": surface, "outcome": outcome, "attempt": attempt,
+        "max_attempts": max_attempts,
+        "before_checks": [v.get("check") for v in before.get("hard") or []],
+        "after_checks": [v.get("check") for v in after.get("hard") or []],
+        "hard_before": len(before.get("hard") or []), "hard_after": len(after.get("hard") or []),
+        "warn_before": len(before.get("warnings") or []),
+        "warn_after": len(after.get("warnings") or []),
+    })
 
 
 def track_motion_prompt_check(

@@ -304,9 +304,30 @@ def emoji_bullet_max() -> int:
     return int(_env_number("SLOP_LINT_EMOJI_BULLET_MAX", EMOJI_BULLET_MAX_DEFAULT, int, low=0))
 
 
-def slop_max_attempts() -> int:
-    """Total drafts a caller may spend on one piece (initial + regenerations)."""
-    return int(_env_number("SLOP_LINT_MAX_ATTEMPTS", MAX_ATTEMPTS_DEFAULT, int, low=1, high=5))
+def slop_max_attempts(content_type: Optional[str] = None) -> int:
+    """Total drafts a caller may spend on one piece (initial + regenerations).
+
+    Resolved most-specific-first: `SLOP_LINT_MAX_ATTEMPTS_<SURFACE>` beats the global
+    `SLOP_LINT_MAX_ATTEMPTS`, which beats `MAX_ATTEMPTS_DEFAULT`. The per-surface knob exists
+    because what an attempt COSTS is a property of the surface rather than of the linter: a
+    newsletter edition is a `lem-complex` call on a weekly cadence, a feed comment is a `lem-medium`
+    call at high volume, so one budget cannot be right for both (issue #1434). Both still default
+    to 2 — raising either is an ops decision, and the `slop_retry` telemetry is what it should be
+    made on. An unparseable value falls through to the next source rather than to the default, so a
+    typo in a surface override cannot silently discard a deliberate global one.
+    """
+    surface = str(content_type or "").strip().lower()
+    names = ([f"SLOP_LINT_MAX_ATTEMPTS_{surface.upper()}"] if surface else [])
+    names.append("SLOP_LINT_MAX_ATTEMPTS")
+    for name in names:
+        raw = (os.environ.get(name) or "").strip()
+        if not raw:
+            continue
+        try:
+            return max(1, min(5, int(raw)))
+        except (TypeError, ValueError):
+            continue
+    return MAX_ATTEMPTS_DEFAULT
 
 
 def banned_words() -> frozenset:
@@ -668,6 +689,77 @@ def slop_retry_directive(violations: Optional[list]) -> str:
     lines.append("- Say the plain thing you would say out loud. Do NOT invent facts, numbers, or "
                  "specifics to replace what you cut.")
     return "\n".join(lines) + "\n"
+
+
+# ---------------------------------------------------------------------------
+# What a steered regeneration actually DID (issue #1434).
+#
+# Every surface here retries a failed draft once, and until now nothing recorded whether that retry
+# worked: the corpus keeps the LAST draft, so a retry that cleared the check it was told to fix and
+# tripped a different one is indistinguishable from one that never moved. These two functions are
+# the vocabulary for that — pure, deterministic, and graded from two lint reports, so the
+# clear-rate is measurable from telemetry rather than guessed at from finished editions.
+# ---------------------------------------------------------------------------
+
+RETRY_CLEARED = "cleared"
+RETRY_TRADED = "traded"
+RETRY_WORSENED = "worsened"
+RETRY_PERSISTED = "persisted"
+RETRY_LOST = "lost"
+
+
+def hard_checks(report: Optional[dict]) -> list:
+    """The names of the HARD checks in a lint report, in report order, deduped."""
+    names = [str(v.get("check")) for v in (report or {}).get("hard") or []
+             if isinstance(v, dict) and v.get("check")]
+    return list(dict.fromkeys(names))
+
+
+def retry_outcome(before: Optional[dict], after: Optional[dict]) -> str:
+    """Grade one regeneration by comparing the lint report before it against the one after.
+
+    - `cleared` — no HARD check remains. The retry did its job.
+    - `worsened` — strictly more HARD checks than it started with.
+    - `traded` — it fixed every check it was steered on and tripped a DIFFERENT one instead. This is
+      the failure mode a whole-draft rewrite has and a targeted edit does not, so it is counted
+      apart from `persisted` rather than lumped in with it.
+    - `persisted` — at least one of the original checks survived the rewrite.
+    - `lost` — the regeneration produced nothing (`after` is None). Counted, not dropped: an empty
+      retry still spent a call, and leaving it out of the denominator flatters the clear rate.
+    """
+    if after is None:
+        return RETRY_LOST
+    before_checks, after_checks = set(hard_checks(before)), set(hard_checks(after))
+    if not after_checks:
+        return RETRY_CLEARED
+    if len(after_checks) > len(before_checks):
+        return RETRY_WORSENED
+    if not (after_checks & before_checks):
+        return RETRY_TRADED
+    return RETRY_PERSISTED
+
+
+def keep_retry(before: Optional[dict], after: Optional[dict]) -> bool:
+    """Whether a regeneration is worth keeping over the draft that produced it.
+
+    Ranked on (HARD count, total violation count), so a retry is kept unless it is strictly WORSE.
+    Callers used to take the newer draft unconditionally, which meant a rewrite that traded one
+    violation for two shipped the noisier text — the retry is a fresh full draft, not an edit, so
+    there is no reason to assume it improved on what it replaced. Free: both reports are already in
+    hand, and no extra call is made either way.
+
+    Ties keep the retry. Equal-ranked drafts are equally good by every measure this layer has, and
+    preferring the older one would only add churn.
+    """
+    if after is None:
+        return False
+    return _draft_rank(after) <= _draft_rank(before)
+
+
+def _draft_rank(report: Optional[dict]) -> tuple:
+    """(HARD count, total violation count) — lower is better."""
+    report = report or {}
+    return (len(report.get("hard") or []), len(report.get("violations") or []))
 
 
 # ---------------------------------------------------------------------------

@@ -34,7 +34,8 @@ def _clean_env(monkeypatch):
     for name in ("SLOP_LINT_ENABLED", "SLOP_LINT_POST_ENABLED", "SLOP_LINT_COMMENT_ENABLED",
                  "SLOP_LINT_DM_ENABLED", "SLOP_LINT_NEWSLETTER_ENABLED", "SLOP_LINT_LEXICON_MAX",
                  "SLOP_LINT_EM_DASH_PER_SENTENCE", "SLOP_LINT_BURSTINESS_MIN",
-                 "SLOP_LINT_EMOJI_BULLET_MAX", "SLOP_LINT_MAX_ATTEMPTS", "SLOP_LINT_EXTRA_WORDS",
+                 "SLOP_LINT_EMOJI_BULLET_MAX", "SLOP_LINT_MAX_ATTEMPTS",
+                 "SLOP_LINT_MAX_ATTEMPTS_NEWSLETTER", "SLOP_LINT_EXTRA_WORDS",
                  "SLOP_LINT_ALLOW_WORDS", "SLOP_LINT_EXTRA_PHRASES", "SLOP_LINT_BLOG_ALIGNMENT_MIN"):
         monkeypatch.delenv(name, raising=False)
     for check in sl.DEFAULT_SEVERITIES:
@@ -351,6 +352,31 @@ class TestReportShape:
         assert sl.slop_max_attempts() == 5
         monkeypatch.setenv("SLOP_LINT_MAX_ATTEMPTS", "junk")
         assert sl.slop_max_attempts() == sl.MAX_ATTEMPTS_DEFAULT
+
+    def test_a_surface_can_carry_its_own_attempt_budget(self, monkeypatch):
+        monkeypatch.setenv("SLOP_LINT_MAX_ATTEMPTS_NEWSLETTER", "3")
+        assert sl.slop_max_attempts("newsletter") == 3
+        assert sl.slop_max_attempts("comment") == sl.MAX_ATTEMPTS_DEFAULT
+        assert sl.slop_max_attempts() == sl.MAX_ATTEMPTS_DEFAULT
+
+    def test_a_surface_budget_beats_the_global_one(self, monkeypatch):
+        monkeypatch.setenv("SLOP_LINT_MAX_ATTEMPTS", "2")
+        monkeypatch.setenv("SLOP_LINT_MAX_ATTEMPTS_NEWSLETTER", "4")
+        assert sl.slop_max_attempts("newsletter") == 4
+        assert sl.slop_max_attempts("post") == 2
+
+    def test_a_junk_surface_budget_falls_through_to_the_global_one(self, monkeypatch):
+        # NOT to the default: a typo in one surface override must not silently discard a deliberate
+        # global setting.
+        monkeypatch.setenv("SLOP_LINT_MAX_ATTEMPTS", "3")
+        monkeypatch.setenv("SLOP_LINT_MAX_ATTEMPTS_NEWSLETTER", "lots")
+        assert sl.slop_max_attempts("newsletter") == 3
+
+    def test_a_surface_budget_is_bounded_like_the_global_one(self, monkeypatch):
+        monkeypatch.setenv("SLOP_LINT_MAX_ATTEMPTS_NEWSLETTER", "99")
+        assert sl.slop_max_attempts("newsletter") == 5
+        monkeypatch.setenv("SLOP_LINT_MAX_ATTEMPTS_NEWSLETTER", "0")
+        assert sl.slop_max_attempts("newsletter") == 1
 
     def test_junk_thresholds_fall_back_to_the_defaults(self, monkeypatch):
         monkeypatch.setenv("SLOP_LINT_BURSTINESS_MIN", "junk")
@@ -696,3 +722,99 @@ class TestGroupPostWiring:
             out = ai_helper.generate_group_post(_profile())
         assert out == slopped
         assert "AI-slop lint" in warn.call_args.args[0]
+
+
+class TestRetryGrading:
+    """Grading one steered regeneration (issue #1434).
+
+    The stored draft only ever shows what was still firing when the budget ran out, so `cleared` and
+    `traded` are indistinguishable after the fact — these two functions are what makes the
+    difference recordable, and what stops a rewrite that came back worse from being kept.
+    """
+
+    def _report(self, *checks, warns=0):
+        hard = [{"check": c, "severity": sl.SEVERITY_HARD, "detail": f"{c} fired"} for c in checks]
+        warnings = [{"check": f"warn_{i}", "severity": sl.SEVERITY_WARN, "detail": "w"}
+                    for i in range(warns)]
+        return {"passes": not hard, "hard": hard, "warnings": warnings,
+                "violations": hard + warnings, "checked": True}
+
+    def test_a_clean_retry_is_cleared(self):
+        assert sl.retry_outcome(self._report(sl.CHECK_CONTRASTIVE),
+                                self._report()) == sl.RETRY_CLEARED
+
+    def test_the_same_check_surviving_is_persisted(self):
+        assert sl.retry_outcome(self._report(sl.CHECK_CONTRASTIVE),
+                                self._report(sl.CHECK_CONTRASTIVE)) == sl.RETRY_PERSISTED
+
+    def test_a_different_check_firing_instead_is_traded(self):
+        # The failure mode a whole-draft rewrite has and a targeted edit does not — counted apart
+        # from `persisted` because the fix for it is a different one.
+        assert sl.retry_outcome(self._report(sl.CHECK_CONTRASTIVE),
+                                self._report(sl.CHECK_LEXICON)) == sl.RETRY_TRADED
+
+    def test_more_checks_than_it_started_with_is_worsened(self):
+        assert sl.retry_outcome(self._report(sl.CHECK_CONTRASTIVE),
+                                self._report(sl.CHECK_CONTRASTIVE,
+                                             sl.CHECK_LEXICON)) == sl.RETRY_WORSENED
+        assert sl.retry_outcome(self._report(sl.CHECK_CONTRASTIVE),
+                                self._report(sl.CHECK_LEXICON,
+                                             sl.CHECK_TADA)) == sl.RETRY_WORSENED
+
+    def test_an_empty_regeneration_is_counted_not_dropped(self):
+        # It still spent a call; leaving it out of the denominator flatters the clear rate.
+        assert sl.retry_outcome(self._report(sl.CHECK_CONTRASTIVE), None) == sl.RETRY_LOST
+
+    def test_hard_checks_are_named_and_deduped(self):
+        report = self._report(sl.CHECK_CONTRASTIVE, sl.CHECK_CONTRASTIVE, sl.CHECK_LEXICON)
+        assert sl.hard_checks(report) == [sl.CHECK_CONTRASTIVE, sl.CHECK_LEXICON]
+        assert sl.hard_checks(None) == []
+
+    def test_a_worse_retry_is_not_kept(self):
+        assert sl.keep_retry(self._report(sl.CHECK_CONTRASTIVE),
+                             self._report(sl.CHECK_CONTRASTIVE, sl.CHECK_LEXICON)) is False
+
+    def test_a_better_retry_is_kept(self):
+        assert sl.keep_retry(self._report(sl.CHECK_CONTRASTIVE, sl.CHECK_LEXICON),
+                             self._report(sl.CHECK_LEXICON)) is True
+        assert sl.keep_retry(self._report(sl.CHECK_CONTRASTIVE), self._report()) is True
+
+    def test_a_noisier_retry_at_the_same_hard_count_is_not_kept(self):
+        assert sl.keep_retry(self._report(sl.CHECK_CONTRASTIVE, warns=1),
+                             self._report(sl.CHECK_LEXICON, warns=3)) is False
+
+    def test_an_equal_retry_is_kept(self):
+        assert sl.keep_retry(self._report(sl.CHECK_CONTRASTIVE),
+                             self._report(sl.CHECK_LEXICON)) is True
+
+    def test_a_missing_retry_is_never_kept(self):
+        assert sl.keep_retry(self._report(sl.CHECK_CONTRASTIVE), None) is False
+
+
+class TestRetryTelemetry:
+    """One `slop_retry` row per steered regeneration, carrying no draft text (issue #1434)."""
+
+    def test_event_shape(self):
+        from cqc_lem.utilities.observability import track_slop_retry
+        before = sl.lint_report("It's not just tooling, it's a mindset.", "newsletter")
+        after = sl.lint_report(_CLEAN, "newsletter")
+        with patch("cqc_lem.utilities.observability.posthog.capture") as capture:
+            track_slop_retry("newsletter", sl.retry_outcome(before, after), before=before,
+                             after=after, attempt=2, max_attempts=2, user_id=7)
+        props = capture.call_args[1]["properties"]
+        assert capture.call_args[1]["event"] == "slop_retry"
+        assert capture.call_args[1]["distinct_id"] == "7"
+        assert props["surface"] == "newsletter" and props["outcome"] == sl.RETRY_CLEARED
+        assert props["before_checks"] == [sl.CHECK_CONTRASTIVE] and props["after_checks"] == []
+        assert props["hard_before"] == 1 and props["hard_after"] == 0
+        assert props["attempt"] == 2 and props["max_attempts"] == 2
+        assert "mindset" not in str(props), "the draft body must never be sent"
+
+    def test_a_lost_regeneration_still_reports(self):
+        from cqc_lem.utilities.observability import track_slop_retry
+        before = sl.lint_report("It's not just tooling, it's a mindset.", "newsletter")
+        with patch("cqc_lem.utilities.observability.posthog.capture") as capture:
+            track_slop_retry("newsletter", sl.RETRY_LOST, before=before, after=None, attempt=2)
+        props = capture.call_args[1]["properties"]
+        assert props["outcome"] == sl.RETRY_LOST and props["after_checks"] == []
+        assert props["hard_after"] == 0

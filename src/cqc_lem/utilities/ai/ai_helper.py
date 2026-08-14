@@ -81,6 +81,7 @@ from cqc_lem.utilities.observability import (
     llm_pipeline,
     llm_step,
     track_motion_prompt_check,
+    track_slop_retry,
 )
 from cqc_lem.utilities.profile_skills_window import profile_skills_directive as _profile_skills_directive
 from cqc_lem.utilities.utils import create_folder_if_not_exists, save_video_url_to_dir
@@ -1009,29 +1010,47 @@ def generate_newsletter_edition(profile: "LinkedInProfile", topic: str = None,
     # regenerated, not just its body — title, subject, and opening_line are derived from it and would
     # go stale otherwise. Neither grader can hold an edition: one that still fails is returned (a
     # newsletter is drafted for human review before it publishes) with the reasons named in the log.
-    for _ in range(max(0, _slop.slop_max_attempts() - 1)):
-        report = _slop.lint_report(edition["body"], "newsletter", blog_content=blog_content)
-        structure = _framework.newsletter_structure_report(edition["body"])
-        if report["passes"] and structure["passes"]:
-            return edition
+    #
+    # Two things the rewrite-everything shape costs, both fixed here without spending a call
+    # (issue #1434). The retry is a fresh draft, not an edit, so it can come back carrying MORE
+    # violations than the draft it replaced — `keep_retry` keeps whichever ranks better, so the
+    # budget can no longer end on the worse of two drafts. And the outcome of each regeneration is
+    # recorded (`slop_retry`), because the stored edition only ever shows what was still firing when
+    # the budget ran out: whether the retry cleared its check, or traded it for a different one, is
+    # not recoverable from the corpus afterwards. The attempt budget is read PER SURFACE and still
+    # defaults to 2 — an edition is a `lem-complex` call, so a third attempt is a cost decision for
+    # `SLOP_LINT_MAX_ATTEMPTS_NEWSLETTER` to make once this telemetry has editions in it.
+    max_attempts = _slop.slop_max_attempts("newsletter")
+    report = _slop.lint_report(edition["body"], "newsletter", blog_content=blog_content)
+    structure = _framework.newsletter_structure_report(edition["body"])
+    attempt = 1
+    while not (report["passes"] and structure["passes"]) and attempt < max_attempts:
+        attempt += 1
         retry = _edition(_slop.slop_retry_directive(report["hard"])
                          + _framework.newsletter_structure_directive(structure["failures"]))
+        retry_report = retry_structure = None
+        if retry:
+            retry = _polish(retry)
+            retry_report = _slop.lint_report(retry["body"], "newsletter", blog_content=blog_content)
+            retry_structure = _framework.newsletter_structure_report(retry["body"])
+        track_slop_retry("newsletter", _slop.retry_outcome(report, retry_report),
+                         before=report, after=retry_report, attempt=attempt,
+                         max_attempts=max_attempts, user_id=user_id)
         if not retry:
             break
-        edition = _polish(retry)
-    final = _slop.lint_report(edition["body"], "newsletter", blog_content=blog_content)
-    if not final["passes"]:
+        if _slop.keep_retry(report, retry_report):
+            edition, report, structure = retry, retry_report, retry_structure
+    if not report["passes"]:
         log_warning("Newsletter edition still trips the AI-slop lint; keeping it for review: "
-                    + "; ".join(_slop.violation_reasons(final["hard"])))
-    final_structure = _framework.newsletter_structure_report(edition["body"])
-    if not final_structure["passes"]:
+                    + "; ".join(_slop.violation_reasons(report["hard"])))
+    if not structure["passes"]:
         # INFO, not WARNING, on purpose: this is a MEASUREMENT of a draft that is kept and reviewed,
         # and on the real corpus it is the common case (9 of 10 editions carried a wall-of-text
         # paragraph). A warning here would recur on almost every edition and file a grouped defect
         # for working behaviour — the `utilities/CLAUDE.md` escalation contract, same call as
         # `cost_alerts` (issue #1071). The reasons still reach the log either way.
         log_info("Newsletter edition kept below the structural floor for review: "
-                 + "; ".join(_framework.newsletter_structure_reasons(final_structure["failures"])),
+                 + "; ".join(_framework.newsletter_structure_reasons(structure["failures"])),
                  task_name="generate_newsletter_edition")
     return edition
 

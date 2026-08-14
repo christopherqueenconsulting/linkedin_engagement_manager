@@ -105,6 +105,18 @@ to promote the lint to a spend gate is made on — how often it WOULD have held 
 body is never sent: `evidence` carries only phrases from LEM's own fixed `MOTION_BANNED_*` lists,
 which is why the opening check (whose only evidence is prompt text) reports none.
 
+## Slop-lint regeneration (issue #1434) — `docs/content-core.md`
+One `slop_retry` event per steered regeneration, on any surface that runs the bounded retry.
+`outcome` is the reading: `cleared` (no HARD check remains), `traded` (it fixed what it was steered
+on and tripped a DIFFERENT check — the failure mode a whole-draft rewrite has and a targeted edit
+does not), `worsened`, `persisted`, or `lost` (the regeneration returned nothing; counted, because
+it still spent a call and dropping it flatters the clear rate). This event exists because the
+finished draft is not evidence: it records only what was still firing when the budget ran out, so
+`cleared` and `traded` are indistinguishable afterwards — which is why #1434 could not measure the
+clear-rate from the 10-edition newsletter corpus. `attempt` next to `max_attempts` is what a
+per-surface budget change (`SLOP_LINT_MAX_ATTEMPTS_<SURFACE>`) should be decided on. Check NAMES
+only: a violation's `evidence` is draft text.
+
 ## Feature flags (issue #651) — `docs/feature-flags.md`
 `utilities/flags.py` is the ONE place; **fail open to env var** (no key, disabled, undefined,
 inconclusive, SDK raises → all return the flag's env var). `only_evaluate_locally=True` → ZERO
