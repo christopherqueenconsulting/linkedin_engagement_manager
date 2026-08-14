@@ -219,6 +219,18 @@ def _queue_withheld_lane(snap: Snapshot) -> str | None:
     lanes = [lb for lb in LANE_LABEL_PRIORITY if lb in snap.labels]
     if lanes:
         return LANE_LABEL_MODES[lanes[0]][0]
+    if snap.merge_state not in MERGE_STATE_PROCEED:
+        # The mergeability rows sit between the lane labels and the checks ladder, and both of them
+        # WAIT: an unreadable or unrecognised `mergeStateStatus` dispatches nothing, so nothing is
+        # being held. (`DIRTY` cannot reach here — it returns above the gate.)
+        return None
+    if snap.auto_merge:
+        # The one that actually matters, because an armed PR is how a PR gets into the queue at all:
+        # `ACT_MERGE` arms auto-merge and GitHub enqueues it, so essentially every queued PR the
+        # daemon sees has `auto_merge` set. The armed row sits ABOVE the checks ladder, so once the
+        # entry clears this PR reports `auto_merge_armed` (or `owner_review_required`) and no lane
+        # runs — naming one here would promise a dispatch that never comes.
+        return None
     checks = snap.checks
     if checks is None:
         return None

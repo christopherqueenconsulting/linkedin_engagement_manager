@@ -238,7 +238,7 @@ call that live PR stranded.
 
 | # | Condition | Action | Reason | Wake |
 |---|---|---|---|---|
-| 20 | draft (unheld — a held draft is row 5-9) | none → awaiting_review | `pr_is_draft` | 6h |
+| 20 | draft (unheld — a held draft is rows 5-10) | none → awaiting_review | `pr_is_draft` | 6h |
 | 21 | `mergeStateStatus == DIRTY` | dispatch `rebase` | `conflicts_with_main` | — |
 | 22 | **a live merge-queue entry** (any state) | none | `in_merge_queue` | 15m |
 | 23 | lane label, by declared priority: `agent:revise` | dispatch `revise` | `owner_requested_changes` | — |
@@ -266,7 +266,10 @@ ejects it anyway, so fix it fast* — is why this row **waits** rather than acti
 drops `queue_state` back to `""`, and the next observation runs the ordinary ladder and dispatches
 the same lane. The gate delays a fix by at most one `ttl_queue`; it never swallows one. `details`
 carries `withheld`, naming the lane being held, so a silent queued PR is legible instead of
-mysterious. **Row 21 (`DIRTY`) is the one documented exception**, and only because the queue cannot
+mysterious — and it names **only a lane the ladder would really run**: rows 27-30 sit above the
+checks ladder and all of them wait, so an armed PR (which is how a PR reaches the queue at all)
+withholds nothing, and saying `fix` there would promise a dispatch that never comes.
+**Row 21 (`DIRTY`) is the one documented exception**, and only because the queue cannot
 merge a conflicted PR either — it will eject it regardless, so a rebase costs the queue nothing it
 was not already losing.
 
@@ -336,9 +339,15 @@ right-hand column below describes.
 | a stale review | ✅ row 22, `withheld = selfreview` | dispatched `selfreview` — same |
 | checks pending | ✅ row 22, `withheld = ""` — the queue is reported, not CI | reported `ci_running`, misleading an operator reading the state |
 | a lane label (`revise`/`phasefix`/`depfix`/`docfix`) | ✅ row 22, `withheld = <mode>` | dispatched that lane — every one of them pushes |
+| auto-merge armed **and** a failed check / stale review / unresolved thread | ✅ row 22, `withheld = ""` — row 30 is above the checks ladder, so nothing would dispatch once the entry cleared either | dispatched nothing then either (row 30 already outranked those rows) |
 | `mergeStateStatus == DIRTY` | ✅ row 21 → `rebase`, the **one documented exception**: the queue cannot merge a conflicted PR either | same |
 | auto-merge armed | ✅ row 22 (above row 29/30), so a queued PR reports the queue rather than the arm | reported `auto_merge_armed` |
 | a hold label | hold wins — rows 5-10 are above row 22. `disarm` is a GitHub-side action and pushes nothing | same |
+
+**A lane label is not a stop.** Holding `agent:revise` on a queued PR means the queue may complete
+the merge before that feedback is applied — where the old order ejected it as a side effect of
+pushing. The gesture that actually stops a queued merge is a **hold label**, which routes to row 5
+(`disarm`) instead of waiting; a lane label was never a merge veto and must not be used as one.
 
 The wait is bounded and self-healing: a lost or completed entry drops `queue_state` to `""`, and the
 next observation runs the ladder normally. `MergeQueueEntryState` is not enumerated here on purpose —

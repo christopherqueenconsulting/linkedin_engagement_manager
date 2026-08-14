@@ -143,6 +143,46 @@ def test_the_first_lane_label_by_priority_is_the_one_named():
     assert got.details["withheld"] == "revise"
 
 
+#: Snapshots whose ladder rows sit BETWEEN the lane labels and the checks ladder. Every one of them
+#: waits, so nothing is withheld — and the armed case is the one that matters, because arming is how
+#: a PR reaches the queue at all (`ACT_MERGE` arms auto-merge, GitHub enqueues).
+NOTHING_TO_WITHHOLD = [
+    ("armed_failed_check", dict(auto_merge=True, checks=RED)),
+    ("armed_stale_review", dict(auto_merge=True, review_fresh=False)),
+    ("armed_unresolved_thread", dict(auto_merge=True, unresolved_threads=2)),
+    ("armed_blocked_green", dict(auto_merge=True, merge_state="BLOCKED")),
+    ("merge_state_unreadable", dict(merge_state="", checks=RED)),
+    ("merge_state_unknown", dict(merge_state="UNKNOWN", checks=RED)),
+    ("merge_state_unrecognised", dict(merge_state="NEW_GITHUB_VALUE", checks=RED)),
+]
+
+
+@pytest.mark.parametrize("name,extra", NOTHING_TO_WITHHOLD, ids=[c[0] for c in NOTHING_TO_WITHHOLD])
+def test_a_lane_the_ladder_would_not_run_is_never_named_as_withheld(name, extra):
+    """`withheld` promises a dispatch, so it must not name one the ladder would refuse.
+
+    An armed PR reports `auto_merge_armed`/`owner_review_required` from a row ABOVE the checks
+    ladder, and an unreadable `mergeStateStatus` waits — so in all of these the entry clearing
+    dispatches nothing, and claiming a held `fix` would be the same illegibility this field exists
+    to remove, pointing the other way.
+    """
+    assert d(pr(queue_state="QUEUED", **extra)).details["withheld"] == ""
+
+
+@pytest.mark.parametrize("armed", [False, True], ids=["unarmed", "armed"])
+@pytest.mark.parametrize("name,extra,mode", PUSHING_LANES, ids=[c[0] for c in PUSHING_LANES])
+def test_withheld_is_exactly_what_dispatches_once_the_entry_clears(name, extra, mode, armed):
+    """The invariant behind the field, asserted against the ladder rather than a hard-coded name.
+
+    Whatever `withheld` says, running the SAME snapshot with no queue entry must dispatch exactly
+    that mode — and an empty string must mean no dispatch at all. A lane label still dispatches when
+    armed (labels outrank the armed row); everything below it does not.
+    """
+    queued = d(pr(queue_state="QUEUED", auto_merge=armed, **extra))
+    cleared = d(pr(queue_state="", auto_merge=armed, **extra))
+    assert queued.details["withheld"] == (cleared.mode or "")
+
+
 # ------------------------------------------------- what still outranks the gate
 
 
