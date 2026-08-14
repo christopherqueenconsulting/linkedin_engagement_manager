@@ -2974,22 +2974,86 @@ def auto_second_wave_comment(self, user_id: int, post_id: int):
         return f"Second-wave comment error: {e}"
 
 
-def _enumerate_joined_groups(driver) -> list:
-    """Scrape the user's joined groups from /groups/ → list of (group_id, name). Best-effort."""
+# ── the groups directory (issues #1052, #1316) ───────────────────────────────────────────────
+# `/groups/` renders the user's OWN groups and a "Groups you might be interested in" rail on one
+# page, and every anchor in both carries the same `/groups/<id>` href. Taking all of them as joins is
+# how the sync invented memberships the user never had — the 2026-08-14 live directory offered 5 of
+# them, and four were already sitting `enabled` in the DB, so group commenting was walking into
+# groups the account does not belong to. So the walk reads each anchor's SECTION and keeps only what
+# the page did not file under a recommendation heading.
+#
+# The section is the nearest PRECEDING heading in document order, not an ancestor of the anchor:
+# that live page's own headings ("Groups listing", "Groups you might be interested in") are neither
+# h1–h3 nor ancestors of the cards beneath them, so an ancestor walk attributes nothing. Live shape
+# on 2026-08-14: 55 anchors, 50 under "Groups listing", 5 under the recommendation heading.
+_GROUP_RECOMMENDATION_HEADINGS = ("might be interested", "may like", "you might like", "recommend",
+                                  "suggested", "discover")
+
+# A row a heading could not be attributed to is KEPT. An unreadable section is not evidence that a
+# membership is a recommendation, and dropping on absence would empty the sync the first time
+# LinkedIn re-words a heading — the same failure this walk exists to end, pointed the other way.
+_GROUP_DIRECTORY_JS = r"""
+const out = [];
+const seen = new Set();
+const headings = [];
+for (const h of document.querySelectorAll('h1,h2,h3,h4,h5,h6,[role="heading"]')) {
+  const t = (h.innerText || '').trim();
+  if (t) headings.push([h, t.slice(0, 80)]);
+}
+for (const a of document.querySelectorAll("a[href*='/groups/']")) {
+  const m = (a.getAttribute('href') || '').match(/\/groups\/(\d+)/);
+  if (!m) continue;
+  const id = m[1];
+  if (seen.has(id)) continue;
+  const name = (a.innerText || '').trim().split('\n')[0];
+  if (!name || name.length < 2) continue;
+  let section = '';
+  for (const [node, text] of headings) {
+    if (node.compareDocumentPosition(a) & Node.DOCUMENT_POSITION_FOLLOWING) section = text;
+    else break;
+  }
+  seen.add(id);
+  out.push([id, name.slice(0, 255), section]);
+  if (out.length >= 60) break;
+}
+return out;
+"""
+
+# The zero-walk cross-check for this walk (#1013): a per-row overflow control, one per JOINED group
+# and none on a recommendation card (50 for 50 rows on 2026-08-14). It reads a control LABEL, so it
+# shares nothing with the walk's chain — not the href, not the id shape, not the heading attribution
+# — which is what makes it able to answer "the page still renders your groups" when the walk says
+# zero. That includes the new failure mode this filter introduces: a re-worded joined-list heading
+# that matches a recommendation marker would drop every row, and this is what says so.
+_GROUPS_DIRECTORY_CROSSCHECK_SEL = "button[aria-label^='More options for ']"
+
+
+def _is_group_recommendation_section(section: str) -> bool:
+    """Whether a directory heading marks its anchors as OFFERS rather than memberships."""
+    text = str(section or "").lower()
+    return any(marker in text for marker in _GROUP_RECOMMENDATION_HEADINGS)
+
+
+def _enumerate_joined_groups(driver, user_id: Optional[int] = None) -> list:
+    """Scrape the user's joined groups from /groups/ → list of (group_id, name).
+
+    Recommendation cards are excluded by the heading they sit under, so a group the user was merely
+    offered never becomes a stored membership. Best-effort: a zero read is cross-checked against the
+    page's own group rows (`_GROUPS_DIRECTORY_CROSSCHECK_SEL`) rather than being taken for "this user
+    is in no groups".
+    """
     driver.get("https://www.linkedin.com/groups/")
     time.sleep(random.uniform(5, 8))
     for y in (600, 1200, 1800):
         driver.execute_script(f"window.scrollTo(0,{y});")
         time.sleep(1.5)
-    items = driver.execute_script(
-        "const out=[]; const seen=new Set();"
-        "for(const a of document.querySelectorAll(\"a[href*='/groups/']\")){"
-        "  const m=(a.getAttribute('href')||'').match(/\\/groups\\/(\\d+)/); if(!m) continue;"
-        "  const id=m[1]; if(seen.has(id)) continue;"
-        "  const name=(a.innerText||'').trim().split('\\n')[0];"
-        "  if(name && name.length>1){ seen.add(id); out.push([id, name.slice(0,255)]); }"
-        "} return out.slice(0,60);")
-    return [(str(i[0]), i[1]) for i in (items or []) if i and i[0]]
+    rows = driver.execute_script(_GROUP_DIRECTORY_JS) or []
+    joined = [(str(r[0]), r[1]) for r in rows
+              if r and r[0] and not _is_group_recommendation_section(r[2] if len(r) > 2 else "")]
+    if not joined:
+        _report_zero_walk(driver, _GROUPS_DIRECTORY_CROSSCHECK_SEL, "Joined-groups directory walk",
+                          user_id=user_id, task_name="auto_sync_user_groups")
+    return joined
 
 
 @shared_task.task(name='cqc_lem.app.run_automation.auto_sync_user_groups',
@@ -3003,7 +3067,7 @@ def auto_sync_user_groups(self, user_id: int):
         log_error("Error getting profile for group sync", exc=e, user_id=user_id, task_name="auto_sync_user_groups")
         return f"Failed: {e}"
     try:
-        groups = _enumerate_joined_groups(driver)
+        groups = _enumerate_joined_groups(driver, user_id=user_id)
         for gid, name in groups:
             upsert_user_group(user_id, gid, name)
         return f"Synced {len(groups)} group(s)"

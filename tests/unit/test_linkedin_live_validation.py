@@ -285,6 +285,41 @@ class TestGroupShareBoxChainCopy:
 
 
 @pytest.mark.unit
+class TestGroupsCrosscheckSelectorCopy:
+    """#1316: the probe grades production's OWN zero-walk tripwire for the groups directory.
+
+    Same posture as the share-box chain above — a carried copy that drifts grades a selector nothing
+    ships, which reads as a working tripwire while the real one is blind.
+    """
+
+    def test_carried_selector_is_identical_to_the_one_production_ships(self):
+        from cqc_lem.app.engagement import feed
+
+        assert llv._CARRIED_GROUPS_DIRECTORY_CROSSCHECK_SEL == feed._GROUPS_DIRECTORY_CROSSCHECK_SEL
+
+    def test_the_running_image_wins_when_it_has_a_selector(self):
+        selector, source = llv._groups_directory_crosscheck()
+        assert source == "image"
+        from cqc_lem.app.engagement import feed
+
+        assert selector == feed._GROUPS_DIRECTORY_CROSSCHECK_SEL
+
+    def test_falls_back_to_the_carried_copy_on_an_image_that_predates_1316(self, monkeypatch):
+        import builtins
+        real_import = builtins.__import__
+
+        def _no_selector(name, *a, **k):
+            if name == "cqc_lem.app.engagement.feed":
+                raise ImportError("cannot import name '_GROUPS_DIRECTORY_CROSSCHECK_SEL'")
+            return real_import(name, *a, **k)
+
+        monkeypatch.setattr(builtins, "__import__", _no_selector)
+        selector, source = llv._groups_directory_crosscheck()
+        assert source == "script"
+        assert selector == llv._CARRIED_GROUPS_DIRECTORY_CROSSCHECK_SEL
+
+
+@pytest.mark.unit
 class TestMessageThreadProbe:
     """#731: the probe's job is to name the route that won, so the NEXT rotation is visible early."""
 
@@ -1595,6 +1630,40 @@ class TestGroupMembershipProbe:
                    "group_page": {"group_id": "1", "page_text": "x", "membership": "member"}}
         assert llv.group_membership_state(reading) == llv.STATE_DRIFT
         assert "blind" in llv.group_membership_verdict(reading)
+
+    def test_a_blind_zero_walk_tripwire_is_drift(self):
+        """#1316: the tripwire is what decides whether an empty sync is a defect or a quiet day.
+
+        Rotate its control label and a sync that enumerates nothing grades `empty` and says nothing —
+        the silence this whole surface keeps failing into.
+        """
+        reading = {"directory": {"page_text": "Groups", "enumerated": [["1", "A"]],
+                                 "anchors": [{"id": "1", "section": "Groups listing"}],
+                                 "crosscheck_selector": "button[aria-label^='More options for ']",
+                                 "crosscheck_count": 0},
+                   "group_page": {"group_id": "1", "page_text": "x", "membership": "member"}}
+        assert llv.group_membership_state(reading) == llv.STATE_DRIFT
+        assert "zero-walk tripwire" in llv.group_membership_verdict(reading)
+
+    def test_a_tripwire_that_matches_the_rows_is_not_a_finding(self):
+        reading = {"directory": {"page_text": "Groups", "enumerated": [["1", "A"]],
+                                 "anchors": [{"id": "1", "section": "Groups listing"}],
+                                 "crosscheck_selector": "button[aria-label^='More options for ']",
+                                 "crosscheck_count": 50},
+                   "group_page": {"group_id": "1", "page_text": "x", "membership": "member"}}
+        assert llv.group_membership_state(reading) == llv.STATE_OK
+
+    def test_an_unreadable_tripwire_read_grounds_nothing(self):
+        """An unreadable tripwire read grounds nothing.
+
+        A read that threw is not the page answering zero, and grading it drift would file a defect
+        for an unanswerable question.
+        """
+        findings = llv.group_enumeration_findings(
+            {"anchors": [{"id": "1", "section": "Groups listing"}], "enumerated": [["1", "A"]],
+             "crosscheck_selector": "button[aria-label^='More options for ']",
+             "crosscheck_count": None})
+        assert findings["crosscheck_blind"] is False
 
     def test_a_directory_that_never_rendered_grounds_nothing(self):
         reading = {"directory": {"page_text": "", "enumerated": [], "anchors": []},
