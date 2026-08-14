@@ -3024,6 +3024,11 @@ for (const a of document.querySelectorAll("a[href*='/groups/']")) {
 return out;
 """
 
+# The cap the walk above stops at, named so the reconcile can tell a walk that ran out of anchors
+# from one whose heading attribution dropped joined rows. `test_the_anchor_cap_constant_matches_the_
+# walk` fails if the two drift.
+_GROUP_DIRECTORY_ANCHOR_CAP = 60
+
 # The zero-walk cross-check for this walk (#1013): a per-row overflow control, one per JOINED group
 # and none on a recommendation card (50 for 50 rows on 2026-08-14). It reads a control LABEL, so it
 # shares nothing with the walk's chain — not the href, not the id shape, not the heading attribution
@@ -3164,7 +3169,12 @@ def _group_membership_answer(header_controls, share_box_present: bool) -> str:
     if _control_leads_with(header_controls, _GROUP_LEAVE_MARKERS):
         return MEMBERSHIP_MEMBER
     if _control_leads_with(header_controls, _GROUP_JOIN_MARKERS):
-        return MEMBERSHIP_NOT_MEMBER
+        # A share box is itself the membership signal here, so the two together are a CONTRADICTION,
+        # not a Join that outranks it: the reading that produces it is the header scope having
+        # reached far enough to pick up a Join from the page's own groups-you-may-like rail. Nothing
+        # else disables a group on one page load, and this is the only direction that costs a real
+        # membership its engagement, so a contradiction answers `unknown` and is asked again.
+        return MEMBERSHIP_UNKNOWN if share_box_present else MEMBERSHIP_NOT_MEMBER
     return MEMBERSHIP_MEMBER if share_box_present else MEMBERSHIP_UNKNOWN
 
 
@@ -3186,6 +3196,33 @@ def _confirm_group_membership(driver, wait, group_id: str, user_id: Optional[int
                   group_id=str(group_id), task_name="auto_sync_user_groups")
         return MEMBERSHIP_UNKNOWN
     return _group_membership_answer(controls, share_box is not None)
+
+
+def _heading_attribution_dropped_rows(reading: GroupsDirectoryReading, native: int) -> bool:
+    """Whether the walk kept FEWER joined rows than the page renders joined-row controls.
+
+    `_GROUPS_DIRECTORY_CROSSCHECK_SEL` is one control per JOINED group and none on a recommendation
+    card, so walking fewer than it counts means the heading attribution filed joined rows as offers.
+    The anchor cap is the one benign explanation, so a walk that hit it answers False.
+    """
+    if len(reading.joined) + len(reading.recommended) >= _GROUP_DIRECTORY_ANCHOR_CAP:
+        return False
+    return len(reading.joined) < native
+
+
+def _confirmation_slice(absent: list) -> Tuple[list, list]:
+    """Which stored-but-unseen groups this run pays a page load for, and which it leaves.
+
+    SAMPLED, not sliced off the front: `get_enabled_group_ids` answers in a stable order, so a fixed
+    head would re-ask the same ids every week and a tail behind more than `GROUP_RECONCILE_MAX_
+    CONFIRMATIONS` real memberships would never be reached at all — which is not what "the next
+    weekly run reaches it" means.
+    """
+    if len(absent) <= GROUP_RECONCILE_MAX_CONFIRMATIONS:
+        return list(absent), []
+    checked = random.sample(list(absent), GROUP_RECONCILE_MAX_CONFIRMATIONS)
+    taken = set(checked)
+    return checked, [gid for gid in absent if gid not in taken]
 
 
 def _reconcile_stored_groups(driver, wait, user_id: int,
@@ -3219,13 +3256,25 @@ def _reconcile_stored_groups(driver, wait, user_id: int,
         return []
     live = {gid for gid, _ in reading.joined}
     recommended = {str(g) for g in reading.recommended} - live
+    if recommended and _heading_attribution_dropped_rows(reading, native):
+        # The cross-check counts JOINED rows (one overflow control apiece, none on a recommendation
+        # card), so it answers something `native > 0` alone does not: whether the heading attribution
+        # moved joined rows into `recommended`. A re-worded joined heading that happens to match a
+        # recommendation marker does exactly that, and those ids would then be disabled on the
+        # heading alone. Demoting them to `absent` does not keep them forever — it just makes the
+        # group's OWN page the evidence, which is what every unattributed row already gets.
+        log_warning(f"Groups directory heading attribution kept {len(reading.joined)} joined row(s) "
+                    f"against {native} the cross-check counted — no group was disabled on a "
+                    f"recommendation heading this run", user_id=user_id,
+                    task_name="auto_sync_user_groups")
+        recommended = set()
     offered = [gid for gid in stored if gid in recommended]
     absent = [gid for gid in stored if gid not in live and gid not in recommended]
 
     disabled = []
     if offered and disable_user_groups(user_id, offered, reason="recommendation_rail"):
         disabled.extend(offered)
-    checked, skipped = absent[:GROUP_RECONCILE_MAX_CONFIRMATIONS], absent[GROUP_RECONCILE_MAX_CONFIRMATIONS:]
+    checked, skipped = _confirmation_slice(absent)
     if skipped:
         log_debug(f"{len(skipped)} stored group(s) were left unconfirmed by this run's cap "
                   f"({','.join(skipped)})", user_id=user_id, task_name="auto_sync_user_groups")

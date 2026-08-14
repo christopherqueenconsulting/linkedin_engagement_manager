@@ -478,11 +478,17 @@ class TestReconcileStoredGroups:
         from cqc_lem.app.engagement.feed import GroupsDirectoryReading
         return GroupsDirectoryReading(joined=list(joined), recommended=list(recommended))
 
-    def _run(self, reading, stored, crosscheck_hits=50, membership=None):
-        """Drive the reconcile with the DB and the group-page confirmation stubbed out."""
+    def _run(self, reading, stored, crosscheck_hits=None, membership=None):
+        """Drive the reconcile with the DB and the group-page confirmation stubbed out.
+
+        The cross-check defaults to ONE control per joined row, which is what the live page renders
+        (50 for 50 rows on 2026-08-14) — a fixed number would make every reading look like drift.
+        """
         from cqc_lem.app.engagement import feed
+        if crosscheck_hits is None:
+            crosscheck_hits = len(reading.joined)
         driver, wait = MagicMock(), MagicMock()
-        driver.find_elements.return_value = [MagicMock()] * crosscheck_hits
+        driver.find_elements.return_value = [MagicMock()] * max(crosscheck_hits, 0)
         if crosscheck_hits < 0:
             driver.find_elements.side_effect = WebDriverException("no session")
         with patch(f"{_FEED}.get_enabled_group_ids", return_value=list(stored)), \
@@ -560,6 +566,50 @@ class TestReconcileStoredGroups:
         assert confirm.call_count == feed.GROUP_RECONCILE_MAX_CONFIRMATIONS
         assert any("left unconfirmed" in str(c.args[0]) for c in debug.call_args_list)
 
+    def test_the_capped_run_draws_from_the_whole_backlog_not_its_head(self):
+        """A fixed head re-asks the same ids weekly, so a tail behind the cap is never reached."""
+        from cqc_lem.app.engagement import feed
+        cap = feed.GROUP_RECONCILE_MAX_CONFIRMATIONS
+        stored = [str(n) for n in range(100, 100 + cap + 3)]
+        with patch(f"{_FEED}.random.sample", side_effect=lambda pop, k: list(pop)[-k:]) as sample:
+            _, _, confirm = self._run(self._reading(), stored=stored)
+        assert sample.call_args[0] == (stored, cap)
+        assert [c.args[2] for c in confirm.call_args_list] == stored[-cap:]
+
+    def test_a_backlog_inside_the_cap_is_not_sampled_at_all(self):
+        from cqc_lem.app.engagement import feed
+        stored = [str(n) for n in range(100, 100 + feed.GROUP_RECONCILE_MAX_CONFIRMATIONS)]
+        with patch(f"{_FEED}.random.sample") as sample:
+            _, _, confirm = self._run(self._reading(), stored=stored)
+        sample.assert_not_called()
+        assert confirm.call_count == len(stored)
+
+    def test_a_walk_that_kept_fewer_joined_rows_than_the_page_renders_disables_none_on_the_heading(self):
+        """A re-worded joined heading files memberships as offers — the cross-check counts them."""
+        disabled, disable, confirm = self._run(
+            self._reading(joined=[("1", "A")], recommended=["77427"]),
+            stored=["1", "77427"], crosscheck_hits=2, membership={"77427": "member"})
+        assert disabled == []
+        disable.assert_not_called()
+        # Demoted to the absent population, so the group's OWN page is the evidence instead.
+        assert confirm.call_count == 1
+
+    def test_a_walk_that_ran_out_of_anchors_is_not_read_as_heading_drift(self):
+        """The 60-anchor cap explains a short walk without anything having been mis-attributed."""
+        from cqc_lem.app.engagement import feed
+        joined = [(str(n), "G") for n in range(1, feed._GROUP_DIRECTORY_ANCHOR_CAP)]
+        disabled, disable, confirm = self._run(
+            feed.GroupsDirectoryReading(joined=joined, recommended=["77427"]),
+            stored=["77427"], crosscheck_hits=len(joined) + 40)
+        assert disabled == ["77427"]
+        assert disable.call_args.kwargs["reason"] == "recommendation_rail"
+        confirm.assert_not_called()
+
+    def test_the_anchor_cap_constant_matches_the_walk(self):
+        """Two copies of 60 that drift would make a full walk read as heading drift."""
+        from cqc_lem.app.engagement import feed
+        assert f"out.length >= {feed._GROUP_DIRECTORY_ANCHOR_CAP}" in feed._GROUP_DIRECTORY_JS
+
     def test_an_unreadable_enabled_list_reconciles_nothing(self):
         """`get_enabled_group_ids` answers [] on a DB blip, which must read as "nothing to do"."""
         disabled, disable, confirm = self._run(self._reading(), stored=[])
@@ -578,8 +628,9 @@ class TestGroupMembershipAnswer:
         (["Request to join"], False, "not_member"),
         (["Requested"], False, "pending"),
         (["Leave group"], False, "member"),
-        # A Join control outranks a share box that is only there because the group previews posts.
-        (["Join"], True, "not_member"),
+        # Both signals at once is a CONTRADICTION — the header scope reaching a rail card's Join —
+        # and the disabling direction never wins one.
+        (["Join"], True, "unknown"),
     ])
     def test_the_three_valued_answer(self, controls, share_box, expected):
         from cqc_lem.app.engagement.feed import _group_membership_answer

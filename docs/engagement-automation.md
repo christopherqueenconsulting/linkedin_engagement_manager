@@ -287,7 +287,12 @@ sync already wrote are still sitting `enabled=1`, and only a write can clear the
   IS in going quiet with nobody to notice. A walk that enumerated nothing reconciles nothing; a
   cross-check (`_GROUPS_DIRECTORY_CROSSCHECK_SEL`) that could not be READ reconciles nothing; a
   cross-check that matched ZERO on a walk that found rows is the tripwire going blind — a WARNING,
-  and still nothing disabled.
+  and still nothing disabled. That cross-check is one control per JOINED row, so it also counts
+  them: a walk that kept FEWER joined rows than the page renders controls has had its heading
+  attribution file memberships as offers (a re-worded joined heading does exactly that), and no id
+  is disabled on a recommendation heading that run — they drop to the ABSENT population and are
+  asked on their own pages instead. Only the 60-anchor cap explains a short walk innocently, so
+  `_GROUP_DIRECTORY_ANCHOR_CAP` is a named constant a test holds against the walk's own literal.
 - **"Not enumerated" is not "not a member."** The walk scrolls a fixed `(600, 1200, 1800)` and caps
   at 60 anchors while user 1 already renders 55, so absence can be lazy-load. Two populations, two
   standards of proof: an id the page filed under a recommendation heading is disabled on that
@@ -298,12 +303,16 @@ sync already wrote are still sitting `enabled=1`, and only a write can clear the
   2026-08-14 live header carried no membership control at all. Controls are scoped to the header
   because the page renders a *Join* per card in its own recommendation rail — #1012 one layer down,
   in the reading rather than the click — and a label must LEAD with the verb, or a group named
-  "Join the Data Guild" reads `not_member` with its share box on screen.
+  "Join the Data Guild" reads `not_member` with its share box on screen. A lead-Join AND a share box
+  together is a CONTRADICTION, not a Join that outranks it — that is what the scope having reached a
+  rail card looks like — so it answers `unknown` and the group is asked again next run.
 - **A disable is `enabled=0`, never a DELETE.** `disable_user_groups` is its own auditable writer
   (not the SPA's `set_groups_enabled`): it only ever writes that one column, leaves `post_enabled`
   alone, logs the user and the ids it switched off, and leaves the row for `get_user_groups` so the
   Account UI can turn it back on. Whatever `GROUP_RECONCILE_MAX_CONFIRMATIONS` leaves over is logged,
-  not silently dropped — the next weekly run reaches it.
+  not silently dropped — and the ids inside the cap are SAMPLED from the whole backlog, never sliced
+  off its front: `get_enabled_group_ids` answers in a stable order, so a fixed head re-asks the same
+  ids every week and a tail sitting behind more than ten real memberships is never reached at all.
 
 ## Weekly group post — draft, preview, publish (issue #932)
 
