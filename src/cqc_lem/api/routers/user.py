@@ -26,6 +26,8 @@ prefix rule and the reasoning.
 """
 
 import json
+import os
+import tempfile
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
@@ -210,10 +212,16 @@ from cqc_lem.utilities.post_image import (
     PostImageRejected,
     claim_manual_generation,
     generate_image_for_post,
-    owns_post_image_url,
-    post_image_abs_path,
     remove_post_image_file,
     save_post_image_bytes,
+)
+from cqc_lem.utilities.post_video import (
+    MAX_POST_VIDEO_BYTES,
+    PostVideoRejected,
+    owns_post_media_url,
+    post_media_abs_path,
+    remove_post_media_file,
+    save_post_video_file,
 )
 from cqc_lem.utilities.profile_refresh import claim_profile_refresh, refresh_claimed_seconds
 from cqc_lem.utilities.quality_gates import (
@@ -2449,6 +2457,78 @@ def generate_post_image_endpoint(request: PostImageGenerateRequest) -> ResponseM
                          detail={"post_id": request.post_id, "image_url": image_url})
 
 
+_VIDEO_UPLOAD_CHUNK_BYTES = 1024 * 1024
+
+
+async def _spool_upload(file: UploadFile, limit: int) -> tuple[str, int]:
+    """Stream an upload into a temp file, stopping one byte past `limit`. Returns `(path, bytes)`.
+
+    Read in chunks rather than `await file.read()`: a post video is two orders of magnitude larger
+    than an image, so holding the whole upload in memory to find out it is over the cap is the one
+    way this endpoint takes the API container down. The caller owns the temp file from here.
+    """
+    fd, path = tempfile.mkstemp(prefix="post_video_")
+    total = 0
+    try:
+        with os.fdopen(fd, "wb") as out:
+            while chunk := await file.read(_VIDEO_UPLOAD_CHUNK_BYTES):
+                total += len(chunk)
+                if total > limit:
+                    break
+                out.write(chunk)
+    except Exception:
+        _drop_temp_upload(path)
+        raise
+    return path, total
+
+
+def _drop_temp_upload(path: Optional[str]) -> None:
+    """Delete a spooled upload. Best-effort — a leftover temp file is not worth a 500."""
+    if not path:
+        return
+    try:
+        os.remove(path)
+    except OSError as e:
+        log_debug("Could not delete a spooled upload", error=str(e), action_type="post_video")
+
+
+@router.post("/post/video", responses={
+    200: {"description": "Video stored"},
+    **{k: v for k, v in error_responses.items() if k in [400, 401]},
+    500: {"description": "Server error"},
+})
+async def upload_post_video_endpoint(
+    session_token: str = Form(...),
+    file: UploadFile = File(...),
+) -> ResponseModel[dict[str, Any]]:
+    """Store the author's own video as a compose-time preview and hand back its URL.
+
+    The URL is what `PUT /user/group-post-draft` takes to attach a video to the weekly group post
+    (issue #1443) — the same shape `POST /user/post/image` hands back for an image, and gated the
+    same way when it comes back in. The file passes the video contract (container, size, and —
+    where ffprobe is installed — duration, frame size and codec) BEFORE it is stored, so a file the
+    group composer would refuse is a 400 here rather than an empty media frame on a published post.
+    """
+    user_id = _main.require_session_user_id(session_token)
+    spooled = None
+    try:
+        spooled, size = await _spool_upload(file, MAX_POST_VIDEO_BYTES)
+        if size > MAX_POST_VIDEO_BYTES:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Video is larger than {MAX_POST_VIDEO_BYTES // (1024 * 1024)} MB")
+        video_url = save_post_video_file(user_id, spooled)
+        spooled = None  # save_post_video_file moved it
+    except PostVideoRejected as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except OSError as e:
+        log_error("Could not store an uploaded post video", exc=e, user_id=user_id)
+        raise HTTPException(status_code=500, detail="Could not store the video")
+    finally:
+        _drop_temp_upload(spooled)
+    return ResponseModel(status_code=200, detail={"video_url": video_url})
+
+
 @router.post("/post/image/remove", responses={
     200: {"description": "Image removed"},
     **{k: v for k, v in error_responses.items() if k in [401, 403, 404]},
@@ -2533,15 +2613,17 @@ class GroupPostDraftUpdateRequest(BaseModel):
 def _resolve_group_media(user_id: int, media_url: str) -> "GroupPostMediaType":
     """Grade a media URL the SPA wants attached to the group post, or raise the user-facing refusal.
 
-    `owns_post_image_url` is the same gate `/schedule_post/` puts on a compose-time image: the value
-    is caller input on a field the publish run later hands to LinkedIn, so only a preview issued to
-    THIS user resolves. The kind comes off the stored file's extension because that is what the
+    `owns_post_media_url` is the same gate `/schedule_post/` puts on a compose-time image, widened
+    to the video half (issue #1443) because this is the one surface that takes both: the value is
+    caller input on a field the publish run later hands to LinkedIn, so only a preview issued to
+    THIS user resolves — an image preview from `POST /user/post/image` or a video one from
+    `POST /user/post/video`. The kind comes off the stored file's extension because that is what the
     group composer's uploader is actually given.
     """
-    if not owns_post_image_url(user_id, media_url):
+    if not owns_post_media_url(user_id, media_url):
         raise HTTPException(status_code=400,
                             detail="Attach media you uploaded or generated here first")
-    stored_path = post_image_abs_path(media_url)
+    stored_path = post_media_abs_path(media_url)
     if not stored_path:
         raise HTTPException(status_code=400, detail="That media is no longer available")
     from cqc_lem.utilities.linkedin.poster import determine_media_type
@@ -2661,8 +2743,9 @@ def update_group_post_draft_endpoint(request: GroupPostDraftUpdateRequest) -> Re
         raise HTTPException(status_code=500, detail="Could not update the group post")
     if media_fields and draft.get("media_url") and draft["media_url"] != media_fields["media_url"]:
         # The row no longer points at it, so the file it replaced is an orphan under the user's
-        # preview dir — same clean-up `_attach_post_image` does for a post.
-        remove_post_image_file(draft["media_url"])
+        # preview dir — same clean-up `_attach_post_image` does for a post. Either kind: what is
+        # being replaced is whatever the author attached last, image or video.
+        remove_post_media_file(draft["media_url"])
     if status == GroupPostDraftStatus.SKIPPED:
         return ResponseModel(status_code=200, detail="Group post skipped")
     if status == GroupPostDraftStatus.READY:

@@ -608,9 +608,9 @@ class TestPostToGroup:
         box.send_keys.side_effect = lambda *_: order.append("text")
         with self._driver_patches(), \
              patch(f"{_FEED}.get_group_post_draft", return_value=draft), \
-             patch(f"{_FEED}.post_image_abs_path", return_value="/assets/i.png"), \
+             patch(f"{_FEED}.post_media_abs_path", return_value="/assets/i.png"), \
              patch(f"{_FEED}.click_first", return_value=MagicMock()), \
-             patch(f"{_FEED}.find_first", side_effect=[media_input, box]), \
+             patch(f"{_FEED}.find_first", side_effect=[media_input, MagicMock(), box]), \
              patch(f"{_FEED}.record_group_post"), patch(f"{_FEED}.update_group_post_draft"), \
              patch(f"{_FEED}.record_group_post_run"), patch(f"{_FEED}.quit_gracefully"):
             result = auto_post_to_group.run(user_id=1, group_id="123", draft_id=11)
@@ -633,7 +633,7 @@ class TestPostToGroup:
         find_results = [box] if failure == "gone_from_disk" else [None, None, box]
         with self._driver_patches(), \
              patch(f"{_FEED}.get_group_post_draft", return_value=draft), \
-             patch(f"{_FEED}.post_image_abs_path",
+             patch(f"{_FEED}.post_media_abs_path",
                    return_value=None if failure == "gone_from_disk" else "/assets/i.png"), \
              patch(f"{_FEED}.click_first", return_value=MagicMock()), \
              patch(f"{_FEED}.find_first", side_effect=find_results), \
@@ -653,7 +653,7 @@ class TestPostToGroup:
         from cqc_lem.app.engagement.feed import auto_post_to_group
         with self._driver_patches(), \
              patch(f"{_FEED}.get_group_post_draft", return_value=dict(_READY_DRAFT)), \
-             patch(f"{_FEED}.post_image_abs_path") as resolved, \
+             patch(f"{_FEED}.post_media_abs_path") as resolved, \
              patch(f"{_FEED}.click_first", return_value=MagicMock()), \
              patch(f"{_FEED}.find_first", return_value=MagicMock()), \
              patch(f"{_FEED}.record_group_post"), patch(f"{_FEED}.update_group_post_draft"), \
@@ -697,14 +697,17 @@ class TestPostToGroup:
         `_unpostable` does) would cost the week AND blame a healthy group. The draft stays `ready`
         for the next weekly slot.
         """
-        from cqc_lem.app.engagement.feed import auto_post_to_group
+        from cqc_lem.app.engagement.feed import _IMAGE_READY_POLLS, auto_post_to_group
         draft = {**_READY_DRAFT, "media_url": "http://x/api/assets?file_name=i.png",
                  "media_type": "image"}
+        # input found, then a composer with no commit control at all (an expected variant), then the
+        # editor lookup that misses.
+        lookups = [MagicMock()] + [None] * _IMAGE_READY_POLLS + [None]
         with self._driver_patches(), \
              patch(f"{_FEED}.get_group_post_draft", return_value=draft), \
-             patch(f"{_FEED}.post_image_abs_path", return_value="/assets/i.png"), \
+             patch(f"{_FEED}.post_media_abs_path", return_value="/assets/i.png"), \
              patch(f"{_FEED}.click_first", return_value=MagicMock()), \
-             patch(f"{_FEED}.find_first", side_effect=[MagicMock(), None]), \
+             patch(f"{_FEED}.find_first", side_effect=lookups), \
              patch(f"{_FEED}.log_warning") as warned, \
              patch(f"{_FEED}.record_group_post") as rec, \
              patch(f"{_FEED}.update_group_post_draft") as upd, \
@@ -715,6 +718,20 @@ class TestPostToGroup:
         run.assert_not_called()   # the rotation does not move past a group that opened its composer
         rec.assert_not_called()
         assert warned.called
+
+    def test_a_video_draft_publishes_and_names_what_shipped_with_it(self):
+        from cqc_lem.app.engagement.feed import auto_post_to_group
+        draft = {**_READY_DRAFT, "media_url": "http://x/api/assets?file_name=v.mp4",
+                 "media_type": "video"}
+        with self._driver_patches(), \
+             patch(f"{_FEED}.get_group_post_draft", return_value=draft), \
+             patch(f"{_FEED}.post_media_abs_path", return_value="/assets/v.mp4"), \
+             patch(f"{_FEED}.click_first", return_value=MagicMock()), \
+             patch(f"{_FEED}.find_first", side_effect=[MagicMock(), MagicMock(), MagicMock()]), \
+             patch(f"{_FEED}.record_group_post"), patch(f"{_FEED}.update_group_post_draft"), \
+             patch(f"{_FEED}.record_group_post_run"), patch(f"{_FEED}.quit_gracefully"):
+            result = auto_post_to_group.run(user_id=1, group_id="123", draft_id=11)
+        assert result == "Posted to group with video"
 
     def test_a_composer_we_never_touched_still_reports_the_group_as_unpostable(self):
         """The reverse: with no media in the draft nothing of ours is on screen.
@@ -861,6 +878,122 @@ class TestPostToGroup:
         rec.assert_not_called()
         run.assert_not_called()
         upd.assert_not_called()
+
+
+class TestGroupMediaTranscodeWait:
+    """What the media overlay is given before the run commits it (issue #1443).
+
+    LinkedIn transcodes a video server-side and keeps the overlay's commit control disabled until it
+    is done, so the wait is on that CONTROL rather than on a clock: a window sized on an image
+    upload is what leaves an empty media frame on the published post.
+    """
+
+    def _url(self) -> str:
+        return "http://x/api/assets?file_name=v.mp4"
+
+    def _confirm(self, enabled=True):
+        control = MagicMock()
+        control.is_enabled.return_value = enabled
+        control.get_attribute.return_value = None
+        return control
+
+    def test_a_video_waits_for_the_commit_control_to_become_clickable(self):
+        from cqc_lem.app.engagement.feed import _MEDIA_ATTACHED, _attach_group_media
+        confirm = MagicMock()
+        confirm.is_enabled.side_effect = [False, False, True]
+        confirm.get_attribute.return_value = None
+        with patch(f"{_FEED}.post_media_abs_path", return_value="/assets/v.mp4"), \
+             patch(f"{_FEED}.click_first", return_value=MagicMock()), \
+             patch(f"{_FEED}.find_first",
+                   side_effect=[MagicMock(), confirm, confirm, confirm]) as looked:
+            state = _attach_group_media(MagicMock(), MagicMock(), self._url(), user_id=1,
+                                        media_type="video")
+        assert state == _MEDIA_ATTACHED
+        # Clicked once, and only after the third poll said it was clickable.
+        confirm.click.assert_called_once()
+        assert looked.call_count == 4
+
+    def test_a_transcode_that_never_finishes_leaves_our_overlay_up(self):
+        """LEFT_OPEN, not ATTACHED.
+
+        The caller must not read the editor it then cannot find as this group refusing member posts.
+        """
+        from cqc_lem.app.engagement.feed import (
+            _MEDIA_LEFT_OPEN,
+            _VIDEO_READY_POLLS,
+            _attach_group_media,
+        )
+        confirm = self._confirm(enabled=False)
+        with patch(f"{_FEED}.post_media_abs_path", return_value="/assets/v.mp4"), \
+             patch(f"{_FEED}.click_first", return_value=MagicMock()), \
+             patch(f"{_FEED}.log_warning") as warned, \
+             patch(f"{_FEED}.find_first",
+                   side_effect=[MagicMock()] + [confirm] * _VIDEO_READY_POLLS) as looked:
+            state = _attach_group_media(MagicMock(), MagicMock(), self._url(), user_id=1,
+                                        media_type="video")
+        assert state == _MEDIA_LEFT_OPEN
+        confirm.click.assert_not_called()
+        assert looked.call_count == 1 + _VIDEO_READY_POLLS
+        warned.assert_called_once()
+
+    def test_an_image_is_not_held_to_the_video_window(self):
+        from cqc_lem.app.engagement.feed import (
+            _IMAGE_READY_POLLS,
+            _MEDIA_LEFT_OPEN,
+            _VIDEO_READY_POLLS,
+            _attach_group_media,
+        )
+        assert _IMAGE_READY_POLLS < _VIDEO_READY_POLLS
+        confirm = self._confirm(enabled=False)
+        with patch(f"{_FEED}.post_media_abs_path", return_value="/assets/i.png"), \
+             patch(f"{_FEED}.click_first", return_value=MagicMock()), \
+             patch(f"{_FEED}.log_warning"), \
+             patch(f"{_FEED}.find_first",
+                   side_effect=[MagicMock()] + [confirm] * _IMAGE_READY_POLLS) as looked:
+            state = _attach_group_media(MagicMock(), MagicMock(), self._url(), user_id=1,
+                                        media_type="image")
+        assert state == _MEDIA_LEFT_OPEN
+        assert looked.call_count == 1 + _IMAGE_READY_POLLS
+
+    def test_a_composer_with_no_commit_step_is_an_expected_no_op(self):
+        """Never warn on the absence.
+
+        Some composer variants have no Next/Done at all, and warning on working behaviour is what
+        files a defect against it (the escalation contract).
+        """
+        from cqc_lem.app.engagement.feed import (
+            _IMAGE_READY_POLLS,
+            _MEDIA_ATTACHED,
+            _attach_group_media,
+        )
+        with patch(f"{_FEED}.post_media_abs_path", return_value="/assets/i.png"), \
+             patch(f"{_FEED}.click_first", return_value=MagicMock()), \
+             patch(f"{_FEED}.log_warning") as warned, \
+             patch(f"{_FEED}.find_first",
+                   side_effect=[MagicMock()] + [None] * _IMAGE_READY_POLLS):
+            state = _attach_group_media(MagicMock(), MagicMock(), self._url(), user_id=1,
+                                        media_type="image")
+        assert state == _MEDIA_ATTACHED
+        warned.assert_not_called()
+
+    def test_an_aria_disabled_control_is_not_clickable_yet(self):
+        from cqc_lem.app.engagement.feed import _media_control_ready
+        still_uploading = MagicMock()
+        still_uploading.is_enabled.return_value = True
+        still_uploading.get_attribute.return_value = "true"
+        assert _media_control_ready(still_uploading) is False
+
+    def test_a_draft_with_no_kind_recorded_falls_back_to_the_stored_file(self):
+        """A row with no kind recorded still has to get the right window.
+
+        `media_type` was added with the media itself, and the file on disk is the same answer one
+        step later.
+        """
+        from cqc_lem.app.engagement.feed import _media_is_video
+        assert _media_is_video(None, "/assets/clip.mp4") is True
+        assert _media_is_video(None, "/assets/pic.png") is False
+        assert _media_is_video(None, "/assets/notes.txt") is False
+        assert _media_is_video("video", "/assets/pic.png") is True
 
 
 class TestGroupDispatchers:
