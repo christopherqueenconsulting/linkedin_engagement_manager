@@ -22,6 +22,16 @@ from openai import APIConnectionError
 
 _BLOCKED_URL = "http://litellm.invalid/v1/chat/completions"
 
+#: Raised by `_no_real_mysql`. The wording is asserted on by
+#: tests/unit/platform/db/test_connection_config.py, because a REFUSED real socket is also a
+#: `mysql.connector.Error` — only the message tells the two apart, so only the message can prove
+#: the guard is the thing that answered.
+_BLOCKED_MYSQL_MESSAGE = (
+    "MySQL blocked in unit tests by tests/unit/conftest.py. Patch get_db_connection with "
+    "the fake_cursor factory, or state the fixture (e.g. `signed_in`) whose collaborators "
+    "this test forgot to stub."
+)
+
 # Sentinel for "caller said nothing", so `fetch_all=None` can still mean a literal None row set —
 # a handful of readers are tested against a driver that returns None instead of an empty list.
 _UNSET = object()
@@ -159,17 +169,21 @@ def _no_real_mysql():
     the identical branch. Tests that want a working handle keep patching `mysql.connector.connect`
     (`mock_database_connection`) or `get_db_connection` (the `fake_cursor` factory) themselves;
     those patches nest inside this one and win.
+
+    BOTH routes to a socket are blocked, because there are two. `mysql/connector/pooling.py` holds
+    its OWN module-level `connect` binding, so patching `mysql.connector.connect` alone leaves
+    `MySQLConnectionPool.add_connection()` calling the real one — measured: a pooled
+    `get_db_connection()` still made two live connect attempts through it. That is the same hazard
+    tests/conftest.py's `_db_pool_disabled_by_default` was written for (#555); the pool being off
+    suite-wide is a second belt, not the reason this one holds.
     """
     import mysql.connector
 
     def _blocked(*_args, **_kwargs):
-        raise mysql.connector.errors.InterfaceError(
-            "MySQL blocked in unit tests by tests/unit/conftest.py. Patch get_db_connection with "
-            "the fake_cursor factory, or state the fixture (e.g. `signed_in`) whose collaborators "
-            "this test forgot to stub."
-        )
+        raise mysql.connector.errors.InterfaceError(_BLOCKED_MYSQL_MESSAGE)
 
-    with patch("mysql.connector.connect", side_effect=_blocked):
+    with patch("mysql.connector.connect", side_effect=_blocked), \
+         patch("mysql.connector.pooling.connect", side_effect=_blocked):
         yield
 
 
