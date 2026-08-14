@@ -1,5 +1,32 @@
 # Changelog
 
+## [0.150.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.149.0...v0.150.0) (2026-08-14)
+
+
+### Features
+
+* **avatars:** split likeness-probe negatives and ship the eval harness (refs [#1430](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1430)) ([#1525](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1525)) ([0546e25](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/0546e256d3c614b31c7b2f22312c350fd8816e25))
+* **content-quality:** calibrate newsletter self-similarity — no ceiling, mix-adjusted creep (closes [#1433](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1433)) ([#1533](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1533)) ([ea4b421](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/ea4b42175ee09449f357efc76949de1d1514531a))
+* **content-quality:** give the newsletter structural floor a checking side (closes [#1435](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1435)) ([#1532](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1532)) ([6e41a1c](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/6e41a1cdb8bf69c48bd16cfe8dbff6e28f39bd63))
+* **content-quality:** read-only sampler for the shipped native-video corpus ([#1363](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1363)) ([#1506](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1506)) ([2955568](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/2955568666c73924f82e57c5f2dff429096bb9f1))
+* **content-quality:** surface the video probe's reason in the review queue (closes [#1402](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1402)) ([#1521](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1521)) ([40006ce](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/40006ce102e8a307a24d8069792bac4ccfe7b7ec))
+* **content:** diff-guard the mechanical newsletter editor pass (closes [#1079](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1079)) ([#1507](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1507)) ([a6d46b0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/a6d46b0d54c5c62c2b5a4200111b78b9f5c7629f))
+* **dms:** list the contacts behind the double-sent catch-up count (refs [#1113](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1113)) ([#1518](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1518)) ([ed6f569](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/ed6f569302fdaa2041f3eab64571c824c29a9971))
+* **invites:** turn the stale-invite withdrawal lane on by default (refs [#1006](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1006)) ([#1520](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1520)) ([7982672](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/7982672a899c1127edc5eaef42b313ef6a4a2632))
+
+
+### Bug Fixes
+
+* **content-generation:** undo window on the group-post "skip this week" (closes [#1415](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1415)) ([#1523](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1523)) ([35a9ef3](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/35a9ef30a4f99b8cf602d2489d0c85e76b3ba193))
+* **dms:** show every catch-up touch in the review queue by default (closes [#1360](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1360)) ([#1509](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1509)) ([325fb68](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/325fb680976d0e89d91e1cd06f1911ba96a6a421))
+* **engagement:** read a comment card's author from its header anchors + ground it with a probe (refs [#1091](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1091)) ([#1505](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1505)) ([1343bd1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/1343bd170b9344232191b0d41aa18f53b4acb96d))
+* **observability:** grade the comment sort-control miss from captured DOM evidence (refs [#1117](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1117)) ([#1514](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1514)) ([8c539c6](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/8c539c69b4c5fde04a28400f436982e9a6318d3c))
+
+
+### Documentation
+
+* **content-quality:** carousel audit — measured render capacity vs the slide-copy contract (closes [#1139](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1139)) ([#1516](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1516)) ([7d95063](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/7d95063ed9fb671bf8cc37b391806a694e4660cc))
+
 ## [0.149.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.148.0...v0.149.0) (2026-08-14)
 
 
