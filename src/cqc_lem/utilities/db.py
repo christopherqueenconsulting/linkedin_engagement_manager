@@ -3311,6 +3311,49 @@ def count_existing_double_sent_catchups() -> int:
         return 0
 
 
+def list_existing_double_sent_catchups() -> list[dict]:
+    """List the (user, contact) pairs behind `count_existing_double_sent_catchups()`.
+
+    Same read, one grain up: the counter returns how many catch-up BODIES were sent more than once,
+    this rolls those rows up per contact so a non-zero count can be judged per person (does anyone
+    need an apology, or was it one contact hit twice?). `sends` is every `success` DM row across the
+    repeated bodies, so a body sent twice contributes 2; `duplicate_bodies` is how many distinct
+    bodies repeated, and summing it over the list reproduces the counter.
+
+    The message body itself is deliberately not returned — it is DM content, and the pair plus the
+    send counts is what the judgement needs.
+
+    Returns:
+        One dict per affected pair (`user_id`, `profile_url`, `sends`, `duplicate_bodies`), worst
+        first. Empty when nothing is double-sent or the read fails.
+    """
+    try:
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(
+                "SELECT d.user_id, d.post_url AS profile_url, "
+                "SUM(d.sends) AS sends, COUNT(*) AS duplicate_bodies FROM ("
+                "SELECT l.user_id, l.post_url, l.message, COUNT(*) AS sends FROM logs l "
+                "WHERE l.action_type = 'dm' AND l.result = 'success' "
+                # EXISTS rather than a JOIN, for the same reason as the counter above: two
+                # milestones can share one body, and a join would fake a duplicate out of one row.
+                "AND EXISTS (SELECT 1 FROM catchup_touches c WHERE c.user_id = l.user_id "
+                "AND c.profile_url = l.post_url AND c.message = l.message) "
+                "GROUP BY l.user_id, l.post_url, l.message HAVING COUNT(*) > 1"
+                ") d GROUP BY d.user_id, d.post_url ORDER BY sends DESC, d.user_id")
+            return [
+                {
+                    "user_id": int(row["user_id"]),
+                    "profile_url": row["profile_url"],
+                    "sends": int(row["sends"]),
+                    "duplicate_bodies": int(row["duplicate_bodies"]),
+                }
+                for row in (cursor.fetchall() or [])
+            ]
+    except mysql.connector.Error as err:
+        log_error("Could not list existing double-sent catch-ups", exc=err)
+        return []
+
+
 
 
 

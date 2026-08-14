@@ -1419,6 +1419,34 @@ class TestCatchupContactFrequency:
             mock_database_connection["cursor"].execute.side_effect = mysql.connector.Error("err")
             assert count_existing_double_sent_catchups() == 0
 
+    def test_list_existing_double_sent_catchups_rolls_duplicates_up_per_contact(
+            self, mock_database_connection):
+        """The count alone can't be judged — box 3 of #1113 wants the (user, contact) pairs."""
+        from cqc_lem.utilities.db import list_existing_double_sent_catchups
+
+        with patch(_GET_CONN, return_value=mock_database_connection["connection"]):
+            mock_database_connection["cursor"].fetchall.return_value = [
+                {"user_id": 1, "profile_url": "https://www.linkedin.com/in/jane",
+                 "sends": 3, "duplicate_bodies": 1},
+            ]
+            assert list_existing_double_sent_catchups() == [
+                {"user_id": 1, "profile_url": "https://www.linkedin.com/in/jane",
+                 "sends": 3, "duplicate_bodies": 1},
+            ]
+        sql = mock_database_connection["cursor"].execute.call_args[0][0]
+        assert "FROM logs l" in sql and "action_type = 'dm'" in sql
+        # The DM body groups the duplicate but is never returned — it is message content.
+        assert "d.message" not in sql.split(") d")[1]
+
+    def test_list_existing_double_sent_catchups_empty_on_db_error(self, mock_database_connection):
+        import mysql.connector
+
+        from cqc_lem.utilities.db import list_existing_double_sent_catchups
+
+        with patch(_GET_CONN, return_value=mock_database_connection["connection"]):
+            mock_database_connection["cursor"].execute.side_effect = mysql.connector.Error("err")
+            assert list_existing_double_sent_catchups() == []
+
     def test_marking_a_touch_sent_stamps_last_sent_at(self, mock_database_connection):
         """The cooldown reads `last_sent_at`, so the status move is what has to write it."""
         from cqc_lem.utilities.db import CatchupTouchStatus, update_catchup_touch_status
