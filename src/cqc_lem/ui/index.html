@@ -2,7 +2,10 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <!-- The owner-authored brand package (PR #1294) ships raster only — PNG, PDF and ICO, no SVG —
+         so the mark is served as an .ico with a PNG app icon beside it rather than as a vector. -->
+    <link rel="icon" href="/favicon.ico" sizes="any" />
+    <link rel="apple-touch-icon" href="/brand/lem-app-icon-256.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>LEM - LinkedIn Engagement Manager</title>
     <meta name="description" content="AI-powered LinkedIn engagement, content scheduling and outreach automation for founders, consultants and revenue teams." />
@@ -48,7 +51,7 @@
           "name": "LinkedIn Engagement Manager",
           "alternateName": "LEM",
           "url": "%VITE_PUBLIC_BASE_URL%/",
-          "logo": "%VITE_PUBLIC_BASE_URL%/favicon.svg"
+          "logo": "%VITE_PUBLIC_BASE_URL%/brand/lem-app-icon-512.png"
         }
       ]
     }

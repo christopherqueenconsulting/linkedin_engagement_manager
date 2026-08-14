@@ -3,13 +3,14 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import api from '../../api/client'
 import { useAuth } from '../../contexts/AuthContext'
 import SettingsCard from '../../components/SettingsCard'
+import { PAID_PLANS, PLANS, monthlyPriceLabel, takePlanIntent } from '../../constants/plans'
 
-const TIER_LABELS: Record<string, string> = {
-  free_trial: 'Free Trial',
-  starter: 'Starter',
-  professional: 'Professional',
-  enterprise: 'Enterprise',
-}
+// Labels and prices come from the shared PLANS constant (issue #1300). This card is the LIVE
+// checkout surface, so it and the landing page disagreeing about a price is the expensive version
+// of that bug.
+const TIER_LABELS: Record<string, string> = Object.fromEntries(
+  PLANS.map((plan) => [plan.tier, plan.label]),
+)
 
 const TIER_COLORS: Record<string, string> = {
   free_trial: 'bg-gray-100 text-gray-700',
@@ -29,6 +30,9 @@ export default function SubscriptionCard() {
   const queryClient = useQueryClient()
   const [checkoutMsg, setCheckoutMsg] = useState<{ ok: boolean; text: string } | null>(null)
   const [portalMsg, setPortalMsg] = useState<string | null>(null)
+  // The plan a visitor pressed on the marketing page before signing up (issue #1300). Read once
+  // per mount and cleared as it is read, so it highlights the first view of this card and no more.
+  const [intendedTier] = useState(() => takePlanIntent())
 
   const { data: settingsData } = useQuery({
     queryKey: ['user-settings', sessionToken],
@@ -130,19 +134,22 @@ export default function SubscriptionCard() {
         <div className="space-y-2">
           <p className="text-xs text-gray-500 font-medium uppercase tracking-wide">Upgrade your plan</p>
           <div className="grid grid-cols-3 gap-2">
-            {[
-              { tier: 'starter', label: 'Starter', price: '$29/mo' },
-              { tier: 'professional', label: 'Professional', price: '$79/mo' },
-              { tier: 'enterprise', label: 'Enterprise', price: '$199/mo' },
-            ].map(({ tier: t, label, price }) => (
+            {PAID_PLANS.map((plan) => (
               <button
-                key={t}
-                onClick={() => checkoutMutation.mutate(t)}
+                key={plan.tier}
+                onClick={() => checkoutMutation.mutate(plan.tier)}
                 disabled={checkoutMutation.isPending}
-                className="flex flex-col items-center border border-blue-200 rounded-lg p-3 hover:bg-blue-50 transition-colors disabled:opacity-50 text-center"
+                className={`flex flex-col items-center rounded-lg p-3 transition-colors disabled:opacity-50 text-center ${
+                  plan.tier === intendedTier
+                    ? 'border-2 border-blue-500 bg-blue-50'
+                    : 'border border-blue-200 hover:bg-blue-50'
+                }`}
               >
-                <span className="text-sm font-semibold text-blue-800">{label}</span>
-                <span className="text-xs text-gray-500">{price}</span>
+                <span className="text-sm font-semibold text-blue-800">{plan.label}</span>
+                <span className="text-xs text-gray-500">{monthlyPriceLabel(plan)}</span>
+                {plan.tier === intendedTier && (
+                  <span className="text-[10px] font-medium text-blue-700">the plan you picked</span>
+                )}
               </button>
             ))}
           </div>

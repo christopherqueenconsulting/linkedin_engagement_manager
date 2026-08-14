@@ -1,5 +1,6 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useId, useState } from 'react'
 import api from '../api/client'
+import { TRIAL_DAYS, paidPricingSentence } from '../constants/plans'
 
 // Front-page FAQ (issue #506). Entries come from `faq_entries` via the public GET /api/faq, which
 // the auto-FAQ pass keeps current from the questions users actually ask. The seeded copy below is
@@ -22,8 +23,12 @@ const FALLBACK_ENTRIES: FaqEntry[] = [
   {
     id: -2,
     question: 'How much does it cost, and is there a free trial?',
+    // Built from the shared PLANS constant (issue #1300) rather than typed out again — this answer
+    // and the pricing section used to be two independent copies of the same three numbers.
     answer:
-      'Every plan starts with a 14-day free trial — no credit card required. After the trial, Starter is $29/month, Professional is $79/month and Enterprise is $199/month. The trial gives you the full Professional feature set so you can evaluate content generation, scheduling and engagement automation before you pay.',
+      `Every plan starts with a ${TRIAL_DAYS}-day free trial — no credit card required. ` +
+      `${paidPricingSentence()} ` +
+      'The trial gives you the full product so you can evaluate content generation, scheduling and engagement automation before you pay.',
   },
   {
     id: -3,
@@ -53,22 +58,29 @@ const FALLBACK_ENTRIES: FaqEntry[] = [
 
 function FaqItem({ question, answer }: { question: string; answer: string }) {
   const [open, setOpen] = useState(false)
+  // The answer needs a stable id so the disclosure button can point `aria-controls` at it —
+  // without that pairing a screen reader hears "expanded" with nothing to say what expanded.
+  const panelId = useId()
+
   return (
-    <div className="border border-gray-200 rounded-lg overflow-hidden">
-      <button
-        type="button"
-        onClick={() => setOpen(!open)}
-        aria-expanded={open}
-        className="w-full flex justify-between items-center px-5 py-4 text-left font-medium text-gray-800 hover:bg-gray-50 transition-colors"
-      >
-        <span>{question}</span>
-        <span className="text-gray-400 text-lg leading-none">{open ? '−' : '+'}</span>
-      </button>
-      {open && (
-        <div className="px-5 pb-4 text-sm text-gray-600 leading-relaxed">
-          {answer}
-        </div>
-      )}
+    <div className="rounded-card border border-line-200 bg-white overflow-hidden">
+      <h3>
+        <button
+          type="button"
+          onClick={() => setOpen(!open)}
+          aria-expanded={open}
+          aria-controls={panelId}
+          className="w-full min-h-11 flex justify-between items-center gap-4 px-5 py-4 text-left font-medium text-ink-900 hover:bg-surface-50 transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600"
+        >
+          <span>{question}</span>
+          <span aria-hidden="true" className="text-brand-600 text-lg leading-none">
+            {open ? '−' : '+'}
+          </span>
+        </button>
+      </h3>
+      <div id={panelId} hidden={!open} className="px-5 pb-4 text-sm text-ink-600 leading-relaxed">
+        {answer}
+      </div>
     </div>
   )
 }
@@ -93,9 +105,11 @@ export default function FAQ() {
   }, [])
 
   return (
-    <section id="faq" className="py-20 px-4 bg-white">
+    <section id="faq" className="py-16 sm:py-20 px-4 bg-surface-50">
       <div className="max-w-3xl mx-auto">
-        <h2 className="text-3xl font-bold text-center text-gray-800 mb-12">Frequently Asked Questions</h2>
+        <h2 className="text-headline sm:text-display font-bold text-center text-ink-900 mb-12">
+          Frequently asked questions
+        </h2>
         <div className="space-y-3">
           {entries.map((entry) => (
             <FaqItem key={entry.id} question={entry.question} answer={entry.answer} />

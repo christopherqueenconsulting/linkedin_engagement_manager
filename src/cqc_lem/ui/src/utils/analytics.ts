@@ -374,4 +374,10 @@ export const EVENTS = {
   // place that can see it — the server never learns a link was copied, only that somebody arrived.
   referralLinkCopied: 'referral_link_copied',
   affiliateNoticeAcknowledged: 'affiliate_notice_acknowledged',
+  // Marketing front page (issue #1300). The section events are the load-bearing half: a CTA event
+  // alone says WHICH button converted but never which section earned the click, and "which section
+  // earned it" is the only signal that makes the next iteration of the page cheaper than the first.
+  landingCtaClicked: 'landing_cta_clicked',
+  landingPlanSelected: 'landing_plan_selected',
+  landingSectionViewed: 'landing_section_viewed',
 } as const

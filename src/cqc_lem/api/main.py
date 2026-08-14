@@ -3420,7 +3420,7 @@ if os.path.isdir(_ui_dist):
     # a previously-deployed build. (CDN edge cache is also purged on each deploy via build-and-push.yml.)
     app.mount("/assets", ArchivedStaticFiles(directory=_spa_assets_dir), name="spa-assets")
 
-    # robots.txt, sitemap.xml, favicon.svg and the Open Graph image (issue #1298). MUST come before
+    # robots.txt, sitemap.xml, favicon.ico and the Open Graph image (issue #1298). MUST come before
     # the catch-all below, which would otherwise hand a crawler index.html for every one of them.
     register_spa_public_routes(app, _ui_dist)
 
