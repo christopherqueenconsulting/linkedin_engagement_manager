@@ -400,6 +400,29 @@ class TestEditions:
         assert "ORDER BY id DESC" in sql
         assert params == (1, 5)
 
+    def test_recent_titles_read_the_same_editions_as_the_bodies(self, fake_cursor):
+        # #1433: the sampler measures body and title similarity over ONE corpus, so the two readers
+        # must share the status filter and the ordering — otherwise the two distributions describe
+        # different sets of editions.
+        conn, cur = fake_cursor(fetch_all=[("Edition two title",), ("Edition one title",)])
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import get_recent_newsletter_titles
+            assert get_recent_newsletter_titles(1, limit=5) == ["Edition two title",
+                                                               "Edition one title"]
+        sql, params = cur.execute.call_args[0]
+        assert "title IS NOT NULL" in sql and "title <> ''" in sql
+        assert "published" in sql and "draft" in sql and "approved" in sql
+        assert "ORDER BY id DESC" in sql
+        assert params == (1, 5)
+
+    def test_recent_titles_empty_on_error(self, fake_cursor):
+        import mysql.connector
+        conn, cur = fake_cursor()
+        cur.execute.side_effect = mysql.connector.Error("boom")
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import get_recent_newsletter_titles
+            assert get_recent_newsletter_titles(1) == []
+
     def test_recent_bodies_empty_on_error(self, fake_cursor):
         import mysql.connector
         conn, cur = fake_cursor()

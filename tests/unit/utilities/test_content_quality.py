@@ -243,6 +243,30 @@ class TestSummarizeScores:
         assert summary["similarity_avg"] == 0.55
         assert summary["similarity_max"] == 0.9
 
+    def test_similarity_is_also_reported_per_surface(self):
+        # #1433: the surfaces sit at different baselines by design, so the pooled mean alone cannot
+        # say whether a move is the writing or the week's mix.
+        summary = cq.summarize_scores([
+            _row(surface=cq.SURFACE_POST, similarity=0.30),
+            _row(surface=cq.SURFACE_POST, similarity=0.40),
+            _row(surface=cq.SURFACE_NEWSLETTER, similarity=0.80)])
+        assert summary["similarity_by_surface"] == {
+            cq.SURFACE_POST: {"sample": 2, "avg": 0.35},
+            cq.SURFACE_NEWSLETTER: {"sample": 1, "avg": 0.8}}
+
+    def test_the_per_surface_split_never_mixes_two_scales(self):
+        summary = cq.summarize_scores([
+            _row(surface=cq.SURFACE_POST, similarity=0.30, similarity_measure=cq.MEASURE_EMBEDDING),
+            _row(surface=cq.SURFACE_POST, similarity=0.40, similarity_measure=cq.MEASURE_EMBEDDING),
+            _row(surface=cq.SURFACE_NEWSLETTER, similarity=0.90,
+                 similarity_measure=cq.MEASURE_LEXICAL)])
+        assert summary["similarity_by_surface"] == {cq.SURFACE_POST: {"sample": 2, "avg": 0.35}}
+
+    def test_an_unmeasured_surface_is_absent_from_the_split(self):
+        summary = cq.summarize_scores([_row(surface=cq.SURFACE_POST, similarity=0.3),
+                                       _row(surface=cq.SURFACE_NEWSLETTER, similarity=None)])
+        assert summary["similarity_by_surface"] == {cq.SURFACE_POST: {"sample": 1, "avg": 0.3}}
+
     def test_the_dominant_similarity_measure_is_reported(self):
         summary = cq.summarize_scores([
             _row(similarity=0.2, similarity_measure=cq.MEASURE_EMBEDDING),
@@ -398,6 +422,64 @@ class TestEvaluateAlerts:
             self._summary(similarity_avg=0.30, similarity_measure=cq.MEASURE_LEXICAL))
         assert [a["name"] for a in alerts] == [cq.ALERT_SIMILARITY_CREEP]
 
+    def test_similarity_creep_is_graded_on_the_per_surface_split(self):
+        # #1433: the newsletter surface sits ~0.8 where a post sits ~0.3, so a week that added two
+        # editions raises the pooled mean on its own. Neither surface moved here.
+        current = self._summary(
+            similarity_avg=0.45, similarity_sample=12,
+            similarity_by_surface={cq.SURFACE_POST: {"sample": 8, "avg": 0.30},
+                                   cq.SURFACE_NEWSLETTER: {"sample": 4, "avg": 0.80}})
+        prior = self._summary(
+            similarity_avg=0.30, similarity_sample=10,
+            similarity_by_surface={cq.SURFACE_POST: {"sample": 9, "avg": 0.30},
+                                   cq.SURFACE_NEWSLETTER: {"sample": 1, "avg": 0.80}})
+        assert cq.evaluate_alerts(current, prior) == []
+        assert cq.mix_adjusted_similarity_delta(current, prior) == 0.0
+
+    def test_similarity_creep_still_fires_when_a_surface_really_converges(self):
+        current = self._summary(
+            similarity_avg=0.45, similarity_sample=12,
+            similarity_by_surface={cq.SURFACE_POST: {"sample": 12, "avg": 0.45}})
+        prior = self._summary(
+            similarity_avg=0.30, similarity_sample=10,
+            similarity_by_surface={cq.SURFACE_POST: {"sample": 10, "avg": 0.30}})
+        alerts = cq.evaluate_alerts(current, prior)
+        assert [a["name"] for a in alerts] == [cq.ALERT_SIMILARITY_CREEP]
+        assert alerts[0]["delta"] == 0.15 and alerts[0]["pooled_delta"] == 0.15
+        assert alerts[0]["mix_adjusted"] is True
+        assert alerts[0]["by_surface"] == {cq.SURFACE_POST: {"sample": 12, "avg": 0.45}}
+        assert "per surface" in alerts[0]["reason"]
+
+    def test_a_newsletter_only_rise_is_still_reported(self):
+        # The decision on #1433 ships no newsletter-specific ceiling, so a real newsletter move is
+        # not exempt — it is graded on the same shared delta as every other surface.
+        current = self._summary(
+            similarity_avg=0.80, similarity_sample=10,
+            similarity_by_surface={cq.SURFACE_NEWSLETTER: {"sample": 10, "avg": 0.80}})
+        prior = self._summary(
+            similarity_avg=0.70, similarity_sample=10,
+            similarity_by_surface={cq.SURFACE_NEWSLETTER: {"sample": 10, "avg": 0.70}})
+        assert [a["name"] for a in cq.evaluate_alerts(current, prior)] == [cq.ALERT_SIMILARITY_CREEP]
+
+    def test_no_shared_surface_never_alerts(self):
+        # Two periods with nothing in common have no comparable move — and that is not "no change"
+        # either, so the pooled delta must not be used as a second chance.
+        current = self._summary(
+            similarity_avg=0.80, similarity_sample=10,
+            similarity_by_surface={cq.SURFACE_NEWSLETTER: {"sample": 10, "avg": 0.80}})
+        prior = self._summary(
+            similarity_avg=0.30, similarity_sample=10,
+            similarity_by_surface={cq.SURFACE_POST: {"sample": 10, "avg": 0.30}})
+        assert cq.evaluate_alerts(current, prior) == []
+        assert cq.mix_adjusted_similarity_delta(current, prior) is None
+
+    def test_a_summary_without_the_split_falls_back_to_the_pooled_delta(self):
+        alerts = cq.evaluate_alerts(self._summary(similarity_avg=0.42),
+                                    self._summary(similarity_avg=0.30))
+        assert [a["name"] for a in alerts] == [cq.ALERT_SIMILARITY_CREEP]
+        assert alerts[0]["mix_adjusted"] is False and alerts[0]["delta"] == 0.12
+        assert "per surface" not in alerts[0]["reason"]
+
     def test_all_three_can_fire_together(self):
         alerts = cq.evaluate_alerts(
             self._summary(slop_score_avg=4.0, similarity_avg=0.5, engagement_rate=0.001),
@@ -417,6 +499,39 @@ class TestEvaluateAlerts:
     def test_a_percent_shaped_floor_is_clamped_to_a_share(self):
         with patch.dict("os.environ", {"CONTENT_QUALITY_ENGAGEMENT_FLOOR": "2"}):
             assert cq.engagement_floor() == 1.0
+
+
+class TestMixAdjustedSimilarityDelta:
+    """The #1433 decomposition on its own — the alert reads it, and so does the rollup panel."""
+
+    def test_weights_each_surface_by_this_periods_sample(self):
+        delta = cq.mix_adjusted_similarity_delta(
+            {"similarity_by_surface": {cq.SURFACE_POST: {"sample": 9, "avg": 0.40},
+                                       cq.SURFACE_NEWSLETTER: {"sample": 1, "avg": 0.80}}},
+            {"similarity_by_surface": {cq.SURFACE_POST: {"sample": 5, "avg": 0.30},
+                                       cq.SURFACE_NEWSLETTER: {"sample": 5, "avg": 0.80}}})
+        # 0.10 on nine posts, 0.00 on one edition.
+        assert delta == 0.09
+
+    def test_a_surface_only_this_period_has_no_move_to_contribute(self):
+        assert cq.mix_adjusted_similarity_delta(
+            {"similarity_by_surface": {cq.SURFACE_POST: {"sample": 4, "avg": 0.40},
+                                       cq.SURFACE_NEWSLETTER: {"sample": 4, "avg": 0.80}}},
+            {"similarity_by_surface": {cq.SURFACE_POST: {"sample": 4, "avg": 0.30}}}) == 0.1
+
+    def test_missing_or_unreadable_readings_are_skipped_not_zeroed(self):
+        assert cq.mix_adjusted_similarity_delta({}, {}) is None
+        assert cq.mix_adjusted_similarity_delta(
+            {"similarity_by_surface": {cq.SURFACE_POST: {"sample": 4, "avg": None}}},
+            {"similarity_by_surface": {cq.SURFACE_POST: {"sample": 4, "avg": 0.30}}}) is None
+        assert cq.mix_adjusted_similarity_delta(
+            {"similarity_by_surface": {cq.SURFACE_POST: {"sample": "many", "avg": 0.40}}},
+            {"similarity_by_surface": {cq.SURFACE_POST: {"sample": 4, "avg": 0.30}}}) is None
+
+    def test_a_surface_with_no_sample_carries_no_weight(self):
+        assert cq.mix_adjusted_similarity_delta(
+            {"similarity_by_surface": {cq.SURFACE_POST: {"sample": 0, "avg": 0.90}}},
+            {"similarity_by_surface": {cq.SURFACE_POST: {"sample": 4, "avg": 0.30}}}) is None
 
 
 class TestQualityRollup:
@@ -440,6 +555,22 @@ class TestQualityRollup:
     def test_window_comes_from_env_when_not_passed(self):
         with patch.dict("os.environ", {"CONTENT_QUALITY_ROLLUP_DAYS": "3"}):
             assert cq.quality_rollup([], today=date(2026, 7, 26))["days"] == 3
+
+    def test_the_pooled_and_mix_adjusted_similarity_moves_are_both_reported(self):
+        # #1433: a week that swapped posts for editions moves the pooled mean and nothing else, so
+        # the panel needs both numbers to explain why no alert fired.
+        today = date(2026, 7, 26)
+        rows = ([_row(shipped_on="2026-07-25", surface=cq.SURFACE_POST, similarity=0.30)
+                 for _ in range(5)]
+                + [_row(shipped_on="2026-07-25", surface=cq.SURFACE_NEWSLETTER, similarity=0.80)
+                   for _ in range(5)]
+                + [_row(shipped_on="2026-07-15", surface=cq.SURFACE_POST, similarity=0.30)
+                   for _ in range(9)]
+                + [_row(shipped_on="2026-07-15", surface=cq.SURFACE_NEWSLETTER, similarity=0.80)])
+        rollup = cq.quality_rollup(rows, days=7, today=today)
+        assert rollup["deltas"]["similarity_avg"] == 0.2
+        assert rollup["deltas"]["similarity_avg_mix_adjusted"] == 0.0
+        assert rollup["alerts"] == []
 
 
 class TestConfig:
