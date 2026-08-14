@@ -1710,16 +1710,87 @@ CAROUSEL_MIN_FONT_SCALE = 0.7
 CAROUSEL_TRUNCATION_MARKER = "..."
 
 
+def _split_points(text: str) -> list[str]:
+    """Split `text` into the POINTS its author wrote — one per non-empty source line.
+
+    A newline in a slide body is structure the writer chose (the checklist the
+    reference gate asks for, a step list), so it is the unit the renderer wraps and
+    bullets. Blank lines are dropped rather than kept as empty lines: they would spend
+    a line of a layout's cap and buy nothing, since the slide has no paragraph spacing.
+    """
+    return [line.strip() for line in (text or "").split("\n") if line.strip()]
+
+
+def _wrap_points(text: str, font, max_px: int, draw) -> list[list[str]]:
+    """Wrap each of `text`'s points on its own — the wrapped lines, grouped by point.
+
+    The flattened result is exactly `_wrap_text`; the grouping is what a layout needs
+    when it draws a marker per POINT (`_step_content`) rather than per line (#1510).
+    """
+    return [_wrap_text(point, font, max_px, draw) for point in _split_points(text)]
+
+
+def _group_fitted_lines(text: str, lines: list[str], font, max_px: int,
+                        draw) -> list[list[str]]:
+    """Re-attach already-fitted `lines` to the points of `text` they were wrapped from.
+
+    `fit_text_block` may have shrunk the type or truncated the tail, so the grouping is
+    recomputed at the font that will actually be DRAWN and `lines` is walked as a prefix
+    of it. Anything left unattributed (a truncation marker's line) rides the last point,
+    so no fitted line is ever dropped here.
+    """
+    groups: list[list[str]] = []
+    pos = 0
+    for point_lines in _wrap_points(text, font, max_px, draw):
+        if pos >= len(lines):
+            break
+        take = lines[pos:pos + len(point_lines)]
+        pos += len(take)
+        if take:
+            groups.append(take)
+    if pos < len(lines):
+        remainder = list(lines[pos:])
+        if groups:
+            groups[-1].extend(remainder)
+        else:
+            groups.append(remainder)
+    return groups
+
+
+def _strip_point_marker(point: str) -> str:
+    """Drop a leading bullet glyph the author typed, so a layout can draw its OWN marker.
+
+    `_norm` has already mapped `•` to `*` and `→` to `->` for the font's sake, so those
+    are the shapes seen here. Numbering (`1.`) is left alone — it is content the reader
+    is meant to see, not a marker the layout replaces.
+    """
+    stripped = point.lstrip()
+    for marker in ("->", "-", "*", "+"):
+        if stripped.startswith(marker):
+            remainder = stripped[len(marker):]
+            if remainder[:1] in (" ", "\t"):
+                return remainder.strip()
+    return stripped
+
+
 def _wrap_text(text: str, font, max_px: int, draw) -> list[str]:
     """Greedy word-wrap `text` to lines no wider than `max_px` (measured via `draw`).
 
-    A single token wider than `max_px` (long URL/word) is hard-broken into
-    margin-fitting chunks so no line ever bleeds past the slide edge. `draw` is a
-    Pillow ImageDraw whose ``textlength`` is used to measure — passed in so this is a
-    pure function (unit-testable without the renderer closure).
+    Newlines the author wrote are HONOURED, not treated as spaces: each source line is
+    wrapped on its own, so a checklist body reaches the PNG as a checklist instead of a
+    run-on paragraph with stray hyphens (#1510). A single token wider than `max_px`
+    (long URL/word) is hard-broken into margin-fitting chunks so no line ever bleeds
+    past the slide edge. `draw` is a Pillow ImageDraw whose ``textlength`` is used to
+    measure — passed in so this is a pure function (unit-testable without the renderer
+    closure).
     """
     if not text:
         return []
+
+    if "\n" in text:
+        return [line
+                for point in _split_points(text)
+                for line in _wrap_text(point, font, max_px, draw)]
 
     def _fits(s: str) -> bool:
         return draw.textlength(s, font=font) <= max_px
@@ -2437,17 +2508,22 @@ def create_carousel_slide_images(
         y += 42
 
         # ── Body with arrow bullets (fewer lines when a photo band is present) ──
-        # Wrap to the width AFTER the arrow indent, keeping a right margin (PAD), so
-        # bulleted lines never run past the slide edge.
+        # ONE marker per point the author wrote, never one per wrapped line (#1510): a
+        # continuation line sits at the same indent under its own bullet. Wrap to the
+        # width AFTER the arrow indent, keeping a right margin (PAD), so bulleted lines
+        # never run past the slide edge.
         BULLET_INDENT = 52
         body_cap = 4 if band_top else 7
-        b_lines, f_b = _fit(body, f_b, W - (PAD + BULLET_INDENT) - PAD, draw,
+        body_width = W - (PAD + BULLET_INDENT) - PAD
+        points_text = "\n".join(_strip_point_marker(p) for p in _split_points(body))
+        b_lines, f_b = _fit(points_text, f_b, body_width, draw,
                             max_lines=body_cap, spacing=20)
-        for line_text in b_lines:
+        for point_lines in _group_fitted_lines(points_text, b_lines, f_b, body_width, draw):
             draw.text((PAD, y), "->", font=f_b, fill=badge_color)
-            draw.text((PAD + BULLET_INDENT, y), line_text, font=f_b, fill=body_color)
-            bb = draw.textbbox((0, 0), line_text, font=f_b)
-            y += (bb[3] - bb[1]) + 20
+            for line_text in point_lines:
+                draw.text((PAD + BULLET_INDENT, y), line_text, font=f_b, fill=body_color)
+                bb = draw.textbbox((0, 0), line_text, font=f_b)
+                y += (bb[3] - bb[1]) + 20
 
         if panel is not None:
             _place_band(img, draw, panel, band_top, badge_color)

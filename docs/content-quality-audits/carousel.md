@@ -179,6 +179,12 @@ its last word to F1 on the way (§5). `slide_artifacts` scores that exact text a
 `['checklist', 'threshold', 'metric']`, so the deck passes the reference gate on the strength of a
 structure the reader never sees.
 
+**FIXED in #1510.** A newline is now the unit the renderer wraps: `_wrap_text` splits the body into
+POINTS first (`_split_points` — one per non-empty source line, blanks dropped so they never spend a
+line of a layout's cap) and wraps each on its own, so the checklist reaches the PNG as a checklist on
+every layout. `_wrap_points` returns the same lines GROUPED by point, which is what a layout needs
+when it draws a marker per point rather than per line (F3).
+
 ### F3 — `step_framework` bullets every WRAPPED line, not every point → **#1510**
 
 `_step_content` draws a `->` marker per line returned by `_wrap`, so line breaks chosen by the
@@ -191,6 +197,15 @@ wrapper become bullet points:
 One sentence, three bullets, each starting mid-clause. `step_framework` is the CONSIDERATION-stage
 default (`_template_by_stage`), i.e. the case-study deck. The marker is also drawn as ASCII `->`
 because `_norm` maps `→` to `->` for the font's sake.
+
+**FIXED in #1510.** `_step_content` bullets the author's points: it strips a leading marker the
+writer typed (`_strip_point_marker` — `-`, `*`, `+`, `->` followed by a space; `1.` numbering is
+content and is kept), fits the joined points through the same `fit_text_block` path as every other
+block, then re-attaches the fitted lines to their points with `_group_fitted_lines` — recomputed at
+the font actually DRAWN, so a shrink or a truncation cannot desynchronise the grouping. One `->` per
+point at `PAD`, every line of that point (first and continuation alike) at the indent.
+`tests/unit/utilities/test_carousel_line_structure.py` asserts the drawn line set — arrow count,
+marker column, and that a wrapped sentence is ONE bullet — rather than that files were produced.
 
 ### F4 — The closing slide renders engagement bait the writer is forbidden to write → **#1511**
 
@@ -362,7 +377,7 @@ Filed and linked:
 | # | Finding | Why it is not here |
 |---|---|---|
 | **#1375** (existing, `priority:high`) | F1 — silent clipping | Already open; this audit added the measured capacities, the corrected diagnosis (Pillow `_draw_block`, not python-pptx) and the before/after renders as a comment |
-| **#1510** | F2 + F3 — the renderer destroys the deck's line structure and invents its own | A layout change to `_wrap_text` / `_step_content`; 2A |
+| **#1510** (shipped) | F2 + F3 — the renderer destroys the deck's line structure and invents its own | A layout change to `_wrap_text` / `_step_content`; 2A; fixed since — see the FIXED notes under F2 and F3 |
 | **#1511** | F4 — hardcoded "Leave a comment below" bait on the CTA slide | 2A |
 | **#1512** (`risk:product-decision`) | F5 — slide text passes no text-quality gate; carousels are never authenticity-judged | Asks whether a slide lint may HOLD a post — a product call, per the issue's own rule |
 | **#1513** (shipped) | F6 — no deck surface in `content_quality`, no rendered-asset probe, no post type on `post_outcome` | 2A; fixed since — see F6 above and `docs/content-quality-telemetry.md` |
