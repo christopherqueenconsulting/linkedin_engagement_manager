@@ -152,3 +152,37 @@ class TestLoggerForwarding:
             log_error("Automation task failed", exc=ValueError("boom"))
 
         mock_capture.assert_not_called()
+
+
+class TestTestSuiteNeverPublishesToPostHog:
+    """The suite must never reach the real PostHog project, whatever is in `.env`.
+
+    `tests/conftest.py` calls `load_dotenv()`, so a developer or VPS checkout with a production
+    `POSTHOG_API_KEY` handed the whole suite a LIVE client. Every test exercising an error path
+    published a real `$exception`: fixture messages ("boom", "db down", "fail") became PostHog
+    error-tracking groups, and the daily error→issue cron filed them as GitHub issues that spent
+    agent capacity on defects that did not exist.
+
+    These assert the guard itself, not a behaviour built on top of it — without them the guard is
+    one silent deletion away from restoring the leak, and nothing else in the suite would fail.
+    """
+
+    def test_posthog_sdk_is_disabled_under_pytest(self):
+        import posthog
+        assert posthog.disabled is True
+
+    def test_module_disables_regardless_of_api_key(self):
+        # The point of the guard: a configured key must NOT be enough to enable sending here.
+        from cqc_lem.utilities.observability import _running_under_pytest
+        assert _running_under_pytest() is True
+
+    def test_capture_exception_is_a_no_op_while_disabled(self):
+        # No `mock_ph.disabled = False` — unlike the send-path tests above, this asserts the
+        # real default the suite runs under.
+        with patch(f"{_OBS}.posthog") as mock_ph, \
+             patch(f"{_OBS}._current_task_context", return_value=(None, None)):
+            mock_ph.disabled = True
+            from cqc_lem.utilities.observability import capture_exception
+            capture_exception(ValueError("boom"), user_id=1)
+
+        mock_ph.capture_exception.assert_not_called()

@@ -48,6 +48,22 @@ os.environ.setdefault("PEXELS_API_KEY", "test-pexels-api-key-12345")
 # which cannot see ruff directives -- files a py/unused-import anyway. A call is a use to both.
 importlib.import_module("cqc_lem.utilities.db")
 
+# MODULE level for the same reason as the block above: a fixture runs after COLLECTION, and
+# `observability.py` reads POSTHOG_API_KEY and decides `posthog.disabled` at IMPORT time. Anything
+# imported during collection would already have made that decision against the real key.
+#
+# The key arrives through the process ENVIRONMENT as often as through a file: `lem-agentd` loads
+# agent-pipeline/secrets.env as a systemd EnvironmentFile, so every pytest the pipeline spawns
+# inherits the production POSTHOG_API_KEY. load_dotenv() above supplies it too on any checkout whose
+# .env carries a real one. Either way, tests that mock a DB error let real production code call
+# log_error(exc=...) and publish a genuine `$exception` — fixture messages ("boom", "db down",
+# "fail") became error groups, the daily error→issue cron filed them as GitHub issues, and the agent
+# pipeline spent capacity on defects that did not exist.
+# `observability.py` refuses under pytest on its own; this is the belt to that braces, and the
+# discoverable half — a guard in the test tree is where someone looks for one.
+_posthog = importlib.import_module("posthog")
+_posthog.disabled = True
+
 
 @pytest.fixture(scope="session", autouse=True)
 def setup_test_environment():
