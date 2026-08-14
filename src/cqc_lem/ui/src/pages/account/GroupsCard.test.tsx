@@ -200,12 +200,21 @@ describe('GroupsCard — group post preview/edit (issue #932)', () => {
     await waitFor(() => expect(screen.getByLabelText('Group post text')).toBeTruthy())
     expect(screen.queryByRole('button', { name: /Skip this week/i })).toBeNull()
     expect(screen.getByText(/Skipped — nothing goes out this week/i)).toBeTruthy()
-    fireEvent.click(screen.getByRole('button', { name: /Put back in the queue/i }))
+    fireEvent.click(screen.getByRole('button', { name: /Undo skip/i }))
     await waitFor(() =>
       expect(put).toHaveBeenCalledWith('/user/group-post-draft',
         { session_token: 'tok', status: 'ready' })
     )
-    expect(screen.getByText(/Back in the queue for this week\./i)).toBeTruthy()
+    expect(screen.getByText(/Skip undone — back in the queue for this week\./i)).toBeTruthy()
+  })
+
+  it('drops the undo control once the publish slot has passed (issue #1415)', async () => {
+    routeGet([GROUPS], { ...DRAFT, status: 'skipped', can_undo_skip: false })
+    harness(<GroupsCard />)
+    await waitFor(() => expect(screen.getByLabelText('Group post text')).toBeTruthy())
+    expect(screen.queryByRole('button', { name: /Undo skip/i })).toBeNull()
+    expect(screen.queryByRole('button', { name: /Skip this week/i })).toBeNull()
+    expect(screen.getByText(/the skip is final/i)).toBeTruthy()
   })
 
   it('shows the server reason a restore was refused, not "try again"', async () => {
@@ -217,7 +226,7 @@ describe('GroupsCard — group post preview/edit (issue #932)', () => {
     })
     harness(<GroupsCard />)
     await waitFor(() => expect(screen.getByLabelText('Group post text')).toBeTruthy())
-    fireEvent.click(screen.getByRole('button', { name: /Put back in the queue/i }))
+    fireEvent.click(screen.getByRole('button', { name: /Undo skip/i }))
     await waitFor(() => expect(screen.getByText(/no longer takes posts/i)).toBeTruthy())
   })
 

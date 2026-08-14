@@ -192,6 +192,7 @@ from cqc_lem.utilities.db import (
 )
 from cqc_lem.utilities.email import generate_pin, hash_pin, send_pin_email
 from cqc_lem.utilities.geocoding import GeocodeError, geocode_city
+from cqc_lem.utilities.group_post_slot import group_skip_undo_open, skip_undo_deadline
 from cqc_lem.utilities.linkedin.helper import load_profile_for_user
 from cqc_lem.utilities.linkedin.login_status import get_login_status
 from cqc_lem.utilities.linkedin.token_refresh import resolve_token_status
@@ -2526,6 +2527,10 @@ def get_group_post_draft_endpoint(session_token: str) -> ResponseModel[Optional[
     A draft the user SKIPPED is still returned (issue #1224): skipping is reversible until the slot
     passes, and a draft the studio cannot show is one the user cannot restore.
 
+    `can_undo_skip` says whether that undo is still live (issue #1415) and `undo_deadline` is the
+    publish slot it closes at, so the SPA offers the control only while the PUT would honour it
+    rather than showing one that silently does nothing.
+
     The payload carries `best_practices` — the SAME list the drafting prompt is held to — so the
     guidance the author edits against cannot drift from the guidance the model wrote against.
     """
@@ -2535,20 +2540,27 @@ def get_group_post_draft_endpoint(session_token: str) -> ResponseModel[Optional[
     draft = get_current_group_post_draft(user_id)
     if draft:
         draft["best_practices"] = list(GROUP_POST_BEST_PRACTICES)
+        deadline = skip_undo_deadline(draft)
+        draft["undo_deadline"] = deadline.isoformat() if deadline else None
+        draft["can_undo_skip"] = (draft.get("status") == str(GroupPostDraftStatus.SKIPPED)
+                                  and group_skip_undo_open(draft))
     return ResponseModel(status_code=200, detail=draft)
 
 
 @router.put("/group-post-draft", responses={
     **{k: v for k, v in error_responses.items() if k in [400, 401, 404]},
-    409: {"description": "Another group post is already queued, or its group no longer takes posts"},
+    409: {"description": "Another group post is already queued, its group no longer takes posts, "
+                         "or this week's publish slot has passed"},
     422: {"description": "Unsupported status or empty text"},
     500: {"description": "Server error"},
 })
 def update_group_post_draft_endpoint(request: GroupPostDraftUpdateRequest) -> ResponseModel[str]:
     """Edit the queued group post.
 
-    Revise the text, attach or drop its media, skip it, or put a skipped one back in the queue.
-    Scoped to the caller's OWN current draft — the id is never taken from the request.
+    Revise the text, attach or drop its media, skip it, or undo a skip and put the draft back in the
+    queue. The undo restores the SAME row rather than drafting a second one — one open draft per user
+    is the lane's invariant (issue #932) — and is refused once this week's publish slot has passed
+    (issue #1415). Scoped to the caller's OWN current draft — the id is never taken from the request.
     """
     user_id = _main.get_session_user_id(request.session_token)
     if not user_id:
@@ -2562,7 +2574,22 @@ def update_group_post_draft_endpoint(request: GroupPostDraftUpdateRequest) -> Re
         if request.status not in settable:
             raise HTTPException(status_code=422, detail="Unsupported group post draft status")
         status = settable[request.status]
-        if status == GroupPostDraftStatus.READY:
+        # An undo on a week that was never skipped changes nothing — an expected no-op, so it is a
+        # DEBUG line and none of the restore gates below apply to it (issue #1415).
+        undoing_skip = status == GroupPostDraftStatus.READY and draft.get("status") != str(status)
+        if status == GroupPostDraftStatus.READY and not undoing_skip:
+            log_debug("Group post undo skip is a no-op — this week was not skipped",
+                      user_id=user_id, task_name="update_group_post_draft_endpoint")
+        if undoing_skip:
+            # Undoing a skip is bounded by the slot the draft is waiting on: once the publish beat
+            # for that week has run the week is spent, and restoring the row would ship a post
+            # written for a week that has passed. The SPA hides the control by then, so reaching
+            # here means a stale tab.
+            if not group_skip_undo_open(draft):
+                raise HTTPException(
+                    status_code=409,
+                    detail="This week's group post slot has passed — the skip is final. "
+                           "The next post is drafted Sunday.")
             # One OPEN draft per user is what stops the weekly beat replacing a post the user is
             # still editing, so a restore that would make a second one is refused rather than
             # quietly leaving two rows the publish run could pick between.

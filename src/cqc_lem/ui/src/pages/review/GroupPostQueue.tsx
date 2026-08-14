@@ -79,8 +79,8 @@ export default function GroupPostQueue(
     onSuccess: async (_res, body) => {
       if (body.status) setDraftEdit(null)
       await qc.invalidateQueries({ queryKey: ['group-post-draft'] })
-      if (body.status === 'skipped') flash(true, 'Skipped — no group post this week.')
-      else if (body.status === 'ready') flash(true, 'Back in the queue for this week.')
+      if (body.status === 'skipped') flash(true, 'Skipped — no group post this week. You can undo this until the Tuesday slot.')
+      else if (body.status === 'ready') flash(true, 'Skip undone — back in the queue for this week.')
       else if (body.remove_media) flash(true, 'Media removed.')
       else if (body.media_url) flash(true, 'Media attached.')
       else flash(true, 'Saved.')
@@ -124,6 +124,9 @@ export default function GroupPostQueue(
   const dirty = !!draft && draftText !== null && draftText !== draft.content &&
     !!draftText.trim() && draftText.length <= GROUP_POST_MAX
   const skipped = draft?.status === 'skipped'
+  // The undo window closes at the publish slot the draft was written for (issue #1415). The server
+  // refuses a restore after that, so the control is hidden rather than left to fail on a click.
+  const canUndoSkip = skipped && draft?.can_undo_skip !== false
   const busy = draftMutation.isPending || mediaBusy !== null
 
   // Rendered by every branch below: a status change retires the panel it was clicked from, so the
@@ -168,7 +171,9 @@ export default function GroupPostQueue(
           </p>
           <p className="text-xs text-gray-500 mt-1">
             {skipped
-              ? 'Skipped — nothing goes out this week unless you put it back in the queue.'
+              ? canUndoSkip
+                ? 'Skipped — nothing goes out this week unless you undo the skip.'
+                : "Skipped — this week's slot has passed, so the skip is final. A new post is drafted Sunday."
               : `Publishes ${formatInTimezone(publishAt.toISOString(), userTimezone)} in the group rotation.`}
           </p>
         </div>
@@ -243,7 +248,9 @@ export default function GroupPostQueue(
             </h3>
             <p className="text-xs text-gray-500">
               {skipped
-                ? 'This post is skipped. Edit it and put it back in the queue to publish at the next weekly slot.'
+                ? canUndoSkip
+                  ? 'This post is skipped. Undo the skip to put it back in the queue for this week.'
+                  : "This post is skipped and this week's publish slot has passed, so it can no longer be put back. The next group post is drafted Sunday."
                 : 'This post goes out at the next weekly group slot. Edit it, or skip it and no group post goes out this week.'}
             </p>
           </div>
@@ -260,12 +267,14 @@ export default function GroupPostQueue(
             </span>
             <span className="flex items-center gap-2">
               {skipped ? (
-                <button type="button"
-                  onClick={() => draftMutation.mutate({ status: 'ready' })}
-                  disabled={busy}
-                  className="px-3 py-1.5 rounded-lg text-sm font-semibold border border-gray-300 text-gray-700 hover:bg-gray-100 disabled:opacity-50 transition-colors">
-                  Put back in the queue
-                </button>
+                canUndoSkip && (
+                  <button type="button"
+                    onClick={() => draftMutation.mutate({ status: 'ready' })}
+                    disabled={busy}
+                    className="px-3 py-1.5 rounded-lg text-sm font-semibold border border-gray-300 text-gray-700 hover:bg-gray-100 disabled:opacity-50 transition-colors">
+                    Undo skip
+                  </button>
+                )
               ) : (
                 <button type="button"
                   onClick={() => draftMutation.mutate({ status: 'skipped' })}
