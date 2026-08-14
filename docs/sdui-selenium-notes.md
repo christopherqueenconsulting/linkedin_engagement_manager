@@ -243,6 +243,25 @@ against the page's own degree LINE (whole-line, never `\b1st\b`, which would fir
 "1st place, 2026 awards"); re-ground with `scripts/linkedin_live_validation.py --profile-scrape`
 against a 2nd/3rd-degree profile and read `degree_anchors` in the report.
 
+**Confirmed live 2026-08-14** (#1031, `--profile-scrape` against a 3rd-degree profile, deployed
+build `v0.149.0`, which carries #1025 — it shipped in `v0.134.0`): `state: ok`,
+`degree_grounded: true`, and a non-empty `degree_locator_matches` — the union leaf XPath, and only
+it; both class anchors matched nothing. **Neither list in that report is a count**: the probe
+truncates each locator's `texts` to the first five and caps `degree_anchors` at eight, so the run's
+`· 3rd`, `· 3rd`, `· 3rd+`, `· 3rd`, `· 3rd` (matches) and the two `· 2nd` further down `<main>`
+(anchors) are floors, not totals — a later run showing a different length is a truncation artefact,
+not drift.
+
+Two details the earlier grab did not pin: the badge renders as a **`<p>`** leaf, not a `<span>`, and
+every one of its classes is hashed (`d3e5c957 _797b549d …`) — the class is unusable as an anchor.
+The tag is not: the leading union's first branch is
+`[self::span or self::div or self::li or self::p]`, so it is tag-**tolerant**, not tag-agnostic, and
+it reads this page only because `<p>` is in that list. A badge that ever renders in some other tag
+falls through to the second branch, which matches the spelled-out `degree connection` text and
+nothing else — so widening the tag list is the fix if the bare `· 2nd` shape ever moves again.
+`tests/unit/app/test_sdui_zero_walk_tripwires.py` (`TestTheLiveBadgeShapeStaysGrounded`) pins this
+exact DOM: all three of its tests fail if `self::p` leaves the chain.
+
 **The FIRST badge is the profile's; every later one names somebody else.** A text anchor is far
 broader than the class anchor it replaced, and a profile page is full of other people's badges —
 the "People also viewed" rail outside `<main>`, mutual-connection highlights inside it. So both
