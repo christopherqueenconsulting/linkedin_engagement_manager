@@ -1691,6 +1691,17 @@ CAROUSEL_TEMPLATES: dict[str, dict] = {
 
 DEFAULT_TEMPLATE = "bold_listicle"
 
+# ── The ONE slide-body length contract (issue #1375) ──────────────────────────
+# The writer prompt states this number and the renderer honours it: a body of up to
+# CAROUSEL_SLIDE_BODY_MAX_CHARS reaches the PNG intact on every template and slide
+# role (`tests/unit/utilities/test_carousel_text_fit.py` renders and asserts it, so
+# the bound is verified rather than copied out of a capacity table). Anything longer
+# still never disappears silently — `fit_text_block` shrinks the type down to
+# CAROUSEL_MIN_FONT_SCALE first and only then truncates, with an explicit marker.
+CAROUSEL_SLIDE_BODY_MAX_CHARS = 150
+CAROUSEL_MIN_FONT_SCALE = 0.7
+CAROUSEL_TRUNCATION_MARKER = "..."
+
 
 def _wrap_text(text: str, font, max_px: int, draw) -> list[str]:
     """Greedy word-wrap `text` to lines no wider than `max_px` (measured via `draw`).
@@ -1731,6 +1742,137 @@ def _wrap_text(text: str, font, max_px: int, draw) -> list[str]:
     if cur:
         lines.append(cur)
     return lines
+
+
+def load_slide_font(size: int, bold: bool = True):
+    """Load the slide typeface at `size`, falling back across platforms then to Pillow's default.
+
+    Module-level so the fit engine and its tests can measure with the SAME font the
+    renderer draws with — a fit decision made against a different face is not a
+    measurement of anything.
+    """
+    from PIL import ImageFont
+
+    bold_paths = [
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+        "/usr/share/fonts/truetype/freefont/FreeSansBold.ttf",
+        "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
+        "/Library/Fonts/Arial Bold.ttf",
+        "/System/Library/Fonts/Helvetica.ttc",
+    ]
+    reg_paths = [
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+        "/usr/share/fonts/truetype/freefont/FreeSans.ttf",
+        "/System/Library/Fonts/Supplemental/Arial.ttf",
+        "/Library/Fonts/Arial.ttf",
+        "/System/Library/Fonts/Helvetica.ttc",
+    ]
+    for path in (bold_paths if bold else reg_paths):
+        if os.path.exists(path):
+            try:
+                return ImageFont.truetype(path, size)
+            except Exception:
+                continue
+    return ImageFont.load_default(size=size)
+
+
+def _lines_height(lines: list[str], font, spacing: int, draw) -> int:
+    """Pixel height a `_draw_block` pass would consume for `lines` at `font`.
+
+    Sums each line's own bounding box plus `spacing`, exactly as the renderer advances
+    its cursor — so a fit decision made here is the geometry the slide actually gets.
+    """
+    total = 0
+    for line in lines:
+        bb = draw.textbbox((0, 0), line, font=font)
+        total += (bb[3] - bb[1]) + spacing
+    return total
+
+
+def _shrink_font(font, size: int):
+    """Return `font` at `size`, or None when this font object cannot be resized.
+
+    Pillow's bitmap fallback (`ImageFont.load_default()` on older Pillow) has no
+    `font_variant`, so a caller that gets None must degrade some other way rather
+    than assume shrink-to-fit is available.
+    """
+    try:
+        return font.font_variant(size=size)
+    except Exception:
+        return None
+
+
+def _truncate_lines(lines: list[str], keep: int, font, max_px: int, draw) -> list[str]:
+    """Cut `lines` to `keep` lines and mark the cut with an explicit marker.
+
+    The marker is appended to the last kept line, dropping trailing words (then
+    characters) until the marked line still fits `max_px`. Visible truncation is the
+    floor of the contract in issue #1375: text may shrink or be marked, never vanish.
+    """
+    kept = list(lines[:max(1, keep)])
+    if len(lines) <= len(kept):
+        return kept
+    marker = CAROUSEL_TRUNCATION_MARKER
+    last = kept[-1].rstrip()
+    while last and draw.textlength(last + marker, font=font) > max_px:
+        if " " in last:
+            last = last.rsplit(" ", 1)[0].rstrip()
+        else:
+            last = last[:-1]
+    kept[-1] = (last + marker) if last else marker
+    return kept
+
+
+def fit_text_block(text: str, font, max_px: int, max_lines: int, spacing: int,
+                   draw) -> tuple[list[str], object, bool]:
+    """Wrap `text` so the whole of it fits the block a layout reserved for it.
+
+    The block is `max_lines` lines at `font` — the height a `_draw_block(max_lines=…)`
+    call used to paint before it silently dropped the rest (issue #1375: four shipped
+    slides, including a closing CTA, ended mid-sentence). Order of degradation:
+
+    1. It already fits — return the wrapped lines unchanged.
+    2. Shrink the type, down to `CAROUSEL_MIN_FONT_SCALE` of the layout's size, and
+       take the first size whose re-wrapped lines fit the SAME pixel height.
+    3. Only if even the smallest size overflows, keep the lines that fit and mark the
+       cut with `CAROUSEL_TRUNCATION_MARKER`.
+
+    Returns `(lines, font, truncated)` — `font` is the size the caller must draw with,
+    and `truncated` is True only in case 3, so a caller can log the degraded render.
+    """
+    lines = _wrap_text(text, font, max_px, draw)
+    if len(lines) <= max_lines:
+        return lines, font, False
+
+    box_h = _lines_height(lines[:max_lines], font, spacing, draw)
+    base_size = int(getattr(font, "size", 0) or 0)
+    if base_size:
+        floor_size = max(1, int(base_size * CAROUSEL_MIN_FONT_SCALE))
+        size = base_size - 1
+        smallest = None
+        while size >= floor_size:
+            candidate_font = _shrink_font(font, size)
+            if candidate_font is None:
+                break
+            smallest = candidate_font
+            candidate = _wrap_text(text, candidate_font, max_px, draw)
+            if _lines_height(candidate, candidate_font, spacing, draw) <= box_h:
+                return candidate, candidate_font, False
+            size -= 2
+        if smallest is not None:
+            # Nothing fits whole: keep as many smallest-size lines as the block holds.
+            small_lines = _wrap_text(text, smallest, max_px, draw)
+            keep, used = 0, 0
+            for line in small_lines:
+                used += _lines_height([line], smallest, spacing, draw)
+                if used > box_h and keep:
+                    break
+                keep += 1
+            return _truncate_lines(small_lines, keep, smallest, max_px, draw), smallest, True
+
+    return _truncate_lines(lines, max_lines, font, max_px, draw), font, True
 
 
 def _fit_and_crop_image(image_path: str, target_w: int, target_h: int):
@@ -1803,7 +1945,7 @@ def create_carousel_slide_images(
     decode fails, the slide renders exactly as before (text-only). Cover + CTA slides
     are left as-is.
     """
-    from PIL import Image, ImageDraw, ImageFont
+    from PIL import Image, ImageDraw
 
     from cqc_lem.utilities.logger import log_warning
 
@@ -1828,30 +1970,7 @@ def create_carousel_slide_images(
     os.makedirs(output_dir, exist_ok=True)
 
     # ── Font loader ───────────────────────────────────────────────────────────
-    def _load_font(size: int, bold: bool = True) -> ImageFont.FreeTypeFont:
-        bold_paths = [
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-            "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
-            "/usr/share/fonts/truetype/freefont/FreeSansBold.ttf",
-            "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
-            "/Library/Fonts/Arial Bold.ttf",
-            "/System/Library/Fonts/Helvetica.ttc",
-        ]
-        reg_paths = [
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-            "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
-            "/usr/share/fonts/truetype/freefont/FreeSans.ttf",
-            "/System/Library/Fonts/Supplemental/Arial.ttf",
-            "/Library/Fonts/Arial.ttf",
-            "/System/Library/Fonts/Helvetica.ttc",
-        ]
-        for path in (bold_paths if bold else reg_paths):
-            if os.path.exists(path):
-                try:
-                    return ImageFont.truetype(path, size)
-                except Exception:
-                    continue
-        return ImageFont.load_default(size=size)
+    _load_font = load_slide_font
 
     # ── Shared helpers ────────────────────────────────────────────────────────
     def _norm(text: str) -> str:
@@ -1866,8 +1985,17 @@ def create_carousel_slide_images(
             text = text.replace(src, dst)
         return text
 
-    def _wrap(text: str, font, max_px: int, draw) -> list[str]:
-        return _wrap_text(text, font, max_px, draw)
+    def _fit(text: str, font, max_px: int, draw, max_lines: int, spacing: int):
+        """Layout-aware wrap: returns `(lines, font)` that fit the reserved block.
+
+        Every text block on every layout goes through this, so no slide can lose text
+        without either shrinking the type or drawing the truncation marker (#1375).
+        """
+        lines, fitted_font, truncated = fit_text_block(text, font, max_px, max_lines, spacing, draw)
+        if truncated:
+            log_warning("Carousel slide text truncated to fit the layout",
+                        post_id=post_id, template=template)
+        return lines, fitted_font
 
     def _block_h(lines, font, spacing, draw) -> int:
         total_h = 0
@@ -1876,9 +2004,9 @@ def create_carousel_slide_images(
             total_h += (bb[3] - bb[1]) + spacing
         return total_h
 
-    def _draw_block(draw, lines, font, x, y, fill, spacing=14,
-                    centered=False, max_lines=99) -> int:
-        for ln in lines[:max_lines]:
+    def _draw_block(draw, lines, font, x, y, fill, spacing=14, centered=False) -> int:
+        # No line cap: `_fit` has already decided what fits, so nothing is dropped here.
+        for ln in lines:
             bb = draw.textbbox((0, 0), ln, font=font)
             lw, lh = bb[2] - bb[0], bb[3] - bb[1]
             lx = (W - lw) // 2 if centered else x
@@ -1934,13 +2062,13 @@ def create_carousel_slide_images(
         pw = int(draw.textlength(pill, font=f_l)) + 36
         _rrect(draw, (50, 52, 50 + pw, 96), radius=22, fill=(*cover_accent, 200))
         draw.text((68, 60), pill, font=f_l, fill=cover_bg if sum(cover_accent) > 380 else WHITE)
-        t_lines = _wrap(title, f_t, W - 140, draw)
-        t_h = _block_h(t_lines[:4], f_t, 18, draw)
+        t_lines, f_t = _fit(title, f_t, W - 140, draw, max_lines=4, spacing=18)
+        t_h = _block_h(t_lines, f_t, 18, draw)
         t_y = max(150, (H // 2) - t_h // 2 - 80)
-        y = _draw_block(draw, t_lines, f_t, 70, t_y, cover_text, spacing=18, centered=True, max_lines=4)
+        y = _draw_block(draw, t_lines, f_t, 70, t_y, cover_text, spacing=18, centered=True)
         draw.rectangle([(W // 2 - 50, y + 16), (W // 2 + 50, y + 22)], fill=cover_accent)
-        s_lines = _wrap(body, f_s, W - 180, draw)
-        _draw_block(draw, s_lines, f_s, 90, y + 46, fill=(*cover_text, 200), spacing=14, centered=True, max_lines=3)
+        s_lines, f_s = _fit(body, f_s, W - 180, draw, max_lines=3, spacing=14)
+        _draw_block(draw, s_lines, f_s, 90, y + 46, fill=(*cover_text, 200), spacing=14, centered=True)
         hint = "Swipe to read  >"
         hw = int(draw.textlength(hint, font=f_l))
         draw.text(((W - hw) // 2, H - 80), hint, font=f_l, fill=(*cover_accent, 160))
@@ -1965,14 +2093,14 @@ def create_carousel_slide_images(
         nh = bb[3] - bb[1]
         draw.text((cx - nw // 2, cy - nh // 2 - 3), num_str, font=f_n, fill=WHITE)
         PAD = 62
-        t_lines = _wrap(title, f_t, W - PAD * 2, draw)
-        y = _draw_block(draw, t_lines, f_t, PAD, cy + cr + 32, fill=title_color, spacing=12,
-                        max_lines=2 if band_top else 3)
+        t_lines, f_t = _fit(title, f_t, W - PAD * 2, draw,
+                            max_lines=2 if band_top else 3, spacing=12)
+        y = _draw_block(draw, t_lines, f_t, PAD, cy + cr + 32, fill=title_color, spacing=12)
         draw.rectangle([(PAD, y + 14), (PAD + 90, y + 20)], fill=badge_color)
         y += 48
-        b_lines = _wrap(body, f_b, W - PAD * 2, draw)
-        _draw_block(draw, b_lines, f_b, PAD, y, fill=body_color, spacing=18,
-                    max_lines=3 if band_top else 7)
+        b_lines, f_b = _fit(body, f_b, W - PAD * 2, draw,
+                            max_lines=3 if band_top else 7, spacing=18)
+        _draw_block(draw, b_lines, f_b, PAD, y, fill=body_color, spacing=18)
         if panel is not None:
             _place_band(img, draw, panel, band_top, badge_color)
         draw.rectangle([(0, H - BAR), (W, H)], fill=bottom_bar)
@@ -1998,13 +2126,13 @@ def create_carousel_slide_images(
         pw = int(draw.textlength(pill, font=f_l)) + 36
         _rrect(draw, ((W - pw) // 2, 140, (W + pw) // 2, 184), radius=20, fill=(*cover_accent, 180))
         draw.text(((W - pw) // 2 + 18, 148), pill, font=f_l, fill=cover_bg if sum(cover_accent) > 380 else WHITE)
-        cta_lines = _wrap(title, f_t, W - 140, draw)
-        cta_h = _block_h(cta_lines[:3], f_t, 20, draw)
+        cta_lines, f_t = _fit(title, f_t, W - 140, draw, max_lines=3, spacing=20)
+        cta_h = _block_h(cta_lines, f_t, 20, draw)
         cta_y = (H - cta_h) // 2 - 60
-        y = _draw_block(draw, cta_lines, f_t, 70, cta_y, fill=cover_text, spacing=20, centered=True, max_lines=3)
+        y = _draw_block(draw, cta_lines, f_t, 70, cta_y, fill=cover_text, spacing=20, centered=True)
         draw.rectangle([(W // 2 - 50, y + 18), (W // 2 + 50, y + 24)], fill=cover_accent)
-        sub_lines = _wrap(body, f_s, W - 180, draw)
-        _draw_block(draw, sub_lines, f_s, 90, y + 48, fill=(*cover_text, 190), spacing=16, centered=True, max_lines=3)
+        sub_lines, f_s = _fit(body, f_s, W - 180, draw, max_lines=3, spacing=16)
+        _draw_block(draw, sub_lines, f_s, 90, y + 48, fill=(*cover_text, 190), spacing=16, centered=True)
         draw.text((56, H - 76), f"{idx} / {total}", font=f_l, fill=(*cover_accent, 180))
         return _save(img, idx)
 
@@ -2031,13 +2159,13 @@ def create_carousel_slide_images(
         draw.text((W - cw - 50, 52), cnt, font=f_l, fill=(*cover_accent, 160))
         # Title — large, left-aligned, starts at 30% from top
         PAD = 70
-        t_lines = _wrap(title, f_t, W - PAD - 60, draw)
-        y = _draw_block(draw, t_lines, f_t, PAD, max(220, H // 3 - 60), cover_text, spacing=14, max_lines=4)
+        t_lines, f_t = _fit(title, f_t, W - PAD - 60, draw, max_lines=4, spacing=14)
+        y = _draw_block(draw, t_lines, f_t, PAD, max(220, H // 3 - 60), cover_text, spacing=14)
         # Thin gold rule
         draw.rectangle([(PAD, y + 24), (PAD + 120, y + 28)], fill=cover_accent)
         y += 52
-        s_lines = _wrap(body, f_s, W - PAD - 60, draw)
-        _draw_block(draw, s_lines, f_s, PAD, y, fill=(*cover_text, 170), spacing=16, max_lines=4)
+        s_lines, f_s = _fit(body, f_s, W - PAD - 60, draw, max_lines=4, spacing=16)
+        _draw_block(draw, s_lines, f_s, PAD, y, fill=(*cover_text, 170), spacing=16)
         # Bottom "Swipe" hint
         hint = "SWIPE  >"
         draw.text((PAD, H - 80), hint, font=f_l, fill=(*cover_accent, 120))
@@ -2059,16 +2187,16 @@ def create_carousel_slide_images(
         draw.text((W - cw - 50, 52), cnt_str, font=f_l, fill=(*badge_color, 140))
         # LARGE title left-aligned, starts high
         PAD = 70
-        t_lines = _wrap(title, f_t, W - PAD - 60, draw)
-        y = _draw_block(draw, t_lines, f_t, PAD, 180, title_color, spacing=14,
-                        max_lines=3 if band_top else 4)
+        t_lines, f_t = _fit(title, f_t, W - PAD - 60, draw,
+                            max_lines=3 if band_top else 4, spacing=14)
+        y = _draw_block(draw, t_lines, f_t, PAD, 180, title_color, spacing=14)
         # Thin colored rule
         draw.rectangle([(PAD, y + 24), (PAD + 100, y + 27)], fill=badge_color)
         y += 52
         # Body text — smaller, muted
-        b_lines = _wrap(body, f_b, W - PAD - 60, draw)
-        _draw_block(draw, b_lines, f_b, PAD, y, fill=body_color, spacing=20,
-                    max_lines=3 if band_top else 8)
+        b_lines, f_b = _fit(body, f_b, W - PAD - 60, draw,
+                            max_lines=3 if band_top else 8, spacing=20)
+        _draw_block(draw, b_lines, f_b, PAD, y, fill=body_color, spacing=20)
         if panel is not None:
             _place_band(img, draw, panel, band_top, badge_color)
         # Bottom: thin line only
@@ -2088,14 +2216,14 @@ def create_carousel_slide_images(
         draw.text((W - cw - 50, 52), cnt_str, font=f_l, fill=(*cover_accent, 140))
         PAD = 70
         # CTA title — center of slide
-        t_lines = _wrap(title, f_t, W - PAD - 60, draw)
-        t_h = _block_h(t_lines[:3], f_t, 16, draw)
+        t_lines, f_t = _fit(title, f_t, W - PAD - 60, draw, max_lines=3, spacing=16)
+        t_h = _block_h(t_lines, f_t, 16, draw)
         t_y = (H - t_h) // 2 - 80
-        y = _draw_block(draw, t_lines, f_t, PAD, t_y, cover_text, spacing=16, max_lines=3)
+        y = _draw_block(draw, t_lines, f_t, PAD, t_y, cover_text, spacing=16)
         draw.rectangle([(PAD, y + 24), (PAD + 100, y + 27)], fill=cover_accent)
         y += 52
-        s_lines = _wrap(body, f_s, W - PAD - 60, draw)
-        _draw_block(draw, s_lines, f_s, PAD, y, fill=(*cover_text, 170), spacing=18, max_lines=4)
+        s_lines, f_s = _fit(body, f_s, W - PAD - 60, draw, max_lines=4, spacing=18)
+        _draw_block(draw, s_lines, f_s, PAD, y, fill=(*cover_text, 170), spacing=18)
         return _save(img, idx)
 
     # ══════════════════════════════════════════════════════════════════════════
@@ -2121,14 +2249,14 @@ def create_carousel_slide_images(
         draw.text(((W - pw) // 2 + 18, 60), pill, font=f_l, fill=cover_bg)
         # Title centered
         PAD = 60
-        t_lines = _wrap(title, f_t, W - PAD * 2, draw)
-        t_h = _block_h(t_lines[:4], f_t, 18, draw)
+        t_lines, f_t = _fit(title, f_t, W - PAD * 2, draw, max_lines=4, spacing=18)
+        t_h = _block_h(t_lines, f_t, 18, draw)
         y = _draw_block(draw, t_lines, f_t, PAD, max(180, (H // 2) - t_h // 2 - 60), cover_text,
-                        spacing=18, centered=True, max_lines=4)
+                        spacing=18, centered=True)
         draw.rectangle([(W // 2 - 40, y + 20), (W // 2 + 40, y + 24)], fill=cover_accent)
         y += 48
-        s_lines = _wrap(body, f_s, W - PAD * 2, draw)
-        _draw_block(draw, s_lines, f_s, PAD, y, fill=(*cover_text, 200), spacing=14, centered=True, max_lines=3)
+        s_lines, f_s = _fit(body, f_s, W - PAD * 2, draw, max_lines=3, spacing=14)
+        _draw_block(draw, s_lines, f_s, PAD, y, fill=(*cover_text, 200), spacing=14, centered=True)
         return _save(img, idx)
 
     def _stat_content(idx, total, title, body, badge_color, image_path=None) -> str:
@@ -2150,18 +2278,17 @@ def create_carousel_slide_images(
         # HUGE title — centered vertically in upper 65%; lifted to the top band when
         # an image occupies the lower third.
         title_max = 2 if band_top else 3
-        t_lines = _wrap(title, f_huge, W - PAD * 2, draw)
-        t_h = _block_h(t_lines[:title_max], f_huge, 18, draw)
+        t_lines, f_huge = _fit(title, f_huge, W - PAD * 2, draw, max_lines=title_max, spacing=18)
+        t_h = _block_h(t_lines, f_huge, 18, draw)
         t_y = 140 if band_top else max(130, (H * 65 // 100) // 2 - t_h // 2)
-        y = _draw_block(draw, t_lines, f_huge, PAD, t_y, title_color, spacing=18, centered=True,
-                        max_lines=title_max)
+        y = _draw_block(draw, t_lines, f_huge, PAD, t_y, title_color, spacing=18, centered=True)
         # Horizontal rule
         draw.rectangle([(PAD, y + 22), (W - PAD, y + 25)], fill=(*badge_color, 120))
         y += 50
         # Body small, centered
-        b_lines = _wrap(body, f_body, W - PAD * 2, draw)
-        _draw_block(draw, b_lines, f_body, PAD, y, fill=body_color, spacing=18, centered=True,
-                    max_lines=2 if band_top else 5)
+        b_lines, f_body = _fit(body, f_body, W - PAD * 2, draw,
+                               max_lines=2 if band_top else 5, spacing=18)
+        _draw_block(draw, b_lines, f_body, PAD, y, fill=body_color, spacing=18, centered=True)
         if panel is not None:
             _place_band(img, draw, panel, band_top, badge_color)
         # Bottom strip
@@ -2185,14 +2312,14 @@ def create_carousel_slide_images(
         draw.polygon([(0, 0), (300, 0), (0, 300)], fill=(*cover_accent, 40))
         draw.polygon([(W, H), (W - 300, H), (W, H - 300)], fill=(*cover_accent, 40))
         PAD = 70
-        t_lines = _wrap(title, f_t, W - PAD * 2, draw)
-        t_h = _block_h(t_lines[:3], f_t, 18, draw)
+        t_lines, f_t = _fit(title, f_t, W - PAD * 2, draw, max_lines=3, spacing=18)
+        t_h = _block_h(t_lines, f_t, 18, draw)
         y = _draw_block(draw, t_lines, f_t, PAD, (H - t_h) // 2 - 80,
-                        cover_text, spacing=18, centered=True, max_lines=3)
+                        cover_text, spacing=18, centered=True)
         draw.rectangle([(W // 2 - 40, y + 22), (W // 2 + 40, y + 25)], fill=cover_accent)
         y += 50
-        s_lines = _wrap(body, f_s, W - PAD * 2, draw)
-        _draw_block(draw, s_lines, f_s, PAD, y, fill=(*cover_text, 190), spacing=16, centered=True, max_lines=3)
+        s_lines, f_s = _fit(body, f_s, W - PAD * 2, draw, max_lines=3, spacing=16)
+        _draw_block(draw, s_lines, f_s, PAD, y, fill=(*cover_text, 190), spacing=16, centered=True)
         draw.text((W // 2 - int(draw.textlength(f"{idx} / {total}", font=f_l)) // 2, H - 70),
                   f"{idx} / {total}", font=f_l, fill=(*cover_accent, 160))
         return _save(img, idx)
@@ -2217,14 +2344,14 @@ def create_carousel_slide_images(
         draw.text(((W - hw) // 2, 36), header, font=f_l, fill=(*cover_accent, 240))
         # Title centered
         PAD = 70
-        t_lines = _wrap(title, f_t, W - PAD * 2, draw)
-        t_h = _block_h(t_lines[:4], f_t, 18, draw)
+        t_lines, f_t = _fit(title, f_t, W - PAD * 2, draw, max_lines=4, spacing=18)
+        t_h = _block_h(t_lines, f_t, 18, draw)
         y = _draw_block(draw, t_lines, f_t, PAD, max(170, (H // 2) - t_h // 2 - 40),
-                        cover_text, spacing=18, centered=True, max_lines=4)
+                        cover_text, spacing=18, centered=True)
         draw.rectangle([(PAD, y + 20), (W - PAD, y + 24)], fill=(*cover_accent, 180))
         y += 48
-        s_lines = _wrap(body, f_s, W - PAD * 2, draw)
-        _draw_block(draw, s_lines, f_s, PAD, y, fill=(*cover_text, 200), spacing=14, centered=True, max_lines=3)
+        s_lines, f_s = _fit(body, f_s, W - PAD * 2, draw, max_lines=3, spacing=14)
+        _draw_block(draw, s_lines, f_s, PAD, y, fill=(*cover_text, 200), spacing=14, centered=True)
         return _save(img, idx)
 
     def _step_content(idx, total, title, body, badge_color, image_path=None) -> str:
@@ -2275,8 +2402,8 @@ def create_carousel_slide_images(
 
         # ── Title ─────────────────────────────────────────────────────────────
         PAD = 62
-        t_lines = _wrap(title, f_t, W - PAD * 2, draw)
-        y = _draw_block(draw, t_lines, f_t, PAD, STRIP + 40, title_color, spacing=12, max_lines=3)
+        t_lines, f_t = _fit(title, f_t, W - PAD * 2, draw, max_lines=3, spacing=12)
+        y = _draw_block(draw, t_lines, f_t, PAD, STRIP + 40, title_color, spacing=12)
 
         # Accent underline
         draw.rectangle([(PAD, y + 12), (PAD + 80, y + 17)], fill=badge_color)
@@ -2287,7 +2414,9 @@ def create_carousel_slide_images(
         # bulleted lines never run past the slide edge.
         BULLET_INDENT = 52
         body_cap = 4 if band_top else 7
-        for line_text in _wrap(body, f_b, W - (PAD + BULLET_INDENT) - PAD, draw)[:body_cap]:
+        b_lines, f_b = _fit(body, f_b, W - (PAD + BULLET_INDENT) - PAD, draw,
+                            max_lines=body_cap, spacing=20)
+        for line_text in b_lines:
             draw.text((PAD, y), "->", font=f_b, fill=badge_color)
             draw.text((PAD + BULLET_INDENT, y), line_text, font=f_b, fill=body_color)
             bb = draw.textbbox((0, 0), line_text, font=f_b)
@@ -2315,12 +2444,12 @@ def create_carousel_slide_images(
         cw = int(draw.textlength(check_text, font=f_check))
         draw.text(((W - cw) // 2, 120), check_text, font=f_check, fill=(*cover_accent, 220))
         PAD = 70
-        t_lines = _wrap(title, f_t, W - PAD * 2, draw)
-        y = _draw_block(draw, t_lines, f_t, PAD, 380, cover_text, spacing=18, centered=True, max_lines=3)
+        t_lines, f_t = _fit(title, f_t, W - PAD * 2, draw, max_lines=3, spacing=18)
+        y = _draw_block(draw, t_lines, f_t, PAD, 380, cover_text, spacing=18, centered=True)
         draw.rectangle([(PAD, y + 20), (W - PAD, y + 23)], fill=(*cover_accent, 180))
         y += 48
-        s_lines = _wrap(body, f_s, W - PAD * 2, draw)
-        _draw_block(draw, s_lines, f_s, PAD, y, fill=(*cover_text, 200), spacing=14, centered=True, max_lines=3)
+        s_lines, f_s = _fit(body, f_s, W - PAD * 2, draw, max_lines=3, spacing=14)
+        _draw_block(draw, s_lines, f_s, PAD, y, fill=(*cover_text, 200), spacing=14, centered=True)
         return _save(img, idx)
 
     # ══════════════════════════════════════════════════════════════════════════
@@ -2347,15 +2476,15 @@ def create_carousel_slide_images(
         lw = int(draw.textlength(label, font=f_l))
         draw.text((W - lw - 36, 48), label, font=f_l, fill=(*cover_accent, 200))
         PAD = 70
-        t_lines = _wrap(title, f_t, W - PAD - 80, draw)
-        t_h = _block_h(t_lines[:4], f_t, 16, draw)
+        t_lines, f_t = _fit(title, f_t, W - PAD - 80, draw, max_lines=4, spacing=16)
+        t_h = _block_h(t_lines, f_t, 16, draw)
         y = _draw_block(draw, t_lines, f_t, PAD, max(200, (H // 2) - t_h // 2 - 60),
-                        cover_text, spacing=16, max_lines=4)
+                        cover_text, spacing=16)
         # Amber rule
         draw.rectangle([(PAD, y + 20), (PAD + 100, y + 24)], fill=cover_accent)
         y += 50
-        s_lines = _wrap(body, f_s, W - PAD - 80, draw)
-        _draw_block(draw, s_lines, f_s, PAD, y, fill=(*cover_text, 190), spacing=16, max_lines=3)
+        s_lines, f_s = _fit(body, f_s, W - PAD - 80, draw, max_lines=3, spacing=16)
+        _draw_block(draw, s_lines, f_s, PAD, y, fill=(*cover_text, 190), spacing=16)
         return _save(img, idx)
 
     def _story_content(idx, total, title, body, badge_color, image_path=None) -> str:
@@ -2381,16 +2510,16 @@ def create_carousel_slide_images(
         draw.text((50, 90), '"', font=f_quote, fill=(*badge_color, 25))
         # Title — larger, treated as pull-quote
         PAD = 70
-        t_lines = _wrap(title, f_t, W - PAD - 80, draw)
-        y = _draw_block(draw, t_lines, f_t, PAD, 220, title_color, spacing=14,
-                        max_lines=3 if band_top else 4)
+        t_lines, f_t = _fit(title, f_t, W - PAD - 80, draw,
+                            max_lines=3 if band_top else 4, spacing=14)
+        y = _draw_block(draw, t_lines, f_t, PAD, 220, title_color, spacing=14)
         # Amber rule
         draw.rectangle([(PAD, y + 16), (PAD + 100, y + 20)], fill=badge_color)
         y += 46
         # Body text — softer
-        b_lines = _wrap(body, f_b, W - PAD - 80, draw)
-        _draw_block(draw, b_lines, f_b, PAD, y, fill=body_color, spacing=20,
-                    max_lines=3 if band_top else 6)
+        b_lines, f_b = _fit(body, f_b, W - PAD - 80, draw,
+                            max_lines=3 if band_top else 6, spacing=20)
+        _draw_block(draw, b_lines, f_b, PAD, y, fill=body_color, spacing=20)
         if panel is not None:
             _place_band(img, draw, panel, band_top, badge_color)
             # keep the signature right border visible over the photo band
@@ -2417,14 +2546,14 @@ def create_carousel_slide_images(
         lw = int(draw.textlength(label, font=f_l))
         draw.text((W - lw - 36, 48), label, font=f_l, fill=(*cover_accent, 200))
         PAD = 70
-        t_lines = _wrap(title, f_t, W - PAD - 80, draw)
-        t_h = _block_h(t_lines[:3], f_t, 16, draw)
+        t_lines, f_t = _fit(title, f_t, W - PAD - 80, draw, max_lines=3, spacing=16)
+        t_h = _block_h(t_lines, f_t, 16, draw)
         y = _draw_block(draw, t_lines, f_t, PAD, max(200, (H // 2) - t_h // 2 - 80),
-                        cover_text, spacing=16, max_lines=3)
+                        cover_text, spacing=16)
         draw.rectangle([(PAD, y + 20), (PAD + 100, y + 24)], fill=cover_accent)
         y += 50
-        s_lines = _wrap(body, f_s, W - PAD - 80, draw)
-        _draw_block(draw, s_lines, f_s, PAD, y, fill=(*cover_text, 190), spacing=16, max_lines=3)
+        s_lines, f_s = _fit(body, f_s, W - PAD - 80, draw, max_lines=3, spacing=16)
+        _draw_block(draw, s_lines, f_s, PAD, y, fill=(*cover_text, 190), spacing=16)
         draw.text((PAD, H - 70), f"Part {idx} of {total}", font=f_l, fill=(*cover_accent, 160))
         return _save(img, idx)
 
