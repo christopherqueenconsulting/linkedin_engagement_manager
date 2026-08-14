@@ -125,7 +125,8 @@ describe('NewsletterQueue editor', () => {
         },
       },
     })
-    fireEvent.click(screen.getByText('Approve cover'))
+    // By role: the editor's warning copy names the control too, so the bare text is ambiguous.
+    fireEvent.click(screen.getByRole('button', { name: 'Approve cover' }))
 
     await waitFor(() =>
       expect(screen.getByAltText('Newsletter cover').getAttribute('src'))
@@ -157,7 +158,7 @@ describe('NewsletterQueue pending-cover legibility', () => {
   it('says the edition publishes without the cover, and that scheduling is a separate approval', async () => {
     serveQueue([withCover(1, 'pending_review')])
     harness(queue())
-    await waitFor(() => expect(screen.getByText('Approve cover')).toBeTruthy())
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Approve cover' })).toBeTruthy())
     expect(screen.getByText(/reaches its slot unapproved/)).toBeTruthy()
     expect(screen.getByText(/this schedules the edition only/)).toBeTruthy()
   })
