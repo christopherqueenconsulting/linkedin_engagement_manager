@@ -111,6 +111,14 @@ def _approved_cover_path(edition: dict) -> "str | None":
     """
     from cqc_lem.utilities.newsletter_cover import COVER_STATUS_APPROVED, cover_abs_path
     if (edition or {}).get("cover_image_status") != COVER_STATUS_APPROVED:
+        if (edition or {}).get("cover_image_path"):
+            # The refusal is unchanged — this only makes the drop visible. INFO, not WARNING:
+            # publishing cover-less is the DESIGNED outcome of an unapproved cover, so escalating
+            # it would file a defect against working behaviour (issue #1432). The pre-slot
+            # reminder (`auto_notify_pending_covers`) is what asks the author to act.
+            log_info("Publishing newsletter edition without its unapproved cover",
+                     user_id=(edition or {}).get("user_id"),
+                     edition_id=(edition or {}).get("id"), action_type="newsletter_cover")
         return None
     path = cover_abs_path(edition.get("cover_image_path"))
     if path is None and edition.get("cover_image_path"):

@@ -199,6 +199,12 @@ app.conf.update(
             'task': 'cqc_lem.app.run_scheduler.auto_generate_newsletter_drafts',
             'schedule': crontab(hour='10', minute='0')  # Daily: top up each user's newsletter draft queue for review
         },
+        'notify-pending-newsletter-covers': {
+            'task': 'cqc_lem.app.run_scheduler.auto_notify_pending_covers',
+            # Daily 10:30 UTC — after the 10:00 draft top-up, so a cover queued by that run has
+            # rendered before this pass reads its status (issue #1432).
+            'schedule': crontab(hour='10', minute='30')
+        },
         'publish-scheduled-newsletters': {
             'task': 'cqc_lem.app.run_scheduler.auto_publish_scheduled_editions',
             'schedule': crontab(minute='5')  # Hourly: publish any edition whose scheduled slot has arrived

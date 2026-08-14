@@ -141,6 +141,12 @@ CAROUSEL_IMAGE_RATE = float(get_constant_from_env('CAROUSEL_IMAGE_RATE', default
 # a local keyword-extraction heuristic is used (no API call).
 CAROUSEL_IMAGE_QUERY_LLM = isTrue(get_constant_from_env('CAROUSEL_IMAGE_QUERY_LLM', default_value='True'))
 
+# --- Newsletter cover approval reminder (issue #1432) ---
+# How far ahead of an edition's slot the author is emailed that its generated cover is still
+# unapproved. The reminder beat is daily, so anything under 24h would leave slots it never covers.
+NEWSLETTER_COVER_REMINDER_LEAD_HOURS = int(
+    get_constant_from_env('NEWSLETTER_COVER_REMINDER_LEAD_HOURS', default_value='36'))
+
 # --- Avatar preview / approval gate (issue #744) ---
 # Sample renders a user must see BEFORE their avatar may be used on a published post, and how
 # many times they may re-roll them. The cap sits on top of the credit ledger: samples cost

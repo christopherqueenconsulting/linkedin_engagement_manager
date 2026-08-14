@@ -247,6 +247,58 @@ def notify_suppression_tripwire(user_id: int, reason: str) -> bool:
         return False
 
 
+COVER_PENDING_EMAIL_KEY = "lem:newsletter_cover_pending_email:{edition_id}"
+
+
+def notify_newsletter_cover_pending(user_id: int, edition_id: int, edition_title: str,
+                                    scheduled_for) -> bool:
+    """Email the author that an edition nearing its slot still has an unapproved cover (#1432).
+
+    ONE-SHOT per edition: the reminder is about a specific slot, so re-sending it every time the
+    beat runs would be nagging rather than informing. The claim is taken through Redis BEFORE the
+    send, like `notify_linkedin_token_expiring`, and released again when the send fails — a
+    reminder that never left must not silence the next pass. **Fails open**: a Redis outage
+    degrades to at most one email per beat run, never to silence, because silence is the exact
+    defect this exists to fix. Returns True only if an email was actually sent.
+    """
+    key = COVER_PENDING_EMAIL_KEY.format(edition_id=edition_id)
+    claimed_client = None
+    try:
+        from cqc_lem.utilities.linkedin.rate_limit import shared_redis_client
+        client = shared_redis_client()
+        if client is not None:
+            # 30 days: longer than any cadence gap, so one edition is only ever reminded once.
+            if not client.set(key, "1", nx=True, ex=30 * 86400):
+                return False
+            claimed_client = client
+    except Exception as e:
+        log_warning("Could not read the newsletter cover reminder claim — sending anyway", exc=e,
+                    user_id=user_id, action_type="newsletter_cover")
+
+    sent = False
+    try:
+        email = get_user_email(user_id)
+        if email:
+            from cqc_lem.utilities.email import send_newsletter_cover_pending_email
+            when = scheduled_for.strftime("%A, %B %d at %I:%M %p UTC") if hasattr(
+                scheduled_for, "strftime") else str(scheduled_for)
+            sent = send_newsletter_cover_pending_email(email, edition_title, when)
+        if sent:
+            log_info("Sent newsletter cover-pending reminder", user_id=user_id,
+                     action_type="newsletter_cover")
+    except Exception as e:
+        log_warning("Could not send the newsletter cover-pending reminder", exc=e, user_id=user_id,
+                    action_type="newsletter_cover")
+
+    if not sent and claimed_client is not None:
+        try:
+            claimed_client.delete(key)
+        except Exception as e:
+            log_warning("Could not release the newsletter cover reminder claim after a failed send",
+                        exc=e, user_id=user_id, action_type="newsletter_cover")
+    return sent
+
+
 def notify_newsletter_draft_ready(user_id: int, edition_title: str, scheduled_for) -> bool:
     """Email the user that their newsletter draft is ready to review and when it auto-publishes.
     Non-fatal — returns True only if an email was actually sent.
