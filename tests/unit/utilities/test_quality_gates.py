@@ -91,6 +91,16 @@ class TestFindings:
         # Demoting by default: whoever wires this onto a post (#1402) is holding it, flag or not.
         assert f["demoted"] is True
 
+    def test_malformed_asset_can_be_recorded_as_an_advisory_note(self):
+        """The advisory shape #1402 records.
+
+        While the probe is fail-open the missing-asset gate already holds the post, so the probe
+        reason explains that hold instead of adding a second one.
+        """
+        f = malformed_asset_finding("video", "zero-byte file", demoted=False)
+        assert f["demoted"] is False
+        assert "zero-byte file" in f["explanation"] and f["details"] == ["zero-byte file"]
+
     def test_malformed_asset_reads_without_a_reason(self):
         f = malformed_asset_finding("video")
         assert f["details"] == [] and "empty or unparseable" in f["explanation"]
