@@ -87,20 +87,15 @@ class TestImportNameTripwire:
 
 
 @pytest.fixture
-def client() -> Iterator[object]:
-    """The real app, with only the I/O the boot call touches mocked out."""
-    with patch("cqc_lem.utilities.observability.track_api_call"), \
-         patch(f"{_AUTH}.get_user_email", return_value="owner@example.com"), \
+def session_reads_stubbed(api_client) -> Iterator[object]:
+    """`api_client` with only the I/O the `/api/auth/session` boot call touches mocked out."""
+    with patch(f"{_AUTH}.get_user_email", return_value="owner@example.com"), \
          patch(f"{_AUTH}.get_user_public_uid", return_value="uid-1354"), \
          patch(f"{_AUTH}.is_user_admin", return_value=False), \
          patch(f"{_AUTH}.get_user_analytics_profile", return_value={}), \
          patch(f"{_AUTH}.strong_factor_deadline", return_value=None), \
          patch(f"{_AUTH}.strong_factor_prompt_due", return_value=False):
-        from fastapi.testclient import TestClient
-
-        from cqc_lem.api.main import app
-        with TestClient(app, raise_server_exceptions=False) as tc:
-            yield tc
+        yield api_client
 
 
 class TestRouterServedRouteAuthenticatesOnTheCookie:
@@ -110,30 +105,31 @@ class TestRouterServedRouteAuthenticatesOnTheCookie:
     `main.py`. If those are two module objects, this 401s.
     """
 
-    def test_cookie_alone_resolves(self, client) -> None:
+    def test_cookie_alone_resolves(self, session_reads_stubbed) -> None:
         with patch(f"{_M}._db_resolve_session",
                    side_effect=lambda t: {"user_id": _UID, "scope": "full"}
                    if t == _COOKIE else None):
-            resp = client.get("/api/auth/session", cookies={"lem_session": _COOKIE})
+            resp = session_reads_stubbed.get("/api/auth/session", cookies={"lem_session": _COOKIE})
         assert resp.status_code == 200, (
             "a router-served route did not authenticate on the session cookie — the middleware and "
             "the handler are reading different ContextVars (#1354)"
         )
         assert resp.json()["detail"]["user_id"] == _UID
 
-    def test_sentinel_plus_cookie_resolves(self, client) -> None:
+    def test_sentinel_plus_cookie_resolves(self, session_reads_stubbed) -> None:
         """The SPA sends `?session_token=cookie` on ~150 call sites; it must not defeat the cookie."""
         with patch(f"{_M}._db_resolve_session",
                    side_effect=lambda t: {"user_id": _UID, "scope": "full"}
                    if t == _COOKIE else None):
-            resp = client.get("/api/auth/session", params={"session_token": "cookie"},
-                              cookies={"lem_session": _COOKIE})
+            resp = session_reads_stubbed.get("/api/auth/session",
+                                             params={"session_token": "cookie"},
+                                             cookies={"lem_session": _COOKIE})
         assert resp.status_code == 200
         assert resp.json()["detail"]["user_id"] == _UID
 
-    def test_no_credential_is_still_401(self, client) -> None:
+    def test_no_credential_is_still_401(self, session_reads_stubbed) -> None:
         with patch(f"{_M}._db_resolve_session", return_value=None):
-            resp = client.get("/api/auth/session")
+            resp = session_reads_stubbed.get("/api/auth/session")
         assert resp.status_code == 401
 
 

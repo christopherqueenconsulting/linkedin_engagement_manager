@@ -55,15 +55,6 @@ class _FakeRedis:
         return None if value is None else str(value).encode()
 
 
-@pytest.fixture(scope="module")
-def client():
-    from fastapi.testclient import TestClient
-
-    from cqc_lem.api.main import app
-    with TestClient(app, raise_server_exceptions=False) as tc:
-        yield tc
-
-
 @pytest.fixture
 def redis():
     fake = _FakeRedis()
@@ -72,11 +63,11 @@ def redis():
 
 
 class TestTheWindowBoundsTheButton:
-    def test_two_presses_ask_for_exactly_one_chrome_session(self, client, redis):
+    def test_two_presses_ask_for_exactly_one_chrome_session(self, api_client, redis):
         with patch(f"{_M}.get_session_user_id", return_value=4242), \
              patch(f"{_USER}.update_stale_profile") as task:
-            first = client.post("/api/user/linkedin-profile/refresh", json={"session_token": _TOK})
-            second = client.post("/api/user/linkedin-profile/refresh", json={"session_token": _TOK})
+            first = api_client.post("/api/user/linkedin-profile/refresh", json={"session_token": _TOK})
+            second = api_client.post("/api/user/linkedin-profile/refresh", json={"session_token": _TOK})
 
         assert first.status_code == 202 and second.status_code == 202
         assert first.json()["detail"]["queued"] is True
@@ -89,24 +80,24 @@ class TestTheWindowBoundsTheButton:
             "user_id": 4242, "force_refresh": True,
         }
 
-    def test_the_profile_get_reports_the_window_the_press_spent(self, client, redis):
+    def test_the_profile_get_reports_the_window_the_press_spent(self, api_client, redis):
         with patch(f"{_M}.get_session_user_id", return_value=4243), \
              patch(f"{_USER}.update_stale_profile"), \
              patch(f"{_USER}.get_linkedin_profile_url_by_user_id", return_value=None):
-            before = client.get(f"/api/user/linkedin-profile?session_token={_TOK}")
-            client.post("/api/user/linkedin-profile/refresh", json={"session_token": _TOK})
-            after = client.get(f"/api/user/linkedin-profile?session_token={_TOK}")
+            before = api_client.get(f"/api/user/linkedin-profile?session_token={_TOK}")
+            api_client.post("/api/user/linkedin-profile/refresh", json={"session_token": _TOK})
+            after = api_client.get(f"/api/user/linkedin-profile?session_token={_TOK}")
 
         assert before.json()["detail"]["refresh_available_in_seconds"] == 0
         assert after.json()["detail"]["refresh_available_in_seconds"] > 0
 
-    def test_one_user_pressing_the_button_never_bounds_another(self, client, redis):
+    def test_one_user_pressing_the_button_never_bounds_another(self, api_client, redis):
         with patch(f"{_USER}.update_stale_profile") as task:
             with patch(f"{_M}.get_session_user_id", return_value=4244):
-                client.post("/api/user/linkedin-profile/refresh", json={"session_token": _TOK})
-                client.post("/api/user/linkedin-profile/refresh", json={"session_token": _TOK})
+                api_client.post("/api/user/linkedin-profile/refresh", json={"session_token": _TOK})
+                api_client.post("/api/user/linkedin-profile/refresh", json={"session_token": _TOK})
             with patch(f"{_M}.get_session_user_id", return_value=4245):
-                resp = client.post("/api/user/linkedin-profile/refresh",
+                resp = api_client.post("/api/user/linkedin-profile/refresh",
                                    json={"session_token": _TOK})
         assert resp.json()["detail"]["queued"] is True
         assert task.apply_async.call_count == 2

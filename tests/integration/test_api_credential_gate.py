@@ -66,16 +66,17 @@ def user_id():
 
 
 @pytest.fixture
-def gated_client():
-    """A TestClient with the gate ACTIVE — the prod posture, which most tests run without."""
+def gated_client(api_client):
+    """`api_client` with the credential gate ACTIVE — the prod posture, which most tests run without.
+
+    The gate is read per request, so turning it on around the shared client is the same posture the
+    old private TestClient had, without a second construction of the app (#1214).
+    """
     from unittest.mock import patch
 
-    from fastapi.testclient import TestClient
-
     from cqc_lem.api import main
-    with patch.object(main, "_API_ACCESS_TOKEN_SET", {_TOKEN}), \
-            TestClient(main.app, raise_server_exceptions=False) as client:
-        yield client
+    with patch.object(main, "_API_ACCESS_TOKEN_SET", {_TOKEN}):
+        yield api_client
 
 
 # The route is deliberately an ordinary session-authenticated GET, not a special one: it resolves

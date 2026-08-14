@@ -11,7 +11,7 @@ import pytest
 
 @pytest.mark.integration
 class TestGetUserSettingsLanguage:
-    def test_returns_explicit_and_effective_language(self):
+    def test_returns_explicit_and_effective_language(self, api_client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=1), \
              patch("cqc_lem.api.routers.user.get_user_subscription_info", return_value=None), \
              patch("cqc_lem.api.routers.user.get_user_preferences",
@@ -22,18 +22,14 @@ class TestGetUserSettingsLanguage:
              patch("cqc_lem.api.routers.user.get_user_blog_url", return_value=None), \
              patch("cqc_lem.api.routers.user.get_user_sitemap_url", return_value=None), \
              patch("cqc_lem.api.routers.user.get_company_linked_in_url_for_user", return_value=None):
-            from fastapi.testclient import TestClient
-
-            from cqc_lem.api.main import app
-
-            response = TestClient(app).get("/api/user/settings?session_token=t")
+            response = api_client.get("/api/user/settings?session_token=t")
 
         assert response.status_code == 200
         prefs = response.json()["detail"]["preferences"]
         assert prefs["content_language"] == "es-ES"
         assert prefs["effective_content_language"] == "es-ES"
 
-    def test_unset_language_reports_the_inherited_default(self):
+    def test_unset_language_reports_the_inherited_default(self, api_client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=1), \
              patch("cqc_lem.api.routers.user.get_user_subscription_info", return_value=None), \
              patch("cqc_lem.api.routers.user.get_user_preferences",
@@ -44,11 +40,7 @@ class TestGetUserSettingsLanguage:
              patch("cqc_lem.api.routers.user.get_user_blog_url", return_value=None), \
              patch("cqc_lem.api.routers.user.get_user_sitemap_url", return_value=None), \
              patch("cqc_lem.api.routers.user.get_company_linked_in_url_for_user", return_value=None):
-            from fastapi.testclient import TestClient
-
-            from cqc_lem.api.main import app
-
-            response = TestClient(app).get("/api/user/settings?session_token=t")
+            response = api_client.get("/api/user/settings?session_token=t")
 
         prefs = response.json()["detail"]["preferences"]
         assert prefs["content_language"] is None          # nothing explicitly chosen
@@ -57,14 +49,10 @@ class TestGetUserSettingsLanguage:
 
 @pytest.mark.integration
 class TestUpdateUserSettingsLanguage:
-    def test_language_is_forwarded_to_the_db(self):
+    def test_language_is_forwarded_to_the_db(self, api_client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=1), \
              patch("cqc_lem.api.routers.user.update_user_preferences", return_value=True) as upd:
-            from fastapi.testclient import TestClient
-
-            from cqc_lem.api.main import app
-
-            response = TestClient(app).put("/api/user/settings", json={
+            response = api_client.put("/api/user/settings", json={
                 "session_token": "t", "last_login_inactivate_delay": 90,
                 "auto_schedule_posts": True, "content_language": "pt-BR",
             })
@@ -72,29 +60,21 @@ class TestUpdateUserSettingsLanguage:
         assert response.status_code == 200
         assert upd.call_args[1]["content_language"] == "pt-BR"
 
-    def test_omitted_language_is_left_unchanged(self):
+    def test_omitted_language_is_left_unchanged(self, api_client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=1), \
              patch("cqc_lem.api.routers.user.update_user_preferences", return_value=True) as upd:
-            from fastapi.testclient import TestClient
-
-            from cqc_lem.api.main import app
-
-            TestClient(app).put("/api/user/settings", json={
+            api_client.put("/api/user/settings", json={
                 "session_token": "t", "last_login_inactivate_delay": 90,
                 "auto_schedule_posts": True,
             })
 
         assert upd.call_args[1]["content_language"] is None
 
-    def test_over_long_language_is_rejected_not_truncated_by_mysql(self):
+    def test_over_long_language_is_rejected_not_truncated_by_mysql(self, api_client):
         # Mirrors the V52 lesson: an over-long value must 422 here, never reach the column.
         with patch("cqc_lem.api.main.get_session_user_id", return_value=1), \
              patch("cqc_lem.api.routers.user.update_user_preferences", return_value=True) as upd:
-            from fastapi.testclient import TestClient
-
-            from cqc_lem.api.main import app
-
-            response = TestClient(app).put("/api/user/settings", json={
+            response = api_client.put("/api/user/settings", json={
                 "session_token": "t", "last_login_inactivate_delay": 90,
                 "auto_schedule_posts": True, "content_language": "x" * 17,
             })

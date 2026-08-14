@@ -8,6 +8,7 @@ This module provides:
 
 import importlib
 import os
+from typing import Any, Iterator
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -93,6 +94,44 @@ def _db_pool_disabled_by_default(monkeypatch):
     """
     from cqc_lem.platform.db import connection
     monkeypatch.setattr(connection, "MYSQL_POOL_ENABLED", False)
+
+
+@pytest.fixture
+def api_client() -> Iterator[Any]:
+    """The ONE TestClient over the real `cqc_lem.api.main.app` — issue #1214.
+
+    Every API test in both lanes goes through here, so the app is imported exactly once, by a
+    caller that is patching nothing. That import order is the point. `api/main.py` binds its five
+    Celery tasks into its own namespace with `from ... import <task>` at module scope, so the 73
+    per-file client factories this replaced — most of which started
+    `patch("cqc_lem.app.engagement.posting.automate_reply_commenting")` and four siblings BEFORE
+    importing the app — left `api.main` holding MagicMocks for the rest of the session once the
+    first of them ran, and were vacuous for every file after it. Measured, not inferred:
+    `tests/unit/api/test_api_client_fixture.py` asserts those symbols are still the real tasks.
+
+    A test that needs a dispatch stubbed patches it where the handler READS it
+    (`cqc_lem.api.main.<task>`, `cqc_lem.api.routers.<module>.<task>`) for the length of its own
+    request, which is what every such test here already did. That is the rule #1194 landed for
+    every other symbol on `main`, and it is why this fixture patches NOTHING itself: a blanket
+    per-file patch is exactly how 13 tests came to bind a dead copy.
+
+    Function-scoped, and `app.dependency_overrides` is restored on the way out, so a test may
+    install an override without leaking it into the next one. The lifespan costs ~1.7ms per test.
+
+    `raise_server_exceptions=False` is the house default: a handler that raises is reported as the
+    500 the caller would really have received, which is what the middleware-level tests assert on.
+    """
+    from fastapi.testclient import TestClient
+
+    from cqc_lem.api.main import app
+
+    saved_overrides = dict(app.dependency_overrides)
+    with TestClient(app, raise_server_exceptions=False) as client:
+        try:
+            yield client
+        finally:
+            app.dependency_overrides.clear()
+            app.dependency_overrides.update(saved_overrides)
 
 
 @pytest.fixture

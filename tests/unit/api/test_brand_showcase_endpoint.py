@@ -10,7 +10,6 @@ from typing import Any, Optional
 from unittest.mock import MagicMock, patch
 
 import pytest
-from fastapi.testclient import TestClient
 
 from cqc_lem.api import main
 from cqc_lem.platform.db.enums import PostStatus
@@ -20,11 +19,6 @@ pytestmark = pytest.mark.unit
 _BRAND = "cqc_lem.utilities.brand_account"
 _FLAGS = "cqc_lem.utilities.flags"
 _REDIS = "cqc_lem.utilities.linkedin.rate_limit"
-
-
-@pytest.fixture
-def client():
-    return TestClient(main.app, raise_server_exceptions=False)
 
 
 @pytest.fixture(autouse=True)
@@ -93,7 +87,7 @@ def _make_post(post_id: int, user_id: int, content: str, status: str = "posted",
     }
 
 
-def _get_showcase(client, *, enabled: bool = True, brand_user_id: int = 1,
+def _get_showcase(api_client, *, enabled: bool = True, brand_user_id: int = 1,
                   posts=None, stats=None):
     posts = posts or []
     with patch(f"{_FLAGS}.flag_enabled", return_value=enabled), \
@@ -101,14 +95,14 @@ def _get_showcase(client, *, enabled: bool = True, brand_user_id: int = 1,
          patch("cqc_lem.platform.db.connection.get_db_connection",
                side_effect=lambda *a, **k: _FakeConn(posts, stats)), \
          patch("cqc_lem.utilities.observability.posthog"):
-        return client.get("/api/brand-showcase")
+        return api_client.get("/api/brand-showcase")
 
 
 class TestBrandShowcasePublicContract:
-    def test_unauthenticated_request_returns_200_with_posts(self, client):
+    def test_unauthenticated_request_returns_200_with_posts(self, api_client):
         posts = [_make_post(1, 1, "Hello from LEM")]
         stats = {(1, 1): {"reactions": 42, "comments": 7, "reposts": 3, "impressions": 1200, "saves": 1}}
-        response = _get_showcase(client, posts=posts, stats=stats)
+        response = _get_showcase(api_client, posts=posts, stats=stats)
 
         assert response.status_code == 200
         detail = response.json()["detail"]
@@ -116,45 +110,45 @@ class TestBrandShowcasePublicContract:
         assert detail["posts"][0]["id"] == 1
         assert detail["posts"][0]["reactions"] == 42
 
-    def test_returns_empty_list_when_flag_is_off(self, client):
-        response = _get_showcase(client, enabled=False)
+    def test_returns_empty_list_when_flag_is_off(self, api_client):
+        response = _get_showcase(api_client, enabled=False)
 
         assert response.status_code == 200
         assert response.json()["detail"]["posts"] == []
 
-    def test_returns_empty_list_when_brand_has_no_posts(self, client):
-        response = _get_showcase(client, posts=[])
+    def test_returns_empty_list_when_brand_has_no_posts(self, api_client):
+        response = _get_showcase(api_client, posts=[])
 
         assert response.status_code == 200
         assert response.json()["detail"]["posts"] == []
 
-    def test_returns_only_posted_posts(self, client):
+    def test_returns_only_posted_posts(self, api_client):
         posts = [
             _make_post(1, 1, "Published"),
             _make_post(2, 1, "Draft", status=PostStatus.PENDING.value),
             _make_post(3, 1, "Errored", status=PostStatus.ERROR.value),
         ]
         stats = {(1, 1): {"reactions": 10}}
-        response = _get_showcase(client, posts=posts, stats=stats)
+        response = _get_showcase(api_client, posts=posts, stats=stats)
 
         detail = response.json()["detail"]
         assert [p["id"] for p in detail["posts"]] == [1]
 
-    def test_never_returns_another_users_rows(self, client):
+    def test_never_returns_another_users_rows(self, api_client):
         posts = [
             _make_post(1, 1, "Brand post"),
             _make_post(2, 99, "Someone else's post"),
         ]
         stats = {(1, 1): {"reactions": 5}}
-        response = _get_showcase(client, posts=posts, stats=stats)
+        response = _get_showcase(api_client, posts=posts, stats=stats)
 
         detail = response.json()["detail"]
         # get_posted_posts filters by user_id in SQL, so the second post is already gone.
         assert [p["id"] for p in detail["posts"]] == [1]
 
-    def test_passes_through_null_stats_without_fabrication(self, client):
+    def test_passes_through_null_stats_without_fabrication(self, api_client):
         posts = [_make_post(1, 1, "No stats yet")]
-        response = _get_showcase(client, posts=posts, stats={})
+        response = _get_showcase(api_client, posts=posts, stats={})
 
         post = response.json()["detail"]["posts"][0]
         assert post["reactions"] is None
@@ -163,30 +157,30 @@ class TestBrandShowcasePublicContract:
 
 
 class TestBrandShowcaseCuration:
-    def test_limits_to_six_most_recent_posts(self, client):
+    def test_limits_to_six_most_recent_posts(self, api_client):
         posts = [_make_post(i, 1, f"Post {i}") for i in range(1, 9)]
         stats = {(1, i): {"reactions": i} for i in range(1, 9)}
-        response = _get_showcase(client, posts=posts, stats=stats)
+        response = _get_showcase(api_client, posts=posts, stats=stats)
 
         detail = response.json()["detail"]
         assert len(detail["posts"]) == 6
         # get_posted_posts orders oldest first; the endpoint keeps the last six and reverses to newest first.
         assert [p["id"] for p in detail["posts"]] == [8, 7, 6, 5, 4, 3]
 
-    def test_includes_post_url_from_successful_post_log(self, client):
+    def test_includes_post_url_from_successful_post_log(self, api_client):
         posts = [_make_post(1, 1, "Linked")]
         stats = {
             (1, 1): {"reactions": 1},
             "url:1": "https://www.linkedin.com/posts/lem_activity-123",
         }
-        response = _get_showcase(client, posts=posts, stats=stats)
+        response = _get_showcase(api_client, posts=posts, stats=stats)
 
         post = response.json()["detail"]["posts"][0]
         assert post["post_url"] == "https://www.linkedin.com/posts/lem_activity-123"
 
 
 class TestBrandShowcaseRateLimitAndCache:
-    def test_redis_cache_is_used_when_available(self, client):
+    def test_redis_cache_is_used_when_available(self, api_client):
         cached = [{"id": 99, "content": "cached", "post_type": "text", "published_at": None,
                    "post_url": None, "reactions": 1, "comments": None, "reposts": None,
                    "impressions": None, "saves": None}]
@@ -199,13 +193,13 @@ class TestBrandShowcaseRateLimitAndCache:
              patch(f"{_REDIS}.shared_redis_client", return_value=redis), \
              patch("cqc_lem.platform.db.connection.get_db_connection") as db_conn, \
              patch("cqc_lem.utilities.observability.posthog"):
-            response = client.get("/api/brand-showcase")
+            response = api_client.get("/api/brand-showcase")
 
         assert response.status_code == 200
         assert response.json()["detail"]["posts"] == cached
         db_conn.assert_not_called()
 
-    def test_rate_limit_allows_normal_load(self, client):
+    def test_rate_limit_allows_normal_load(self, api_client):
         redis = MagicMock()
         redis.get.return_value = None
         posts = [_make_post(1, 1, "Post")]
@@ -216,18 +210,18 @@ class TestBrandShowcaseRateLimitAndCache:
              patch("cqc_lem.platform.db.connection.get_db_connection",
                    side_effect=lambda *a, **k: _FakeConn(posts, stats)), \
              patch("cqc_lem.utilities.observability.posthog"):
-            response = client.get("/api/brand-showcase")
+            response = api_client.get("/api/brand-showcase")
 
         assert response.status_code == 200
         assert redis.pipeline.called
 
 
 class TestBrandShowcaseFailureModes:
-    def test_db_fault_returns_503_not_500(self, client):
+    def test_db_fault_returns_503_not_500(self, api_client):
         with patch(f"{_FLAGS}.flag_enabled", return_value=True), \
              patch("cqc_lem.platform.db.connection.get_db_connection",
                    side_effect=RuntimeError("db down")), \
              patch("cqc_lem.utilities.observability.posthog"):
-            response = client.get("/api/brand-showcase")
+            response = api_client.get("/api/brand-showcase")
 
         assert response.status_code == 503

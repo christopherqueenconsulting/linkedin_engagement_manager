@@ -36,16 +36,6 @@ def auth_mod():
     return auth
 
 
-@pytest.fixture(scope="module")
-def client():
-    with patch("cqc_lem.utilities.observability.track_api_call"):
-        from fastapi.testclient import TestClient
-
-        from cqc_lem.api.main import app
-        with TestClient(app, raise_server_exceptions=False) as tc:
-            yield tc
-
-
 # ---------------------------------------------------------------------------
 # _bearer_token — Authorization header parsing
 # ---------------------------------------------------------------------------
@@ -130,33 +120,33 @@ class TestGateMiddleware:
     # handler (/api/assets is public by design, so it can't test the gate).
     GATED_PROBE = "/api/__gated_probe__"
 
-    def test_guarded_route_without_any_credential_is_401(self, main_mod, client):
+    def test_guarded_route_without_any_credential_is_401(self, main_mod, api_client):
         with patch.object(main_mod, "_API_ACCESS_TOKEN_SET", {self.TOKEN}):
-            resp = client.get(self.GATED_PROBE)
+            resp = api_client.get(self.GATED_PROBE)
         assert resp.status_code == 401
 
-    def test_guarded_route_wrong_token_and_no_session_is_401(self, main_mod, client):
+    def test_guarded_route_wrong_token_and_no_session_is_401(self, main_mod, api_client):
         with patch.object(main_mod, "_API_ACCESS_TOKEN_SET", {self.TOKEN}):
-            resp = client.get(self.GATED_PROBE, headers={"Authorization": "Bearer wrong"})
+            resp = api_client.get(self.GATED_PROBE, headers={"Authorization": "Bearer wrong"})
         assert resp.status_code == 401
 
-    def test_guarded_route_valid_token_passes_gate(self, main_mod, client):
+    def test_guarded_route_valid_token_passes_gate(self, main_mod, api_client):
         # Valid token clears the gate; routing then 404s on the unknown path.
         with patch.object(main_mod, "_API_ACCESS_TOKEN_SET", {self.TOKEN}):
-            resp = client.get(self.GATED_PROBE, headers={"Authorization": f"Bearer {self.TOKEN}"})
+            resp = api_client.get(self.GATED_PROBE, headers={"Authorization": f"Bearer {self.TOKEN}"})
         assert resp.status_code != 401
 
-    def test_session_cookie_passes_gate_without_a_bearer(self, main_mod, client):
+    def test_session_cookie_passes_gate_without_a_bearer(self, main_mod, api_client):
         """The whole point of #950: the SPA holds no bearer, so its cookie has to clear the gate."""
         with patch.object(main_mod, "_API_ACCESS_TOKEN_SET", {self.TOKEN}):
-            resp = client.get(self.GATED_PROBE,
+            resp = api_client.get(self.GATED_PROBE,
                               headers={"Cookie": f"{SESSION_COOKIE_NAME}=whatever"})
         assert resp.status_code != 401
 
-    def test_session_header_passes_gate_without_a_bearer(self, main_mod, client):
+    def test_session_header_passes_gate_without_a_bearer(self, main_mod, api_client):
         # The cookie-less fallback (plain-http origin) and the tutorial capture harness.
         with patch.object(main_mod, "_API_ACCESS_TOKEN_SET", {self.TOKEN}):
-            resp = client.get(self.GATED_PROBE, headers={"X-Session-Token": "real-token"})
+            resp = api_client.get(self.GATED_PROBE, headers={"X-Session-Token": "real-token"})
         assert resp.status_code != 401
 
     @pytest.mark.parametrize("headers", [
@@ -167,14 +157,14 @@ class TestGateMiddleware:
         {"X-Session-Token": "   "},                   # whitespace only
         {"Cookie": "some_other_cookie=1"},            # a different cookie is not a credential
     ])
-    def test_empty_or_unrelated_session_credential_is_401(self, main_mod, client, headers):
+    def test_empty_or_unrelated_session_credential_is_401(self, main_mod, api_client, headers):
         with patch.object(main_mod, "_API_ACCESS_TOKEN_SET", {self.TOKEN}):
-            resp = client.get(self.GATED_PROBE, headers=headers)
+            resp = api_client.get(self.GATED_PROBE, headers=headers)
         assert resp.status_code == 401
 
-    def test_gate_disabled_allows_unauthenticated(self, main_mod, client):
+    def test_gate_disabled_allows_unauthenticated(self, main_mod, api_client):
         with patch.object(main_mod, "_API_ACCESS_TOKEN_SET", set()):
-            resp = client.get("/api/assets", params={"file_name": "x.png"})
+            resp = api_client.get("/api/assets", params={"file_name": "x.png"})
         assert resp.status_code != 401
 
 
@@ -196,25 +186,25 @@ class TestQueryParamMutatingRoutesStillRefuseAnonymous:
     ]
 
     @pytest.mark.parametrize("path,params", ROUTES)
-    def test_no_credential_is_401(self, main_mod, client, path, params):
+    def test_no_credential_is_401(self, main_mod, api_client, path, params):
         with patch.object(main_mod, "_API_ACCESS_TOKEN_SET", {self.TOKEN}):
-            resp = client.post(path, params=params)
+            resp = api_client.post(path, params=params)
         assert resp.status_code == 401
 
     @pytest.mark.parametrize("path,params", ROUTES)
-    def test_unresolvable_session_cookie_is_401(self, main_mod, client, path, params):
+    def test_unresolvable_session_cookie_is_401(self, main_mod, api_client, path, params):
         with patch.object(main_mod, "_API_ACCESS_TOKEN_SET", {self.TOKEN}), \
              patch.object(main_mod, "get_session_user_id", return_value=None):
-            resp = client.post(path, params=params,
+            resp = api_client.post(path, params=params,
                                headers={"Cookie": f"{SESSION_COOKIE_NAME}=forged"})
         assert resp.status_code == 401
 
     @pytest.mark.parametrize("path,params", ROUTES)
-    def test_bearer_alone_is_401(self, main_mod, client, path, params):
+    def test_bearer_alone_is_401(self, main_mod, api_client, path, params):
         """A bearer holder is not a user. It clears the edge filter and nothing else."""
         with patch.object(main_mod, "_API_ACCESS_TOKEN_SET", {self.TOKEN}), \
              patch.object(main_mod, "get_session_user_id", return_value=None):
-            resp = client.post(path, params=params,
+            resp = api_client.post(path, params=params,
                                headers={"Authorization": f"Bearer {self.TOKEN}"})
         assert resp.status_code == 401
 
@@ -278,15 +268,15 @@ class TestSessionCookieAttributes:
 
 
 class TestAppInfo:
-    def test_returns_version_and_toggle(self, main_mod, client):
+    def test_returns_version_and_toggle(self, main_mod, api_client):
         with patch("cqc_lem.utilities.env_constants.get_app_version", return_value="1.2.3"), \
              patch("cqc_lem.utilities.env_constants.SHOW_VERSION_FOOTER", True):
-            resp = client.get("/api/app-info")
+            resp = api_client.get("/api/app-info")
         assert resp.status_code == 200
         assert resp.json()["detail"] == {"version": "1.2.3", "show_version": True}
 
-    def test_reachable_when_gate_enabled(self, main_mod, client):
+    def test_reachable_when_gate_enabled(self, main_mod, api_client):
         # The footer loads pre-login, so /api/app-info must clear the bearer gate.
         with patch.object(main_mod, "_API_ACCESS_TOKEN_SET", {"tok"}):
-            resp = client.get("/api/app-info")
+            resp = api_client.get("/api/app-info")
         assert resp.status_code == 200

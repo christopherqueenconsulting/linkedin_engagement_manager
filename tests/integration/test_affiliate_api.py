@@ -206,14 +206,6 @@ def store():
 
 
 @pytest.fixture
-def client():
-    from fastapi.testclient import TestClient
-
-    from cqc_lem.api.main import app
-    return TestClient(app, raise_server_exceptions=False)
-
-
-@pytest.fixture
 def env(store):
     with patch(f"{_M}.get_session_user_id", return_value=USER), \
          patch("cqc_lem.platform.db.connection.get_db_connection", return_value=_Connection(store)), \
@@ -232,14 +224,14 @@ def env(store):
         yield
 
 
-def _get(client):
-    r = client.get("/api/user/affiliate?session_token=t")
+def _get(api_client):
+    r = api_client.get("/api/user/affiliate?session_token=t")
     assert r.status_code == 200
     return r.json()["detail"]
 
 
-def _post(client, path, **body):
-    r = client.post(f"/api/user/affiliate{path}", json={"session_token": "t", **body})
+def _post(api_client, path, **body):
+    r = api_client.post(f"/api/user/affiliate{path}", json={"session_token": "t", **body})
     return r
 
 
@@ -251,8 +243,8 @@ def _iso(dt: Optional[datetime]) -> Optional[str]:
     return _utc_iso(dt)
 
 
-def test_user_is_enrolled_by_default_with_a_link_and_the_bonus(client, env, store):
-    detail = _get(client)
+def test_user_is_enrolled_by_default_with_a_link_and_the_bonus(api_client, env, store):
+    detail = _get(api_client)
     assert detail["enrolled"] is True and detail["status"] == "enrolled"
     assert detail["referral_url"].endswith("ref=42")
     assert detail["days_earned"] == 7
@@ -262,16 +254,16 @@ def test_user_is_enrolled_by_default_with_a_link_and_the_bonus(client, env, stor
     assert detail["promo_content_allowed"] is False
 
 
-def test_enrollment_is_idempotent_across_page_loads(client, env, store):
-    _get(client)
-    _get(client)
+def test_enrollment_is_idempotent_across_page_loads(api_client, env, store):
+    _get(api_client)
+    _get(api_client)
     assert store.trial_days() == 21
     assert len([r for r in store.rewards if r["kind"] == "enrollment"]) == 1
 
 
-def test_opt_out_is_immediate_and_returns_the_standard_trial(client, env, store):
-    _get(client)
-    r = _post(client, "/status", enrolled=False)
+def test_opt_out_is_immediate_and_returns_the_standard_trial(api_client, env, store):
+    _get(api_client)
+    r = _post(api_client, "/status", enrolled=False)
     assert r.status_code == 200
     detail = r.json()["detail"]
     assert detail["enrolled"] is False and detail["referral_url"] == ""
@@ -280,71 +272,71 @@ def test_opt_out_is_immediate_and_returns_the_standard_trial(client, env, store)
     assert detail["trial_ends_at"] is not None
 
 
-def test_opting_back_in_regrants_the_bonus_once(client, env, store):
-    _get(client)
-    _post(client, "/status", enrolled=False)
-    _post(client, "/status", enrolled=True)
+def test_opting_back_in_regrants_the_bonus_once(api_client, env, store):
+    _get(api_client)
+    _post(api_client, "/status", enrolled=False)
+    _post(api_client, "/status", enrolled=True)
     assert store.trial_days() == 21
-    _post(client, "/status", enrolled=True)     # a second opt-in must not pay again
+    _post(api_client, "/status", enrolled=True)     # a second opt-in must not pay again
     assert store.trial_days() == 21
 
 
-def test_promo_consent_requires_an_explicit_acknowledgement(client, env, store):
-    _get(client)
-    r = client.post("/api/user/affiliate/promo-consent",
+def test_promo_consent_requires_an_explicit_acknowledgement(api_client, env, store):
+    _get(api_client)
+    r = api_client.post("/api/user/affiliate/promo-consent",
                     json={"session_token": "t", "enabled": True, "consent_acknowledged": False})
     assert r.status_code == 422
     assert store.enrollments[USER]["promo_content_opt_in"] == 0
 
 
-def test_promo_consent_records_a_timestamp_and_can_be_withdrawn(client, env, store):
-    _get(client)
-    detail = _post(client, "/promo-consent", enabled=True, consent_acknowledged=True).json()["detail"]
+def test_promo_consent_records_a_timestamp_and_can_be_withdrawn(api_client, env, store):
+    _get(api_client)
+    detail = _post(api_client, "/promo-consent", enabled=True, consent_acknowledged=True).json()["detail"]
     assert detail["promo_content_opt_in"] is True
     assert detail["promo_consent_at"] is not None
     assert detail["promo_content_allowed"] is True
 
     # Withdrawing needs no acknowledgement, and clears the consent record with it.
-    detail = _post(client, "/promo-consent", enabled=False).json()["detail"]
+    detail = _post(api_client, "/promo-consent", enabled=False).json()["detail"]
     assert detail["promo_content_opt_in"] is False
     assert detail["promo_consent_at"] is None
     assert detail["promo_content_allowed"] is False
 
 
-def test_leaving_the_program_withdraws_promo_consent_too(client, env, store):
-    _get(client)
-    _post(client, "/promo-consent", enabled=True, consent_acknowledged=True)
-    detail = _post(client, "/status", enrolled=False).json()["detail"]
+def test_leaving_the_program_withdraws_promo_consent_too(api_client, env, store):
+    _get(api_client)
+    _post(api_client, "/promo-consent", enabled=True, consent_acknowledged=True)
+    detail = _post(api_client, "/status", enrolled=False).json()["detail"]
     assert detail["promo_content_opt_in"] is False
     assert detail["promo_content_allowed"] is False
 
 
-def test_promo_consent_cannot_be_enabled_by_a_non_member(client, env, store):
-    _get(client)
-    _post(client, "/status", enrolled=False)
-    r = _post(client, "/promo-consent", enabled=True, consent_acknowledged=True)
+def test_promo_consent_cannot_be_enabled_by_a_non_member(api_client, env, store):
+    _get(api_client)
+    _post(api_client, "/status", enrolled=False)
+    r = _post(api_client, "/promo-consent", enabled=True, consent_acknowledged=True)
     assert r.status_code == 422
 
 
-def test_notice_acknowledgement_is_recorded_once(client, env, store):
-    _get(client)
-    detail = _post(client, "/notice").json()["detail"]
+def test_notice_acknowledgement_is_recorded_once(api_client, env, store):
+    _get(api_client)
+    detail = _post(api_client, "/notice").json()["detail"]
     first = detail["notice_seen_at"]
     assert first is not None
-    assert _post(client, "/notice").json()["detail"]["notice_seen_at"] == first
+    assert _post(api_client, "/notice").json()["detail"]["notice_seen_at"] == first
 
 
-def test_endpoints_reject_an_invalid_session(client, env):
+def test_endpoints_reject_an_invalid_session(api_client, env):
     with patch(f"{_M}.get_session_user_id", return_value=None):
-        assert client.get("/api/user/affiliate?session_token=x").status_code == 401
-        assert _post(client, "/status", enrolled=False).status_code == 401
-        assert _post(client, "/notice").status_code == 401
+        assert api_client.get("/api/user/affiliate?session_token=x").status_code == 401
+        assert _post(api_client, "/status", enrolled=False).status_code == 401
+        assert _post(api_client, "/notice").status_code == 401
 
 
-def test_self_referral_pays_nobody(client, env, store):
+def test_self_referral_pays_nobody(api_client, env, store):
     """The whole referral path, end to end: attribute at signup → activate → reward."""
     from cqc_lem.utilities.marketing.affiliate import attribute_referral, convert_referral
-    _get(client)
+    _get(api_client)
     before = store.trial_days()
     attribute_referral(USER, {"ref": str(USER)})
     assert store.referrals[0]["status"] == "rejected"
@@ -354,9 +346,9 @@ def test_self_referral_pays_nobody(client, env, store):
     assert store.trial_days() == before
 
 
-def test_a_real_referral_pays_only_on_activation(client, env, store):
+def test_a_real_referral_pays_only_on_activation(api_client, env, store):
     from cqc_lem.utilities.marketing.affiliate import attribute_referral, convert_referral
-    _get(client)
+    _get(api_client)
     attribute_referral(7, {"ref": str(USER)})
     assert store.referrals[0]["status"] == "pending"
     assert store.trial_days() == 21           # signup alone earns the referrer nothing
@@ -371,9 +363,9 @@ def test_a_real_referral_pays_only_on_activation(client, env, store):
     assert store.trial_days() == 35
 
 
-def test_duplicate_referral_attribution_is_rejected(client, env, store):
+def test_duplicate_referral_attribution_is_rejected(api_client, env, store):
     from cqc_lem.utilities.marketing.affiliate import attribute_referral
-    _get(client)
+    _get(api_client)
     attribute_referral(7, {"ref": str(USER)})
     second = attribute_referral(7, {"ref": str(USER)})
     assert second["reason"] == "duplicate"
@@ -390,8 +382,8 @@ def env_no_join_bonus(env):
         yield
 
 
-def test_joining_pays_nothing_and_only_referrals_earn(client, env_no_join_bonus, store):
-    detail = _get(client)
+def test_joining_pays_nothing_and_only_referrals_earn(api_client, env_no_join_bonus, store):
+    detail = _get(api_client)
     assert detail["enrolled"] is True
     assert detail["referral_url"].endswith(f"ref={USER}")
     assert detail["bonus_days"] == 0
@@ -403,27 +395,27 @@ def test_joining_pays_nothing_and_only_referrals_earn(client, env_no_join_bonus,
     attribute_referral(7, {"ref": str(USER)})
     assert convert_referral(7)["days"] == 14
     assert store.trial_days() == 28
-    assert _get(client)["days_earned"] == 14
+    assert _get(api_client)["days_earned"] == 14
 
 
-def test_the_enrollment_event_fires_once_per_user_not_once_per_page_load(client, env_no_join_bonus):
+def test_the_enrollment_event_fires_once_per_user_not_once_per_page_load(api_client, env_no_join_bonus):
     with patch("cqc_lem.utilities.observability.track_affiliate_event") as event:
-        _get(client)
-        _get(client)
+        _get(api_client)
+        _get(api_client)
     assert [c.args[0] for c in event.call_args_list].count("affiliate_enrolled") == 1
 
 
-def test_opt_out_takes_nothing_away_but_still_reports_the_trial_length(client, env_no_join_bonus,
+def test_opt_out_takes_nothing_away_but_still_reports_the_trial_length(api_client, env_no_join_bonus,
                                                                       store):
     """With no join bonus there is no reward to revoke — and the user must STILL be told what their
     trial now is, which is the acceptance criterion the old grant-derived date could not meet.
     """
     from cqc_lem.utilities.marketing.affiliate import attribute_referral, convert_referral
-    _get(client)
+    _get(api_client)
     attribute_referral(7, {"ref": str(USER)})
     convert_referral(7)
 
-    detail = _post(client, "/status", enrolled=False).json()["detail"]
+    detail = _post(api_client, "/status", enrolled=False).json()["detail"]
     assert detail["enrolled"] is False
     assert detail["reward_days"] == 0                    # nothing was clawed back
     assert store.trial_days() == 28                      # the earned referral days survive
@@ -432,62 +424,62 @@ def test_opt_out_takes_nothing_away_but_still_reports_the_trial_length(client, e
     assert detail["trial_ends_at"] == _iso(store.users[USER]["trial_ends_at"])
 
 
-def test_the_reward_date_wins_over_the_user_record_when_a_grant_actually_moved(client, env, store):
+def test_the_reward_date_wins_over_the_user_record_when_a_grant_actually_moved(api_client, env, store):
     """`env` configures the 7-day join bonus, so opting out revokes — and the date the user is told
     must be the one the revoke computed, not a re-read that could race it.
     """
-    _get(client)
+    _get(api_client)
     assert store.trial_days() == 21
 
-    detail = _post(client, "/status", enrolled=False).json()["detail"]
+    detail = _post(api_client, "/status", enrolled=False).json()["detail"]
     assert detail["reward_days"] == 7
     assert detail["trial_ends_at"] == _iso(store.users[USER]["trial_ends_at"])
     assert store.trial_days() == 14
 
 
-def test_a_user_who_is_no_longer_on_a_trial_is_not_quoted_a_stale_trial_date(client,
+def test_a_user_who_is_no_longer_on_a_trial_is_not_quoted_a_stale_trial_date(api_client,
                                                                             env_no_join_bonus,
                                                                             store):
     """`users.trial_ends_at` outlives the trial. A paid account opting out must not be told "your
     trial still ends <a date in the past>" — with no grant to report, the field stays null.
     """
-    _get(client)
+    _get(api_client)
     store.users[USER]["subscription_status"] = "active"
 
-    detail = _post(client, "/status", enrolled=False).json()["detail"]
+    detail = _post(api_client, "/status", enrolled=False).json()["detail"]
     assert detail["enrolled"] is False
     assert detail["reward_days"] == 0
     assert detail["trial_ends_at"] is None
 
 
-def test_the_grandfathered_join_bonus_is_reported_as_revocable_after_the_policy_flips(client, env,
+def test_the_grandfathered_join_bonus_is_reported_as_revocable_after_the_policy_flips(api_client, env,
                                                                                      store):
     """The #750 cohort: enrolled while the join bonus was 7, still holding it after the config went
     to 0. `bonus_days` (what joining pays now) and `revocable_bonus_days` (what leaving takes back
     from THIS user) must disagree — the enrollment notice's "leave in one click" line reads the
     second, and reading the first would promise them a claw-back-free exit they do not have.
     """
-    _get(client)                                         # enrolled under the 7-day bonus
+    _get(api_client)                                         # enrolled under the 7-day bonus
     assert store.trial_days() == 21
 
     with patch(f"{_AFF}.AFFILIATE_ENROLLMENT_BONUS_DAYS", 0):
-        detail = _get(client)
+        detail = _get(api_client)
         assert detail["bonus_days"] == 0
         assert detail["revocable_bonus_days"] == 7
 
         # And it IS revoked, which is the whole reason the copy has to say so beforehand.
-        flip = _post(client, "/status", enrolled=False).json()["detail"]
+        flip = _post(api_client, "/status", enrolled=False).json()["detail"]
         assert flip["reward_days"] == 7
         assert store.trial_days() == 14
 
 
-def test_nothing_is_revocable_when_the_only_days_were_earned_by_referring(client,
+def test_nothing_is_revocable_when_the_only_days_were_earned_by_referring(api_client,
                                                                          env_no_join_bonus, store):
     from cqc_lem.utilities.marketing.affiliate import attribute_referral, convert_referral
-    _get(client)
+    _get(api_client)
     attribute_referral(7, {"ref": str(USER)})
     convert_referral(7)
 
-    detail = _get(client)
+    detail = _get(api_client)
     assert detail["days_earned"] == 14
     assert detail["revocable_bonus_days"] == 0           # earned days are never clawed back

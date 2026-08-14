@@ -48,28 +48,6 @@ _PAST = "2020-01-01"
 _FUTURE = "2099-01-01"
 
 
-@pytest.fixture(scope="module")
-def client():
-    patches = [
-        patch("cqc_lem.utilities.observability.track_api_call"),
-        patch("cqc_lem.app.engagement.invites.automate_invites_to_company_page_for_user"),
-        patch("cqc_lem.app.engagement.posting.automate_reply_commenting"),
-        patch("cqc_lem.app.run_content_plan.auto_create_weekly_content"),
-        patch("cqc_lem.app.aws_test_celery_task.test_get_my_profile"),
-    ]
-    for p in patches:
-        p.start()
-    try:
-        from fastapi.testclient import TestClient
-
-        from cqc_lem.api.main import app
-        with TestClient(app, raise_server_exceptions=False) as tc:
-            yield tc
-    finally:
-        for p in patches:
-            p.stop()
-
-
 @pytest.fixture(autouse=True)
 def _account_without_a_strong_factor():
     """Overrides the directory-wide default in `conftest.py`.
@@ -155,12 +133,12 @@ class TestSurfaceMatching:
             # Not even its near-neighbour's surface — an unknown scope has no surface at all.
             assert _scope_allows(scope, "/api/user/linkedin-cookie") is False
 
-    def test_an_unrecognised_scope_is_refused_at_the_resolver(self, client):
+    def test_an_unrecognised_scope_is_refused_at_the_resolver(self, api_client):
         """End to end, not just the predicate: a row carrying a scope nobody taught the table about
         gets a 403, not a session.
         """
         with _session("enrol-typo"):
-            r = client.get("/api/user/auth-factors", params={"session_token": _TOKEN})
+            r = api_client.get("/api/user/auth-factors", params={"session_token": _TOKEN})
         assert r.status_code == 403
 
     def test_a_prefix_is_not_a_surface_match(self):
@@ -189,7 +167,7 @@ class TestExtensionScope:
 
     @pytest.mark.parametrize("method,path,body", OFF_SURFACE)
     def test_a_stolen_extension_token_cannot_reach_the_rest_of_the_account(
-            self, client, method, path, body):
+            self, api_client, method, path, body):
         """The whole point of 2c.1. Before it, this token read and wrote everything the SPA can."""
         with _session("extension"), \
              patch(f"{_USER}.get_user_email", return_value=_EMAIL) as email, \
@@ -198,25 +176,25 @@ class TestExtensionScope:
              patch(f"{_USER}.create_pin_for_email") as create_pin, \
              patch(f"{_USER}.list_user_sessions", return_value=[]):
             if body is None:
-                resp = getattr(client, method)(path, params={"session_token": _TOKEN})
+                resp = getattr(api_client, method)(path, params={"session_token": _TOKEN})
             else:
-                resp = getattr(client, method)(path, json={"session_token": _TOKEN, **body})
+                resp = getattr(api_client, method)(path, json={"session_token": _TOKEN, **body})
         assert resp.status_code == 403
         assert resp.json()["detail"]["code"] == "session_scope_forbidden"
         # Refused BEFORE the handler did anything — not merely refused on the way out.
         for should_not_run in (email, revoke, create_session, create_pin):
             should_not_run.assert_not_called()
 
-    def test_the_one_endpoint_the_extension_actually_calls_still_works(self, client):
+    def test_the_one_endpoint_the_extension_actually_calls_still_works(self, api_client):
         with _session("extension"), \
              patch(f"{_USER}.step_up_satisfied", return_value=True), \
              patch(f"{_USER}.store_linkedin_li_at", return_value=True) as store:
-            resp = client.post("/api/user/linkedin-cookie",
+            resp = api_client.post("/api/user/linkedin-cookie",
                                json={"session_token": _TOKEN, "li_at": "a" * 40})
         assert resp.status_code == 200
         store.assert_called_once()
 
-    def test_the_refusal_is_audited(self, client):
+    def test_the_refusal_is_audited(self, api_client):
         """The extension calls exactly one path, so this row cannot happen by accident — it is the
         clearest signal available that someone else is holding that token.
         """
@@ -225,7 +203,7 @@ class TestExtensionScope:
         with _session("extension"), \
              patch.object(_kernel(), "record_auth_event") as recorded, \
              patch(f"{_USER}.list_user_sessions", return_value=[]):
-            resp = client.get("/api/user/security", params={"session_token": _TOKEN},
+            resp = api_client.get("/api/user/security", params={"session_token": _TOKEN},
                               headers={"CF-Connecting-IP": "203.0.113.9"})
         assert resp.status_code == 403
         event, kwargs = recorded.call_args[0][0], recorded.call_args[1]
@@ -235,35 +213,35 @@ class TestExtensionScope:
         assert kwargs["ip"] == "203.0.113.9"
         assert kwargs["details"] == {"scope": "extension", "path": "/user/security"}
 
-    def test_a_failed_audit_write_does_not_turn_a_refusal_into_a_500(self, client):
+    def test_a_failed_audit_write_does_not_turn_a_refusal_into_a_500(self, api_client):
         """The refusal IS the control; the row is only the record of it."""
         with _session("extension"), \
              patch.object(_kernel(), "record_auth_event", side_effect=RuntimeError("db down")), \
              patch(f"{_USER}.list_user_sessions", return_value=[]):
-            resp = client.get("/api/user/security", params={"session_token": _TOKEN})
+            resp = api_client.get("/api/user/security", params={"session_token": _TOKEN})
         assert resp.status_code == 403
 
-    def test_a_held_enrolment_session_is_not_audited(self, client):
+    def test_a_held_enrolment_session_is_not_audited(self, api_client):
         """It produces these constantly and harmlessly while the SPA settles — auditing them would
         bury the one row that means something.
         """
         with _deadline(_PAST), _session("enroll"), \
              patch.object(_kernel(), "record_auth_event") as recorded, \
              patch(f"{_USER}.list_user_sessions", return_value=[]):
-            resp = client.get("/api/user/security", params={"session_token": _TOKEN})
+            resp = api_client.get("/api/user/security", params={"session_token": _TOKEN})
         assert resp.status_code == 403
         recorded.assert_not_called()
 
-    def test_a_full_session_is_untouched_by_the_narrowing(self, client):
+    def test_a_full_session_is_untouched_by_the_narrowing(self, api_client):
         with _session("full"), \
              patch(f"{_USER}.list_user_sessions", return_value=[]), \
              patch(f"{_USER}.get_auth_audit_events", return_value=[]), \
              patch(f"{_USER}.get_user_public_uid", return_value="pub-1"), \
              patch(f"{_USER}.get_user_email", return_value=_EMAIL):
-            resp = client.get("/api/user/security", params={"session_token": _TOKEN})
+            resp = api_client.get("/api/user/security", params={"session_token": _TOKEN})
         assert resp.status_code == 200
 
-    def test_a_legacy_row_with_no_scope_behaves_as_a_full_session(self, client):
+    def test_a_legacy_row_with_no_scope_behaves_as_a_full_session(self, api_client):
         """`scope` was added in 2c and defaults to 'full'; a NULL from an older row must not be
         read as a restriction that silently signs someone out of their own account.
         """
@@ -273,10 +251,10 @@ class TestExtensionScope:
              patch(f"{_USER}.get_auth_audit_events", return_value=[]), \
              patch(f"{_USER}.get_user_public_uid", return_value="pub-1"), \
              patch(f"{_USER}.get_user_email", return_value=_EMAIL):
-            resp = client.get("/api/user/security", params={"session_token": _TOKEN})
+            resp = api_client.get("/api/user/security", params={"session_token": _TOKEN})
         assert resp.status_code == 200
 
-    def test_a_restricted_token_does_not_fall_through_to_a_full_cookie(self, client):
+    def test_a_restricted_token_does_not_fall_through_to_a_full_cookie(self, api_client):
         """The narrowing has to survive a request that carries BOTH. Serving it on the cookie would
         be the restriction quietly not happening.
         """
@@ -286,7 +264,7 @@ class TestExtensionScope:
         with patch(f"{_M}._db_resolve_session", side_effect=resolve), \
              patch(f"{_USER}.get_user_email", return_value=_EMAIL), \
              patch(f"{_USER}.list_user_sessions", return_value=[]):
-            resp = client.get("/api/user/security", params={"session_token": _TOKEN},
+            resp = api_client.get("/api/user/security", params={"session_token": _TOKEN},
                               cookies={"lem_session": "browser-cookie"})
         assert resp.status_code == 403
 
@@ -296,42 +274,42 @@ class TestExtensionScope:
 # ---------------------------------------------------------------------------
 
 class TestEnrollmentDeadline:
-    def _pin_login(self, client):
+    def _pin_login(self, api_client):
         with patch(f"{_AUTH}.hash_pin", return_value="h"), \
              patch(f"{_AUTH}.verify_pin_for_email", return_value=True), \
              patch(f"{_AUTH}.get_pin_lockout", return_value=None), \
              patch(f"{_AUTH}.get_user_id", return_value=_UID), \
              patch(f"{_AUTH}.check_auth_verify", return_value=_Allowed()), \
              patch(f"{_AUTH}.create_session", return_value="new-token") as create_session:
-            resp = client.post("/api/auth/email/verify",
+            resp = api_client.post("/api/auth/email/verify",
                                json={"email": _EMAIL, "pin": "123456"})
         return resp, create_session
 
-    def test_no_deadline_keeps_todays_behaviour_exactly(self, client):
+    def test_no_deadline_keeps_todays_behaviour_exactly(self, api_client):
         from cqc_lem.utilities.db import SESSION_SCOPE_FULL
         with _deadline(""):
-            resp, create_session = self._pin_login(client)
+            resp, create_session = self._pin_login(api_client)
         assert resp.status_code == 200
         assert create_session.call_args.kwargs["scope"] == SESSION_SCOPE_FULL
         assert resp.json()["detail"]["enrollment_required"] is False
 
-    def test_a_future_deadline_does_not_hold_anyone_yet(self, client):
+    def test_a_future_deadline_does_not_hold_anyone_yet(self, api_client):
         from cqc_lem.utilities.db import SESSION_SCOPE_FULL
         with _deadline(_FUTURE):
-            resp, create_session = self._pin_login(client)
+            resp, create_session = self._pin_login(api_client)
         assert create_session.call_args.kwargs["scope"] == SESSION_SCOPE_FULL
 
-    def test_past_the_deadline_a_factorless_pin_login_is_held(self, client):
+    def test_past_the_deadline_a_factorless_pin_login_is_held(self, api_client):
         from cqc_lem.utilities.db import SESSION_SCOPE_ENROLL
         with _deadline(_PAST):
-            resp, create_session = self._pin_login(client)
+            resp, create_session = self._pin_login(api_client)
         # Signed in — the PIN is still a bootstrap. Held, not refused.
         assert resp.status_code == 200
         assert resp.json()["detail"]["session_token"] == "new-token"
         assert create_session.call_args.kwargs["scope"] == SESSION_SCOPE_ENROLL
         assert resp.json()["detail"]["enrollment_required"] is True
 
-    def test_an_account_that_already_enrolled_is_never_held(self, client):
+    def test_an_account_that_already_enrolled_is_never_held(self, api_client):
         """It goes down the 2c bootstrap path instead — PIN, then a factor."""
         with _deadline(_PAST), \
              patch(f"{_AUTH}.has_strong_factor", return_value=True), \
@@ -344,16 +322,16 @@ class TestEnrollmentDeadline:
              patch(f"{_AUTH}.get_user_id", return_value=_UID), \
              patch(f"{_AUTH}.check_auth_verify", return_value=_Allowed()), \
              patch(f"{_AUTH}.create_session") as create_session:
-            resp = client.post("/api/auth/email/verify", json={"email": _EMAIL, "pin": "123456"})
+            resp = api_client.post("/api/auth/email/verify", json={"email": _EMAIL, "pin": "123456"})
         assert resp.status_code == 200
         assert resp.json()["detail"]["second_factor_required"] is True
         create_session.assert_not_called()
 
-    def test_the_kill_switch_beats_the_deadline(self, client):
+    def test_the_kill_switch_beats_the_deadline(self, api_client):
         from cqc_lem.utilities.db import SESSION_SCOPE_FULL
         with _deadline(_PAST), \
              patch("cqc_lem.utilities.auth_factors.STRONG_AUTH_ENABLED", False):
-            _resp, create_session = self._pin_login(client)
+            _resp, create_session = self._pin_login(api_client)
         assert create_session.call_args.kwargs["scope"] == SESSION_SCOPE_FULL
 
 
@@ -371,15 +349,15 @@ class TestEnrollmentHold:
     ]
 
     @pytest.mark.parametrize("method,path,body", OFF_SURFACE)
-    def test_a_held_session_reaches_nothing_but_enrolment(self, client, method, path, body):
+    def test_a_held_session_reaches_nothing_but_enrolment(self, api_client, method, path, body):
         with _deadline(_PAST), _session("enroll"), \
              patch(f"{_USER}.store_linkedin_li_at") as store_cookie, \
              patch(f"{_USER}.revoke_other_sessions") as revoke, \
              patch(f"{_USER}.list_user_sessions", return_value=[]):
             if body is None:
-                resp = getattr(client, method)(path, params={"session_token": _TOKEN})
+                resp = getattr(api_client, method)(path, params={"session_token": _TOKEN})
             else:
-                resp = getattr(client, method)(path, json={"session_token": _TOKEN, **body})
+                resp = getattr(api_client, method)(path, json={"session_token": _TOKEN, **body})
         assert resp.status_code == 403
         # The SPA reads this code and renders the gate instead of a dead page. 403 and never 401:
         # the axios interceptor treats any 401 as a dead session and would sign the user out.
@@ -387,49 +365,49 @@ class TestEnrollmentHold:
         store_cookie.assert_not_called()
         revoke.assert_not_called()
 
-    def test_a_held_session_can_still_enrol(self, client):
+    def test_a_held_session_can_still_enrol(self, api_client):
         with _deadline(_PAST), _session("enroll"), \
              patch(f"{_USER}.enrollment_allowed", return_value=True), \
              patch(f"{_USER}.has_confirmed_totp", return_value=False), \
              patch(f"{_USER}.get_user_email", return_value=_EMAIL), \
              patch(f"{_USER}.begin_totp_enrollment", return_value=(1, "SEED", "otpauth://x")):
-            resp = client.post("/api/user/totp/enroll/begin", json={"session_token": _TOKEN})
+            resp = api_client.post("/api/user/totp/enroll/begin", json={"session_token": _TOKEN})
         assert resp.status_code == 200
         assert resp.json()["detail"]["secret"] == "SEED"
 
-    def test_a_held_session_can_still_save_recovery_codes(self, client):
+    def test_a_held_session_can_still_save_recovery_codes(self, api_client):
         """Forced to enrol and then unable to save the sheet would be the worst possible order."""
         with _deadline(_PAST), _session("enroll"), \
              patch(f"{_USER}.step_up_satisfied", return_value=True), \
              patch(f"{_USER}.generate_recovery_codes", return_value=["AAA", "BBB"]):
-            resp = client.post("/api/user/recovery-codes/regenerate",
+            resp = api_client.post("/api/user/recovery-codes/regenerate",
                                json={"session_token": _TOKEN})
         assert resp.status_code == 200
         assert resp.json()["detail"]["codes"] == ["AAA", "BBB"]
 
-    def test_a_held_session_can_still_sign_out(self, client):
+    def test_a_held_session_can_still_sign_out(self, api_client):
         with _deadline(_PAST), _session("enroll"), \
              patch(f"{_M}._db_get_session_user_id", return_value=_UID), \
              patch(f"{_AUTH}.delete_session") as ds:
-            resp = client.post("/api/auth/logout", json={"session_token": _TOKEN})
+            resp = api_client.post("/api/auth/logout", json={"session_token": _TOKEN})
         assert resp.status_code == 200
         ds.assert_called_once()
 
-    def test_the_session_check_reports_the_hold(self, client):
+    def test_the_session_check_reports_the_hold(self, api_client):
         with _deadline(_PAST), _session("enroll"), \
              patch(f"{_AUTH}.get_user_email", return_value=_EMAIL), \
              patch(f"{_AUTH}.get_user_public_uid", return_value="pub-1"), \
              patch(f"{_AUTH}.get_user_analytics_profile", return_value={}), \
              patch(f"{_AUTH}.is_user_admin", return_value=False), \
              patch(f"{_AUTH}.strong_factor_prompt_due", return_value=True):
-            resp = client.get("/api/auth/session", params={"session_token": _TOKEN})
+            resp = api_client.get("/api/auth/session", params={"session_token": _TOKEN})
         detail = resp.json()["detail"]
         assert resp.status_code == 200
         assert detail["enrollment_required"] is True
         assert detail["strong_factor_prompt"] is True
         assert detail["strong_factor_deadline"].startswith("2020-01-01")
 
-    def test_enrolling_a_factor_releases_the_hold(self, client):
+    def test_enrolling_a_factor_releases_the_hold(self, api_client):
         with _deadline(_PAST), _session("enroll"), \
              patch(f"{_M}._db_get_session_user_id", return_value=_UID), \
              patch(f"{_USER}.enrollment_allowed", return_value=True), \
@@ -438,12 +416,12 @@ class TestEnrollmentHold:
              patch(f"{_USER}.session_signed_in_with_recovery_code", return_value=False), \
              patch(f"{_USER}.record_step_up", return_value=True), \
              patch(f"{_M}.release_enrollment_scope", return_value=True) as released:
-            resp = client.post("/api/user/totp/enroll/confirm",
+            resp = api_client.post("/api/user/totp/enroll/confirm",
                                json={"session_token": _TOKEN, "code": "123456"})
         assert resp.status_code == 200
         released.assert_called_once_with(_TOKEN)
 
-    def test_pulling_the_rollout_back_releases_a_session_already_held(self, client):
+    def test_pulling_the_rollout_back_releases_a_session_already_held(self, api_client):
         """Clearing the date must not strand everyone who signed in during the window until their
         session expires — the hold is re-decided on every read, not baked into the row.
         """
@@ -453,12 +431,12 @@ class TestEnrollmentHold:
              patch(f"{_USER}.get_auth_audit_events", return_value=[]), \
              patch(f"{_USER}.get_user_public_uid", return_value="pub-1"), \
              patch(f"{_USER}.get_user_email", return_value=_EMAIL):
-            resp = client.get("/api/user/security", params={"session_token": _TOKEN})
+            resp = api_client.get("/api/user/security", params={"session_token": _TOKEN})
         assert resp.status_code == 200
         # ...and the row is promoted, so the next request costs no extra question.
         released.assert_called_once_with(_TOKEN)
 
-    def test_enrolling_on_ONE_device_releases_the_others(self, client):
+    def test_enrolling_on_ONE_device_releases_the_others(self, api_client):
         """The hold belongs to the ACCOUNT, not the session row. Deciding it from the row alone is
         a dead end on every other device: the account now HAS a factor, so enrolling again is
         step-up gated — and the step-up ceremony is deliberately outside the enrolment surface, so
@@ -471,11 +449,11 @@ class TestEnrollmentHold:
              patch(f"{_USER}.get_auth_audit_events", return_value=[]), \
              patch(f"{_USER}.get_user_public_uid", return_value="pub-1"), \
              patch(f"{_USER}.get_user_email", return_value=_EMAIL):
-            resp = client.get("/api/user/security", params={"session_token": _TOKEN})
+            resp = api_client.get("/api/user/security", params={"session_token": _TOKEN})
         assert resp.status_code == 200
         released.assert_called_once_with(_TOKEN)
 
-    def test_a_promotion_that_cannot_be_written_still_grants_access(self, client):
+    def test_a_promotion_that_cannot_be_written_still_grants_access(self, api_client):
         """The write is bookkeeping; the verdict is re-derived from the account every request. A DB
         error here must cost one extra query next time, never access.
         """
@@ -486,10 +464,10 @@ class TestEnrollmentHold:
              patch(f"{_USER}.get_auth_audit_events", return_value=[]), \
              patch(f"{_USER}.get_user_public_uid", return_value="pub-1"), \
              patch(f"{_USER}.get_user_email", return_value=_EMAIL):
-            resp = client.get("/api/user/security", params={"session_token": _TOKEN})
+            resp = api_client.get("/api/user/security", params={"session_token": _TOKEN})
         assert resp.status_code == 200
 
-    def test_the_session_check_agrees_with_what_the_server_enforces(self, client):
+    def test_the_session_check_agrees_with_what_the_server_enforces(self, api_client):
         """`/auth/session` reports the hold off the SAME read that authenticated the request. A
         second lookup could answer 'not held' to the browser while every request it then made was
         refused — the app rendering over a wall of 403s.
@@ -499,7 +477,7 @@ class TestEnrollmentHold:
              patch(f"{_AUTH}.get_user_public_uid", return_value="pub-1"), \
              patch(f"{_AUTH}.get_user_analytics_profile", return_value={}), \
              patch(f"{_AUTH}.is_user_admin", return_value=False):
-            held = client.get("/api/auth/session", params={"session_token": _TOKEN})
+            held = api_client.get("/api/auth/session", params={"session_token": _TOKEN})
         assert held.json()["detail"]["enrollment_required"] is True
 
         # Same session, once the account holds a factor: released, and reported released.
@@ -510,10 +488,10 @@ class TestEnrollmentHold:
              patch(f"{_AUTH}.get_user_public_uid", return_value="pub-1"), \
              patch(f"{_AUTH}.get_user_analytics_profile", return_value={}), \
              patch(f"{_AUTH}.is_user_admin", return_value=False):
-            free = client.get("/api/auth/session", params={"session_token": _TOKEN})
+            free = api_client.get("/api/auth/session", params={"session_token": _TOKEN})
         assert free.json()["detail"]["enrollment_required"] is False
 
-    def test_an_enrolment_write_is_not_attempted_when_no_rollout_is_configured(self, client):
+    def test_an_enrolment_write_is_not_attempted_when_no_rollout_is_configured(self, api_client):
         """The promotion is an UPDATE. A deployment with no deadline cannot hold a session, so it
         should not pay a write on every enrolment to discover that.
         """
@@ -525,7 +503,7 @@ class TestEnrollmentHold:
              patch(f"{_USER}.session_signed_in_with_recovery_code", return_value=False), \
              patch(f"{_USER}.record_step_up", return_value=True), \
              patch(f"{_M}.release_enrollment_scope") as released:
-            resp = client.post("/api/user/totp/enroll/confirm",
+            resp = api_client.post("/api/user/totp/enroll/confirm",
                                json={"session_token": _TOKEN, "code": "123456"})
         assert resp.status_code == 200
         released.assert_not_called()

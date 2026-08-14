@@ -19,7 +19,6 @@ import ast
 import json
 import re
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
@@ -34,14 +33,10 @@ _API_FILES = [_API_DIR / "main.py", *sorted((_API_DIR / "routers").glob("*.py"))
 _EXPLICIT_ANY_ENVELOPE = "ResponseModel_Any_"
 
 
-@pytest.fixture(scope="module")
-def schema():
-    with patch("cqc_lem.utilities.observability.track_api_call"):
-        from fastapi.testclient import TestClient
-
-        from cqc_lem.api.main import app
-        with TestClient(app, raise_server_exceptions=False) as tc:
-            return tc.get("/api/openapi.json").json()
+@pytest.fixture
+def schema(api_client):
+    """The published document, read off the running app rather than reconstructed."""
+    return api_client.get("/api/openapi.json").json()
 
 
 def _annotated_handlers():

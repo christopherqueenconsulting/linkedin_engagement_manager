@@ -41,14 +41,6 @@ def _response(status_code=200, payload=None):
 
 
 @pytest.fixture
-def client():
-    from fastapi.testclient import TestClient
-
-    from cqc_lem.api.main import app
-    return TestClient(app, raise_server_exceptions=False)
-
-
-@pytest.fixture
 def env(monkeypatch):
     """A configured install whose token lives in .env, with an in-memory credential store."""
     from cqc_lem.utilities.marketing import youtube_auth as ya
@@ -64,24 +56,24 @@ def env(monkeypatch):
     return stored
 
 
-def _status(client, response, live=False):
+def _status(api_client, response, live=False):
     with patch(f"{_M}.get_session_user_id", return_value=42), \
          patch(f"{_ADMIN}.is_user_admin", return_value=True), \
          patch("requests.post", return_value=response):
-        return client.get(f"/api/admin/youtube-status?session_token=t&live={str(live).lower()}")
+        return api_client.get(f"/api/admin/youtube-status?session_token=t&live={str(live).lower()}")
 
 
-def test_a_live_token_reads_as_connected(client, env):
+def test_a_live_token_reads_as_connected(api_client, env):
     from cqc_lem.utilities.marketing.youtube_auth import UPLOAD_SCOPE
-    response = _status(client, _response(payload={"access_token": "at", "scope": UPLOAD_SCOPE}))
+    response = _status(api_client, _response(payload={"access_token": "at", "scope": UPLOAD_SCOPE}))
     assert response.status_code == 200
     detail = response.json()["detail"]
     assert detail["connected"] is True and detail["status"] == "ok"
     assert detail["configured"] is True and detail["token_source"] == "env"
 
 
-def test_a_dead_grant_reads_as_needs_reauth_with_the_reason(client, env):
-    response = _status(client, _response(400, {"error": "invalid_grant",
+def test_a_dead_grant_reads_as_needs_reauth_with_the_reason(api_client, env):
+    response = _status(api_client, _response(400, {"error": "invalid_grant",
                                                "error_description": "Token has been expired"}))
     detail = response.json()["detail"]
     assert detail["connected"] is False and detail["status"] == "needs_reauth"
@@ -89,39 +81,39 @@ def test_a_dead_grant_reads_as_needs_reauth_with_the_reason(client, env):
     assert detail["runbook"] == "docs/youtube-publishing.md"
 
 
-def test_an_unreachable_google_reads_as_unknown_not_broken(client, env):
+def test_an_unreachable_google_reads_as_unknown_not_broken(api_client, env):
     with patch(f"{_M}.get_session_user_id", return_value=42), \
          patch(f"{_ADMIN}.is_user_admin", return_value=True), \
          patch("requests.post", side_effect=OSError("network down")):
-        detail = client.get("/api/admin/youtube-status?session_token=t").json()["detail"]
+        detail = api_client.get("/api/admin/youtube-status?session_token=t").json()["detail"]
     assert detail["status"] == "unknown" and detail["connected"] is False
 
 
-def test_the_refresh_token_is_never_returned(client, env):
-    response = _status(client, _response(payload={"access_token": "at"}))
+def test_the_refresh_token_is_never_returned(api_client, env):
+    response = _status(api_client, _response(payload={"access_token": "at"}))
     assert "env-token" not in json.dumps(response.json())
 
 
-def test_a_non_admin_session_is_refused(client, env):
+def test_a_non_admin_session_is_refused(api_client, env):
     with patch(f"{_M}.get_session_user_id", return_value=42), \
          patch(f"{_ADMIN}.is_user_admin", return_value=False), \
          patch("requests.post") as post:
-        response = client.get("/api/admin/youtube-status?session_token=t")
+        response = api_client.get("/api/admin/youtube-status?session_token=t")
     assert response.status_code == 403
     post.assert_not_called()
 
 
-def test_an_expired_session_is_refused(client, env):
+def test_an_expired_session_is_refused(api_client, env):
     with patch(f"{_M}.get_session_user_id", return_value=None):
-        assert client.get("/api/admin/youtube-status?session_token=t").status_code == 401
+        assert api_client.get("/api/admin/youtube-status?session_token=t").status_code == 401
 
 
-def test_installing_a_token_stores_it_probes_it_and_takes_precedence_over_env(client, env,
+def test_installing_a_token_stores_it_probes_it_and_takes_precedence_over_env(api_client, env,
                                                                              monkeypatch):
     from cqc_lem.utilities.marketing import youtube_auth as ya
     monkeypatch.setattr(f"{_ADMIN}.ADMIN_SECRET", "s3cret")
     with patch("requests.post", return_value=_response(payload={"access_token": "at"})) as post:
-        response = client.post("/api/admin/youtube-token",
+        response = api_client.post("/api/admin/youtube-token",
                                json={"refresh_token": "  db-token  "},
                                headers={"x-admin-secret": "s3cret"})
     assert response.status_code == 200
@@ -131,16 +123,16 @@ def test_installing_a_token_stores_it_probes_it_and_takes_precedence_over_env(cl
     assert post.call_args.kwargs["data"]["refresh_token"] == "db-token"  # DB value wins over .env
 
 
-def test_installing_a_token_requires_the_admin_secret(client, env, monkeypatch):
+def test_installing_a_token_requires_the_admin_secret(api_client, env, monkeypatch):
     monkeypatch.setattr(f"{_ADMIN}.ADMIN_SECRET", "s3cret")
     with patch("requests.post") as post:
-        response = client.post("/api/admin/youtube-token", json={"refresh_token": "x"})
+        response = api_client.post("/api/admin/youtube-token", json={"refresh_token": "x"})
     assert response.status_code == 403
     post.assert_not_called()
 
 
-def test_an_empty_token_is_rejected_before_anything_is_stored(client, env, monkeypatch):
+def test_an_empty_token_is_rejected_before_anything_is_stored(api_client, env, monkeypatch):
     monkeypatch.setattr(f"{_ADMIN}.ADMIN_SECRET", "s3cret")
-    response = client.post("/api/admin/youtube-token", json={"refresh_token": "   "},
+    response = api_client.post("/api/admin/youtube-token", json={"refresh_token": "   "},
                            headers={"x-admin-secret": "s3cret"})
     assert response.status_code == 422 and env == {}

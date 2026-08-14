@@ -30,28 +30,6 @@ _OTHER_EMAIL = "victim@example.com"
 _OTHER_USER_ID = SESSION_USER_ID + 1
 
 
-@pytest.fixture(scope="module")
-def client():
-    patches = [
-        patch("cqc_lem.utilities.observability.track_api_call"),
-        patch("cqc_lem.app.engagement.invites.automate_invites_to_company_page_for_user"),
-        patch("cqc_lem.app.engagement.posting.automate_reply_commenting"),
-        patch("cqc_lem.app.run_content_plan.auto_create_weekly_content"),
-        patch("cqc_lem.app.aws_test_celery_task.test_get_my_profile"),
-    ]
-    for p in patches:
-        p.start()
-    try:
-        from fastapi.testclient import TestClient
-
-        from cqc_lem.api.main import app
-        with TestClient(app, raise_server_exceptions=False) as tc:
-            yield tc
-    finally:
-        for p in patches:
-            p.stop()
-
-
 @pytest.fixture
 def no_session():
     with patch(f"{_M}.get_session_user_id", return_value=None):
@@ -96,7 +74,7 @@ _POST_ID_CASES = [
 _ALL_CASES = _CASES + _POST_ID_CASES
 
 
-def _call(client, method, path, params, body, token=None):
+def _call(api_client, method, path, params, body, token=None):
     params = dict(params or {})
     body = dict(body) if body is not None else None
     if token:
@@ -104,7 +82,7 @@ def _call(client, method, path, params, body, token=None):
             body["session_token"] = token
         else:
             params["session_token"] = token
-    return client.request(method, path, params=params or None, json=body)
+    return api_client.request(method, path, params=params or None, json=body)
 
 
 def _ids(cases):
@@ -140,10 +118,10 @@ class TestNoSessionIs401:
     """A valid bearer token is not an identity — every converted route needs a session."""
 
     @pytest.mark.parametrize("method,path,params,body,db_call", _ALL_CASES, ids=_ids(_ALL_CASES))
-    def test_returns_401_and_touches_nothing(self, client, no_session, method, path, params, body,
+    def test_returns_401_and_touches_nothing(self, api_client, no_session, method, path, params, body,
                                              db_call):
         with _watch(path, db_call) as touched:
-            resp = _call(client, method, path, params, body)
+            resp = _call(api_client, method, path, params, body)
         assert resp.status_code == 401, f"{method} {path} answered {resp.status_code}"
         assert not _touched(touched), f"{method} {path} reached {db_call} without a session"
 
@@ -152,20 +130,20 @@ class TestAnotherAccountsTargetIs403:
     """A session plus somebody else's identifier reaches nothing."""
 
     @pytest.mark.parametrize("method,path,params,body,db_call", _CASES, ids=_ids(_CASES))
-    def test_returns_403_and_touches_nothing(self, client, signed_in, method, path, params, body,
+    def test_returns_403_and_touches_nothing(self, api_client, signed_in, method, path, params, body,
                                              db_call):
         with _watch(path, db_call) as touched:
-            resp = _call(client, method, path, params, body, token=SESSION_TOKEN)
+            resp = _call(api_client, method, path, params, body, token=SESSION_TOKEN)
         assert resp.status_code == 403, f"{method} {path} answered {resp.status_code}"
         assert not _touched(touched), f"{method} {path} reached {db_call} for another account"
 
     @pytest.mark.parametrize("method,path,params,body,db_call", _POST_ID_CASES,
                              ids=_ids(_POST_ID_CASES))
-    def test_a_foreign_post_id_is_403(self, client, signed_in, method, path, params, body,
+    def test_a_foreign_post_id_is_403(self, api_client, signed_in, method, path, params, body,
                                       db_call):
         with patch(f"{_M}.user_owns_posts", return_value=False), \
              patch(f"{_M}.{db_call}") as touched:
-            resp = _call(client, method, path, params, body, token=SESSION_TOKEN)
+            resp = _call(api_client, method, path, params, body, token=SESSION_TOKEN)
         assert resp.status_code == 403, f"{method} {path} answered {resp.status_code}"
         assert not _touched(touched), f"{method} {path} reached {db_call} for a foreign post"
 
@@ -182,22 +160,22 @@ class TestOwnTargetStillWorks:
     address keeps working, or this lands as an outage rather than a fix.
     """
 
-    def test_own_email_is_accepted(self, client, signed_in):
+    def test_own_email_is_accepted(self, api_client, signed_in):
         with patch(f"{_M}.get_recent_logs", return_value=[]) as logs:
-            resp = client.get("/api/activity/", params={"session_token": SESSION_TOKEN,
+            resp = api_client.get("/api/activity/", params={"session_token": SESSION_TOKEN,
                                                         "email": SESSION_EMAIL})
         assert resp.status_code == 200
         assert logs.call_args[0][0] == SESSION_USER_ID
 
-    def test_own_email_matches_case_insensitively(self, client, signed_in):
+    def test_own_email_matches_case_insensitively(self, api_client, signed_in):
         with patch(f"{_M}.get_recent_logs", return_value=[]):
-            resp = client.get("/api/activity/", params={"session_token": SESSION_TOKEN,
+            resp = api_client.get("/api/activity/", params={"session_token": SESSION_TOKEN,
                                                         "email": SESSION_EMAIL.upper()})
         assert resp.status_code == 200
 
-    def test_own_user_id_is_accepted(self, client, signed_in):
+    def test_own_user_id_is_accepted(self, api_client, signed_in):
         with patch(f"{_M}.automate_invites_to_company_page_for_user") as task:
-            resp = client.post("/api/invite_to_li_company_page/",
+            resp = api_client.post("/api/invite_to_li_company_page/",
                                params={"session_token": SESSION_TOKEN,
                                        "user_id": SESSION_USER_ID})
         assert resp.status_code == 200
@@ -207,19 +185,19 @@ class TestOwnTargetStillWorks:
 class TestBulkUpdateChecksEveryId:
     """A list is only as scoped as its worst entry: one foreign id must fail the whole call."""
 
-    def test_ownership_is_asked_for_the_whole_list(self, client, signed_in):
+    def test_ownership_is_asked_for_the_whole_list(self, api_client, signed_in):
         with patch(f"{_M}.user_owns_posts", return_value=True) as owns, \
              patch(f"{_M}.bulk_update_posts", return_value=True):
-            resp = client.post("/api/posts/bulk_update/",
+            resp = api_client.post("/api/posts/bulk_update/",
                                json={"session_token": SESSION_TOKEN,
                                      "post_ids": [1, 2, 3], "status": "approved"})
         assert resp.status_code == 200
         owns.assert_called_once_with(SESSION_USER_ID, [1, 2, 3])
 
-    def test_one_foreign_id_rejects_the_batch(self, client, signed_in):
+    def test_one_foreign_id_rejects_the_batch(self, api_client, signed_in):
         with patch(f"{_M}.user_owns_posts", return_value=False), \
              patch(f"{_M}.bulk_update_posts") as upd:
-            resp = client.request("DELETE", "/api/posts/",
+            resp = api_client.request("DELETE", "/api/posts/",
                                   json={"session_token": SESSION_TOKEN, "post_ids": [1, 4242]})
         assert resp.status_code == 403
         upd.assert_not_called()
@@ -228,21 +206,21 @@ class TestBulkUpdateChecksEveryId:
 class TestEmailChangeIsNotHere:
     """`PUT /user/` used to move the account email on the strength of knowing the current one."""
 
-    def test_new_email_is_refused_out_loud_not_ignored(self, client, signed_in):
+    def test_new_email_is_refused_out_loud_not_ignored(self, api_client, signed_in):
         """400 and a pointer, never a silent 200 — a client that believes it moved the address
         while the account still answers to the old one is its own failure mode.
         """
         with patch(f"{_USER}.update_user", return_value=True) as upd:
-            resp = client.put("/api/user/", json={"session_token": SESSION_TOKEN,
+            resp = api_client.put("/api/user/", json={"session_token": SESSION_TOKEN,
                                                   "new_email": "attacker@evil.example",
                                                   "blog_url": "https://blog.example.com"})
         assert resp.status_code == 400
         assert "/user/email/change/init" in resp.json()["detail"]
         upd.assert_not_called()
 
-    def test_settings_without_new_email_still_save(self, client, signed_in):
+    def test_settings_without_new_email_still_save(self, api_client, signed_in):
         with patch(f"{_USER}.update_user", return_value=True) as upd:
-            resp = client.put("/api/user/", json={"session_token": SESSION_TOKEN,
+            resp = api_client.put("/api/user/", json={"session_token": SESSION_TOKEN,
                                                   "blog_url": "https://blog.example.com"})
         assert resp.status_code == 200
         assert "email" not in upd.call_args.kwargs
@@ -309,14 +287,14 @@ class TestADeniedTargetIsAudited:
     reason `_scope_checked` writes one for a misused extension token.
     """
 
-    def test_the_row_names_the_kind_of_identifier_and_the_path_only(self, client, no_session):
+    def test_the_row_names_the_kind_of_identifier_and_the_path_only(self, api_client, no_session):
         from cqc_lem.api.main import AuthAuditEvent
 
         with patch(f"{_M}.get_session_user_id", return_value=SESSION_USER_ID), \
              patch(f"{_M}.get_user_email", return_value=SESSION_EMAIL), \
              patch(f"{_M}.get_recent_logs"), \
              patch(f"{_M}.record_auth_event", return_value=True) as recorded:
-            resp = client.get("/api/activity/", params={"session_token": SESSION_TOKEN,
+            resp = api_client.get("/api/activity/", params={"session_token": SESSION_TOKEN,
                                                         "email": _OTHER_EMAIL})
 
         assert resp.status_code == 403
@@ -329,13 +307,13 @@ class TestADeniedTargetIsAudited:
         # The caller-supplied address is somebody else's and never lands in the audit trail.
         assert _OTHER_EMAIL not in str(recorded.call_args)
 
-    def test_a_failed_audit_write_does_not_turn_the_refusal_into_a_500(self, client, no_session):
+    def test_a_failed_audit_write_does_not_turn_the_refusal_into_a_500(self, api_client, no_session):
         """The refusal IS the control; the row is the record of it."""
         with patch(f"{_M}.get_session_user_id", return_value=SESSION_USER_ID), \
              patch(f"{_M}.get_user_email", return_value=SESSION_EMAIL), \
              patch(f"{_M}.get_recent_logs"), \
              patch(f"{_M}.record_auth_event", side_effect=RuntimeError("db down")):
-            resp = client.get("/api/activity/", params={"session_token": SESSION_TOKEN,
+            resp = api_client.get("/api/activity/", params={"session_token": SESSION_TOKEN,
                                                         "email": _OTHER_EMAIL})
         assert resp.status_code == 403
 
@@ -349,13 +327,13 @@ class TestAnOutageIsNotAPermissionError:
 
     @pytest.mark.parametrize("method,path,params,body,db_call", _POST_ID_CASES,
                              ids=_ids(_POST_ID_CASES))
-    def test_an_unprovable_check_is_503_and_touches_nothing(self, client, signed_in, method, path,
+    def test_an_unprovable_check_is_503_and_touches_nothing(self, api_client, signed_in, method, path,
                                                             params, body, db_call):
         from cqc_lem.utilities.db import OwnershipUnprovable
 
         with patch(f"{_M}.user_owns_posts", side_effect=OwnershipUnprovable("db down")), \
              patch(f"{_M}.{db_call}") as touched:
-            resp = _call(client, method, path, params, body, token=SESSION_TOKEN)
+            resp = _call(api_client, method, path, params, body, token=SESSION_TOKEN)
         assert resp.status_code == 503, f"{method} {path} answered {resp.status_code}"
         assert not _touched(touched)
 
@@ -410,12 +388,12 @@ class TestTheAuthorisedIdIsTheOnlyOneThatReachesATask:
     never used again — `caller_id` is the only thing that reaches Celery.
     """
 
-    def test_weekly_content_runs_as_the_caller_not_the_parameter(self, client, signed_in):
+    def test_weekly_content_runs_as_the_caller_not_the_parameter(self, api_client, signed_in):
         with patch(f"{_M}.mark_queued") as queued, \
              patch(f"{_M}.celery_chain") as chain, \
              patch(f"{_M}.plan_content_for_user") as plan, \
              patch(f"{_M}.auto_create_weekly_content") as fill:
-            resp = client.post("/api/create_weekly_content/",
+            resp = api_client.post("/api/create_weekly_content/",
                                params={"session_token": SESSION_TOKEN,
                                        "user_id": SESSION_USER_ID})
 
@@ -425,9 +403,9 @@ class TestTheAuthorisedIdIsTheOnlyOneThatReachesATask:
         fill.si.assert_called_once_with(user_id=SESSION_USER_ID)
         chain.assert_called_once()
 
-    def test_aws_profile_test_runs_as_the_caller(self, client, signed_in):
+    def test_aws_profile_test_runs_as_the_caller(self, api_client, signed_in):
         with patch(f"{_M}.test_get_my_profile") as task:
-            resp = client.post("/api/aws_test_get_my_profile/",
+            resp = api_client.post("/api/aws_test_get_my_profile/",
                                params={"session_token": SESSION_TOKEN})
         assert resp.status_code == 200
         assert task.apply_async.call_args.kwargs["kwargs"] == {"user_id": SESSION_USER_ID}
@@ -438,12 +416,12 @@ class TestAResolvedSessionWithNoAddressIsOurFault:
     caller they lack permission to their own account while hiding a data fault.
     """
 
-    def test_it_is_a_500_not_a_403(self, client, no_session):
+    def test_it_is_a_500_not_a_403(self, api_client, no_session):
         with patch(f"{_M}.get_session_user_id", return_value=SESSION_USER_ID), \
              patch(f"{_M}.get_user_email", return_value=None), \
              patch(f"{_M}.log_error") as err, \
              patch(f"{_M}.insert_post") as inserted:
-            resp = client.post("/api/schedule_post/",
+            resp = api_client.post("/api/schedule_post/",
                                json={"session_token": SESSION_TOKEN, "content": "hi",
                                      "scheduled_datetime": "2026-07-10T15:00:00Z"})
         assert resp.status_code == 500
@@ -464,11 +442,11 @@ class TestNoHandlerNamesAnAccountItDoesNotUse:
 
         assert "email" not in inspect.signature(linkedin_auth_init).parameters
 
-    def test_a_stray_email_parameter_changes_nothing(self, client):
+    def test_a_stray_email_parameter_changes_nothing(self, api_client):
         """A cached page still linking with `?email=` must redirect exactly as before, not 422."""
         with patch(f"{_M}.AuthClient") as auth:
             auth.return_value.generate_member_auth_url.return_value = "https://linkedin.example/oauth"
-            resp = client.get("/api/auth/linkedin/",
+            resp = api_client.get("/api/auth/linkedin/",
                               params={"session_token": SESSION_TOKEN, "email": _OTHER_EMAIL},
                               follow_redirects=False)
         assert resp.status_code == 307

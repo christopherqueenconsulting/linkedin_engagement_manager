@@ -20,37 +20,27 @@ import pytest
 pytestmark = pytest.mark.unit
 
 
-@pytest.fixture(scope="module")
-def client():
-    with patch("cqc_lem.utilities.observability.track_api_call"):
-        from fastapi.testclient import TestClient
-
-        from cqc_lem.api.main import app
-        with TestClient(app, raise_server_exceptions=False) as tc:
-            yield tc
-
-
 class TestDocsSurfaceMovedUnderApi:
     @pytest.mark.parametrize("path", ["/api/docs", "/api/redoc", "/api/openapi.json"])
-    def test_reachable_at_the_new_path(self, client, path):
-        r = client.get(path)
+    def test_reachable_at_the_new_path(self, api_client, path):
+        r = api_client.get(path)
         assert r.status_code == 200
         assert r.content
 
-    def test_swagger_oauth2_redirect_helper_moved_with_it(self, client):
+    def test_swagger_oauth2_redirect_helper_moved_with_it(self, api_client):
         """FastAPI defaults `swagger_ui_oauth2_redirect_url` to the fixed literal
         `/docs/oauth2-redirect` and does NOT derive it from `docs_url`. Left alone it strands the
         helper outside `/api` and Swagger's Authorize flow breaks silently.
         """
-        assert client.get("/api/docs/oauth2-redirect").status_code == 200
+        assert api_client.get("/api/docs/oauth2-redirect").status_code == 200
 
     @pytest.mark.parametrize("old,new", [
         ("/docs", "/api/docs"),
         ("/redoc", "/api/redoc"),
         ("/openapi.json", "/api/openapi.json"),
     ])
-    def test_old_path_redirects_permanently(self, client, old, new):
-        r = client.get(old, follow_redirects=False)
+    def test_old_path_redirects_permanently(self, api_client, old, new):
+        r = api_client.get(old, follow_redirects=False)
         assert r.status_code == 301
         assert r.headers["location"] == new
 
@@ -66,7 +56,7 @@ class TestDocsSurfaceMovedUnderApi:
         assert _is_public_api_path("/api/docs/oauth2-redirect")
         assert not _is_public_api_path("/api/docs-admin")
 
-    def test_the_surface_answers_with_no_credential_once_the_gate_is_LIVE(self, client):
+    def test_the_surface_answers_with_no_credential_once_the_gate_is_LIVE(self, api_client):
         """The tests above run in the CI config, where `API_ACCESS_TOKENS` is unset and
         `_api_token_required` short-circuits to False for EVERY path — so they would pass just as
         happily if the three entries had never been added to `_PUBLIC_API_PREFIXES`.
@@ -78,12 +68,12 @@ class TestDocsSurfaceMovedUnderApi:
         with patch("cqc_lem.api.main._API_ACCESS_TOKEN_SET", {"a-configured-token"}):
             for path in ("/api/docs", "/api/redoc", "/api/openapi.json",
                          "/api/docs/oauth2-redirect"):
-                assert client.get(path).status_code == 200, path
-            assert client.get("/api/docs-admin").status_code == 401
-            assert client.get("/api/admin/automation-status",
+                assert api_client.get(path).status_code == 200, path
+            assert api_client.get("/api/docs-admin").status_code == 401
+            assert api_client.get("/api/admin/automation-status",
                               params={"user_id": 1}).status_code == 401
 
-    def test_the_legacy_redirect_beats_the_SPA_catch_all(self, client):
+    def test_the_legacy_redirect_beats_the_SPA_catch_all(self, api_client):
         """`src/cqc_lem/ui/dist` does not exist in a checkout, so the SPA catch-all is never
         registered in CI and the redirect tests above have nothing competing with them. In prod it
         IS registered, and `/{full_path:path}` matches `/docs` — the redirects only win because
@@ -101,18 +91,18 @@ class TestDocsSurfaceMovedUnderApi:
         try:
             for old, new in (("/docs", "/api/docs"), ("/redoc", "/api/redoc"),
                              ("/openapi.json", "/api/openapi.json")):
-                r = client.get(old, follow_redirects=False)
+                r = api_client.get(old, follow_redirects=False)
                 assert r.status_code == 301, f"{old} was answered by the SPA, not the redirect"
                 assert r.headers["location"] == new
             # ...and the stand-in really was reachable, so the assertions above are not vacuous.
-            assert client.get("/some-spa-route").text == "<html>spa</html>"
+            assert api_client.get("/some-spa-route").text == "<html>spa</html>"
         finally:
             app.router.routes.pop()
 
 
 class TestAdminRoutesAreNotInTheSchema:
-    def test_no_admin_route_appears_in_the_public_schema(self, client):
-        schema = client.get("/api/openapi.json").json()
+    def test_no_admin_route_appears_in_the_public_schema(self, api_client):
+        schema = api_client.get("/api/openapi.json").json()
         leaked = [p for p in schema["paths"] if p.startswith("/api/admin")]
         assert not leaked, (
             "these /api/admin operations are published in an unauthenticated schema, which names "
@@ -129,7 +119,7 @@ class TestAdminRoutesAreNotInTheSchema:
         from cqc_lem.api.main import _ADMIN_ROUTES_HIDDEN
         assert _ADMIN_ROUTES_HIDDEN >= 18
 
-    def test_admin_routes_still_exist_and_still_answer(self, client):
+    def test_admin_routes_still_exist_and_still_answer(self, api_client):
         """Hidden is not removed: the routes must keep serving their real handler, and their auth
         is unchanged — a missing admin secret is still 403, never 404.
         """
@@ -137,7 +127,7 @@ class TestAdminRoutesAreNotInTheSchema:
         paths = {getattr(r, "path", "") for r in _walk_routes(app.routes)}
         assert "/api/admin/automation-pause" in paths
         with patch("cqc_lem.api.routers.admin.ADMIN_SECRET", "s3cret"):
-            assert client.post("/api/admin/automation-pause",
+            assert api_client.post("/api/admin/automation-pause",
                                params={"user_id": 1}).status_code == 403
 
 

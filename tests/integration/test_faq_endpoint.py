@@ -63,14 +63,6 @@ def _entry(entry_id, question, sort_order, status="published", cluster_id=None):
 
 
 @pytest.fixture
-def client():
-    from fastapi.testclient import TestClient
-
-    from cqc_lem.api.main import app
-    return TestClient(app, raise_server_exceptions=False)
-
-
-@pytest.fixture
 def store():
     return [
         _entry(2, "Can I cancel anytime?", 60),
@@ -80,15 +72,15 @@ def store():
     ]
 
 
-def _get_faq(client, store):
+def _get_faq(api_client, store):
     with patch("cqc_lem.platform.db.connection.get_db_connection", side_effect=lambda *a, **k: _FakeConn(store)), \
          patch("cqc_lem.utilities.observability.posthog"):
-        return client.get("/api/faq")
+        return api_client.get("/api/faq")
 
 
 class TestPublicFaq:
-    def test_serves_only_published_entries_in_display_order(self, client, store):
-        response = _get_faq(client, store)
+    def test_serves_only_published_entries_in_display_order(self, api_client, store):
+        response = _get_faq(api_client, store)
 
         assert response.status_code == 200
         entries = response.json()["detail"]["entries"]
@@ -99,9 +91,9 @@ class TestPublicFaq:
         assert entries[0]["updated_at"] == "2026-07-25T12:00:00Z"
         assert "cluster_id" not in entries[0]
 
-    def test_an_unpublished_faq_returns_an_empty_list_not_an_error(self, client):
+    def test_an_unpublished_faq_returns_an_empty_list_not_an_error(self, api_client):
         """The SPA falls back to its seeded copy — the front page must not break on an empty FAQ."""
-        response = _get_faq(client, [_entry(9, "Draft only", 10, status="draft")])
+        response = _get_faq(api_client, [_entry(9, "Draft only", 10, status="draft")])
 
         assert response.status_code == 200
         assert response.json()["detail"]["entries"] == []

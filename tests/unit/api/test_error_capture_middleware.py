@@ -51,13 +51,6 @@ def app_with_probe_routes():
     app.router.routes[:] = original_routes
 
 
-@pytest.fixture(scope="module")
-def client(app_with_probe_routes):
-    from fastapi.testclient import TestClient
-    with TestClient(app_with_probe_routes, raise_server_exceptions=False) as tc:
-        yield tc
-
-
 def _capturing_posthog() -> MagicMock:
     """A stand-in for the posthog module that reports itself enabled, so capture_exception runs its
     real body instead of returning early on the keyless test env.
@@ -68,21 +61,21 @@ def _capturing_posthog() -> MagicMock:
 
 
 class TestProbeRoutesAreReachable:
-    def test_catch_all_is_registered_and_would_shadow_appended_routes(self, client):
+    def test_catch_all_is_registered_and_would_shadow_appended_routes(self, app_with_probe_routes, api_client):
         """Guards the fixture itself: an unmatched path resolves to a catch-all and answers 200, so
         the 500/404 the probes return below can only mean they were matched ahead of it. If the
         probes stop being registered first they go back to answering 200 too, and the tests below
         stop proving anything.
         """
-        response = client.get("/__no_such_route")
+        response = api_client.get("/__no_such_route")
 
         assert response.status_code == 200
 
 
 class TestUnhandledExceptionCapture:
-    def test_unhandled_route_error_is_captured_with_route_context(self, client):
+    def test_unhandled_route_error_is_captured_with_route_context(self, app_with_probe_routes, api_client):
         with patch("cqc_lem.api.main.capture_exception") as mock_capture:
-            response = client.get("/__probe_boom")
+            response = api_client.get("/__probe_boom")
 
         assert response.status_code == 500
         mock_capture.assert_called_once()
@@ -92,19 +85,19 @@ class TestUnhandledExceptionCapture:
         assert kwargs["method"] == "GET"
         assert kwargs["source"] == "fastapi.middleware"
 
-    def test_http_exception_is_not_captured(self, client):
+    def test_http_exception_is_not_captured(self, app_with_probe_routes, api_client):
         """A 404/401 is a normal response, not an error-tracking issue — capturing it would drown
         real crashes in expected 4xx noise.
         """
         with patch("cqc_lem.api.main.capture_exception") as mock_capture:
-            response = client.get("/__probe_http_error")
+            response = api_client.get("/__probe_http_error")
 
         assert response.status_code == 404
         mock_capture.assert_not_called()
 
-    def test_healthy_request_is_not_captured(self, client):
+    def test_healthy_request_is_not_captured(self, app_with_probe_routes, api_client):
         with patch("cqc_lem.api.main.capture_exception") as mock_capture:
-            response = client.get("/health")
+            response = api_client.get("/health")
 
         # Assert the body, not just a 200: the catch-all also answers 200, so "no capture" on a
         # shadowed /health would be the same vacuous pass the probes above were fixed out of.
@@ -117,11 +110,11 @@ class TestExceptionReachesPostHog:
     wiring, not that an `$exception` is actually emitted with route context.
     """
 
-    def test_unhandled_route_error_emits_exception_event(self, client):
+    def test_unhandled_route_error_emits_exception_event(self, app_with_probe_routes, api_client):
         fake_posthog = _capturing_posthog()
 
         with patch("cqc_lem.utilities.observability.posthog", fake_posthog):
-            response = client.get("/__probe_boom")
+            response = api_client.get("/__probe_boom")
 
         assert response.status_code == 500
         fake_posthog.capture_exception.assert_called_once()
@@ -133,11 +126,11 @@ class TestExceptionReachesPostHog:
         assert properties["method"] == "GET"
         assert properties["source"] == "fastapi.middleware"
 
-    def test_http_exception_emits_no_exception_event(self, client):
+    def test_http_exception_emits_no_exception_event(self, app_with_probe_routes, api_client):
         fake_posthog = _capturing_posthog()
 
         with patch("cqc_lem.utilities.observability.posthog", fake_posthog):
-            response = client.get("/__probe_http_error")
+            response = api_client.get("/__probe_http_error")
 
         assert response.status_code == 404
         fake_posthog.capture_exception.assert_not_called()

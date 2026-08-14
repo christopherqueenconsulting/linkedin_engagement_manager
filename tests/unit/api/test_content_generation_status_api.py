@@ -10,29 +10,6 @@ pytestmark = pytest.mark.unit
 
 from tests.unit.api.conftest import SESSION_TOKEN, SESSION_USER_ID  # noqa: E402
 
-
-@pytest.fixture(scope="module")
-def client():
-    patches = [
-        patch("cqc_lem.utilities.observability.track_api_call"),
-        patch("cqc_lem.app.engagement.invites.automate_invites_to_company_page_for_user"),
-        patch("cqc_lem.app.engagement.posting.automate_reply_commenting"),
-        patch("cqc_lem.app.run_content_plan.auto_create_weekly_content"),
-        patch("cqc_lem.app.aws_test_celery_task.test_get_my_profile"),
-    ]
-    for p in patches:
-        p.start()
-    try:
-        from fastapi.testclient import TestClient
-
-        from cqc_lem.api.main import app
-        with TestClient(app, raise_server_exceptions=False) as tc:
-            yield tc
-    finally:
-        for p in patches:
-            p.stop()
-
-
 _SESSION = "tok"
 _USER = 7
 _STATUS = {
@@ -49,70 +26,70 @@ _STATUS = {
 
 
 class TestContentGenerationStatusEndpoint:
-    def test_returns_status_for_the_session_user(self, client):
+    def test_returns_status_for_the_session_user(self, api_client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
              patch("cqc_lem.api.main.get_generation_status", return_value=_STATUS) as get_status:
-            resp = client.get("/api/content_generation_status/",
+            resp = api_client.get("/api/content_generation_status/",
                               params={"session_token": _SESSION})
         assert resp.status_code == 200
         assert resp.json()["detail"] == _STATUS
         get_status.assert_called_once_with(_USER)
 
-    def test_returns_null_when_no_run_tracked(self, client):
+    def test_returns_null_when_no_run_tracked(self, api_client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
              patch("cqc_lem.api.main.get_generation_status", return_value=None):
-            resp = client.get("/api/content_generation_status/",
+            resp = api_client.get("/api/content_generation_status/",
                               params={"session_token": _SESSION})
         assert resp.status_code == 200
         assert resp.json()["detail"] is None
 
-    def test_rejects_invalid_session(self, client):
+    def test_rejects_invalid_session(self, api_client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=None), \
              patch("cqc_lem.api.main.get_generation_status") as get_status:
-            resp = client.get("/api/content_generation_status/", params={"session_token": "bad"})
+            resp = api_client.get("/api/content_generation_status/", params={"session_token": "bad"})
         assert resp.status_code == 401
         get_status.assert_not_called()
 
-    def test_requires_a_session_token(self, client):
-        resp = client.get("/api/content_generation_status/")
+    def test_requires_a_session_token(self, api_client):
+        resp = api_client.get("/api/content_generation_status/")
         assert resp.status_code == 422
 
 
 class TestCreateWeeklyContentMarksQueued:
-    def test_marks_queued_before_dispatch(self, client, signed_in):
+    def test_marks_queued_before_dispatch(self, api_client, signed_in):
         with patch("cqc_lem.api.main.mark_queued") as queued, \
              patch("cqc_lem.api.main.celery_chain") as chain:
-            resp = client.post("/api/create_weekly_content/",
+            resp = api_client.post("/api/create_weekly_content/",
                                params={"session_token": SESSION_TOKEN})
         assert resp.status_code == 200
         queued.assert_called_once_with(SESSION_USER_ID)
         chain.return_value.apply_async.assert_called_once()
 
-    def test_no_session_does_not_mark_queued(self, client):
+    def test_no_session_does_not_mark_queued(self, api_client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=None), \
              patch("cqc_lem.api.main.mark_queued") as queued:
-            resp = client.post("/api/create_weekly_content/")
+            resp = api_client.post("/api/create_weekly_content/")
         assert resp.status_code == 401
         queued.assert_not_called()
 
-    def test_another_accounts_user_id_does_not_spend_their_budget(self, client, signed_in):
+    def test_another_accounts_user_id_does_not_spend_their_budget(self, api_client, signed_in):
         """The generation run costs LLM money and fills a calendar — it runs for the CALLER only."""
         with patch("cqc_lem.api.main.mark_queued") as queued, \
              patch("cqc_lem.api.main.celery_chain") as chain:
-            resp = client.post("/api/create_weekly_content/",
+            resp = api_client.post("/api/create_weekly_content/",
                                params={"session_token": SESSION_TOKEN,
                                        "user_id": SESSION_USER_ID + 1})
         assert resp.status_code == 403
         queued.assert_not_called()
         chain.assert_not_called()
 
-    def test_dispatch_failure_clears_the_queued_record(self, client, signed_in):
+    def test_dispatch_failure_clears_the_queued_record(self, api_client, signed_in):
         """A broker outage must not strand the SPA polling a run that will never start."""
         with patch("cqc_lem.api.main.mark_queued"), \
              patch("cqc_lem.api.main.clear_generation_status") as cleared, \
              patch("cqc_lem.api.main.celery_chain") as chain:
             chain.return_value.apply_async.side_effect = OSError("broker unreachable")
-            resp = client.post("/api/create_weekly_content/",
+            resp = api_client.post("/api/create_weekly_content/",
                                params={"session_token": SESSION_TOKEN})
         assert resp.status_code == 500
         cleared.assert_called_once_with(SESSION_USER_ID)
