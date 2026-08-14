@@ -71,6 +71,8 @@ class TestDwellMetrics:
         assert fw.dwell_score(text) == 0
 
     @pytest.mark.parametrize("line", ["1. Do the thing", "- Do the thing", "• Do the thing",
+                                      # The marker the newsletter writer prompt asks for by name.
+                                      "-> Do the thing", "→ Do the thing",
                                       "Step 2 is where it breaks"])
     def test_list_shapes_detected(self, line):
         assert fw.dwell_metrics(f"Hook line.\n\n{line}\n\nClose.")["has_list"] is True

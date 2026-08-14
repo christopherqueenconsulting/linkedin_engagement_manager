@@ -647,6 +647,25 @@ class TestNewsletterStructureReport:
         report = newsletter_structure_report("One wall. " * 60)
         assert report["checked"] is False and report["passes"] is True and report["failures"] == []
 
+    def test_the_arrow_list_the_writer_prompt_asks_for_counts_as_a_list_block(self):
+        """The grader must see the marker the WRITER contract mandates, or it burns a shared draft.
+
+        `generate_newsletter_edition`'s format rules ask for list items "beginning with a literal
+        '-> ' or a bullet character", and `sanitize_for_linkedin` only rewrites `- `/`* ` into a
+        bullet — so an arrow list survives to the grader verbatim.
+        """
+        from cqc_lem.utilities.ai.content_framework import (
+            NEWSLETTER_STRUCTURE_CHECK_LIST,
+            newsletter_structure_report,
+        )
+        from cqc_lem.utilities.linkedin_formatter import sanitize_for_linkedin
+        body = _clean_edition_body().replace(
+            "1. Measure the thing.\n2. Then change it.\n3. Measure again.",
+            "-> Measure the thing.\n-> Then change it.\n-> Measure again.")
+        assert "-> Measure the thing." in sanitize_for_linkedin(body)
+        checks = [f["check"] for f in newsletter_structure_report(body)["failures"]]
+        assert NEWSLETTER_STRUCTURE_CHECK_LIST not in checks
+
 
 class TestNewsletterWallRepairIsDeterministic:
     """#1435. The one failure a reflow can fix is never spent on a generation.

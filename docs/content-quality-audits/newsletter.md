@@ -283,7 +283,12 @@ wrote the same first drafts (identical 756-word mean, same seeds), and the treat
 3 of 4 wall-free where the control's were 0 of 4.
 
 **What did NOT move, stated plainly.** The list block is 3 of 4 in both arms — on this n the retry
-did not add one, and nothing here can. Two of four treatment editions still miss a floor, which is
+did not add one, and nothing here can. That row also carried a grader gap, found in review and fixed
+here: the newsletter writer prompt asks for list items `beginning with a literal "-> "`, and
+`sanitize_for_linkedin` rewrites only `- `/`* ` into a bullet, so an arrow list reached `has_list`
+verbatim and read as NO list at all. `_LIST_LINE_RE` now recognises the arrow forms, so an edition
+written exactly as the contract asks no longer spends a shared draft on a floor it already met — the
+3-of-4 above is therefore a FLOOR on the real number, not a measurement of it. Two of four treatment editions still miss a floor, which is
 the expected outcome of a one-retry budget, and both were kept and returned for review. Slop HARD is
 unchanged (3 in each arm), as it should be: the structural side shares the budget but grades
 something else. And the reflow only reaches SINGLE-LINE prose blocks, so a 356-character paragraph

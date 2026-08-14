@@ -1526,9 +1526,13 @@ DWELL_MIN_PARAGRAPHS = 4
 # score's demote-not-block posture, minus the demotion) — it never blocks or regenerates a post.
 DWELL_SCORE_MIN_DEFAULT = 60
 
-# Re-readable structure — a numbered step, a bullet, or a checkbox line. This is the shape readers
-# scroll back up through and SAVE, which is both a dwell multiplier and the strongest 2026 signal.
-_LIST_LINE_RE = re.compile(r"^\s*(?:\d+[.)]\s+|[-*•‣▪✓✔☑]\s+|step\s+\d+\b)", re.IGNORECASE | re.MULTILINE)
+# Re-readable structure — a numbered step, a bullet, an arrow, or a checkbox line. This is the shape
+# readers scroll back up through and SAVE, which is both a dwell multiplier and the strongest 2026
+# signal. The ARROW forms are not decoration: the newsletter writer prompt asks for list items
+# `beginning with a literal "-> " or a bullet character`, and `sanitize_for_linkedin` converts only
+# `- `/`* ` to a bullet — so without them a compliant edition reads as having NO list block.
+_LIST_LINE_RE = re.compile(r"^\s*(?:\d+[.)]\s+|[-*•‣▪✓✔☑]\s+|(?:->|-->|=>|→|⇒)\s*\S|step\s+\d+\b)",
+                           re.IGNORECASE | re.MULTILINE)
 
 _PARAGRAPH_SPLIT_RE = re.compile(r"\n\s*\n")
 
