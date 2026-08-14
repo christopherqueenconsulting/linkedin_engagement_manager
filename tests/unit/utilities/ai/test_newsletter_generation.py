@@ -871,6 +871,9 @@ class TestStructureFailuresFeedTheBoundedRegeneration:
             edition = ai_helper.generate_newsletter_edition(self._profile(), topic="x")
         assert edition["body"].startswith("A short opening line")
         assert track.call_args.kwargs["kept"] is True
+        # And the row says the slop lint steered nothing here: this regeneration was the structural
+        # floor's, so counting it `cleared` would inflate the clear-rate #1530 reads (issue #1434).
+        assert track.call_args.args[1] == _slop.RETRY_UNSTEERED
 
 
 class TestNewsletterSlopRetry:

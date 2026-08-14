@@ -218,10 +218,13 @@ fresh draft rather than an edit, so `keep_retry` keeps whichever of the two rank
 count, total violations) instead of taking the newer one blind — on the newsletter, where the
 structural floor (#1435) steers the same retry, the rank is (HARD count, structural failures, total
 violations) so a draft that fixed the floor is not thrown away for a WARN; and each regeneration emits
-`slop_retry` naming what it actually did (`cleared` / `traded` / `worsened` / `persisted` / `lost`,
-plus whether the draft was `kept`) — the finished draft only shows what was still firing at the end,
-so without that event a retry that traded one check for another is invisible. The other loops still
-take the newer draft blind and record nothing.
+`slop_retry` naming what it actually did (`cleared` / `traded` / `worsened` / `persisted` / `lost` /
+`unsteered`, plus whether the draft was `kept`) — the finished draft only shows what was still firing
+at the end, so without that event a retry that traded one check for another is invisible.
+`unsteered` is the newsletter's own case: the structural floor shares this budget, so a slop-clean
+edition can spend a regeneration with no HARD check to fix, and counting those as `cleared` would
+inflate the clear-rate the event was raised to measure. The other loops still take the newer draft
+blind and record nothing.
 
 - Banned lexicon pileup
 - The "it's not X, it's Y" contrastive frame

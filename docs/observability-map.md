@@ -110,10 +110,16 @@ One `slop_retry` event per steered regeneration. **The newsletter loop is the on
 the short-form surfaces (`lint_repaired`: seed comments, replies, DMs) and the affiliate promo draft
 run the same bounded retry and emit nothing yet, so a breakdown by `surface` reads `newsletter` or
 empty. Widening it is #1536; do not read a missing surface as a surface that never retries.
-`outcome` is the reading: `cleared` (no HARD check remains), `traded` (it fixed what it was steered
-on and tripped a DIFFERENT check — the failure mode a whole-draft rewrite has and a targeted edit
-does not), `worsened`, `persisted`, or `lost` (the regeneration returned nothing; counted, because
-it still spent a call and dropping it flatters the clear rate). This event exists because the
+`outcome` is the reading: `cleared` (a HARD check was firing and none remains), `traded` (it fixed
+what it was steered on and tripped a DIFFERENT check — the failure mode a whole-draft rewrite has
+and a targeted edit does not), `worsened`, `persisted`, `lost` (the regeneration returned nothing;
+counted, because it still spent a call and dropping it flatters the clear rate), or `unsteered` —
+the draft carried NO HARD check going in, so the call was spent on something else and cleared
+nothing. That last one is not a curiosity: on the newsletter the structural floor (#1435) shares
+this budget, so a slop-clean edition that is too short regenerates with no slop check to fix, and
+folding those rows into `cleared` would inflate exactly the clear-rate #1530 has to read here. Grade
+the clear-rate over the rows that were steered (`hard_before > 0`, i.e. everything but `unsteered`).
+This event exists because the
 finished draft is not evidence: it records only what was still firing when the budget ran out, so
 `cleared` and `traded` are indistinguishable afterwards — which is why #1434 could not measure the
 clear-rate from the 10-edition newsletter corpus. `kept` says whether that regeneration's draft

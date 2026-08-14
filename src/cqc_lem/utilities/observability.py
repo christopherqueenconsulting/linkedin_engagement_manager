@@ -1545,7 +1545,10 @@ def track_slop_retry(
     `outcome` is `slop_lint.retry_outcome`'s verdict on the pair of reports, and it is the whole
     reason the event exists: a finished draft only records the checks that were STILL firing when
     the budget ran out, so the clear-rate of the retry — and how often a full-draft rewrite trades
-    one HARD check for a different one — cannot be recovered from the corpus afterwards.
+    one HARD check for a different one — cannot be recovered from the corpus afterwards. Grade that
+    rate over the STEERED rows (`hard_before > 0`): a loop whose budget is shared with another
+    grader can spend a regeneration on a draft that tripped no HARD check at all, and those land as
+    `unsteered` rather than flattering `cleared`.
 
     `kept` is the second half of that reading and is NOT derivable from `outcome`: since a caller
     may now discard a regeneration that came back worse (`slop_lint.keep_retry`), a `persisted` row

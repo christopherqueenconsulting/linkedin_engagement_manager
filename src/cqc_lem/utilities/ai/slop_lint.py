@@ -706,6 +706,7 @@ RETRY_TRADED = "traded"
 RETRY_WORSENED = "worsened"
 RETRY_PERSISTED = "persisted"
 RETRY_LOST = "lost"
+RETRY_UNSTEERED = "unsteered"
 
 
 def hard_checks(report: Optional[dict]) -> list:
@@ -726,10 +727,18 @@ def retry_outcome(before: Optional[dict], after: Optional[dict]) -> str:
     - `persisted` — at least one of the original checks survived the rewrite.
     - `lost` — the regeneration produced nothing (`after` is None). Counted, not dropped: an empty
       retry still spent a call, and leaving it out of the denominator flatters the clear rate.
+    - `unsteered` — the draft carried NO HARD check going in, so this regeneration was spent on
+      something else and cleared nothing. Only the newsletter can produce it: the structural floor
+      (issue #1435) shares that loop's budget, so a slop-clean edition that is too short is
+      regenerated with no slop check to fix. Kept apart from `cleared` because folding it in would
+      inflate the clear-rate #1530 has to read off this event — the whole reason it exists. A
+      draft that was clean going in and trips a check coming out is `worsened`, not this.
     """
     if after is None:
         return RETRY_LOST
     before_checks, after_checks = set(hard_checks(before)), set(hard_checks(after))
+    if not before_checks and not after_checks:
+        return RETRY_UNSTEERED
     if not after_checks:
         return RETRY_CLEARED
     if len(after_checks) > len(before_checks):

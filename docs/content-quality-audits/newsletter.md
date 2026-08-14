@@ -201,13 +201,17 @@ at.
 **What shipped instead**, all of it at **$0.00 per edition — no additional LLM call on any path**:
 
 1. **The retry is now recorded.** One `slop_retry` event per regeneration carries
-   `outcome` ∈ {`cleared`, `traded`, `worsened`, `persisted`, `lost`}, `kept` (whether that draft
-   survived — a `persisted` row can be the edition that shipped OR one that was discarded, so the
-   two are not the same reading), the HARD check names before and after, and
+   `outcome` ∈ {`cleared`, `traded`, `worsened`, `persisted`, `lost`, `unsteered`}, `kept` (whether
+   that draft survived — a `persisted` row can be the edition that shipped OR one that was
+   discarded, so the two are not the same reading), the HARD check names before and after, and
    `attempt`/`max_attempts`. `traded` is broken out from `persisted` on purpose: it
    is the failure mode a whole-draft rewrite has and a targeted edit does not, so its share is what
-   decides between "buy another attempt" and "stop rewriting the whole edition". Check names only —
-   a violation's `evidence` is draft text.
+   decides between "buy another attempt" and "stop rewriting the whole edition". `unsteered` is
+   broken out for the opposite reason: the structural floor (#1435) shares this budget, so an
+   edition that was slop-clean going in can spend a regeneration with no HARD check to fix, and
+   scoring those as `cleared` would inflate the very clear-rate #1530 reads off this event — grade
+   it over the steered rows (`hard_before > 0`). Check names only — a violation's `evidence` is
+   draft text.
 2. **The budget can no longer end on the worse of two drafts.** The loop took the newer draft
    unconditionally, even when the rewrite came back carrying more violations than the one it
    replaced. `slop_lint.keep_retry` ranks the two reports on (HARD count, total violations) and

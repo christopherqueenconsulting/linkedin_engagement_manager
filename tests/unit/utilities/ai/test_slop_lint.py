@@ -789,6 +789,17 @@ class TestRetryGrading:
         # It still spent a call; leaving it out of the denominator flatters the clear rate.
         assert sl.retry_outcome(self._report(sl.CHECK_CONTRASTIVE), None) == sl.RETRY_LOST
 
+    def test_a_retry_with_no_check_to_fix_is_not_scored_as_cleared(self):
+        # The newsletter's structural floor (#1435) shares this budget, so a slop-clean edition can
+        # spend a regeneration with no HARD check to fix. Scoring it `cleared` would inflate the
+        # clear-rate #1530 reads off this event — which is the one number it exists to produce.
+        assert sl.retry_outcome(self._report(), self._report()) == sl.RETRY_UNSTEERED
+        assert sl.retry_outcome(None, self._report()) == sl.RETRY_UNSTEERED
+
+    def test_a_clean_draft_that_comes_back_tripping_a_check_is_still_worsened(self):
+        assert sl.retry_outcome(self._report(),
+                                self._report(sl.CHECK_LEXICON)) == sl.RETRY_WORSENED
+
     def test_hard_checks_are_named_and_deduped(self):
         report = self._report(sl.CHECK_CONTRASTIVE, sl.CHECK_CONTRASTIVE, sl.CHECK_LEXICON)
         assert sl.hard_checks(report) == [sl.CHECK_CONTRASTIVE, sl.CHECK_LEXICON]
