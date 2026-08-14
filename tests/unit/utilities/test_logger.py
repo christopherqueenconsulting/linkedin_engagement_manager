@@ -395,6 +395,23 @@ class TestDatedRotatingFileHandler:
 
         assert mod._utc_today() == datetime.datetime.now(datetime.timezone.utc).date()
 
+    def test_a_failed_close_at_midnight_never_raises_into_the_caller(self, tmp_path, monkeypatch):
+        """A full disk flushes on close(); logging must degrade, not crash the calling task."""
+        from cqc_lem.utilities import logger as mod
+
+        day1, day2 = datetime.date(2026, 8, 5), datetime.date(2026, 8, 6)
+        handler = self._handler(mod, [day1, day1, day2], tmp_path, monkeypatch)
+        handler.emit(self._record("before midnight"))
+        handler.stream.close = lambda: (_ for _ in ()).throw(OSError("No space left on device"))
+        errors = []
+        monkeypatch.setattr(handler, "handleError", lambda record: errors.append(record))
+
+        handler.emit(self._record("after midnight"))
+        handler.close()
+
+        assert len(errors) == 1
+        assert (tmp_path / "logs" / "cqc_lem_2026_08_06.log").read_text().strip() == "after midnight"
+
 
 # ---------------------------------------------------------------------------
 # OTLP resource (service.name) — issue: logs were landing under 'unknown_service'

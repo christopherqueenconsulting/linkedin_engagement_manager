@@ -73,8 +73,16 @@ class DatedRotatingFileHandler(RotatingFileHandler):
                          backupCount=backup_count, delay=True)
 
     def emit(self, record: logging.LogRecord) -> None:
-        """Write `record` to TODAY's file, switching files first if the date has moved on."""
-        self._switch_day_if_needed()
+        """Write `record` to TODAY's file, switching files first if the date has moved on.
+
+        The switch is guarded the same way the base class guards its own write: a logging call must
+        never raise into the caller, so a failed close (a full disk flushes on `close()`) reports
+        through `handleError` and the record is still written.
+        """
+        try:
+            self._switch_day_if_needed()
+        except Exception:  # pragma: no cover - exercised via a raising stream in the tests
+            self.handleError(record)
         super().emit(record)
 
     def _switch_day_if_needed(self) -> None:
@@ -88,9 +96,11 @@ class DatedRotatingFileHandler(RotatingFileHandler):
             return
         self._current_day = day
         self.baseFilename = os.path.abspath(dated_log_path(day))
-        if self.stream is not None:
-            self.stream.close()
-            self.stream = None  # FileHandler.emit reopens it against the new baseFilename
+        # Detach BEFORE closing: if the close raises, the handler must still be pointed at today's
+        # file rather than stranded on a dead stream for yesterday's.
+        stream, self.stream = self.stream, None  # FileHandler.emit reopens against baseFilename
+        if stream is not None:
+            stream.close()
 
 
 def _otlp_resource():
