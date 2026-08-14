@@ -39,12 +39,16 @@ const STATUS_COLORS: Record<string, string> = {
   canceled: 'bg-gray-100 text-gray-500',
 }
 
-const STATUSES = ['pending', 'approved', 'sending', 'sent', 'skipped', 'failed', 'canceled', 'ALL']
+// ALL first and selected by default, like every other review queue (ConnectionRequests, etc.). A
+// 'pending' default made the tab read as EMPTY for anyone on catchup_touch_mode='auto_approve' —
+// their drafts land 'approved' and are sent by the drip, so no row is ever 'pending' — while the
+// dashboard activity feed showed the same touches going out (issue #1360).
+const STATUSES = ['ALL', 'pending', 'approved', 'sending', 'sent', 'skipped', 'failed', 'canceled']
 
 export default function CatchupTouches({ userTimezone }: { userTimezone: string }) {
   const { sessionToken } = useAuth()
   const qc = useQueryClient()
-  const [filter, setFilter] = useState('pending')
+  const [filter, setFilter] = useState('ALL')
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null)
   // Per-touch message edits (keyed by id) so each card edits independently.
   const [edits, setEdits] = useState<Record<number, string>>({})
@@ -61,6 +65,11 @@ export default function CatchupTouches({ userTimezone }: { userTimezone: string 
     enabled: !!sessionToken,
   })
   const touches = data?.touches ?? []
+  // The request is page 1 of 50 with no pager, and the API orders by score DESC — so on ALL a big
+  // archive of sent/skipped rows can outrank the few PENDING drafts that still need a decision.
+  // Say so out loud rather than let the list read as complete (the same silence as issue #1360).
+  const total = data?.total ?? 0
+  const hiddenByPaging = Math.max(0, total - touches.length)
 
   const flash = (ok: boolean, text: string) => { setMsg({ ok, text }); setTimeout(() => setMsg(null), 4000) }
   const invalidate = () => qc.invalidateQueries({ queryKey: ['catchup-touches'] })
@@ -98,7 +107,9 @@ export default function CatchupTouches({ userTimezone }: { userTimezone: string 
           LEM scans your LinkedIn Catch-up feed daily for network milestones — new jobs, promotions,
           work anniversaries — scores them against your targeting, and queues LinkedIn's own suggested
           congratulations for each one (switch to an AI-written version in Account → Catch-up message).
-          <span className="font-semibold"> Nothing sends until you approve it</span>, each milestone is
+          <span className="font-semibold"> Nothing sends until you approve it</span> — unless
+          Account → Catch-up approval is set to "Auto-use", in which case drafts land already
+          approved and this queue shows them as APPROVED/SENT rather than PENDING. Each milestone is
           messaged at most once, and approved messages drip out under your daily catch-up and DM caps
           (Account → Engagement).
         </p>
@@ -116,10 +127,23 @@ export default function CatchupTouches({ userTimezone }: { userTimezone: string 
         ))}
       </div>
 
+      {!isLoading && hiddenByPaging > 0 && (
+        <p className="text-xs text-gray-500">
+          Showing the {touches.length} highest-scoring of {total} touches — {hiddenByPaging} not
+          listed. Pick a status above to narrow the list.
+        </p>
+      )}
+
       {isLoading && <p className="text-gray-400 text-sm">Loading catch-up touches…</p>}
       {!isLoading && touches.length === 0 && (
-        <div className="text-center py-10 bg-white rounded-lg border border-gray-200 text-sm text-gray-500">
-          No catch-up touches {filter === 'ALL' ? 'yet' : `with status ${filter}`}.
+        <div className="text-center py-10 bg-white rounded-lg border border-gray-200 text-sm text-gray-500 space-y-2">
+          <p>No catch-up touches {filter === 'ALL' ? 'yet' : `with status ${filter}`}.</p>
+          {filter !== 'ALL' && (
+            <button onClick={() => setFilter('ALL')}
+              className="px-3 py-1 border border-gray-300 rounded text-xs font-semibold text-gray-600 hover:bg-gray-50">
+              Show all statuses
+            </button>
+          )}
         </div>
       )}
 
