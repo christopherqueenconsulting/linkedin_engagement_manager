@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { act, cleanup, render, screen, within } from '@testing-library/react'
+import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import App from '../App'
 
@@ -292,5 +292,61 @@ describe('the session round-trip (issue #1300)', () => {
     renderApp()
     expect(await screen.findByTestId('dashboard')).toBeTruthy()
     expect(screen.queryByRole('heading', { level: 1, name: /Your LinkedIn content/i })).toBeNull()
+  })
+})
+
+// The legal pages ride inside the marketing chrome for a logged-out visitor (issue #1300 §1), so
+// everything the front page's structure asserts has to hold there too — and the nav's in-page
+// anchors have to still lead somewhere from a path that has no sections.
+describe('the marketing chrome on the legal pages (issue #1300)', () => {
+  it('keeps one nav, one main and one footer on /privacy-policy', () => {
+    window.history.pushState({}, '', '/privacy-policy')
+    const { container } = renderApp()
+    expect(screen.getByRole('heading', { level: 1, name: 'Privacy Policy' })).toBeTruthy()
+    expect(container.querySelectorAll('nav')).toHaveLength(1)
+    expect(container.querySelectorAll('main')).toHaveLength(1)
+    expect(container.querySelectorAll('footer')).toHaveLength(1)
+    expect(container.querySelectorAll('[class*="sticky"][class*="top-0"]')).toHaveLength(1)
+  })
+
+  it('keeps one nav, one main and one footer on /terms-and-conditions', () => {
+    window.history.pushState({}, '', '/terms-and-conditions')
+    const { container } = renderApp()
+    expect(screen.getByRole('heading', { level: 1, name: 'Terms and Conditions' })).toBeTruthy()
+    expect(container.querySelectorAll('nav')).toHaveLength(1)
+    expect(container.querySelectorAll('main')).toHaveLength(1)
+    expect(container.querySelectorAll('footer')).toHaveLength(1)
+  })
+
+  it('points the in-page anchors at the front page rather than the current path', () => {
+    window.history.pushState({}, '', '/privacy-policy')
+    renderApp()
+    // A bare href="#features" here resolves to /privacy-policy#features — a dead control in both
+    // the nav and the footer, on both legal pages.
+    for (const link of screen.getAllByRole('link', { name: 'Features' })) {
+      expect(link.getAttribute('href')).toBe('/#features')
+    }
+  })
+
+  it('routes back to the front page and scrolls to the section that was asked for', async () => {
+    const scrollIntoView = vi.fn()
+    Element.prototype.scrollIntoView = scrollIntoView
+    window.history.pushState({}, '', '/privacy-policy')
+    renderApp()
+
+    act(() => {
+      screen.getAllByRole('link', { name: 'Pricing' })[0].click()
+    })
+
+    expect(window.location.pathname).toBe('/')
+    expect(screen.getByRole('heading', { level: 1, name: /Your LinkedIn content/i })).toBeTruthy()
+    await waitFor(() => expect(scrollIntoView).toHaveBeenCalled())
+  })
+
+  it('leaves the anchors as plain hashes on the front page, where the browser handles them', () => {
+    renderApp()
+    for (const link of screen.getAllByRole('link', { name: 'Features' })) {
+      expect(link.getAttribute('href')).toBe('#features')
+    }
   })
 })

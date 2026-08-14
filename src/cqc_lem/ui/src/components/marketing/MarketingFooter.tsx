@@ -1,6 +1,7 @@
 import { Link } from 'react-router-dom'
 import { useAppInfo } from '../../hooks/useAppInfo'
 import LegalDisclaimer from './LegalDisclaimer'
+import NavAnchor from './NavAnchor'
 import { NAV_ANCHORS } from './navAnchors'
 
 // The marketing page's single footer (issue #1300). The one it replaces hardcoded "© 2024" and sat
@@ -35,9 +36,9 @@ export default function MarketingFooter() {
             <ul className="flex flex-col gap-3">
               {NAV_ANCHORS.map(({ href, label }) => (
                 <li key={href}>
-                  <a href={href} className="text-white hover:text-brand-300 transition-colors">
+                  <NavAnchor href={href} className="text-white hover:text-brand-300 transition-colors">
                     {label}
-                  </a>
+                  </NavAnchor>
                 </li>
               ))}
               <li>

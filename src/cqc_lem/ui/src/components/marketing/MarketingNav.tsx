@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom'
 import { useAuth } from '../../contexts/AuthContext'
 import CtaButton from './CtaButton'
 import Icon from './Icon'
+import NavAnchor from './NavAnchor'
 import { NAV_ANCHORS } from './navAnchors'
 
 // The marketing page's own nav (issue #1300) — and the ONLY one it renders. The page used to draw
@@ -32,13 +33,13 @@ export default function MarketingNav() {
 
         <div className="hidden md:flex items-center gap-6 ml-4">
           {NAV_ANCHORS.map(({ href, label }) => (
-            <a
+            <NavAnchor
               key={href}
               href={href}
               className="text-sm font-medium text-ink-600 hover:text-brand-700 transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600"
             >
               {label}
-            </a>
+            </NavAnchor>
           ))}
         </div>
 
@@ -77,13 +78,13 @@ export default function MarketingNav() {
           <ul className="flex flex-col">
             {NAV_ANCHORS.map(({ href, label }) => (
               <li key={href}>
-                <a
+                <NavAnchor
                   href={href}
-                  onClick={() => setMenuOpen(false)}
+                  onNavigate={() => setMenuOpen(false)}
                   className="flex items-center min-h-11 text-base font-medium text-ink-700 hover:text-brand-700"
                 >
                   {label}
-                </a>
+                </NavAnchor>
               </li>
             ))}
             <li className="pt-2">
