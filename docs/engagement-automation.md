@@ -223,7 +223,8 @@ thread replies, likes, whether we replied, `visible_most_relevant`.
   'Most relevant' but present under 'Most recent' (the May-2026 demotion signal), NULL when the
   sort control couldn't be read. NULL rows excluded from the demotion denominator. What separates
   the two no-label cases is the evidence scan: a row that still NAMES a sort is drift and stays
-  NULL, everything else is an affordance LinkedIn did not render.
+  NULL, a scan that came back blind stays NULL too (an empty capture is equally a failed read), and
+  a scan that described the page without naming a sort is an affordance LinkedIn did not render.
 - Unfindable comment = SKIPPED.
 - Weekly report (`auto_weekly_comment_quality`) ships rates to PostHog + `/user/engagement-analytics`.
 - Demotion rate > `COMMENT_DEMOTION_HOLD_RATE` on ≥`COMMENT_QUALITY_MIN_SAMPLE` readable readings

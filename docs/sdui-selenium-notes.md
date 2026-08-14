@@ -124,9 +124,17 @@ What changed in response:
   offered no ordering, so every comment is shown and there is nothing to be demoted within. NULL had
   meant this reading was excluded from the demotion denominator exactly like a genuinely unreadable
   one — the starved denominator #818 is really about (18 of 24 checked readings before 2026-08-05).
-  The gate is the same `keyword` row that decides the level, so the inference can never fire on real
-  drift; the only way it can be wrong is to UNDER-report demotion, which softens the commenting hold
-  and can never falsely trip it.
+  The gate is the same `keyword` row that decides the level, so the inference never fires on a page
+  that still NAMES a control we cannot reach. It is not a proof of no drift: a label rotated to
+  wording with no sort word in it produces `header` rows exactly like an absent control does, which
+  is why the direction matters — the inference can only UNDER-report demotion, softening the
+  commenting hold, never falsely tripping it.
+- **A blind scan is NOT an absent affordance, and reads NULL.** `scan_sort_control_candidates`
+  returns `[]` both for "nothing describable" and for "the read failed", deliberately not telling
+  them apart, so inferring from `[]` would file an `execute_script` fault as a healthy reading — the
+  "we couldn't tell" → "fine" collapse the three-valued column exists to prevent. A page that
+  rendered comments has header controls to describe, so `[]` is the abnormal case. The LEVEL decision
+  is unaffected: evidence we do not have never warrants a warning either.
 
 ## The Catch-up feed is full SDUI — no `data-view-name`, no `<li>` cards
 

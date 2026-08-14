@@ -676,12 +676,32 @@ class TestReadCommentOutcome:
                 es, [TestReportSortControlMiss._LIVE_HEADER_CANDIDATE])
         assert out["status"] == "checked" and out["visible_most_relevant"] is True
 
-    def test_a_blind_scan_reads_the_same_way(self):
-        # Nothing describable on the page is not evidence that a control was there — the same
-        # reading the level decision makes (`test_an_empty_scan_is_debug_too`).
+    def test_a_blind_scan_leaves_visibility_null(self):
+        # [] is BOTH "nothing describable on the page" and "the scan itself failed" —
+        # `scan_sort_control_candidates` deliberately does not tell them apart, and
+        # `_report_sort_control_miss` returns [] from its except path too. Inferring an absent
+        # affordance from it would file an `execute_script` fault as a healthy reading, which is the
+        # "we couldn't tell" → "fine" collapse this column exists to prevent. A page that rendered
+        # comments has header controls to describe, so [] is the abnormal case.
         with ExitStack() as es:
             out = self._found_on_an_unsorted_thread(es, [])
-        assert out["visible_most_relevant"] is True
+        assert out["status"] == "checked" and out["visible_most_relevant"] is None
+
+    def test_a_scan_that_failed_leaves_visibility_null(self):
+        # The same reading through the REAL report path: evidence collection never raises, so a
+        # WebDriver fault arrives as []. It must not become a healthy 1.
+        our_tb = MagicMock()
+        our_tb.text = "Latency is the tell here"
+        items = [(our_tb, MagicMock(), "https://www.linkedin.com/in/me/")]
+        with ExitStack() as es:
+            driver = _outcome_env(es, items, sort_label="")
+            _p(es, "_thread_replies", return_value=[])
+            _p(es, "track_selector_evidence")
+            _p(es, "log_debug")
+            _p(es, "_diagnose_sort_control_miss", side_effect=RuntimeError("stale page"))
+            out = _fn("_read_comment_outcome")(driver, MagicMock(), 1, "https://post", "me",
+                                               "Latency is the tell here")
+        assert out["status"] == "checked" and out["visible_most_relevant"] is None
 
     def test_a_page_that_still_names_a_sort_leaves_visibility_null(self):
         # Real drift: the affordance IS rendered and our chain cannot reach it, so we know nothing

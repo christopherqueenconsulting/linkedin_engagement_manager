@@ -1620,16 +1620,25 @@ def _read_comment_outcome(driver, wait, user_id: int, post_url: str, our_slug: s
     # needs, so it runs before the visibility decision, not after it.
     no_sort_offered = False
     if items and not sort_label:
-        no_sort_offered = not _page_still_names_a_sort(
-            _report_sort_control_miss(driver, user_id, post_url))
+        evidence = _report_sort_control_miss(driver, user_id, post_url)
+        # A BLIND scan is not evidence of an absent affordance. `scan_sort_control_candidates`
+        # returns [] both for "nothing describable on the page" and for "the read itself failed",
+        # deliberately not telling them apart, and `_report_sort_control_miss` returns [] from its
+        # own except path too — so an `execute_script` fault would otherwise read as "LinkedIn
+        # offered no ordering" and record a healthy 1. That is "we couldn't tell" filed as "fine",
+        # which is the one thing this three-valued column exists to prevent. A page that rendered
+        # comments at all has header controls to describe, so [] here is the abnormal case: it stays
+        # NULL. The LEVEL decision below is unaffected — evidence we do not have never warns.
+        no_sort_offered = bool(evidence) and not _page_still_names_a_sort(evidence)
 
     visible = None
     if ours is not None:
         # Only the DEFAULT sort answers the question this feature exists to ask — or the absence of
         # any sort at all, which answers it the same way (#1117, owner decision 2B): on a thread
         # LinkedIn offered no ordering for, every comment is shown and there is nothing to be
-        # demoted within, so a comment we FOUND is visible. Gated on the evidence scan naming no
-        # sort, so it can never fire on real drift; NULL there is the starved denominator #818 is
+        # demoted within, so a comment we FOUND is visible. Gated on a scan that described the page
+        # and named no sort in it, so it never fires on a page still NAMING a control we cannot
+        # reach, nor on a capture that saw nothing; NULL there is the starved denominator #818 is
         # about, and the only way this inference can be wrong is to UNDER-report demotion, which
         # softens the commenting hold rather than falsely tripping it.
         visible = True if sort_label == _SORT_MOST_RELEVANT or no_sort_offered else None

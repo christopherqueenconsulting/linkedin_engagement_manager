@@ -13,9 +13,10 @@ sort, or present on a thread LinkedIn rendered no sort control for at all — no
 there, so nothing is demoted within it), 0 (absent under the default sort but present under
 'Most recent' — demoted) or NULL (ambiguous). NULL rows are excluded from the demotion denominator
 entirely rather than counted as healthy, because treating "we couldn't tell" as "fine" is exactly
-how a silent kill stays silent. What earns the 1 on an unsorted thread is the evidence scan finding
-nothing that NAMES a sort (`posting._page_still_names_a_sort`) — a page that still names one we
-cannot resolve is drift and stays NULL (#1117).
+how a silent kill stays silent. What earns the 1 on an unsorted thread is an evidence scan that
+DESCRIBED the page and found nothing NAMING a sort (`posting._page_still_names_a_sort`) — a page that
+still names one we cannot resolve is drift and stays NULL, and so does a scan that came back blind,
+since an empty capture is equally a failed read (#1117).
 """
 
 import os
