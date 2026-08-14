@@ -11,7 +11,9 @@ These rules apply to all files under `tests/`.
 ```
 tests/unit/          Fast, no real services — mock everything
 tests/integration/   Real MySQL + Redis — use service containers in CI
-tests/e2e/           Real browser — use selenium/standalone-chrome
+                     TWO lanes only. #1215 deleted tests/e2e/; nothing in CI drives a
+                     browser. Selenium work is graded by the read-only live probe,
+                     scripts/linkedin_live_validation.py.
 ```
 
 ## Fixture Usage
@@ -32,7 +34,6 @@ Import fixtures from `tests/conftest.py` by name:
 ```python
 @pytest.mark.unit          # default for all unit tests
 @pytest.mark.integration   # needs MySQL + Redis
-@pytest.mark.e2e           # needs selenium browser
 @pytest.mark.slow          # long-running, excluded from quick runs
 ```
 

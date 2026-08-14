@@ -187,20 +187,6 @@ def sample_message_data():
 
 
 @pytest.fixture
-def mock_replicate_training():
-    """Mock Replicate training API for avatar tests."""
-    with patch("replicate.trainings.create") as mock_create, \
-         patch("replicate.trainings.get") as mock_get:
-        training = MagicMock()
-        training.id = "train-mock-abc123"
-        training.status = "starting"
-        training.output = None
-        mock_create.return_value = training
-        mock_get.return_value = training
-        yield {"create": mock_create, "get": mock_get, "training": training}
-
-
-@pytest.fixture
 def mock_runwayml():
     """Mock the RunwayML SDK used by video_models (task completes immediately)."""
     with patch("cqc_lem.utilities.ai.video_models.RunwayML") as mock_cls, \
@@ -217,37 +203,6 @@ def mock_runwayml():
         yield {"client": client, "class": mock_cls, "task": task}
 
 
-def pytest_collection_modifyitems(config, items):
-    """Auto-skip tests whose external service keys are absent or placeholder."""
-    # --- REPLICATE_API_TOKEN ---
-    replicate_token = os.environ.get("REPLICATE_API_TOKEN", "")
-    replicate_missing = not replicate_token or replicate_token.startswith("your_") or replicate_token in ("test-key", "")
-    if replicate_missing:
-        skip_replicate = pytest.mark.skip(
-            reason=(
-                "REPLICATE_API_TOKEN is not set or is a placeholder — "
-                "set a real token to run avatar E2E tests"
-            )
-        )
-        for item in items:
-            if "requires_replicate" in item.keywords:
-                item.add_marker(skip_replicate)
-
-    # --- CAPSOLVER_API_KEY ---
-    capsolver_key = os.environ.get("CAPSOLVER_API_KEY", "")
-    capsolver_missing = not capsolver_key or capsolver_key.startswith("your_") or capsolver_key in ("", "test-key")
-    if capsolver_missing:
-        skip_capsolver = pytest.mark.skip(
-            reason=(
-                "CAPSOLVER_API_KEY is not set or is a placeholder — "
-                "sign up at capsolver.com and add the key to .env to run CAPTCHA E2E tests"
-            )
-        )
-        for item in items:
-            if "requires_capsolver" in item.keywords:
-                item.add_marker(skip_capsolver)
-
-
 # Marker for skipping tests that require real external services
 def pytest_configure(config):
     """Configure custom pytest markers."""
@@ -261,14 +216,5 @@ def pytest_configure(config):
         "markers", "requires_selenium: mark test as requiring real browser automation"
     )
     config.addinivalue_line(
-        "markers", "requires_replicate: mark test as requiring a real REPLICATE_API_TOKEN"
-    )
-    config.addinivalue_line(
-        "markers", "requires_capsolver: mark test as requiring a real CAPSOLVER_API_KEY"
-    )
-    config.addinivalue_line(
         "markers", "slow: mark test as slow running"
-    )
-    config.addinivalue_line(
-        "markers", "e2e: mark test as end-to-end test"
     )

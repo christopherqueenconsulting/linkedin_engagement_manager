@@ -57,8 +57,7 @@ src/cqc_lem/
 └── aws/           AWS CDK stacks — UNSUPPORTED deploy path (#973), kept for reference only
 tests/
 ├── unit/          Fast tests — mock all I/O
-├── integration/   Require MySQL + Redis service containers
-└── e2e/           Require selenium/standalone-chrome
+└── integration/   Require MySQL + Redis (TWO lanes; #1215 deleted tests/e2e/)
 compose/local/database/migrations/  Flyway migrations
 .litellm/         config.yaml + complexity_router.py (lem-router pre-call hook)
 ```
@@ -248,7 +247,7 @@ during the build, one before the PR:
 ## Testing Standards
 
 - All new/modified code: ≥80% patch coverage enforced by Codecov.
-- Three lanes: **unit** (`tests/unit/`, mock ALL I/O — fixtures `mock_openai_client` / `mock_database_connection` / `mock_selenium_driver`, plus hermetic autouse guards), **integration** (real MySQL + Redis containers), **e2e** (`selenium/standalone-chrome`).
+- **TWO lanes** (#1215): **unit** (`tests/unit/`, mock ALL I/O — fixtures `mock_openai_client` / `mock_database_connection` / `mock_selenium_driver`, plus hermetic autouse guards) and **integration** (real MySQL + Redis). **No CI lane drives a browser** — `scripts/linkedin_live_validation.py` grades Selenium.
 - Run: `poetry run pytest tests/unit -v --tb=short`; coverage: `poetry run pytest --cov=src/cqc_lem --cov-report=xml`.
 - Markers, fixtures, and lane selection: the **test-lanes** skill and `tests/README.md`.
 

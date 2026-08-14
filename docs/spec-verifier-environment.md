@@ -73,7 +73,8 @@ LEM already has a verifier layer that most issues can point at directly rather t
 
 | Kind of change | The verifier that already exists |
 |---|---|
-| Almost anything | The **test-lanes** skill: unit (mock all I/O) / integration (real MySQL+Redis) / e2e (Selenium); `--strict-markers`; ≥80% patch coverage enforced by Codecov |
+| Almost anything | The **test-lanes** skill: TWO lanes — unit (mock all I/O) / integration (real MySQL+Redis); `--strict-markers`; ≥80% patch coverage enforced by Codecov |
+| A real browser | No CI lane drives one (#1215). The read-only live probe `scripts/linkedin_live_validation.py` is the verifier — **linkedin-live-validation** skill, `docs/sdui-probe-coverage.md` |
 | Schema change | **db-migration** skill: Flyway timestamp versioning, additive-only DDL, `Migration Versions` CI check |
 | Feature toggle | **add-feature-flag** skill: fail-open-to-env-var contract, call-site read, `docs/feature-flags.md` registry row |
 | Merge-worthy PR | The six required CI contexts (`Unit Tests`, `Integration Tests`, `UI Build`, `Migration Versions`, `GitGuardian Scan`, `CodeQL PR Quality Gate`) — CLAUDE.md's CI Gates table |

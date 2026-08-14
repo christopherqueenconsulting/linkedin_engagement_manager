@@ -12,10 +12,12 @@ tests/
 │   ├── utilities/          # Tests for utility modules
 │   │   ├── ai/            # AI helper tests
 │   │   └── linkedin/      # LinkedIn integration tests
-├── integration/            # Integration tests (multiple components)
-├── e2e/                   # End-to-end tests (full workflows)
+├── integration/            # Integration tests (real MySQL + Redis)
 └── fixtures/              # Test data and fixtures
 ```
+
+**There are TWO lanes, not three.** What happened to the browser lane is
+[below](#there-is-no-e2e-lane-issue-1215).
 
 ## Test Categories
 
@@ -56,24 +58,40 @@ def test_engagement_workflow():
     pass
 ```
 
-### End-to-End Tests (`tests/e2e/`)
+### There is no e2e lane (issue #1215)
 
-Tests that verify complete user workflows from start to finish.
+`tests/e2e/` was deleted, along with `e2e-coverage.yml` and the `e2e` Codecov flag. **A change that
+needs a real browser is graded by the read-only live probe, not by a CI lane** — run
+`scripts/linkedin_live_validation.py` (the **linkedin-live-validation** skill; `docs/sdui-probe-coverage.md`).
 
-**Characteristics:**
-- Simulate real user scenarios
-- May require full application stack
-- Slowest test category
-- Focus on business value and user experience
+**Why, with the measurement.** The lane claimed to be the browser tier and never was. Its last run
+before deletion was **6 passed, 11 skipped, no browser**:
 
-**Example:**
-```python
-@pytest.mark.e2e
-def test_post_creation_and_publishing():
-    """Test complete post creation and publishing workflow."""
-    # Tests entire workflow
-    pass
-```
+- The 6 that passed were pure `unittest.mock` tests — no browser, no database, no server. Every
+  behaviour they asserted was **already covered in `tests/unit/`**: the carousel/video publish paths
+  in `test_run_automation_posting.py`, `_is_local_image_path` in `utilities/linkedin/test_poster.py`,
+  `API_URL_FINAL` in `utilities/test_env_constants_url.py`, orphan re-queueing in
+  `app/test_run_scheduler.py`. Nothing was lost by deleting them.
+- 5 skipped on `REPLICATE_API_TOKEN` / `CAPSOLVER_API_KEY`, which are not repo secrets and never
+  have been, so those tests had **never executed in CI**. The one genuine browser test among them
+  (the Playwright avatar page) had also gone stale: it authenticated by writing a `lem_session` key
+  into `localStorage`, and sessions have been httpOnly cookies since #745/#914.
+- 6 skipped because they need MySQL and the workflow declared **no service container**. Those were
+  the only tests in the lane worth keeping, and they now live — and actually run — in
+  `tests/integration/test_post_publish_workflow_db.py`.
+- The whole job was `continue-on-error: true`, so none of that was ever visible as a failure. It
+  still installed Chromium and booted a FastAPI server on every PR to run mocks.
+
+Rebuilding it as ~15 genuinely browser-driven tests was the alternative, and was rejected: the thing
+worth driving a browser against is LinkedIn, whose SDUI markup changes without notice. A CI browser
+can only be pointed at a fixture of that markup, which grades our selectors against a copy that goes
+stale precisely when the real page moves — while the live probe already grades the real page and
+files one issue per drift.
+
+**One thing the old lane's absence had been hiding**: nothing in CI ever imported the probe's
+production symbols, so three restructure slices broke its lazy imports without anything going red.
+`tests/unit/test_live_validation_lazy_imports.py` now resolves every deferred `cqc_lem` import in
+that script, statically, on every PR.
 
 ## One workflow per lane — do not add a "run everything" workflow
 
@@ -83,10 +101,10 @@ Each lane has exactly one CI workflow, and that workflow owns its Codecov flag:
 |---|---|---|---|
 | unit | `unit-tests.yml` | `Unit Tests (Python 3.12)` — **required** | `unit` |
 | integration | `integration-coverage.yml` | `Integration Tests` — **required** | `integration` |
-| e2e | `e2e-coverage.yml` | `E2E Tests` | `e2e` |
 
-Those three flags are the *only* ones `codecov.yml` declares, and the required checks are the only
-ones branch protection reads.
+Those two flags are the *only* ones `codecov.yml` declares, and both checks are required by branch
+protection. `codecov.yml`'s `after_n_builds` counts **uploads, not lanes** — the unit lane is
+sharded across two jobs that both upload under `unit`, so it is 3.
 
 A general `Test Suite` workflow used to run alongside them, invoking pytest **three times** in one
 job — `tests/unit`, then `tests/integration`, then `pytest tests/` with coverage, which re-ran both.
@@ -125,7 +143,6 @@ Tests use markers to categorize and filter execution:
 
 - `@pytest.mark.unit` - Unit tests
 - `@pytest.mark.integration` - Integration tests
-- `@pytest.mark.e2e` - End-to-end tests
 - `@pytest.mark.slow` - Slow-running tests
 - `@pytest.mark.requires_openai` - Requires OpenAI API access
 - `@pytest.mark.requires_database` - Requires database connection
@@ -155,11 +172,8 @@ poetry run pytest tests/unit/utilities/test_db.py::TestDatabaseOperations::test_
 # Run only unit tests
 poetry run pytest tests/unit -v
 
-# Run only integration tests
+# Run only integration tests (needs MySQL + Redis)
 poetry run pytest tests/integration -v
-
-# Run only e2e tests
-poetry run pytest tests/e2e -v
 ```
 
 ### Running by Marker
@@ -458,7 +472,7 @@ def test_with_fixture(sample_linkedin_profile):
 
 - Use `test_*.py` pattern for test files
 - Match source file names: `utilities/db.py` → `test_db.py`
-- Place in appropriate directory (unit/integration/e2e)
+- Place in the lane that owns it: `tests/unit/` (mock all I/O) or `tests/integration/` (real MySQL + Redis)
 
 ### Test Function Naming
 

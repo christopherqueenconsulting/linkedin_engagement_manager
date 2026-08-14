@@ -38,8 +38,7 @@ src/cqc_lem/
 └── aws/           AWS CDK stacks
 tests/
 ├── unit/          Fast tests — mock all I/O
-├── integration/   Require MySQL + Redis service containers
-└── e2e/           Require selenium/standalone-chrome
+└── integration/   Require MySQL + Redis service containers  (TWO lanes — #1215 deleted tests/e2e/)
 .litellm/
 ├── config.yaml    LiteLLM model aliases and routing config
 └── complexity_router.py  Pre-call hook: routes lem-router by prompt complexity
@@ -125,7 +124,8 @@ Always use `get_docker_driver()` from `selenium_util.py`. Connect to `selenium-c
   - `mock_database_connection` fixture — patches `mysql.connector.connect`
   - `mock_selenium_driver` fixture — patches `selenium.webdriver.Chrome`
 - Integration tests in `tests/integration/` — use real MySQL + Redis.
-- E2E tests in `tests/e2e/` — use real standalone-chrome container.
+- **There is no e2e lane** (#1215 deleted it). Nothing in CI drives a browser; Selenium work is
+  graded by the read-only live probe, `scripts/linkedin_live_validation.py`.
 - Run: `poetry run pytest tests/unit -v --tb=short`
 - Run with coverage: `poetry run pytest --cov=src/cqc_lem --cov-report=xml`
 
