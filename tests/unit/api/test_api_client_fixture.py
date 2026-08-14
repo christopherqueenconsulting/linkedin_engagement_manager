@@ -34,13 +34,37 @@ _OWN_APP_MODULES = {
 }
 
 
+def _client_names(tree: ast.AST) -> set[str]:
+    """Every local name this module bound to `TestClient`, alias included.
+
+    Matching the literal name `TestClient` alone would let
+    `from fastapi.testclient import TestClient as Client` past the scan, which is the one shape a
+    guard keyed on a spelling always misses.
+    """
+    names = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            names |= {a.asname or a.name for a in node.names if a.name == "TestClient"}
+    return names
+
+
 def _test_client_sites() -> list[str]:
-    """Every `TestClient(...)` construction under tests/, as `<relative path>:<line>`."""
+    """Every `TestClient(...)` construction under tests/, as `<relative path>:<line>`.
+
+    Both call shapes count: the bare name (`TestClient(app)`, aliases resolved by `_client_names`)
+    and the attribute one (`testclient.TestClient(app)`), which no import statement binds a name for.
+    """
     sites = []
     for path in sorted(_TESTS_ROOT.rglob("*.py")):
         tree = ast.parse(path.read_text())
+        local_names = _client_names(tree) | {"TestClient"}
         for node in ast.walk(tree):
-            if isinstance(node, ast.Call) and getattr(node.func, "id", None) == "TestClient":
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            constructs = (isinstance(func, ast.Name) and func.id in local_names) or (
+                isinstance(func, ast.Attribute) and func.attr == "TestClient")
+            if constructs:
                 sites.append(f"{path.relative_to(_TESTS_ROOT)}:{node.lineno}")
     return sites
 
@@ -87,6 +111,12 @@ class TestNoModuleScopePatchLeaksIntoTheApiLayer:
     module scope. A fixture that starts that patch on `cqc_lem.app.engagement.posting` and THEN
     imports the app hands `main` the mock for the rest of the session — `p.stop()` restores the
     defining module and cannot reach the copy `main` already took.
+
+    What it sees, honestly: a leak written at module scope is caught whatever the order, because
+    pytest imports every collected module before it runs anything. A leak a FIXTURE leaves behind is
+    only caught when the offending file runs before this one in this process — and under
+    `--dist loadfile` "this process" is one xdist worker's share of the files. So it is a tripwire
+    over the lane, not a proof about every file in it; the scan above is the order-independent half.
     """
 
     @pytest.mark.parametrize("module_name", _api_modules())
