@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.148.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.147.0...v0.148.0) (2026-08-14)
+
+
+### Features
+
+* **content:** burn muted-autoplay captions into video posts (closes [#1278](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1278)) ([#1437](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1437)) ([adc9eb0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/adc9eb0f028cd98b7c02bc84afb1b6a85bbb088b))
+
+
+### Bug Fixes
+
+* **agent-pipeline:** retry a truncated hourly-triage LLM response, scale max_tokens ([#1472](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1472)) ([2d70801](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/2d70801d74424b2a9cff95730375453a58749fa3))
+* **content:** recover a fenced carousel JSON reply instead of dropping the deck ([#1485](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1485)) ([46636b7](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/46636b7a71fa6e2596ee004f6686f767000c4dac))
+* **db:** resolve MYSQL_PORT before the connector calls int() on it ([#1319](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1319)) ([#1486](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1486)) ([8d5ba15](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/8d5ba15e16bc976321843a9dd307d7826184b86d))
+* **groups:** stop the groups sync storing groups the user was only offered ([#1316](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1316)) ([#1484](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1484)) ([89403e9](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/89403e98fe88b3fed3384642b19ae7b04d79cf99))
+* **infra:** sweep the vestigial selenium-chrome container so Created stays a real signal (closes [#1092](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1092)) ([#1479](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1479)) ([523d594](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/523d59492c901684bc86f83e2cf33ec02be1ac9f))
+* **observability:** date the app log file per record, not per process (closes [#1093](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1093)) ([#1478](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1478)) ([91d19ee](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/91d19eedaa4917ac78ee91a0887ca6e5e3ef5d7f))
+* **observability:** stop the test suite publishing to production PostHog ([#1451](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1451)) ([8ab180b](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/8ab180b338544d0ce4e9bd7cbda6988bf50d471a))
+* **utilities:** lazy Pexels client, guarded api_call telemetry, structured MIME parse log (closes [#1103](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1103)) ([#1477](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1477)) ([a265df1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/a265df1c1b901f03c66006422cfe7638f98c98fb))
+
 ## [0.147.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.146.0...v0.147.0) (2026-08-13)
 
 
