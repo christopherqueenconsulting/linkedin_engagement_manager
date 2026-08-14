@@ -40,8 +40,7 @@ class TestConnectionRequestDb:
     def test_count_invites_sent_today(self, fake_cursor):
         # Combined daily budget (owner review): counted from the immutable ENGAGED/SUCCESS invite logs
         # (which cover BOTH reactive and proactive sends), not from connection_requests.updated_at.
-        conn, cur = fake_cursor(lastrowid=7)
-        cur.fetchone.return_value = (4,)
+        conn, cur = fake_cursor(lastrowid=7, fetch_one=(4,))
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import CONNECTION_REQUEST_SENT_MESSAGE, count_invites_sent_today
             assert count_invites_sent_today(1) == 4
@@ -50,8 +49,7 @@ class TestConnectionRequestDb:
         assert params == (1, "engaged", "success", CONNECTION_REQUEST_SENT_MESSAGE)
 
     def test_list_returns_pagination_shape(self, fake_cursor):
-        conn, cur = fake_cursor(lastrowid=7)
-        cur.fetchone.return_value = {"c": 3}
+        conn, cur = fake_cursor(lastrowid=7, fetch_one={"c": 3})
         cur.fetchall.return_value = [{"id": 1, "created_at": None, "status": "pending"}]
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_connection_requests

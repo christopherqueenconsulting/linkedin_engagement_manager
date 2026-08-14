@@ -179,8 +179,7 @@ class TestPostStats:
                                  "tactical_list", "bold_claim", "text", "AI hiring", "awareness")
 
     def test_get_post_engagement_rows_none_coerced(self, fake_cursor):
-        conn, cur = fake_cursor()
-        cur.fetchall.return_value = None
+        conn, cur = fake_cursor(fetch_all=None)
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_post_engagement_rows
             assert get_post_engagement_rows(1) == []
@@ -219,8 +218,7 @@ class TestScheduledDms:
 
     def test_get_scheduled_dms_serializes_datetimes(self, fake_cursor):
         when = datetime(2026, 7, 10, 15, 30)
-        conn, cur = fake_cursor()
-        cur.fetchone.return_value = {"c": 1}
+        conn, cur = fake_cursor(fetch_one={"c": 1})
         cur.fetchall.return_value = [{"id": 1, "scheduled_time": when,
                                       "created_at": when, "updated_at": None}]
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):

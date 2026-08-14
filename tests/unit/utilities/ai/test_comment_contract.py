@@ -395,12 +395,9 @@ class TestPermalinkCommentPathSkips:
 
 
 class TestRecentCommentHistoryQuery:
-    def test_reads_successful_comment_bodies_newest_first(self):
-        from cqc_lem.utilities import db
+    def test_reads_successful_comment_bodies_newest_first(self, fake_cursor):
         from cqc_lem.utilities.db import LogActionType, LogResultType, get_recent_comment_texts
-        conn = MagicMock()
-        cursor = conn.cursor.return_value
-        cursor.fetchall.return_value = [("newest comment",), ("older comment",)]
+        conn, cursor = fake_cursor(fetch_all=[("newest comment",), ("older comment",)])
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             out = get_recent_comment_texts(7, limit=25)
         assert out == ["newest comment", "older comment"]

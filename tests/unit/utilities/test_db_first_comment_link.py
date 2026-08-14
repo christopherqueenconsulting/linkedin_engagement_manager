@@ -61,8 +61,7 @@ class TestGetPostFirstCommentLink:
 
 class TestLinkInFirstCommentPref:
     def test_default_true(self, fake_cursor):
-        conn, _ = fake_cursor()
-        conn.cursor.return_value.fetchone.return_value = None
+        conn, _ = fake_cursor(fetch_one=None)
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_engagement_preferences
             assert get_engagement_preferences(1)["link_in_first_comment"] is True

@@ -437,7 +437,6 @@ class TestCommentBlockedDetection:
     def test_a_walk_cut_short_by_the_deadline_never_badges_the_author(self):
         # "No card offered a comment affordance" is only evidence when the walk finished. A run that
         # ran out of time says how far WE got, not what the author allows.
-        from cqc_lem.app.engagement import feed as ra
         ticks = iter([0.0])   # the target-loop check passes, the inner one is past the deadline
 
         def _clock():
@@ -467,7 +466,6 @@ class TestCommentBlockedDetection:
         assert r["blocked"].call_count == 2
 
     def test_the_badge_crossing_is_announced_exactly_once(self):
-        from cqc_lem.app.engagement import feed as ra
         from cqc_lem.utilities.db import ENGAGEMENT_TARGET_BLOCKED_BADGE_STREAK as THRESHOLD
         for streak, announced in ((THRESHOLD - 1, 0), (THRESHOLD, 1), (THRESHOLD + 1, 0)):
             with patch(f"{_FEED}.log_info") as info:
@@ -477,13 +475,11 @@ class TestCommentBlockedDetection:
             assert len([c for c in info.call_args_list
                         if "un-commentable" in str(c.args[0])]) == announced
 
-    def test_a_landed_comment_clears_the_streak_in_the_same_statement(self):
+    def test_a_landed_comment_clears_the_streak_in_the_same_statement(self, fake_cursor):
         # record_target_engagement is the ONE place the streak resets — a comment landing IS the
         # proof the target is commentable.
         from cqc_lem.utilities import db
-        conn, cursor = MagicMock(), MagicMock()
-        cursor.rowcount = 1
-        conn.cursor.return_value = cursor
+        conn, cursor = fake_cursor(rowcount=1)
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             assert db.record_target_engagement(1, "https://www.linkedin.com/in/jane") is True
         sql = cursor.execute.call_args[0][0]

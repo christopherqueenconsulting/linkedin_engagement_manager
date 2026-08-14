@@ -231,8 +231,7 @@ class TestBlockedAndFollowDefaults:
 
 class TestRecordTargetCommentBlocked:
     def test_increments_and_returns_the_new_streak(self, fake_cursor):
-        conn, cursor = fake_cursor()
-        cursor.fetchone.return_value = (2, "unknown")
+        conn, cursor = fake_cursor(fetch_one=(2, "unknown"))
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import record_target_comment_blocked
             assert record_target_comment_blocked(1, "https://x/in/jane").streak == 2
@@ -263,8 +262,7 @@ class TestRecordTargetCommentBlocked:
 
 class TestConnectEscalation:
     def _sql(self, fake_cursor):
-        conn, cursor = fake_cursor()
-        cursor.fetchone.return_value = (2, "needs_connection")
+        conn, cursor = fake_cursor(fetch_one=(2, "needs_connection"))
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import record_target_comment_blocked
             visit = record_target_comment_blocked(1, "https://x/in/jane")
@@ -407,8 +405,7 @@ class TestSetTargetFollowStatus:
 class TestRecordTargetFollowFailure:
     def test_goes_terminal_at_the_attempt_cap(self, fake_cursor):
         from cqc_lem.utilities.db import ENGAGEMENT_TARGET_FOLLOW_MAX_ATTEMPTS
-        conn, cursor = fake_cursor()
-        cursor.fetchone.return_value = (2,)
+        conn, cursor = fake_cursor(fetch_one=(2,))
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import record_target_follow_failure
             assert record_target_follow_failure(1, "https://x/in/jane") == 2

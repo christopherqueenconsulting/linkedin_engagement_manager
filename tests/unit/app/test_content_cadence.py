@@ -302,11 +302,8 @@ class TestGenerationCarriesTheDayType:
             _create_content_for_planned_post(post, {})
         assert create.call_args.kwargs["day_weekday"] is None
 
-    def test_buffer_query_selects_the_scheduled_time(self):
-        from unittest.mock import MagicMock
-        conn, cursor = MagicMock(), MagicMock()
-        cursor.fetchall.return_value = []
-        conn.cursor.return_value = cursor
+    def test_buffer_query_selects_the_scheduled_time(self, fake_cursor):
+        conn, cursor = fake_cursor()
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_planned_posts_within_buffer
             get_planned_posts_within_buffer(1, days=5, max_posts=5)

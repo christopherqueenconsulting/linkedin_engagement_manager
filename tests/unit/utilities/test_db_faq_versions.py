@@ -1,7 +1,7 @@
 """Unit tests for the auto-FAQ DB helpers — issue #507 (entries, versions, candidate queue)."""
 
 from datetime import datetime
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import mysql.connector
 import pytest
@@ -16,14 +16,6 @@ _ENTRY = {"id": 7, "question": "Does it work with Sales Navigator?", "answer": "
           "created_at": datetime(2026, 7, 25, 9, 0), "updated_at": datetime(2026, 7, 25, 9, 0)}
 _VERSION = {"id": 3, "faq_entry_id": 7, "question": _ENTRY["question"], "answer": "Not yet.",
             "status": "published", "source": "auto", "created_at": datetime(2026, 7, 25, 9, 0)}
-
-
-def _failing_conn():
-    conn = MagicMock()
-    cur = MagicMock()
-    cur.execute.side_effect = mysql.connector.Error("boom")
-    conn.cursor.return_value = cur
-    return conn, cur
 
 
 class TestGetFaqEntries:
@@ -43,8 +35,8 @@ class TestGetFaqEntries:
             assert get_faq_entries(statuses=("nonsense",)) == []
         connect.assert_not_called()
 
-    def test_db_error_returns_an_empty_list(self):
-        conn, _cur = _failing_conn()
+    def test_db_error_returns_an_empty_list(self, fake_cursor):
+        conn, _cur = fake_cursor(execute_error=mysql.connector.Error("boom"))
         with patch(f"{_GET_CONN}", return_value=conn), patch(f"{_FEEDBACK}.log_error") as log:
             from cqc_lem.utilities.db import get_faq_entries
             assert get_faq_entries() == []
@@ -65,8 +57,8 @@ class TestGetFaqEntryByCluster:
             assert get_faq_entry_by_cluster(None) is None
         connect.assert_not_called()
 
-    def test_db_error_returns_none(self):
-        conn, _cur = _failing_conn()
+    def test_db_error_returns_none(self, fake_cursor):
+        conn, _cur = fake_cursor(execute_error=mysql.connector.Error("boom"))
         with patch(f"{_GET_CONN}", return_value=conn), patch(f"{_FEEDBACK}.log_error"):
             from cqc_lem.utilities.db import get_faq_entry_by_cluster
             assert get_faq_entry_by_cluster(42) is None
@@ -93,8 +85,8 @@ class TestUpsertFaqEntry:
             assert upsert_faq_entry("Q?", "") is None
         connect.assert_not_called()
 
-    def test_db_error_returns_none(self):
-        conn, _cur = _failing_conn()
+    def test_db_error_returns_none(self, fake_cursor):
+        conn, _cur = fake_cursor(execute_error=mysql.connector.Error("boom"))
         with patch(f"{_GET_CONN}", return_value=conn), patch(f"{_FEEDBACK}.log_error") as log:
             from cqc_lem.utilities.db import upsert_faq_entry
             assert upsert_faq_entry("Q?", "A.") is None
@@ -133,8 +125,8 @@ class TestFaqEntryVersions:
             assert get_faq_entry_versions(None) == []
         connect.assert_not_called()
 
-    def test_history_db_error_returns_an_empty_list(self):
-        conn, _cur = _failing_conn()
+    def test_history_db_error_returns_an_empty_list(self, fake_cursor):
+        conn, _cur = fake_cursor(execute_error=mysql.connector.Error("boom"))
         with patch(f"{_GET_CONN}", return_value=conn), patch(f"{_FEEDBACK}.log_error"):
             from cqc_lem.utilities.db import get_faq_entry_versions
             assert get_faq_entry_versions(7) == []
@@ -166,8 +158,8 @@ class TestApplyFaqEntryVersion:
             assert apply_faq_entry_version(7, None) is None
         connect.assert_not_called()
 
-    def test_db_error_returns_none(self):
-        conn, _cur = _failing_conn()
+    def test_db_error_returns_none(self, fake_cursor):
+        conn, _cur = fake_cursor(execute_error=mysql.connector.Error("boom"))
         with patch(f"{_GET_CONN}", return_value=conn), patch(f"{_FEEDBACK}.log_error") as log:
             from cqc_lem.utilities.db import apply_faq_entry_version
             assert apply_faq_entry_version(7, 3) is None
@@ -187,8 +179,8 @@ class TestGetFaqCandidateFeedback:
         assert "ORDER BY created_at ASC, id ASC" in sql
         assert params == ("triaged", 10)
 
-    def test_db_error_returns_an_empty_list(self):
-        conn, _cur = _failing_conn()
+    def test_db_error_returns_an_empty_list(self, fake_cursor):
+        conn, _cur = fake_cursor(execute_error=mysql.connector.Error("boom"))
         with patch(f"{_GET_CONN}", return_value=conn), patch(f"{_FEEDBACK}.log_error") as log:
             from cqc_lem.utilities.db import get_faq_candidate_feedback
             assert get_faq_candidate_feedback() == []

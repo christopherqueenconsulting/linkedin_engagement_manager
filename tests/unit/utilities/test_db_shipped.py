@@ -1,20 +1,12 @@
 """Unit tests for the shipped-notice DB helpers (issue #502)."""
 
 from datetime import datetime
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import mysql.connector
 import pytest
 
 pytestmark = pytest.mark.unit
-
-
-def _erroring_conn():
-    conn = MagicMock()
-    cur = MagicMock()
-    cur.execute.side_effect = mysql.connector.Error("boom")
-    conn.cursor.return_value = cur
-    return conn, cur
 
 
 class TestReporterMapping:
@@ -29,10 +21,10 @@ class TestReporterMapping:
         assert "f.user_id IS NOT NULL" in sql
         assert params == (498, 498)
 
-    def test_no_issue_number_and_db_errors_return_nothing(self):
+    def test_no_issue_number_and_db_errors_return_nothing(self, fake_cursor):
         from cqc_lem.utilities.db import get_feedback_reporters_for_issue
         assert get_feedback_reporters_for_issue(None) == []
-        conn, _cur = _erroring_conn()
+        conn, _cur = fake_cursor(execute_error=mysql.connector.Error("boom"))
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             assert get_feedback_reporters_for_issue(498) == []
 
@@ -59,10 +51,10 @@ class TestResolveCluster:
         assert "LEFT JOIN feedback s ON s.id = f.cluster_id" in sql
         assert "f.github_issue_number = %s OR s.github_issue_number = %s" in sql
 
-    def test_zero_on_no_issue_or_error(self):
+    def test_zero_on_no_issue_or_error(self, fake_cursor):
         from cqc_lem.utilities.db import mark_feedback_resolved_for_issue
         assert mark_feedback_resolved_for_issue(0) == 0
-        conn, _cur = _erroring_conn()
+        conn, _cur = fake_cursor(execute_error=mysql.connector.Error("boom"))
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             assert mark_feedback_resolved_for_issue(498) == 0
 
@@ -85,11 +77,11 @@ class TestRecordShippedNotice:
             assert record_shipped_notice(498, "**Fixed:** X (#498)") == 11
         assert "SELECT id FROM shipped_notices" in cur.execute.call_args[0][0]
 
-    def test_rejects_incomplete_input_and_survives_errors(self):
+    def test_rejects_incomplete_input_and_survives_errors(self, fake_cursor):
         from cqc_lem.utilities.db import record_shipped_notice
         assert record_shipped_notice(0, "line") is None
         assert record_shipped_notice(498, "   ") is None
-        conn, _cur = _erroring_conn()
+        conn, _cur = fake_cursor(execute_error=mysql.connector.Error("boom"))
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             assert record_shipped_notice(498, "line") is None
 
@@ -114,15 +106,15 @@ class TestRecipients:
         assert cur.execute.call_args[0][1] == (11,)
 
         assert get_shipped_notice_recipient_ids(None) == []
-        conn, _cur = _erroring_conn()
+        conn, _cur = fake_cursor(execute_error=mysql.connector.Error("boom"))
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             assert get_shipped_notice_recipient_ids(11) == []
 
-    def test_missing_ids_and_errors_are_false(self):
+    def test_missing_ids_and_errors_are_false(self, fake_cursor):
         from cqc_lem.utilities.db import record_shipped_notice_recipient
         assert record_shipped_notice_recipient(None, 4) is False
         assert record_shipped_notice_recipient(11, None) is False
-        conn, _cur = _erroring_conn()
+        conn, _cur = fake_cursor(execute_error=mysql.connector.Error("boom"))
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             assert record_shipped_notice_recipient(11, 4) is False
 
@@ -147,7 +139,7 @@ class TestUnseenNotices:
             get_unseen_shipped_notices(4, delay_hours=-5)
         assert cur.execute.call_args[0][1][1] == 0
 
-        conn, _cur = _erroring_conn()
+        conn, _cur = fake_cursor(execute_error=mysql.connector.Error("boom"))
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_unseen_shipped_notices
             assert get_unseen_shipped_notices(4) == []
@@ -165,7 +157,7 @@ class TestSeenAndChangelog:
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             assert mark_shipped_notice_seen(11, 4) is False
 
-        conn, _cur = _erroring_conn()
+        conn, _cur = fake_cursor(execute_error=mysql.connector.Error("boom"))
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             assert mark_shipped_notice_seen(11, 4) is False
 
@@ -179,7 +171,7 @@ class TestSeenAndChangelog:
         assert "ORDER BY shipped_at DESC" in sql
         assert params == (2,)
 
-        conn, _cur = _erroring_conn()
+        conn, _cur = fake_cursor(execute_error=mysql.connector.Error("boom"))
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_recent_shipped_notices
             assert get_recent_shipped_notices() == []
@@ -192,7 +184,7 @@ class TestSeenAndChangelog:
             assert get_shipped_notice_by_issue(498) == row
         assert cur.execute.call_args[0][1] == (498,)
 
-        conn, _cur = _erroring_conn()
+        conn, _cur = fake_cursor(execute_error=mysql.connector.Error("boom"))
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_shipped_notice_by_issue
             assert get_shipped_notice_by_issue(498) is None

@@ -7,19 +7,12 @@ after enough wrong guesses, and moving an email is recorded rather than silently
 
 import hashlib
 from datetime import datetime, timedelta, timezone
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import mysql.connector
 import pytest
 
 pytestmark = pytest.mark.unit
-
-
-def _conn_cursor() -> tuple:
-    conn = MagicMock()
-    cursor = MagicMock()
-    conn.cursor.return_value = cursor
-    return conn, cursor
 
 
 def _patch_conn(conn):
@@ -71,10 +64,10 @@ class TestTokenHashing:
 
 
 class TestSessionRowIsHashOnly:
-    def test_create_session_stores_the_hash_and_the_device_facts(self):
+    def test_create_session_stores_the_hash_and_the_device_facts(self, fake_cursor):
         from cqc_lem.utilities.db import create_session
 
-        conn, cursor = _conn_cursor()
+        conn, cursor = fake_cursor()
         with _patch_conn(conn):
             token = create_session(42, user_agent="Mozilla/5.0 (Macintosh) Chrome/1", ip="1.2.3.4")
 
@@ -91,21 +84,19 @@ class TestSessionRowIsHashOnly:
         assert _device_label(None) == "Unknown device"
         assert _device_label("Mozilla/5.0 (iPhone) Safari/604") == "Safari on iPhone"
 
-    def test_lookup_ignores_a_revoked_session(self):
+    def test_lookup_ignores_a_revoked_session(self, fake_cursor):
         from cqc_lem.utilities.db import get_session_user_id
 
-        conn, cursor = _conn_cursor()
-        cursor.fetchone.return_value = None
+        conn, cursor = fake_cursor(fetch_one=None)
         with _patch_conn(conn):
             assert get_session_user_id("tok") is None
         sql = cursor.execute.call_args_list[0][0][0]
         assert "revoked_at IS NULL" in sql
 
-    def test_lookup_touches_last_seen(self):
+    def test_lookup_touches_last_seen(self, fake_cursor):
         from cqc_lem.utilities.db import get_session_user_id
 
-        conn, cursor = _conn_cursor()
-        cursor.fetchone.return_value = {"user_id": 5, "created_at": datetime.now(timezone.utc)}
+        conn, cursor = fake_cursor(fetch_one={"user_id": 5, "created_at": datetime.now(timezone.utc)})
         with _patch_conn(conn):
             assert get_session_user_id("tok") == 5
         update = next(c for c in cursor.execute.call_args_list if "UPDATE" in c[0][0].upper())
@@ -113,10 +104,10 @@ class TestSessionRowIsHashOnly:
 
 
 class TestListAndRevoke:
-    def test_list_returns_no_token_material_and_flags_the_current_device(self):
+    def test_list_returns_no_token_material_and_flags_the_current_device(self, fake_cursor):
         from cqc_lem.utilities.db import list_user_sessions
 
-        conn, cursor = _conn_cursor()
+        conn, cursor = fake_cursor()
         cursor.fetchall.return_value = [
             {"id": 1, "session_token": _sha256("mine"), "label": "Chrome on macOS",
              "user_agent": "UA", "created_at": None, "last_seen_at": None, "expires_at": None},
@@ -132,10 +123,10 @@ class TestListAndRevoke:
         assert rows[1]["label"] == "Safari on iPhone"
         assert all("session_token" not in r for r in rows)
 
-    def test_list_with_no_current_token_marks_nothing_current(self):
+    def test_list_with_no_current_token_marks_nothing_current(self, fake_cursor):
         from cqc_lem.utilities.db import list_user_sessions
 
-        conn, cursor = _conn_cursor()
+        conn, cursor = fake_cursor()
         cursor.fetchall.return_value = [
             {"id": 1, "session_token": None, "label": "Chrome on macOS", "user_agent": None,
              "created_at": None, "last_seen_at": None, "expires_at": None},
@@ -144,10 +135,10 @@ class TestListAndRevoke:
             rows = list_user_sessions(7)
         assert rows[0]["is_current"] is False
 
-    def test_revoke_is_scoped_to_the_owner(self):
+    def test_revoke_is_scoped_to_the_owner(self, fake_cursor):
         from cqc_lem.utilities.db import revoke_session
 
-        conn, cursor = _conn_cursor()
+        conn, cursor = fake_cursor()
         cursor.rowcount = 0
         with _patch_conn(conn):
             assert revoke_session(7, 99) is False
@@ -155,10 +146,10 @@ class TestListAndRevoke:
         assert "user_id = %s" in sql
         assert 7 in params
 
-    def test_revoke_others_keeps_the_presented_token(self):
+    def test_revoke_others_keeps_the_presented_token(self, fake_cursor):
         from cqc_lem.utilities.db import revoke_other_sessions
 
-        conn, cursor = _conn_cursor()
+        conn, cursor = fake_cursor()
         cursor.rowcount = 3
         with _patch_conn(conn):
             assert revoke_other_sessions(7, keep_token="mine") == 3
@@ -167,20 +158,20 @@ class TestListAndRevoke:
         assert _sha256("mine") in params
         assert "mine" not in params
 
-    def test_revoke_others_without_a_token_revokes_everything(self):
+    def test_revoke_others_without_a_token_revokes_everything(self, fake_cursor):
         from cqc_lem.utilities.db import revoke_other_sessions
 
-        conn, cursor = _conn_cursor()
+        conn, cursor = fake_cursor()
         cursor.rowcount = 4
         with _patch_conn(conn):
             assert revoke_other_sessions(7) == 4
         sql, _ = cursor.execute.call_args[0]
         assert "session_token <>" not in sql
 
-    def test_db_error_revokes_nothing_rather_than_raising(self):
+    def test_db_error_revokes_nothing_rather_than_raising(self, fake_cursor):
         from cqc_lem.utilities.db import revoke_other_sessions, revoke_session
 
-        conn, cursor = _conn_cursor()
+        conn, cursor = fake_cursor()
         cursor.execute.side_effect = mysql.connector.Error("DB error")
         with _patch_conn(conn):
             assert revoke_other_sessions(7) == 0
@@ -188,58 +179,54 @@ class TestListAndRevoke:
 
 
 class TestPinLockout:
-    def test_wrong_pin_locks_after_the_configured_attempts(self):
+    def test_wrong_pin_locks_after_the_configured_attempts(self, fake_cursor):
         from cqc_lem.utilities.db import verify_pin_for_email
         from cqc_lem.utilities.env_constants import PIN_MAX_ATTEMPTS
 
-        conn, cursor = _conn_cursor()
-        cursor.fetchone.side_effect = [None, None]  # not locked, PIN does not match
+        conn, cursor = fake_cursor(fetch_one_side_effect=[None, None])
         with _patch_conn(conn):
             assert verify_pin_for_email("user@example.com", "wrong") is False
         update = next(c for c in cursor.execute.call_args_list if "attempts" in c[0][0])
         assert "locked_until" in update[0][0]
         assert PIN_MAX_ATTEMPTS in update[0][1]
 
-    def test_a_locked_email_never_reaches_the_pin_comparison(self):
+    def test_a_locked_email_never_reaches_the_pin_comparison(self, fake_cursor):
         from cqc_lem.utilities.db import verify_pin_for_email
 
-        conn, cursor = _conn_cursor()
-        cursor.fetchone.side_effect = [{"id": 1}]  # the lockout probe finds a lock
+        conn, cursor = fake_cursor(fetch_one_side_effect=[{"id": 1}])
         with _patch_conn(conn):
             assert verify_pin_for_email("user@example.com", "correct") is False
         assert cursor.execute.call_count == 1
 
-    def test_get_pin_lockout_reads_the_live_lock(self):
+    def test_get_pin_lockout_reads_the_live_lock(self, fake_cursor):
         from cqc_lem.utilities.db import get_pin_lockout
 
         until = datetime.now(timezone.utc) + timedelta(minutes=15)
-        conn, cursor = _conn_cursor()
-        cursor.fetchone.return_value = {"locked_until": until}
+        conn, cursor = fake_cursor(fetch_one={"locked_until": until})
         with _patch_conn(conn):
             assert get_pin_lockout("user@example.com") == until
 
-    def test_get_pin_lockout_is_none_on_db_error(self):
+    def test_get_pin_lockout_is_none_on_db_error(self, fake_cursor):
         from cqc_lem.utilities.db import get_pin_lockout
 
-        conn, cursor = _conn_cursor()
+        conn, cursor = fake_cursor()
         cursor.execute.side_effect = mysql.connector.Error("DB error")
         with _patch_conn(conn):
             assert get_pin_lockout("user@example.com") is None
 
 
 class TestPublicUid:
-    def test_returns_the_stored_uid(self):
+    def test_returns_the_stored_uid(self, fake_cursor):
         from cqc_lem.utilities.db import get_user_public_uid
 
-        conn, cursor = _conn_cursor()
-        cursor.fetchone.return_value = {"public_uid": "abc-123"}
+        conn, cursor = fake_cursor(fetch_one={"public_uid": "abc-123"})
         with _patch_conn(conn):
             assert get_user_public_uid(7) == "abc-123"
 
-    def test_mints_one_for_a_row_that_has_none(self):
+    def test_mints_one_for_a_row_that_has_none(self, fake_cursor):
         from cqc_lem.utilities.db import get_user_public_uid
 
-        conn, cursor = _conn_cursor()
+        conn, cursor = fake_cursor()
         cursor.fetchone.return_value = {"public_uid": None}
         with _patch_conn(conn):
             minted = get_user_public_uid(7)
@@ -247,20 +234,20 @@ class TestPublicUid:
         update = next(c for c in cursor.execute.call_args_list if "UPDATE" in c[0][0].upper())
         assert minted in update[0][1]
 
-    def test_unknown_user_is_none(self):
+    def test_unknown_user_is_none(self, fake_cursor):
         from cqc_lem.utilities.db import get_user_public_uid
 
-        conn, cursor = _conn_cursor()
+        conn, cursor = fake_cursor()
         cursor.fetchone.return_value = None
         with _patch_conn(conn):
             assert get_user_public_uid(404) is None
 
 
 class TestEmailChange:
-    def test_records_history_and_stamps_verification(self):
+    def test_records_history_and_stamps_verification(self, fake_cursor):
         from cqc_lem.utilities.db import change_user_email
 
-        conn, cursor = _conn_cursor()
+        conn, cursor = fake_cursor()
         cursor.fetchone.side_effect = [None, {"email": "old@example.com"}]
         with _patch_conn(conn):
             assert change_user_email(7, "new@example.com", changed_by_session_id=11) is True
@@ -271,29 +258,29 @@ class TestEmailChange:
         assert "new@example.com" in insert[0][1]
         assert 11 in insert[0][1]
 
-    def test_refuses_an_address_owned_by_another_account(self):
+    def test_refuses_an_address_owned_by_another_account(self, fake_cursor):
         from cqc_lem.utilities.db import change_user_email
 
-        conn, cursor = _conn_cursor()
+        conn, cursor = fake_cursor()
         cursor.fetchone.side_effect = [{"id": 99}]
         with _patch_conn(conn):
             assert change_user_email(7, "taken@example.com") is False
         assert not any("UPDATE users" in c[0][0] for c in cursor.execute.call_args_list)
 
-    def test_unknown_user_changes_nothing(self):
+    def test_unknown_user_changes_nothing(self, fake_cursor):
         from cqc_lem.utilities.db import change_user_email
 
-        conn, cursor = _conn_cursor()
+        conn, cursor = fake_cursor()
         cursor.fetchone.side_effect = [None, None]
         with _patch_conn(conn):
             assert change_user_email(404, "new@example.com") is False
 
 
 class TestAuthAudit:
-    def test_writes_the_event_with_a_hashed_ip(self):
+    def test_writes_the_event_with_a_hashed_ip(self, fake_cursor):
         from cqc_lem.utilities.db import AuthAuditEvent, record_auth_event
 
-        conn, cursor = _conn_cursor()
+        conn, cursor = fake_cursor()
         with _patch_conn(conn):
             assert record_auth_event(AuthAuditEvent.LOGIN_SUCCESS, user_id=7,
                                      email="me@example.com", ip="203.0.113.9",
@@ -303,10 +290,10 @@ class TestAuthAudit:
         assert "login_success" in params
         assert "203.0.113.9" not in params
 
-    def test_truncates_an_oversized_user_agent(self):
+    def test_truncates_an_oversized_user_agent(self, fake_cursor):
         from cqc_lem.utilities.db import AuthAuditEvent, record_auth_event
 
-        conn, cursor = _conn_cursor()
+        conn, cursor = fake_cursor()
         with _patch_conn(conn):
             record_auth_event(AuthAuditEvent.LOGIN_FAILED, email="me@example.com",
                               user_agent="x" * 900, success=False)
@@ -314,18 +301,18 @@ class TestAuthAudit:
         # VARCHAR(512) — an over-long agent string must not fail the write.
         assert any(isinstance(p, str) and len(p) == 512 for p in params)
 
-    def test_a_failed_audit_write_never_raises(self):
+    def test_a_failed_audit_write_never_raises(self, fake_cursor):
         from cqc_lem.utilities.db import AuthAuditEvent, record_auth_event
 
-        conn, cursor = _conn_cursor()
+        conn, cursor = fake_cursor()
         cursor.execute.side_effect = mysql.connector.Error("DB error")
         with _patch_conn(conn):
             assert record_auth_event(AuthAuditEvent.LOGOUT, user_id=7) is False
 
-    def test_history_read_returns_no_ip_hash(self):
+    def test_history_read_returns_no_ip_hash(self, fake_cursor):
         from cqc_lem.utilities.db import get_auth_audit_events
 
-        conn, cursor = _conn_cursor()
+        conn, cursor = fake_cursor()
         cursor.fetchall.return_value = [{"event": "login_success", "success": 1,
                                          "user_agent": "UA", "created_at": None}]
         with _patch_conn(conn):
@@ -343,10 +330,10 @@ class TestSessionScopeResolution:
     authenticates it — reading the scope separately would double a query every request makes.
     """
 
-    def test_resolve_returns_the_user_and_the_scope(self):
+    def test_resolve_returns_the_user_and_the_scope(self, fake_cursor):
         from cqc_lem.utilities.db import resolve_session
 
-        conn, cursor = _conn_cursor()
+        conn, cursor = fake_cursor()
         cursor.fetchone.return_value = {"user_id": 7, "created_at": datetime.now(timezone.utc),
                                         "scope": "extension"}
         with _patch_conn(conn):
@@ -354,40 +341,40 @@ class TestSessionScopeResolution:
         # Still hashed before it reaches SQL.
         assert cursor.execute.call_args_list[0][0][1][0] == _sha256("tok")
 
-    def test_a_legacy_row_with_no_scope_resolves_as_full(self):
+    def test_a_legacy_row_with_no_scope_resolves_as_full(self, fake_cursor):
         """`scope` arrived in 2c with a 'full' default; a NULL must not read as a restriction."""
         from cqc_lem.utilities.db import resolve_session
 
-        conn, cursor = _conn_cursor()
+        conn, cursor = fake_cursor()
         cursor.fetchone.return_value = {"user_id": 7, "created_at": None, "scope": None}
         with _patch_conn(conn):
             assert resolve_session("tok")["scope"] == "full"
 
-    def test_an_expired_or_unknown_token_resolves_to_nothing(self):
+    def test_an_expired_or_unknown_token_resolves_to_nothing(self, fake_cursor):
         from cqc_lem.utilities.db import resolve_session
 
-        conn, cursor = _conn_cursor()
+        conn, cursor = fake_cursor()
         cursor.fetchone.return_value = None
         with _patch_conn(conn):
             assert resolve_session("tok") is None
 
-    def test_get_session_user_id_still_answers_the_id_alone(self):
+    def test_get_session_user_id_still_answers_the_id_alone(self, fake_cursor):
         from cqc_lem.utilities.db import get_session_user_id
 
-        conn, cursor = _conn_cursor()
+        conn, cursor = fake_cursor()
         cursor.fetchone.return_value = {"user_id": 7, "created_at": None, "scope": "full"}
         with _patch_conn(conn):
             assert get_session_user_id("tok") == 7
 
 
 class TestEnrollmentScopeRelease:
-    def test_release_is_conditional_on_the_current_scope(self):
+    def test_release_is_conditional_on_the_current_scope(self, fake_cursor):
         """A full, recovery or extension session enrolling a factor must not be widened by this —
         which is why the check is inside the UPDATE and not a read-then-write.
         """
         from cqc_lem.utilities.db import release_enrollment_scope
 
-        conn, cursor = _conn_cursor()
+        conn, cursor = fake_cursor()
         cursor.rowcount = 1
         with _patch_conn(conn):
             assert release_enrollment_scope("tok") is True
@@ -395,26 +382,26 @@ class TestEnrollmentScopeRelease:
         assert "scope = %s" in sql and "AND scope = %s" in sql
         assert params == ("full", _sha256("tok"), "enroll")
 
-    def test_nothing_held_is_not_an_error(self):
+    def test_nothing_held_is_not_an_error(self, fake_cursor):
         from cqc_lem.utilities.db import release_enrollment_scope
 
-        conn, cursor = _conn_cursor()
+        conn, cursor = fake_cursor()
         cursor.rowcount = 0
         with _patch_conn(conn):
             assert release_enrollment_scope("tok") is False
 
-    def test_a_failed_write_never_raises(self):
+    def test_a_failed_write_never_raises(self, fake_cursor):
         from cqc_lem.utilities.db import release_enrollment_scope
 
-        conn, cursor = _conn_cursor()
+        conn, cursor = fake_cursor()
         cursor.execute.side_effect = mysql.connector.Error("DB error")
         with _patch_conn(conn):
             assert release_enrollment_scope("tok") is False
 
-    def test_an_empty_token_never_reaches_sql(self):
+    def test_an_empty_token_never_reaches_sql(self, fake_cursor):
         from cqc_lem.utilities.db import release_enrollment_scope
 
-        conn, cursor = _conn_cursor()
+        conn, cursor = fake_cursor()
         with _patch_conn(conn):
             assert release_enrollment_scope("") is False
         cursor.execute.assert_not_called()

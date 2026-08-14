@@ -99,32 +99,23 @@ def _extend(cursor, user_id=5, feedback_id=99, p0=25, p1=100, days=60):
 
 
 class TestGetLatestReviewFeedbackId:
-    def test_returns_most_recent_review_id(self):
-        cur = MagicMock()
-        cur.fetchone.return_value = (17,)
-        conn = MagicMock()
-        conn.cursor.return_value = cur
+    def test_returns_most_recent_review_id(self, fake_cursor):
+        conn, cur = fake_cursor(fetch_one=(17,))
         with patch(f"{_GET_CONN}", return_value=conn):
             from cqc_lem.utilities.db import get_latest_review_feedback_id
             assert get_latest_review_feedback_id(5) == 17
         sql, params = cur.execute.call_args[0]
         assert "source=%s" in sql and params == (5, "review")
 
-    def test_no_review_returns_none(self):
-        cur = MagicMock()
-        cur.fetchone.return_value = None
-        conn = MagicMock()
-        conn.cursor.return_value = cur
+    def test_no_review_returns_none(self, fake_cursor):
+        conn, _ = fake_cursor(fetch_one=None)
         with patch(f"{_GET_CONN}", return_value=conn):
             from cqc_lem.utilities.db import get_latest_review_feedback_id
             assert get_latest_review_feedback_id(5) is None
 
-    def test_db_error_returns_none_and_closes(self):
+    def test_db_error_returns_none_and_closes(self, fake_cursor):
         import mysql.connector
-        cur = MagicMock()
-        cur.execute.side_effect = mysql.connector.Error("boom")
-        conn = MagicMock()
-        conn.cursor.return_value = cur
+        conn, cur = fake_cursor(execute_error=mysql.connector.Error("boom"))
         with patch(f"{_GET_CONN}", return_value=conn), patch(f"{_FEEDBACK}.log_error"):
             from cqc_lem.utilities.db import get_latest_review_feedback_id
             assert get_latest_review_feedback_id(5) is None
@@ -259,40 +250,28 @@ class TestExtendTrialForUser:
 
 
 class TestGrantAndSlotReads:
-    def test_get_grant_returns_row(self):
-        cur = MagicMock()
-        cur.fetchone.return_value = {"user_id": 5, "cohort": "P0"}
-        conn = MagicMock()
-        conn.cursor.return_value = cur
+    def test_get_grant_returns_row(self, fake_cursor):
+        conn, _ = fake_cursor(fetch_one={"user_id": 5, "cohort": "P0"})
         with patch(f"{_GET_CONN}", return_value=conn):
             from cqc_lem.utilities.db import get_early_adopter_grant
             assert get_early_adopter_grant(5)["cohort"] == "P0"
 
-    def test_get_grant_db_error_returns_none(self):
+    def test_get_grant_db_error_returns_none(self, fake_cursor):
         import mysql.connector
-        cur = MagicMock()
-        cur.execute.side_effect = mysql.connector.Error("boom")
-        conn = MagicMock()
-        conn.cursor.return_value = cur
+        conn, _ = fake_cursor(execute_error=mysql.connector.Error("boom"))
         with patch(f"{_GET_CONN}", return_value=conn), patch(f"{_BILLING}.log_error"):
             from cqc_lem.utilities.db import get_early_adopter_grant
             assert get_early_adopter_grant(5) is None
 
-    def test_slot_usage_maps_cohort_to_used(self):
-        cur = MagicMock()
-        cur.fetchall.return_value = [("P0", 3), ("P1", 0)]
-        conn = MagicMock()
-        conn.cursor.return_value = cur
+    def test_slot_usage_maps_cohort_to_used(self, fake_cursor):
+        conn, _ = fake_cursor(fetch_all=[("P0", 3), ("P1", 0)])
         with patch(f"{_GET_CONN}", return_value=conn):
             from cqc_lem.utilities.db import get_early_adopter_slot_usage
             assert get_early_adopter_slot_usage() == {"P0": 3, "P1": 0}
 
-    def test_slot_usage_db_error_returns_empty(self):
+    def test_slot_usage_db_error_returns_empty(self, fake_cursor):
         import mysql.connector
-        cur = MagicMock()
-        cur.execute.side_effect = mysql.connector.Error("boom")
-        conn = MagicMock()
-        conn.cursor.return_value = cur
+        conn, _ = fake_cursor(execute_error=mysql.connector.Error("boom"))
         with patch(f"{_GET_CONN}", return_value=conn), patch(f"{_BILLING}.log_error"):
             from cqc_lem.utilities.db import get_early_adopter_slot_usage
             assert get_early_adopter_slot_usage() == {}

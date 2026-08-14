@@ -232,6 +232,14 @@ def fake_cursor():
     - `rowcount` / `lastrowid` — read after `execute` by the write helpers.
     - `execute_error` — raised by `execute()`, for the `mysql.connector.Error` fallback contracts.
 
+    Two neighbours it deliberately does NOT replace. `mock_database_connection` (tests/conftest.py)
+    patches a different seam — `mysql.connector.connect` rather than `get_db_connection` — so it is
+    the right tool when the code under test opens its own connection. And the handful of stateful
+    fakes that dispatch on the SQL text to model real table behaviour (`_Cursor` in
+    test_db_early_adopter_trial / test_db_affiliate, `_FakeCursor` in test_brand_showcase_endpoint)
+    are simulators, not stubs: their point is the state machine, and flattening them into canned
+    rows would delete the assertion. Reach for those, not for a second copy of this factory.
+
     Returns:
         A callable returning the `(connection, cursor)` pair. Patch `get_db_connection` with the
         connection; assert against the cursor.

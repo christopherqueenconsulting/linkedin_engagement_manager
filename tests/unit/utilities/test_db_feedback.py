@@ -2,7 +2,7 @@
 
 import json
 from datetime import datetime, timezone
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -13,17 +13,9 @@ _GET_CONN = "cqc_lem.platform.db.connection.get_db_connection"
 _FEEDBACK = "cqc_lem.platform.db.repositories.feedback"
 
 
-def _conn(lastrowid=7):
-    conn = MagicMock()
-    cur = MagicMock()
-    cur.lastrowid = lastrowid
-    conn.cursor.return_value = cur
-    return conn, cur
-
-
 class TestInsertFeedback:
-    def test_insert_returns_id_and_serializes_context(self):
-        conn, cur = _conn(lastrowid=42)
+    def test_insert_returns_id_and_serializes_context(self, fake_cursor):
+        conn, cur = fake_cursor(lastrowid=42)
         with patch(f"{_GET_CONN}", return_value=conn):
             from cqc_lem.utilities.db import FeedbackSource, insert_feedback
             got = insert_feedback("The schedule tab 500s", user_id=3,
@@ -40,8 +32,8 @@ class TestInsertFeedback:
         assert params[5] == "negative"
         conn.commit.assert_called_once()
 
-    def test_anonymous_and_empty_context_store_null(self):
-        conn, cur = _conn(lastrowid=8)
+    def test_anonymous_and_empty_context_store_null(self, fake_cursor):
+        conn, cur = fake_cursor(lastrowid=8)
         with patch(f"{_GET_CONN}", return_value=conn):
             from cqc_lem.utilities.db import insert_feedback
             got = insert_feedback("nice work")
@@ -60,8 +52,8 @@ class TestInsertFeedback:
             assert insert_feedback(None) is None
         get_conn.assert_not_called()
 
-    def test_over_long_type_hint_and_sentiment_are_truncated(self):
-        conn, cur = _conn()
+    def test_over_long_type_hint_and_sentiment_are_truncated(self, fake_cursor):
+        conn, cur = fake_cursor(lastrowid=7)
         with patch(f"{_GET_CONN}", return_value=conn):
             from cqc_lem.utilities.db import insert_feedback
             insert_feedback("body", type_hint="b" * 80, sentiment="s" * 40)
@@ -69,9 +61,9 @@ class TestInsertFeedback:
         assert len(params[2]) == 32  # feedback.type_hint VARCHAR(32)
         assert len(params[5]) == 16  # feedback.sentiment VARCHAR(16)
 
-    def test_db_error_returns_none_and_closes(self):
+    def test_db_error_returns_none_and_closes(self, fake_cursor):
         import mysql.connector
-        conn, cur = _conn()
+        conn, cur = fake_cursor(lastrowid=7)
         cur.execute.side_effect = mysql.connector.Error("boom")
         with patch(f"{_GET_CONN}", return_value=conn), \
                 patch(f"{_FEEDBACK}.log_error") as logged:

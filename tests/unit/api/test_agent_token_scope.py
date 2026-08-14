@@ -281,26 +281,23 @@ class TestAgentTokenTTL:
         assert "1" in meta and "365" in meta   # ge=1, le=365
 
     @staticmethod
-    def _resolve_with_scope(scope):
+    def _resolve_with_scope(fake_cursor, scope):
         """Drive db.resolve_session over a mocked row and return the UPDATE it issued."""
         from datetime import datetime, timezone
-        from unittest.mock import MagicMock
 
         from cqc_lem.utilities import db
 
-        conn, cursor = MagicMock(), MagicMock()
-        conn.cursor.return_value = cursor
-        cursor.fetchone.return_value = {
+        conn, cursor = fake_cursor(fetch_one={
             "user_id": 7, "scope": scope,
             "created_at": datetime(2026, 1, 1, tzinfo=timezone.utc),
-        }
+        })
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             resolved = db.resolve_session("a" * 64)
         updates = [c for c in cursor.execute.call_args_list if "UPDATE" in c[0][0].upper()]
         assert len(updates) == 1
         return resolved, updates[0][0][0]
 
-    def test_an_agent_session_expiry_is_never_slid(self):
+    def test_an_agent_session_expiry_is_never_slid(self, fake_cursor):
         """The bug the `ttl_hours` parameter alone did NOT fix.
 
         resolve_session slides EVERY session to now + SESSION_IDLE_HOURS, so a 90-day agent token
@@ -309,16 +306,16 @@ class TestAgentTokenTTL:
         """
         from cqc_lem.utilities.db import SESSION_SCOPE_AGENT
 
-        resolved, sql = self._resolve_with_scope(SESSION_SCOPE_AGENT)
+        resolved, sql = self._resolve_with_scope(fake_cursor, SESSION_SCOPE_AGENT)
         assert resolved == {"user_id": 7, "scope": SESSION_SCOPE_AGENT}
         assert "expires_at" not in sql, "an agent session's granted TTL must survive being used"
         assert "last_seen_at" in sql, "it is still a session that reports when it was last seen"
 
-    def test_a_browser_session_still_slides(self):
+    def test_a_browser_session_still_slides(self, fake_cursor):
         """The fix must not turn every other session into a fixed-expiry one."""
         from cqc_lem.utilities.db import SESSION_SCOPE_FULL
 
-        _, sql = self._resolve_with_scope(SESSION_SCOPE_FULL)
+        _, sql = self._resolve_with_scope(fake_cursor, SESSION_SCOPE_FULL)
         assert "expires_at" in sql
 
 

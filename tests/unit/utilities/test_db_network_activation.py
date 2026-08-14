@@ -2,7 +2,7 @@
 request failure reasons, and the outreach-funnel backlog counter.
 """
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -76,12 +76,9 @@ class TestOpenOutreachTargetCount:
         sql = cur.execute.call_args[0][0]
         assert "'pending','approved'" in sql and "stage <> 'completed'" in sql
 
-    def test_zero_when_the_query_fails(self):
+    def test_zero_when_the_query_fails(self, fake_cursor):
         import mysql.connector
-        conn = MagicMock()
-        cur = MagicMock()
-        cur.execute.side_effect = mysql.connector.Error("no such table")
-        conn.cursor.return_value = cur
+        conn, _ = fake_cursor(execute_error=mysql.connector.Error("no such table"))
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import count_open_outreach_targets
             assert count_open_outreach_targets(1) == 0

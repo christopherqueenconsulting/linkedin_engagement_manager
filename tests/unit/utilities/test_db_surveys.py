@@ -1,20 +1,12 @@
 """Unit tests for the survey DB helpers (issue #501)."""
 
 from datetime import datetime
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import mysql.connector
 import pytest
 
 pytestmark = pytest.mark.unit
-
-
-def _erroring_conn():
-    conn = MagicMock()
-    cur = MagicMock()
-    cur.execute.side_effect = mysql.connector.Error("boom")
-    conn.cursor.return_value = cur
-    return conn, cur
 
 
 class TestLatestFeedbackAt:
@@ -34,7 +26,7 @@ class TestLatestFeedbackAt:
             from cqc_lem.utilities.db import FeedbackSource, get_latest_feedback_at
             assert get_latest_feedback_at(4, FeedbackSource.REVIEW) is None
 
-        conn, _cur = _erroring_conn()
+        conn, _cur = fake_cursor(execute_error=mysql.connector.Error("boom"))
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import FeedbackSource, get_latest_feedback_at
             assert get_latest_feedback_at(4, FeedbackSource.REVIEW) is None
@@ -53,8 +45,8 @@ class TestReviewGate:
             from cqc_lem.utilities.db import has_review_feedback
             assert has_review_feedback(4) is False
 
-    def test_fails_closed_on_a_db_error(self):
-        conn, _cur = _erroring_conn()
+    def test_fails_closed_on_a_db_error(self, fake_cursor):
+        conn, _cur = fake_cursor(execute_error=mysql.connector.Error("boom"))
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import has_review_feedback
             assert has_review_feedback(4) is False
@@ -68,8 +60,8 @@ class TestSurveyPromptLedger:
             from cqc_lem.utilities.db import get_survey_prompts_sent
             assert get_survey_prompts_sent(4) == {"nps_day3": sent}
 
-    def test_empty_dict_on_error(self):
-        conn, _cur = _erroring_conn()
+    def test_empty_dict_on_error(self, fake_cursor):
+        conn, _cur = fake_cursor(execute_error=mysql.connector.Error("boom"))
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_survey_prompts_sent
             assert get_survey_prompts_sent(4) == {}
@@ -89,8 +81,8 @@ class TestSurveyPromptLedger:
             from cqc_lem.utilities.db import record_survey_prompt
             assert record_survey_prompt(4, "nps_day3") is False
 
-    def test_record_survives_a_db_error(self):
-        conn, _cur = _erroring_conn()
+    def test_record_survives_a_db_error(self, fake_cursor):
+        conn, _cur = fake_cursor(execute_error=mysql.connector.Error("boom"))
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import record_survey_prompt
             assert record_survey_prompt(4, "nps_day3") is False
@@ -107,8 +99,8 @@ class TestSurveyCandidates:
         assert "trial_ends_at > NOW()" in sql
         assert "activated_at" not in sql
 
-    def test_empty_on_error(self):
-        conn, _cur = _erroring_conn()
+    def test_empty_on_error(self, fake_cursor):
+        conn, _cur = fake_cursor(execute_error=mysql.connector.Error("boom"))
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_survey_candidate_user_ids
             assert get_survey_candidate_user_ids() == []

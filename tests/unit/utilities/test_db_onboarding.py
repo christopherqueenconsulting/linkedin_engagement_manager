@@ -1,20 +1,12 @@
 """Unit tests for the onboarding/activation DB helpers (issue #500)."""
 
 from datetime import datetime
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import mysql.connector
 import pytest
 
 pytestmark = pytest.mark.unit
-
-
-def _erroring_conn():
-    conn = MagicMock()
-    cur = MagicMock()
-    cur.execute.side_effect = mysql.connector.Error("boom")
-    conn.cursor.return_value = cur
-    return conn, cur
 
 
 class TestOnboardingState:
@@ -56,8 +48,8 @@ class TestOnboardingState:
             from cqc_lem.utilities.db import OnboardingStep, mark_onboarding_step
             assert mark_onboarding_step(4, OnboardingStep.VOICE_SET) is False
 
-    def test_state_errors_are_swallowed(self):
-        conn, _cur = _erroring_conn()
+    def test_state_errors_are_swallowed(self, fake_cursor):
+        conn, _cur = fake_cursor(execute_error=mysql.connector.Error("boom"))
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import (
                 OnboardingStep,
@@ -92,8 +84,8 @@ class TestOnboardingNudges:
             from cqc_lem.utilities.db import record_onboarding_nudge
             assert record_onboarding_nudge(4, "connect_linkedin") is False
 
-    def test_nudge_errors_are_swallowed(self):
-        conn, _cur = _erroring_conn()
+    def test_nudge_errors_are_swallowed(self, fake_cursor):
+        conn, _cur = fake_cursor(execute_error=mysql.connector.Error("boom"))
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_onboarding_nudges_sent, record_onboarding_nudge
             assert get_onboarding_nudges_sent(4) == {}
@@ -112,8 +104,8 @@ class TestOnboardingCandidates:
         # Must NOT require a live LinkedIn connection — that's the step most stalled users lack.
         assert "linkedin_connection_status" not in sql
 
-    def test_error_returns_empty_list(self):
-        conn, _cur = _erroring_conn()
+    def test_error_returns_empty_list(self, fake_cursor):
+        conn, _cur = fake_cursor(execute_error=mysql.connector.Error("boom"))
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_onboarding_candidate_user_ids
             assert get_onboarding_candidate_user_ids() == []
@@ -156,8 +148,8 @@ class TestStepEvidenceQueries:
         assert params[1] == "success"
         assert set(params[2:]) == {"comment", "reply", "dm", "followup"}
 
-    def test_evidence_errors_are_swallowed(self):
-        conn, _cur = _erroring_conn()
+    def test_evidence_errors_are_swallowed(self, fake_cursor):
+        conn, _cur = fake_cursor(execute_error=mysql.connector.Error("boom"))
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import (
                 PostStatus,

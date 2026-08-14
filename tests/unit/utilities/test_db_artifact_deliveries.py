@@ -1,6 +1,6 @@
 """Issue #624 — owned-asset delivery counts, the attribution side of the CTA loop."""
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import mysql.connector
 import pytest
@@ -77,9 +77,8 @@ class TestCountArtifactCtaDeliveries:
         assert out["window_days"] == 1
         assert cur.execute.call_args_list[0][0][1][2] == 1
 
-    def test_db_error_returns_the_empty_shape(self):
-        conn = MagicMock()
-        conn.cursor.return_value.execute.side_effect = mysql.connector.Error("boom")
+    def test_db_error_returns_the_empty_shape(self, fake_cursor):
+        conn, _ = fake_cursor(execute_error=mysql.connector.Error("boom"))
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import count_artifact_cta_deliveries
             out = count_artifact_cta_deliveries(1, newsletter_url="https://li/news")

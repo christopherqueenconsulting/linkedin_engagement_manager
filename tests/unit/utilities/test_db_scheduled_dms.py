@@ -53,8 +53,7 @@ class TestScheduledDmDb:
             assert get_orphaned_scheduled_dms() == []
 
     def test_list_returns_pagination_shape(self, fake_cursor):
-        conn, cur = fake_cursor(lastrowid=7)
-        cur.fetchone.return_value = {"c": 3}
+        conn, cur = fake_cursor(lastrowid=7, fetch_one={"c": 3})
         cur.fetchall.return_value = [{"id": 1, "scheduled_time": None, "status": "pending"}]
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_scheduled_dms

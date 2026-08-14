@@ -53,9 +53,7 @@ class TestAccrueMonthlyFixedCosts:
         get_conn.assert_not_called()
 
     def test_writes_missing_and_skips_existing(self, fake_cursor):
-        conn, cur = fake_cursor()
-        # First accrual already present for this period, second is new.
-        cur.fetchone.side_effect = [(1,), None]
+        conn, cur = fake_cursor(fetch_one_side_effect=[(1,), None])
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import CostCategory, accrue_monthly_fixed_costs
             written = accrue_monthly_fixed_costs(date(2026, 7, 1), [

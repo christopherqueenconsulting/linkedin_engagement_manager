@@ -191,8 +191,7 @@ class TestLogAggregates:
         assert second_params == (1, "dm", "success")
 
     def test_empty_fetchall_none_coerced_to_list(self, fake_cursor):
-        conn, cur = fake_cursor()
-        cur.fetchall.return_value = None
+        conn, cur = fake_cursor(fetch_all=None)
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_users_with_stripe_subscriptions
             assert get_users_with_stripe_subscriptions() == []

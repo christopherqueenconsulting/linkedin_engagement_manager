@@ -1,6 +1,6 @@
 """Unit tests for the persistent per-post comment-claim ledger (commented_posts)."""
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import mysql.connector
 import pytest
@@ -97,16 +97,8 @@ class TestStaleClaimTakeover:
     task (task_acks_late) must be able to take it over or the comment is lost (issue #549).
     """
 
-    def _dup_then(self, update_rowcount):
-        conn = MagicMock()
-        cur = MagicMock()
-        cur.execute.side_effect = [mysql.connector.IntegrityError("dup"), None]
-        type(cur).rowcount = property(lambda self: update_rowcount)
-        conn.cursor.return_value = cur
-        return conn, cur
-
-    def test_takes_over_a_stale_claim(self):
-        conn, cur = self._dup_then(update_rowcount=1)
+    def test_takes_over_a_stale_claim(self, fake_cursor):
+        conn, cur = fake_cursor(rowcount=1, execute_error=[mysql.connector.IntegrityError("dup"), None])
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import claim_post_for_comment
             assert claim_post_for_comment(1, "feedpost://abc") is True
@@ -116,32 +108,29 @@ class TestStaleClaimTakeover:
         assert "status='claimed'" in sql and "INTERVAL %s MINUTE" in sql
         assert params[2] == 60
 
-    def test_fresh_claim_is_not_stolen(self):
-        conn, _ = self._dup_then(update_rowcount=0)
+    def test_fresh_claim_is_not_stolen(self, fake_cursor):
+        conn, _ = fake_cursor(rowcount=0, execute_error=[mysql.connector.IntegrityError("dup"), None])
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import claim_post_for_comment
             assert claim_post_for_comment(1, "feedpost://abc") is False
 
-    def test_custom_window_is_passed_through(self):
-        conn, cur = self._dup_then(update_rowcount=1)
+    def test_custom_window_is_passed_through(self, fake_cursor):
+        conn, cur = fake_cursor(rowcount=1, execute_error=[mysql.connector.IntegrityError("dup"), None])
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import claim_post_for_comment
             assert claim_post_for_comment(1, "feedpost://abc", stale_after_minutes=5) is True
         assert cur.execute.call_args[0][1][2] == 5
 
-    def test_window_floors_at_one_minute(self):
-        conn, cur = self._dup_then(update_rowcount=1)
+    def test_window_floors_at_one_minute(self, fake_cursor):
+        conn, cur = fake_cursor(rowcount=1, execute_error=[mysql.connector.IntegrityError("dup"), None])
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import claim_post_for_comment
             claim_post_for_comment(1, "feedpost://abc", stale_after_minutes=0)
         assert cur.execute.call_args[0][1][2] == 1
 
-    def test_takeover_error_returns_false(self):
-        conn = MagicMock()
-        cur = MagicMock()
-        cur.execute.side_effect = [mysql.connector.IntegrityError("dup"),
-                                   mysql.connector.Error("takeover boom")]
-        conn.cursor.return_value = cur
+    def test_takeover_error_returns_false(self, fake_cursor):
+        conn, _ = fake_cursor(execute_error=[mysql.connector.IntegrityError("dup"),
+                                             mysql.connector.Error("takeover boom")])
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import claim_post_for_comment
             assert claim_post_for_comment(1, "feedpost://abc") is False

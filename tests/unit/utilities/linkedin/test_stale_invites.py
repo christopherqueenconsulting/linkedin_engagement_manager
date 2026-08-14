@@ -777,14 +777,11 @@ class TestDailySpendLedger:
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             assert count_invite_withdrawals_today(1) == 0
 
-    def test_a_db_failure_reads_zero_rather_than_losing_the_run(self):
+    def test_a_db_failure_reads_zero_rather_than_losing_the_run(self, fake_cursor):
         """Fail-open on the COUNT is safe: pacing and the shared envelope still bound the walk, and
         the alternative is a beat that dies on a transient DB blip."""
         from cqc_lem.utilities.db import count_invite_withdrawals_today
-        conn = MagicMock()
-        cursor = MagicMock()
-        cursor.execute.side_effect = ValueError("bad column")
-        conn.cursor.return_value = cursor
+        conn, _ = fake_cursor(execute_error=ValueError("bad column"))
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             assert count_invite_withdrawals_today(1) == 0
         conn.close.assert_called_once()

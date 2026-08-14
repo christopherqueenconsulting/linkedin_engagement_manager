@@ -71,8 +71,7 @@ class TestUserGroupsDB:
         cur.execute.assert_not_called()
 
     def test_next_group_for_post_is_least_recently_posted(self, fake_cursor):
-        conn, cur = fake_cursor()
-        cur.fetchone.return_value = {"group_id": "456", "group_name": "Sales"}
+        conn, cur = fake_cursor(fetch_one={"group_id": "456", "group_name": "Sales"})
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_next_group_for_post
             assert get_next_group_for_post(1) == {"group_id": "456", "group_name": "Sales"}
@@ -85,8 +84,7 @@ class TestUserGroupsDB:
         assert "COALESCE(last_post_run_at, last_posted_at) ASC" in sql
 
     def test_next_group_for_post_none_when_nothing_opted_in(self, fake_cursor):
-        conn, cur = fake_cursor()
-        cur.fetchone.return_value = None
+        conn, cur = fake_cursor(fetch_one=None)
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_next_group_for_post
             assert get_next_group_for_post(1) is None
@@ -189,8 +187,7 @@ class TestGroupPostDraftDB:
         cur.execute.assert_not_called()
 
     def test_post_enabled_ids_read_the_posting_flag_not_the_commenting_one(self, fake_cursor):
-        conn, cur = fake_cursor(lastrowid=7)
-        cur.fetchall.return_value = [("g1",), ("g2",)]
+        conn, cur = fake_cursor(lastrowid=7, fetch_all=[("g1",), ("g2",)])
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_post_enabled_group_ids
             assert get_post_enabled_group_ids(1) == ["g1", "g2"]

@@ -43,11 +43,8 @@ class TestGetPublishedFaqEntries:
             from cqc_lem.utilities.db import get_published_faq_entries
             assert get_published_faq_entries() == []
 
-    def test_db_errors_are_swallowed_so_the_public_page_still_renders(self):
-        conn = MagicMock()
-        cur = MagicMock()
-        cur.execute.side_effect = mysql.connector.Error("boom")
-        conn.cursor.return_value = cur
+    def test_db_errors_are_swallowed_so_the_public_page_still_renders(self, fake_cursor):
+        conn, _ = fake_cursor(execute_error=mysql.connector.Error("boom"))
         with patch(f"{_GET_CONN}", return_value=conn), \
              patch(f"{_FEEDBACK}.log_error") as log:
             from cqc_lem.utilities.db import get_published_faq_entries

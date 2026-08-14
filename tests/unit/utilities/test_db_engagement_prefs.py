@@ -436,8 +436,7 @@ class TestReplyInboundToken:
         assert get_user_id_by_reply_token("") is None
 
     def test_users_with_reply_mode(self, fake_cursor):
-        conn, cursor = fake_cursor()
-        cursor.fetchall.return_value = [(1,), (5,), (9,)]
+        conn, cursor = fake_cursor(fetch_all=[(1,), (5,), (9,)])
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_users_with_reply_mode
             assert get_users_with_reply_mode("scheduled") == [1, 5, 9]

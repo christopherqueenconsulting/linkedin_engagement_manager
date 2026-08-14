@@ -47,8 +47,7 @@ class TestOutreachFunnelDb:
         assert "target_profile_url = %s" in sql
 
     def test_list_returns_pagination_shape(self, fake_cursor):
-        conn, cur = fake_cursor(lastrowid=7)
-        cur.fetchone.return_value = {"c": 2}
+        conn, cur = fake_cursor(lastrowid=7, fetch_one={"c": 2})
         cur.fetchall.return_value = [{"id": 1, "stage": "comment", "status": "pending",
                                       "created_at": None, "updated_at": None}]
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):

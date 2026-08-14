@@ -73,8 +73,7 @@ class TestCatchupTouchDb:
             assert has_catchup_touch(1, "u", CatchupEventType.BIRTHDAY, "2026") is False
 
     def test_list_returns_pagination_shape_and_filters(self, fake_cursor):
-        conn, cur = fake_cursor(lastrowid=7)
-        cur.fetchone.return_value = {"c": 2}
+        conn, cur = fake_cursor(lastrowid=7, fetch_one={"c": 2})
         cur.fetchall.return_value = [{"id": 1, "status": "pending", "created_at": None, "updated_at": None}]
         with patch(f"{_GET_CONN}", return_value=conn):
             from cqc_lem.utilities.db import get_catchup_touches
@@ -86,8 +85,7 @@ class TestCatchupTouchDb:
 
     def test_list_serializes_datetimes(self, fake_cursor):
         from datetime import datetime
-        conn, cur = fake_cursor(lastrowid=7)
-        cur.fetchone.return_value = {"c": 1}
+        conn, cur = fake_cursor(lastrowid=7, fetch_one={"c": 1})
         cur.fetchall.return_value = [{"id": 1, "created_at": datetime(2026, 7, 24),
                                       "updated_at": datetime(2026, 7, 24)}]
         with patch(f"{_GET_CONN}", return_value=conn):
