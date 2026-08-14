@@ -296,6 +296,14 @@ export default function NewsletterQueue(
             </div>
             <p className="text-sm font-medium text-gray-800 truncate">{e.title || 'Untitled edition'}</p>
             {e.subtitle && <p className="text-xs text-gray-500 line-clamp-1">{e.subtitle}</p>}
+            {/* A pending cover is only approvable inside the editor below, so the LIST has to say
+                it exists (issue #1432) — every edition in production shipped cover-less because
+                nothing outside the open editor ever mentioned the cover was waiting. */}
+            {e.cover_image_status === 'pending_review' && (
+              <p className="mt-1.5 text-xs font-medium text-yellow-700">
+                🖼️ Cover needs your approval — publishes without it otherwise
+              </p>
+            )}
             {(e.format || e.hook_style) && (
               <div className="flex flex-wrap gap-1 mt-1.5">
                 {e.format && (
@@ -379,8 +387,17 @@ export default function NewsletterQueue(
                 )}
               </div>
               {draftEdit.cover_image_url ? (
-                <img src={draftEdit.cover_image_url} alt="Newsletter cover"
-                  className="w-full rounded-lg border border-gray-200 object-cover" />
+                <>
+                  <img src={draftEdit.cover_image_url} alt="Newsletter cover"
+                    className="w-full rounded-lg border border-gray-200 object-cover" />
+                  {draftEdit.cover_image_status !== 'approved' && (
+                    <p className="text-xs text-yellow-700 bg-yellow-50 border border-yellow-200 rounded-lg px-3 py-2">
+                      A generated cover is a public brand asset, so it only goes out once you
+                      approve it here. If this edition reaches its slot unapproved, it publishes
+                      on time <strong>without a cover</strong>.
+                    </p>
+                  )}
+                </>
               ) : (
                 <p className="text-xs text-gray-400">
                   No cover yet. Editions publish fine without one — a cover just makes the article
@@ -454,6 +471,15 @@ export default function NewsletterQueue(
             </div>
 
             {msg && <p className={`text-sm font-medium ${msg.ok ? 'text-green-600' : 'text-red-600'}`}>{msg.text}</p>}
+            {/* Two separate approvals with near-identical names: this one schedules the EDITION,
+                "Approve cover" above releases the image. Say so, or the big blue button reads as
+                approving everything on the screen (issue #1432). */}
+            {draftEdit.cover_image_url && draftEdit.cover_image_status !== 'approved' && (
+              <p className="text-xs text-yellow-700">
+                Heads up: this schedules the edition only — the cover above still needs
+                <strong> Approve cover</strong>.
+              </p>
+            )}
             <div className="grid grid-cols-2 gap-2">
               <button type="button" onClick={() => draftMutation.mutate('save')} disabled={busy}
                 className="bg-gray-100 text-gray-700 py-2 rounded-lg text-sm font-semibold hover:bg-gray-200 disabled:opacity-50 transition-colors">

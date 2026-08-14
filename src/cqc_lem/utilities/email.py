@@ -454,6 +454,43 @@ def send_newsletter_draft_ready_email(to_email: str, edition_title: str,
         to_email, f"📝 Your newsletter draft is ready: {title}", html, high_priority=True)
 
 
+def _newsletter_queue_url() -> str:
+    """Deep link to the newsletter review queue — the ONE screen an author can approve a cover on."""
+    import os
+    base = (os.getenv("LEM_APP_URL") or "https://lem.christopherqueenconsulting.com").rstrip("/")
+    return f"{base}/content?tab=newsletters"
+
+
+def send_newsletter_cover_pending_email(to_email: str, edition_title: str, scheduled_for: str,
+                                        queue_url: Optional[str] = None) -> bool:
+    """Email a user whose edition is about to publish with a cover still awaiting approval (#1432).
+
+    The draft-ready email cannot carry this: the cover is rendered asynchronously and lands
+    minutes AFTER that email goes out. So this is the only message that can say the cover is
+    waiting, and it names the consequence — the edition publishes cover-less if nothing happens.
+    """
+    url = queue_url or _newsletter_queue_url()
+    title = edition_title or "Your next edition"
+    html = f"""
+    <html><body style="font-family:Arial,Helvetica,sans-serif;color:#222;">
+    <h2>Your newsletter cover is waiting for you</h2>
+    <p>We generated a cover image for <strong>{title}</strong>, but a generated cover is a public
+    brand asset so it only goes out once you've looked at it.</p>
+    <p>That edition publishes <strong>{scheduled_for}</strong>. If the cover isn't approved by
+    then, it goes out <strong>without a cover image</strong> — the edition itself still
+    publishes on time.</p>
+    <p><a href="{url}" style="background:#0a66c2;color:#fff;padding:10px 16px;border-radius:6px;
+    text-decoration:none;">Review the cover</a></p>
+    <p style="color:#888;font-size:12px;">Open the edition in your newsletter queue and use
+    <strong>Approve cover</strong> — or <strong>Remove cover</strong> if you'd rather publish
+    without one.</p>
+    </body></html>
+    """
+    return _dispatch_email(
+        to_email, f"🖼️ Approve the cover before this edition goes out: {title}", html,
+        high_priority=True)
+
+
 def send_content_generation_ready_email(to_email: str, ready_count: int,
                                         failed_count: int = 0) -> bool:
     """Email a user that their weekly content finished generating (issue #545). Generation runs

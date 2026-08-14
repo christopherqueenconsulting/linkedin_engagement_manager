@@ -134,3 +134,39 @@ describe('NewsletterQueue editor', () => {
     expect(screen.queryByText('PUBLISHES WITH THIS EDITION')).toBeNull()
   })
 })
+
+// Issue #1432: no generated cover in production was EVER approved, so every edition shipped
+// cover-less. The approve control was always there — nothing outside the open editor said it was
+// waiting, and the edition's own "Approve & Schedule" reads as approving the whole screen.
+describe('NewsletterQueue pending-cover legibility', () => {
+  const withCover = (id: number, status: 'pending_review' | 'approved'): NewsletterEdition => ({
+    ...edition(id, `Edition ${id}`),
+    cover_image_url: 'https://cdn.test/c.png',
+    cover_image_source: 'ai',
+    cover_image_status: status,
+  })
+
+  it('flags a pending cover on the queue row, before the edition is opened', async () => {
+    serveQueue([withCover(1, 'pending_review'), withCover(2, 'approved')])
+    harness(queue())
+    await waitFor(() => expect(screen.getByText('Edition 1')).toBeTruthy())
+    // One row carries it; the approved edition's row says nothing.
+    expect(screen.getAllByText(/Cover needs your approval/)).toHaveLength(1)
+  })
+
+  it('says the edition publishes without the cover, and that scheduling is a separate approval', async () => {
+    serveQueue([withCover(1, 'pending_review')])
+    harness(queue())
+    await waitFor(() => expect(screen.getByText('Approve cover')).toBeTruthy())
+    expect(screen.getByText(/reaches its slot unapproved/)).toBeTruthy()
+    expect(screen.getByText(/this schedules the edition only/)).toBeTruthy()
+  })
+
+  it('says none of it once the cover is approved', async () => {
+    serveQueue([withCover(1, 'approved')])
+    harness(queue())
+    await waitFor(() => expect(screen.getByText('PUBLISHES WITH THIS EDITION')).toBeTruthy())
+    expect(screen.queryByText(/Cover needs your approval/)).toBeNull()
+    expect(screen.queryByText(/this schedules the edition only/)).toBeNull()
+  })
+})

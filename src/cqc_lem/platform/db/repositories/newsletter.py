@@ -371,6 +371,26 @@ def get_editions_due_to_publish(now) -> list:
     except mysql.connector.Error as err:
         log_error("Could not get editions due to publish", exc=err)
         return []
+def get_editions_with_pending_cover(now, until) -> list:
+    """Editions publishing in `(now, until]` whose cover is still awaiting the author (issue #1432).
+
+    The slot is what makes this urgent: an unapproved cover is dropped at publish time and the
+    edition ships cover-less, so this is the last window in which the author can still act. The
+    status literal mirrors `newsletter_cover.COVER_STATUS_PENDING` — kept as a literal here so this
+    layer stays free of the utilities tree, like the 'draft'/'approved' statuses above.
+    """
+    try:
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(
+                "SELECT id, user_id, title, scheduled_for FROM newsletter_editions "
+                "WHERE status IN ('draft', 'approved') AND cover_image_path IS NOT NULL "
+                "AND cover_image_status = 'pending_review' "
+                "AND scheduled_for > %s AND scheduled_for <= %s "
+                "ORDER BY scheduled_for", (now, until))
+            return cursor.fetchall()
+    except mysql.connector.Error as err:
+        log_error("Could not get editions with a pending cover", exc=err)
+        return []
 def get_newsletter_edition(edition_id: int) -> "dict | None":
     """Fetch a single newsletter edition by id."""
     try:

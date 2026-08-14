@@ -100,6 +100,7 @@ from cqc_lem.utilities.engagement_window import (
 from cqc_lem.utilities.env_constants import (
     COST_ROUTING_WINDOW_DAYS,
     CQC_LEM_POST_TIME_DELTA_MINUTES,
+    NEWSLETTER_COVER_REMINDER_LEAD_HOURS,
     SELENIUM_KEEP_VIDEOS_X_DAYS,
 )
 from cqc_lem.utilities.human_pacing import (
@@ -1103,6 +1104,38 @@ def generate_newsletter_cover(edition_id: int, use_avatar: bool = None):
     log_info("Newsletter cover awaiting review", user_id=user_id,
              task_name="generate_newsletter_cover")
     return f"Generated cover for edition {edition_id}"
+
+
+@shared_task.task
+def auto_notify_pending_covers():
+    """Remind authors whose next edition still carries an unapproved cover (issue #1432).
+
+    A generated cover lands `pending_review` and `_approved_cover_path` drops it at publish time,
+    so an edition whose cover is never approved ships cover-less — silently, and in production
+    that was EVERY edition. The draft-ready email cannot carry the warning: the cover renders
+    asynchronously and lands after that email is sent. This beat is the pre-slot half — the
+    edition still publishes on time either way, the reminder only makes the drop legible while
+    the author can still act on it.
+    """
+    from cqc_lem.utilities.db import get_editions_with_pending_cover
+    from cqc_lem.utilities.notifications import notify_newsletter_cover_pending
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    until = now + timedelta(hours=NEWSLETTER_COVER_REMINDER_LEAD_HOURS)
+    editions = get_editions_with_pending_cover(now, until)
+    notified = 0
+    for edition in editions:
+        if notify_newsletter_cover_pending(edition["user_id"], edition["id"],
+                                           edition.get("title"), edition.get("scheduled_for")):
+            notified += 1
+    # An empty sweep is the normal state (no covers pending, or every one already reminded), so it
+    # stays DEBUG — INFO only when something was actually sent.
+    if notified:
+        log_info(f"Reminded {notified} author(s) about a pending newsletter cover",
+                 task_name="auto_notify_pending_covers")
+    else:
+        log_debug(f"No pending newsletter covers to remind on ({len(editions)} in window)",
+                  task_name="auto_notify_pending_covers")
+    return f"Reminded {notified} author(s) about a pending newsletter cover"
 
 
 @shared_task.task

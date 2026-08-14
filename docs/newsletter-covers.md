@@ -13,7 +13,7 @@ deliberately not symmetric.
 |---|---|
 | `src/cqc_lem/utilities/newsletter_cover.py` | ONE place a cover is validated, stored, and generated |
 | `src/cqc_lem/utilities/linkedin/article_editor.py` | `attach_article_cover` — the publish-time upload into LinkedIn's hidden file input |
-| `src/cqc_lem/app/run_scheduler.py` | `generate_newsletter_cover` task + the `cover_image_auto` queue hook |
+| `src/cqc_lem/app/run_scheduler.py` | `generate_newsletter_cover` task + the `cover_image_auto` queue hook; `auto_notify_pending_covers` — the pre-slot reminder (#1432) |
 | `src/cqc_lem/app/engagement/newsletter.py` | `_approved_cover_path` — the ONE gate deciding a cover may reach LinkedIn |
 | `src/cqc_lem/ui/.../review/NewsletterQueue.tsx` | Per-edition upload / generate / approve / remove |
 | `src/cqc_lem/ui/.../account/NewsletterCard.tsx` | The account-settings opt-in (`cover_image_auto`) |
@@ -31,6 +31,38 @@ half is complete on its own for a user who never touches generation. A generated
 
 `_approved_cover_path` is the only thing that reads `cover_image_status` at publish time. Anything
 that reads `cover_image_path` on its own would publish unreviewed artwork; don't.
+
+## Why no cover was ever approved — and what happens at the slot (issue #1432)
+
+The #1284 re-audit read all ten editions in production: every generated cover sat at
+`pending_review`, none had ever reached `approved`, and **every shipped edition went out
+cover-less**. Nothing in the gate was broken. The approval was never *asked for*:
+
+1. **The control was only reachable inside an open editor.** `Approve cover` lives in the
+   review-queue editor panel (`/content?tab=newsletters` → select an edition → *Cover image*). The
+   queue LIST — the screen an author actually scans — said nothing about a cover at all, so a
+   waiting cover was invisible unless you opened that edition and scrolled to it.
+2. **Two approvals, near-identical names.** The prominent blue **Approve & Schedule** approves the
+   EDITION; the cover has its own, separate `Approve cover`. Clicking the big one reads as
+   approving everything on the screen.
+3. **The draft-ready email could not mention it.** `notify_newsletter_draft_ready` is sent inside
+   `_topup_newsletter_drafts_for_user`, at draft creation — the cover is rendered asynchronously by
+   `generate_newsletter_cover` and lands *minutes later*. That email is structurally incapable of
+   reporting a cover state that does not exist yet.
+4. **The publish path said nothing.** `_approved_cover_path` returned `None` and the edition
+   published without its cover, silently.
+
+**Decision: notify and publish.** An edition NEVER waits on its cover — cadence is the promise, and
+a held edition is a worse failure than a cover-less one — and `_approved_cover_path` is not
+weakened. What changed is that the state is legible *before* the slot:
+
+| Where | What it says |
+|---|---|
+| Queue list row | `🖼️ Cover needs your approval — publishes without it otherwise` on any edition whose cover is `pending_review` |
+| Editor, under the cover | That an unapproved cover means the edition publishes on time **without a cover** |
+| Above `Approve & Schedule` | That the button schedules the EDITION only, and the cover still needs its own approval |
+| Email | `auto_notify_pending_covers` (daily 10:30 UTC, after the 10:00 top-up) emails the author for any edition publishing within `NEWSLETTER_COVER_REMINDER_LEAD_HOURS` (36) whose cover is still pending. ONE-SHOT per edition via a Redis claim, released on a failed send; **fails open** — a Redis outage degrades to at most one email per run, never to silence |
+| Publish | `_approved_cover_path` logs INFO when it drops a pending cover. INFO deliberately: publishing cover-less is the DESIGNED outcome, and a repeated `log_warning` would file a defect against working behaviour |
 
 ## The deterministic gate
 

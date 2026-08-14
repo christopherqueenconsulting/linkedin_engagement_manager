@@ -742,3 +742,88 @@ class TestCoverAutoQueue:
                           pending=0, create_ret=77)
         assert cover.apply_async.call_count == 2
         assert cover.apply_async.call_args[1]["kwargs"] == {"edition_id": 77}
+
+
+class TestPendingCoverIsLegible:
+    """Issue #1432 — the drop is designed, so it is reported, never escalated."""
+
+    def test_dropping_a_pending_cover_logs_info_not_a_warning(self):
+        # A repeated log_warning re-emits at ERROR and files a defect; publishing cover-less on an
+        # unapproved cover is the DESIGNED outcome, so it must never take that path.
+        from cqc_lem.app.engagement.newsletter import _approved_cover_path
+        edition = {"user_id": 1, "cover_image_path": "images/newsletter_covers/1/a.png",
+                   "cover_image_status": "pending_review"}
+        with patch(f"{_NL}.log_info") as info, patch(f"{_NL}.log_warning") as warn:
+            assert _approved_cover_path(edition) is None
+        info.assert_called_once()
+        warn.assert_not_called()
+
+    def test_an_edition_with_no_cover_at_all_says_nothing(self):
+        from cqc_lem.app.engagement.newsletter import _approved_cover_path
+        with patch(f"{_NL}.log_info") as info:
+            assert _approved_cover_path({"user_id": 1}) is None
+        info.assert_not_called()
+
+    def test_an_approved_cover_says_nothing(self):
+        from cqc_lem.app.engagement.newsletter import _approved_cover_path
+        edition = {"user_id": 1, "cover_image_path": "images/newsletter_covers/1/a.png",
+                   "cover_image_status": "approved"}
+        with patch("cqc_lem.utilities.newsletter_cover.cover_abs_path", return_value="/a.png"), \
+             patch(f"{_NL}.log_info") as info:
+            assert _approved_cover_path(edition) == "/a.png"
+        info.assert_not_called()
+
+
+class TestAutoNotifyPendingCovers:
+    """Issue #1432 — the pre-slot half: tell the author while they can still act."""
+
+    _SCHED = "cqc_lem.app.run_scheduler"
+
+    def _run(self, editions, notified=True):
+        from cqc_lem.app.run_scheduler import auto_notify_pending_covers
+        with patch("cqc_lem.utilities.db.get_editions_with_pending_cover",
+                   return_value=editions) as query, \
+             patch("cqc_lem.utilities.notifications.notify_newsletter_cover_pending",
+                   return_value=notified) as notify:
+            result = auto_notify_pending_covers.run()
+        return result, query, notify
+
+    def test_reminds_each_edition_in_the_window(self):
+        editions = [{"id": 5, "user_id": 1, "title": "A", "scheduled_for": "2026-08-20"},
+                    {"id": 6, "user_id": 2, "title": "B", "scheduled_for": "2026-08-21"}]
+        result, _, notify = self._run(editions)
+        assert notify.call_count == 2
+        assert notify.call_args_list[0][0] == (1, 5, "A", "2026-08-20")
+        assert "2 author" in result
+
+    def test_window_runs_from_now_to_the_configured_lead(self):
+        from cqc_lem.utilities.env_constants import NEWSLETTER_COVER_REMINDER_LEAD_HOURS
+        _, query, _ = self._run([])
+        now, until = query.call_args[0]
+        # The slot has not arrived yet — an edition already due is the publish beat's problem.
+        assert (until - now).total_seconds() == NEWSLETTER_COVER_REMINDER_LEAD_HOURS * 3600
+        assert until.tzinfo is None  # naive UTC, like every other datetime compared to the DB
+
+    def test_an_empty_sweep_is_the_normal_state(self):
+        result, _, notify = self._run([])
+        notify.assert_not_called()
+        assert "0 author" in result
+
+    def test_an_already_reminded_edition_is_not_counted(self):
+        editions = [{"id": 5, "user_id": 1, "title": "A", "scheduled_for": "2026-08-20"}]
+        result, _, notify = self._run(editions, notified=False)
+        notify.assert_called_once()
+        assert "0 author" in result
+
+
+class TestPendingCoverReminderBeat:
+    def test_beat_runs_after_the_draft_top_up(self):
+        # The cover is rendered asynchronously by the 10:00 top-up, so a reminder sweep that ran
+        # WITH it would read every fresh draft as cover-less and say nothing (issue #1432).
+        from cqc_lem.app.my_celery import app
+        entry = app.conf.beat_schedule["notify-pending-newsletter-covers"]
+        assert entry["task"] == "cqc_lem.app.run_scheduler.auto_notify_pending_covers"
+        assert entry["schedule"].hour == {10}
+        assert entry["schedule"].minute == {30}
+        drafts = app.conf.beat_schedule["generate-newsletter-drafts"]
+        assert drafts["schedule"].hour == {10} and drafts["schedule"].minute == {0}
