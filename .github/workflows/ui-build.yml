@@ -115,3 +115,38 @@ jobs:
           fi
           [ "$found" -eq 1 ] || { echo "::error::grep failed (exit $found) — the canary check did not run."; exit 1; }
           echo "✓ dist/ carries no LEM-issued shared secret (positive control present)"
+
+      # The real proof for issue #1300's code-splitting criterion. It has to live here rather than
+      # in vitest: `npm test` runs BEFORE `npm run build` above, so no test can ever observe dist/.
+      # Before the split, an anonymous visitor reading the marketing page downloaded Dashboard,
+      # ContentStudio, Account, Avatars and AdminFeedbackPage inside one 739,054-byte entry chunk.
+      - name: Marketing entry chunk stays split
+        working-directory: src/cqc_lem/ui
+        run: |
+          set -eu
+          # 480 KiB. The measured entry after the split is ~421 KB; the headroom is for ordinary
+          # growth, not for quietly re-absorbing a route. Raising this number is a decision, and
+          # putting it in the diff is the point.
+          CEILING=491520
+
+          test -d dist/assets || { echo "::error::dist/assets not found — this check did not run."; exit 1; }
+
+          entry=$(ls dist/assets/index-*.js 2>/dev/null | head -n1)
+          [ -n "$entry" ] || { echo "::error::no entry chunk (dist/assets/index-*.js) — this check did not run."; exit 1; }
+          size=$(wc -c < "$entry")
+          echo "entry chunk: $entry = $size bytes (ceiling $CEILING)"
+          if [ "$size" -gt "$CEILING" ]; then
+            echo "::error::The SPA entry chunk is $size bytes, over the $CEILING ceiling."
+            echo "::error::A statically imported route pulls the whole authenticated app into the marketing page — see App.tsx and issue #1300."
+            exit 1
+          fi
+
+          # A ceiling alone would pass if the routes were split into chunks nothing loads, or if a
+          # route vanished entirely. Name the ones that must exist as their own files.
+          for route in Dashboard ContentStudio Account Avatars AdminFeedbackPage; do
+            ls dist/assets/${route}-*.js >/dev/null 2>&1 || {
+              echo "::error::No separate chunk for ${route} — it is back inside the entry bundle."
+              exit 1
+            }
+          done
+          echo "✓ entry chunk under the ceiling and every authenticated route is its own chunk"
