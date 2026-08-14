@@ -154,11 +154,16 @@ def missing_asset_finding(post_type: str) -> dict:
         score=None, threshold=None)
 
 
-def malformed_asset_finding(post_type: str, reason: str = "") -> dict:
+def malformed_asset_finding(post_type: str, reason: str = "", demoted: bool = True) -> dict:
     """A video file was downloaded but is empty or unparseable — held so it can't publish broken.
 
     The `reason` is surfaced to the review UI so a user/dev sees whether the failure was a zero-byte
     file, a missing codec signature, or an ffprobe parse failure (issue #1280).
+
+    `demoted=False` records the same reason as an ADVISORY note (issue #1402): a rejected file is
+    never stored, so the missing-asset gate is already holding that post and this only explains WHY
+    the media is missing. The probe pipeline demotes it only when `VIDEO_PROBE_ENABLED` makes a
+    malformed asset a hard failure.
     """
     kind = "video" if str(post_type).lower() == "video" else "media file"
     return build_finding(
@@ -167,7 +172,7 @@ def malformed_asset_finding(post_type: str, reason: str = "") -> dict:
                      f"{reason or 'file is empty or unparseable'}."),
         remediation=("Wait for the media backfill to retry, re-generate the post, or replace the "
                      "video manually."),
-        score=None, threshold=None,
+        score=None, threshold=None, demoted=demoted,
         details=[reason] if reason else [])
 
 

@@ -121,6 +121,7 @@ from cqc_lem.utilities.db import (
     get_post_authenticity_score,
     get_post_content,
     get_post_content_mix,
+    get_post_gate_reason,
     get_post_type_counts,
     get_recent_post_shape_history,
     get_recent_post_texts,
@@ -175,11 +176,13 @@ from cqc_lem.utilities.observability import (
     track_video_asset_probe,
 )
 from cqc_lem.utilities.quality_gates import (
+    GATE_MALFORMED_ASSET,
     affiliate_promo_finding,
     authenticity_finding,
     demoting_findings,
     fact_grounding_finding,
     focus_finding,
+    malformed_asset_finding,
     meeting_cta_finding,
     missing_asset_finding,
     similarity_finding,
@@ -1144,6 +1147,55 @@ def _probe_video_file(file_path: str) -> tuple[bool, str]:
     return True, ""
 
 
+def _record_video_probe_finding(post_id: int, probe_ok: bool, reason: str,
+                                user_id: Optional[int] = None, task_name: str = "") -> None:
+    """Record — or clear — the malformed-media note on `posts.gate_reason` (issue #1402).
+
+    The probe verdict is the only place the reason a video file was rejected exists: the file never
+    becomes `posts.video_url`, so by the time the gate pass runs the post merely looks assetless and
+    the review queue can only say "no video yet". This writes WHICH way the download was unusable
+    ("zero-byte file", "missing MP4 ftyp signature") next to that hold, and clears it on the next
+    passing probe so a healed post stops showing a stale reason.
+
+    The note is ADVISORY while the probe is fail-open — `missing_asset` is already holding the post,
+    so a second demoting finding would add nothing but a duplicate hold. With `VIDEO_PROBE_ENABLED`
+    ON a malformed asset is a hard failure by contract, and the finding demotes with it.
+
+    Best-effort: review UX must never cost the post, so an unreadable/unwritable reason only logs.
+    """
+    try:
+        existing = get_post_gate_reason(post_id)
+        kept = [f for f in existing if f.get("gate") != GATE_MALFORMED_ASSET]
+        if probe_ok:
+            if len(kept) == len(existing):
+                # Nothing to clear — the happy path never writes.
+                return
+            findings = kept
+        else:
+            findings = kept + [malformed_asset_finding(PostType.VIDEO.value, reason,
+                                                       demoted=VIDEO_PROBE_ENABLED)]
+        update_db_post_gate_reason(post_id, findings)
+    except Exception as e:
+        log_warning("Could not record the video probe verdict on the post — a held video post will "
+                    "not say why its file was rejected", exc=e, user_id=user_id, post_id=post_id,
+                    task_name=task_name or "video_asset_probe")
+
+
+def _recorded_malformed_asset_notes(post_id: int) -> list[dict]:
+    """The malformed-media note the video probe recorded on this post, if any (issue #1402).
+
+    A gate pass cannot re-derive this one: the rejected file was never stored, so all the evaluator
+    sees is a post with no media. Re-read here so every pass keeps the reason alongside the
+    missing-asset hold it explains. Never raises — an unreadable note only costs the explanation.
+    """
+    try:
+        return [f for f in get_post_gate_reason(post_id) if f.get("gate") == GATE_MALFORMED_ASSET]
+    except Exception as e:
+        log_warning("Could not read the recorded probe verdict — this post's hold will not say why "
+                    "its media file was rejected", exc=e, post_id=post_id, task_name="create_content")
+        return []
+
+
 def _accept_probed_video(post_id: int, video_file_path: str, video_src_url: str,
                          user_id: Optional[int] = None, task_name: str = "") -> bool:
     """Decide whether a just-downloaded video file may become the post's media (issue #1280).
@@ -1154,11 +1206,16 @@ def _accept_probed_video(post_id: int, video_file_path: str, video_src_url: str,
     denominator. Raises when `VIDEO_PROBE_ENABLED` is ON — a malformed asset is then a hard
     failure; otherwise the probe is advisory and a failure returns False, which every caller treats
     exactly like a failed render: the URL is not persisted, so the missing-asset gate holds the post
-    and asset backfill can retry it.
+    and asset backfill can retry it. Either way the verdict is recorded on the post
+    (`_record_video_probe_finding`), so the review queue can say why the file was rejected.
     """
     probe_ok, probe_reason = _probe_video_file(video_file_path)
     track_video_asset_probe(post_id=post_id, user_id=user_id, probe_ok=probe_ok, reason=probe_reason,
                             source="runway" if str(video_src_url).startswith("http") else "pexels")
+    # The reason goes onto the post here, where it exists (issue #1402) — a passing probe clears any
+    # note an earlier rejection left, so a healed post stops explaining a hold it no longer has.
+    _record_video_probe_finding(post_id, probe_ok, probe_reason, user_id=user_id,
+                                task_name=task_name)
     if probe_ok:
         return True
     log_warning(f"Video asset probe failed ({probe_reason}) — not persisting URL",
@@ -1728,6 +1785,10 @@ def evaluate_post_gates(post_id: int, content: str, post_type: Union[PostType, s
 
     if _post_missing_required_asset(post_id, post_type, video_url):
         findings.append(missing_asset_finding(post_type))
+        # WHY the media is missing, when the video probe rejected a downloaded file (issue #1402).
+        # Carried only while the missing-asset hold stands: once real media exists the note is
+        # stale, and the next passing probe clears it from the post anyway.
+        findings.extend(_recorded_malformed_asset_notes(post_id))
 
     if authenticity_score is not None and authenticity_gate_enabled():
         threshold = authenticity_score_min(prefs)
