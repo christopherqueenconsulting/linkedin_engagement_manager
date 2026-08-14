@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.149.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.148.0...v0.149.0) (2026-08-14)
+
+
+### Features
+
+* **content-generation:** statuses, media, and best-practice guidance for group posts (closes [#1224](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1224)) ([#1444](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1444)) ([37da0ac](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/37da0ac341715fcdf91053e038474bdecd7ff07b))
+* **ui:** rebuild the SPA front page on the brand system — structure, IA, safety story, a11y and performance ([#1483](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1483)) ([f0dcf28](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/f0dcf28b5c51587de7e2354f4f5f8ef499e12abb))
+
+
+### Bug Fixes
+
+* **agent-pipeline:** stop a code-owner-review-blocked PR from starving the WIP gate ([#1503](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1503)) ([1d3e048](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/1d3e0482e0030f65a96514d2aea7d8e38d4c831a))
+
 ## [0.148.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.147.0...v0.148.0) (2026-08-14)
 
 
