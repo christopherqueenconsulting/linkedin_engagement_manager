@@ -169,6 +169,11 @@ retry) and then ships with a logged reason — rendered images have no review qu
 front. Tool/model version numbers ("GPT-4o", "Postgres 16") are NOT graded as claims — the
 receipt's structure asks for the exact stack by name.
 
+Both deck graders read the generated JSON, never the PNG that ships — which is the gap the audit
+below measures: the prompt allows a 200-char slide body, the schema 500, and the layouts the plan
+selects draw 99–193 before `_draw_block` silently stops.
+Full audit: `docs/content-quality-audits/carousel.md`.
+
 ## Mechanical editor pass (issue #1079, `content_alignment.mechanical_edit_text`)
 
 An opt-in `lem-medium` copy edit on a newsletter draft — capitalization, grammar, punctuation,
