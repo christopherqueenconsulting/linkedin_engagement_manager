@@ -57,9 +57,28 @@ class TestSkipUndoDeadline:
     def test_reads_a_datetime_row_as_well_as_an_iso_string(self):
         assert skip_undo_deadline({"created_at": datetime(2026, 8, 9, 15, 0)}) == _SLOT
 
+    def test_a_carried_forward_draft_is_measured_from_its_last_write(self):
+        """A carried-forward draft is measured from its last write, not its creation.
+
+        The publish beat carries an unpublished draft forward — no session, unreadable group
+        switches, no Chrome slot — so its FIRST slot is long past while the row is still live.
+
+        Anchoring on `created_at` alone would make a skip on one of those irreversible the moment it
+        was made, which is the bug this window exists to fix.
+        """
+        carried = {"created_at": "2026-07-12T15:00:00", "updated_at": "2026-08-13T09:00:00"}
+        assert skip_undo_deadline(carried) == datetime(2026, 8, 18, 15, 0, tzinfo=timezone.utc)
+
+    def test_an_unreadable_update_time_falls_back_to_creation(self):
+        assert skip_undo_deadline({"created_at": _DRAFTED, "updated_at": None}) == _SLOT
+
+    def test_an_older_update_never_pulls_the_deadline_in(self):
+        assert skip_undo_deadline(
+            {"created_at": _DRAFTED, "updated_at": "2026-07-12T15:00:00"}) == _SLOT
+
     @pytest.mark.parametrize("created", [None, "", "not a date", 17])
-    def test_unreadable_creation_time_has_no_deadline(self, created):
-        assert skip_undo_deadline({"created_at": created}) is None
+    def test_unreadable_timestamps_have_no_deadline(self, created):
+        assert skip_undo_deadline({"created_at": created, "updated_at": created}) is None
 
 
 class TestGroupSkipUndoOpen:
@@ -74,6 +93,15 @@ class TestGroupSkipUndoOpen:
     def test_still_closed_days_later(self):
         assert group_skip_undo_open({"created_at": _DRAFTED},
                                     now=datetime(2026, 8, 14, 12, 0)) is False
+
+    def test_a_skip_on_a_carried_forward_draft_is_undoable(self):
+        """A draft the publish beat could not ship stays live with an old `created_at`.
+
+        The user pressing Skip on it must get the same undo window as anyone else — otherwise the
+        control they just used is irreversible on the exact rows the lane holds longest.
+        """
+        carried = {"created_at": "2026-07-12T15:00:00", "updated_at": "2026-08-13T09:00:00"}
+        assert group_skip_undo_open(carried, now=datetime(2026, 8, 14, 12, 0)) is True
 
     def test_an_unreadable_creation_time_fails_open(self):
         """The bug being fixed is a user stuck with an accidental skip.

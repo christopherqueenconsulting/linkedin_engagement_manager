@@ -315,13 +315,35 @@ class TestGroupPostSkipUndoWindow:
         assert r.status_code == 200
         saved.assert_called_once_with(11, content="My own words.", status=None)
 
+    def test_a_skip_on_a_carried_forward_draft_is_still_undoable(self, api_client):
+        """The publish beat carries an unshipped draft forward (no session, unreadable switches).
+
+        Its first slot is then long past while the row is still the one the studio shows, so a
+        window measured from `created_at` alone would land the user's skip irreversible the moment
+        they made it — the bug being fixed, on the rows the lane holds longest.
+        """
+        carried = {**_DRAFT, "status": "skipped", "created_at": "2026-07-12T15:00:00",
+                   "updated_at": "2026-08-12T08:00:00"}
+        with patch(f"{_API}.get_session_user_id", return_value=1), \
+             patch(f"{_USER}.get_current_group_post_draft", return_value=carried), \
+             patch(f"{_USER}.get_open_group_post_draft", return_value=None), \
+             patch(f"{_USER}.get_post_enabled_group_ids", return_value=["g1"]), \
+             patch(f"{_USER}.update_group_post_draft", return_value=True) as saved:
+            put = api_client.put("/api/user/group-post-draft",
+                                 json={"session_token": "tok", "status": "ready"})
+            got = api_client.get("/api/user/group-post-draft?session_token=tok")
+        assert put.status_code == 200
+        assert str(saved.call_args.kwargs["status"]) == "ready"
+        assert got.json()["detail"]["can_undo_skip"] is True
+        assert got.json()["detail"]["undo_deadline"].startswith("2026-08-18T15:00:00")
+
     def test_an_unreadable_creation_time_leaves_the_undo_open(self, api_client):
         """Fails OPEN.
 
         The reported bug is a user stuck with an accidental skip, and a restore is an explicit
         action that publishes at the next slot rather than silently.
         """
-        skipped = {**_DRAFT, "status": "skipped", "created_at": None}
+        skipped = {**_DRAFT, "status": "skipped", "created_at": None, "updated_at": None}
         with patch(f"{_API}.get_session_user_id", return_value=1), \
              patch(f"{_USER}.get_current_group_post_draft", return_value=skipped), \
              patch(f"{_USER}.get_open_group_post_draft", return_value=None), \

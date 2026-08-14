@@ -44,10 +44,16 @@ Two rules decide everything here:
   is about to ship.
 
 - **"Until the slot passes" is an actual instant** (#1415). `utilities/group_post_slot.py` computes
-  it: the first **Tuesday 15:00 UTC after the draft was WRITTEN** — the slot it was drafted for —
-  never one measured from the skip, because a user may edit a skipped draft and an `updated_at`
-  anchor would push the deadline out a week every time they did. The Python helper mirrors the SPA's
-  `utils/groupPostSlot.ts`; keep the two in step. Consequences:
+  it: the first **Tuesday 15:00 UTC after the row was last written** — the slot the draft is WAITING
+  ON. For the ordinary post that is the Tuesday the Sunday beat drafted it for. It is deliberately
+  **not** `created_at` alone: the publish beat carries an unshipped draft forward (no LinkedIn
+  session that Tuesday, unreadable group switches, no Chrome slot), and such a row's first slot is
+  already in the past while it is still the draft the studio shows — a `created_at` window would
+  land the user's skip irreversible the moment they made it, which is the bug this exists to fix.
+  The cost is that editing a skipped draft after the window closed reopens it; that is an explicit
+  action on a draft the user plainly still wants, and it fails the same direction as everything else
+  here. The Python helper mirrors the SPA's `utils/groupPostSlot.ts`; keep the two in step.
+  Consequences:
   - `GET /user/group-post-draft` carries **`can_undo_skip`** and **`undo_deadline`**, so the studio
     and the Account card show **Undo skip** only while the PUT would honour it, and say the skip is
     final (next post drafted Sunday) after. A control that silently does nothing is the failure
@@ -59,7 +65,7 @@ Two rules decide everything here:
     forbids.
   - An undo on a week that was never skipped is an **expected no-op** — DEBUG, and none of the
     restore refusals apply to it.
-  - An unreadable `created_at` leaves the window OPEN. The bug being fixed is a user stuck with an
+  - Unreadable timestamps leave the window OPEN. The bug being fixed is a user stuck with an
     accidental skip; a restore is explicit and publishes at the next slot.
 
 - **Not every skipped draft is one the USER skipped.** `auto_group_posts` also skips a draft whose

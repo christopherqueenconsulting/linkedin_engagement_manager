@@ -2,9 +2,9 @@
 
 `auto_group_posts` publishes on Tuesdays at 15:00 UTC (`my_celery.beat_schedule`), two days after the
 draft beat writes the post. "Skip this week" is the user's own call and stays reversible right up to
-that slot — after it the week is spent, and restoring the draft would ship a post written for a week
-that has passed. This module is the ONE place that boundary is computed, so the API refusal and the
-control the SPA offers cannot disagree about it.
+the slot that draft is waiting on — after it the week is spent, and restoring the draft would ship a
+post written for a week that has passed. This module is the ONE place that boundary is computed, so
+the API refusal and the control the SPA offers cannot disagree about it.
 
 The SPA mirrors `next_group_publish_slot` in `ui/src/utils/groupPostSlot.ts` to show when a queued
 draft ships; keep the two in step.
@@ -41,27 +41,35 @@ def next_group_publish_slot(from_dt: Optional[datetime] = None) -> datetime:
 def skip_undo_deadline(draft: dict[str, Any]) -> Optional[datetime]:
     """The instant this draft's skip stops being undoable, or None when it cannot be worked out.
 
-    The deadline is the publish slot the draft was WRITTEN for — the first one after it was created
-    — not one measured from the skip. A user may edit a skipped draft, and anchoring on the row's
-    `updated_at` would push the deadline out by a week every time they did.
+    The deadline is the slot the draft is WAITING ON — the first publish slot after the row was last
+    written. For the ordinary post that is exactly the Tuesday the Sunday beat drafted it for.
+    Anchoring on `created_at` alone is wrong for a draft the publish beat CARRIED FORWARD (no
+    LinkedIn session that Tuesday, unreadable group switches, a Chrome session that never opened):
+    that row's first slot is already in the past, so a skip on it would land irreversible the moment
+    it was made — the very bug this window exists to fix.
+
+    The cost of the `updated_at` floor is that editing a skipped draft after the window closed
+    reopens it. That is an explicit action on a draft the user plainly still wants, and a restore
+    publishes at the NEXT slot, so it fails the same way the unreadable-timestamp path does: open.
 
     Args:
-        draft: A group-post draft row as the API serves it (`created_at` is an ISO string).
+        draft: A group-post draft row as the API serves it (timestamps are ISO strings).
 
     Returns:
-        The publish slot as a timezone-aware UTC datetime, or None when `created_at` is missing or
-        unparseable.
+        The publish slot as a timezone-aware UTC datetime, or None when neither `created_at` nor
+        `updated_at` can be read.
     """
-    created = _parse(draft.get("created_at"))
-    if created is None:
+    written = [ts for ts in (_parse(draft.get("created_at")), _parse(draft.get("updated_at")))
+               if ts is not None]
+    if not written:
         return None
-    return next_group_publish_slot(created)
+    return next_group_publish_slot(max(written))
 
 
 def group_skip_undo_open(draft: dict[str, Any], now: Optional[datetime] = None) -> bool:
     """Whether this draft's skip can still be undone.
 
-    Fails OPEN: a draft whose `created_at` cannot be read is treated as still undoable, because the
+    Fails OPEN: a draft whose timestamps cannot be read is treated as still undoable, because the
     bug this window exists to fix (#1415) is a user stuck with an accidental skip, and a restore is
     an explicit action that publishes at the NEXT slot rather than silently.
 

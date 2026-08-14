@@ -2581,7 +2581,7 @@ def update_group_post_draft_endpoint(request: GroupPostDraftUpdateRequest) -> Re
             log_debug("Group post undo skip is a no-op — this week was not skipped",
                       user_id=user_id, task_name="update_group_post_draft_endpoint")
         if undoing_skip:
-            # Undoing a skip is bounded by the slot the draft was written for: once the publish beat
+            # Undoing a skip is bounded by the slot the draft is waiting on: once the publish beat
             # for that week has run the week is spent, and restoring the row would ship a post
             # written for a week that has passed. The SPA hides the control by then, so reaching
             # here means a stale tab.
