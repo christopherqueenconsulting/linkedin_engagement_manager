@@ -33,6 +33,10 @@ MYSQL_DATABASE = os.getenv('MYSQL_DATABASE')
 MYSQL_PORT = os.getenv('MYSQL_PORT')
 DbConnection = Union[PooledMySQLConnection, MySQLConnectionAbstract]
 
+#: MySQL's own default, and what `.env.example` / docker-compose ship. Used when MYSQL_PORT is
+#: unset so an environment that never exported it still connects.
+DEFAULT_MYSQL_PORT = 3306
+
 @dataclass
 class _PoolState:
     """Per-process pool bookkeeping, held on one mutable object rather than several module globals.
@@ -49,6 +53,28 @@ class _PoolState:
 
 _POOL_LOCK = threading.Lock()
 _POOL_STATE = _PoolState()
+
+
+def _resolve_mysql_port(raw: Any) -> int:
+    """Turns whatever MYSQL_PORT holds into a port number the connector can use.
+
+    The connector does `int(port)` deep inside `connect()`, so an unset MYSQL_PORT used to raise
+    `TypeError: int() argument ... not 'NoneType'` — which is NOT a `mysql.connector.Error`, so it
+    escaped every caller's `except mysql.connector.Error` and surfaced as a grouped error-tracking
+    issue instead of a connection failure (issue #1319).
+
+    Returns:
+        The parsed port, or DEFAULT_MYSQL_PORT when the value is missing or unparseable.
+    """
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        return DEFAULT_MYSQL_PORT
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        # A garbage value IS a misconfiguration worth escalating, unlike an unset one.
+        log_warning("MYSQL_PORT is not a number - falling back to the default MySQL port",
+                    mysql_port=str(raw), default_port=DEFAULT_MYSQL_PORT)
+        return DEFAULT_MYSQL_PORT
 
 
 def _get_mysql_config() -> dict[str, Any]:
@@ -69,7 +95,7 @@ def _get_mysql_config() -> dict[str, Any]:
         'user': MYSQL_USER,
         'password': MYSQL_PASSWORD,
         'database': MYSQL_DATABASE,
-        'port': MYSQL_PORT,
+        'port': _resolve_mysql_port(MYSQL_PORT),
         'time_zone': '+00:00',
     }
 
