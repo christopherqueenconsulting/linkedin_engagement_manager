@@ -212,7 +212,11 @@ at.
    unconditionally, even when the rewrite came back carrying more violations than the one it
    replaced. `slop_lint.keep_retry` ranks the two reports on (HARD count, total violations) and
    keeps whichever is better, ties going to the retry. Both reports were already in hand; this
-   spends nothing.
+   spends nothing. On the newsletter the rank carries a middle term — the structural floor (#1435)
+   steers the same retry off the same body, so the ordering is (HARD slop count, structural
+   failures, total violations). Without it the slop half alone would discard the draft that fixed
+   the other grader: a too-short first draft trips no slop check at all, so a full-length
+   replacement carrying one WARN ranks worse on slop and better on everything it was asked for.
 3. **The attempt budget is now per-surface** (`SLOP_LINT_MAX_ATTEMPTS_<SURFACE>`, resolved ahead of
    the global `SLOP_LINT_MAX_ATTEMPTS`), because what an attempt costs is a property of the surface:
    an edition is a `lem-complex` call on a weekly cadence, a feed comment a `lem-medium` call at

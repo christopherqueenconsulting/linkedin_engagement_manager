@@ -215,7 +215,9 @@ newsletter.
 
 Two rules travel with it, and **both are newsletter-only today** (#1536 widens them): the retry is a
 fresh draft rather than an edit, so `keep_retry` keeps whichever of the two ranks better on (HARD
-count, total violations) instead of taking the newer one blind; and each regeneration emits
+count, total violations) instead of taking the newer one blind — on the newsletter, where the
+structural floor (#1435) steers the same retry, the rank is (HARD count, structural failures, total
+violations) so a draft that fixed the floor is not thrown away for a WARN; and each regeneration emits
 `slop_retry` naming what it actually did (`cleared` / `traded` / `worsened` / `persisted` / `lost`,
 plus whether the draft was `kept`) — the finished draft only shows what was still firing at the end,
 so without that event a retry that traded one check for another is invisible. The other loops still

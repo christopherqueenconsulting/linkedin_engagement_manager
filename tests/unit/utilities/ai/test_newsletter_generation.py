@@ -851,6 +851,27 @@ class TestStructureFailuresFeedTheBoundedRegeneration:
             edition = ai_helper.generate_newsletter_edition(self._profile(), topic="x")
         assert call.call_count == 1 and edition["body"] == "Too short."
 
+    def test_a_retry_that_fixed_the_floor_survives_the_keep_rule(self, monkeypatch):
+        """The #1434 keep rule ranks slop reports; both graders steer THIS retry (#1435).
+
+        A too-short first draft trips no slop check at all, so a full-length replacement carrying a
+        single WARN ranks worse on slop alone — ranking on slop alone would discard the only draft
+        that cleared the floor and hand back the two-word one.
+        """
+        monkeypatch.setenv("HUMANIZE_ENABLED", "off")
+        from cqc_lem.utilities.ai import ai_helper, slop_lint as _slop
+        good = _clean_edition_body()
+        assert _slop.lint_report(good, "newsletter")["violations"], (
+            "this fixture must carry a WARN for the test to mean anything")
+        assert not _slop.lint_report("Too short.", "newsletter")["violations"]
+        with patch(f"{_AI}._call_llm",
+                   side_effect=[_resp(self._payload("Too short.")), _resp(self._payload(good))]), \
+             patch(f"{_AI}.flag_enabled", return_value=False), \
+             patch(f"{_AI}.track_slop_retry") as track:
+            edition = ai_helper.generate_newsletter_edition(self._profile(), topic="x")
+        assert edition["body"].startswith("A short opening line")
+        assert track.call_args.kwargs["kept"] is True
+
 
 class TestNewsletterSlopRetry:
     """The bounded regeneration's own behaviour (issue #1434).

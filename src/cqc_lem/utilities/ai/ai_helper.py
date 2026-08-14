@@ -1026,6 +1026,28 @@ def generate_newsletter_edition(profile: "LinkedInProfile", topic: str = None,
     # not recoverable from the corpus afterwards. The attempt budget is read PER SURFACE and still
     # defaults to 2 — an edition is a `lem-complex` call, so a third attempt is a cost decision for
     # `SLOP_LINT_MAX_ATTEMPTS_NEWSLETTER` to make once this telemetry has editions in it.
+
+    def _keep(before: dict, before_structure: dict,
+              after: "dict | None", after_structure: "dict | None") -> bool:
+        """Whether a regeneration is worth keeping over the draft that produced it.
+
+        `_slop.keep_retry`'s rank with the structural floor spliced in, because BOTH graders steered
+        this retry and the slop half alone would throw away the draft that fixed the other one: a
+        short first draft trips no slop check at all, so a full-length replacement carrying one WARN
+        ranks worse on slop and better on everything the retry was actually asked for. Ordered
+        hard-slop first (the only violations that would hold a post on another surface), then
+        structural failures, then total violations. Ties keep the retry, same as `keep_retry`.
+        """
+        if after is None:
+            return False
+
+        def rank(report: dict, structure: "dict | None") -> tuple:
+            return (len(report.get("hard") or []),
+                    len((structure or {}).get("failures") or []),
+                    len(report.get("violations") or []))
+
+        return rank(after, after_structure) <= rank(before, before_structure)
+
     max_attempts = _slop.slop_max_attempts("newsletter")
     report = _slop.lint_report(edition["body"], "newsletter", blog_content=blog_content)
     structure = _framework.newsletter_structure_report(edition["body"])
@@ -1039,7 +1061,7 @@ def generate_newsletter_edition(profile: "LinkedInProfile", topic: str = None,
             retry = _polish(retry)
             retry_report = _slop.lint_report(retry["body"], "newsletter", blog_content=blog_content)
             retry_structure = _framework.newsletter_structure_report(retry["body"])
-        kept = bool(retry) and _slop.keep_retry(report, retry_report)
+        kept = bool(retry) and _keep(report, structure, retry_report, retry_structure)
         track_slop_retry("newsletter", _slop.retry_outcome(report, retry_report),
                          before=report, after=retry_report, attempt=attempt,
                          max_attempts=max_attempts, kept=kept, user_id=user_id)
