@@ -15,14 +15,26 @@ pytestmark = pytest.mark.unit
 
 
 @pytest.fixture(autouse=True)
-def _no_aws_secret(monkeypatch):
-    """Keeps the config resolution on the env-var path, not the AWS-secret one."""
+def _direct_connection_env(monkeypatch):
+    """Keeps config resolution on the env-var path, and off the pool.
+
+    Pooling is left ON by default (`MYSQL_POOL_ENABLED` unset resolves to True, which is what CI's
+    empty `.env` gives), and `_get_pooled_connection()` then builds a real `MySQLConnectionPool`
+    whose `add_connection()` opens a genuine socket to MYSQL_HOST — I/O this lane is not allowed to
+    do — and leaves that pool bound to the process for every later test in the worker. The port is
+    resolved in `_get_mysql_config()` before either branch, so the direct path proves the same
+    thing without any of that. `test_connection_pooling.py` owns the pooled path.
+    """
+    db.reset_connection_pool()
+    monkeypatch.setattr(db, "MYSQL_POOL_ENABLED", False)
     monkeypatch.setattr(db, "AWS_MYSQL_SECRET_NAME", None)
     monkeypatch.setattr(db, "AWS_REGION", None)
     monkeypatch.setattr(db, "MYSQL_HOST", "mysql-host")
     monkeypatch.setattr(db, "MYSQL_USER", "lem")
     monkeypatch.setattr(db, "MYSQL_PASSWORD", "secret")
     monkeypatch.setattr(db, "MYSQL_DATABASE", "lem_db")
+    yield
+    db.reset_connection_pool()
 
 
 class TestResolveMysqlPort:
