@@ -21,7 +21,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const queryClient = useQueryClient()
   const [user, setUser] = useState<AuthUser | null>(null)
   const [sessionToken, setSessionToken] = useState<string | null>(null)
-  const [isLoading, setIsLoading] = useState(true)
+  // Loading means "a stored session is being re-read". With nothing stored there is nothing to
+  // wait for, so a logged-out visitor never renders a loading shell it would immediately drop.
+  const [isLoading, setIsLoading] = useState(() => !!localStorage.getItem(SESSION_KEY))
   const [isAdmin, setIsAdmin] = useState(false)
   const [enrollmentRequired, setEnrollmentRequired] = useState(false)
   const [strongFactorPrompt, setStrongFactorPrompt] = useState(false)
@@ -61,10 +63,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     const storedToken = localStorage.getItem(SESSION_KEY)
-    if (!storedToken) {
-      setIsLoading(false)
-      return
-    }
+    if (!storedToken) return
     loadSession(storedToken)
       .catch(() => {
         localStorage.removeItem(SESSION_KEY)

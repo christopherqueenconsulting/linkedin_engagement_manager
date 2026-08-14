@@ -10,24 +10,34 @@ export default function Account() {
   const queryClient = useQueryClient()
   const { data: readiness } = useAccountReadiness()
   const [searchParams, setSearchParams] = useSearchParams()
-  const [oauthMsg, setOauthMsg] = useState<{ ok: boolean; text: string } | null>(null)
+  // The LinkedIn OAuth callback lands as ?li_connected=1 or ?li_error=… and the effect below
+  // strips it from the URL, so what it said is read ONCE at mount — otherwise the notice would
+  // vanish with the parameter that produced it.
+  const [oauthResult] = useState(() => {
+    if (searchParams.get('li_connected') === '1') {
+      return { ok: true, text: 'LinkedIn connected successfully!', dismissAfterMs: 5000 }
+    }
+    if (searchParams.get('li_error')) {
+      return { ok: false, text: 'LinkedIn connection failed — please try again.', dismissAfterMs: 8000 }
+    }
+    return null
+  })
+  const [oauthDismissed, setOauthDismissed] = useState(false)
+  const oauthMsg = oauthResult && !oauthDismissed ? oauthResult : null
 
-  // Handle LinkedIn OAuth callback: ?li_connected=1 or ?li_error=... in URL
+  // Everything the callback has to change lives outside React: the connected marker, the cached
+  // token status, and the URL itself.
   useEffect(() => {
-    const liConnected = searchParams.get('li_connected')
-    const liError = searchParams.get('li_error')
-    if (liConnected === '1') {
+    if (!oauthResult) return
+    if (oauthResult.ok) {
       localStorage.setItem('lem_li_connected', '1')
       // Force refetch so the fresh token is reflected immediately
       queryClient.invalidateQueries({ queryKey: ['token-status'] })
-      setSearchParams({ section: 'setup' }, { replace: true })
-      setOauthMsg({ ok: true, text: 'LinkedIn connected successfully!' })
-      setTimeout(() => setOauthMsg(null), 5000)
-    } else if (liError) {
-      setOauthMsg({ ok: false, text: 'LinkedIn connection failed — please try again.' })
-      setSearchParams({ section: 'setup' }, { replace: true })
-      setTimeout(() => setOauthMsg(null), 8000)
     }
+    setSearchParams({ section: 'setup' }, { replace: true })
+    const t = setTimeout(() => setOauthDismissed(true), oauthResult.dismissAfterMs)
+    return () => clearTimeout(t)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   return (

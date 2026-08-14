@@ -187,9 +187,7 @@ export default function ContentStudio() {
   const [imageError, setImageError] = useState<string | null>(null)
   const imageFileRef = useRef<HTMLInputElement>(null)
 
-  // The re-score verdict belongs to one post — drop it when a different one is opened.
   const editingPostId = editingPost?.post_id ?? null
-  useEffect(() => { setRescoreResult(null); setImageError(null) }, [editingPostId])
 
   const { start: filterStartDate, end: filterEndDate } = resolveDateRange(
     dateRange, userTimezone, customStartDate, customEndDate
@@ -338,7 +336,19 @@ export default function ContentStudio() {
   // for every other post 'posted' is written by the task that has the LinkedIn URN to prove it.
   const [nativeCopied, setNativeCopied] = useState(false)
   const [nativeError, setNativeError] = useState<string | null>(null)
-  useEffect(() => { setNativeCopied(false); setNativeError(null) }, [editingPostId])
+
+  // The re-score verdict, the image error and the native-copy flag all belong to ONE post — drop
+  // them the moment a different one is opened. Adjusted during render (React's documented
+  // "adjusting state when a prop changes" pattern) rather than in an effect, so the editor never
+  // paints one post's verdict over another's.
+  const [scratchPostId, setScratchPostId] = useState(editingPostId)
+  if (scratchPostId !== editingPostId) {
+    setScratchPostId(editingPostId)
+    setRescoreResult(null)
+    setImageError(null)
+    setNativeCopied(false)
+    setNativeError(null)
+  }
 
   const markPostedMutation = useMutation({
     mutationFn: (post_id: number) =>
