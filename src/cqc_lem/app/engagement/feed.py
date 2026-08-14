@@ -3193,15 +3193,21 @@ _GROUP_MEDIA_INPUT_LOCATORS = [
     (By.XPATH, f"//input[@type='file' and contains(@accept,'video'){_X_NOT_IN_MESSAGING}]"),
     (By.XPATH, f"//input[@type='file'{_X_NOT_IN_MESSAGING}]"),
 ]
+# The trigger is the one control here we CLICK, so it carries the exclusion harder than the input
+# does: LinkedIn's messaging overlay labels its own attachment control "Add a photo", and clicking
+# THAT opens the message thread's file picker over the group page — #1012's rule exactly. Composer
+# first, then page-wide with the messaging containers cut out; the or-chain is parenthesised because
+# `and` binds tighter than `or` and an unbracketed tail would exclude messaging from the LAST label
+# only.
+_X_MEDIA_TRIGGER_LABELS = (f"contains({_X_LOWER_ARIA},'add media') "
+                           f"or contains({_X_LOWER_ARIA},'add a photo') "
+                           f"or contains({_X_LOWER_ARIA},'add photo') "
+                           f"or contains({_X_LOWER_ARIA},'add a video') "
+                           f"or contains({_X_LOWER_ARIA},'add video')")
 _GROUP_MEDIA_TRIGGER_LOCATORS = [
-    (By.XPATH,
-     "//*[self::button or @role='button']["
-     f"contains({_X_LOWER_ARIA},'add media') "
-     f"or contains({_X_LOWER_ARIA},'add a photo') "
-     f"or contains({_X_LOWER_ARIA},'add photo') "
-     f"or contains({_X_LOWER_ARIA},'add a video') "
-     f"or contains({_X_LOWER_ARIA},'add video')"
-     "]"),
+    (By.XPATH, f"//div[@role='dialog']//*[self::button or @role='button'][{_X_MEDIA_TRIGGER_LABELS}]"),
+    (By.XPATH, "//*[self::button or @role='button']"
+               f"[({_X_MEDIA_TRIGGER_LABELS}){_X_NOT_IN_MESSAGING}]"),
 ]
 # The media overlay's own commit control. It is NOT the share box's Post button — that one is
 # clicked later, after the text goes in. Scoped to the open dialog first for the same reason the

@@ -91,12 +91,15 @@ move past a group whose share box opened seconds earlier. With no media in the d
 ours is on screen and a missing editor is still the group's answer, which retires the draft and
 rotates past it exactly as before (issue #858).
 
-The page-wide tail of the input/confirm chains excludes the messaging overlay by name
+The page-wide tail of the input/trigger/confirm chains excludes the messaging overlay by name
 (`msg-overlay-*` / `msg-form`, the containers `message_thread.py` already keys on). That overlay
 rides every LinkedIn page and its attachment input declares an image `accept`, so without the
 exclusion the "last resort" would not be a long shot — it is the control the run would
 deterministically land on the moment the composer's own input drifts, uploading the author's image
-into a message thread while reporting the media as attached.
+into a message thread while reporting the media as attached. The TRIGGER carries that exclusion for
+a harder reason than the input does: it is the one control in the chain the run CLICKS, and
+messaging labels its own attachment control "Add a photo" — clicking that is #1012's rule broken,
+not just a bad upload target.
 
 Video is supported end to end at the data + publish layer, but the studio can currently only attach
 IMAGES — there is no video upload/validation surface (size, duration, codec) to reuse yet. That

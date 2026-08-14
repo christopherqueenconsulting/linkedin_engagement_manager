@@ -591,13 +591,17 @@ class TestPostToGroup:
 
         A group page carries other file inputs — the messaging overlay's declares an image `accept`
         too — and writing the draft's file into one of those uploads the image somewhere the user
-        never asked for while the run still reports the media as attached.
+        never asked for while the run still reports the media as attached. The TRIGGER chain is held
+        to the same shape and for a harder reason: it is the one control we CLICK, and messaging
+        labels its own attachment control "Add a photo".
         """
         from cqc_lem.app.engagement.feed import (
             _GROUP_MEDIA_CONFIRM_LOCATORS,
             _GROUP_MEDIA_INPUT_LOCATORS,
+            _GROUP_MEDIA_TRIGGER_LOCATORS,
         )
-        for chain in (_GROUP_MEDIA_INPUT_LOCATORS, _GROUP_MEDIA_CONFIRM_LOCATORS):
+        for chain in (_GROUP_MEDIA_INPUT_LOCATORS, _GROUP_MEDIA_TRIGGER_LOCATORS,
+                      _GROUP_MEDIA_CONFIRM_LOCATORS):
             scoped = [i for i, (_, value) in enumerate(chain) if "role='dialog'" in value]
             unscoped = [i for i, (_, value) in enumerate(chain) if "role='dialog'" not in value]
             assert scoped, chain
