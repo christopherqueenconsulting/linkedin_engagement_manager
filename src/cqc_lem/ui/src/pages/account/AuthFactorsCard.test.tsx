@@ -12,7 +12,7 @@ vi.mock('../../api/client', () => ({
     post: (...args: unknown[]) => post(...args),
   },
 }))
-vi.mock('../../contexts/AuthContext', () => ({ useAuth: () => ({ sessionToken: 'cookie' }) }))
+vi.mock('../../contexts/useAuth', () => ({ useAuth: () => ({ sessionToken: 'cookie' }) }))
 vi.mock('../../utils/webauthn', () => ({
   isPasskeySupported: () => true,
   createPasskey: vi.fn(async () => ({ id: 'cred' })),

@@ -16,7 +16,7 @@ vi.mock('../../api/client', () => ({
     delete: (...args: unknown[]) => del(...args),
   },
 }))
-vi.mock('../../contexts/AuthContext', () => ({ useAuth: () => ({ sessionToken: 'tok' }) }))
+vi.mock('../../contexts/useAuth', () => ({ useAuth: () => ({ sessionToken: 'tok' }) }))
 vi.mock('../../utils/analytics', () => ({
   maskProps: (className: string) => ({ className }),
   capture: vi.fn(),

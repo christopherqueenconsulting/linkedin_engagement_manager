@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import api from '../../api/client'
-import { useAuth } from '../../contexts/AuthContext'
+import { useAuth } from '../../contexts/useAuth'
 import NewsletterArticlePreview from '../../components/NewsletterArticlePreview'
 import { formatInTimezone, toZonedInputValue, zonedInputToUtcIso } from '../../utils/datetime'
 import type { NewsletterDraft, NewsletterEdition } from '../account/types'

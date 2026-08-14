@@ -1,8 +1,8 @@
 import Toggle from '../../../components/Toggle'
 import { FIELD_LIMITS } from '../fieldLimits'
 import CsvInput from './CsvInput'
-import { useEngagementPrefs } from './EngagementPrefsContext'
-import { useUserPrefs } from './UserPrefsContext'
+import { useEngagementPrefs } from './engagementPrefsCtx'
+import { useUserPrefs } from './userPrefsCtx'
 import { Field, SectionCard, inputClass } from './Field'
 import { CONTENT_LANGUAGE_OPTIONS } from './options'
 

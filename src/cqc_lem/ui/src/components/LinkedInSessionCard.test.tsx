@@ -6,7 +6,7 @@ import LinkedInSessionCard from './LinkedInSessionCard'
 
 const post = vi.fn()
 vi.mock('../api/client', () => ({ default: { post: (...args: unknown[]) => post(...args) } }))
-vi.mock('../contexts/AuthContext', () => ({ useAuth: () => ({ sessionToken: 'tok' }) }))
+vi.mock('../contexts/useAuth', () => ({ useAuth: () => ({ sessionToken: 'tok' }) }))
 
 function harness(ui: ReactNode) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })

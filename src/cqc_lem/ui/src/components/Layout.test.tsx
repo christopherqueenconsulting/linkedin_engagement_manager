@@ -10,7 +10,7 @@ const auth = {
   openLoginModal: vi.fn(),
   isAdmin: true,
 }
-vi.mock('../contexts/AuthContext', () => ({ useAuth: () => auth }))
+vi.mock('../contexts/useAuth', () => ({ useAuth: () => auth }))
 vi.mock('./AccountReadinessBanner', () => ({ default: () => null }))
 vi.mock('./FeedbackWidget', () => ({ default: () => null }))
 vi.mock('./FloatingDock', () => ({ default: ({ children }: { children: ReactNode }) => <div>{children}</div> }))

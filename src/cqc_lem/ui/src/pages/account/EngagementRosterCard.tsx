@@ -1,11 +1,11 @@
 import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import api from '../../api/client'
-import { useAuth } from '../../contexts/AuthContext'
+import { useAuth } from '../../contexts/useAuth'
 import { ROSTER_BLOCKED_BADGE_STREAK, TARGET_CATEGORIES } from './types'
 import type { EngagementTarget, EngagementTargetCategory } from './types'
-import { useRegisterSaveSection, sectionSaveCallbacks } from './SettingsSaveContext'
-import { useEngagementPrefs } from './settings/EngagementPrefsContext'
+import { useRegisterSaveSection, sectionSaveCallbacks } from './settingsSave'
+import { useEngagementPrefs } from './settings/engagementPrefsCtx'
 import { ConflictNotices } from './settings/Field'
 
 type RosterResponse = { targets: EngagementTarget[]; suggestions: EngagementTarget[] }

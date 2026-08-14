@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import api from '../api/client'
-import { useAuth } from '../contexts/AuthContext'
+import { useAuth } from '../contexts/useAuth'
 import { useStepUp } from '../hooks/useStepUp'
 
 // Connect LinkedIn by reusing the user's existing session cookie (li_at) so automation

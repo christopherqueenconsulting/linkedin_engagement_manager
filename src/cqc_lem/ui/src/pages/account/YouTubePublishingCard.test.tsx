@@ -8,7 +8,7 @@ const get = vi.fn()
 vi.mock('../../api/client', () => ({ default: { get: (...args: unknown[]) => get(...args) } }))
 
 let auth = { sessionToken: 'tok', isAdmin: true }
-vi.mock('../../contexts/AuthContext', () => ({ useAuth: () => auth }))
+vi.mock('../../contexts/useAuth', () => ({ useAuth: () => auth }))
 
 type Status = Record<string, unknown>
 const payload = (detail: Status) => ({ data: { detail } })

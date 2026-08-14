@@ -1,11 +1,11 @@
 import { useEffect, useState } from 'react'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import api from '../../api/client'
-import { useAuth } from '../../contexts/AuthContext'
+import { useAuth } from '../../contexts/useAuth'
 import Toggle from '../../components/Toggle'
 import { maskProps } from '../../utils/analytics'
 import type { GroupPostDraft, UserGroup } from './types'
-import { useRegisterSaveSection, sectionSaveCallbacks } from './SettingsSaveContext'
+import { useRegisterSaveSection, sectionSaveCallbacks } from './settingsSave'
 
 const groupLabel = (g: UserGroup) => g.group_name || `Group ${g.group_id}`
 // LinkedIn's own post cap, mirrored from the API's _LEN_GROUP_POST so the counter, the Save button

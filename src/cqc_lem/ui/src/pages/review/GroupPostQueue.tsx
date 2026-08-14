@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import api from '../../api/client'
-import { useAuth } from '../../contexts/AuthContext'
+import { useAuth } from '../../contexts/useAuth'
 import { formatInTimezone } from '../../utils/datetime'
+import { nextGroupPublishSlot } from '../../utils/groupPostSlot'
 import type { GroupPostDraft } from '../account/types'
 import { maskProps } from '../../utils/analytics'
 
@@ -14,22 +15,6 @@ const GROUP_POST_MAX = 3000
 const STATUS_STYLES: Record<string, string> = {
   ready: 'bg-yellow-100 text-yellow-700',
   skipped: 'bg-gray-200 text-gray-600',
-}
-
-// The weekly group-post beat publishes on Tuesdays at 15:00 UTC (issue #932). Given a reference
-// instant, return the next occurrence of that slot so the UI can show when a queued draft ships.
-export function nextGroupPublishSlot(from: Date = new Date()): Date {
-  const base = new Date(from)
-  const candidate = new Date(
-    Date.UTC(base.getUTCFullYear(), base.getUTCMonth(), base.getUTCDate(), 15, 0, 0, 0)
-  )
-  const day = candidate.getUTCDay()
-  const daysUntilTuesday = (2 - day + 7) % 7
-  candidate.setUTCDate(candidate.getUTCDate() + daysUntilTuesday)
-  if (candidate.getTime() <= base.getTime()) {
-    candidate.setUTCDate(candidate.getUTCDate() + 7)
-  }
-  return candidate
 }
 
 function errorText(err: unknown, fallback: string): string {

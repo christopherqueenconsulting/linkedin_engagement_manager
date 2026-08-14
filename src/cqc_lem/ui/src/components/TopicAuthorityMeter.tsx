@@ -5,43 +5,7 @@
 // (token-set overlap coefficient) so the meter roughly agrees with the server-side governor. It is
 // advisory: nothing here blocks publishing.
 
-// Kept in sync with content_framework._STOPWORDS — meaningful-token extraction must match the
-// backend or the meter would disagree with the governor that actually flags off-niche posts.
-const STOPWORDS = new Set(
-  ('a an and are as at be been but by can could did do does for from had has have he her here his ' +
-    'how i if in into is it its just me more most my no nor not of on or our out over she so some ' +
-    'than that the their them then there these they this those to too up us was we were what when ' +
-    'where which who why will with would you your').split(' '),
-)
-
-function tokens(text: string): Set<string> {
-  const out = new Set<string>()
-  for (const w of (text || '').toLowerCase().match(/[a-z0-9']+/g) || []) {
-    if (w.length > 1 && !STOPWORDS.has(w)) out.add(w)
-  }
-  return out
-}
-
-// Overlap coefficient |content∩dna| / min(|content|,|dna|) — same measure as the Python scorer.
-export function topicAuthorityScore(
-  content: string,
-  focusTopics: string[],
-  headline?: string,
-  about?: string,
-): number {
-  const dna = new Set<string>()
-  for (const t of focusTopics || []) for (const w of tokens(t)) dna.add(w)
-  for (const w of tokens(headline || '')) dna.add(w)
-  for (const w of tokens(about || '')) dna.add(w)
-  const ctokens = tokens(content)
-  if (dna.size === 0 || ctokens.size === 0) return 1
-  let hits = 0
-  for (const w of ctokens) if (dna.has(w)) hits += 1
-  return hits / Math.min(ctokens.size, dna.size)
-}
-
-// Matches content_alignment.TOPIC_AUTHORITY_MIN_DEFAULT.
-const OFF_NICHE_THRESHOLD = 0.15
+import { OFF_NICHE_THRESHOLD, topicAuthorityScore } from '../utils/topicAuthority'
 
 interface TopicAuthorityMeterProps {
   content: string

@@ -5,7 +5,7 @@ import ReplySetupSteps from './ReplySetupSteps'
 
 const state: { eng: Partial<EngPrefs> | null } = { eng: null }
 
-vi.mock('./EngagementPrefsContext', () => ({
+vi.mock('./engagementPrefsCtx', () => ({
   useEngagementPrefs: () => state,
 }))
 

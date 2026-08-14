@@ -1,10 +1,10 @@
 import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import api from '../../api/client'
-import { useAuth } from '../../contexts/AuthContext'
+import { useAuth } from '../../contexts/useAuth'
 import { STORY_KINDS } from './types'
 import type { StoryEntry, StoryKind } from './types'
-import { useRegisterSaveSection, sectionSaveCallbacks } from './SettingsSaveContext'
+import { useRegisterSaveSection, sectionSaveCallbacks } from './settingsSave'
 import { EVENTS, capture, maskProps } from '../../utils/analytics'
 
 type StoryBankResponse = { entries: StoryEntry[]; kinds: StoryKind[]; target_entries: number }

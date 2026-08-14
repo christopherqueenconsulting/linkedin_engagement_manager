@@ -8,7 +8,7 @@ const auth = {
   strongFactorDeadline: '2099-01-01T00:00:00Z',
   enrollmentRequired: false,
 }
-vi.mock('../contexts/AuthContext', () => ({ useAuth: () => auth }))
+vi.mock('../contexts/useAuth', () => ({ useAuth: () => auth }))
 
 beforeEach(() => {
   localStorage.clear()

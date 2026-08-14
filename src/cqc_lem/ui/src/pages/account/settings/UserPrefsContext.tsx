@@ -1,11 +1,10 @@
-import {
-  createContext, useContext, useEffect, useMemo, useState, type ReactNode,
-} from 'react'
+import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import api from '../../../api/client'
-import { useAuth } from '../../../contexts/AuthContext'
+import { useAuth } from '../../../contexts/useAuth'
 import type { UserPrefs } from '../types'
-import { useRegisterSaveSection } from '../SettingsSaveContext'
+import { UserPrefsCtxObject, type UserPrefsCtx } from './userPrefsCtx'
+import { useRegisterSaveSection } from '../settingsSave'
 
 export type UserSettingsResponse = {
   subscription: unknown
@@ -14,23 +13,6 @@ export type UserSettingsResponse = {
   sitemap_url: string | null
   company_linked_in_url: string | null
 }
-
-// PUT /user/settings writes the whole preferences object at once, so the inactivity auto-stop
-// (Setup), auto-schedule + content buffer (Content & Publishing) and content language (My Voice)
-// must share one state object and one mutation even though the hub renders them three sections
-// apart. This also fixes F11: the old card seeded `auto_schedule_posts=false` / 90 days BEFORE the
-// API answered, so saving anything else could quietly turn auto-scheduling off.
-type UserPrefsCtx = {
-  prefs: UserPrefs | null
-  effectiveLanguage: string | null
-  setPrefs: (patch: Partial<UserPrefs>) => void
-  isDirty: boolean
-  saving: boolean
-  message: { ok: boolean; text: string } | null
-  save: () => Promise<boolean>
-}
-
-const Ctx = createContext<UserPrefsCtx | null>(null)
 
 export function UserPrefsProvider({ children }: { children: ReactNode }) {
   const { sessionToken } = useAuth()
@@ -105,11 +87,5 @@ export function UserPrefsProvider({ children }: { children: ReactNode }) {
     }),
     [prefs, data, isDirty, mutation.isPending, message]
   )
-  return <Ctx.Provider value={value}>{children}</Ctx.Provider>
-}
-
-export function useUserPrefs(): UserPrefsCtx {
-  const ctx = useContext(Ctx)
-  if (!ctx) throw new Error('useUserPrefs must be used inside a UserPrefsProvider')
-  return ctx
+  return <UserPrefsCtxObject.Provider value={value}>{children}</UserPrefsCtxObject.Provider>
 }

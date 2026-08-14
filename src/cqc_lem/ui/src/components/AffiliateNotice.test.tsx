@@ -14,7 +14,7 @@ vi.mock('../api/client', () => ({
     post: (...args: unknown[]) => post(...args),
   },
 }))
-vi.mock('../contexts/AuthContext', () => ({ useAuth: () => ({ sessionToken: 'tok' }) }))
+vi.mock('../contexts/useAuth', () => ({ useAuth: () => ({ sessionToken: 'tok' }) }))
 vi.mock('../utils/analytics', () => ({
   capture: vi.fn(),
   EVENTS: { affiliateNoticeAcknowledged: 'affiliate_notice_acknowledged' },

@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
-import { useAuth } from '../../contexts/AuthContext'
+import { useAuth } from '../../contexts/useAuth'
 import CtaButton from './CtaButton'
 import Icon from './Icon'
 import NavAnchor from './NavAnchor'

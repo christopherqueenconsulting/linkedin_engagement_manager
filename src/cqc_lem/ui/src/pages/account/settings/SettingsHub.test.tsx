@@ -8,31 +8,34 @@ vi.mock('../../api/client', () => ({
   default: { get: vi.fn(), put: vi.fn(), post: vi.fn(), delete: vi.fn() },
 }))
 
-vi.mock('../../contexts/AuthContext', () => ({
+vi.mock('../../contexts/useAuth', () => ({
   useAuth: () => ({ sessionToken: 'tok' }),
 }))
 
 vi.mock('../SettingsSaveContext', () => ({
   SettingsSaveProvider: ({ children }: { children: ReactNode }) => <>{children}</>,
   SaveAllBar: () => <div data-testid="save-all-bar" />,
+}))
+
+vi.mock('../settingsSave', () => ({
   useRegisterSaveSection: vi.fn(),
   sectionSaveCallbacks: () => ({ onSuccess: vi.fn(), onError: vi.fn() }),
 }))
 
 vi.mock('./EngagementPrefsContext', () => ({
   EngagementPrefsProvider: ({ children }: { children: ReactNode }) => <>{children}</>,
-  useEngagementPrefs: () => ({ message: null }),
 }))
+vi.mock('./engagementPrefsCtx', () => ({ useEngagementPrefs: () => ({ message: null }) }))
 
 vi.mock('./UserPrefsContext', () => ({
   UserPrefsProvider: ({ children }: { children: ReactNode }) => <>{children}</>,
-  useUserPrefs: () => ({ message: null }),
 }))
+vi.mock('./userPrefsCtx', () => ({ useUserPrefs: () => ({ message: null }) }))
 
 vi.mock('./ConflictsContext', () => ({
   ConflictsProvider: ({ children }: { children: ReactNode }) => <>{children}</>,
-  useConflicts: () => ({ alertCounts: {} }),
 }))
+vi.mock('./conflictsCtx', () => ({ useConflicts: () => ({ alertCounts: {} }) }))
 
 vi.mock('../SubscriptionCard', () => ({ default: () => <div data-testid="subscription-card" /> }))
 vi.mock('../VideoCreditsCard', () => ({ default: () => <div data-testid="video-credits-card" /> }))

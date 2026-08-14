@@ -22,8 +22,8 @@ const auth = {
 
 vi.mock('../contexts/AuthContext', () => ({
   AuthProvider: ({ children }: { children: ReactNode }) => <>{children}</>,
-  useAuth: () => auth,
 }))
+vi.mock('../contexts/useAuth', () => ({ useAuth: () => auth }))
 
 const captured: { event: string; properties?: Record<string, unknown> }[] = []
 vi.mock('../utils/analytics', async () => {

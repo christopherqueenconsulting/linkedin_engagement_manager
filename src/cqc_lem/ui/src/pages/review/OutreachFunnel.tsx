@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import api from '../../api/client'
-import { useAuth } from '../../contexts/AuthContext'
+import { useAuth } from '../../contexts/useAuth'
 import { maskProps } from '../../utils/analytics'
 
 // Comment-first outreach funnel (issue #399): a sequenced, APPROVAL-GATED value-comment -> connect

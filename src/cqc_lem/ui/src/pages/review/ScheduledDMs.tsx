@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import api from '../../api/client'
-import { useAuth } from '../../contexts/AuthContext'
+import { useAuth } from '../../contexts/useAuth'
 import { formatInTimezone, zonedInputToUtcIso } from '../../utils/datetime'
 import { maskProps } from '../../utils/analytics'
 

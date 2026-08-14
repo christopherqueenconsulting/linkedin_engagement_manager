@@ -1,32 +1,12 @@
-import {
-  createContext, useContext, useEffect, useMemo, useState, type ReactNode,
-} from 'react'
+import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import api from '../../../api/client'
-import { useAuth } from '../../../contexts/AuthContext'
+import { useAuth } from '../../../contexts/useAuth'
 import type { EngPrefs } from '../types'
-import { useRegisterSaveSection } from '../SettingsSaveContext'
+import { EngagementPrefsCtx, type EngCtx } from './engagementPrefsCtx'
+import { useRegisterSaveSection } from '../settingsSave'
 import { blockingIssues } from './conflicts'
 import { DEFAULT_PRESET, presetValues } from './presets'
-
-// Voice, targeting, caps, connections and catch-up all live in ONE engagement_preferences row that
-// is written by ONE INSERT … ON DUPLICATE KEY UPDATE. The hub renders them in five different
-// sections, so they must share one piece of state and one mutation — otherwise saving one section
-// would write the other sections' stale copies back over the user's edits.
-type EngCtx = {
-  eng: EngPrefs | null
-  setEng: (patch: Partial<EngPrefs>) => void
-  isDirty: boolean
-  saving: boolean
-  message: { ok: boolean; text: string } | null
-  save: () => Promise<boolean>
-  catchupAllowed: number
-  /** True until the user's first save — the hub starts these accounts on the Balanced preset. */
-  isNewAccount: boolean
-  presetApplied: boolean
-}
-
-const Ctx = createContext<EngCtx | null>(null)
 
 export function EngagementPrefsProvider({ children }: { children: ReactNode }) {
   const { sessionToken } = useAuth()
@@ -108,11 +88,5 @@ export function EngagementPrefsProvider({ children }: { children: ReactNode }) {
     }),
     [eng, isDirty, mutation.isPending, message, isNewAccount, presetApplied]
   )
-  return <Ctx.Provider value={value}>{children}</Ctx.Provider>
-}
-
-export function useEngagementPrefs(): EngCtx {
-  const ctx = useContext(Ctx)
-  if (!ctx) throw new Error('useEngagementPrefs must be used inside an EngagementPrefsProvider')
-  return ctx
+  return <EngagementPrefsCtx.Provider value={value}>{children}</EngagementPrefsCtx.Provider>
 }

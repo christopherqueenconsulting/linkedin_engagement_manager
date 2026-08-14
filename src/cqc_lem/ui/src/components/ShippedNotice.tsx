@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { useAuth } from '../contexts/AuthContext'
+import { useAuth } from '../contexts/useAuth'
 import { useShippedNotices } from '../hooks/useShippedNotices'
 import api from '../api/client'
 
