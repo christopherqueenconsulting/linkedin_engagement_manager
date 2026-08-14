@@ -232,6 +232,15 @@ today:
 - Every finding above is invisible to monitoring. F1 has been shipping since the renderer existed
   and was found by a human looking at a JPEG.
 
+**FIXED in #1513.** The renderer now writes a render receipt (`deck_render.json`, one row per slide:
+role, written body length, characters drawn, characters DROPPED, photo band) next to the slides, and
+the nightly beat turns it into ONE reading on a new `surface="carousel"`. What #1375 left visible on
+one render — `_fit` marks and logs the cut it could not shrink away — is now a trended number across
+all of them (`deck_chars_dropped` / `deck_slides_clipped`), rather than a human looking at a JPEG,
+and `post_outcome` carries `post_type`, so reach and `saves` split by format. What #1513 does NOT do
+is grade slide PROSE — that is still F5/#1512 — and the capacities in §1 stay measurements, not
+thresholds: the deck reading reports what was dropped, it holds nothing.
+
 ### F7 — Observations recorded, not actioned
 
 - **`minimal_dark` is unreachable from the plan.** `_template_by_stage` maps the four stages to
@@ -356,7 +365,7 @@ Filed and linked:
 | **#1510** | F2 + F3 — the renderer destroys the deck's line structure and invents its own | A layout change to `_wrap_text` / `_step_content`; 2A |
 | **#1511** | F4 — hardcoded "Leave a comment below" bait on the CTA slide | 2A |
 | **#1512** (`risk:product-decision`) | F5 — slide text passes no text-quality gate; carousels are never authenticity-judged | Asks whether a slide lint may HOLD a post — a product call, per the issue's own rule |
-| **#1513** | F6 — no deck surface in `content_quality`, no rendered-asset probe, no post type on `post_outcome` | 2A |
+| **#1513** (shipped) | F6 — no deck surface in `content_quality`, no rendered-asset probe, no post type on `post_outcome` | 2A; fixed since — see F6 above and `docs/content-quality-telemetry.md` |
 | **#1515** (`needs-human`) | The corpus §1 could not read — 8–12 real decks scored from the production read path | Needs production credentials and an owner authorisation, exactly like #1292 |
 
 Still not answered, and honestly so: **no real carousel corpus was read and no live LinkedIn

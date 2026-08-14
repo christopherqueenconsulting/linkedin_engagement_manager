@@ -48,11 +48,23 @@ from cqc_lem.utilities.ai.content_framework import (
     hook_report,
     text_similarity,
 )
+from cqc_lem.utilities.deck_render import (
+    DECK_PROBE_MISSING as DECK_RENDER_PROBE_MISSING,
+    DECK_PROBE_OK as DECK_RENDER_PROBE_OK,
+    DECK_PROBE_UNREADABLE as DECK_RENDER_PROBE_UNREADABLE,
+    DECK_RENDER_FILENAME,
+    read_deck_render_receipt,
+)
 
 SURFACE_POST = "post"
 SURFACE_COMMENT = "comment"
 SURFACE_NEWSLETTER = "newsletter"
+# The three WRITING surfaces — the ones a slop lint, a hook budget and a self-similarity history
+# apply to. `SURFACE_CAROUSEL` is deliberately NOT one of them: a deck reading grades what the
+# RENDERER did to slides that already shipped (issue #1513), not prose, so it carries none of the
+# text dimensions and never joins a similarity batch.
 SURFACES: tuple = (SURFACE_POST, SURFACE_COMMENT, SURFACE_NEWSLETTER)
+SURFACE_CAROUSEL = "carousel"
 
 # Aliases, not copies (issue #1265): the generation-time gates grade the SAME post on the same two
 # measures, and the trend line is only readable against a hold if both call the measure by one name.
@@ -74,6 +86,12 @@ VIDEO_PROBE_OK = "ok"
 VIDEO_PROBE_MISSING = "missing"
 VIDEO_PROBE_EMPTY = "empty"
 VIDEO_PROBE_UNREADABLE = "unreadable"
+
+# Carousel deck vocabulary (issue #1513) — aliases, not copies: the renderer writes the receipt and
+# this module reads it, so both sides name the probe states from `deck_render`.
+DECK_PROBE_OK = DECK_RENDER_PROBE_OK
+DECK_PROBE_MISSING = DECK_RENDER_PROBE_MISSING
+DECK_PROBE_UNREADABLE = DECK_RENDER_PROBE_UNREADABLE
 
 # A HARD violation is what actually blocks a post or drops a comment, so it carries most of the
 # weight; WARN checks are advisory (a genuine list of three tools reads like a rule-of-three) and only
@@ -564,6 +582,86 @@ def score_video_asset(*, video_url: Optional[str], model: Optional[str] = None,
         "video_aspect_ratio": aspect,
         "video_asset_probe": probe["asset_probe"],
     }
+
+
+def resolve_deck_render_path(slide_urls: Optional[Sequence[Any]]) -> Optional[str]:
+    """The on-disk render receipt for a deck, from the slide URLs stored on the post.
+
+    Same containment rule as `resolve_local_video_path`, one directory over: the receipt is the
+    `deck_render.json` the renderer wrote NEXT TO the slides it describes, so the deck's own stored
+    URL is what locates it and nothing outside `assets_dir/images/carousel` is ever opened.
+    """
+    for url in (slide_urls or []):
+        file_name = _asset_file_name(url)
+        if not file_name:
+            continue
+        root = os.path.abspath(assets_dir)
+        slide_path = os.path.abspath(os.path.join(root, file_name))
+        carousel_root = os.path.join(root, "images", "carousel")
+        if not slide_path.startswith(carousel_root + os.sep):
+            continue
+        return os.path.join(os.path.dirname(slide_path), DECK_RENDER_FILENAME)
+    return None
+
+
+def score_carousel_deck(*, slide_urls: Optional[Sequence[Any]]) -> dict:
+    """Score the SLIDES of one shipped deck — the carousel half of #1281's video asset probe.
+
+    Everything here is read from the render receipt the renderer wrote, because the reading has to
+    compare what the writer wrote against what the layout drew and only the render holds both. The
+    stored PNG cannot answer it and neither can `posts.carousel_slides`.
+
+    `deck_chars_dropped` is the #1375 clipping, per deck; `deck_slides_clipped` is how many slides
+    lost anything at all, so one badly-overflowing slide and a deck that clips everywhere are
+    distinguishable. An unread deck reports its probe state with every dimension None — never a
+    zero, which would read as a clean render (`docs/content-quality-telemetry.md`).
+    """
+    receipt, probe = read_deck_render_receipt(resolve_deck_render_path(slide_urls))
+    if receipt is None:
+        return {"deck_probe": probe, "deck_slides": None, "deck_template": None,
+                "deck_body_chars_avg": None, "deck_body_chars_max": None,
+                "deck_chars_dropped": None, "deck_slides_clipped": None,
+                "deck_slides_with_band": None}
+    slides = [slide for slide in receipt.get("slides") or [] if isinstance(slide, dict)]
+    bodies = []
+    for slide in slides:
+        try:
+            bodies.append(int(slide.get("body_chars") or 0))
+        except (TypeError, ValueError):
+            bodies.append(0)
+
+    def _chars_dropped(slide: Mapping[str, Any]) -> int:
+        try:
+            return max(0, int(slide.get("chars_dropped") or 0))
+        except (TypeError, ValueError):
+            return 0
+
+    template = receipt.get("template")
+    return {
+        "deck_probe": probe,
+        "deck_slides": len(slides),
+        "deck_template": str(template)[:32] if template else None,
+        "deck_body_chars_avg": _mean([float(value) for value in bodies], 1),
+        "deck_body_chars_max": max(bodies) if bodies else None,
+        "deck_chars_dropped": sum(_chars_dropped(slide) for slide in slides),
+        "deck_slides_clipped": sum(1 for slide in slides if _chars_dropped(slide) > 0),
+        "deck_slides_with_band": sum(1 for slide in slides if slide.get("band")),
+    }
+
+
+def deck_score_row(*, ref_id: Any, shipped_on: Any, deck: Optional[Mapping[str, Any]]) -> dict:
+    """The ONE `content_quality` reading a deck produces — its own surface, next to the caption's.
+
+    The caption keeps being scored as `surface="post"` (it IS a post, and the text dimensions grade
+    it); this row grades the render. `chars` is the deck's total slide body, so the two rows never
+    look like the same measurement of the same string.
+    """
+    deck = dict(deck or {})
+    slides = deck.get("deck_slides")
+    avg = deck.get("deck_body_chars_avg")
+    chars = int(round(float(avg) * int(slides))) if (avg is not None and slides) else None
+    return {"surface": SURFACE_CAROUSEL, "ref_id": str(ref_id), "shipped_on": shipped_on,
+            "chars": chars, **deck}
 
 
 def score_item(*, surface: str, ref_id: Any, text: Optional[str], shipped_on: Any,

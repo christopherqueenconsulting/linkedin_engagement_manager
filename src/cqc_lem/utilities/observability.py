@@ -292,9 +292,11 @@ EVENTS = {spec.event: spec for spec in (
     ), DISTINCT_SYSTEM),
 
     # --- Content + engagement outcomes --------------------------------------------------------
+    # `post_type` is a label() and not a text(): "do carousels out-reach text posts?" is a BREAKDOWN
+    # on this event (issue #1513), and a dashboard filter matches on the ingested type.
     EventSpec("post_outcome", (
-        prop("post_id"), text("variant_key"), count("reactions"), count("comments"),
-        count("reposts"), count("saves"), count_or_none("impressions"),
+        prop("post_id"), label("post_type"), text("variant_key"), count("reactions"),
+        count("comments"), count("reposts"), count("saves"), count_or_none("impressions"),
         prop("engagement"), prop("engagement_rate"),
     )),
     EventSpec("audience_snapshot", (
@@ -327,6 +329,13 @@ EVENTS = {spec.event: spec for spec in (
         prop("engagement_rate"), prop("impressions"), prop("detector_score"),
         prop("detector_provider"), prop("video_render_ok"), prop("video_model_tier"),
         prop("video_duration_seconds"), prop("video_aspect_ratio"), prop("video_asset_probe"),
+        # Deck dimensions (issue #1513), carried on the reading whose `surface` is "carousel".
+        # `deck_probe` and `deck_template` are the two a breakdown splits on — an unread deck has to
+        # be filterable OUT of a clipping chart — so both are label(); the counts stay prop() because
+        # they are compared, and NULL is the reading for a deck nothing could measure.
+        label("deck_probe"), label("deck_template"), prop("deck_slides"),
+        prop("deck_body_chars_avg"), prop("deck_body_chars_max"), prop("deck_chars_dropped"),
+        prop("deck_slides_clipped"), prop("deck_slides_with_band"),
     )),
     EventSpec("content_quality_rollup", (
         prop("user_id"), prop("days"), prop("alert_count"), items("alerts"),
@@ -1260,11 +1269,18 @@ def track_post_outcome(
     impressions: Optional[int] = None,
     saves: Optional[int] = 0,
     user_id: Optional[int] = None,
+    post_type: Optional[str] = None,
     **extra,
 ) -> None:
     """Emit a LinkedIn post-outcome event so content performance (impressions / engagement rate) is
     queryable in PostHog alongside LLM cost. `engagement` / `engagement_rate` are derived with the
     same weighting `post_stats` uses; `engagement_rate` is None when impressions are unknown.
+
+    `post_type` is the FORMAT the post shipped as (text / carousel / video / document, issue #1513).
+    Without it `saves` — the metric the save-worthy strategy is built on — could not be read per
+    format, so "do carousels out-reach text posts?" was unanswerable from telemetry. It stays None
+    when the caller could not read the format, which keeps those rows out of a format breakdown
+    instead of piling them onto one.
 
     This is the success metric of the cost-routing experiment (issue #652), so the user's arm rides
     along as `$feature/cost-routing-arm` when PostHog enrolled them — `variant_key` (the #396 media
@@ -1276,7 +1292,7 @@ def track_post_outcome(
     # The `$feature/*` keys can never collide with a declared property, so riding in `extra` puts
     # them on the event exactly as spreading them first did.
     _emit(EVENTS["post_outcome"], {
-        "post_id": post_id, "variant_key": shipped, "reactions": reactions,
+        "post_id": post_id, "post_type": post_type, "variant_key": shipped, "reactions": reactions,
         "comments": comments, "reposts": reposts, "saves": saves, "impressions": impressions,
         "user_id": user_id,
         "engagement": engagement_score(reactions, comments, reposts),

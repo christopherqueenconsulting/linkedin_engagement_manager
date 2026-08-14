@@ -390,6 +390,28 @@ class TestTrackPostOutcome:
         assert props["engagement"] == 22
         assert props["engagement_rate"] == pytest.approx(22 / 500)
 
+    def test_post_type_is_ingested_as_a_string_a_breakdown_can_filter(self):
+        """The format is a dashboard BREAKDOWN (issue #1513).
+
+        PostHog matches a filter on the ingested type, so it goes through the declared label()
+        field, never `**extra`.
+        """
+        with patch(f"{_MOD}.posthog") as mock_ph:
+            from cqc_lem.utilities.observability import track_post_outcome
+            track_post_outcome(post_id=9, reactions=1, comments=0, saves=6, user_id=1,
+                               post_type="carousel")
+
+        props = mock_ph.capture.call_args.kwargs["properties"]
+        assert props["post_type"] == "carousel" and isinstance(props["post_type"], str)
+        assert props["saves"] == 6
+
+    def test_an_unread_format_stays_none_rather_than_a_default(self):
+        with patch(f"{_MOD}.posthog") as mock_ph:
+            from cqc_lem.utilities.observability import track_post_outcome
+            track_post_outcome(post_id=9, reactions=1, comments=0, user_id=1)
+
+        assert mock_ph.capture.call_args.kwargs["properties"]["post_type"] is None
+
     def test_engagement_rate_none_without_impressions(self):
         with patch(f"{_MOD}.posthog") as mock_ph:
             from cqc_lem.utilities.observability import track_post_outcome

@@ -44,6 +44,41 @@ Per shipped piece — surface is `post` / `comment` / `newsletter`:
 
 Read-only over content that already shipped: it never edits, holds, or re-generates anything.
 
+## The rendered-asset readings — video (#1281) and the deck surface (#1513)
+
+A post is two things: the text, and what the reader actually sees. `score_item` grades the text; two
+asset scorers grade the artifact.
+
+- **Video** (`score_video_asset`): render outcome, model tier, duration, aspect ratio, and a bounded
+  local file probe, read off `posts.video_url` and the on-disk MP4. The dimensions ride on the post's
+  OWN reading — a video post is still one row.
+- **Carousel / document** (`score_carousel_deck`): a SECOND reading, on its own
+  `surface="carousel"`. A deck's caption is a post and keeps being scored as one; the deck row grades
+  what the RENDERER did — `deck_slides`, `deck_body_chars_avg` / `deck_body_chars_max`,
+  `deck_chars_dropped`, `deck_slides_clipped`, `deck_template`, `deck_slides_with_band` — which no
+  text dimension can see. `carousel` is deliberately NOT in `SURFACES`: it carries no slop score, no
+  hook budget and no self-similarity, and never joins a similarity batch. Slide TEXT quality is a
+  separate, still-open question (#1512).
+
+**The deck reading exists because the render is the only place the measurement can be taken.** A
+layout can still lose text — #1375 stopped it happening *silently* (`_fit` shrinks the type, then
+marks and logs what it finally cuts), but a marked cut is visible, not measured — and the written
+string and the drawn lines are in hand together exactly once. Neither the stored PNG nor
+`posts.carousel_slides` can recover it afterwards. `create_carousel_slide_images`
+therefore writes a **render receipt** (`deck_render.json`, `utilities/deck_render.py`) next to the
+slides it describes, and the nightly beat reads it back the way the video scorer reads the stored
+MP4. `deck_render.py` is stdlib-only so the beat never imports Pillow/pptx to score three text
+surfaces.
+
+`deck_probe` is the three-valued state of that read: `ok`, `missing` (no receipt — every deck
+rendered before #1513, or one whose assets were pruned) and `unreadable` (a receipt that will not
+parse). **A deck that could not be read reports NULL dimensions, never 0** — "0 characters dropped"
+is indistinguishable from a clean render, which would quietly claim the clipping was fixed.
+
+The deck row is persisted through the same upsert as any other reading, so `by_surface` gives the
+carousel trend line its own count; the deck dimensions themselves live on the PostHog event
+(`content_quality`, where `deck_probe` and `deck_template` are `label()`s a breakdown filters on).
+
 ## The two rules that run through all of it
 
 1. **Unscored is never zero.** A post with no impressions yet has no engagement rate; a draft the
