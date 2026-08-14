@@ -10,6 +10,7 @@ pytestmark = pytest.mark.unit
 _FEED = "cqc_lem.app.engagement.feed"
 _RS = "cqc_lem.app.run_scheduler"
 _DB = "cqc_lem.utilities.db"
+_ZW = "cqc_lem.utilities.linkedin.zero_walk"
 
 
 @pytest.fixture(autouse=True)
@@ -257,6 +258,71 @@ class TestDraftGroupPost:
         create.assert_not_called()
 
 
+def _directory_driver(rows, crosscheck_hits: int = 0):
+    """A driver whose `/groups/` read answers with `rows` and whose page renders `crosscheck_hits` group rows.
+
+    `execute_script` serves the scroll calls (which return None) and then the directory read; the
+    zero-walk cross-check goes through `find_elements`, so the two reads stay independent here
+    exactly as they are on the page.
+    """
+    driver = MagicMock()
+    driver.execute_script.side_effect = lambda script, *a: rows if "compareDocumentPosition" in script else None
+    driver.find_elements.return_value = [MagicMock()] * crosscheck_hits
+    return driver
+
+
+class TestEnumerateJoinedGroups:
+    """#1316: `/groups/` renders the joined list and a recommendation rail with identical hrefs."""
+
+    def test_a_recommended_group_is_never_stored_as_a_membership(self):
+        from cqc_lem.app.engagement.feed import _enumerate_joined_groups
+        driver = _directory_driver([
+            ["3063585", "Data Science Community (moderated)", "Groups listing"],
+            ["10529815", "C2C and W2 positions", "Groups you might be interested in"],
+            ["154024", "WordPress", "Groups you might be interested in"],
+        ])
+        assert _enumerate_joined_groups(driver) == [("3063585", "Data Science Community (moderated)")]
+
+    def test_a_row_no_heading_could_be_attributed_to_is_kept(self):
+        """A row no heading could be attributed to is kept.
+
+        Dropping on an unreadable section would empty the sync the first time LinkedIn re-words a
+        heading — the same silent failure, pointed the other way.
+        """
+        from cqc_lem.app.engagement.feed import _enumerate_joined_groups
+        driver = _directory_driver([["77427", "A group", ""], ["99", "Another", None]])
+        assert _enumerate_joined_groups(driver) == [("77427", "A group"), ("99", "Another")]
+
+    def test_zero_joined_groups_is_drift_when_the_page_still_renders_rows(self):
+        """The tripwire this issue exists for.
+
+        A filter that swallowed the joined list, or an id shape that rotated, must not read as
+        "this user is in no groups".
+        """
+        from cqc_lem.app.engagement import feed
+        driver = _directory_driver([["10529815", "Offered", "Groups you might be interested in"]],
+                                   crosscheck_hits=50)
+        with patch(f"{_ZW}.log_warning") as warn:
+            assert feed._enumerate_joined_groups(driver, user_id=1) == []
+        assert warn.called
+        assert driver.find_elements.call_args[0][1] == feed._GROUPS_DIRECTORY_CROSSCHECK_SEL
+
+    def test_zero_on_a_page_that_renders_no_rows_either_is_a_quiet_day(self):
+        from cqc_lem.app.engagement.feed import _enumerate_joined_groups
+        driver = _directory_driver([], crosscheck_hits=0)
+        with patch(f"{_ZW}.log_warning") as warn:
+            assert _enumerate_joined_groups(driver, user_id=1) == []
+        warn.assert_not_called()
+
+    def test_a_non_empty_walk_never_pays_for_the_crosscheck(self):
+        from cqc_lem.app.engagement.feed import _enumerate_joined_groups
+        driver = _directory_driver([["1", "A", "Groups listing"]], crosscheck_hits=50)
+        with patch(f"{_ZW}.log_warning") as warn:
+            assert _enumerate_joined_groups(driver) == [("1", "A")]
+        driver.find_elements.assert_not_called()
+        warn.assert_not_called()
+
+
 class TestSyncUserGroups:
     def test_upserts_enumerated(self):
         from cqc_lem.app.engagement.feed import auto_sync_user_groups
@@ -265,6 +331,15 @@ class TestSyncUserGroups:
              patch(f"{_FEED}.upsert_user_group") as up, patch(f"{_FEED}.quit_gracefully"):
             result = auto_sync_user_groups.run(user_id=1)
         assert up.call_count == 2 and "Synced 2" in result
+
+    def test_the_walk_is_told_whose_sync_it_is(self):
+        """A drift warning nobody can attribute to a user is a defect report with no subject."""
+        from cqc_lem.app.engagement.feed import auto_sync_user_groups
+        with patch(f"{_FEED}.get_current_profile", return_value=(MagicMock(), MagicMock(), "e", MagicMock())), \
+             patch(f"{_FEED}._enumerate_joined_groups", return_value=[]) as walk, \
+             patch(f"{_FEED}.upsert_user_group"), patch(f"{_FEED}.quit_gracefully"):
+            auto_sync_user_groups.run(user_id=42)
+        assert walk.call_args.kwargs["user_id"] == 42
 
 
 class TestCommentInGroups:

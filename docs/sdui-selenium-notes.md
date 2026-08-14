@@ -328,6 +328,48 @@ generating an `lem-medium` comment per post it can never post — #1084).
 **Live counts: not yet taken.** The run is `risk:live-linkedin` and belongs to the owner (see the
 **linkedin-live-validation** skill); its per-locator numbers land here, replacing this line.
 
+## The groups directory renders offers and memberships with identical hrefs (#1316)
+
+Live-grounded 2026-08-14 (`/groups/`, user 1, `--group-membership`). One page, two lists, and every
+anchor in both is `/groups/<numeric-id>/` — so `_enumerate_joined_groups`, which took every anchor as
+a join, was storing groups the user had only been OFFERED. Four of them were already sitting
+`enabled` in `user_groups`, and the rail rotates: three consecutive runs enumerated a DIFFERENT set
+of five recommendations, so every weekly sync added five more.
+
+What the live DOM actually looks like:
+
+| Reading | Live value (2026-08-14) |
+|---|---|
+| `/groups/<id>` anchors, whole document | 55 → 54 across runs (50 joined + the day's ~5 recommendations) |
+| Headings, in document order | `0 notifications total`, **`Groups listing`**, **`Groups you might be interested in`**, `Ads Banner`, `More inboxes` |
+| `main a[href*='/groups/']` | 51 — the recommendation rail is OUTSIDE `<main>` |
+| `main button[aria-label^='More options for ']` | **50 — exactly one per JOINED row, none on a recommendation card** |
+| `main [role='listitem']` / `main h2, main [role='heading']` | 0 / 0 — neither is an anchor here |
+| Directory tabs (`Your groups`, `Requested`) | `<button>`s, NOT headings — an ancestor walk attributes nothing |
+
+Two things follow, and both are in `engagement.feed`:
+
+- **The section is the nearest PRECEDING heading in document order**, never an ancestor: the page's
+  own section headings are neither h1–h3 nor ancestors of the cards beneath them.
+  `_GROUP_DIRECTORY_JS` returns `[id, name, section]` per anchor and `_is_group_recommendation_section`
+  drops the offers. A row whose section could not be read is **kept** — an unreadable heading is not
+  evidence that a membership is a recommendation, and dropping on absence would empty the sync the
+  first time LinkedIn re-words a heading.
+- **Zero joined groups is cross-checked before it counts as "this user is in no groups"**
+  (`_GROUPS_DIRECTORY_CROSSCHECK_SEL` = `button[aria-label^='More options for ']`, via
+  `_report_zero_walk`). It shares nothing with the walk — not the href, not the id shape, not the
+  heading attribution — which is what lets it answer for a rotated id shape AND for the new failure
+  mode the section filter introduces: a re-worded joined-list heading that matched a recommendation
+  marker would drop every row, and this is what says so. The probe grades the shipped selector
+  (`directory.crosscheck_count` / `crosscheck_blind`), so a rotated control label surfaces as a
+  finding rather than as a tripwire that silently answers zero.
+
+The group PAGE's own header carries no membership control at all: live `header_controls` were
+`['Dismiss', 'Public group', 'View information on Active Group badge', 'Open about group', 'Share',
+'Manage notifications', 'More options for <group>']`. Membership there reads as **share box present
++ no Join**, never as a Leave button — and `More options for <group>` is why a membership marker must
+match verb-first rather than by substring (a group named "Join …" would otherwise read `not_member`).
+
 ## A post PERMALINK runs the same engine as the feed — and is not a one-post page
 
 `comment_on_post` is the live comment task behind profile-viewer engagement and the outreach

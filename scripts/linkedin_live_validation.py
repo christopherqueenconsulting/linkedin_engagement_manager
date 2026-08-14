@@ -3102,8 +3102,15 @@ return out;
 # The anchor cap matches `_enumerate_joined_groups`' own `slice(0,60)` for the same reason: that run
 # capped anchors at 40 against 55 enumerated ids, which reads as 15 ids the sync invented when it is
 # only the probe's own ceiling. `anchor_total` keeps the truncation visible either way.
+#
+# `controls` carries the directory's own per-row controls WITH the section each sits under, because
+# that is the evidence for the production zero-walk cross-check (#1316): on 2026-08-14 the joined
+# list rendered one `More options for <group>` button per row and the recommendation rail rendered
+# none, which is what makes that control able to say "your groups are on the page" when the walk
+# returns nothing. `crosscheck` counts the selector production actually ships, so a rotated label
+# shows up here rather than as a tripwire that silently answers zero.
 _GROUP_DIRECTORY_JS = """
-const out = {headings: [], anchors: [], anchor_total: 0};
+const out = {headings: [], anchors: [], anchor_total: 0, controls: [], crosscheck: null};
 const headingNodes = [];
 for (const h of document.querySelectorAll('h1,h2,h3,h4,h5,h6,[role="heading"]')) {
   const t = (h.innerText || '').trim();
@@ -3128,8 +3135,38 @@ for (const a of document.querySelectorAll("a[href*='/groups/']")) {
   out.anchors.push({id: id, text: (a.innerText || '').trim().split('\\n')[0].slice(0, 80),
                     section: section});
 }
+const cseen = new Set();
+for (const b of document.querySelectorAll('main button')) {
+  const l = ((b.getAttribute('aria-label') || b.innerText || '').trim()).slice(0, 80);
+  if (!l || cseen.has(l)) continue;
+  cseen.add(l);
+  let section = '';
+  for (const [node, text] of headingNodes) {
+    if (node.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING) section = text;
+    else break;
+  }
+  out.controls.push({label: l, section: section});
+  if (out.controls.length >= 120) break;
+}
+try { out.crosscheck = document.querySelectorAll(arguments[0]).length; }
+catch (e) { out.crosscheck = null; }
 return out;
 """
+
+
+# Carried copy of `engagement.feed._GROUPS_DIRECTORY_CROSSCHECK_SEL` for images that predate #1316,
+# same posture as `_share_box_chains`. `TestGroupsCrosscheckSelectorCopy` fails the build if it
+# drifts from the shipped selector — a probe grading a tripwire nothing ships grounds nothing.
+_CARRIED_GROUPS_DIRECTORY_CROSSCHECK_SEL = "button[aria-label^='More options for ']"
+
+
+def _groups_directory_crosscheck() -> tuple:
+    """The directory zero-walk tripwire production ships, and where this run read it from."""
+    try:
+        from cqc_lem.app.engagement.feed import _GROUPS_DIRECTORY_CROSSCHECK_SEL
+        return str(_GROUPS_DIRECTORY_CROSSCHECK_SEL), "image"
+    except Exception:
+        return _CARRIED_GROUPS_DIRECTORY_CROSSCHECK_SEL, "script"
 
 
 def _first_few(values: Optional[list], limit: int = 5) -> str:
@@ -3221,10 +3258,24 @@ def group_enumeration_findings(directory: Optional[dict]) -> dict:
     anchor_total = len(anchors) if anchor_total in (None, "") else int(anchor_total)
     recommended = [gid for gid in enumerated
                    if _labels_matching([by_id.get(gid)], _GROUP_RECOMMENDATION_MARKERS)]
+    crosscheck = directory.get("crosscheck_count")
+    # The tripwire counts a per-JOINED-row control, so only anchors the walk would KEEP can make a
+    # zero read of it evidence of anything. A directory carrying nothing but the recommendation rail
+    # is a genuinely group-less account: production enumerates zero, counts zero controls, and grades
+    # it the quiet day it is — so measuring the tripwire against the rail's own anchors would file a
+    # drift finding against a walk that is working.
+    joined_anchors = [a for a in anchors
+                      if not _labels_matching([a.get("section")], _GROUP_RECOMMENDATION_MARKERS)]
     return {"anchor_total": anchor_total,
             "anchors_truncated": anchor_total > len(anchors),
             "sections_readable": any(by_id.values()),
+            "joined_anchors": len(joined_anchors),
             "enumerated_under_recommendation": recommended,
+            # The tripwire that decides whether a zero enumeration is graded a defect or a quiet day
+            # (#1316). Zero rows for it while the page carries group anchors means production's zero
+            # read would come back `empty` — silent — and this is the only place that shows.
+            "crosscheck_blind": bool(directory.get("crosscheck_selector")) and crosscheck == 0
+                                and bool(joined_anchors),
             # Only meaningful when the anchor list was not cut short — otherwise every id past the
             # cap looks invented.
             "enumerated_not_anchored": ([gid for gid in enumerated if gid not in by_id]
@@ -3263,10 +3314,14 @@ def group_membership_state(reading: Optional[dict]) -> str:
     findings = group_enumeration_findings(directory)
     states = []
     if str(directory.get("page_text") or "").strip():
-        blind = directory.get("anchors") and not directory.get("enumerated")
+        # Since #1316 the walk returns a SUBSET of the page's `/groups/` anchors by design, so the
+        # blind question is about the anchors it would keep: a page carrying only the recommendation
+        # rail is an account in no groups, and the sync returning nothing there is it working.
+        blind = findings["joined_anchors"] and not directory.get("enumerated")
         unattributed = directory.get("anchors") and not findings["sections_readable"]
         states.append(STATE_DRIFT if (blind or unattributed
                                       or findings["enumerated_under_recommendation"]
+                                      or findings["crosscheck_blind"]
                                       or findings["enumerated_not_anchored"]) else STATE_OK)
     else:
         states.append(STATE_UNKNOWN)
@@ -3289,7 +3344,7 @@ def group_membership_verdict(reading: Optional[dict]) -> str:
     parts = []
     if not str(directory.get("page_text") or "").strip():
         parts.append("the groups directory did not render — re-run")
-    elif directory.get("anchors") and not directory.get("enumerated"):
+    elif findings["joined_anchors"] and not directory.get("enumerated"):
         parts.append("the directory rendered group anchors that `_enumerate_joined_groups` matched "
                      "none of — the sync is blind and every stored membership is unverifiable")
     else:
@@ -3307,6 +3362,11 @@ def group_membership_verdict(reading: Optional[dict]) -> str:
         if findings["enumerated_not_anchored"]:
             parts.append(f"{len(findings['enumerated_not_anchored'])} enumerated id(s) are on no "
                          f"anchor the probe read ({_first_few(findings['enumerated_not_anchored'])})")
+        if findings["crosscheck_blind"]:
+            parts.append(f"the zero-walk tripwire `{directory.get('crosscheck_selector')}` matched "
+                         f"NOTHING on a directory that rendered group anchors — a sync that "
+                         f"enumerates zero would be graded a quiet day and stay silent; re-ground "
+                         f"`_GROUPS_DIRECTORY_CROSSCHECK_SEL` from `controls`")
     if not group.get("group_id"):
         parts.append("no group to probe — pass a group id")
     elif not str(group.get("page_text") or "").strip():
@@ -3368,14 +3428,19 @@ def probe_group_membership(driver, user_id: int = 1, group_id: Optional[str] = N
             enabled_ids_error = f"{type(e).__name__}: {e}"[:200]
     enabled_ids = [str(g) for g in (enabled_ids or [])]
 
+    crosscheck_sel, crosscheck_source = _groups_directory_crosscheck()
     enumerated = [(str(gid), name) for gid, name in (enumerate_groups(driver) or [])]
-    directory = driver.execute_script(_GROUP_DIRECTORY_JS) or {}
+    directory = driver.execute_script(_GROUP_DIRECTORY_JS, crosscheck_sel) or {}
     directory = {"url": "https://www.linkedin.com/groups/",
                  "page_text": page_text_sample(driver),
                  "enumerated": [list(row) for row in enumerated],
                  "headings": list(directory.get("headings") or []),
                  "anchors": list(directory.get("anchors") or []),
-                 "anchor_total": directory.get("anchor_total")}
+                 "anchor_total": directory.get("anchor_total"),
+                 "controls": list(directory.get("controls") or []),
+                 "crosscheck_selector": crosscheck_sel,
+                 "crosscheck_source": crosscheck_source,
+                 "crosscheck_count": directory.get("crosscheck")}
     directory.update(group_enumeration_findings(directory))
 
     live_ids = {gid for gid, _ in enumerated}
