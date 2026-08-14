@@ -943,18 +943,19 @@ def run_triage(triaged: list[Issue], milestones: list[dict], all_labels: list[st
         return [], [], None
     prompt = build_prompt(triaged, milestones, all_labels)
     max_tokens = min(16000, max(4000, 800 * len(triaged)))
-    last_exc: Optional[ValueError] = None
-    for _attempt in range(2):
+    max_attempts = 2
+    for attempt in range(max_attempts):
         raw = llm.classify(prompt, max_tokens=max_tokens)
         if raw is None:
             return [], [], None
         try:
             decisions, proposed = parse_llm_plan(raw, triaged, milestones)
-        except ValueError as exc:
-            last_exc = exc
+        except ValueError:
+            if attempt == max_attempts - 1:
+                raise  # re-raises the ValueError just caught — never a bare/None raise
             continue
         return decisions, proposed, raw
-    raise last_exc
+    raise AssertionError("unreachable: the loop above always returns or re-raises")
 
 
 class TriageLockBusy(RuntimeError):
