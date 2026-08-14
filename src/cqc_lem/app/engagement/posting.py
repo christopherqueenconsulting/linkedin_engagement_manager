@@ -1612,10 +1612,27 @@ def _read_comment_outcome(driver, wait, user_id: int, post_url: str, our_slug: s
     # 1-comment revisit warned. `_report_sort_control_miss` owns the warning now (#1117).
     sort_label = _comment_sort_label(driver, wait, warn_on_miss=False)
     ours = _find_our_comment(items, our_slug, comment_text)
+    # A rendered thread with an unreadable sort control is the #818 starvation signal — captured
+    # HERE, before the skip below returns, because whether we found OUR comment says nothing about
+    # whether the page rendered a sort control, and gating the evidence on it threw away most of the
+    # readings that had any (#1117). This call is also the miss's ONLY log line, and its scan is the
+    # only thing that can tell an absent affordance from selector rot — which the reading below then
+    # needs, so it runs before the visibility decision, not after it.
+    no_sort_offered = False
+    if items and not sort_label:
+        no_sort_offered = not _page_still_names_a_sort(
+            _report_sort_control_miss(driver, user_id, post_url))
+
     visible = None
     if ours is not None:
-        # Only the DEFAULT sort answers the question this feature exists to ask.
-        visible = True if sort_label == _SORT_MOST_RELEVANT else None
+        # Only the DEFAULT sort answers the question this feature exists to ask — or the absence of
+        # any sort at all, which answers it the same way (#1117, owner decision 2B): on a thread
+        # LinkedIn offered no ordering for, every comment is shown and there is nothing to be
+        # demoted within, so a comment we FOUND is visible. Gated on the evidence scan naming no
+        # sort, so it can never fire on real drift; NULL there is the starved denominator #818 is
+        # about, and the only way this inference can be wrong is to UNDER-report demotion, which
+        # softens the commenting hold rather than falsely tripping it.
+        visible = True if sort_label == _SORT_MOST_RELEVANT or no_sort_offered else None
     elif sort_label == _SORT_MOST_RELEVANT and _switch_comment_sort(driver, wait, _SORT_MOST_RECENT):
         _load_comment_thread(driver)
         items = _comment_items(driver)
@@ -1624,13 +1641,6 @@ def _read_comment_outcome(driver, wait, user_id: int, post_url: str, our_slug: s
         visible = False if ours is not None else None
 
     outcome["visible_most_relevant"] = visible
-    # A rendered thread with an unreadable sort control is the #818 starvation signal — captured
-    # HERE, before the skip below returns, because whether we found OUR comment says nothing about
-    # whether the page rendered a sort control, and gating the evidence on it threw away most of the
-    # readings that had any (#1117). This call is also the miss's ONLY log line.
-    if items and not sort_label:
-        _report_sort_control_miss(driver, user_id, post_url)
-
     if ours is None:
         outcome["status"] = "skipped"
         outcome["skip_reason"] = "post-unavailable" if not items else "comment-not-found"

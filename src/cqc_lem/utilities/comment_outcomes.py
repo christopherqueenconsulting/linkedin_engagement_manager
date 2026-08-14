@@ -9,9 +9,13 @@ No DB, no Selenium: the browser step stays thin and the arithmetic is unit-testa
 validation pattern).
 
 Three-valued visibility is load-bearing. `visible_most_relevant` is 1 (present under the default
-sort), 0 (absent there but present under 'Most recent' — demoted) or NULL (ambiguous). NULL rows
-are excluded from the demotion denominator entirely rather than counted as healthy, because
-treating "we couldn't tell" as "fine" is exactly how a silent kill stays silent.
+sort, or present on a thread LinkedIn rendered no sort control for at all — nothing is ordered
+there, so nothing is demoted within it), 0 (absent under the default sort but present under
+'Most recent' — demoted) or NULL (ambiguous). NULL rows are excluded from the demotion denominator
+entirely rather than counted as healthy, because treating "we couldn't tell" as "fine" is exactly
+how a silent kill stays silent. What earns the 1 on an unsorted thread is the evidence scan finding
+nothing that NAMES a sort (`posting._page_still_names_a_sort`) — a page that still names one we
+cannot resolve is drift and stays NULL (#1117).
 """
 
 import os

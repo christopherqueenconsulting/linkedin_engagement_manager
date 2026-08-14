@@ -119,9 +119,14 @@ What changed in response:
   `Selector miss` warning into production error tracking; a diagnostic that files defects is a
   diagnostic nobody can afford to run.
 
-**Still open on #1117:** `visible_most_relevant` stays NULL on these readings, so a thread LinkedIn
-never offered to sort is excluded from the denominator exactly like an unreadable one. That is the
-starved denominator #818 is about, and it is a measurement decision, not a locator one.
+- **The reading follows the evidence too** (owner decision 2B on #1117). A comment we FOUND on a
+  thread whose scan names no sort at all records `visible_most_relevant = 1`, not NULL: LinkedIn
+  offered no ordering, so every comment is shown and there is nothing to be demoted within. NULL had
+  meant this reading was excluded from the demotion denominator exactly like a genuinely unreadable
+  one — the starved denominator #818 is really about (18 of 24 checked readings before 2026-08-05).
+  The gate is the same `keyword` row that decides the level, so the inference can never fire on real
+  drift; the only way it can be wrong is to UNDER-report demotion, which softens the commenting hold
+  and can never falsely trip it.
 
 ## The Catch-up feed is full SDUI — no `data-view-name`, no `<li>` cards
 

@@ -218,9 +218,12 @@ Commenting used to be write-only. Read-only T+24h sweep revisits each un-checked
 row, locates it via the #478 thread map, writes ONE `comment_outcomes` row: author replies,
 thread replies, likes, whether we replied, `visible_most_relevant`.
 
-- **Three-valued on purpose**: 1 present under 'Most relevant', 0 absent there but present under
-  'Most recent' (the May-2026 demotion signal), NULL when sort control couldn't be read. NULL
-  rows excluded from the demotion denominator.
+- **Three-valued on purpose**: 1 present under 'Most relevant' — or present on a thread LinkedIn
+  rendered no sort control for at all, since nothing is ordered there (#1117) — 0 absent under
+  'Most relevant' but present under 'Most recent' (the May-2026 demotion signal), NULL when the
+  sort control couldn't be read. NULL rows excluded from the demotion denominator. What separates
+  the two no-label cases is the evidence scan: a row that still NAMES a sort is drift and stays
+  NULL, everything else is an affordance LinkedIn did not render.
 - Unfindable comment = SKIPPED.
 - Weekly report (`auto_weekly_comment_quality`) ships rates to PostHog + `/user/engagement-analytics`.
 - Demotion rate > `COMMENT_DEMOTION_HOLD_RATE` on ≥`COMMENT_QUALITY_MIN_SAMPLE` readable readings

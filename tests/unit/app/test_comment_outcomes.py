@@ -598,7 +598,7 @@ class TestReadCommentOutcome:
         with ExitStack() as es:
             driver = _outcome_env(es, theirs, sort_label="", switched=False)
             _p(es, "log_info")
-            _p(es, "_report_sort_control_miss")
+            _p(es, "_report_sort_control_miss", return_value=[])
             _fn("_read_comment_outcome")(driver, MagicMock(), 1, "https://post", "me", "ours")
             label = _fn("_comment_sort_label")
         assert label.call_args.kwargs["warn_on_miss"] is False
@@ -611,7 +611,7 @@ class TestReadCommentOutcome:
         with ExitStack() as es:
             driver = _outcome_env(es, items, sort_label="", switched=False)
             _p(es, "_thread_replies", return_value=[])
-            report = _p(es, "_report_sort_control_miss")
+            report = _p(es, "_report_sort_control_miss", return_value=[])
             _fn("_read_comment_outcome")(driver, MagicMock(), 1, "https://post", "me",
                                           "Latency is the tell here")
         assert report.call_args.args[1:] == (1, "https://post")
@@ -625,10 +625,12 @@ class TestReadCommentOutcome:
         with ExitStack() as es:
             driver = _outcome_env(es, theirs, sort_label="", switched=False)
             _p(es, "log_info")
-            report = _p(es, "_report_sort_control_miss")
+            report = _p(es, "_report_sort_control_miss", return_value=[])
             out = _fn("_read_comment_outcome")(driver, MagicMock(), 1, "https://post", "me", "ours")
         assert out["skip_reason"] == "comment-not-found"
         assert report.called
+        # A comment we never FOUND is not visible-by-inference: the 2B reading needs both halves.
+        assert out["visible_most_relevant"] is None
 
     def test_a_post_that_rendered_nothing_captures_no_evidence(self):
         # No thread means no control was expected — the same reason that miss does not warn (#1063).
@@ -650,15 +652,43 @@ class TestReadCommentOutcome:
                                           "Latency is the tell here")
         assert not report.called
 
-    def test_unknown_sort_leaves_visibility_null_even_when_found(self):
-        our_tb = MagicMock(); our_tb.text = "Latency is the tell here"
+    def _found_on_an_unsorted_thread(self, es, candidates):
+        """Our comment on the page, no readable sort label, and `candidates` as the scan's evidence.
+
+        That is the whole input to the 2B reading.
+        """
+        our_tb = MagicMock()
+        our_tb.text = "Latency is the tell here"
         items = [(our_tb, MagicMock(), "https://www.linkedin.com/in/me/")]
+        driver = _outcome_env(es, items, sort_label="")
+        _p(es, "_thread_replies", return_value=[])
+        _p(es, "_report_sort_control_miss", return_value=candidates)
+        return _fn("_read_comment_outcome")(driver, MagicMock(), 1, "https://post", "me",
+                                            "Latency is the tell here")
+
+    def test_a_thread_linkedin_offered_no_sort_for_reads_visible(self):
+        # Owner decision 2B on #1117. The scan names no sort anywhere (the live shape is the post's
+        # own overflow menu), so LinkedIn rendered no ordering — every comment on the thread is
+        # shown and there is nothing to be demoted within. NULL here was the starved denominator
+        # #818 raised: 18 of 24 checked readings were dropped this way.
         with ExitStack() as es:
-            driver = _outcome_env(es, items, sort_label="")
-            _p(es, "_thread_replies", return_value=[])
-            out = _fn("_read_comment_outcome")(driver, MagicMock(), 1, "https://post", "me",
-                                              "Latency is the tell here")
-        # We read the outcome, but we cannot claim anything about 'Most relevant' visibility.
+            out = self._found_on_an_unsorted_thread(
+                es, [TestReportSortControlMiss._LIVE_HEADER_CANDIDATE])
+        assert out["status"] == "checked" and out["visible_most_relevant"] is True
+
+    def test_a_blind_scan_reads_the_same_way(self):
+        # Nothing describable on the page is not evidence that a control was there — the same
+        # reading the level decision makes (`test_an_empty_scan_is_debug_too`).
+        with ExitStack() as es:
+            out = self._found_on_an_unsorted_thread(es, [])
+        assert out["visible_most_relevant"] is True
+
+    def test_a_page_that_still_names_a_sort_leaves_visibility_null(self):
+        # Real drift: the affordance IS rendered and our chain cannot reach it, so we know nothing
+        # about the order our comment sits in. The 2B inference must never fire here.
+        with ExitStack() as es:
+            out = self._found_on_an_unsorted_thread(
+                es, [{"tag": "button", "text": "Top comments", "reason": "keyword"}])
         assert out["status"] == "checked" and out["visible_most_relevant"] is None
 
     def test_failed_sort_switch_never_reads_as_a_demotion(self):
