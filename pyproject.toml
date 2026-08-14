@@ -73,26 +73,7 @@ boto3 = "^1.36.7"
 sendgrid = "^6.12.5"
 stripe = "^15.2.1"
 
-# ---------------------------------------------------------------------------
-# streamlit group — legacy Streamlit UI (replaced by React SPA).
-# NOT installed in Docker. Install locally with:
-#   poetry install --with streamlit
-# Add packages here if they are only needed for Streamlit pages.
-# ---------------------------------------------------------------------------
 timezonefinder = ">=6.5,<9.0"
-[tool.poetry.group.streamlit]
-optional = true
-
-[tool.poetry.group.streamlit.dependencies]
-streamlit = ">=1.39,<1.40.0 || >1.40.1,<2.0"
-streamlit-ext = "^0.1"
-streamlit-elements = "^0.1"
-extra-streamlit-components = "^0.1"
-streamlit-aggrid = "^1.0"
-# pandas is only imported in src/cqc_lem/streamlit/ — keep here, not in main
-pandas = ">=2.2.3,<4.0.0"
-# Same reasoning: the only `import mammoth` in the tree is src/cqc_lem/streamlit/utils.py.
-mammoth = "^1.8.0"
 
 [tool.poetry.group.dev]
 optional = true
@@ -164,8 +145,6 @@ omit = [
     "tests/*",
     "src/cqc_lem/aws/*",
     "src/cqc_lem/ui/*",
-    # Legacy Streamlit UI — not maintained, no reasonable test strategy
-    "src/cqc_lem/streamlit/*",
     # Selenium browser driver utilities — E2E only, require Chrome container
     "src/cqc_lem/utilities/selenium_util.py",
     "src/cqc_lem/utilities/linkedin/scrapper.py",
@@ -224,12 +203,10 @@ combine-as-imports = true
 # reason for a test is not obvious. Requiring one on all ~10,700 of them would generate exactly the
 # boilerplate the house rule warns against, so only the FORMAT rules apply here.
 "tests/**" = ["D100", "D101", "D102", "D103", "D104", "D105", "D107"]
-# Two trees the owner has already decided against, so documenting them is work with no reader:
-# the CDK path is declared UNSUPPORTED (#973 — prod is VPS Docker Compose) and the legacy Streamlit
-# UI is slated for deletion (#972 — replaced by the React SPA). Format rules still apply; nothing
-# here is required to GROW a docstring it will never need.
+# The CDK path is declared UNSUPPORTED (#973 — prod is VPS Docker Compose), so documenting it is
+# work with no reader. Format rules still apply; nothing here is required to GROW a docstring it
+# will never need.
 "src/cqc_lem/aws/**" = ["D100", "D101", "D102", "D103", "D104", "D105", "D107"]
-"src/cqc_lem/streamlit/**" = ["D100", "D101", "D102", "D103", "D104", "D105", "D107"]
 
 
 [tool.mypy]

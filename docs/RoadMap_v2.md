@@ -122,7 +122,5 @@ This roadmap outlines the steps to take LinkedIn Engagement Manager (LEM) from s
 | 🔴 | Add support for more social media platforms (e.g., Twitter, Facebook). |
 | 🔴 | Explore options for AI-driven responses to comments. |
 | 🔴 | Expand the dashboard with deeper analytics and user customization options. |
-| 🔴 | Add error handling and logging for API requests in `src/cqc_lem_streamlit/pages/2_Review_Schedule.py`. |
 | 🔴 | Refactor `create_video_from_prompt` function in `src/cqc_lem/utilities/ai/ai_helper.py` to handle different video formats. |
-| 🔴 | Optimize the performance of the Streamlit interface in `src/cqc_lem_streamlit/pages/2_Review_Schedule.py`. |
 | 🔴 | Add unit tests for AI content generation functions in `src/cqc_lem/utilities/ai/ai_helper.py`. |

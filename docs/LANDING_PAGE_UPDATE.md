@@ -46,21 +46,9 @@ The Home.py file has been completely redesigned to emulate a professional SaaS l
 
 ## Technical Implementation
 
-### Dependencies
-The updated Home.py requires:
-- `streamlit` (core UI framework)
-- `cqc_lem.streamlit.utils.get_custom_css` (custom styling)
-
-### Running the Application
-If you encounter dependency issues, you can test the landing page using the standalone version:
-
-```bash
-# Install Streamlit
-pip install streamlit
-
-# Run the test version
-streamlit run /tmp/final_home_test.py
-```
+**Historical note:** this describes the legacy Streamlit landing page (`src/cqc_lem/streamlit/`),
+replaced by the React SPA and deleted in #972. Kept here for archival context only — nothing below
+is runnable against the current tree.
 
 ### Integration Notes
 - The new design integrates with existing pages (My Account, Schedule Content, etc.)
