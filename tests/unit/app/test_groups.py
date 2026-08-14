@@ -976,6 +976,67 @@ class TestGroupMediaTranscodeWait:
         assert state == _MEDIA_ATTACHED
         warned.assert_not_called()
 
+    def test_a_missed_poll_costs_a_poll_not_the_sessions_selector_timeout(self):
+        """The poll lookup gets its OWN short wait, not the session's.
+
+        The shared wait is `WAIT_DEFAULT_TIMEOUT` (15s), so re-finding the commit control through it
+        would spend the window on the ABSENT case — an expected composer variant — and leave the
+        BUSY case, the transcode this wait exists for, with only the sleeps. Both would then read as
+        a number of polls that is nothing like the wall clock they cost.
+        """
+        from cqc_lem.app.engagement.feed import (
+            _CONFIRM_LOOKUP_SECONDS,
+            _IMAGE_READY_POLLS,
+            _attach_group_media,
+        )
+        from cqc_lem.utilities.env_constants import WAIT_DEFAULT_TIMEOUT
+        assert _CONFIRM_LOOKUP_SECONDS < WAIT_DEFAULT_TIMEOUT
+        session_wait = MagicMock()
+        with patch(f"{_FEED}.post_media_abs_path", return_value="/assets/i.png"), \
+             patch(f"{_FEED}.click_first", return_value=MagicMock()), \
+             patch(f"{_FEED}.find_first",
+                   side_effect=[MagicMock()] + [None] * _IMAGE_READY_POLLS) as looked:
+            _attach_group_media(MagicMock(), session_wait, self._url(), user_id=1,
+                                media_type="image")
+        poll_waits = [call.args[1] for call in looked.call_args_list[1:]]
+        assert len(poll_waits) == _IMAGE_READY_POLLS
+        assert all(w is not session_wait for w in poll_waits)
+        assert all(w._timeout == _CONFIRM_LOOKUP_SECONDS for w in poll_waits)
+
+    def test_the_video_window_is_minutes_of_real_clock(self):
+        """The transcode this exists for takes minutes, so the poll count has to buy minutes.
+
+        LinkedIn transcodes server-side and a 200 MB upload is not done in a couple of minutes;
+        committing before it is, is exactly the empty media frame the wait prevents.
+        """
+        from cqc_lem.app.engagement.feed import _MEDIA_POLL_SECONDS, _VIDEO_READY_POLLS
+        assert _VIDEO_READY_POLLS * min(_MEDIA_POLL_SECONDS) >= 3 * 60
+
+    def test_a_video_stops_re_asking_for_a_control_that_was_never_there(self):
+        """ABSENT is answered on its own budget, not the transcode's.
+
+        The overlay renders its commit control DISABLED, so "not there at all" is a question about
+        the overlay; spending the whole video window re-asking it would hold a Chrome slot for
+        minutes on the one answer that is an expected no-op.
+        """
+        from cqc_lem.app.engagement.feed import (
+            _CONFIRM_ABSENT_POLLS,
+            _MEDIA_ATTACHED,
+            _VIDEO_READY_POLLS,
+            _attach_group_media,
+        )
+        assert _CONFIRM_ABSENT_POLLS < _VIDEO_READY_POLLS
+        with patch(f"{_FEED}.post_media_abs_path", return_value="/assets/v.mp4"), \
+             patch(f"{_FEED}.click_first", return_value=MagicMock()), \
+             patch(f"{_FEED}.log_warning") as warned, \
+             patch(f"{_FEED}.find_first",
+                   side_effect=[MagicMock()] + [None] * _VIDEO_READY_POLLS) as looked:
+            state = _attach_group_media(MagicMock(), MagicMock(), self._url(), user_id=1,
+                                        media_type="video")
+        assert state == _MEDIA_ATTACHED
+        assert looked.call_count == 1 + _CONFIRM_ABSENT_POLLS
+        warned.assert_not_called()
+
     def test_an_aria_disabled_control_is_not_clickable_yet(self):
         from cqc_lem.app.engagement.feed import _media_control_ready
         still_uploading = MagicMock()

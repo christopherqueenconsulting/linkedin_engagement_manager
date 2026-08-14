@@ -218,6 +218,7 @@ from cqc_lem.utilities.post_video import post_media_abs_path
 from cqc_lem.utilities.selenium_util import (
     click_first,
     find_first,
+    get_driver_wait,
     get_driver_wait_pair,
     is_session_lost,
     quit_gracefully,
@@ -3294,14 +3295,27 @@ _MEDIA_ATTACHED = "attached"
 _MEDIA_LEFT_OPEN = "left_open"
 
 # How long the media overlay gets to finish before the run commits it, in polls of
-# `_MEDIA_POLL_SECONDS`. An image is ready almost as fast as it uploads — 4 polls is the 6-9s settle
-# #1224 shipped — but LinkedIn TRANSCODES a video server-side and keeps the overlay's commit control
-# disabled until it is done, so a window sized on an image is what leaves an empty media frame on
-# the published post (issue #1443). The video window is generous because the cost of waiting is a
-# slower weekly beat and the cost of not waiting is a broken post.
+# `_MEDIA_POLL_SECONDS`. An image is ready almost as fast as it uploads, but LinkedIn TRANSCODES a
+# video server-side and keeps the overlay's commit control disabled until it is done, so a window
+# sized on an image is what leaves an empty media frame on the published post (issue #1443). The
+# video window is generous because the cost of waiting is a slower weekly beat and the cost of not
+# waiting is a broken post.
+#
+# A poll that MISSES the control must cost a poll, not a selector timeout: the session's shared
+# `wait` is `WAIT_DEFAULT_TIMEOUT` (15s), so re-finding through it would make the window nearly ten
+# times the wall clock these numbers read as — and it would spend that inflation on the ABSENT case,
+# the one answer that is an expected no-op, while the BUSY case (control found instantly, every
+# poll) got only the sleeps. `_CONFIRM_LOOKUP_SECONDS` is the short wait the poll lookups use so the
+# two cases cost the same and the numbers below mean what they say.
 _MEDIA_POLL_SECONDS = (1.5, 2.5)
-_IMAGE_READY_POLLS = 4
-_VIDEO_READY_POLLS = 60
+_CONFIRM_LOOKUP_SECONDS = 2
+_IMAGE_READY_POLLS = 8      # ~16-36s
+_VIDEO_READY_POLLS = 120    # ~3-5 min
+# …and a control we have NEVER seen is answered on its own, shorter budget: the overlay renders its
+# commit control DISABLED and only enables it when the transcode lands, so "not there at all" is a
+# question about the overlay, not about the transcode. Without this the video window would spend its
+# whole length re-asking the one question that was already answered.
+_CONFIRM_ABSENT_POLLS = 20  # ~30-90s
 
 # What the poll saw. ABSENT is not a failure: some composer variants have no commit step at all, and
 # clicking nothing there is what #1224 already shipped — only a control that RESOLVED and stayed
@@ -3325,20 +3339,28 @@ def _media_control_ready(element) -> bool:
         return False
 
 
-def _await_media_confirm(driver, wait, polls: int):
+def _await_media_confirm(driver, polls: int):
     """Poll the media overlay until its commit control is clickable.
 
     Returns `(state, element)` — `_CONFIRM_READY` with the control, `_CONFIRM_ABSENT` when this
     composer has no commit step, or `_CONFIRM_BUSY` when the control exists and never became
     clickable inside the window. Waiting on the CONTROL rather than on a fixed sleep is what makes
     the wait right for a video without slowing an image down: an image resolves on the first poll.
+
+    The lookup uses its OWN short wait rather than the session's — a poll is a poll, and a miss that
+    cost `WAIT_DEFAULT_TIMEOUT` would make the ABSENT case (an expected composer variant) the most
+    expensive answer in the chain and the video's real window the shortest.
     """
+    poll_wait = get_driver_wait(driver, wait_time=_CONFIRM_LOOKUP_SECONDS)
     seen = False
-    for _ in range(max(1, polls)):
+    for attempt in range(max(1, polls)):
         time.sleep(random.uniform(*_MEDIA_POLL_SECONDS))
-        confirm = find_first(driver, wait, _GROUP_MEDIA_CONFIRM_LOCATORS, "Group media confirm",
+        confirm = find_first(driver, poll_wait, _GROUP_MEDIA_CONFIRM_LOCATORS,
+                             "Group media confirm",
                              required=False, warn_on_miss=False, max_try=1)
         if confirm is None:
+            if not seen and attempt + 1 >= _CONFIRM_ABSENT_POLLS:
+                return _CONFIRM_ABSENT, None
             continue
         seen = True
         if _media_control_ready(confirm):
@@ -3405,7 +3427,7 @@ def _attach_group_media(driver, wait, media_url: str, user_id: int = None,
         # commit control becoming clickable rather than on a clock — a video needs minutes where an
         # image needs seconds, and committing early is what leaves an empty media frame on the post.
         state, confirm = _await_media_confirm(
-            driver, wait,
+            driver,
             _VIDEO_READY_POLLS if _media_is_video(media_type, path) else _IMAGE_READY_POLLS)
         if state == _CONFIRM_BUSY:
             # The control resolved and never became clickable: the upload did not finish inside the

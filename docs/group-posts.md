@@ -164,6 +164,13 @@ because the cost of waiting is a slower weekly beat and the cost of committing e
 media frame on a published post. The window comes off the draft's own `media_type`, falling back to
 the stored file for a row written before that column carried a kind.
 
+**A poll that misses costs a poll.** The lookup inside the loop uses its own short wait
+(`_CONFIRM_LOOKUP_SECONDS`), never the session's `WAIT_DEFAULT_TIMEOUT`: through the shared wait,
+every MISS pays 15s and every HIT pays nothing, so the ABSENT row above — an expected composer
+variant — would become the most expensive answer in the chain while the transcode the window exists
+for got only the sleeps. With the short wait the poll counts mean the wall clock they read as:
+roughly half a minute for an image, three to six minutes for a video.
+
 ## What works in a group (and why the list lives in code)
 
 `GROUP_POST_BEST_PRACTICES` is ONE tuple read by BOTH halves: the drafting prompt
