@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import api from '../../api/client'
 import { useAuth } from '../../contexts/useAuth'
@@ -22,9 +22,9 @@ const blank = (): StoryEntry => ({
 export default function StoryBankCard() {
   const { sessionToken } = useAuth()
   const queryClient = useQueryClient()
-  const [entries, setEntries] = useState<StoryEntry[]>([])
-  const [savedSig, setSavedSig] = useState<string | null>(null)
-  const [init, setInit] = useState(false)
+  // The edited list, once the user touches one — null means "show what the API returned". Derived
+  // rather than seeded in an effect, so a refetch can never discard rows being typed.
+  const [draft, setDraft] = useState<StoryEntry[] | null>(null)
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null)
 
   const { data } = useQuery({
@@ -37,17 +37,13 @@ export default function StoryBankCard() {
     staleTime: 60 * 1000,
   })
 
-  useEffect(() => {
-    if (data && !init) {
-      setEntries(data.entries)
-      setSavedSig(JSON.stringify(data.entries))
-      setInit(true)
-    }
-  }, [data, init])
+  const entries: StoryEntry[] = draft ?? data?.entries ?? []
+  const editEntries = (fn: (es: StoryEntry[]) => StoryEntry[]) =>
+    setDraft((es) => fn(es ?? data?.entries ?? []))
 
   const update = (idx: number, patch: Partial<StoryEntry>) =>
-    setEntries((es) => es.map((e, i) => (i === idx ? { ...e, ...patch } : e)))
-  const addRow = () => setEntries((es) => [...es, blank()])
+    editEntries((es) => es.map((e, i) => (i === idx ? { ...e, ...patch } : e)))
+  const addRow = () => editEntries((es) => [...es, blank()])
 
   const removeMutation = useMutation({
     mutationFn: (entry_id: number) =>
@@ -56,7 +52,7 @@ export default function StoryBankCard() {
   })
   const removeRow = (idx: number) => {
     const entry = entries[idx]
-    setEntries((es) => es.filter((_, i) => i !== idx))
+    editEntries((es) => es.filter((_, i) => i !== idx))
     // Only a row that was actually saved needs a server-side delete; a never-saved draft row just
     // disappears from local state.
     if (entry?.id) removeMutation.mutate(entry.id)
@@ -70,7 +66,7 @@ export default function StoryBankCard() {
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['story-bank'] })
-      setSavedSig(JSON.stringify(entries))
+      setDraft(null)
       // Fired on the SAVE, not on "+ Add entry" — a blank row the user abandons never became an
       // entry. Counts and kinds only; the entry text is the user's own material.
       const added = entries.filter((e) => !e.id && e.body.trim())
@@ -90,11 +86,11 @@ export default function StoryBankCard() {
     },
   })
 
-  const isDirty = init && savedSig !== null && JSON.stringify(entries) !== savedSig
+  const isDirty = !!data && JSON.stringify(entries) !== JSON.stringify(data.entries)
   useRegisterSaveSection('story-bank', 'Story Bank', isDirty,
     async () => { await saveMutation.mutateAsync(); return true })
 
-  if (!init) return null
+  if (!data) return null
 
   const target = data?.target_entries ?? 5
   const filled = entries.filter((e) => e.body.trim() && e.active).length

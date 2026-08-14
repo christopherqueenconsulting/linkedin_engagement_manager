@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import api from '../../api/client'
 import { useAuth } from '../../contexts/useAuth'
@@ -35,8 +35,9 @@ const COMMON_TIMEZONES = [
 export default function TimezoneCard() {
   const { sessionToken } = useAuth()
   const queryClient = useQueryClient()
-  const [timezone, setTimezone] = useState('America/New_York')
-  const [tzInitialised, setTzInitialised] = useState(false)
+  // The user's own choice, once they make one — null means "show whatever the API says". Derived
+  // rather than seeded in an effect so a refetch can never clobber an edit in progress.
+  const [tzEdit, setTzEdit] = useState<string | null>(null)
   const [tzSavedMsg, setTzSavedMsg] = useState<string | null>(null)
 
   const { data: tzData } = useQuery({
@@ -49,12 +50,7 @@ export default function TimezoneCard() {
     staleTime: 5 * 60 * 1000,
   })
 
-  useEffect(() => {
-    if (tzData?.timezone && !tzInitialised) {
-      setTimezone(tzData.timezone)
-      setTzInitialised(true)
-    }
-  }, [tzData, tzInitialised])
+  const timezone = tzEdit ?? tzData?.timezone ?? 'America/New_York'
 
   const tzMutation = useMutation({
     mutationFn: () =>
@@ -80,7 +76,7 @@ export default function TimezoneCard() {
         <label className="block text-sm font-medium text-gray-700 mb-1">Your timezone</label>
         <select
           value={timezone}
-          onChange={(e) => setTimezone(e.target.value)}
+          onChange={(e) => setTzEdit(e.target.value)}
           className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
         >
           {COMMON_TIMEZONES.map((tz) => (

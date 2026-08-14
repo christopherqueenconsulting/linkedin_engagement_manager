@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import api from '../../api/client'
 import { useAuth } from '../../contexts/useAuth'
@@ -6,8 +6,9 @@ import SettingsCard from '../../components/SettingsCard'
 
 export default function CompanyPageCard() {
   const { sessionToken } = useAuth()
-  const [companyPage, setCompanyPage] = useState('')
-  const [companyPageInit, setCompanyPageInit] = useState(false)
+  // The edit in progress, once there is one — null means "show what the API returned". Derived
+  // rather than seeded in an effect so a refetch can never overwrite what the user typed.
+  const [companyPageEdit, setCompanyPageEdit] = useState<string | null>(null)
   const [companyPageMsg, setCompanyPageMsg] = useState<{ ok: boolean; text: string } | null>(null)
 
   const { data: settingsData } = useQuery({
@@ -35,14 +36,7 @@ export default function CompanyPageCard() {
     staleTime: 60 * 1000,
   })
 
-  useEffect(() => {
-    if (settingsData && !companyPageInit) {
-      if (settingsData.company_linked_in_url) {
-        setCompanyPage(settingsData.company_linked_in_url)
-      }
-      setCompanyPageInit(true)
-    }
-  }, [settingsData, companyPageInit])
+  const companyPage = companyPageEdit ?? settingsData?.company_linked_in_url ?? ''
 
   // LinkedIn company page save (used by the monthly company-page invite automation)
   const companyPageMutation = useMutation({
@@ -71,7 +65,7 @@ export default function CompanyPageCard() {
         <input
           type="url"
           value={companyPage}
-          onChange={(e) => setCompanyPage(e.target.value)}
+          onChange={(e) => setCompanyPageEdit(e.target.value)}
           className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
           placeholder="https://www.linkedin.com/company/your-company/"
         />

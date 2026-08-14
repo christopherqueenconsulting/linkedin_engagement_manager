@@ -151,6 +151,11 @@ export default function ContentStudio() {
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(10)
 
+  // Selection / bulk state
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set())
+  const [bulkStatus, setBulkStatus] = useState<string>('approved')
+  const [bulkDate, setBulkDate] = useState<string>('')
+
   // Keyword search — raw input is debounced into the applied query so we don't
   // refetch on every keystroke. Supports boolean operators (AND / OR / NOT).
   const [searchInput, setSearchInput] = useState('')
@@ -163,11 +168,6 @@ export default function ContentStudio() {
     }, 400)
     return () => clearTimeout(t)
   }, [searchInput])
-
-  // Selection / bulk state
-  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set())
-  const [bulkStatus, setBulkStatus] = useState<string>('approved')
-  const [bulkDate, setBulkDate] = useState<string>('')
 
   // Single-post edit state
   const [editingPost, setEditingPost] = useState<Post | null>(null)
@@ -520,7 +520,8 @@ export default function ContentStudio() {
   function toggleSelect(id: number) {
     setSelectedIds((prev) => {
       const next = new Set(prev)
-      next.has(id) ? next.delete(id) : next.add(id)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
       return next
     })
   }

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import api from '../../api/client'
 import { useAuth } from '../../contexts/useAuth'
@@ -21,12 +21,12 @@ const postSig = (rows: UserGroup[]) =>
 
 export default function GroupsCard() {
   const { sessionToken } = useAuth()
-  const [groups, setGroups] = useState<UserGroup[]>([])
-  const [groupsInit, setGroupsInit] = useState(false)
-  const [savedSig, setSavedSig] = useState<string | null>(null)
-  const [savedPostSig, setSavedPostSig] = useState('')
+  // Edits in progress, once there are any — null means "show what the API returned". Both are
+  // derived at render rather than seeded in an effect, so a background refetch can never discard a
+  // toggle the user just moved or a post they are part-way through rewriting.
+  const [groupEdits, setGroupEdits] = useState<UserGroup[] | null>(null)
   const [groupsMsg, setGroupsMsg] = useState<{ ok: boolean; text: string } | null>(null)
-  const [draftText, setDraftText] = useState<string | null>(null)
+  const [draftEdit, setDraftEdit] = useState<string | null>(null)
   const [draftMsg, setDraftMsg] = useState<{ ok: boolean; text: string } | null>(null)
 
   const { data: groupsData, refetch: refetchGroups } = useQuery({
@@ -38,15 +38,8 @@ export default function GroupsCard() {
     enabled: !!sessionToken,
     staleTime: 60 * 1000,
   })
-  useEffect(() => {
-    if (groupsData && !groupsInit) {
-      const normalized = normalize(groupsData)
-      setGroups(normalized)
-      setSavedSig(JSON.stringify(normalized))
-      setSavedPostSig(postSig(normalized))
-      setGroupsInit(true)
-    }
-  }, [groupsData, groupsInit])
+  const serverGroups = useMemo(() => (groupsData ? normalize(groupsData) : null), [groupsData])
+  const groups: UserGroup[] = groupEdits ?? serverGroups ?? []
 
   // The post queued for the next weekly group slot. It is written days ahead precisely so it can be
   // read and revised here before it ships (issue #932).
@@ -59,11 +52,9 @@ export default function GroupsCard() {
     enabled: !!sessionToken,
     staleTime: 60 * 1000,
   })
-  // Adopt the server's text only until the user starts typing — a background refetch must not
-  // discard an edit in progress.
-  useEffect(() => {
-    setDraftText((cur) => (cur === null ? draft?.content ?? null : cur))
-  }, [draft])
+  // The server's text stands until the user starts typing — a background refetch must not discard
+  // an edit in progress.
+  const draftText = draftEdit ?? draft?.content ?? null
 
   const draftMutation = useMutation({
     mutationFn: (body: { content?: string; status?: string }) =>
@@ -71,7 +62,7 @@ export default function GroupsCard() {
     onSuccess: async (_res, body) => {
       // Only a skip drops the local text — re-adopting the saved copy would clobber anything the
       // user typed while the save was in flight.
-      if (body.status) setDraftText(null)
+      if (body.status) setDraftEdit(null)
       await refetchDraft()
       setDraftMsg({
         ok: true,
@@ -95,7 +86,8 @@ export default function GroupsCard() {
   })
 
   const toggleGroup = (gid: string, field: 'enabled' | 'post_enabled') =>
-    setGroups((gs) => gs.map((g) => (g.group_id === gid ? { ...g, [field]: !g[field] } : g)))
+    setGroupEdits((gs) =>
+      (gs ?? serverGroups ?? []).map((g) => (g.group_id === gid ? { ...g, [field]: !g[field] } : g)))
 
   const groupsMutation = useMutation({
     mutationFn: () =>
@@ -109,11 +101,8 @@ export default function GroupsCard() {
       // Saving the flags moves the rotation — a group whose Post switch just went on and has never
       // been posted in is now next. Adopt the answer the server re-resolves instead of leaving the
       // card naming the group it was mounted with.
-      const fresh = await refetchGroups()
-      const normalized = normalize(fresh.data ?? groups)
-      setGroups(normalized)
-      setSavedSig(JSON.stringify(normalized))
-      setSavedPostSig(postSig(normalized))
+      await refetchGroups()
+      setGroupEdits(null)
       setGroupsMsg({ ok: true, text: 'Saved.' })
       setTimeout(() => setGroupsMsg(null), 3000)
     },
@@ -123,7 +112,7 @@ export default function GroupsCard() {
     },
   })
 
-  const isDirty = groupsInit && savedSig !== null && JSON.stringify(groups) !== savedSig
+  const isDirty = !!serverGroups && JSON.stringify(groups) !== JSON.stringify(serverGroups)
   useRegisterSaveSection('groups', 'LinkedIn Groups', isDirty,
     async () => { await groupsMutation.mutateAsync(); return true })
 
@@ -138,13 +127,13 @@ export default function GroupsCard() {
   useRegisterSaveSection('group-post', 'Next group post', draftDirty,
     async () => { await draftMutation.mutateAsync({ content: draftText as string }); return true })
 
-  if (!(groupsInit && groups.length > 0)) return null
+  if (!(serverGroups && groups.length > 0)) return null
 
   // The server decides the rotation (least-recently-posted first) and marks the row. Any unsaved
   // change to which groups take posts changes that answer — including switching a never-posted
   // group ON, which jumps it to the front — so the card stops naming a group until the save
   // re-resolves it rather than confidently naming the wrong one.
-  const postSelectionDirty = postSig(groups) !== savedPostSig
+  const postSelectionDirty = postSig(groups) !== postSig(serverGroups)
   const markedNext = postSelectionDirty ? undefined : groups.find((g) => g.is_next_post && g.post_enabled)
   const postingGroups = groups.filter((g) => g.post_enabled)
 
@@ -190,7 +179,7 @@ export default function GroupsCard() {
           <textarea
             aria-label="Group post text"
             value={draftText}
-            onChange={(e) => setDraftText(e.target.value)}
+            onChange={(e) => setDraftEdit(e.target.value)}
             rows={8}
             {...maskProps('w-full border border-gray-300 rounded p-2 text-sm text-gray-800')}
           />

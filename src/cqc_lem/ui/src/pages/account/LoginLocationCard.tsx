@@ -60,8 +60,8 @@ export default function LoginLocationCard() {
       setLocationMsg({ ok: true, text: `Location set to ${where}${d?.timezone ? ` (${d.timezone})` : ''}.` })
       setTimeout(() => setLocationMsg(null), 4000)
     },
-    onError: (e: any) => {
-      const detail = e?.response?.data?.detail
+    onError: (e: unknown) => {
+      const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail
       setLocationMsg({ ok: false, text: typeof detail === 'string' ? detail : 'Could not set that location — check the city/state.' })
       setTimeout(() => setLocationMsg(null), 5000)
     },

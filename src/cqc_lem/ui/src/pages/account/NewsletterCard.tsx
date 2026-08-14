@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import api from '../../api/client'
@@ -12,7 +12,9 @@ import { formatHour12 } from '../../utils/datetime'
 export default function NewsletterCard() {
   const { sessionToken } = useAuth()
   const queryClient = useQueryClient()
-  const [newsletter, setNewsletter] = useState<NewsletterSettings | null>(null)
+  // Only the fields the user has actually touched. The card renders the API row with those edits
+  // laid over it, so nothing has to be seeded in an effect and a refetch cannot discard an edit.
+  const [nlEdit, setNlEdit] = useState<Partial<NewsletterSettings> | null>(null)
   const [nlMsg, setNlMsg] = useState<{ ok: boolean; text: string } | null>(null)
 
   const { data: nlData } = useQuery({
@@ -24,9 +26,7 @@ export default function NewsletterCard() {
     enabled: !!sessionToken,
     staleTime: 60 * 1000,
   })
-  useEffect(() => {
-    if (nlData && !newsletter) setNewsletter(nlData)
-  }, [nlData])
+  const newsletter: NewsletterSettings | null = nlData ? { ...nlData, ...nlEdit } : null
 
   const { data: subs } = useQuery({
     queryKey: ['newsletter-subscribers', sessionToken],
@@ -38,12 +38,13 @@ export default function NewsletterCard() {
     staleTime: 60 * 1000,
   })
 
-  const setNl = (patch: Partial<NewsletterSettings>) => setNewsletter((p) => (p ? { ...p, ...patch } : p))
+  const setNl = (patch: Partial<NewsletterSettings>) => setNlEdit((p) => ({ ...p, ...patch }))
 
   const nlMutation = useMutation({
     mutationFn: () => api.put('/user/newsletter-settings', { session_token: sessionToken, ...newsletter }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['newsletter-settings'] })
+      setNlEdit(null)
       setNlMsg({ ok: true, text: 'Saved.' })
       setTimeout(() => setNlMsg(null), 3000)
     },

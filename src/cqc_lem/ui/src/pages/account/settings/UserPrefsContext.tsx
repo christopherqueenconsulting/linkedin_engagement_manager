@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from 'react'
+import { useMemo, useState, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import api from '../../../api/client'
 import { useAuth } from '../../../contexts/useAuth'
@@ -17,8 +17,9 @@ export type UserSettingsResponse = {
 export function UserPrefsProvider({ children }: { children: ReactNode }) {
   const { sessionToken } = useAuth()
   const queryClient = useQueryClient()
-  const [prefs, setPrefsState] = useState<UserPrefs | null>(null)
-  const [savedSig, setSavedSig] = useState<string | null>(null)
+  // Only the fields the user has touched, laid over the loaded row at render time — so nothing is
+  // seeded in an effect, and a background refetch can never overwrite an edit in progress.
+  const [edits, setEdits] = useState<Partial<UserPrefs> | null>(null)
   const [message, setMessage] = useState<{ ok: boolean; text: string } | null>(null)
 
   const { data } = useQuery({
@@ -31,20 +32,24 @@ export function UserPrefsProvider({ children }: { children: ReactNode }) {
     staleTime: 60 * 1000,
   })
 
-  useEffect(() => {
-    if (!data?.preferences || prefs) return
-    const loaded: UserPrefs = {
+  // Exactly the five columns this section writes — never anything else the endpoint returns, which
+  // is what let a save reset auto-scheduling.
+  const loaded: UserPrefs | null = useMemo(() => {
+    if (!data?.preferences) return null
+    return {
       last_login_inactivate_delay: data.preferences.last_login_inactivate_delay,
       auto_schedule_posts: data.preferences.auto_schedule_posts,
       content_language: data.preferences.content_language,
       content_buffer_days: data.preferences.content_buffer_days,
       content_buffer_max_posts: data.preferences.content_buffer_max_posts,
     }
-    setPrefsState(loaded)
-    setSavedSig(JSON.stringify(loaded))
-  }, [data, prefs])
+  }, [data])
+  const prefs: UserPrefs | null = useMemo(
+    () => (loaded ? { ...loaded, ...edits } : null),
+    [loaded, edits]
+  )
 
-  const setPrefs = (patch: Partial<UserPrefs>) => setPrefsState((p) => (p ? { ...p, ...patch } : p))
+  const setPrefs = (patch: Partial<UserPrefs>) => setEdits((p) => ({ ...p, ...patch }))
 
   const mutation = useMutation({
     mutationFn: () =>
@@ -58,7 +63,8 @@ export function UserPrefsProvider({ children }: { children: ReactNode }) {
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['user-settings'] })
-      setSavedSig(JSON.stringify(prefs))
+      // The refetch answers with what was just written, so the merged row is that row again.
+      setEdits(null)
       setMessage({ ok: true, text: 'Saved.' })
       setTimeout(() => setMessage(null), 3000)
     },
@@ -68,7 +74,7 @@ export function UserPrefsProvider({ children }: { children: ReactNode }) {
     },
   })
 
-  const isDirty = !!prefs && savedSig !== null && JSON.stringify(prefs) !== savedSig
+  const isDirty = !!loaded && JSON.stringify(prefs) !== JSON.stringify(loaded)
 
   // Never write preferences we have not loaded — that is what let a save reset auto-scheduling.
   const save = async (): Promise<boolean> => {

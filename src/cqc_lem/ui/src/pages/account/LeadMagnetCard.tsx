@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import api from '../../api/client'
 import { useAuth } from '../../contexts/useAuth'
@@ -12,8 +12,9 @@ import { maskProps } from '../../utils/analytics'
 export default function LeadMagnetCard() {
   const { sessionToken } = useAuth()
   const queryClient = useQueryClient()
-  const [leadMagnet, setLeadMagnet] = useState<LeadMagnet | null>(null)
-  const [savedSig, setSavedSig] = useState<string | null>(null)
+  // Only the fields the user has touched, laid over the API row at render time — so nothing is
+  // seeded in an effect, and "dirty" is simply "the merged row differs from what the API returned".
+  const [lmEdit, setLmEdit] = useState<Partial<LeadMagnet> | null>(null)
   const [lmMsg, setLmMsg] = useState<{ ok: boolean; text: string } | null>(null)
 
   const { data: lmData } = useQuery({
@@ -23,21 +24,19 @@ export default function LeadMagnetCard() {
     enabled: !!sessionToken,
     staleTime: 60 * 1000,
   })
-  useEffect(() => {
-    if (lmData && !leadMagnet) { setLeadMagnet(lmData); setSavedSig(JSON.stringify(lmData)) }
-  }, [lmData])
-  const setLm = (patch: Partial<LeadMagnet>) => setLeadMagnet((p) => (p ? { ...p, ...patch } : p))
+  const leadMagnet: LeadMagnet | null = lmData ? { ...lmData, ...lmEdit } : null
+  const setLm = (patch: Partial<LeadMagnet>) => setLmEdit((p) => ({ ...p, ...patch }))
   const lmMutation = useMutation({
     mutationFn: () => api.put('/user/lead-magnet', { session_token: sessionToken, ...leadMagnet }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['lead-magnet'] })
-      setSavedSig(JSON.stringify(leadMagnet))
+      setLmEdit(null)
       setLmMsg({ ok: true, text: 'Saved.' }); setTimeout(() => setLmMsg(null), 3000)
     },
     onError: () => { setLmMsg({ ok: false, text: 'Could not save — try again.' }); setTimeout(() => setLmMsg(null), 5000) },
   })
 
-  const isDirty = !!leadMagnet && savedSig !== null && JSON.stringify(leadMagnet) !== savedSig
+  const isDirty = !!lmData && JSON.stringify(leadMagnet) !== JSON.stringify(lmData)
   useRegisterSaveSection('lead-magnet', 'Lead Magnet', isDirty,
     async () => { await lmMutation.mutateAsync(); return true })
 
