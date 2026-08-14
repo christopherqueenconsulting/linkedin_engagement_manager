@@ -11,7 +11,7 @@ import mysql.connector
 
 from cqc_lem.platform.db.connection import db_cursor
 from cqc_lem.platform.db.enums import GroupPostDraftStatus, GroupPostMediaType
-from cqc_lem.utilities.logger import log_error
+from cqc_lem.utilities.logger import log_error, log_info
 
 # "the caller said nothing about the media", which is not the same answer as "the caller said there
 # is no media" — see `update_group_post_draft`.
@@ -145,6 +145,32 @@ def set_groups_enabled(user_id: int, group_states: dict) -> bool:
             return True
     except mysql.connector.Error as err:
         log_error("Could not update group states", exc=err, user_id=user_id)
+        return False
+def disable_user_groups(user_id: int, group_ids: list, reason: str = "") -> bool:
+    """Switch engagement off for groups a sync proved are not memberships (issue #1487).
+
+    Deliberately NOT `set_groups_enabled`, which is the SPA's bulk writer and can flip a flag either
+    way: this one only ever writes `enabled=0`, never touches `post_enabled`, and never DELETEs — the
+    row stays in `user_groups`, so `get_user_groups` keeps listing it and the user can turn it back on
+    from the Account UI. It logs what it switched off with the user and the ids, because a group going
+    quiet on its own is otherwise invisible until someone notices the silence.
+    """
+    ids = [str(g) for g in (group_ids or []) if str(g or "").strip()]
+    if not ids:
+        return False
+    try:
+        with db_cursor(commit=True) as cursor:
+            cursor.execute(
+                f"UPDATE user_groups SET enabled=0 WHERE user_id=%s AND group_id IN "
+                f"({','.join(['%s'] * len(ids))})",
+                (user_id, *ids))
+        log_info("Disabled group(s) the live directory did not confirm as memberships",
+                 user_id=user_id, group_ids=",".join(ids), reason=reason or "unspecified",
+                 task_name="auto_sync_user_groups")
+        return True
+    except mysql.connector.Error as err:
+        log_error("Could not disable groups", exc=err, user_id=user_id,
+                  task_name="auto_sync_user_groups")
         return False
 def get_post_enabled_group_ids(user_id: int) -> Optional[list]:
     """The groups the user has opted into for POSTING. Separate from get_enabled_group_ids, which

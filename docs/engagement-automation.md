@@ -271,6 +271,40 @@ A paced DAILY drip, not the once-a-month blast it used to be.
 - Every run emits `company_page_invite_run` — including the ones that send nothing, since a
   series carrying only sends can't tell "paced to zero" from "silently broken".
 
+## Groups sync — and reconciling the rows it already wrote (issues #1316, #1487)
+
+`/groups/` renders the joined list AND a rotating "Groups you might be interested in" rail on one
+page, with identical `/groups/<id>/` hrefs. `_enumerate_joined_groups` used to take both, so the
+weekly sync INVENTED memberships and `auto_comment_in_groups` walked into groups the account never
+joined. #1316 filters on the nearest preceding heading; #1487 is the other half — the rows the old
+sync already wrote are still sitting `enabled=1`, and only a write can clear them.
+
+- **`_read_groups_directory` is the ONE walk**, and it reports BOTH populations: `joined` (what the
+  sync upserts) and `recommended` (ids the page positively filed under a recommendation heading).
+  `_enumerate_joined_groups` is the `joined` half under its old name, because that is what the
+  read-only `--group-membership` probe drives.
+- **Reconciling fails CLOSED at every step**, because the cost of being wrong is a group the user
+  IS in going quiet with nobody to notice. A walk that enumerated nothing reconciles nothing; a
+  cross-check (`_GROUPS_DIRECTORY_CROSSCHECK_SEL`) that could not be READ reconciles nothing; a
+  cross-check that matched ZERO on a walk that found rows is the tripwire going blind — a WARNING,
+  and still nothing disabled.
+- **"Not enumerated" is not "not a member."** The walk scrolls a fixed `(600, 1200, 1800)` and caps
+  at 60 anchors while user 1 already renders 55, so absence can be lazy-load. Two populations, two
+  standards of proof: an id the page filed under a recommendation heading is disabled on that
+  reading alone; an id merely ABSENT is asked again on the group's OWN page
+  (`_confirm_group_membership`), and only a header Join control disables it. `unknown` is a real
+  answer and is never actioned.
+- **The group-page reading is presence-of-share-box + absence-of-Join**, never a Leave button: the
+  2026-08-14 live header carried no membership control at all. Controls are scoped to the header
+  because the page renders a *Join* per card in its own recommendation rail — #1012 one layer down,
+  in the reading rather than the click — and a label must LEAD with the verb, or a group named
+  "Join the Data Guild" reads `not_member` with its share box on screen.
+- **A disable is `enabled=0`, never a DELETE.** `disable_user_groups` is its own auditable writer
+  (not the SPA's `set_groups_enabled`): it only ever writes that one column, leaves `post_enabled`
+  alone, logs the user and the ids it switched off, and leaves the row for `get_user_groups` so the
+  Account UI can turn it back on. Whatever `GROUP_RECONCILE_MAX_CONFIRMATIONS` leaves over is logged,
+  not silently dropped — the next weekly run reaches it.
+
 ## Weekly group post — draft, preview, publish (issue #932)
 
 A group post used to be written and published inside ONE Selenium run, so the only thing the user

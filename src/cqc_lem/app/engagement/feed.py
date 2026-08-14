@@ -100,6 +100,7 @@ from cqc_lem.utilities.db import (
     count_open_connection_requests,
     count_user_comments_on_post_url,
     create_group_post_draft,
+    disable_user_groups,
     get_duplicate_comment_posts,
     get_enabled_group_ids,
     get_engagement_preferences,
@@ -3038,43 +3039,226 @@ def _is_group_recommendation_section(section: str) -> bool:
     return any(marker in text for marker in _GROUP_RECOMMENDATION_HEADINGS)
 
 
-def _enumerate_joined_groups(driver, user_id: Optional[int] = None) -> list:
-    """Scrape the user's joined groups from /groups/ → list of (group_id, name).
+class GroupsDirectoryReading(NamedTuple):
+    """What ONE walk of `/groups/` established, split by what the page's own headings said.
 
-    Recommendation cards are excluded by the heading they sit under, so a group the user was merely
-    offered never becomes a stored membership. Best-effort: a zero read is cross-checked against the
-    page's own group rows (`_GROUPS_DIRECTORY_CROSSCHECK_SEL`) rather than being taken for "this user
-    is in no groups".
+    `recommended` is POSITIVE evidence and the only "this is not a membership" answer the directory
+    itself can give: the page filed that anchor under a recommendation heading. An id in NEITHER list
+    was not answered either way — it may be a membership the walk's scroll or its 60-anchor cap never
+    reached — which is why `_reconcile_stored_groups` never disables on absence alone.
+    """
+
+    joined: list
+    recommended: list
+
+
+def _read_groups_directory(driver, user_id: Optional[int] = None) -> GroupsDirectoryReading:
+    """Walk /groups/ once and report both populations the page renders.
+
+    Best-effort: a zero read is cross-checked against the page's own group rows
+    (`_GROUPS_DIRECTORY_CROSSCHECK_SEL`) rather than being taken for "this user is in no groups".
     """
     driver.get("https://www.linkedin.com/groups/")
     time.sleep(random.uniform(5, 8))
     for y in (600, 1200, 1800):
         driver.execute_script(f"window.scrollTo(0,{y});")
         time.sleep(1.5)
-    rows = driver.execute_script(_GROUP_DIRECTORY_JS) or []
-    joined = [(str(r[0]), r[1]) for r in rows
-              if r and r[0] and not _is_group_recommendation_section(r[2] if len(r) > 2 else "")]
+    rows = [r for r in (driver.execute_script(_GROUP_DIRECTORY_JS) or []) if r and r[0]]
+    joined, recommended = [], []
+    for row in rows:
+        if _is_group_recommendation_section(row[2] if len(row) > 2 else ""):
+            recommended.append(str(row[0]))
+        else:
+            joined.append((str(row[0]), row[1]))
     if not joined:
         _report_zero_walk(driver, _GROUPS_DIRECTORY_CROSSCHECK_SEL, "Joined-groups directory walk",
                           user_id=user_id, task_name="auto_sync_user_groups")
-    return joined
+    return GroupsDirectoryReading(joined=joined, recommended=recommended)
+
+
+def _enumerate_joined_groups(driver, user_id: Optional[int] = None) -> list:
+    """Scrape the user's joined groups from /groups/ → list of (group_id, name).
+
+    Recommendation cards are excluded by the heading they sit under, so a group the user was merely
+    offered never becomes a stored membership. Kept as its own name because it is the ONE thing the
+    read-only live probe drives (`scripts/linkedin_live_validation.py --group-membership`), which
+    grades the walk against the page's own anchors and needs the shipped enumeration verbatim.
+    """
+    return _read_groups_directory(driver, user_id=user_id).joined
+
+
+# ── reconcile: the rows the OLD sync already wrote (issue #1487) ──────────────────────────────
+# #1316 stopped the walk INVENTING memberships, but that fix is forward-only: the rows it used to
+# write are still sitting `enabled=1`, so `auto_comment_in_groups` keeps walking into groups the
+# account never joined. Reconciling is a write that switches engagement OFF, so every step of it
+# fails CLOSED — the cost of being wrong is a group the user is in going quiet, and the only thing
+# that reverses it is the user noticing.
+#
+# Two populations, two standards of proof, because they are not the same claim:
+#   * the directory filed the id under a recommendation heading — the page SAID it is an offer;
+#   * the id was simply not enumerated — which can equally be lazy-load or the walk's 60-anchor cap
+#     (user 1 already renders 55), so absence is asked about again on the group's OWN page and only
+#     a Join control there disables it.
+_GROUP_JOIN_MARKERS = ("join", "request to join")
+_GROUP_PENDING_MARKERS = ("requested", "pending", "withdraw")
+_GROUP_LEAVE_MARKERS = ("leave",)
+
+MEMBERSHIP_MEMBER = "member"
+MEMBERSHIP_NOT_MEMBER = "not_member"
+MEMBERSHIP_PENDING = "pending"
+MEMBERSHIP_UNKNOWN = "unknown"
+
+# How many stored-but-unseen groups one run will open a page for. A confirmation is a page load
+# apiece inside a task that already has a Chrome session and a soft time limit; whatever the cap
+# leaves over is logged rather than dropped silently, and the next weekly run reaches it.
+GROUP_RECONCILE_MAX_CONFIRMATIONS = 10
+
+# Controls scoped to the group's OWN header. The scoping is the point: the group page renders a
+# "Join" per card in its groups-you-may-like rail, so keying membership off any Join on the page is
+# the #1012 hazard one layer down — in the reading rather than in the click.
+_GROUP_HEADER_CONTROLS_JS = """
+const out = [];
+const seen = new Set();
+const h1 = document.querySelector('main h1') || document.querySelector('h1');
+if (!h1) return out;
+let node = h1;
+for (let i = 0; i < 6 && node.parentElement; i++) {
+  node = node.parentElement;
+  if (node.querySelectorAll('button').length) break;
+}
+for (const b of node.querySelectorAll('button')) {
+  const l = ((b.getAttribute('aria-label') || b.innerText || '').trim()).slice(0, 80);
+  if (!l || seen.has(l)) continue;
+  seen.add(l);
+  out.push(l);
+  if (out.length >= 20) break;
+}
+return out;
+"""
+
+
+def _control_leads_with(labels, markers: tuple) -> bool:
+    """Whether any control label LEADS with one of these action words, rather than merely containing one.
+
+    A LinkedIn control label often carries the group's own NAME, so a substring match makes the
+    membership answer depend on what the group is called: a group named "Join the Data Guild" would
+    read `not_member` with its share box sitting right there, and this is the one direction that must
+    never be wrong. Every real membership control leads with its verb.
+    """
+    for label in labels or []:
+        stripped = str(label or "").strip().lower()
+        if any(stripped.startswith(marker) for marker in markers):
+            return True
+    return False
+
+
+def _group_membership_answer(header_controls, share_box_present: bool) -> str:
+    """What a group page says about our membership — three-valued, and `unknown` is never actioned.
+
+    Read as presence-of-share-box + absence-of-Join, never a Leave button: the 2026-08-14 live header
+    carried no membership control at all and `member` came from the share box alone (#1316), so a fix
+    waiting for Leave would answer `unknown` for every group the user IS in.
+    """
+    if _control_leads_with(header_controls, _GROUP_PENDING_MARKERS):
+        return MEMBERSHIP_PENDING
+    if _control_leads_with(header_controls, _GROUP_LEAVE_MARKERS):
+        return MEMBERSHIP_MEMBER
+    if _control_leads_with(header_controls, _GROUP_JOIN_MARKERS):
+        return MEMBERSHIP_NOT_MEMBER
+    return MEMBERSHIP_MEMBER if share_box_present else MEMBERSHIP_UNKNOWN
+
+
+def _confirm_group_membership(driver, wait, group_id: str, user_id: Optional[int] = None) -> str:
+    """Open ONE group's page and ask it whether we belong. Read-only — nothing is clicked.
+
+    Any failure answers `unknown`, which the caller leaves alone: a page that would not render is not
+    evidence that the user left.
+    """
+    try:
+        driver.get(f"https://www.linkedin.com/groups/{group_id}/")
+        time.sleep(random.uniform(4, 6))
+        controls = driver.execute_script(_GROUP_HEADER_CONTROLS_JS) or []
+        share_box = find_first(driver, wait, _GROUP_SHARE_BOX_LOCATORS, "Group share box",
+                               required=False, warn_on_miss=False, max_try=1, visible_only=True)
+    except WebDriverException as e:
+        # An unreadable page changes nothing, so it is an expected no-op rather than a defect.
+        log_debug(f"Group membership check could not read the page: {e}", user_id=user_id,
+                  group_id=str(group_id), task_name="auto_sync_user_groups")
+        return MEMBERSHIP_UNKNOWN
+    return _group_membership_answer(controls, share_box is not None)
+
+
+def _reconcile_stored_groups(driver, wait, user_id: int,
+                             reading: GroupsDirectoryReading) -> list:
+    """Switch engagement off for stored groups THIS walk proved are not memberships (#1487).
+
+    Returns:
+        The group ids it disabled — empty whenever the walk was not good enough to ground a disable.
+    """
+    if not reading.joined:
+        # A walk that enumerated nothing already reported itself through `_report_zero_walk`; it can
+        # never be the evidence for switching a group off.
+        log_debug("Groups reconcile skipped: the directory walk enumerated no membership",
+                  user_id=user_id, task_name="auto_sync_user_groups")
+        return []
+    native = _zw.page_native_count(driver, _GROUPS_DIRECTORY_CROSSCHECK_SEL)
+    if native is None:
+        log_debug("Groups reconcile skipped: the directory cross-check could not be read",
+                  user_id=user_id, task_name="auto_sync_user_groups")
+        return []
+    if native == 0:
+        # The walk found rows the tripwire cannot see, so the tripwire is blind — the #1316
+        # `crosscheck_blind` finding, and a defect in its own right.
+        log_warning(f"Groups directory cross-check `{_GROUPS_DIRECTORY_CROSSCHECK_SEL}` matched "
+                    f"nothing on a walk that enumerated {len(reading.joined)} group(s) — selector "
+                    f"drift, and no group was reconciled", user_id=user_id,
+                    task_name="auto_sync_user_groups")
+        return []
+    stored = [str(g) for g in (get_enabled_group_ids(user_id) or [])]
+    if not stored:
+        return []
+    live = {gid for gid, _ in reading.joined}
+    recommended = {str(g) for g in reading.recommended} - live
+    offered = [gid for gid in stored if gid in recommended]
+    absent = [gid for gid in stored if gid not in live and gid not in recommended]
+
+    disabled = []
+    if offered and disable_user_groups(user_id, offered, reason="recommendation_rail"):
+        disabled.extend(offered)
+    checked, skipped = absent[:GROUP_RECONCILE_MAX_CONFIRMATIONS], absent[GROUP_RECONCILE_MAX_CONFIRMATIONS:]
+    if skipped:
+        log_debug(f"{len(skipped)} stored group(s) were left unconfirmed by this run's cap "
+                  f"({','.join(skipped)})", user_id=user_id, task_name="auto_sync_user_groups")
+    left = [gid for gid in checked
+            if _confirm_group_membership(driver, wait, gid, user_id=user_id) == MEMBERSHIP_NOT_MEMBER]
+    if left and disable_user_groups(user_id, left, reason="join_control_on_group_page"):
+        disabled.extend(left)
+    return disabled
 
 
 @shared_task.task(name='cqc_lem.app.run_automation.auto_sync_user_groups',
                   bind=True, base=QueueOnce, once={'graceful': True, 'unlock_before_run': True, 'keys': ['user_id']},
                   queue='se_content')
 def auto_sync_user_groups(self, user_id: int):
-    """Refresh the user's joined-groups list (new groups default to enabled)."""
+    """Refresh the user's joined-groups list, then reconcile what is already stored (#1487).
+
+    New groups default to enabled; a stored group this walk PROVED is not a membership is switched
+    off (never deleted).
+    """
     try:
         driver, wait, user_email, my_profile = get_current_profile(user_id=user_id, session_name="Sync Groups")
     except Exception as e:
         log_error("Error getting profile for group sync", exc=e, user_id=user_id, task_name="auto_sync_user_groups")
         return f"Failed: {e}"
     try:
-        groups = _enumerate_joined_groups(driver, user_id=user_id)
-        for gid, name in groups:
+        reading = _read_groups_directory(driver, user_id=user_id)
+        for gid, name in reading.joined:
             upsert_user_group(user_id, gid, name)
-        return f"Synced {len(groups)} group(s)"
+        # Reconciling runs while the session is still ON /groups/ — the cross-check it fails closed
+        # against is a read of THAT page.
+        disabled = _reconcile_stored_groups(driver, wait, user_id, reading)
+        synced = f"Synced {len(reading.joined)} group(s)"
+        return f"{synced}, disabled {len(disabled)}" if disabled else synced
     finally:
         quit_gracefully(driver)
 
