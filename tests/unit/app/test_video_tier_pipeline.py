@@ -215,6 +215,94 @@ class TestDefaultVideoQualityPreference:
         assert crv.call_args[1]["model"] == "gen4_turbo"
 
 
+class TestPersistedRenderModel:
+    """Issue #1410: `posts.video_model` records the model that ACTUALLY rendered the asset.
+
+    `posts.video_quality` records what was requested — it survives the no-credits degrade and the
+    Pexels fallback unchanged — so it cannot answer which model ran, and the stored URL is written
+    under `videos/runwayml/` whatever produced it.
+    """
+
+    def _render(self, quality="premium", balance=5, render="https://x.mp4", stock="/tmp/p.mp4",
+                post_id=9):
+        from unittest.mock import MagicMock
+        writer = MagicMock(return_value=True)
+        crv = (patch("cqc_lem.app.run_content_plan.create_runway_video", side_effect=render)
+               if isinstance(render, Exception)
+               else patch("cqc_lem.app.run_content_plan.create_runway_video", return_value=render))
+        pexels = (patch("cqc_lem.utilities.pexels_helper.download_pexels_video",
+                        side_effect=stock, create=True)
+                  if isinstance(stock, Exception)
+                  else patch("cqc_lem.utilities.pexels_helper.download_pexels_video",
+                             return_value=stock, create=True))
+        with patch("cqc_lem.utilities.db.get_post_video_quality", return_value=quality), \
+             patch("cqc_lem.utilities.db.get_default_video_quality", return_value=quality), \
+             patch("cqc_lem.utilities.db.get_video_credit_balance", return_value=balance), \
+             patch("cqc_lem.utilities.db.deduct_video_credits", return_value=True), \
+             patch("cqc_lem.utilities.db.refund_video_credits"), \
+             patch("cqc_lem.utilities.db.update_db_post_video_model", writer), \
+             patch("cqc_lem.utilities.db.get_active_avatar", return_value=None), \
+             patch("cqc_lem.app.run_content_plan.get_flux_image_prompt_from_ai", return_value="scene"), \
+             patch("cqc_lem.utilities.ai.image_gen.render_image_from_prompt", return_value="/tmp/i.png"), \
+             patch("cqc_lem.app.run_content_plan.get_runway_ml_video_prompt_from_ai",
+                   return_value="motion"), \
+             patch("cqc_lem.app.run_content_plan.create_folder_if_not_exists"), \
+             crv, pexels:
+            from cqc_lem.app.run_content_plan import _generate_video_src
+            src = _generate_video_src(1, "text", None, post_id=post_id)
+        return src, writer
+
+    def test_premium_render_records_the_veo_key(self):
+        src, writer = self._render(quality="premium", balance=5)
+        assert src == "https://x.mp4"
+        writer.assert_called_once_with(9, "veo3.1_fast")
+
+    def test_a_degraded_premium_records_the_model_that_actually_ran(self):
+        """No credits -> the render is standard, so the recorded model must be too."""
+        _src, writer = self._render(quality="premium", balance=0)
+        writer.assert_called_once_with(9, "gen4_turbo")
+
+    def test_the_stock_fallback_records_pexels(self):
+        from cqc_lem.utilities.content_quality import VIDEO_MODEL_PEXELS
+        src, writer = self._render(render=RuntimeError("boom"))
+        assert src == "/tmp/p.mp4"
+        writer.assert_called_once_with(9, VIDEO_MODEL_PEXELS)
+
+    def test_a_render_that_produced_nothing_clears_the_column(self):
+        """Leaving a previous render's key behind would name the model of a video it never made."""
+        src, writer = self._render(render=RuntimeError("boom"), stock=None)
+        assert src is None
+        writer.assert_called_once_with(9, None)
+
+    def test_a_failed_stock_fallback_clears_the_column_too(self):
+        src, writer = self._render(render=RuntimeError("boom"), stock=RuntimeError("pexels down"))
+        assert src is None
+        writer.assert_called_once_with(9, None)
+
+    def test_no_post_id_writes_nothing(self):
+        """`create_video_content` can run without a post row (preview paths) — nothing to write to."""
+        src, writer = self._render(post_id=None)
+        assert src == "https://x.mp4"
+        writer.assert_not_called()
+
+    def test_a_write_that_raises_never_costs_the_video(self):
+        from unittest.mock import MagicMock
+        writer = MagicMock(side_effect=RuntimeError("db down"))
+        with patch("cqc_lem.utilities.db.get_post_video_quality", return_value="standard"), \
+             patch("cqc_lem.utilities.db.get_default_video_quality", return_value="standard"), \
+             patch("cqc_lem.utilities.db.update_db_post_video_model", writer), \
+             patch("cqc_lem.utilities.db.get_active_avatar", return_value=None), \
+             patch("cqc_lem.app.run_content_plan.get_flux_image_prompt_from_ai", return_value="scene"), \
+             patch("cqc_lem.utilities.ai.image_gen.render_image_from_prompt", return_value="/tmp/i.png"), \
+             patch("cqc_lem.app.run_content_plan.get_runway_ml_video_prompt_from_ai",
+                   return_value="motion"), \
+             patch("cqc_lem.app.run_content_plan.create_runway_video", return_value="https://x.mp4"):
+            from cqc_lem.app.run_content_plan import _generate_video_src
+            src = _generate_video_src(1, "text", None, post_id=9)
+        # The telemetry write is best-effort: the rendered video is returned either way.
+        assert src == "https://x.mp4"
+
+
 class TestContentLanguageThreading:
     """Issue #548: the user's language must reach the motion prompt of audio-capable models —
     Veo has no language parameter, so a prompt that omits it gets a voiceover of Veo's choosing.

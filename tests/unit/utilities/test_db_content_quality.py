@@ -15,7 +15,7 @@ class TestGetShippedContentForQuality:
     def _batches(self):
         return [
             [{"id": 5, "content": "Post body", "archetype": "build_receipt",
-              "post_type": "text", "video_url": None,
+              "post_type": "text", "video_url": None, "video_model": None,
               "authenticity_score": 91, "shipped_on": date(2026, 7, 26), "reactions": 12,
               "comments": 3, "reposts": 1, "impressions": 2200}],
             [{"id": 71, "message": "Comment body", "shipped_on": date(2026, 7, 26)}],
@@ -64,6 +64,24 @@ class TestGetShippedContentForQuality:
         conn, _ = fake_cursor(fetch_all_side_effect=batches)
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             assert get_shipped_content_for_quality(1)[0]["carousel_slides"] == []
+    def test_video_posts_carry_the_recorded_render_model(self, fake_cursor):
+        """Issue #1410: the scorer needs the model that RAN, which only the post row holds."""
+        from cqc_lem.utilities.db import get_shipped_content_for_quality
+        batches = self._batches()
+        batches[0][0].update({"post_type": "video", "video_model": "veo3.1_fast",
+                              "video_url": "/api/assets?file_name=videos/runwayml/5.mp4"})
+        conn, cur = fake_cursor(fetch_all_side_effect=batches)
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+            post = get_shipped_content_for_quality(1)[0]
+        assert post["video_model"] == "veo3.1_fast"
+        assert "p.video_model" in cur.execute.call_args_list[0][0][0]
+
+    def test_a_post_that_shipped_before_the_column_reports_no_model(self, fake_cursor):
+        from cqc_lem.utilities.db import get_shipped_content_for_quality
+        conn, _ = fake_cursor(fetch_all_side_effect=self._batches())
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+            post = get_shipped_content_for_quality(1)[0]
+        assert post["video_model"] is None
 
     def test_comment_and_newsletter_rows_have_no_per_item_engagement(self, fake_cursor):
         from cqc_lem.utilities.db import get_shipped_content_for_quality

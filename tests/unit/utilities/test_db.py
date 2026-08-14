@@ -442,6 +442,49 @@ class TestUpdateDbPostVideoUrl:
 
 
 @pytest.mark.unit
+class TestUpdateDbPostVideoModel:
+    """The render model persisted per post (issue #1410)."""
+
+    def test_writes_the_model_key(self, mock_database_connection):
+        from cqc_lem.utilities.db import update_db_post_video_model
+
+        with patch("cqc_lem.platform.db.connection.get_db_connection") as mock_conn:
+            mock_conn.return_value = mock_database_connection["connection"]
+            mock_database_connection["cursor"].rowcount = 1
+
+            result = update_db_post_video_model(19, "veo3.1_fast")
+
+            assert result is True
+            sql, params = mock_database_connection["cursor"].execute.call_args[0]
+            assert "video_model" in sql
+            assert params == ("veo3.1_fast", 19)
+
+    def test_none_clears_the_column(self, mock_database_connection):
+        from cqc_lem.utilities.db import update_db_post_video_model
+
+        with patch("cqc_lem.platform.db.connection.get_db_connection") as mock_conn:
+            mock_conn.return_value = mock_database_connection["connection"]
+            mock_database_connection["cursor"].rowcount = 1
+
+            update_db_post_video_model(19, None)
+
+            _sql, params = mock_database_connection["cursor"].execute.call_args[0]
+            assert params == (None, 19)
+
+    def test_a_long_model_is_truncated_to_the_column_width(self, mock_database_connection):
+        from cqc_lem.utilities.db import update_db_post_video_model
+
+        with patch("cqc_lem.platform.db.connection.get_db_connection") as mock_conn:
+            mock_conn.return_value = mock_database_connection["connection"]
+            mock_database_connection["cursor"].rowcount = 1
+
+            update_db_post_video_model(19, "m" * 90)
+
+            _sql, params = mock_database_connection["cursor"].execute.call_args[0]
+            assert params[0] == "m" * 32
+
+
+@pytest.mark.unit
 class TestGetPosts:
     def test_returns_tuple_of_list_and_total(self, mock_database_connection):
         from cqc_lem.utilities.db import get_posts
