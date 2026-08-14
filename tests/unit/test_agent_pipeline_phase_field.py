@@ -3,12 +3,14 @@
 The field is declared in `.github/ISSUE_TEMPLATE/agent-task.yml`; the consumer is the
 `phase_leftover` helper in `scripts/agent-pipeline/tick.sh`.
 
-Also covers the RUNBOOK.md prompt-text invariant that makes this addition safe to ship onto the
+Also covers the runbook prompt-text invariant that makes this addition safe to ship onto the
 existing backlog: a `template:agent-task` gate MUST be a complete no-op on any issue that lacks the
 label. `MODE=start`/`MODE=selfreview` are prose an LLM agent reads, not code pytest exercises, but
 the STRUCTURE of that prose (which paragraph the label-gate lives in, that it explicitly states the
 no-op) is grep-able and worth pinning down the same way `test_agent_pipeline_phasefix.py` pins
-`tick.sh`'s prose-adjacent shell.
+`tick.sh`'s prose-adjacent shell. `RUNBOOK.md` used to hold every mode's prose in one file; the
+context/cache-efficiency runbook split moved `MODE=start`/`MODE=selfreview` each into their own
+`scripts/agent-pipeline/runbook/<mode>.md` file, so the gate reads from there instead.
 
 `phase_leftover` itself still shells out to `gh issue view`, so it is exercised here by shadowing
 `gh` with a bash function before sourcing the extracted block — same technique the existing
@@ -30,11 +32,12 @@ pytestmark = pytest.mark.unit
 
 _ROOT = Path(__file__).resolve().parents[2]
 TICK_SH = _ROOT / "scripts" / "agent-pipeline" / "tick.sh"
-RUNBOOK = _ROOT / "scripts" / "agent-pipeline" / "RUNBOOK.md"
+RUNBOOK_DIR = _ROOT / "scripts" / "agent-pipeline" / "runbook"
+MODE_START_FILE = RUNBOOK_DIR / "start.md"
+MODE_SELFREVIEW_FILE = RUNBOOK_DIR / "selfreview.md"
 TEMPLATE_YAML = _ROOT / ".github" / "ISSUE_TEMPLATE" / "agent-task.yml"
 
 TICK_SOURCE = TICK_SH.read_text(encoding="utf-8")
-RUNBOOK_SOURCE = RUNBOOK.read_text(encoding="utf-8")
 
 PHASE_FIELD_VALUE = re.search(
     r"\nphase_field_value\(\) \{.*?\n\}\n", TICK_SOURCE, re.S
@@ -250,17 +253,19 @@ def test_template_acceptance_field_does_not_set_render():
     assert "render" not in fields["acceptance"]["attributes"]
 
 
-# --------------------------------------------------------------------------- RUNBOOK.md prose gate
+# --------------------------------------------------------------------------- runbook prose gate
+#
+# Each mode is its own file post-split, so there is no "next heading" to slice up to — the whole
+# file IS the section (after its one-line pointer back to `_preamble.md`).
 
 
-def _section(heading_start: str, heading_end: str) -> str:
-    start = RUNBOOK_SOURCE.index(heading_start)
-    end = RUNBOOK_SOURCE.index(heading_end, start)
-    return RUNBOOK_SOURCE[start:end]
+def _section(path: Path, heading_start: str) -> str:
+    text = path.read_text(encoding="utf-8")
+    return text[text.index(heading_start):]
 
 
-MODE_START = _section("## MODE=start", "## MODE=fix")
-MODE_SELFREVIEW = _section("## MODE=selfreview", "## MODE=rebase")
+MODE_START = _section(MODE_START_FILE, "## MODE=start")
+MODE_SELFREVIEW = _section(MODE_SELFREVIEW_FILE, "## MODE=selfreview")
 
 
 def test_mode_start_gate_is_explicitly_label_scoped():

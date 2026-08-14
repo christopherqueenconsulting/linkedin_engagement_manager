@@ -142,21 +142,27 @@ fi
 log "lane policy: mode=$MODE arm=${LEM_LANE_REASON} override=${LEM_LANE_OVERRIDE:-none}"
 export LEM_LANE_OVERRIDE LEM_LANE_TIER LEM_LANE_REASON
 
+# Per-mode file, not the flat $RUNBOOK index: `runbook/<mode>.md` holds only that mode's ~20-60
+# lines (env, numbered steps, STOP condition) instead of the whole ~440-line document every other
+# mode also needed. RUNBOOK_DIR is derived from $RUNBOOK so a relocated runbook still resolves —
+# same reasoning `run_lane.sh`'s `runbook_dir` already applies to the directory grant.
+RUNBOOK_DIR="$(dirname "$RUNBOOK")/runbook"
+
 case "$MODE" in
-  start)     PROMPT="Read $RUNBOOK and follow MODE=start. ISSUE=$ISSUE BRANCH=$BRANCH RISK=$RISK WORKTREE=$WT." ;;
-  fix)       PROMPT="Read $RUNBOOK and follow MODE=fix. PR=$PR ISSUE=$ISSUE BRANCH=$BRANCH ATTEMPTS=$ATTEMPTS." ;;
-  review)    PROMPT="Read $RUNBOOK and follow MODE=review. PR=$PR ISSUE=$ISSUE BRANCH=$BRANCH." ;;
+  start)     PROMPT="Read $RUNBOOK_DIR/start.md and follow it. ISSUE=$ISSUE BRANCH=$BRANCH RISK=$RISK WORKTREE=$WT." ;;
+  fix)       PROMPT="Read $RUNBOOK_DIR/fix.md and follow it. PR=$PR ISSUE=$ISSUE BRANCH=$BRANCH ATTEMPTS=$ATTEMPTS." ;;
+  review)    PROMPT="Read $RUNBOOK_DIR/review.md and follow it. PR=$PR ISSUE=$ISSUE BRANCH=$BRANCH." ;;
   # The fallback is the CANONICAL marker, not a friendlier variant. `CLAUDE_REVIEW_MARKER` is
   # v1's variable and never reaches this environment, so the fallback is what actually ships — and
   # when it said "Claude self-review" the merge gate, which matches "Claude adversarial review",
   # could not see a single review this lane produced. `test_agent_pipeline_review_marker.py` now
   # fails the build if these two halves disagree again.
-  selfreview) PROMPT="Read $RUNBOOK and follow MODE=selfreview. PR=$PR ISSUE=$ISSUE BRANCH=$BRANCH MARKER='${CLAUDE_REVIEW_MARKER:-🔎 Claude adversarial review}'." ;;
-  rebase)    PROMPT="Read $RUNBOOK and follow MODE=rebase. PR=$PR ISSUE=$ISSUE BRANCH=$BRANCH." ;;
-  revise)    PROMPT="Read $RUNBOOK and follow MODE=revise. PR=$PR BRANCH=$BRANCH OWNER=$ASSIGNEE." ;;
-  depfix)    PROMPT="Read $RUNBOOK and follow MODE=depfix. PR=$PR BRANCH=$BRANCH." ;;
-  docfix)    PROMPT="Read $RUNBOOK and follow MODE=docfix. PR=$PR BRANCH=$BRANCH." ;;
-  phasefix)  PROMPT="Read $RUNBOOK and follow MODE=phasefix. PR=$PR ISSUE=$ISSUE BRANCH=$BRANCH." ;;
+  selfreview) PROMPT="Read $RUNBOOK_DIR/selfreview.md and follow it. PR=$PR ISSUE=$ISSUE BRANCH=$BRANCH MARKER='${CLAUDE_REVIEW_MARKER:-🔎 Claude adversarial review}'." ;;
+  rebase)    PROMPT="Read $RUNBOOK_DIR/rebase.md and follow it. PR=$PR ISSUE=$ISSUE BRANCH=$BRANCH." ;;
+  revise)    PROMPT="Read $RUNBOOK_DIR/revise.md and follow it. PR=$PR BRANCH=$BRANCH OWNER=$ASSIGNEE." ;;
+  depfix)    PROMPT="Read $RUNBOOK_DIR/depfix.md and follow it. PR=$PR BRANCH=$BRANCH." ;;
+  docfix)    PROMPT="Read $RUNBOOK_DIR/docfix.md and follow it. PR=$PR BRANCH=$BRANCH." ;;
+  phasefix)  PROMPT="Read $RUNBOOK_DIR/phasefix.md and follow it. PR=$PR ISSUE=$ISSUE BRANCH=$BRANCH." ;;
   *) log "unknown MODE '$MODE' — refusing."; exit 2 ;;
 esac
 
