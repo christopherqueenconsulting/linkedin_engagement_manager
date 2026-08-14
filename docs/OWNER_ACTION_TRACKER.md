@@ -143,7 +143,7 @@ live key's scopes.** If a PostHog script misbehaves, check scopes before debuggi
 | Flag | Blocked on |
 |---|---|
 | `APPRECIATION_SOURCES_ENABLED` | #1002 — grounded GREEN today; now just needs the flip after #1019 deploys |
-| `STALE_INVITE_WITHDRAWAL_ENABLED` | #1006 — **fully grounded today** (read path, confirm dialog, entity check). Flip is now purely your call |
+| `STALE_INVITE_WITHDRAWAL_ENABLED` | #1006 — **decided: ON.** The code default is now `true`, so a deployment that does not name the variable runs the beat. an explicit value in `/opt/lem/.env` still beats the default, and that file was seeded from `.env.example` back when it said `false`: **check it, delete that line (or set it to `true`), and recreate the `celery_worker_selenium` service** — otherwise the flip does nothing in prod |
 | `TUTORIAL_VIDEOS_ENABLED` | `ELEVENLABS_API_KEY` (unset), `TUTORIAL_DEMO_SESSION_TOKEN` (unset), and #1094 above |
 | `COST_ROUTING_ENABLED` + `COST_AWARE_ROUTING_ENABLED` | Set **both together**, recreate app + litellm, preview with `python -m cqc_lem.utilities.cost_routing --json` |
 | `POSTHOG_SURVEYS_ENABLED` | Precondition now met (`UI_POSTHOG_KEY` exists). Still needs `posthog_surveys.py --apply --launch` |

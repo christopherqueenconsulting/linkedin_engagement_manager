@@ -86,12 +86,27 @@ class TestParseSentAge:
 class TestPlan:
     """The allowance is decided BEFORE a browser session opens — most runs must cost no Chrome slot."""
 
-    def test_lane_is_off_by_default(self, monkeypatch):
-        from cqc_lem.utilities.linkedin.stale_invites import WITHDRAW_STATUS_DISABLED, plan_withdrawals
+    def test_lane_is_on_by_default(self, monkeypatch):
+        """#1006 grounded the whole path live, so an unset switch now RUNS the lane."""
+        from cqc_lem.utilities.linkedin.stale_invites import WITHDRAW_STATUS_WITHDREW, plan_withdrawals
         monkeypatch.delenv("STALE_INVITE_WITHDRAWAL_ENABLED", raising=False)
-        plan = plan_withdrawals(1, prefs={})
+        with patch(f"{_SI}.count_invite_withdrawals_today", return_value=0), \
+                patch(f"{_SI}.remaining_actions", return_value=4):
+            plan = plan_withdrawals(1, prefs={})
+        assert plan["allowance"] == 4
+        assert plan["status"] == WITHDRAW_STATUS_WITHDREW
+
+    @pytest.mark.parametrize("value", ["false", "0", "no", "maybe"])
+    def test_the_switch_still_silences_the_lane(self, monkeypatch, value):
+        """A withdrawal cannot be taken back, so anything that is not an explicit yes reads as off —
+        including a typo, which must fail towards withdrawing less."""
+        from cqc_lem.utilities.linkedin.stale_invites import WITHDRAW_STATUS_DISABLED, plan_withdrawals
+        monkeypatch.setenv("STALE_INVITE_WITHDRAWAL_ENABLED", value)
+        with patch(f"{_SI}.count_invite_withdrawals_today") as count:
+            plan = plan_withdrawals(1, prefs={})
         assert plan["allowance"] == 0
         assert plan["status"] == WITHDRAW_STATUS_DISABLED
+        count.assert_not_called()
 
     def test_zero_threshold_disables_rather_than_withdrawing_everything(self, monkeypatch):
         from cqc_lem.utilities.linkedin.stale_invites import WITHDRAW_STATUS_DISABLED, plan_withdrawals

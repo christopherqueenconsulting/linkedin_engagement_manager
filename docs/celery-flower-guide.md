@@ -54,7 +54,7 @@ All times are in the timezone set by the `TZ` env var (default `America/New_York
 | `check-scheduled-posts` | `auto_check_scheduled_posts` | :00 and :30 of every hour |
 | `generate-content-plan` | `auto_generate_content` | Daily 1:00 AM |
 | `create-content-from-plan` | `auto_create_weekly_content` | Daily 1:30 AM |
-| `clean-up-stale-invites` | `auto_clean_stale_invites` | Daily 2:00 AM — withdraws pending invites past `STALE_INVITE_AGE_DAYS`; **OFF unless `STALE_INVITE_WITHDRAWAL_ENABLED`** (#969) |
+| `clean-up-stale-invites` | `auto_clean_stale_invites` | Daily 2:00 AM — withdraws pending invites past `STALE_INVITE_AGE_DAYS`; ON by default since #1006, silenced by `STALE_INVITE_WITHDRAWAL_ENABLED=false` (#969) |
 | `clen-up-stale-profiles` | `auto_clean_stale_profiles` | Daily 3:00 AM |
 | `invite_to_company_pages` | `auto_invite_to_company_pages` | 1st of month 5:00 AM |
 | `send-appreciation-dms` | `auto_appreciate_dms` | Every 15 min; dispatches each user at their own staggered slot in 7:00–9:00 **user-local** (#554/#696) |

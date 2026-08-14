@@ -12,11 +12,15 @@ Three things make this safe enough to point at a real account:
    a withdrawal, so an invite withdrawn by mistake costs a real opportunity. Every decision therefore
    fails CLOSED: an invite whose age cannot be READ is never stale (`parse_sent_age_days` returns
    `None`, and `None` is skipped), and a row without a resolvable Withdraw control is left alone.
-2. **The lane is OFF until someone turns it on** (`STALE_INVITE_WITHDRAWAL_ENABLED`, default false).
-   The selectors below are written from LinkedIn's invitation manager as documented, not from a live
-   grounding run — and an ungrounded Selenium lane that silently matches nothing is exactly how the
-   catch-up lane spent months doing nothing. `scripts/linkedin_live_validation.py --sent-invites` is
-   the read-only probe that grounds it before the switch is flipped.
+2. **The switch is still a switch** (`STALE_INVITE_WITHDRAWAL_ENABLED`), but it now defaults TRUE.
+   It shipped false because the selectors below were written from LinkedIn's invitation manager as
+   documented, not from a live grounding run — and an ungrounded Selenium lane that silently matches
+   nothing is exactly how the catch-up lane spent months doing nothing. That reason is spent: #1006
+   grounded the whole path against a real account on 2026-08-07 (row read, the "Sent … ago" stamps,
+   scroll-loading past the newest 20, the confirm dialog, and the entity check — one real withdrawal
+   proved the confirm step end to end), and the owner authorised the flip on the issue. Setting the
+   variable to `false` still turns the lane off. `scripts/linkedin_live_validation.py --sent-invites`
+   remains the read-only probe to re-ground it whenever the page moves.
 3. **It is paced and capped like every other outbound lane.** The allowance is decided BEFORE a
    Chrome session opens (`plan_withdrawals`), draws its own `ACTION_WITHDRAW_INVITE` budget through
    the #626 engine, and every hard gate (manual/suppression pause, the 429 breaker) is re-read per
@@ -65,7 +69,7 @@ SENT_INVITATIONS_URL = "https://www.linkedin.com/mynetwork/invitation-manager/se
 # Run statuses — stable strings so "why did this account withdraw nothing yesterday?" is a group-by
 # on the telemetry rather than a log grep.
 WITHDRAW_STATUS_WITHDREW = "withdrew"
-WITHDRAW_STATUS_DISABLED = "disabled"              # lane not switched on (the default)
+WITHDRAW_STATUS_DISABLED = "disabled"              # switch set to off, or a zero cap/threshold
 WITHDRAW_STATUS_BUDGET_REACHED = "budget_reached"  # paced to zero / cap already spent today
 WITHDRAW_STATUS_NONE_STALE = "none_stale"          # rows read, none old enough
 WITHDRAW_STATUS_NO_ROWS = "no_rows"                # nothing pending, or the list did not render
@@ -203,9 +207,20 @@ return null;
 
 
 def withdrawal_lane_enabled() -> bool:
-    """Opt-in switch, OFF by default. The selectors here have not been through a live grounding run,
-    and a withdrawal cannot be taken back — so nothing goes out until someone turns this on."""
-    return (os.environ.get("STALE_INVITE_WITHDRAWAL_ENABLED") or "false").strip().lower() \
+    """The lane's kill switch, ON by default since #1006 grounded every step of it live.
+
+    It was opt-in OFF while the selectors were unproven; they are proven now, and leaving the lane
+    off means pending invites keep eating LinkedIn's outstanding-invite ceiling — the very thing
+    #969 exists to stop. A withdrawal still cannot be taken back, so the switch stays: an operator
+    who wants the beat silent sets `STALE_INVITE_WITHDRAWAL_ENABLED=false` (or `0`/`no`), and every
+    other guard — the 21-day threshold, the daily cap, pacing, the fail-closed age read, the
+    entity check, the 429 breaker — is unchanged and independent of this. A value that parses as
+    nothing recognisable also reads as off: on the one action that cannot be undone, a typo must
+    fail in the direction that withdraws less, not more. An EMPTY value reads as unset (the
+    default); a whitespace-only one does not — it takes the same off reading as a typo, which is
+    the safe direction here even though `_env_int` would hand back its default.
+    """
+    return (os.environ.get("STALE_INVITE_WITHDRAWAL_ENABLED") or "true").strip().lower() \
         in ("1", "true", "yes")
 
 

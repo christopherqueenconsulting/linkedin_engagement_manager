@@ -163,7 +163,8 @@ generation/posting failures needing a manual fix.
 ### Engagement automation (`app/engagement/{feed,posting,outreach,invites,newsletter}.py`)
 
 Full posture for every row: **`docs/engagement-automation.md`**. One row per lane — the ONE place,
-and the invariant that bites. Flags named here default OFF. Since #1154 every lane lives in
+and the invariant that bites. Flags named here default OFF — the ONE exception is
+`STALE_INVITE_WITHDRAWAL_ENABLED`, ON since #1006 grounded it live. Since #1154 every lane lives in
 `app/engagement/`: feed walk + group composer + roster tail in `feed.py`; publishing and the sweeps
 measuring what a post earned (`post_to_linkedin`, reply sweep, comment follow-ups, comment outcomes,
 post/audience stats) in `posting.py`; DMs and who gets one in `outreach.py`. **That is where to
@@ -188,7 +189,7 @@ import and patch them** — `app/run_automation.py` was deleted in #1206, so `ru
 | **Weekly group post** (#932, #1224) | `auto_draft_group_post` → `auto_post_to_group` | TWO beats, so **a run with no READY draft publishes nothing**. ONE open draft per user; a restore making a SECOND is a 409. User owns `ready`⟷`skipped` only; media rides `owns_post_image_url`, goes in BEFORE the text, fails OPEN |
 | **Roster targets** (#962) | `comment_on_roster_posts`, `auto_follow_roster_target` | Posts but ZERO commentable cards records a blocked visit; a whole roster blocked records nothing. `roster_auto_follow` draws `max_follows_per_day` bounded by (never in) the account envelope, and clicks NOTHING unless the control names the page owner |
 | **Roster connect escalation** (#979) | `advance_roster_connect` | blocked → follow → still blocked → `needs_connection` → (opt-in) ONE invite. `needs_connection` needs EVIDENCE (`following` + a blocked visit AFTER `followed_at`); a landed comment stands it down. Spends the SHARED `max_invites_per_day` at ≤ `ceil(remaining/3)`, ONE shot per target (`requested` written BEFORE dispatch). `ConnectStatus` is the ONE vocabulary |
-| **Stale-invite withdrawal** (#969) | `linkedin/stale_invites.py`, `STALE_INVITE_WITHDRAWAL_ENABLED` | Withdrawing is ONE-WAY (~3 weeks before a re-invite), so reads fail CLOSED — an unreadable "Sent … ago" is NEVER stale, and only the row's OWN `Sent` line is parsed. `plan_withdrawals` decides the allowance BEFORE Chrome opens |
+| **Stale-invite withdrawal** (#969) | `linkedin/stale_invites.py`, `STALE_INVITE_WITHDRAWAL_ENABLED` (default **true** since #1006 — the one flag in this table that is ON) | Withdrawing is ONE-WAY (~3 weeks before a re-invite), so reads fail CLOSED — an unreadable "Sent … ago" is NEVER stale, and only the row's OWN `Sent` line is parsed. The sent list has NO pager and loads on SCROLL, so an unexpanded walk sees only the newest rows — never the ones this lane exists for. `plan_withdrawals` decides the allowance BEFORE Chrome opens |
 | **Company-page invites** (#732) | `linkedin/company_page_inviter.py` | A paced DAILY drip bounded by the SMALLEST of three ceilings — per-day cap, credit spread, live credit count. `plan_daily_invites` decides all of it BEFORE a Chrome session opens |
 ### Engagement configuration (`engagement_preferences` table, API in `api/main.py`, SPA in `ui/.../Account.tsx`)
 - **Targeting:** include/exclude topics/keywords/authors, `min_reactions`, `max_post_age_hours`, LLM topic-relevance scoring. **Voice:** tone, `comment_length` (short/medium/long; default short), style, emoji/hashtag toggles.

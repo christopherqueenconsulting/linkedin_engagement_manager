@@ -34,9 +34,10 @@ class TestCleanStaleInvites:
         track.assert_called_once()
         assert track.call_args[0][0] == 42
 
-    def test_the_off_by_default_skip_is_debug_not_info(self):
-        """It is the default, it repeats for every active user every night, and it is working
-        behaviour — an INFO line here is one row per user per day saying nothing happened.
+    def test_the_switched_off_skip_is_debug_not_info(self):
+        """Someone deliberately set the switch (or a zero cap/threshold), it repeats for every
+        active user every night, and it is working behaviour — an INFO line here is one row per
+        user per day saying nothing happened.
         """
         from cqc_lem.app.engagement.invites import clean_stale_invites
         with patch(f"{_INV}.plan_withdrawals", return_value=_plan()), \

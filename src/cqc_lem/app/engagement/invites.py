@@ -83,10 +83,10 @@ from cqc_lem.utilities.selenium_util import (
 def clean_stale_invites(self, user_id: int):
     """Withdraw this user's pending connection invites older than the threshold (issue #969).
 
-    The budget is decided BEFORE a browser session is opened: the lane is opt-in and OFF by default,
-    and even switched on most days are paced to zero — a Chrome slot spent discovering that is a slot
-    an engagement lane needed. Returns the run report so a Flower run and the `stale_invite_run`
-    event tell the same story.
+    The budget is decided BEFORE a browser session is opened: most days are paced to zero even with
+    the lane on (`STALE_INVITE_WITHDRAWAL_ENABLED`, default true since #1006) — a Chrome slot spent
+    discovering that is a slot an engagement lane needed. Returns the run report so a Flower run and
+    the `stale_invite_run` event tell the same story.
     """
     task_name = "clean_stale_invites"
 
@@ -95,9 +95,9 @@ def clean_stale_invites(self, user_id: int):
         report = {"status": plan["status"], "cap": plan["cap"],
                   "withdrawn_today": plan["withdrawn_today"],
                   "threshold_days": plan["threshold_days"]}
-        # DEBUG for the switched-off case: it is the DEFAULT, it repeats for every active user every
-        # night, and it is working behaviour — an INFO line here is one row per user per day saying
-        # nothing happened on purpose.
+        # DEBUG for the switched-off case: someone deliberately set the switch (or a zero cap /
+        # threshold), it repeats for every active user every night, and it is working behaviour —
+        # an INFO line here is one row per user per day saying nothing happened on purpose.
         emit = log_debug if plan["status"] == WITHDRAW_STATUS_DISABLED else log_info
         emit(f"Stale-invite withdrawal skipped — {plan['status']} "
              f"(cap {plan['cap']}, withdrawn today {plan['withdrawn_today']})",
