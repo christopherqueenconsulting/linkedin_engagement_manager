@@ -27,9 +27,9 @@ services:
     ports:
       # Same port as the standalone, so SELENIUM_HUB_PORT and every tool that speaks to it
       # (tools/selenium_mcp_server.py, the capacity monitor's /status poll) are unchanged. Bound to
-      # LOOPBACK by default because this overlay composes after docker-compose.prod.yml, whose whole
-      # point for `ports` is that 4444 is not publicly reachable — a default of "all interfaces"
-      # here would silently undo that hardening on the cutover.
+      # LOOPBACK by default because the standalone this replaces binds its own 4444 to loopback
+      # (SELENIUM_STANDALONE_BIND, in docker-compose.yml since #1092) — a default of "all
+      # interfaces" here would silently undo that hardening on the cutover.
       # NOTE: there is no 7900 on a hub. noVNC lives on the NODES, and replicas cannot publish the
       # same host port — which is why the pool is unwatchable and `selenium-node-debug` below is a
       # separate, non-replicated node that DOES publish 7900.

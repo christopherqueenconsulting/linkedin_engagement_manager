@@ -42,8 +42,11 @@ design, and the change of capacity is a separate, deliberate decision.
 >
 > **Two cutover failure modes worth knowing (both hit live on 2026-07-27):**
 > 1. A compose *profile* stops a service from being **started**, not from **running**. The standalone
->    kept holding `127.0.0.1:4444`, so the hub could not bind. `deploy.sh` now evicts a running
->    `selenium-chrome` before bringing the grid up.
+>    kept holding `127.0.0.1:4444`, so the hub could not bind. `deploy.sh` now evicts the
+>    `selenium-chrome` container before bringing the grid up — matched on `docker ps -a`, so a
+>    standalone left in `Created` by a failed start (a manual `up` without this overlay, which
+>    cannot bind 4444 while the hub holds it) is swept too rather than sitting there forever and
+>    poisoning the "any container in `Created`" outage tripwire (#1092).
 > 2. When that bind fails, Docker leaves the hub container **running with no network attached**. It
 >    presents as *"hub unhealthy, 0 nodes"* and the node logs say
 >    `UnknownHostException: selenium-hub` — not as a port error. The fix is `docker rm -f
@@ -153,7 +156,9 @@ production slot. One caveat left:
 `tools/selenium_mcp_server.py` is unaffected — it drives 4444, which is still the hub.
 
 Both 4444 and the event bus bind to **loopback** by default (`SELENIUM_GRID_HUB_BIND`,
-`SELENIUM_GRID_BUS_BIND`), matching how `docker-compose.prod.yml` hardens the standalone today.
+`SELENIUM_GRID_BUS_BIND`), matching how the standalone binds its own 4444/7900
+(`SELENIUM_STANDALONE_BIND`, in `docker-compose.yml` since #1092 so the hardening no longer depends
+on which overlay is composed).
 
 #### Pinning a session to the debug node
 

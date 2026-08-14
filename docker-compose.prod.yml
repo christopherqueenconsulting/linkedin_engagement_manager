@@ -208,23 +208,20 @@ services:
         limits:
           memory: 512m
 
-  selenium-chrome:
-    # Session cap (8), shm (8g) and limits (8cpu/8g) come from the base file — prod runs the
-    # same browser pool as dev so the "cap == summed lane concurrency" invariant holds in both.
-    # Bind noVNC (7900) and the Selenium hub (4444) to loopback only. 7900 lets the
-    # live browser be watched via an SSH tunnel (ssh -L 7900:localhost:7900 …) or the
-    # lemvnc.<domain> Cloudflare hostname; 4444 lets host-side tooling — notably the
-    # Selenium MCP server (tools/selenium_mcp_server.py) — drive that same browser for
-    # interactive debugging. Neither is exposed publicly (loopback + host firewall);
-    # for browser access add a public hostname in Cloudflare Zero Trust (gate with Access).
-    ports: !override ["127.0.0.1:7900:7900", "127.0.0.1:4444:4444"]
+  # NOTE: this overlay deliberately says NOTHING about `selenium-chrome` (#1092). The Grid overlay
+  # is the deployed topology and parks the standalone behind the `standalone` profile, so a block
+  # here patched a service prod never starts — and a permanently-`Created` leftover of it poisons
+  # the "any container in Created" tripwire the host watchdog reads. Its 4444/7900 loopback bind
+  # now lives in the base file (SELENIUM_STANDALONE_BIND), so the one-flag standalone rollback,
+  # which does NOT compose this overlay's neighbours either, keeps the same hardening.
 
   litellm:
     # already restart: unless-stopped in the base file
     # Loopback-only publish so the Ollama agent lane (claude -p with ANTHROPIC_BASE_URL pointed
-    # here) can reach the proxy from the host without exposing it on the WAN — same pattern as
-    # the selenium-chrome 4444 bind above. !override replaces the base 4000:4000 (all-interfaces)
-    # rather than merging into a double bind.
+    # here) can reach the proxy from the host without exposing it on the WAN — same pattern as the
+    # Selenium 4444 bind (the hub's SELENIUM_GRID_HUB_BIND, or the standalone's
+    # SELENIUM_STANDALONE_BIND on the rollback path). !override replaces the base 4000:4000
+    # (all-interfaces) rather than merging into a double bind.
     ports: !override ["127.0.0.1:4000:4000"]
     deploy:
       resources:
