@@ -474,6 +474,20 @@ def get_post_type(post_id: int) -> Optional[PostType]:
         except ValueError:
             return None
     return None
+def parse_carousel_slides(value) -> list:
+    """The stored `carousel_slides` column as a list — [] for anything that will not parse.
+
+    One parser for both readers: the poster's `get_carousel_slides` and the nightly quality pass
+    (issue #1513) must agree on what a deck's stored slides are, or a deck the poster can publish
+    would score as having none.
+    """
+    if not value:
+        return []
+    try:
+        slides = json.loads(value) if isinstance(value, str) else value
+    except (json.JSONDecodeError, TypeError):
+        return []
+    return slides if isinstance(slides, list) else []
 def get_carousel_slides(post_id: int) -> list[str]:
     """A post's carousel slide paths as a list — [] whenever there is nothing usable.
 
@@ -489,15 +503,7 @@ def get_carousel_slides(post_id: int) -> list[str]:
         log_error("Could not get carousel_slides", exc=err, post_id=post_id)
         row = None
 
-    if row and row['carousel_slides']:
-        try:
-            slides = row['carousel_slides']
-            if isinstance(slides, str):
-                slides = json.loads(slides)
-            return slides if isinstance(slides, list) else []
-        except (json.JSONDecodeError, TypeError):
-            return []
-    return []
+    return parse_carousel_slides(row['carousel_slides'] if row else None)
 _ALLOWED_POST_CLAUSES = frozenset({"status = %s", "scheduled_time = %s", "rejection_reason = %s"})
 def bulk_update_posts(post_ids: list[int], status: Optional[PostStatus] = None,
                       scheduled_time: Optional[datetime] = None,
@@ -1119,11 +1125,11 @@ def get_shipped_content_for_quality(user_id: int, days: int = 1) -> list:
     One function and one connection for three queries on purpose: the scorer treats posts, comments and
     newsletter editions as one stream of writing, and three separate readers would let a surface drift
     out of the window silently. Each row is
-    ``{surface, ref_id, text, shipped_on, format_key, post_type, video_url, authenticity_score,
-    reactions, comments, reposts, impressions}`` — the engagement fields are None for a surface that
-    has no per-item stats (comments, newsletters) and for a post whose stats have not been captured
-    yet, which is the normal case the night it ships. `post_type` and `video_url` are present only for
-    posts; they are None for comments and newsletters.
+    ``{surface, ref_id, text, shipped_on, format_key, post_type, video_url, carousel_slides,
+    authenticity_score, reactions, comments, reposts, impressions}`` — the engagement fields are None
+    for a surface that has no per-item stats (comments, newsletters) and for a post whose stats have
+    not been captured yet, which is the normal case the night it ships. `post_type`, `video_url` and
+    `carousel_slides` are present only for posts; they are None/[] for comments and newsletters.
     """
     window = max(1, int(days))
     connection = _connection.get_db_connection()
@@ -1133,8 +1139,8 @@ def get_shipped_content_for_quality(user_id: int, days: int = 1) -> list:
         # LEFT JOIN: a post shipped tonight has no post_stats row yet and must still be scored — its
         # engagement rate simply reports as unmeasured until the daily scrape catches up.
         cursor.execute(
-            "SELECT p.id, p.content, p.archetype, p.post_type, p.video_url, p.authenticity_score, "
-            "  DATE(p.scheduled_time) AS shipped_on, "
+            "SELECT p.id, p.content, p.archetype, p.post_type, p.video_url, p.carousel_slides, "
+            "  p.authenticity_score, DATE(p.scheduled_time) AS shipped_on, "
             "  s.reactions, s.comments, s.reposts, s.impressions "
             "FROM posts p LEFT JOIN post_stats s "
             "  ON s.post_id=p.id AND s.user_id=p.user_id "
@@ -1148,6 +1154,7 @@ def get_shipped_content_for_quality(user_id: int, days: int = 1) -> list:
                 "surface": "post", "ref_id": str(r["id"]), "text": r["content"],
                 "shipped_on": r["shipped_on"], "format_key": r.get("archetype"),
                 "post_type": r.get("post_type"), "video_url": r.get("video_url"),
+                "carousel_slides": parse_carousel_slides(r.get("carousel_slides")),
                 "authenticity_score": r.get("authenticity_score"),
                 "reactions": r.get("reactions"), "comments": r.get("comments"),
                 "reposts": r.get("reposts"), "impressions": r.get("impressions"),
@@ -1514,6 +1521,22 @@ def get_shipped_variant_keys(user_id: int) -> dict:
             return {r[0]: r[1] for r in (cursor.fetchall() or []) if r[1]}
     except mysql.connector.Error as err:
         log_error("Could not get shipped variant keys", exc=err, user_id=user_id)
+        return {}
+def get_post_types_for_user(user_id: int) -> dict:
+    """``{post_id: post_type}`` for every post this user has (issue #1513).
+
+    This is the format each `post_outcome` event reports.
+
+    Read ONCE per stats sweep, the same way `get_shipped_variant_keys` is, so the format rides along
+    without a query per post inside the Selenium loop. An empty dict on any DB error: a missing
+    format label must never cost us the outcome itself.
+    """
+    try:
+        with db_cursor() as cursor:
+            cursor.execute("SELECT id, post_type FROM posts WHERE user_id=%s", (user_id,))
+            return {r[0]: r[1] for r in (cursor.fetchall() or []) if r[1]}
+    except mysql.connector.Error as err:
+        log_error("Could not get post types", exc=err, user_id=user_id)
         return {}
 def get_variant_outcome_rows(user_id: int) -> list:
     """Realized outcomes for shipped A/B variants (issue #396 / D2). Joins each recorded shipped

@@ -38,6 +38,16 @@ def _video_post(ref_id="1", text="A plain first line.\nAnd a second sentence for
     return row
 
 
+def _carousel_post(ref_id="7", text="A caption for the deck.", **kw):
+    row = {"surface": "post", "ref_id": ref_id, "text": text, "shipped_on": "2026-07-26",
+           "format_key": None, "post_type": "carousel", "video_url": None,
+           "carousel_slides": [f"/api/assets?file_name=images/carousel/{ref_id}/slide_01.png"],
+           "authenticity_score": None, "reactions": 5, "comments": 2,
+           "reposts": 0, "impressions": 400}
+    row.update(kw)
+    return row
+
+
 def _newsletter(ref_id="12", text="An opening line.\n\nA developed section with a real example.",
                 **kw):
     row = {"surface": "newsletter", "ref_id": ref_id, "text": text, "shipped_on": "2026-07-26",
@@ -136,6 +146,52 @@ class TestNightlyContentQuality:
                                                          "video_asset_probe": "missing"}))
             self._run(es, [_video_post(video_url="/api/assets?file_name=videos/runwayml/1.mp4")])
         assert video.call_args.kwargs["video_url"] == "/api/assets?file_name=videos/runwayml/1.mp4"
+
+    def test_a_carousel_post_scores_its_deck_on_its_own_surface(self):
+        with ExitStack() as es:
+            deck = es.enter_context(patch(f"{CQ}.score_carousel_deck", return_value={
+                "deck_probe": "ok", "deck_slides": 5, "deck_template": "bold_listicle",
+                "deck_body_chars_avg": 148.0, "deck_body_chars_max": 196,
+                "deck_chars_dropped": 57, "deck_slides_clipped": 1, "deck_slides_with_band": 3}))
+            result, record, track = self._run(es, [_carousel_post()])
+        # TWO readings for one carousel: the caption as a post, the render as a deck.
+        assert "scored 2 piece(s)" in result
+        assert deck.call_args.kwargs["slide_urls"] == [
+            "/api/assets?file_name=images/carousel/7/slide_01.png"]
+        caption, deck_row = (call.args[1] for call in record.call_args_list)
+        assert caption["surface"] == "post" and caption.get("deck_slides") is None
+        assert deck_row["surface"] == "carousel" and deck_row["ref_id"] == "7"
+        assert deck_row["deck_chars_dropped"] == 57 and deck_row["deck_template"] == "bold_listicle"
+        assert [call.args[1]["surface"] for call in track.call_args_list] == ["post", "carousel"]
+
+    def test_a_document_post_is_the_same_deck_surface(self):
+        with ExitStack() as es:
+            es.enter_context(patch(f"{CQ}.score_carousel_deck", return_value={
+                "deck_probe": "ok", "deck_slides": 4, "deck_template": "step_framework",
+                "deck_body_chars_avg": 90.0, "deck_body_chars_max": 120, "deck_chars_dropped": 0,
+                "deck_slides_clipped": 0, "deck_slides_with_band": 2}))
+            _result, record, _track = self._run(es, [_carousel_post(post_type="document")])
+        assert [call.args[1]["surface"] for call in record.call_args_list] == ["post", "carousel"]
+
+    def test_a_deck_with_no_readable_render_records_that_not_a_zero(self):
+        with ExitStack() as es:
+            es.enter_context(patch(f"{CQ}.score_carousel_deck", return_value={
+                "deck_probe": "missing", "deck_slides": None, "deck_template": None,
+                "deck_body_chars_avg": None, "deck_body_chars_max": None,
+                "deck_chars_dropped": None, "deck_slides_clipped": None,
+                "deck_slides_with_band": None}))
+            _result, record, _track = self._run(es, [_carousel_post()])
+        deck_row = record.call_args_list[1].args[1]
+        assert deck_row["deck_probe"] == "missing"
+        assert deck_row["deck_chars_dropped"] is None and deck_row["chars"] is None
+
+    def test_text_and_video_posts_produce_no_deck_reading(self):
+        with ExitStack() as es:
+            deck = es.enter_context(patch(f"{CQ}.score_carousel_deck"))
+            es.enter_context(patch(f"{CQ}.score_video_asset", return_value={}))
+            _result, record, _track = self._run(es, [_post(), _video_post(ref_id="2")])
+        assert deck.call_count == 0
+        assert [call.args[1]["surface"] for call in record.call_args_list] == ["post", "post"]
 
     def test_the_embedding_spend_is_billed_to_the_user_it_scored(self):
         # similarity_reports is the only LLM spend here, and this task loops over users instead of
@@ -337,6 +393,45 @@ class TestPostHogEvents:
         # The lint's reason strings quote the draft, so they must not ride along.
         assert "slop_reasons" not in props
         assert not any("sentence" in str(v) for v in props.values())
+
+    def test_the_deck_reading_rides_the_same_event_with_string_filters(self):
+        """The deck reading is an existing EventSpec's fields, never a new capture (issue #1513).
+
+        The two properties a breakdown filters on ingest as strings.
+        """
+        from cqc_lem.utilities.observability import track_content_quality
+        deck = {"surface": "carousel", "ref_id": "87", "shipped_on": "2026-08-14", "chars": 740,
+                "deck_probe": "ok", "deck_slides": 5, "deck_template": "bold_listicle",
+                "deck_body_chars_avg": 148.0, "deck_body_chars_max": 196,
+                "deck_chars_dropped": 57, "deck_slides_clipped": 1, "deck_slides_with_band": 3}
+        with patch(f"{OBS}.posthog.capture") as capture:
+            track_content_quality(7, deck)
+        capture.assert_called_once()
+        props = capture.call_args.kwargs["properties"]
+        assert capture.call_args.kwargs["event"] == "content_quality"
+        assert props["surface"] == "carousel" and isinstance(props["surface"], str)
+        assert props["deck_probe"] == "ok" and isinstance(props["deck_probe"], str)
+        assert props["deck_template"] == "bold_listicle"
+        assert props["deck_chars_dropped"] == 57 and props["deck_slides_clipped"] == 1
+        assert props["deck_slides"] == 5 and props["deck_slides_with_band"] == 3
+
+    def test_an_unmeasured_deck_never_ingests_as_zero(self):
+        from cqc_lem.utilities.observability import track_content_quality
+        with patch(f"{OBS}.posthog.capture") as capture:
+            track_content_quality(7, {"surface": "carousel", "ref_id": "9",
+                                      "deck_probe": "missing", "deck_slides": None,
+                                      "deck_chars_dropped": None})
+        props = capture.call_args.kwargs["properties"]
+        assert props["deck_chars_dropped"] is None and props["deck_slides"] is None
+        assert props["deck_probe"] == "missing"
+
+    def test_a_text_post_carries_no_deck_dimensions(self):
+        from cqc_lem.utilities.observability import track_content_quality
+        with patch(f"{OBS}.posthog.capture") as capture:
+            track_content_quality(7, {"surface": "post", "ref_id": "1", "chars": 400})
+        props = capture.call_args.kwargs["properties"]
+        assert props["deck_probe"] is None and props["deck_template"] is None
+        assert props["deck_slides"] is None
 
     def test_rollup_event_flattens_both_periods_and_the_deltas(self):
         from cqc_lem.utilities.observability import track_content_quality_rollup

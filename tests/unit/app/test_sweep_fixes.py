@@ -155,6 +155,34 @@ class TestScrapeRecordsImpressions:
         # A post with no recorded variant is None, never a made-up arm.
         assert variants == {9: "flux|gen4|1:1", 10: None}
 
+    def test_outcome_event_carries_the_format_the_post_shipped(self):
+        """The format the post shipped as rides onto its outcome event (issue #1513).
+
+        Without it, "do carousels out-reach text posts?" is unanswerable from telemetry — `saves`
+        was already on the event, the split was not.
+        """
+        counts = {"reactions": 5, "comments": 2, "reposts": 0, "impressions": 100, "saves": 4}
+        with patch(f"{_POST}.time.sleep"), \
+             patch(f"{_POST}.get_recent_posted_post_ids", return_value=[9, 10]), \
+             patch(f"{_POST}.get_uncaptured_posted_post_ids", return_value=[]), \
+             patch(f"{_POST}.get_current_profile", return_value=(MagicMock(), MagicMock(), "e", MagicMock())), \
+             patch(f"{_POST}.get_post_url_from_log_for_user", return_value="https://x/urn"), \
+             patch(f"{_POST}._post_social_counts", return_value=counts), \
+             patch(f"{_POST}._post_analytics_counts", return_value={}), \
+             patch(f"{_POST}.get_shipped_variant_keys", return_value={}), \
+             patch(f"{_POST}.get_post_types_for_user", return_value={9: "carousel"}) as types, \
+             patch(f"{_POST}.record_post_stats"), \
+             patch(f"{_POST}.track_post_outcome") as outcome, patch(f"{_POST}.quit_gracefully"):
+            from cqc_lem.app.engagement.posting import auto_scrape_post_stats
+            auto_scrape_post_stats.run(user_id=1)
+        # ONE query for the sweep, never one per post inside the Selenium loop.
+        types.assert_called_once_with(1)
+        formats = {call.kwargs["post_id"]: call.kwargs["post_type"]
+                   for call in outcome.call_args_list}
+        # An unreadable format stays None so those rows drop out of a format breakdown instead of
+        # piling onto one.
+        assert formats == {9: "carousel", 10: None}
+
     def test_analytics_page_signals_merge_over_detail_page(self):
         detail = {"reactions": 5, "comments": 2, "reposts": 0, "impressions": 0, "saves": 0}
         analytics = {"reposts": 6, "impressions": 72, "saves": 9}

@@ -89,3 +89,78 @@ class TestCreateCarouselSlideImages:
                 assert len(paths) == 5  # 1 cover + 3 contents + 1 CTA
             except (ImportError, Exception):
                 pytest.skip("Pillow not available or render failed in test env")
+
+
+@pytest.mark.unit
+class TestDeckRenderReceipt:
+    """The render receipt written next to the slides (issue #1513).
+
+    The renderer is the only place the written string and the drawn lines are both in hand, so these
+    assert the reading exists AND that it measures the clipping #1375 made visible, rather than the
+    layout's own line caps.
+    """
+
+    def _carousel(self, body: str):
+        from cqc_lem.utilities.carousel_creator import (
+            EducationalContentCarousel,
+            EducationalContentSlide,
+        )
+        return EducationalContentCarousel(
+            cover=EducationalContentSlide(title="Cover", content="Intro"),
+            contents=[EducationalContentSlide(title="One", content=body)],
+            call_to_action=EducationalContentSlide(title="CTA", content="Save this for later."),
+        )
+
+    def _render(self, carousel, tmp_path, image_path=None):
+        import json
+
+        from cqc_lem.utilities.carousel_creator import create_carousel_slide_images
+        from cqc_lem.utilities.deck_render import DECK_RENDER_FILENAME
+        with patch("cqc_lem.utilities.carousel_creator.select_slide_image",
+                   return_value=image_path):
+            create_carousel_slide_images(carousel, post_id=87, output_dir=str(tmp_path),
+                                         template="bold_listicle")
+        with open(os.path.join(str(tmp_path), DECK_RENDER_FILENAME), encoding="utf-8") as handle:
+            return json.load(handle)
+
+    def test_records_one_row_per_slide_with_its_role_and_written_length(self, tmp_path):
+        receipt = self._render(self._carousel("A short body."), tmp_path)
+        assert receipt["post_id"] == 87 and receipt["template"] == "bold_listicle"
+        assert [slide["role"] for slide in receipt["slides"]] == ["cover", "body", "cta"]
+        body = receipt["slides"][1]
+        assert body["body_chars"] == len("A short body.")
+        assert body["chars_dropped"] == 0 and body["band"] is False
+
+    def test_records_the_characters_the_layout_never_drew(self, tmp_path):
+        # Far past what any layout can shrink to fit, so `_fit` marks the cut (#1375) — and this
+        # count is the ONLY record of HOW MUCH the reader lost.
+        receipt = self._render(self._carousel("word " * 99), tmp_path)
+        body = receipt["slides"][1]
+        assert body["chars_dropped"] > 0
+        assert body["chars_drawn"] > 0
+        assert body["chars_drawn"] + body["chars_dropped"] <= body["body_chars"]
+
+    def test_an_unknown_template_is_recorded_as_the_one_that_was_drawn(self, tmp_path):
+        import json
+
+        from cqc_lem.utilities.carousel_creator import (
+            DEFAULT_TEMPLATE,
+            create_carousel_slide_images,
+        )
+        from cqc_lem.utilities.deck_render import DECK_RENDER_FILENAME
+
+        with patch("cqc_lem.utilities.carousel_creator.select_slide_image", return_value=None):
+            create_carousel_slide_images(self._carousel("Body."), post_id=87,
+                                         output_dir=str(tmp_path), template="no_such_template")
+        with open(os.path.join(str(tmp_path), DECK_RENDER_FILENAME), encoding="utf-8") as handle:
+            assert json.load(handle)["template"] == DEFAULT_TEMPLATE
+
+    def test_the_band_is_recorded_only_when_one_actually_landed(self, tmp_path):
+        from PIL import Image
+        photo = tmp_path / "band.png"
+        Image.new("RGB", (400, 400), color=(10, 20, 30)).save(photo)
+        receipt = self._render(self._carousel("A short body."), tmp_path, image_path=str(photo))
+        roles = {slide["role"]: slide for slide in receipt["slides"]}
+        # Only content slides get a photo band; cover and CTA never do.
+        assert roles["body"]["band"] is True
+        assert roles["cover"]["band"] is False and roles["cta"]["band"] is False

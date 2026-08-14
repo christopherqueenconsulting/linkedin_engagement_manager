@@ -36,6 +36,13 @@ from pptx.slide import Slide
 from pydantic import BaseModel, Field, HttpUrl, StrictStr, conlist
 from pydantic_extra_types.color import Color
 
+from cqc_lem.utilities.deck_render import (
+    SLIDE_ROLE_BODY,
+    SLIDE_ROLE_COVER,
+    SLIDE_ROLE_CTA,
+    write_deck_render_receipt,
+)
+
 
 # Generic slide model for reusability
 class CarouselSlide(BaseModel):
@@ -1952,6 +1959,9 @@ def create_carousel_slide_images(
     W, H = 1080, 1080
     WHITE = (255, 255, 255)
 
+    # The template that will actually be DRAWN, not the one that was asked for: an unknown name
+    # falls back below, and the receipt has to name the layout whose caps produced the clipping.
+    template_key = template if template in CAROUSEL_TEMPLATES else DEFAULT_TEMPLATE
     tmpl = CAROUSEL_TEMPLATES.get(template, CAROUSEL_TEMPLATES[DEFAULT_TEMPLATE])
     cover_bg     = tmpl["cover_bg"]
     cover_text   = tmpl["cover_text"]
@@ -1985,6 +1995,11 @@ def create_carousel_slide_images(
             text = text.replace(src, dst)
         return text
 
+    # What the CURRENT slide wrote and painted (issue #1513). Reset by the render loop before each
+    # slide, so every block a layout lays out — title and body alike — adds to the same slide's
+    # tally.
+    marks = {"drawn": 0, "dropped": 0, "band": False}
+
     def _fit(text: str, font, max_px: int, draw, max_lines: int, spacing: int):
         """Layout-aware wrap: returns `(lines, font)` that fit the reserved block.
 
@@ -1993,6 +2008,12 @@ def create_carousel_slide_images(
         """
         lines, fitted_font, truncated = fit_text_block(text, font, max_px, max_lines, spacing, draw)
         if truncated:
+            # This is now the ONLY place a slide loses text, so it is the only reading of the loss
+            # (#1513). Re-wrap the whole string at the size actually drawn so both sides are the
+            # same measure; the marker is the renderer's own characters, never the writer's.
+            whole = sum(len(ln) for ln in _wrap_text(text, fitted_font, max_px, draw))
+            kept = sum(len(ln) for ln in lines) - len(CAROUSEL_TRUNCATION_MARKER)
+            marks["dropped"] += max(0, whole - kept)
             log_warning("Carousel slide text truncated to fit the layout",
                         post_id=post_id, template=template)
         return lines, fitted_font
@@ -2005,7 +2026,10 @@ def create_carousel_slide_images(
         return total_h
 
     def _draw_block(draw, lines, font, x, y, fill, spacing=14, centered=False) -> int:
-        # No line cap: `_fit` has already decided what fits, so nothing is dropped here.
+        # No line cap: `_fit` has already decided what fits, so nothing is dropped here — this
+        # only tallies what reaches the PNG for the render receipt (#1513). The truncation
+        # marker is drawn text, so it counts here; `_fit` excludes it from the loss.
+        marks["drawn"] += sum(len(ln) for ln in lines)
         for ln in lines:
             bb = draw.textbbox((0, 0), ln, font=font)
             lw, lh = bb[2] - bb[0], bb[3] - bb[1]
@@ -2038,6 +2062,9 @@ def create_carousel_slide_images(
             log_warning("Carousel content image composite failed; rendering text-only",
                         exc=e, post_id=post_id)
             return None, None
+        # The band is what makes a body slide's line cap the TIGHTER one, so the receipt records
+        # whether this slide actually got one rather than whether one was asked for.
+        marks["band"] = True
         return panel, band_top
 
     def _place_band(img, draw, panel, band_top, accent):
@@ -2636,12 +2663,17 @@ def create_carousel_slide_images(
     content_type = _carousel_content_type(carousel_data)
     total = len(slides_data)
     image_paths = []
+    slide_receipts: list[dict] = []
     for idx, (title, body) in enumerate(slides_data, start=1):
+        marks.update({"drawn": 0, "dropped": 0, "band": False})
         if idx == 1:
+            role = SLIDE_ROLE_COVER
             path = render_cover(idx, total, title, body)
         elif idx == total:
+            role = SLIDE_ROLE_CTA
             path = render_cta(idx, total, title, body)
         else:
+            role = SLIDE_ROLE_BODY
             bc = badge_colors[(idx - 2) % len(badge_colors)]
             # Shared deterministic engine; default_path=None so a miss => text-only
             # (never a placeholder image).
@@ -2651,6 +2683,15 @@ def create_carousel_slide_images(
             )
             path = render_content(idx, total, title, body, bc, slide_image)
         image_paths.append(path)
+        # `body` is what the WRITER wrote; `chars_dropped` is what the layout refused to draw. The
+        # two are recorded side by side because the gap between them is the whole finding (#1375).
+        slide_receipts.append({
+            "index": idx, "role": role, "title_chars": len(title or ""),
+            "body_chars": len(body or ""), "chars_drawn": marks["drawn"],
+            "chars_dropped": marks["dropped"], "band": bool(marks["band"]),
+        })
+
+    write_deck_render_receipt(output_dir, post_id, template_key, slide_receipts)
 
     return image_paths
 

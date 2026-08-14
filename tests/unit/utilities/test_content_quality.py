@@ -897,3 +897,93 @@ class TestVideoAssetScoring:
         assert result["video_duration_seconds"] is None
         assert result["video_aspect_ratio"] == "9:16"
         assert result["video_asset_probe"] == cq.VIDEO_PROBE_MISSING
+
+
+class TestCarouselDeckScoring:
+    """The deck reading (issue #1513) — the carousel half of #1281's video asset probe."""
+
+    def _receipt(self, tmp_path, monkeypatch, payload, post_id="87"):
+        deck_dir = tmp_path / "images" / "carousel" / post_id
+        deck_dir.mkdir(parents=True)
+        (deck_dir / "deck_render.json").write_text(json.dumps(payload))
+        monkeypatch.setattr(cq, "assets_dir", str(tmp_path))
+        return [f"http://lem/api/assets?file_name=images/carousel/{post_id}/slide_0{i}.png"
+                for i in (1, 2, 3)]
+
+    def test_reads_every_dimension_off_the_render_receipt(self, tmp_path, monkeypatch):
+        urls = self._receipt(tmp_path, monkeypatch, {
+            "post_id": 87, "template": "bold_listicle", "slides": [
+                {"index": 1, "role": "cover", "title_chars": 30, "body_chars": 120,
+                 "chars_drawn": 117, "chars_dropped": 3, "band": False},
+                {"index": 2, "role": "body", "title_chars": 25, "body_chars": 196,
+                 "chars_drawn": 139, "chars_dropped": 57, "band": True},
+                {"index": 3, "role": "cta", "title_chars": 12, "body_chars": 88,
+                 "chars_drawn": 88, "chars_dropped": 0, "band": False}]})
+        deck = cq.score_carousel_deck(slide_urls=urls)
+        assert deck["deck_probe"] == cq.DECK_PROBE_OK
+        assert deck["deck_slides"] == 3
+        assert deck["deck_template"] == "bold_listicle"
+        assert deck["deck_body_chars_avg"] == pytest.approx(134.7, abs=0.1)
+        assert deck["deck_body_chars_max"] == 196
+        # The whole point of the reading: 60 characters were written and never drawn.
+        assert deck["deck_chars_dropped"] == 60
+        assert deck["deck_slides_clipped"] == 2
+        assert deck["deck_slides_with_band"] == 1
+
+    def test_a_clean_render_reports_zero_dropped_not_none(self, tmp_path, monkeypatch):
+        urls = self._receipt(tmp_path, monkeypatch, {
+            "post_id": 87, "template": "stat_reveal", "slides": [
+                {"index": 1, "role": "cover", "body_chars": 60, "chars_dropped": 0,
+                 "band": False}]})
+        deck = cq.score_carousel_deck(slide_urls=urls)
+        assert deck["deck_chars_dropped"] == 0 and deck["deck_slides_clipped"] == 0
+        assert deck["deck_probe"] == cq.DECK_PROBE_OK
+
+    def test_a_deck_with_no_receipt_is_unmeasured_never_zero(self, tmp_path, monkeypatch):
+        # Every deck rendered before #1513 shipped looks like this. A 0 here would read as a clean
+        # render and quietly claim the clipping was fixed.
+        monkeypatch.setattr(cq, "assets_dir", str(tmp_path))
+        deck = cq.score_carousel_deck(
+            slide_urls=["http://lem/api/assets?file_name=images/carousel/9/slide_01.png"])
+        assert deck["deck_probe"] == cq.DECK_PROBE_MISSING
+        assert deck["deck_slides"] is None and deck["deck_chars_dropped"] is None
+        assert deck["deck_body_chars_avg"] is None and deck["deck_slides_with_band"] is None
+
+    def test_an_unparseable_receipt_reads_as_unreadable(self, tmp_path, monkeypatch):
+        deck_dir = tmp_path / "images" / "carousel" / "87"
+        deck_dir.mkdir(parents=True)
+        (deck_dir / "deck_render.json").write_text("{not json")
+        monkeypatch.setattr(cq, "assets_dir", str(tmp_path))
+        deck = cq.score_carousel_deck(
+            slide_urls=["http://lem/api/assets?file_name=images/carousel/87/slide_01.png"])
+        assert deck["deck_probe"] == cq.DECK_PROBE_UNREADABLE
+        assert deck["deck_slides"] is None
+
+    def test_a_url_outside_the_carousel_root_is_never_opened(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(cq, "assets_dir", str(tmp_path))
+        assert cq.resolve_deck_render_path(
+            ["http://lem/api/assets?file_name=../../etc/passwd"]) is None
+        assert cq.resolve_deck_render_path(
+            ["http://lem/api/assets?file_name=videos/runwayml/clip.mp4"]) is None
+        assert cq.resolve_deck_render_path(["https://example.com/not-ours.png"]) is None
+        assert cq.resolve_deck_render_path(None) is None
+
+    def test_deck_score_row_is_its_own_surface(self, tmp_path, monkeypatch):
+        urls = self._receipt(tmp_path, monkeypatch, {
+            "post_id": 87, "template": "story_arc", "slides": [
+                {"index": 1, "role": "cover", "body_chars": 100, "chars_dropped": 0},
+                {"index": 2, "role": "body", "body_chars": 200, "chars_dropped": 40}]})
+        row = cq.deck_score_row(ref_id=87, shipped_on="2026-08-14",
+                                deck=cq.score_carousel_deck(slide_urls=urls))
+        assert row["surface"] == cq.SURFACE_CAROUSEL and row["surface"] not in cq.SURFACES
+        assert row["ref_id"] == "87" and row["shipped_on"] == "2026-08-14"
+        # `chars` is the deck's own body total, so it never reads as a second measurement of the
+        # caption the post row already scored.
+        assert row["chars"] == 300
+        assert row["deck_chars_dropped"] == 40
+
+    def test_deck_score_row_leaves_chars_unmeasured_when_the_deck_is(self):
+        row = cq.deck_score_row(ref_id=5, shipped_on="2026-08-14",
+                                deck={"deck_probe": cq.DECK_PROBE_MISSING, "deck_slides": None,
+                                      "deck_body_chars_avg": None})
+        assert row["chars"] is None and row["deck_probe"] == cq.DECK_PROBE_MISSING

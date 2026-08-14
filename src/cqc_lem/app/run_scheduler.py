@@ -703,6 +703,12 @@ def auto_nightly_content_quality(self, days: int = None):
     Video posts (#1281) also score the rendered asset itself: render outcome, model tier, duration,
     aspect ratio and a local file probe result. These are read from `posts.video_url` and the on-disk
     file; a missing or unreadable asset is recorded, not skipped, so the trend line can catch it.
+
+    A carousel (or document) post produces a SECOND reading on its own `carousel` surface (#1513):
+    slide count, per-slide body length, characters the layout dropped at render, template and how
+    many slides carried a photo band. Its caption keeps being scored as a post — the deck row grades
+    what the RENDERER did, which no text dimension can see. Read from the render receipt stored next
+    to the slides; a deck with no readable receipt records that state with NULL dimensions.
     """
     from cqc_lem.platform.db.enums import PostType
     from cqc_lem.utilities.ai.content_framework import COMMENT_HISTORY_LIMIT
@@ -711,10 +717,12 @@ def auto_nightly_content_quality(self, days: int = None):
         SURFACE_NEWSLETTER,
         SURFACE_POST,
         content_quality_enabled,
+        deck_score_row,
         detector_daily_max,
         detector_sampled,
         detector_score,
         max_items_per_run,
+        score_carousel_deck,
         score_item,
         score_video_asset,
         similarity_reports,
@@ -738,6 +746,9 @@ def auto_nightly_content_quality(self, days: int = None):
         return "No active users"
     window = window_days() if days is None else max(1, int(days))
     cap = max_items_per_run()
+    # A document post is a carousel published through the document path — same renderer, same
+    # slides — so the deck reading applies to both (issue #1513).
+    deck_post_types = (PostType.CAROUSEL.value, PostType.DOCUMENT.value)
     scored = dropped = 0
     for user_id in users:
         items = get_shipped_content_for_quality(user_id, days=window)
@@ -797,6 +808,15 @@ def auto_nightly_content_quality(self, days: int = None):
             record_content_quality_score(user_id, score)
             track_content_quality(user_id, score)
             scored += 1
+            if surface == SURFACE_POST and item.get("post_type") in deck_post_types:
+                # ONE reading per deck, alongside the caption's — a document post renders through
+                # the same slide pipeline, so it is the same surface.
+                deck = deck_score_row(
+                    ref_id=item.get("ref_id"), shipped_on=item.get("shipped_on"),
+                    deck=score_carousel_deck(slide_urls=item.get("carousel_slides")))
+                record_content_quality_score(user_id, deck)
+                track_content_quality(user_id, deck)
+                scored += 1
     return f"Content quality scored {scored} piece(s) across {len(users)} user(s); {dropped} over cap"
 
 

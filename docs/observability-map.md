@@ -86,6 +86,12 @@ and recommendations are RENDERED, never written.
 posts/comments/editions into `content_quality_scores`: weighted slop (HARD ×3), self-similarity,
 **stored** authenticity (no fresh judge call), hook length, impression-weighted ER. **Unscored is
 never zero** — each dimension has its own sample size. Never pauses (safety is #629).
+A carousel/document post also produces ONE deck reading on `surface="carousel"` (#1513) — slide
+count, per-slide body length, characters the layout DROPPED at render, template, slides with a photo
+band — read from the render receipt written next to the slides, because the clip can only be
+measured while the render happens. `deck_probe` is `ok`/`missing`/`unreadable`, and an unread deck
+carries NULL dimensions. `post_outcome` carries `post_type` as a `label()`, which is what makes
+"do carousels out-reach text posts?" answerable next to `saves`.
 
 ## Image generation telemetry (issue #1291)
 Every AI still image carries its surface on the `media_cost` event: `meta.surface` is threaded

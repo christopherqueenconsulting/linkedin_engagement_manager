@@ -43,6 +43,28 @@ class TestGetShippedContentForQuality:
         assert post["authenticity_score"] == 91
         assert post["impressions"] == 2200
 
+    def test_a_carousel_post_carries_its_stored_slides(self, fake_cursor):
+        # Issue #1513: the deck reading is located from the post's OWN stored slide URLs, so the
+        # column has to come back off the same query rather than a per-post lookup.
+        import json
+
+        from cqc_lem.utilities.db import get_shipped_content_for_quality
+        batches = self._batches()
+        batches[0][0].update(post_type="carousel", carousel_slides=json.dumps(
+            ["/api/assets?file_name=images/carousel/5/slide_01.png"]))
+        conn, _ = fake_cursor(fetch_all_side_effect=batches)
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+            post = get_shipped_content_for_quality(1)[0]
+        assert post["carousel_slides"] == ["/api/assets?file_name=images/carousel/5/slide_01.png"]
+
+    def test_an_unparseable_slides_column_reads_as_no_slides(self, fake_cursor):
+        from cqc_lem.utilities.db import get_shipped_content_for_quality
+        batches = self._batches()
+        batches[0][0].update(post_type="carousel", carousel_slides="{not json")
+        conn, _ = fake_cursor(fetch_all_side_effect=batches)
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+            assert get_shipped_content_for_quality(1)[0]["carousel_slides"] == []
+
     def test_comment_and_newsletter_rows_have_no_per_item_engagement(self, fake_cursor):
         from cqc_lem.utilities.db import get_shipped_content_for_quality
         conn, _ = fake_cursor(fetch_all_side_effect=self._batches())
@@ -96,6 +118,26 @@ class TestGetShippedContentForQuality:
         cur.execute.side_effect = mysql.connector.Error("boom")
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             assert get_shipped_content_for_quality(1) == []
+
+
+class TestGetPostTypesForUser:
+    """Issue #1513: the format each `post_outcome` event reports, read once per stats sweep."""
+
+    def test_maps_every_post_to_its_format(self, fake_cursor):
+        from cqc_lem.utilities.db import get_post_types_for_user
+        conn, cur = fake_cursor(fetch_all=[(9, "carousel"), (10, "text"), (11, "video")])
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+            assert get_post_types_for_user(1) == {9: "carousel", 10: "text", 11: "video"}
+        sql, params = cur.execute.call_args[0]
+        assert "FROM posts WHERE user_id=%s" in sql and params == (1,)
+
+    def test_a_db_error_costs_the_label_never_the_outcome(self, fake_cursor):
+        import mysql.connector
+
+        from cqc_lem.utilities.db import get_post_types_for_user
+        conn, _cur = fake_cursor(execute_error=mysql.connector.Error("boom"))
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+            assert get_post_types_for_user(1) == {}
 
 
 class TestRecordContentQualityScore:
