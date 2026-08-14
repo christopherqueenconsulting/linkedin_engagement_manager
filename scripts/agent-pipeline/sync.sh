@@ -82,7 +82,7 @@ mkdir -p "$SNAP"
 # state/, logs/ and work/ are excluded on purpose: the queue, the ledger and live worktrees are not
 # part of the code being rolled back, and restoring a stale queue over a live one would be worse
 # than the bad deploy.
-for d in lib docs mcp v2; do
+for d in lib docs mcp runbook v2; do
   [ -d "$BASE/$d" ] && cp -a "$BASE/$d" "$SNAP/" 2>/dev/null
 done
 for f in tick.sh status.sh sync.sh RUNBOOK.md .installed.sha256; do
@@ -143,7 +143,7 @@ fi
 # Liveness AND freshness, the same pair the watchdog checks: a unit that is `active` while its
 # heartbeat is frozen is the failure this rollback exists for.
 log "ROLLING BACK — daemon did not come back within ${VERIFY_SECONDS}s of the sync."
-for d in lib docs mcp v2; do
+for d in lib docs mcp runbook v2; do
   [ -d "$SNAP/$d" ] && rm -rf "$BASE/$d" && cp -a "$SNAP/$d" "$BASE/" 2>/dev/null
 done
 for f in tick.sh status.sh sync.sh RUNBOOK.md .installed.sha256; do

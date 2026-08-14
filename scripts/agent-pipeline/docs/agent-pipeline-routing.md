@@ -126,6 +126,38 @@ so the entire RUNBOOK/MODE machinery (depfix/revise/rebase/fix/review/selfreview
 unchanged — only the model + base URL differ. If an Ollama-lane run fails, the capacity gauge
 records the outcome and the issue is retried on the next tick (possibly on Claude).
 
+## Prompt-caching contract
+
+Every mode's dispatch prompt in `v2/actions/agent_run.sh` is built as ONE literal string:
+`"Read $RUNBOOK_DIR/<mode>.md and follow it. <KEY=value KEY=value ...>"`. That shape is a hard
+invariant, not a style choice, and it stays hard-coded rather than templated so a future edit has to
+notice it's breaking the shape rather than filling in a generic placeholder:
+
+- **Stable prefix first, dynamic suffix last.** Prompt caching (and any future harness-level cache)
+  is a strict byte-prefix match — the literal `"Read $RUNBOOK_DIR/<mode>.md and follow it."` text
+  must always be the first thing in the prompt, with every `KEY=value` field that varies per
+  dispatch (`ISSUE`, `PR`, `BRANCH`, `ATTEMPTS`, `MARKER`, …) appended AFTER it, never interpolated
+  before or in the middle of the stable text.
+- **`--mcp-config` stays a fixed static file.** `run_lane.sh` passes
+  `--mcp-config /home/lem/agent-pipeline/mcp/mcp-config.json` — the same path on every dispatch,
+  every mode, every lane. Never make this per-mode or per-worktree; a config path that varies by run
+  invalidates the tools+system prefix on every single dispatch, for zero behavioral gain (the file's
+  *contents* can still change between runs — it's the *path* that must stay fixed).
+- **The one dynamic field that sits mid-prompt must stay LAST.** `MODE=start`'s prompt is
+  `"... ISSUE=$ISSUE BRANCH=$BRANCH RISK=$RISK WORKTREE=$WT."` — `WORKTREE=$WT` is a fresh path on
+  every dispatch (the worktree `add_worktree` just created) and it is deliberately the LAST field,
+  not the first or the middle. Moving it earlier — or adding a new per-run value (a timestamp, an
+  execution ID, "for logging") ahead of an existing stable field — silently drags the byte-prefix
+  break earlier into the prompt than it needs to be. When a new dynamic field is genuinely needed,
+  append it at the end of its mode's `KEY=value` list; never insert it before one that's already
+  there.
+
+This costs nothing to enforce today (`agent_run.sh`'s prompt construction already follows it) — the
+point of writing it down is that the failure mode is easy to reintroduce by accident and expensive to
+notice: a regression here doesn't error, it just quietly makes every dispatch pay full cold-context
+cost. `scripts/agent-pipeline/RUNBOOK.md`'s split into `runbook/<mode>.md` files (Part C) is the other
+half of the same effort — cutting what each dispatch reads once it gets past this prefix.
+
 ## PostHog telemetry
 
 Reuses the EXISTING PostHog project keys from `/opt/lem/.env` (copied into

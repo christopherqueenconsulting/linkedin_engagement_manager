@@ -48,6 +48,10 @@ files() {
   # version of the updater it was first installed with — which is the same class of staleness the
   # updater exists to end.
   for f in tick.sh RUNBOOK.md status.sh sync.sh; do [ -e "$SRC/$f" ] && echo "$f"; done
+  # RUNBOOK.md is now a short index; the per-mode instructions `agent_run.sh` actually dispatches
+  # against live here. Missing this glob means the box keeps the old index with none of the files
+  # it links to, and every v2 dispatch reads a file that was never shipped.
+  for f in "$SRC"/runbook/*.md; do [ -e "$f" ] && echo "runbook/$(basename "$f")"; done
   # lib/ was NOT copied here until 2026-08-09, so tick.sh shipped while the helpers it sources did
   # not. The box's copies drifted out of the repo's sight: `run_lane.sh` there had gained an export
   # block (the #842 unattended-benchmark vars) that existed nowhere in git, and would have been
