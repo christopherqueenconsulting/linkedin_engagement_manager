@@ -1,41 +1,20 @@
-import {
-  createContext, useContext, useEffect, useMemo, useState, type ReactNode,
-} from 'react'
+import { useMemo, useState, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import api from '../../../api/client'
-import { useAuth } from '../../../contexts/AuthContext'
+import { useAuth } from '../../../contexts/useAuth'
 import type { EngPrefs } from '../types'
-import { useRegisterSaveSection } from '../SettingsSaveContext'
+import { EngagementPrefsCtx, type EngCtx } from './engagementPrefsCtx'
+import { useRegisterSaveSection } from '../settingsSave'
 import { blockingIssues } from './conflicts'
 import { DEFAULT_PRESET, presetValues } from './presets'
-
-// Voice, targeting, caps, connections and catch-up all live in ONE engagement_preferences row that
-// is written by ONE INSERT … ON DUPLICATE KEY UPDATE. The hub renders them in five different
-// sections, so they must share one piece of state and one mutation — otherwise saving one section
-// would write the other sections' stale copies back over the user's edits.
-type EngCtx = {
-  eng: EngPrefs | null
-  setEng: (patch: Partial<EngPrefs>) => void
-  isDirty: boolean
-  saving: boolean
-  message: { ok: boolean; text: string } | null
-  save: () => Promise<boolean>
-  catchupAllowed: number
-  /** True until the user's first save — the hub starts these accounts on the Balanced preset. */
-  isNewAccount: boolean
-  presetApplied: boolean
-}
-
-const Ctx = createContext<EngCtx | null>(null)
 
 export function EngagementPrefsProvider({ children }: { children: ReactNode }) {
   const { sessionToken } = useAuth()
   const queryClient = useQueryClient()
-  const [eng, setEngState] = useState<EngPrefs | null>(null)
-  const [savedSig, setSavedSig] = useState<string | null>(null)
+  // Only the fields the user has touched, laid over the API row at render time — so nothing is
+  // seeded in an effect, and a background refetch can never overwrite an edit in progress.
+  const [edits, setEdits] = useState<Partial<EngPrefs> | null>(null)
   const [message, setMessage] = useState<{ ok: boolean; text: string } | null>(null)
-  const [isNewAccount, setIsNewAccount] = useState(false)
-  const [presetApplied, setPresetApplied] = useState(false)
 
   const { data } = useQuery({
     queryKey: ['engagement-preferences', sessionToken],
@@ -47,32 +26,32 @@ export function EngagementPrefsProvider({ children }: { children: ReactNode }) {
     staleTime: 60 * 1000,
   })
 
-  useEffect(() => {
-    if (!data || eng) return
-    const fresh = data.has_saved_preferences === false
-    setSavedSig(JSON.stringify(data))
-    setIsNewAccount(fresh)
-    if (fresh) {
-      // A brand-new account starts on Balanced (issue #558, decision 2A). It is applied as an
-      // UNSAVED change — nothing is written until the user saves — so an existing user's stored
-      // values can never be overwritten by this, and nobody's outbound posture changes silently.
-      const allowed = data.max_catchup_touches_allowed ?? 5
-      setEngState({ ...data, ...presetValues(DEFAULT_PRESET, allowed) })
-      setPresetApplied(true)
-    } else {
-      setEngState(data)
-    }
-  }, [data, eng])
+  // A brand-new account starts on Balanced (issue #558, decision 2A). It is applied as an UNSAVED
+  // change — nothing is written until the user saves — so an existing user's stored values can
+  // never be overwritten by this, and nobody's outbound posture changes silently.
+  const isNewAccount = data?.has_saved_preferences === false
+  const preset = useMemo(
+    () => (data && isNewAccount ? presetValues(DEFAULT_PRESET, data.max_catchup_touches_allowed ?? 5) : null),
+    [data, isNewAccount]
+  )
+  // What the row would be if the user saved right now: the API row, the new-account preset over it,
+  // then their own edits.
+  const eng: EngPrefs | null = useMemo(
+    () => (data ? { ...data, ...preset, ...edits } : null),
+    [data, preset, edits]
+  )
+  const presetApplied = preset !== null
 
-  const setEng = (patch: Partial<EngPrefs>) => setEngState((p) => (p ? { ...p, ...patch } : p))
+  const setEng = (patch: Partial<EngPrefs>) => setEdits((p) => ({ ...p, ...patch }))
 
   const mutation = useMutation({
     mutationFn: () => api.put('/user/engagement-preferences', { session_token: sessionToken, ...eng }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['engagement-preferences'] })
-      setSavedSig(JSON.stringify(eng))
-      setIsNewAccount(false)
-      setPresetApplied(false)
+    onSuccess: async () => {
+      // Only once the refetch has ANSWERED — until then React Query still serves the pre-save row,
+      // so clearing the edits first would put every field (and, on a first save, the Balanced
+      // preset) back on screen for the length of the round trip.
+      await queryClient.invalidateQueries({ queryKey: ['engagement-preferences'] })
+      setEdits(null)
       setMessage({ ok: true, text: 'Saved.' })
       setTimeout(() => setMessage(null), 3000)
     },
@@ -82,7 +61,7 @@ export function EngagementPrefsProvider({ children }: { children: ReactNode }) {
     },
   })
 
-  const isDirty = !!eng && savedSig !== null && JSON.stringify(eng) !== savedSig
+  const isDirty = !!data && JSON.stringify(eng) !== JSON.stringify(data)
 
   const save = async (): Promise<boolean> => {
     if (!eng) return false
@@ -108,11 +87,5 @@ export function EngagementPrefsProvider({ children }: { children: ReactNode }) {
     }),
     [eng, isDirty, mutation.isPending, message, isNewAccount, presetApplied]
   )
-  return <Ctx.Provider value={value}>{children}</Ctx.Provider>
-}
-
-export function useEngagementPrefs(): EngCtx {
-  const ctx = useContext(Ctx)
-  if (!ctx) throw new Error('useEngagementPrefs must be used inside an EngagementPrefsProvider')
-  return ctx
+  return <EngagementPrefsCtx.Provider value={value}>{children}</EngagementPrefsCtx.Provider>
 }

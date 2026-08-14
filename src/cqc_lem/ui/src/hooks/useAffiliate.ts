@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import api from '../api/client'
-import { useAuth } from '../contexts/AuthContext'
+import { useAuth } from '../contexts/useAuth'
 
 // Affiliate / ambassador program (issue #737). TWO independent toggles, and the types keep them
 // apart the same way the backend does: `enrolled` is (A) affiliate status (default on, one click

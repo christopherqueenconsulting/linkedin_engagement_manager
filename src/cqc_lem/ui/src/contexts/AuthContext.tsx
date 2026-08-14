@@ -1,57 +1,10 @@
-import { createContext, useCallback, useContext, useState, useEffect, useRef } from 'react'
+import { useCallback, useState, useEffect, useRef } from 'react'
 import type { ReactNode } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import api from '../api/client'
+import { AuthContext } from './useAuth'
+import type { AuthUser, SessionDetail } from './useAuth'
 import { identifyUser, resetAnalytics } from '../utils/analytics'
-
-interface AuthUser {
-  email: string
-  userId?: number
-}
-
-// GET /auth/session — identity plus the non-sensitive person facts PostHog is identified with.
-interface SessionDetail {
-  user_id: number
-  // Non-sequential public identifier (issue #745, 2b) — the id that may appear in a URL or a
-  // support ticket. The row id stays server-side.
-  public_uid?: string | null
-  email: string
-  plan?: string | null
-  plan_status?: string | null
-  timezone?: string | null
-  created_at?: string | null
-  // What PostHog Surveys target on (issue #653).
-  onboarding_completed_at?: string | null
-  posts_approved?: number | null
-  is_admin?: boolean
-  // Mandatory strong-factor enrolment (issue #905). `enrollment_required` is the HARD state — this
-  // session is held to the enrolment surface server-side, so the SPA renders the gate instead of
-  // the app. `strong_factor_prompt` is the soft one: a deadline exists and nothing is enrolled yet.
-  enrollment_required?: boolean
-  strong_factor_deadline?: string | null
-  strong_factor_prompt?: boolean
-}
-
-interface AuthContextValue {
-  user: AuthUser | null
-  sessionToken: string | null
-  isLoading: boolean
-  isAdmin: boolean
-  /** This session may only enrol a strong factor until it does (issue #905). */
-  enrollmentRequired: boolean
-  /** A deadline is scheduled and this account still has no factor — show the nudge. */
-  strongFactorPrompt: boolean
-  strongFactorDeadline: string | null
-  /** Re-read /auth/session — the gate calls it once a factor lands, to drop itself. */
-  refreshSession: () => Promise<void>
-  login: (token: string, email: string) => void
-  logout: () => Promise<void>
-  openLoginModal: () => void
-  closeLoginModal: () => void
-  isLoginModalOpen: boolean
-}
-
-const AuthContext = createContext<AuthContextValue | null>(null)
 
 const SESSION_KEY = 'lem_session'
 
@@ -68,7 +21,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const queryClient = useQueryClient()
   const [user, setUser] = useState<AuthUser | null>(null)
   const [sessionToken, setSessionToken] = useState<string | null>(null)
-  const [isLoading, setIsLoading] = useState(true)
+  // Loading means "a stored session is being re-read". With nothing stored there is nothing to
+  // wait for, so a logged-out visitor never renders a loading shell it would immediately drop.
+  const [isLoading, setIsLoading] = useState(() => !!localStorage.getItem(SESSION_KEY))
   const [isAdmin, setIsAdmin] = useState(false)
   const [enrollmentRequired, setEnrollmentRequired] = useState(false)
   const [strongFactorPrompt, setStrongFactorPrompt] = useState(false)
@@ -108,10 +63,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     const storedToken = localStorage.getItem(SESSION_KEY)
-    if (!storedToken) {
-      setIsLoading(false)
-      return
-    }
+    if (!storedToken) return
     loadSession(storedToken)
       .catch(() => {
         localStorage.removeItem(SESSION_KEY)
@@ -203,10 +155,4 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       {children}
     </AuthContext.Provider>
   )
-}
-
-export function useAuth() {
-  const ctx = useContext(AuthContext)
-  if (!ctx) throw new Error('useAuth must be used within AuthProvider')
-  return ctx
 }

@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import api from '../../api/client'
-import { useAuth } from '../../contexts/AuthContext'
+import { useAuth } from '../../contexts/useAuth'
 import { formatInTimezone } from '../../utils/datetime'
+import { nextGroupPublishSlot } from '../../utils/groupPostSlot'
 import type { GroupPostDraft } from '../account/types'
 import { maskProps } from '../../utils/analytics'
 
@@ -16,22 +17,6 @@ const STATUS_STYLES: Record<string, string> = {
   skipped: 'bg-gray-200 text-gray-600',
 }
 
-// The weekly group-post beat publishes on Tuesdays at 15:00 UTC (issue #932). Given a reference
-// instant, return the next occurrence of that slot so the UI can show when a queued draft ships.
-export function nextGroupPublishSlot(from: Date = new Date()): Date {
-  const base = new Date(from)
-  const candidate = new Date(
-    Date.UTC(base.getUTCFullYear(), base.getUTCMonth(), base.getUTCDate(), 15, 0, 0, 0)
-  )
-  const day = candidate.getUTCDay()
-  const daysUntilTuesday = (2 - day + 7) % 7
-  candidate.setUTCDate(candidate.getUTCDate() + daysUntilTuesday)
-  if (candidate.getTime() <= base.getTime()) {
-    candidate.setUTCDate(candidate.getUTCDate() + 7)
-  }
-  return candidate
-}
-
 function errorText(err: unknown, fallback: string): string {
   const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail
   return typeof detail === 'string' ? detail : fallback
@@ -42,7 +27,9 @@ export default function GroupPostQueue(
 ) {
   const { sessionToken } = useAuth()
   const qc = useQueryClient()
-  const [draftText, setDraftText] = useState<string | null>(null)
+  // The edit in progress, once there is one. The server's text stands until then — a background
+  // refetch must not discard what the user is typing.
+  const [draftEdit, setDraftEdit] = useState<string | null>(null)
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null)
   const [publishAt, setPublishAt] = useState<Date>(() => nextGroupPublishSlot())
   const [mediaBusy, setMediaBusy] = useState<'upload' | 'generate' | null>(null)
@@ -77,11 +64,7 @@ export default function GroupPostQueue(
     staleTime: 60 * 1000,
   })
 
-  // Adopt the server's text only until the user starts typing — a background refetch must not
-  // discard an edit in progress.
-  useEffect(() => {
-    setDraftText((cur) => (cur === null ? draft?.content ?? null : cur))
-  }, [draft])
+  const draftText = draftEdit ?? draft?.content ?? null
 
   function flash(ok: boolean, text: string) {
     setMsg({ ok, text })
@@ -94,7 +77,7 @@ export default function GroupPostQueue(
     mutationFn: (body: { content?: string; status?: string; media_url?: string; remove_media?: boolean }) =>
       api.put('/user/group-post-draft', { session_token: sessionToken, ...body }),
     onSuccess: async (_res, body) => {
-      if (body.status) setDraftText(null)
+      if (body.status) setDraftEdit(null)
       await qc.invalidateQueries({ queryKey: ['group-post-draft'] })
       if (body.status === 'skipped') flash(true, 'Skipped — no group post this week.')
       else if (body.status === 'ready') flash(true, 'Back in the queue for this week.')
@@ -267,7 +250,7 @@ export default function GroupPostQueue(
           <textarea
             aria-label="Group post text"
             value={draftText ?? ''}
-            onChange={(e) => setDraftText(e.target.value)}
+            onChange={(e) => setDraftEdit(e.target.value)}
             rows={8}
             {...maskProps('w-full border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none')}
           />

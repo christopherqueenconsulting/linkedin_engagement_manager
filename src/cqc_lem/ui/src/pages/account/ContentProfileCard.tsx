@@ -1,14 +1,20 @@
 import { useEffect, useState } from 'react'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import api from '../../api/client'
-import { useAuth } from '../../contexts/AuthContext'
+import { useAuth } from '../../contexts/useAuth'
 
 export default function ContentProfileCard() {
   const { user, sessionToken } = useAuth()
   const email = user?.email ?? ''
-  const [blogUrl, setBlogUrl] = useState(localStorage.getItem('lem_blog_url') || '')
-  const [sitemapUrl, setSitemapUrl] = useState(localStorage.getItem('lem_sitemap_url') || '')
-  const [urlsInitialised, setUrlsInitialised] = useState(false)
+  // Edits in progress, once there are any — null means "show the DB value, or the cached one until
+  // the DB answers". Derived rather than seeded in an effect so a refetch can never overwrite a
+  // half-typed URL. localStorage is read once, as a placeholder only; the DB is the source of truth.
+  const [blogEdit, setBlogEdit] = useState<string | null>(null)
+  const [sitemapEdit, setSitemapEdit] = useState<string | null>(null)
+  const [cached] = useState(() => ({
+    blog: localStorage.getItem('lem_blog_url') || '',
+    sitemap: localStorage.getItem('lem_sitemap_url') || '',
+  }))
   const [savedMsg, setSavedMsg] = useState<string | null>(null)
 
   const { data: settingsData } = useQuery({
@@ -36,22 +42,15 @@ export default function ContentProfileCard() {
     staleTime: 60 * 1000,
   })
 
-  // Seed blog/sitemap from DB on first load — DB is source of truth over localStorage
+  const blogUrl = blogEdit ?? settingsData?.blog_url ?? cached.blog
+  const sitemapUrl = sitemapEdit ?? settingsData?.sitemap_url ?? cached.sitemap
+
+  // Mirror what the DB says into the placeholder cache — an external store, which is what an
+  // effect is for. It is only ever read before the first /user/settings answer lands.
   useEffect(() => {
-    if (settingsData && !urlsInitialised) {
-      const apiBlogUrl = settingsData.blog_url ?? ''
-      const apiSitemapUrl = settingsData.sitemap_url ?? ''
-      if (apiBlogUrl) {
-        setBlogUrl(apiBlogUrl)
-        localStorage.setItem('lem_blog_url', apiBlogUrl)
-      }
-      if (apiSitemapUrl) {
-        setSitemapUrl(apiSitemapUrl)
-        localStorage.setItem('lem_sitemap_url', apiSitemapUrl)
-      }
-      setUrlsInitialised(true)
-    }
-  }, [settingsData, urlsInitialised])
+    if (settingsData?.blog_url) localStorage.setItem('lem_blog_url', settingsData.blog_url)
+    if (settingsData?.sitemap_url) localStorage.setItem('lem_sitemap_url', settingsData.sitemap_url)
+  }, [settingsData])
 
   const saveMutation = useMutation({
     mutationFn: () =>
@@ -94,7 +93,7 @@ export default function ContentProfileCard() {
         <input
           type="url"
           value={blogUrl}
-          onChange={(e) => setBlogUrl(e.target.value)}
+          onChange={(e) => setBlogEdit(e.target.value)}
           className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
           placeholder="https://yourblog.com"
         />
@@ -105,7 +104,7 @@ export default function ContentProfileCard() {
         <input
           type="url"
           value={sitemapUrl}
-          onChange={(e) => setSitemapUrl(e.target.value)}
+          onChange={(e) => setSitemapEdit(e.target.value)}
           className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
           placeholder="https://yourblog.com/sitemap.xml"
         />

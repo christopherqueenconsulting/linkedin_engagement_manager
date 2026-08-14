@@ -1,6 +1,6 @@
 import { useCallback, useRef, useState } from 'react'
 import api from '../api/client'
-import { useAuth } from '../contexts/AuthContext'
+import { useAuth } from '../contexts/useAuth'
 import { createPasskey, getPasskeyAssertion, isPasskeySupported } from '../utils/webauthn'
 
 /**

@@ -1,19 +1,12 @@
-import { createContext, useContext, useMemo, type ReactNode } from 'react'
+import { useMemo, type ReactNode } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import api from '../../../api/client'
-import { useAuth } from '../../../contexts/AuthContext'
+import { useAuth } from '../../../contexts/useAuth'
 import type { EngagementTarget, LeadMagnet, NewsletterSettings } from '../types'
 import { evaluateConflicts, sectionAlertCounts, type Finding } from './conflicts'
-import { useEngagementPrefs } from './EngagementPrefsContext'
-import { useUserPrefs } from './UserPrefsContext'
-
-type ConflictsCtx = {
-  findings: Finding[]
-  alertCounts: Record<string, number>
-  applyFix: (finding: Finding) => void
-}
-
-const Ctx = createContext<ConflictsCtx | null>(null)
+import { ConflictsCtxObject, type ConflictsCtx } from './conflictsCtx'
+import { useEngagementPrefs } from './engagementPrefsCtx'
+import { useUserPrefs } from './userPrefsCtx'
 
 const browserTimezone = () => {
   try {
@@ -105,9 +98,5 @@ export function ConflictsProvider({ children }: { children: ReactNode }) {
     // setEng is stable enough for this purpose (it only closes over the state setter).
     [findings] // eslint-disable-line react-hooks/exhaustive-deps
   )
-  return <Ctx.Provider value={value}>{children}</Ctx.Provider>
-}
-
-export function useConflicts(): ConflictsCtx {
-  return useContext(Ctx) ?? { findings: [], alertCounts: {}, applyFix: () => {} }
+  return <ConflictsCtxObject.Provider value={value}>{children}</ConflictsCtxObject.Provider>
 }

@@ -1,6 +1,6 @@
 import { useState, type ReactNode } from 'react'
 import { SETTING_BY_KEY } from './registry'
-import { useConflicts } from './ConflictsContext'
+import { useConflicts } from './conflictsCtx'
 import type { Finding, Severity } from './conflicts'
 
 const TONE: Record<Severity, string> = {

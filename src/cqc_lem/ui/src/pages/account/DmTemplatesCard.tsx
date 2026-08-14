@@ -1,10 +1,10 @@
-import { useEffect, useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import api from '../../api/client'
-import { useAuth } from '../../contexts/AuthContext'
+import { useAuth } from '../../contexts/useAuth'
 import { DM_EVENTS } from './types'
 import type { DmTemplate } from './types'
-import { useRegisterSaveSection, sectionSaveCallbacks } from './SettingsSaveContext'
+import { useRegisterSaveSection, sectionSaveCallbacks } from './settingsSave'
 import PlaceholderChips from './PlaceholderChips'
 import { FIELD_LIMITS } from './fieldLimits'
 import { EVENTS, capture, maskProps } from '../../utils/analytics'
@@ -12,9 +12,10 @@ import { EVENTS, capture, maskProps } from '../../utils/analytics'
 export default function DmTemplatesCard() {
   const { sessionToken } = useAuth()
   const queryClient = useQueryClient()
-  const [dmTemplates, setDmTemplates] = useState<DmTemplate[]>([])
-  const [dmInit, setDmInit] = useState(false)
-  const [savedSig, setSavedSig] = useState<string | null>(null)
+  // The edited list, once the user touches it — null means "show the API rows plus the blank
+  // step-0 row every event needs". Derived rather than seeded in an effect, so a refetch can never
+  // discard a template being typed.
+  const [draft, setDraft] = useState<DmTemplate[] | null>(null)
   const [dmMsg, setDmMsg] = useState<{ ok: boolean; text: string } | null>(null)
 
   const { data: dmData } = useQuery({
@@ -26,29 +27,31 @@ export default function DmTemplatesCard() {
     enabled: !!sessionToken,
     staleTime: 60 * 1000,
   })
-  useEffect(() => {
-    if (dmData && !dmInit) {
-      const seeded: DmTemplate[] = [...dmData]
-      for (const ev of DM_EVENTS) {
-        if (!seeded.some((t) => t.event_type === ev.key && t.step === 0)) {
-          seeded.push({ event_type: ev.key, step: 0, delay_hours: 0, template_text: '', is_active: true })
-        }
+  // Every event gets a step-0 row to type into even when the API has none for it yet.
+  const seeded = useMemo<DmTemplate[] | null>(() => {
+    if (!dmData) return null
+    const rows: DmTemplate[] = [...dmData]
+    for (const ev of DM_EVENTS) {
+      if (!rows.some((t) => t.event_type === ev.key && t.step === 0)) {
+        rows.push({ event_type: ev.key, step: 0, delay_hours: 0, template_text: '', is_active: true })
       }
-      setDmTemplates(seeded)
-      setSavedSig(JSON.stringify(seeded))
-      setDmInit(true)
     }
-  }, [dmData, dmInit])
+    return rows
+  }, [dmData])
+
+  const dmTemplates: DmTemplate[] = draft ?? seeded ?? []
+  const editTemplates = (fn: (ts: DmTemplate[]) => DmTemplate[]) =>
+    setDraft((ts) => fn(ts ?? seeded ?? []))
 
   const updateTemplate = (event_type: string, step: number, patch: Partial<DmTemplate>) =>
-    setDmTemplates((ts) => ts.map((t) => (t.event_type === event_type && t.step === step ? { ...t, ...patch } : t)))
+    editTemplates((ts) => ts.map((t) => (t.event_type === event_type && t.step === step ? { ...t, ...patch } : t)))
   const addFollowupStep = (event_type: string) =>
-    setDmTemplates((ts) => {
+    editTemplates((ts) => {
       const nextStep = ts.filter((t) => t.event_type === event_type).reduce((m, t) => Math.max(m, t.step), -1) + 1
       return [...ts, { event_type, step: nextStep, delay_hours: 24, template_text: '', is_active: true }]
     })
   const removeStep = (event_type: string, step: number) =>
-    setDmTemplates((ts) => ts.filter((t) => !(t.event_type === event_type && t.step === step)))
+    editTemplates((ts) => ts.filter((t) => !(t.event_type === event_type && t.step === step)))
 
   const dmMutation = useMutation({
     mutationFn: () =>
@@ -56,9 +59,11 @@ export default function DmTemplatesCard() {
         session_token: sessionToken,
         templates: dmTemplates.filter((t) => t.template_text.trim()),
       }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['dm-templates'] })
-      setSavedSig(JSON.stringify(dmTemplates))
+    onSuccess: async () => {
+      // Wait for the refetch: React Query serves the pre-save rows until it lands, so dropping the
+      // draft first would blank a template that was just written for the length of the round trip.
+      await queryClient.invalidateQueries({ queryKey: ['dm-templates'] })
+      setDraft(null)
       capture(EVENTS.dmTemplateSaved, {
         templates: dmTemplates.filter((t) => t.template_text.trim()).length,
         // How many events have a follow-up sequence configured, not the message bodies.
@@ -73,11 +78,11 @@ export default function DmTemplatesCard() {
     },
   })
 
-  const isDirty = dmInit && savedSig !== null && JSON.stringify(dmTemplates) !== savedSig
+  const isDirty = !!seeded && JSON.stringify(dmTemplates) !== JSON.stringify(seeded)
   useRegisterSaveSection('dm-templates', 'DM Templates', isDirty,
     async () => { await dmMutation.mutateAsync(); return true })
 
-  if (!dmInit) return null
+  if (!seeded) return null
 
   return (
     <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6 space-y-4">

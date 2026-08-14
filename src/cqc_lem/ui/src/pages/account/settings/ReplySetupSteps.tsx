@@ -1,4 +1,4 @@
-import { useEngagementPrefs } from './EngagementPrefsContext'
+import { useEngagementPrefs } from './engagementPrefsCtx'
 
 // The one-time email-forwarding setup for event-driven replies, promoted to a status chip so
 // "forwarding was never confirmed" stops being a silent failure (conflict C6).

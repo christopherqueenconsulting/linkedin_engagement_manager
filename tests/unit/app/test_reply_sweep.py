@@ -284,9 +284,18 @@ class TestGoldenHourSweepCountdowns:
 
 
 class _FakeComment:
+    """One SDUI comment card, with its header anchors in the order LinkedIn renders them (#1091).
+
+    The AVATAR link comes first — an /in/ href with no text — then the name link. Reading the first
+    anchor therefore names nobody, which is why the sweep must read the whole header.
+    """
+
     def __init__(self, text, author="Jane Doe", href="https://www.linkedin.com/in/jane", already=False):
-        self._text, self._author, self._href, self._already = text, author, href, already
+        self._text, self._href, self._already = text, href, already
         self.text = text
+        self.anchors = [{"href": href, "text": "", "aria": ""}]
+        if author:
+            self.anchors.append({"href": href, "text": author, "aria": ""})
 
     def find_elements(self, by, sel):
         if "expandable-text-box" in sel:
@@ -295,11 +304,19 @@ class _FakeComment:
         return [MagicMock()] if self._already else []   # already-replied probe
 
     def find_element(self, by, sel):
-        if "/in/" in sel:
-            link = MagicMock(); link.text = self._author
-            link.get_attribute = lambda a: self._href if a == "href" else ""
-            return link
         raise Exception("not found")
+
+
+def _sweep_driver(current_url="x"):
+    """A driver that answers `comment_author_identity`'s anchor read off the card it is handed.
+
+    Anything else (a bare MagicMock) reads as no anchors.
+    """
+    driver = MagicMock()
+    driver.current_url = current_url
+    driver.execute_script.side_effect = lambda script, *args: (
+        args[0].anchors if args and isinstance(getattr(args[0], "anchors", None), list) else None)
+    return driver
 
 
 class TestReplyToCommentsOnOpenPost:
@@ -309,7 +326,7 @@ class TestReplyToCommentsOnOpenPost:
 
     def test_replies_to_new_comment(self):
         from cqc_lem.app.engagement.posting import _reply_to_comments_on_open_post
-        driver = MagicMock(); driver.current_url = "other"
+        driver = _sweep_driver("other")
         with patch(f"{_POST}.get_post_url_from_log_for_user", return_value="https://li/feed/update/urn:li:share:1/"), \
              patch(f"{_POST}.get_post_content", return_value="post body"), \
              patch(f"{_POST}.click_first", return_value=None), \
@@ -328,12 +345,66 @@ class TestReplyToCommentsOnOpenPost:
         assert result == {"status": "ok", "summary": "Replied to 1 comments",
                           "comments_found": 1, "replies_sent": 1}
 
+    def test_engager_is_recorded_when_the_avatar_anchor_comes_first(self):
+        """#1091: an avatar-first card must still record its commenter.
+
+        The sweep read the FIRST /in/ anchor on the card, which is the avatar link — no text, so
+        `clean_person_name` returned '' and the capture was skipped in silence while the reply on
+        that same card still landed.
+        """
+        from cqc_lem.app.engagement.posting import _reply_to_comments_on_open_post
+        driver = _sweep_driver()
+        card = _FakeComment("Nice post", author="Jane Doe Verified Profile 2nd",
+                            href="https://www.linkedin.com/in/jane")
+        assert card.anchors[0]["text"] == ""      # the anchor the old reader took
+        with patch(f"{_POST}.get_post_url_from_log_for_user", return_value="https://li/feed/update/urn:li:share:1/"), \
+             patch(f"{_POST}.get_post_content", return_value="post body"), \
+             patch(f"{_POST}.click_first", return_value=None), \
+             patch(f"{_POST}._comment_items_from_thread", return_value=[card]), \
+             patch(f"{_POST}.get_lead_magnet_settings", return_value={"enabled": False}), \
+             patch(f"{_POST}.upsert_engager") as upsert, \
+             patch(f"{_POST}.generate_thread_reply", return_value="Thanks!"), \
+             patch(f"{_POST}.get_engagement_preferences", return_value={}), \
+             patch(f"{_POST}._flag_lead_signal", return_value=None) as flag, \
+             patch(f"{_POST}._reply_to_comment_inline", return_value=True), \
+             patch(f"{_POST}.insert_new_log"):
+            _reply_to_comments_on_open_post(driver, MagicMock(), 1, 9, self._profile(), "synth")
+        upsert.assert_called_once_with(1, "Jane Doe", "https://www.linkedin.com/in/jane",
+                                       connection_degree="2nd")
+        flag.assert_called_once()   # the lead-signal half rode the same dead read (#483)
+
+    def test_unnamed_commenter_is_a_countable_debug_skip_not_a_crash(self):
+        """A card where nothing is name-like has no key for a name-keyed capture.
+
+        The sweep records that as DEBUG (an expected no-op per utilities/CLAUDE.md) and still replies.
+        """
+        from cqc_lem.app.engagement.posting import _reply_to_comments_on_open_post
+        driver = _sweep_driver()
+        card = _FakeComment("Nice post", author="", href="https://www.linkedin.com/in/ghost")
+        with patch(f"{_POST}.get_post_url_from_log_for_user", return_value="https://li/feed/update/urn:li:share:1/"), \
+             patch(f"{_POST}.get_post_content", return_value="post body"), \
+             patch(f"{_POST}.click_first", return_value=None), \
+             patch(f"{_POST}._comment_items_from_thread", return_value=[card]), \
+             patch(f"{_POST}.get_lead_magnet_settings", return_value={"enabled": False}), \
+             patch(f"{_POST}.upsert_engager") as upsert, \
+             patch(f"{_POST}.generate_thread_reply", return_value="Thanks!"), \
+             patch(f"{_POST}.get_engagement_preferences", return_value={}), \
+             patch(f"{_POST}._reply_to_comment_inline", return_value=True) as rep, \
+             patch(f"{_POST}.log_debug") as debug, \
+             patch(f"{_POST}.log_warning") as warn, \
+             patch(f"{_POST}.insert_new_log"):
+            _reply_to_comments_on_open_post(driver, MagicMock(), 1, 9, self._profile(), "synth")
+        upsert.assert_not_called()
+        rep.assert_called_once()    # the reply half only needs the href, and still works
+        warn.assert_not_called()
+        assert any("name unreadable" in str(c.args[0]) for c in debug.call_args_list)
+
     def test_load_more_miss_never_warns(self):
         """Issue #1041: the miss IS the expansion loop's exit condition — every sweep ends on one,
         so warning would escalate to a grouped $exception for working behaviour.
         """
         from cqc_lem.app.engagement.posting import _reply_to_comments_on_open_post
-        driver = MagicMock(); driver.current_url = "x"
+        driver = _sweep_driver()
         with patch(f"{_POST}.get_post_url_from_log_for_user", return_value="https://li/feed/update/urn:li:share:1/"), \
              patch(f"{_POST}.get_post_content", return_value="post body"), \
              patch(f"{_POST}.click_first", return_value=None) as click, \
@@ -353,7 +424,7 @@ class TestReplyToCommentsOnOpenPost:
         until LinkedIn stops rendering it.
         """
         from cqc_lem.app.engagement.posting import _reply_to_comments_on_open_post
-        driver = MagicMock(); driver.current_url = "x"
+        driver = _sweep_driver()
         with patch(f"{_POST}.get_post_url_from_log_for_user", return_value="https://li/feed/update/urn:li:share:1/"), \
              patch(f"{_POST}.get_post_content", return_value="post body"), \
              patch(f"{_POST}.click_first", side_effect=[MagicMock(), MagicMock(), None]) as click, \
@@ -365,7 +436,7 @@ class TestReplyToCommentsOnOpenPost:
 
     def test_skips_already_replied(self):
         from cqc_lem.app.engagement.posting import _reply_to_comments_on_open_post
-        driver = MagicMock(); driver.current_url = "x"
+        driver = _sweep_driver()
         with patch(f"{_POST}.get_post_url_from_log_for_user", return_value="https://li/feed/update/urn:li:share:1/"), \
              patch(f"{_POST}.get_post_content", return_value="post body"), \
              patch(f"{_POST}.click_first", return_value=None), \
@@ -385,7 +456,7 @@ class TestReplyToCommentsOnOpenPost:
     def test_lead_magnet_delivery_is_queued_for_approval_never_sent(self):
         """Issue #624: the comment-keyword artifact goes to the approval queue, not out the door."""
         from cqc_lem.app.engagement.posting import _reply_to_comments_on_open_post
-        driver = MagicMock(); driver.current_url = "x"
+        driver = _sweep_driver()
         with patch(f"{_POST}.get_post_url_from_log_for_user", return_value="https://li/feed/update/urn:li:share:1/"), \
              patch(f"{_POST}.get_post_content", return_value="post body"), \
              patch(f"{_POST}.click_first", return_value=None), \
@@ -433,7 +504,7 @@ class TestReplyToCommentsOnOpenPost:
              patch(f"{_POST}.log_warning"), \
              patch(f"{_POST}.generate_thread_reply") as gen, \
              patch(f"{_POST}._reply_to_comment_inline") as rep:
-            result = _reply_to_comments_on_open_post(MagicMock(), MagicMock(), 1, 9, prof, "s")
+            result = _reply_to_comments_on_open_post(_sweep_driver(), MagicMock(), 1, 9, prof, "s")
         assert "no profile slug" in result["summary"].lower()
         assert result["status"] == "no_profile_slug"
         gen.assert_not_called()
@@ -455,13 +526,13 @@ class TestReplyToCommentsOnOpenPost:
              patch(f"{_POST}._flag_lead_signal", return_value=None), \
              patch(f"{_POST}._reply_to_comment_inline", return_value=True) as rep, \
              patch(f"{_POST}.insert_new_log"):
-            _reply_to_comments_on_open_post(MagicMock(), MagicMock(), 1, 9, self._profile(), "s")
+            _reply_to_comments_on_open_post(_sweep_driver(), MagicMock(), 1, 9, self._profile(), "s")
         assert rep.call_count == _MAX_REPLIES_PER_SWEEP
 
     def test_no_post_url_returns_early(self):
         from cqc_lem.app.engagement.posting import _reply_to_comments_on_open_post
         with patch(f"{_POST}.get_post_url_from_log_for_user", return_value=None):
-            result = _reply_to_comments_on_open_post(MagicMock(), MagicMock(), 1, 9, self._profile(), "s")
+            result = _reply_to_comments_on_open_post(_sweep_driver(), MagicMock(), 1, 9, self._profile(), "s")
         assert result["summary"] == "No post URL"
         assert result["status"] == "no_post_url"
 
@@ -470,7 +541,7 @@ class TestReplyToCommentsOnOpenPost:
         replying to our own comment looks like the user talking to themselves in the activity feed.
         """
         from cqc_lem.app.engagement.posting import _reply_to_comments_on_open_post
-        driver = MagicMock(); driver.current_url = "x"
+        driver = _sweep_driver()
         own = _FakeComment("Here is my seed comment insight", author="Me Myself",
                            href="https://www.linkedin.com/in/me")
         with patch(f"{_POST}.get_post_url_from_log_for_user", return_value="https://li/feed/update/urn:li:share:1/"), \
@@ -492,7 +563,7 @@ class TestReplyToCommentsOnOpenPost:
         replied to this commenter+text on this post and stops a second reply.
         """
         from cqc_lem.app.engagement.posting import _reply_to_comments_on_open_post
-        driver = MagicMock(); driver.current_url = "x"
+        driver = _sweep_driver()
         redis = MagicMock(); redis.get.return_value = b"1"
         with patch(f"{_POST}.get_post_url_from_log_for_user", return_value="https://li/feed/update/urn:li:share:1/"), \
              patch(f"{_POST}.get_post_content", return_value="post body"), \
@@ -513,7 +584,7 @@ class TestReplyToCommentsOnOpenPost:
     def test_records_replied_to_comment_after_successful_post(self):
         """After a reply lands, a Redis marker is written so later sweeps deduplicate the target."""
         from cqc_lem.app.engagement.posting import _reply_to_comments_on_open_post
-        driver = MagicMock(); driver.current_url = "x"
+        driver = _sweep_driver()
         redis = MagicMock(); redis.get.return_value = None
         with patch(f"{_POST}.get_post_url_from_log_for_user", return_value="https://li/feed/update/urn:li:share:1/"), \
              patch(f"{_POST}.get_post_content", return_value="post body"), \

@@ -15,9 +15,11 @@ import LeadsPipeline from './review/LeadsPipeline'
 import CatchupTouches from './review/CatchupTouches'
 import GroupPostQueue from './review/GroupPostQueue'
 import ComposePost from './content/ComposePost'
-import { useAuth } from '../contexts/AuthContext'
+import { useAuth } from '../contexts/useAuth'
 import { useUserTimezoneState } from '../hooks/useUserTimezone'
 import { formatInTimezone, toZonedInputValue, zonedInputToUtcIso, zonedDateToUtcStart, zonedDateToUtcEnd } from '../utils/datetime'
+import { DATE_RANGE_FILTERS, resolveDateRange } from '../utils/dateRange'
+import type { DateRangeFilter } from '../utils/dateRange'
 import { emptyRunExplanation, isGenerationRunning } from '../utils/generationStatus'
 import type { GenerationStatus } from '../utils/generationStatus'
 import { EVENTS, capture, maskProps, recordPostApproval } from '../utils/analytics'
@@ -65,18 +67,6 @@ const POST_TYPE_FILTERS: { label: string; value: PostTypeFilter }[] = [
 // is published as a single PDF instead of a multi-image share.
 const isDeckType = (postType: string) => postType === 'carousel' || postType === 'document'
 
-type DateRangeFilter = 'ALL' | 'today' | 'yesterday' | 'last7days' | 'last30days' | 'thisMonth' | 'next30days' | 'custom'
-const DATE_RANGE_FILTERS: { label: string; value: DateRangeFilter }[] = [
-  { label: 'All dates', value: 'ALL' },
-  { label: 'Today', value: 'today' },
-  { label: 'Yesterday', value: 'yesterday' },
-  { label: 'Last 7 days', value: 'last7days' },
-  { label: 'Last 30 days', value: 'last30days' },
-  { label: 'This month', value: 'thisMonth' },
-  { label: 'Next 30 days', value: 'next30days' },
-  { label: 'Custom', value: 'custom' },
-]
-
 type SortBy = 'scheduled_time' | 'status' | 'post_type' | 'id'
 const SORT_BY_OPTIONS: { label: string; value: SortBy }[] = [
   { label: 'Scheduled time', value: 'scheduled_time' },
@@ -86,65 +76,6 @@ const SORT_BY_OPTIONS: { label: string; value: SortBy }[] = [
 ]
 
 const PAGE_SIZE_OPTIONS = [10, 25, 50]
-
-// Return YYYY-MM-DD for *today* in the user's configured timezone so preset ranges
-// line up with the wall clock the rest of the UI uses.
-export function getTodayInTz(tz: string): string {
-  try {
-    const parts = new Intl.DateTimeFormat('en-US', {
-      timeZone: tz,
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-    }).formatToParts(new Date())
-    const get = (type: string) => parts.find((p) => p.type === type)?.value ?? '0'
-    return `${get('year')}-${get('month')}-${get('day')}`
-  } catch {
-    return new Date().toISOString().slice(0, 10)
-  }
-}
-
-// Given a preset (or custom) date range, return the user-timezone wall dates that bound it.
-export function resolveDateRange(
-  preset: DateRangeFilter,
-  tz: string,
-  customStart?: string,
-  customEnd?: string,
-): { start: string | null; end: string | null } {
-  const today = getTodayInTz(tz)
-  const [year, month, day] = today.split('-').map(Number)
-  switch (preset) {
-    case 'ALL':
-      return { start: null, end: null }
-    case 'today':
-      return { start: today, end: today }
-    case 'yesterday': {
-      const d = new Date(Date.UTC(year, month - 1, day - 1))
-      return { start: d.toISOString().slice(0, 10), end: d.toISOString().slice(0, 10) }
-    }
-    case 'last7days': {
-      const d = new Date(Date.UTC(year, month - 1, day - 6))
-      return { start: d.toISOString().slice(0, 10), end: today }
-    }
-    case 'last30days': {
-      const d = new Date(Date.UTC(year, month - 1, day - 29))
-      return { start: d.toISOString().slice(0, 10), end: today }
-    }
-    case 'thisMonth': {
-      const start = `${year}-${String(month).padStart(2, '0')}-01`
-      const end = new Date(Date.UTC(year, month, 0)).toISOString().slice(0, 10)
-      return { start, end }
-    }
-    case 'next30days': {
-      const d = new Date(Date.UTC(year, month - 1, day + 29))
-      return { start: today, end: d.toISOString().slice(0, 10) }
-    }
-    case 'custom':
-      return { start: customStart || null, end: customEnd || null }
-    default:
-      return { start: null, end: null }
-  }
-}
 
 interface Post {
   post_id: number
@@ -220,6 +151,11 @@ export default function ContentStudio() {
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(10)
 
+  // Selection / bulk state
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set())
+  const [bulkStatus, setBulkStatus] = useState<string>('approved')
+  const [bulkDate, setBulkDate] = useState<string>('')
+
   // Keyword search — raw input is debounced into the applied query so we don't
   // refetch on every keystroke. Supports boolean operators (AND / OR / NOT).
   const [searchInput, setSearchInput] = useState('')
@@ -232,11 +168,6 @@ export default function ContentStudio() {
     }, 400)
     return () => clearTimeout(t)
   }, [searchInput])
-
-  // Selection / bulk state
-  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set())
-  const [bulkStatus, setBulkStatus] = useState<string>('approved')
-  const [bulkDate, setBulkDate] = useState<string>('')
 
   // Single-post edit state
   const [editingPost, setEditingPost] = useState<Post | null>(null)
@@ -256,9 +187,7 @@ export default function ContentStudio() {
   const [imageError, setImageError] = useState<string | null>(null)
   const imageFileRef = useRef<HTMLInputElement>(null)
 
-  // The re-score verdict belongs to one post — drop it when a different one is opened.
   const editingPostId = editingPost?.post_id ?? null
-  useEffect(() => { setRescoreResult(null); setImageError(null) }, [editingPostId])
 
   const { start: filterStartDate, end: filterEndDate } = resolveDateRange(
     dateRange, userTimezone, customStartDate, customEndDate
@@ -407,7 +336,19 @@ export default function ContentStudio() {
   // for every other post 'posted' is written by the task that has the LinkedIn URN to prove it.
   const [nativeCopied, setNativeCopied] = useState(false)
   const [nativeError, setNativeError] = useState<string | null>(null)
-  useEffect(() => { setNativeCopied(false); setNativeError(null) }, [editingPostId])
+
+  // The re-score verdict, the image error and the native-copy flag all belong to ONE post — drop
+  // them the moment a different one is opened. Adjusted during render (React's documented
+  // "adjusting state when a prop changes" pattern) rather than in an effect, so the editor never
+  // paints one post's verdict over another's.
+  const [scratchPostId, setScratchPostId] = useState(editingPostId)
+  if (scratchPostId !== editingPostId) {
+    setScratchPostId(editingPostId)
+    setRescoreResult(null)
+    setImageError(null)
+    setNativeCopied(false)
+    setNativeError(null)
+  }
 
   const markPostedMutation = useMutation({
     mutationFn: (post_id: number) =>
@@ -589,7 +530,8 @@ export default function ContentStudio() {
   function toggleSelect(id: number) {
     setSelectedIds((prev) => {
       const next = new Set(prev)
-      next.has(id) ? next.delete(id) : next.add(id)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
       return next
     })
   }

@@ -3,9 +3,8 @@ import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import FeedbackWidget from './FeedbackWidget'
 import FloatingDock, { FLOATING_DOCK_ID } from './FloatingDock'
-import {
-  SettingsSaveProvider, SaveAllBar, useRegisterSaveSection,
-} from '../pages/account/SettingsSaveContext'
+import { SettingsSaveProvider, SaveAllBar } from '../pages/account/SettingsSaveContext'
+import { useRegisterSaveSection } from '../pages/account/settingsSave'
 
 vi.mock('../utils/analytics', () => ({
   capture: vi.fn(),
@@ -14,7 +13,7 @@ vi.mock('../utils/analytics', () => ({
   analyticsSessionId: () => undefined,
   EVENTS: { prefsSaved: 'prefs_saved', feedbackOpened: 'feedback_opened' },
 }))
-vi.mock('../contexts/AuthContext', () => ({
+vi.mock('../contexts/useAuth', () => ({
   useAuth: () => ({ user: { userId: 1 }, sessionToken: 't' }),
 }))
 vi.mock('../hooks/useAppInfo', () => ({ useAppInfo: () => ({ data: null }) }))

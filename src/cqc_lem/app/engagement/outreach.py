@@ -190,10 +190,10 @@ from cqc_lem.utilities.linkedin.composer import (
     _comment_items,
     _comment_items_from_thread,
     _reply_under_comment_inline,
+    comment_author_identity,
 )
 from cqc_lem.utilities.linkedin.helper import (
     clean_person_name,
-    connection_degree,
     get_linkedin_profile_from_url,
     is_first_degree,
     load_profile_for_user,
@@ -2151,19 +2151,16 @@ def _harvest_post_commenters(driver, post_url: str, author_name: str, now: datet
     time.sleep(random.uniform(3, 5))
     signals = []
     for comment in _comment_items_from_thread(driver)[:limit]:
-        try:
-            link = comment.find_element(By.CSS_SELECTOR, "a[href*='/in/']")
-            raw = (link.text or "") or (link.get_attribute("aria-label") or "")
-            name = clean_person_name(raw)
-            url = (link.get_attribute("href") or "").split("?")[0]
-        except Exception:
+        # Same header-anchor reader as the reply sweep (#1091) — the naive first-/in/-link read
+        # named nobody on cards whose avatar anchor comes first, and dropped them silently here too.
+        author = comment_author_identity(driver, comment)
+        if not author.name or not author.profile_url:
             continue
-        if not name or not url:
-            continue
-        signals.append(CandidateSignal(person_name=name, person_profile_url=url,
+        signals.append(CandidateSignal(person_name=author.name,
+                                       person_profile_url=author.profile_url,
                                        source=SOURCE_ADJACENT_POST, context_url=post_url,
                                        context_author=author_name, occurred_at=now,
-                                       connection_degree=connection_degree(raw)))
+                                       connection_degree=author.connection_degree))
     return signals
 
 

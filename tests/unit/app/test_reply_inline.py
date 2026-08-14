@@ -339,3 +339,60 @@ class TestCommentItemsFromThread:
         from cqc_lem.utilities.linkedin import composer as mod
         with patch(f"{_CMP}.find_all_first", return_value=[]):
             assert mod._comment_items_from_thread(MagicMock()) == []
+
+
+class TestCommentAuthorIdentity:
+    """#1091: who a comment card names, and which anchor answers."""
+
+    def _driver(self, anchors):
+        driver = MagicMock()
+        driver.execute_script.return_value = anchors
+        return driver
+
+    def test_skips_the_avatar_anchor_and_names_the_header_link(self):
+        from cqc_lem.utilities.linkedin import composer as mod
+        driver = self._driver([
+            {"href": "https://www.linkedin.com/in/jane", "text": "", "aria": ""},
+            {"href": "https://www.linkedin.com/in/jane",
+             "text": "Jane Doe Verified Profile 2nd", "aria": ""},
+        ])
+        author = mod.comment_author_identity(driver, MagicMock())
+        assert author.name == "Jane Doe"
+        assert author.profile_url == "https://www.linkedin.com/in/jane"
+        assert author.connection_degree == "2nd"
+
+    def test_falls_back_to_the_aria_label_when_the_link_renders_no_text(self):
+        from cqc_lem.utilities.linkedin import composer as mod
+        driver = self._driver([{"href": "https://www.linkedin.com/in/jane", "text": "",
+                                "aria": "View Jane Doe's profile"}])
+        assert mod.comment_author_identity(driver, MagicMock()).name == "Jane Doe"
+
+    def test_an_unnamed_card_still_yields_its_href(self):
+        """The slug half must not regress.
+
+        The own-comment skip and the reply dedup run off the href, and they kept working through
+        the whole outage this fixes.
+        """
+        from cqc_lem.utilities.linkedin import composer as mod
+        driver = self._driver([{"href": "https://www.linkedin.com/in/ghost", "text": "",
+                                "aria": ""}])
+        author = mod.comment_author_identity(driver, MagicMock())
+        assert author == ("", "https://www.linkedin.com/in/ghost", None)
+
+    def test_an_at_mention_in_the_body_never_becomes_the_author(self):
+        """An @mention in the body is never mistaken for the card's author.
+
+        The JS drops anchors inside the body text box, so a comment that mentions us is not read as
+        ours (the #478 false 'mine' match) and not recorded as its own author.
+        """
+        from cqc_lem.utilities.linkedin import composer as mod
+        driver = self._driver([])
+        mod.comment_author_identity(driver, MagicMock())
+        js = driver.execute_script.call_args.args[0]
+        assert "expandable-text-box" in js and "continue" in js
+
+    def test_a_dead_driver_reads_as_nobody_rather_than_raising(self):
+        from cqc_lem.utilities.linkedin import composer as mod
+        driver = MagicMock()
+        driver.execute_script.side_effect = Exception("no session")
+        assert mod.comment_author_identity(driver, MagicMock()) == ("", "", None)

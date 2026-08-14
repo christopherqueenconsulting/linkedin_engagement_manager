@@ -13,7 +13,7 @@ vi.mock('../api/client', () => ({
   },
 }))
 
-vi.mock('../contexts/AuthContext', () => ({
+vi.mock('../contexts/useAuth', () => ({
   useAuth: () => ({ sessionToken: 'tok', isAdmin: true }),
 }))
 

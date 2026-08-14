@@ -150,10 +150,7 @@ from cqc_lem.utilities.linkedin.composer import (
     _reply_composer_for_comment,
     _reply_under_comment_inline,
     _type_and_submit_reply,
-)
-from cqc_lem.utilities.linkedin.helper import (
-    clean_person_name,
-    connection_degree,
+    comment_author_identity,
 )
 from cqc_lem.utilities.linkedin.poster import (
     object_urn_from_post_url,
@@ -692,20 +689,26 @@ def _reply_to_comments_on_open_post(driver, wait, user_id: int, post_id: int, my
         # (if enabled) DM them the resource when their comment contains the trigger keyword.
         commenter_slug = ""
         try:
-            _link = comment.find_element(By.CSS_SELECTOR, "a[href*='/in/']")
-            # SDUI packs "Name Verified Profile 1st" into one link — keep the name, keep the badge
-            # separately (it tells the connection scan who we're already connected to, issue #623).
-            _eraw = (_link.text or "") or (_link.get_attribute("aria-label") or "")
-            _ename = clean_person_name(_eraw)
-            _edegree = connection_degree(_eraw)
-            _eprofile = (_link.get_attribute("href") or "").split("?")[0]
+            # The HEADER anchor, never the first /in/ link on the card (#1091): the avatar anchor
+            # carries the href with no text and an @mention in the body carries text for the wrong
+            # person, so the naive read named nobody and skipped the capture below in silence.
+            # SDUI packs "Name Verified Profile 1st" into one link — the reader keeps the name and
+            # keeps the badge separately (it tells the connection scan who we're already connected
+            # to, issue #623).
+            _author = comment_author_identity(driver, comment)
+            _ename, _eprofile, _edegree = _author.name, _author.profile_url, _author.connection_degree
             commenter_slug = profile_slug(_eprofile)
             # Never reply to a comment WE authored (seed, second-wave, or manual). It reads as the
             # user talking to themselves in the activity feed and stacks "responses" on their own post.
             if _href_is_profile(_eprofile, our_slug):
                 log_debug("Skipping own comment", user_id=user_id, post_id=post_id, comment_text=short_comment_text)
                 continue
-            if _ename and _ename.lower() != (my_profile.full_name or "").lower():
+            if not _ename:
+                # Countable, and distinct from the exception below: the card rendered and we read it,
+                # but nothing on it was name-like, so the name-keyed capture has no key to use.
+                log_debug("Commenter name unreadable; skipping engager/lead capture",
+                          user_id=user_id, post_id=post_id, comment_text=short_comment_text)
+            elif _ename.lower() != (my_profile.full_name or "").lower():
                 upsert_engager(user_id, _ename, _eprofile, connection_degree=_edegree)
                 # Inbound intent (#483): this commenter may be raising their hand — flag + draft.
                 if leads_flagged < _MAX_LEAD_FLAGS_PER_SWEEP and _flag_lead_signal(

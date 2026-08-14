@@ -8,7 +8,7 @@ const get = vi.fn()
 vi.mock('../../api/client', () => ({
   default: { get: (...args: unknown[]) => get(...args) },
 }))
-vi.mock('../../contexts/AuthContext', () => ({ useAuth: () => ({ sessionToken: 'tok' }) }))
+vi.mock('../../contexts/useAuth', () => ({ useAuth: () => ({ sessionToken: 'tok' }) }))
 
 function payload(detail: Record<string, unknown>) {
   return {

@@ -19,7 +19,7 @@ const auth = {
 }
 const get = vi.fn()
 
-vi.mock('../contexts/AuthContext', () => ({ useAuth: () => auth }))
+vi.mock('../contexts/useAuth', () => ({ useAuth: () => auth }))
 vi.mock('../api/client', () => ({ default: { get: (...a: unknown[]) => get(...a) } }))
 vi.mock('../pages/account/AuthFactorsCard', () => ({
   default: () => <div data-testid="auth-factors-card" />,

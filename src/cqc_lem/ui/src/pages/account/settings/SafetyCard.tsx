@@ -1,4 +1,4 @@
-import { useUserPrefs } from './UserPrefsContext'
+import { useUserPrefs } from './userPrefsCtx'
 import { Field, SectionCard, inputClass } from './Field'
 import { INACTIVATE_OPTIONS } from './options'
 

@@ -2,7 +2,8 @@ import { describe, expect, it, vi, afterEach, beforeEach } from 'vitest'
 import type { ReactNode } from 'react'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import GroupPostQueue, { nextGroupPublishSlot } from './GroupPostQueue'
+import GroupPostQueue from './GroupPostQueue'
+import { nextGroupPublishSlot } from '../../utils/groupPostSlot'
 import type { GroupPostDraft } from '../account/types'
 
 const get = vi.fn()
@@ -15,7 +16,7 @@ vi.mock('../../api/client', () => ({
     post: (...args: unknown[]) => post(...args),
   },
 }))
-vi.mock('../../contexts/AuthContext', () => ({ useAuth: () => ({ sessionToken: 'tok' }) }))
+vi.mock('../../contexts/useAuth', () => ({ useAuth: () => ({ sessionToken: 'tok' }) }))
 vi.mock('../../utils/analytics', () => ({
   maskProps: (className: string) => ({ className }),
   capture: vi.fn(),
