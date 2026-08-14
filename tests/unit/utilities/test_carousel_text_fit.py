@@ -52,6 +52,31 @@ SHIPPED_CLIPPED_BODIES = {
 }
 
 
+# Bodies of EXACTLY CAROUSEL_SLIDE_BODY_MAX_CHARS characters, in the word shapes that
+# set widest. The budget is a character count the prompt states, but the renderer bounds
+# PIXELS — so it only holds if it holds for the widest shapes, not just for average
+# prose. `caps` and `wide` are what caught the three blocks whose line caps were too
+# tight to honour the budget at all.
+BUDGET_BODIES = {
+    "prose": (
+        "Release gate rule: a coverage floor at 80 percent, timestamped migrations, "
+        "one named reviewer per diff, and a rollback tag recorded before any deploy."
+    ),
+    "caps": (
+        "WE SHIPPED 160 RELEASES IN 32 DAYS WITH ZERO ROLLBACKS AND NO MANUAL STEPS AT "
+        "ALL, WHICH CHANGED HOW THE WHOLE TEAM PLANS EVERY SINGLE SPRINT AT WORK."
+    ),
+    "wide": (
+        "Implementing infrastructure observability requires distributed instrumentation, "
+        "comprehensive documentation, plus uncompromising reliability tracking."
+    ),
+    "narrow": (
+        "It is a fact: if it is in the list it is in the test, and if it is in the test "
+        "it is in the log, so it is in the plan and it is on the ship list here."
+    ),
+}
+
+
 @contextmanager
 def _recording_renderer(tmp_path):
     """Render with a photo band present, recording painted strings PER slide.
@@ -109,15 +134,14 @@ class TestSlideBodyBudgetRendersIntact:
     """The ONE budget the prompt states is a number the renderer honours."""
 
     @pytest.mark.parametrize("template", sorted(CAROUSEL_TEMPLATES))
-    def test_body_at_budget_is_never_clipped(self, template, tmp_path):
-        # A dense body at exactly the stated budget — the reference gate pushes the
-        # writer toward this shape, so it is the case most likely to overflow.
-        body = (
-            "Release gate rule: a coverage floor at 80 percent, timestamped migrations, "
-            "one named reviewer per diff, and a rollback tag recorded before any deploy."
-        )
+    @pytest.mark.parametrize("shape", sorted(BUDGET_BODIES))
+    def test_body_at_budget_is_never_clipped(self, shape, template, tmp_path):
+        # A character budget is not a pixel budget: the same 150 characters are ~30%
+        # wider set in caps or in long words. One lucky string proves nothing, so the
+        # budget is asserted across the word shapes a writer actually produces.
+        body = BUDGET_BODIES[shape]
         assert len(body) == CAROUSEL_SLIDE_BODY_MAX_CHARS, (
-            "This body is the budget under test — keep it exactly "
+            f"The {shape} body is the budget under test — keep it exactly "
             f"{CAROUSEL_SLIDE_BODY_MAX_CHARS} characters"
         )
 

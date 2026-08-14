@@ -2067,7 +2067,7 @@ def create_carousel_slide_images(
         t_y = max(150, (H // 2) - t_h // 2 - 80)
         y = _draw_block(draw, t_lines, f_t, 70, t_y, cover_text, spacing=18, centered=True)
         draw.rectangle([(W // 2 - 50, y + 16), (W // 2 + 50, y + 22)], fill=cover_accent)
-        s_lines, f_s = _fit(body, f_s, W - 180, draw, max_lines=3, spacing=14)
+        s_lines, f_s = _fit(body, f_s, W - 180, draw, max_lines=4, spacing=14)
         _draw_block(draw, s_lines, f_s, 90, y + 46, fill=(*cover_text, 200), spacing=14, centered=True)
         hint = "Swipe to read  >"
         hw = int(draw.textlength(hint, font=f_l))
@@ -2131,7 +2131,7 @@ def create_carousel_slide_images(
         cta_y = (H - cta_h) // 2 - 60
         y = _draw_block(draw, cta_lines, f_t, 70, cta_y, fill=cover_text, spacing=20, centered=True)
         draw.rectangle([(W // 2 - 50, y + 18), (W // 2 + 50, y + 24)], fill=cover_accent)
-        sub_lines, f_s = _fit(body, f_s, W - 180, draw, max_lines=3, spacing=16)
+        sub_lines, f_s = _fit(body, f_s, W - 180, draw, max_lines=4, spacing=16)
         _draw_block(draw, sub_lines, f_s, 90, y + 48, fill=(*cover_text, 190), spacing=16, centered=True)
         draw.text((56, H - 76), f"{idx} / {total}", font=f_l, fill=(*cover_accent, 180))
         return _save(img, idx)
@@ -2287,7 +2287,7 @@ def create_carousel_slide_images(
         y += 50
         # Body small, centered
         b_lines, f_body = _fit(body, f_body, W - PAD * 2, draw,
-                               max_lines=2 if band_top else 5, spacing=18)
+                               max_lines=3 if band_top else 5, spacing=18)
         _draw_block(draw, b_lines, f_body, PAD, y, fill=body_color, spacing=18, centered=True)
         if panel is not None:
             _place_band(img, draw, panel, band_top, badge_color)

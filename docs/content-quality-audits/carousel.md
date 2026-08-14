@@ -151,6 +151,15 @@ that length on all five templates in all three slide roles, with the photo band 
 the painted strings still contain the whole body. The four slides §5 recorded shipping clipped are
 in the same test and render intact.
 
+A character budget is not a pixel budget, so that test renders the budget in FOUR word shapes (prose,
+all-caps, long-word, short-word): the same 150 characters set ~30% wider in caps, and three blocks
+whose line caps were too tight to honour the budget at any shape — `bold_listicle`'s cover and CTA
+subtitles (3 lines, now 4) and `stat_reveal`'s banded body (2 lines, now 3) — only showed up under
+them. Those caps had no geometric reason to be that tight: with a body block ending ~590px the
+`stat_reveal` photo band starts at 660px, and the cover/CTA subtitles end ~830px against a footer at
+~1000px. A cap here is a text budget, not a layout edge — raise it rather than let a within-budget
+body degrade.
+
 ### F2 — The renderer flattens the line structure the deck was written with → **#1510**
 
 `_wrap_text` starts with `text.split()`, which splits on newlines as well as spaces. A slide body
