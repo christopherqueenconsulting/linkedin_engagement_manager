@@ -65,6 +65,11 @@ export default function CatchupTouches({ userTimezone }: { userTimezone: string 
     enabled: !!sessionToken,
   })
   const touches = data?.touches ?? []
+  // The request is page 1 of 50 with no pager, and the API orders by score DESC — so on ALL a big
+  // archive of sent/skipped rows can outrank the few PENDING drafts that still need a decision.
+  // Say so out loud rather than let the list read as complete (the same silence as issue #1360).
+  const total = data?.total ?? 0
+  const hiddenByPaging = Math.max(0, total - touches.length)
 
   const flash = (ok: boolean, text: string) => { setMsg({ ok, text }); setTimeout(() => setMsg(null), 4000) }
   const invalidate = () => qc.invalidateQueries({ queryKey: ['catchup-touches'] })
@@ -102,10 +107,10 @@ export default function CatchupTouches({ userTimezone }: { userTimezone: string 
           LEM scans your LinkedIn Catch-up feed daily for network milestones — new jobs, promotions,
           work anniversaries — scores them against your targeting, and queues LinkedIn's own suggested
           congratulations for each one (switch to an AI-written version in Account → Catch-up message).
-          <span className="font-semibold"> Nothing sends until you approve it</span> — unless you set
-          Account → Catch-up approval to auto-approve, in which case drafts land already approved and
-          this queue shows them as APPROVED/SENT rather than PENDING. Each milestone is messaged at
-          most once, and approved messages drip out under your daily catch-up and DM caps
+          <span className="font-semibold"> Nothing sends until you approve it</span> — unless
+          Account → Catch-up approval is set to "Auto-use", in which case drafts land already
+          approved and this queue shows them as APPROVED/SENT rather than PENDING. Each milestone is
+          messaged at most once, and approved messages drip out under your daily catch-up and DM caps
           (Account → Engagement).
         </p>
       </div>
@@ -121,6 +126,13 @@ export default function CatchupTouches({ userTimezone }: { userTimezone: string 
           </button>
         ))}
       </div>
+
+      {!isLoading && hiddenByPaging > 0 && (
+        <p className="text-xs text-gray-500">
+          Showing the {touches.length} highest-scoring of {total} touches — {hiddenByPaging} not
+          listed. Pick a status above to narrow the list.
+        </p>
+      )}
 
       {isLoading && <p className="text-gray-400 text-sm">Loading catch-up touches…</p>}
       {!isLoading && touches.length === 0 && (

@@ -72,6 +72,23 @@ describe('CatchupTouches — default view', () => {
   })
 })
 
+describe('CatchupTouches — truncated page', () => {
+  it('says how many touches the page left out', async () => {
+    get.mockResolvedValue({ data: { detail: { touches: [SENT_TOUCH], total: 63 } } })
+    harness(<CatchupTouches userTimezone="America/New_York" />)
+
+    await waitFor(() => expect(screen.getByText(/62 not listed/)).toBeTruthy())
+  })
+
+  it('stays quiet when the page holds every touch', async () => {
+    get.mockResolvedValue({ data: { detail: { touches: [SENT_TOUCH], total: 1 } } })
+    harness(<CatchupTouches userTimezone="America/New_York" />)
+
+    await waitFor(() => expect(screen.getByText('Jane Doe')).toBeTruthy())
+    expect(screen.queryByText(/not listed/)).toBeNull()
+  })
+})
+
 describe('CatchupTouches — status filter', () => {
   it('scopes the request to the chosen status', async () => {
     get.mockResolvedValue({ data: { detail: { touches: [], total: 0 } } })
