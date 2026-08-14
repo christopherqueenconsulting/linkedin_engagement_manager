@@ -333,8 +333,16 @@ services:
     # shm scales with sessions — a starved /dev/shm crashes tabs.
     shm_size: 8g
     ports:
-      - "${SELENIUM_HUB_PORT}:4444"
-      - "7900:7900"
+      # Loopback by default, in the BASE file rather than in docker-compose.prod.yml, so the
+      # hardening is a property of the standalone itself and not of whichever overlay happens to be
+      # composed (#1092). 4444 is a WebDriver endpoint — anyone who reaches it drives a browser and
+      # reads local files — and 7900 is noVNC onto a logged-in LinkedIn session. Host-side tooling
+      # (tools/selenium_mcp_server.py, an `ssh -L 7900:localhost:7900` tunnel, the Cloudflare
+      # hostname, which reaches the container over the compose network) is unaffected. Set
+      # SELENIUM_STANDALONE_BIND to a private address only when the box is not the one you browse
+      # from; never 0.0.0.0.
+      - "${SELENIUM_STANDALONE_BIND:-127.0.0.1}:${SELENIUM_HUB_PORT}:4444"
+      - "${SELENIUM_STANDALONE_BIND:-127.0.0.1}:7900:7900"
     environment:
       # INVARIANT: SE_NODE_MAX_SESSIONS == the sum of every lane worker's SELENIUM_CONCURRENCY
       # (se_engage 3 + se_prepost 2 + se_outreach 2 + se_content 1 = 8). Below the sum, lanes

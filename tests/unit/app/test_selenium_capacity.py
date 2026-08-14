@@ -82,6 +82,37 @@ class TestSessionCapMatchesLaneConcurrency:
         # Lane concurrency lives on the worker services, so that one spans the whole overlay.
         assert "SELENIUM_CONCURRENCY" not in PROD_OVERLAY
 
+    def test_prod_overlay_does_not_carry_the_standalone_at_all(self):
+        # #1092: the Grid overlay parks the standalone behind a profile, so a block here patched a
+        # service prod never starts — and its permanently-`Created` leftover poisoned the "any
+        # container in Created" outage tripwire. Keeping the overlay silent about it is what makes
+        # the base file the single place the standalone is described.
+        assert "\n  selenium-chrome:\n" not in PROD_OVERLAY
+
+
+class TestStandalonePortsAreHardenedInTheBaseFile:
+    """The standalone's 4444/7900 bind must not depend on which overlay is composed (#1092).
+
+    4444 is a WebDriver endpoint (drive a browser, read local files) and 7900 is a live view of a
+    logged-in LinkedIn session. When the loopback bind lived in docker-compose.prod.yml, the
+    one-flag `SELENIUM_TOPOLOGY=standalone` rollback still composed that overlay — but anything
+    that brings the standalone up without it published both on all interfaces.
+    """
+
+    CHROME = _service_block(COMPOSE, "selenium-chrome")
+
+    @pytest.mark.parametrize("port", ["${SELENIUM_HUB_PORT}:4444", "7900:7900"])
+    def test_published_ports_default_to_loopback(self, port: str):
+        assert f'"${{SELENIUM_STANDALONE_BIND:-127.0.0.1}}:{port}"' in self.CHROME
+
+    def test_no_port_is_published_on_all_interfaces(self):
+        # Every entry, not just the two named above: a third publish added without a bind address
+        # is exactly the regression this class exists to catch, and it would pass the test above.
+        published = re.findall(r'^\s*- "([^"]+)"', _config_only(self.CHROME), re.MULTILINE)
+        assert published, "the standalone publishes nothing — did the ports block move?"
+        for entry in published:
+            assert entry.startswith("${SELENIUM_STANDALONE_BIND:-127.0.0.1}:"), entry
+
 
 class TestChromeResourceBudget:
     def test_shm_covers_every_concurrent_session(self):
@@ -225,9 +256,9 @@ class TestGridOverlay:
         for port in ("4442", "4443"):
             assert f'"${{SELENIUM_GRID_BUS_BIND:-127.0.0.1}}:{port}:{port}"' in hub
 
-    def test_the_hub_port_defaults_to_loopback_like_the_standalone_does_in_prod(self):
-        # This overlay composes AFTER docker-compose.prod.yml, which binds the standalone's 4444 to
-        # loopback on purpose. A hub published on all interfaces would undo that on the cutover.
+    def test_the_hub_port_defaults_to_loopback_like_the_standalone_does(self):
+        # The standalone binds 4444 to loopback on purpose (SELENIUM_STANDALONE_BIND, base file).
+        # A hub published on all interfaces would undo that on the cutover.
         hub = _service_block(GRID_OVERLAY, "selenium-hub")
         assert '"${SELENIUM_GRID_HUB_BIND:-127.0.0.1}:${SELENIUM_HUB_PORT}:4444"' in hub
 
@@ -270,6 +301,15 @@ class TestDeployComposesTheDeployedTopology:
         # up would also make that name resolve to two containers.
         assert "docker rm -f selenium-chrome" in self.DEPLOY
         assert "rm -sf selenium-hub selenium-node-chrome selenium-node-debug" in self.DEPLOY
+
+    def test_the_standalone_is_evicted_in_any_state_not_only_running(self):
+        # #1092: a standalone whose start FAILED (the hub already holds 4444 — what a manual
+        # `compose up` without the Grid overlay does) is left `Created`, never Running, so a
+        # `docker ps` match walked past it and it survived every deploy. "Any container in
+        # Created" is the outage tripwire the host watchdog reads, so one vestigial container
+        # stuck there permanently is a silenced alarm, not a cosmetic leftover.
+        guard = self.DEPLOY.split("docker rm -f selenium-chrome")[0].rsplit("\nif ", 1)[1]
+        assert "docker ps -a --format" in guard, guard
 
     def test_the_eviction_happens_before_anything_is_brought_up(self):
         assert self.DEPLOY.index("docker rm -f selenium-chrome") < self.DEPLOY.index("${COMPOSE} pull")

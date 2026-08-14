@@ -53,9 +53,14 @@ That aborts the converge mid-tier and leaves workers in `Created` — a silent w
   expectation, and any of those services sitting in `Created` / `Exited` / `Dead` / `Paused` /
   `Restarting`, or absent from `compose ps`, fails the deploy loudly instead of leaving the
   worker tier down silently. The expectation is deliberately the **profile-filtered** service
-  list: `compose ps` labels containers by PROJECT, not by profile, so the standalone
-  `selenium-chrome` the Grid overlay parks for rollback sits `Exited` indefinitely and must
-  never fail a deploy it is not part of. `flyway` is excluded too — it is a `run --rm` one-shot.
+  list: `compose ps` labels containers by PROJECT, not by profile, so a leftover container of a
+  profiled-out service sits `Created`/`Exited` indefinitely and must never fail a deploy it is not
+  part of. `flyway` is excluded too — it is a `run --rm` one-shot.
+  The one container that actually hit this — the standalone `selenium-chrome` the Grid overlay
+  parks — is now *removed* by the step-3b topology guard rather than merely ignored (#1092): it
+  matches on `docker ps -a`, so a standalone left in `Created` (a manual `compose up` without the
+  Grid overlay, whose start fails because the hub already holds 4444) is swept on the next deploy
+  instead of permanently poisoning the "any container in `Created`" outage tripwire.
 - **Persists `IMAGE_TAG` / `.last_good_tag` immediately after the edge flip**, while the
   serving tier is live on the new tag. A later worker-tier failure is a partial deploy, but
   the box's recorded baseline matches what is actually running so the next deploy diffs

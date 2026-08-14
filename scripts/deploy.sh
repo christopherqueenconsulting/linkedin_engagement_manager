@@ -201,9 +201,10 @@ verify_stack_running() {
   fi
 
   # ONE `ps -a` read, restricted to the services this topology expects. `ps` labels containers by
-  # PROJECT, not by profile, so an un-removed container of a profile-disabled service (exactly what
-  # the parked standalone `selenium-chrome` is, kept for an instant rollback) sits there Exited
-  # forever — checking it would fail every deploy for a service the deploy never touches.
+  # PROJECT, not by profile, so an un-removed container of a profile-disabled service sits there
+  # Created/Exited indefinitely — checking it would fail every deploy for a service the deploy never
+  # touches. (Step 3b now removes the one container that actually hit this, the parked standalone
+  # `selenium-chrome`; the filter stays because the reasoning holds for any profiled-out service.)
   # Space-separated, not '\t': neither a compose service name nor a container state can contain a
   # space, and this can't then hinge on whether the CLI expands the escape in a Go template.
   states="$(${COMPOSE} ps -a --format '{{.Service}} {{.State}}' 2>/dev/null || true)"
@@ -270,8 +271,17 @@ export IMAGE_TAG="${TAG}"
 # half-created hub is left RUNNING WITH NO NETWORK ATTACHED, which presents as "hub unhealthy,
 # 0 nodes registered" (nodes cannot resolve `selenium-hub`) rather than as a port error. Evict the
 # standalone first so the transition is clean. Live-verified during the 2026-07-27 cutover.
-if [[ "${SELENIUM_TOPOLOGY}" == "grid" ]] && docker ps --format '{{.Names}}' | grep -qx "selenium-chrome"; then
-  log "Grid topology: evicting the running standalone selenium-chrome so the hub can bind 4444"
+#
+# `ps -a`, not `ps`: a standalone that FAILED to start — which is what a manual `compose up`
+# WITHOUT the grid overlay produces, because the hub already holds 4444 — is left in `Created`,
+# never Running, so a running-only match walked straight past it and it survived every subsequent
+# deploy. That is not cosmetic (#1092): "any container in `Created`" is the tripwire the host
+# watchdog and the owner read for a 2026-07-28-style outage, since a healthcheck cannot see a
+# Created container, and one permanently-Created vestigial service turns that signal into noise.
+# Removing a Created/Exited one costs the rollback nothing: `SELENIUM_TOPOLOGY=standalone`
+# recreates it from compose and the `chrome-profile` named volume survives.
+if [[ "${SELENIUM_TOPOLOGY}" == "grid" ]] && docker ps -a --format '{{.Names}}' | grep -qx "selenium-chrome"; then
+  log "Grid topology: removing the standalone selenium-chrome container (any state) so the hub can bind 4444"
   docker rm -f selenium-chrome >/dev/null 2>&1 || log "WARN: could not remove selenium-chrome (continuing)"
 fi
 # The SAME transition in reverse, which is the rollback path (`SELENIUM_TOPOLOGY=standalone`) and so
