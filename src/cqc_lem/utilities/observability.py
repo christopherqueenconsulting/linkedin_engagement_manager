@@ -73,7 +73,23 @@ def _env_flag(name: str, default: bool = True) -> bool:
 # knowing about it. It only ever fires for UNCAUGHT exceptions — everything LEM catches reaches
 # PostHog through capture_exception() below (from log_error/log_critical, the Celery signals and the
 # FastAPI middleware). Read at import so the flag is set before posthog.setup() builds the client.
-EXCEPTION_AUTOCAPTURE_ENABLED = bool(posthog.api_key) and _env_flag("POSTHOG_EXCEPTION_AUTOCAPTURE")
+#
+# Gated on `posthog.disabled` rather than on the key, so it answers the pytest question too — this
+# was the one hop in the chain that still only asked "is a key configured?" (#1498). The excepthook
+# is installed by the SDK, not by us: an autocapture that stays armed under pytest is a global
+# `sys.excepthook` / `threading.excepthook` swap made mid-suite, and the only thing standing between
+# it and a real `$exception` from a fixture is the client's own disabled check.
+def _exception_autocapture_enabled() -> bool:
+    """Whether the SDK's uncaught-exception excepthook may be armed in this process.
+
+    A function rather than an inline expression so both branches are testable: re-importing this
+    module to exercise the other one would rebind `posthog.disabled` for the rest of the suite,
+    which is the very guard being tested.
+    """
+    return not posthog.disabled and _env_flag("POSTHOG_EXCEPTION_AUTOCAPTURE")
+
+
+EXCEPTION_AUTOCAPTURE_ENABLED = _exception_autocapture_enabled()
 posthog.enable_exception_autocapture = EXCEPTION_AUTOCAPTURE_ENABLED
 
 # What posthog-js hands out as a session id (uuid v7-ish). Anything else is not linked (#649).
