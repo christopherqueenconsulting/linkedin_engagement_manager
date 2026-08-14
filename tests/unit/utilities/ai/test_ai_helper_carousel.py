@@ -158,3 +158,152 @@ def test_wall_of_text_caption_is_reflowed_and_capped():
 
     assert len(post_text) <= _CAROUSEL_CAPTION_MAX_CHARS   # hard-capped
     assert "\n\n" in post_text                             # reflowed into paragraphs
+
+
+@pytest.mark.unit
+class TestLoadsJsonObject:
+    """Fence- and prose-tolerant JSON parsing for carousel replies.
+
+    Issue #1323: `response_format={"type": "json_object"}` is a request, not a guarantee — a reply
+    that carries a good object inside a fence or beside a line of prose must still parse.
+    """
+
+    def test_plain_object_parses(self):
+        from cqc_lem.utilities.ai.ai_helper import _loads_json_object
+        assert _loads_json_object('{"a": 1}') == {"a": 1}
+
+    def test_fenced_object_parses(self):
+        from cqc_lem.utilities.ai.ai_helper import _loads_json_object
+        assert _loads_json_object('```json\n{"a": 1}\n```') == {"a": 1}
+
+    def test_bare_fence_without_language_tag_parses(self):
+        from cqc_lem.utilities.ai.ai_helper import _loads_json_object
+        assert _loads_json_object('```\n{"a": 1}\n```') == {"a": 1}
+
+    def test_prose_around_the_object_parses(self):
+        from cqc_lem.utilities.ai.ai_helper import _loads_json_object
+        raw = 'Sure! Here is the carousel:\n{"a": 1}\nLet me know if you want changes.'
+        assert _loads_json_object(raw) == {"a": 1}
+
+    @pytest.mark.parametrize("raw", ["", "   ", "not json at all", None, "[1, 2, 3]"])
+    def test_unusable_replies_return_none(self, raw):
+        """None is the ONE signal the caller acts on.
+
+        A JSON array counts as unusable too: it is not the object the prompt asked for and carries
+        no post_text/carousel keys.
+        """
+        from cqc_lem.utilities.ai.ai_helper import _loads_json_object
+        assert _loads_json_object(raw) is None
+
+
+@pytest.mark.unit
+def test_fenced_carousel_json_is_recovered_not_dropped():
+    """A fenced reply must be recovered, not dropped.
+
+    Issue #1323: it used to raise JSONDecodeError and fall back to the generic caption with an
+    EMPTY deck — which flags the post 'error' downstream.
+    """
+    from contextlib import contextmanager
+
+    from cqc_lem.utilities.linkedin.profile import LinkedInProfile
+
+    payload = _educational_carousel_json()
+    fenced = MagicMock()
+    fenced.choices = [MagicMock(message=MagicMock(
+        content="```json\n" + json.dumps(payload) + "\n```"))]
+    profile = LinkedInProfile(full_name="Test User", job_title="CTO", company_name="ACME",
+                              industry="Technology")
+
+    @contextmanager
+    def _env():
+        with patch("cqc_lem.utilities.ai.ai_helper._call_llm", return_value=fenced), \
+             patch("cqc_lem.utilities.db.get_user_password_pair_by_id", return_value=("t@e.com", "p")), \
+             patch("cqc_lem.utilities.selenium_util.get_driver_wait_pair", return_value=(MagicMock(), MagicMock())), \
+             patch("cqc_lem.utilities.linkedin.helper.get_my_profile", return_value=profile), \
+             patch("cqc_lem.utilities.selenium_util.quit_gracefully"), \
+             patch("cqc_lem.utilities.ai.ai_helper.log_error") as mock_log_error:
+            yield mock_log_error
+
+    with _env() as mock_log_error:
+        from cqc_lem.utilities.ai.ai_helper import generate_carousel_content
+        post_text, carousel_dict = generate_carousel_content(user_id=1, stage="awareness")
+
+    assert post_text == payload["post_text"]
+    assert carousel_dict == payload["carousel"]
+    assert mock_log_error.call_count == 0
+
+
+@pytest.mark.unit
+def test_unparseable_reply_logs_one_error_with_context():
+    """The residual failure keeps ERROR, with context.
+
+    An empty deck flags the post 'error' downstream, and user_id/task_name make the grouped issue
+    name the user it cost.
+    """
+    from contextlib import contextmanager
+
+    from cqc_lem.utilities.linkedin.profile import LinkedInProfile
+
+    junk = MagicMock()
+    junk.choices = [MagicMock(message=MagicMock(content="I'm sorry, I can't help with that."))]
+    profile = LinkedInProfile(full_name="Test User", job_title="CTO", company_name="ACME",
+                              industry="Technology")
+
+    @contextmanager
+    def _env():
+        with patch("cqc_lem.utilities.ai.ai_helper._call_llm", return_value=junk), \
+             patch("cqc_lem.utilities.db.get_user_password_pair_by_id", return_value=("t@e.com", "p")), \
+             patch("cqc_lem.utilities.selenium_util.get_driver_wait_pair", return_value=(MagicMock(), MagicMock())), \
+             patch("cqc_lem.utilities.linkedin.helper.get_my_profile", return_value=profile), \
+             patch("cqc_lem.utilities.selenium_util.quit_gracefully"), \
+             patch("cqc_lem.utilities.ai.ai_helper.log_error") as mock_log_error:
+            yield mock_log_error
+
+    with _env() as mock_log_error:
+        from cqc_lem.utilities.ai.ai_helper import generate_carousel_content
+        post_text, carousel_dict = generate_carousel_content(user_id=7, stage="awareness")
+
+    assert carousel_dict == {}
+    assert isinstance(post_text, str) and post_text
+    assert mock_log_error.call_count == 1
+    kwargs = mock_log_error.call_args.kwargs
+    assert kwargs["user_id"] == 7
+    assert kwargs["task_name"] == "create_carousel_content"
+    assert "exc" not in kwargs   # nothing was raised — no stack to attach
+
+
+@pytest.mark.unit
+def test_empty_reply_content_takes_the_fallback_instead_of_raising():
+    """A refusal / content-filtered reply carries `content=None`.
+
+    `.strip()` on it raised an AttributeError straight out of the task, past the fallback that
+    exists for exactly this: no deck in hand. It must degrade the same way an unparseable reply
+    does — one ERROR with context, empty deck, generic caption.
+    """
+    from contextlib import contextmanager
+
+    from cqc_lem.utilities.linkedin.profile import LinkedInProfile
+
+    empty = MagicMock()
+    empty.choices = [MagicMock(message=MagicMock(content=None))]
+    profile = LinkedInProfile(full_name="Test User", job_title="CTO", company_name="ACME",
+                              industry="Technology")
+
+    @contextmanager
+    def _env():
+        with patch("cqc_lem.utilities.ai.ai_helper._call_llm", return_value=empty), \
+             patch("cqc_lem.utilities.db.get_user_password_pair_by_id", return_value=("t@e.com", "p")), \
+             patch("cqc_lem.utilities.selenium_util.get_driver_wait_pair", return_value=(MagicMock(), MagicMock())), \
+             patch("cqc_lem.utilities.linkedin.helper.get_my_profile", return_value=profile), \
+             patch("cqc_lem.utilities.selenium_util.quit_gracefully"), \
+             patch("cqc_lem.utilities.ai.ai_helper.log_error") as mock_log_error:
+            yield mock_log_error
+
+    with _env() as mock_log_error:
+        from cqc_lem.utilities.ai.ai_helper import generate_carousel_content
+        post_text, carousel_dict = generate_carousel_content(user_id=7, stage="awareness")
+
+    assert carousel_dict == {}
+    assert isinstance(post_text, str) and post_text
+    assert mock_log_error.call_count == 1
+    assert mock_log_error.call_args.kwargs["user_id"] == 7

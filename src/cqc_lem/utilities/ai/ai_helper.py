@@ -3313,6 +3313,38 @@ def ai_check_message_history(message_history_json: str, main_focus: str, message
 _CAROUSEL_CAPTION_MAX_CHARS = 2200
 
 
+def _loads_json_object(raw: "str | None") -> "dict | None":
+    """Parse a reply that is supposed to be ONE JSON object, tolerating what models actually send.
+
+    `response_format={"type": "json_object"}` is a request, not a guarantee — a model still wraps the
+    object in a ```json fence or brackets it with a line of prose, and a strict `json.loads` on that
+    fails at character 0. Every such reply carries a perfectly good object; refusing it costs the
+    caller the whole generation (issue #1323).
+
+    Returns `None` only when nothing parseable is in hand, so the caller owns the fallback and there
+    is ONE place that decides a reply is unusable.
+    """
+    import json as _json
+
+    text = (raw or "").strip()
+    if not text:
+        return None
+    if text.startswith("```"):
+        # Drop the opening fence (with its optional language tag) and anything after the closing one.
+        text = text.split("\n", 1)[1] if "\n" in text else text.lstrip("`")
+        text = text.split("```", 1)[0].strip()
+    for candidate in (text, text[text.find("{"):text.rfind("}") + 1]):
+        if not candidate:
+            continue
+        try:
+            parsed = _json.loads(candidate)
+        except (ValueError, TypeError):
+            continue
+        if isinstance(parsed, dict):
+            return parsed
+    return None
+
+
 def generate_carousel_content(user_id: int, stage: str, prefs: dict = None,
                               profile_synthesis: str = None, blueprint: dict = None,
                               fact_anchors: list = None,
@@ -3456,7 +3488,6 @@ Return ONLY valid JSON. No explanation, no markdown fences."""
             + PLAIN_PUNCTUATION_DIRECTIVE
         ),
     }
-    import json as _json
 
     def _draft(extra_directive: str = "") -> tuple[str, dict]:
         user_message = {"role": "user",
@@ -3468,11 +3499,16 @@ Return ONLY valid JSON. No explanation, no markdown fences."""
             temperature=round(random.uniform(0.6, 0.8), 2),
             top_p=round(random.uniform(0.85, 0.95), 2),
         )
-        raw = response.choices[0].message.content.strip()
-        try:
-            parsed = _json.loads(raw)
-        except _json.JSONDecodeError as exc:
-            log_error("generate_carousel_content: LLM returned invalid JSON", exc=exc)
+        # A refusal or content filter comes back with content=None, so `.strip()` on it raised an
+        # AttributeError out of the task instead of taking the fallback one line below.
+        raw = (response.choices[0].message.content or "").strip()
+        parsed = _loads_json_object(raw)
+        if parsed is None:
+            # ERROR, not WARNING: there is no degraded carousel. An empty deck fails
+            # `model_cls(**carousel_dict)` in run_content_plan, which flags the post 'error' for a
+            # human — so this is a task-level failure, logged where it is DETECTED.
+            log_error("generate_carousel_content: LLM returned no parseable JSON object",
+                      user_id=user_id, task_name="create_carousel_content")
             parsed = {}
         # QA guard: reflow a wall-of-text caption into scannable paragraphs and hard-cap the length,
         # even when the model ignored the format directive (JSON mode often drops line breaks).
