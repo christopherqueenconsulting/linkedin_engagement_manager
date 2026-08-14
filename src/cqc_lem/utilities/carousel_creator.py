@@ -36,6 +36,7 @@ from pptx.slide import Slide
 from pydantic import BaseModel, Field, HttpUrl, StrictStr, conlist
 from pydantic_extra_types.color import Color
 
+from cqc_lem.utilities.ai.content_framework import SAVE_ASK_PILL
 from cqc_lem.utilities.deck_render import (
     SLIDE_ROLE_BODY,
     SLIDE_ROLE_COVER,
@@ -2149,7 +2150,9 @@ def create_carousel_slide_images(
         draw.rectangle([(W - 10, 0), (W, H)], fill=cover_accent)
         dx, dy, ds = 86, 96, 20
         draw.polygon([(dx, dy - ds), (dx + ds, dy), (dx, dy + ds), (dx - ds, dy)], fill=(*cover_accent, 180))
-        pill = "Leave a comment below"
+        # The pill states the SAVE ask the writer directive asks for, never an engagement-bait
+        # imperative — it is pixels, so no downstream text gate could strip one (issue #1511).
+        pill = SAVE_ASK_PILL
         pw = int(draw.textlength(pill, font=f_l)) + 36
         _rrect(draw, ((W - pw) // 2, 140, (W + pw) // 2, 184), radius=20, fill=(*cover_accent, 180))
         draw.text(((W - pw) // 2 + 18, 148), pill, font=f_l, fill=cover_bg if sum(cover_accent) > 380 else WHITE)
