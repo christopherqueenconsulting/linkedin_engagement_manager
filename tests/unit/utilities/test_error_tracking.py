@@ -176,6 +176,41 @@ class TestTestSuiteNeverPublishesToPostHog:
         from cqc_lem.utilities.observability import _running_under_pytest
         assert _running_under_pytest() is True
 
+    def test_exception_autocapture_is_disarmed_under_pytest(self):
+        # Issue #1498. This hop used to ask only "is a key configured?", so a suite that inherited
+        # the production POSTHOG_API_KEY armed the SDK's uncaught-exception excepthook — a global
+        # sys.excepthook / threading.excepthook swap made mid-run, with only the client's own
+        # disabled check between a fixture traceback and a real $exception.
+        import posthog
+
+        from cqc_lem.utilities import observability
+
+        assert observability.EXCEPTION_AUTOCAPTURE_ENABLED is False
+        assert posthog.enable_exception_autocapture is False
+
+    def test_exception_autocapture_follows_the_sdk_disable_not_the_key(self, monkeypatch):
+        from cqc_lem.utilities.observability import _exception_autocapture_enabled
+
+        # `tests/conftest.py` calls load_dotenv(), so a checkout whose `.env` carries
+        # POSTHOG_EXCEPTION_AUTOCAPTURE=false would otherwise fail this on the kill switch rather
+        # than on the guard under test. Pin the flag to its default.
+        monkeypatch.delenv("POSTHOG_EXCEPTION_AUTOCAPTURE", raising=False)
+        with patch(f"{_OBS}.posthog") as mock_ph:
+            mock_ph.disabled = False
+            assert _exception_autocapture_enabled() is True
+
+            # A key can be present and the SDK still disabled — under pytest it always is.
+            mock_ph.disabled = True
+            assert _exception_autocapture_enabled() is False
+
+    def test_autocapture_kill_switch_still_wins_when_the_sdk_is_live(self, monkeypatch):
+        from cqc_lem.utilities.observability import _exception_autocapture_enabled
+
+        monkeypatch.setenv("POSTHOG_EXCEPTION_AUTOCAPTURE", "false")
+        with patch(f"{_OBS}.posthog") as mock_ph:
+            mock_ph.disabled = False
+            assert _exception_autocapture_enabled() is False
+
     def test_capture_exception_is_a_no_op_while_disabled(self):
         # No `mock_ph.disabled = False` — unlike the send-path tests above, this asserts the
         # real default the suite runs under.
