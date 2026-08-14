@@ -1424,19 +1424,41 @@ class TestCatchupContactFrequency:
         """The count alone can't be judged — box 3 of #1113 wants the (user, contact) pairs."""
         from cqc_lem.utilities.db import list_existing_double_sent_catchups
 
+        first, last = datetime(2026, 8, 1, 9, 12), datetime(2026, 8, 1, 9, 14)
         with patch(_GET_CONN, return_value=mock_database_connection["connection"]):
             mock_database_connection["cursor"].fetchall.return_value = [
                 {"user_id": 1, "profile_url": "https://www.linkedin.com/in/jane",
-                 "sends": 3, "duplicate_bodies": 1},
+                 "sends": 3, "duplicate_bodies": 1,
+                 "first_sent_at": first, "last_sent_at": last, "repeat_gap_seconds": 120},
             ]
             assert list_existing_double_sent_catchups() == [
                 {"user_id": 1, "profile_url": "https://www.linkedin.com/in/jane",
-                 "sends": 3, "duplicate_bodies": 1},
+                 "sends": 3, "duplicate_bodies": 1,
+                 "first_sent_at": first, "last_sent_at": last, "repeat_gap_seconds": 120},
             ]
+        # Rows are read by column NAME, so a positional cursor would blow up in prod on a mock that
+        # hands back dicts regardless — assert the dict cursor was actually asked for.
+        mock_database_connection["connection"].cursor.assert_called_with(dictionary=True)
         sql = mock_database_connection["cursor"].execute.call_args[0][0]
         assert "FROM logs l" in sql and "action_type = 'dm'" in sql
         # The DM body groups the duplicate but is never returned — it is message content.
         assert "d.message" not in sql.split(") d")[1]
+
+    def test_list_existing_double_sent_catchups_reports_an_unstamped_gap_as_unknown(
+            self, mock_database_connection):
+        """An unstamped row has no gap, and 0 is the strongest retry signal there is.
+
+        `logs.created_at` carries no NOT NULL, so that reading must never be invented.
+        """
+        from cqc_lem.utilities.db import list_existing_double_sent_catchups
+
+        with patch(_GET_CONN, return_value=mock_database_connection["connection"]):
+            mock_database_connection["cursor"].fetchall.return_value = [
+                {"user_id": 1, "profile_url": "https://www.linkedin.com/in/jane",
+                 "sends": 2, "duplicate_bodies": 1,
+                 "first_sent_at": None, "last_sent_at": None, "repeat_gap_seconds": None},
+            ]
+            assert list_existing_double_sent_catchups()[0]["repeat_gap_seconds"] is None
 
     def test_list_existing_double_sent_catchups_empty_on_db_error(self, mock_database_connection):
         import mysql.connector
