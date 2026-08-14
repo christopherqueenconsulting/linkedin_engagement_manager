@@ -399,8 +399,10 @@ class TestGenerateVideoSrcPremium:
         avatar = {"status": "succeeded", "model_ref": "owner/m:v1"}
         result, gen_img, create_video, refund, _ = self._run(avatar)
         assert result == "https://runway/v.mp4"
+        # `render_info` is the out-dict the renderer fills with THIS frame's provenance for the
+        # likeness probe (issue #1430).
         gen_img.assert_called_once_with("image prompt", 1, ratio="9:16",
-                                        surface="video", post_id=9)
+                                        surface="video", post_id=9, render_info={})
         assert create_video.call_args[0][0] == "/tmp/avatar.png"
         assert create_video.call_args[1]["audio"] is True
         refund.assert_not_called()

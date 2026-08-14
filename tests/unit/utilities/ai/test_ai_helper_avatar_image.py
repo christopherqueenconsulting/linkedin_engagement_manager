@@ -115,6 +115,24 @@ class TestGeneratePostImage:
             self._generate(surface="carousel", focal_concept="a founder at a whiteboard")
         assert gen.call_args.kwargs["focal_concept"] == "a founder at a whiteboard"
 
+    def test_render_info_is_threaded_to_the_avatar_gate(self):
+        """Issue #1430: the likeness probe reads THIS render's provenance from here."""
+        info: dict = {}
+        with patch("cqc_lem.utilities.avatar.guardrails.resolve_avatar_for", return_value=_AVATAR), \
+             patch("cqc_lem.utilities.ai.image_gen.render_avatar_image_gated",
+                   return_value="/tmp/a.webp") as gen:
+            self._generate(render_info=info)
+        assert gen.call_args.kwargs["render_info"] is info
+
+    def test_a_declined_guardrail_reports_no_avatar_render(self):
+        """Never left unset — an unreported render is not the same reading as a base render."""
+        info: dict = {}
+        with patch("cqc_lem.utilities.avatar.guardrails.resolve_avatar_for", return_value=None), \
+             patch("cqc_lem.utilities.ai.image_gen.render_image_gated",
+                   return_value="/tmp/f.webp"):
+            self._generate(render_info=info)
+        assert info["used_avatar"] is False
+
     def test_focal_concept_reaches_the_base_gate(self):
         """Issue #1290: non-avatar renders also grade against the brief's focal_concept."""
         with patch("cqc_lem.utilities.avatar.guardrails.resolve_avatar_for", return_value=None), \

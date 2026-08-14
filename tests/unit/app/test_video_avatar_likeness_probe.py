@@ -39,12 +39,14 @@ class TestAvatarLikenessProbeInVideoGeneration:
              patch(f"{_RCP}.create_runway_video", return_value="https://runway.video/abc.mp4"), \
              patch(f"{_LIKENESS}.probe_avatar_likeness",
                    return_value={"present": True, "checked": True, "reason": "ok"}) as probe, \
+             patch("cqc_lem.utilities.db.post_avatar_media_state", return_value=True), \
              patch(f"{_OBS}.track_avatar_likeness_probe") as track:
             result = _generate_video_src(post_id=7)
         assert result == "https://runway.video/abc.mp4"
         gen.assert_called_once()
         probe.assert_called_once_with("/tmp/avatar_frame.webp", _AVATAR, user_id=1, post_id=7)
-        track.assert_called_once_with(1, 7, {"present": True, "checked": True, "reason": "ok"})
+        track.assert_called_once_with(1, 7, {"present": True, "checked": True, "reason": "ok"},
+                                      used_avatar="true")
 
     def test_no_probe_when_no_avatar(self):
         with patch("cqc_lem.utilities.avatar.guardrails.resolve_avatar_for", return_value=None), \
@@ -110,6 +112,109 @@ class TestAvatarLikenessProbeInVideoGeneration:
              patch(f"{_RCP}.log_warning") as warn:
             _generate_video_src(post_id=12)
         assert not [c for c in warn.call_args_list if "Video generation failed" in str(c)]
+
+    def test_fallback_frame_is_reported_as_not_a_lora_render(self):
+        """A base-Flux fallback frame carries no likeness by design (issue #1430).
+
+        Its checked-negative must be attributable, or it is summed into the LoRA render's error
+        rate and the measured rate can never decide the hold default.
+        """
+        with patch("cqc_lem.utilities.avatar.guardrails.resolve_avatar_for",
+                   return_value=_AVATAR), \
+             patch("cqc_lem.utilities.db.get_default_video_quality", return_value="standard"), \
+             patch(f"{_RCP}.get_flux_image_prompt_from_ai", return_value="image prompt"), \
+             patch(f"{_RCP}.get_runway_ml_video_prompt_from_ai", return_value="motion"), \
+             patch("cqc_lem.utilities.ai.ai_helper.generate_post_image",
+                   return_value="/tmp/base_fallback.webp"), \
+             patch(f"{_RCP}.create_runway_video", return_value="https://runway.video/abc.mp4"), \
+             patch(f"{_LIKENESS}.probe_avatar_likeness",
+                   return_value={"present": False, "checked": True, "reason": "no match"}), \
+             patch("cqc_lem.utilities.db.post_avatar_media_state", return_value=False), \
+             patch(f"{_OBS}.track_avatar_likeness_probe") as track:
+            _generate_video_src(post_id=13)
+        assert track.call_args.kwargs["used_avatar"] == "false"
+
+    def test_the_renderers_own_reading_beats_the_sticky_post_flag(self):
+        """The renderer's per-render answer wins over the sticky post flag (issue #1430).
+
+        `posts.avatar_media` is per POST and never cleared, so an earlier avatar render leaves it
+        true for a later frame that fell back to base Flux.
+        """
+        def _fallback_render(*args, **kwargs):
+            kwargs["render_info"]["used_avatar"] = False
+            return "/tmp/base_fallback.webp"
+
+        with patch("cqc_lem.utilities.avatar.guardrails.resolve_avatar_for",
+                   return_value=_AVATAR), \
+             patch("cqc_lem.utilities.db.get_default_video_quality", return_value="standard"), \
+             patch(f"{_RCP}.get_flux_image_prompt_from_ai", return_value="image prompt"), \
+             patch(f"{_RCP}.get_runway_ml_video_prompt_from_ai", return_value="motion"), \
+             patch("cqc_lem.utilities.ai.ai_helper.generate_post_image",
+                   side_effect=_fallback_render), \
+             patch(f"{_RCP}.create_runway_video", return_value="https://runway.video/abc.mp4"), \
+             patch(f"{_LIKENESS}.probe_avatar_likeness",
+                   return_value={"present": False, "checked": True, "reason": "no match"}), \
+             patch("cqc_lem.utilities.db.post_avatar_media_state", return_value=True) as flag, \
+             patch(f"{_OBS}.track_avatar_likeness_probe") as track:
+            _generate_video_src(post_id=16)
+        assert track.call_args.kwargs["used_avatar"] == "false"
+        flag.assert_not_called()
+
+    def test_a_real_lora_render_reports_true_without_reading_the_flag(self):
+        def _lora_render(*args, **kwargs):
+            kwargs["render_info"]["used_avatar"] = True
+            return "/tmp/avatar_frame.webp"
+
+        with patch("cqc_lem.utilities.avatar.guardrails.resolve_avatar_for",
+                   return_value=_AVATAR), \
+             patch("cqc_lem.utilities.db.get_default_video_quality", return_value="standard"), \
+             patch(f"{_RCP}.get_flux_image_prompt_from_ai", return_value="image prompt"), \
+             patch(f"{_RCP}.get_runway_ml_video_prompt_from_ai", return_value="motion"), \
+             patch("cqc_lem.utilities.ai.ai_helper.generate_post_image",
+                   side_effect=_lora_render), \
+             patch(f"{_RCP}.create_runway_video", return_value="https://runway.video/abc.mp4"), \
+             patch(f"{_LIKENESS}.probe_avatar_likeness",
+                   return_value={"present": True, "checked": True, "reason": "ok"}), \
+             patch("cqc_lem.utilities.db.post_avatar_media_state", return_value=False) as flag, \
+             patch(f"{_OBS}.track_avatar_likeness_probe") as track:
+            _generate_video_src(post_id=17)
+        assert track.call_args.kwargs["used_avatar"] == "true"
+        flag.assert_not_called()
+
+    def test_unreadable_avatar_media_flag_is_unknown_not_a_fallback(self):
+        """An unreadable flag is not the reading "base-Flux fallback" — it is no reading at all."""
+        with patch("cqc_lem.utilities.avatar.guardrails.resolve_avatar_for",
+                   return_value=_AVATAR), \
+             patch("cqc_lem.utilities.db.get_default_video_quality", return_value="standard"), \
+             patch(f"{_RCP}.get_flux_image_prompt_from_ai", return_value="image prompt"), \
+             patch(f"{_RCP}.get_runway_ml_video_prompt_from_ai", return_value="motion"), \
+             patch("cqc_lem.utilities.ai.ai_helper.generate_post_image",
+                   return_value="/tmp/avatar_frame.webp"), \
+             patch(f"{_RCP}.create_runway_video", return_value="https://runway.video/abc.mp4"), \
+             patch(f"{_LIKENESS}.probe_avatar_likeness",
+                   return_value={"present": True, "checked": True, "reason": "ok"}), \
+             patch("cqc_lem.utilities.db.post_avatar_media_state", return_value=None), \
+             patch(f"{_OBS}.track_avatar_likeness_probe") as track:
+            _generate_video_src(post_id=14)
+        assert track.call_args.kwargs["used_avatar"] == "unknown"
+
+    def test_avatar_media_read_failure_never_costs_the_video(self):
+        with patch("cqc_lem.utilities.avatar.guardrails.resolve_avatar_for",
+                   return_value=_AVATAR), \
+             patch("cqc_lem.utilities.db.get_default_video_quality", return_value="standard"), \
+             patch(f"{_RCP}.get_flux_image_prompt_from_ai", return_value="image prompt"), \
+             patch(f"{_RCP}.get_runway_ml_video_prompt_from_ai", return_value="motion"), \
+             patch("cqc_lem.utilities.ai.ai_helper.generate_post_image",
+                   return_value="/tmp/avatar_frame.webp"), \
+             patch(f"{_RCP}.create_runway_video", return_value="https://runway.video/abc.mp4"), \
+             patch(f"{_LIKENESS}.probe_avatar_likeness",
+                   return_value={"present": True, "checked": True, "reason": "ok"}), \
+             patch("cqc_lem.utilities.db.post_avatar_media_state",
+                   side_effect=RuntimeError("db down")), \
+             patch(f"{_OBS}.track_avatar_likeness_probe") as track:
+            result = _generate_video_src(post_id=15)
+        assert result == "https://runway.video/abc.mp4"
+        assert track.call_args.kwargs["used_avatar"] == "unknown"
 
     def test_hold_flag_drops_to_fallback_on_failed_probe(self):
         with patch(f"{_RCP}.AVATAR_LIKENESS_VIDEO_HOLD_ENABLED", True), \

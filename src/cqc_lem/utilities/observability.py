@@ -342,8 +342,15 @@ EVENTS = {spec.event: spec for spec in (
     # Avatar likeness on a video source frame (issue #1279). `present` is a label() and stays
     # three-valued: "True"/"False" are the probe's verdict, None means it never ran, and only a
     # string keeps a breakdown on the verdict working while leaving the unchecked rows out of it.
+    # `used_avatar` is the RENDERER's reading for the probed frame (`posts.avatar_media` is only the
+    # fallback — it is per POST and sticky) and is what splits a checked-negative into its TWO
+    # causes (issue #1430): a bad LoRA render, or the base-Flux fallback `generate_image_with_avatar`
+    # substitutes when LoRA inference fails — a frame that legitimately carries no likeness. A raw
+    # checked-negative rate mixes them, so it can never decide the hold flag. Three-valued as a
+    # string ("true"/"false"/"unknown") because an unreadable flag is not a fallback render.
     EventSpec("avatar_likeness_probe", (
         prop("user_id"), prop("post_id"), label("present"), flag("checked"), text("reason"),
+        label("used_avatar"),
     )),
     EventSpec("image_gate_verdict", (
         label("surface"), label("verdict"), items("issues"), prop("attempt_count"),
@@ -1111,6 +1118,7 @@ def track_avatar_likeness_probe(
     user_id: Optional[int],
     post_id: Optional[int],
     verdict: Optional[dict],
+    used_avatar: Optional[str] = None,
     **extra,
 ) -> None:
     """Emit one avatar-likeness probe reading (issue #1279).
@@ -1119,9 +1127,24 @@ def track_avatar_likeness_probe(
     Telemetry-only by default; the separate ``AVATAR_LIKENESS_VIDEO_HOLD_ENABLED`` flag controls whether
     a failed probe may hold the video. Every probe is emitted, including unchecked ones, so false
     positive/negative rates can be measured before any hold is enabled.
+
+    Args:
+        user_id: The account the frame was rendered for.
+        post_id: The post the frame belongs to.
+        verdict: The ``probe_avatar_likeness`` reading (``present`` / ``checked`` / ``reason``).
+        used_avatar: ``"true"`` / ``"false"`` / ``"unknown"`` — whether the PROBED frame is a real
+            LoRA render (issue #1430), read from the renderer and only falling back to the sticky
+            per-post ``posts.avatar_media`` flag. A checked-negative on a ``"false"`` frame
+            is the base-Flux fallback doing its job, not a likeness defect, so the two must never
+            share one rate.
+        **extra: Extra properties for this one event, applied LAST — so a call site can add a
+            property or override a declared one. Nothing a dashboard or alert FILTERS on may
+            arrive this way: `_emit` applies it after the coercions, so the string contract
+            cannot see it.
     """
     _emit(EVENTS["avatar_likeness_probe"],
-          {**dict(verdict or {}), "user_id": user_id, "post_id": post_id}, extra)
+          {**dict(verdict or {}), "user_id": user_id, "post_id": post_id,
+           "used_avatar": used_avatar}, extra)
 
 
 def _rollup_field(user_id: Optional[int], feature: Optional[str], model_tier: Optional[str]) -> str:
