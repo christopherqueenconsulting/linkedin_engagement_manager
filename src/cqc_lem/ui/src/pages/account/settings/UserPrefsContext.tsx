@@ -61,9 +61,11 @@ export function UserPrefsProvider({ children }: { children: ReactNode }) {
         content_buffer_days: prefs?.content_buffer_days,
         content_buffer_max_posts: prefs?.content_buffer_max_posts,
       }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['user-settings'] })
-      // The refetch answers with what was just written, so the merged row is that row again.
+    onSuccess: async () => {
+      // Drop the edits only once the refetch has ANSWERED. React Query keeps serving the previous
+      // row while it is in flight, so clearing them first snaps every field back to its pre-save
+      // value for the round trip — and leaves it there for good if that refetch fails.
+      await queryClient.invalidateQueries({ queryKey: ['user-settings'] })
       setEdits(null)
       setMessage({ ok: true, text: 'Saved.' })
       setTimeout(() => setMessage(null), 3000)

@@ -46,9 +46,11 @@ export function EngagementPrefsProvider({ children }: { children: ReactNode }) {
 
   const mutation = useMutation({
     mutationFn: () => api.put('/user/engagement-preferences', { session_token: sessionToken, ...eng }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['engagement-preferences'] })
-      // The refetch answers with what was just written, so the merged row is that row again.
+    onSuccess: async () => {
+      // Only once the refetch has ANSWERED — until then React Query still serves the pre-save row,
+      // so clearing the edits first would put every field (and, on a first save, the Balanced
+      // preset) back on screen for the length of the round trip.
+      await queryClient.invalidateQueries({ queryKey: ['engagement-preferences'] })
       setEdits(null)
       setMessage({ ok: true, text: 'Saved.' })
       setTimeout(() => setMessage(null), 3000)

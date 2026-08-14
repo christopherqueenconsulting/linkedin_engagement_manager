@@ -61,6 +61,21 @@ export default function NewsletterQueue(
         ? { id: selected.id, patch: { ...(p?.id === selected.id ? p.patch : {}), ...patch } }
         : p)
 
+  // A cover the server has just re-decided is no longer something the editor may override: the
+  // cover fields are written into the edits by `applyCover` for instant feedback, and a later
+  // generation would otherwise keep painting the previous URL and the previous review status over
+  // the row the API returns — a generated cover reading `approved` is exactly the claim
+  // `_approved_cover_path` refuses to act on.
+  const dropCoverEdits = (id: number) =>
+    setEdits((p) => {
+      if (p?.id !== id) return p
+      const rest = { ...p.patch }
+      delete rest.cover_image_url
+      delete rest.cover_image_source
+      delete rest.cover_image_status
+      return Object.keys(rest).length > 0 ? { id, patch: rest } : null
+    })
+
   const draftMutation = useMutation({
     mutationFn: (action: 'save' | 'approve' | 'skip') =>
       api.put('/user/newsletter-draft', {
@@ -135,11 +150,15 @@ export default function NewsletterQueue(
       form.append('file', file)
       return api.post('/user/newsletter-draft/cover', form)
     },
-    onSuccess: (res) => {
+    onSuccess: async (res) => {
+      const id = draftEdit!.id
       applyCover(res.data.detail as CoverDetail)
-      qc.invalidateQueries({ queryKey: ['newsletter-queue'] })
       setMsg({ ok: true, text: 'Cover uploaded.' })
       setTimeout(() => setMsg(null), 3000)
+      // The override is instant feedback only — hand the cover back to the API row once the
+      // refetch carries it, so a later generation is never painted over by this one.
+      await qc.invalidateQueries({ queryKey: ['newsletter-queue'] })
+      dropCoverEdits(id)
     },
     onError: (e) => coverError(e, 'Could not upload that image — try another file.'),
   })
@@ -173,11 +192,13 @@ export default function NewsletterQueue(
         edition_id: draftEdit!.id,
         action,
       }),
-    onSuccess: (res, action) => {
+    onSuccess: async (res, action) => {
+      const id = draftEdit!.id
       applyCover(res.data.detail as CoverDetail)
-      qc.invalidateQueries({ queryKey: ['newsletter-queue'] })
       setMsg({ ok: true, text: action === 'remove' ? 'Cover removed.' : 'Cover approved.' })
       setTimeout(() => setMsg(null), 3000)
+      await qc.invalidateQueries({ queryKey: ['newsletter-queue'] })
+      dropCoverEdits(id)
     },
     onError: (e) => coverError(e, 'Could not update the cover — try again.'),
   })
@@ -203,6 +224,7 @@ export default function NewsletterQueue(
       if (cancelled) return
       const fresh = res.data?.editions.find((e) => e.id === coverWaitId)
       if (fresh?.cover_image_url && fresh.cover_image_url !== coverWaitFrom) {
+        dropCoverEdits(coverWaitId)
         stop()
         setMsg({ ok: true, text: 'Cover ready — review it below and approve to publish it.' })
         setTimeout(() => setMsg(null), 5000)

@@ -6,11 +6,12 @@ import NewsletterQueue from './NewsletterQueue'
 import type { NewsletterEdition } from '../account/types'
 
 const get = vi.fn()
+const post = vi.fn()
 vi.mock('../../api/client', () => ({
   default: {
     get: (...args: unknown[]) => get(...args),
     put: vi.fn(),
-    post: vi.fn(),
+    post: (...args: unknown[]) => post(...args),
   },
 }))
 vi.mock('../../contexts/useAuth', () => ({ useAuth: () => ({ user: { email: 'a@b.c' }, sessionToken: 'tok' }) }))
@@ -44,7 +45,7 @@ const boxes = () => screen.getAllByRole('textbox') as HTMLInputElement[]
 const titleBox = () => boxes()[0]
 const bodyBox = () => boxes()[2]
 
-afterEach(() => { cleanup(); get.mockReset() })
+afterEach(() => { cleanup(); get.mockReset(); post.mockReset() })
 
 describe('NewsletterQueue editor', () => {
   it('opens on the soonest queued edition', async () => {
@@ -96,5 +97,40 @@ describe('NewsletterQueue editor', () => {
     await client.invalidateQueries({ queryKey: ['newsletter-queue'] })
 
     await waitFor(() => expect(titleBox().value).toBe('First up'))
+  })
+
+  // A cover decision writes the returned cover fields straight into the local edits so the panel
+  // answers instantly. That override must not outlive the refetch it triggers: the cover the
+  // editor shows — and the review status next to it — is the API row's, never this session's.
+  it('hands the cover back to the API row once the decision refetch lands', async () => {
+    const withCover = (url: string, status: 'pending_review' | 'approved'): NewsletterEdition => ({
+      ...edition(1, 'First up'),
+      cover_image_url: url,
+      cover_image_source: 'ai',
+      cover_image_status: status,
+    })
+    serveQueue([withCover('https://cdn.test/old.png', 'pending_review')])
+    harness(queue())
+    await waitFor(() => expect(screen.getByText('NEEDS YOUR APPROVAL')).toBeTruthy())
+
+    // A regeneration lands a different cover — still unapproved — while this tab is deciding on
+    // the one it is looking at.
+    serveQueue([withCover('https://cdn.test/new.png', 'pending_review')])
+    post.mockResolvedValue({
+      data: {
+        detail: {
+          cover_image_url: 'https://cdn.test/old.png',
+          cover_image_source: 'ai',
+          cover_image_status: 'approved',
+        },
+      },
+    })
+    fireEvent.click(screen.getByText('Approve cover'))
+
+    await waitFor(() =>
+      expect(screen.getByAltText('Newsletter cover').getAttribute('src'))
+        .toBe('https://cdn.test/new.png'))
+    expect(screen.getByText('NEEDS YOUR APPROVAL')).toBeTruthy()
+    expect(screen.queryByText('PUBLISHES WITH THIS EDITION')).toBeNull()
   })
 })

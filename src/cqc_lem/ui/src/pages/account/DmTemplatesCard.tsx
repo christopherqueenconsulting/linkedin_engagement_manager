@@ -59,8 +59,10 @@ export default function DmTemplatesCard() {
         session_token: sessionToken,
         templates: dmTemplates.filter((t) => t.template_text.trim()),
       }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['dm-templates'] })
+    onSuccess: async () => {
+      // Wait for the refetch: React Query serves the pre-save rows until it lands, so dropping the
+      // draft first would blank a template that was just written for the length of the round trip.
+      await queryClient.invalidateQueries({ queryKey: ['dm-templates'] })
       setDraft(null)
       capture(EVENTS.dmTemplateSaved, {
         templates: dmTemplates.filter((t) => t.template_text.trim()).length,

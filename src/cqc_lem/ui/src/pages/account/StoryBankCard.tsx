@@ -64,8 +64,10 @@ export default function StoryBankCard() {
         session_token: sessionToken,
         entries: entries.filter((e) => e.body.trim()),
       }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['story-bank'] })
+    onSuccess: async () => {
+      // Wait for the refetch: React Query serves the pre-save rows until it lands, so dropping the
+      // draft first would make a just-added entry disappear — and keep it gone if that refetch fails.
+      await queryClient.invalidateQueries({ queryKey: ['story-bank'] })
       setDraft(null)
       // Fired on the SAVE, not on "+ Add entry" — a blank row the user abandons never became an
       // entry. Counts and kinds only; the entry text is the user's own material.

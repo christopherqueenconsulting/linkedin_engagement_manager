@@ -28,8 +28,10 @@ export default function LeadMagnetCard() {
   const setLm = (patch: Partial<LeadMagnet>) => setLmEdit((p) => ({ ...p, ...patch }))
   const lmMutation = useMutation({
     mutationFn: () => api.put('/user/lead-magnet', { session_token: sessionToken, ...leadMagnet }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['lead-magnet'] })
+    onSuccess: async () => {
+      // Wait for the refetch: React Query serves the pre-save row until it lands, so dropping the
+      // edits first would flash the old keyword and message back over what was just saved.
+      await queryClient.invalidateQueries({ queryKey: ['lead-magnet'] })
       setLmEdit(null)
       setLmMsg({ ok: true, text: 'Saved.' }); setTimeout(() => setLmMsg(null), 3000)
     },

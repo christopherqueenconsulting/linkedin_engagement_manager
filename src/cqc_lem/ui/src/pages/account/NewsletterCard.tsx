@@ -42,8 +42,10 @@ export default function NewsletterCard() {
 
   const nlMutation = useMutation({
     mutationFn: () => api.put('/user/newsletter-settings', { session_token: sessionToken, ...newsletter }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['newsletter-settings'] })
+    onSuccess: async () => {
+      // Wait for the refetch: React Query serves the pre-save row until it lands, so dropping the
+      // edits first would flash the old schedule back over what was just saved.
+      await queryClient.invalidateQueries({ queryKey: ['newsletter-settings'] })
       setNlEdit(null)
       setNlMsg({ ok: true, text: 'Saved.' })
       setTimeout(() => setNlMsg(null), 3000)

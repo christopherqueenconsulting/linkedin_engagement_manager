@@ -185,8 +185,10 @@ export default function EngagementRosterCard() {
         session_token: sessionToken,
         targets: targets.filter((t) => t.profile_url.trim()),
       }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['engagement-targets'] })
+    onSuccess: async () => {
+      // Wait for the refetch: React Query serves the pre-save rows until it lands, so dropping the
+      // draft first would make a just-added target disappear — and keep it gone if that refetch fails.
+      await queryClient.invalidateQueries({ queryKey: ['engagement-targets'] })
       setDraft(null)
       setMsg({ ok: true, text: 'Engagement roster saved.' })
       setTimeout(() => setMsg(null), 3000)
