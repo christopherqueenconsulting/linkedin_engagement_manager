@@ -162,6 +162,12 @@ counterpart of `get_recent_post_texts`, and the nightly pass now reads it into t
 history map. This ships MEASUREMENT only: no threshold, no gate, nothing paused. Calibrating a
 newsletter similarity ceiling against a corpus bigger than one account is **#1433**.
 
+**#1433 answered it: no ceiling ships, and the measurement changed one thing.** §8 below records the
+decision and the corpus that could not support one. What #1433 did ship is the consequence of this
+finding rather than a threshold on it — once editions carry a `similarity` value, the rollup's
+POOLED mean moves with the week's surface MIX, so `similarity_creep` is now graded on the
+per-surface split (`content_quality.mix_adjusted_similarity_delta`).
+
 ### F10 — The HARD slop checks are not clearing on this surface → **#1434**
 
 Seven of ten editions still trip a HARD check after the bounded regeneration (`contrastive_frame`
@@ -407,3 +413,100 @@ carry is structural (0.77 self-similarity), which is #1433, not a scaffold quest
 newsletters, so from the merge date a newsletter scaffold moves from `slop_warn` to `slop_hard`. The
 step is this severity landing, not quality moving. Content-quality telemetry is a trend line and
 never gates anything (`docs/content-quality-telemetry.md`); the newsletter publish flow is unchanged.
+
+---
+
+## 8. Calibrated newsletter self-similarity (#1433)
+
+**Decision: no newsletter self-similarity threshold ships — not a rollup ceiling, not a
+generation-time gate, not a title check. What ships instead is a mix-adjusted `similarity_creep` and
+the sampler that will produce the corpus a threshold needs.**
+
+### 8.1 The corpus the issue asked for does not exist
+
+#1433 asks for **20+ editions across more than one account**, or a stated reason that is impossible.
+It is impossible, and not just today:
+
+- **Accounts.** LEM production is a single-owner deployment: one active account, which is the same
+  account §1's ten editions came from. A second account's editions cannot be sampled because there
+  is no second account, and the number cannot be reached by waiting.
+- **Editions.** That account has published weekly since 2026-07-07. §1's corpus (ids 1–10, every
+  edition LEM has ever written) reaches 20 somewhere around November 2026 — and all 20 would still
+  be one editorial line, which is the half of the requirement that actually matters. Twenty editions
+  of one newsletter measure how consistently that newsletter covers its subject, not where the
+  boundary between "consistent" and "templated" sits.
+- **Substitutes were considered and rejected.** Grading a competitor's published editions (the §1
+  exemplar path) measures a corpus LEM's prompts did not write, and the pipeline's own A/B
+  generations (§4) are two editions per arm on the same subject by construction — both would produce
+  a number with no relationship to the thing being thresholded.
+
+So the honest measured distribution remains §1's: body self-similarity **0.684–0.828** (mean 0.77),
+title **0.372–0.711** (mean 0.60), n=10, one account, all pre-contract.
+
+### 8.2 Why no number is picked from it
+
+1. **The level is expected, not a defect.** A newsletter has ONE subject by design — that is what a
+   subscriber signed up for. The post surface's ceilings (`POST_EMBEDDING_SIMILARITY_MAX` 0.78,
+   `POST_SIMILARITY_MAX` 0.55) exist because a feed post competes against the author's OWN last
+   post in the same scroll. Reusing either number here would hold or alert on the newsletter doing
+   its job, and #1433 says so in its own scope: a threshold that fires on normal editorial
+   repetition is worse than none.
+2. **The rollup is a trend line, never a gate** (`docs/content-quality-telemetry.md`). Its alerts
+   are already relative — an account against its OWN prior period — so a newsletter that really
+   collapses into a template still shows up as a rise, with no absolute ceiling required.
+3. **The safety posture is already different.** Every edition waits in a human review queue days
+   before its slot. A generation-time gate (the posts' pattern) would spend a `lem-complex`
+   regeneration to pre-empt a reader who is going to look at the draft anyway.
+4. **The title check has the same problem one scale down.** Five of ten titles read as topic labels
+   and cluster at 0.60 — a real quality finding, and it is a finding about *how titles are written*,
+   which is #1284's writer contract and the `humanize_title` path, not a number. A 0.60-ish title
+   ceiling calibrated on ten titles from one newsletter would fire on the next edition of the same
+   series.
+
+### 8.3 What DID have to change: the pooled mean moves with the mix
+
+The one thing #1284's measurement forced. `summarize_scores` pools every surface into one
+`similarity_avg`, and the surfaces sit at different baselines by design — a newsletter at ~0.77
+against a post gated at 0.78 and a comment lower again. Once editions carry a value instead of NULL,
+**a week that published two editions raises the pooled mean without any writing converging**, and
+`similarity_creep`'s 0.05 delta is easily cleared by that alone. That is an un-calibrated newsletter
+threshold arriving by the back door: not stated anywhere, and firing on the publishing schedule.
+
+`content_quality.mix_adjusted_similarity_delta` is the fix. Each surface's own week-over-week move,
+averaged with THIS period's per-surface samples as the weights, over the surfaces measured on both
+sides. `evaluate_alerts` grades that instead of the pooled delta; the pooled number stays exactly as
+it was for the dashboard and rides along on the alert as `pooled_delta`. Consequences:
+
+- The shared `CONTENT_QUALITY_SIMILARITY_DELTA` (0.05) is unchanged and stays surface-agnostic — it
+  thresholds a *move*, which is comparable across surfaces in a way a *level* is not.
+- A newsletter surface that really does converge still alerts, on the same delta as everything else.
+- Two periods with no surface in common produce **no verdict** rather than a pooled one: `None`, and
+  the pooled delta is not consulted as a second chance.
+- `CONTENT_QUALITY_MIN_SAMPLE` counts the SHARED surfaces' samples once the split is grading, not
+  the pooled `similarity_sample` — otherwise one edition against one edition could raise the alert
+  while the period reported twenty scored pieces.
+- Nothing is held, paused or regenerated. It is still the trend line.
+
+### 8.4 The sampler that unblocks the calibration
+
+`scripts/sample_newsletter_similarity.py` — read-only, no writes, no browser, and it re-uses
+`similarity_reports` so it measures exactly what the nightly pass measures — including its window,
+`COMMENT_HISTORY_LIMIT` editions per account, which is both what `run_scheduler` reads and the cap
+`similarity_reports` puts on the history pool (`--limit` is clamped there, because reading further
+back would report more editions than the scores actually came from). It reports the
+leave-one-out distribution (min / p25 / median / mean / p75 / p90 / max) for **bodies and titles
+separately**, split per account and per measure (cosine and token overlap are never pooled), against
+the post ceilings as a labelled *reference, not a verdict*.
+
+```
+poetry run python scripts/sample_newsletter_similarity.py
+```
+
+It refuses to imply a calibration it cannot support: under **20 editions** or under **2 accounts**
+with a comparison it prints `NOT ENOUGH` and `sufficient_corpus` is false. An account with a single
+edition contributes zero comparisons and does not count toward the account floor — one edition has
+nothing to be similar to, and reporting it as 0.0 would invent a reading.
+
+**What would reopen this decision:** that sampler returning `sufficient_corpus: true` — a second
+account with a real edition history, i.e. LEM running someone else's newsletter. Until then a
+number would be an opinion with a decimal point on it.

@@ -68,8 +68,38 @@ only** and records the full `similarity_measures` breakdown; `evaluate_alerts` a
 requires both periods to share the same dominant measure before `similarity_creep` can fire.
 
 Similarity is graded **WITHIN** a surface — a post compared against the user's comments would score
-as unique no matter how templated it is. Newsletter editions have no body-history reader, so their
-similarity reports as unmeasured rather than against the wrong scale.
+as unique no matter how templated it is. Newsletter editions got their body-history reader
+(`get_recent_newsletter_bodies`) in #1284, so all three surfaces are measured; an account with no
+history on a surface still reports unmeasured rather than against the wrong scale.
+
+### The pooled mean moves with the surface MIX (#1433)
+
+The surfaces sit at **different baselines by design**: LEM's newsletter editions measure 0.68–0.83
+cosine against each other (a newsletter has ONE subject — that is what a subscriber signed up for),
+a post is gated at `POST_EMBEDDING_SIMILARITY_MAX` 0.78, a comment lower again. So `similarity_avg`,
+which pools all three, moves when the week's **composition** changes even if no surface moved at
+all — a week that published two editions clears the 0.05 creep delta on the mix alone.
+
+`summarize_scores` therefore also reports `similarity_by_surface` (`{surface: {sample, avg}}`, same
+dominant-measure rule), and `evaluate_alerts` grades **`mix_adjusted_similarity_delta`**: each
+surface's own week-over-week move, weighted by THIS period's per-surface samples, over the surfaces
+measured on both sides. The pooled number is unchanged for the dashboard and rides along on the
+alert as `pooled_delta`; the rollup carries both as `deltas.similarity_avg` and
+`deltas.similarity_avg_mix_adjusted`. Two periods with **no surface in common** produce `None` — no
+verdict — and the pooled delta is never consulted as a second chance.
+
+`CONTENT_QUALITY_MIN_SAMPLE` then counts **the shared surfaces' own samples**, not the pooled
+`similarity_sample`: two periods can each carry twenty scored pieces and still share one surface
+with a single edition on each side, and the minimum exists to keep exactly that measurement out of
+the owner's inbox.
+
+The threshold itself is unchanged and stays surface-agnostic: `CONTENT_QUALITY_SIMILARITY_DELTA`
+thresholds a *move*, which is comparable across surfaces in a way a *level* is not. **No surface has
+an absolute self-similarity ceiling here**, and #1433 decided the newsletter surface does not get
+one either — a threshold that fires on normal editorial repetition is worse than none, and the
+corpus that could calibrate one (20+ editions across 2+ accounts) does not exist. The sampler that
+would produce it is `scripts/sample_newsletter_similarity.py`, which prints `NOT ENOUGH` below those
+floors; the full decision is `docs/content-quality-audits/newsletter.md` §8.
 
 ## LLM spend
 
@@ -91,7 +121,7 @@ alert trains the owner to ignore the next one.
 |---|---|---|
 | `slop_regression` | mean weighted slop rose week-over-week | `CONTENT_QUALITY_SLOP_REGRESSION_DELTA` (1.0 — one extra HARD violation every three pieces) |
 | `engagement_floor` | engagement per impression below the floor | `CONTENT_QUALITY_ENGAGEMENT_FLOOR` (0.02) |
-| `similarity_creep` | self-similarity rose, same measure both periods | `CONTENT_QUALITY_SIMILARITY_DELTA` (0.05) |
+| `similarity_creep` | self-similarity rose **per surface** (mix-adjusted, #1433), same measure both periods | `CONTENT_QUALITY_SIMILARITY_DELTA` (0.05) |
 
 `engagement_floor` is the exception twice over: it needs **no prior period** (an account below the
 floor is below it regardless of last week) and it counts against its own

@@ -268,7 +268,7 @@ is `docs/observability-map.md`.
 | **Feature flags** (#651) | `utilities/flags.py` | **Fails open to the env var** on every unresolvable path; read at CALL SITE, never at import; safety controls (429 breaker, holds, caps) are NOT flags | `docs/feature-flags.md` |
 | **Marketing attribution** (#658) | `utilities/marketing/attribution.py` | Only OWNED destinations tagged (`is_owned_link`); existing UTMs never overwritten; `signup_completed_web` ≠ `signup_completed` | `docs/marketing-attribution.md` |
 | **Model-tier benchmarks** (#721) | `scripts/benchmark_models.py` | The suite scores a FIRST draft, production ships an n-th — `contract` checks are the floor, `repairable` advisory (#910); an all-errored run is REFUSED, never a scorecard of zeros (#923) | `docs/model-benchmarks/README.md` |
-| **Content-quality telemetry** (#630) | `auto_nightly_content_quality` | The TREND LINE, not a gate — **unscored is never zero**, and it pauses nothing (safety is #629) | `docs/content-quality-telemetry.md` |
+| **Content-quality telemetry** (#630) | `auto_nightly_content_quality` | The TREND LINE, not a gate — **unscored is never zero**, and it pauses nothing (safety is #629). The three surfaces are NOT one scale (#1433): `similarity_creep` grades the per-surface split (`mix_adjusted_similarity_delta`), never the pooled mean, and no surface has an absolute similarity ceiling here | `docs/content-quality-telemetry.md` |
 | **Surveys — NPS/CSAT** (#653) | PostHog Surveys + `utilities/surveys.py` | Type `api`, rendered headless in `PostHogSurveyModal.tsx`; ONE answer = TWO paths counted ONCE; `markSurveySeen()` advances the 30d wait | `docs/surveys.md` |
 
 ## CI Gates

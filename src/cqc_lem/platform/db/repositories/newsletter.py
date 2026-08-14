@@ -344,6 +344,28 @@ def get_recent_newsletter_bodies(user_id: int, limit: int = 20) -> list:
         return []
 
 
+def get_recent_newsletter_titles(user_id: int, limit: int = 20) -> list:
+    """Recent edition TITLES (published + queued draft/approved), most-recent first.
+
+    The title is the subscriber's subject line, so it is a writing surface of its own: #1284
+    measured ten of them at 0.372-0.711 cosine against each other while their bodies sat at
+    0.68-0.83. Same status filter and ordering as `get_recent_newsletter_bodies`, so a title row and
+    a body row for the same edition are the same edition — the sampler behind #1433 reads both and
+    would otherwise be comparing two different corpora.
+    """
+    try:
+        with db_cursor() as cursor:
+            cursor.execute(
+                "SELECT title FROM newsletter_editions "
+                "WHERE user_id = %s AND title IS NOT NULL AND title <> '' "
+                "AND status IN ('draft', 'approved', 'published') "
+                "ORDER BY id DESC LIMIT %s", (user_id, int(limit)))
+            return [r[0] for r in cursor.fetchall()]
+    except mysql.connector.Error as err:
+        log_error("Could not get recent newsletter titles", exc=err, user_id=user_id)
+        return []
+
+
 def get_recent_newsletter_blueprint_history(user_id: int, limit: int = 12) -> list:
     """Recent editions' SHAPE history — {subject, format, hook_style, opening_line} dicts, most-recent
     first, across queued/published/skipped editions. Fed to the planner and regenerator so new
