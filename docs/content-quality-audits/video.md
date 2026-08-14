@@ -33,7 +33,8 @@ high-engagement LinkedIn video exemplar. Both remain bounded by the headless wor
 
 The missing corpus / exemplar work is filed as a separate `risk:live-linkedin` follow-up (§6).
 Until that lands, this audit reports on the **machinery** that produces the video, not on a corpus of
-shipped videos.
+shipped videos. **§7 is the sampler that fills the corpus half of that gap** — it produces the
+scorecard from a checkout where the database and the asset volume are both reachable.
 
 ---
 
@@ -234,3 +235,43 @@ has, and only the restored contract can see anything wrong with it**.
 Existing gates are untouched: `_post_missing_required_asset` still only checks presence; no new hold
 condition is introduced. The only generation-side change is the additional system-prompt text in
 `get_runway_ml_video_prompt_from_ai`.
+
+---
+
+## 7. Measuring the shipped corpus — `scripts/sample_shipped_videos.py` (#1363)
+
+§1 records that the corpus half of this audit is blocked on access, not on tooling. This is the
+tooling: a read-only sampler that turns "run it where the data is" into one command, so the measured
+scorecard does not have to be assembled by hand or by a fresh SQL query.
+
+```bash
+poetry run python scripts/sample_shipped_videos.py                       # scorecard + frames
+poetry run python scripts/sample_shipped_videos.py --users 1 --json      # raw summary
+poetry run python scripts/sample_shipped_videos.py --no-frames           # probe only
+```
+
+- **It samples 6–10 published video posts** (`MIN_CORPUS` / `MAX_SAMPLES`), newest first, and counts
+  a post as *gradable* only when its **body and its asset are both available** — the pairing the
+  issue asks for. A post whose stored MP4 does not resolve under `assets_dir` is sampled and
+  reported, never graded.
+- **It reads through the existing seam.** `db.get_posted_posts`, `db.get_post_video_url` and
+  `db.get_post_captions` are the readers; `content_quality.score_item` and `score_video_asset` are
+  the scorer. That is deliberate: a row in this report and a row in the nightly
+  `content_quality_scores` table are produced by the same functions, so the audit and the telemetry
+  cannot disagree about the same post.
+- **Frames come out at three points** — `open` (0.5s), `mid`, `close` — into
+  `docs/content-quality-audits/assets/1363/`, which is what R1 and R8 are actually graded on. The
+  opening frame is sampled at 0.5s rather than at t=0 because frame zero of a Runway render is
+  routinely a near-black fade-in and says nothing about the hook.
+- **Unmeasured is never zero.** A clip whose duration ffprobe could not read is excluded from the
+  5–10s band denominator rather than counted as a failure, and a corpus below `MIN_CORPUS` prints
+  `NOT ENOUGH` next to every rate. The same rule the nightly telemetry follows (#630): an audit that
+  reports a rate over three videos has invented a calibration.
+- **It writes nothing but image files** — no database write, no browser, no LLM call.
+
+Pinned by `tests/unit/scripts/test_sample_shipped_videos.py`.
+
+**What the sampler still cannot do:** source the real high-engagement LinkedIn video exemplar. That
+needs an authenticated, non-headless LinkedIn session, which is a human step, not a headless one —
+and #1140's fallback clause (quoted in §1) is what applies until someone runs it. The gauntlet-loop
+verdict trail in §4 documents the in-repo gold standard used in its place.
