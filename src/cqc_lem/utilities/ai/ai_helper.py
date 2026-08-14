@@ -981,34 +981,58 @@ def generate_newsletter_edition(profile: "LinkedInProfile", topic: str = None,
     if not edition:
         return None
     user_id, _ = current_llm_attribution()
-    if flag_enabled(NEWSLETTER_EDITOR, user_id=user_id):
-        edition["body"] = _mechanical_edit_text(
-            edition["body"], content_type="newsletter",
-            profile_synthesis=profile_synthesis, enabled=True,
-        ) or edition["body"]
 
-    # Deterministic slop lint over the finished BODY (issue #625 / D1), with the same bounded
-    # regeneration the other surfaces get. The WHOLE edition is regenerated, not just its body —
-    # title, subject, and opening_line are derived from it and would go stale otherwise. An edition
-    # that still trips the lint is returned anyway (a newsletter is drafted for human review before
-    # it publishes) with the patterns named in the log.
+    def _polish(draft: dict) -> dict:
+        """The per-draft passes that run before either grader sees the body."""
+        if flag_enabled(NEWSLETTER_EDITOR, user_id=user_id):
+            draft["body"] = _mechanical_edit_text(
+                draft["body"], content_type="newsletter",
+                profile_synthesis=profile_synthesis, enabled=True,
+            ) or draft["body"]
+        # The wall-of-text repair is done in CODE, not asked for (issue #1435). A retry told to
+        # split its paragraphs and to hold 800-1200 words trades the second for the first — measured
+        # at 768 -> 565 mean words on this change's own A/B — so the one failure a reflow can fix is
+        # never spent on a generation. The opening line is re-derived because reflowing a
+        # wall-of-text FIRST block changes it.
+        if _framework.newsletter_structure_enabled():
+            shaped = _framework.newsletter_shape_body(draft["body"])
+            if shaped and shaped != draft["body"]:
+                draft["body"] = shaped
+                draft["opening_line"] = _opening_line(shaped)
+        return draft
+
+    edition = _polish(edition)
+
+    # Two deterministic graders over the finished BODY, sharing ONE bounded regeneration budget: the
+    # slop lint (issue #625 / D1) and the structural floor (issue #1435 — the checking half of the
+    # #1284 writer contract, which an A/B showed wording alone did not bind). The WHOLE edition is
+    # regenerated, not just its body — title, subject, and opening_line are derived from it and would
+    # go stale otherwise. Neither grader can hold an edition: one that still fails is returned (a
+    # newsletter is drafted for human review before it publishes) with the reasons named in the log.
     for _ in range(max(0, _slop.slop_max_attempts() - 1)):
         report = _slop.lint_report(edition["body"], "newsletter", blog_content=blog_content)
-        if report["passes"]:
+        structure = _framework.newsletter_structure_report(edition["body"])
+        if report["passes"] and structure["passes"]:
             return edition
-        retry = _edition(_slop.slop_retry_directive(report["hard"]))
+        retry = _edition(_slop.slop_retry_directive(report["hard"])
+                         + _framework.newsletter_structure_directive(structure["failures"]))
         if not retry:
             break
-        edition = retry
-        if flag_enabled(NEWSLETTER_EDITOR, user_id=user_id):
-            edition["body"] = _mechanical_edit_text(
-                edition["body"], content_type="newsletter",
-                profile_synthesis=profile_synthesis, enabled=True,
-            ) or edition["body"]
+        edition = _polish(retry)
     final = _slop.lint_report(edition["body"], "newsletter", blog_content=blog_content)
     if not final["passes"]:
         log_warning("Newsletter edition still trips the AI-slop lint; keeping it for review: "
                     + "; ".join(_slop.violation_reasons(final["hard"])))
+    final_structure = _framework.newsletter_structure_report(edition["body"])
+    if not final_structure["passes"]:
+        # INFO, not WARNING, on purpose: this is a MEASUREMENT of a draft that is kept and reviewed,
+        # and on the real corpus it is the common case (9 of 10 editions carried a wall-of-text
+        # paragraph). A warning here would recur on almost every edition and file a grouped defect
+        # for working behaviour — the `utilities/CLAUDE.md` escalation contract, same call as
+        # `cost_alerts` (issue #1071). The reasons still reach the log either way.
+        log_info("Newsletter edition kept below the structural floor for review: "
+                 + "; ".join(_framework.newsletter_structure_reasons(final_structure["failures"])),
+                 task_name="generate_newsletter_edition")
     return edition
 
 

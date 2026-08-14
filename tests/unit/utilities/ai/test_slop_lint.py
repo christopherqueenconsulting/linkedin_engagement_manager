@@ -607,6 +607,13 @@ class TestShortFormRepair:
 
 
 class TestNewsletterWiring:
+    @pytest.fixture(autouse=True)
+    def _slop_lint_only(self, monkeypatch):
+        # These count the drafts the SLOP lint spends. The #1435 structural checking side shares
+        # that budget and would fire on every short fixture body here; its own wiring is covered in
+        # test_newsletter_generation.py.
+        monkeypatch.setenv("NEWSLETTER_STRUCTURE_ENABLED", "off")
+
     def _edition(self, body):
         import json
         return _resp(json.dumps({"title": "A specific title", "subtitle": "why to read it",

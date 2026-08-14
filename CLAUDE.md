@@ -334,7 +334,9 @@ local dev → PR to main → CI gates pass → release-please tags vX.Y.Z → bu
   (#625) BLOCKS five HARD checks and WARNs the rest, severity PER SURFACE (`SURFACE_SEVERITIES`):
   `canned_scaffold` is WARN on a post, HARD on a newsletter (#1285). `{POST,NEWSLETTER}_BANNED_SCAFFOLDS`
   are ONE list the prompt names and the lint greps, so the two cannot drift —
-  `docs/content-quality-audits/{text,newsletter}.md`.
+  `docs/content-quality-audits/{text,newsletter}.md`. The newsletter's structural floor has a
+  checking side too (#1435, `newsletter_structure_report` re-reading `dwell_report()`) that shares
+  the slop budget and can never hold an edition.
 - **Content mix (70/20/10)** (same doc): every planned post carries a class in `posts.content_mix` —
   `value` 70% / `authority` 20% / `promo` 10% (forced `case_snapshot`). **A promo CTA is always an
   ARTIFACT** (lead magnet / newsletter); a meeting ask is banned in prompts, repaired

@@ -1966,6 +1966,161 @@ def newsletter_writing_directive() -> str:
 
 
 # ---------------------------------------------------------------------------
+# The CHECKING half of the structural floor above (issue #1435).
+#
+# #1284 shipped that floor as writer-side wording only and then measured it: same subjects, same
+# blueprint, same profile, same models, with ONLY the contract swapped. The arm carrying the
+# explicit floor came back with LONGER paragraphs (512 and 525 chars against the control's 343 and
+# 313) and opened inside the fold 0 times out of 2. The lesson that audit drew is why this exists —
+# every gap it closed, closed because something DETERMINISTIC ran.
+#
+# This is NOT a second grader. It reads `dwell_report()`'s own metrics and only re-thresholds the
+# word band, because a newsletter's length target (800-1200 words) is not a feed post's (180-400) —
+# every other number here is the constant the writer-side directive already names, so the two sides
+# cannot drift.
+#
+# It never blocks. An edition is drafted days ahead of its slot and always lands in a human review
+# queue, so a still-failing edition is returned with its reasons logged, exactly as the slop lint
+# does. The only thing a failure buys is one more draft out of the SAME bounded regeneration budget
+# the slop lint already spends.
+#
+# ONE of the four failures is repaired without asking the model at all. `newsletter_shape_body()`
+# reflows a wall-of-text paragraph deterministically, for the same reason the audit's lesson exists:
+# a re-generation that is told to split its paragraphs AND to keep 800-1200 words trades the second
+# for the first. Measured on the first A/B run of this change (#1435, 4 editions per arm), asking
+# the model to fix the shape moved the fold from 2/4 to 4/4 but pulled the mean word count from 768
+# down to 565 — so the paragraph repair is done in code, and the retry is left to carry only what
+# code cannot write: the opening line, the list block, and the length.
+# ---------------------------------------------------------------------------
+
+NEWSLETTER_STRUCTURE_CHECK_FOLD = "newsletter_opening_fold"
+NEWSLETTER_STRUCTURE_CHECK_WALL = "newsletter_wall_of_text"
+NEWSLETTER_STRUCTURE_CHECK_LIST = "newsletter_no_list_block"
+NEWSLETTER_STRUCTURE_CHECK_WORDS = "newsletter_word_band"
+
+# What the retry is told to do about each failure. Targeted repairs — the retry regenerates the
+# whole edition (title and opening line are derived from the body), so these steer the SHAPE while
+# the rest of the prompt keeps the subject, blueprint and source material fixed.
+_NEWSLETTER_STRUCTURE_FIXES = {
+    NEWSLETTER_STRUCTURE_CHECK_FOLD: (
+        f"The first line must stand ALONE, in under {LINKEDIN_FOLD_CHARS} characters, with a blank "
+        "line after it. Cut it to one sharp sentence and move the rest into the paragraph below."),
+    NEWSLETTER_STRUCTURE_CHECK_WALL: (
+        f"NO paragraph may run past {DWELL_PARAGRAPH_MAX_CHARS} characters. Split every long one at "
+        "a sentence boundary into two paragraphs with a blank line between them."),
+    NEWSLETTER_STRUCTURE_CHECK_LIST: (
+        "Include at least ONE numbered or bulleted block, each item on its own short line — the "
+        "thing a reader scrolls back to and saves."),
+    NEWSLETTER_STRUCTURE_CHECK_WORDS: (
+        f"Write {NEWSLETTER_WORD_FLOOR}-{NEWSLETTER_WORD_CEILING} words by developing the sections "
+        "further (another concrete example, another step), never by padding or repeating."),
+}
+
+
+def newsletter_shape_body(text: Optional[str]) -> Optional[str]:
+    """Deterministic wall-of-text repair for a newsletter body.
+
+    The newsletter half of `shape_for_dwell`: the same reflow at the same thresholds, but nothing
+    may be TRIMMED. `shape_for_dwell` caps a post at `LINKEDIN_MAX_CHARS` because a post that long
+    already exceeds LinkedIn's own limit; an 800-1200 word edition is nowhere near an article's, and
+    a trim here would delete the takeaways block or the CTA off the end. The cap passed below is
+    provably unreachable: reflowing replaces a space with a blank line, so it adds at most one
+    character per break and there are fewer breaks than characters.
+
+    Only single-line prose blocks over `DWELL_PARAGRAPH_MAX_CHARS` are reflowed; list blocks and
+    already-short paragraphs are returned untouched. Falsy or already-scannable text is returned
+    unchanged, so this is safe to run on every draft.
+    """
+    from cqc_lem.utilities.linkedin_formatter import enforce_post_readability
+    if not text or not dwell_metrics(text)["wall_of_text"]:
+        return text
+    return enforce_post_readability(text, max_chars=2 * len(text) + 2,
+                                    target_paragraph_chars=220,
+                                    long_paragraph_chars=DWELL_PARAGRAPH_MAX_CHARS)
+
+
+def newsletter_structure_enabled() -> bool:
+    """Whether the structural checking side runs at all.
+
+    Read at call time (the POST_SIMILARITY_MAX live-env pattern) so ops can stand it down without a
+    restart. Off restores the exact prior behaviour: the edition is graded by the slop lint alone.
+    """
+    raw = (os.environ.get("NEWSLETTER_STRUCTURE_ENABLED") or "").strip().lower()
+    return raw not in ("0", "false", "no", "off")
+
+
+def newsletter_structure_report(text: Optional[str]) -> dict:
+    """Grade a finished newsletter body against the structural floor the writer contract states.
+
+    The four measures are the ones `newsletter_writing_directive` names: the opening line inside the
+    fold, no wall-of-text paragraph, at least one list block, and the edition length band.
+
+    Deterministic — no LLM, no I/O. Every measurement comes from `dwell_report()`; the only
+    newsletter-specific threshold is the word band, because the dwell grader's 180-400 word target
+    is a feed post's, not an edition's.
+
+    Returns {passes, failures, metrics, dwell_score, checked}. `checked` is False for empty text or
+    when the checking side is disabled, in which case the report is empty and PASSING — this layer
+    fails OPEN and can never hold an edition.
+    """
+    if not text or not str(text).strip() or not newsletter_structure_enabled():
+        return {"passes": True, "failures": [], "metrics": {}, "dwell_score": None,
+                "checked": False}
+    report = dwell_report(text)
+    m = report["metrics"]
+    failures = []
+    if not m["hook_within_fold"]:
+        failures.append({"check": NEWSLETTER_STRUCTURE_CHECK_FOLD,
+                         "detail": f"opens with a {m['hook_chars']}-character line, past the "
+                                   f"{LINKEDIN_FOLD_CHARS}-character fold"})
+    if m["wall_of_text"]:
+        failures.append({"check": NEWSLETTER_STRUCTURE_CHECK_WALL,
+                         "detail": f"carries a {m['longest_paragraph_chars']}-character paragraph, "
+                                   f"past the {DWELL_PARAGRAPH_MAX_CHARS}-character ceiling"})
+    if not m["has_list"]:
+        failures.append({"check": NEWSLETTER_STRUCTURE_CHECK_LIST,
+                         "detail": "carries no numbered or bulleted block"})
+    if not NEWSLETTER_WORD_FLOOR <= m["words"] <= NEWSLETTER_WORD_CEILING:
+        failures.append({"check": NEWSLETTER_STRUCTURE_CHECK_WORDS,
+                         "detail": f"runs {m['words']} words, outside the {NEWSLETTER_WORD_FLOOR}-"
+                                   f"{NEWSLETTER_WORD_CEILING} band"})
+    return {"passes": not failures, "failures": failures, "metrics": m,
+            "dwell_score": report["score"], "checked": True}
+
+
+def newsletter_structure_reasons(failures: Optional[list]) -> list:
+    """Plain-English reason strings for a list of structural failures.
+
+    What the logs show, in the same `check: detail` shape `slop_lint.violation_reasons` produces.
+    """
+    return [f"{f.get('check')}: {f.get('detail')}" for f in (failures or [])
+            if isinstance(f, dict) and f.get("detail")]
+
+
+def newsletter_structure_directive(failures: Optional[list]) -> str:
+    """The regeneration steer after an edition misses the structural floor.
+
+    Names the measured number that failed plus the concrete repair for it, so the retry fixes the
+    SHAPE rather than rewriting the edition. Empty string when nothing failed, so a caller can
+    concatenate it unconditionally.
+    """
+    named = [f for f in (failures or [])
+             if isinstance(f, dict) and f.get("detail") and f.get("check") in _NEWSLETTER_STRUCTURE_FIXES]
+    if not named:
+        return ""
+    lines = ["\n\nYOUR PREVIOUS DRAFT MISSED THE STRUCTURAL FLOOR, measured on the finished body. "
+             "Fix exactly these. Keep the same subject, argument and facts — change only the shape:"]
+    for f in named:
+        lines.append(f"- It {f['detail']}. {_NEWSLETTER_STRUCTURE_FIXES[f['check']]}")
+    # Measured, not decorative: on the first A/B run of this change the shape repairs above were
+    # paid for in LENGTH — the treatment arm's mean fell from 768 words to 565 while it fixed the
+    # fold. The floor is the one thing a shape fix must not spend.
+    lines.append(f"- Do NOT shorten the edition to satisfy the repairs above. It must still run "
+                 f"{NEWSLETTER_WORD_FLOOR}-{NEWSLETTER_WORD_CEILING} words.")
+    return "\n".join(lines) + "\n"
+
+
+# ---------------------------------------------------------------------------
 # COMMENT QUALITY CONTRACT v2 + comment-side similarity gate (issue #617 / G2). Sampled production
 # comments opened with "I totally agree that...", ran one [validate]+[generic insight]+[question]
 # template, and near-duplicated each other across different posts the same day — exactly the

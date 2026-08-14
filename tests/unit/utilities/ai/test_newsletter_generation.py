@@ -395,6 +395,12 @@ class TestNewsletterMechanicalEdit:
     and fails open.
     """
 
+    @pytest.fixture(autouse=True)
+    def _no_structure_retry(self, monkeypatch):
+        # These assert exact LLM call counts. The #1435 structural checking side would spend a
+        # regeneration on every two-word stub body here, which is a different test's subject.
+        monkeypatch.setenv("NEWSLETTER_STRUCTURE_ENABLED", "off")
+
     def _profile(self):
         prof = MagicMock()
         prof.model_dump_json.return_value = "{}"
@@ -538,3 +544,290 @@ class TestNewsletterStructuralFloor:
             assert label in NEWSLETTER_STRUCTURAL_LABELS
             assert label.upper() in directive
         assert "key takeaways" not in NEWSLETTER_STRUCTURAL_LABELS
+
+
+def _clean_edition_body(words: int = 900) -> str:
+    """A body that clears every structural floor.
+
+    A short opening line, short paragraphs, a list block, and a word count inside the 800-1200 band.
+    """
+    paragraph = "We shipped the change and the number moved. " * 5   # ~35 words, ~220 chars
+    filler = []
+    total = len(paragraph.split()) + 20
+    while total < words:
+        filler.append(paragraph.strip())
+        total += len(paragraph.split())
+    return ("A short opening line that stands alone.\n\n"
+            + "\n\n".join(filler)
+            + "\n\nKEY TAKEAWAYS\n\n1. Measure the thing.\n2. Then change it.\n3. Measure again.\n\n"
+              "What did you change last week?")
+
+
+class TestNewsletterStructureReport:
+    """#1435. The CHECKING half of the #1284 floor.
+
+    The same four measurements, read off the existing `dwell_report()`, never a parallel grader.
+    """
+
+    def test_clean_body_passes_with_no_failures(self):
+        from cqc_lem.utilities.ai.content_framework import newsletter_structure_report
+        report = newsletter_structure_report(_clean_edition_body())
+        assert report["checked"] is True
+        assert report["passes"] is True, report["failures"]
+        assert report["failures"] == []
+
+    def test_long_opening_line_is_named_with_its_measurement(self):
+        from cqc_lem.utilities.ai.content_framework import (
+            LINKEDIN_FOLD_CHARS,
+            NEWSLETTER_STRUCTURE_CHECK_FOLD,
+            newsletter_structure_report,
+        )
+        body = ("Opening. " * 40).strip() + "\n\n" + _clean_edition_body()
+        report = newsletter_structure_report(body)
+        failure = next(f for f in report["failures"] if f["check"] == NEWSLETTER_STRUCTURE_CHECK_FOLD)
+        assert str(LINKEDIN_FOLD_CHARS) in failure["detail"]
+        assert "-character line" in failure["detail"]
+
+    def test_wall_of_text_paragraph_is_named_with_its_length(self):
+        from cqc_lem.utilities.ai.content_framework import (
+            DWELL_PARAGRAPH_MAX_CHARS,
+            NEWSLETTER_STRUCTURE_CHECK_WALL,
+            newsletter_structure_report,
+        )
+        wall = "This paragraph keeps going and going without a break. " * 12
+        report = newsletter_structure_report(_clean_edition_body() + "\n\n" + wall)
+        failure = next(f for f in report["failures"] if f["check"] == NEWSLETTER_STRUCTURE_CHECK_WALL)
+        assert str(len(wall.strip())) in failure["detail"]
+        assert str(DWELL_PARAGRAPH_MAX_CHARS) in failure["detail"]
+
+    def test_missing_list_block_is_a_failure(self):
+        from cqc_lem.utilities.ai.content_framework import (
+            NEWSLETTER_STRUCTURE_CHECK_LIST,
+            newsletter_structure_report,
+        )
+        body = _clean_edition_body().replace("1. Measure the thing.", "Measure the thing.") \
+                                   .replace("2. Then change it.", "Then change it.") \
+                                   .replace("3. Measure again.", "Measure again.")
+        checks = [f["check"] for f in newsletter_structure_report(body)["failures"]]
+        assert NEWSLETTER_STRUCTURE_CHECK_LIST in checks
+
+    def test_word_band_is_the_newsletter_band_not_the_dwell_target(self):
+        from cqc_lem.utilities.ai.content_framework import (
+            DWELL_TARGET_WORDS_MAX,
+            NEWSLETTER_STRUCTURE_CHECK_WORDS,
+            NEWSLETTER_WORD_FLOOR,
+            newsletter_structure_report,
+        )
+        # A body inside the dwell grader's own 180-400 word post target is still SHORT for an
+        # edition — the one threshold this report may not inherit.
+        short = _clean_edition_body(words=DWELL_TARGET_WORDS_MAX)
+        failure = next(f for f in newsletter_structure_report(short)["failures"]
+                       if f["check"] == NEWSLETTER_STRUCTURE_CHECK_WORDS)
+        assert str(NEWSLETTER_WORD_FLOOR) in failure["detail"]
+        long_body = _clean_edition_body(words=1500)
+        assert any(f["check"] == NEWSLETTER_STRUCTURE_CHECK_WORDS
+                   for f in newsletter_structure_report(long_body)["failures"])
+
+    def test_metrics_come_from_the_existing_dwell_report(self):
+        from cqc_lem.utilities.ai import content_framework as fw
+        body = _clean_edition_body()
+        report = fw.newsletter_structure_report(body)
+        assert report["metrics"] == fw.dwell_report(body)["metrics"]
+        assert report["dwell_score"] == fw.dwell_report(body)["score"]
+
+    def test_empty_body_is_checked_false_and_passing(self):
+        from cqc_lem.utilities.ai.content_framework import newsletter_structure_report
+        for empty in (None, "", "   "):
+            report = newsletter_structure_report(empty)
+            assert report["checked"] is False and report["passes"] is True
+
+    def test_disabled_by_env_fails_open(self, monkeypatch):
+        from cqc_lem.utilities.ai.content_framework import newsletter_structure_report
+        monkeypatch.setenv("NEWSLETTER_STRUCTURE_ENABLED", "off")
+        report = newsletter_structure_report("One wall. " * 60)
+        assert report["checked"] is False and report["passes"] is True and report["failures"] == []
+
+
+class TestNewsletterWallRepairIsDeterministic:
+    """#1435. The one failure a reflow can fix is never spent on a generation.
+
+    Asking a retry to split its paragraphs AND hold 800-1200 words traded the second for the first
+    on this change's own A/B (mean 768 -> 565 words), so the paragraphs are reflowed in code.
+    """
+
+    def test_a_wall_paragraph_is_split_below_the_ceiling(self):
+        from cqc_lem.utilities.ai.content_framework import (
+            DWELL_PARAGRAPH_MAX_CHARS,
+            dwell_metrics,
+            newsletter_shape_body,
+        )
+        wall = "The deploy took eleven minutes and nobody could say why. " * 12
+        shaped = newsletter_shape_body(wall)
+        assert dwell_metrics(shaped)["longest_paragraph_chars"] <= DWELL_PARAGRAPH_MAX_CHARS
+
+    def test_nothing_is_trimmed_from_a_long_edition(self):
+        from cqc_lem.utilities.ai.content_framework import newsletter_shape_body
+        # `shape_for_dwell` caps a POST at LinkedIn's 3000-char post limit. An edition is far longer
+        # than that and must come back whole — the trim branch has to be unreachable here.
+        wall = "We measured it, then we changed it, then we measured it again. " * 90
+        shaped = newsletter_shape_body(wall)
+        assert len(shaped.split()) == len(wall.split())
+        assert shaped.split()[-1] == wall.split()[-1]
+
+    def test_a_scannable_body_is_returned_unchanged(self):
+        from cqc_lem.utilities.ai.content_framework import newsletter_shape_body
+        body = _clean_edition_body()
+        assert newsletter_shape_body(body) == body
+
+    def test_a_list_block_is_left_alone(self):
+        from cqc_lem.utilities.ai.content_framework import newsletter_shape_body
+        wall = "One long paragraph that runs on and on without any break at all. " * 6
+        body = wall + "\n\n1. First step.\n2. Second step.\n3. Third step."
+        shaped = newsletter_shape_body(body)
+        assert "1. First step.\n2. Second step.\n3. Third step." in shaped
+
+    def test_falsy_input_is_returned_unchanged(self):
+        from cqc_lem.utilities.ai.content_framework import newsletter_shape_body
+        assert newsletter_shape_body("") == ""
+        assert newsletter_shape_body(None) is None
+
+    def test_a_generated_wall_is_reflowed_and_the_opening_line_re_derived(self, monkeypatch):
+        monkeypatch.setenv("HUMANIZE_ENABLED", "off")
+        from cqc_lem.utilities.ai import ai_helper
+        from cqc_lem.utilities.ai.content_framework import DWELL_PARAGRAPH_MAX_CHARS, dwell_metrics
+        wall = "The deploy took eleven minutes and nobody could say why. " * 12
+        payload = json.dumps({"title": "T", "subtitle": "S", "subject": "S", "body": wall})
+        prof = MagicMock()
+        prof.model_dump_json.return_value = "{}"
+        with patch(f"{_AI}._call_llm", return_value=_resp(payload)), \
+             patch(f"{_AI}.flag_enabled", return_value=False):
+            edition = ai_helper.generate_newsletter_edition(prof, topic="x")
+        assert dwell_metrics(edition["body"])["longest_paragraph_chars"] <= DWELL_PARAGRAPH_MAX_CHARS
+        assert edition["opening_line"] == edition["body"].splitlines()[0]
+
+    def test_the_reflow_is_off_when_the_checking_side_is(self, monkeypatch):
+        monkeypatch.setenv("HUMANIZE_ENABLED", "off")
+        monkeypatch.setenv("NEWSLETTER_STRUCTURE_ENABLED", "off")
+        from cqc_lem.utilities.ai import ai_helper
+        wall = "The deploy took eleven minutes and nobody could say why. " * 12
+        payload = json.dumps({"title": "T", "subtitle": "S", "subject": "S", "body": wall.strip()})
+        prof = MagicMock()
+        prof.model_dump_json.return_value = "{}"
+        with patch(f"{_AI}._call_llm", return_value=_resp(payload)), \
+             patch(f"{_AI}.flag_enabled", return_value=False):
+            edition = ai_helper.generate_newsletter_edition(prof, topic="x")
+        assert edition["body"] == wall.strip()
+
+
+class TestNewsletterStructureDirective:
+    """The retry steer names the measured number and the concrete repair, never a full rewrite."""
+
+    def test_directive_names_each_failure_and_its_repair(self):
+        from cqc_lem.utilities.ai.content_framework import (
+            DWELL_PARAGRAPH_MAX_CHARS,
+            newsletter_structure_directive,
+            newsletter_structure_report,
+        )
+        wall = "This paragraph keeps going and going without a break. " * 12
+        report = newsletter_structure_report(_clean_edition_body() + "\n\n" + wall)
+        directive = newsletter_structure_directive(report["failures"])
+        assert str(len(wall.strip())) in directive
+        assert f"{DWELL_PARAGRAPH_MAX_CHARS} characters" in directive
+        assert "Split every long one" in directive
+        assert "Keep the same subject, argument and facts" in directive
+
+    def test_no_failures_is_the_empty_string(self):
+        from cqc_lem.utilities.ai.content_framework import newsletter_structure_directive
+        assert newsletter_structure_directive([]) == ""
+        assert newsletter_structure_directive(None) == ""
+
+    def test_unknown_or_malformed_failures_are_ignored(self):
+        from cqc_lem.utilities.ai.content_framework import newsletter_structure_directive
+        assert newsletter_structure_directive([{"check": "made_up", "detail": "x"}, "junk", {}]) == ""
+
+    def test_reasons_read_like_the_slop_lint_reasons(self):
+        from cqc_lem.utilities.ai.content_framework import (
+            NEWSLETTER_STRUCTURE_CHECK_LIST,
+            newsletter_structure_reasons,
+        )
+        reasons = newsletter_structure_reasons(
+            [{"check": NEWSLETTER_STRUCTURE_CHECK_LIST, "detail": "carries no block"}, {"check": "x"}])
+        assert reasons == [f"{NEWSLETTER_STRUCTURE_CHECK_LIST}: carries no block"]
+
+
+class TestStructureFailuresFeedTheBoundedRegeneration:
+    """#1435 acceptance: the failures ride the SAME bounded regeneration the slop lint uses.
+
+    Nothing here may hold or pause an edition.
+    """
+
+    def _profile(self):
+        prof = MagicMock()
+        prof.model_dump_json.return_value = "{}"
+        return prof
+
+    def _payload(self, body):
+        return json.dumps({"title": "T", "subtitle": "S", "subject": "S", "body": body})
+
+    def test_a_structurally_short_edition_is_regenerated_once(self, monkeypatch):
+        monkeypatch.setenv("HUMANIZE_ENABLED", "off")
+        from cqc_lem.utilities.ai import ai_helper
+        good = _clean_edition_body()
+        with patch(f"{_AI}._call_llm",
+                   side_effect=[_resp(self._payload("Too short.")),
+                                _resp(self._payload(good))]) as call, \
+             patch(f"{_AI}.flag_enabled", return_value=False):
+            edition = ai_helper.generate_newsletter_edition(self._profile(), topic="x")
+        assert call.call_count == 2
+        assert edition["body"].startswith("A short opening line")
+
+    def test_the_retry_directive_carries_the_structural_failures(self, monkeypatch):
+        monkeypatch.setenv("HUMANIZE_ENABLED", "off")
+        from cqc_lem.utilities.ai import ai_helper
+        with patch(f"{_AI}._call_llm",
+                   side_effect=[_resp(self._payload("Too short.")),
+                                _resp(self._payload(_clean_edition_body()))]) as call, \
+             patch(f"{_AI}.flag_enabled", return_value=False):
+            ai_helper.generate_newsletter_edition(self._profile(), topic="x")
+        retry_system = call.call_args_list[1].kwargs["messages"][0]["content"]
+        assert "MISSED THE STRUCTURAL FLOOR" in retry_system
+        assert "outside the 800-1200 band" in retry_system
+
+    def test_a_clean_edition_spends_no_extra_draft(self, monkeypatch):
+        monkeypatch.setenv("HUMANIZE_ENABLED", "off")
+        from cqc_lem.utilities.ai import ai_helper
+        with patch(f"{_AI}._call_llm",
+                   return_value=_resp(self._payload(_clean_edition_body()))) as call, \
+             patch(f"{_AI}.flag_enabled", return_value=False):
+            edition = ai_helper.generate_newsletter_edition(self._profile(), topic="x")
+        assert call.call_count == 1
+        assert edition is not None
+
+    def test_a_still_failing_edition_is_returned_not_held(self, monkeypatch, caplog):
+        monkeypatch.setenv("HUMANIZE_ENABLED", "off")
+        from cqc_lem.utilities.ai import ai_helper
+        with patch(f"{_AI}._call_llm", return_value=_resp(self._payload("Still too short."))), \
+             patch(f"{_AI}.flag_enabled", return_value=False):
+            edition = ai_helper.generate_newsletter_edition(self._profile(), topic="x")
+        assert edition is not None and edition["body"] == "Still too short."
+        assert "structural floor" in caplog.text
+        assert "newsletter_word_band" in caplog.text
+
+    def test_attempts_are_capped_by_the_shared_slop_budget(self, monkeypatch):
+        monkeypatch.setenv("HUMANIZE_ENABLED", "off")
+        monkeypatch.setenv("SLOP_LINT_MAX_ATTEMPTS", "3")
+        from cqc_lem.utilities.ai import ai_helper
+        with patch(f"{_AI}._call_llm", return_value=_resp(self._payload("Still too short."))) as call, \
+             patch(f"{_AI}.flag_enabled", return_value=False):
+            ai_helper.generate_newsletter_edition(self._profile(), topic="x")
+        # Initial draft + at most (attempts - 1) regenerations — one budget for both graders.
+        assert call.call_count == 3
+
+    def test_disabled_checking_side_restores_the_prior_behaviour(self, monkeypatch):
+        monkeypatch.setenv("HUMANIZE_ENABLED", "off")
+        monkeypatch.setenv("NEWSLETTER_STRUCTURE_ENABLED", "off")
+        from cqc_lem.utilities.ai import ai_helper
+        with patch(f"{_AI}._call_llm", return_value=_resp(self._payload("Too short."))) as call, \
+             patch(f"{_AI}.flag_enabled", return_value=False):
+            edition = ai_helper.generate_newsletter_edition(self._profile(), topic="x")
+        assert call.call_count == 1 and edition["body"] == "Too short."
