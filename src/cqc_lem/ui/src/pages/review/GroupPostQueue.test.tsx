@@ -374,6 +374,51 @@ describe('GroupPostQueue — media (issue #1224)', () => {
     )
   })
 
+  it('uploads a video through the video surface and attaches its URL (issue #1443)', async () => {
+    get.mockResolvedValue({ data: { detail: DRAFT } })
+    post.mockResolvedValue({
+      data: { detail: { video_url: 'http://api/assets?file_name=videos/post_previews/1/v.mp4' } },
+    })
+    put.mockResolvedValue({ data: { detail: 'ok' } })
+    harness(<GroupPostQueue userTimezone="America/New_York" />)
+
+    await waitFor(() => expect(screen.getByLabelText('Group post video file')).toBeTruthy())
+    const file = new File(['x'], 'clip.mp4', { type: 'video/mp4' })
+    fireEvent.change(screen.getByLabelText('Group post video file'), { target: { files: [file] } })
+
+    await waitFor(() => expect(post).toHaveBeenCalledWith('/user/post/video', expect.any(FormData)))
+    await waitFor(() =>
+      expect(put).toHaveBeenCalledWith('/user/group-post-draft', {
+        session_token: 'tok',
+        media_url: 'http://api/assets?file_name=videos/post_previews/1/v.mp4',
+      })
+    )
+  })
+
+  it('surfaces the reason a video was refused instead of attaching anything', async () => {
+    get.mockResolvedValue({ data: { detail: DRAFT } })
+    post.mockRejectedValue({ response: { data: { detail: 'Video must be at least 3 seconds long' } } })
+    harness(<GroupPostQueue userTimezone="America/New_York" />)
+
+    await waitFor(() => expect(screen.getByLabelText('Group post video file')).toBeTruthy())
+    const file = new File(['x'], 'clip.mp4', { type: 'video/mp4' })
+    fireEvent.change(screen.getByLabelText('Group post video file'), { target: { files: [file] } })
+
+    await waitFor(() => expect(screen.getByText(/at least 3 seconds/i)).toBeTruthy())
+    expect(put).not.toHaveBeenCalled()
+  })
+
+  it('plays an attached video rather than rendering it as an image', async () => {
+    get.mockResolvedValue({
+      data: { detail: { ...DRAFT, media_url: 'http://api/assets?file_name=v.mp4', media_type: 'video' } },
+    })
+    harness(<GroupPostQueue userTimezone="America/New_York" />)
+
+    await waitFor(() => expect(screen.getByRole('button', { name: /Remove media/i })).toBeTruthy())
+    expect(screen.queryByAltText('Group post media')).toBeNull()
+    expect(document.querySelector('video')).toBeTruthy()
+  })
+
   it('refuses to generate an image with nothing to draw from', async () => {
     get.mockResolvedValue({ data: { detail: { ...DRAFT, content: '' } } })
     harness(<GroupPostQueue userTimezone="America/New_York" />)

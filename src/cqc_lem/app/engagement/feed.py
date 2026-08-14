@@ -91,6 +91,7 @@ from cqc_lem.utilities.db import (
     ConnectStatus,
     FollowStatus,
     GroupPostDraftStatus,
+    GroupPostMediaType,
     LogActionType,
     LogResultType,
     claim_post_for_comment,
@@ -185,6 +186,7 @@ from cqc_lem.utilities.linkedin.helper import (
 )
 from cqc_lem.utilities.linkedin.poster import (
     comment_on_linkedin_post,
+    determine_media_type,
     object_urn_from_post_url,
 )
 from cqc_lem.utilities.linkedin.profile import LinkedInProfile
@@ -212,10 +214,11 @@ from cqc_lem.utilities.observability import (
     track_feed_scan,
     track_selector_evidence,
 )
-from cqc_lem.utilities.post_image import post_image_abs_path
+from cqc_lem.utilities.post_video import post_media_abs_path
 from cqc_lem.utilities.selenium_util import (
     click_first,
     find_first,
+    get_driver_wait,
     get_driver_wait_pair,
     is_session_lost,
     quit_gracefully,
@@ -3291,8 +3294,102 @@ _MEDIA_UNTOUCHED = "untouched"
 _MEDIA_ATTACHED = "attached"
 _MEDIA_LEFT_OPEN = "left_open"
 
+# How long the media overlay gets to finish before the run commits it, in polls of
+# `_MEDIA_POLL_SECONDS`. An image is ready almost as fast as it uploads, but LinkedIn TRANSCODES a
+# video server-side and keeps the overlay's commit control disabled until it is done, so a window
+# sized on an image is what leaves an empty media frame on the published post (issue #1443). The
+# video window is generous because the cost of waiting is a slower weekly beat and the cost of not
+# waiting is a broken post.
+#
+# A poll that MISSES the control must cost a poll, not a selector timeout: the session's shared
+# `wait` is `WAIT_DEFAULT_TIMEOUT` (15s), so re-finding through it would make the window nearly ten
+# times the wall clock these numbers read as — and it would spend that inflation on the ABSENT case,
+# the one answer that is an expected no-op, while the BUSY case (control found instantly, every
+# poll) got only the sleeps. `_CONFIRM_LOOKUP_SECONDS` is the short wait the poll lookups use so the
+# two cases cost the same and the numbers below mean what they say.
+_MEDIA_POLL_SECONDS = (1.5, 2.5)
+_CONFIRM_LOOKUP_SECONDS = 2
+_IMAGE_READY_POLLS = 8      # ~16-36s
+_VIDEO_READY_POLLS = 120    # ~3-5 min
+# …and a control we have NEVER seen is answered on its own, shorter budget: the overlay renders its
+# commit control DISABLED and only enables it when the transcode lands, so "not there at all" is a
+# question about the overlay, not about the transcode. Without this the video window would spend its
+# whole length re-asking the one question that was already answered.
+_CONFIRM_ABSENT_POLLS = 20  # ~30-90s
 
-def _attach_group_media(driver, wait, media_url: str, user_id: int = None) -> str:
+# What the poll saw. ABSENT is not a failure: some composer variants have no commit step at all, and
+# clicking nothing there is what #1224 already shipped — only a control that RESOLVED and stayed
+# disabled says the upload never finished.
+_CONFIRM_READY = "ready"
+_CONFIRM_ABSENT = "absent"
+_CONFIRM_BUSY = "busy"
+
+
+def _media_control_ready(element: WebElement) -> bool:
+    """Is the media overlay's commit control actually clickable, or still disabled by an upload?
+
+    Both readings matter: LinkedIn disables the button outright while an image uploads and marks it
+    `aria-disabled` while a video transcodes.
+    """
+    try:
+        if not element.is_enabled():
+            return False
+        return str(element.get_attribute("aria-disabled") or "").lower() != "true"
+    except WebDriverException:
+        return False
+
+
+def _await_media_confirm(driver, polls: int) -> Tuple[str, Optional[WebElement]]:
+    """Poll the media overlay until its commit control is clickable.
+
+    Returns `(state, element)` — `_CONFIRM_READY` with the control, `_CONFIRM_ABSENT` when this
+    composer has no commit step, or `_CONFIRM_BUSY` when the control exists and never became
+    clickable inside the window. Waiting on the CONTROL rather than on a fixed sleep is what makes
+    the wait right for a video without slowing an image down: an image resolves on the first poll.
+
+    The lookup uses its OWN short wait rather than the session's — a poll is a poll, and a miss that
+    cost `WAIT_DEFAULT_TIMEOUT` would make the ABSENT case (an expected composer variant) the most
+    expensive answer in the chain and the video's real window the shortest.
+
+    `visible_only=True` for the same reason `click_first` (which this replaced) asks for it:
+    LinkedIn ships hidden duplicates of a control, and the page-wide fallbacks in the locator chain
+    will happily match one. A hidden button reads as ENABLED, so it would be clicked — and a click
+    on a non-displayed element raises, which turns a working upload into `left_open` and costs the
+    week's group post.
+    """
+    poll_wait = get_driver_wait(driver, wait_time=_CONFIRM_LOOKUP_SECONDS)
+    seen = False
+    for attempt in range(max(1, polls)):
+        time.sleep(random.uniform(*_MEDIA_POLL_SECONDS))
+        confirm = find_first(driver, poll_wait, _GROUP_MEDIA_CONFIRM_LOCATORS,
+                             "Group media confirm", visible_only=True,
+                             required=False, warn_on_miss=False, max_try=1)
+        if confirm is None:
+            if not seen and attempt + 1 >= _CONFIRM_ABSENT_POLLS:
+                return _CONFIRM_ABSENT, None
+            continue
+        seen = True
+        if _media_control_ready(confirm):
+            return _CONFIRM_READY, confirm
+    return (_CONFIRM_BUSY if seen else _CONFIRM_ABSENT), None
+
+
+def _media_is_video(media_type: Optional[str], path: str) -> bool:
+    """Is the draft's attachment a video? The row's kind first, the stored file as the fallback.
+
+    Both answers come from the same place originally — `_resolve_group_media` reads the file — so
+    this only has to cover a draft written before the column carried a kind.
+    """
+    if media_type:
+        return str(media_type).lower() == str(GroupPostMediaType.VIDEO)
+    try:
+        return determine_media_type(path) == "VIDEO"
+    except ValueError:
+        return False
+
+
+def _attach_group_media(driver, wait, media_url: str, user_id: int = None,
+                        media_type: Optional[str] = None) -> str:
     """Hand the draft's image/video to the open group composer.
 
     Returns what the attempt did to the COMPOSER, not just whether it worked: `_MEDIA_ATTACHED`,
@@ -3308,7 +3405,7 @@ def _attach_group_media(driver, wait, media_url: str, user_id: int = None) -> st
     Selenium cannot drive; `webdriver.Remote`'s local file detector ships the bytes to the Chrome
     node, so the worker's own path is the right thing to send.
     """
-    path = post_image_abs_path(media_url)
+    path = post_media_abs_path(media_url)
     if not path:
         log_warning("Group post media is missing on disk — posting the text alone", user_id=user_id,
                     task_name="auto_post_to_group")
@@ -3332,12 +3429,22 @@ def _attach_group_media(driver, wait, media_url: str, user_id: int = None) -> st
             return _MEDIA_LEFT_OPEN if opened else _MEDIA_UNTOUCHED
         file_input.send_keys(path)
         opened = True
-        # LinkedIn transcodes the upload before the overlay will commit; a video takes the longer
-        # end of this, and committing early is what leaves an empty media frame on the post.
-        time.sleep(random.uniform(6, 9))
-        click_first(driver, wait, _GROUP_MEDIA_CONFIRM_LOCATORS, "Group media confirm",
-                    required=False, warn_on_miss=False, max_try=1)
-        time.sleep(random.uniform(1, 2))
+        # LinkedIn transcodes the upload before the overlay will commit, so the run waits on the
+        # commit control becoming clickable rather than on a clock — a video needs minutes where an
+        # image needs seconds, and committing early is what leaves an empty media frame on the post.
+        state, confirm = _await_media_confirm(
+            driver,
+            _VIDEO_READY_POLLS if _media_is_video(media_type, path) else _IMAGE_READY_POLLS)
+        if state == _CONFIRM_BUSY:
+            # The control resolved and never became clickable: the upload did not finish inside the
+            # window, so OUR overlay is still covering the composer and the caller must not read a
+            # missing editor as this group refusing member posts.
+            log_warning("Group post media never finished uploading — posting the text alone",
+                        user_id=user_id, task_name="auto_post_to_group")
+            return _MEDIA_LEFT_OPEN
+        if confirm is not None:
+            confirm.click()
+            time.sleep(random.uniform(1, 2))
         return _MEDIA_ATTACHED
     except WebDriverException as e:
         log_warning("Group post media attach failed — posting the text alone", exc=e,
@@ -3415,7 +3522,8 @@ def auto_post_to_group(self, user_id: int, group_id: str, group_name: str = None
         time.sleep(random.uniform(2, 3))
         # Media goes in BEFORE the text: LinkedIn's uploader takes over the composer while it
         # transcodes, and text typed first is what the overlay discards.
-        media_state = (_attach_group_media(driver, wait, draft["media_url"], user_id=user_id)
+        media_state = (_attach_group_media(driver, wait, draft["media_url"], user_id=user_id,
+                                           media_type=draft.get("media_type"))
                        if draft.get("media_url") else _MEDIA_UNTOUCHED)
         media_attached = media_state == _MEDIA_ATTACHED
 

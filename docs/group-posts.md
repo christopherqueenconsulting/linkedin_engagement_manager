@@ -84,17 +84,39 @@ rows the publish run could pick between.
 
 A group post may carry one native image or video (`media_url` + `media_type`, both NULL on a
 text-only post). The URL is the same public `/api/assets?file_name=` value `posts.image_url` stores,
-so the studio reuses the post-image surface rather than growing a second one:
+so the studio reuses the compose-time media surface rather than growing a second one:
 
-1. The SPA uploads (`POST /user/post/image`, no `post_id`) or renders (`POST /user/post/image/generate`)
-   into the author's own preview dir — the same compose-time path `/schedule_post/` uses.
-2. `PUT /user/group-post-draft` takes that URL and runs it through **`owns_post_image_url`**: it is
+1. The SPA uploads an image (`POST /user/post/image`, no `post_id`), renders one
+   (`POST /user/post/image/generate`) or uploads a video (`POST /user/post/video`, issue #1443) into
+   the author's own preview dir — the same compose-time path `/schedule_post/` uses.
+2. `PUT /user/group-post-draft` takes that URL and runs it through **`owns_post_media_url`**: it is
    caller input on a field the publish run later hands to LinkedIn, so only a preview WE issued to
    THIS user resolves. Anything else is a 400.
 3. The kind is read off the stored FILE (`determine_media_type`), never off the request — the
    uploader is judged on the extension on disk, and the stored name comes from the DECODED format.
 4. Replacing or removing media deletes the file it replaced, the same clean-up `_attach_post_image`
    does for a post.
+
+**The two halves keep separate dirs and separate ownership functions on purpose.**
+`images/post_previews/<user_id>/` is `owns_post_image_url`'s, `videos/post_previews/<user_id>/` is
+`owns_post_video_url`'s, and only the union — `owns_post_media_url` / `post_media_abs_path` /
+`remove_post_media_file` in `utilities/post_video.py` — reads both. Widening the image gate instead
+would let a caller hand `/schedule_post/`'s `image_url` an MP4, and the group post is the one
+surface that genuinely takes either kind.
+
+### The video contract
+
+`utilities/post_video.py` grades an upload BEFORE a byte lands in the preview dir, because the
+checks a video needs are not the ones an image needs. Two postures in one gate:
+
+- **Deterministic, always enforced:** size (75 KB – 200 MB) and the container, read from the file's
+  own ISO `ftyp` brand — MP4 or MOV, and the brand is also what picks the stored extension, since
+  that extension is what `determine_media_type` reads at publish.
+- **Measured, fail-open:** duration (3 s – 15 min), frame size (≥ 256×144) and codec (H.264 / HEVC)
+  need ffprobe, which is not installed in every container that serves this API. A probe that cannot
+  run accepts what the head check already proved — the same posture `_probe_video_file` takes
+  (issue #1280) — while a probe that CAN run and reports a violation refuses with the reason. A
+  failure is a **400 carrying the user-facing reason**, and nothing is stored.
 
 At publish, `_attach_group_media` writes the path into the composer's hidden `<input type=file>` —
 clicking the styled affordance opens the OS file chooser, which Selenium cannot drive, and
@@ -126,9 +148,28 @@ a harder reason than the input does: it is the one control in the chain the run 
 messaging labels its own attachment control "Add a photo" — clicking that is #1012's rule broken,
 not just a bad upload target.
 
-Video is supported end to end at the data + publish layer, but the studio can currently only attach
-IMAGES — there is no video upload/validation surface (size, duration, codec) to reuse yet. That
-half is issue #1443.
+**The commit is waited for, not timed.** LinkedIn transcodes an upload server-side and keeps the
+media overlay's commit control (`Next` / `Done`) disabled until it is done, so `_attach_group_media`
+polls that CONTROL rather than sleeping a fixed window sized on an image (issue #1443). Three
+answers, and they are not the same thing:
+
+| What the poll saw | What the run does |
+|---|---|
+| Control resolved and became clickable | click it, media is attached |
+| No control at all | click nothing — some composer variants have no commit step, so this is an expected no-op and never warns |
+| Control resolved and stayed disabled | warn, and return `left_open` — the upload never finished, so our overlay is still up |
+
+A video gets a much longer window than an image (`_VIDEO_READY_POLLS` vs `_IMAGE_READY_POLLS`)
+because the cost of waiting is a slower weekly beat and the cost of committing early is an empty
+media frame on a published post. The window comes off the draft's own `media_type`, falling back to
+the stored file for a row written before that column carried a kind.
+
+**A poll that misses costs a poll.** The lookup inside the loop uses its own short wait
+(`_CONFIRM_LOOKUP_SECONDS`), never the session's `WAIT_DEFAULT_TIMEOUT`: through the shared wait,
+every MISS pays 15s and every HIT pays nothing, so the ABSENT row above — an expected composer
+variant — would become the most expensive answer in the chain while the transcode the window exists
+for got only the sleeps. With the short wait the poll counts mean the wall clock they read as:
+roughly half a minute for an image, three to six minutes for a video.
 
 ## What works in a group (and why the list lives in code)
 

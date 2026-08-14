@@ -33,8 +33,9 @@ export default function GroupPostQueue(
   const [draftEdit, setDraftEdit] = useState<string | null>(null)
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null)
   const [publishAt, setPublishAt] = useState<Date>(() => nextGroupPublishSlot())
-  const [mediaBusy, setMediaBusy] = useState<'upload' | 'generate' | null>(null)
+  const [mediaBusy, setMediaBusy] = useState<'upload' | 'video' | 'generate' | null>(null)
   const mediaFileRef = useRef<HTMLInputElement | null>(null)
+  const videoFileRef = useRef<HTMLInputElement | null>(null)
   const mounted = useRef(false)
 
   useEffect(() => {
@@ -89,29 +90,44 @@ export default function GroupPostQueue(
     onError: (err) => flash(false, errorText(err, 'Could not save — try again.')),
   })
 
-  // The media rides the SAME post-image surface the Content Studio uses for a scheduled post: it is
-  // stored under this user's own preview dir and the group-post PUT only accepts a URL we issued
-  // them, so nothing here can point the publish run at someone else's file.
-  async function attachMedia(request: () => Promise<{ data: ApiEnvelope<{ image_url: string }> }>,
-                             kind: 'upload' | 'generate') {
+  // The media rides the SAME compose-time surface the Content Studio uses for a scheduled post: it
+  // is stored under this user's own preview dir and the group-post PUT only accepts a URL we issued
+  // them, so nothing here can point the publish run at someone else's file. An image comes back as
+  // `image_url` and a video as `video_url` (issue #1443) — one field on the draft either way.
+  async function attachMedia(
+    request: () => Promise<{ data: ApiEnvelope<{ image_url?: string; video_url?: string }> }>,
+    kind: 'upload' | 'video' | 'generate',
+  ) {
     if (!sessionToken) { flash(false, 'Not logged in.'); return }
     setMediaBusy(kind)
     try {
       const r = await request()
-      await draftMutation.mutateAsync({ media_url: r.data.detail.image_url })
+      const url = r.data.detail.image_url ?? r.data.detail.video_url
+      await draftMutation.mutateAsync({ media_url: url as string })
     } catch (err) {
       flash(false, errorText(err, 'Could not attach that media — try another file.'))
     } finally {
       if (mounted.current) setMediaBusy(null)
       if (mediaFileRef.current) mediaFileRef.current.value = ''
+      if (videoFileRef.current) videoFileRef.current.value = ''
     }
   }
 
-  function handleUpload(file: File) {
+  function uploadForm(file: File) {
     const form = new FormData()
     form.append('session_token', sessionToken as string)
     form.append('file', file)
-    return attachMedia(() => api.post('/user/post/image', form), 'upload')
+    return form
+  }
+
+  function handleUpload(file: File) {
+    return attachMedia(() => api.post('/user/post/image', uploadForm(file)), 'upload')
+  }
+
+  // A video is refused by the API — with the reason — when it fails the container/duration/codec
+  // contract, so the button hands the file straight over rather than guessing here.
+  function handleVideoUpload(file: File) {
+    return attachMedia(() => api.post('/user/post/video', uploadForm(file)), 'video')
   }
 
   function handleGenerate() {
@@ -206,11 +222,28 @@ export default function GroupPostQueue(
                 if (file) handleUpload(file)
               }}
             />
+            <input
+              ref={videoFileRef}
+              type="file"
+              accept="video/mp4,video/quicktime"
+              aria-label="Group post video file"
+              className="hidden"
+              onChange={(e) => {
+                const file = e.target.files?.[0]
+                if (file) handleVideoUpload(file)
+              }}
+            />
             <button type="button"
               onClick={() => mediaFileRef.current?.click()}
               disabled={busy}
               className="px-3 py-1.5 rounded-lg text-sm font-semibold border border-gray-300 text-gray-700 hover:bg-gray-100 disabled:opacity-50 transition-colors">
               {mediaBusy === 'upload' ? 'Uploading…' : 'Upload image'}
+            </button>
+            <button type="button"
+              onClick={() => videoFileRef.current?.click()}
+              disabled={busy}
+              className="px-3 py-1.5 rounded-lg text-sm font-semibold border border-gray-300 text-gray-700 hover:bg-gray-100 disabled:opacity-50 transition-colors">
+              {mediaBusy === 'video' ? 'Uploading…' : 'Upload video'}
             </button>
             <button type="button"
               onClick={handleGenerate}

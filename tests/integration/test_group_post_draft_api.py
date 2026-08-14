@@ -365,8 +365,8 @@ class TestGroupPostDraftMedia:
     def test_attaching_media_records_the_kind_from_the_stored_file(self, api_client):
         with patch(f"{_API}.get_session_user_id", return_value=1), \
              patch(f"{_USER}.get_current_group_post_draft", return_value=dict(_DRAFT)), \
-             patch(f"{_USER}.owns_post_image_url", return_value=True), \
-             patch(f"{_USER}.post_image_abs_path", return_value="/assets/img_abc.png"), \
+             patch(f"{_USER}.owns_post_media_url", return_value=True), \
+             patch(f"{_USER}.post_media_abs_path", return_value="/assets/img_abc.png"), \
              patch(f"{_USER}.update_group_post_draft", return_value=True) as saved:
             r = api_client.put("/api/user/group-post-draft",
                               json={"session_token": "tok", "media_url": _MEDIA_URL})
@@ -374,10 +374,43 @@ class TestGroupPostDraftMedia:
         assert saved.call_args.kwargs["media_url"] == _MEDIA_URL
         assert str(saved.call_args.kwargs["media_type"]) == "image"
 
+    def test_attaching_a_video_records_it_as_a_video(self, api_client):
+        """The video half of the same surface (issue #1443).
+
+        The kind still comes off the stored FILE, so a video preview lands `media_type = 'video'`
+        without the client ever naming it.
+        """
+        video_url = "http://api/api/assets?file_name=videos/post_previews/1/vid_abc.mp4"
+        with patch(f"{_API}.get_session_user_id", return_value=1), \
+             patch(f"{_USER}.get_current_group_post_draft", return_value=dict(_DRAFT)), \
+             patch(f"{_USER}.owns_post_media_url", return_value=True), \
+             patch(f"{_USER}.post_media_abs_path", return_value="/assets/vid_abc.mp4"), \
+             patch(f"{_USER}.update_group_post_draft", return_value=True) as saved:
+            r = api_client.put("/api/user/group-post-draft",
+                              json={"session_token": "tok", "media_url": video_url})
+        assert r.status_code == 200
+        assert saved.call_args.kwargs["media_url"] == video_url
+        assert str(saved.call_args.kwargs["media_type"]) == "video"
+
+    def test_a_video_url_we_did_not_issue_this_user_is_refused(self, api_client):
+        """Same gate as the image half.
+
+        The ownership check is what makes this field safe, and it is the caller's OWN preview dir or
+        nothing.
+        """
+        theirs = "http://api/api/assets?file_name=videos/post_previews/9/vid_abc.mp4"
+        with patch(f"{_API}.get_session_user_id", return_value=1), \
+             patch(f"{_USER}.get_current_group_post_draft", return_value=dict(_DRAFT)), \
+             patch(f"{_USER}.update_group_post_draft") as saved:
+            r = api_client.put("/api/user/group-post-draft",
+                              json={"session_token": "tok", "media_url": theirs})
+        assert r.status_code == 400
+        saved.assert_not_called()
+
     def test_a_url_we_did_not_issue_this_user_is_refused(self, api_client):
         with patch(f"{_API}.get_session_user_id", return_value=1), \
              patch(f"{_USER}.get_current_group_post_draft", return_value=dict(_DRAFT)), \
-             patch(f"{_USER}.owns_post_image_url", return_value=False), \
+             patch(f"{_USER}.owns_post_media_url", return_value=False), \
              patch(f"{_USER}.update_group_post_draft") as saved:
             r = api_client.put("/api/user/group-post-draft",
                               json={"session_token": "tok",
@@ -388,8 +421,8 @@ class TestGroupPostDraftMedia:
     def test_media_that_is_no_longer_on_disk_is_refused(self, api_client):
         with patch(f"{_API}.get_session_user_id", return_value=1), \
              patch(f"{_USER}.get_current_group_post_draft", return_value=dict(_DRAFT)), \
-             patch(f"{_USER}.owns_post_image_url", return_value=True), \
-             patch(f"{_USER}.post_image_abs_path", return_value=None), \
+             patch(f"{_USER}.owns_post_media_url", return_value=True), \
+             patch(f"{_USER}.post_media_abs_path", return_value=None), \
              patch(f"{_USER}.update_group_post_draft") as saved:
             r = api_client.put("/api/user/group-post-draft",
                               json={"session_token": "tok", "media_url": _MEDIA_URL})
@@ -399,8 +432,8 @@ class TestGroupPostDraftMedia:
     def test_a_file_that_is_neither_image_nor_video_is_refused(self, api_client):
         with patch(f"{_API}.get_session_user_id", return_value=1), \
              patch(f"{_USER}.get_current_group_post_draft", return_value=dict(_DRAFT)), \
-             patch(f"{_USER}.owns_post_image_url", return_value=True), \
-             patch(f"{_USER}.post_image_abs_path", return_value="/assets/notes.txt"), \
+             patch(f"{_USER}.owns_post_media_url", return_value=True), \
+             patch(f"{_USER}.post_media_abs_path", return_value="/assets/notes.txt"), \
              patch(f"{_USER}.update_group_post_draft") as saved:
             r = api_client.put("/api/user/group-post-draft",
                               json={"session_token": "tok", "media_url": _MEDIA_URL})
@@ -412,7 +445,7 @@ class TestGroupPostDraftMedia:
         with patch(f"{_API}.get_session_user_id", return_value=1), \
              patch(f"{_USER}.get_current_group_post_draft", return_value=attached), \
              patch(f"{_USER}.update_group_post_draft", return_value=True) as saved, \
-             patch(f"{_USER}.remove_post_image_file") as removed:
+             patch(f"{_USER}.remove_post_media_file") as removed:
             r = api_client.put("/api/user/group-post-draft",
                               json={"session_token": "tok", "remove_media": True})
         assert r.status_code == 200
@@ -425,10 +458,10 @@ class TestGroupPostDraftMedia:
                     "media_type": "image"}
         with patch(f"{_API}.get_session_user_id", return_value=1), \
              patch(f"{_USER}.get_current_group_post_draft", return_value=attached), \
-             patch(f"{_USER}.owns_post_image_url", return_value=True), \
-             patch(f"{_USER}.post_image_abs_path", return_value="/assets/img_abc.png"), \
+             patch(f"{_USER}.owns_post_media_url", return_value=True), \
+             patch(f"{_USER}.post_media_abs_path", return_value="/assets/img_abc.png"), \
              patch(f"{_USER}.update_group_post_draft", return_value=True), \
-             patch(f"{_USER}.remove_post_image_file") as removed:
+             patch(f"{_USER}.remove_post_media_file") as removed:
             r = api_client.put("/api/user/group-post-draft",
                               json={"session_token": "tok", "media_url": _MEDIA_URL})
         assert r.status_code == 200
@@ -443,7 +476,7 @@ class TestGroupPostDraftMedia:
         with patch(f"{_API}.get_session_user_id", return_value=1), \
              patch(f"{_USER}.get_current_group_post_draft", return_value=attached), \
              patch(f"{_USER}.update_group_post_draft", return_value=True) as saved, \
-             patch(f"{_USER}.remove_post_image_file") as removed:
+             patch(f"{_USER}.remove_post_media_file") as removed:
             r = api_client.put("/api/user/group-post-draft",
                               json={"session_token": "tok", "content": "My own words."})
         assert r.status_code == 200

@@ -2820,6 +2820,32 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/user/post/video": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Upload Post Video Endpoint
+         * @description Store the author's own video as a compose-time preview and hand back its URL.
+         *
+         *     The URL is what `PUT /user/group-post-draft` takes to attach a video to the weekly group post
+         *     (issue #1443) — the same shape `POST /user/post/image` hands back for an image, and gated the
+         *     same way when it comes back in. The file passes the video contract (container, size, and —
+         *     where ffprobe is installed — duration, frame size and codec) BEFORE it is stored, so a file the
+         *     group composer would refuse is a 400 here rather than an empty media frame on a published post.
+         */
+        post: operations["upload_post_video_endpoint_api_user_post_video_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/user/posthog-stats": {
         parameters: {
             query?: never;
@@ -3520,6 +3546,13 @@ export interface components {
             file: string;
             /** Post Id */
             post_id?: number | null;
+            /** Session Token */
+            session_token: string;
+        };
+        /** Body_upload_post_video_endpoint_api_user_post_video_post */
+        Body_upload_post_video_endpoint_api_user_post_video_post: {
+            /** File */
+            file: string;
             /** Session Token */
             session_token: string;
         };
@@ -10654,6 +10687,60 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
                 };
+            };
+        };
+    };
+    upload_post_video_endpoint_api_user_post_video_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "multipart/form-data": components["schemas"]["Body_upload_post_video_endpoint_api_user_post_video_post"];
+            };
+        };
+        responses: {
+            /** @description Video stored */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResponseModel_dict_str__Any__"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };

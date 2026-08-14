@@ -424,6 +424,25 @@
         "title": "Body_upload_post_image_endpoint_api_user_post_image_post",
         "type": "object"
       },
+      "Body_upload_post_video_endpoint_api_user_post_video_post": {
+        "properties": {
+          "file": {
+            "contentMediaType": "application/octet-stream",
+            "title": "File",
+            "type": "string"
+          },
+          "session_token": {
+            "title": "Session Token",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_token",
+          "file"
+        ],
+        "title": "Body_upload_post_video_endpoint_api_user_post_video_post",
+        "type": "object"
+      },
       "BulkDeleteRequest": {
         "description": "Body of `DELETE /posts/` \u2014 a SOFT delete.\n\n`rejection_reason` is the author's own words on why the draft was no good, and is fed back in when the post is\nlater regenerated (issue #713).",
         "properties": {
@@ -11165,6 +11184,54 @@
           }
         },
         "summary": "Rescore Post Endpoint"
+      }
+    },
+    "/api/user/post/video": {
+      "post": {
+        "description": "Store the author's own video as a compose-time preview and hand back its URL.\n\nThe URL is what `PUT /user/group-post-draft` takes to attach a video to the weekly group post\n(issue #1443) \u2014 the same shape `POST /user/post/image` hands back for an image, and gated the\nsame way when it comes back in. The file passes the video contract (container, size, and \u2014\nwhere ffprobe is installed \u2014 duration, frame size and codec) BEFORE it is stored, so a file the\ngroup composer would refuse is a 400 here rather than an empty media frame on a published post.",
+        "operationId": "upload_post_video_endpoint_api_user_post_video_post",
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_upload_post_video_endpoint_api_user_post_video_post"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseModel_dict_str__Any__"
+                }
+              }
+            },
+            "description": "Video stored"
+          },
+          "400": {
+            "description": "Bad Request"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "500": {
+            "description": "Server error"
+          }
+        },
+        "summary": "Upload Post Video Endpoint"
       }
     },
     "/api/user/posthog-stats": {
