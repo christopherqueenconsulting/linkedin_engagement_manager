@@ -553,3 +553,28 @@ class TestGenerateCarouselContent:
             call_args = mock_openai_client.chat.completions.create.call_args[1]
             all_content = str(call_args["messages"])
             assert expected_hint_fragment in all_content
+
+
+@pytest.mark.unit
+class TestGenerateGroupPost:
+    """The group-post prompt is held to the SAME list the Content Studio shows the author.
+
+    One list (issue #1224), so the model and the UI can never say different things about what works.
+    """
+
+    def test_the_prompt_carries_the_shared_best_practice_list(self, mock_openai_client,
+                                                              sample_linkedin_profile):
+        mock_openai_client.chat.completions.create.return_value.choices[0].message.content = (
+            "We rewrote our onboarding docs after watching three customers get stuck on the same "
+            "step. Support tickets dropped by a third. What is the smallest doc fix that paid off "
+            "for you?")
+        with patch("cqc_lem.utilities.ai.ai_helper.client", mock_openai_client):
+            from cqc_lem.utilities.ai.ai_helper import generate_group_post
+            from cqc_lem.utilities.ai.content_framework import GROUP_POST_BEST_PRACTICES
+            from cqc_lem.utilities.linkedin.profile import LinkedInProfile
+
+            generate_group_post(LinkedInProfile(**sample_linkedin_profile), group_name="AI Leaders")
+
+            prompt = str(mock_openai_client.chat.completions.create.call_args[1]["messages"])
+            for rule in GROUP_POST_BEST_PRACTICES:
+                assert rule[:60] in prompt

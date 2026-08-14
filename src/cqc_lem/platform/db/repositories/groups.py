@@ -10,8 +10,12 @@ from typing import Optional
 import mysql.connector
 
 from cqc_lem.platform.db.connection import db_cursor
-from cqc_lem.platform.db.enums import GroupPostDraftStatus
+from cqc_lem.platform.db.enums import GroupPostDraftStatus, GroupPostMediaType
 from cqc_lem.utilities.logger import log_error
+
+# "the caller said nothing about the media", which is not the same answer as "the caller said there
+# is no media" — see `update_group_post_draft`.
+_UNSET = object()
 
 
 def upsert_user_group(user_id: int, group_id: str, group_name: str = None) -> bool:
@@ -173,9 +177,18 @@ def create_group_post_draft(user_id: int, group_id: str, content: str,
         log_error("Could not create group post draft", exc=err, user_id=user_id)
         return None
 def update_group_post_draft(draft_id: int, content: str = None,
-                            status: "GroupPostDraftStatus" = None) -> bool:
-    """Save the user's revision and/or move the draft's status. `published_at` is stamped by the
-    status change itself, so the publish run can never claim a ship time without the status.
+                            status: "GroupPostDraftStatus" = None,
+                            media_url: "str | None" = _UNSET,
+                            media_type: "GroupPostMediaType | None" = None) -> bool:
+    """Save the user's revision, move the draft's status, and/or attach or clear its media.
+
+    `published_at` is stamped by the status change itself, so the publish run can never claim a ship
+    time without the status.
+
+    `media_url` is three-valued on purpose (issue #1224): omitted leaves the attachment alone, a URL
+    attaches it, and an explicit `None` detaches it — a caller saving a text edit must not silently
+    drop the image the author attached a minute earlier. `media_type` always travels with the URL,
+    so a row can never say "there is media" without saying what it is.
     """
     fields, params = [], []
     if content is not None:
@@ -186,6 +199,11 @@ def update_group_post_draft(draft_id: int, content: str = None,
         params.append(str(status))
         if status == GroupPostDraftStatus.PUBLISHED:
             fields.append("published_at = NOW()")
+    if media_url is not _UNSET:
+        fields.append("media_url = %s")
+        params.append(media_url or None)
+        fields.append("media_type = %s")
+        params.append(str(media_type) if (media_url and media_type) else None)
     if not fields:
         return False
     params.append(draft_id)

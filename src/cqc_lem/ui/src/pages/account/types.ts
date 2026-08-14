@@ -266,6 +266,11 @@ export type GroupPostDraft = {
   content: string
   status: string
   created_at?: string | null
+  // Attached image/video (issue #1224). media_url is null on a text-only group post.
+  media_url?: string | null
+  media_type?: 'image' | 'video' | null
+  // Served with the draft so the editor shows the same rules the drafting prompt follows.
+  best_practices?: string[]
 }
 
 export type LeadMagnet = {

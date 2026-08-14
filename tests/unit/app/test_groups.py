@@ -187,6 +187,61 @@ class TestGroupPostDraftDB:
             assert update_group_post_draft(7) is False
         cur.execute.assert_not_called()
 
+    def test_attaching_media_writes_the_kind_alongside_the_url(self, fake_cursor):
+        """A row can never say "there is media" without saying what it is (issue #1224).
+
+        The publish run reads the kind to decide what it is handing the composer.
+        """
+        conn, cur = fake_cursor(lastrowid=7)
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import GroupPostMediaType, update_group_post_draft
+            assert update_group_post_draft(7, media_url="http://x/api/assets?file_name=a.png",
+                                           media_type=GroupPostMediaType.IMAGE) is True
+        assert cur.execute.call_args[0][1] == ("http://x/api/assets?file_name=a.png", "image", 7)
+
+    def test_clearing_media_is_distinct_from_saying_nothing_about_it(self, fake_cursor):
+        """The three-valued `media_url`: an explicit None detaches, an OMITTED one changes nothing.
+
+        A text edit that dropped the author's image a minute after they attached it is the bug this
+        shape exists to prevent.
+        """
+        conn, cur = fake_cursor(lastrowid=7)
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import update_group_post_draft
+            assert update_group_post_draft(7, media_url=None) is True
+            assert cur.execute.call_args[0][1] == (None, None, 7)
+
+            cur.execute.reset_mock()
+            assert update_group_post_draft(7, content="just the text") is True
+        assert "media_url" not in cur.execute.call_args[0][0]
+
+    def test_the_studio_sees_a_skipped_draft_so_it_can_be_restored(self, fake_cursor):
+        conn, cur = fake_cursor(lastrowid=7,
+                                fetch_one={"id": 7, "user_id": 1, "group_id": "g1",
+                                           "group_name": "AI", "content": "x", "status": "skipped",
+                                           "media_url": None, "media_type": None,
+                                           "created_at": None, "updated_at": None,
+                                           "published_at": None})
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import get_current_group_post_draft
+            assert get_current_group_post_draft(1)["status"] == "skipped"
+        assert cur.execute.call_args[0][1] == (1, "ready", "skipped", "ready")
+        # An open draft outranks a skipped one whatever the ids say, so restoring an old skip can
+        # never hide the post that is about to ship.
+        assert "ORDER BY status = %s DESC" in cur.execute.call_args[0][0]
+
+    def test_the_studio_never_sees_a_published_or_failed_draft(self, fake_cursor):
+        conn, cur = fake_cursor(lastrowid=7, fetch_one=None)
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import get_current_group_post_draft
+            assert get_current_group_post_draft(1) is None
+        assert "published" not in cur.execute.call_args[0][1]
+        assert "failed" not in cur.execute.call_args[0][1]
+
+    def test_only_the_users_own_two_statuses_are_settable_from_the_spa(self):
+        from cqc_lem.utilities.db import GroupPostDraftStatus
+        assert [str(s) for s in GroupPostDraftStatus.user_settable()] == ["ready", "skipped"]
+
     def test_post_enabled_ids_read_the_posting_flag_not_the_commenting_one(self, fake_cursor):
         conn, cur = fake_cursor(lastrowid=7, fetch_all=[("g1",), ("g2",)])
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
@@ -536,6 +591,149 @@ class TestPostToGroup:
         assert str(upd.call_args.kwargs["status"]) == "published"
         # record_group_post stamps both columns itself — the success path never double-stamps.
         run.assert_not_called()
+
+    def test_media_goes_in_before_the_text(self):
+        """Media goes in first because the uploader takes over the composer while it transcodes.
+
+        Text typed first is what the overlay discards (issue #1224). The published result names what
+        shipped with it.
+        """
+        from cqc_lem.app.engagement.feed import auto_post_to_group
+        draft = {**_READY_DRAFT, "media_url": "http://x/api/assets?file_name=i.png",
+                 "media_type": "image"}
+        order = []
+        media_input = MagicMock()
+        media_input.send_keys.side_effect = lambda *_: order.append("media")
+        box = MagicMock()
+        box.send_keys.side_effect = lambda *_: order.append("text")
+        with self._driver_patches(), \
+             patch(f"{_FEED}.get_group_post_draft", return_value=draft), \
+             patch(f"{_FEED}.post_image_abs_path", return_value="/assets/i.png"), \
+             patch(f"{_FEED}.click_first", return_value=MagicMock()), \
+             patch(f"{_FEED}.find_first", side_effect=[media_input, box]), \
+             patch(f"{_FEED}.record_group_post"), patch(f"{_FEED}.update_group_post_draft"), \
+             patch(f"{_FEED}.record_group_post_run"), patch(f"{_FEED}.quit_gracefully"):
+            result = auto_post_to_group.run(user_id=1, group_id="123", draft_id=11)
+        assert result == "Posted to group with image"
+        assert order == ["media", "text"]
+        media_input.send_keys.assert_called_once_with("/assets/i.png")
+
+    @pytest.mark.parametrize("failure", ["gone_from_disk", "no_control"])
+    def test_media_that_will_not_attach_still_ships_the_post(self, failure):
+        """Fail OPEN, like the article cover — text alone is worth more than no post at all.
+
+        The warning is what makes the drift visible (it escalates on repeat).
+        """
+        from cqc_lem.app.engagement.feed import auto_post_to_group
+        draft = {**_READY_DRAFT, "media_url": "http://x/api/assets?file_name=i.png",
+                 "media_type": "image"}
+        box = MagicMock()
+        # gone_from_disk never reaches a lookup; no_control misses the input twice (before and
+        # after the media button) and then resolves the editor.
+        find_results = [box] if failure == "gone_from_disk" else [None, None, box]
+        with self._driver_patches(), \
+             patch(f"{_FEED}.get_group_post_draft", return_value=draft), \
+             patch(f"{_FEED}.post_image_abs_path",
+                   return_value=None if failure == "gone_from_disk" else "/assets/i.png"), \
+             patch(f"{_FEED}.click_first", return_value=MagicMock()), \
+             patch(f"{_FEED}.find_first", side_effect=find_results), \
+             patch(f"{_FEED}.log_warning") as warned, \
+             patch(f"{_FEED}.record_group_post") as rec, \
+             patch(f"{_FEED}.update_group_post_draft") as upd, \
+             patch(f"{_FEED}.record_group_post_run") as run, patch(f"{_FEED}.quit_gracefully"):
+            result = auto_post_to_group.run(user_id=1, group_id="123", draft_id=11)
+        assert result == "Posted to group"
+        box.send_keys.assert_called_once_with("A useful insight.")
+        rec.assert_called_once_with(1, "123")
+        run.assert_not_called()
+        assert str(upd.call_args.kwargs["status"]) == "published"
+        warned.assert_called_once()
+
+    def test_a_text_only_draft_never_opens_the_media_chain(self):
+        from cqc_lem.app.engagement.feed import auto_post_to_group
+        with self._driver_patches(), \
+             patch(f"{_FEED}.get_group_post_draft", return_value=dict(_READY_DRAFT)), \
+             patch(f"{_FEED}.post_image_abs_path") as resolved, \
+             patch(f"{_FEED}.click_first", return_value=MagicMock()), \
+             patch(f"{_FEED}.find_first", return_value=MagicMock()), \
+             patch(f"{_FEED}.record_group_post"), patch(f"{_FEED}.update_group_post_draft"), \
+             patch(f"{_FEED}.record_group_post_run"), patch(f"{_FEED}.quit_gracefully"):
+            assert auto_post_to_group.run(user_id=1, group_id="123", draft_id=11) == "Posted to group"
+        resolved.assert_not_called()
+
+    def test_the_composers_own_upload_control_is_tried_before_any_other_on_the_page(self):
+        """#1012's rule, applied to an upload.
+
+        A group page carries other file inputs — the messaging overlay's declares an image `accept`
+        too — and writing the draft's file into one of those uploads the image somewhere the user
+        never asked for while the run still reports the media as attached. The TRIGGER chain is held
+        to the same shape and for a harder reason: it is the one control we CLICK, and messaging
+        labels its own attachment control "Add a photo".
+        """
+        from cqc_lem.app.engagement.feed import (
+            _GROUP_MEDIA_CONFIRM_LOCATORS,
+            _GROUP_MEDIA_INPUT_LOCATORS,
+            _GROUP_MEDIA_TRIGGER_LOCATORS,
+        )
+        for chain in (_GROUP_MEDIA_INPUT_LOCATORS, _GROUP_MEDIA_TRIGGER_LOCATORS,
+                      _GROUP_MEDIA_CONFIRM_LOCATORS):
+            scoped = [i for i, (_, value) in enumerate(chain) if "role='dialog'" in value]
+            unscoped = [i for i, (_, value) in enumerate(chain) if "role='dialog'" not in value]
+            assert scoped, chain
+            # Page-wide stays as the last resort (the share box is inline on some variants), but it
+            # can never be reached while a composer-scoped control resolves.
+            assert max(scoped) < min(unscoped)
+            # …and the last resort is not a long shot: the messaging overlay rides EVERY LinkedIn
+            # page, so an unscoped locator that could match inside it is the control we would land
+            # on the moment the composer's own drifts.
+            for i in unscoped:
+                assert "msg-overlay" in chain[i][1], chain[i]
+
+    def test_a_media_overlay_we_could_not_close_never_blames_the_group(self):
+        """Fail-open has to hold for what the media step LEAVES BEHIND, not just for the upload.
+
+        The uploader's overlay is OURS. An editor or Post button missing after we opened it says the
+        overlay is still up — so stamping the draft FAILED and rotating past the group (what
+        `_unpostable` does) would cost the week AND blame a healthy group. The draft stays `ready`
+        for the next weekly slot.
+        """
+        from cqc_lem.app.engagement.feed import auto_post_to_group
+        draft = {**_READY_DRAFT, "media_url": "http://x/api/assets?file_name=i.png",
+                 "media_type": "image"}
+        with self._driver_patches(), \
+             patch(f"{_FEED}.get_group_post_draft", return_value=draft), \
+             patch(f"{_FEED}.post_image_abs_path", return_value="/assets/i.png"), \
+             patch(f"{_FEED}.click_first", return_value=MagicMock()), \
+             patch(f"{_FEED}.find_first", side_effect=[MagicMock(), None]), \
+             patch(f"{_FEED}.log_warning") as warned, \
+             patch(f"{_FEED}.record_group_post") as rec, \
+             patch(f"{_FEED}.update_group_post_draft") as upd, \
+             patch(f"{_FEED}.record_group_post_run") as run, patch(f"{_FEED}.quit_gracefully"):
+            result = auto_post_to_group.run(user_id=1, group_id="123", draft_id=11)
+        assert result == "Group post editor not found"
+        upd.assert_not_called()   # the draft is still the user's to publish next slot
+        run.assert_not_called()   # the rotation does not move past a group that opened its composer
+        rec.assert_not_called()
+        assert warned.called
+
+    def test_a_composer_we_never_touched_still_reports_the_group_as_unpostable(self):
+        """The reverse: with no media in the draft nothing of ours is on screen.
+
+        A missing editor there is the group refusing member posts, which must still retire the draft
+        and rotate past it (issue #858) — the media fix must not swallow that.
+        """
+        from cqc_lem.app.engagement.feed import auto_post_to_group
+        with self._driver_patches(), \
+             patch(f"{_FEED}.get_group_post_draft", return_value=dict(_READY_DRAFT)), \
+             patch(f"{_FEED}.click_first", return_value=MagicMock()), \
+             patch(f"{_FEED}.find_first", return_value=None), \
+             patch(f"{_FEED}.record_group_post"), \
+             patch(f"{_FEED}.update_group_post_draft") as upd, \
+             patch(f"{_FEED}.record_group_post_run") as run, patch(f"{_FEED}.quit_gracefully"):
+            result = auto_post_to_group.run(user_id=1, group_id="123", draft_id=11)
+        assert result == "Group post editor not found"
+        assert str(upd.call_args.kwargs["status"]) == "failed"
+        run.assert_called_once_with(1, "123")
 
     @pytest.mark.parametrize("draft", [
         None,

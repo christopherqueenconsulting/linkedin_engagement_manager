@@ -7,10 +7,12 @@ import type { GroupPostDraft } from '../account/types'
 
 const get = vi.fn()
 const put = vi.fn()
+const post = vi.fn()
 vi.mock('../../api/client', () => ({
   default: {
     get: (...args: unknown[]) => get(...args),
     put: (...args: unknown[]) => put(...args),
+    post: (...args: unknown[]) => post(...args),
   },
 }))
 vi.mock('../../contexts/AuthContext', () => ({ useAuth: () => ({ sessionToken: 'tok' }) }))
@@ -37,6 +39,7 @@ function harness(ui: ReactNode) {
 beforeEach(() => {
   get.mockReset()
   put.mockReset()
+  post.mockReset()
 })
 afterEach(cleanup)
 
@@ -221,9 +224,9 @@ describe('GroupPostQueue — editing', () => {
   })
 
   it('keeps the skip confirmation once the retired draft leaves the queue', async () => {
-    // What the server really does: a skipped draft is no longer the OPEN one, so the refetch that
-    // follows the skip returns null and the panel holding the button unmounts. The confirmation
-    // has to outlive it, or the click reads as having done nothing.
+    // A skipped draft the server has since replaced (or a read that comes back empty) unmounts the
+    // panel holding the button, so the confirmation has to outlive it or the click reads as having
+    // done nothing.
     get.mockResolvedValueOnce({ data: { detail: DRAFT } }).mockResolvedValue({ data: { detail: null } })
     put.mockResolvedValue({ data: { detail: 'ok' } })
     harness(<GroupPostQueue userTimezone="America/New_York" />)
@@ -251,5 +254,113 @@ describe('GroupPostQueue — editing', () => {
     )
 
     expect(screen.getByText(/Skipped — no group post this week\./i)).toBeTruthy()
+  })
+})
+
+describe('GroupPostQueue — statuses (issue #1224)', () => {
+  const SKIPPED: GroupPostDraft = { ...DRAFT, status: 'skipped' }
+
+  it('shows a skipped draft with the way back into the queue', async () => {
+    get.mockResolvedValue({ data: { detail: SKIPPED } })
+    put.mockResolvedValue({ data: { detail: 'ok' } })
+    harness(<GroupPostQueue userTimezone="America/New_York" />)
+
+    await waitFor(() => expect(screen.getByText('SKIPPED')).toBeTruthy())
+    expect(screen.queryByRole('button', { name: /Skip this week/i })).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: /Put back in the queue/i }))
+
+    await waitFor(() =>
+      expect(put).toHaveBeenCalledWith('/user/group-post-draft', {
+        session_token: 'tok',
+        status: 'ready',
+      })
+    )
+    expect(screen.getByText(/Back in the queue for this week\./i)).toBeTruthy()
+  })
+
+  it('a queued draft offers Skip, not Restore', async () => {
+    get.mockResolvedValue({ data: { detail: DRAFT } })
+    harness(<GroupPostQueue userTimezone="America/New_York" />)
+
+    await waitFor(() => expect(screen.getByText('READY')).toBeTruthy())
+    expect(screen.queryByRole('button', { name: /Put back in the queue/i })).toBeNull()
+  })
+})
+
+describe('GroupPostQueue — media (issue #1224)', () => {
+  it('renders the best-practice list the API served with the draft', async () => {
+    get.mockResolvedValue({
+      data: { detail: { ...DRAFT, best_practices: ['Open with a question.', 'Stay native.'] } },
+    })
+    harness(<GroupPostQueue userTimezone="America/New_York" />)
+
+    await waitFor(() => expect(screen.getByText('Open with a question.')).toBeTruthy())
+    expect(screen.getByText('Stay native.')).toBeTruthy()
+  })
+
+  it('uploads a file then attaches the URL the server issued', async () => {
+    get.mockResolvedValue({ data: { detail: DRAFT } })
+    post.mockResolvedValue({ data: { detail: { image_url: 'http://api/assets?file_name=a.png' } } })
+    put.mockResolvedValue({ data: { detail: 'ok' } })
+    harness(<GroupPostQueue userTimezone="America/New_York" />)
+
+    await waitFor(() => expect(screen.getByLabelText('Group post media file')).toBeTruthy())
+    const file = new File(['x'], 'a.png', { type: 'image/png' })
+    fireEvent.change(screen.getByLabelText('Group post media file'), { target: { files: [file] } })
+
+    await waitFor(() => expect(post).toHaveBeenCalledWith('/user/post/image', expect.any(FormData)))
+    await waitFor(() =>
+      expect(put).toHaveBeenCalledWith('/user/group-post-draft', {
+        session_token: 'tok',
+        media_url: 'http://api/assets?file_name=a.png',
+      })
+    )
+  })
+
+  it('generates an image from the text on screen, not the stale saved copy', async () => {
+    get.mockResolvedValue({ data: { detail: DRAFT } })
+    post.mockResolvedValue({ data: { detail: { image_url: 'http://api/assets?file_name=b.png' } } })
+    put.mockResolvedValue({ data: { detail: 'ok' } })
+    harness(<GroupPostQueue userTimezone="America/New_York" />)
+
+    await waitFor(() => expect(screen.getByLabelText('Group post text')).toBeTruthy())
+    fireEvent.change(screen.getByLabelText('Group post text'), { target: { value: 'Edited text.' } })
+    fireEvent.click(screen.getByRole('button', { name: /Generate with AI/i }))
+
+    await waitFor(() =>
+      expect(post).toHaveBeenCalledWith('/user/post/image/generate', {
+        session_token: 'tok',
+        content: 'Edited text.',
+      })
+    )
+  })
+
+  it('shows the attached image and lets it be removed', async () => {
+    get.mockResolvedValue({
+      data: { detail: { ...DRAFT, media_url: 'http://api/assets?file_name=a.png', media_type: 'image' } },
+    })
+    put.mockResolvedValue({ data: { detail: 'ok' } })
+    harness(<GroupPostQueue userTimezone="America/New_York" />)
+
+    await waitFor(() => expect(screen.getByAltText('Group post media')).toBeTruthy())
+    fireEvent.click(screen.getByRole('button', { name: /Remove media/i }))
+
+    await waitFor(() =>
+      expect(put).toHaveBeenCalledWith('/user/group-post-draft', {
+        session_token: 'tok',
+        remove_media: true,
+      })
+    )
+  })
+
+  it('refuses to generate an image with nothing to draw from', async () => {
+    get.mockResolvedValue({ data: { detail: { ...DRAFT, content: '' } } })
+    harness(<GroupPostQueue userTimezone="America/New_York" />)
+
+    await waitFor(() => expect(screen.getByRole('button', { name: /Generate with AI/i })).toBeTruthy())
+    fireEvent.click(screen.getByRole('button', { name: /Generate with AI/i }))
+
+    expect(post).not.toHaveBeenCalled()
+    expect(screen.getByText(/Write the post first/i)).toBeTruthy()
   })
 })

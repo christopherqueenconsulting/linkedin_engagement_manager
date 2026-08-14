@@ -212,6 +212,7 @@ from cqc_lem.utilities.observability import (
     track_feed_scan,
     track_selector_evidence,
 )
+from cqc_lem.utilities.post_image import post_image_abs_path
 from cqc_lem.utilities.selenium_util import (
     click_first,
     find_first,
@@ -3232,6 +3233,117 @@ _GROUP_SHARE_BOX_TEXT_SIGNALS = ("start a post", "start a public post", "create 
 _GROUP_EDITOR_LOCATORS = [(By.CSS_SELECTOR, "div[role='textbox']")]
 _GROUP_POST_BUTTON_LOCATORS = [(By.XPATH, "//button[normalize-space()='Post']")]
 
+# Media on a group post (issue #1224). The file input is tried FIRST and the trigger only when it
+# is absent: LinkedIn renders the hidden `<input type=file>` up front in most variants, and clicking
+# the styled affordance when we did not have to is what opens an overlay we then have to get back
+# out of. The input is never visible, so every lookup here is `visible_only=False`.
+#
+# The COMPOSER's own input comes first (#1012's rule, applied to an upload): a LinkedIn page carries
+# other `<input type=file>` controls — the messaging overlay's attachment input declares an image
+# `accept` too — and writing the draft's file into one of those uploads the image somewhere the user
+# never asked for, while this run still reports the media as attached. The page-wide chain stays as
+# the last resort, the same shape `article_editor`'s cover ladder uses — but it EXCLUDES the
+# messaging overlay by name (`msg-overlay-*` / `msg-form`, the containers `message_thread.py`
+# already keys on), because that overlay rides every LinkedIn page: without the exclusion the "last
+# resort" is not a long shot, it is the control we would deterministically land on once the
+# composer's own input drifts.
+_X_NOT_IN_MESSAGING = (" and not(ancestor::*[contains(@class,'msg-overlay')"
+                       " or contains(@class,'msg-form')])")
+_GROUP_MEDIA_INPUT_LOCATORS = [
+    (By.XPATH, "//div[@role='dialog']//input[@type='file' and contains(@accept,'image')]"),
+    (By.XPATH, "//div[@role='dialog']//input[@type='file' and contains(@accept,'video')]"),
+    (By.XPATH, "//div[@role='dialog']//input[@type='file']"),
+    (By.XPATH, f"//input[@type='file' and contains(@accept,'image'){_X_NOT_IN_MESSAGING}]"),
+    (By.XPATH, f"//input[@type='file' and contains(@accept,'video'){_X_NOT_IN_MESSAGING}]"),
+    (By.XPATH, f"//input[@type='file'{_X_NOT_IN_MESSAGING}]"),
+]
+# The trigger is the one control here we CLICK, so it carries the exclusion harder than the input
+# does: LinkedIn's messaging overlay labels its own attachment control "Add a photo", and clicking
+# THAT opens the message thread's file picker over the group page — #1012's rule exactly. Composer
+# first, then page-wide with the messaging containers cut out; the or-chain is parenthesised because
+# `and` binds tighter than `or` and an unbracketed tail would exclude messaging from the LAST label
+# only.
+_X_MEDIA_TRIGGER_LABELS = (f"contains({_X_LOWER_ARIA},'add media') "
+                           f"or contains({_X_LOWER_ARIA},'add a photo') "
+                           f"or contains({_X_LOWER_ARIA},'add photo') "
+                           f"or contains({_X_LOWER_ARIA},'add a video') "
+                           f"or contains({_X_LOWER_ARIA},'add video')")
+_GROUP_MEDIA_TRIGGER_LOCATORS = [
+    (By.XPATH, f"//div[@role='dialog']//*[self::button or @role='button'][{_X_MEDIA_TRIGGER_LABELS}]"),
+    (By.XPATH, "//*[self::button or @role='button']"
+               f"[({_X_MEDIA_TRIGGER_LABELS}){_X_NOT_IN_MESSAGING}]"),
+]
+# The media overlay's own commit control. It is NOT the share box's Post button — that one is
+# clicked later, after the text goes in. Scoped to the open dialog first for the same reason the
+# input is: a bare "Next" anywhere on the page belongs to some other surface.
+_GROUP_MEDIA_CONFIRM_LOCATORS = [
+    (By.XPATH, "//div[@role='dialog']//button[normalize-space()='Next']"),
+    (By.XPATH, "//div[@role='dialog']//button[normalize-space()='Done']"),
+    (By.XPATH, f"//button[normalize-space()='Next'{_X_NOT_IN_MESSAGING}]"),
+    (By.XPATH, f"//button[normalize-space()='Done'{_X_NOT_IN_MESSAGING}]"),
+]
+
+# What the media chain did to the composer, which is a different question from whether the media
+# went on (issue #1224). `LEFT_OPEN` is the one that matters downstream: the uploader's overlay is
+# OURS, so an editor or Post button we cannot find after opening it says our overlay is still up —
+# never that this group refuses member posts.
+_MEDIA_UNTOUCHED = "untouched"
+_MEDIA_ATTACHED = "attached"
+_MEDIA_LEFT_OPEN = "left_open"
+
+
+def _attach_group_media(driver, wait, media_url: str, user_id: int = None) -> str:
+    """Hand the draft's image/video to the open group composer.
+
+    Returns what the attempt did to the COMPOSER, not just whether it worked: `_MEDIA_ATTACHED`,
+    `_MEDIA_UNTOUCHED` (nothing opened — the composer is exactly as we found it), or
+    `_MEDIA_LEFT_OPEN` (we opened the uploader and could not finish, so an overlay may still be
+    covering the editor). The caller needs that third answer to tell OUR overlay apart from a group
+    that will not take a member post.
+
+    Never raises and never blocks the post: a group post that goes out as text is worth more than
+    no post at all, so every failure here is a warning and the caller carries on — the same
+    fail-open posture `render_image_gated` and the article cover take. The file is written into the
+    hidden `<input type=file>` because clicking the styled control opens the OS file chooser, which
+    Selenium cannot drive; `webdriver.Remote`'s local file detector ships the bytes to the Chrome
+    node, so the worker's own path is the right thing to send.
+    """
+    path = post_image_abs_path(media_url)
+    if not path:
+        log_warning("Group post media is missing on disk — posting the text alone", user_id=user_id,
+                    task_name="auto_post_to_group")
+        return _MEDIA_UNTOUCHED
+    opened = False
+    try:
+        file_input = find_first(driver, wait, _GROUP_MEDIA_INPUT_LOCATORS, "Group media input",
+                                visible_only=False, required=False, warn_on_miss=False, max_try=1)
+        if file_input is None:
+            trigger = click_first(driver, wait, _GROUP_MEDIA_TRIGGER_LOCATORS, "Group media button",
+                                  required=False, warn_on_miss=False, max_try=1)
+            if trigger is not None:
+                opened = True
+                time.sleep(random.uniform(1, 2))
+                file_input = find_first(driver, wait, _GROUP_MEDIA_INPUT_LOCATORS,
+                                        "Group media input", visible_only=False, required=False,
+                                        warn_on_miss=False, max_try=1)
+        if file_input is None:
+            log_warning("Group composer media control not found — posting the text alone",
+                        user_id=user_id, task_name="auto_post_to_group")
+            return _MEDIA_LEFT_OPEN if opened else _MEDIA_UNTOUCHED
+        file_input.send_keys(path)
+        opened = True
+        # LinkedIn transcodes the upload before the overlay will commit; a video takes the longer
+        # end of this, and committing early is what leaves an empty media frame on the post.
+        time.sleep(random.uniform(6, 9))
+        click_first(driver, wait, _GROUP_MEDIA_CONFIRM_LOCATORS, "Group media confirm",
+                    required=False, warn_on_miss=False, max_try=1)
+        time.sleep(random.uniform(1, 2))
+        return _MEDIA_ATTACHED
+    except WebDriverException as e:
+        log_warning("Group post media attach failed — posting the text alone", exc=e,
+                    user_id=user_id, task_name="auto_post_to_group")
+        return _MEDIA_LEFT_OPEN if opened else _MEDIA_UNTOUCHED
+
 
 @shared_task.task(name='cqc_lem.app.run_automation.auto_post_to_group',
                   bind=True, base=QueueOnce, once={'graceful': True, 'unlock_before_run': True,
@@ -3301,21 +3413,40 @@ def auto_post_to_group(self, user_id: int, group_id: str, group_name: str = None
             return _unpostable("Group share box control drifted" if has_share_signal
                                else "Group share box not found")
         time.sleep(random.uniform(2, 3))
+        # Media goes in BEFORE the text: LinkedIn's uploader takes over the composer while it
+        # transcodes, and text typed first is what the overlay discards.
+        media_state = (_attach_group_media(driver, wait, draft["media_url"], user_id=user_id)
+                       if draft.get("media_url") else _MEDIA_UNTOUCHED)
+        media_attached = media_state == _MEDIA_ATTACHED
+
+        def _composer_blocked(reason: str) -> str:
+            # Our own uploader overlay, NOT a group that refuses member posts: the share box opened
+            # a moment ago, so `_unpostable` here would stamp the draft FAILED and rotate past a
+            # healthy group on the strength of a control WE covered up. The draft stays `ready` and
+            # takes the next weekly slot; the repeat-escalating warning is what turns real drift
+            # into one grouped issue.
+            log_warning(f"Group composer unusable after the media step: {reason}", user_id=user_id,
+                        task_name="auto_post_to_group", group_id=group_id)
+            return reason
+
+        _lost = _composer_blocked if media_state != _MEDIA_UNTOUCHED else _unpostable
         box = find_first(driver, wait, _GROUP_EDITOR_LOCATORS, "Group post editor",
                          visible_only=True, required=False)
         if box is None:
-            return _unpostable("Group post editor not found")
+            return _lost("Group post editor not found")
         box.click()
         box.send_keys(text)
         time.sleep(random.uniform(1, 2))
         if click_first(driver, wait, _GROUP_POST_BUTTON_LOCATORS, "Group Post button",
                        required=False) is None:
-            return _unpostable("Group Post button not found")
+            return _lost("Group Post button not found")
         time.sleep(random.uniform(3, 5))
         # Only a post that actually shipped advances the rotation — a failed run leaves this group
         # next in line rather than skipping its turn.
         record_group_post(user_id, group_id)
         update_group_post_draft(draft["id"], status=GroupPostDraftStatus.PUBLISHED)
+        if media_attached:
+            return f"Posted to group with {draft.get('media_type') or 'media'}"
         return "Posted to group"
     except Exception as e:
         log_error("Group post error", exc=e, user_id=user_id, task_name="auto_post_to_group")
