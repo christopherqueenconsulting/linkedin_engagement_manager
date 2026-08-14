@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.151.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.150.0...v0.151.0) (2026-08-14)
+
+
+### Features
+
+* **content-generation:** attach a video to the weekly group post (closes [#1443](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1443)) ([#1537](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1537)) ([7ffb591](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/7ffb59175e21c1522a53a83c85888e7190afb11b))
+* **content-quality:** hold a still-over similarity draft at generation (closes [#1452](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1452)) ([#1541](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1541)) ([9070698](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/907069896f8a764da4586a6ed1808d9441245322))
+* **content-quality:** record what a slop-lint retry did, and stop keeping the worse draft (closes [#1434](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1434)) ([#1531](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1531)) ([efd4596](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/efd45964be4eae89411495c362b268396d0f6ccc))
+* **newsletter:** ask for the cover approval before the slot arrives (closes [#1432](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1432)) ([#1535](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1535)) ([6a0d5d4](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/6a0d5d47030a3caa8a05c4e8d6da86fbcdd247ca))
+
+
+### Bug Fixes
+
+* **carousel:** stop slide bodies vanishing past the line cap (closes [#1375](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1375)) ([#1546](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1546)) ([af24bbe](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/af24bbe926c05cf5e633edb7ac0d866127dafc3b))
+* **observability:** stop the test suite shipping logs to PostHog too (closes [#1460](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1460)) ([#1542](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1542)) ([323bf6b](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/323bf6b00158173252823c5f95a40fbad2bedb15))
+* **scrapper:** parse the profile render that names no markup (closes [#1465](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1465)) ([#1544](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1544)) ([1a37850](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/1a3785043356678fd851beefc1fa08f2c960df62))
+
 ## [0.150.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.149.0...v0.150.0) (2026-08-14)
 
 
