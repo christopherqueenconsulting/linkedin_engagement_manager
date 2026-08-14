@@ -1665,6 +1665,36 @@ class TestGroupMembershipProbe:
              "crosscheck_count": None})
         assert findings["crosscheck_blind"] is False
 
+    def test_a_directory_carrying_only_the_recommendation_rail_is_an_account_in_no_groups(self):
+        """A page with nothing but offers on it is not a blind walk.
+
+        Since #1316 the walk returns a SUBSET of the page's `/groups/` anchors on purpose, so both
+        the blind read and the tripwire have to be measured against the anchors it would KEEP —
+        otherwise a user who has joined nothing grades `drift` every sweep, against a walk that is
+        working and a tripwire that correctly counted zero rows.
+        """
+        directory = {"page_text": "Groups", "enumerated": [],
+                     "anchors": [{"id": "1", "section": "Groups you might be interested in"},
+                                 {"id": "2", "section": "Groups you might be interested in"}],
+                     "crosscheck_selector": "button[aria-label^='More options for ']",
+                     "crosscheck_count": 0}
+        findings = llv.group_enumeration_findings(directory)
+        assert findings["joined_anchors"] == 0
+        assert findings["crosscheck_blind"] is False
+        reading = {"directory": directory,
+                   "group_page": {"group_id": "1", "page_text": "x", "membership": "member"}}
+        assert llv.group_membership_state(reading) == llv.STATE_OK
+        assert "blind" not in llv.group_membership_verdict(reading)
+
+    def test_a_joined_row_the_sync_missed_is_still_blind_when_the_rail_is_on_the_page(self):
+        """The rail must not mask the finding either — one kept anchor and a zero enumeration is drift."""
+        reading = {"directory": {"page_text": "Groups", "enumerated": [],
+                                 "anchors": [{"id": "1", "section": "Groups listing"},
+                                             {"id": "2", "section": "Groups you might be interested in"}]},
+                   "group_page": {"group_id": "1", "page_text": "x", "membership": "member"}}
+        assert llv.group_membership_state(reading) == llv.STATE_DRIFT
+        assert "blind" in llv.group_membership_verdict(reading)
+
     def test_a_directory_that_never_rendered_grounds_nothing(self):
         reading = {"directory": {"page_text": "", "enumerated": [], "anchors": []},
                    "group_page": {"group_id": "1", "page_text": "x", "membership": "member"}}

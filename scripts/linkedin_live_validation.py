@@ -3259,15 +3259,23 @@ def group_enumeration_findings(directory: Optional[dict]) -> dict:
     recommended = [gid for gid in enumerated
                    if _labels_matching([by_id.get(gid)], _GROUP_RECOMMENDATION_MARKERS)]
     crosscheck = directory.get("crosscheck_count")
+    # The tripwire counts a per-JOINED-row control, so only anchors the walk would KEEP can make a
+    # zero read of it evidence of anything. A directory carrying nothing but the recommendation rail
+    # is a genuinely group-less account: production enumerates zero, counts zero controls, and grades
+    # it the quiet day it is — so measuring the tripwire against the rail's own anchors would file a
+    # drift finding against a walk that is working.
+    joined_anchors = [a for a in anchors
+                      if not _labels_matching([a.get("section")], _GROUP_RECOMMENDATION_MARKERS)]
     return {"anchor_total": anchor_total,
             "anchors_truncated": anchor_total > len(anchors),
             "sections_readable": any(by_id.values()),
+            "joined_anchors": len(joined_anchors),
             "enumerated_under_recommendation": recommended,
             # The tripwire that decides whether a zero enumeration is graded a defect or a quiet day
             # (#1316). Zero rows for it while the page carries group anchors means production's zero
             # read would come back `empty` — silent — and this is the only place that shows.
             "crosscheck_blind": bool(directory.get("crosscheck_selector")) and crosscheck == 0
-                                and bool(anchors),
+                                and bool(joined_anchors),
             # Only meaningful when the anchor list was not cut short — otherwise every id past the
             # cap looks invented.
             "enumerated_not_anchored": ([gid for gid in enumerated if gid not in by_id]
@@ -3306,7 +3314,10 @@ def group_membership_state(reading: Optional[dict]) -> str:
     findings = group_enumeration_findings(directory)
     states = []
     if str(directory.get("page_text") or "").strip():
-        blind = directory.get("anchors") and not directory.get("enumerated")
+        # Since #1316 the walk returns a SUBSET of the page's `/groups/` anchors by design, so the
+        # blind question is about the anchors it would keep: a page carrying only the recommendation
+        # rail is an account in no groups, and the sync returning nothing there is it working.
+        blind = findings["joined_anchors"] and not directory.get("enumerated")
         unattributed = directory.get("anchors") and not findings["sections_readable"]
         states.append(STATE_DRIFT if (blind or unattributed
                                       or findings["enumerated_under_recommendation"]
@@ -3333,7 +3344,7 @@ def group_membership_verdict(reading: Optional[dict]) -> str:
     parts = []
     if not str(directory.get("page_text") or "").strip():
         parts.append("the groups directory did not render — re-run")
-    elif directory.get("anchors") and not directory.get("enumerated"):
+    elif findings["joined_anchors"] and not directory.get("enumerated"):
         parts.append("the directory rendered group anchors that `_enumerate_joined_groups` matched "
                      "none of — the sync is blind and every stored membership is unverifiable")
     else:
