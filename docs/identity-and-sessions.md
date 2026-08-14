@@ -595,6 +595,46 @@ not a lax response. `test_no_literal_return_contradicts_its_annotation` reads th
 `detail=` returns back out of the source, so that drift fails in the unit lane instead of on the
 branch nobody exercised.
 
+#### The SPA's types are GENERATED from that schema (issue #1446)
+
+The published document is now the source of the SPA's response types, so a route and the browser
+code reading it cannot drift silently. Three artefacts, all committed:
+
+| Artefact | Written by | Read by |
+|---|---|---|
+| `src/cqc_lem/ui/openapi.json` | `poetry run python scripts/dump_openapi.py` | the generator |
+| `src/cqc_lem/ui/src/api/schema.ts` (+ `schema.stamp.json`) | `npm run gen:api-types` (openapi-typescript, pinned in `package.json`) | the SPA |
+| `src/cqc_lem/ui/src/api/types.ts` | a human, once | every call site |
+
+**After changing any route's shape, run both commands and commit all four.** The dump imports the
+app directly — no server, no database — and takes `app.openapi()` *after*
+`_hide_admin_routes_from_schema()` has run, so `/api/admin/*` stays out of a file that ships to the
+browser as types.
+
+`tests/unit/api/test_openapi_snapshot.py` holds the whole chain from the REQUIRED Unit Tests lane.
+App → snapshot is exact (the bytes are re-rendered and compared). Snapshot → TypeScript is checked
+through `schema.stamp.json`, the hash of the schema the generator last ran on — that lane has no
+node, so it cannot re-run the generator, and the stamp is what makes "regenerated one, forgot the
+other" fail there anyway. `npm run check:api-types` re-runs the generator and diffs, which is the
+exact answer wherever node is available.
+
+`api/types.ts` is the only hand-written piece: `ApiEnvelope<T>` takes `status_code` from the
+generated envelope component, and `GetDetail<'/api/…'>` picks a documented payload out of `paths`.
+
+**Narrowing a payload beyond `Record<string, unknown>`** — which is where a `dict[str, Any]`
+`detail` lands — is a documentation-only change, never a serialization one. Give the route
+`responses={200: {"model": ResponseModel[X]}}` with `X` from `api/response_schemas.py`: FastAPI
+uses it for the schema and keeps serializing through the return annotation, so every key the
+handler returns is still on the wire, including ones no model declares. The rule that makes it safe
+is that the model must be *derived* from what the handler really returns — the stored columns, or
+the literal dict in the source — which is what `tests/unit/api/test_response_schemas.py` proves for
+each one. A field documented but not returned is worse than an undocumented one: the SPA generates a
+type from it and reads `undefined`. The same rule decides REQUIRED: `= None` on a model field
+documents "may be absent" (`key?:` in the generated TypeScript), not "may be null" — so a key the
+handler always writes is `Optional[X]` with no default, and only a genuinely partial record (the
+Redis-backed ones, `extra="allow"`) keeps its defaults. On these two payloads the PUT writes the
+whole object, so a key the SPA is allowed to omit is a column a partial save resets.
+
 The other unauthenticated surface, `GET /health/deep`, was trimmed in the same issue: it returns
 **counts only** — no worker or queue names — and `"status":"healthy"` stays the first key of the
 response, which is a monitor contract. See [`stack-watchdog.md`](stack-watchdog.md).

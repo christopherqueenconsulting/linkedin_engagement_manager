@@ -39,6 +39,15 @@ from cqc_lem.api.models import (
     SessionTokenField,
     error_responses,
 )
+from cqc_lem.api.response_schemas import (
+    CatchupContactIntervalBounds,
+    CatchupPerContactCapBounds,
+    FeedReach,
+    GateDefaults,
+    GmailForwardConfirmation,
+    UserSettingsDetail,
+    detail_model_from,
+)
 from cqc_lem.app.engagement.posting import update_stale_profile
 from cqc_lem.utilities.ai.content_alignment import profile_niche_anchors
 from cqc_lem.utilities.ai.content_framework import GROUP_POST_BEST_PRACTICES
@@ -769,6 +778,32 @@ class EngagementPreferencesRequest(BaseModel):
                        max(CATCHUP_MAX_PER_CONTACT_DAYS_MIN, int(v)))
         except (TypeError, ValueError):
             return CATCHUP_MAX_PER_CONTACT_DAYS_DEFAULT
+
+
+# What `GET /user/engagement-preferences` DOCUMENTS (#1446) — never what it serializes. The saved
+# row is exactly what the PUT body carries, so the field list is taken from the request model
+# rather than restated: a restatement is a second list to keep in step with the 45 columns, and
+# `test_response_schemas.py` ties both of them to `db._ENGAGEMENT_DEFAULTS`. The extras below are
+# the read-only context the handler adds on top of the row — every one of them REQUIRED and
+# nullable, because the handler assigns the key on both branches of its own try/except: `= None`
+# would document it as possibly ABSENT, which the generated TypeScript spells `key?:`.
+EngagementPreferencesDetail = detail_model_from(
+    "EngagementPreferencesDetail", EngagementPreferencesRequest,
+    drop=("session_token",),
+    extras={
+        "has_saved_preferences": (bool, ...),
+        "reply_inbound_address": (Optional[str], ...),
+        "gmail_forward_confirmation": (Optional[GmailForwardConfirmation], ...),
+        "max_catchup_touches_allowed": (int, ...),
+        "catchup_contact_interval_bounds": (CatchupContactIntervalBounds, ...),
+        "catchup_per_contact_cap_bounds": (CatchupPerContactCapBounds, ...),
+        "gate_defaults": (GateDefaults, ...),
+        "feed_reach": (Optional[FeedReach], ...),
+    },
+    doc="The saved engagement preferences, plus the read-only context the Settings hub renders.\n\n"
+        "Everything above `has_saved_preferences` is a stored column and can be PUT back; "
+        "everything from it down is derived per request and is ignored on a save.",
+)
 
 
 class DmTemplateItem(BaseModel):
@@ -1670,7 +1705,7 @@ def step_up_verify(request: StepUpVerifyRequest, http_request: Request = None) -
     return ResponseModel(status_code=200, detail={"verified": True})
 
 
-@router.get("/settings")
+@router.get("/settings", responses={200: {"model": ResponseModel[UserSettingsDetail]}})
 def get_user_settings(session_token: str) -> ResponseModel[dict[str, Any]]:
     """The Account page's snapshot: subscription, preferences, blog/sitemap and company page.
 
@@ -1766,7 +1801,8 @@ def get_linkedin_profile_skills_endpoint(session_token: str) -> ResponseModel[di
     })
 
 
-@router.get("/engagement-preferences")
+@router.get("/engagement-preferences",
+            responses={200: {"model": ResponseModel[EngagementPreferencesDetail]}})
 def get_engagement_preferences_endpoint(session_token: str) -> ResponseModel[dict[str, Any]]:
     """The saved engagement preferences, plus the read-only context the Settings hub renders.
 

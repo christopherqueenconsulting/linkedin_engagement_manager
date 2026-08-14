@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
 import api from '../api/client'
+import type { ApiEnvelope } from '../api/types'
 import { useAuth } from '../contexts/useAuth'
 import { useUserTimezone } from '../hooks/useUserTimezone'
 import { useScrollAffordance } from '../hooks/useScrollAffordance'
@@ -331,7 +332,7 @@ export default function Dashboard() {
     staleTime: 5 * 60 * 1000,
   })
 
-  const { data: statsData } = useQuery<{ detail: DashboardStats }>({
+  const { data: statsData } = useQuery<ApiEnvelope<DashboardStats>>({
     queryKey: ['dashboard-stats', userId],
     queryFn: () =>
       api.get(`/dashboard/stats/?session_token=${encodeURIComponent(sessionToken!)}`).then((r) => r.data),
@@ -341,7 +342,7 @@ export default function Dashboard() {
 
   // Upcoming (future-dated, non-terminal) work across posts, scheduled DMs, and newsletter
   // editions — the backend already filters terminal states, sorts soonest-first, and caps.
-  const { data: plannedData } = useQuery<{ detail: { tasks: PlannedTask[] } }>({
+  const { data: plannedData } = useQuery<ApiEnvelope<{ tasks: PlannedTask[] }>>({
     queryKey: ['planned-tasks', userId],
     queryFn: () =>
       api
@@ -351,7 +352,7 @@ export default function Dashboard() {
     refetchInterval: 30_000,
   })
 
-  const { data: activityData } = useQuery<{ detail: ActivityEntry[] }>({
+  const { data: activityData } = useQuery<ApiEnvelope<ActivityEntry[]>>({
     queryKey: ['activity', userId],
     queryFn: () =>
       api.get(`/activity/?session_token=${encodeURIComponent(sessionToken!)}&limit=15`).then((r) => r.data),

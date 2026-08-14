@@ -1,0 +1,5 @@
+{
+  "generator": "openapi-typescript@7.13.0",
+  "source": "openapi.json",
+  "source_sha256": "4c628ec4ba38137e249540dc3008e49faeeb42951fad83c75d93c11867f34059"
+}

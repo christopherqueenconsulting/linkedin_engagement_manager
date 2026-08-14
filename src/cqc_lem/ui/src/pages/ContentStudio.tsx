@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import api from '../api/client'
+import type { ApiEnvelope } from '../api/types'
 import LinkedInPostPreview from '../components/LinkedInPostPreview'
 import PostGateReason from '../components/PostGateReason'
 import { gateHold } from '../utils/gateFindings'
@@ -198,7 +199,7 @@ export default function ContentStudio() {
     filterStatus, filterPostType, dateRange, filterStartDate, filterEndDate, searchQuery,
   ]
 
-  const { data, isLoading } = useQuery<{ detail: PostsResponse }>({
+  const { data, isLoading } = useQuery<ApiEnvelope<PostsResponse>>({
     queryKey,
     queryFn: () => {
       const params = new URLSearchParams({
@@ -515,7 +516,7 @@ export default function ContentStudio() {
       ? `Generating ${genStatus.completed + genStatus.failed} of ${genStatus.total}…`
       : 'Generating content…'
 
-  const { data: postUrlData, isLoading: postUrlLoading } = useQuery<{ detail: { post_url: string | null } }>({
+  const { data: postUrlData, isLoading: postUrlLoading } = useQuery<ApiEnvelope<{ post_url: string | null }>>({
     // Keyed on the address, like every other cache key on this page — `sessionToken` is the same
     // sentinel for every account since #745 and carries no identity of its own (issue #914).
     queryKey: ['post_url', editingPost?.post_id, email],
