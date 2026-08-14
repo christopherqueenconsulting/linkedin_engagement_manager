@@ -58,3 +58,20 @@ class TestGetFileMimeType:
         from cqc_lem.utilities.mime_type_helper import get_file_mime_type
         result = get_file_mime_type(".png")
         assert result == "image/png"
+
+    def test_malformed_table_line_logs_instead_of_printing(self, monkeypatch):
+        """The parse error path used to `print()`; it goes through the structured logger now."""
+        from unittest.mock import patch
+
+        from cqc_lem.utilities import mime_type_helper
+
+        monkeypatch.setattr(mime_type_helper, "mime_types_str", ".png image/png\nnot-a-pair-line x y")
+        with patch.object(mime_type_helper, "log_warning") as mock_warn:
+            assert mime_type_helper.get_file_mime_type(".png") == "image/png"
+        mock_warn.assert_called_once()
+        assert mock_warn.call_args.kwargs["mime_line"] == "not-a-pair-line x y"
+
+    def test_table_has_no_malformed_lines(self):
+        """Every row is `<ext> <mime>`, so the warning above is a real defect signal, not noise."""
+        from cqc_lem.utilities.mime_type_helper import mime_types_str
+        assert [ln for ln in mime_types_str.strip().split("\n") if len(ln.split()) != 2] == []

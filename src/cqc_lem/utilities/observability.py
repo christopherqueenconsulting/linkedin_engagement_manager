@@ -1993,9 +1993,18 @@ def track_api_call(
     became, so this counts failures rather than only the requests that survived. Callers with no
     session land on the shared `"anonymous"` person, which is the only way public-surface traffic
     is visible at all.
+
+    Never raises. The middleware calls this from a `finally:`, so an exception escaping here would
+    REPLACE the request's own in-flight exception — telemetry must never be able to eat the failure
+    it was capturing.
     """
-    _emit(EVENTS["api_call"], {"route": route, "method": method, "status_code": status_code,
-                               "latency_ms": latency_ms, "user_id": user_id})
+    try:
+        _emit(EVENTS["api_call"], {"route": route, "method": method, "status_code": status_code,
+                                   "latency_ms": latency_ms, "user_id": user_id})
+    except Exception as e:
+        from cqc_lem.utilities.logger import log_warning
+        log_warning("Could not track api call", exc=e, user_id=user_id,
+                    http_status=status_code, route=route)
 
 
 def llm_tracked(model_alias: str):

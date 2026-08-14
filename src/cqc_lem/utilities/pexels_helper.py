@@ -5,8 +5,9 @@ Runway render fails (and after any premium credits are refunded), and `get_photo
 `carousel_creator.get_pexels_image_path`. Nothing here authors a brief or preserves an avatar
 likeness — reaching this module already means the good path lost.
 
-`api` is constructed at import from `PEXELS_API_KEY`, so this module is imported lazily inside the
-functions that need it rather than at module top level in its callers.
+Nothing here reads `PEXELS_API_KEY` at import: the photo client is built on first use by
+`_get_api()`, so an unconfigured deployment can import the module and every entry point degrades
+(`search_videos` returns `[]`, `get_photos` returns `[]`) instead of failing at import time.
 """
 # Import API class from pexels_api package
 import os
@@ -16,10 +17,25 @@ import requests
 from pexels_api import API
 from pexels_api.tools import Photo
 
-# Create API object
-api = API(os.environ['PEXELS_API_KEY'])
+_api: API | None = None
 
 _PEXELS_VIDEO_SEARCH_URL = "https://api.pexels.com/videos/search"
+
+
+def _get_api() -> API | None:
+    """The shared Pexels photo client, built on first use — None when no key is configured.
+
+    Constructed lazily and cached: building it at import made an unset `PEXELS_API_KEY` a `KeyError`
+    for anyone who so much as imported this module, which defeated the degrade-to-empty path the
+    functions below were written for.
+    """
+    global _api
+    if _api is None:
+        pexels_key = os.environ.get("PEXELS_API_KEY")
+        if not pexels_key:
+            return None
+        _api = API(pexels_key)
+    return _api
 
 
 def search_videos(query: str, per_page: int = 10) -> list[dict]:
@@ -99,8 +115,13 @@ def get_photos(query: str, num_of_photos: int = 25) -> list[Photo]:
     """First page of Pexels photo results for `query` — the pool `get_photo` samples from.
 
     Page size is what makes the random pick meaningful, so it is a parameter rather than a constant.
-    Network and auth failures propagate from the SDK; callers own the fallback.
+    An unconfigured `PEXELS_API_KEY` yields an empty pool, which `get_photo` turns into the
+    `IndexError` its callers already fall back on. Network and auth failures propagate from the SDK;
+    callers own the fallback.
     """
+    api = _get_api()
+    if api is None:
+        return []
     # Search for photos
     api.search(query, page=1, results_per_page=num_of_photos)
     # Get photo entries
