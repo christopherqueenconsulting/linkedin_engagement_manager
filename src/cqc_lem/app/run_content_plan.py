@@ -1168,7 +1168,53 @@ def _accept_probed_video(post_id: int, video_file_path: str, video_src_url: str,
     return False
 
 
-def _store_video_asset(post_id: int, video_src_url: str) -> Optional[str]:
+def _caption_video_asset(post_id: int, video_file_path: str, content: Optional[str],
+                         user_id: Optional[int] = None, task_name: str = "") -> None:
+    """Burn the post's hook onto its rendered video for LinkedIn's muted autoplay (issue #1278).
+
+    The ONE place a POST's video gets captioned, so the initial-generation path and the
+    regenerate/backfill paths cannot drift on what a shipped video looks like. `video_captions`
+    rewrites the file IN PLACE, which is why this runs before C2PA signing (a re-encode after
+    signing would strip the credentials) and before `posts.video_url` is persisted — the stored
+    URL then points at the video that actually ships.
+
+    In place also means the probed file is REPLACED, so the burn is handed `_probe_video_file` and
+    the re-encoded output has to pass the same check the download did (issue #1280) before it is
+    allowed to become the post's media. Otherwise the only bytes LinkedIn ever receives would be
+    the one version nothing verified.
+
+    Never raises and never changes the stored URL: an off flag, an unusable hook, a missing
+    ffmpeg, a failed burn or an output that fails the probe all leave the uncaptioned video
+    exactly where it was.
+
+    The avatar question is asked three-valued and answered CLOSED: an unreadable
+    `posts.avatar_media` counts as avatar-led, so the frame gets the sidecar and nothing else. The
+    disclosure path can afford to guess "not an avatar" (it costs a caption line); painting text
+    over someone's likeness on a failed DB read cannot.
+    """
+    from cqc_lem.utilities.db import post_avatar_media_state, update_db_post_captions
+    from cqc_lem.utilities.video_captions import apply_captions_to_video, caption_srt_asset_url
+
+    try:
+        result = apply_captions_to_video(
+            video_file_path, content, post_id=post_id, user_id=user_id,
+            avatar_led=post_avatar_media_state(post_id) is not False,
+            validate=lambda path: _probe_video_file(path)[0])
+    except Exception as e:
+        # apply_captions_to_video already fails open; this only catches an import/DB fault.
+        log_warning("Video captioning step could not run — shipping the video uncaptioned", exc=e,
+                    user_id=user_id, post_id=post_id, task_name=task_name or "caption_video_asset")
+        return
+
+    if result.srt_path:
+        # The sidecar is recorded even when the burn was skipped for an avatar-led frame: the
+        # author can still attach it on LinkedIn, and it is the record of what was offered.
+        update_db_post_captions(post_id, result.caption_text,
+                                caption_srt_asset_url(result.srt_path))
+
+
+def _store_video_asset(post_id: int, video_src_url: str, content: Optional[str] = None,
+                       user_id: Optional[int] = None) -> Optional[str]:
     """Download a generated video into the shared assets volume, probe it, and attach C2PA
     credentials to AI output. Persist posts.video_url and return the public API asset URL only when
     the probe passes. The ONE place a regenerated video is stored — both the asset-only healer and
@@ -1182,6 +1228,11 @@ def _store_video_asset(post_id: int, video_src_url: str) -> Optional[str]:
     if not _accept_probed_video(post_id, video_file_path, video_src_url,
                                 task_name="regenerate_post_video_task"):
         return None
+
+    # Captions BEFORE signing: the burn re-encodes the file, which would strip C2PA credentials
+    # attached first.
+    _caption_video_asset(post_id, video_file_path, content, user_id=user_id,
+                         task_name="regenerate_post_video_task")
 
     # Only AI (Runway, http) output gets C2PA AI credentials — not Pexels stock.
     if str(video_src_url).startswith("http"):
@@ -1230,7 +1281,8 @@ def regenerate_video_for_post(post_id: int) -> Optional[str]:
         return None
 
     try:
-        api_video_url = _store_video_asset(post_id, video_src_url)
+        api_video_url = _store_video_asset(post_id, video_src_url, content=text_content,
+                                           user_id=user_id)
     except Exception as e:
         # A hard probe failure (or any other storage error) should not strand the post; log it
         # and let the missing-asset gate hold it for review / backfill.
@@ -1423,7 +1475,8 @@ def regenerate_post(post_id: int, guidance: str = None) -> Optional[str]:
         api_video_url = None
         if video_src_url:
             try:
-                api_video_url = _store_video_asset(post_id, video_src_url)
+                api_video_url = _store_video_asset(post_id, video_src_url, content=content,
+                                                   user_id=user_id)
             except Exception as e:
                 # Losing the download must not lose the regenerated caption too — persist it and
                 # let the missing-asset gate hold the post, exactly as a failed render does.
@@ -3076,6 +3129,11 @@ def _create_content_for_planned_post(post: dict, prefs: dict) -> bool:
                 video_file_path = None
                 video_url = None
                 ai_video = False
+            # Muted-autoplay captions (issue #1278) run on the probed file, before signing: the
+            # burn re-encodes the video and would strip C2PA credentials attached first.
+            if video_file_path:
+                _caption_video_asset(post_id, video_file_path, content, user_id=user_id,
+                                     task_name="auto_create_weekly_content")
             # Attach AI Content Credentials to AI-generated video only (not stock).
             if ai_video:
                 try:

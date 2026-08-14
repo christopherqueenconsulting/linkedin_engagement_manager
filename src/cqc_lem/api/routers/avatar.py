@@ -88,6 +88,9 @@ class AvatarPreferencesRequest(BaseModel):
     avatar_use_carousel: Optional[bool] = None
     avatar_use_video: Optional[bool] = None
     avatar_use_newsletter: Optional[bool] = None
+    # Not a render surface: permission for burned captions to sit on an avatar-led video frame
+    # (issue #1278).
+    avatar_caption_overlay: Optional[bool] = None
 
 
 @router.get("/credits", responses={

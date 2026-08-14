@@ -73,6 +73,7 @@ instead of silently evaluating to `False` inside a Celery task.
 | `posthog-surveys-enabled` | `POSTHOG_SURVEYS_ENABLED` | `false` | growth | Gates the headless PostHog survey renderer (issue #653, `docs/surveys.md`). Keep OFF until the SPA bundle carries a `VITE_POSTHOG_KEY` and the surveys are launched. |
 | `newsletter-editor-enabled` | `NEWSLETTER_EDITOR_ENABLED` | `false` | content | Final mechanical LLM edit pass on newsletter drafts (capitalization, grammar, punctuation, formatting) before slop-lint review. Adds one `lem-medium` call per draft. |
 | `video-motion-lint-hold` | `VIDEO_MOTION_LINT_HOLD_ENABLED` | `false` | content | ENFORCEMENT for the motion-prompt lint (issue #1277, `docs/content-core.md`). The lint always grades and emits `motion_prompt_check`; this decides whether a HARD violation buys a steered rewrite and then HOLDS the render. OFF = warn-only, so the credit-spend profile is unchanged until it is flipped. Scoped per user. |
+| `video-captions-enabled` | `VIDEO_CAPTIONS_ENABLED` | `false` | content | Burns the post's opening line into generated video posts for LinkedIn's muted autoplay (issue #1278, `video_captions.py`). One extra ffmpeg pass per video post; no LLM spend. Scoped per user. An avatar-led video needs the separate `users.avatar_caption_overlay` opt-in as well — the flag alone never paints over a likeness. |
 
 ## Provisioning
 

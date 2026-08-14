@@ -184,6 +184,56 @@ def update_db_post_video_url(post_id: int, video_url: str) -> bool:
         log_error("Could not update post video url", exc=e)
 
     return success
+
+
+def update_db_post_captions(post_id: int, caption_text: Optional[str],
+                            caption_srt_url: Optional[str]) -> bool:
+    """Record the muted-autoplay caption produced for a video post (issue #1278).
+
+    `caption_text` is the caption that was authored from the post's own opening — burned onto the
+    frame when the frame allowed it — and `caption_srt_url` the sidecar that was written, which is
+    real on every path that gets this far (an avatar-led frame without the overlay opt-in, or a
+    burn that failed open, still leaves the author an .srt to attach on LinkedIn). Both nullable,
+    because a post with no usable hook legitimately ships uncaptioned.
+
+    False when the write failed or no row matched.
+    """
+    try:
+        with db_cursor(commit=True) as cursor:
+            cursor.execute(
+                "UPDATE posts SET caption_text = %s, caption_srt_url = %s WHERE id = %s",
+                (caption_text, caption_srt_url, post_id)
+            )
+
+            success = cursor.rowcount == 1
+    except mysql.connector.Error as e:
+        success = False
+        log_error("Could not update post captions", exc=e, post_id=post_id)
+
+    return success
+
+
+def get_post_captions(post_id: int) -> dict:
+    """`{"caption_text", "caption_srt_url"}` for a post — both None when it ships uncaptioned.
+
+    An unreadable row answers the same shape with Nones rather than raising: nothing gates on a
+    caption, so a DB blip must not fail the read that only wants to display one.
+    """
+    empty = {"caption_text": None, "caption_srt_url": None}
+    try:
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(
+                "SELECT caption_text, caption_srt_url FROM posts WHERE id = %s", (post_id,))
+            row = cursor.fetchone()
+    except mysql.connector.Error as e:
+        log_error("Could not get post captions", exc=e, post_id=post_id)
+        return empty
+
+    if not row:
+        return empty
+    return {"caption_text": row.get("caption_text"), "caption_srt_url": row.get("caption_srt_url")}
+
+
 def update_db_post_status(post_id: int, post_status: PostStatus) -> bool:
     """Move a post to `post_status`.
 
@@ -1645,11 +1695,14 @@ def mark_post_avatar_media(post_id: Optional[int]) -> bool:
     except mysql.connector.Error as err:
         log_error("Could not mark avatar media", exc=err, post_id=post_id)
         return False
-def post_used_avatar_media(post_id: Optional[int]) -> bool:
-    """Did any generated media on this post come out of the avatar path (issue #744)?
+def post_avatar_media_state(post_id: Optional[int]) -> Optional[bool]:
+    """Three-valued `posts.avatar_media`: True / False / **None when it could not be read**.
 
-    What the AI-disclosure line is applied on. Fail-soft in both directions: a falsy post_id and a read
-    error both return False, so an unreadable flag costs a disclosure rather than the post.
+    Two callers want opposite fail-soft directions from the same fact, so the read has to be able to
+    say "unknown". The AI disclosure treats unknown as False (`post_used_avatar_media` below) —
+    a missed disclosure line. The caption burn treats it as True (issue #1278), because painting
+    text over a real person's likeness on a guess is the one outcome the avatar guardrails exist to
+    prevent. A falsy post_id is a definite False: there is no post, so no avatar media.
     """
     if not post_id:
         return False
@@ -1657,10 +1710,20 @@ def post_used_avatar_media(post_id: Optional[int]) -> bool:
         with db_cursor() as cursor:
             cursor.execute("SELECT avatar_media FROM posts WHERE id = %s", (post_id,))
             row = cursor.fetchone()
-            return bool(row and row[0])
+            if not row:
+                return None
+            return bool(row[0])
     except mysql.connector.Error as err:
         log_error("Could not read avatar_media", exc=err, post_id=post_id)
-        return False
+        return None
+def post_used_avatar_media(post_id: Optional[int]) -> bool:
+    """Did any generated media on this post come out of the avatar path (issue #744)?
+
+    What the AI-disclosure line is applied on. Fail-soft in both directions: a falsy post_id and a read
+    error both return False, so an unreadable flag costs a disclosure rather than the post. Callers
+    that must fail the other way read `post_avatar_media_state` instead.
+    """
+    return bool(post_avatar_media_state(post_id))
 def get_post_quality_rows(start_date, end_date) -> list:
     """Per-post QUALITY observations across all users over [start_date, end_date] — the outcome side
     of the cost-aware routing experiment (docs/cost-performance-margin-plan.md §D.1(1), issue #494):

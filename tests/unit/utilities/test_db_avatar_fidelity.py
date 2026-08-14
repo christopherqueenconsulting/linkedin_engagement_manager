@@ -217,14 +217,15 @@ class TestSampleRenderClaim:
 class TestAvatarPreferences:
     def test_reads_every_flag(self):
         row = {"avatar_disabled": 0, "avatar_use_post_image": 1,
-               "avatar_use_carousel": 0, "avatar_use_video": 1, "avatar_use_newsletter": 1}
+               "avatar_use_carousel": 0, "avatar_use_video": 1, "avatar_use_newsletter": 1,
+               "avatar_caption_overlay": 1}
         conn, _ = _conn(fetch_one=row)
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_avatar_preferences
             prefs = get_avatar_preferences(3)
         assert prefs == {"avatar_disabled": False, "avatar_use_post_image": True,
                          "avatar_use_carousel": False, "avatar_use_video": True,
-                         "avatar_use_newsletter": True}
+                         "avatar_use_newsletter": True, "avatar_caption_overlay": True}
 
     def test_missing_user_returns_all_off(self):
         conn, _ = _conn(fetch_one=None)

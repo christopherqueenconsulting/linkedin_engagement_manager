@@ -44,6 +44,10 @@ DEFAULT_AVATAR_PREFERENCES: dict[str, bool] = {
     "avatar_use_carousel": False,
     "avatar_use_video": False,
     "avatar_use_newsletter": False,
+    # NOT a surface — it does not decide whether the avatar renders, it decides whether burned
+    # caption text may sit on a frame the avatar already rendered (issue #1278). Default OFF for
+    # the same reason as the surfaces: nothing goes over a real person's likeness unasked.
+    "avatar_caption_overlay": False,
 }
 
 

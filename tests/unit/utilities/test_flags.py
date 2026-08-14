@@ -61,14 +61,19 @@ class TestRegistry:
     def test_exported_constants_are_all_registered(self):
         for key in (flags.COMMENT_RESEARCH, flags.TUTORIAL_VIDEOS,
                     flags.FEED_FALLBACK_DEFAULT, flags.COST_ROUTING,
-                    flags.POSTHOG_SURVEYS, flags.NEWSLETTER_EDITOR):
+                    flags.POSTHOG_SURVEYS, flags.NEWSLETTER_EDITOR,
+                    flags.VIDEO_CAPTIONS):
             assert key in flags.FLAGS
 
     def test_safety_controls_are_not_flags(self):
-        """The 429 breaker, the automation pause and the per-day caps stay in Redis/env."""
-        forbidden = ("pause", "breaker", "rate-limit", "cap", "suppression")
+        """The 429 breaker, the automation pause and the per-day caps stay in Redis/env.
+
+        Matched on whole hyphen-separated WORDS, not substrings: `video-captions-enabled` is a
+        render toggle, and a substring check reads the 'cap' inside 'captions' as a per-day cap.
+        """
+        forbidden = {"pause", "paused", "breaker", "rate", "limit", "cap", "caps", "suppression"}
         for key in flags.FLAGS:
-            assert not any(word in key for word in forbidden), key
+            assert not forbidden & set(key.split("-")), key
 
     def test_unregistered_flag_raises_rather_than_silently_reading_false(self):
         with pytest.raises(KeyError):

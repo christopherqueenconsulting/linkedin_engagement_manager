@@ -75,6 +75,7 @@ POSTHOG_SURVEYS = "posthog-surveys-enabled"
 NEWSLETTER_EDITOR = "newsletter-editor-enabled"
 BRAND_SHOWCASE = "brand-showcase-enabled"
 VIDEO_MOTION_LINT_HOLD = "video-motion-lint-hold"
+VIDEO_CAPTIONS = "video-captions-enabled"
 
 FLAGS: Dict[str, FlagSpec] = {
     spec.key: spec for spec in (
@@ -153,6 +154,16 @@ FLAGS: Dict[str, FlagSpec] = {
                          "grades and reports; this decides whether a HARD violation buys a steered "
                          "rewrite and then holds the render. OFF = warn-only, so the credit-spend "
                          "profile is unchanged until it is flipped."),
+        ),
+        FlagSpec(
+            key=VIDEO_CAPTIONS,
+            env_var="VIDEO_CAPTIONS_ENABLED",
+            default=False,
+            owner="content",
+            description=("Burn the post's opening line into generated video posts for LinkedIn's "
+                         "muted autoplay (issue #1278). OFF by default — it re-encodes every "
+                         "video post once and changes what the feed shows. Avatar-led videos need "
+                         "the separate per-user `avatar_caption_overlay` opt-in on top of this."),
         ),
     )
 }
