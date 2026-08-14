@@ -252,16 +252,40 @@ class TestTheProjectFloorIsNotQuietlyLowered:
     def test_the_enforced_target_is_still_the_ratcheted_floor(self):
         """#1340 proposed cutting this to ~87% on a number that never reproduced without e2e.
 
-        Measured on main at 6a145efa from unit + integration alone: project 95.06%. The floor is a
-        ratchet — raising it is the intended direction, lowering it needs a reason this test's
-        failure message will ask for.
+        Measured on main at 6a145efa (2026-08-14) from unit + integration alone: project 95.06%.
+        #1488 ratcheted the floor 90% -> 93% against that baseline. The floor is a ratchet —
+        raising it is the intended direction, lowering it needs a reason this test's failure
+        message will ask for.
         """
         project = _load(_CODECOV)["coverage"]["status"]["project"]["default"]
         target = float(str(project["target"]).rstrip("%"))
-        assert target >= 90, (
+        assert target >= 93, (
             f"project target dropped to {target}%. The two-lane baseline measured 95.06% with the "
-            "e2e lane already deleted, so this is a real cut, not a re-baseline. Lowering it is the "
-            "owner's call on #1488 — take it there and move this floor in the same commit, so the "
-            "ratchet cannot be walked back silently."
+            "e2e lane already deleted, and #1488 ratcheted this floor to 93% against it — so this "
+            "is a real cut, not a re-baseline. Lowering it is the owner's call: take it to an "
+            "issue and move this floor in the same commit, so the ratchet cannot be walked back "
+            "silently."
         )
         assert project["informational"] is False, "the floor only means something if it is enforced"
+
+    def test_the_component_floor_is_still_the_ratcheted_one(self):
+        """#1488 raised the per-component target 80% -> 90% in the same pass.
+
+        The lowest component measured 92.61% (Celery Tasks) at that baseline, so 90% is a floor
+        every component clears. These stay `informational`: they report per-component drift, the
+        project status is what gates.
+        """
+        rules = _load(_CODECOV)["component_management"]["default_rules"]["statuses"]
+        project_rules = [rule for rule in rules if rule["type"] == "project"]
+        assert project_rules, "component_management declares no project status to ratchet"
+        for rule in project_rules:
+            target = float(str(rule["target"]).rstrip("%"))
+            assert target >= 90, (
+                f"component target dropped to {target}%. #1488 raised it to 90% against a "
+                "lowest-component baseline of 92.61%; lowering it needs a reason written into "
+                "codecov.yml in the same commit."
+            )
+            assert rule["informational"] is True, (
+                "component statuses are advisory by design — enforcing them turns one module's "
+                "refactor into a red status on a PR the project floor already covers"
+            )

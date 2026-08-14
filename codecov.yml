@@ -40,11 +40,15 @@ coverage:
         #
         # Therefore this was NOT "re-baselined" to the ~87% #1340 chose: on the measurement above
         # that is a real cut justified by a number that has never reproduced without the e2e flag.
-        # That is a deviation from the decision on #1340 and it is the owner's to reverse — #1488
-        # carries the call (lower to ~87%, hold at 90%, or ratchet up toward 95.06%) and is the
-        # ONE place this number changes. Default direction: raise as the baseline rises, never
-        # lower. The 1% threshold absorbs run-to-run flake.
-        target: 90%
+        #
+        # #1488 took that call and ratcheted the floor UP instead: 90% -> 93%, against the
+        # 95.06% baseline measured on main at 6a145efa (2026-08-14). That leaves ~2 points of
+        # slack plus the 1% threshold below it, i.e. a PR may lose ~3 points before this status
+        # goes red — enough to absorb run-to-run flake and a restructure slice moving a module,
+        # tight enough that a genuine regression shows up in the PR that caused it. Raise it as
+        # the baseline rises; never lower it. Lowering needs a reason written here, and
+        # tests/unit/test_codecov_upload_contract.py holds the floor so it cannot move silently.
+        target: 93%
         threshold: 1%
         informational: false
         carryforward_behavior: include
@@ -97,8 +101,13 @@ ignore:
 component_management:
   default_rules:
     statuses:
+      # Ratcheted 80% -> 90% by #1488, in the same pass as the project floor. Measured on main at
+      # 6a145efa (2026-08-14) the LOWEST component is Celery Tasks at 92.61% (FastAPI Endpoints
+      # 94.98%, LinkedIn Automation 94.62%, Utilities 96.47%), so every component clears this
+      # today. Still `informational` — these report per-component drift, they do not gate; the
+      # enforced number is the project floor above.
       - type: project
-        target: 80%
+        target: 90%
         informational: true
   individual_components:
     - component_id: api
