@@ -1522,9 +1522,14 @@ def mechanical_edit_text(content: Optional[str], content_type: str = "newsletter
             temperature=0.3,
         )
         edited = (resp.choices[0].message.content or "").strip()
-    except Exception:
+    except Exception as e:
+        # DEBUG, not WARNING: the pass is opt-in polish that fails open, so the draft is unharmed and
+        # a recurring warning here would file a defect against working behaviour. Silent was worse —
+        # a proxy outage looked identical to a disabled flag.
+        log_debug("Mechanical edit call failed; keeping the original draft", exc=e, ai_model="lem-medium")
         return original
     if not edited:
+        log_debug("Mechanical edit returned nothing; keeping the original draft", ai_model="lem-medium")
         return original
     # Drop any stray typography the editor might have introduced; URLs are preserved by the
     # formatter's masking, so only punctuation normalization happens here. The guard runs on the

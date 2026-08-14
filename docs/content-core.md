@@ -188,8 +188,10 @@ instructions. Four conditions, all required:
 | **Length** | Within `MECHANICAL_EDIT_LENGTH_MARGIN` (10%), with `MECHANICAL_EDIT_LENGTH_SLACK` (40 chars) of absolute slack so one added comma on a short draft is not read as a rewrite |
 
 The guard runs on the NORMALIZED candidate, because that is the text that would actually ship. It
-**fails open**: a rejected edit, an LLM error, an empty reply, or a disabled flag all return the
-ORIGINAL draft at DEBUG. A polish pass must never be able to block a newsletter.
+**fails open**: a rejected edit, an LLM error, and an empty reply all return the ORIGINAL draft, each
+logged at DEBUG so a proxy outage does not look identical to a disabled flag (a WARNING would file a
+defect against a pass that is working as designed). A disabled flag returns the draft silently.
+A polish pass must never be able to block a newsletter.
 
 ## Slop lint (issue #625, `slop_lint.py`)
 

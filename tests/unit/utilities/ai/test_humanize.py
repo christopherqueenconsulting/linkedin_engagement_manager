@@ -323,6 +323,23 @@ class TestMechanicalEditDiffGuard:
         with patch("cqc_lem.utilities.ai.ai_helper._call_llm", return_value=_llm_reply(edited)):
             assert ca.mechanical_edit_text(self.ORIGINAL, "newsletter", enabled=True) == edited
 
+    def test_an_llm_error_is_logged_at_debug_not_warning(self):
+        """A silent fail-open makes a proxy outage look exactly like a disabled flag.
+
+        DEBUG rather than WARNING because the pass is opt-in polish whose failure costs nothing:
+        a recurring warning re-emits at ERROR and files a defect against working behaviour.
+        """
+        with patch("cqc_lem.utilities.ai.ai_helper._call_llm", side_effect=RuntimeError("proxy down")), \
+             patch.object(ca, "log_debug") as debug:
+            assert ca.mechanical_edit_text(self.ORIGINAL, "newsletter", enabled=True) == self.ORIGINAL
+        assert debug.called
+
+    def test_an_empty_reply_is_logged_at_debug(self):
+        with patch("cqc_lem.utilities.ai.ai_helper._call_llm", return_value=_llm_reply("   ")), \
+             patch.object(ca, "log_debug") as debug:
+            assert ca.mechanical_edit_text(self.ORIGINAL, "newsletter", enabled=True) == self.ORIGINAL
+        assert debug.called
+
 
 class TestFindTitleSlopWords:
     def test_detects_hype_and_tier1_words(self):
