@@ -277,8 +277,13 @@ poetry run python scripts/sample_shipped_videos.py --no-frames           # probe
 - **Unmeasured is never zero.** A clip whose duration ffprobe could not read is excluded from the
   5–10s band denominator rather than counted as a failure, and a corpus below `MIN_CORPUS` prints
   `NOT ENOUGH` next to every rate. The same rule the nightly telemetry follows (#630): an audit that
-  reports a rate over three videos has invented a calibration.
-- **It writes nothing but image files** — no database write, no browser, no LLM call.
+  reports a rate over three videos has invented a calibration. Every count carries its denominator
+  for the same reason — a bare `Hard slop violations: 0` over a corpus that graded nothing reads as
+  "checked, and clean".
+- **It writes nothing but image files** — no database write, no browser, no LLM call, and the frames
+  are extracted only for the rows the scorecard actually reports, so a JPEG in the frames directory
+  is never a "representative frame" of a video the corpus does not contain. A frames directory that
+  cannot be created (the read-only sidecar mount §8 was run from) costs the frames, never the run.
 
 Pinned by `tests/unit/scripts/test_sample_shipped_videos.py`.
 
@@ -304,7 +309,7 @@ Gradable (body + asset)   : 0  (NOT ENOUGH — 6+ needed for a scorecard)
 Duration in 5-10s band    : 0/0 measured  (none probed)
 Captioned (burned text)   : 0/0
 Hook within mobile budget : 0/0
-Hard slop violations      : 0
+Hard slop violations      : 0 (over 0 graded)
 
 Asset probe states:
     10  missing

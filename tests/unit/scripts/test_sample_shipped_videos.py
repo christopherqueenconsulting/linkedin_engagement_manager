@@ -76,6 +76,20 @@ class TestExtractFrames:
         assert tool.extract_frames(str(tmp_path / "gone.mp4"), str(tmp_path), "post1", 6) == []
         assert tool.extract_frames(None, str(tmp_path), "post1", 6) == []
 
+    def test_an_unwritable_frames_dir_costs_the_frames_not_the_run(self, tool, tmp_path,
+                                                                   monkeypatch):
+        # The documented run is a prod-image sidecar with the checkout mounted READ-ONLY, so
+        # makedirs on the default frames dir raises — and must not take the measured corpus with it.
+        video = tmp_path / "clip.mp4"
+        video.write_bytes(b"\x00\x00\x00\x18ftypmp42")
+        monkeypatch.setattr(tool.shutil, "which", lambda name: "/usr/bin/ffmpeg")
+
+        def readonly(*args, **kwargs):
+            raise OSError(30, "Read-only file system")
+
+        monkeypatch.setattr(tool.os, "makedirs", readonly)
+        assert tool.extract_frames(str(video), str(tmp_path / "frames"), "post1", 6) == []
+
     def test_writes_one_frame_per_timestamp(self, tool, tmp_path, monkeypatch):
         video = tmp_path / "clip.mp4"
         video.write_bytes(b"\x00\x00\x00\x18ftypmp42")
@@ -264,3 +278,40 @@ class TestCollect:
         monkeypatch.setattr(tool, "extract_frames", fail)
         summary = tool.collect([1], limit=10, frames_dir="/tmp/frames", with_frames=False)
         assert summary["per_post"][0]["frames"] == []
+
+    def test_frames_are_only_written_for_the_posts_the_scorecard_reports(self, tool, monkeypatch):
+        # `--limit` is applied per user and again across users, so the multi-user default scores
+        # more rows than it reports. A frame for a dropped row is a JPEG the audit could cite for
+        # a video that is not in the corpus.
+        from cqc_lem.utilities import db
+
+        by_user = {
+            1: [_post(11, scheduled_time="2026-08-09 09:00:00"),
+                _post(12, scheduled_time="2026-08-08 09:00:00")],
+            2: [_post(21, scheduled_time="2026-07-02 09:00:00"),
+                _post(22, scheduled_time="2026-07-01 09:00:00")],
+        }
+        monkeypatch.setattr(db, "get_posted_posts", lambda user_id: by_user[user_id])
+        monkeypatch.setattr(db, "get_post_video_url",
+                            lambda post_id: f"http://x/api/assets?file_name=videos/runwayml/{post_id}.mp4")
+        monkeypatch.setattr(db, "get_post_captions", lambda post_id: {})
+        probes = []
+        monkeypatch.setattr(tool, "score_video_asset",
+                            lambda **kwargs: probes.append(kwargs) or _probe())
+        framed = []
+        monkeypatch.setattr(tool, "extract_frames",
+                            lambda path, out_dir, prefix, duration: framed.append(prefix) or [])
+
+        summary = tool.collect([1, 2], limit=2, frames_dir="/tmp/frames")
+        assert [r["post_id"] for r in summary["per_post"]] == [11, 12]
+        assert framed == ["post11", "post12"]
+        # One probe per sampled post — the frame timestamps read the duration the row reports.
+        assert len(probes) == 4
+
+
+class TestRender:
+    def test_the_slop_count_carries_its_denominator(self, tool):
+        rows = [TestSummarize()._row(i, asset_available=False, video_asset_probe="missing")
+                for i in range(10)]
+        # An all-missing corpus checked NO bodies for slop; a bare "0" reads as "checked, clean".
+        assert "Hard slop violations      : 0 (over 0 graded)" in tool._render(tool.summarize(rows))

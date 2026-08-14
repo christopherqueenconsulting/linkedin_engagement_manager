@@ -112,7 +112,10 @@ def extract_frames(video_path: Optional[str], out_dir: str, prefix: str,
 
     Best-effort in every direction — no ffmpeg, an unreadable clip, a non-zero exit or a zero-byte
     output simply contributes no frame. The scorecard reports the frames it has; a sampler that
-    raised here would lose the measured rows it already collected.
+    raised here would lose the measured rows it already collected. That includes the frames
+    DIRECTORY: this is meant to be run from a prod-image sidecar with the checkout mounted
+    read-only, where creating `docs/content-quality-audits/assets/1363/` raises — and losing the
+    whole measured corpus because an image file could not be written is exactly backwards.
     """
     path = str(video_path or "").strip()
     if not path or not os.path.exists(path):
@@ -120,7 +123,10 @@ def extract_frames(video_path: Optional[str], out_dir: str, prefix: str,
     ffmpeg = shutil.which("ffmpeg")
     if not ffmpeg:
         return []
-    os.makedirs(out_dir, exist_ok=True)
+    try:
+        os.makedirs(out_dir, exist_ok=True)
+    except OSError:
+        return []
     written: list = []
     for label, seconds in frame_timestamps(duration):
         out_path = os.path.join(out_dir, f"{prefix}_{label}.jpg")
@@ -205,22 +211,32 @@ def summarize(rows: Sequence[Mapping[str, Any]]) -> dict:
 
 def collect(user_ids: Sequence[int], limit: int, frames_dir: str,
             with_frames: bool = True) -> dict:
-    """Read the corpus through the db facade and probe each stored asset."""
+    """Read the corpus through the db facade, probe each stored asset, then frame what is REPORTED.
+
+    `--limit` is applied per user AND again across users, so the default run (every active user)
+    scores more rows than it reports. Frames are therefore extracted only after that second
+    truncation: a JPEG in the frames directory belongs to a post in the scorecard, or the audit
+    doc ends up citing a representative frame for a video the corpus does not contain.
+    Each asset is probed exactly once, inside `sample_report` — the duration the frame timestamps
+    are derived from is the one the row reports.
+    """
     from cqc_lem.utilities.db import get_post_captions, get_post_video_url, get_posted_posts
 
     rows: list = []
     for user_id in user_ids:
         for post in video_posts(get_posted_posts(user_id), limit=limit):
             video_url = get_post_video_url(post.get("id"))
-            probe = score_video_asset(video_url=video_url)
-            frames = extract_frames(resolve_local_video_path(video_url), frames_dir,
-                                    f"post{post.get('id')}",
-                                    probe.get("video_duration_seconds")) if with_frames else []
             rows.append(sample_report(post, video_url,
                                       captions=get_post_captions(post.get("id")),
-                                      frames=frames, user_id=user_id))
+                                      user_id=user_id))
     rows.sort(key=lambda r: str(r.get("shipped_on") or ""), reverse=True)
-    return summarize(rows[:max(0, limit)])
+    sampled = rows[:max(0, limit)]
+    if with_frames:
+        for row in sampled:
+            row["frames"] = extract_frames(row.get("local_path"), frames_dir,
+                                           f"post{row.get('post_id')}",
+                                           row.get("video_duration_seconds"))
+    return summarize(sampled)
 
 
 def purge_hint(summary: Mapping[str, Any]) -> Optional[str]:
@@ -251,7 +267,9 @@ def _render(summary: Mapping[str, Any]) -> str:
                  + (f"  ({rate:.0%})" if rate is not None else "  (none probed)"))
     lines.append(f"Captioned (burned text)   : {summary['captioned']}/{gradable}")
     lines.append(f"Hook within mobile budget : {summary['hook_within_budget']}/{gradable}")
-    lines.append(f"Hard slop violations      : {summary['slop_hard']}")
+    # Never a bare count: this is summed over the GRADABLE rows, so an all-missing corpus would
+    # otherwise print "Hard slop violations : 0" and read as "checked, and clean".
+    lines.append(f"Hard slop violations      : {summary['slop_hard']} (over {gradable} graded)")
     lines.append("")
     for title, key in (("Aspect ratios", "aspect_ratios"), ("Model tiers", "model_tiers"),
                        ("Asset probe states", "asset_probes")):
