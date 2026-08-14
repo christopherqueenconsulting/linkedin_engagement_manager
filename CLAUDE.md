@@ -215,8 +215,8 @@ import and patch them** — `app/run_automation.py` was deleted in #1206, so `ru
 | **Session scopes are SURFACES** (#905/#1026) | the same resolver | Refusal is 403 + audited. `extension` reaches only the ONE path the extension calls. `enroll` reaches only enrolment, which promotes it to `full` — **a hold is never a lockout**. **`agent`** is the headless credential: `_AGENT_SESSION_SURFACE` (queueing) only, TTL fixed at mint. It may queue but **NEVER approve** — THREE guards, because a row reaches APPROVED three ways. Surfaces match on PATH not method, so a read grants its writes — hence `PUT /user/engagement-preferences` is separately refused | `docs/identity-and-sessions.md` |
 ## Agent Working Method
 
-Three practices wrap `ship-issue`'s branch → build → PR flow — one before code, one during it, one
-before the PR:
+Six practices wrap `ship-issue`'s branch → build → PR flow — three around the PR itself, three
+session/context discipline (the dominant lever on token spend):
 
 - **Before code on a non-trivial issue** (`docs/spec-verifier-environment.md`, skill `spec-first`):
   nail testable acceptance criteria, name the check that proves success, locate the owning
@@ -231,6 +231,12 @@ before the PR:
   deliverable that needs more than review — builder/critic pairs blind-compare against a named
   reference exemplar, capped at 3 rounds then `needs-human`. First-class for `ui/`-touching or
   UX-sensitive issues. Slots into `ship-issue` step 4.
+- **Prefer `cavecrew-investigator`/`cavecrew-reviewer` over vanilla `Explore`/`general-purpose`**
+  for a bounded, read-only lookup — already ~60% fewer tokens per delegation; default to it.
+- **Right-size fan-out to the minimum, not the maximum, agent count.** A parallel wave of N pays N
+  full cold-context spawns regardless of caching — default to 1 agent unless genuinely split-able.
+- **One thread, one deliverable.** End the session (or `/clear`) once a distinct piece of work is
+  done, rather than stringing unrelated large tasks through one continuously-growing thread.
 
 ## Testing Standards
 
@@ -352,10 +358,10 @@ new branch without a documented row fails the build. Labels are the human contra
   — three once did, one switching the branch under the others inside a minute. `lib/run_lane.sh`
   enforces it: `cd ""` SUCCEEDS in bash, so an empty worktree path silently runs the agent in the
   shared tree instead of failing.
-- **NEVER put `model:` in an agent definition.** It overrides the CLI `--model`, and a subagent
-  inherits the parent's `ANTHROPIC_BASE_URL` — so on the Ollama lane (LiteLLM serves only `lem-*`) a
-  pinned `opus` 400s in 7s **while the parent exits rc=0**, recorded as a healthy run. Pin tools and
-  `--effort`, never the model: `scripts/agent-pipeline/docs/agent-pipeline-routing.md`.
+- **Model pins + env traps live in `.claude/agents/builder.md`** (every agent carries that
+  section): never put `model:` in a definition — it inherits the parent's Ollama-lane URL and 400s
+  invisibly at rc=0; pin tools/`--effort` instead. Reproduce CI with an empty `.env` +
+  `src/cqc_lem/ui/dist` moved aside — masks failures CI hits.
 - **Fresh state:** before generating ANY code edit, run `git status` and read the target file — never
   edit from memory; another agent may have changed it under you.
 - **Micro-branching:** never edit a shared branch asynchronously; branch per task
@@ -363,12 +369,8 @@ new branch without a documented row fails the build. Labels are the human contra
   conventional-commit message.
 - **Conflict avoidance:** if working-tree changes clash with your target files, halt, `git stash`,
   pull current state, resolve, re-apply.
-- **One venv, many worktrees:** the editable-install `.pth` is mutable and the last `poetry install`
-  anywhere wins, so `poetry run python -c "import cqc_lem…"` may read a DIFFERENT worktree. Use
-  `PYTHONPATH=src` for standalone scripts and print `__file__` to prove which tree loaded. `pytest`
-  is unaffected (`pythonpath` is rootdir-relative).
-- **Reproduce CI locally** with an empty `.env` and `src/cqc_lem/ui/dist` moved aside. A dev `.env`
-  masks real failures (unset `DB_PORT` → `int(None)` → `TypeError`, uncaught by `except
-  mysql.connector.Error`); a built SPA causes a false `test_docs_surface` failure.
-- **Branch cleanup:** merged feature branches auto-delete (`delete_branch_on_merge=true`); orphans swept weekly by `.github/workflows/stale-branches.yml`, with a 48-hour grace window protecting active agent work. `docs/branch-cleanup.md`.
+- **One venv, many worktrees:** the editable-install `.pth` is mutable — `poetry run python -c
+  "import cqc_lem…"` may read a DIFFERENT worktree. Use `PYTHONPATH=src` and print `__file__` to
+  confirm (`pytest` unaffected).
+- **Branch cleanup:** merged feature branches auto-delete (`delete_branch_on_merge=true`); orphans swept weekly (`.github/workflows/stale-branches.yml`, 48h grace window). `docs/branch-cleanup.md`.
 - **A label is not an access control** (`docs/contribution-security.md`): this repo is PUBLIC and the pipeline runs with the owner's credentials, so `agent:ready` / `release:now` are verified by **provenance, not presence** — the AUTHOR has standing (`author_trusted`) AND an allowlisted actor applied the label (`label_actor_trusted`, timeline API), plus `pr_is_upstream` on PR lanes; an unreadable answer REFUSES. `agent:ready` writers are gated at source: `triage_issues.py` grants it only to trusted authors, the unauthenticated `POST /api/feedback` loop **never** does. `.github/CODEOWNERS` guards every control surface, and the pipeline's credential has **no `workflows` permission** — the hard control, since agent and owner share one identity.
