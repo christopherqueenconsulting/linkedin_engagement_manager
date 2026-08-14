@@ -3121,11 +3121,12 @@ class TestCommenterReadProbe:
     def _probe(self, driver, urls, our_slug="me"):
         return llv.probe_commenter_read(driver, urls, our_slug=our_slug, sleep=lambda s: None)
 
-    def test_the_avatar_first_card_is_reported_as_drift(self, monkeypatch):
-        """The exact #1091 shape.
+    def test_the_avatar_first_gap_is_reported_but_is_not_drift_once_the_fix_ships(self, monkeypatch):
+        """The exact #1091 shape, read on an image that already carries the header reader.
 
-        The header read names the commenter, the first-anchor read does not, and that gap is the
-        month of missing rows.
+        The gap between the two reads is the month of missing rows and stays in the reading — but
+        the SHIPPED reader names the commenter, so the surface is healthy and must not grade
+        `drift`. This probe is sweepable, so a `drift` here files a GitHub issue every week.
         """
         self._patch_thread(monkeypatch, [[self._card()]])
         report = self._probe(self._driver(), ["https://post"])
@@ -3134,8 +3135,22 @@ class TestCommenterReadProbe:
         assert report["named_by_first_anchor"] == 0
         assert report["comments"][0]["header_name"] == "Jane Doe"
         assert report["comments"][0]["connection_degree"] == "2nd"
+        assert report["reader_source"] == "image"
+        assert report["state"] == llv.STATE_OK
+        assert "the fix working, not drift" in report["verdict"]
+
+    def test_the_same_gap_is_drift_on_an_image_that_still_ships_the_naive_read(self, monkeypatch):
+        """Pre-merge grounding: the same gap on a pre-#1091 image IS the live defect.
+
+        There the naive read is what production runs, so the gap must grade `drift` and file.
+        """
+        self._patch_thread(monkeypatch, [[self._card()]])
+        carried, _ = llv._comment_author_reader()
+        monkeypatch.setattr(llv, "_comment_author_reader", lambda: (carried, "script"))
+        report = self._probe(self._driver(), ["https://post"])
+        assert report["reader_source"] == "script"
         assert report["state"] == llv.STATE_DRIFT
-        assert "silently skipped engager" in report["verdict"]
+        assert "silently skipped engager capture" in report["verdict"]
 
     def test_both_reads_agreeing_is_ok(self, monkeypatch):
         self._patch_thread(monkeypatch, [[self._card(avatar_first=False)]])

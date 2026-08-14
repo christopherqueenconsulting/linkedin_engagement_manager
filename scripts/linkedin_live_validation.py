@@ -1044,9 +1044,13 @@ def commenter_read_verdict(reading: Optional[dict]) -> str:
         return ("no third-party commenter carries a readable name — the header read has rotated and "
                 "reciprocity capture is dead")
     if first < header:
-        return (f"the first-/in/-anchor read names {first} of {others} third-party commenter(s) "
-                f"where the header read names {header} — that gap is the silently skipped engager "
-                f"capture")
+        gap = (f"the first-/in/-anchor read names {first} of {others} third-party commenter(s) "
+               f"where the header read names {header}")
+        if reading.get("reader_source") == "script":
+            return (f"{gap} — this image still ships the naive read, so that gap IS the silently "
+                    f"skipped engager capture")
+        return (f"{gap} — the shipped header reader (#1091) closes that gap, which is the fix "
+                f"working, not drift")
     return f"header read names {header} of {others} third-party commenter(s)"
 
 
@@ -1056,9 +1060,14 @@ def commenter_read_state(reading: Optional[dict]) -> str:
     Two page-native cross-checks stand before any grade, because both look like "no engagers" in the
     DB and neither is a reader fault: a post whose thread rendered nothing grounded nothing, and a
     thread carrying only the user's OWN comments has nobody to capture (the sweep skips those by
-    design). Where a third-party card DID render, drift is either half failing — the shipped header
-    read naming nobody, or the naive first-anchor read (what shipped until #1091) naming fewer people
-    than the header read.
+    design). Where a third-party card DID render, drift is the SHIPPED read naming nobody.
+
+    The gap against the naive first-anchor read is drift only on an image that still ships that read
+    (`reader_source == 'script'`, i.e. one predating #1091). Once the header reader ships, an
+    avatar-first card produces that gap on every healthy sweep, and this surface is sweepable — so
+    grading it `drift` would have `sdui_drift_issues.py` file the same non-finding every Monday,
+    which is the exact noise that filer exists to refuse. The gap stays in the reading and the
+    verdict as evidence either way; it just stops being a grade.
     """
     reading = dict(reading or {})
     if not int(reading.get("posts_read") or 0) or not int(reading.get("cards") or 0):
@@ -1069,7 +1078,8 @@ def commenter_read_state(reading: Optional[dict]) -> str:
     header = int(reading.get("named_by_header") or 0)
     if not header:
         return STATE_DRIFT
-    if int(reading.get("named_by_first_anchor") or 0) < header:
+    if reading.get("reader_source") == "script" \
+            and int(reading.get("named_by_first_anchor") or 0) < header:
         return STATE_DRIFT
     return STATE_OK
 

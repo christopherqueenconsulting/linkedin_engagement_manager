@@ -116,7 +116,9 @@ reply sweep.
 
 An empty `post_engagers` therefore has TWO causes that look identical in the DB, and only the live
 probe separates them: **no third-party commenter existed** (`--commenter-read` grades `unknown` and
-says so) versus **the reader rotated** (it grades `drift`, naming the gap between the two reads).
+says so) versus **the reader rotated** (it grades `drift` — the SHIPPED header read naming nobody).
+It reports the gap against the naive first-anchor read either way, but only grades that gap `drift`
+on an image predating #1091, where the naive read is still what ships.
 Measured 2026-08-14 on the three freshest posts: 6 comment cards, all ours, 0 third-party — the
 first case, with `post_outcome` agreeing at 1–2 comments per post.
 
