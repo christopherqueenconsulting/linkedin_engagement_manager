@@ -427,6 +427,14 @@ named in this procedure — so the receiver ran 23-hour-old code through nine me
 anyone noticed (#1412). It surfaced as `kv.schema_version` refusing to advance: the receiver calls
 `db.connect()` per request, so every delivery rewrote the version from its stale module.
 
+**And the procedure is not the only guard.** A documented step is only as good as the person
+following it, so `status.sh` checks the property directly: every unit in `LEMD_UNITS` (both, by
+default) whose start time predates the newest file in `v2/lemd/` is listed as `stale units:` and
+raised in NEEDS ATTENTION, with the restart command. `--json` carries it as `v2.stale_units`, always
+a list. A unit whose start time cannot be read is skipped rather than assumed current — unknown must
+never render as up to date — and any future unit that imports the package inherits the check by being
+added to that list.
+
 **Automated (`scripts/agent-pipeline/sync.sh`, shipped but not enabled).** A `lem`-owned systemd
 timer pulls `main` into a machine mirror at `/home/lem/agent-pipeline-src`, runs `install.sh --sync`,
 restarts both units, and verifies the daemon came back — restoring a snapshot if it did not. Pull
