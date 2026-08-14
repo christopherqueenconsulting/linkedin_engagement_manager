@@ -81,8 +81,15 @@ export default function GroupsCard() {
       })
       setTimeout(() => setDraftMsg(null), 3000)
     },
-    onError: () => {
-      setDraftMsg({ ok: false, text: 'Could not save — try again.' })
+    onError: (err) => {
+      // The server's reason, when it gave one: a restore refused because the group was switched
+      // off for posting is not fixed by trying again, and "try again" is the one thing that
+      // reading would tell the user to do.
+      const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+      setDraftMsg({
+        ok: false,
+        text: typeof detail === 'string' ? detail : 'Could not save — try again.',
+      })
       setTimeout(() => setDraftMsg(null), 5000)
     },
   })

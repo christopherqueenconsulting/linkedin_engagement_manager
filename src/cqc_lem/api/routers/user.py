@@ -136,6 +136,7 @@ from cqc_lem.utilities.db import (
     get_pin_lockout,
     get_post_content,
     get_post_coverage_counts,
+    get_post_enabled_group_ids,
     get_post_engagement_rows,
     get_post_image_url,
     get_post_manual_publish,
@@ -2539,7 +2540,7 @@ def get_group_post_draft_endpoint(session_token: str) -> ResponseModel[Optional[
 
 @router.put("/group-post-draft", responses={
     **{k: v for k, v in error_responses.items() if k in [400, 401, 404]},
-    409: {"description": "Another group post is already queued"},
+    409: {"description": "Another group post is already queued, or its group no longer takes posts"},
     422: {"description": "Unsupported status or empty text"},
     500: {"description": "Server error"},
 })
@@ -2569,6 +2570,17 @@ def update_group_post_draft_endpoint(request: GroupPostDraftUpdateRequest) -> Re
             if open_draft and open_draft.get("id") != draft["id"]:
                 raise HTTPException(status_code=409,
                                     detail="A newer group post is already queued")
+            # The publish beat SKIPS a draft whose group has since been switched off for posting
+            # (run_scheduler.auto_group_posts), so not every skipped draft is one the user skipped.
+            # Restoring one of those would report success and then be dropped again at the next
+            # slot, silently, every week — so it is refused with the reason the user can act on.
+            # None means the switches were unreadable, which is not evidence of an opt-out: the
+            # publish beat holds the draft on that read too.
+            post_enabled = get_post_enabled_group_ids(user_id)
+            if post_enabled is not None and draft.get("group_id") not in post_enabled:
+                raise HTTPException(
+                    status_code=409,
+                    detail="That group no longer takes posts — turn posting back on for it first")
     content = request.content
     if content is not None and not content.strip():
         # An empty draft would publish nothing and read as a bug — skipping is the way to cancel.

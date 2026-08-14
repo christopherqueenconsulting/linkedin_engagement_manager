@@ -43,6 +43,13 @@ Two rules decide everything here:
   open draft always outranking a skipped one, so restoring an old skip can never hide the post that
   is about to ship.
 
+- **Not every skipped draft is one the USER skipped.** `auto_group_posts` also skips a draft whose
+  group has since been switched off for posting, and that row is now visible in the studio like any
+  other. Restoring one of those would report success and be dropped again at the next slot, every
+  week, so the restore is refused with the reason the user can act on (turn posting back on for the
+  group). Unreadable switches are `None`, never an opt-out — the restore goes through, the same way
+  the publish beat holds the draft rather than cancelling it on that read.
+
 **ONE open draft per user still holds.** `get_open_group_post_draft` is unchanged (`ready` only), so
 the Sunday beat still skips a user who has a live draft and still drafts afresh for one who skipped.
 A restore that would create a SECOND open draft is refused with a **409** rather than leaving two

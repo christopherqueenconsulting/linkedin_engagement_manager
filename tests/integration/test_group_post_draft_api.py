@@ -146,11 +146,49 @@ class TestGroupPostDraftStatuses:
         with patch(f"{_API}.get_session_user_id", return_value=1), \
              patch(f"{_USER}.get_current_group_post_draft", return_value=skipped), \
              patch(f"{_USER}.get_open_group_post_draft", return_value=None), \
+             patch(f"{_USER}.get_post_enabled_group_ids", return_value=["g1"]), \
              patch(f"{_USER}.update_group_post_draft", return_value=True) as saved:
             r = api_client.put("/api/user/group-post-draft",
                               json={"session_token": "tok", "status": "ready"})
         assert r.status_code == 200
         assert r.json()["detail"] == "Group post restored"
+        assert str(saved.call_args.kwargs["status"]) == "ready"
+
+    def test_restoring_a_draft_the_publish_beat_dropped_is_refused_with_the_reason(self,
+                                                                                  api_client):
+        """Not every skipped draft is one the USER skipped.
+
+        `auto_group_posts` skips a draft whose group has since been switched off for posting, and
+        that row is now visible in the studio. Restoring it would report success and then be dropped
+        again at the next weekly slot, every week, with nothing on screen saying why.
+        """
+        skipped = {**_DRAFT, "status": "skipped"}
+        with patch(f"{_API}.get_session_user_id", return_value=1), \
+             patch(f"{_USER}.get_current_group_post_draft", return_value=skipped), \
+             patch(f"{_USER}.get_open_group_post_draft", return_value=None), \
+             patch(f"{_USER}.get_post_enabled_group_ids", return_value=["other-group"]), \
+             patch(f"{_USER}.update_group_post_draft") as saved:
+            r = api_client.put("/api/user/group-post-draft",
+                              json={"session_token": "tok", "status": "ready"})
+        assert r.status_code == 409
+        assert "no longer takes posts" in r.json()["detail"]
+        saved.assert_not_called()
+
+    def test_unreadable_post_switches_do_not_block_a_restore(self, api_client):
+        """None is "we could not tell", not "opted out".
+
+        The publish beat holds the draft on that read too, so refusing here would turn a transient
+        DB fault into a lost week.
+        """
+        skipped = {**_DRAFT, "status": "skipped"}
+        with patch(f"{_API}.get_session_user_id", return_value=1), \
+             patch(f"{_USER}.get_current_group_post_draft", return_value=skipped), \
+             patch(f"{_USER}.get_open_group_post_draft", return_value=None), \
+             patch(f"{_USER}.get_post_enabled_group_ids", return_value=None), \
+             patch(f"{_USER}.update_group_post_draft", return_value=True) as saved:
+            r = api_client.put("/api/user/group-post-draft",
+                              json={"session_token": "tok", "status": "ready"})
+        assert r.status_code == 200
         assert str(saved.call_args.kwargs["status"]) == "ready"
 
     def test_restoring_is_refused_when_a_newer_draft_is_already_queued(self, api_client):

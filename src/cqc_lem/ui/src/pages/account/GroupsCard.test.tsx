@@ -208,6 +208,19 @@ describe('GroupsCard — group post preview/edit (issue #932)', () => {
     expect(screen.getByText(/Back in the queue for this week\./i)).toBeTruthy()
   })
 
+  it('shows the server reason a restore was refused, not "try again"', async () => {
+    // The publish beat also skips a draft whose group was switched off for posting, so a restore
+    // can be refused for a reason retrying will never fix.
+    routeGet([GROUPS], { ...DRAFT, status: 'skipped' })
+    put.mockRejectedValue({
+      response: { data: { detail: 'That group no longer takes posts — turn posting back on for it first' } },
+    })
+    harness(<GroupsCard />)
+    await waitFor(() => expect(screen.getByLabelText('Group post text')).toBeTruthy())
+    fireEvent.click(screen.getByRole('button', { name: /Put back in the queue/i }))
+    await waitFor(() => expect(screen.getByText(/no longer takes posts/i)).toBeTruthy())
+  })
+
   it('will not save an emptied post — skipping is how you cancel', async () => {
     routeGet([GROUPS], DRAFT)
     harness(<GroupsCard />)
