@@ -1,11 +1,35 @@
 """Unit tests for database utility functions."""
 
+import re
 from datetime import datetime, timezone
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
 _GET_CONN = "cqc_lem.platform.db.connection.get_db_connection"
+
+_MIGRATIONS_DIR = Path(__file__).resolve().parents[3] / "compose/local/database/migrations"
+_POSTS_STATUS_ENUM = re.compile(
+    r"ALTER\s+TABLE\s+posts\s+MODIFY\s+COLUMN\s+status\s+ENUM\(([^)]*)\)",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _declared_post_status_values() -> set:
+    """The values `posts.status` actually accepts after every migration has run.
+
+    Flyway orders by numeric version, so the newest `MODIFY COLUMN status` wins — that restated
+    list is the whole vocabulary, since MySQL requires every kept value to be repeated.
+    """
+    declared = None
+    for path in sorted(_MIGRATIONS_DIR.glob("V*__*.sql"),
+                       key=lambda p: int(p.name.split("__")[0][1:])):
+        match = _POSTS_STATUS_ENUM.search(path.read_text())
+        if match:
+            declared = match.group(1)
+    assert declared is not None, "no migration declares the posts.status ENUM"
+    return set(re.findall(r"'([^']+)'", declared))
 
 
 @pytest.mark.unit
@@ -253,6 +277,18 @@ class TestPostStatusEnum:
         from cqc_lem.utilities.db import PostStatus
         assert isinstance(PostStatus.PENDING.value, str)
         assert str(PostStatus.PENDING) == "pending"
+
+    def test_the_enum_is_the_migration_s_enum(self):
+        # Issue #1567: PostStatus.ERROR existed in Python but never in the column, so every write of
+        # it raised "1265 Data truncated for column 'status'" and the failed post kept its old
+        # status. Read the effective ENUM off the migrations (last MODIFY wins, Flyway's numeric
+        # version order) so a member added without one fails HERE, not at 3am in a Celery task.
+        from cqc_lem.utilities.db import PostStatus
+        assert {m.value for m in PostStatus} == _declared_post_status_values()
+
+    def test_error_is_a_declared_column_value(self):
+        from cqc_lem.utilities.db import PostStatus
+        assert PostStatus.ERROR.value in _declared_post_status_values()
 
 
 @pytest.mark.unit
