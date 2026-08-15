@@ -55,6 +55,7 @@ from cqc_lem.utilities.deck_render import (
     DECK_RENDER_FILENAME,
     read_deck_render_receipt,
 )
+from cqc_lem.utilities.video_receipt import read_video_receipt, video_receipt_path
 
 SURFACE_POST = "post"
 SURFACE_COMMENT = "comment"
@@ -570,17 +571,32 @@ def score_video_asset(*, video_url: Optional[str], model: Optional[str] = None,
     has; the nightly beat scores a post that shipped days ago and passes none. So the probed ratio
     is the default and an explicit `ratio` overrides it — without that the dimension would be NULL
     on every row the beat writes.
+
+    A RECORDED measurement wins over the live probe whenever one exists (#1517). Every caller here
+    scores content that already SHIPPED, and `purge_post_assets` (#148) deletes the stored MP4 at
+    publish — so the live probe is reading a file that is gone by design and reports
+    `NULL / NULL / missing` for every current-pipeline video. The receipt written beside that file
+    at store time is the same probe, taken at the one moment the asset provably existed. Preferring
+    it also keeps this function's answer STABLE across the purge, which is what lets the audit
+    sampler and the nightly beat report the same numbers for the same post (#1363).
     """
     path = resolve_local_video_path(video_url)
-    probe = probe_video_asset(path)
-    render_ok = bool(path and os.path.exists(path) and probe["has_video_stream"])
-    aspect = (str(ratio or "").strip()[:16]) or probe["aspect_ratio"]
+    recorded = read_video_receipt(video_receipt_path(path))
+    if recorded:
+        probe = recorded
+        # The file's absence says nothing here — it was deleted at publish. What the receipt read
+        # at store time is the render outcome.
+        render_ok = bool(recorded.get("has_video_stream"))
+    else:
+        probe = probe_video_asset(path)
+        render_ok = bool(path and os.path.exists(path) and probe["has_video_stream"])
+    aspect = (str(ratio or "").strip()[:16]) or probe.get("aspect_ratio")
     return {
         "video_render_ok": render_ok,
         "video_model_tier": video_model_tier(model, video_url),
-        "video_duration_seconds": probe["duration_seconds"],
+        "video_duration_seconds": probe.get("duration_seconds"),
         "video_aspect_ratio": aspect,
-        "video_asset_probe": probe["asset_probe"],
+        "video_asset_probe": probe.get("asset_probe"),
     }
 
 

@@ -67,9 +67,10 @@ FRAME_TIMEOUT_SECONDS = 30
 PURGE_HINT = (
     "NOTE: nothing was gradable and every sampled asset is missing on disk. Expected, not a mount\n"
     "  fault: purge_post_assets (#148, 2026-06-25) deletes a post's stored MP4 as soon as it\n"
-    "  publishes, so a SHIPPED post's asset only survives on renders that predate that purge —\n"
-    "  which also predate the #1293 aspect fix and the #1278 caption burn. Grading current-pipeline\n"
-    "  video needs the asset measures recorded at STORE time: issue #1517."
+    "  publishes. Since #1517 the asset MEASURES are recorded at store time and survive that purge,\n"
+    "  so a sample of posts shipped after it grades normally — a corpus that is still entirely\n"
+    "  missing is one that shipped BEFORE #1517 landed, and those renders also predate the #1293\n"
+    "  aspect fix and the #1278 caption burn. Sample a more recent window."
 )
 
 
