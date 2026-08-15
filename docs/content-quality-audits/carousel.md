@@ -104,7 +104,7 @@ it, and the verdict is against what the pipeline does today.
 | R2 | **Per-slide readability at LinkedIn's render size** | `_load_font` sizes + `_draw_block(max_lines=…)` | **FAIL.** Type size and contrast are fine — 36–38px body on 1080px is ~24pt, inside published guidance, and legible at the 360px feed width (§5). What fails is FIT: the body is silently amputated at the line cap (F1), and the deck's own line structure is destroyed (F2, F3) |
 | R3 | **Slide count in the effective range for the family** | the `conlist` bounds on each carousel model + the `schema_hint` in `generate_carousel_content` | **PARTIAL.** Educational/Insights ask for 2–4 body slides (4–6 total), CaseStudy renders 5–6, ProductDemo 4–5, and the schema floor allows a **3-slide deck** (cover + 1 + CTA). Published 2026 consensus is 6–10 slides. LEM sits at or below the bottom of that band by construction, and nothing enforces even its own 2–4 ask. Sized, not calibrated — no measured corpus here, so no number is moved |
 | R4 | **Visual consistency + the image-stack rules** | `CAROUSEL_TEMPLATES`, `avatar/guardrails.avatar_allowed_for`, `build_image_brief(surface="carousel")` | **PASS on the rules, ABSENT on the brand.** No text or logo is ever rendered into a generated slide image (the brief engine owns the prompt, #1290 wired the vision gate + focal concept), and a likeness only appears where the guardrails allow. But the palette is one of five fixed template palettes chosen by BUYER STAGE, so a user's decks change look between stages, and `client_logo_url` is consumed by no layout — there is no per-user brand anywhere in a deck |
-| R5 | **Per-slide copy quality — the same bar as a text post** | `evaluate_post_gates` (caption only), `deck_reference_report` (slides) | **FAIL.** The caption runs the full suite; the SLIDES run one gate. `slop_lint`, `AI_TELL_WORDS`, `POST_BANNED_SCAFFOLDS`, the bait-closer check, the similarity gate and the authenticity judge never see a slide body — and on a document post the slides ARE the post. A carousel is also never authenticity-scored at generation at all (F5) |
+| R5 | **Per-slide copy quality — the same bar as a text post** | `evaluate_post_gates` (caption only), `deck_reference_report` (slides) | **FAIL.** The caption runs the full suite; the SLIDES run one gate. `slop_lint`, `AI_TELL_WORDS`, `POST_BANNED_SCAFFOLDS`, the bait-closer check, the similarity gate and the authenticity judge never see a slide body — and on a document post the slides ARE the post. A carousel is also never authenticity-scored at generation at all (F5) — **both halves addressed in #1512**: the slides now get the existing slop lint (advisory), and the caption is judged at generation like any other post |
 | R6 | **Blueprint-to-buyer-stage fit** | `_select_carousel_blueprint` → `carousel_blueprint_directive`, `_template_by_stage` | **PASS, and the strongest part of the pipeline.** Carousels rotate through the SAME post archetype menu as text posts and write into the same V51 shape history, so a deck cannot repeat the shape the last text post used; fact-anchored archetypes are taken OFF the menu when the writer has no verified anchor, precisely because slide text cannot be corrected after the render |
 | R7 | **A real closing CTA slide, not a trailing summary** | the `call_to_action` field on every carousel model; `_*_cta` layouts | **PARTIAL → the worst live failure.** Structurally every deck ends on a dedicated CTA slide, and `save_worthy_directive` asks for a soft "save this for the next time you…". In production that slide (a) rendered a hardcoded **"Leave a comment below"** bait pill on the default template until #1511 replaced it with the directive's own save ask (F4) and (b) clips at 117 chars, which is how post 87 shipped its closing ask as *"Save this for your next sprint retrospective to spark the"* |
 | R8 | **The slide's photo depicts the slide's idea** | `derive_image_query` → `get_pexels_image_path` | **FAIL, unchecked.** `CAROUSEL_IMAGE_RATE` defaults to 1.0, so every body slide gets a photo band; the query is 2–4 keywords from an `lem-simple` call (heuristic fallback) and the first Pexels hit is used with no relevance check. The `lem-vision` gate #1290 wired covers only the AVATAR generation path, which is off by default (`CAROUSEL_REPLICATE_ENABLED=False`). This is the mechanism behind the two off-topic bands #1292 already recorded — a PLC photo under a software-release claim, a CD wallet under an agent-pipeline claim |
@@ -251,6 +251,36 @@ Filed as `risk:product-decision` because the useful version of the fix asks whet
 lint may HOLD a post. `_report_carousel_fact_grounding`'s advisory-only posture is deliberate and is
 **not** touched by this audit or its PR, per the issue's own scope rule.
 
+**SHIPPED (#1512).** `_report_carousel_slide_slop` now runs the EXISTING `slop_lint_report`
+over the concatenated slide text (`_deck_text`, cover and CTA included — the reference gate's
+`graded` exemption is about reusable artifacts, not about text quality) and records the verdict as
+the ADVISORY `slide_ai_slop` finding on `posts.gate_reason`. Two mechanics make it readable: the
+note is written where the slide text exists and re-read by `evaluate_post_gates`
+(`_recorded_slide_slop_notes`) the same way the video probe's reason is, and a regenerated clean
+deck clears it. `demoted=False` always — so nothing about which posts publish changes.
+
+**Both product calls are now answered** — owner reply on PR #1554, recorded here because a decision
+that lives only in a merged thread is a decision nobody can find later:
+
+- **(a) A slide-level lint may NOT hold a post — advisory only.** Slide text is baked into rendered
+  images with no review queue, so unlike the caption's `ai_slop` hold this one cannot be cleared by
+  editing and re-scoring: the only remedy is regenerating the whole deck (a fresh
+  `generate_carousel_content` call plus a full Pillow slide render and PPTX write, per held deck),
+  and the slides then change wholesale. `slide_ai_slop` therefore stays `demoted=False` until the
+  advisory finding has given us a base rate for how often a hold would fire. `slide_slop_finding`
+  takes `demoted` as an argument, so flipping the posture later is one call site.
+- **(b) A carousel IS authenticity-judged at generation.** `_score_carousel_caption_authenticity`
+  scores the deck's CAPTION inside `create_carousel_content` — ONE judge call per deck
+  (`score_authenticity` runs on `lem-medium`, not the `lem-complex` the Decision Comment estimated;
+  the cost is smaller than that comment stated, and small next to generating the deck) — so
+  `posts.authenticity_score` is populated and `evaluate_post_gates`' authenticity gate stops
+  skipping itself on this post type. A low-scoring deck is now demoted to PENDING exactly as a text
+  post is, and re-score works on it normally. The SLIDES are not judged: their reading is the
+  deterministic lint above, because the judge grades text a reviewer can edit.
+
+Both halves leave `_report_carousel_fact_grounding` advisory-only, as the audit's scope rule
+requires.
+
 ### F6 — Carousels have no rendered-asset telemetry and no deck surface → **#1513**
 
 Video posts got asset telemetry in #1281: `score_video_asset` records render outcome, duration,
@@ -271,7 +301,8 @@ the nightly beat turns it into ONE reading on a new `surface="carousel"`. What #
 one render — `_fit` marks and logs the cut it could not shrink away — is now a trended number across
 all of them (`deck_chars_dropped` / `deck_slides_clipped`), rather than a human looking at a JPEG,
 and `post_outcome` carries `post_type`, so reach and `saves` split by format. What #1513 does NOT do
-is grade slide PROSE — that is still F5/#1512 — and the capacities in §1 stay measurements, not
+is grade slide PROSE — that is F5/#1512, which grades it on the POST rather than as a deck
+dimension — and the capacities in §1 stay measurements, not
 thresholds: the deck reading reports what was dropped, it holds nothing.
 
 ### F7 — Observations recorded, not actioned
@@ -397,7 +428,7 @@ Filed and linked:
 | **#1375** (existing, `priority:high`) | F1 — silent clipping | Already open; this audit added the measured capacities, the corrected diagnosis (Pillow `_draw_block`, not python-pptx) and the before/after renders as a comment |
 | **#1510** (shipped) | F2 + F3 — the renderer destroys the deck's line structure and invents its own | A layout change to `_wrap_text` / `_step_content`; 2A; fixed since — see the FIXED notes under F2 and F3 |
 | **#1511** | F4 — hardcoded "Leave a comment below" bait on the CTA slide | 2A |
-| **#1512** (`risk:product-decision`) | F5 — slide text passes no text-quality gate; carousels are never authenticity-judged | Asks whether a slide lint may HOLD a post — a product call, per the issue's own rule |
+| **#1512** (shipped) | F5 — slide text passes no text-quality gate; carousels are never authenticity-judged | Asked whether a slide lint may HOLD a post — a product call, per the issue's own rule; answered on PR #1554 (advisory lint, caption judged at generation) — see F5 |
 | **#1513** (shipped) | F6 — no deck surface in `content_quality`, no rendered-asset probe, no post type on `post_outcome` | 2A; fixed since — see F6 above and `docs/content-quality-telemetry.md` |
 | **#1515** (`needs-human`) | The corpus §1 could not read — 8–12 real decks scored from the production read path | Needs production credentials and an owner authorisation, exactly like #1292 |
 
