@@ -78,3 +78,11 @@ class TestGetDmTemplates:
             from cqc_lem.utilities.db import get_dm_templates
             rows = get_dm_templates(1)
         assert rows[0]["is_active"] is True
+
+    def test_read_error_is_none_not_an_empty_set(self, fake_cursor):
+        """Issue #1575: a save deletes what the payload omits, so an unreadable set is never []."""
+        import mysql.connector
+        conn, _ = fake_cursor(execute_error=mysql.connector.Error("nope"))
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import get_dm_templates
+            assert get_dm_templates(1) is None

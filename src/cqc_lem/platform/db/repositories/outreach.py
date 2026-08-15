@@ -1342,11 +1342,14 @@ def get_dm_template(user_id: int, event_type: str, step: int = 0) -> Optional[di
     if step == 0 and event_type in _DM_DEFAULT_TEMPLATES:
         return {"template_text": _DM_DEFAULT_TEMPLATES[event_type], "delay_hours": 0, "step": 0}
     return None
-def get_dm_templates(user_id: int) -> list:
+def get_dm_templates(user_id: int) -> Optional[list]:
     """Every DM template the user has, ordered by event type then step, with `is_active` as a real bool.
 
-    [] on a read error, which reads as "no custom templates" — the defaults in `_DM_DEFAULT_TEMPLATES`
-    are what a step-0 lookup falls back to.
+    **None on a read error, never []** — this read FAILS CLOSED because it is the editor's only
+    picture of the set, and `upsert_dm_templates` now deletes whatever the next save leaves out
+    (issue #1575). An empty list served for a transient DB fault renders as "you have no templates",
+    and the first field the user then edits posts a one-row set that destroys every other ladder they
+    had. [] therefore has to mean the table really is empty; the caller answers None with a 503.
     """
     try:
         with db_cursor(dictionary=True) as cursor:
@@ -1359,7 +1362,7 @@ def get_dm_templates(user_id: int) -> list:
             return rows
     except mysql.connector.Error as err:
         log_error("Could not list dm templates", exc=err, user_id=user_id)
-        return []
+        return None
 def upsert_dm_templates(user_id: int, templates: list) -> bool:
     """Replace the user's WHOLE template set: upsert what was posted, DELETE the rest (issue #1575).
 

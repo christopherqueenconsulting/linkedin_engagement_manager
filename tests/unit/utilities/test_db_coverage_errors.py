@@ -103,7 +103,9 @@ _ERROR_CASES = [
     ("get_newsletter_edition", (1,), None),
     ("mark_edition_published", (1, "url"), False),
     ("mark_edition_failed", (1,), False),
-    ("get_dm_templates", (1,), []),
+    # None, not [] — the editor's save deletes what the payload omits, so an unreadable set must not
+    # render as "you have none" (issue #1575).
+    ("get_dm_templates", (1,), None),
     ("upsert_dm_templates", (1, [{"event_type": "manual"}]), False),
     ("enqueue_followup", (1, "u", "Jane", "manual", 1, datetime(2026, 7, 10)), False),
     ("get_due_followups", (datetime(2026, 7, 6),), []),

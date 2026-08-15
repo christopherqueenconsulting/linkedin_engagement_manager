@@ -24,6 +24,16 @@ class TestGetDmTemplates:
             resp = api_client.get("/api/user/dm-templates?session_token=bad")
         assert resp.status_code == 401
 
+    def test_503_when_the_set_is_unreadable(self, api_client):
+        """An unreadable set must never render as "you have none" (issue #1575).
+
+        The next save of the whole set would otherwise delete every ladder the user actually has.
+        """
+        with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
+             patch("cqc_lem.api.routers.user.get_dm_templates", return_value=None):
+            resp = api_client.get(f"/api/user/dm-templates?session_token={_SESSION}")
+        assert resp.status_code == 503
+
 
 class TestUpdateDmTemplates:
     def test_upserts(self, api_client):
