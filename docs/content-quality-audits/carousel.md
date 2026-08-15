@@ -20,9 +20,10 @@ is under the 200 the prompt hands the writer. The overflow
 is not shrunk, wrapped or marked — `_draw_block` simply stops at its `max_lines` and the rest of
 the sentence is gone. The same renderer discards the line structure the deck was written with (a
 checklist arrives as run-on prose), invents structure it was not given (`step_framework` stamps an
-arrow bullet on every WRAPPED line, so one sentence becomes three bullets), and stamps
+arrow bullet on every WRAPPED line, so one sentence becomes three bullets), and stamped
 *"Leave a comment below"* onto the closing slide of the default template — the exact engagement
-bait `save_worthy_directive` forbids the writer, baked into an image no gate can strip. None of it
+bait `save_worthy_directive` forbids the writer, baked into an image no gate can strip (F4, fixed
+in #1511). None of it
 failed, because on every one of these seams the two sides never read each other.
 
 ---
@@ -105,7 +106,7 @@ it, and the verdict is against what the pipeline does today.
 | R4 | **Visual consistency + the image-stack rules** | `CAROUSEL_TEMPLATES`, `avatar/guardrails.avatar_allowed_for`, `build_image_brief(surface="carousel")` | **PASS on the rules, ABSENT on the brand.** No text or logo is ever rendered into a generated slide image (the brief engine owns the prompt, #1290 wired the vision gate + focal concept), and a likeness only appears where the guardrails allow. But the palette is one of five fixed template palettes chosen by BUYER STAGE, so a user's decks change look between stages, and `client_logo_url` is consumed by no layout — there is no per-user brand anywhere in a deck |
 | R5 | **Per-slide copy quality — the same bar as a text post** | `evaluate_post_gates` (caption only), `deck_reference_report` (slides) | **FAIL.** The caption runs the full suite; the SLIDES run one gate. `slop_lint`, `AI_TELL_WORDS`, `POST_BANNED_SCAFFOLDS`, the bait-closer check, the similarity gate and the authenticity judge never see a slide body — and on a document post the slides ARE the post. A carousel is also never authenticity-scored at generation at all (F5) |
 | R6 | **Blueprint-to-buyer-stage fit** | `_select_carousel_blueprint` → `carousel_blueprint_directive`, `_template_by_stage` | **PASS, and the strongest part of the pipeline.** Carousels rotate through the SAME post archetype menu as text posts and write into the same V51 shape history, so a deck cannot repeat the shape the last text post used; fact-anchored archetypes are taken OFF the menu when the writer has no verified anchor, precisely because slide text cannot be corrected after the render |
-| R7 | **A real closing CTA slide, not a trailing summary** | the `call_to_action` field on every carousel model; `_*_cta` layouts | **PARTIAL → the worst live failure.** Structurally every deck ends on a dedicated CTA slide, and `save_worthy_directive` asks for a soft "save this for the next time you…". In production that slide (a) renders a hardcoded **"Leave a comment below"** bait pill on the default template (F4) and (b) clips at 117 chars, which is how post 87 shipped its closing ask as *"Save this for your next sprint retrospective to spark the"* |
+| R7 | **A real closing CTA slide, not a trailing summary** | the `call_to_action` field on every carousel model; `_*_cta` layouts | **PARTIAL → the worst live failure.** Structurally every deck ends on a dedicated CTA slide, and `save_worthy_directive` asks for a soft "save this for the next time you…". In production that slide (a) rendered a hardcoded **"Leave a comment below"** bait pill on the default template until #1511 replaced it with the directive's own save ask (F4) and (b) clips at 117 chars, which is how post 87 shipped its closing ask as *"Save this for your next sprint retrospective to spark the"* |
 | R8 | **The slide's photo depicts the slide's idea** | `derive_image_query` → `get_pexels_image_path` | **FAIL, unchecked.** `CAROUSEL_IMAGE_RATE` defaults to 1.0, so every body slide gets a photo band; the query is 2–4 keywords from an `lem-simple` call (heuristic fallback) and the first Pexels hit is used with no relevance check. The `lem-vision` gate #1290 wired covers only the AVATAR generation path, which is off by default (`CAROUSEL_REPLICATE_ENABLED=False`). This is the mechanism behind the two off-topic bands #1292 already recorded — a PLC photo under a software-release claim, a CD wallet under an agent-pipeline claim |
 
 ---
@@ -200,6 +201,14 @@ pill reading **"Leave a comment below"** above whatever CTA the model wrote. It 
 awareness-stage default template and on `DEFAULT_TEMPLATE`, it is in the shipped
 `assets/1292/car87_slide05.jpg`, and unlike a caption it cannot be repaired: `strip_engagement_bait`
 and the `bait_closer` slop check operate on text, and this is pixels.
+
+**FIXED in #1511.** The save ask is ONE constant in `content_framework`: `SAVE_ASK_STEM`
+("save this") builds both `SAVE_ASK_PHRASE`, which `save_worthy_directive` hands the WRITER, and
+`SAVE_ASK_PILL` ("Save this for later"), which `_listicle_cta` paints — so the render side cannot
+ask for something the writer side forbids, the same one-list invariant `POST_BANNED_SCAFFOLDS`
+carries for prompt vs lint. `tests/unit/utilities/test_carousel_cta_bait.py` renders every template
+and asserts no slide PAINTS a bait imperative, judged by `contains_engagement_bait` (the ONE
+detector) plus the literal imperatives it does not cover ("leave a comment").
 
 ### F5 — Slide text passes no text-quality gate at all → **#1512** (`risk:product-decision`)
 

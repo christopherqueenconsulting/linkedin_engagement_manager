@@ -1783,6 +1783,17 @@ def motion_prompt_directive() -> str:
     )
 
 
+# The save ask lives HERE, once (issue #1511). `save_worthy_directive` hands the WRITER
+# SAVE_ASK_PHRASE, and `carousel_creator`'s closing-slide pill paints SAVE_ASK_PILL — both built
+# from the same stem, so the render side can never ask for something the writer side forbids. It
+# did: the pill read "Leave a comment below", the exact engagement bait this directive bans, baked
+# into a PNG that `strip_engagement_bait` and the `bait_closer` slop check (both TEXT-only) can
+# never reach. Same one-list invariant POST_BANNED_SCAFFOLDS carries for prompt vs lint.
+SAVE_ASK_STEM = "save this"
+SAVE_ASK_PHRASE = f"{SAVE_ASK_STEM} for the next time you..."
+SAVE_ASK_PILL = f"{SAVE_ASK_STEM.capitalize()} for later"
+
+
 def save_worthy_directive(content_type: str = "carousel") -> str:
     """Reference-framing rules that make a CAROUSEL/document worth SAVING rather than swiping past
     (issue #391 / C2). A saved carousel is the strongest 2026 signal there is: it holds the reader
@@ -1802,7 +1813,7 @@ def save_worthy_directive(content_type: str = "carousel") -> str:
         "- Each slide's body must carry a specific: a number, a named example, or a concrete "
         "action. Abstract slides are what readers swipe past.\n"
         "- The final slide recaps the whole thing as a compact list worth screenshotting, and the "
-        "call to action closes with a soft 'save this for the next time you...' — never "
+        f"call to action closes with a soft '{SAVE_ASK_PHRASE}' — never "
         "engagement-bait, never 'follow for more'.\n"
     )
 
