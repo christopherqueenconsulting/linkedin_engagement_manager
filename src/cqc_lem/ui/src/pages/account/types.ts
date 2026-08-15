@@ -149,6 +149,11 @@ export const DM_EVENTS: { key: string; label: string }[] = [
   { key: 'recommendation_received', label: 'Recommendation received' },
   { key: 'collaboration', label: 'After a collaboration' },
   { key: 'profile_viewer', label: 'Profile viewer outreach' },
+  // Every event type the API stores has to be editable here: a save is the WHOLE set and the server
+  // deletes what the payload leaves out (issue #1575), so an event this card never rendered would be
+  // wiped by the next save of any other one.
+  { key: 'manual', label: 'Manual outreach' },
+  { key: 'funnel', label: 'Outreach funnel DM' },
   // The direction for the next message after a lead REPLIES (issue #485). The draft is written
   // against what they actually said; this template sets its intent, not its wording.
   { key: 'nurture', label: 'After they reply (nurture)' },
