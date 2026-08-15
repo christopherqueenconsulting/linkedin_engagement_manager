@@ -220,8 +220,9 @@ regeneration. Every loop resolves the budget for the surface it is drafting, so 
 the short-form surfaces (`lint_repaired`) and the affiliate promo draft too, not only on the
 newsletter.
 
-Two rules travel with it, on **every** loop that retries (#1434 on the newsletter, #1536 on
-`lint_repaired` and the affiliate promo draft): the retry is a fresh draft rather than an edit, so
+Two rules travel with it, on every loop whose retry the slop lint OWNS (#1434 on the newsletter,
+#1536 on `lint_repaired` and the affiliate promo draft): the retry is a fresh draft rather than an
+edit, so
 `keep_retry` keeps whichever of the two ranks better on (HARD count, total violations) instead of
 taking the newer one blind — on the newsletter, where the structural floor (#1435) steers the same
 retry, the rank is (HARD count, structural failures, total violations) so a draft that fixed the
@@ -233,7 +234,12 @@ queue-less surfaces: a DM or a seed comment is SENT, so the draft the loop ends 
 reader gets, where a worse edition would at least meet a human first. `unsteered` is the
 newsletter's own case: the structural floor shares this budget, so a slop-clean edition can spend a
 regeneration with no HARD check to fix, and counting those as `cleared` would inflate the clear-rate
-the event was raised to measure.
+the event was raised to measure. The comment quality gate (`_gated_comment`, #617) is the one retry
+loop neither rule reaches, on purpose: a slop violation there shares the budget with contract and
+similarity failures, and a draft that never clears is SKIPPED rather than sent, so there is no
+worse-draft to keep and no single grader whose clear-rate the event would be measuring. It records
+its rejections in the log, not in `slop_retry` — so a `surface="comment"` breakdown is the
+`lint_repaired` comment paths, not every comment that was ever redrafted.
 
 - Banned lexicon pileup
 - The "it's not X, it's Y" contrastive frame

@@ -1176,7 +1176,7 @@ def generate_seed_comment(post_content, profile: "LinkedInProfile", prefs: dict 
         return _humanize_text(content.strip(), content_type="comment",
                               profile_synthesis=profile_synthesis, prefs=prefs)
 
-    return lint_repaired(_draft(), "comment", _draft, action_type="comment")
+    return lint_repaired(_draft(), "comment", _draft, user_id=user_id, action_type="comment")
 
 
 def generate_second_wave_comment(post_content, profile: "LinkedInProfile", prefs: dict = None,
@@ -1275,7 +1275,7 @@ def generate_thread_reply(post_content: str, comment_text: str, profile: "Linked
         return _humanize_text(content.strip(), content_type="comment",
                               profile_synthesis=profile_synthesis, prefs=prefs)
 
-    return lint_repaired(_draft(), "comment", _draft, action_type="comment")
+    return lint_repaired(_draft(), "comment", _draft, user_id=user_id, action_type="comment")
 
 
 def generate_comment_reply_followup(their_reply: str, profile: "LinkedInProfile",
@@ -1317,7 +1317,7 @@ def generate_comment_reply_followup(their_reply: str, profile: "LinkedInProfile"
         return _humanize_text(content.strip(), content_type="comment",
                               profile_synthesis=profile_synthesis, prefs=prefs)
 
-    return lint_repaired(_draft(), "comment", _draft, action_type="comment")
+    return lint_repaired(_draft(), "comment", _draft, user_id=user_id, action_type="comment")
 
 
 def generate_lead_response(their_message: str, profile: "LinkedInProfile", channel: str = "reply",

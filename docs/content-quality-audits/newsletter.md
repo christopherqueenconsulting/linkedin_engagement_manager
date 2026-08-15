@@ -232,8 +232,11 @@ rule on the NEWSLETTER loop only, and left `lint_repaired` (seed comments, repli
 post drafts) and the affiliate promo draft taking the newer draft blind and emitting nothing — the
 same two defects, on higher-volume surfaces with no review queue behind them. **#1536 wired both
 into those loops**, reusing `keep_retry` / `retry_outcome` / `track_slop_retry` unchanged, so a
-`slop_retry` breakdown by `surface` now covers every loop that retries. The per-surface budget was
-already widened here, because that one is a config read with no behaviour change.
+`slop_retry` breakdown by `surface` now covers every loop the slop lint's own retry drives. The
+comment quality gate (`_gated_comment`) is still outside it — its budget is shared with the comment
+contract and it skips instead of shipping — so `surface="comment"` is the `lint_repaired` comment
+paths, not the surface's whole retry volume. The per-surface budget was already widened here,
+because that one is a config read with no behaviour change.
 
 **Still open:** the number itself. Re-run this reading once `slop_retry` has covered a full
 newsletter cycle — if `cleared` dominates, buy the third attempt; if `traded` dominates, the retry

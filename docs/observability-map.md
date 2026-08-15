@@ -112,10 +112,17 @@ body is never sent: `evidence` carries only phrases from LEM's own fixed `MOTION
 which is why the opening check (whose only evidence is prompt text) reports none.
 
 ## Slop-lint regeneration (issue #1434, widened #1536) — `docs/content-core.md`
-One `slop_retry` event per steered regeneration, from **every** loop that runs the bounded retry:
+One `slop_retry` event per steered regeneration, from every loop that runs the bounded SLOP retry:
 the newsletter, the short-form surfaces (`lint_repaired`: seed comments, replies, DMs, group and
 post drafts) and the affiliate promo draft. So `surface` is a real breakdown — it was
 newsletter-only between #1434 and #1536, which is worth knowing when reading rows from that window.
+**One retry loop is deliberately not here:** the comment quality gate (`ai_helper._gated_comment`,
+#617) — the path a top-level FEED comment takes — regenerates on a SHARED budget where a slop
+violation sits next to contract and similarity failures, and it SKIPS the post rather than shipping
+anything, so there is no kept-vs-discarded draft to grade. Its regenerations are logged (DEBUG, per
+attempt), never emitted. Read `surface="comment"` as the `lint_repaired` comment paths (seed
+comments, thread replies, reply follow-ups) only — it is not the comment surface's total retry
+volume.
 `outcome` is the reading: `cleared` (a HARD check was firing and none remains), `traded` (it fixed
 what it was steered on and tripped a DIFFERENT check — the failure mode a whole-draft rewrite has
 and a targeted edit does not), `worsened`, `persisted`, `lost` (the regeneration returned nothing;

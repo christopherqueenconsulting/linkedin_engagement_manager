@@ -736,6 +736,24 @@ class TestShortFormRetryTelemetry:
             assert ai_helper.lint_repaired(_CLEAN, "post", MagicMock()) == _CLEAN
         track.assert_not_called()
 
+    @pytest.mark.parametrize("generator, args", [
+        ("generate_seed_comment", ("my post body",)),
+        ("generate_thread_reply", ("my post body", "their comment")),
+        ("generate_comment_reply_followup", ("their reply",)),
+    ])
+    def test_the_comment_generators_hand_the_loop_the_user_they_already_have(self, generator, args):
+        # `lint_repaired` reads the person off the log context it is given, so a call site that
+        # knows the user and drops it lands every one of its `slop_retry` rows on the shared
+        # "system" distinct id — the event exists to be read per surface AND per person.
+        from cqc_lem.utilities.ai import ai_helper
+        with patch(f"{_AI}.lint_repaired", return_value="x") as loop, \
+             patch(f"{_AI}._call_llm") as call, \
+             patch(f"{_AI}._humanize_text", side_effect=lambda t, **k: t), \
+             patch(f"{_AI}._voice_reference", return_value="voice"):
+            call.return_value.choices = [MagicMock(message=MagicMock(content="a draft"))]
+            getattr(ai_helper, generator)(*args, MagicMock(), user_id=42)
+        assert loop.call_args.kwargs["user_id"] == 42
+
 
 class TestNewsletterWiring:
     @pytest.fixture(autouse=True)
