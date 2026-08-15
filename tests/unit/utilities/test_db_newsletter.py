@@ -41,6 +41,47 @@ class TestUpdateNewsletterSettings:
         sql = cur.execute.call_args[0][0]
         assert "generate_lead_days" in sql and "max_queued_drafts" in sql
 
+    def test_the_save_never_writes_a_column_the_publish_run_owns(self):
+        """A written column the request cannot set is a column every save blanks (issue #1538).
+
+        The settings PUT writes the WHOLE row from a request that carries neither `newsletter_url`
+        nor `last_published_at`, and `newsletter_url` is what the CTA loop (#624), the
+        subscriber-count scrape (#400) and post alignment (#967) all read.
+        """
+        from cqc_lem.platform.db.repositories.newsletter import (
+            _NEWSLETTER_COLS,
+            _NEWSLETTER_DEFAULTS,
+        )
+
+        assert "newsletter_url" not in _NEWSLETTER_COLS
+        assert "last_published_at" not in _NEWSLETTER_COLS
+        # The READ shape stays wider than the written one — both are still on the wire.
+        assert set(_NEWSLETTER_COLS) < set(_NEWSLETTER_DEFAULTS)
+
+    def test_saving_settings_leaves_the_stored_newsletter_url_alone(self, fake_cursor):
+        """The regression itself: neither the INSERT columns nor the UPDATE clause may name it."""
+        conn, cur = fake_cursor()
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import update_newsletter_settings
+            update_newsletter_settings(1, {"enabled": True, "title": "Weekly Wins"})
+        sql, values = cur.execute.call_args[0]
+        assert "newsletter_url" not in sql
+        # …while the columns the request DOES carry are still written, so this is not a dead save.
+        from cqc_lem.platform.db.repositories.newsletter import _NEWSLETTER_COLS
+        assert values[1 + _NEWSLETTER_COLS.index("title")] == "Weekly Wins"
+
+    def test_the_written_columns_are_exactly_what_the_request_model_can_set(self):
+        """Anti-drift, so the same bug cannot arrive one save later.
+
+        A column added to the written list that `NewsletterSettingsRequest` cannot carry blanks
+        itself on the next save.
+        """
+        from cqc_lem.api.routers.user import NewsletterSettingsRequest
+        from cqc_lem.platform.db.repositories.newsletter import _NEWSLETTER_COLS
+
+        settable = set(NewsletterSettingsRequest.model_fields) - {"session_token"}
+        assert set(_NEWSLETTER_COLS) == settable
+
 
 class TestNewsletterDue:
     def test_returns_due_user_ids(self, fake_cursor):
