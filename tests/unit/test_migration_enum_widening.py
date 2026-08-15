@@ -21,14 +21,21 @@ from pathlib import Path
 
 MIGRATIONS_DIR = Path(__file__).resolve().parents[2] / "compose" / "local" / "database" / "migrations"
 
-# `<table>` and `<column>` for a CREATE TABLE body or an ALTER TABLE ... MODIFY, plus the ENUM list.
-_CREATE_RE = re.compile(r"CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?`?(\w+)`?\s*\((.*?)\n\s*\)\s*;",
+# `<table>` and `<column>` for a CREATE TABLE body or an ALTER TABLE clause, plus the ENUM list.
+# The CREATE body ends at a `)` that closes the column list — `[^;]*` swallows any trailing table
+# options (`) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;`).
+_CREATE_RE = re.compile(r"CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?`?(\w+)`?\s*\((.*?)\n\s*\)[^;]*;",
                         re.IGNORECASE | re.DOTALL)
 _CREATE_COL_RE = re.compile(r"^\s*`?(\w+)`?\s+ENUM\s*\((.*?)\)", re.IGNORECASE | re.DOTALL | re.MULTILINE)
 _ALTER_RE = re.compile(
     r"ALTER\s+TABLE\s+`?(\w+)`?(.*?);", re.IGNORECASE | re.DOTALL)
-_MODIFY_RE = re.compile(
-    r"MODIFY\s+(?:COLUMN\s+)?`?(\w+)`?\s+ENUM\s*\((.*?)\)", re.IGNORECASE | re.DOTALL)
+# ADD/CHANGE count too: a column FIRST declared by `ADD COLUMN ... ENUM(...)` is otherwise invisible
+# here, so a later MODIFY that narrows it would be the column's only known declaration and the guard
+# would skip it as a single-declaration column — exactly the case it exists to catch.
+_ALTER_COL_RE = re.compile(
+    r"(?:MODIFY|ADD)\s+(?:COLUMN\s+)?`?(\w+)`?\s+ENUM\s*\((.*?)\)"
+    r"|CHANGE\s+(?:COLUMN\s+)?`?\w+`?\s+`?(\w+)`?\s+ENUM\s*\((.*?)\)",
+    re.IGNORECASE | re.DOTALL)
 _VALUE_RE = re.compile(r"'([^']*)'")
 
 
@@ -52,10 +59,32 @@ def _declarations() -> dict:
                 found.setdefault((table, column), []).append(
                     (_version(path), path.name, frozenset(_VALUE_RE.findall(values))))
         for table, body in _ALTER_RE.findall(sql):
-            for column, values in _MODIFY_RE.findall(body):
+            for modify_col, modify_values, change_col, change_values in _ALTER_COL_RE.findall(body):
+                column, values = (modify_col, modify_values) if modify_col else (change_col, change_values)
                 found.setdefault((table, column), []).append(
                     (_version(path), path.name, frozenset(_VALUE_RE.findall(values))))
     return found
+
+
+def test_every_enum_declaration_in_the_schema_is_parsed():
+    """A declaration the parser cannot see is a value the guard cannot protect.
+
+    The guard is only as good as its reader: a column whose FIRST declaration is an
+    ``ADD COLUMN ... ENUM(...)`` would otherwise have exactly one visible declaration once a later
+    migration narrows it with ``MODIFY``, and the union check skips single-declaration columns. So
+    pin the reader against the schema itself — every non-comment ``ENUM(`` in every migration must
+    have produced a declaration.
+    """
+    parsed = {}
+    for _, decls in _declarations().items():
+        for _, name, _ in decls:
+            parsed[name] = parsed.get(name, 0) + 1
+    unparsed = []
+    for path in sorted(MIGRATIONS_DIR.glob("V*.sql")):
+        declared = len(re.findall(r"ENUM\s*\(", _strip_comments(path.read_text(encoding="utf-8")), re.IGNORECASE))
+        if declared != parsed.get(path.name, 0):
+            unparsed.append(f"{path.name}: {declared} ENUM declaration(s), {parsed.get(path.name, 0)} parsed")
+    assert not unparsed, "the ENUM reader has blind spots:\n" + "\n".join(unparsed)
 
 
 def test_the_newest_declaration_of_every_enum_column_carries_every_value_ever_declared():
