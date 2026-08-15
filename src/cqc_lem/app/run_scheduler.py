@@ -710,7 +710,9 @@ def auto_nightly_content_quality(self, days: int = None):
 
     Video posts (#1281) also score the rendered asset itself: render outcome, model tier, duration,
     aspect ratio and a local file probe result. These are read from `posts.video_url` and the on-disk
-    file; a missing or unreadable asset is recorded, not skipped, so the trend line can catch it.
+    file; a missing or unreadable asset is recorded, not skipped, so the trend line can catch it. The
+    model tier is the exception — it comes from `posts.video_model`, recorded by the render path
+    (#1410), because the stored URL only proves the asset came out of the Runway path.
 
     A carousel (or document) post produces a SECOND reading on its own `carousel` surface (#1513):
     slide count, per-slide body length, characters the layout dropped at render, template and how
@@ -799,7 +801,10 @@ def auto_nightly_content_quality(self, days: int = None):
             surface = str(item.get("surface") or "")
             video = None
             if surface == SURFACE_POST and item.get("post_type") == PostType.VIDEO.value:
-                video = score_video_asset(video_url=item.get("video_url"))
+                # `video_model` is what the render actually used (#1410); None on a post that
+                # shipped before it was recorded, which falls back to the coarse tier off the URL.
+                video = score_video_asset(video_url=item.get("video_url"),
+                                          model=item.get("video_model"))
             detector = None
             if detector_budget > 0 and detector_sampled(surface, item.get("ref_id")):
                 detector = detector_score(item.get("text"))

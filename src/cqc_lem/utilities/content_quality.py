@@ -80,8 +80,9 @@ ALERT_SIMILARITY_CREEP = "similarity_creep"
 # Video asset vocabulary. Keep these constants in ONE place so the scorer, the DB writer, the
 # nightly beat and the weekly rollup all name the same states.
 VIDEO_MODEL_PEXELS = "pexels"
-# Coarse on purpose: the stored URL proves the asset came out of the Runway path, not WHICH model
-# rendered it — nothing persists that per post (issue #1410).
+# The FALLBACK tier, not the normal one: the stored URL proves the asset came out of the Runway
+# path, not WHICH model rendered it. Since #1410 the render path records the exact key on
+# `posts.video_model`, so this is what a post that shipped before that column existed reads as.
 VIDEO_MODEL_RUNWAY = "runway"
 VIDEO_PROBE_OK = "ok"
 VIDEO_PROBE_MISSING = "missing"
@@ -537,12 +538,13 @@ def video_model_tier(model: Optional[str], video_url: Optional[str] = None) -> O
     named explicitly; an empty/unknown model with no URL is None; an unrecognized model is
     preserved as-is so it is not silently rewritten.
 
-    With no `model` in hand the tier is read off the STORED asset, and the file NAME decides it
+    The nightly beat passes the `posts.video_model` the render path recorded (issue #1410), so the
+    exact `VIDEO_MODELS` key is the normal reading. With no `model` in hand — a post that shipped
+    before that column existed — the tier is read off the STORED asset, and the file NAME decides it
     before the directory does: every stored `posts.video_url` is written under `videos/runwayml/`
     whatever produced it (`_store_video_asset`), so a stock clip landing there would otherwise be
-    recorded as a Runway render. Only `pexels_*` proves stock, so that check comes first.
-    `VIDEO_MODEL_RUNWAY` is deliberately coarse — which Runway model rendered a post is not
-    persisted anywhere (issue #1410).
+    recorded as a Runway render. Only `pexels_*` proves stock, so that check comes first, and
+    `VIDEO_MODEL_RUNWAY` is the coarse fallback.
     """
     model = str(model or "").strip()
     if model:

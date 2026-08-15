@@ -32,6 +32,7 @@ def _video_post(ref_id="1", text="A plain first line.\nAnd a second sentence for
     row = {"surface": "post", "ref_id": ref_id, "text": text, "shipped_on": "2026-07-26",
            "format_key": None, "post_type": "video",
            "video_url": f"/api/assets?file_name=videos/runwayml/{ref_id}.mp4",
+           "video_model": "veo3.1_fast",
            "authenticity_score": 88, "reactions": 10, "comments": 4,
            "reposts": 1, "impressions": 1000}
     row.update(kw)
@@ -192,6 +193,37 @@ class TestNightlyContentQuality:
             _result, record, _track = self._run(es, [_post(), _video_post(ref_id="2")])
         assert deck.call_count == 0
         assert [call.args[1]["surface"] for call in record.call_args_list] == ["post", "post"]
+    def test_the_recorded_render_model_reaches_the_scorer(self):
+        """Issue #1410: the exact tier can only come from what the render path recorded.
+
+        The stored URL is written under `videos/runwayml/` whatever produced it.
+        """
+        with ExitStack() as es:
+            video = es.enter_context(patch(f"{CQ}.score_video_asset",
+                                           return_value={"video_render_ok": True,
+                                                         "video_model_tier": "veo3.1_fast",
+                                                         "video_duration_seconds": 6,
+                                                         "video_aspect_ratio": "9:16",
+                                                         "video_asset_probe": "ok"}))
+            _result, record, _track = self._run(es, [_video_post(video_model="veo3.1_fast")])
+        assert video.call_args.kwargs["model"] == "veo3.1_fast"
+        assert record.call_args.args[1]["video_model_tier"] == "veo3.1_fast"
+
+    def test_a_post_with_no_recorded_model_falls_back_to_the_coarse_tier(self):
+        """Nothing was recorded before #1410, so the scorer reads the tier off the URL instead.
+
+        Passing None is what lets it, rather than the beat inventing a key.
+        """
+        with ExitStack() as es:
+            video = es.enter_context(patch(f"{CQ}.score_video_asset",
+                                           return_value={"video_render_ok": True,
+                                                         "video_model_tier": "runway",
+                                                         "video_duration_seconds": 5,
+                                                         "video_aspect_ratio": "1:1",
+                                                         "video_asset_probe": "ok"}))
+            _result, record, _track = self._run(es, [_video_post(video_model=None)])
+        assert video.call_args.kwargs["model"] is None
+        assert record.call_args.args[1]["video_model_tier"] == "runway"
 
     def test_the_embedding_spend_is_billed_to_the_user_it_scored(self):
         # similarity_reports is the only LLM spend here, and this task loops over users instead of

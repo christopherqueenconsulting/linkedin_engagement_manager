@@ -1098,6 +1098,30 @@ def _premium_tier_for_quality(quality: str):
     return None
 
 
+def _persist_video_model(post_id: Optional[int], model: Optional[str]) -> None:
+    """Record on the post which model rendered its video (issue #1410).
+
+    Written from `_generate_video_src` because that is the ONE place the answer exists: the model is
+    chosen there (premium degrades to standard without credits) and the Pexels fallback is taken
+    there, and every path that produces a video asset — the create path and the regenerate/heal path
+    — goes through it, so both record the same thing by construction. `posts.video_url` alone cannot
+    say it: every asset is stored under `videos/runwayml/` whatever produced it.
+
+    Never raises: telemetry must not cost a rendered video. A no-op without a post to write to.
+    """
+    if not post_id:
+        return
+    try:
+        from cqc_lem.utilities.db import update_db_post_video_model
+        update_db_post_video_model(post_id, model)
+    except Exception as e:
+        # DEBUG, not WARNING: the only cost of losing this write is one nightly telemetry row
+        # falling back to the coarse `runway` / `pexels` tier it recorded before #1410 — the post
+        # and its video are unaffected, so a defect must not be filed for it.
+        log_debug(f"_persist_video_model: could not record the render model "
+                  f"({type(e).__name__}: {e})", post_id=post_id)
+
+
 @attribute_llm_cost(FEATURE_CONTENT)
 def _generate_video_src(user_id: int, text_content: str, profile, post_id: int = None):
     """Generate a video source URL honoring the post's quality tier + video credits.
@@ -1109,6 +1133,8 @@ def _generate_video_src(user_id: int, text_content: str, profile, post_id: int =
     the post's video_quality, falling back to the user's default_video_quality preference.
     Premium credits are reserved up-front and refunded on failure; falls back to standard when
     the user has no credits, and to Pexels stock on error.
+    Records the model that actually ran on `posts.video_model` (issue #1410) — see
+    `_persist_video_model` for why the write lives here and not at the storage step.
     Returns the remote Runway URL (http) or a local Pexels path, or None.
     """
     from cqc_lem.utilities.ai.ai_helper import generate_post_image
@@ -1200,6 +1226,7 @@ def _generate_video_src(user_id: int, text_content: str, profile, post_id: int =
                                       user_id=user_id, post_id=post_id)
         if not src:
             raise RuntimeError("no video output")
+        _persist_video_model(post_id, model)
         log_info(f"_generate_video_src: model={model} audio={audio} -> {str(src)[:60]}")
         return src
     except Exception as e:
@@ -1214,15 +1241,22 @@ def _generate_video_src(user_id: int, text_content: str, profile, post_id: int =
         if deducted and user_id:
             refund_video_credits(user_id, deducted, post_id)
         try:
+            from cqc_lem.utilities.content_quality import VIDEO_MODEL_PEXELS
             from cqc_lem.utilities.pexels_helper import download_pexels_video
             videos_dir = os.path.join(assets_dir, 'videos', 'pexels')
             create_folder_if_not_exists(videos_dir)
-            return download_pexels_video(text_content[:50], videos_dir)
+            stock_src = download_pexels_video(text_content[:50], videos_dir)
+            # Cleared rather than left alone when the stock helper came back empty: this render
+            # produced no asset, and the key from a PREVIOUS render would then be read as the model
+            # of a video it never made.
+            _persist_video_model(post_id, VIDEO_MODEL_PEXELS if stock_src else None)
+            return stock_src
         except Exception as pe:
             # DEBUG: the OUTCOME — a video post with no asset — is already warned by the caller,
             # which holds the post PENDING with a durable missing_asset finding. A second warning
             # here forks a second grouped issue for the same lost video (issue #1038).
             log_debug(f"_generate_video_src: Pexels fallback failed ({type(pe).__name__}: {pe})")
+            _persist_video_model(post_id, None)
             return None
 
 
@@ -1439,6 +1473,12 @@ def _accept_probed_video(post_id: int, video_file_path: str, video_src_url: str,
     exactly like a failed render: the URL is not persisted, so the missing-asset gate holds the post
     and asset backfill can retry it. Either way the verdict is recorded on the post
     (`_record_video_probe_finding`), so the review queue can say why the file was rejected.
+
+    A rejection also CLEARS the render model `_generate_video_src` just recorded (issue #1410): the
+    file this key names never became the post's media, and on the regenerate path the row still
+    carries the PREVIOUS video's URL — leaving the key would report the rejected render as the model
+    of the video that actually shipped. Cleared, the nightly beat falls back to the coarse tier read
+    off that URL, which is all that is genuinely known.
     """
     probe_ok, probe_reason = _probe_video_file(video_file_path)
     track_video_asset_probe(post_id=post_id, user_id=user_id, probe_ok=probe_ok, reason=probe_reason,
@@ -1451,6 +1491,7 @@ def _accept_probed_video(post_id: int, video_file_path: str, video_src_url: str,
         return True
     log_warning(f"Video asset probe failed ({probe_reason}) — not persisting URL",
                 user_id=user_id, post_id=post_id, task_name=task_name)
+    _persist_video_model(post_id, None)
     if VIDEO_PROBE_ENABLED:
         raise RuntimeError(f"video asset probe failed: {probe_reason}")
     return False
@@ -1553,7 +1594,16 @@ def _store_video_asset(post_id: int, video_src_url: str, content: Optional[str] 
     """
     videos_dir = os.path.join(assets_dir, 'videos', 'runwayml')
     create_folder_if_not_exists(videos_dir)
-    video_file_path = save_video_url_to_dir(video_src_url, videos_dir)
+    try:
+        video_file_path = save_video_url_to_dir(video_src_url, videos_dir)
+    except Exception:
+        # Same clear as a rejected probe (issue #1410), for the exit that never reaches one:
+        # `save_video_url_to_dir` RAISES on a non-2xx or a dropped connection, so the render this
+        # key names produced no file for this post. On the regenerate path the row still carries the
+        # PREVIOUS video's URL, and leaving the key would report the undownloaded render as the
+        # model of the video that actually shipped.
+        _persist_video_model(post_id, None)
+        raise
 
     if not _accept_probed_video(post_id, video_file_path, video_src_url,
                                 task_name="regenerate_post_video_task"):
@@ -3483,7 +3533,16 @@ def _create_content_for_planned_post(post: dict, prefs: dict) -> bool:
             # Define and create assets_dir / videos
             videos_dir = os.path.join(assets_dir, 'videos', 'runwayml')
             create_folder_if_not_exists(videos_dir)
-            video_file_path = save_video_url_to_dir(video_url, videos_dir)
+            try:
+                video_file_path = save_video_url_to_dir(video_url, videos_dir)
+            except Exception:
+                # The download raises on a non-2xx / dropped connection, so this post never got the
+                # file the recorded render model names — clear it (issue #1410) before the outer
+                # handler turns this into a failed post. Only the download is wrapped: everything
+                # after `update_db_post_video_url` below has a stored asset the key correctly
+                # describes, and clearing there would erase a true record.
+                _persist_video_model(post_id, None)
+                raise
             log_info(f"Video from url: {video_url} | Saved to: {video_file_path}")
             # Probe before this file becomes posts.video_url (issue #1280). This is where a video
             # post is BORN, so an unprobed zero-byte download here is the one that actually reaches
