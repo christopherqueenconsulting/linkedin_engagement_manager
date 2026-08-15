@@ -151,11 +151,15 @@ The original reason #1282 was opened — real shipped video bodies/assets and a 
 exemplar — still cannot be satisfied headlessly. A separate follow-up issue (**#1363**) carries
 that scope so this PR can land the regression fix and updated audit doc.
 
-### F7 — A shipped video's asset measures do not survive publication → **#1517**
+### F7 — A shipped video's asset measures do not survive publication → **#1517** *(shipped)*
 
 Found by running §7's sampler against production on 2026-08-14: the stored MP4 is deleted at publish
-(`purge_post_assets`, #148), so neither this audit nor the nightly telemetry can measure a shipped
-video's duration, aspect ratio or captions. Full evidence and the fix shape in **§8**.
+(`purge_post_assets`, #148), so neither this audit nor the nightly telemetry could measure a shipped
+video's duration, aspect ratio or render outcome. Full evidence in **§8**. Fixed by recording the
+measurement at STORE time in a receipt beside the file (`utilities/video_receipt.py`), which the
+purge leaves behind — so the numbers survive publication even though the video does not. What still
+does not survive is the PIXELS: representative frames need the MP4 itself, which is #1363's
+keyframe-retention question, not this one.
 
 ---
 
@@ -348,6 +352,32 @@ itself is explicitly out of scope: bounding the assets volume is what #148 exist
 Until #1517 lands, `sample_shipped_videos.py` says so in its own output rather than printing a bare
 `10 missing` (`purge_hint`).
 
+#### What #1517 changed — which measures survive publication
+
+`_record_video_asset_measures` (`app/run_content_plan.py`) probes the stored file once more at the
+END of both store paths — after the caption burn and C2PA signing, which rewrite it, and before
+`posts.video_url` is persisted — and writes the reading to a `<video>.probe.json` receipt beside the
+MP4 (`utilities/video_receipt.py`). `purge_post_assets` removes only the exact `.mp4` named by
+`video_url`, so the receipt survives with no carve-out, exactly as the caption `.srt` does.
+`score_video_asset` prefers that recording over a live probe, which is what makes this table true
+for a post scored days after it shipped:
+
+| Measure | Survives publication | Read from |
+|---|---|---|
+| `video_duration_seconds` | ✅ | receipt |
+| `video_aspect_ratio` | ✅ | receipt (an explicit `ratio=` from a caller still wins) |
+| `video_asset_probe` | ✅ | receipt |
+| `video_render_ok` | ✅ | receipt (`has_video_stream`) — the file's later absence is by design, not a failed render |
+| `video_model_tier` | ✅ | the stored URL, which never needed the file |
+| Caption text + `.srt` sidecar | ✅ | `posts.caption_text` / `caption_srt_url` (#1278) |
+| Representative frames (R1/R8), pixel/legibility review | ❌ | needs the MP4 — **#1363**'s keyframe-retention decision |
+
+Two rules the receipt keeps: a video whose probe did not READ the file gets no receipt at all (an
+unmeasured clip must not become a recorded `0 seconds, ok` — #630), and a receipt that will not
+parse is treated as absent, so the reader falls back to a live probe instead of scoring a guess.
+Nothing here is retroactive: posts that shipped before this landed have no receipt and keep reading
+`missing`.
+
 ### The exemplar — fallback note taken
 
 Decision `2A` on PR #1506: the real high-engagement LinkedIn exemplar is **not** fetched, and this
@@ -361,7 +391,7 @@ a human step, available any time someone wants to upgrade this section, and neve
 
 | Acceptance box | State |
 |---|---|
-| 6–10 shipped video samples with bodies **and** assets available | **Blocked by #1517**, not by access — the assets are deleted at publish. Bodies: 10/10 available. Assets: 0/10 |
+| 6–10 shipped video samples with bodies **and** assets available | **Unblocked for video shipped after #1517** — the asset MEASURES now survive the purge, so a re-run grades current-pipeline posts. The ten rows above stay ungradable: nothing recorded a receipt for them |
 | Named real reference exemplar or explicit fallback note | **Done** — fallback note above, per #1140's clause (decision `2A`) |
-| Representative frames embedded/referenced in the audit doc | **Not produced** — frame extraction needs a readable MP4; unblocks with #1517 |
+| Representative frames embedded/referenced in the audit doc | **Not produced** — frame extraction needs a readable MP4, which #1517 deliberately did not retain; it turns on #1363's own keyframe-retention decision |
 | Any new findings filed as follow-up issues | **Done** — F7 → **#1517** |

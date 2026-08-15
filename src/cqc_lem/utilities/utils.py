@@ -364,8 +364,10 @@ def purge_post_assets(post_id, video_url=None):
     carousel slide directory (images/carousel/<post_id>/). Path-safe (only deletes
     inside assets_dir) and tolerant of already-missing files. Returns removed paths.
 
-    Two sidecars deliberately survive it: the caption `.srt` (issue #1278) and the deck render
-    receipt (issue #1513) — both are read AFTER the post publishes, which is exactly when this runs.
+    Three sidecars deliberately survive it: the caption `.srt` (issue #1278), the video measurement
+    receipt (`.probe.json`, issue #1517) and the deck render receipt (issue #1513) — all are read
+    AFTER the post publishes, which is exactly when this runs. The first two survive without a
+    carve-out, because only the exact `.mp4` named by `video_url` is removed.
     """
     import shutil
     from urllib.parse import parse_qs, urlparse

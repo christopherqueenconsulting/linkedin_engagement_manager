@@ -1367,6 +1367,48 @@ def _caption_video_asset(post_id: int, video_file_path: str, content: Optional[s
                                 caption_srt_asset_url(result.srt_path))
 
 
+def _record_video_asset_measures(post_id: int, video_file_path: str,
+                                 user_id: Optional[int] = None,
+                                 task_name: str = "") -> Optional[str]:
+    """Record the stored video's duration, aspect ratio and probe state beside the file (#1517).
+
+    The ONE place a video's asset measures become durable, so both store paths — the initial
+    generation and the regenerate/backfill healer — record the same reading of the same bytes.
+    Call it LAST, after captioning and C2PA signing: those rewrite the file, and the measurement
+    has to describe the version that actually ships.
+
+    Why it is recorded at all: `purge_post_assets` (#148) deletes the MP4 the moment the post
+    publishes, and `auto_nightly_content_quality` scores content that has already shipped — so
+    without this the nightly beat re-probes a deleted file and writes `NULL / NULL / missing` for
+    every video post. `score_video_asset` reads the receipt back.
+
+    Nothing is recorded unless the probe actually read the file: a receipt is a measurement, and an
+    unmeasured video must keep reading as unmeasured rather than as a clean zero (#630). That makes
+    a failure here WARN-worthy — the file just passed `_accept_probed_video`, so a probe that cannot
+    read it means no video post will carry measures until someone looks (a missing `ffprobe` in the
+    worker image is exactly that class of fault).
+
+    Never raises: telemetry does not cost a user their video, which is already stored.
+    """
+    from cqc_lem.utilities.content_quality import VIDEO_PROBE_OK, probe_video_asset
+    from cqc_lem.utilities.video_receipt import write_video_receipt
+
+    try:
+        measures = probe_video_asset(video_file_path)
+        if measures.get("asset_probe") != VIDEO_PROBE_OK:
+            log_warning("Could not measure the stored video — its duration and aspect ratio will "
+                        f"read as unmeasured after publish ({measures.get('asset_probe')})",
+                        user_id=user_id, post_id=post_id,
+                        task_name=task_name or "record_video_asset_measures")
+            return None
+        return write_video_receipt(video_file_path, post_id, measures)
+    except Exception as e:
+        log_warning("Could not record the stored video's asset measures — this post's video "
+                    "dimensions will be blank in content_quality_scores", exc=e, user_id=user_id,
+                    post_id=post_id, task_name=task_name or "record_video_asset_measures")
+        return None
+
+
 def _store_video_asset(post_id: int, video_src_url: str, content: Optional[str] = None,
                        user_id: Optional[int] = None) -> Optional[str]:
     """Download a generated video into the shared assets volume, probe it, and attach C2PA
@@ -1399,6 +1441,10 @@ def _store_video_asset(post_id: int, video_src_url: str, content: Optional[str] 
             # itself broken — which recurs on every AI video until someone looks.
             log_warning("C2PA signing raised — the video ships without content credentials", exc=e,
                         post_id=post_id, task_name="regenerate_post_video_task")
+    # Measured LAST, on the bytes that ship, and BEFORE the URL is persisted — the file is deleted
+    # at publish, so this is the only moment the measurement can be taken (issue #1517).
+    _record_video_asset_measures(post_id, video_file_path, user_id=user_id,
+                                 task_name="regenerate_post_video_task")
     video_file_name = os.path.basename(video_file_path)
     api_video_url = f"{API_URL_FINAL}/api/assets?file_name=videos/runwayml/{video_file_name}"
     update_db_post_video_url(post_id, api_video_url)
@@ -3320,6 +3366,10 @@ def _create_content_for_planned_post(post: dict, prefs: dict) -> bool:
                                 exc=e, user_id=user_id, post_id=post_id,
                                 task_name="auto_create_weekly_content")
             if video_file_path:
+                # Same as _store_video_asset: measured last, on the bytes that ship, because
+                # purge_post_assets deletes this file at publish (issue #1517).
+                _record_video_asset_measures(post_id, video_file_path, user_id=user_id,
+                                             task_name="auto_create_weekly_content")
                 # Get the file name from the video file path
                 video_file_name = os.path.basename(video_file_path)
 

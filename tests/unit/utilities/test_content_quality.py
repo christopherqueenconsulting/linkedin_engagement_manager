@@ -7,12 +7,14 @@ no-op behaviour. Nothing here touches the network: the one embedding call is moc
 """
 
 import json
+import os
 from datetime import date
 from unittest.mock import patch
 
 import pytest
 
 from cqc_lem.utilities import content_quality as cq
+from cqc_lem.utilities.video_receipt import VIDEO_RECEIPT_SUFFIX, write_video_receipt
 
 pytestmark = pytest.mark.unit
 
@@ -897,6 +899,86 @@ class TestVideoAssetScoring:
         assert result["video_duration_seconds"] is None
         assert result["video_aspect_ratio"] == "9:16"
         assert result["video_asset_probe"] == cq.VIDEO_PROBE_MISSING
+
+
+class TestScoreVideoAssetFromRecordedMeasures:
+    """The recorded measurement wins over a live probe of a deleted file (issue #1517)."""
+
+    URL = "/api/assets?file_name=videos/runwayml/clip.mp4"
+
+    def _assets(self, tmp_path, monkeypatch):
+        videos = tmp_path / "videos" / "runwayml"
+        videos.mkdir(parents=True)
+        monkeypatch.setattr(cq, "assets_dir", str(tmp_path))
+        return videos
+
+    def _record(self, videos, **measures):
+        return write_video_receipt(str(videos / "clip.mp4"), 7, measures)
+
+    def test_a_purged_post_still_reports_what_was_measured_at_store_time(self, tmp_path,
+                                                                        monkeypatch):
+        # The whole point: purge_post_assets (#148) deleted the MP4 at publish, and the nightly
+        # beat scores AFTER that — so a live probe here can only ever say "missing".
+        videos = self._assets(tmp_path, monkeypatch)
+        self._record(videos, duration_seconds=8, aspect_ratio="9:16",
+                     asset_probe=cq.VIDEO_PROBE_OK, has_video_stream=True)
+        assert not os.path.exists(str(videos / "clip.mp4"))
+        result = cq.score_video_asset(video_url=self.URL)
+        assert result["video_render_ok"] is True
+        assert result["video_duration_seconds"] == 8
+        assert result["video_aspect_ratio"] == "9:16"
+        assert result["video_asset_probe"] == cq.VIDEO_PROBE_OK
+        assert result["video_model_tier"] == cq.VIDEO_MODEL_RUNWAY
+
+    def test_the_answer_does_not_change_across_the_purge(self, tmp_path, monkeypatch):
+        # The #1363 invariant: the audit sampler and the nightly beat must report the same numbers
+        # for the same post, whichever side of the purge each of them runs on.
+        videos = self._assets(tmp_path, monkeypatch)
+        video = videos / "clip.mp4"
+        video.write_text("fake")
+        monkeypatch.setattr(cq, "probe_video_asset", lambda p: {
+            "duration_seconds": 8, "aspect_ratio": "9:16", "asset_probe": cq.VIDEO_PROBE_OK,
+            "has_video_stream": True})
+        self._record(videos, duration_seconds=8, aspect_ratio="9:16",
+                     asset_probe=cq.VIDEO_PROBE_OK, has_video_stream=True)
+        before = cq.score_video_asset(video_url=self.URL)
+        video.unlink()
+        assert cq.score_video_asset(video_url=self.URL) == before
+
+    def test_an_explicit_ratio_still_overrides_the_recording(self, tmp_path, monkeypatch):
+        videos = self._assets(tmp_path, monkeypatch)
+        self._record(videos, duration_seconds=8, aspect_ratio="16:9",
+                     asset_probe=cq.VIDEO_PROBE_OK, has_video_stream=True)
+        assert cq.score_video_asset(video_url=self.URL, ratio="9:16")["video_aspect_ratio"] == "9:16"
+
+    def test_a_recorded_dimension_that_was_never_read_stays_unmeasured(self, tmp_path, monkeypatch):
+        # Unmeasured is never zero (#630) — a null duration in the receipt is a null column, not 0.
+        videos = self._assets(tmp_path, monkeypatch)
+        self._record(videos, duration_seconds=None, aspect_ratio=None,
+                     asset_probe=cq.VIDEO_PROBE_OK, has_video_stream=True)
+        result = cq.score_video_asset(video_url=self.URL)
+        assert result["video_duration_seconds"] is None
+        assert result["video_aspect_ratio"] is None
+        assert result["video_asset_probe"] == cq.VIDEO_PROBE_OK
+
+    def test_nothing_recorded_falls_back_to_the_live_probe(self, tmp_path, monkeypatch):
+        videos = self._assets(tmp_path, monkeypatch)
+        (videos / "clip.mp4").write_text("fake")
+        monkeypatch.setattr(cq, "probe_video_asset", lambda p: {
+            "duration_seconds": 5, "aspect_ratio": "1:1", "asset_probe": cq.VIDEO_PROBE_OK,
+            "has_video_stream": True})
+        result = cq.score_video_asset(video_url=self.URL)
+        assert result["video_duration_seconds"] == 5
+        assert result["video_aspect_ratio"] == "1:1"
+        assert result["video_render_ok"] is True
+
+    def test_a_broken_receipt_falls_back_to_the_live_probe(self, tmp_path, monkeypatch):
+        videos = self._assets(tmp_path, monkeypatch)
+        (videos / ("clip" + VIDEO_RECEIPT_SUFFIX)).write_text("{truncated")
+        result = cq.score_video_asset(video_url=self.URL)
+        assert result["video_asset_probe"] == cq.VIDEO_PROBE_MISSING
+        assert result["video_duration_seconds"] is None
+        assert result["video_render_ok"] is False
 
 
 class TestCarouselDeckScoring:

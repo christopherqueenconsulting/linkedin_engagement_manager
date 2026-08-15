@@ -90,6 +90,38 @@ SQL and harder to drift than nested JSON keys. All columns are nullable so an un
 4. `track_content_quality` forwards the same `video_*` keys to PostHog so the dashboard can trend
    them without re-reading the DB.
 
+### The measurement is taken at STORE time, not at scoring time (#1517)
+
+Step 2 above describes probing the stored asset — and the stored asset is **gone** by the time this
+beat runs. `purge_post_assets` (#148) deletes a post's MP4 the moment `post_to_linkedin` succeeds,
+because LinkedIn re-hosts the media; this beat scores content that has already shipped. Between #148
+and #1517 that meant `NULL / NULL / missing` on every video row: the columns were real, the values
+were not.
+
+So the probe is taken where the file provably exists — at the end of both store paths
+(`_record_video_asset_measures`, after captioning and C2PA signing rewrite the file, before
+`posts.video_url` is persisted) — and written to a `<video>.probe.json` receipt beside the MP4
+(`utilities/video_receipt.py`). The purge removes only the exact `.mp4` it resolves from
+`video_url`, so the receipt survives it the same way the caption `.srt` (#1278) does, and the deck
+render receipt (#1513) is the same pattern one directory over.
+
+`score_video_asset` prefers a recorded measurement and falls back to a live probe when there is
+none, which is what keeps the nightly beat and `scripts/sample_shipped_videos.py` reporting the same
+numbers for the same post whichever side of the purge each runs on (the #1363 invariant). Which
+measures survive publication — and which still need the pixels — is tabulated in
+`docs/content-quality-audits/video.md` §8.
+
+Two rules, both the "unscored is never zero" rule in a different coat:
+
+- **No receipt is written unless the probe read the file.** A recorded `0 seconds / ok` cannot be
+  told apart from a real measurement, so an unreadable probe records nothing, warns, and the row
+  keeps reading unmeasured.
+- **A receipt that will not parse is no receipt.** Absent and broken both fall back to the live
+  probe rather than to a fabricated reading.
+
+Nothing is retroactive: video posts that shipped before #1517 have no receipt and keep reading
+`missing`.
+
 ---
 
 ## 4. Rollup additions (future, not in this PR)
