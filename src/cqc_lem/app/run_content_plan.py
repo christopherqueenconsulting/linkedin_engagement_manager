@@ -2146,6 +2146,12 @@ def _gate_findings_for_post(user_id: int, post_id: int, content: str,
     history and the embedding call both belong to the review gate inside `create_text_post`, so
     re-running the gate here would be a second `lem-embedding` call and a second history read for
     one draft. `evaluate_post_gates` is therefore still handed no `recent_texts` from this caller.
+
+    Both recorded verdicts — the similarity one and a deck's slide-level slop note (issue #1512) —
+    are carried on the FAILURE path too. The caller persists whatever comes back, overwriting
+    `posts.gate_reason`, and neither verdict can be re-derived later: a re-score would pay a second
+    embedding call, and the slide text is gone the moment the deck is rendered to images. Dropping
+    them here would erase them for good.
     """
     try:
         score = get_post_authenticity_score(post_id)
@@ -2169,7 +2175,7 @@ def _gate_findings_for_post(user_id: int, post_id: int, content: str,
     except Exception as e:
         log_warning("Could not evaluate the quality gates for this post", exc=e,
                     user_id=user_id, post_id=post_id, task_name="create_content")
-        return similarity
+        return similarity + _recorded_slide_slop_notes(post_id)
 
 
 def _cta_keyword_for(user_id: int, post_id: int) -> Optional[str]:

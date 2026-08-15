@@ -253,6 +253,15 @@ def slide_slop_finding(hard_reasons: Optional[list] = None,
     the way the caption's `ai_slop` hold can — the only remedy is regenerating the whole deck. The
     `demoted` flag exists so the holding posture is one argument away once it is decided; nothing
     passes it today.
+
+    No `score`/`threshold`, unlike the caption's `slop_finding` — this is a count of patterns, not a
+    measurement against a limit, and the SPA renders the pair as "score N · your limit M". The
+    caption's finding is only ever built when a HARD check fired, so its count is always ≥ 1; a
+    deck's is built on ANY violation, and on the `post` surface most of the checks that fire on the
+    concatenated slide text are WARN-severity (burstiness, rule-of-three, canned scaffold), which
+    would have rendered the dominant case as "score 0 · your limit 0" beside an explanation saying
+    it matched a pattern. The count lives in the explanation and every reason in `details`, the same
+    way the other advisory finding (`malformed_asset_finding`) carries its reading.
     """
     hard = [str(r).strip() for r in (hard_reasons or []) if str(r).strip()]
     warn = [str(r).strip() for r in (warn_reasons or []) if str(r).strip()]
@@ -265,7 +274,7 @@ def slide_slop_finding(hard_reasons: Optional[list] = None,
                      + ("" if demoted else " Recorded for your review — the post is not held on it.")),
         remediation=("Slide text is rendered into images, so it cannot be edited and re-scored: "
                      "regenerate the carousel if the flagged constructions matter to you."),
-        score=float(len(hard)), threshold=0.0, demoted=demoted,
+        score=None, threshold=None, demoted=demoted,
         details=hard[:10] + [f"(advisory) {w}" for w in warn[:5]])
 
 

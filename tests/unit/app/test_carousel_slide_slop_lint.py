@@ -11,6 +11,8 @@ though the slide text is gone by the time the gate pass runs, and it holds nothi
 
 from unittest.mock import patch
 
+import pytest
+
 import cqc_lem.app.run_content_plan as rcp
 from cqc_lem.utilities.quality_gates import (
     GATE_SLIDE_SLOP,
@@ -18,6 +20,8 @@ from cqc_lem.utilities.quality_gates import (
     demoting_findings,
     slide_slop_finding,
 )
+
+pytestmark = pytest.mark.unit
 
 _RCP = "cqc_lem.app.run_content_plan"
 
@@ -205,6 +209,29 @@ class TestGatePassCarriesTheNote:
         warn.assert_called_once()
 
 
+class TestAGatePassThatRaisesDoesNotEraseTheNote:
+    """The caller PERSISTS whatever comes back, so anything dropped here is dropped for good."""
+
+    def _findings(self, recorded):
+        with patch(f"{_RCP}.get_post_authenticity_score", return_value=None), \
+             patch(f"{_RCP}._post_archetype_or_none", return_value=None), \
+             patch(f"{_RCP}._recorded_similarity_finding", return_value=[]), \
+             patch(f"{_RCP}._engagement_prefs_or_empty", return_value={}), \
+             patch(f"{_RCP}._fact_anchors_for", return_value=[]), \
+             patch(f"{_RCP}._cta_keyword_for", return_value=None), \
+             patch(f"{_RCP}.get_post_gate_reason", return_value=recorded), \
+             patch(f"{_RCP}.evaluate_post_gates", side_effect=RuntimeError("gates down")), \
+             patch(f"{_RCP}.log_warning"):
+            return rcp._gate_findings_for_post(1, 7, "caption", "carousel")
+
+    def test_the_recorded_slide_note_survives_a_failed_gate_pass(self):
+        findings = self._findings([slide_slop_finding([], ["opens on a canned scaffold"])])
+        assert [f["gate"] for f in findings] == [GATE_SLIDE_SLOP]
+
+    def test_a_post_that_recorded_nothing_still_returns_nothing(self):
+        assert self._findings([]) == []
+
+
 class TestSlideSlopFindingCopy:
     def test_it_is_advisory_by_default_and_names_the_hard_reasons_first(self):
         finding = slide_slop_finding(["uses a contrastive frame"], ["opens on a canned scaffold"])
@@ -218,4 +245,16 @@ class TestSlideSlopFindingCopy:
         finding = slide_slop_finding(["uses a contrastive frame"], demoted=True)
         assert finding["demoted"] is True
         assert "not held" not in finding["explanation"]
-        assert finding["score"] == 1.0 and finding["threshold"] == 0.0
+
+    def test_a_warn_only_deck_carries_no_meaningless_score_pair(self):
+        # Most checks that fire on concatenated slide text are WARN on the `post` surface, so this
+        # is the DOMINANT shape. `score`/`threshold` render in the SPA as "score N · your limit M";
+        # a pattern count is not a measurement against a limit, and 0-against-0 beside an
+        # explanation saying a pattern matched is the state this asserts can never be built.
+        finding = slide_slop_finding([], ["opens on a canned scaffold"])
+        assert finding["score"] is None and finding["threshold"] is None
+        assert "matches 1 AI-slop pattern(s)" in finding["explanation"]
+
+    def test_a_hard_deck_carries_no_score_pair_either(self):
+        finding = slide_slop_finding(["uses a contrastive frame"])
+        assert finding["score"] is None and finding["threshold"] is None
