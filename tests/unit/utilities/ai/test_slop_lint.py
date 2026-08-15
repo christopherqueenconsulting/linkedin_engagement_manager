@@ -656,6 +656,105 @@ class TestShortFormRepair:
         assert redraft.call_count == 1      # the default budget of 2, not the newsletter's 4
 
 
+# One HARD check (bait_closer), and a rewrite of it carrying three — the shape a whole-draft
+# regeneration can come back in, and the one these surfaces used to ship because they took the newer
+# draft blind. There is no review queue behind a DM or a seed comment, so the loop's last draft is
+# the text that is SENT.
+_ONE_CHECK = "It's not X, it's Y. Thoughts?"
+_THREE_CHECKS = ("It's not X, it's Y. Here's the kicker: we shipped it. "
+                 "Let's dive into this game changer. Thoughts?")
+
+
+class TestShortFormWorseRetry:
+    """A worse regeneration is not the draft that ships (issue #1536).
+
+    The newsletter loop got this rule in #1434; these surfaces did not.
+    """
+
+    def test_a_worse_regeneration_is_discarded(self):
+        from cqc_lem.utilities.ai import ai_helper
+        with patch(f"{_AI}.log_warning"):
+            out = ai_helper.lint_repaired(_ONE_CHECK, "dm",
+                                          MagicMock(return_value=_THREE_CHECKS))
+        assert out == _ONE_CHECK
+
+    def test_a_better_regeneration_still_ships(self):
+        from cqc_lem.utilities.ai import ai_helper
+        out = ai_helper.lint_repaired(_ONE_CHECK, "dm", MagicMock(return_value=_CLEAN))
+        assert out == _CLEAN
+
+    def test_the_warning_names_what_the_kept_draft_still_trips(self, monkeypatch):
+        # The reasons have to describe the draft that is actually being sent, not the rewrite that
+        # was thrown away.
+        from cqc_lem.utilities.ai import ai_helper
+        with patch(f"{_AI}.log_warning") as warn:
+            ai_helper.lint_repaired(_ONE_CHECK, "dm", MagicMock(return_value=_THREE_CHECKS))
+        reasons = warn.call_args.args[0]
+        assert sl.CHECK_BAIT_CLOSER in reasons and sl.CHECK_TADA not in reasons
+
+
+class TestShortFormRetryTelemetry:
+    """One `slop_retry` row per regeneration on the queue-less surfaces (issue #1536).
+
+    These are the surfaces that retry most often, so a breakdown by `surface` that only ever reads
+    `newsletter` is the clear-rate #1530 needs, missing exactly the loops it needs it for.
+    """
+
+    def _events(self, draft, surface, redraft):
+        from cqc_lem.utilities.ai import ai_helper
+        with patch(f"{_AI}.track_slop_retry") as track, patch(f"{_AI}.log_warning"):
+            out = ai_helper.lint_repaired(draft, surface, MagicMock(return_value=redraft),
+                                          user_id=7, action_type=surface)
+        return out, track
+
+    def test_a_cleared_retry_is_recorded_with_the_real_surface(self):
+        out, track = self._events(_ONE_CHECK, "comment", _CLEAN)
+        assert out == _CLEAN
+        track.assert_called_once()
+        args, kwargs = track.call_args
+        assert args[0] == "comment" and args[1] == sl.RETRY_CLEARED
+        assert kwargs["kept"] is True and kwargs["user_id"] == 7
+        assert kwargs["attempt"] == 2 and kwargs["max_attempts"] == 2
+
+    def test_a_worse_retry_is_recorded_as_not_kept(self):
+        out, track = self._events(_ONE_CHECK, "dm", _THREE_CHECKS)
+        assert out == _ONE_CHECK
+        assert track.call_args[0][1] == sl.RETRY_WORSENED
+        assert track.call_args[1]["kept"] is False
+
+    def test_an_empty_retry_is_recorded_rather_than_dropped(self):
+        # It still spent a `lem-medium` call; leaving it out flatters the clear rate.
+        out, track = self._events(_ONE_CHECK, "dm", None)
+        assert out == _ONE_CHECK
+        assert track.call_args[0][1] == sl.RETRY_LOST
+        assert track.call_args[1]["kept"] is False
+        assert track.call_args[1]["after"] is None
+
+    def test_a_draft_that_never_retries_records_nothing(self):
+        from cqc_lem.utilities.ai import ai_helper
+        with patch(f"{_AI}.track_slop_retry") as track:
+            assert ai_helper.lint_repaired(_CLEAN, "post", MagicMock()) == _CLEAN
+        track.assert_not_called()
+
+    @pytest.mark.parametrize("generator, args", [
+        ("generate_seed_comment", ("my post body",)),
+        ("generate_thread_reply", ("my post body", "their comment")),
+        ("generate_comment_reply_followup", ("their reply",)),
+    ])
+    def test_the_comment_generators_hand_the_loop_the_user_they_already_have(self, generator, args):
+        # `lint_repaired` reads the person off the log context it is given, so a call site that
+        # knows the user and drops it lands every one of its `slop_retry` rows on the shared
+        # "system" distinct id — the event exists to be read per surface AND per person.
+        from cqc_lem.utilities.ai import ai_helper
+        with patch(f"{_AI}.lint_repaired", return_value="x") as loop, \
+             patch(f"{_AI}._call_llm") as call, \
+             patch(f"{_AI}._humanize_text", side_effect=lambda t, **k: t), \
+             patch(f"{_AI}._voice_reference", return_value="voice"):
+            call.return_value.choices = [MagicMock(message=MagicMock(content="a draft"))]
+            getattr(ai_helper, generator)(*args, MagicMock(), user_id=42)
+        assert loop.call_args.kwargs["user_id"] == 42
+
+
 class TestNewsletterWiring:
     @pytest.fixture(autouse=True)
     def _slop_lint_only(self, monkeypatch):
