@@ -111,11 +111,11 @@ to promote the lint to a spend gate is made on — how often it WOULD have held 
 body is never sent: `evidence` carries only phrases from LEM's own fixed `MOTION_BANNED_*` lists,
 which is why the opening check (whose only evidence is prompt text) reports none.
 
-## Slop-lint regeneration (issue #1434) — `docs/content-core.md`
-One `slop_retry` event per steered regeneration. **The newsletter loop is the only emitter today** —
-the short-form surfaces (`lint_repaired`: seed comments, replies, DMs) and the affiliate promo draft
-run the same bounded retry and emit nothing yet, so a breakdown by `surface` reads `newsletter` or
-empty. Widening it is #1536; do not read a missing surface as a surface that never retries.
+## Slop-lint regeneration (issue #1434, widened #1536) — `docs/content-core.md`
+One `slop_retry` event per steered regeneration, from **every** loop that runs the bounded retry:
+the newsletter, the short-form surfaces (`lint_repaired`: seed comments, replies, DMs, group and
+post drafts) and the affiliate promo draft. So `surface` is a real breakdown — it was
+newsletter-only between #1434 and #1536, which is worth knowing when reading rows from that window.
 `outcome` is the reading: `cleared` (a HARD check was firing and none remains), `traded` (it fixed
 what it was steered on and tripped a DIFFERENT check — the failure mode a whole-draft rewrite has
 and a targeted edit does not), `worsened`, `persisted`, `lost` (the regeneration returned nothing;

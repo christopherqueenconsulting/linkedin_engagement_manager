@@ -314,9 +314,16 @@ def generate_promo_post(user_id: int, post_id: Optional[int] = None,
     the content-plan caller contains the rest — a user who opted into (B) must never lose the post
     they would otherwise have had because the promotional one failed.
     """
-    from cqc_lem.utilities.ai.slop_lint import lint_report, slop_max_attempts, slop_retry_directive, violation_reasons
+    from cqc_lem.utilities.ai.slop_lint import (
+        keep_retry,
+        lint_report,
+        retry_outcome,
+        slop_max_attempts,
+        slop_retry_directive,
+        violation_reasons,
+    )
     from cqc_lem.utilities.logger import log_info, log_warning
-    from cqc_lem.utilities.observability import AFFILIATE_PROMO_GENERATED
+    from cqc_lem.utilities.observability import AFFILIATE_PROMO_GENERATED, track_slop_retry
 
     verdict = promo_slot_verdict(user_id, post_id, content_mix)
     if verdict:
@@ -326,22 +333,48 @@ def generate_promo_post(user_id: int, post_id: Optional[int] = None,
     referral_link = link_for_user(user_id)
     prompt = _prompt(prefs, profile_synthesis, referral_link)
 
+    # The bounded slop retry, graded the way the newsletter's is (issue #1536). A regeneration is a
+    # fresh draft rather than an edit, so `keep_retry` decides which of the two the next attempt is
+    # steered off instead of taking the newer one blind, and every regeneration emits `slop_retry`
+    # with this surface — a blocked draft records nothing anywhere, so without the event this loop's
+    # clear-rate is unreadable. $0.00 per draft: both reports are already computed here, and the only
+    # new spend is one PostHog capture on a draft that already failed the lint.
+    #
+    # The loop stays here rather than folding onto `lint_repaired`: this surface REFUSES copy that
+    # never clears (that helper ships it with a warning, which is right for a DM and wrong for a
+    # post carrying a referral link), and an empty regeneration is its own refusal reason. What is
+    # genuinely shared — `keep_retry`, `retry_outcome`, `track_slop_retry` — is imported, not
+    # re-implemented.
+    max_attempts = max(1, slop_max_attempts("post"))
     content, retry_directive, attempts = None, "", 0
-    for _ in range(max(1, slop_max_attempts("post"))):
+    best, best_report = None, None
+    while attempts < max_attempts:
         attempts += 1
         draft = _draft(user_id, prompt, retry_directive)
         if not draft:
+            if attempts > 1:
+                track_slop_retry("post", retry_outcome(best_report, None), before=best_report,
+                                 after=None, attempt=attempts, max_attempts=max_attempts,
+                                 kept=False, user_id=user_id)
             _blocked(user_id, post_id, REASON_EMPTY_DRAFT)
             return None
         candidate = _finalize(user_id, draft, referral_link)
         report = lint_report(candidate, "post")
-        if report["passes"]:
-            content = candidate
+        kept = True
+        if attempts > 1:
+            kept = keep_retry(best_report, report)
+            track_slop_retry("post", retry_outcome(best_report, report), before=best_report,
+                             after=report, attempt=attempts, max_attempts=max_attempts,
+                             kept=kept, user_id=user_id)
+        if kept:
+            best, best_report = candidate, report
+        if best_report["passes"]:
+            content = best
             break
         log_warning("Affiliate promo draft tripped the AI-slop lint — regenerating: "
-                    + "; ".join(violation_reasons(report["hard"])),
+                    + "; ".join(violation_reasons(best_report["hard"])),
                     user_id=user_id, post_id=post_id, task_name="generate_promo_post")
-        retry_directive = slop_retry_directive(report["hard"])
+        retry_directive = slop_retry_directive(best_report["hard"])
 
     if not content:
         _blocked(user_id, post_id, REASON_SLOP)

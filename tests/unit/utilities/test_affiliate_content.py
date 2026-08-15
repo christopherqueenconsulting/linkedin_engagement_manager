@@ -330,6 +330,75 @@ class TestQualityGates:
         assert "no metrics" in system.lower() or "no results" in system.lower()
 
 
+# --- the bounded retry is graded and recorded (issue #1536) -----------------------------------------
+
+# One HARD check, and a rewrite of it carrying three: the shape a whole-draft regeneration can come
+# back in, which this loop used to steer its next attempt off regardless. Graded AFTER `_finalize`
+# (the link and the disclosure are appended before the lint runs), so neither depends on what the
+# last line is.
+_ONE_CHECK = "Here's the kicker: we shipped it on a Friday and pick times fell 18 percent that week."
+_THREE_CHECKS = ("Here's the kicker: we shipped it on a Friday. It's not just a tool, it's a "
+                 "revolution. Let's dive into this game changer that will unlock value at scale.")
+
+_SLOP = "cqc_lem.utilities.ai.slop_lint"
+_OBS = "cqc_lem.utilities.observability"
+
+
+def _generate_drafts(stack, drafts, post_id=10, user_id=1):
+    """Generate with one model response per attempt, and the attempt budget pinned at 2."""
+    responses = [SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=d))])
+                 for d in drafts]
+    call = MagicMock(side_effect=responses)
+    stack.enter_context(patch(f"{_AI}._call_llm", call))
+    stack.enter_context(patch(f"{_SLOP}.slop_max_attempts", return_value=2))
+    track = stack.enter_context(patch(f"{_OBS}.track_slop_retry"))
+    content = affiliate_content.generate_promo_post(user_id, post_id=post_id, content_mix="promo")
+    return content, call, track
+
+
+class TestPromoRetryGrading:
+    def test_a_cleared_retry_ships_and_is_recorded(self):
+        with ExitStack() as stack:
+            _env(stack)
+            content, call, track = _generate_drafts(stack, [_ONE_CHECK, DRAFT])
+        assert content and call.call_count == 2
+        args, kwargs = track.call_args
+        assert args[0] == "post" and args[1] == "cleared"
+        assert kwargs["kept"] is True and kwargs["user_id"] == 1
+        assert kwargs["attempt"] == 2 and kwargs["max_attempts"] == 2
+
+    def test_a_worse_retry_is_not_the_draft_the_next_step_reads(self):
+        with ExitStack() as stack:
+            _env(stack)
+            warn = stack.enter_context(patch("cqc_lem.utilities.logger.log_warning"))
+            content, _, track = _generate_drafts(stack, [_ONE_CHECK, _THREE_CHECKS])
+        assert content is None                      # neither draft cleared, so nothing is published
+        assert track.call_args[0][1] == "worsened"
+        assert track.call_args[1]["kept"] is False
+        # The reasons steering the loop describe the draft that was kept, not the rewrite thrown
+        # away — a discarded regeneration must not set the next attempt's directive either.
+        steers = [c.args[0] for c in warn.call_args_list if "tripped the AI-slop lint" in c.args[0]]
+        assert steers and all("tada_transition" in s and "banned_lexicon" not in s for s in steers)
+
+    def test_an_empty_regeneration_is_recorded_before_it_blocks(self):
+        with ExitStack() as stack:
+            _env(stack)
+            blocked = stack.enter_context(patch(f"{_AC}._track"))
+            stack.enter_context(patch("cqc_lem.utilities.logger.log_warning"))
+            content, _, track = _generate_drafts(stack, [_ONE_CHECK, ""])
+        assert content is None
+        assert blocked.call_args[1]["reason"] == affiliate_content.REASON_EMPTY_DRAFT
+        assert track.call_args[0][1] == "lost"
+        assert track.call_args[1]["kept"] is False
+
+    def test_a_clean_first_draft_records_no_retry(self):
+        with ExitStack() as stack:
+            _env(stack)
+            content, call, track = _generate_drafts(stack, [DRAFT])
+        assert content and call.call_count == 1
+        track.assert_not_called()
+
+
 # --- published telemetry ---------------------------------------------------------------------------
 
 class TestPublishedEvent:

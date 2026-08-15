@@ -220,18 +220,20 @@ regeneration. Every loop resolves the budget for the surface it is drafting, so 
 the short-form surfaces (`lint_repaired`) and the affiliate promo draft too, not only on the
 newsletter.
 
-Two rules travel with it, and **both are newsletter-only today** (#1536 widens them): the retry is a
-fresh draft rather than an edit, so `keep_retry` keeps whichever of the two ranks better on (HARD
-count, total violations) instead of taking the newer one blind — on the newsletter, where the
-structural floor (#1435) steers the same retry, the rank is (HARD count, structural failures, total
-violations) so a draft that fixed the floor is not thrown away for a WARN; and each regeneration emits
-`slop_retry` naming what it actually did (`cleared` / `traded` / `worsened` / `persisted` / `lost` /
-`unsteered`, plus whether the draft was `kept`) — the finished draft only shows what was still firing
-at the end, so without that event a retry that traded one check for another is invisible.
-`unsteered` is the newsletter's own case: the structural floor shares this budget, so a slop-clean
-edition can spend a regeneration with no HARD check to fix, and counting those as `cleared` would
-inflate the clear-rate the event was raised to measure. The other loops still take the newer draft
-blind and record nothing.
+Two rules travel with it, on **every** loop that retries (#1434 on the newsletter, #1536 on
+`lint_repaired` and the affiliate promo draft): the retry is a fresh draft rather than an edit, so
+`keep_retry` keeps whichever of the two ranks better on (HARD count, total violations) instead of
+taking the newer one blind — on the newsletter, where the structural floor (#1435) steers the same
+retry, the rank is (HARD count, structural failures, total violations) so a draft that fixed the
+floor is not thrown away for a WARN; and each regeneration emits `slop_retry` naming what it actually
+did (`cleared` / `traded` / `worsened` / `persisted` / `lost` / `unsteered`, plus whether the draft
+was `kept`) — the finished draft only shows what was still firing at the end, so without that event a
+retry that traded one check for another is invisible. Keeping the better draft bites hardest on the
+queue-less surfaces: a DM or a seed comment is SENT, so the draft the loop ends on is the one the
+reader gets, where a worse edition would at least meet a human first. `unsteered` is the
+newsletter's own case: the structural floor shares this budget, so a slop-clean edition can spend a
+regeneration with no HARD check to fix, and counting those as `cleared` would inflate the clear-rate
+the event was raised to measure.
 
 - Banned lexicon pileup
 - The "it's not X, it's Y" contrastive frame

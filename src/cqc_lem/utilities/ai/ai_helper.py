@@ -398,24 +398,40 @@ def lint_repaired(draft: "str | None", content_type: str, redraft, **log_ctx) ->
     calls at volume, so `SLOP_LINT_MAX_ATTEMPTS_COMMENT` has to be able to say something different
     from `SLOP_LINT_MAX_ATTEMPTS_NEWSLETTER`. Passing the surface the caller already handed us is
     what keeps that knob from being a no-op everywhere except the newsletter.
+
+    Two rules the newsletter loop got first and this one did not until issue #1536, both free —
+    every report below is already computed, and nothing here adds an LLM call. `redraft` returns a
+    fresh draft, not an edit, so it can come back carrying MORE violations than the one it replaced;
+    `keep_retry` keeps whichever of the two ranks better, so the budget can no longer end on the
+    worse draft. That costs more here than on the newsletter: these surfaces have no review queue,
+    so the draft the loop ends on is the one that SHIPS. And each regeneration emits `slop_retry`
+    with the surface the caller passed in, because the returned draft only records what was still
+    firing when the budget ran out — whether a retry cleared its check or traded it for a different
+    one is not recoverable from the sent text afterwards.
     """
     current = draft
     if not current:
         return current
+    user_id = log_ctx.get("user_id")
     max_attempts = _slop.slop_max_attempts(content_type)
-    for _ in range(max(0, max_attempts - 1)):
-        report = _slop.lint_report(current, content_type)
-        if report["passes"]:
-            return current
+    report = _slop.lint_report(current, content_type)
+    attempt = 1
+    while not report["passes"] and attempt < max_attempts:
+        attempt += 1
         nxt = redraft(_slop.slop_retry_directive(report["hard"]))
+        nxt_report = _slop.lint_report(nxt, content_type) if nxt else None
+        kept = bool(nxt) and _slop.keep_retry(report, nxt_report)
+        track_slop_retry(content_type, _slop.retry_outcome(report, nxt_report),
+                         before=report, after=nxt_report, attempt=attempt,
+                         max_attempts=max_attempts, kept=kept, user_id=user_id)
         if not nxt:
             break
-        current = nxt
-    final = _slop.lint_report(current, content_type)
-    if not final["passes"]:
+        if kept:
+            current, report = nxt, nxt_report
+    if not report["passes"]:
         log_warning(f"{content_type} still trips the AI-slop lint after "
                     f"{max_attempts} attempt(s); sending anyway: "
-                    + "; ".join(_slop.violation_reasons(final["hard"])), **log_ctx)
+                    + "; ".join(_slop.violation_reasons(report["hard"])), **log_ctx)
     return current
 
 
