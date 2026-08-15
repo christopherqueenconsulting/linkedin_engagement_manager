@@ -75,6 +75,14 @@ def _keep_specific_park_reason(existing: str | None, incoming: str | None) -> st
     return incoming
 
 
+def _excluded_note(excluded: list[dict[str, Any]]) -> str:
+    """The ' (not counted: …)' tail of the WIP-hold log line, empty when nothing is excluded."""
+    if not excluded:
+        return ""
+    named = ", ".join(f"#{e['number']} {e['state']}" for e in excluded)
+    return f" (not counted, a human owns the next move: {named})"
+
+
 def _item_mode(child_mode: str) -> str:
     """The mode as the ITEM knows it, given the mode a CHILD was spawned with.
 
@@ -103,6 +111,10 @@ class Daemon:
         #: undeduped form would write ~40 rows a pass for ever, which is the volume problem that
         #: made the per-item hold log line unreadable in the first place.
         self._refused: dict[tuple[str, int], str] = {}
+        #: The last WIP-gate shape written to the ledger. A standing hold is a fact about the gate,
+        #: not an event — same rule as `_refused` — so the row is re-written only when the count,
+        #: the cap or the set of excluded PRs actually changes.
+        self._wip_gate_note: tuple[Any, ...] | None = None
         #: (kind, number) -> the answer id an in-flight un-park is spending. Written to
         #: `items.last_comment_id` only when that action succeeds, so a failed un-park retries on
         #: the next observation instead of consuming the owner's reply.
@@ -495,6 +507,28 @@ class Daemon:
         }
         self._write_decision(payload)
 
+    def _emit_wip_gate(self, wip: int, excluded: list[dict[str, Any]]) -> None:
+        """Record WHY new starts are held, including what the count left out.
+
+        Written once per shape, not once per pass: the gate closing is an event, the gate staying
+        closed is not. Without this row the ledger shows a run of `refused_by: wip_limit` entries
+        and no way to tell a pipeline saturated with its own work from one discounting three PRs it
+        cannot move — the six-hour idle in #1426 read as the first and was the second.
+        """
+        note = (wip, self.cfg.max_agents,
+                tuple((e["number"], e["state"]) for e in excluded))
+        if self._wip_gate_note == note:
+            return
+        self._wip_gate_note = note
+        self._write_decision({
+            "ts": int(time.time()),
+            "shadow": self.cfg.shadow,
+            "stage": "wip_gate",
+            "wip": wip,
+            "max_agents": self.cfg.max_agents,
+            "excluded": excluded,
+        })
+
     def _write_decision(self, payload: dict[str, Any]) -> None:
         """Append one row to the decision ledger. Telemetry must never break the loop."""
         try:
@@ -564,8 +598,16 @@ class Daemon:
                 # identical lines every pass, which buries the dispatch lines that matter in a file
                 # an operator reads by tailing it.
                 if not held_by_wip:
-                    LOG.info("WIP limit: %s PR(s) in flight >= %s — holding new starts",
-                             wip, self.cfg.max_agents)
+                    # The excluded PRs are named here, at the hold, because this is the line an
+                    # operator reads when the pipeline looks stopped. #1426: three PRs blocked on a
+                    # code-owner approval idled the queue for six hours, and the only evidence was
+                    # this line reporting a number — nothing said which PRs, or that any were
+                    # already discounted. A gate that holds and a gate that has stalled must not
+                    # print the same thing.
+                    excluded = db.wip_excluded(self.conn)
+                    LOG.info("WIP limit: %s PR(s) in flight >= %s — holding new starts%s",
+                             wip, self.cfg.max_agents, _excluded_note(excluded))
+                    self._emit_wip_gate(wip, excluded)
                 held_by_wip += 1
                 self._emit_act(row, mode, executed=False, refused_by="wip_limit")
                 continue
@@ -600,6 +642,16 @@ class Daemon:
                 continue
             self._emit_act(row, mode, executed=True)
             launched += 1
+        if wip < self.cfg.max_agents:
+            # The gate is OPEN. Forgetting the shape means the NEXT close is written again, even if
+            # it happens to look identical — a gate that closed twice is two events, not one.
+            #
+            # Keyed on the gate itself, not on whether anything was held this pass: a pass with no
+            # dispatchable start holds nothing while the gate stays shut, and reading that as "the
+            # gate opened" re-writes an identical row every time the backlog empties and refills. A
+            # standing hold must read as ONE event however many passes it spans — which is the
+            # whole reason this row is deduped at all.
+            self._wip_gate_note = None
         return launched
 
     def _launch(self, row, mode: str):

@@ -139,6 +139,21 @@ two such PRs held both WIP slots for 7 hours while every `ready` issue behind th
 The daemon posts ONE `gh pr comment` on the transition into this state (`_notify_owner_review_needed`)
 so the wait is not also silent.
 
+**The WIP gate, and what it is not counting.** `db.wip_count()` counts PRs in `WIP_STATES`;
+`db.HUMAN_HELD_STATES` (`awaiting_owner_review`, `parked`) names the ones held out of it, and
+`db.wip_excluded()` reports them. When the gate holds new starts, `act()` logs the excluded PRs by
+number and state and writes ONE `stage: "wip_gate"` row to `logs/lemd-decisions.ndjson`
+(`{wip, max_agents, excluded[]}`), re-written only when that shape changes. Without it the ledger
+shows a run of `refused_by: wip_limit` rows and no way to tell a pipeline saturated with its own
+work from one discounting PRs it cannot move — the six-hour idle in #1426 read as the first and was
+the second. Every UNREADABLE state is deliberately outside `HUMAN_HELD_STATES`: an item whose merge
+state, checks or work state could not be read waits in `awaiting_ci`, which **is** counted, so the
+gate fails closed toward the throttle rather than toward unbounded starts.
+
+```bash
+jq -c 'select(.stage=="wip_gate")' logs/lemd-decisions.ndjson | tail -3
+```
+
 ---
 
 ## 4. The decision table
