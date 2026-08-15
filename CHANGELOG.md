@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.152.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.151.1...v0.152.0) (2026-08-15)
+
+
+### Features
+
+* **content-quality:** grade carousel SLIDE text with the existing slop lint ([#1512](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1512)) ([#1554](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1554)) ([3b6fb32](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/3b6fb32ad765f46471d706c91e143255586e2bbd))
+* **content-quality:** ship the slop_retry clear-rate reader and date the first read ([#1530](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1530)) ([#1562](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1562)) ([b672bef](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/b672befa6a254734b4a94d4f3c3bf437c3911991))
+* **observability:** record a video's asset measures at store time so they survive publish (closes [#1517](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1517)) ([#1560](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1560)) ([ae58718](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/ae58718d6077c9ba6881a88ad299d2dac77b7a2b))
+
+
+### Bug Fixes
+
+* **carousel:** the closing slide states the save ask, not engagement bait (closes [#1511](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1511)) ([#1558](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1558)) ([375d7f9](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/375d7f99a793e6c534348679fc76eeb8d119af5e))
+* **carousel:** the slide renderer flattens the deck's line breaks and bullets the wrapper's instead (closes [#1510](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1510)) ([#1559](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1559)) ([f2590c8](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/f2590c856a124a0d8c37e988dbcdd5d7d2c005ba))
+* **content-quality:** widen the worse-draft keep and slop_retry to lint_repaired and the affiliate promo loop (closes [#1536](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1536)) ([#1563](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1563)) ([b73ec53](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/b73ec5389f34023acb66824a1437042033b82970))
+
 ## [0.151.1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.151.0...v0.151.1) (2026-08-14)
 
 
