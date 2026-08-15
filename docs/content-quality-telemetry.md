@@ -58,7 +58,10 @@ asset scorers grade the artifact.
   `deck_chars_dropped`, `deck_slides_clipped`, `deck_template`, `deck_slides_with_band` — which no
   text dimension can see. `carousel` is deliberately NOT in `SURFACES`: it carries no slop score, no
   hook budget and no self-similarity, and never joins a similarity batch. Slide TEXT quality is a
-  separate, still-open question (#1512).
+  separate reading and lives on the POST, not here (#1512): `_report_carousel_slide_slop` runs the
+  existing slop lint over the concatenated slide text at generation and records an ADVISORY
+  `slide_ai_slop` finding on `posts.gate_reason` — it holds nothing, and it never becomes a deck
+  dimension.
 
 **The deck reading exists because the render is the only place the measurement can be taken.** A
 layout can still lose text — #1375 stopped it happening *silently* (`_fit` shrinks the type, then

@@ -777,6 +777,28 @@ def _report_carousel_slide_slop(user_id: int, post_id: Optional[int],
                     post_id=post_id, task_name="create_carousel_content")
 
 
+def _score_carousel_caption_authenticity(user_id: int, post_id: Optional[int], caption: str,
+                                         profile_synthesis: Optional[str] = None,
+                                         prefs: Optional[dict] = None) -> None:
+    """Judge a deck's CAPTION with the same authenticity judge a text post's draft gets (issue #1512).
+
+    `_score_and_persist_authenticity` was only ever called from `create_text_post` and
+    `rescore_post`, so `posts.authenticity_score` stayed NULL for every generated deck and the
+    authenticity gate inside `evaluate_post_gates` skipped itself by its own `is not None` guard —
+    every carousel caption shipped unjudged unless a human pressed re-score. A caption is a post
+    like any other, so it is judged like one: ONE `lem-medium` judge call per deck, and the gate that
+    reads the score back demotes a low-scoring deck to PENDING exactly as it does a text post.
+
+    The SLIDES are not judged here — their reading is the deterministic slop lint above; the judge
+    grades the caption only, which is what the review queue can actually be edited and re-scored on.
+    """
+    if post_id is None or not (caption or "").strip():
+        return
+    _score_and_persist_authenticity(user_id, post_id, caption, load_profile_for_user(user_id),
+                                    profile_synthesis, prefs,
+                                    task_name="create_carousel_content")
+
+
 @attribute_llm_cost(FEATURE_CONTENT)
 def create_carousel_content(user_id: int, stage: str, post_id: int = None,
                             template: Optional[str] = None,
@@ -845,6 +867,13 @@ def create_carousel_content(user_id: int, stage: str, post_id: int = None,
     # the concatenated slides. Recorded on the post, advisory — it holds nothing, and it leaves
     # `_report_carousel_fact_grounding`'s advisory-only posture (ring-fenced by #1139) untouched.
     _report_carousel_slide_slop(user_id, post_id, carousel_dict)
+
+    # The caption's authenticity judge (issue #1512, owner decision 2A on PR #1554): a carousel
+    # caption is a post like any other, and until now it was the one generated post type that
+    # reached the gate pass with a NULL score, so the authenticity gate skipped every deck. Scored
+    # here rather than after the render because this is the finished caption — the render can only
+    # fail the post, never rewrite its text.
+    _score_carousel_caption_authenticity(user_id, post_id, post_text, profile_synthesis, prefs)
 
     # Count the anchor as used so the NEXT piece rotates to different raw material — the same write
     # create_text_post makes. Without it the carousel reads the bank but never advances it, so
@@ -1959,11 +1988,16 @@ def _select_story_for_post(user_id: int, prefs: dict = None,
 
 def _score_and_persist_authenticity(user_id: int, post_id: int, content: str,
                                     user_profile: LinkedInProfile, profile_synthesis: str = None,
-                                    prefs: dict = None) -> None:
+                                    prefs: dict = None,
+                                    task_name: str = "create_text_post") -> None:
     """Run the authenticity gate's LLM judge on a finished draft and persist the 0-100 score (issue
     #382). This only SCORES + records; the demotion to PENDING happens in the content-plan
     status-setter, which reads the score back. No-op when the gate is disabled. Best-effort — a scorer
     or DB hiccup never blocks generation (score_authenticity itself fails open).
+
+    `task_name` names the caller on the emitted logs — the deck caption is judged from
+    `create_carousel_content` (issue #1512), and a carousel's low-score warning must not read as a
+    text post's.
     """
     if not authenticity_gate_enabled():
         return
@@ -1976,15 +2010,15 @@ def _score_and_persist_authenticity(user_id: int, post_id: int, content: str,
                 f"Post flagged as low-authenticity (score {result.get('score')} < "
                 f"{authenticity_score_min(prefs)}) — will hold for review: "
                 f"{'; '.join(result.get('reasons') or []) or 'no reasons given'}",
-                user_id=user_id, post_id=post_id, task_name="create_text_post")
+                user_id=user_id, post_id=post_id, task_name=task_name)
         else:
             log_info(f"Post authenticity score {result.get('score')}",
-                     user_id=user_id, post_id=post_id, task_name="create_text_post")
+                     user_id=user_id, post_id=post_id, task_name=task_name)
     except Exception as e:
         # WARNING: score_authenticity already fails open on its own, so anything raising here means
         # the gate silently did not run and the draft auto-approves unscored.
         log_warning("Authenticity scoring raised — this post is not scored by the gate", exc=e,
-                    user_id=user_id, post_id=post_id, task_name="create_text_post")
+                    user_id=user_id, post_id=post_id, task_name=task_name)
 
 
 def _is_affiliate_promo(content: str, post_id: Optional[int]) -> bool:
