@@ -239,6 +239,43 @@ newsletter cycle — if `cleared` dominates, buy the third attempt; if `traded` 
 directive needs to edit the offending sentences rather than re-author the edition, and no attempt
 budget will fix it. Tracked as **#1530**.
 
+#### F10, #1530 first read (2026-08-15): the window has not opened — **0 rows**
+
+The reading is one command now, and running it is what this entry records:
+
+```bash
+POSTHOG_PERSONAL_API_KEY=… poetry run python scripts/slop_retry_clear_rate.py --days 30
+poetry run python scripts/slop_retry_clear_rate.py --print-sql   # no key, paste into the UI
+```
+
+**What the query returns today: nothing, and that is arithmetic rather than a defect.** The
+instrument merged 2026-08-14 17:52 UTC (#1531) and shipped in **v0.151.0**; prod reports `0.151.1`.
+The newsletter draft beat runs daily at **10:00 UTC** (`generate-newsletter-drafts`), so at the time
+of this read — 2026-08-15 00:49 UTC — the beat had not fired once since the deploy, and PostHog
+holds **zero `slop_retry` rows** against a healthy ingest (`motion_prompt_check` and
+`content_quality` are landing in the same window). The event does not exist in the project taxonomy
+yet.
+
+Three things follow, and they are the reason this is a dated entry rather than a number:
+
+* **The earliest honest read is mid-September 2026.** Editions publish weekly and the beat only tops
+  a queue up, so ≥1 month of editions is single-digit regenerations. `slop_retry_clear_rate.py`
+  refuses to state a rate under a 10-steered-row floor (`--min-rows`) and exits non-zero, for the
+  same reason §8 refuses a 10-edition similarity threshold: a percentage read off two rows renders
+  identically to a measured one.
+* **The per-surface breakdown Scope 1 asks for needs #1536 first.** `track_slop_retry` is called
+  from the newsletter loop only, so today every row would say `surface=newsletter` — the script
+  already splits by surface, and the other surfaces will populate it when #1536 widens
+  `lint_repaired` and the affiliate promo loop.
+* **The formula is pinned in code, not in prose.** `cleared` / (`cleared` + `traded` + `worsened` +
+  `persisted` + `lost`), `unsteered` excluded from that denominator and reported as its own share of
+  all rows (`tests/unit/scripts/test_slop_retry_clear_rate.py`). That exclusion is #1434's review
+  guard: a slop-clean edition that is too short spends this budget on the structural floor, and
+  scoring it `cleared` would inflate the number the budget decision turns on.
+
+**`SLOP_LINT_MAX_ATTEMPTS_NEWSLETTER` therefore stays at 2**, unchanged, on the same grounds #1434
+gave: the third `lem-complex` call is still unpriced.
+
 ### Findings carried forward from #1142
 
 F1 (prompts targeted the wrong channel), F2 (`NEWSLETTER_BANNED_SCAFFOLDS` → #1285), F3
