@@ -32,3 +32,18 @@ kills every deploy at the migration step. `outOfOrder=true` applies it in place 
 safe because migrations are independent additive DDL — do **not** author a migration that depends
 on a later-timestamped one having already run. Duplicate *versions* are still rejected (and caught
 pre-merge by the **Migration Versions** check); only out-of-order *application* is allowed.
+
+### Widening an ENUM: restate the UNION, not "the values plus mine"
+
+MySQL has no "add one value" DDL — `ALTER TABLE … MODIFY … ENUM(…)` restates the whole list, so an
+enum widening is the one kind of migration that is **not** naturally additive: whichever declaration
+is applied last *is* the column. Under `outOfOrder=true` that is the one merged last, which may hold
+the older version number. So a widening must restate every value **any** migration has ever declared
+for that column — including ones added by a branch whose timestamp is newer than yours — not just
+the values you can see in the column today.
+
+This has bitten once: `V20260725001931` (nurture) merged first, `V20260724211808` (catch-up) merged
+after it with an older version, and its `MODIFY` dropped `'nurture'` from `dm_followups.event_type`.
+Production and a freshly-migrated database ended up with different enums, and every auto-nurture
+insert failed with `1265 Data truncated` for three weeks (#1566).
+`tests/unit/test_migration_enum_widening.py` now fails the build on it.
