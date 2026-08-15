@@ -44,9 +44,18 @@ from cqc_lem.api.models import (
 from cqc_lem.api.response_schemas import (
     CatchupContactIntervalBounds,
     CatchupPerContactCapBounds,
+    DmTemplate,
+    EngagementTargetsDetail,
     FeedReach,
     GateDefaults,
     GmailForwardConfirmation,
+    GroupPostDraftDetail,
+    LeadMagnetDetail,
+    NewsletterDraftDetail,
+    NewsletterSettingsDetail,
+    NewsletterSubscribersDetail,
+    StoryBankDetail,
+    UserGroup,
     UserSettingsDetail,
     detail_model_from,
 )
@@ -1907,7 +1916,8 @@ def update_engagement_preferences_endpoint(request: EngagementPreferencesRequest
     return ResponseModel(status_code=200, detail="Engagement preferences updated")
 
 
-@router.get("/newsletter-settings")
+@router.get("/newsletter-settings",
+            responses={200: {"model": ResponseModel[NewsletterSettingsDetail]}})
 def get_newsletter_settings_endpoint(session_token: str) -> ResponseModel[dict[str, Any]]:
     """The caller's newsletter settings row, defaults filled in by `get_newsletter_settings`."""
     user_id = _main.get_session_user_id(session_token)
@@ -1916,7 +1926,8 @@ def get_newsletter_settings_endpoint(session_token: str) -> ResponseModel[dict[s
     return ResponseModel(status_code=200, detail=get_newsletter_settings(user_id))
 
 
-@router.get("/newsletter-subscribers")
+@router.get("/newsletter-subscribers",
+            responses={200: {"model": ResponseModel[NewsletterSubscribersDetail]}})
 def get_newsletter_subscribers_endpoint(session_token: str) -> ResponseModel[dict[str, Any]]:
     """Subscriber-growth time-series for the current user (issue #400): the recorded snapshots plus
     the latest known subscriber count, for charting growth over time.
@@ -1984,7 +1995,7 @@ def _compute_next_publish(user_id: int, anchor=None):
         _dt.now(_tz.utc).replace(tzinfo=None))  # naive UTC — compared to naive DB datetimes
 
 
-@router.get("/newsletter-draft")
+@router.get("/newsletter-draft", responses={200: {"model": ResponseModel[NewsletterDraftDetail]}})
 def get_newsletter_draft_endpoint(session_token: str) -> ResponseModel[dict[str, Any]]:
     """The newsletter review queue.
 
@@ -2558,7 +2569,7 @@ class GroupTogglesRequest(BaseModel):
     groups: dict = {}
 
 
-@router.get("/groups")
+@router.get("/groups", responses={200: {"model": ResponseModel[List[UserGroup]]}})
 def get_user_groups_endpoint(session_token: str) -> ResponseModel[list[dict[str, Any]]]:
     """The user's LinkedIn groups and their per-group toggles.
 
@@ -2636,7 +2647,8 @@ def _resolve_group_media(user_id: int, media_url: str) -> "GroupPostMediaType":
     return GroupPostMediaType.VIDEO if kind == "VIDEO" else GroupPostMediaType.IMAGE
 
 
-@router.get("/group-post-draft")
+@router.get("/group-post-draft",
+            responses={200: {"model": ResponseModel[Optional[GroupPostDraftDetail]]}})
 def get_group_post_draft_endpoint(session_token: str) -> ResponseModel[Optional[dict[str, Any]]]:
     """The group post waiting to be published, so the user can read it before it ships (issue #932).
 
@@ -3117,7 +3129,7 @@ class LeadMagnetRequest(BaseModel):
     message: Optional[str] = Field(default=None, max_length=_LEN_LM_MESSAGE)
 
 
-@router.get("/lead-magnet")
+@router.get("/lead-magnet", responses={200: {"model": ResponseModel[LeadMagnetDetail]}})
 def get_lead_magnet_endpoint(session_token: str) -> ResponseModel[dict[str, Any]]:
     """The caller's lead-magnet settings: the trigger keyword and the DM it pays out."""
     user_id = _main.get_session_user_id(session_token)
@@ -3150,7 +3162,7 @@ def update_lead_magnet_endpoint(request: LeadMagnetRequest) -> ResponseModel[str
     return ResponseModel(status_code=200, detail="Lead magnet updated")
 
 
-@router.get("/dm-templates")
+@router.get("/dm-templates", responses={200: {"model": ResponseModel[List[DmTemplate]]}})
 def get_dm_templates_endpoint(session_token: str) -> ResponseModel[list[dict[str, Any]]]:
     """The caller's DM template ladders — every event type, every follow-up step."""
     user_id = _main.get_session_user_id(session_token)
@@ -3170,7 +3182,8 @@ def update_dm_templates_endpoint(request: DmTemplatesRequest) -> ResponseModel[s
     return ResponseModel(status_code=200, detail="DM templates updated")
 
 
-@router.get("/engagement-targets")
+@router.get("/engagement-targets",
+            responses={200: {"model": ResponseModel[EngagementTargetsDetail]}})
 def get_engagement_targets_endpoint(session_token: str) -> ResponseModel[dict[str, Any]]:
     """The user's engagement roster plus seed suggestions for an empty one (issue #616)."""
     user_id = _main.get_session_user_id(session_token)
@@ -3204,7 +3217,7 @@ def delete_engagement_target_endpoint(request: EngagementTargetDeleteRequest) ->
     return ResponseModel(status_code=200, detail="Roster target removed")
 
 
-@router.get("/story-bank")
+@router.get("/story-bank", responses={200: {"model": ResponseModel[StoryBankDetail]}})
 def get_story_bank_endpoint(session_token: str) -> ResponseModel[dict[str, Any]]:
     """The user's story bank plus how many entries a usable bank needs (issue #620)."""
     user_id = _main.get_session_user_id(session_token)

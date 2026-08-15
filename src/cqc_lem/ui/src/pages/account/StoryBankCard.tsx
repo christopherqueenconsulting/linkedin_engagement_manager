@@ -3,11 +3,12 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import api from '../../api/client'
 import { useAuth } from '../../contexts/useAuth'
 import { STORY_KINDS } from './types'
+import type { GetDetail } from '../../api/types'
 import type { StoryEntry, StoryKind } from './types'
 import { useRegisterSaveSection, sectionSaveCallbacks } from './settingsSave'
 import { EVENTS, capture, maskProps } from '../../utils/analytics'
 
-type StoryBankResponse = { entries: StoryEntry[]; kinds: StoryKind[]; target_entries: number }
+type StoryBankResponse = GetDetail<'/api/user/story-bank'>
 
 const blank = (): StoryEntry => ({
   kind: 'anecdote', title: '', body: '', happened_at: null, active: true,

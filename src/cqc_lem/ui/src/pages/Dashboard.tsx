@@ -1,7 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
 import api from '../api/client'
-import type { ApiEnvelope } from '../api/types'
+import type { ApiEnvelope, GetDetail } from '../api/types'
 import { useAuth } from '../contexts/useAuth'
 import { useUserTimezone } from '../hooks/useUserTimezone'
 import { useScrollAffordance } from '../hooks/useScrollAffordance'
@@ -236,29 +236,12 @@ function deltaSince(d: AudienceDelta | null | undefined): string {
   return d ? `since ${shortDate(d.from_date)}` : 'not enough history'
 }
 
-interface DashboardStats {
-  scheduled_this_week: number
-  pending_review: number
-  posted_total: number
-}
-
-interface PlannedTask {
-  kind: 'Post' | 'DM' | 'Newsletter'
-  id: number
-  title: string
-  status: string
-  scheduled_time: string
-}
-
-interface ActivityEntry {
-  id: number
-  action_type: string
-  result: string
-  post_id: number | null
-  post_url: string | null
-  message: string | null
-  created_at: string
-}
+// Generated from the published schema (issue #1446), not written here: the three payloads below
+// are documented on their operations, so a shape change breaks the build instead of rendering
+// `undefined` in a tile.
+type DashboardStats = GetDetail<'/api/dashboard/stats/'>
+type PlannedTasks = GetDetail<'/api/dashboard/planned-tasks/'>
+type ActivityEntry = GetDetail<'/api/activity/'>[number]
 
 const ACTION_ICONS: Record<string, string> = {
   post: '📝',
@@ -342,7 +325,7 @@ export default function Dashboard() {
 
   // Upcoming (future-dated, non-terminal) work across posts, scheduled DMs, and newsletter
   // editions — the backend already filters terminal states, sorts soonest-first, and caps.
-  const { data: plannedData } = useQuery<ApiEnvelope<{ tasks: PlannedTask[] }>>({
+  const { data: plannedData } = useQuery<ApiEnvelope<PlannedTasks>>({
     queryKey: ['planned-tasks', userId],
     queryFn: () =>
       api

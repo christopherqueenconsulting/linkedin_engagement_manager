@@ -28,35 +28,36 @@ export type GmailForwardConfirmation = components['schemas']['GmailForwardConfir
 
 export type FeedReach = components['schemas']['FeedReach']
 
-export type EngagementTargetCategory = 'peer' | 'icp' | 'creator'
+/**
+ * An EDITABLE row of a payload the SPA also writes back.
+ *
+ * The generated payload type is what the server SENDS, and every key of it is on the wire. The
+ * roster and story-bank editors also build rows that have never been saved, whose automation-owned
+ * columns (`id`, the counters, the follow/connect ladder) do not exist yet — so `Editable` keeps
+ * exactly the fields the matching PUT writes required and lets the rest be absent, while every
+ * NAME and TYPE still comes from the schema. Widening it to a plain `Partial` would be the bug
+ * this file exists to prevent: the PUT replaces the whole row, so a droppable editable field is a
+ * column a save resets.
+ */
+type Editable<Row, Written extends keyof Row> = Partial<Row> & Pick<Row, Written>
 
-// One account on the curated engagement roster. last_engaged_at / comments_this_week are written
-// by the commenting task and are read-only here.
-export type EngagementTarget = {
-  id?: number
-  profile_url: string
-  name: string | null
-  category: EngagementTargetCategory
-  max_comments_per_week: number
-  active: boolean
-  source: 'user' | 'suggested'
-  last_engaged_at?: string | null
-  comments_this_week?: number
-  // Written by the roster pass, read-only here (issue #962). A streak counts consecutive VISITS
-  // where the target's posts rendered with no comment affordance at all — the signature of an
-  // author who only accepts comments from connections or followers.
-  comment_blocked_streak?: number
-  last_blocked_at?: string | null
-  // 'following' and 'follow_failed' are terminal: the roster never re-examines the target.
-  follow_status?: 'unknown' | 'not_following' | 'following' | 'follow_failed'
-  followed_at?: string | null
-  follow_attempts?: number
-  // The rung above follow (issue #979): set once a FOLLOWED target is still un-commentable on a
-  // later visit. 'requested' / 'connected' / 'failed' are all terminal for automation — one invite
-  // per target, ever.
-  connect_status?: 'unknown' | 'needs_connection' | 'requested' | 'connected' | 'failed'
-  connect_requested_at?: string | null
-}
+type RosterRow = GetDetail<'/api/user/engagement-targets'>['targets'][number]
+
+/** One account on the curated engagement roster (issue #616).
+ *
+ *  `last_engaged_at` / `comments_this_week` and everything from `comment_blocked_streak` down are
+ *  written by the roster pass and are read-only here (issues #962, #979) — `upsert_engagement_targets`
+ *  writes only the fields below, so saving the roster can never reset a streak or a follow state. */
+export type EngagementTarget = Editable<
+  RosterRow,
+  'profile_url' | 'name' | 'category' | 'max_comments_per_week' | 'active' | 'source'
+>
+
+export type EngagementTargetCategory = RosterRow['category']
+
+/** A seed candidate for an empty roster — never saved, so it carries none of the counters. */
+export type EngagementTargetSuggestion =
+  GetDetail<'/api/user/engagement-targets'>['suggestions'][number]
 
 // A target is badged once it has been un-commentable on this many consecutive visits — one visit
 // that happened to render only reshares is not evidence. Mirrors
@@ -69,26 +70,13 @@ export const TARGET_CATEGORIES: { key: EngagementTargetCategory; label: string; 
   { key: 'creator', label: 'Large creator', hint: 'Big audiences you borrow reach from — ~20%' },
 ]
 
-export type StoryKind =
-  | 'anecdote'
-  | 'number'
-  | 'opinion'
-  | 'client_win'
-  | 'mistake'
-  | 'artifact'
+type StoryRow = GetDetail<'/api/user/story-bank'>['entries'][number]
 
-// One piece of the user's own raw material (issue #620). used_count / last_used_at are the rotation
-// counters written by generation and are read-only here.
-export type StoryEntry = {
-  id?: number
-  kind: StoryKind
-  title: string | null
-  body: string
-  happened_at: string | null
-  active: boolean
-  used_count?: number
-  last_used_at?: string | null
-}
+/** One piece of the user's own raw material (issue #620). `used_count` / `last_used_at` are the
+ *  rotation counters written by generation and are read-only here. */
+export type StoryEntry = Editable<StoryRow, 'kind' | 'title' | 'body' | 'happened_at' | 'active'>
+
+export type StoryKind = StoryRow['kind']
 
 export const STORY_KINDS: { key: StoryKind; label: string; hint: string }[] = [
   { key: 'anecdote', label: 'Anecdote', hint: 'Something that actually happened to you' },
@@ -99,110 +87,62 @@ export const STORY_KINDS: { key: StoryKind; label: string; hint: string }[] = [
   { key: 'artifact', label: 'Artifact', hint: 'Something you built, shipped or wrote' },
 ]
 
-export type DmTemplate = {
-  event_type: string
-  step: number
-  delay_hours: number
-  template_text: string
-  is_active: boolean
-}
+/** One rung of a DM ladder. The PUT replaces the WHOLE set, so nothing here is droppable. */
+export type DmTemplate = GetDetail<'/api/user/dm-templates'>[number]
 
-export type NewsletterSettings = {
-  enabled: boolean
-  title: string | null
-  topic: string | null
-  cadence: string
-  align_with_blog: boolean
-  publish_day: number
-  publish_hour: number
-  generate_lead_days: number
-  max_queued_drafts: number
-  invite_connections_enabled: boolean
-  max_invites_per_run: number
-  /** Opt-in: generate a cover image for each new draft (costs money per edition). */
-  cover_image_auto: boolean
-}
+/** The newsletter settings row. `newsletter_url` / `last_published_at` are written by the publish
+ *  run rather than by the settings PUT, which round-trips them untouched. */
+export type NewsletterSettings = GetDetail<'/api/user/newsletter-settings'>
 
-export type NewsletterSubscriberStat = {
-  subscriber_count: number | null
-  invites_sent: number
-  captured_at: string
-}
+export type NewsletterSubscribers = GetDetail<'/api/user/newsletter-subscribers'>
 
-export type ArtifactCtaAttribution = {
-  window_days: number
-  lead_magnet_dms: number
-  // null (not 0) when no subscribe URL is configured — there was nothing to carry.
-  newsletter_links: number | null
-}
+/** One growth snapshot (issue #400). `subscriber_count` is null when the page could not be read on
+ *  that run — a different fact from zero subscribers. */
+export type NewsletterSubscriberStat = NewsletterSubscribers['history'][number]
 
-export type NewsletterSubscribers = {
-  latest: number | null
-  history: NewsletterSubscriberStat[]
-  attribution?: ArtifactCtaAttribution
-}
+/** The owned-asset CTAs delivered in the same window (issue #624), so growth can be read against
+ *  them. `newsletter_links` is null (not 0) when no subscribe URL is configured. */
+export type ArtifactCtaAttribution = NewsletterSubscribers['attribution']
 
-export type NewsletterEdition = {
-  id: number
-  title: string | null
-  subtitle: string | null
-  subject?: string | null
-  format?: string | null
-  hook_style?: string | null
-  body: string | null
-  status: string
-  scheduled_for: string | null
-  /** Cover image (issue #893) — null when the edition has none. */
-  cover_image_url?: string | null
-  cover_image_source?: 'upload' | 'ai' | null
-  /** 'approved' publishes with the edition; 'pending_review' is a generated cover awaiting you. */
-  cover_image_status?: 'pending_review' | 'approved' | null
-}
+type NewsletterDraftPayload = GetDetail<'/api/user/newsletter-draft'>
 
-export type NewsletterDraft = {
-  editions: NewsletterEdition[]
-  next_publish: string | null
-  max_queued_drafts?: number
-  generate_lead_days?: number
-}
+/** One queued edition. `cover_image_url` (issue #893) is null when it has none, and
+ *  `cover_image_status` 'approved' publishes with the edition while 'pending_review' waits for you.
+ *
+ *  The queue edits an edition field by field, so the cover and the format fields — which the
+ *  drafting run writes, never the editor — are not required to build one. */
+export type NewsletterEdition = Editable<
+  NewsletterDraftPayload['editions'][number],
+  'id' | 'title' | 'subtitle' | 'body' | 'status' | 'scheduled_for'
+>
+
+/** The review queue. `next_publish` is the slot AFTER the last edition already queued — when a NEW
+ *  draft would go out, not when the next send is. */
+export type NewsletterDraft = Editable<NewsletterDraftPayload, 'editions' | 'next_publish'>
 
 export const WEEKDAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
 
-export type UserGroup = {
-  group_id: string
-  group_name: string | null
-  enabled: boolean
-  /** Whether the weekly original group post may land in this group (issue #769). */
-  post_enabled?: boolean
-  last_posted_at?: string | null
-  /** Server-marked: the group the NEXT weekly group post goes to. */
-  is_next_post?: boolean
-}
+/** One joined LinkedIn group. `enabled` (commenting) and `post_enabled` (publishing, issue #769)
+ *  are independent switches — being in a group is not permission to publish into it — and
+ *  `is_next_post` is server-marked: the group the NEXT weekly group post goes to.
+ *
+ *  The card toggles the two switches per row, so only the identity fields are required to name one. */
+export type UserGroup = Editable<
+  GetDetail<'/api/user/groups'>[number],
+  'group_id' | 'group_name' | 'enabled'
+>
 
-/** The group post waiting to be published, editable until it ships (issue #932). */
-export type GroupPostDraft = {
-  id: number
-  group_id: string
-  group_name: string | null
-  content: string
-  status: string
-  created_at?: string | null
-  // Attached image/video (issue #1224). media_url is null on a text-only group post.
-  media_url?: string | null
-  media_type?: 'image' | 'video' | null
-  // Served with the draft so the editor shows the same rules the drafting prompt follows.
-  best_practices?: string[]
-  /** Whether "Skip this week" can still be undone — false once the publish slot passed (issue #1415). */
-  can_undo_skip?: boolean
-  /** The publish slot the undo window closes at (ISO, UTC). */
-  undo_deadline?: string | null
-}
+/** The group post waiting to be published, editable until it ships (issue #932).
+ *
+ *  `media_url` is null on a text-only draft (issue #1224), `best_practices` is the SAME list the
+ *  drafting prompt was held to, and `can_undo_skip` / `undo_deadline` say whether "Skip this week"
+ *  can still be reversed and when that window closes (issue #1415). */
+export type GroupPostDraft = Editable<
+  NonNullable<GetDetail<'/api/user/group-post-draft'>>,
+  'id' | 'group_id' | 'group_name' | 'content' | 'status'
+>
 
-export type LeadMagnet = {
-  enabled: boolean
-  keyword: string | null
-  message: string | null
-}
+export type LeadMagnet = GetDetail<'/api/user/lead-magnet'>
 
 export const DM_EVENTS: { key: string; label: string }[] = [
   { key: 'connection_accepted', label: 'Connection accepted' },

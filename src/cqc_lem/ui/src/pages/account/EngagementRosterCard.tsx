@@ -3,12 +3,13 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import api from '../../api/client'
 import { useAuth } from '../../contexts/useAuth'
 import { ROSTER_BLOCKED_BADGE_STREAK, TARGET_CATEGORIES } from './types'
-import type { EngagementTarget, EngagementTargetCategory } from './types'
+import type { GetDetail } from '../../api/types'
+import type { EngagementTarget, EngagementTargetCategory, EngagementTargetSuggestion } from './types'
 import { useRegisterSaveSection, sectionSaveCallbacks } from './settingsSave'
 import { useEngagementPrefs } from './settings/engagementPrefsCtx'
 import { ConflictNotices } from './settings/Field'
 
-type RosterResponse = { targets: EngagementTarget[]; suggestions: EngagementTarget[] }
+type RosterResponse = GetDetail<'/api/user/engagement-targets'>
 
 // Every row's number field says only "/wk" next to it, which told a sighted user nothing about what
 // it controls (issue #956) — so the column header, the tooltip and the aria-label all say it here.
@@ -163,7 +164,7 @@ export default function EngagementRosterCard() {
   const update = (idx: number, patch: Partial<EngagementTarget>) =>
     editTargets((ts) => ts.map((t, i) => (i === idx ? { ...t, ...patch } : t)))
   const addRow = () => editTargets((ts) => [...ts, blank()])
-  const addSuggestion = (s: EngagementTarget) =>
+  const addSuggestion = (s: EngagementTargetSuggestion) =>
     editTargets((ts) => (ts.some((t) => t.profile_url === s.profile_url) ? ts : [...ts, { ...s }]))
 
   const removeMutation = useMutation({
