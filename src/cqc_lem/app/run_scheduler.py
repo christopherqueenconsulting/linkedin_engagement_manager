@@ -120,6 +120,11 @@ from cqc_lem.utilities.logger import log_debug, log_info, log_warning
 from cqc_lem.utilities.notifications import notify_linkedin_session
 from cqc_lem.utilities.observability import FEATURE_CONTENT, FEATURE_NEWSLETTER, attribute_llm_cost, llm_attribution
 
+# How close to its slot a post's missing media stops being a self-healing state and becomes a
+# defect: the backfill beat runs every 3 hours, so 24h leaves several regeneration passes between
+# the reading and the publish. Inside it, nothing further will repair the post.
+BACKFILL_URGENT_HOURS = 24
+
 
 def _skip_if_throttled(name: str, measurement_only: bool = False, **context) -> bool:
     """True when Selenium engagement should NOT fan out — either a manual automation pause OR an open
@@ -1869,17 +1874,37 @@ def auto_survey_prompts():
     return f"Asked {asked} of {len(users)} subscriber(s)"
 
 
+def _asset_backfill_is_urgent(scheduled_time: object) -> bool:
+    """True when a still-missing asset can no longer be waited out.
+
+    The slot is inside BACKFILL_URGENT_HOURS (or already past), so no further regeneration pass
+    stands between the post and publishing without its media. A `scheduled_time` that is absent or
+    not a datetime reads as NOT urgent: the safety net never invents an alarm from something it
+    could not read.
+    """
+    if not isinstance(scheduled_time, datetime):
+        return False
+    due = scheduled_time if scheduled_time.tzinfo else scheduled_time.replace(tzinfo=timezone.utc)
+    return due - datetime.now(timezone.utc) <= timedelta(hours=BACKFILL_URGENT_HOURS)
+
+
 @shared_task.task
 def auto_backfill_missing_assets():
     """Safety net: regenerate missing media for unposted video/carousel posts before they
     publish, so a post never reaches its scheduled time without its asset (e.g. when the
     original generation failed).
+
+    Regeneration is asynchronous and this beat runs every 3 hours, so re-reading the same post on
+    the next pass is the safety net WORKING — it is logged at DEBUG. Only two states are a defect
+    worth escalating: a post whose type has no repair path here (nothing will ever fix it), and an
+    asset still absent inside BACKFILL_URGENT_HOURS of its slot (no pass is left to fix it).
     """
     from cqc_lem.app.run_content_plan import regenerate_post_carousel_task, regenerate_post_video_task
     from cqc_lem.utilities.db import get_unposted_posts_missing_assets
 
     posts = get_unposted_posts_missing_assets()
     queued = 0
+    urgent = 0
     for post_id, user_id, post_type, buyer_stage, scheduled_time in posts:
         pt = str(post_type).lower()
         if pt == 'video':
@@ -1888,9 +1913,22 @@ def auto_backfill_missing_assets():
         elif pt in ('carousel', 'document'):  # documents share the carousel slide pipeline
             regenerate_post_carousel_task.apply_async(kwargs={'post_id': post_id})
             queued += 1
-        log_warning("Backfilling missing media asset for unposted post",
-                    post_id=post_id, user_id=user_id, task_name="auto_backfill_missing_assets")
-    log_info(f"Asset backfill: queued {queued} regeneration(s) across {len(posts)} post(s)",
+        else:
+            log_warning("No asset regeneration path for post type", post_id=post_id,
+                        user_id=user_id, post_type=pt,
+                        task_name="auto_backfill_missing_assets")
+            continue
+        if _asset_backfill_is_urgent(scheduled_time):
+            urgent += 1
+            log_warning("Missing media asset still absent close to its scheduled slot",
+                        post_id=post_id, user_id=user_id,
+                        task_name="auto_backfill_missing_assets")
+        else:
+            log_debug("Backfilling missing media asset for unposted post",
+                      post_id=post_id, user_id=user_id,
+                      task_name="auto_backfill_missing_assets")
+    log_info(f"Asset backfill: queued {queued} regeneration(s) across {len(posts)} post(s) "
+             f"({urgent} inside the urgent window)",
              task_name="auto_backfill_missing_assets")
     return f"Queued {queued} asset regeneration(s)"
 
