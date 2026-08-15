@@ -315,3 +315,23 @@ class TestBackfillEscalation:
         r = self._run([(6, 1, 'video', 'awareness', _due_in(hours=-1))])
         assert "Missing media asset still absent close to its scheduled slot" in \
             self._messages(r["warn"])
+
+    def test_slot_with_beat_passes_left_is_not_urgent(self):
+        """The urgent window is ONE beat interval, not a day.
+
+        The beat runs every 3 hours, so a slot 12h out still has passes left to confirm the
+        regeneration queued here landed — warning on it would re-file the #1568 exception on the
+        healthy path for every post scheduled within a day.
+        """
+        from cqc_lem.app.run_scheduler import BACKFILL_URGENT_HOURS
+
+        assert BACKFILL_URGENT_HOURS <= 6, "urgent window must stay near the 3h beat interval"
+        r = self._run([(6, 1, 'video', 'awareness', _due_in(hours=12))])
+        r["warn"].assert_not_called()
+        assert "Backfilling missing media asset for unposted post" in self._messages(r["debug"])
+
+    def test_urgent_window_still_covers_the_last_beat_pass(self):
+        """...and never so tight that the final pass before the slot misses the alarm."""
+        from cqc_lem.app.run_scheduler import BACKFILL_URGENT_HOURS
+
+        assert BACKFILL_URGENT_HOURS >= 3, "a slot inside one beat interval must still warn"
