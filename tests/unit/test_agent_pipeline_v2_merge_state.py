@@ -144,6 +144,11 @@ def test_blocked_armed_with_unreadable_checks_is_still_the_ordinary_wait():
 
 
 def test_blocked_armed_already_queued_is_still_the_ordinary_wait():
-    """A queue entry means GitHub is already acting on it — not waiting on a human."""
+    """A queue entry means GitHub is already acting on it — not waiting on a human.
+
+    The reason it reports changed with #1388: the merge-queue gate now sits above this branch, so a
+    queued PR says `in_merge_queue` rather than `auto_merge_armed`. What #1501 is about is
+    unchanged and is what this asserts — a live entry is never `awaiting_owner_review`.
+    """
     got = d(pr(merge_state="BLOCKED", auto_merge=True, queue_state="QUEUED"))
-    assert (got.reason, got.next_state) == ("auto_merge_armed", db.STATE_WAIT_QUEUE)
+    assert (got.reason, got.next_state) == ("in_merge_queue", db.STATE_WAIT_QUEUE)

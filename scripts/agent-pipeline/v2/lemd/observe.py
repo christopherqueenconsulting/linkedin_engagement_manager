@@ -204,6 +204,50 @@ def _work_in_flight_or_stranded(snap: Snapshot, ttl_review: int,
                     details={"branch": snap.branch or ""})
 
 
+def _queue_withheld_lane(snap: Snapshot) -> str | None:
+    """Which pushing lane the merge-queue gate is holding back, for the decision ledger.
+
+    Telemetry, not control flow — nothing branches on the answer. The gate makes a queued PR
+    silent, and silence is exactly what an operator cannot distinguish from a healthy wait: `#1388`
+    is a defect about a queued PR being acted on, and its fix must not turn into a defect about a
+    queued PR that is quietly holding a `fix` nobody can see. Mirrors the ladder below it in the
+    same order, so the name reported is the lane that will actually run once the entry clears.
+
+    Returns:
+        The mode name, or None when nothing is being held (the PR is simply waiting on the queue).
+    """
+    lanes = [lb for lb in LANE_LABEL_PRIORITY if lb in snap.labels]
+    if lanes:
+        return LANE_LABEL_MODES[lanes[0]][0]
+    if snap.merge_state not in MERGE_STATE_PROCEED:
+        # The mergeability rows sit between the lane labels and the checks ladder, and both of them
+        # WAIT: an unreadable or unrecognised `mergeStateStatus` dispatches nothing, so nothing is
+        # being held. (`DIRTY` cannot reach here — it returns above the gate.)
+        return None
+    if snap.auto_merge:
+        # The one that actually matters, because an armed PR is how a PR gets into the queue at all:
+        # `ACT_MERGE` arms auto-merge and GitHub enqueues it, so essentially every queued PR the
+        # daemon sees has `auto_merge` set. The armed row sits ABOVE the checks ladder, so once the
+        # entry clears this PR reports `auto_merge_armed` (or `owner_review_required`) and no lane
+        # runs — naming one here would promise a dispatch that never comes.
+        return None
+    checks = snap.checks
+    if checks is None:
+        return None
+    if checks.failed:
+        # Before the pending test, exactly as the ladder has it: a failed check outranks the ones
+        # still running, because it will not turn green by waiting.
+        return "fix"
+    if checks.pending or checks.total == 0:
+        # Still reporting: the ladder would WAIT on these too, so nothing is held.
+        return None
+    if snap.unresolved_threads > 0:
+        return "review"
+    if not snap.review_fresh:
+        return "selfreview"
+    return None
+
+
 def decide(snap: Snapshot, *, ttl_ci: int, ttl_review: int, ttl_queue: int,
            ttl_parked: int, max_park_laps: int = 0) -> Decision:
     """Pure state-machine step. No I/O, no clock — every input is in `snap`.
@@ -340,7 +384,33 @@ def decide(snap: Snapshot, *, ttl_ci: int, ttl_review: int, ttl_queue: int,
                         wake_in=ttl_parked)
 
     if snap.merge_state == "DIRTY":
+        # The ONE documented exception to the merge-queue gate below, and it is an exception because
+        # the queue cannot merge a conflicted PR either: GitHub will eject it, so rebasing now costs
+        # the queue nothing it was not already going to lose.
         return Decision(ACT_DISPATCH, db.STATE_CLAIMED, "conflicts_with_main", mode="rebase")
+
+    if snap.queue_state:
+        # ---- the queue is mid-flight: NOTHING that pushes a commit may run (#1388) --------------
+        #
+        # This used to be read LAST, below `fix`, `review` and `selfreview`, so a PR the queue was
+        # already validating could be dispatched into all three — and each of them pushes, which
+        # ejects it. Merge-queue entry is expensive (GitHub builds the PR against the queue head), so
+        # an ejection re-pays that cost from scratch, and a PR that keeps acquiring findings cycles.
+        # It also fights the queue: the branch is rewritten under a ref GitHub is mid-validation on.
+        #
+        # The counter-argument — "if a queued PR's required check really fails, the queue ejects it
+        # anyway, so fix it fast" — is why this WAITS rather than acting: the queue is about to
+        # report a verdict, and acting on what it says beats pre-empting it. Losing the entry drops
+        # `queue_state` back to `""` on the next observation, at which point the ordinary ladder
+        # below runs and dispatches the very same lane. So the gate delays a fix by at most one
+        # `ttl_queue`; it never swallows one.
+        #
+        # `DIRTY` is handled above, and is the only lane that may act on a queued PR.
+        return Decision(ACT_NONE, db.STATE_WAIT_QUEUE, "in_merge_queue",
+                        wait_reason="merge_queue", wake_in=ttl_queue,
+                        details={"queue_state": snap.queue_state,
+                                 "merge_state": snap.merge_state,
+                                 "withheld": _queue_withheld_lane(snap) or ""})
 
     lanes = [lb for lb in LANE_LABEL_PRIORITY if lb in snap.labels]
     if lanes:
@@ -387,6 +457,10 @@ def decide(snap: Snapshot, *, ttl_ci: int, ttl_review: int, ttl_queue: int,
         # stays armed, so a human's approval still completes the merge unattended — but it must NOT
         # share `STATE_WAIT_QUEUE`'s WIP accounting: #1501 measured two such PRs holding both WIP
         # slots for 7 hours while every `ready` issue behind them went undispatched.
+        #
+        # `not snap.queue_state` is now redundant — the queue gate above returns before this — and
+        # is kept because it states the condition this branch actually depends on rather than
+        # relying on a neighbour twenty lines up to hold it.
         if snap.merge_state == "BLOCKED" and not snap.queue_state \
                 and snap.checks is not None and snap.checks.green:
             return Decision(ACT_NONE, db.STATE_WAIT_OWNER_REVIEW, "owner_review_required",
@@ -418,11 +492,8 @@ def decide(snap: Snapshot, *, ttl_ci: int, ttl_review: int, ttl_queue: int,
         return Decision(ACT_DISPATCH, db.STATE_CLAIMED, "no_fresh_review", mode="selfreview")
 
     # ---- green, reviewed, threads clear: the queue's problem now ------------------------------
-    if snap.queue_state:
-        return Decision(ACT_NONE, db.STATE_WAIT_QUEUE, "in_merge_queue",
-                        wait_reason="merge_queue", wake_in=ttl_queue,
-                        details={"queue_state": snap.queue_state})
-
+    # A live queue entry never reaches here — the gate above returns `in_merge_queue` for it — so
+    # this branch is only ever the FIRST arming.
     return Decision(ACT_MERGE, db.STATE_WAIT_QUEUE, "gate_satisfied",
                     wait_reason="merge_queue", wake_in=ttl_queue)
 

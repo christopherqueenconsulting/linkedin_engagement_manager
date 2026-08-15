@@ -238,40 +238,59 @@ call that live PR stranded.
 
 | # | Condition | Action | Reason | Wake |
 |---|---|---|---|---|
-| 19 | draft (unheld — a held draft is row 5-9) | none → awaiting_review | `pr_is_draft` | 6h |
-| 20 | `mergeStateStatus == DIRTY` | dispatch `rebase` | `conflicts_with_main` | — |
-| 21 | lane label, by declared priority: `agent:revise` | dispatch `revise` | `owner_requested_changes` | — |
-| 22 | …then `agent:phasefix` | dispatch `phasefix` | `phase_scope_untracked` | — |
-| 23 | …then `agent:depfix` | dispatch `depfix` | `dependabot_ci_failure` | — |
-| 24 | …then `agent:docfix` | dispatch `docfix` | `lint_gate_failure` | — |
-| 25 | `mergeStateStatus` is `UNKNOWN` or `""` | none | `merge_state_unknown` | 120s |
-| 26 | `mergeStateStatus` outside the enum | none | `merge_state_unrecognised` | 300s |
-| 27 | auto-merge armed, `BLOCKED`, checks all green, no queue entry | none → **awaiting_owner_review** | `owner_review_required` | 6h |
-| 28 | auto-merge armed (anything else) | none | `auto_merge_armed` | 15m |
-| 29 | checks unreadable | none | `checks_unknown` | 300s |
-| 30 | a required check failed | dispatch `fix` | `required_checks_failing` | — |
-| 31 | checks pending, or zero checks | none | `ci_running` | 30m |
-| 32 | unresolved Copilot threads | dispatch `review` | `unresolved_review_threads` | — |
-| 33 | no review at/after the head | dispatch `selfreview` | `no_fresh_review` | — |
-| 34 | already in the merge queue | none | `in_merge_queue` | 15m |
-| 35 | green, reviewed, threads clear | **merge** | `gate_satisfied` | 15m |
+| 20 | draft (unheld — a held draft is rows 5-10) | none → awaiting_review | `pr_is_draft` | 6h |
+| 21 | `mergeStateStatus == DIRTY` | dispatch `rebase` | `conflicts_with_main` | — |
+| 22 | **a live merge-queue entry** (any state) | none | `in_merge_queue` | 15m |
+| 23 | lane label, by declared priority: `agent:revise` | dispatch `revise` | `owner_requested_changes` | — |
+| 24 | …then `agent:phasefix` | dispatch `phasefix` | `phase_scope_untracked` | — |
+| 25 | …then `agent:depfix` | dispatch `depfix` | `dependabot_ci_failure` | — |
+| 26 | …then `agent:docfix` | dispatch `docfix` | `lint_gate_failure` | — |
+| 27 | `mergeStateStatus` is `UNKNOWN` or `""` | none | `merge_state_unknown` | 120s |
+| 28 | `mergeStateStatus` outside the enum | none | `merge_state_unrecognised` | 300s |
+| 29 | auto-merge armed, `BLOCKED`, checks all green, no queue entry | none → **awaiting_owner_review** | `owner_review_required` | 6h |
+| 30 | auto-merge armed (anything else) | none | `auto_merge_armed` | 15m |
+| 31 | checks unreadable | none | `checks_unknown` | 300s |
+| 32 | a required check failed | dispatch `fix` | `required_checks_failing` | — |
+| 33 | checks pending, or zero checks | none | `ci_running` | 30m |
+| 34 | unresolved Copilot threads | dispatch `review` | `unresolved_review_threads` | — |
+| 35 | no review at/after the head | dispatch `selfreview` | `no_fresh_review` | — |
+| 36 | green, reviewed, threads clear | **merge** | `gate_satisfied` | 15m |
 
-Row 26 sits above row 28 deliberately. An armed PR reporting `BLOCKED` is the normal, healthy state
-of a PR waiting on required checks; without this the ladder fell through to `gate_satisfied` on every
-pass and burned the per-head merge budget in three minutes (measured on #1295).
+**Row 22 is the merge-queue gate (#1388), and its position is the whole rule: while the queue holds
+a live entry, no lane that pushes a commit may run.** `queue_state` used to be read last, below rows
+32/34/35, so a PR the queue was already validating was dispatched into `fix`, `review` or
+`selfreview` — each of which pushes, which ejects it. Entry is expensive (GitHub builds the PR
+against the queue head), so an ejection re-pays that cost from scratch and a PR that keeps acquiring
+findings cycles. The counter-argument — *if a queued PR's required check really fails, the queue
+ejects it anyway, so fix it fast* — is why this row **waits** rather than acting: losing the entry
+drops `queue_state` back to `""`, and the next observation runs the ordinary ladder and dispatches
+the same lane. The gate delays a fix by at most one `ttl_queue`; it never swallows one. `details`
+carries `withheld`, naming the lane being held, so a silent queued PR is legible instead of
+mysterious — and it names **only a lane the ladder would really run**: rows 27-30 sit above the
+checks ladder and all of them wait, so an armed PR (which is how a PR reaches the queue at all)
+withholds nothing, and saying `fix` there would promise a dispatch that never comes.
+**Row 21 (`DIRTY`) is the one documented exception**, and only because the queue cannot
+merge a conflicted PR either — it will eject it regardless, so a rebase costs the queue nothing it
+was not already losing.
 
-Row 27 sits above row 28: `BLOCKED` with every required check already green and no queue entry is
+Row 30 sits above the checks rows (31-33) deliberately. An armed PR reporting `BLOCKED` is the
+normal, healthy state of a PR waiting on required checks; without this the ladder fell through to
+`gate_satisfied` on every pass and burned the per-head merge budget in three minutes (measured on
+#1295).
+
+Row 29 sits above row 30: `BLOCKED` with every required check already green and no queue entry is
 not "waiting on a check" — nothing left to check. The one remaining required gate at that point is
 `require_code_owner_reviews`, which only a human's approval satisfies (#1501). Auto-merge stays
 armed either way — GitHub completes the merge itself the instant that approval lands — so this row
 changes only where the WAIT is recorded (`awaiting_owner_review`, excluded from the WIP gate, §3),
-not whether the pipeline waits.
+not whether the pipeline waits. Its "no queue entry" clause is redundant under row 22 and is kept
+because the branch depends on it.
 
-Row 33's freshness is **stricter than v1's**: a review must be at or after the head commit. Being
+Row 35's freshness is **stricter than v1's**: a review must be at or after the head commit. Being
 wrong in this direction costs one extra selfreview; being wrong in the other merges code no reviewer
 saw. **One exception, and it errs permissive**: when the head's `committedDate` is unreadable,
 `review_state` falls back to "any review counts", however stale — refusing every PR on an unreadable
-date would wedge the gate entirely. Row 30 treats zero checks as pending, not green.
+date would wedge the gate entirely. Row 33 treats zero checks as pending, not green.
 
 ---
 
@@ -283,13 +302,13 @@ behaviour is incidental.
 | `mergeStateStatus` | Handled? | What happens today |
 |---|---|---|
 | `CLEAN` | ✅ | falls through to the checks/review ladder |
-| `DIRTY` | ✅ | row 19 → `rebase` |
-| `BLOCKED` | ✅ | proceeds; normally a PR waiting on a required check, read directly off the ladder. Armed + checks-all-green + no queue entry is the one exception — `require_code_owner_reviews` is the actual gate, so it routes to `awaiting_owner_review` instead (row 27, §3) |
+| `DIRTY` | ✅ | row 21 → `rebase` |
+| `BLOCKED` | ✅ | proceeds; normally a PR waiting on a required check, read directly off the ladder. Armed + checks-all-green + no queue entry is the one exception — `require_code_owner_reviews` is the actual gate, so it routes to `awaiting_owner_review` instead (row 29, §3) |
 | `UNSTABLE` | ✅ | proceeds and can reach `gate_satisfied`. Correct **because** `checks_for` filters to required contexts, so non-required red is mergeable — now recorded rather than accidental |
 | `BEHIND` | ✅ | proceeds, deliberately: `main` does not require branches to be up to date (`strict` is false) and the merge queue builds against the queue head, so a rebase would spend a model session on something GitHub does for free |
-| `UNKNOWN` / `""` | ✅ | waits 120s (row 24). Was the #1082 shape — an unreadable field read as a healthy one |
+| `UNKNOWN` / `""` | ✅ | waits 120s (row 27). Was the #1082 shape — an unreadable field read as a healthy one |
 | `HAS_HOOKS` | ✅ | proceeds, named |
-| anything outside the enum | ✅ | waits 300s (row 25) — the enum is closed, so a new member means the world changed |
+| anything outside the enum | ✅ | waits 300s (row 28) — the enum is closed, so a new member means the world changed |
 
 **Label combinations**
 
@@ -297,7 +316,7 @@ behaviour is incidental.
 |---|---|
 | two lane labels (e.g. `agent:revise` + `agent:docfix`) | ✅ resolved by `LANE_LABEL_PRIORITY`; the waiting lane is recorded in `details.lanes_pending` and runs once the first clears its own label |
 | `agent:merge-parked` | ✅ decided: `unpark.sh` keeps REMOVING it for rollback parity, and nothing writes it — v2 has no separate merge park, so writing it would add a concept the daemon lacks |
-| hold label + lane label | hold wins (row 5-8), lane label inert until un-parked |
+| hold label + lane label | hold wins (rows 5-10), lane label inert until un-parked |
 | hold label + **auto-merge armed** | ❌ **the daemon holds and GitHub merges anyway** — see §7 |
 
 **Draft × everything.** `is_draft` is checked FIRST, above `DIRTY` and above the armed-auto-merge
@@ -309,17 +328,30 @@ wait, so a draft is never rebased and an armed draft is never recognised.
 | Draft + `DIRTY` | never rebased | never rebased |
 | Draft + armed | hold honoured, arm untouched | arm never recognised |
 
-**Merge queue × everything else — the largest omission.** `queue_state` is read **last**, below
-`fix`, `review` and `selfreview`. So a PR that is *already in the merge queue*:
+**Merge queue × everything else.** `queue_state` is read at **row 22**, above every lane that pushes
+a commit (#1388). It used to be read last, below `fix`, `review` and `selfreview`, which is what the
+right-hand column below describes.
 
-| Queued PR also has… | What happens | Consequence |
+| Queued PR also has… | Today | Was (before #1388) |
 |---|---|---|
-| a failed required check | dispatches `fix` | the fix **pushes a commit, ejecting it from the queue** |
-| an unresolved Copilot thread | dispatches `review` | same — the reply/resolve pushes |
-| a stale review | dispatches `selfreview` | same |
-| checks pending | reports `ci_running`, not `in_merge_queue` | an operator reading the state is misled |
+| a failed required check | ✅ row 22 → `in_merge_queue`, `details.withheld = fix` | dispatched `fix` — the fix **pushed a commit, ejecting it from the queue** |
+| an unresolved Copilot thread | ✅ row 22, `withheld = review` | dispatched `review` — the reply/resolve pushed |
+| a stale review | ✅ row 22, `withheld = selfreview` | dispatched `selfreview` — same |
+| checks pending | ✅ row 22, `withheld = ""` — the queue is reported, not CI | reported `ci_running`, misleading an operator reading the state |
+| a lane label (`revise`/`phasefix`/`depfix`/`docfix`) | ✅ row 22, `withheld = <mode>` | dispatched that lane — every one of them pushes |
+| auto-merge armed **and** a failed check / stale review / unresolved thread | ✅ row 22, `withheld = ""` — row 30 is above the checks ladder, so nothing would dispatch once the entry cleared either | dispatched nothing then either (row 30 already outranked those rows) |
+| `mergeStateStatus == DIRTY` | ✅ row 21 → `rebase`, the **one documented exception**: the queue cannot merge a conflicted PR either | same |
+| auto-merge armed | ✅ row 22 (above row 29/30), so a queued PR reports the queue rather than the arm | reported `auto_merge_armed` |
+| a hold label | hold wins — rows 5-10 are above row 22. `disarm` is a GitHub-side action and pushes nothing | same |
 
-Row 32 reads as though queue membership is checked early. It is only checked on the fully-green path.
+**A lane label is not a stop.** Holding `agent:revise` on a queued PR means the queue may complete
+the merge before that feedback is applied — where the old order ejected it as a side effect of
+pushing. The gesture that actually stops a queued merge is a **hold label**, which routes to row 5
+(`disarm`) instead of waiting; a lane label was never a merge veto and must not be used as one.
+
+The wait is bounded and self-healing: a lost or completed entry drops `queue_state` to `""`, and the
+next observation runs the ladder normally. `MergeQueueEntryState` is not enumerated here on purpose —
+every value means "the queue is mid-flight on this ref", and the answer is the same for all of them.
 
 **Lane labels on the wrong kind**
 
@@ -400,7 +432,6 @@ issue. It exists so the gaps are visible rather than discovered one incident at 
 
 | Gap | Why it matters | Issue |
 |---|---|---|
-| **A queued PR gets pushed out of the queue** by `fix`/`review`/`selfreview`, because `queue_state` is read last (§5) | the queue is re-entered from scratch each time | #1388 |
 | **An issue whose only linked PR was closed unmerged waits for ever** — `_open_pr_for_issue` returns True for any linked ref, because the API's refs carry no `state` | needs `ACT_PARK` re-added, so split out | #1405 |
 | **`PER_HEAD_MODES` and `MODE_BUDGET["merge"]` have no consumers** (§6) — the merge bound lives entirely in `merge_enable.sh` and works | left as-is: moving it would relocate a functioning guard for no behaviour change | — |
 | **v2 has no phase guard.** v1 routed a PR closing a phased issue with untracked later phases to `MODE=phasefix`, escalating to the owner only after repeated attempts (`tick.sh:715-745`); v2 has no equivalent and merges it | a shipped issue can silently lose its remaining scope | #1396 |
