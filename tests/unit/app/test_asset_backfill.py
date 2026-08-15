@@ -1,10 +1,16 @@
 """Unit tests for the asset-backfill safety net + missing-asset guard."""
 
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 pytestmark = pytest.mark.unit
+
+
+def _due_in(hours: float) -> datetime:
+    """A timezone-aware slot `hours` from now (negative = already past)."""
+    return datetime.now(timezone.utc) + timedelta(hours=hours)
 
 
 class TestDbQueries:
@@ -235,21 +241,97 @@ class TestCreatePathVideoProbe:
 
 
 class TestBackfillTask:
-    def test_enqueues_regen_per_type(self):
-        rows = [(6, 1, 'video', 'awareness', 't'),
-                (5, 1, 'carousel', 'awareness', 't'),
-                (4, 1, 'text', 'awareness', 't')]
+    def _run(self, rows):
         vid, car = MagicMock(), MagicMock()
         with patch("cqc_lem.utilities.db.get_unposted_posts_missing_assets", return_value=rows), \
              patch("cqc_lem.app.run_content_plan.regenerate_post_video_task", vid), \
-             patch("cqc_lem.app.run_content_plan.regenerate_post_carousel_task", car):
+             patch("cqc_lem.app.run_content_plan.regenerate_post_carousel_task", car), \
+             patch("cqc_lem.app.run_scheduler.log_warning") as warn, \
+             patch("cqc_lem.app.run_scheduler.log_debug") as debug:
             from cqc_lem.app.run_scheduler import auto_backfill_missing_assets
             result = auto_backfill_missing_assets()
-        vid.apply_async.assert_called_once_with(kwargs={'post_id': 6})
-        car.apply_async.assert_called_once_with(kwargs={'post_id': 5})
-        assert "Queued 2" in result
+        return {"vid": vid, "car": car, "warn": warn, "debug": debug, "result": result}
+
+    def test_enqueues_regen_per_type(self):
+        rows = [(6, 1, 'video', 'awareness', _due_in(hours=72)),
+                (5, 1, 'carousel', 'awareness', _due_in(hours=72)),
+                (4, 1, 'text', 'awareness', _due_in(hours=72))]
+        r = self._run(rows)
+        r["vid"].apply_async.assert_called_once_with(kwargs={'post_id': 6})
+        r["car"].apply_async.assert_called_once_with(kwargs={'post_id': 5})
+        assert "Queued 2" in r["result"]
 
     def test_no_missing_posts(self):
         with patch("cqc_lem.utilities.db.get_unposted_posts_missing_assets", return_value=[]):
             from cqc_lem.app.run_scheduler import auto_backfill_missing_assets
             assert "Queued 0" in auto_backfill_missing_assets()
+
+
+class TestBackfillEscalation:
+    """Issue #1568: a queued regeneration is the safety net WORKING, so it must not warn.
+
+    The beat re-reads the same post every 3 hours until the regen lands, so warning per pass
+    escalated an expected self-heal into a grouped $exception.
+    """
+
+    def _run(self, rows):
+        return TestBackfillTask()._run(rows)
+
+    def _messages(self, mock):
+        return [c.args[0] for c in mock.call_args_list]
+
+    def test_queued_regen_far_from_slot_is_debug_not_warning(self):
+        rows = [(6, 1, 'video', 'awareness', _due_in(hours=72))]
+        r = self._run(rows)
+        r["warn"].assert_not_called()
+        assert "Backfilling missing media asset for unposted post" in self._messages(r["debug"])
+
+    def test_asset_still_missing_inside_urgent_window_warns(self):
+        rows = [(5, 1, 'carousel', 'awareness', _due_in(hours=2))]
+        r = self._run(rows)
+        assert "Missing media asset still absent close to its scheduled slot" in \
+            self._messages(r["warn"])
+        r["car"].apply_async.assert_called_once_with(kwargs={'post_id': 5})
+
+    def test_naive_scheduled_time_is_read_as_utc(self):
+        due = (datetime.now(timezone.utc) + timedelta(hours=2)).replace(tzinfo=None)
+        r = self._run([(5, 1, 'document', 'awareness', due)])
+        assert "Missing media asset still absent close to its scheduled slot" in \
+            self._messages(r["warn"])
+
+    def test_unreadable_scheduled_time_never_warns(self):
+        r = self._run([(6, 1, 'video', 'awareness', None)])
+        r["warn"].assert_not_called()
+        assert "Backfilling missing media asset for unposted post" in self._messages(r["debug"])
+
+    def test_type_with_no_repair_path_warns_and_queues_nothing(self):
+        r = self._run([(4, 1, 'text', 'awareness', _due_in(hours=72))])
+        assert "No asset regeneration path for post type" in self._messages(r["warn"])
+        r["vid"].apply_async.assert_not_called()
+        r["car"].apply_async.assert_not_called()
+        assert "Queued 0" in r["result"]
+
+    def test_past_due_post_counts_as_urgent(self):
+        r = self._run([(6, 1, 'video', 'awareness', _due_in(hours=-1))])
+        assert "Missing media asset still absent close to its scheduled slot" in \
+            self._messages(r["warn"])
+
+    def test_slot_with_beat_passes_left_is_not_urgent(self):
+        """The urgent window is ONE beat interval, not a day.
+
+        The beat runs every 3 hours, so a slot 12h out still has passes left to confirm the
+        regeneration queued here landed — warning on it would re-file the #1568 exception on the
+        healthy path for every post scheduled within a day.
+        """
+        from cqc_lem.app.run_scheduler import BACKFILL_URGENT_HOURS
+
+        assert BACKFILL_URGENT_HOURS <= 6, "urgent window must stay near the 3h beat interval"
+        r = self._run([(6, 1, 'video', 'awareness', _due_in(hours=12))])
+        r["warn"].assert_not_called()
+        assert "Backfilling missing media asset for unposted post" in self._messages(r["debug"])
+
+    def test_urgent_window_still_covers_the_last_beat_pass(self):
+        """...and never so tight that the final pass before the slot misses the alarm."""
+        from cqc_lem.app.run_scheduler import BACKFILL_URGENT_HOURS
+
+        assert BACKFILL_URGENT_HOURS >= 3, "a slot inside one beat interval must still warn"
