@@ -3358,6 +3358,29 @@ export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
         /**
+         * ActivityEntry
+         * @description One row of the activity feed — what LEM already did.
+         *
+         *     `post_url` goes through `_public_post_url`, so a home-feed comment (logged under a synthetic
+         *     `feedpost://` key, with no LinkedIn permalink) reports null rather than leaking that string.
+         */
+        ActivityEntry: {
+            /** Action Type */
+            action_type: string;
+            /** Created At */
+            created_at: string | null;
+            /** Id */
+            id: number;
+            /** Message */
+            message: string | null;
+            /** Post Id */
+            post_id: number | null;
+            /** Post Url */
+            post_url: string | null;
+            /** Result */
+            result: string;
+        };
+        /**
          * AffiliateNoticeRequest
          * @description Body of `POST /user/affiliate/notice` — session only.
          *
@@ -3411,6 +3434,21 @@ export interface components {
              * @default 90
              */
             ttl_days: number;
+        };
+        /**
+         * ArtifactCtaAttribution
+         * @description Owned-asset CTA deliveries in the window (#624) — what subscriber growth is read against.
+         *
+         *     `newsletter_links` is None, not 0, when no subscribe URL is configured: there was nothing to
+         *     carry, which is a different fact from "carried nothing".
+         */
+        ArtifactCtaAttribution: {
+            /** Lead Magnet Dms */
+            lead_magnet_dms: number;
+            /** Newsletter Links */
+            newsletter_links: number | null;
+            /** Window Days */
+            window_days: number;
         };
         /**
          * AuthFactorDeleteRequest
@@ -3689,6 +3727,18 @@ export interface components {
             session_token: string;
         };
         /**
+         * DashboardStats
+         * @description `detail` of `GET /dashboard/stats/` — the three headline counters, SQL aggregates over all posts.
+         */
+        DashboardStats: {
+            /** Pending Review */
+            pending_review: number;
+            /** Posted Total */
+            posted_total: number;
+            /** Scheduled This Week */
+            scheduled_this_week: number;
+        };
+        /**
          * DmDeleteRequest
          * @description Body of `DELETE /dm`.
          *
@@ -3700,6 +3750,25 @@ export interface components {
             dm_id: number;
             /** Session Token */
             session_token: string;
+        };
+        /**
+         * DmTemplate
+         * @description One rung of a DM template ladder (event type + step), as `GET /user/dm-templates` reads it.
+         *
+         *     Every field is a stored column and the PUT replaces the whole set, so none of them is optional:
+         *     a key the generated type let a caller drop is a column a save would blank.
+         */
+        DmTemplate: {
+            /** Delay Hours */
+            delay_hours: number;
+            /** Event Type */
+            event_type: string;
+            /** Is Active */
+            is_active: boolean;
+            /** Step */
+            step: number;
+            /** Template Text */
+            template_text: string;
         };
         /**
          * DmTemplateItem
@@ -4116,6 +4185,66 @@ export interface components {
             use_hashtags: boolean;
         };
         /**
+         * EngagementTarget
+         * @description One account on the curated engagement roster (#616), as `GET /user/engagement-targets` reads it.
+         *
+         *     The field list is the SELECT the reader runs (`db._ENGAGEMENT_TARGET_COLS`), so `week_start` —
+         *     the rolling counter's anchor, which the SPA does not render — is documented rather than dropped:
+         *     it is on the wire either way, and a payload that documents less than it sends is what this
+         *     module exists to stop.
+         *
+         *     Everything from `comment_blocked_streak` down is automation-owned (#962, #979): the roster PUT
+         *     writes only the editable fields, so a save can never reset a streak or a follow state.
+         */
+        EngagementTarget: {
+            /** Active */
+            active: boolean;
+            /**
+             * Category
+             * @enum {string}
+             */
+            category: "peer" | "icp" | "creator";
+            /** Comment Blocked Streak */
+            comment_blocked_streak: number;
+            /** Comments This Week */
+            comments_this_week: number;
+            /** Connect Requested At */
+            connect_requested_at: string | null;
+            /**
+             * Connect Status
+             * @enum {string}
+             */
+            connect_status: "unknown" | "needs_connection" | "requested" | "connected" | "failed";
+            /** Follow Attempts */
+            follow_attempts: number;
+            /**
+             * Follow Status
+             * @enum {string}
+             */
+            follow_status: "unknown" | "not_following" | "following" | "follow_failed";
+            /** Followed At */
+            followed_at: string | null;
+            /** Id */
+            id: number;
+            /** Last Blocked At */
+            last_blocked_at: string | null;
+            /** Last Engaged At */
+            last_engaged_at: string | null;
+            /** Max Comments Per Week */
+            max_comments_per_week: number;
+            /** Name */
+            name: string | null;
+            /** Profile Url */
+            profile_url: string;
+            /**
+             * Source
+             * @enum {string}
+             */
+            source: "user" | "suggested";
+            /** Week Start */
+            week_start: string | null;
+        };
+        /**
          * EngagementTargetDeleteRequest
          * @description Body of `DELETE /user/engagement-targets`.
          *
@@ -4160,6 +4289,44 @@ export interface components {
              * @default user
              */
             source: string;
+        };
+        /**
+         * EngagementTargetSuggestion
+         * @description A seed candidate for an EMPTY roster — deliberately a narrower shape than a saved row.
+         *
+         *     `suggest_engagement_targets` builds these from `post_engagers` and they have never been stored,
+         *     so they carry no `id` and none of the automation-owned counters. Documenting them as full
+         *     targets would generate a type whose `id` the SPA would read as a number and get `undefined`.
+         */
+        EngagementTargetSuggestion: {
+            /** Active */
+            active: boolean;
+            /**
+             * Category
+             * @enum {string}
+             */
+            category: "peer" | "icp" | "creator";
+            /** Max Comments Per Week */
+            max_comments_per_week: number;
+            /** Name */
+            name: string | null;
+            /** Profile Url */
+            profile_url: string;
+            /**
+             * Source
+             * @enum {string}
+             */
+            source: "user" | "suggested";
+        };
+        /**
+         * EngagementTargetsDetail
+         * @description `detail` of `GET /user/engagement-targets` — the saved roster plus seeds for an empty one.
+         */
+        EngagementTargetsDetail: {
+            /** Suggestions */
+            suggestions: components["schemas"]["EngagementTargetSuggestion"][];
+            /** Targets */
+            targets: components["schemas"]["EngagementTarget"][];
         };
         /**
          * EngagementTargetsRequest
@@ -4298,6 +4465,32 @@ export interface components {
             post_similarity_max_pct: number;
         };
         /**
+         * GateFinding
+         * @description One quality-gate result in the shape the review UI renders (#421).
+         *
+         *     Every key is written by `quality_gates.build_finding`, which is the only writer of a stored
+         *     `posts.gate_reason` entry — so this is the whole finding, not a subset of it. `demoted` marks
+         *     the findings that actually held the post at PENDING; the rest are advisory notes beside them.
+         */
+        GateFinding: {
+            /** Demoted */
+            demoted: boolean;
+            /** Details */
+            details: string[];
+            /** Explanation */
+            explanation: string;
+            /** Gate */
+            gate: string;
+            /** Label */
+            label: string;
+            /** Remediation */
+            remediation: string;
+            /** Score */
+            score: number | null;
+            /** Threshold */
+            threshold: number | null;
+        };
+        /**
          * GenerateCarouselPreviewRequest
          * @description Body of `POST /generate-carousel` — render slide images for a caller to attach to a post.
          *
@@ -4338,6 +4531,47 @@ export interface components {
             url_found?: boolean | null;
         } & {
             [key: string]: unknown;
+        };
+        /**
+         * GroupPostDraftDetail
+         * @description The weekly group post waiting to be published (#932, #1224, #1415).
+         *
+         *     `detail` is null in full when nothing is queued, so every field here is required: the handler
+         *     reads one row and then always adds the three derived keys.
+         *
+         *     `media_url` is null on a text-only draft and `media_type` says which kind of media is attached
+         *     when it is not (#1443). `can_undo_skip` is whether "Skip this week" can still be reversed, and
+         *     `undo_deadline` is the publish slot that window closes at.
+         */
+        GroupPostDraftDetail: {
+            /** Best Practices */
+            best_practices: string[];
+            /** Can Undo Skip */
+            can_undo_skip: boolean;
+            /** Content */
+            content: string;
+            /** Created At */
+            created_at: string | null;
+            /** Group Id */
+            group_id: string;
+            /** Group Name */
+            group_name: string | null;
+            /** Id */
+            id: number;
+            /** Media Type */
+            media_type: ("image" | "video") | null;
+            /** Media Url */
+            media_url: string | null;
+            /** Published At */
+            published_at: string | null;
+            /** Status */
+            status: string;
+            /** Undo Deadline */
+            undo_deadline: string | null;
+            /** Updated At */
+            updated_at: string | null;
+            /** User Id */
+            user_id: number;
         };
         /**
          * GroupPostDraftUpdateRequest
@@ -4383,6 +4617,18 @@ export interface components {
         HTTPValidationError: {
             /** Detail */
             detail?: components["schemas"]["ValidationError"][];
+        };
+        /**
+         * LeadMagnetDetail
+         * @description `detail` of `GET /user/lead-magnet` — the comment keyword and the DM it pays out (#624).
+         */
+        LeadMagnetDetail: {
+            /** Enabled */
+            enabled: boolean;
+            /** Keyword */
+            keyword: string | null;
+            /** Message */
+            message: string | null;
         };
         /**
          * LeadMagnetRequest
@@ -4606,6 +4852,23 @@ export interface components {
             use_avatar?: boolean | null;
         };
         /**
+         * NewsletterDraftDetail
+         * @description `detail` of `GET /user/newsletter-draft`.
+         *
+         *     `next_publish` is the slot AFTER the last edition already queued — when a NEW draft would go
+         *     out, not when the next send is.
+         */
+        NewsletterDraftDetail: {
+            /** Editions */
+            editions: components["schemas"]["NewsletterEdition"][];
+            /** Generate Lead Days */
+            generate_lead_days: number;
+            /** Max Queued Drafts */
+            max_queued_drafts: number;
+            /** Next Publish */
+            next_publish: string | null;
+        };
+        /**
          * NewsletterDraftRequest
          * @description Body of `PUT /user/newsletter-draft`.
          *
@@ -4632,6 +4895,39 @@ export interface components {
             title?: string | null;
         };
         /**
+         * NewsletterEdition
+         * @description One queued edition in the review queue.
+         *
+         *     The stored `cover_image_path` is popped by the handler and replaced with `cover_image_url`
+         *     (#893): the SPA renders the cover from a URL and must never be handed a server path.
+         */
+        NewsletterEdition: {
+            /** Body */
+            body: string | null;
+            /** Cover Image Source */
+            cover_image_source: ("upload" | "ai") | null;
+            /** Cover Image Status */
+            cover_image_status: ("pending_review" | "approved") | null;
+            /** Cover Image Url */
+            cover_image_url: string | null;
+            /** Format */
+            format: string | null;
+            /** Hook Style */
+            hook_style: string | null;
+            /** Id */
+            id: number;
+            /** Scheduled For */
+            scheduled_for: string | null;
+            /** Status */
+            status: string;
+            /** Subject */
+            subject: string | null;
+            /** Subtitle */
+            subtitle: string | null;
+            /** Title */
+            title: string | null;
+        };
+        /**
          * NewsletterRegenerateRequest
          * @description Body of `POST /user/newsletter-draft/regenerate` — rewrite one queued edition.
          */
@@ -4642,6 +4938,47 @@ export interface components {
             guidance?: string | null;
             /** Session Token */
             session_token: string;
+        };
+        /**
+         * NewsletterSettingsDetail
+         * @description `detail` of `GET /user/newsletter-settings` — the whole row, defaults filled in.
+         *
+         *     Derived from `_NEWSLETTER_DEFAULTS`: a user with no row gets that dict back verbatim, so the two
+         *     shapes are the same answer and the defaults are the honest field list. `newsletter_url` and
+         *     `last_published_at` are written by the publish run, not by the settings PUT.
+         *
+         *     `cadence` stays a plain string: the SPA's `<select>` hands back `string`, and a Literal here
+         *     would document a closed vocabulary that `update_newsletter_settings` does not enforce.
+         */
+        NewsletterSettingsDetail: {
+            /** Align With Blog */
+            align_with_blog: boolean;
+            /** Cadence */
+            cadence: string;
+            /** Cover Image Auto */
+            cover_image_auto: boolean;
+            /** Enabled */
+            enabled: boolean;
+            /** Generate Lead Days */
+            generate_lead_days: number;
+            /** Invite Connections Enabled */
+            invite_connections_enabled: boolean;
+            /** Last Published At */
+            last_published_at: string | null;
+            /** Max Invites Per Run */
+            max_invites_per_run: number;
+            /** Max Queued Drafts */
+            max_queued_drafts: number;
+            /** Newsletter Url */
+            newsletter_url: string | null;
+            /** Publish Day */
+            publish_day: number;
+            /** Publish Hour */
+            publish_hour: number;
+            /** Title */
+            title: string | null;
+            /** Topic */
+            topic: string | null;
         };
         /**
          * NewsletterSettingsRequest
@@ -4709,6 +5046,35 @@ export interface components {
             title?: string | null;
             /** Topic */
             topic?: string | null;
+        };
+        /**
+         * NewsletterSubscriberStat
+         * @description One subscriber-growth snapshot (#400).
+         *
+         *     `subscriber_count` is NULL when the page could not be read on that run — a different fact from
+         *     zero subscribers, which is why it is nullable rather than defaulted.
+         */
+        NewsletterSubscriberStat: {
+            /**
+             * Captured At
+             * Format: date-time
+             */
+            captured_at: string;
+            /** Invites Sent */
+            invites_sent: number;
+            /** Subscriber Count */
+            subscriber_count: number | null;
+        };
+        /**
+         * NewsletterSubscribersDetail
+         * @description `detail` of `GET /user/newsletter-subscribers` — the growth series and its attribution.
+         */
+        NewsletterSubscribersDetail: {
+            attribution: components["schemas"]["ArtifactCtaAttribution"];
+            /** History */
+            history: components["schemas"]["NewsletterSubscriberStat"][];
+            /** Latest */
+            latest: number | null;
         };
         /**
          * NpsSurveyRequest
@@ -4827,6 +5193,36 @@ export interface components {
             label?: string | null;
             /** Session Token */
             session_token?: string | null;
+        };
+        /**
+         * PlannedTask
+         * @description One upcoming item on the dashboard's forward half, from whichever queue it came out of.
+         *
+         *     `scheduled_time` is an explicit-UTC ISO string (`_utc_iso`) so the browser localizes it instead
+         *     of reading a naive value as local.
+         */
+        PlannedTask: {
+            /** Id */
+            id: number;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "Post" | "DM" | "Newsletter";
+            /** Scheduled Time */
+            scheduled_time: string | null;
+            /** Status */
+            status: string;
+            /** Title */
+            title: string;
+        };
+        /**
+         * PlannedTasksDetail
+         * @description `detail` of `GET /dashboard/planned-tasks/`.
+         */
+        PlannedTasksDetail: {
+            /** Tasks */
+            tasks: components["schemas"]["PlannedTask"][];
         };
         /**
          * PortalSessionRequest
@@ -4969,6 +5365,42 @@ export interface components {
          */
         PostStatus: "planning" | "pending" | "approved" | "rejected" | "scheduled" | "posted" | "error";
         /**
+         * PostSummary
+         * @description One row of the Content Studio's paged post list.
+         *
+         *     Not the stored row: the handler selects these keys out of it and renames `id` to `post_id`.
+         *     `carousel_slides` is null on anything that is not a deck, and `gate_reason` is the parsed
+         *     findings list (empty, never null, when a draft is being held for nothing).
+         */
+        PostSummary: {
+            /** Archetype */
+            archetype: string | null;
+            /** Authenticity Score */
+            authenticity_score: number | null;
+            /** Carousel Slides */
+            carousel_slides: string[] | null;
+            /** Content */
+            content: string;
+            /** Gate Reason */
+            gate_reason: components["schemas"]["GateFinding"][];
+            /** Image Url */
+            image_url: string | null;
+            /** Manual Publish */
+            manual_publish: boolean;
+            /** Post Id */
+            post_id: number;
+            /** Post Type */
+            post_type: string;
+            /** Rejection Reason */
+            rejection_reason: string | null;
+            /** Scheduled Time */
+            scheduled_time: string | null;
+            /** Status */
+            status: string;
+            /** Video Url */
+            video_url: string | null;
+        };
+        /**
          * PostType
          * @description The `posts.post_type` ENUM, mirrored in Python so post types are never raw strings.
          *
@@ -4977,9 +5409,104 @@ export interface components {
          * @enum {string}
          */
         PostType: "text" | "carousel" | "video" | "document";
+        /**
+         * PostsPage
+         * @description `detail` of `GET /posts/` — one page of the caller's own posts, plus the paging context.
+         */
+        PostsPage: {
+            /** Page */
+            page: number;
+            /** Page Size */
+            page_size: number;
+            /** Posts */
+            posts: components["schemas"]["PostSummary"][];
+            /** Total */
+            total: number;
+        };
+        /** ResponseModel[DashboardStats] */
+        ResponseModel_DashboardStats_: {
+            detail: components["schemas"]["DashboardStats"];
+            /** Status Code */
+            status_code: number;
+        };
         /** ResponseModel[EngagementPreferencesDetail] */
         ResponseModel_EngagementPreferencesDetail_: {
             detail: components["schemas"]["EngagementPreferencesDetail"];
+            /** Status Code */
+            status_code: number;
+        };
+        /** ResponseModel[EngagementTargetsDetail] */
+        ResponseModel_EngagementTargetsDetail_: {
+            detail: components["schemas"]["EngagementTargetsDetail"];
+            /** Status Code */
+            status_code: number;
+        };
+        /** ResponseModel[LeadMagnetDetail] */
+        ResponseModel_LeadMagnetDetail_: {
+            detail: components["schemas"]["LeadMagnetDetail"];
+            /** Status Code */
+            status_code: number;
+        };
+        /** ResponseModel[List[ActivityEntry]] */
+        ResponseModel_List_ActivityEntry__: {
+            /** Detail */
+            detail: components["schemas"]["ActivityEntry"][];
+            /** Status Code */
+            status_code: number;
+        };
+        /** ResponseModel[List[DmTemplate]] */
+        ResponseModel_List_DmTemplate__: {
+            /** Detail */
+            detail: components["schemas"]["DmTemplate"][];
+            /** Status Code */
+            status_code: number;
+        };
+        /** ResponseModel[List[UserGroup]] */
+        ResponseModel_List_UserGroup__: {
+            /** Detail */
+            detail: components["schemas"]["UserGroup"][];
+            /** Status Code */
+            status_code: number;
+        };
+        /** ResponseModel[NewsletterDraftDetail] */
+        ResponseModel_NewsletterDraftDetail_: {
+            detail: components["schemas"]["NewsletterDraftDetail"];
+            /** Status Code */
+            status_code: number;
+        };
+        /** ResponseModel[NewsletterSettingsDetail] */
+        ResponseModel_NewsletterSettingsDetail_: {
+            detail: components["schemas"]["NewsletterSettingsDetail"];
+            /** Status Code */
+            status_code: number;
+        };
+        /** ResponseModel[NewsletterSubscribersDetail] */
+        ResponseModel_NewsletterSubscribersDetail_: {
+            detail: components["schemas"]["NewsletterSubscribersDetail"];
+            /** Status Code */
+            status_code: number;
+        };
+        /** ResponseModel[PlannedTasksDetail] */
+        ResponseModel_PlannedTasksDetail_: {
+            detail: components["schemas"]["PlannedTasksDetail"];
+            /** Status Code */
+            status_code: number;
+        };
+        /** ResponseModel[PostsPage] */
+        ResponseModel_PostsPage_: {
+            detail: components["schemas"]["PostsPage"];
+            /** Status Code */
+            status_code: number;
+        };
+        /** ResponseModel[StoryBankDetail] */
+        ResponseModel_StoryBankDetail_: {
+            detail: components["schemas"]["StoryBankDetail"];
+            /** Status Code */
+            status_code: number;
+        };
+        /** ResponseModel[Union[GroupPostDraftDetail, NoneType]] */
+        ResponseModel_Union_GroupPostDraftDetail__NoneType__: {
+            detail: components["schemas"]["GroupPostDraftDetail"] | null;
             /** Status Code */
             status_code: number;
         };
@@ -5172,6 +5699,21 @@ export interface components {
             session_token: string;
         };
         /**
+         * StoryBankDetail
+         * @description `detail` of `GET /user/story-bank` — the entries plus what a seeded bank means.
+         *
+         *     `kinds` is `db.STORY_BANK_KINDS` verbatim, so the SPA's picker cannot offer a kind the writer
+         *     would fall back to `anecdote` on.
+         */
+        StoryBankDetail: {
+            /** Entries */
+            entries: components["schemas"]["StoryEntry"][];
+            /** Kinds */
+            kinds: string[];
+            /** Target Entries */
+            target_entries: number;
+        };
+        /**
          * StoryBankItem
          * @description One piece of the user's own raw material (issue #620). `body` is the only required field —
          *     quick capture is a textarea, not a form wizard, so the title defaults from the body.
@@ -5210,6 +5752,34 @@ export interface components {
             entries: components["schemas"]["StoryBankItem"][];
             /** Session Token */
             session_token: string;
+        };
+        /**
+         * StoryEntry
+         * @description One piece of the user's own raw material (#620), as the story bank reads it.
+         *
+         *     `used_count` / `last_used_at` are the rotation counters generation writes; they are read-only
+         *     here, and the SELECT (`db._STORY_BANK_COLS`) is what this list is taken from.
+         */
+        StoryEntry: {
+            /** Active */
+            active: boolean;
+            /** Body */
+            body: string;
+            /** Happened At */
+            happened_at: string | null;
+            /** Id */
+            id: number;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "anecdote" | "number" | "opinion" | "client_win" | "mistake" | "artifact";
+            /** Last Used At */
+            last_used_at: string | null;
+            /** Title */
+            title: string | null;
+            /** Used Count */
+            used_count: number;
         };
         /**
          * SubscriptionSummary
@@ -5355,6 +5925,29 @@ export interface components {
             tier: string;
         };
         /**
+         * UserGroup
+         * @description One of the user's LinkedIn groups and its per-group toggles.
+         *
+         *     `enabled` (commenting) and `post_enabled` (publishing) are independent on purpose — being in a
+         *     group is not permission to publish into it. `is_next_post` is marked ON the row rather than
+         *     returned beside the list, so an SPA bundle open from before a deploy still reads `detail` as the
+         *     plain array it expects (#743).
+         */
+        UserGroup: {
+            /** Enabled */
+            enabled: boolean;
+            /** Group Id */
+            group_id: string;
+            /** Group Name */
+            group_name: string | null;
+            /** Is Next Post */
+            is_next_post: boolean;
+            /** Last Posted At */
+            last_posted_at: string | null;
+            /** Post Enabled */
+            post_enabled: boolean;
+        };
+        /**
          * UserPreferencesDetail
          * @description Account-level preferences — the five columns the Account page edits, plus the derived one.
          *
@@ -5495,7 +6088,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ResponseModel_list_dict_str__Any___"];
+                    "application/json": components["schemas"]["ResponseModel_List_ActivityEntry__"];
                 };
             };
             /** @description Unauthorized */
@@ -7024,7 +7617,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ResponseModel_dict_str__Any__"];
+                    "application/json": components["schemas"]["ResponseModel_PlannedTasksDetail_"];
                 };
             };
             /** @description Unauthorized */
@@ -7070,7 +7663,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ResponseModel_dict_str__Any__"];
+                    "application/json": components["schemas"]["ResponseModel_DashboardStats_"];
                 };
             };
             /** @description Unauthorized */
@@ -7814,7 +8407,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ResponseModel_dict_str__Any__"];
+                    "application/json": components["schemas"]["ResponseModel_PostsPage_"];
                 };
             };
             /** @description Unauthorized */
@@ -8817,7 +9410,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ResponseModel_list_dict_str__Any___"];
+                    "application/json": components["schemas"]["ResponseModel_List_DmTemplate__"];
                 };
             };
             /** @description Validation Error */
@@ -9043,7 +9636,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ResponseModel_dict_str__Any__"];
+                    "application/json": components["schemas"]["ResponseModel_EngagementTargetsDetail_"];
                 };
             };
             /** @description Validation Error */
@@ -9173,7 +9766,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ResponseModel_Union_dict_str__Any___NoneType__"];
+                    "application/json": components["schemas"]["ResponseModel_Union_GroupPostDraftDetail__NoneType__"];
                 };
             };
             /** @description Validation Error */
@@ -9270,7 +9863,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ResponseModel_list_dict_str__Any___"];
+                    "application/json": components["schemas"]["ResponseModel_List_UserGroup__"];
                 };
             };
             /** @description Validation Error */
@@ -9334,7 +9927,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ResponseModel_dict_str__Any__"];
+                    "application/json": components["schemas"]["ResponseModel_LeadMagnetDetail_"];
                 };
             };
             /** @description Validation Error */
@@ -9798,7 +10391,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ResponseModel_dict_str__Any__"];
+                    "application/json": components["schemas"]["ResponseModel_NewsletterDraftDetail_"];
                 };
             };
             /** @description Validation Error */
@@ -10064,7 +10657,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ResponseModel_dict_str__Any__"];
+                    "application/json": components["schemas"]["ResponseModel_NewsletterSettingsDetail_"];
                 };
             };
             /** @description Validation Error */
@@ -10128,7 +10721,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ResponseModel_dict_str__Any__"];
+                    "application/json": components["schemas"]["ResponseModel_NewsletterSubscribersDetail_"];
                 };
             };
             /** @description Validation Error */
@@ -11050,7 +11643,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ResponseModel_dict_str__Any__"];
+                    "application/json": components["schemas"]["ResponseModel_StoryBankDetail_"];
                 };
             };
             /** @description Validation Error */

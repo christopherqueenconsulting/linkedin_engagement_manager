@@ -1,6 +1,78 @@
 {
   "components": {
     "schemas": {
+      "ActivityEntry": {
+        "description": "One row of the activity feed \u2014 what LEM already did.\n\n`post_url` goes through `_public_post_url`, so a home-feed comment (logged under a synthetic\n`feedpost://` key, with no LinkedIn permalink) reports null rather than leaking that string.",
+        "properties": {
+          "action_type": {
+            "title": "Action Type",
+            "type": "string"
+          },
+          "created_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created At"
+          },
+          "id": {
+            "title": "Id",
+            "type": "integer"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message"
+          },
+          "post_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Post Id"
+          },
+          "post_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Post Url"
+          },
+          "result": {
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "action_type",
+          "result",
+          "post_id",
+          "post_url",
+          "message",
+          "created_at"
+        ],
+        "title": "ActivityEntry",
+        "type": "object"
+      },
       "AffiliateNoticeRequest": {
         "description": "Body of `POST /user/affiliate/notice` \u2014 session only.\n\nThe timestamp it records is the EVIDENCE that the enrolment notice was delivered, which is what makes default-on\nenrolment fair.",
         "properties": {
@@ -93,6 +165,37 @@
           }
         },
         "title": "AgentTokenRequest",
+        "type": "object"
+      },
+      "ArtifactCtaAttribution": {
+        "description": "Owned-asset CTA deliveries in the window (#624) \u2014 what subscriber growth is read against.\n\n`newsletter_links` is None, not 0, when no subscribe URL is configured: there was nothing to\ncarry, which is a different fact from \"carried nothing\".",
+        "properties": {
+          "lead_magnet_dms": {
+            "title": "Lead Magnet Dms",
+            "type": "integer"
+          },
+          "newsletter_links": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Newsletter Links"
+          },
+          "window_days": {
+            "title": "Window Days",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "window_days",
+          "lead_magnet_dms",
+          "newsletter_links"
+        ],
+        "title": "ArtifactCtaAttribution",
         "type": "object"
       },
       "AuthFactorDeleteRequest": {
@@ -759,6 +862,30 @@
         "title": "ConnectionRequestUpdate",
         "type": "object"
       },
+      "DashboardStats": {
+        "description": "`detail` of `GET /dashboard/stats/` \u2014 the three headline counters, SQL aggregates over all posts.",
+        "properties": {
+          "pending_review": {
+            "title": "Pending Review",
+            "type": "integer"
+          },
+          "posted_total": {
+            "title": "Posted Total",
+            "type": "integer"
+          },
+          "scheduled_this_week": {
+            "title": "Scheduled This Week",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "scheduled_this_week",
+          "pending_review",
+          "posted_total"
+        ],
+        "title": "DashboardStats",
+        "type": "object"
+      },
       "DmDeleteRequest": {
         "description": "Body of `DELETE /dm`.\n\nThe delete is SOFT \u2014 the row moves to `canceled` so it is never sent, and the history of what was drafted\nsurvives.",
         "properties": {
@@ -776,6 +903,40 @@
           "dm_id"
         ],
         "title": "DmDeleteRequest",
+        "type": "object"
+      },
+      "DmTemplate": {
+        "description": "One rung of a DM template ladder (event type + step), as `GET /user/dm-templates` reads it.\n\nEvery field is a stored column and the PUT replaces the whole set, so none of them is optional:\na key the generated type let a caller drop is a column a save would blank.",
+        "properties": {
+          "delay_hours": {
+            "title": "Delay Hours",
+            "type": "integer"
+          },
+          "event_type": {
+            "title": "Event Type",
+            "type": "string"
+          },
+          "is_active": {
+            "title": "Is Active",
+            "type": "boolean"
+          },
+          "step": {
+            "title": "Step",
+            "type": "integer"
+          },
+          "template_text": {
+            "title": "Template Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "event_type",
+          "step",
+          "delay_hours",
+          "template_text",
+          "is_active"
+        ],
+        "title": "DmTemplate",
         "type": "object"
       },
       "DmTemplateItem": {
@@ -1650,6 +1811,169 @@
         "title": "EngagementPreferencesRequest",
         "type": "object"
       },
+      "EngagementTarget": {
+        "description": "One account on the curated engagement roster (#616), as `GET /user/engagement-targets` reads it.\n\nThe field list is the SELECT the reader runs (`db._ENGAGEMENT_TARGET_COLS`), so `week_start` \u2014\nthe rolling counter's anchor, which the SPA does not render \u2014 is documented rather than dropped:\nit is on the wire either way, and a payload that documents less than it sends is what this\nmodule exists to stop.\n\nEverything from `comment_blocked_streak` down is automation-owned (#962, #979): the roster PUT\nwrites only the editable fields, so a save can never reset a streak or a follow state.",
+        "properties": {
+          "active": {
+            "title": "Active",
+            "type": "boolean"
+          },
+          "category": {
+            "enum": [
+              "peer",
+              "icp",
+              "creator"
+            ],
+            "title": "Category",
+            "type": "string"
+          },
+          "comment_blocked_streak": {
+            "title": "Comment Blocked Streak",
+            "type": "integer"
+          },
+          "comments_this_week": {
+            "title": "Comments This Week",
+            "type": "integer"
+          },
+          "connect_requested_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Connect Requested At"
+          },
+          "connect_status": {
+            "enum": [
+              "unknown",
+              "needs_connection",
+              "requested",
+              "connected",
+              "failed"
+            ],
+            "title": "Connect Status",
+            "type": "string"
+          },
+          "follow_attempts": {
+            "title": "Follow Attempts",
+            "type": "integer"
+          },
+          "follow_status": {
+            "enum": [
+              "unknown",
+              "not_following",
+              "following",
+              "follow_failed"
+            ],
+            "title": "Follow Status",
+            "type": "string"
+          },
+          "followed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Followed At"
+          },
+          "id": {
+            "title": "Id",
+            "type": "integer"
+          },
+          "last_blocked_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Blocked At"
+          },
+          "last_engaged_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Engaged At"
+          },
+          "max_comments_per_week": {
+            "title": "Max Comments Per Week",
+            "type": "integer"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "profile_url": {
+            "title": "Profile Url",
+            "type": "string"
+          },
+          "source": {
+            "enum": [
+              "user",
+              "suggested"
+            ],
+            "title": "Source",
+            "type": "string"
+          },
+          "week_start": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Week Start"
+          }
+        },
+        "required": [
+          "id",
+          "profile_url",
+          "name",
+          "category",
+          "max_comments_per_week",
+          "active",
+          "last_engaged_at",
+          "comments_this_week",
+          "week_start",
+          "source",
+          "comment_blocked_streak",
+          "last_blocked_at",
+          "follow_status",
+          "followed_at",
+          "follow_attempts",
+          "connect_status",
+          "connect_requested_at"
+        ],
+        "title": "EngagementTarget",
+        "type": "object"
+      },
       "EngagementTargetDeleteRequest": {
         "description": "Body of `DELETE /user/engagement-targets`.\n\nThe target is named by profile URL, not by id \u2014 that is the roster's natural key, and it is what the SPA is\nholding.",
         "properties": {
@@ -1715,6 +2039,86 @@
           "profile_url"
         ],
         "title": "EngagementTargetItem",
+        "type": "object"
+      },
+      "EngagementTargetSuggestion": {
+        "description": "A seed candidate for an EMPTY roster \u2014 deliberately a narrower shape than a saved row.\n\n`suggest_engagement_targets` builds these from `post_engagers` and they have never been stored,\nso they carry no `id` and none of the automation-owned counters. Documenting them as full\ntargets would generate a type whose `id` the SPA would read as a number and get `undefined`.",
+        "properties": {
+          "active": {
+            "title": "Active",
+            "type": "boolean"
+          },
+          "category": {
+            "enum": [
+              "peer",
+              "icp",
+              "creator"
+            ],
+            "title": "Category",
+            "type": "string"
+          },
+          "max_comments_per_week": {
+            "title": "Max Comments Per Week",
+            "type": "integer"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "profile_url": {
+            "title": "Profile Url",
+            "type": "string"
+          },
+          "source": {
+            "enum": [
+              "user",
+              "suggested"
+            ],
+            "title": "Source",
+            "type": "string"
+          }
+        },
+        "required": [
+          "profile_url",
+          "name",
+          "category",
+          "max_comments_per_week",
+          "active",
+          "source"
+        ],
+        "title": "EngagementTargetSuggestion",
+        "type": "object"
+      },
+      "EngagementTargetsDetail": {
+        "description": "`detail` of `GET /user/engagement-targets` \u2014 the saved roster plus seeds for an empty one.",
+        "properties": {
+          "suggestions": {
+            "items": {
+              "$ref": "#/components/schemas/EngagementTargetSuggestion"
+            },
+            "title": "Suggestions",
+            "type": "array"
+          },
+          "targets": {
+            "items": {
+              "$ref": "#/components/schemas/EngagementTarget"
+            },
+            "title": "Targets",
+            "type": "array"
+          }
+        },
+        "required": [
+          "targets",
+          "suggestions"
+        ],
+        "title": "EngagementTargetsDetail",
         "type": "object"
       },
       "EngagementTargetsRequest": {
@@ -2104,6 +2508,72 @@
         "title": "GateDefaults",
         "type": "object"
       },
+      "GateFinding": {
+        "description": "One quality-gate result in the shape the review UI renders (#421).\n\nEvery key is written by `quality_gates.build_finding`, which is the only writer of a stored\n`posts.gate_reason` entry \u2014 so this is the whole finding, not a subset of it. `demoted` marks\nthe findings that actually held the post at PENDING; the rest are advisory notes beside them.",
+        "properties": {
+          "demoted": {
+            "title": "Demoted",
+            "type": "boolean"
+          },
+          "details": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Details",
+            "type": "array"
+          },
+          "explanation": {
+            "title": "Explanation",
+            "type": "string"
+          },
+          "gate": {
+            "title": "Gate",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "remediation": {
+            "title": "Remediation",
+            "type": "string"
+          },
+          "score": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Score"
+          },
+          "threshold": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Threshold"
+          }
+        },
+        "required": [
+          "gate",
+          "label",
+          "score",
+          "threshold",
+          "demoted",
+          "explanation",
+          "remediation",
+          "details"
+        ],
+        "title": "GateFinding",
+        "type": "object"
+      },
       "GenerateCarouselPreviewRequest": {
         "description": "Body of `POST /generate-carousel` \u2014 render slide images for a caller to attach to a post.\n\nA preview only: the slides come back as URLs for `carousel_slides`, and nothing is scheduled\nor stored against a post here.",
         "properties": {
@@ -2208,6 +2678,141 @@
         "title": "GmailForwardConfirmation",
         "type": "object"
       },
+      "GroupPostDraftDetail": {
+        "description": "The weekly group post waiting to be published (#932, #1224, #1415).\n\n`detail` is null in full when nothing is queued, so every field here is required: the handler\nreads one row and then always adds the three derived keys.\n\n`media_url` is null on a text-only draft and `media_type` says which kind of media is attached\nwhen it is not (#1443). `can_undo_skip` is whether \"Skip this week\" can still be reversed, and\n`undo_deadline` is the publish slot that window closes at.",
+        "properties": {
+          "best_practices": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Best Practices",
+            "type": "array"
+          },
+          "can_undo_skip": {
+            "title": "Can Undo Skip",
+            "type": "boolean"
+          },
+          "content": {
+            "title": "Content",
+            "type": "string"
+          },
+          "created_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created At"
+          },
+          "group_id": {
+            "title": "Group Id",
+            "type": "string"
+          },
+          "group_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Group Name"
+          },
+          "id": {
+            "title": "Id",
+            "type": "integer"
+          },
+          "media_type": {
+            "anyOf": [
+              {
+                "enum": [
+                  "image",
+                  "video"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Media Type"
+          },
+          "media_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Media Url"
+          },
+          "published_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Published At"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "undo_deadline": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Undo Deadline"
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated At"
+          },
+          "user_id": {
+            "title": "User Id",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "user_id",
+          "group_id",
+          "group_name",
+          "content",
+          "media_url",
+          "media_type",
+          "status",
+          "created_at",
+          "updated_at",
+          "published_at",
+          "best_practices",
+          "undo_deadline",
+          "can_undo_skip"
+        ],
+        "title": "GroupPostDraftDetail",
+        "type": "object"
+      },
       "GroupPostDraftUpdateRequest": {
         "description": "Body of `PUT /user/group-post-draft` (issues #932, #1224).\n\nIt names no draft id: the handler always edits the caller's OWN current draft, so there is no id a client could\npoint somewhere else.",
         "properties": {
@@ -2293,6 +2898,44 @@
           }
         },
         "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "LeadMagnetDetail": {
+        "description": "`detail` of `GET /user/lead-magnet` \u2014 the comment keyword and the DM it pays out (#624).",
+        "properties": {
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "keyword": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Keyword"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message"
+          }
+        },
+        "required": [
+          "enabled",
+          "keyword",
+          "message"
+        ],
+        "title": "LeadMagnetDetail",
         "type": "object"
       },
       "LeadMagnetRequest": {
@@ -2758,6 +3401,45 @@
         "title": "NewsletterCoverRequest",
         "type": "object"
       },
+      "NewsletterDraftDetail": {
+        "description": "`detail` of `GET /user/newsletter-draft`.\n\n`next_publish` is the slot AFTER the last edition already queued \u2014 when a NEW draft would go\nout, not when the next send is.",
+        "properties": {
+          "editions": {
+            "items": {
+              "$ref": "#/components/schemas/NewsletterEdition"
+            },
+            "title": "Editions",
+            "type": "array"
+          },
+          "generate_lead_days": {
+            "title": "Generate Lead Days",
+            "type": "integer"
+          },
+          "max_queued_drafts": {
+            "title": "Max Queued Drafts",
+            "type": "integer"
+          },
+          "next_publish": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Publish"
+          }
+        },
+        "required": [
+          "editions",
+          "next_publish",
+          "max_queued_drafts",
+          "generate_lead_days"
+        ],
+        "title": "NewsletterDraftDetail",
+        "type": "object"
+      },
       "NewsletterDraftRequest": {
         "description": "Body of `PUT /user/newsletter-draft`.\n\n`action` is `save` (fields only), `approve` or `skip`; anything else maps to no status change, so an unknown\naction saves rather than publishing.",
         "properties": {
@@ -2827,6 +3509,153 @@
         "title": "NewsletterDraftRequest",
         "type": "object"
       },
+      "NewsletterEdition": {
+        "description": "One queued edition in the review queue.\n\nThe stored `cover_image_path` is popped by the handler and replaced with `cover_image_url`\n(#893): the SPA renders the cover from a URL and must never be handed a server path.",
+        "properties": {
+          "body": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Body"
+          },
+          "cover_image_source": {
+            "anyOf": [
+              {
+                "enum": [
+                  "upload",
+                  "ai"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cover Image Source"
+          },
+          "cover_image_status": {
+            "anyOf": [
+              {
+                "enum": [
+                  "pending_review",
+                  "approved"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cover Image Status"
+          },
+          "cover_image_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cover Image Url"
+          },
+          "format": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Format"
+          },
+          "hook_style": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hook Style"
+          },
+          "id": {
+            "title": "Id",
+            "type": "integer"
+          },
+          "scheduled_for": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scheduled For"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "subject": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Subject"
+          },
+          "subtitle": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Subtitle"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "subtitle",
+          "subject",
+          "format",
+          "hook_style",
+          "body",
+          "status",
+          "scheduled_for",
+          "cover_image_url",
+          "cover_image_source",
+          "cover_image_status"
+        ],
+        "title": "NewsletterEdition",
+        "type": "object"
+      },
       "NewsletterRegenerateRequest": {
         "description": "Body of `POST /user/newsletter-draft/regenerate` \u2014 rewrite one queued edition.",
         "properties": {
@@ -2855,6 +3684,114 @@
           "edition_id"
         ],
         "title": "NewsletterRegenerateRequest",
+        "type": "object"
+      },
+      "NewsletterSettingsDetail": {
+        "description": "`detail` of `GET /user/newsletter-settings` \u2014 the whole row, defaults filled in.\n\nDerived from `_NEWSLETTER_DEFAULTS`: a user with no row gets that dict back verbatim, so the two\nshapes are the same answer and the defaults are the honest field list. `newsletter_url` and\n`last_published_at` are written by the publish run, not by the settings PUT.\n\n`cadence` stays a plain string: the SPA's `<select>` hands back `string`, and a Literal here\nwould document a closed vocabulary that `update_newsletter_settings` does not enforce.",
+        "properties": {
+          "align_with_blog": {
+            "title": "Align With Blog",
+            "type": "boolean"
+          },
+          "cadence": {
+            "title": "Cadence",
+            "type": "string"
+          },
+          "cover_image_auto": {
+            "title": "Cover Image Auto",
+            "type": "boolean"
+          },
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "generate_lead_days": {
+            "title": "Generate Lead Days",
+            "type": "integer"
+          },
+          "invite_connections_enabled": {
+            "title": "Invite Connections Enabled",
+            "type": "boolean"
+          },
+          "last_published_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Published At"
+          },
+          "max_invites_per_run": {
+            "title": "Max Invites Per Run",
+            "type": "integer"
+          },
+          "max_queued_drafts": {
+            "title": "Max Queued Drafts",
+            "type": "integer"
+          },
+          "newsletter_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Newsletter Url"
+          },
+          "publish_day": {
+            "title": "Publish Day",
+            "type": "integer"
+          },
+          "publish_hour": {
+            "title": "Publish Hour",
+            "type": "integer"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          },
+          "topic": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Topic"
+          }
+        },
+        "required": [
+          "enabled",
+          "title",
+          "topic",
+          "cadence",
+          "align_with_blog",
+          "newsletter_url",
+          "last_published_at",
+          "publish_day",
+          "publish_hour",
+          "generate_lead_days",
+          "max_queued_drafts",
+          "invite_connections_enabled",
+          "max_invites_per_run",
+          "cover_image_auto"
+        ],
+        "title": "NewsletterSettingsDetail",
         "type": "object"
       },
       "NewsletterSettingsRequest": {
@@ -2943,6 +3880,71 @@
           "session_token"
         ],
         "title": "NewsletterSettingsRequest",
+        "type": "object"
+      },
+      "NewsletterSubscriberStat": {
+        "description": "One subscriber-growth snapshot (#400).\n\n`subscriber_count` is NULL when the page could not be read on that run \u2014 a different fact from\nzero subscribers, which is why it is nullable rather than defaulted.",
+        "properties": {
+          "captured_at": {
+            "format": "date-time",
+            "title": "Captured At",
+            "type": "string"
+          },
+          "invites_sent": {
+            "title": "Invites Sent",
+            "type": "integer"
+          },
+          "subscriber_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Subscriber Count"
+          }
+        },
+        "required": [
+          "subscriber_count",
+          "invites_sent",
+          "captured_at"
+        ],
+        "title": "NewsletterSubscriberStat",
+        "type": "object"
+      },
+      "NewsletterSubscribersDetail": {
+        "description": "`detail` of `GET /user/newsletter-subscribers` \u2014 the growth series and its attribution.",
+        "properties": {
+          "attribution": {
+            "$ref": "#/components/schemas/ArtifactCtaAttribution"
+          },
+          "history": {
+            "items": {
+              "$ref": "#/components/schemas/NewsletterSubscriberStat"
+            },
+            "title": "History",
+            "type": "array"
+          },
+          "latest": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Latest"
+          }
+        },
+        "required": [
+          "latest",
+          "history",
+          "attribution"
+        ],
+        "title": "NewsletterSubscribersDetail",
         "type": "object"
       },
       "NpsSurveyRequest": {
@@ -3192,6 +4194,69 @@
           "credential"
         ],
         "title": "PasskeyRegisterCompleteRequest",
+        "type": "object"
+      },
+      "PlannedTask": {
+        "description": "One upcoming item on the dashboard's forward half, from whichever queue it came out of.\n\n`scheduled_time` is an explicit-UTC ISO string (`_utc_iso`) so the browser localizes it instead\nof reading a naive value as local.",
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "integer"
+          },
+          "kind": {
+            "enum": [
+              "Post",
+              "DM",
+              "Newsletter"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "scheduled_time": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scheduled Time"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "id",
+          "title",
+          "status",
+          "scheduled_time"
+        ],
+        "title": "PlannedTask",
+        "type": "object"
+      },
+      "PlannedTasksDetail": {
+        "description": "`detail` of `GET /dashboard/planned-tasks/`.",
+        "properties": {
+          "tasks": {
+            "items": {
+              "$ref": "#/components/schemas/PlannedTask"
+            },
+            "title": "Tasks",
+            "type": "array"
+          }
+        },
+        "required": [
+          "tasks"
+        ],
+        "title": "PlannedTasksDetail",
         "type": "object"
       },
       "PortalSessionRequest": {
@@ -3579,6 +4644,135 @@
         "title": "PostStatus",
         "type": "string"
       },
+      "PostSummary": {
+        "description": "One row of the Content Studio's paged post list.\n\nNot the stored row: the handler selects these keys out of it and renames `id` to `post_id`.\n`carousel_slides` is null on anything that is not a deck, and `gate_reason` is the parsed\nfindings list (empty, never null, when a draft is being held for nothing).",
+        "properties": {
+          "archetype": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Archetype"
+          },
+          "authenticity_score": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Authenticity Score"
+          },
+          "carousel_slides": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Carousel Slides"
+          },
+          "content": {
+            "title": "Content",
+            "type": "string"
+          },
+          "gate_reason": {
+            "items": {
+              "$ref": "#/components/schemas/GateFinding"
+            },
+            "title": "Gate Reason",
+            "type": "array"
+          },
+          "image_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Image Url"
+          },
+          "manual_publish": {
+            "title": "Manual Publish",
+            "type": "boolean"
+          },
+          "post_id": {
+            "title": "Post Id",
+            "type": "integer"
+          },
+          "post_type": {
+            "title": "Post Type",
+            "type": "string"
+          },
+          "rejection_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rejection Reason"
+          },
+          "scheduled_time": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scheduled Time"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "video_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Video Url"
+          }
+        },
+        "required": [
+          "post_id",
+          "content",
+          "video_url",
+          "image_url",
+          "scheduled_time",
+          "post_type",
+          "status",
+          "carousel_slides",
+          "archetype",
+          "authenticity_score",
+          "gate_reason",
+          "rejection_reason",
+          "manual_publish"
+        ],
+        "title": "PostSummary",
+        "type": "object"
+      },
       "PostType": {
         "description": "The `posts.post_type` ENUM, mirrored in Python so post types are never raw strings.\n\n`posts.post_type` is a MySQL ENUM, so adding a member here is only half the change \u2014 the column needs\na Flyway migration before anything can be written with the new value.",
         "enum": [
@@ -3589,6 +4783,55 @@
         ],
         "title": "PostType",
         "type": "string"
+      },
+      "PostsPage": {
+        "description": "`detail` of `GET /posts/` \u2014 one page of the caller's own posts, plus the paging context.",
+        "properties": {
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "page_size": {
+            "title": "Page Size",
+            "type": "integer"
+          },
+          "posts": {
+            "items": {
+              "$ref": "#/components/schemas/PostSummary"
+            },
+            "title": "Posts",
+            "type": "array"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "posts",
+          "total",
+          "page",
+          "page_size"
+        ],
+        "title": "PostsPage",
+        "type": "object"
+      },
+      "ResponseModel_DashboardStats_": {
+        "properties": {
+          "detail": {
+            "$ref": "#/components/schemas/DashboardStats"
+          },
+          "status_code": {
+            "title": "Status Code",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "status_code",
+          "detail"
+        ],
+        "title": "ResponseModel[DashboardStats]",
+        "type": "object"
       },
       "ResponseModel_EngagementPreferencesDetail_": {
         "properties": {
@@ -3605,6 +4848,229 @@
           "detail"
         ],
         "title": "ResponseModel[EngagementPreferencesDetail]",
+        "type": "object"
+      },
+      "ResponseModel_EngagementTargetsDetail_": {
+        "properties": {
+          "detail": {
+            "$ref": "#/components/schemas/EngagementTargetsDetail"
+          },
+          "status_code": {
+            "title": "Status Code",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "status_code",
+          "detail"
+        ],
+        "title": "ResponseModel[EngagementTargetsDetail]",
+        "type": "object"
+      },
+      "ResponseModel_LeadMagnetDetail_": {
+        "properties": {
+          "detail": {
+            "$ref": "#/components/schemas/LeadMagnetDetail"
+          },
+          "status_code": {
+            "title": "Status Code",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "status_code",
+          "detail"
+        ],
+        "title": "ResponseModel[LeadMagnetDetail]",
+        "type": "object"
+      },
+      "ResponseModel_List_ActivityEntry__": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ActivityEntry"
+            },
+            "title": "Detail",
+            "type": "array"
+          },
+          "status_code": {
+            "title": "Status Code",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "status_code",
+          "detail"
+        ],
+        "title": "ResponseModel[List[ActivityEntry]]",
+        "type": "object"
+      },
+      "ResponseModel_List_DmTemplate__": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/DmTemplate"
+            },
+            "title": "Detail",
+            "type": "array"
+          },
+          "status_code": {
+            "title": "Status Code",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "status_code",
+          "detail"
+        ],
+        "title": "ResponseModel[List[DmTemplate]]",
+        "type": "object"
+      },
+      "ResponseModel_List_UserGroup__": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/UserGroup"
+            },
+            "title": "Detail",
+            "type": "array"
+          },
+          "status_code": {
+            "title": "Status Code",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "status_code",
+          "detail"
+        ],
+        "title": "ResponseModel[List[UserGroup]]",
+        "type": "object"
+      },
+      "ResponseModel_NewsletterDraftDetail_": {
+        "properties": {
+          "detail": {
+            "$ref": "#/components/schemas/NewsletterDraftDetail"
+          },
+          "status_code": {
+            "title": "Status Code",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "status_code",
+          "detail"
+        ],
+        "title": "ResponseModel[NewsletterDraftDetail]",
+        "type": "object"
+      },
+      "ResponseModel_NewsletterSettingsDetail_": {
+        "properties": {
+          "detail": {
+            "$ref": "#/components/schemas/NewsletterSettingsDetail"
+          },
+          "status_code": {
+            "title": "Status Code",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "status_code",
+          "detail"
+        ],
+        "title": "ResponseModel[NewsletterSettingsDetail]",
+        "type": "object"
+      },
+      "ResponseModel_NewsletterSubscribersDetail_": {
+        "properties": {
+          "detail": {
+            "$ref": "#/components/schemas/NewsletterSubscribersDetail"
+          },
+          "status_code": {
+            "title": "Status Code",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "status_code",
+          "detail"
+        ],
+        "title": "ResponseModel[NewsletterSubscribersDetail]",
+        "type": "object"
+      },
+      "ResponseModel_PlannedTasksDetail_": {
+        "properties": {
+          "detail": {
+            "$ref": "#/components/schemas/PlannedTasksDetail"
+          },
+          "status_code": {
+            "title": "Status Code",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "status_code",
+          "detail"
+        ],
+        "title": "ResponseModel[PlannedTasksDetail]",
+        "type": "object"
+      },
+      "ResponseModel_PostsPage_": {
+        "properties": {
+          "detail": {
+            "$ref": "#/components/schemas/PostsPage"
+          },
+          "status_code": {
+            "title": "Status Code",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "status_code",
+          "detail"
+        ],
+        "title": "ResponseModel[PostsPage]",
+        "type": "object"
+      },
+      "ResponseModel_StoryBankDetail_": {
+        "properties": {
+          "detail": {
+            "$ref": "#/components/schemas/StoryBankDetail"
+          },
+          "status_code": {
+            "title": "Status Code",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "status_code",
+          "detail"
+        ],
+        "title": "ResponseModel[StoryBankDetail]",
+        "type": "object"
+      },
+      "ResponseModel_Union_GroupPostDraftDetail__NoneType__": {
+        "properties": {
+          "detail": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/GroupPostDraftDetail"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "status_code": {
+            "title": "Status Code",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "status_code",
+          "detail"
+        ],
+        "title": "ResponseModel[Union[GroupPostDraftDetail, NoneType]]",
         "type": "object"
       },
       "ResponseModel_Union_dict_str__Any___NoneType__": {
@@ -4047,6 +5513,36 @@
         "title": "StoryBankDeleteRequest",
         "type": "object"
       },
+      "StoryBankDetail": {
+        "description": "`detail` of `GET /user/story-bank` \u2014 the entries plus what a seeded bank means.\n\n`kinds` is `db.STORY_BANK_KINDS` verbatim, so the SPA's picker cannot offer a kind the writer\nwould fall back to `anecdote` on.",
+        "properties": {
+          "entries": {
+            "items": {
+              "$ref": "#/components/schemas/StoryEntry"
+            },
+            "title": "Entries",
+            "type": "array"
+          },
+          "kinds": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Kinds",
+            "type": "array"
+          },
+          "target_entries": {
+            "title": "Target Entries",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "entries",
+          "kinds",
+          "target_entries"
+        ],
+        "title": "StoryBankDetail",
+        "type": "object"
+      },
       "StoryBankItem": {
         "description": "One piece of the user's own raw material (issue #620). `body` is the only required field \u2014\nquick capture is a textarea, not a form wizard, so the title defaults from the body.",
         "properties": {
@@ -4126,6 +5622,86 @@
           "session_token"
         ],
         "title": "StoryBankRequest",
+        "type": "object"
+      },
+      "StoryEntry": {
+        "description": "One piece of the user's own raw material (#620), as the story bank reads it.\n\n`used_count` / `last_used_at` are the rotation counters generation writes; they are read-only\nhere, and the SELECT (`db._STORY_BANK_COLS`) is what this list is taken from.",
+        "properties": {
+          "active": {
+            "title": "Active",
+            "type": "boolean"
+          },
+          "body": {
+            "title": "Body",
+            "type": "string"
+          },
+          "happened_at": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Happened At"
+          },
+          "id": {
+            "title": "Id",
+            "type": "integer"
+          },
+          "kind": {
+            "enum": [
+              "anecdote",
+              "number",
+              "opinion",
+              "client_win",
+              "mistake",
+              "artifact"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "last_used_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Used At"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          },
+          "used_count": {
+            "title": "Used Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "title",
+          "body",
+          "happened_at",
+          "used_count",
+          "last_used_at",
+          "active"
+        ],
+        "title": "StoryEntry",
         "type": "object"
       },
       "SubscriptionSummary": {
@@ -4496,6 +6072,59 @@
           "post_id"
         ],
         "title": "UpgradeVideoRequest",
+        "type": "object"
+      },
+      "UserGroup": {
+        "description": "One of the user's LinkedIn groups and its per-group toggles.\n\n`enabled` (commenting) and `post_enabled` (publishing) are independent on purpose \u2014 being in a\ngroup is not permission to publish into it. `is_next_post` is marked ON the row rather than\nreturned beside the list, so an SPA bundle open from before a deploy still reads `detail` as the\nplain array it expects (#743).",
+        "properties": {
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "group_id": {
+            "title": "Group Id",
+            "type": "string"
+          },
+          "group_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Group Name"
+          },
+          "is_next_post": {
+            "title": "Is Next Post",
+            "type": "boolean"
+          },
+          "last_posted_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Posted At"
+          },
+          "post_enabled": {
+            "title": "Post Enabled",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "group_id",
+          "group_name",
+          "enabled",
+          "post_enabled",
+          "last_posted_at",
+          "is_next_post"
+        ],
+        "title": "UserGroup",
         "type": "object"
       },
       "UserPreferencesDetail": {
@@ -4886,7 +6515,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ResponseModel_list_dict_str__Any___"
+                  "$ref": "#/components/schemas/ResponseModel_List_ActivityEntry__"
                 }
               }
             },
@@ -6798,7 +8427,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ResponseModel_dict_str__Any__"
+                  "$ref": "#/components/schemas/ResponseModel_PlannedTasksDetail_"
                 }
               }
             },
@@ -6867,7 +8496,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ResponseModel_dict_str__Any__"
+                  "$ref": "#/components/schemas/ResponseModel_DashboardStats_"
                 }
               }
             },
@@ -8132,7 +9761,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ResponseModel_dict_str__Any__"
+                  "$ref": "#/components/schemas/ResponseModel_PostsPage_"
                 }
               }
             },
@@ -9164,7 +10793,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ResponseModel_list_dict_str__Any___"
+                  "$ref": "#/components/schemas/ResponseModel_List_DmTemplate__"
                 }
               }
             },
@@ -9483,7 +11112,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ResponseModel_dict_str__Any__"
+                  "$ref": "#/components/schemas/ResponseModel_EngagementTargetsDetail_"
                 }
               }
             },
@@ -9599,7 +11228,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ResponseModel_Union_dict_str__Any___NoneType__"
+                  "$ref": "#/components/schemas/ResponseModel_Union_GroupPostDraftDetail__NoneType__"
                 }
               }
             },
@@ -9684,7 +11313,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ResponseModel_list_dict_str__Any___"
+                  "$ref": "#/components/schemas/ResponseModel_List_UserGroup__"
                 }
               }
             },
@@ -9761,7 +11390,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ResponseModel_dict_str__Any__"
+                  "$ref": "#/components/schemas/ResponseModel_LeadMagnetDetail_"
                 }
               }
             },
@@ -10314,7 +11943,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ResponseModel_dict_str__Any__"
+                  "$ref": "#/components/schemas/ResponseModel_NewsletterDraftDetail_"
                 }
               }
             },
@@ -10577,7 +12206,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ResponseModel_dict_str__Any__"
+                  "$ref": "#/components/schemas/ResponseModel_NewsletterSettingsDetail_"
                 }
               }
             },
@@ -10654,7 +12283,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ResponseModel_dict_str__Any__"
+                  "$ref": "#/components/schemas/ResponseModel_NewsletterSubscribersDetail_"
                 }
               }
             },
@@ -11651,7 +13280,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ResponseModel_dict_str__Any__"
+                  "$ref": "#/components/schemas/ResponseModel_StoryBankDetail_"
                 }
               }
             },

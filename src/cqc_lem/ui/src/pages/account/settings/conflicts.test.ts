@@ -39,8 +39,11 @@ const user = (over: Partial<UserPrefs> = {}): UserPrefs => ({
   content_buffer_days: 5, content_buffer_max_posts: 5, ...over,
 })
 
+// `newsletter_url` / `last_published_at` are written by the publish run, not by the settings PUT —
+// they are on the wire either way, which is why the generated type requires them here.
 const newsletter = (over: Partial<NewsletterSettings> = {}): NewsletterSettings => ({
   enabled: true, title: 'Brief', topic: null, cadence: 'weekly', align_with_blog: true,
+  newsletter_url: null, last_published_at: null,
   publish_day: 1, publish_hour: 9, generate_lead_days: 3, max_queued_drafts: 1,
   invite_connections_enabled: false, max_invites_per_run: 50, cover_image_auto: false, ...over,
 })

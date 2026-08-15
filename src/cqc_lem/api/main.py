@@ -51,6 +51,12 @@ from cqc_lem.api.models import (
     SessionTokenField,
     error_responses,
 )
+from cqc_lem.api.response_schemas import (
+    ActivityEntry,
+    DashboardStats,
+    PlannedTasksDetail,
+    PostsPage,
+)
 from cqc_lem.api.spa_assets import (
     VITE_BASE_URL_PLACEHOLDER,
     ArchivedStaticFiles,
@@ -1675,7 +1681,7 @@ def ack_shipped_notice_endpoint(request: ShippedNoticeAckRequest) -> ResponseMod
 
 
 @router.get("/dashboard/stats/", responses={
-    200: {"description": "Dashboard stats returned"},
+    200: {"description": "Dashboard stats returned", "model": ResponseModel[DashboardStats]},
     **{k: v for k, v in error_responses.items() if k in [401, 403]}
 })
 def get_dashboard_stats(session_token: Optional[str] = None,
@@ -1701,7 +1707,7 @@ def get_dashboard_stats(session_token: Optional[str] = None,
 
 
 @router.get("/dashboard/planned-tasks/", responses={
-    200: {"description": "Planned tasks returned"},
+    200: {"description": "Planned tasks returned", "model": ResponseModel[PlannedTasksDetail]},
     **{k: v for k, v in error_responses.items() if k in [401, 403]}
 })
 def get_planned_tasks_endpoint(session_token: Optional[str] = None,
@@ -1729,7 +1735,8 @@ def get_planned_tasks_endpoint(session_token: Optional[str] = None,
 
 
 @router.get("/activity/", responses={
-    200: {"description": "Recent activity log returned"},
+    200: {"description": "Recent activity log returned",
+          "model": ResponseModel[List[ActivityEntry]]},
     **{k: v for k, v in error_responses.items() if k in [401, 403]}
 })
 def get_activity(session_token: Optional[str] = None, email: Optional[str] = None,
@@ -2225,7 +2232,7 @@ def get_user_id_from_email(session_token: Optional[str] = None,
 
 
 @router.get("/posts/", responses={
-    200: {"description": "Posts retrieved successfully"},
+    200: {"description": "Posts retrieved successfully", "model": ResponseModel[PostsPage]},
     **{k: v for k, v in error_responses.items() if k in [401, 403]}
 })
 def get_posts_for_email(

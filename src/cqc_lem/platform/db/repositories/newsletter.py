@@ -23,7 +23,13 @@ _NEWSLETTER_DEFAULTS: dict = {
     "publish_day": 1, "publish_hour": 9, "generate_lead_days": 3, "max_queued_drafts": 1,
     "invite_connections_enabled": False, "max_invites_per_run": 50, "cover_image_auto": False,
 }
-_NEWSLETTER_COLS = ("enabled", "title", "topic", "cadence", "align_with_blog", "newsletter_url",
+# What the settings PUT writes — a STRICT subset of the defaults above, which are the READ shape.
+# `newsletter_url` and `last_published_at` are the publish run's (`mark_newsletter_published`), and
+# `update_newsletter_settings` writes the whole row from a request model that carries neither: any
+# column listed here that the request cannot set is a column every save silently blanks. That is
+# what `newsletter_url` did until #1538 — one settings save dropped the subscribe link the CTA
+# loop (#624), the subscriber-count scrape (#400) and the post alignment (#967) all read.
+_NEWSLETTER_COLS = ("enabled", "title", "topic", "cadence", "align_with_blog",
                     "publish_day", "publish_hour", "generate_lead_days", "max_queued_drafts",
                     "invite_connections_enabled", "max_invites_per_run", "cover_image_auto")
 _NEWSLETTER_BOOL_COLS = ("enabled", "align_with_blog", "invite_connections_enabled",

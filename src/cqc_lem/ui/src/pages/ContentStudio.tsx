@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import api from '../api/client'
-import type { ApiEnvelope } from '../api/types'
+import type { ApiEnvelope, GetDetail } from '../api/types'
 import LinkedInPostPreview from '../components/LinkedInPostPreview'
 import PostGateReason from '../components/PostGateReason'
 import { gateHold } from '../utils/gateFindings'
@@ -78,27 +78,12 @@ const SORT_BY_OPTIONS: { label: string; value: SortBy }[] = [
 
 const PAGE_SIZE_OPTIONS = [10, 25, 50]
 
-interface Post {
-  post_id: number
-  content: string
-  video_url: string | null
-  image_url?: string | null
-  scheduled_time: string
-  post_type: string
-  status: string
-  carousel_slides: string[] | null
-  post_url?: string | null
-  // The SHAPE the draft was written to (V51 posts.archetype) — reported with the review decision.
-  archetype?: string | null
-  // Quality-gate verdict (issue #421) — why a PENDING post is being held, and its A1 score.
-  authenticity_score?: number | null
-  gate_reason?: GateFinding[] | null
-  // Why the user rejected/deleted this draft (issue #713) — used when regenerating.
-  rejection_reason?: string | null
-  // An occasion/milestone draft (issue #1074). LinkedIn's "Celebrate an occasion" composer has no
-  // API, so LEM never publishes this one — the author copies it across and says when it landed.
-  manual_publish?: boolean
-}
+// One row of the list, generated with it. `archetype` is the SHAPE the draft was written to
+// (reported with the review decision), `authenticity_score` / `gate_reason` are the quality-gate
+// verdict holding a PENDING post (issue #421), `rejection_reason` is why the user turned one down
+// (issue #713), and `manual_publish` marks an occasion draft LEM never publishes itself (#1074) —
+// LinkedIn's "Celebrate an occasion" composer has no API, so the author copies it across.
+type Post = PostsResponse['posts'][number]
 
 // What POST /user/post/rescore returns after re-running the gates on the saved content.
 interface RescoreResult {
@@ -109,12 +94,9 @@ interface RescoreResult {
   detail: string
 }
 
-interface PostsResponse {
-  posts: Post[]
-  total: number
-  page: number
-  page_size: number
-}
+// Generated from the published schema (issue #1446) — one page of the caller's own posts plus the
+// paging context, so a renamed key breaks the build rather than the list.
+type PostsResponse = GetDetail<'/api/posts/'>
 
 const STATUS_COLORS: Record<string, string> = {
   approved: 'bg-green-100 text-green-700',

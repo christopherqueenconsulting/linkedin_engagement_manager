@@ -632,8 +632,28 @@ each one. A field documented but not returned is worse than an undocumented one:
 type from it and reads `undefined`. The same rule decides REQUIRED: `= None` on a model field
 documents "may be absent" (`key?:` in the generated TypeScript), not "may be null" — so a key the
 handler always writes is `Optional[X]` with no default, and only a genuinely partial record (the
-Redis-backed ones, `extra="allow"`) keeps its defaults. On these two payloads the PUT writes the
-whole object, so a key the SPA is allowed to omit is a column a partial save resets.
+Redis-backed ones, `extra="allow"`) keeps its defaults. On the payloads a PUT writes back whole, a
+key the SPA is allowed to omit is a column a partial save resets.
+
+Every payload the SPA reads is narrowed this way as of issue #1538 — the nine account-page reads
+(engagement targets, story bank, DM templates, newsletter settings/subscribers/draft, groups, group
+post draft, lead magnet) plus the dashboard's counters, planned tasks and activity feed and the
+Content Studio's post page. Nothing in `ui/src/pages/account/types.ts` that names an endpoint
+payload is hand-written any more; what stays there is the constants (`WEEKDAYS`,
+`TARGET_CATEGORIES`, `STORY_KINDS`, `DM_EVENTS`, `CATCHUP_EVENTS`, `csv`/`parseCsv`) and one
+`Editable<Row, Written>` helper. That helper exists because two of those payloads are also EDITED:
+the roster and story-bank cards build rows that have never been saved, so the automation-owned
+columns (`id`, the rotation counters, the follow/connect ladder) do not exist on them yet. It keeps
+exactly the fields the matching PUT writes required and lets the rest be absent — every name and
+type still coming from the schema. Widening one to a plain `Partial` would reintroduce the original
+bug: the PUT replaces the whole row, so a droppable editable field is a column a save resets.
+
+A `Literal[...]` in a response model is a second copy of a MySQL ENUM or a `StrEnum`, and it earns
+that by giving the SPA a real union instead of `string` (the roster's badge logic is checked at
+compile time off it). `TestTheDocumentedVocabulariesAreTheStoredOnes` pins every one of them against
+the tuple or enum the writer uses, so the copy cannot drift. Where the server does NOT enforce a
+vocabulary — the newsletter `cadence`, a post `status` — the model stays `str`, because documenting
+a closed set nothing closes is the same kind of lie as documenting a field nothing returns.
 
 The other unauthenticated surface, `GET /health/deep`, was trimmed in the same issue: it returns
 **counts only** — no worker or queue names — and `"status":"healthy"` stays the first key of the
