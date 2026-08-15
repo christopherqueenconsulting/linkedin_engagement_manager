@@ -8,11 +8,14 @@ ever recorded that the probe did not read.
 
 The receipt format itself is covered by `tests/unit/utilities/test_video_receipt.py`.
 """
+import os
 from datetime import datetime as _real_datetime
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
+from cqc_lem.utilities import content_quality as cq
 from cqc_lem.utilities.content_quality import VIDEO_PROBE_OK, VIDEO_PROBE_UNREADABLE
 from cqc_lem.utilities.video_receipt import read_video_receipt, video_receipt_path
 
@@ -116,6 +119,43 @@ class TestStoreVideoAssetRecordsMeasures:
              patch(f"{_RCP}._record_video_asset_measures") as measure:
             assert _store_video_asset(7, "https://runway.test/xyz.mp4") is None
         measure.assert_not_called()
+
+
+class TestTheStoredUrlResolvesToTheRecording:
+    """The JOIN the two halves each assume and neither pins on its own.
+
+    The writer puts a receipt beside the file it was handed; the reader resolves one from
+    `posts.video_url`. Both are covered separately, so a change to the store directory or to the
+    `/api/assets` URL shape would silently put the receipt somewhere the scorer never looks — every
+    shipped video back to reading `missing`, with both files still green. This runs the real store
+    directory, the real URL builder, the real receipt write and the real resolver against each
+    other, with only the download and the ffprobe call mocked.
+    """
+
+    def test_the_url_persisted_at_store_time_reads_back_the_recorded_measures(self, tmp_path,
+                                                                              monkeypatch):
+        import cqc_lem.app.run_content_plan as rcp
+        stored: dict = {}
+        monkeypatch.setattr(rcp, "assets_dir", str(tmp_path))
+        monkeypatch.setattr(cq, "assets_dir", str(tmp_path))
+        with patch(f"{_RCP}.save_video_url_to_dir",
+                   side_effect=lambda url, directory: _valid_mp4(Path(directory))), \
+             patch(f"{_RCP}._accept_probed_video", return_value=True), \
+             patch(f"{_RCP}._caption_video_asset"), \
+             patch(f"{_CQ}.probe_video_asset", return_value=_measures()), \
+             patch("cqc_lem.utilities.c2pa_helper.add_ai_content_credentials"), \
+             patch(f"{_RCP}.update_db_post_video_url",
+                   side_effect=lambda post_id, url: stored.update(url=url)):
+            api_url = rcp._store_video_asset(7, "https://runway.test/clip.mp4")
+
+        assert api_url == stored["url"]
+        # purge_post_assets (#148) at publish: the MP4 goes, the receipt stays.
+        os.remove(str(tmp_path / "videos" / "runwayml" / "clip.mp4"))
+        result = cq.score_video_asset(video_url=api_url)
+        assert result["video_duration_seconds"] == 8
+        assert result["video_aspect_ratio"] == "9:16"
+        assert result["video_asset_probe"] == VIDEO_PROBE_OK
+        assert result["video_render_ok"] is True
 
 
 class TestBirthPathRecordsMeasures:
