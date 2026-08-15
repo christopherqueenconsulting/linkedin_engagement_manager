@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.153.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.152.1...v0.153.0) (2026-08-15)
+
+
+### Features
+
+* **content-quality:** persist the video render model per post (closes [#1410](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1410)) ([#1522](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1522)) ([6130e77](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/6130e7789a531dd2465abbe86c5610fc6b1d382d))
+
+
+### Bug Fixes
+
+* **agents:** hold every pushing lane while the merge queue validates a PR (closes [#1388](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1388)) ([#1553](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1553)) ([1f1a586](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/1f1a586327fd0786be621a8b78147062c6a0e763))
+* **agents:** make the WIP gate say which PRs it is not counting (closes [#1426](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1426)) ([#1524](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1524)) ([ccfa731](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/ccfa731be74f6932798fd2a8a9bec0e03e62cb40))
+* **db:** add 'error' to the posts.status ENUM so a failed post can be flagged (closes [#1567](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1567)) ([#1570](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1570)) ([a959997](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/a9599970306bedf59dbc7c9d3b73816e315aa7c9))
+* **outreach:** re-widen the DM event_type enum so nurture and catch-up coexist (closes [#1566](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1566)) ([#1571](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1571)) ([d510638](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/d510638243ba78108b922ab5bc01044ddb21cad1))
+
 ## [0.152.1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.152.0...v0.152.1) (2026-08-15)
 
 
