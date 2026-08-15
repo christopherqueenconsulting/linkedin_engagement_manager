@@ -1342,11 +1342,14 @@ def get_dm_template(user_id: int, event_type: str, step: int = 0) -> Optional[di
     if step == 0 and event_type in _DM_DEFAULT_TEMPLATES:
         return {"template_text": _DM_DEFAULT_TEMPLATES[event_type], "delay_hours": 0, "step": 0}
     return None
-def get_dm_templates(user_id: int) -> list:
+def get_dm_templates(user_id: int) -> Optional[list]:
     """Every DM template the user has, ordered by event type then step, with `is_active` as a real bool.
 
-    [] on a read error, which reads as "no custom templates" — the defaults in `_DM_DEFAULT_TEMPLATES`
-    are what a step-0 lookup falls back to.
+    **None on a read error, never []** — this read FAILS CLOSED because it is the editor's only
+    picture of the set, and `upsert_dm_templates` now deletes whatever the next save leaves out
+    (issue #1575). An empty list served for a transient DB fault renders as "you have no templates",
+    and the first field the user then edits posts a one-row set that destroys every other ladder they
+    had. [] therefore has to mean the table really is empty; the caller answers None with a 503.
     """
     try:
         with db_cursor(dictionary=True) as cursor:
@@ -1359,18 +1362,39 @@ def get_dm_templates(user_id: int) -> list:
             return rows
     except mysql.connector.Error as err:
         log_error("Could not list dm templates", exc=err, user_id=user_id)
-        return []
+        return None
 def upsert_dm_templates(user_id: int, templates: list) -> bool:
-    """Upsert a list of {event_type, step, delay_hours, template_text, is_active} for a user."""
+    """Replace the user's WHOLE template set: upsert what was posted, DELETE the rest (issue #1575).
+
+    The posted set is authoritative, which is what `PUT /user/dm-templates` has always documented and
+    what the Settings editor assumes: it posts every non-blank row it renders, so a step the user
+    removed, and a template they blanked to fall back to the built-in default, are both absent from
+    the payload. Upserting alone left those rows in `dm_templates` still `is_active=1`, so the
+    follow-up sequencer kept rendering and SENDING a step the user had deleted — a DM nobody had
+    configured, arriving out of sequence with the message before it.
+
+    An empty list therefore clears the user's ladders and returns them to the code defaults. The
+    delete runs in the same transaction as the upserts, so a failure leaves the set as it was.
+    """
     try:
         with db_cursor(commit=True) as cursor:
+            keep: list = []
             for t in templates:
+                event_type, step = str(t.get("event_type")), int(t.get("step", 0))
                 cursor.execute(
                     "INSERT INTO dm_templates (user_id, event_type, step, delay_hours, template_text, is_active) "
                     "VALUES (%s,%s,%s,%s,%s,%s) ON DUPLICATE KEY UPDATE "
                     "delay_hours=VALUES(delay_hours), template_text=VALUES(template_text), is_active=VALUES(is_active)",
-                    (user_id, str(t.get("event_type")), int(t.get("step", 0)), int(t.get("delay_hours", 0)),
+                    (user_id, event_type, step, int(t.get("delay_hours", 0)),
                      t.get("template_text", ""), 1 if t.get("is_active", True) else 0))
+                keep.append((event_type, step))
+            if keep:
+                placeholders = ",".join(["(%s,%s)"] * len(keep))
+                cursor.execute(
+                    f"DELETE FROM dm_templates WHERE user_id=%s AND (event_type, step) NOT IN ({placeholders})",
+                    (user_id, *[value for pair in keep for value in pair]))
+            else:
+                cursor.execute("DELETE FROM dm_templates WHERE user_id=%s", (user_id,))
             return True
     except mysql.connector.Error as err:
         log_error("Could not upsert dm templates", exc=err, user_id=user_id)

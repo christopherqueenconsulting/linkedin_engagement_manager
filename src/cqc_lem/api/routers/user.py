@@ -3168,7 +3168,13 @@ def get_dm_templates_endpoint(session_token: str) -> ResponseModel[list[dict[str
     user_id = _main.get_session_user_id(session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
-    return ResponseModel(status_code=200, detail=get_dm_templates(user_id))
+    # A DB fault is a 503, not an empty set (issue #1575). The editor posts back the WHOLE set and
+    # the server deletes what the payload omits, so answering an unreadable table with `[]` would
+    # turn the user's next save into a wipe of every ladder they have.
+    templates = get_dm_templates(user_id)
+    if templates is None:
+        raise HTTPException(status_code=503, detail="Could not read DM templates")
+    return ResponseModel(status_code=200, detail=templates)
 
 
 @router.put("/dm-templates")
