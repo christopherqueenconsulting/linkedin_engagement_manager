@@ -34,6 +34,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 from typing import Optional
 
@@ -47,6 +48,7 @@ EVENT = "slop_retry"
 # The five graded outcomes. `unsteered` is deliberately NOT here — it is the excluded sixth.
 GRADED_OUTCOMES = ("cleared", "traded", "worsened", "persisted", "lost")
 UNSTEERED = "unsteered"
+_SURFACE_RE = re.compile(r"[A-Za-z0-9_-]+")
 
 # Below this many steered rows the report states the sample and refuses to read a rate off it. A
 # newsletter is a weekly cadence, so a fortnight of editions is single digits — the floor is what
@@ -60,9 +62,19 @@ def build_query(days: int = DEFAULT_DAYS, surface: Optional[str] = None,
 
     Aggregation is done in Python rather than in SQL so the clear-rate formula (and its `unsteered`
     exclusion) is unit-testable without a PostHog round trip.
+
+    `--surface` is the one value that reaches the query as text rather than as an int, so it is
+    validated instead of quoted: a surface name is an identifier (`newsletter`, `post_image`), and
+    anything else is a typo the reader should see here rather than as a HogQL parse error — or as a
+    predicate that silently means something other than what was typed.
+
+    Raises:
+        ValueError: if `surface` is not a bare identifier.
     """
     where = [f"event = '{EVENT}'", f"timestamp > now() - INTERVAL {int(days)} DAY"]
     if surface:
+        if not _SURFACE_RE.fullmatch(surface):
+            raise ValueError(f"surface must be a bare identifier, got {surface!r}")
         where.append(f"properties.surface = '{surface}'")
     return (
         "SELECT properties.surface AS surface, properties.outcome AS outcome, "
@@ -138,28 +150,40 @@ def _tally(rows: list) -> dict:
     `steered` is the denominator #1434's review fixed: the five graded outcomes, `unsteered`
     excluded. `unsteered_share` is stated against ALL rows, because the question it answers is what
     fraction of the regeneration budget the OTHER grader is spending.
+
+    An outcome this script does not know (a sixth verdict added to `slop_lint.retry_outcome`, a
+    property that failed to ingest) counts as `unrecognised` and is REPORTED. It cannot be folded
+    into either denominator without deciding what it means, and dropping it silently would shrink
+    the denominator the clear-rate is read off — i.e. raise the number — with nothing on screen
+    saying so.
     """
     counts = {name: 0 for name in GRADED_OUTCOMES}
     counts[UNSTEERED] = 0
     kept = 0
+    unrecognised: dict = {}
     graded_without_hard_before = 0
     for row in rows:
         outcome = row["outcome"]
-        counts[outcome] = counts.get(outcome, 0) + 1
+        if outcome not in counts:
+            unrecognised[outcome] = unrecognised.get(outcome, 0) + 1
+            continue
+        counts[outcome] += 1
         if outcome != UNSTEERED:
             if row["kept"]:
                 kept += 1
-            if not (row["hard_before"] or 0):
-                # Only `lost` can land here: the regeneration returned nothing, so there is no
-                # `after` report to grade against a clean `before`. Reported so the outcome-based
-                # denominator and the `hard_before > 0` one can be reconciled rather than argued
-                # about.
+            if row["hard_before"] == 0:
+                # `lost` (the regeneration returned nothing, so there is no `after` report to grade
+                # against a clean `before`) or a `worsened` row whose draft was clean going in.
+                # Reported so the outcome-based denominator and the `hard_before > 0` one can be
+                # reconciled rather than argued about. An UNREADABLE count is None, not 0, and is
+                # deliberately not counted here — it is not evidence of a clean draft.
                 graded_without_hard_before += 1
     steered = sum(counts.get(name, 0) for name in GRADED_OUTCOMES)
     return {
         "rows": len(rows),
         "steered": steered,
         "outcomes": counts,
+        "unrecognised": unrecognised,
         "clear_rate": _rate(counts["cleared"], steered),
         "traded_share": _rate(counts["traded"], steered),
         "persisted_share": _rate(counts["persisted"], steered),
@@ -213,8 +237,13 @@ def _line(name: str, tally: dict, min_rows: int = DEFAULT_MIN_ROWS) -> str:
 
 
 def format_report(result: dict, days: int = DEFAULT_DAYS,
-                  min_rows: int = DEFAULT_MIN_ROWS) -> str:
-    """The stdout report — the sample and the window first, so no rate is quoted without them."""
+                  min_rows: int = DEFAULT_MIN_ROWS, limit: Optional[int] = None) -> str:
+    """The stdout report — the sample and the window first, so no rate is quoted without them.
+
+    `limit` is the row cap the query ran with: a window that filled it was TRUNCATED to its newest
+    rows, and the rate below is then read off a slice of the window the header claims. Said out
+    loud rather than left for the reader to infer from a round number.
+    """
     lines = [
         f"slop_retry — {result['rows']} rows over the last {days} days "
         f"({result['steered']} steered, {result['unsteered']} unsteered — "
@@ -234,9 +263,19 @@ def format_report(result: dict, days: int = DEFAULT_DAYS,
                      f"lost {_pct(result['lost_share'])}; "
                      f"kept {_pct(result['kept_share'])}; "
                      f"unsteered {_pct(result['unsteered_share'])} of all rows")
+    if limit and result["rows"] >= limit:
+        lines.append(f"  TRUNCATED — the query returned its {limit}-row cap, so the window holds "
+                     "more rows than were read and every rate above is off its newest slice. "
+                     "Re-run with a larger --limit or a shorter --days.")
+    if result.get("unrecognised"):
+        lines.append("  UNRECOGNISED OUTCOMES — counted in neither denominator, so the rates above "
+                     "are read off the rest: "
+                     + ", ".join(f"{name or '(empty)'} {count}"
+                                 for name, count in sorted(result["unrecognised"].items())) + ".")
     if result["graded_without_hard_before"]:
         lines.append(f"  ({result['graded_without_hard_before']} graded rows carried no HARD check "
-                     "going in — a regeneration that returned nothing)")
+                     "going in — a regeneration that returned nothing, or one whose draft was "
+                     "clean going in and came back worse)")
     if result["by_surface"]:
         lines.append("by surface:")
         lines += [_line(name, tally, min_rows) for name, tally in result["by_surface"].items()]
@@ -288,7 +327,11 @@ def main(argv: Optional[list] = None) -> int:
                         help="Print the reading as JSON instead of the report.")
     args = parser.parse_args(argv)
 
-    hogql = build_query(days=args.days, surface=args.surface, limit=args.limit)
+    try:
+        hogql = build_query(days=args.days, surface=args.surface, limit=args.limit)
+    except ValueError as exc:
+        print(str(exc))
+        return 1
     if args.print_sql:
         print(hogql)
         return 0
@@ -302,7 +345,7 @@ def main(argv: Optional[list] = None) -> int:
                                 os.getenv("POSTHOG_APP_HOST", DEFAULT_APP_HOST))
     result = measure(parse_rows(client.query(hogql)))
     print(json.dumps(result, indent=2) if args.as_json
-          else format_report(result, days=args.days, min_rows=args.min_rows))
+          else format_report(result, days=args.days, min_rows=args.min_rows, limit=args.limit))
     return 0 if result["steered"] >= args.min_rows else 1
 
 

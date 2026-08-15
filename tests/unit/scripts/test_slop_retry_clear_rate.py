@@ -107,6 +107,30 @@ class TestMeasure:
                                                _row("cleared")]))
         assert result["graded_without_hard_before"] == 1
 
+    def test_an_unreadable_hard_count_is_not_read_as_a_clean_draft(self, tool):
+        # `_as_int` returns None for an unreadable count on purpose; treating that None as 0 would
+        # report the row as having carried no HARD check going in, which is a claim about the draft
+        # that the data does not support.
+        row = _row("persisted")
+        row["hard_before"] = "not a number"
+        assert tool.measure(tool.parse_rows([row]))["graded_without_hard_before"] == 0
+
+    def test_an_outcome_this_reader_does_not_know_is_reported_not_dropped(self, tool):
+        # A sixth verdict added to retry_outcome — or an outcome that failed to ingest — must not
+        # vanish: leaving it out of both denominators shrinks the one the clear-rate is read off,
+        # i.e. RAISES the number, with nothing on screen saying the sample was cut.
+        rows = tool.parse_rows([_row("cleared"), _row("persisted"), _row("rewritten")])
+        result = tool.measure(rows)
+        assert (result["rows"], result["steered"]) == (3, 2)
+        assert result["unrecognised"] == {"rewritten": 1}
+        assert "UNRECOGNISED OUTCOMES" in tool.format_report(result, days=30)
+
+    def test_an_unknown_outcome_never_counts_toward_the_kept_share(self, tool):
+        # kept was tallied for every row that was not `unsteered`, so an unknown outcome could put
+        # the numerator above the steered denominator and print a kept share over 100%.
+        rows = tool.parse_rows([_row("cleared", kept=True), _row("rewritten", kept=True)])
+        assert tool.measure(rows)["kept_share"] == 100.0
+
     def test_the_kept_share_counts_only_steered_rows(self, tool):
         rows = tool.parse_rows([_row("cleared", kept=True), _row("persisted", kept=False)])
         assert tool.measure(rows)["kept_share"] == 50.0
@@ -137,6 +161,12 @@ class TestQuery:
     def test_a_surface_filter_narrows_the_query(self, tool):
         assert "properties.surface = 'newsletter'" in tool.build_query(surface="newsletter")
 
+    def test_a_surface_that_is_not_an_identifier_is_refused(self, tool):
+        # The one argument that reaches HogQL as text. A quote does not belong in a surface name,
+        # and interpolating one rewrites the predicate rather than filtering on it.
+        with pytest.raises(ValueError):
+            tool.build_query(surface="newsletter' OR '1'='1")
+
 
 class TestReport:
     def test_a_thin_sample_refuses_to_state_a_rate(self, tool):
@@ -153,6 +183,14 @@ class TestReport:
         text = tool.format_report(tool.measure(rows), days=30)
         assert "clear-rate 100.0%" in text
         assert "banned_lexicon         steered    1  cleared 1" in text
+
+    def test_a_window_that_filled_the_row_cap_says_it_was_truncated(self, tool):
+        # The header states a window; a query that returned its cap read only the newest slice of
+        # it, and the rate is off that slice.
+        rows = tool.parse_rows([_row("cleared") for _ in range(12)])
+        text = tool.format_report(tool.measure(rows), days=30, limit=12)
+        assert "TRUNCATED" in text
+        assert "TRUNCATED" not in tool.format_report(tool.measure(rows), days=30, limit=10000)
 
     def test_the_sample_and_the_window_lead_the_report(self, tool):
         rows = tool.parse_rows([_row("cleared") for _ in range(10)])
@@ -172,6 +210,11 @@ class TestMain:
         monkeypatch.delenv("POSTHOG_PERSONAL_API_KEY", raising=False)
         assert tool.main([]) == 1
         assert "nothing was measured" in capsys.readouterr().out
+
+    def test_a_bad_surface_exits_one_rather_than_raising(self, tool, monkeypatch, capsys):
+        monkeypatch.delenv("POSTHOG_PERSONAL_API_KEY", raising=False)
+        assert tool.main(["--print-sql", "--surface", "news letter"]) == 1
+        assert "bare identifier" in capsys.readouterr().out
 
     def test_a_thin_window_exits_non_zero(self, tool, monkeypatch, capsys):
         monkeypatch.setenv("POSTHOG_PERSONAL_API_KEY", "phx_test")
