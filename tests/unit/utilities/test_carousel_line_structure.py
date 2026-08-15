@@ -22,6 +22,8 @@ pytest.importorskip("PIL")
 from PIL import Image, ImageDraw  # noqa: E402
 
 from cqc_lem.utilities.carousel_creator import (  # noqa: E402
+    CAROUSEL_SLIDE_BODY_MAX_CHARS,
+    CAROUSEL_TRUNCATION_MARKER,
     EducationalContentCarousel,
     EducationalContentSlide,
     create_carousel_slide_images,
@@ -71,12 +73,14 @@ def _recording_renderer(band_path=None):
         yield slides
 
 
-def _render_body(body: str, template: str, tmp_path) -> list[tuple[int, str]]:
+def _render_body(body: str, template: str, tmp_path, band_path=None) -> list[tuple[int, str]]:
     """Render a 3-slide deck carrying `body` on its ONE content slide.
 
     Cover and CTA carry short text of their own so their tighter line caps never turn a
-    structure question into a length one. Returns the content slide's painted
-    `(x, text)` pairs in paint order.
+    structure question into a length one. `band_path` is the photo band the content
+    slide composites — passing one is the TIGHTER of the two line caps, and the case a
+    deck with images actually renders. Returns the content slide's painted `(x, text)`
+    pairs in paint order.
     """
     carousel = EducationalContentCarousel(
         cover=EducationalContentSlide(title="Ship faster", content="How we hold the gate."),
@@ -84,11 +88,22 @@ def _render_body(body: str, template: str, tmp_path) -> list[tuple[int, str]]:
         call_to_action=EducationalContentSlide(title="Save this", content="For your next retro."),
     )
     out_dir = tempfile.mkdtemp(dir=str(tmp_path))
-    with _recording_renderer() as slides:
+    with _recording_renderer(band_path=band_path) as slides:
         create_carousel_slide_images(carousel, post_id=1510, output_dir=out_dir,
                                      template=template)
     assert len(slides) == 3
     return slides[1]
+
+
+def _band_image(tmp_path) -> str:
+    """Write a real image for `select_slide_image` to return.
+
+    A content slide only composites its photo band — and only takes the tighter body
+    line cap that goes with it — when the selector hands it a decodable file.
+    """
+    path = str(tmp_path / "band.png")
+    Image.new("RGB", (1200, 800), (20, 30, 40)).save(path)
+    return path
 
 
 def _body_lines(painted: list[tuple[int, str]], source_words: set[str]) -> list[str]:
@@ -209,6 +224,49 @@ class TestStepFrameworkBulletsPoints:
         drawn = [text for _x, text in painted]
 
         assert "-5% churn after the change" in drawn
+
+
+@pytest.mark.unit
+class TestPointsNeverCostTheBodyItsWords:
+    """Honouring line breaks must not spend the #1375 character budget.
+
+    A four-point checklist needs four lines where the flattened paragraph needed three,
+    and a content slide carrying a photo band reserves three — so the F2 fix, on its own,
+    truncated a body well under `CAROUSEL_SLIDE_BODY_MAX_CHARS` on four of five
+    templates. Words outrank shape: the points reflow to a paragraph before a word is cut.
+    """
+
+    @pytest.mark.parametrize("template",
+                             ["bold_listicle", "minimal_dark", "stat_reveal",
+                              "step_framework", "story_arc"])
+    def test_a_banded_slide_keeps_every_word_of_a_body_within_budget(self, template, tmp_path):
+        assert len(CHECKLIST_BODY) <= CAROUSEL_SLIDE_BODY_MAX_CHARS
+        painted = _render_body(CHECKLIST_BODY, template, tmp_path,
+                               band_path=_band_image(tmp_path))
+        drawn = " ".join(text for _x, text in painted)
+
+        assert CAROUSEL_TRUNCATION_MARKER not in drawn, (
+            f"{template} cut a {len(CHECKLIST_BODY)}-char body: {drawn!r}"
+        )
+        for word in ("checklist:", "Coverage", "Migration", "reviewer", "diff"):
+            assert word in drawn, f"{template} lost {word!r}: {drawn!r}"
+
+    def test_the_reflow_is_the_fallback_not_the_first_choice(self, tmp_path):
+        # Text-only (the looser cap): the points still get their own lines.
+        painted = _render_body(CHECKLIST_BODY, "bold_listicle", tmp_path)
+        drawn = [text for _x, text in painted]
+        assert "- Coverage floor >= 80%" in drawn
+
+    def test_a_reflowed_step_body_is_one_bullet_not_one_per_line(self, tmp_path):
+        painted = _render_body(CHECKLIST_BODY, "step_framework", tmp_path,
+                               band_path=_band_image(tmp_path))
+        arrows = [text for _x, text in painted if text == "->"]
+        drawn = " ".join(text for _x, text in painted)
+
+        # Either the points still fit (4 arrows) or they reflowed to one paragraph
+        # (1 arrow) — never one arrow per wrapped line, which is F3 by another road.
+        assert len(arrows) in (1, 4), drawn
+        assert CAROUSEL_TRUNCATION_MARKER not in drawn
 
 
 @pytest.mark.unit

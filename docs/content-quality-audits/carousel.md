@@ -185,6 +185,15 @@ line of a layout's cap) and wraps each on its own, so the checklist reaches the 
 every layout. `_wrap_points` returns the same lines GROUPED by point, which is what a layout needs
 when it draws a marker per point rather than per line (F3).
 
+**Words outrank shape**, though, and structure costs vertical space: four points need four lines
+where the flattened paragraph needed three, and a content slide carrying a photo band reserves
+three — so honouring the line breaks ALONE cut a 112-character checklist (well inside
+`CAROUSEL_SLIDE_BODY_MAX_CHARS`) on four of the five templates, trading F2 for F1. `_fit_flow` is the
+ladder that keeps both: points first, then the type shrinks (#1375), then the points REFLOW to one
+paragraph, and only a body that overflows even flattened is truncated. `_step_content` groups
+against the text `_fit_flow` actually laid out, so a reflowed body is ONE bullet — never one per
+wrapped line, which would be F3 by another road.
+
 ### F3 — `step_framework` bullets every WRAPPED line, not every point → **#1510**
 
 `_step_content` draws a `->` marker per line returned by `_wrap`, so line breaks chosen by the

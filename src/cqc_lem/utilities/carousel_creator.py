@@ -2071,13 +2071,29 @@ def create_carousel_slide_images(
     # tally.
     marks = {"drawn": 0, "dropped": 0, "band": False}
 
-    def _fit(text: str, font, max_px: int, draw, max_lines: int, spacing: int):
-        """Layout-aware wrap: returns `(lines, font)` that fit the reserved block.
+    def _fit_flow(text: str, font, max_px: int, draw, max_lines: int, spacing: int):
+        """`_fit`, plus the text that was actually laid out.
 
-        Every text block on every layout goes through this, so no slide can lose text
-        without either shrinking the type or drawing the truncation marker (#1375).
+        Honouring the author's line breaks (#1510) costs vertical space: a four-point
+        checklist needs four lines where the flattened paragraph needed three, and a
+        content slide carrying a photo band reserves three. **Words outrank shape** —
+        the `CAROUSEL_SLIDE_BODY_MAX_CHARS` contract is counted in characters, and
+        losing a whole bullet is worse than losing the line breaks — so a body that
+        overflows ONLY because each point took its own line is reflowed to one
+        paragraph rather than cut. Truncation stays the last resort #1375 made it.
+
+        The third return value is the text the returned lines were wrapped from, which
+        a layout drawing a marker per POINT (`_step_content`) must group against: after
+        a reflow there is one point, so the paragraph gets one marker, never one per
+        wrapped line.
         """
         lines, fitted_font, truncated = fit_text_block(text, font, max_px, max_lines, spacing, draw)
+        if truncated and "\n" in (text or ""):
+            flat = " ".join(_split_points(text))
+            flat_lines, flat_font, flat_truncated = fit_text_block(
+                flat, font, max_px, max_lines, spacing, draw)
+            if not flat_truncated:
+                return flat_lines, flat_font, flat
         if truncated:
             # This is now the ONLY place a slide loses text, so it is the only reading of the loss
             # (#1513). Re-wrap the whole string at the size actually drawn so both sides are the
@@ -2087,6 +2103,16 @@ def create_carousel_slide_images(
             marks["dropped"] += max(0, whole - kept)
             log_warning("Carousel slide text truncated to fit the layout",
                         post_id=post_id, template=template)
+        return lines, fitted_font, text
+
+    def _fit(text: str, font, max_px: int, draw, max_lines: int, spacing: int):
+        """Layout-aware wrap: returns `(lines, font)` that fit the reserved block.
+
+        Every text block on every layout goes through this, so no slide can lose text
+        without either shrinking the type, reflowing its points, or drawing the
+        truncation marker (#1375).
+        """
+        lines, fitted_font, _text = _fit_flow(text, font, max_px, draw, max_lines, spacing)
         return lines, fitted_font
 
     def _block_h(lines, font, spacing, draw) -> int:
@@ -2516,9 +2542,9 @@ def create_carousel_slide_images(
         body_cap = 4 if band_top else 7
         body_width = W - (PAD + BULLET_INDENT) - PAD
         points_text = "\n".join(_strip_point_marker(p) for p in _split_points(body))
-        b_lines, f_b = _fit(points_text, f_b, body_width, draw,
-                            max_lines=body_cap, spacing=20)
-        for point_lines in _group_fitted_lines(points_text, b_lines, f_b, body_width, draw):
+        b_lines, f_b, laid_out = _fit_flow(points_text, f_b, body_width, draw,
+                                           max_lines=body_cap, spacing=20)
+        for point_lines in _group_fitted_lines(laid_out, b_lines, f_b, body_width, draw):
             draw.text((PAD, y), "->", font=f_b, fill=badge_color)
             for line_text in point_lines:
                 draw.text((PAD + BULLET_INDENT, y), line_text, font=f_b, fill=body_color)
