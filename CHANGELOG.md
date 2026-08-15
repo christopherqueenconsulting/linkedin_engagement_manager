@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.152.1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.152.0...v0.152.1) (2026-08-15)
+
+
+### Bug Fixes
+
+* **observability:** stop the asset backfill warning on its own self-heal (closes [#1568](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1568)) ([#1569](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1569)) ([c721fe4](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/c721fe46c4acbd9c286f10d272db02c71e3c6667))
+
 ## [0.152.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.151.1...v0.152.0) (2026-08-15)
 
 
