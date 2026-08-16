@@ -140,6 +140,9 @@ live key's scopes.** If a PostHog script misbehaves, check scopes before debuggi
 
 ## 4. Feature flags that are OFF, and what each needs first
 
+A ✅ row is one that is now **ON** — kept in the table only so nobody re-does the work. Read the row,
+not the heading.
+
 | Flag | Blocked on |
 |---|---|
 | `APPRECIATION_SOURCES_ENABLED` | #1002 — grounded GREEN today; now just needs the flip after #1019 deploys |
