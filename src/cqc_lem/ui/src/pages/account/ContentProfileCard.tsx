@@ -1,10 +1,12 @@
 import { useEffect, useState } from 'react'
-import { useMutation, useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import api from '../../api/client'
 import { useAuth } from '../../contexts/useAuth'
+import { sectionSaveCallbacks, useRegisterSaveSection } from './settingsSave'
 
 export default function ContentProfileCard() {
   const { user, sessionToken } = useAuth()
+  const queryClient = useQueryClient()
   const email = user?.email ?? ''
   // Edits in progress, once there are any — null means "show the DB value, or the cached one until
   // the DB answers". Derived rather than seeded in an effect so a refetch can never overwrite a
@@ -53,15 +55,24 @@ export default function ContentProfileCard() {
   }, [settingsData])
 
   const saveMutation = useMutation({
-    mutationFn: () =>
-      api.put('/user/', {
-        session_token: sessionToken,
-        blog_url: blogUrl || null,
-        sitemap_url: sitemapUrl || null,
-      }),
-    onSuccess: () => {
+    mutationFn: () => {
+      // Send only the URLs we can vouch for: one the user edited, or one whose stored value has
+      // loaded. An omitted field is left alone by the endpoint, and an empty one is CLEARED — so
+      // the localStorage placeholder must never be written, or a save made before /user/settings
+      // answers wipes a stored URL with a stale hint (issue #1574).
+      const body: { session_token: string | null; blog_url?: string | null; sitemap_url?: string | null } =
+        { session_token: sessionToken }
+      if (blogEdit !== null || settingsData) body.blog_url = (blogEdit ?? settingsData?.blog_url) || null
+      if (sitemapEdit !== null || settingsData) body.sitemap_url = (sitemapEdit ?? settingsData?.sitemap_url) || null
+      return api.put('/user/', body)
+    },
+    onSuccess: async () => {
       localStorage.setItem('lem_blog_url', blogUrl)
       localStorage.setItem('lem_sitemap_url', sitemapUrl)
+      // Re-read the row this card and every other reader of /user/settings share. Without it the
+      // cached pre-save row is served for the rest of its 60s staleTime, so coming back to the page
+      // shows the OLD URL — a save that worked, reported as one that did not (issue #1574).
+      await queryClient.invalidateQueries({ queryKey: ['user-settings'] })
       setSavedMsg('Settings saved!')
       setTimeout(() => setSavedMsg(null), 3000)
     },
@@ -71,9 +82,18 @@ export default function ContentProfileCard() {
     },
   })
 
+  // Every other card in the Settings hub plugs into Save All and the unsaved-changes guard; this
+  // one never did, so an edited Blog URL was dropped without a word by the dock that says it saved
+  // everything, and navigating away took the edit with it. Same complaint as the rest of #1574 —
+  // the user pressed Save and nothing was written.
+  const isDirty = (blogEdit !== null && blogEdit !== (settingsData?.blog_url ?? '')) ||
+    (sitemapEdit !== null && sitemapEdit !== (settingsData?.sitemap_url ?? ''))
+  useRegisterSaveSection('content-profile', 'Content & Profile', isDirty,
+    () => saveMutation.mutateAsync().then(() => true))
+
   function handleSave(e: React.FormEvent) {
     e.preventDefault()
-    saveMutation.mutate()
+    saveMutation.mutate(undefined, sectionSaveCallbacks('content-profile'))
   }
 
   return (

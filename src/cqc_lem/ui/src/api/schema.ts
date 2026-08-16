@@ -1553,6 +1553,11 @@ export interface paths {
          * Update User Endpoint
          * @description Save the blog/sitemap URLs.
          *
+         *     A URL the client SENT is written even when it is empty — that is how one gets removed. The
+         *     fields it did not send are the ones left alone, which is what `model_fields_set` reads: testing
+         *     the values for truth instead meant clearing a blog URL answered 200 while storing nothing, and
+         *     the Account page reported it saved (issue #1574).
+         *
          *     Sending `new_email` is a 400, LOUDLY: this endpoint used to move the account address on the strength of knowing
          *     the current one, and a silent 200 is how somebody believes their address changed when it did not (issue #914).
          */

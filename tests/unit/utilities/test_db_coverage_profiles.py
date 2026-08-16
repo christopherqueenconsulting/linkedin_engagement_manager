@@ -187,11 +187,54 @@ class TestUpdateUser:
         assert "blog_url = %s, sitemap_url = %s" in sql
         assert values == ["b", "s", 9]
 
-    def test_zero_rowcount_returns_false(self, fake_cursor):
-        conn, _ = fake_cursor(rowcount=0)
+    # --- issue #1574: clearing a URL is a write, and re-saving one is not a failure -------------
+    def test_re_saving_the_same_value_is_not_a_failure(self, fake_cursor):
+        """MySQL reports 0 CHANGED rows when the stored value already matches.
+
+        That used to be False, so pressing Save twice answered the second press with
+        "Update failed".
+        """
+        conn, cur = fake_cursor(rowcount=0, fetch_one=(1,))
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import update_user
+            assert update_user(9, blog_url="b") is True
+        assert "SELECT 1 FROM users WHERE id = %s" in cur.execute.call_args[0][0]
+
+    def test_zero_rowcount_on_a_missing_user_returns_false(self, fake_cursor):
+        conn, _ = fake_cursor(rowcount=0, fetch_one=None)
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import update_user
             assert update_user(9, blog_url="b") is False
+
+    def test_none_clears_the_column(self, fake_cursor):
+        """Removing a blog URL used to be swallowed by the falsy check.
+
+        A silent no-op the Account page still reported as saved.
+        """
+        conn, cur = fake_cursor(rowcount=1)
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import update_user
+            assert update_user(9, blog_url=None) is True
+        sql, values = cur.execute.call_args[0]
+        assert sql == "UPDATE users SET blog_url = %s WHERE id = %s"
+        assert values == [None, 9]
+
+    def test_empty_string_is_stored_as_null(self, fake_cursor):
+        conn, cur = fake_cursor(rowcount=1)
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import update_user
+            assert update_user(9, blog_url="", sitemap_url="s") is True
+        _, values = cur.execute.call_args[0]
+        assert values == [None, "s", 9]
+
+    def test_an_omitted_column_is_left_alone(self, fake_cursor):
+        conn, cur = fake_cursor(rowcount=1)
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import update_user
+            assert update_user(9, sitemap_url=None) is True
+        sql, values = cur.execute.call_args[0]
+        assert sql == "UPDATE users SET sitemap_url = %s WHERE id = %s"
+        assert values == [None, 9]
 
     # --- issue #950: the address cannot move through here at all ------------------------------
     def test_email_keyword_is_rejected(self):

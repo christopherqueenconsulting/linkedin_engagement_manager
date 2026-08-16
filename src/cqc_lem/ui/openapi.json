@@ -10229,7 +10229,7 @@
     },
     "/api/user/": {
       "put": {
-        "description": "Save the blog/sitemap URLs.\n\nSending `new_email` is a 400, LOUDLY: this endpoint used to move the account address on the strength of knowing\nthe current one, and a silent 200 is how somebody believes their address changed when it did not (issue #914).",
+        "description": "Save the blog/sitemap URLs.\n\nA URL the client SENT is written even when it is empty \u2014 that is how one gets removed. The\nfields it did not send are the ones left alone, which is what `model_fields_set` reads: testing\nthe values for truth instead meant clearing a blog URL answered 200 while storing nothing, and\nthe Account page reported it saved (issue #1574).\n\nSending `new_email` is a 400, LOUDLY: this endpoint used to move the account address on the strength of knowing\nthe current one, and a silent 200 is how somebody believes their address changed when it did not (issue #914).",
         "operationId": "update_user_endpoint_api_user__put",
         "requestBody": {
           "content": {

@@ -1067,6 +1067,11 @@ def shipped_notices_endpoint(session_token: str) -> ResponseModel[dict[str, Any]
 def update_user_endpoint(settings: UserSettingsRequest) -> ResponseModel[str]:
     """Save the blog/sitemap URLs.
 
+    A URL the client SENT is written even when it is empty — that is how one gets removed. The
+    fields it did not send are the ones left alone, which is what `model_fields_set` reads: testing
+    the values for truth instead meant clearing a blog URL answered 200 while storing nothing, and
+    the Account page reported it saved (issue #1574).
+
     Sending `new_email` is a 400, LOUDLY: this endpoint used to move the account address on the strength of knowing
     the current one, and a silent 200 is how somebody believes their address changed when it did not (issue #914).
     """
@@ -1083,10 +1088,12 @@ def update_user_endpoint(settings: UserSettingsRequest) -> ResponseModel[str]:
                    "and POST /user/email/change/verify",
         )
 
-    if not any([settings.blog_url, settings.sitemap_url]):
+    written = {name: getattr(settings, name)
+               for name in ("blog_url", "sitemap_url") if name in settings.model_fields_set}
+    if not written:
         return ResponseModel(status_code=200, detail="User settings unchanged")
 
-    updated = update_user(user_id, blog_url=settings.blog_url, sitemap_url=settings.sitemap_url)
+    updated = update_user(user_id, **written)
     if not updated:
         raise HTTPException(status_code=404, detail="Update failed")
     return ResponseModel(status_code=200, detail="User updated successfully")
