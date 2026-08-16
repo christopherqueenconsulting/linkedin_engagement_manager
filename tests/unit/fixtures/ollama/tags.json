@@ -8,7 +8,8 @@
       "details": {
         "family": "",
         "parameter_size": ""
-      }
+      },
+      "digest": "4de9bf66c0eb"
     },
     {
       "name": "deepseek-v4-flash:preview",
@@ -18,17 +19,30 @@
       "details": {
         "family": "",
         "parameter_size": ""
-      }
+      },
+      "digest": "ac252c581d64"
     },
     {
-      "name": "deepseek-v4-pro",
-      "model": "deepseek-v4-pro",
+      "name": "deepseek-v4-pro:0813",
+      "model": "deepseek-v4-pro:0813",
+      "modified_at": "2026-08-13T08:00:00-07:00",
+      "size": 892744322880,
+      "details": {
+        "family": "",
+        "parameter_size": ""
+      },
+      "digest": "db976f1eacdd"
+    },
+    {
+      "name": "deepseek-v4-pro:preview",
+      "model": "deepseek-v4-pro:preview",
       "modified_at": "2026-04-24T00:00:00Z",
       "size": 1600000000000,
       "details": {
         "family": "",
         "parameter_size": ""
-      }
+      },
+      "digest": "079ba36ea28c"
     },
     {
       "name": "gemma4:31b",
@@ -38,7 +52,8 @@
       "details": {
         "family": "",
         "parameter_size": ""
-      }
+      },
+      "digest": "221b330d11a8"
     },
     {
       "name": "glm-5.1",
@@ -48,7 +63,8 @@
       "details": {
         "family": "",
         "parameter_size": ""
-      }
+      },
+      "digest": "882e35812821"
     },
     {
       "name": "glm-5.2",
@@ -58,7 +74,8 @@
       "details": {
         "family": "",
         "parameter_size": ""
-      }
+      },
+      "digest": "f553240f6dc4"
     },
     {
       "name": "gpt-oss:120b",
@@ -68,7 +85,8 @@
       "details": {
         "family": "",
         "parameter_size": ""
-      }
+      },
+      "digest": "d98fe6ba01e6"
     },
     {
       "name": "gpt-oss:20b",
@@ -78,7 +96,8 @@
       "details": {
         "family": "",
         "parameter_size": ""
-      }
+      },
+      "digest": "05afbac4bad6"
     },
     {
       "name": "kimi-k2.6",
@@ -88,7 +107,8 @@
       "details": {
         "family": "",
         "parameter_size": ""
-      }
+      },
+      "digest": "4764ecb21f85"
     },
     {
       "name": "kimi-k2.7-code",
@@ -98,7 +118,8 @@
       "details": {
         "family": "",
         "parameter_size": ""
-      }
+      },
+      "digest": "1a7e88d8c572"
     },
     {
       "name": "kimi-k3",
@@ -108,7 +129,8 @@
       "details": {
         "family": "",
         "parameter_size": ""
-      }
+      },
+      "digest": "d189309738f0"
     },
     {
       "name": "minimax-m2.7",
@@ -118,7 +140,8 @@
       "details": {
         "family": "",
         "parameter_size": ""
-      }
+      },
+      "digest": "d1008bea3761"
     },
     {
       "name": "minimax-m3",
@@ -128,7 +151,8 @@
       "details": {
         "family": "",
         "parameter_size": ""
-      }
+      },
+      "digest": "9ce5291d9c0e"
     },
     {
       "name": "mistral-large-3:675b",
@@ -138,7 +162,8 @@
       "details": {
         "family": "",
         "parameter_size": ""
-      }
+      },
+      "digest": "f7e3b2a16d5c"
     },
     {
       "name": "nemotron-3-nano:30b",
@@ -148,7 +173,8 @@
       "details": {
         "family": "",
         "parameter_size": ""
-      }
+      },
+      "digest": "a4b4f1851393"
     },
     {
       "name": "nemotron-3-super",
@@ -158,7 +184,8 @@
       "details": {
         "family": "",
         "parameter_size": ""
-      }
+      },
+      "digest": "da11955bb451"
     },
     {
       "name": "nemotron-3-ultra",
@@ -168,7 +195,8 @@
       "details": {
         "family": "",
         "parameter_size": ""
-      }
+      },
+      "digest": "4eecabff7a75"
     },
     {
       "name": "qwen3.5:397b",
@@ -178,7 +206,8 @@
       "details": {
         "family": "",
         "parameter_size": ""
-      }
+      },
+      "digest": "b909ca2f1b7f"
     }
   ]
 }
