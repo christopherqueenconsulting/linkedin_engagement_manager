@@ -97,7 +97,17 @@ PHASE_GAP_OPEN_RE = re.compile(r"phase-gap:\s*(?!cleared\b|none\b|ok\b)\S", re.I
 #: What retires a declaration. Written by MODE=phasefix once the follow-up is filed and linked (or
 #: the closing keyword dropped) — never by time passing and never by a new commit: the gap is in the
 #: PR's SCOPE claim, which a push does not touch.
-PHASE_GAP_CLEARED_RE = re.compile(r"phase-gap:\s*(?:cleared|none|ok)\b", re.I)
+#:
+#: ANCHORED TO A LINE, and the asymmetry with the open pattern above is the point. The two mistakes
+#: do not cost the same: a comment that merely TALKS about this mechanism and is read as a
+#: declaration causes one phasefix run, which finds nothing and clears itself (`phasefix.md` step 4
+#: posts the clearing line unconditionally). A comment that merely talks about it and is read as a
+#: CLEARING retires a real hold, and the PR merges with the scope lost — #548's failure, which is
+#: the one this whole mechanism exists to stop. Prose quotes it mid-sentence ("...clears the
+#: declaration with `🧩 phase-gap: cleared`" is how three docs in this repo phrase it); it does not
+#: put it at the head of a line. `re.M` so a clearing comment may still carry a heading above it —
+#: agents write those, and requiring the whole comment to start with the phrase would wedge the lane.
+PHASE_GAP_CLEARED_RE = re.compile(r"^[^A-Za-z\n]*phase-gap:\s*(?:cleared|none|ok)\b", re.I | re.M)
 
 
 class GitHubUnavailable(RuntimeError):

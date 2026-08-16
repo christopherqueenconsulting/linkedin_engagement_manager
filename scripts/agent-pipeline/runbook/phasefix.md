@@ -30,6 +30,10 @@ You were dispatched by **one of two** holds, and each has its own release — do
      `gh pr comment $PR --body "🧩 phase-gap: cleared — <Follow-up: #<n> | closing keyword dropped>"`
    - `gh pr edit $PR --add-label agent:working --remove-label agent:phasefix`
 
+   The clearing line must START a line of its own (the command above does that). Mentioning it inside a
+   sentence does NOT clear anything, on purpose: prose that merely quotes this mechanism must never
+   retire a real hold and merge the PR with the scope lost.
+
    Skipping the comment leaves the daemon dispatching this lane until the phasefix budget parks the PR
    to the owner — the one failure mode of the v2 path. STOP.
 5. Escalate ONLY if the remaining scope requires a genuine product decision you cannot capture as an

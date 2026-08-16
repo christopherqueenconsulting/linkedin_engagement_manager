@@ -319,7 +319,13 @@ overwritten.
 Three properties are deliberate. It **fails open**: no declaration, no hold — a PR nobody said
 anything about decides exactly as it did before, so the enforcement can never wedge the queue on its
 own opinion. It is **not cleared by a push or by time**, because the gap is in the PR's scope claim
-and neither of those touches it; only the `cleared` line retires it. And it is **bounded** by the
+and neither of those touches it; only the `cleared` line retires it — and only when it **heads a
+line**, which is the one place the two patterns are deliberately asymmetric. `PHASE_GAP_OPEN_RE`
+matches anywhere in a comment, `PHASE_GAP_CLEARED_RE` only at the start of a line, because the two
+mistakes do not cost the same: over-reading a declaration costs one phasefix run, which finds nothing
+and posts the clearing line anyway, while over-reading a CLEARING retires a real hold and merges the
+PR with the scope lost. Prose quotes this mechanism mid-sentence — the paragraph you are reading
+does — and prose must never be able to clear a hold. And it is **bounded** by the
 phasefix budget like any other dispatch, so a declaration the lane cannot clear parks and asks rather
 than re-dispatching for ever. It sits below the label lanes (`agent:revise` outranks it: the owner's
 own instruction outranks our bookkeeping) and above every merge row, because merging is the one act

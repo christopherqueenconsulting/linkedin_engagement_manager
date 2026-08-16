@@ -22,6 +22,7 @@ Three properties are the design, and each has a test here:
 
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 
@@ -190,6 +191,38 @@ def test_prose_about_the_convention_is_not_a_declaration(monkeypatch):
         assert _state(monkeypatch, body).phase_gap is False, body
 
 
+def test_prose_quoting_the_clearing_line_does_not_retire_a_real_hold(monkeypatch):
+    """The one mistake that merges, so the two patterns are deliberately NOT symmetric.
+
+    Three docs in this repo phrase the mechanism as "...clears the declaration with
+    `🧩 phase-gap: cleared`", and this PR's own review has to be able to say that sentence. If a
+    comment merely TALKING about clearing counted as clearing, an open gap would retire itself and
+    the PR would merge with the scope lost — which is #548, the failure this whole mechanism exists
+    to stop. So the clearing line must head a line; a mention inside a sentence is not one.
+    """
+    mentions = (
+        "MODE=phasefix clears it with `🧩 phase-gap: cleared` once the follow-up is linked.",
+        "did the 🧩 phase-gap: cleared comment ever fire on this one?",
+    )
+    for body in mentions:
+        assert _state(monkeypatch, DECLARED, body).phase_gap is True, body
+    # ...and the real clearing line still clears, including under a heading an agent wrote above it.
+    assert _state(monkeypatch, DECLARED, f"## Follow-up filed\n\n{CLEARED}").phase_gap is False
+
+
+def test_a_false_declaration_costs_one_phasefix_run_not_a_wedge(monkeypatch):
+    """The other half of the asymmetry, asserted: over-reading an OPEN line is the cheap mistake.
+
+    Prose that quotes the DECLARATION shape does hold the PR — the open pattern is left loose on
+    purpose, because a missed declaration merges and a spurious one does not. `phasefix.md` step 4
+    posts the clearing line unconditionally ("do this even if you never saw one"), so the spurious
+    hold costs exactly one lane run and then releases itself.
+    """
+    quoted = "the reviewer writes 🧩 phase-gap: #1396 — what remains, and the daemon reads it"
+    assert _state(monkeypatch, quoted).phase_gap is True
+    assert _state(monkeypatch, quoted, CLEARED).phase_gap is False
+
+
 def test_a_snapshot_carries_the_declaration_into_the_decision(monkeypatch):
     """The wiring between the two halves above, which is where a field like this normally rots."""
     monkeypatch.setattr(github, "pr_facts", lambda *a, **k: {
@@ -225,11 +258,23 @@ def test_selfreview_tells_the_agent_to_write_what_the_detector_reads():
     )
 
 
+def _posted_bodies(runbook: Path) -> list[str]:
+    """The literal comment BODIES a runbook tells the agent to post.
+
+    The raw markdown line is not what reaches GitHub — `gh pr comment $PR --body "…"` is, and the
+    detector runs on the body. Asserting against the line would pass on a runbook whose posted text
+    the detector cannot read.
+    """
+    return re.findall(r'gh pr comment [^\n]*?--body "([^"]*)"', runbook.read_text(encoding="utf-8"))
+
+
 def test_phasefix_tells_the_agent_how_to_clear_it():
     """The other half. A lane that cannot release its own hold re-dispatches until the budget parks."""
-    text = PHASEFIX.read_text(encoding="utf-8")
-    assert any(github.PHASE_GAP_CLEARED_RE.search(ln) for ln in text.splitlines()), (
-        "phasefix.md never shows the agent a line that clears the declaration"
+    bodies = _posted_bodies(PHASEFIX)
+    assert bodies, "phasefix.md gives the agent no `gh pr comment --body` to copy"
+    assert all(github.PHASE_GAP_CLEARED_RE.search(b) for b in bodies), (
+        "phasefix.md posts a body the CLEARED detector cannot read — the lane cannot release its "
+        f"own hold: {bodies}"
     )
 
 
