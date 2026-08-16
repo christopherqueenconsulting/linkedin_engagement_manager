@@ -122,6 +122,18 @@ on an image predating #1091, where the naive read is still what ships.
 Measured 2026-08-14 on the three freshest posts: 6 comment cards, all ours, 0 third-party — the
 first case, with `post_outcome` agreeing at 1–2 comments per post.
 
+**Settled on 2026-08-16 (owner decision on #1091), so two things are deliberate, not gaps:**
+
+- **A commenter is the ONLY input.** Reactions on our posts are NOT a `post_engagers` source.
+  Widening reciprocity to reactors was considered and declined here: reacting is a far weaker signal
+  than commenting, and it is a feature with its own acceptance criteria, not a repair for an empty
+  table. An empty `post_engagers` under an `unknown` grade is an AUDIENCE fact — nobody commented —
+  and belongs to the growth work (`docs/engagement-growth-analysis-2026-07.md`), never to this lane.
+- **`unknown` raises nothing.** It stays a probe grade in the weekly sweep JSON:
+  `scripts/sdui_drift_issues.py` files only `drift`, and no telemetry event or streak alert rides on
+  it. A run of posts with zero third-party comments is read off impressions/`post_outcome`, not off
+  a reciprocity alarm — making the empty table louder does not create engagement.
+
 ## DM conversation auto-nurture (`_nurture_after_reply`, `utilities/ai/dm_nurture.py`)
 
 A reply used to END a sequence — now it's classified (interested / objection / not-now /
