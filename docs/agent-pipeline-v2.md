@@ -260,6 +260,7 @@ call that live PR stranded.
 | 24 | …then `agent:phasefix` | dispatch `phasefix` | `phase_scope_untracked` | — |
 | 25 | …then `agent:depfix` | dispatch `depfix` | `dependabot_ci_failure` | — |
 | 26 | …then `agent:docfix` | dispatch `docfix` | `lint_gate_failure` | — |
+| 26a | an OPEN `🧩 phase-gap:` declaration on the PR | dispatch `phasefix` | `phase_scope_untracked` | — |
 | 27 | `mergeStateStatus` is `UNKNOWN` or `""` | none | `merge_state_unknown` | 120s |
 | 28 | `mergeStateStatus` outside the enum | none | `merge_state_unrecognised` | 300s |
 | 29 | auto-merge armed, `BLOCKED`, checks all green, no queue entry | none → **awaiting_owner_review** | `owner_review_required` | 6h |
@@ -300,6 +301,29 @@ armed either way — GitHub completes the merge itself the instant that approval
 changes only where the WAIT is recorded (`awaiting_owner_review`, excluded from the WIP gate, §3),
 not whether the pipeline waits. Its "no queue entry" clause is redundant under row 22 and is kept
 because the branch depends on it.
+
+**Row 26a is the phase guard (#1396), and its shape is the decision, not an implementation detail.**
+v1 judged acceptance-criteria coverage itself, at the merge gate, from the issue body and a prose
+regex (`phase_guard_ok`, `tick.sh:715-745`). v2 does not, and will not: reading a diff and concluding
+"this closes an issue whose later phase is untracked" is the call an LLM gets confidently wrong, and
+a wrong hold costs a human decision every time it fires. So the judgement is made **once**, by
+`MODE=selfreview` — the pass that already has the issue, the diff and the tests in front of it —
+which fixes the gap where it can and otherwise writes one line into its review comment:
+`🧩 phase-gap: #N — <what remains>`. `review_state` reads that line out of the comment list it
+already fetches (`PHASE_GAP_OPEN_RE`), `Snapshot.phase_gap` carries it, and this row routes the PR to
+the `phasefix` lane that files + links the follow-up and clears the declaration
+(`🧩 phase-gap: cleared`). It is numbered `26a` rather than `27` because it belongs with the lane
+rows above it and renumbering ten rows of cross-referenced prose is how §6's budget column was once
+overwritten.
+
+Three properties are deliberate. It **fails open**: no declaration, no hold — a PR nobody said
+anything about decides exactly as it did before, so the enforcement can never wedge the queue on its
+own opinion. It is **not cleared by a push or by time**, because the gap is in the PR's scope claim
+and neither of those touches it; only the `cleared` line retires it. And it is **bounded** by the
+phasefix budget like any other dispatch, so a declaration the lane cannot clear parks and asks rather
+than re-dispatching for ever. It sits below the label lanes (`agent:revise` outranks it: the owner's
+own instruction outranks our bookkeeping) and above every merge row, because merging is the one act
+that makes the lost scope permanent.
 
 Row 35's freshness is **stricter than v1's**: a review must be at or after the head commit. Being
 wrong in this direction costs one extra selfreview; being wrong in the other merges code no reviewer
@@ -354,6 +378,7 @@ right-hand column below describes.
 | a stale review | ✅ row 22, `withheld = selfreview` | dispatched `selfreview` — same |
 | checks pending | ✅ row 22, `withheld = ""` — the queue is reported, not CI | reported `ci_running`, misleading an operator reading the state |
 | a lane label (`revise`/`phasefix`/`depfix`/`docfix`) | ✅ row 22, `withheld = <mode>` | dispatched that lane — every one of them pushes |
+| an open `🧩 phase-gap:` declaration | ✅ row 22, `withheld = phasefix` — the declaration survives anything the queue does, so the lane runs if the entry clears. The daemon cannot queue such a PR itself (row 26a is above row 36, and the declaration arrives in the very comment that makes the review fresh), so this combination means a HUMAN armed it — and a human's arm outranks our bookkeeping | — (row 26a is new in #1396) |
 | auto-merge armed **and** a failed check / stale review / unresolved thread | ✅ row 22, `withheld = ""` — row 30 is above the checks ladder, so nothing would dispatch once the entry cleared either | dispatched nothing then either (row 30 already outranked those rows) |
 | `mergeStateStatus == DIRTY` | ✅ row 21 → `rebase`, the **one documented exception**: the queue cannot merge a conflicted PR either | same |
 | auto-merge armed | ✅ row 22 (above row 29/30), so a queued PR reports the queue rather than the arm | reported `auto_merge_armed` |
@@ -449,7 +474,6 @@ issue. It exists so the gaps are visible rather than discovered one incident at 
 |---|---|---|
 | **An issue whose only linked PR was closed unmerged waits for ever** — `_open_pr_for_issue` returns True for any linked ref, because the API's refs carry no `state` | needs `ACT_PARK` re-added, so split out | #1405 |
 | **`PER_HEAD_MODES` and `MODE_BUDGET["merge"]` have no consumers** (§6) — the merge bound lives entirely in `merge_enable.sh` and works | left as-is: moving it would relocate a functioning guard for no behaviour change | — |
-| **v2 has no phase guard.** v1 routed a PR closing a phased issue with untracked later phases to `MODE=phasefix`, escalating to the owner only after repeated attempts (`tick.sh:715-745`); v2 has no equivalent and merges it | a shipped issue can silently lose its remaining scope | #1396 |
 | **The sync timer is not enabled.** The mechanism is shipped and tested; enabling it needs `pipeline-selfmod-gate` to be a required check first, which is an owner-only branch-protection change | until then, deploys stay manual and `main` can silently outrun the box | #1397, #1398 |
 
 ---

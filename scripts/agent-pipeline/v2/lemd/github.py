@@ -77,6 +77,28 @@ CLAUDE_REVIEW_MARKER_TEXT = "Claude adversarial review"
 REVIEW_MARKER_TEXTS = (CLAUDE_REVIEW_MARKER_TEXT, "Claude self-review")
 MARKER_DECORATION_RE = re.compile(r"^[^A-Za-z]*")
 
+#: The phase-scope declaration MODE=selfreview writes, and MODE=phasefix clears (#1396).
+#:
+#: v2 deliberately has NO gate that judges acceptance-criteria coverage from a diff — reading a diff
+#: and concluding "this closes an issue whose later phase is untracked" is exactly the call an LLM
+#: gets confidently wrong, and a wrong hold costs a human decision every time it fires. So the
+#: JUDGEMENT stays where it already happens with the full context (the self-review pass, which has
+#: read the issue, the diff and the tests), and what lands here is only that verdict's residue.
+#:
+#: Detection keys on the ASCII phrase, not on the decoration, for the reason `CLAUDE_REVIEW_MARKER`
+#: does: a non-BMP character does not survive the round-trip through the agent that posts it. It is
+#: NOT anchored to the start of the comment — the declaration rides inside the review marker comment
+#: rather than replacing it, because a self-review that found a scope gap has usually found other
+#: findings too, and posting two comments to say one thing invites exactly half of it being posted.
+#:
+#: Fail-OPEN: no declaration means no hold. A PR nobody said anything about merges as it does today.
+PHASE_GAP_MARKER = "🧩 phase-gap"
+PHASE_GAP_OPEN_RE = re.compile(r"phase-gap:\s*(?!cleared\b|none\b|ok\b)\S", re.I)
+#: What retires a declaration. Written by MODE=phasefix once the follow-up is filed and linked (or
+#: the closing keyword dropped) — never by time passing and never by a new commit: the gap is in the
+#: PR's SCOPE claim, which a push does not touch.
+PHASE_GAP_CLEARED_RE = re.compile(r"phase-gap:\s*(?:cleared|none|ok)\b", re.I)
+
 
 class GitHubUnavailable(RuntimeError):
     """A read failed. Callers must treat this as "I do not know", never as "nothing to do"."""
@@ -266,6 +288,10 @@ class ReviewState:
     unresolved: int
     reviewed_at: str = ""
     head_at: str = ""
+    #: An OPEN phase-scope declaration from the self-review pass (#1396) — this PR closes an issue
+    #: whose remaining scope is not tracked anywhere. Defaults False so every existing caller, and
+    #: every PR predating the convention, behaves exactly as before.
+    phase_gap: bool = False
 
 
 def _epoch(value: str | None) -> float:
@@ -308,6 +334,10 @@ def review_state(slug: str, pr: int, *, timeout: int = 30) -> ReviewState:
     Only COPILOT-authored threads count as unresolved, mirroring `copilot_unresolved_threads`: a
     human's unresolved nit is not something MODE=review can resolve, so counting it would dispatch
     that lane forever.
+
+    The phase-scope declaration (#1396) is read from the SAME comment list, because it is written
+    into the same comment: the self-review marker. Reading it here costs nothing extra, and putting
+    it anywhere else would mean a second GraphQL call per observation of every open PR.
     """
     owner, _, name = slug.partition("/")
     data = gh_json(
@@ -323,6 +353,7 @@ def review_state(slug: str, pr: int, *, timeout: int = 30) -> ReviewState:
         head_at = ((commits[-1] or {}).get("commit") or {}).get("committedDate") or ""
 
     stamps: list[str] = []
+    phase_gap = False
     for review in ((node.get("reviews") or {}).get("nodes") or []):
         login = ((review or {}).get("author") or {}).get("login") or ""
         if COPILOT_LOGIN in login.lower() and review.get("submittedAt"):
@@ -332,6 +363,14 @@ def review_state(slug: str, pr: int, *, timeout: int = 30) -> ReviewState:
         undecorated = MARKER_DECORATION_RE.sub("", body)
         if undecorated.startswith(REVIEW_MARKER_TEXTS) and comment.get("createdAt"):
             stamps.append(comment["createdAt"])
+        # LAST declaration wins, so the walk does not break early: `comments(last:100)` arrives
+        # oldest-first, and the thing being asked is "is the gap still open NOW". A `cleared` line
+        # that could not overwrite an earlier `gap` line would wedge the PR in the phasefix lane
+        # until its budget parked it to the owner — the failure v1's `phasefix_clear` had to have.
+        if PHASE_GAP_CLEARED_RE.search(body):
+            phase_gap = False
+        elif PHASE_GAP_OPEN_RE.search(body):
+            phase_gap = True
     reviewed_at = max(stamps, key=_epoch) if stamps else ""
 
     unresolved = 0
@@ -344,7 +383,8 @@ def review_state(slug: str, pr: int, *, timeout: int = 30) -> ReviewState:
             unresolved += 1
 
     fresh = bool(reviewed_at) and (not head_at or _epoch(reviewed_at) >= _epoch(head_at))
-    return ReviewState(fresh=fresh, unresolved=unresolved, reviewed_at=reviewed_at, head_at=head_at)
+    return ReviewState(fresh=fresh, unresolved=unresolved, reviewed_at=reviewed_at,
+                       head_at=head_at, phase_gap=phase_gap)
 
 
 def list_by_label(slug: str, label: str, kind: str = "pr", *, limit: int = 100,

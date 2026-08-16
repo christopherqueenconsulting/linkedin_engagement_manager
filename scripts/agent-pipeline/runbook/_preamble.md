@@ -70,16 +70,26 @@ Before you open (or merge) a PR that closes an issue:
      first.
 4. **Never** leave a later phase living only in prose. If it isn't an issue, it doesn't exist.
 
-`tick.sh` enforces this at the merge gate (`phase_guard_ok`): a PR whose closed issue declares a later
-phase with no linked follow-up is **not merged** — it gets a `🧩 phase-guard` comment and is routed to
-**MODE=phasefix** (label `agent:phasefix`), where an agent files + links the follow-up itself. Filing
-the follow-up is mechanical, NOT a human decision — the owner is assigned only after the agent has
-failed twice. Unchecked boxes alone only produce a warning comment, so clear them honestly.
+**Who enforces this, exactly (#1396).** The runner is `lem-agentd` (v2), and **v2 has no merge-time
+gate that re-judges your PR's scope from the diff** — that was v1's `phase_guard_ok`, which survives
+only in `tick.sh`, the heartbeat-gated failsafe. Judging acceptance-criteria coverage from a diff is
+a call an LLM gets confidently wrong, and a wrong hold costs a human decision every time it fires, so
+v2 asks it exactly once, in the place that already has the issue, the diff and the tests in front of
+it: **MODE=selfreview**. That pass fixes a scope gap where it finds one (files + links the follow-up),
+and declares one it cannot fix as a `🧩 phase-gap:` line in its review comment. A declared gap holds
+the merge and routes the PR to **MODE=phasefix**, where an agent files + links the follow-up itself
+and clears the declaration. Filing the follow-up is mechanical, NOT a human decision — the owner is
+assigned only after that lane's budget is spent.
 
-The guard fires on what a PR **closes** (`closing_issue_for_pr` — GitHub's development link, or a
-`Closes #N` keyword), never on the `feature/claude-issue-N` branch name. So the intended way to land
-one phase of a multi-phase issue is exactly what it looks like: **omit the closing keyword**, name
-what remains in the PR body, and the issue stays open with nothing held.
+So the enforcement is real but it is **downstream of you and fail-open**: nothing re-derives what you
+left out. If you leave a phase in prose and the reviewer does not catch it, it merges and it is lost.
+Unchecked boxes alone hold nothing, so clear them honestly.
+
+Either way the question is asked about what a PR **closes** (a `Closes #N` keyword, or GitHub's
+development link — `closing_issue_for_pr` in v1), never about the `feature/claude-issue-N` branch
+name. So the intended way to land one phase of a multi-phase issue is exactly what it looks like:
+**omit the closing keyword**, name what remains in the PR body, and the issue stays open with
+nothing held.
 
 ## Escalate to a human instead of proceeding when:
 - The issue needs a **WRITE on LinkedIn** — posting, commenting, sending an invite or a DM,

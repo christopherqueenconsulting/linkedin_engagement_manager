@@ -46,9 +46,9 @@ Why this matters + evidence (link data, PRs, docs). Agents only know what's writ
 A missing `## Acceptance` section, an acceptance box that reads "make it better," or scope prose that
 hides a second phase inside a sentence ("...and later we should also...") is not a stylistic nit —
 it is the thing that produced #548, #568, and the stretch half of #647 shipping incomplete and
-silently closing (`AGENT_WORKFLOW_PLAYBOOK.md`'s "Phased work" section). The phase-guard at merge time
-catches the closing half of that failure; nothing catches the front half except reading the issue like
-a spec before starting.
+silently closing (`AGENT_WORKFLOW_PLAYBOOK.md`'s "Phased work" section). The self-review pass's
+honest-close check catches the closing half of that failure, and only when it notices (#1396);
+nothing catches the front half except reading the issue like a spec before starting.
 
 **Applying it, concretely, before writing code:**
 

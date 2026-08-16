@@ -90,7 +90,11 @@ def _reasons_in_doc() -> set[str]:
     # fixing the table. Rows are `| # | Condition | Action | Reason | Wake |`.
     for line in table.splitlines():
         cells = [c.strip() for c in line.split("|")]
-        if len(cells) < 6 or not cells[1].isdigit():
+        # `26a`, not just `26`: a branch inserted between two documented rows is numbered with a
+        # suffix rather than by renumbering ten rows of cross-referenced prose — that renumber is
+        # how §6's budget column was once overwritten. A row id the parser cannot read is a row
+        # that silently stops being part of the contract, so it reads both shapes.
+        if len(cells) < 6 or not re.fullmatch(r"\d+[a-z]?", cells[1]):
             continue
         for cell in re.findall(r"`([a-z_]+(?::\{?[a-z_,{}]+\}?)?)`", cells[4]):
             found.add(_family(cell))
