@@ -827,8 +827,8 @@ def llm_trace(name: str, user_id: Optional[int] = None,
     matching `llm_attribution()` scope so a pipeline entry point declares who/what once.
 
     Nesting is deliberate: a trace opened inside an open one becomes a SPAN of the outer trace rather
-    than a second trace. `create_text_post` recurses into itself for post-type fallbacks, and two
-    half-traces of one post answer nobody's question.
+    than a second trace. One pipeline entry point re-enters another (a regenerate flow calling
+    `create_text_post`), and two half-traces of one post answer nobody's question.
     """
     if _llm_trace.get().get("trace_id"):
         with llm_attribution(user_id=user_id, feature=feature):

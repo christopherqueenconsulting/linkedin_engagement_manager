@@ -117,19 +117,21 @@ class TestFactGroundingGate:
 class TestReviewGateSpendsItsRetryOnFabrication:
     def _review(self, first, second, blueprint, entries=()):
         from cqc_lem.app import run_content_plan as rcp
+        from cqc_lem.domain.models import PostDraftContext
+        ctx = PostDraftContext(user_id=1, stage="awareness", post_type="thought_leadership",
+                               blueprint=blueprint, post_id=7, lead_magnet_cta="")
         with patch(f"{_RCP}.has_first_person_proof", return_value=True), \
              patch(f"{_RCP}._check_post_alignment"), \
              patch(f"{_RCP}.get_story_bank_entries", return_value=list(entries)), \
-             patch(f"{_RCP}.create_text_post", return_value=second) as regen:
-            out = rcp._review_generated_post(1, "awareness", "thought_leadership", None,
-                                             blueprint, 7, "", first, [])
+             patch(f"{_RCP}._compose_draft", return_value=(second, ctx)) as regen:
+            out = rcp._review_generated_post(ctx, first, [])
         return out, regen
 
     def test_a_fabricating_receipt_is_regenerated_once_with_the_offending_numbers_named(self):
         out, regen = self._review(_RECEIPT_WITH_INVENTED_NUMBERS, _RECEIPT_WITH_PLACEHOLDERS,
                                   {"format": "build_receipt"})
         assert out == _RECEIPT_WITH_PLACEHOLDERS
-        directive = regen.call_args[1]["history_directive"]
+        directive = regen.call_args.args[0].history_directive
         assert "INVENTED SPECIFICS" in directive
         assert "20" in directive and "62%" in directive
 

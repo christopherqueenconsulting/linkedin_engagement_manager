@@ -85,14 +85,21 @@ class TestUseAccounting:
         use.assert_not_called()
 
 
+def _ctx(lead_magnet_cta=""):
+    """The settled draft inputs the review gate grades against (issue #1217)."""
+    from cqc_lem.domain.models import PostDraftContext
+    return PostDraftContext(user_id=1, stage="awareness", post_type="thought_leadership",
+                            user_profile=MagicMock(), prefs={}, profile_synthesis="",
+                            blueprint={}, post_id=77, lead_magnet_cta=lead_magnet_cta,
+                            story_directive="STORY DIRECTIVE")
+
+
 def _review(content, story=_STORY, second="second draft", lead_magnet_cta="", **env):
     from cqc_lem.app import run_content_plan as rcp
-    with patch(f"{_RCP}.create_text_post", return_value=second) as retry, \
+    with patch(f"{_RCP}._compose_draft", return_value=(second, _ctx())) as retry, \
          patch(f"{_RCP}._check_post_alignment", return_value=True), \
          patch.dict("os.environ", env, clear=False):
-        out = rcp._review_generated_post(
-            1, "awareness", "thought_leadership", MagicMock(), {}, 77, lead_magnet_cta, content, [],
-            prefs={}, profile_synthesis="", story=story, story_directive="STORY DIRECTIVE")
+        out = rcp._review_generated_post(_ctx(lead_magnet_cta), content, [], story=story)
     return out, retry
 
 
@@ -109,8 +116,9 @@ class TestFabricationGate:
         out, retry = _review(self._INVENTED)
         assert out == "second draft"
         retry.assert_called_once()
-        assert retry.call_args.kwargs["story_directive"] == "STORY DIRECTIVE"
-        assert "47" in retry.call_args.kwargs["history_directive"]
+        # The regeneration is dispatched with the SAME settled inputs, only re-steered.
+        assert retry.call_args.args[0].story_directive == "STORY DIRECTIVE"
+        assert "47" in retry.call_args.args[0].history_directive
 
     def test_lead_magnet_cta_numbers_are_not_flagged_as_fabricated(self):
         # The CTA directive is material WE handed the writer — a number in the user's configured
@@ -141,9 +149,7 @@ class TestFabricationGate:
 
     def test_failed_retry_keeps_the_first_draft(self):
         from cqc_lem.app import run_content_plan as rcp
-        with patch(f"{_RCP}.create_text_post", side_effect=RuntimeError("llm down")), \
+        with patch(f"{_RCP}._compose_draft", side_effect=RuntimeError("llm down")), \
              patch(f"{_RCP}._check_post_alignment", return_value=True):
-            out = rcp._review_generated_post(
-                1, "awareness", "thought_leadership", MagicMock(), {}, 77, "", self._INVENTED, [],
-                prefs={}, profile_synthesis="", story=_STORY, story_directive="STORY DIRECTIVE")
+            out = rcp._review_generated_post(_ctx(), self._INVENTED, [], story=_STORY)
         assert out == self._INVENTED

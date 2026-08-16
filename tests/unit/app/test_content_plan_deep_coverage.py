@@ -252,31 +252,55 @@ class TestCreateTextPost:
         assert result == "News post"
         m["website"].assert_not_called()
 
-    def test_the_type_fallback_forwards_every_settled_input_and_stands_the_gates_down(self):
+    def test_the_type_fallback_forwards_every_settled_input(self):
         """The point of `PostDraftContext` (#1220): a retry cannot quietly drop one of the inputs.
 
         The fallback tests above only assert which generator answered, so a dropped
-        `story_directive` (or a retry that re-ran the once-per-post gates) would pass all of them.
-        This pins the argument set the retry is dispatched with.
+        `story_directive` would pass all of them. This pins the argument set the fallback attempt
+        is dispatched with.
         """
-        from cqc_lem.app.run_content_plan import _draft_as_other_type
+        from cqc_lem.app.run_content_plan import _compose_draft
         from cqc_lem.domain.models import PostDraftContext
         draft = PostDraftContext(user_id=3, stage="awareness", post_type="blog_summary",
-                                 user_profile="profile", blueprint={"format": "listicle"},
+                                 user_profile="profile", prefs={"tone": "warm"},
+                                 profile_synthesis="brief", blueprint={"format": "listicle"},
                                  post_id=42, lead_magnet_cta="comment GUIDE",
                                  history_directive="avoid X", story_directive="anchor on Y",
-                                 content_mix="value")
-        post_types = ["thought_leadership", "blog_summary"]
-        with patch(f"{_RCP}.create_text_post", return_value="TL post") as create:
-            content, post_type = _draft_as_other_type(draft, post_types, "blog_summary")
-        assert (content, post_type) == ("TL post", "thought_leadership")
-        assert post_types == ["thought_leadership"]  # the exhausted type is off the menu
-        assert create.call_args[0] == (3, "awareness", "thought_leadership", "profile")
-        assert create.call_args[1] == {"refine_final_post": False, "similarity_check": False,
-                                       "blueprint": {"format": "listicle"}, "post_id": 42,
-                                       "lead_magnet_cta": "comment GUIDE",
-                                       "history_directive": "avoid X",
-                                       "story_directive": "anchor on Y", "content_mix": "value"}
+                                 content_mix="value", refine_final_post=False)
+        with _TextPostHarness() as m, \
+             patch(f"{_RCP}.random.choice", return_value="thought_leadership"):
+            content, shipped = _compose_draft(draft)
+        assert (content, shipped.post_type) == ("TL post", "thought_leadership")
+        assert m["tl"].call_args[0] == ("profile", "awareness")
+        assert m["tl"].call_args[1] == {"prefs": {"tone": "warm"}, "profile_synthesis": "brief",
+                                        "blueprint": {"format": "listicle"}, "post_id": 42,
+                                        "user_id": 3, "lead_magnet_cta": "comment GUIDE",
+                                        "history_directive": "avoid X",
+                                        "story_directive": "anchor on Y", "content_mix": "value"}
+
+    def test_the_type_fallback_is_bounded_and_the_gates_run_once(self):
+        """Issue #1217: the fallback is a loop around the GENERATE step, not a self-call.
+
+        Two sources miss (no blog, no sitemap) and the third answers, so the loop stops at its
+        third attempt — and the once-per-post gates the recursion used to suppress with
+        `refine_final_post=False` are simply outside it: refinement, the review gate and the shape
+        write each happen once for the post, not once per attempt.
+        """
+        from cqc_lem.app.run_content_plan import create_text_post
+        with _TextPostHarness() as m, \
+             patch(f"{_RCP}.random.choice",
+                   side_effect=["website_content", "personal_story"]), \
+             patch(f"{_RCP}.get_recent_post_texts", return_value=[]), \
+             patch(f"{_RCP}._review_generated_post",
+                   side_effect=lambda ctx, content, *a, **kw: content) as review:
+            result = create_text_post(1, "awareness", post_type="blog_summary",
+                                      user_profile=_profile(), post_id=42)
+        assert result == "refined:Story post"
+        m["blog"].assert_not_called()
+        m["website"].assert_not_called()  # its source was missing too
+        review.assert_called_once()
+        assert m["refine"].call_count == 1
+        m["shape_save"].assert_called_once_with(42, "listicle", "question", topic=None)
 
     def test_random_type_chosen_when_none(self):
         from cqc_lem.app.run_content_plan import create_text_post

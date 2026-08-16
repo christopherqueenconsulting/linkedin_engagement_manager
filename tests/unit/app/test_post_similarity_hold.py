@@ -43,20 +43,31 @@ def _review(verdicts, second=_SECOND, existing=None, write=None):
     retry. Returns (content, post_similarity_report mock, update_db_post_gate_reason mock).
     """
     from cqc_lem.app import run_content_plan as rcp
+    from cqc_lem.domain.models import PostDraftContext
+    ctx = PostDraftContext(user_id=1, stage="awareness", post_type="thought_leadership",
+                           user_profile=MagicMock(), prefs={}, profile_synthesis="",
+                           blueprint={}, post_id=77, lead_magnet_cta="",
+                           story_directive="STORY DIRECTIVE")
     sim = MagicMock(side_effect=list(verdicts))
     upd = write or MagicMock()
-    retry = (patch(f"{_RCP}.create_text_post", side_effect=second)
+    retry = (patch(f"{_RCP}._compose_draft", side_effect=second)
              if isinstance(second, Exception) else
-             patch(f"{_RCP}.create_text_post", return_value=second))
+             patch(f"{_RCP}._compose_draft", return_value=(second, ctx)))
     with patch(f"{_RCP}.post_similarity_report", sim), \
          patch(f"{_RCP}.get_post_gate_reason", return_value=list(existing or [])), \
          patch(f"{_RCP}.update_db_post_gate_reason", upd), \
          patch(f"{_RCP}._check_post_alignment", return_value=True), \
          retry:
-        out = rcp._review_generated_post(
-            1, "awareness", "thought_leadership", MagicMock(), {}, 77, "", _DRAFT, ["an earlier post"],
-            prefs={}, profile_synthesis="", story=None, story_directive="STORY DIRECTIVE")
+        out = rcp._review_generated_post(ctx, _DRAFT, ["an earlier post"], story=None)
     return out, sim, upd
+
+
+def _preview_ctx():
+    """A draft with no post row behind it — the Content Studio preview path."""
+    from cqc_lem.domain.models import PostDraftContext
+    return PostDraftContext(user_id=1, stage="awareness", post_type="thought_leadership",
+                            user_profile=MagicMock(), prefs={}, profile_synthesis="",
+                            blueprint={}, post_id=None, lead_magnet_cta="", story_directive="")
 
 
 def _written(upd):
@@ -141,10 +152,8 @@ class TestTheReviewGateRecordsItsVerdict:
              patch(f"{_RCP}.get_post_gate_reason") as read, \
              patch(f"{_RCP}.update_db_post_gate_reason", upd), \
              patch(f"{_RCP}._check_post_alignment", return_value=True), \
-             patch(f"{_RCP}.create_text_post", return_value=_SECOND):
-            rcp._review_generated_post(1, "awareness", "thought_leadership", MagicMock(), {}, None,
-                                       "", _DRAFT, ["an earlier post"], prefs={},
-                                       profile_synthesis="", story=None, story_directive="")
+             patch(f"{_RCP}._compose_draft", return_value=(_SECOND, _preview_ctx())):
+            rcp._review_generated_post(_preview_ctx(), _DRAFT, ["an earlier post"], story=None)
         read.assert_not_called()
         upd.assert_not_called()
 

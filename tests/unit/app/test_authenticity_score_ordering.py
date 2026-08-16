@@ -3,9 +3,10 @@
 Not the one the review gate threw away.
 
 `_review_generated_post` regenerates the post once on a similarity / A2-proof / fabrication / slop
-failure, and its retry re-enters `create_text_post` with `similarity_check=False` — the flag that
-also guards the authenticity scoring call. Scoring therefore has to run AFTER the review gate, and
-still exactly once per shipped post.
+failure, so scoring the draft as it is generated would score one that was thrown away. Scoring
+therefore has to run AFTER the review gate, and still exactly once per shipped post — since issue
+#1217 the retry re-enters `_compose_draft`, which is generate + refine only, so the scoring call
+sits outside it by construction rather than being suppressed by `similarity_check=False`.
 """
 
 from unittest.mock import MagicMock, patch

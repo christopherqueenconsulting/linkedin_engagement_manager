@@ -138,12 +138,15 @@ opens the trace *and* the same `llm_attribution()` scope, reading the user id of
 `@llm_step` goes on the STEP FUNCTION, never at a call site. Newsletters and comments draw draft,
 research, humanize and authenticity from the same shared content core as posts, so decorating the
 core is what gives every pipeline a legible trace without touching a single caller. Current spans:
-`research`, `draft`, `refine`, `hook`, `humanize`, `authenticity`, `review`.
+`research`, `draft`, `refine`, `hook`, `humanize`, `authenticity`, `compose`, `review`.
 
 Two invariants worth knowing before you add either:
 
-- **A trace opened inside an open trace becomes a span**, not a second trace. `create_text_post`
-  recurses into itself for post-type fallbacks, and two half-traces of one post answer nobody.
+- **A trace opened inside an open trace becomes a span**, not a second trace. One pipeline entry
+  point re-enters another (a regenerate flow calling `create_text_post`), and two half-traces of one
+  post answer nobody. Inside `create_text_post` the same rule is why `compose` is ONE span covering
+  the first draft and any retry: the type fallback and the review gate's regeneration both re-enter
+  `_compose_draft` (issue #1217), so the retry attributes to the same place as the draft it replaces.
 - **A span outside a pipeline is a no-op.** Most calls into the shared core are not part of a
   pipeline; an orphan span is something PostHog cannot render, and the work must run identically
   either way. Same posture as the rest of this file: telemetry is never a reason to lose the

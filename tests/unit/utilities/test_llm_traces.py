@@ -44,8 +44,8 @@ class TestTraceIdentity:
         assert current_llm_trace() == (None, None)
 
     def test_a_nested_trace_is_a_span_not_a_second_trace(self):
-        """create_text_post recurses into itself for post-type fallbacks. Two half-traces of one
-        post answer nobody's question, so the inner one joins the outer.
+        """A pipeline can re-enter another one (a regenerate flow calling create_text_post). Two
+        half-traces of one post answer nobody's question, so the inner one joins the outer.
         """
         from cqc_lem.utilities.observability import llm_trace
         with patch(f"{_MOD}.posthog") as mock_ph:
@@ -251,6 +251,7 @@ class TestTheDecoratedPipelines:
         ("cqc_lem.utilities.ai.ai_helper", "optimize_post_hook", "hook"),
         ("cqc_lem.utilities.ai.content_alignment", "humanize_text", "humanize"),
         ("cqc_lem.utilities.ai.content_alignment", "score_authenticity", "authenticity"),
+        ("cqc_lem.app.run_content_plan", "_compose_draft", "compose"),
         ("cqc_lem.app.run_content_plan", "_review_generated_post", "review"),
     ])
     def test_shared_core_steps_open_a_span(self, module, name, step):

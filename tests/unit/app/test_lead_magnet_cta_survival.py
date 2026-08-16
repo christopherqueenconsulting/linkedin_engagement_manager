@@ -110,6 +110,34 @@ class TestCreateTextPostCtaSurvival:
         assert len(outs) == 6  # 6-variant menu keyed by post_id % 6
 
 
+class TestReviewGateRetryCtaSurvival:
+    def test_the_regeneration_is_composed_with_the_keyword_protected(self):
+        """Issue #1217: the retry re-enters the compose core carrying the trigger word.
+
+        The old recursive retry passed neither `preserve_cta_keyword` nor the bait exemption, so a
+        regenerated post's mechanic could only be put back by the deterministic repair afterwards —
+        and a trigger word colliding with the bait regex was stripped out of the retry before the
+        repair ever saw it.
+        """
+        from cqc_lem.app import run_content_plan as rcp
+        from cqc_lem.domain.models import PostDraftContext
+        ctx = PostDraftContext(user_id=1, stage="awareness", post_type="thought_leadership",
+                               user_profile=MagicMock(), prefs={}, profile_synthesis="",
+                               blueprint={}, post_id=30, lead_magnet_cta="comment AUDIT")
+        verdicts = [{"score": 0.9, "threshold": 0.5, "match": "an earlier post",
+                     "too_similar": True, "measure": "embedding"},
+                    {"score": 0.1, "threshold": 0.5, "match": None,
+                     "too_similar": False, "measure": "embedding"}]
+        with patch(f"{_RCP}.post_similarity_report", side_effect=verdicts), \
+             patch(f"{_RCP}._record_post_similarity_finding"), \
+             patch(f"{_RCP}._check_post_alignment", return_value=True), \
+             patch(f"{_RCP}._compose_draft", return_value=(_GENERATED, ctx)) as compose:
+            out = rcp._review_generated_post(ctx, _REWORDED, ["an earlier post"], story=None,
+                                             cta_keyword="AUDIT")
+        assert out == _GENERATED
+        assert compose.call_args.kwargs == {"cta_keyword": "AUDIT", "bait_exempt_keyword": "AUDIT"}
+
+
 class TestRegeneratePostCtaSurvival:
     def test_guidance_rewrite_repaired(self):
         # The guidance pass is one more LLM rewrite AFTER create_text_post's verify-and-repair —
