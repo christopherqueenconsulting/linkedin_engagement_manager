@@ -155,18 +155,27 @@ def summarize_outcomes(rows: Optional[Iterable[Mapping[str, Any]]]) -> dict:
     }
 
 
-def quality_verdict(summary: Optional[Mapping[str, Any]]) -> dict:
+def quality_verdict(summary: Optional[Mapping[str, Any]],
+                    min_sample: Optional[int] = None) -> dict:
     """Turn a summary into the actionable verdict that gates commenting (the G2 feedback loop).
 
     'watch' exists so a scary-looking rate off three reads never pauses a user's engagement: the
     rate is over threshold but the visibility sample is too thin to act on, so it is surfaced and
     nothing is stopped.
+
+    Args:
+        summary: `summarize_outcomes` output for the window being scored.
+        min_sample: Readable comments required before the rate may act, for a caller reading a
+            SHORTER window than the weekly one `min_visibility_sample()` (10) was calibrated for —
+            see `suppression.comment_min_sample()`. Omitted (the default) keeps today's floor
+            exactly, so the weekly call site is unchanged. Floored at 1 for the same reason
+            `min_visibility_sample()` is: a 0 would make an empty sample look conclusive.
     """
     summary = dict(summary or {})
     sample = int(summary.get("visibility_sample") or 0)
     rate = summary.get("demotion_rate")
     threshold = demotion_hold_rate()
-    minimum = min_visibility_sample()
+    minimum = min_visibility_sample() if min_sample is None else max(1, int(min_sample))
     verdict = {"status": VERDICT_UNKNOWN, "reason": "No comment visibility readings in the window",
                "demotion_rate": rate, "visibility_sample": sample,
                "threshold": threshold, "min_sample": minimum}
@@ -186,9 +195,17 @@ def quality_verdict(summary: Optional[Mapping[str, Any]]) -> dict:
     return verdict
 
 
-def comment_quality_report(rows: Optional[Iterable[Mapping[str, Any]]], days: int = 7) -> dict:
+def comment_quality_report(rows: Optional[Iterable[Mapping[str, Any]]], days: int = 7,
+                           min_sample: Optional[int] = None) -> dict:
     """The one shape shared by the weekly PostHog event, the analytics endpoint and the dashboard —
     so the number the user reads and the number the guard acts on can never diverge.
+
+    Args:
+        rows: `comment_outcomes` rows for the window.
+        days: Width of the window the rows came from, echoed into the report.
+        min_sample: Passed straight through to `quality_verdict` — a caller reading a shorter
+            window than the weekly one scales the floor with it. Omitted leaves today's behaviour.
     """
     summary = summarize_outcomes(rows)
-    return {"days": int(days), **summary, "verdict": quality_verdict(summary)}
+    return {"days": int(days), **summary,
+            "verdict": quality_verdict(summary, min_sample=min_sample)}

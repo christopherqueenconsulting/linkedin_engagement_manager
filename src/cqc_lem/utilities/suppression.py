@@ -20,10 +20,16 @@ Two guards keep it from crying wolf, because a false trip costs the user a real 
 
 import os
 from datetime import date, timedelta
+from math import ceil
 from statistics import median
 from typing import Any, Iterable, Mapping, Optional, Sequence
 
-from cqc_lem.utilities.comment_outcomes import VERDICT_HOLD, VERDICT_UNKNOWN, VERDICT_WATCH
+from cqc_lem.utilities.comment_outcomes import (
+    VERDICT_HOLD,
+    VERDICT_UNKNOWN,
+    VERDICT_WATCH,
+    min_visibility_sample,
+)
 
 # A collapse is a step function, not a slide: the documented pattern is an order-of-magnitude drop.
 # 70% off the trailing median is well outside normal day-to-day variance but comfortably inside the
@@ -40,9 +46,13 @@ DEFAULT_MIN_BASELINE_POSTS = 3
 # clean behaviour, and the daily check RE-ARMS this while the tripwire is still set, so in practice
 # it never lapses on its own — a human clears it.
 DEFAULT_PAUSE_SECONDS = 90 * 24 * 60 * 60
-# The comment-demotion signal reads a ROLLING WEEK, matching #628's own scoring window — see
+# The comment-demotion signal reads the LAST FEW DAYS, not #628's rolling week — see
 # comment_history_days().
-DEFAULT_COMMENT_DAYS = 7
+DEFAULT_COMMENT_DAYS = 3
+# The window `min_visibility_sample()` (10) was calibrated for: `auto_weekly_comment_quality` scores
+# a rolling week. It is the denominator comment_min_sample() scales that floor by, so a narrower
+# comment window keeps the same reads-per-day expectation instead of an unreachable floor.
+COMMENT_SAMPLE_REFERENCE_DAYS = 7
 
 STATUS_OK = "ok"
 STATUS_WATCH = "watch"
@@ -136,14 +146,34 @@ def history_days() -> int:
 
 
 def comment_history_days() -> int:
-    """How far back the COMMENT-demotion signal reads — deliberately NOT `history_days()`.
+    """How far back the COMMENT-demotion signal reads — days, not `history_days()` or #628's week.
 
-    #628 scores comment visibility over a rolling week and its own hold expires in one, so a
-    demotion episode that has since been remediated still sits in a 35-day window for weeks. Reading
-    the reach baseline's window here would let a month-old, already-fixed episode trip a 90-day
-    engagement pause today.
+    Two things set it. A demotion episode #628 has since remediated must not trip a 90-day
+    engagement pause weeks later, so the reach baseline's window is far too wide here. And this beat
+    runs DAILY: at a week wide, a sudden demotion spike is averaged against up to six healthy days,
+    so the rate takes days to cross the threshold even though the check itself ran the morning it
+    started. Three days is short enough that a spike moves the rate while it is still a spike.
+
+    The floor scales with it (`comment_min_sample()`) rather than staying at the weekly 10, which a
+    3-day window would rarely reach. That is a deliberate sensitivity trade: a narrower window on a
+    smaller sample trips sooner and is likelier to trip on noise. It is the right side to err on
+    here because the reach signal is independent evidence, `watch` and `unknown` action nothing, and
+    a human clears the pause — a false trip costs a day of engagement, a missed penalty costs 60-90.
     """
     return max(1, _env_int("SUPPRESSION_COMMENT_DAYS", DEFAULT_COMMENT_DAYS))
+
+
+def comment_min_sample() -> int:
+    """Readable comments the demotion rate needs before it may trip the pause, in THIS window.
+
+    Derived from `comment_history_days()` instead of being its own env knob, so tuning
+    `SUPPRESSION_COMMENT_DAYS` moves the floor with it — two independent knobs drift, and a window
+    narrowed without its floor is a signal that silently never fires (a 3-day window almost never
+    collects the weekly 10). At the defaults: `ceil(10 * 3 / 7)` = 5. Floored at 1 so no
+    combination can make an empty sample look conclusive.
+    """
+    return max(1, ceil(min_visibility_sample() * comment_history_days()
+                       / COMMENT_SAMPLE_REFERENCE_DAYS))
 
 
 def _posts(day: Mapping[str, Any]) -> int:

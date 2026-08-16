@@ -652,6 +652,7 @@ def auto_suppression_tripwire(self):
     from cqc_lem.utilities.post_stats import build_engagement_trend
     from cqc_lem.utilities.suppression import (
         comment_history_days,
+        comment_min_sample,
         evaluate_suppression,
         history_days,
         pause_seconds,
@@ -665,11 +666,14 @@ def auto_suppression_tripwire(self):
         return "No active users"
     window = history_days()
     comment_window = comment_history_days()
+    # The floor rides the window: the weekly 10 would almost never be reached in 3 days, which is a
+    # signal that silently never fires rather than one that is merely strict.
+    comment_floor = comment_min_sample()
     checked = tripped = rearmed = 0
     for user_id in users:
         trend = build_engagement_trend(get_post_performance_rows(user_id, days=window))
         quality = comment_quality_report(get_comment_outcomes(user_id, days=comment_window),
-                                         days=comment_window)
+                                         days=comment_window, min_sample=comment_floor)
         verdict = evaluate_suppression(trend, comment_quality=quality)
         checked += 1
         already = suppression_trip_state(user_id)

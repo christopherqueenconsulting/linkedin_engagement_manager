@@ -890,6 +890,15 @@ class TestWeeklyQualityReport:
             result, hold, track, _crit = self._run(es, self._rows(3, 0))
         assert "0 held" in result and track.called and not hold.called
 
+    def test_the_weekly_floor_is_untouched_by_the_tripwires_scaled_one(self):
+        # Issue #1136 gave the DAILY suppression path a floor of 5 for its 3-day window. Five
+        # demoted readings over the weekly window must still only 'watch' — this call site never
+        # passes min_sample, so it keeps the floor of 10 and holds nothing.
+        with ExitStack() as es:
+            result, hold, track, _crit = self._run(es, self._rows(5, 0))
+        assert "0 held" in result and track.called and not hold.called
+        assert track.call_args.args[1]["verdict"]["min_sample"] == 10
+
     def test_user_with_no_readings_is_not_reported(self):
         with ExitStack() as es:
             result, hold, track, _crit = self._run(es, [])

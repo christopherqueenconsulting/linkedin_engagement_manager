@@ -328,9 +328,10 @@ class TestMeasurementExemption:
 
 
 class TestCommentWindow:
-    def test_the_comment_signal_reads_a_week_not_the_reach_baseline_window(self):
-        # A month-old demotion episode #628 has already remediated must not trip a 90-day pause.
-        assert sup.comment_history_days() == 7
+    def test_the_comment_signal_reads_days_not_the_reach_baseline_window(self):
+        # A month-old demotion episode #628 has already remediated must not trip a 90-day pause, and
+        # at a week wide (#1136) a spike is diluted by up to six healthy days on a DAILY beat.
+        assert sup.comment_history_days() == 3
         assert sup.comment_history_days() < sup.history_days()
 
     def test_the_comment_window_is_configurable(self, monkeypatch):
@@ -338,3 +339,27 @@ class TestCommentWindow:
         assert sup.comment_history_days() == 14
         monkeypatch.setenv("SUPPRESSION_COMMENT_DAYS", "0")
         assert sup.comment_history_days() == 1
+
+
+class TestCommentMinSample:
+    """Issue #1136: the readable-comment floor is DERIVED from the window, never its own knob."""
+
+    def test_default_window_scales_the_weekly_floor_down(self):
+        # ceil(10 * 3 / 7) = 5 — a 3-day window rarely collects the weekly 10, and a floor it cannot
+        # reach is a signal that never fires rather than one that is merely strict.
+        assert sup.comment_min_sample() == 5
+
+    def test_it_tracks_the_window_instead_of_drifting(self, monkeypatch):
+        monkeypatch.setenv("SUPPRESSION_COMMENT_DAYS", "7")
+        assert sup.comment_min_sample() == 10  # back to the weekly window, back to the weekly floor
+        monkeypatch.setenv("SUPPRESSION_COMMENT_DAYS", "14")
+        assert sup.comment_min_sample() == 20
+
+    def test_it_tracks_the_weekly_floor_too(self, monkeypatch):
+        monkeypatch.setenv("COMMENT_QUALITY_MIN_SAMPLE", "20")
+        assert sup.comment_min_sample() == 9  # ceil(20 * 3 / 7)
+
+    def test_it_never_falls_below_one(self, monkeypatch):
+        monkeypatch.setenv("SUPPRESSION_COMMENT_DAYS", "1")
+        monkeypatch.setenv("COMMENT_QUALITY_MIN_SAMPLE", "1")
+        assert sup.comment_min_sample() == 1
