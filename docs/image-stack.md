@@ -133,6 +133,53 @@ step hands LinkedIn. Two consequences the helpers exist for:
 `POST_IMAGE_GENERATE_MAX_PER_HOUR` per user, claimed BEFORE the render (the button can be held
 down and every press is real spend) and failing OPEN when Redis is gone.
 
+## Media retention, and what a dangling URL means (issue #1377)
+
+`utilities/media_provenance.py` is the ONE place a stored media URL is walked back to what is behind
+it — whether the file is still there, and which brief rendered it. Both readings exist because the
+#1292 audit found `posts.image_url` / `video_url` values pointing at nothing and no way to tell
+whether that was correct.
+
+**A published post's local asset is NOT retained, and that is deliberate.** `purge_post_assets`
+(#148) runs the moment `post_to_linkedin` succeeds and removes the post's MP4 and its whole
+`images/posts/<post_id>/` directory: LinkedIn re-hosts the media, so the local copy is dead weight,
+and the row keeps a URL that no longer resolves. Nothing clears the column, because the value is
+still the record of what was published — the SPA renders a broken image for a shipped post, which is
+the accepted cost of not carrying every account's media forever. That decision is what makes the
+report below readable at all:
+
+| Reading | What it means |
+|---|---|
+| `present` | file on the volume |
+| `missing` + `expected` | `posted` row — the purge doing its job. Never alerted on |
+| `missing` + NOT expected | **the defect.** A row that has not published, whose media is already gone: still going to be served to the SPA and to the publish run, as a 404 |
+| `unresolvable` | not one of our `/api/assets` URLs at all (a hand-edited row) — never counted as missing |
+
+`auto_media_integrity_scan` (weekly, Mondays 03:50 UTC) grades the newest
+`MEDIA_INTEGRITY_SCAN_LIMIT` media-bearing rows and emits ONE `media_integrity` event. It is a
+REPORT: it deletes no file and clears no row, because deciding whether a dangling row should be
+cleared is a separate question from noticing it. An unexpected dangle also goes out through
+`log_error`, so it reaches a human as a grouped `$exception`.
+
+The walk is capped, and **the cap is never silent**: `rows` says how many rows were graded and
+`truncated` says whether the cap is why it stopped. The ordering is `id DESC`, so a bound cap drops
+the OLDEST rows — and `dangling = 0` out of a truncated walk is a different claim from `dangling = 0`
+out of a whole corpus. A reader that ignores `truncated` will eventually read a capped scan as a
+clean one.
+
+**The brief receipt.** A generated render stores `<file stem>.brief.json` beside itself —
+`focal_concept`, the render prompt, surface, preset and the vision gate's verdict — keyed by the URL
+the row carries, so `read_brief_receipt(posts.image_url)` answers "what was this asked to depict?"
+after the fact. That is rubric row R6, which was unscoreable for every render shipped before this.
+Three rules:
+
+- **A receipt is a record, never a default.** No brief, no receipt — an uploaded image has no brief
+  behind it, and a Pexels stock clip did not come from the brief written for the render it replaced.
+- **It outlives the render**, like the caption `.srt` and the video measurement receipt. A video's
+  sidecar survives for free (the purge removes only the exact `.mp4`); the image one is named in
+  `purge_post_assets`'s carve-out, because that branch clears the whole directory.
+- **A receipt that will not parse is no receipt** — absent and broken both read as unknown.
+
 ## Environment
 
 | Var | Meaning |

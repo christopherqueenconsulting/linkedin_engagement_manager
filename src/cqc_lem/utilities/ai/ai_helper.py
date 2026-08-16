@@ -2993,16 +2993,25 @@ def _profile_visual_context(profile: "LinkedInProfile | None",
 
 def get_flux_image_prompt_from_ai(post_content: str, *, profile: "LinkedInProfile | None" = None,
                                   ratio: str = "1:1", avatar: "dict | None" = None,
-                                  surface: str = "post_image") -> str:
+                                  surface: str = "post_image",
+                                  brief_info: "dict | None" = None) -> str:
     """Compatibility wrapper over the ONE brief engine (utilities/ai/image_brief.py).
 
     Kept because ~4 call sites (and their tests) pass a plain prompt string around; new code
     should call ``build_image_brief`` directly and keep the brief's ``focal_concept`` for the
     vision gate.
+
+    ``brief_info``, when passed, is filled with ``{"brief": ImageBrief}`` — the whole brief this
+    call authored, for a caller that stores the render and has to record what it was asked to
+    depict (issue #1377). It is an out-param rather than a changed return type precisely because
+    the string return is what those call sites are built on.
     """
     from cqc_lem.utilities.ai.image_brief import build_image_brief
-    return build_image_brief(post_content, surface=surface, ratio=ratio,
-                             profile=profile, avatar=avatar).prompt
+    brief = build_image_brief(post_content, surface=surface, ratio=ratio,
+                              profile=profile, avatar=avatar)
+    if brief_info is not None:
+        brief_info["brief"] = brief
+    return brief.prompt
 
 
 def get_flux_image_via_replicate(prompt: str, ref: str = DEFAULT_IMAGE_MODEL, *,
@@ -3113,7 +3122,11 @@ def generate_post_image(prompt: str, user_id: int, *, ratio: str = DEFAULT_IMAGE
 
     ``render_info``, when passed, is filled with ``{"used_avatar": bool}`` describing THIS render
     (issue #1430) — whether the returned file came out of the LoRA or the base-Flux fallback. It is
-    the per-render answer the sticky ``posts.avatar_media`` flag cannot give.
+    the per-render answer the sticky ``posts.avatar_media`` flag cannot give. Both gated branches
+    also report ``gate_verdict`` through it (issue #1377): the verdict exists only inside the render
+    call, and a caller storing a brief receipt beside the file needs it on either branch — an avatar
+    render and a base-Flux one are equally gated, so only one of them reporting would make a base
+    render read as ungraded.
     """
     from cqc_lem.utilities.ai.image_gen import render_avatar_image_gated, render_image_gated
     from cqc_lem.utilities.avatar.guardrails import resolve_avatar_for
@@ -3133,7 +3146,8 @@ def generate_post_image(prompt: str, user_id: int, *, ratio: str = DEFAULT_IMAGE
                                                 surface=surface)
     return render_image_gated(
         prompt, surface=surface, ratio=ratio, focal_concept=focal_concept,
-        user_id=user_id, post_id=post_id, image_model=image_model)
+        user_id=user_id, post_id=post_id, image_model=image_model,
+        render_info=render_info)
 
 
 def _record_avatar_media(image_path: str, post_id: "int | None", user_id: "int | None") -> None:

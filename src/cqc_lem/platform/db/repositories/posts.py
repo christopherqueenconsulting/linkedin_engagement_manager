@@ -1813,6 +1813,36 @@ def get_post_quality_rows(start_date, end_date) -> list:
     except mysql.connector.Error as err:
         log_error("Could not get post quality rows", exc=err)
         return []
+
+
+def get_posts_with_media(limit: int = 500) -> list:
+    """Every post row carrying an `image_url` or a `video_url`, newest first (issue #1377).
+
+    The input to the media-integrity report, so it is deliberately NOT scoped to a user or to a
+    window: a dangling URL is a property of the row, not of a time range. `limit` bounds the walk
+    because each row costs a `stat` on the assets volume — and because it is `id DESC` the rows it
+    drops are the OLDEST, which is why the caller reports whether the cap bound at all. A row that
+    dangles keeps dangling and is still there next week; a row just written is the one whose media
+    can still be repaired before it publishes.
+
+    Each row is `{id, user_id, status, post_type, image_url, video_url}` — status is what decides
+    whether a missing file is `purge_post_assets` doing its job or an asset that went away while the
+    post still needed it.
+    """
+    try:
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(
+                "SELECT id, user_id, status, post_type, image_url, video_url FROM posts "
+                "WHERE (image_url IS NOT NULL AND image_url <> '') "
+                "   OR (video_url IS NOT NULL AND video_url <> '') "
+                "ORDER BY id DESC LIMIT %s",
+                (max(1, int(limit)),))
+            return [dict(r) for r in (cursor.fetchall() or [])]
+    except mysql.connector.Error as err:
+        log_error("Could not read posts carrying media", exc=err)
+        return []
+
+
 def has_post_with_status(user_id: int, statuses: tuple) -> bool:
     """True when the user has at least one post in any of the given statuses."""
     if not statuses:

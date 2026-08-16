@@ -323,6 +323,28 @@ class TestPurgePostAssets:
         assert not nested.exists()
         assert (carousel_dir / DECK_RENDER_FILENAME).exists()
 
+    def test_keeps_the_brief_receipt_the_next_image_audit_reads(self, tmp_path):
+        """Issue #1377: `focal_concept` is what rubric row R6 is scored against, after the fact.
+
+        The post's image directory is cleared wholesale at publish, so without a carve-out the
+        record of what the render was ASKED to depict dies with the render — which is exactly the
+        state P4 filed: every shipped image permanently unauditable.
+        """
+        from cqc_lem.utilities.media_provenance import read_brief_receipt
+        from cqc_lem.utilities.utils import purge_post_assets
+        image_dir = tmp_path / "images" / "posts" / "9"
+        image_dir.mkdir(parents=True)
+        (image_dir / "img_a1.webp").write_bytes(b"i")
+        url = "https://api.example.com/api/assets?file_name=images/posts/9/img_a1.webp"
+        with patch("cqc_lem.assets_dir", str(tmp_path)):
+            (image_dir / ("img_a1" + ".brief.json")).write_text(
+                json.dumps({"post_id": 9, "focal_concept": "a steering wheel"}))
+            removed = purge_post_assets(9)
+            recovered = read_brief_receipt(url)
+        assert not (image_dir / "img_a1.webp").exists()
+        assert str(image_dir) in removed
+        assert recovered and recovered["focal_concept"] == "a steering wheel"
+
     def test_no_video_url_only_purges_carousel(self, tmp_path):
         from cqc_lem.utilities.utils import purge_post_assets
         _, carousel_dir = self._setup_assets(tmp_path)

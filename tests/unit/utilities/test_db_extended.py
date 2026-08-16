@@ -978,3 +978,36 @@ class TestDbCursor:
 
         params = inspect.signature(db_cursor.__wrapped__).parameters
         assert all(p.kind is inspect.Parameter.KEYWORD_ONLY for p in params.values())
+
+
+# ---------------------------------------------------------------------------
+# get_posts_with_media (issue #1377)
+# ---------------------------------------------------------------------------
+
+class TestGetPostsWithMedia:
+    def test_reads_every_media_bearing_row_newest_first(self, mock_database_connection):
+        from cqc_lem.utilities.db import get_posts_with_media
+
+        rows = [{"id": 84, "user_id": 1, "status": "approved", "post_type": "text",
+                 "image_url": "/api/assets?file_name=images/posts/84/img.webp", "video_url": None}]
+        with patch("cqc_lem.platform.db.connection.get_db_connection") as mock_conn:
+            mock_conn.return_value = mock_database_connection["connection"]
+            mock_database_connection["cursor"].fetchall.return_value = rows
+
+            assert get_posts_with_media(limit=25) == rows
+
+        sql = mock_database_connection["cursor"].execute.call_args[0][0]
+        # Not scoped to a user or a window: a dangling URL is a property of the ROW, and the ones
+        # that have dangled longest are the oldest.
+        assert "image_url IS NOT NULL" in sql and "video_url IS NOT NULL" in sql
+        assert "user_id=%s" not in sql
+        assert mock_database_connection["cursor"].execute.call_args[0][1] == (25,)
+
+    def test_a_read_that_failed_answers_empty_rather_than_raising(self, mock_database_connection):
+        from cqc_lem.utilities.db import get_posts_with_media
+
+        with patch("cqc_lem.platform.db.connection.get_db_connection") as mock_conn:
+            mock_conn.return_value = mock_database_connection["connection"]
+            mock_database_connection["cursor"].execute.side_effect = mysql.connector.Error("err")
+
+            assert get_posts_with_media() == []

@@ -110,3 +110,78 @@ class TestGateVerdictTelemetry:
         assert props["surface"] == "newsletter"
         assert props["user_id"] == 3
         assert props["post_id"] == 9
+
+
+class TestTheVerdictReachesTheCaller:
+    """Issue #1377: the same verdict the event carries has to reach the STORE.
+
+    PostHog answers "how often does the gate reject", but the brief receipt written beside a stored
+    render answers "was THIS image checked" — and a render that shipped unchecked reads exactly like
+    one that passed unless the verdict travels with it.
+    """
+
+    def _verdict_response(self, payload):
+        return SimpleNamespace(choices=[SimpleNamespace(
+            message=SimpleNamespace(content=__import__("json").dumps(payload)))])
+
+    def test_render_info_carries_the_gate_verdict(self, tmp_path):
+        img = tmp_path / "a.png"
+        img.write_bytes(b"png")
+        render_info: dict = {}
+        with patch("cqc_lem.utilities.observability.track_image_gate_verdict"), \
+             patch.object(image_gen, "_render_with_backend",
+                          return_value=(str(img), "gpt-image")), \
+             patch.object(image_gen, "client") as mock_client:
+            mock_client.chat.completions.create.return_value = self._verdict_response(
+                {"acceptable": True, "relevance": 4, "issues": []})
+            render_image_gated("p", surface="post_image", render_info=render_info)
+        assert render_info["gate_verdict"] == "accepted"
+
+    def test_an_outage_reads_as_unchecked_not_as_a_pass(self, tmp_path):
+        img = tmp_path / "a.png"
+        img.write_bytes(b"png")
+        render_info: dict = {}
+        with patch("cqc_lem.utilities.observability.track_image_gate_verdict"), \
+             patch.object(image_gen, "_render_with_backend",
+                          return_value=(str(img), "gpt-image")), \
+             patch.object(image_gen, "client") as mock_client:
+            mock_client.chat.completions.create.side_effect = RuntimeError("vision down")
+            render_image_gated("p", surface="post_image", render_info=render_info)
+        assert render_info["gate_verdict"] == "unchecked"
+
+    def test_the_avatar_path_carries_it_beside_used_avatar(self, tmp_path):
+        avatar = {"model_ref": "owner/lora:v1", "trigger_word": "TOK",
+                  "gender_presentation": "man", "age_band": "40s"}
+        img = tmp_path / "a.png"
+        img.write_bytes(b"png")
+        render_info: dict = {}
+        with patch("cqc_lem.utilities.observability.track_image_gate_verdict"), \
+             patch("cqc_lem.utilities.avatar.replicate_avatar.generate_image_with_avatar",
+                   return_value=(str(img), True)), \
+             patch("cqc_lem.utilities.ai.ai_helper._record_avatar_media"), \
+             patch.object(image_gen, "client") as mock_client:
+            mock_client.chat.completions.create.return_value = self._verdict_response(
+                {"acceptable": False, "relevance": 1, "issues": ["fused fingers"]})
+            render_avatar_image_gated("p", avatar=avatar, user_id=3, surface="newsletter",
+                                      post_id=9, render_info=render_info)
+        assert render_info["gate_verdict"] == "rejected"
+        assert render_info["used_avatar"] is True
+
+    def test_generate_post_image_reports_the_verdict_on_the_base_flux_branch_too(self, tmp_path):
+        # Both branches of `generate_post_image` are gated, so only one of them reporting would
+        # make a base-Flux render read as ungraded in the brief receipt beside it (issue #1377).
+        from cqc_lem.utilities.ai.ai_helper import generate_post_image
+
+        img = tmp_path / "a.png"
+        img.write_bytes(b"png")
+        render_info: dict = {}
+        with patch("cqc_lem.utilities.observability.track_image_gate_verdict"), \
+             patch("cqc_lem.utilities.avatar.guardrails.resolve_avatar_for", return_value=None), \
+             patch.object(image_gen, "_render_with_backend",
+                          return_value=(str(img), "gpt-image")), \
+             patch.object(image_gen, "client") as mock_client:
+            mock_client.chat.completions.create.return_value = self._verdict_response(
+                {"acceptable": True, "relevance": 4, "issues": []})
+            generate_post_image("p", 3, post_id=9, render_info=render_info)
+        assert render_info["gate_verdict"] == "accepted"
+        assert render_info["used_avatar"] is False

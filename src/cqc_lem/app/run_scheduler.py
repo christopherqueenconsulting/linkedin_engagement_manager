@@ -128,6 +128,14 @@ from cqc_lem.utilities.observability import FEATURE_CONTENT, FEATURE_NEWSLETTER,
 # the safety net working, not a defect.
 BACKFILL_URGENT_HOURS = 4
 
+# How many media-bearing post rows one integrity report walks (issue #1377). Newest first: a row
+# that dangles keeps dangling, so the older ones stay findable next week, while a row that has just
+# been written is the one whose media can still be repaired before it publishes. Each row costs a
+# `stat` on the assets volume and nothing else, so the cap is for the DB read, not the file checks —
+# and when it BINDS the report says `truncated`, because "0 dangling" out of a capped walk is not
+# the same answer as "0 dangling".
+MEDIA_INTEGRITY_SCAN_LIMIT = 500
+
 
 def _skip_if_throttled(name: str, measurement_only: bool = False, **context) -> bool:
     """True when Selenium engagement should NOT fan out — either a manual automation pause OR an open
@@ -873,6 +881,57 @@ def auto_weekly_content_quality(self, days: int = None):
             alerted += 1
     return (f"Content quality rollup reported for {reported}/{len(users)} user(s); "
             f"{alerted} regression alert(s)")
+
+
+@shared_task.task(bind=True, base=QueueOnce, once={'graceful': True})
+def auto_media_integrity_scan(self, limit: int = None):
+    """Weekly read-only report on stored media URLs vs. the assets volume (issue #1377).
+
+    Reports, never repairs: it deletes no file and clears no row. A `posted` post whose local media
+    is gone is the CORRECT end state — `purge_post_assets` removes it the moment LinkedIn re-hosts
+    the media — so those are counted separately as `missing_expected` and never alerted on. The
+    reading that matters is a media URL with no file behind it on a post that has NOT published
+    yet: that URL is still going to be served to the SPA and to the publish run, as a 404.
+
+    Whether such a row should be CLEARED is a product decision this task deliberately does not make
+    (`docs/image-stack.md`, "Media retention"), which is why an unexpected dangle escalates through
+    `log_error` — a grouped `$exception` that reaches a human — rather than through a repair.
+
+    The `media_integrity` event is the half that needs no production credentials: the image audits
+    (#1141, #1292) read PostHog because the volume and the DB both need the VPS, and this is what
+    puts the answer on the side of that line they can reach.
+
+    The walk is CAPPED, and the report says so: `rows` is how many post rows were graded and
+    `truncated` is True when the cap was the reason it stopped. A silent cap would be worse than no
+    report at all here — `dangling: 0` would read as "nothing dangles" when it only ever meant
+    "nothing dangles in the newest `MEDIA_INTEGRITY_SCAN_LIMIT` rows".
+    """
+    from cqc_lem.utilities.db import get_posts_with_media
+    from cqc_lem.utilities.logger import log_error
+    from cqc_lem.utilities.media_provenance import integrity_summary, scan_post_media
+    from cqc_lem.utilities.observability import track_media_integrity
+
+    row_limit = MEDIA_INTEGRITY_SCAN_LIMIT if limit is None else max(1, int(limit))
+    posts = get_posts_with_media(limit=row_limit)
+    if not posts:
+        # DEBUG, not INFO: a fleet with no media rows is an expected no-op, and a DB read that
+        # failed already logged where it happened.
+        log_debug("No post carries a media URL — nothing to grade",
+                  task_name="auto_media_integrity_scan")
+        return "No media rows to check"
+    summary = integrity_summary(scan_post_media(posts))
+    summary["rows"] = len(posts)
+    # `>=` rather than `==`: the reader only needs to know the cap may have hidden older rows.
+    summary["truncated"] = len(posts) >= row_limit
+    track_media_integrity(summary)
+    if summary["dangling"]:
+        log_error(f"{summary['dangling']} post media URL(s) point at files that are gone before "
+                  f"publication — posts {', '.join(summary['dangling_posts']) or 'unknown'}",
+                  action_type="post", task_name="auto_media_integrity_scan")
+    return (f"Media integrity: {summary['checked']} URL(s) checked across {summary['rows']} row(s)"
+            f"{' (capped)' if summary['truncated'] else ''}, {summary['present']} present, "
+            f"{summary['dangling']} dangling, {summary['missing_expected']} purged at publish, "
+            f"{summary['with_brief']} with a recorded brief")
 
 
 def _max_dt(*dts):
