@@ -25,7 +25,7 @@ mode file below that matches your MODE.
 | `revise` | [`runbook/revise.md`](runbook/revise.md) | The owner requested changes on a PR — implement their feedback (distinct from Copilot's threads). |
 | `selfreview` | [`runbook/selfreview.md`](runbook/selfreview.md) | Adversarial review pass on a PR before merge — the default review gate when Copilot isn't invoked. |
 | `rebase` | [`runbook/rebase.md`](runbook/rebase.md) | A PR conflicts with `main` — rebase and resolve conflicts cleanly. |
-| `phasefix` | [`runbook/phasefix.md`](runbook/phasefix.md) | The phase guard held a PR that closes an issue with declared work left — file/link the follow-up mechanically. |
+| `phasefix` | [`runbook/phasefix.md`](runbook/phasefix.md) | A PR that closes an issue with declared work left is held — file/link the follow-up mechanically, then clear the hold. Entered from a `🧩 phase-gap:` declaration (v2) or the `agent:phasefix` label (v1's failsafe). |
 
 `scripts/agent-pipeline/v2/actions/agent_run.sh`'s `case "$MODE" in ... esac` builds each dispatch
 prompt as `"Read $RUNBOOK_DIR/<mode>.md and follow it. <KEY=value ...>"` — stable literal prefix

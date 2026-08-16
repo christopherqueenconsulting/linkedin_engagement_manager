@@ -62,6 +62,10 @@ class Snapshot:
     checks: github.ChecksState | None = None
     review_fresh: bool = False      # a review marker at or after the current head
     unresolved_threads: int = 0
+    #: The self-review pass declared this PR closes an issue whose remaining scope is untracked, and
+    #: nothing has cleared that declaration (#1396). Default False, and that is the fail-OPEN half of
+    #: the design: a PR nobody declared a gap on decides exactly as it did before.
+    phase_gap: bool = False
     #: For an ISSUE: has a previous run already produced a branch or a PR? Three-valued, and the
     #: third value is the point — `None` means "could not tell", which must never be read as "no".
     work_exists: bool | None = None
@@ -128,8 +132,9 @@ LANE_LABEL_MODES = {
     "agent:revise": ("revise", "owner_requested_changes"),
     # Reachable since #1395. The mode had a budget, a timeout, an Ollama eligibility entry and a
     # RUNBOOK prompt, and `decide()` never emitted it — so v1 applied the label and v2 ignored it.
-    # NOTE this makes the LANE reachable, not the phase GUARD: v2 still has nothing that decides a
-    # PR is closing a phased issue with untracked scope (#1396). Only v1 writes the label today.
+    # Since #1396 the lane also has a v2-native entrance that needs no label: an OPEN phase-scope
+    # declaration on the PR (`snap.phase_gap`), which the self-review pass writes and this lane
+    # clears. Same mode, same reason string, so the two entrances are one lane in the ledger.
     "agent:phasefix": ("phasefix", "phase_scope_untracked"),
     "agent:depfix": ("depfix", "dependabot_ci_failure"),
     "agent:docfix": ("docfix", "lint_gate_failure"),
@@ -219,6 +224,8 @@ def _queue_withheld_lane(snap: Snapshot) -> str | None:
     lanes = [lb for lb in LANE_LABEL_PRIORITY if lb in snap.labels]
     if lanes:
         return LANE_LABEL_MODES[lanes[0]][0]
+    if snap.phase_gap:
+        return "phasefix"
     if snap.merge_state not in MERGE_STATE_PROCEED:
         # The mergeability rows sit between the lane labels and the checks ladder, and both of them
         # WAIT: an unreadable or unrecognised `mergeStateStatus` dispatches nothing, so nothing is
@@ -424,6 +431,24 @@ def decide(snap: Snapshot, *, ttl_ci: int, ttl_review: int, ttl_queue: int,
         details = {"lanes_pending": lanes[1:]} if len(lanes) > 1 else {}
         return Decision(ACT_DISPATCH, db.STATE_CLAIMED, reason, mode=mode, details=details)
 
+    if snap.phase_gap:
+        # The phase guard v2 shipped without (#1396), and deliberately NOT v1's shape. v1 judged
+        # acceptance-criteria coverage itself, at the merge gate, from the issue body and a prose
+        # regex — a call that is wrong often enough to cost a human decision per false positive.
+        # Here the judgement is made ONCE, by the self-review pass that has already read the issue,
+        # the diff and the tests, and it is only its verdict that reaches this function.
+        #
+        # So this branch holds nothing on its own opinion: it routes a DECLARED gap to the lane that
+        # resolves it mechanically (file + link the follow-up, or drop the closing keyword), exactly
+        # as the `agent:phasefix` label above does. It sits below the label lanes because
+        # `agent:revise` still outranks it — the owner's own instruction outranks our bookkeeping —
+        # and above every merge row, because a merge is the one thing that makes the gap permanent.
+        #
+        # Bounded by the phasefix budget like any other dispatch: a gap the lane cannot clear parks
+        # and ASKS after `MODE_BUDGET["phasefix"]` runs rather than re-dispatching for ever.
+        return Decision(ACT_DISPATCH, db.STATE_CLAIMED, "phase_scope_untracked", mode="phasefix",
+                        details={"declared_by": "selfreview"})
+
     if snap.merge_state in MERGE_STATE_UNREADABLE:
         # Below the lane labels on purpose: `revise`, `depfix` and `docfix` do not merge anything,
         # so there is no reason to hold them on a mergeability GitHub is still computing. Everything
@@ -550,6 +575,7 @@ def snapshot_pr(slug: str, number: int, *, owner: str | None = None,
         checks=checks,
         review_fresh=reviews.fresh,
         unresolved_threads=reviews.unresolved,
+        phase_gap=reviews.phase_gap,
         answer=_answer_for(slug, "pr", number, labels, owner),
         answer_routed=answer_routed,
         readable=True,

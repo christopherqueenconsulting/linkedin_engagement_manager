@@ -21,10 +21,24 @@ Your review is only worth running if it would catch what the author missed — h
    this item-by-item walk and keep the general defect-hunting above exactly as written — this is a
    strictly ADDITIVE scope on template issues, not a replacement, and it changes nothing about how
    selfreview behaves on the rest of the backlog.
-   **Also check the close is honest:** if the PR says `Closes #N`, confirm the diff covers every acceptance
-   criterion and that no later phase is left untracked (see the preamble's "Phased work"). A PR that closes
-   an issue while leaving scope behind IS a finding — fix it by filing + linking the follow-up, or by
-   dropping the closing keyword and saying what remains.
+   **Also check the close is honest — this check is LOAD-BEARING, you are the only thing performing it.**
+   If the PR says `Closes #N`, confirm the diff covers every acceptance criterion and that no later phase is
+   left untracked (see the preamble's "Phased work"). A PR that closes an issue while leaving scope behind IS
+   a finding, and you resolve it here like any other: file + link the follow-up issue (`Follow-up: #<new>` in
+   the PR body **and** a comment on #N), or drop the closing keyword and say what remains. Deciding to file a
+   follow-up is mechanical — never a human decision, so never park a PR for it.
+   **If you cannot resolve it in this run** (say the remainder needs a product decision before it can be
+   written up), DECLARE it, on its own line inside your marker comment in step 4, in exactly this shape:
+
+   ```
+   🧩 phase-gap: #<N> — <what remains, one line>
+   ```
+
+   That line is read by the daemon (`lemd/github.py`, `PHASE_GAP_OPEN_RE`): it holds the merge and routes the
+   PR to **MODE=phasefix**, which files + links the follow-up and clears the declaration. It is the ONLY
+   phase enforcement v2 has — there is no separate merge-time gate re-judging the diff — so a gap you neither
+   fix nor declare merges and the remaining scope is lost. Do **not** write that line when the close is
+   honest: an undeclared PR merges normally, which is the intended default.
 3. For each REAL finding: FIX IT in the worktree (you are on $BRANCH), with tests where behavior changed.
    Run the relevant unit tests locally. Commit (Claude co-author trailer) + `git push`.
 4. Post the verdict comment — the merge gate looks for the marker, so the comment MUST START with the

@@ -33,7 +33,7 @@ it. **An issue without `agent:ready` does not exist to the pipeline.**
 | `agent:revise` | (PR) Owner requested changes / answered a Decision Comment | Runner |
 | `agent:blocked` | Held after escalation; runner skips it | Runner/agent |
 | `agent:depfix` | (PR) Dependabot PR with failing CI, priority fix lane | CI router |
-| `agent:phasefix` | (PR) Phase-guard hold: agent files/links the follow-up for a multi-phase close | Runner |
+| `agent:phasefix` | (PR) Phase-scope hold: agent files/links the follow-up for a multi-phase close. v2 also enters this lane from a `🧩 phase-gap:` declaration, with no label | Runner |
 | `needs-human` | Waiting on a human decision or human-only action | Agent (on escalation) or human |
 
 ### Priority (queue order within the ready pool)
@@ -157,9 +157,11 @@ prose convention — but it is what makes two checks load-bearing instead of adv
   only ever fixes findings in place or escalates, exactly as it does today.
 - **`phase_guard_ok`** (the `tick.sh` merge-time failsafe, see "Phased work" just below) reads the
   form's `Phase` field FIRST, before falling back to its existing prose-regex scan — giving the
-  field one real, working consumer today. **This is v1's failsafe getting a structured field to
-  read, not v2-native phase enforcement** — `lem-agentd` (v2) has no phase guard at all yet, tracked
-  and explicitly out of scope here as `#1396`.
+  field one real, working consumer today. **This is v1's failsafe, and it is the only place that
+  shape of guard still exists**: v2's phase enforcement (#1396) is not a merge-time re-judgement at
+  all, it is `MODE=selfreview`'s own honest-close finding, declared as a `🧩 phase-gap:` line and
+  routed to `MODE=phasefix`. On a template issue that pass walks the `Acceptance` boxes item by
+  item, so the `Phase` field feeds v2's version too — through the reviewer, not through a gate.
 
 Walkthrough of every field: the **agent-task-template** skill.
 
@@ -197,21 +199,28 @@ this issue / stretch*. If anything remains, do one of exactly two things:
 1. **File the follow-up issue and link it** — then `Closes #N` is honest.
 2. **Drop `Closes #N`** — write "Remaining on #N: …" instead and leave the issue open.
 
-The pipeline enforces this at the merge gate: a PR whose closed issue declares a later phase with no
-linked follow-up is **not merged**. It gets a `🧩 phase-guard` comment and is routed to
-**MODE=phasefix** (`agent:phasefix`): an agent files + links the follow-up issue itself and hands the
-PR back to the merge loop — filing the follow-up is mechanical, not a human decision. The owner is
-assigned (`needs-human` + `agent:blocked`) only after two failed phasefix passes. Unchecked boxes
-alone only produce a warning comment — so tick the boxes you actually satisfied, and don't leave a
-phase living in prose.
+**Who enforces this, on each runner (#1396).** The two are not the same shape, and the difference is
+a decision, not drift.
 
-This detection is a prose regex over the issue body ("Phase 2", "deferred to", …), which is exactly
-what the **structured template's** `Phase` field (see above) gives a real value to read instead of
-guess from: `phase_guard_ok` checks `Phase: phase N of M` first and only falls back to the regex
-when that field is absent. Still v1's failsafe, still prose-adjacent under the hood — full v2-native
-phase enforcement in `lem-agentd` remains tracked and blocked on `#1396`.
+- **v2 (`lem-agentd`, the live runner):** no merge-time gate re-judges your PR — judging
+  acceptance-criteria coverage from a diff is the call an LLM gets confidently wrong, and a wrong
+  hold costs a human decision every time it fires. The question is asked **once**, by
+  `MODE=selfreview`, which has the issue, the diff and the tests in front of it. It fixes the gap
+  where it can; where it cannot, it writes `🧩 phase-gap: #N — <what remains>` into its review
+  comment. That line holds the merge (`decide()` row 26a) and routes the PR to **MODE=phasefix**,
+  which files + links the follow-up and clears the declaration with `🧩 phase-gap: cleared`. **It
+  fails open**: no declaration, no hold. So it catches what a reviewer catches — nothing re-derives
+  what both you and the reviewer missed.
+- **v1 (`tick.sh`, the heartbeat-gated failsafe):** the original guard is still there. A PR whose
+  closed issue declares a later phase with no linked follow-up gets a `🧩 phase-guard` comment,
+  the `agent:phasefix` label, and the same lane; the owner is assigned only after two failed passes.
+  Its detection is a prose regex over the issue body ("Phase 2", "deferred to", …) with the
+  **structured template's** `Phase` field read first when present.
 
-Clearing the hold is a two-part manual step — the guard **strips `agent:working`**, and a PR without
+Either way, filing the follow-up is mechanical, not a human decision, and unchecked boxes alone hold
+nothing — so tick the boxes you actually satisfied, and don't leave a phase living in prose.
+
+Clearing a v1 hold is a two-part manual step — the guard **strips `agent:working`**, and a PR without
 it is invisible to the merge loop no matter how you fixed the scope. So do one of the two above,
 then put the PR back in the flow:
 

@@ -51,11 +51,12 @@ flowchart TD
   COPTHREADS -- no --> MERGEGATE
   SELFREV -- "findings, fixable" --> BUILD
   SELFREV -- "marker posted (PASS or FIXED n)" --> MERGEGATE
+  SELFREV -- "closes an issue w/ untracked\nscope it cannot fix: declares\n'phase-gap: #N'" --> PHASEFIX
   SELFREV -- "unsafe to fix alone" --> DC
 
-  MERGEGATE{"Merge gate:\nCI green + fresh review evidence\n+ zero unresolved threads\n+ phase_guard_ok"}
-  MERGEGATE -- "closes issue w/ undisclosed\nlater phase, no follow-up linked" --> PHASEFIX["MODE=phasefix (mechanical)\nfile+link follow-up, self-resolve"]
-  PHASEFIX -- "2 failed passes" --> DC
+  MERGEGATE{"Merge gate:\nCI green + fresh review evidence\n+ zero unresolved threads\n+ no open phase-gap declaration"}
+  PHASEFIX["MODE=phasefix (mechanical)\nfile+link follow-up, clear the declaration"]
+  PHASEFIX -- "budget spent" --> DC
   PHASEFIX --> MERGEGATE
   MERGEGATE -- pass --> MERGE[Runner merges to main]
 
@@ -111,10 +112,12 @@ flowchart TD
    after CI is green; `MODE=review` addresses and resolves every unresolved Copilot thread (the
    runner will not merge with one open).
 10. **Merge gate.** Requires CI green + a fresh review (adversarial marker newer than the head
-    commit, or Copilot) + zero unresolved Copilot threads + `phase_guard_ok`. A PR that closes an
-    issue with an undisclosed later phase and no linked follow-up is held and routed to
-    `MODE=phasefix` — mechanical, self-resolved by an agent, escalated to the owner only after two
-    failed passes.
+    commit, or Copilot) + zero unresolved Copilot threads + no open phase-scope declaration. The
+    scope check is the reviewer's, not a second opinion at merge time (#1396): step 9's pass either
+    fixes the gap or writes `🧩 phase-gap: #N — <what remains>` into its comment, and that line
+    holds the merge and routes the PR to `MODE=phasefix` — mechanical, self-resolved by an agent,
+    escalated to the owner only after that lane's budget is spent. (v1's `tick.sh` failsafe still
+    runs its own `phase_guard_ok` re-judgement; v2 deliberately does not.)
 11. **Merge and release.** Merged PRs batch into a release-please PR that ships at the next window
     (05/11/17/23 UTC) unless an agent self-applies `release:now` under the policy in
     `docs/release-fast-lane.md` (verified at merge time against `TRUSTED_LABELLERS`, same
@@ -148,8 +151,9 @@ No single check; a stack of them, each owned by name:
   coverage (Codecov).
 - **Review correctness**: the `🔎 Claude adversarial review` marker (existence + freshness) for
   default-lane PRs, a resolved-Copilot-threads state for `risk:*`/`review:copilot` PRs.
-- **Scope correctness**: `phase_guard_ok` at the merge gate — a closed issue may not carry an
-  undisclosed later phase.
+- **Scope correctness**: the self-review pass's honest-close finding, made durable as a
+  `🧩 phase-gap:` declaration that holds the merge until `MODE=phasefix` clears it — a closed issue
+  may not carry an undisclosed later phase. Fails open by design: it catches what a reviewer catches.
 - **Trust correctness**: `author_trusted` + `label_actor_trusted` (issue intake) and
   `TRUSTED_LABELLERS` (the `release:now` fast lane) — an unreadable answer refuses rather than
   guesses.

@@ -54,7 +54,9 @@ A fresh worktree on branch `$BRANCH` (from origin/main) is ready. Implement issu
      `Follow-up: #<new>` in the PR body **and** comment it on #$ISSUE. Keep `Closes #$ISSUE`.
    - **(b)** Omit `Closes #$ISSUE` from the PR body, state "Remaining on #$ISSUE: …", leave it open.
 
-   Never leave the remainder in prose only — the merge gate (`phase_guard_ok`) holds the PR if you do.
+   Never leave the remainder in prose only. Nothing re-derives it for you: the only thing downstream
+   that can catch it is the MODE=selfreview pass (see the preamble's "Phased work"), and if it misses
+   it the PR merges and the remaining scope is lost — which is the exact way #548's Phase 2 vanished.
    On a `template:agent-task` issue, check its `### Phase` field first: a `phase N of M` declaration IS
    the "explicit later phase" case above, and its `### Remaining phases` text is the scope to quote into
    the follow-up issue.
