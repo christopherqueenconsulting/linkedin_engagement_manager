@@ -238,7 +238,9 @@ class TestCapture:
         assert script_args[1] == "tok-123" and script_args[2] == "demo@lem.test"
 
     def test_demo_session_is_also_seeded_as_the_cookie_the_edge_gate_reads(self, monkeypatch):
-        """Issue #1357. `localStorage` alone authenticates at the ROUTE (the SPA sends the token in
+        """Issue #1357.
+
+        `localStorage` alone authenticates at the ROUTE (the SPA sends the token in
         the `session_token` field) but carries nothing `_has_session_credential` can see, and the
         `X-Session-Token` header that used to clear that gate is gone. With `API_ACCESS_TOKENS` set
         the harness would 401 at the edge on every protected call and film a logged-out screen.
