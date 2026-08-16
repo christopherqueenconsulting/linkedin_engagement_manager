@@ -239,11 +239,14 @@ def format_decision_comment(tag: str, previous_tag: str, verdict: Verdict) -> st
             labels = ", ".join(f"`{label}`" for label in pr.labels)
             lines.append(f"- #{pr.number} (closes {closes}) — {labels}")
         lines.append("")
+    audit_only_note = (
+        "**This comment is audit / notification only.** Nothing in this repo watches replies on "
+        "a release-please PR — it carries no `agent:ready`/`needs-human` flow label, and "
+        "`tick.sh` never reads this thread. There is no automated unblock."
+    )
     lines.extend(
         [
-            "**This comment is audit / notification only.** Nothing in this repo watches replies on "
-            "a release-please PR — it carries no `agent:ready`/`needs-human` flow label, and "
-            "`tick.sh` never reads this thread. There is no automated unblock.",
+            audit_only_note,
             "",
             "To ship this release, the owner runs the existing manual entrypoint:",
             "",
