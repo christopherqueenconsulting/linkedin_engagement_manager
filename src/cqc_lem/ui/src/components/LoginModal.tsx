@@ -13,7 +13,7 @@ type Step = 'email' | 'pin' | 'second-factor'
 type SecondFactorMethod = 'totp' | 'recovery_code'
 
 export default function LoginModal() {
-  const { closeLoginModal, login } = useAuth()
+  const { closeLoginModal, login, sessionEndedReason } = useAuth()
   const [step, setStep] = useState<Step>('email')
   const [email, setEmail] = useState('')
   const [pin, setPin] = useState('')
@@ -159,6 +159,18 @@ export default function LoginModal() {
         >
           ×
         </button>
+
+        {/* The reason this modal opened, when it opened by itself (issue #1358). It replaces the
+            old teardown's `window.location.href = '/'` — a redirect that told the user nothing and
+            was read, for most of a working day, as "login is broken". */}
+        {sessionEndedReason && (
+          <div
+            role="status"
+            className="mb-4 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900"
+          >
+            {sessionEndedReason}
+          </div>
+        )}
 
         {step === 'email' && (
           <>

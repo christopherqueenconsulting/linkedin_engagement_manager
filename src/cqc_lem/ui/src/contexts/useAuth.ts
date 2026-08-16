@@ -48,6 +48,13 @@ export interface AuthContextValue {
   openLoginModal: () => void
   closeLoginModal: () => void
   isLoginModalOpen: boolean
+  /**
+   * Why this tab stopped being signed in, when nobody asked it to (issue #1358). Set only when the
+   * session was torn down after a 401 was corroborated against `/auth/session` — a deliberate
+   * `logout()` leaves it null. The sign-in surface renders it, so a sign-out is never the silent
+   * hard redirect that made #1354 read as "I cannot log in".
+   */
+  sessionEndedReason: string | null
 }
 
 export const AuthContext = createContext<AuthContextValue | null>(null)

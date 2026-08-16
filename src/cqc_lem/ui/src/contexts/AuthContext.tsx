@@ -5,6 +5,7 @@ import api from '../api/client'
 import { AuthContext } from './useAuth'
 import type { AuthUser, SessionDetail } from './useAuth'
 import { identifyUser, resetAnalytics } from '../utils/analytics'
+import { SESSION_ENDED_EVENT, SESSION_ENDED_MESSAGE } from '../utils/sessionEnd'
 
 const SESSION_KEY = 'lem_session'
 
@@ -29,6 +30,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [strongFactorPrompt, setStrongFactorPrompt] = useState(false)
   const [strongFactorDeadline, setStrongFactorDeadline] = useState<string | null>(null)
   const [isLoginModalOpen, setIsLoginModalOpen] = useState(false)
+  // Why the app stopped being signed in, when it stopped on its own (issue #1358). Null for a
+  // sign-out the user asked for — they know why that happened.
+  const [sessionEndedReason, setSessionEndedReason] = useState<string | null>(null)
   // Identify once per user per page load — re-identifying on every session check would burn a
   // $identify on each mount for no new information.
   const identifiedUserId = useRef<number | null>(null)
@@ -90,6 +94,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setSessionToken(COOKIE_SESSION)
     setUser({ email })
     setIsLoginModalOpen(false)
+    setSessionEndedReason(null)
     // The verify response carries no user id, so read the session back: it resolves the id every
     // authenticated feature already needs AND the person facts to identify with. A failure here
     // leaves the optimistic (email-only) user in place rather than bouncing a valid login.
@@ -103,11 +108,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     })
   }
 
-  async function logout() {
-    const token = sessionToken
-    if (token) {
-      await api.post('/auth/logout', { session_token: token }).catch(() => {})
-    }
+  // Everything a sign-out clears in THIS browser, with no server call in it. Shared by the
+  // deliberate `logout()` below and by the session-ended listener (issue #1358), which has nothing
+  // left to tell the server: the session it would be revoking is the one that just proved gone.
+  const clearLocalSession = useCallback(() => {
     localStorage.removeItem(SESSION_KEY)
     localStorage.removeItem('lem_email')
     localStorage.removeItem('lem_li_connected')
@@ -130,7 +134,33 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     // Break the browser↔person link, or the next person to sign in on this machine inherits it.
     identifiedUserId.current = null
     resetAnalytics()
+  }, [queryClient])
+
+  async function logout() {
+    const token = sessionToken
+    if (token) {
+      await api.post('/auth/logout', { session_token: token }).catch(() => {})
+    }
+    clearLocalSession()
+    setSessionEndedReason(null)
   }
+
+  // The session went away on its own — the API client corroborated a 401 against /auth/session and
+  // got a 401 back (issue #1358). Tearing down HERE, rather than in the interceptor, is what makes
+  // it a state change instead of a page navigation: React Router moves the tab to the logged-out
+  // tree, the client state and any error boundary survive, and the reason is something we can show
+  // rather than something the user has to infer from having been dumped on the front page.
+  useEffect(() => {
+    const onSessionEnded = () => {
+      clearLocalSession()
+      setSessionEndedReason(SESSION_ENDED_MESSAGE)
+      setIsLoginModalOpen(true)
+      // A boot that is still in flight would otherwise leave the app on its loading shell forever.
+      setIsLoading(false)
+    }
+    window.addEventListener(SESSION_ENDED_EVENT, onSessionEnded)
+    return () => window.removeEventListener(SESSION_ENDED_EVENT, onSessionEnded)
+  }, [clearLocalSession])
 
   return (
     <AuthContext.Provider
@@ -148,8 +178,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         login,
         logout,
         openLoginModal: () => setIsLoginModalOpen(true),
-        closeLoginModal: () => setIsLoginModalOpen(false),
+        // Dismissing the modal dismisses the notice with it — re-opening it later to sign in is a
+        // fresh intent, not a second report of a sign-out that already happened.
+        closeLoginModal: () => { setIsLoginModalOpen(false); setSessionEndedReason(null) },
         isLoginModalOpen,
+        sessionEndedReason,
       }}
     >
       {children}
