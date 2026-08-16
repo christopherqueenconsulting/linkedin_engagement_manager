@@ -77,6 +77,28 @@ class TestRoster:
             assert "deepseek-v4-flash" not in _ollama_models(group)
             assert "deepseek-v4-flash:0731" not in _ollama_models(group)
 
+    def test_no_tier_carries_the_extra_high_deepseek_pro_family(self):
+        """Guard the #1583 decline — the `-pro` family is EXTRA HIGH usage.
+
+        That is +2 usage levels against every Ollama deployment in this config, all of which are Low
+        or Medium. The #842 standing spend policy allows a usage-level increase on lem-complex alone and only
+        on a strict judge-rate win over the champion, whose last measured judge rate there is 100%.
+        So this is a spend decision no benchmark can currently unblock, not a quality one — which is
+        exactly why it needs an assertion: nothing else here would notice the family being adopted
+        off its spec sheet (1.6T MoE, 1M context, three thinking modes all read well).
+
+        Every spelling is covered because the bare name is a moving tag: on 2026-08-16 the catalog
+        dropped it and ollama.com re-pointed it onto the new `:0813` build, republishing the April
+        build as `:preview` — the same move the flash family made on 2026-08-09 (#1201).
+        """
+        for group in ("lem-simple", "lem-medium", "lem-complex", "lem-router",
+                      "lem-agent-tier1", "lem-agent-tier2", "lem-agent-tier2-alt",
+                      "lem-agent-tier3"):
+            assert not any(m.startswith("deepseek-v4-pro") for m in _ollama_models(group)), (
+                f"{group} carries a deepseek-v4-pro build — declined on #1583 as an Extra-high "
+                f"usage-level model; adopting one is a benchmark + owner spend decision, and this "
+                f"test is where that decision gets recorded.")
+
     def test_gemma4_serves_the_medium_tier(self):
         assert "gemma4:31b" in _ollama_models("lem-medium")
 

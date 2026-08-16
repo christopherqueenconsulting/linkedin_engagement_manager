@@ -395,6 +395,40 @@ serves a build you rejected". Since #1237 the scan treats that as its own re-poi
   every tier off a phantom. A vanish is a TRANSITION; an empty catalog is no evidence of one.
 - Still a trigger, never an auto-pin — same posture as #925.
 
+### What the 2026-08-16 tag scan settled (#1583) — both declined, unbenchmarked on purpose
+
+| Tag | What it is | Decision |
+|---|---|---|
+| `deepseek-v4-pro:0813` | **Extra high (4)** usage level, 1M context, text-only, 1.6T total / 49B active MoE with three thinking modes (ollama.com/library/deepseek-v4-pro). 893GB, published 2026-08-13 — a genuinely new build: it is the one the bare `deepseek-v4-pro` name now points at | **Decline.** +2 usage levels against every incumbent, and the standing spend policy buys an increase only on `lem-complex` and only on a **strict** judge-rate win over the champion. See below for why no run can produce one today. |
+| `deepseek-v4-pro:preview` | Same model page, so the same **Extra high (4)** level. 1600GB, published 2026-04-24 — the same `size`/`modified_at` the committed snapshot carried under the *bare* `deepseek-v4-pro`, i.e. a versioned name for a build LEM has never deployed | **Decline**, on the same policy, plus there is nothing to trade: it is the *older* of the two builds at the identical usage level. |
+
+Three things worth reading beyond the two verdicts:
+
+- **The decline is a spend call, not a quality claim, and it is decidable without a run.** Every
+  Ollama deployment in `.litellm/config.yaml` is Low (`gemma4:31b`) or Medium (`gpt-oss:20b`,
+  `gpt-oss:120b`, `deepseek-v4-flash:preview`, `qwen3.5:397b`); Extra high is **+2** levels on every
+  one of them. The standing spend policy above allows an increase on `lem-complex` alone, on a
+  strict judge-rate win — and the champion `qwen3.5:397b`'s last measured judge rate on that tier is
+  **100%** (`bm-20260802-20ae40`). A strict win over 100% does not exist, so a benchmark run could
+  at best tie, at Extra-high metering for every one of its calls. If the champion is ever
+  re-measured *below* 100% on `lem-complex`, that is the event that makes this model worth the
+  quota — re-open then, not on the next spec sheet.
+- **This is not the `kimi-k3` case.** kimi-k3 was declined because it is outside plan usage
+  entirely (HTTP 402, per-token pricing, `unknown` level). `deepseek-v4-pro` publishes a usage pip
+  like every model LEM serves, so it *is* inside plan usage — it just sits in the most expensive
+  class of it. Different reason, same outcome.
+- **The bare name moved again — the flash story, in the `-pro` family.** `/api/tags` on 2026-08-16
+  no longer lists a bare `deepseek-v4-pro`; `:0813` (893GB, 2026-08-13) and `:preview` (1600GB,
+  2026-04-24) are what it lists. ollama.com's tags page gives `deepseek-v4-pro:cloud` and
+  `deepseek-v4-pro:0813-cloud` the **same digest** (`6ed7420bc3a4`) while
+  `:preview-cloud` carries its own (`22bfd5026abd`) — so, exactly as on `deepseek-v4-flash`
+  (#1201), the bare name was **re-pointed onto the new build** and the April build was republished
+  under `:preview`. It cost nothing this time only because no tier ever served this model: nothing
+  in `.litellm/config.yaml` had to move, and `plan_vanished` filed no tier-naming issue for the same
+  reason. Read it as confirmation that the family does this routinely — a bare `deepseek-*` id in
+  this config is a build LEM does not control. The snapshot refresh for this scan is the cron's own
+  PR (#1582, +2 new / -1 gone), not this record.
+
 ## Running it
 
 ```bash

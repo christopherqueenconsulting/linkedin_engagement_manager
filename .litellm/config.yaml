@@ -138,6 +138,14 @@ model_list:
   # which the #842 standing spend policy holds by default. Every deployment in this file is served
   # inside plan usage; kimi-k3 would move a tier onto metered extra-usage billing, which is an
   # owner spend decision, not a roster refresh. Re-evaluate only if the plan changes.
+  # NOTE: openai/deepseek-v4-pro (`:0813` and `:preview`) was EVALUATED and DECLINED 2026-08-16
+  # (issue #1583), unbenchmarked and deliberately so. It is an EXTRA HIGH usage-level model — +2
+  # levels against every Ollama deployment in this file, all of which are Low or Medium — and the
+  # #842 standing spend policy buys a usage-level increase on this tier only, and only on a STRICT
+  # judge-rate win over the champion. qwen3.5:397b's last measured judge rate here is 100%, so no
+  # run can produce that win; it could only tie, at Extra-high metering per call. Unlike kimi-k3
+  # above it IS inside plan usage — the objection is the quota class, not the billing model.
+  # Re-open if qwen3.5:397b is ever re-measured below 100% judge on lem-complex.
   # NOTE: openai/kimi-k2:1t was RETIRED 2026-06-16 (returns 410) and was removed — it was
   # the primary here, so content generation fell through to the OpenAI/Anthropic fallbacks,
   # which fail when those keys aren't set. qwen3.5:397b (OLLAMA) is now primary.
