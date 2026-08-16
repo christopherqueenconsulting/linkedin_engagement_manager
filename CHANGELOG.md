@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.153.1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.153.0...v0.153.1) (2026-08-16)
+
+
+### Bug Fixes
+
+* **dms:** stop sending follow-up steps the user deleted (closes [#1575](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1575)) ([#1577](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1577)) ([b9497ed](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/b9497ed6b6f2b873747d0c343a483ac3f4a6496a))
+
 ## [0.153.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.152.1...v0.153.0) (2026-08-15)
 
 
