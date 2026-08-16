@@ -36,6 +36,24 @@ class TestRunEndpoint:
         assert kwargs["json"] == {"variables": {"distinct_id": "7"}}
         assert kwargs["headers"]["Authorization"] == "Bearer phx_test"
 
+    def test_the_runtime_scoped_key_is_used_and_outranks_the_shared_one(self, monkeypatch):
+        # Issue #1453: the stats panel is one of the SILENT consumers — the wrong key here shows up
+        # as an empty panel, never an error, so the precedence is worth pinning.
+        from cqc_lem.utilities.posthog_endpoints import run_endpoint
+        monkeypatch.setenv("POSTHOG_PERSONAL_API_KEY", "phx_shared")
+        monkeypatch.setenv("POSTHOG_RUNTIME_API_KEY", "phx_runtime")
+        with patch(f"{_MOD}.requests.post", return_value=_resp({"results": [], "columns": []})) as post:
+            run_endpoint("lem-posts-engagement-weekly", 7)
+        assert post.call_args.kwargs["headers"]["Authorization"] == "Bearer phx_runtime"
+
+    def test_only_another_purpose_s_key_reads_as_unconfigured(self, monkeypatch):
+        from cqc_lem.utilities.posthog_endpoints import run_endpoint
+        monkeypatch.delenv("POSTHOG_PERSONAL_API_KEY", raising=False)
+        monkeypatch.setenv("POSTHOG_ANNOTATION_API_KEY", "phx_annotation")
+        with patch(f"{_MOD}.requests.post") as post:
+            assert run_endpoint("lem-posts-engagement-weekly", 7) is None
+        post.assert_not_called()
+
     def test_default_project_and_host_when_unset(self, monkeypatch):
         from cqc_lem.utilities.posthog_endpoints import run_endpoint
         monkeypatch.setenv("POSTHOG_PERSONAL_API_KEY", "phx_test")

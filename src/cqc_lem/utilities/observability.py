@@ -41,6 +41,7 @@ from cqc_lem.utilities.experiments import (
     POST_MEDIA_VARIANT,
 )
 from cqc_lem.utilities.logger import _running_under_pytest, log_debug, log_warning
+from cqc_lem.utilities.posthog_keys import runtime_api_key
 
 posthog.api_key = os.getenv("POSTHOG_API_KEY", "")
 posthog.host = os.getenv("POSTHOG_HOST", "https://us.i.posthog.com")
@@ -1736,8 +1737,11 @@ def posthog_hogql_query(sql: str, timeout: int = 30) -> Optional[list]:
     read path isn't configured (no personal API key / project) or the call fails. None means
     "unknown" — never zero — so a check reading it reports itself skipped instead of alerting on a
     missing analytics plane. Reads only; the write/provision path lives in scripts/posthog_dashboards.py.
+
+    This is an app-runtime read, so it uses the RUNTIME key (`posthog_keys.runtime_api_key`), not
+    the cron's query key.
     """
-    api_key = os.getenv("POSTHOG_PERSONAL_API_KEY", "")
+    api_key = runtime_api_key()
     project_id = os.getenv("POSTHOG_PROJECT_ID", "")
     if not api_key or not project_id:
         return None

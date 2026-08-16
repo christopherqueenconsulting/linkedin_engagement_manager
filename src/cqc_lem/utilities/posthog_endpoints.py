@@ -8,6 +8,9 @@ Never raises: a missing key, an endpoint that hasn't been provisioned yet (404) 
 all degrade to `available: False` for that panel, never a broken Dashboard page. The FastAPI route
 (`GET /user/posthog-stats`) is the only caller — the personal API key lives here, server-side, and
 never reaches the browser.
+
+The key is the RUNTIME-scoped one (`POSTHOG_RUNTIME_API_KEY`, falling back to
+`POSTHOG_PERSONAL_API_KEY`); `posthog_keys.py` is where that resolution lives.
 """
 from __future__ import annotations
 
@@ -17,6 +20,7 @@ from typing import Optional
 import requests
 
 from cqc_lem.utilities.logger import log_warning
+from cqc_lem.utilities.posthog_keys import runtime_api_key
 
 DEFAULT_APP_HOST = "https://us.posthog.com"
 DEFAULT_PROJECT_ID = "475262"  # "CQC LEM" — not a secret; the key that reaches it is.
@@ -38,7 +42,7 @@ STATS_PANELS = {
 
 
 def _client_config() -> Optional[tuple]:
-    api_key = os.getenv("POSTHOG_PERSONAL_API_KEY", "")
+    api_key = runtime_api_key()
     if not api_key:
         return None
     project_id = os.getenv("POSTHOG_PROJECT_ID", DEFAULT_PROJECT_ID)

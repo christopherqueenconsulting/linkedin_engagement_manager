@@ -228,6 +228,35 @@ class TestLocalEvaluation:
             flags.flag_enabled(flags.COMMENT_RESEARCH)
         assert ph.setup.return_value.personal_api_key == "phx_test"
 
+    def test_the_runtime_scoped_key_alone_enables_local_evaluation(self, monkeypatch):
+        """The runtime-scoped key is sufficient on its own (issue #1453).
+
+        Once POSTHOG_RUNTIME_API_KEY carries it, the shared POSTHOG_PERSONAL_API_KEY no longer has
+        to be present in the app containers at all.
+        """
+        monkeypatch.setenv("POSTHOG_API_KEY", "phc_test")
+        monkeypatch.setenv("POSTHOG_RUNTIME_API_KEY", "phx_runtime")
+        with _sdk() as ph:
+            assert flags.local_evaluation_available() is True
+            ph.get_feature_flag.return_value = True
+            flags.flag_enabled(flags.COMMENT_RESEARCH)
+        assert ph.setup.return_value.personal_api_key == "phx_runtime"
+
+    def test_the_runtime_scoped_key_outranks_the_shared_one(self, monkeypatch):
+        _with_backend(monkeypatch)
+        monkeypatch.setenv("POSTHOG_RUNTIME_API_KEY", "phx_runtime")
+        with _sdk() as ph:
+            ph.get_feature_flag.return_value = True
+            flags.flag_enabled(flags.COMMENT_RESEARCH)
+        assert ph.setup.return_value.personal_api_key == "phx_runtime"
+
+    def test_another_purpose_s_key_does_not_enable_local_evaluation(self, monkeypatch):
+        # The cron's query key reaching the app containers must not read as a runtime key.
+        monkeypatch.setenv("POSTHOG_API_KEY", "phc_test")
+        monkeypatch.setenv("POSTHOG_QUERY_API_KEY", "phx_query")
+        with _sdk():
+            assert flags.local_evaluation_available() is False
+
     def test_distinct_id_matches_the_observability_convention(self):
         assert flags.distinct_id(42) == "42"
         assert flags.distinct_id(None) == "system"

@@ -216,6 +216,19 @@ def _no_real_selenium():
 
 
 @pytest.fixture(autouse=True)
+def _posthog_scoped_keys_absent(monkeypatch):
+    """Start the lane with every purpose-scoped PostHog key unset (issue #1453).
+
+    Each consumer now reads its scoped key BEFORE the shared `POSTHOG_PERSONAL_API_KEY`, so a dev
+    box or a pipeline environment carrying a real scoped key would silently outrank the one a test
+    sets. The tests that care about precedence set them explicitly.
+    """
+    from cqc_lem.utilities.posthog_keys import PURPOSE_ENV_VARS
+    for name in PURPOSE_ENV_VARS.values():
+        monkeypatch.delenv(name, raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _feature_flags_env_only(monkeypatch):
     """Issue #651: the flag wrapper polls PostHog for flag DEFINITIONS the first time any flag is
     checked. `tests/conftest.py` calls load_dotenv(), so a dev box with a real

@@ -14,7 +14,7 @@ clear PostHog answer returns the flag's env var:
 | Situation | Value used |
 |---|---|
 | `POSTHOG_FLAGS_ENABLED=false` | env var |
-| No `POSTHOG_API_KEY` or no `POSTHOG_PERSONAL_API_KEY` | env var |
+| No `POSTHOG_API_KEY` or no runtime personal key | env var |
 | Definitions not loaded yet / load failed | env var |
 | Flag not defined in PostHog | env var |
 | Flag defined but not decidable locally | env var |
@@ -143,7 +143,7 @@ treats any 401 as a dead session — a gated flags query would log a signed-in v
 | Env var | Default | Meaning |
 |---|---|---|
 | `POSTHOG_FLAGS_ENABLED` | `true` | Master kill switch. `false` = env vars only, no polling, no lookups. |
-| `POSTHOG_PERSONAL_API_KEY` | — | Required for local evaluation (scope `feature_flag:read`). Must be present in the **app** containers, not only in the cron scripts' environment. |
+| `POSTHOG_RUNTIME_API_KEY` | — | Required for local evaluation (scope `feature_flag:read`), falling back to `POSTHOG_PERSONAL_API_KEY` when unset (issue #1453, `docs/kpi-dashboards.md`). Must be present in the **app** containers, not only in the cron scripts' environment. A key that can't evaluate flags fails SILENTLY — every flag just reads its env var. |
 | `POSTHOG_FLAG_POLL_SECONDS` | `30` | Definition refresh interval — the worst-case delay before a flip is live. Doubles as the retry cooldown after a failed fetch. |
 
 ## Verifying

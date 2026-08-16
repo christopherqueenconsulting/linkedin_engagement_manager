@@ -58,6 +58,47 @@ class TestMain:
     def test_missing_api_key_skips_without_failing(self, monkeypatch, capsys):
         monkeypatch.delenv("POSTHOG_PERSONAL_API_KEY", raising=False)
         assert pha.main(["--tag", "v1.2.3"]) == 0
+        err = capsys.readouterr().err
+        assert "skipping the release annotation" in err
+        # Names BOTH vars — the reader has to know which one to set (issue #1453).
+        assert "POSTHOG_ANNOTATION_API_KEY" in err and "POSTHOG_PERSONAL_API_KEY" in err
+
+    def test_the_annotation_scoped_key_outranks_the_shared_one(self, monkeypatch):
+        monkeypatch.setenv("POSTHOG_PERSONAL_API_KEY", "phx_shared")
+        monkeypatch.setenv("POSTHOG_ANNOTATION_API_KEY", "phx_annotation")
+        captured = {}
+
+        def _client(api_key, project_id, app_host):
+            captured["api_key"] = api_key
+            client = MagicMock()
+            client.create_annotation.return_value = {}
+            return client
+
+        monkeypatch.setattr(pha, "PostHogAnnotationsClient", _client)
+        assert pha.main(["--tag", "v1.2.3"]) == 0
+        assert captured["api_key"] == "phx_annotation"
+
+    def test_the_shared_key_still_works_alone(self, monkeypatch):
+        # The rollout is additive: CI keeps working before any scoped key exists.
+        monkeypatch.setenv("POSTHOG_PERSONAL_API_KEY", "phx_shared")
+        monkeypatch.delenv("POSTHOG_ANNOTATION_API_KEY", raising=False)
+        captured = {}
+
+        def _client(api_key, project_id, app_host):
+            captured["api_key"] = api_key
+            client = MagicMock()
+            client.create_annotation.return_value = {}
+            return client
+
+        monkeypatch.setattr(pha, "PostHogAnnotationsClient", _client)
+        assert pha.main(["--tag", "v1.2.3"]) == 0
+        assert captured["api_key"] == "phx_shared"
+
+    def test_another_purpose_s_key_does_not_post_an_annotation(self, monkeypatch, capsys):
+        monkeypatch.delenv("POSTHOG_PERSONAL_API_KEY", raising=False)
+        monkeypatch.setenv("POSTHOG_QUERY_API_KEY", "phx_query")
+        monkeypatch.setattr(pha, "PostHogAnnotationsClient", MagicMock())
+        assert pha.main(["--tag", "v1.2.3"]) == 0
         assert "skipping the release annotation" in capsys.readouterr().err
 
     def test_posts_the_annotation(self, monkeypatch, capsys):

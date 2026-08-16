@@ -10,6 +10,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from cqc_lem.utilities import flags
+from cqc_lem.utilities.posthog_keys import PURPOSE_ENV_VARS
 
 pytestmark = pytest.mark.integration
 
@@ -18,7 +19,12 @@ _M = "cqc_lem.api.main"
 
 @pytest.fixture(autouse=True)
 def _clean_flag_state(monkeypatch):
+    # The purpose-scoped keys (#1453) are cleared alongside the shared one: local evaluation now
+    # reads POSTHOG_RUNTIME_API_KEY FIRST, so a real scoped key in this lane's environment would
+    # outrank what a test sets and quietly turn the no-key path into the has-key one. The unit lane
+    # carries the same guard in tests/unit/conftest.py; this lane has no shared conftest for it.
     for name in ("POSTHOG_FLAGS_ENABLED", "POSTHOG_API_KEY", "POSTHOG_PERSONAL_API_KEY",
+                 *PURPOSE_ENV_VARS.values(),
                  "COMMENT_RESEARCH_ENABLED", "TUTORIAL_VIDEOS_ENABLED",
                  "FEED_FALLBACK_WHEN_EMPTY_DEFAULT", "COST_ROUTING_ENABLED"):
         monkeypatch.delenv(name, raising=False)

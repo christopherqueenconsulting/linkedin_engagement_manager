@@ -168,7 +168,47 @@ every panel came back unavailable.
 `scripts/posthog_annotate.py`, called from `build-and-push.yml`'s deploy job right after
 `deploy.sh`'s own health check passes, posts one project-scoped annotation — `"vX.Y.Z deployed"` —
 so every insight graph shows exactly when a release shipped. It needs its own GH Actions secret,
-`POSTHOG_PERSONAL_API_KEY` (scope: `annotation` read+write) — distinct from the env var of the same
+`POSTHOG_ANNOTATION_API_KEY` (scope: `annotation` read+write), falling back to
+`POSTHOG_PERSONAL_API_KEY` — distinct from the env var of the same
 name used locally by the provisioning scripts. Absent, the script prints why and exits 0; the step
 also runs with `continue-on-error: true`, so a PostHog outage can never fail a release that already
 shipped.
+
+## Purpose-scoped personal keys (issue #1453)
+
+One account-scoped `POSTHOG_PERSONAL_API_KEY` used to do three unrelated jobs, so its scope was the
+union of all of them. `src/cqc_lem/utilities/posthog_keys.py` is the ONE place that resolution now
+lives: each purpose reads its own env var and falls back to `POSTHOG_PERSONAL_API_KEY`.
+
+| Purpose | Env var | Consumers | Scope |
+|---|---|---|---|
+| `annotation` | `POSTHOG_ANNOTATION_API_KEY` | `scripts/posthog_annotate.py` (GH Actions) | `annotation:write` |
+| `runtime` | `POSTHOG_RUNTIME_API_KEY` | `flags.py`, `posthog_endpoints.py`, `observability.posthog_hogql_query` (app containers) | `feature_flag:read`, `query:read` |
+| `query` | `POSTHOG_QUERY_API_KEY` | `scripts/posthog_error_issues.py` via `error_to_issues.sh` (host cron) | `query:read` |
+
+The provisioning scripts (`posthog_provision`, `posthog_dashboards`, `posthog_flags`,
+`posthog_surveys`, `posthog_experiments`, `posthog_ops_destination`) are run by hand and
+deliberately keep reading `POSTHOG_PERSONAL_API_KEY` — an operator key exported into a shell for the
+run and stored nowhere is the right shape for them.
+
+**`scripts/benchmark_models.py` is the exception that blocks the last step.** It also reads the
+shared key, but it is NOT hand-run: `scripts/weekly_model_check.sh` (host cron, Sun) sources
+`POSTHOG_PERSONAL_API_KEY` out of `/opt/lem/.env` for it, so the shared key is a *stored* credential
+for that lane. It reads PostHog's evaluations API — a scope none of the three purposes above covers
+— and it degrades **silently**: with the project key present and the personal key gone, neither
+branch in `main()` fires, `evals` stays `None`, and the run falls back to the in-runner judge with
+nothing printed. So the shared key cannot simply be deleted from `/opt/lem/.env`; decide what
+`benchmark_models` gets (its own scoped key, or the shared key retained for that one lane) BEFORE
+revoking, and check a weekly report actually carries PostHog-scored cases afterwards.
+
+**The fallback is the rollout.** Nothing changes in an environment until a scoped key exists there,
+so: create the scoped keys alongside the current one, populate ONE consumer, verify it, repeat, and
+revoke the shared key LAST — after `benchmark_models` is settled. If anything regresses, unset the
+scoped var and the shared key answers again.
+
+**Verify per surface, because three of them fail silently.** A wrong key in `flags.py` just makes
+every flag read its env default; in `posthog_endpoints.py` the SPA stats panel goes empty; in the
+error cron nothing gets filed and absence looks exactly like a quiet day. A green deploy is not
+evidence. Check `flags.local_evaluation_available()`, `GET /user/posthog-stats` returning populated
+panels, and `scripts/posthog_error_issues.py` (dry run) returning rows over a window known to
+contain exceptions.
