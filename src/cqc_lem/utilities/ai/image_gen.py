@@ -336,9 +336,10 @@ Each issue string must be a short actionable phrase (e.g. "garbled text on white
 # The gate is asked whether the render carries marks, so it has to be able to READ one. At
 # `low` the API downsamples to ~512px on the long edge, where four logo tiles on a laptop screen
 # in a 1536x1024 cover are simply not resolvable — which is how ed9 passed this gate carrying the
-# exact thing it is asked about (issue #1376). A high-detail read costs ~1k image tokens on
-# lem-vision against an image render that costs an order of magnitude more, so the gate's own
-# question is worth answering properly.
+# exact thing it is asked about (issue #1376). Read the cost in DOLLARS, not tokens: `lem-vision`
+# routes to gpt-4o-mini, which bills an image at a much larger token count than gpt-4o so that the
+# PRICE comes out the same — a high-detail look at a 1536x1024 cover is well under a cent, an order
+# of magnitude below the render it grades. The gate's own question is worth answering properly.
 _VISION_GATE_DETAIL = "high"
 
 
