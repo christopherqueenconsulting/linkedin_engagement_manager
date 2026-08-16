@@ -26,6 +26,7 @@ def _auth_hardening_side_effects():
     """
     with patch("cqc_lem.api.main.record_auth_event", return_value=True), \
          patch("cqc_lem.api.routers.auth.record_auth_event", return_value=True), \
+         patch("cqc_lem.api.routers.admin.record_auth_event", return_value=True), \
          patch("cqc_lem.api.routers.auth.mark_email_verified", return_value=True), \
          patch("cqc_lem.api.routers.auth.get_pin_lockout", return_value=None), \
          patch("cqc_lem.api.routers.auth.get_user_public_uid", return_value="pub-uid-1"):

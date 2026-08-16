@@ -46,6 +46,10 @@ const EVENT_LABELS: Record<string, string> = {
   recovery_code_used: 'Recovery code used',
   step_up_verified: 'Identity confirmed',
   step_up_denied: 'Change blocked — identity not confirmed',
+  // Written against the account the role changed ON (#1450), so the person it happened to sees it
+  // here rather than only the admin who did it.
+  admin_granted: 'Admin access granted',
+  admin_revoked: 'Admin access removed',
 }
 
 function when(value: string | null): string {

@@ -49,7 +49,7 @@ describe('Layout nav on a narrow screen (issue #894)', () => {
 
   it('never breaks a nav label across lines — a wrapped label would blow out the 56px bar', () => {
     harness()
-    const labels = ['Home', 'Account', 'Avatars', 'Content', 'Feedback Triage']
+    const labels = ['Home', 'Account', 'Avatars', 'Content', 'Users', 'Feedback Triage']
     for (const label of labels) {
       expect(screen.getByRole('link', { name: label }).className).toContain('whitespace-nowrap')
     }
