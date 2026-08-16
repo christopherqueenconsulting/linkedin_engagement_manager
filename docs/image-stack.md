@@ -44,6 +44,13 @@ passed `surface="thumbnail"` at all until #1141 wired `video_tutorials.generate_
 **NO text, letters, or logos in any render prompt** — enforced in the system prompt, with
 `with_no_marks()` as the render-side belt.
 
+**A SCREEN is the one surface a blanket constraint does not hold on.** A described laptop or
+monitor invites the renderer to fill its glass with plausible UI, and newsletter cover ed9 came back
+with four logo tiles and the letters "AI" on one while travelling the fully-gated path — belt and
+braces both applied (#1376). So the system prompt steers the brief onto a tangible object rather
+than a screen, and states that a screen which genuinely belongs in the frame is switched off and
+dark; `with_no_marks()` adds the same thing on the render side for any prompt that names one.
+
 An unparseable or invalid model reply falls back to `_fallback_brief` — deterministic, so a bad
 generation never means no image.
 
@@ -62,6 +69,15 @@ prediction can't stall a Celery worker forever. Cost is attributed via `track_me
 caller's `surface` (post_image / carousel / newsletter / video / thumbnail) threaded into
 `meta.surface` so per-surface spend is queryable.
 
+`with_no_marks()` appends the no-marks constraint per backend — a prohibition for
+instruction-following gpt-image, the same thing phrased positively for FLUX — and, when the prompt
+NAMES a mark-carrying surface, that surface's blank-state clause on top (`_MARK_MAGNETS`, #1376).
+Those clauses are positive on BOTH backends and split by surface class, because on FLUX naming a
+thing summons it: a scene with a laptop must not be handed a clause that mentions posters. Matching
+runs on the scene with the blanket constraint stripped back out — `_NO_MARKS_FLUX` itself says
+"screens are blank", so matching the whole string would make every FLUX render look like it
+described a screen.
+
 ### The vision quality gate
 
 `render_image_gated(prompt, surface=...)` adds a `lem-vision` check — `inspect_render_quality`
@@ -72,7 +88,12 @@ grades the rendered file against the brief's `focal_concept` — with bounded re
   logged, render kept).
 - **Fails OPEN**: `QualityVerdict.checked=False` means the gate could not run. A vision outage must
   never take a cover or post image down with it — and for newsletter covers the human
-  `pending_review` gate still sits behind this one.
+  `pending_review` gate still sits behind this one. Unchanged by #1376, which made the gate part of
+  the mark control: it detects more, it still blocks nothing.
+- **It reads at `detail="high"`** (`_VISION_GATE_DETAIL`). The gate is asked whether the render
+  carries marks, so it has to be able to READ one: at `low` the image is downsampled to ~512px on
+  the long edge, where logo tiles on a laptop screen in a 1536×1024 cover do not survive — which is
+  how ed9 passed this gate carrying the exact thing it was asked about (#1376).
 - **A rejected render's retry never names the defect back at FLUX.** `repair_directive` carries the
   same backend split, for the same reason, as `with_no_marks`: gpt-image is told what to avoid,
   FLUX is told what the image must SHOW (an off-topic verdict names the `focal_concept` back). The

@@ -47,6 +47,13 @@ _DEFAULT_PRESET = "post_image"
 DEAD_QUALITY_TAGS = ("photorealistic", "cinematic", "8k", "masterpiece", "ultra-detailed")
 DEAD_STYLE_WORDS = ("illustration", "painting", "render", "CGI", "artstation", "stock photo")
 
+# Negation is not a style question: FLUX has no negative prompting and renders what a prompt
+# NAMES, so "no logos" is how a logo gets there. ONE list, for the same reason as the two above —
+# both the author-side drift test and the render-side mark guard grep it, so a constraint written
+# as a prohibition cannot pass one checker by being invisible to the other.
+NEGATION_MARKERS = ("no text", "no logo", "no logos", "without ", "avoid ", "free of ",
+                    "don't ", "do not ")
+
 # Encodes the BFL/Replicate/fal prompting research (2026): subject-first ordering, 40-80 word
 # flowing prose, concrete camera/lighting vocabulary instead of generic quality tags, positive
 # phrasing only (FLUX has no negative prompts — naming a thing summons it), and skin texture
@@ -81,6 +88,11 @@ _SYSTEM_PROMPT_TAIL = """- The renderer ignores negation, so never write "no X" 
   text, letters, numbers, logos, watermarks, brands, charts, or UI at all: naming them
   summons them, garbled. Describe surfaces positively instead: plain unbranded clothing,
   blank screens, clean unmarked walls.
+- A SCREEN is where marks appear even when the brief never asked for them: a described laptop,
+  monitor or phone invites the renderer to fill its glass with plausible UI, tiled app icons
+  and company marks. Build the scene around a tangible object, material or environment rather
+  than a screen; when one genuinely belongs in the frame, state that it is switched off and
+  uniformly dark.
 - One cohesive scene — no collages or split screens.
 - When a person appears: face clearly visible and well-lit; describe wardrobe, expression
   and pose, never facial features beyond what the context already declares (identity is

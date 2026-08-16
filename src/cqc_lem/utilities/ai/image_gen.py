@@ -18,6 +18,7 @@ for covers the human ``pending_review`` gate still sits behind this one.
 import base64
 import json
 import os
+import re
 import secrets
 import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
@@ -64,13 +65,54 @@ _NO_MARKS_GPT = (" Absolutely no text, letters, words, numbers, captions, waterm
 _NO_MARKS_FLUX = (" Every garment and surface is plain and unbranded, screens are blank, walls "
                   "clean and unmarked.")
 
+# The blanket constraint above is not enough when the scene NAMES a surface whose whole purpose is
+# carrying marks (issue #1376). Newsletter cover ed9 went through this exact path — brief authored
+# by image_brief, rendered with `_NO_MARKS_GPT` appended, then through the vision gate — and the
+# laptop in it came back with four logo tiles and the letters "AI" on its screen, legible at feed
+# width. A described screen invites the renderer to fill it with plausible UI, and a general
+# prohibition does not reliably suppress that; what does is saying what the surface DOES show.
+#
+# So these clauses are POSITIVE on both backends, not just on FLUX: they state the surface's
+# appearance rather than forbidding its contents, which is the one phrasing that survives a
+# renderer that ignores negation AND steers one that does not.
+#
+# Split by surface class on purpose. A prompt naming a laptop must not be handed a clause that
+# names posters and signs — on FLUX naming a thing summons it, so a screen-only scene would gain
+# a poster it never asked for.
+_MARK_MAGNETS: tuple[tuple[str, str], ...] = (
+    (r"screen|screens|monitor|monitors|laptop|laptops|display|displays|tablet|tablets|phone|"
+     r"phones|smartphone|smartphones|television|televisions|projector|projectors|kiosk|kiosks|"
+     r"dashboard|dashboards",
+     " Every screen in the frame is switched off and uniformly dark, its glass reflecting only "
+     "the light already in the room."),
+    (r"whiteboard|whiteboards|chalkboard|chalkboards|blackboard|blackboards|board|boards|poster|"
+     r"posters|sign|signs|signage|banner|banners|billboard|billboards|notebook|notebooks|page|"
+     r"pages|book|books|document|documents|paper|papers",
+     " Every board, page and printed surface in the frame is bare, smooth and evenly blank."),
+)
+_MARK_MAGNET_PATTERNS: tuple[tuple[re.Pattern, str], ...] = tuple(
+    (re.compile(rf"\b(?:{words})\b", re.IGNORECASE), clause) for words, clause in _MARK_MAGNETS)
+
 
 def with_no_marks(prompt: str, backend: str = "gpt-image") -> str:
-    """The render prompt plus the no-marks constraint for that backend, added at most once."""
+    """The render prompt plus the no-marks constraint for that backend, added at most once.
+
+    A prompt that NAMES a mark-carrying surface — a screen, a whiteboard, a page — also gets that
+    surface's blank-state clause, because the blanket constraint measurably did not hold there
+    (issue #1376). The match runs against the SCENE, with either blanket constraint stripped back
+    out first: `_NO_MARKS_FLUX` itself says "screens are blank", so matching the whole string would
+    make every FLUX render look like it described a screen.
+    """
     suffix = _NO_MARKS_FLUX if backend == "flux" else _NO_MARKS_GPT
     if _NO_MARKS_GPT in prompt or _NO_MARKS_FLUX in prompt:
-        return prompt
-    return f"{prompt}{suffix}"
+        marked = prompt
+    else:
+        marked = f"{prompt}{suffix}"
+    scene = prompt.replace(_NO_MARKS_GPT, "").replace(_NO_MARKS_FLUX, "")
+    for pattern, clause in _MARK_MAGNET_PATTERNS:
+        if clause not in marked and pattern.search(scene):
+            marked = f"{marked}{clause}"
+    return marked
 
 
 # What a rejected render must show INSTEAD, keyed by what the vision gate actually reports. Its
@@ -284,9 +326,20 @@ Mark it unacceptable when ANY of these hold:
 - deformed anatomy or uncanny distorted objects — inspect HANDS closely: wrong finger
   count, fused or bent-back fingers, mangled knuckles, or a hand merging into an object
 - the image does not plausibly relate to the stated subject (relevance 1-2)
-- watermarks, logos, or UI chrome
+- any watermark, logo, brand mark, app icon or UI chrome ANYWHERE in the frame — inspect every
+  SCREEN, monitor, laptop display, whiteboard, poster, sign and page closely, at full
+  resolution: tiled app icons or a company mark on a laptop screen is the single most common
+  way this leaks, and it stays legible when the image is scaled to feed width
 - it looks like generic meaningless abstract filler rather than a composed scene
 Each issue string must be a short actionable phrase (e.g. "garbled text on whiteboard")."""
+
+# The gate is asked whether the render carries marks, so it has to be able to READ one. At
+# `low` the API downsamples to ~512px on the long edge, where four logo tiles on a laptop screen
+# in a 1536x1024 cover are simply not resolvable — which is how ed9 passed this gate carrying the
+# exact thing it is asked about (issue #1376). A high-detail read costs ~1k image tokens on
+# lem-vision against an image render that costs an order of magnitude more, so the gate's own
+# question is worth answering properly.
+_VISION_GATE_DETAIL = "high"
 
 
 def inspect_render_quality(image_path: str, focal_concept: str) -> QualityVerdict:
@@ -303,7 +356,8 @@ def inspect_render_quality(image_path: str, focal_concept: str) -> QualityVerdic
                  "text": _VISION_GATE_PROMPT.format(focal=(focal_concept or "professional "
                                                            "LinkedIn content")[:400])},
                 {"type": "image_url",
-                 "image_url": {"url": f"data:image/{mime};base64,{encoded}", "detail": "low"}},
+                 "image_url": {"url": f"data:image/{mime};base64,{encoded}",
+                               "detail": _VISION_GATE_DETAIL}},
             ]}],
             response_format={"type": "json_object"},
             temperature=0,
