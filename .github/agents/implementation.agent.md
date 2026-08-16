@@ -11,7 +11,7 @@ You are an implementation specialist for the LinkedIn Engagement Manager (LEM) p
 
 LEM automates LinkedIn: Selenium scraping, AI content generation (via LiteLLM proxy), Celery task queue, React SPA, MySQL, FastAPI.
 
-**Stack:** Python 3.12+, FastAPI, Celery/Redis, MySQL 8, Selenium 4, LiteLLM, React 18 + Vite + TailwindCSS, Poetry, Docker Compose, AWS CDK.
+**Stack:** Python 3.12+, FastAPI, Celery/Redis, MySQL 8, Selenium 4, LiteLLM, React 18 + Vite + TailwindCSS, Poetry, Docker Compose.
 
 **Key directories:**
 ```

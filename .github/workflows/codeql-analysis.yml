@@ -74,18 +74,10 @@ jobs:
           # finding class this gives up — py/unused-global-variable in a test file, which is what
           # evicted #1168 and #1171 from the merge queue.
           #
-          # `src/cqc_lem/aws/diagram` is a generated, MINIFIED vendor bundle — app.8e9fe77f.js is
-          # 2.34 MB on a single 571,880-character line, 12x the largest hand-written file in the
-          # repo, plus a 3 MB source map. It is the bulk of what the javascript-typescript
-          # extractor was chewing on (102s), it is referenced by nothing, and it sits in the aws/
-          # tree that is an UNSUPPORTED deploy path (#973). No alert in a minified bundle is
-          # actionable. Scoped to the diagram assets rather than to src/cqc_lem/aws so the CDK
-          # Python there stays analysed.
           config: |
             paths-ignore:
               - .agents/skills
               - tests
-              - src/cqc_lem/aws/diagram
 
       - name: Autobuild
         uses: github/codeql-action/autobuild@v4

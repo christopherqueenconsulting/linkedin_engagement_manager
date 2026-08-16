@@ -18,7 +18,7 @@ Two pillars: (1) **content generation & scheduling** — a 30-day buyer-journey 
 | AI proxy | LiteLLM (port 4000) |
 | Frontend | React 18 + Vite + TailwindCSS |
 | Package manager | Poetry |
-| Infra | Docker Compose (local), AWS CDK (cloud) |
+| Infra | Docker Compose — the ONLY supported deploy (VPS) |
 | Observability | PostHog |
 
 ## Directory Map
@@ -34,8 +34,7 @@ src/cqc_lem/
 │   ├── db.py      All database access (no raw SQL outside this file)
 │   ├── logger.py  Structured logger — log_info/log_error/etc. preferred over myprint()
 │   └── selenium_util.py  get_docker_driver() — always use this for WebDriver
-├── ui/            React SPA (src/, dist/ is built output served by FastAPI)
-└── aws/           AWS CDK stacks
+└── ui/            React SPA (src/, dist/ is built output served by FastAPI)
 tests/
 ├── unit/          Fast tests — mock all I/O
 └── integration/   Require MySQL + Redis service containers  (TWO lanes — #1215 deleted tests/e2e/)
@@ -85,7 +84,6 @@ tests/
 - `.env` — live credentials
 - `poetry.lock` — lockfile managed by Poetry
 - `src/cqc_lem/ui/dist/` — built frontend artifacts (auto-generated)
-- `aws/cdk.out/` — CDK synth output (auto-generated)
 
 ## AI Call Pattern
 
