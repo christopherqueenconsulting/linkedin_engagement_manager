@@ -123,7 +123,11 @@ per-surface presets (`newsletter`/`post_image`/`carousel`/`video`/`thumbnail`); 
 per-content-type prompt helper, add a preset. `utilities/ai/image_gen.py` renders it
 (`IMAGE_BACKEND`, cost-tracked); `render_image_gated` adds the bounded `lem-vision` check, failing
 OPEN. Avatar likeness NEVER renders in `image_gen` — `generate_post_image` (ai_helper) owns the LoRA
-path behind `avatar/guardrails.resolve_avatar_for`. NO text/logos in a render prompt.
+path behind `avatar/guardrails.resolve_avatar_for`. NO text/logos in a render prompt — and a prompt
+that NAMES a screen or a board gets that surface's blank-state clause on top (`with_no_marks`,
+#1376), positive phrasing on BOTH backends, because a blanket prohibition measurably did not hold on
+a described laptop; the gate reads at `detail="high"` for the same reason — at `low` it could not
+resolve the marks it is asked about.
 `utilities/post_image.py` (#1030) is the ONE place a POST's image is validated, stored and removed
 (upload OR the studio's "Generate with AI", same engine as the scheduled path). A compose-time
 `image_url` is CALLER input: `/schedule_post/` takes it only when `owns_post_image_url` says it's a

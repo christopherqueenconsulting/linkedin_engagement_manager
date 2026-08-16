@@ -20,6 +20,7 @@ from cqc_lem.utilities.ai.image_brief import (
     _SYSTEM_PROMPT,
     DEAD_QUALITY_TAGS,
     DEAD_STYLE_WORDS,
+    NEGATION_MARKERS,
     _fallback_brief,
 )
 
@@ -28,9 +29,9 @@ pytestmark = pytest.mark.unit
 _SRC = Path(__file__).resolve().parents[4] / "src" / "cqc_lem"
 
 # Negation is not a style question: FLUX has no negative prompting and renders what a prompt
-# NAMES, so "no logos" is how a logo gets there. Every one of these shipped in a real prompt.
-_NEGATION_MARKERS = ("no text", "no logo", "no logos", "without ", "avoid ", "free of ",
-                     "don't ", "do not ")
+# NAMES, so "no logos" is how a logo gets there. Every one of these shipped in a real prompt. The
+# list moved into `image_brief` (issue #1376) so the render-side mark guard greps the SAME one.
+_NEGATION_MARKERS = NEGATION_MARKERS
 
 
 class TestPresetsObeyTheSharedSystemPrompt:

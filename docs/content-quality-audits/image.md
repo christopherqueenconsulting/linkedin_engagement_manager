@@ -332,7 +332,7 @@ hand-written prompt, which is what makes P2 different from F1/F3.
 | ID | Finding | Evidence | Filed |
 |---|---|---|---|
 | **P1** | **Carousel body text is truncated mid-sentence, systematically.** Not one bad slide: 4 of 8 body slides across BOTH sampled posts, including post 87's closing CTA — the slide whose entire job is the ask. No ellipsis, no reflow, no smaller type; the sentence simply stops | rows 5, 6, 7, 9 above | #1375 |
-| **P2** | **A newsletter cover rendered third-party logos and the letters "AI" into the image** — R2's exact prohibition, on the gated live path rather than a hand-written prompt. `cover_image_status` was `pending_review`, so the human gate is the only thing between this and a public brand asset | row 3 | #1376 |
+| **P2** | **A newsletter cover rendered third-party logos and the letters "AI" into the image** — R2's exact prohibition, on the gated live path rather than a hand-written prompt. `cover_image_status` was `pending_review`, so the human gate is the only thing between this and a public brand asset | row 3 | #1376 — **control shipped, §7.6** |
 | **P3** | **`posts.image_url` / `video_url` can point at files that no longer exist**, and nothing detects it. 3 of the sampled rows dangle — posts 79 and 82 (`images/posts/{79,82}/out-0.webp`) and post 85's video — and all three are `posted` | volume listing vs DB rows | #1377 |
 | **P4** | **`ImageBrief.focal_concept` is never persisted with the render**, so R6 is unauditable after the fact — this audit could only infer intent from the post's topic and archetype. There is no `media_cost` table at all in production; the cost path writes `cost_ledger` | schema read | #1377 |
 | **P5** | **No surface renders 4:5.** `post_image` and `carousel` are 1:1, `newsletter` 3:2, `video` 9:16. Published 2026 guidance is consistent that 1080×1350 (4:5) takes the most mobile feed real estate and is the thumb-stopping format — LEM never asks for it | dimensions above | #1375 |
@@ -384,3 +384,38 @@ made AFTER #1377 shipped — every image in §7.1 stays unauditable for R6, perm
 intent from `posts.topic` is still the only option for them. And a render is only covered where the
 brief reaches the store: **post images and post videos**. Newsletter covers and carousel slides
 write no receipt yet, so R6 on those surfaces is still scored the way §7.1 scored it.
+
+### 7.6 P2's control — the screen, not the caller (#1376)
+
+Row 3 is the only R2 failure in the sample, and the only one of the three R2 leaks this audit has
+found that nothing explains as a caller mistake. F1 was a hand-written prompt bypassing the brief
+engine; F3 was the repair round reintroducing marks by naming them. Row 3 travelled the whole
+belt-and-braces path — `image_brief` authored it, `with_no_marks` appended the gpt-image
+prohibition, `render_image_gated` took a `lem-vision` verdict — and the laptop in it came back with
+four logo tiles anyway.
+
+So the control is aimed at the **surface**, not at a caller:
+
+| Half | What changed | Why that half |
+|---|---|---|
+| Author (`image_brief._SYSTEM_PROMPT`) | Build the scene around a tangible object rather than a screen; a screen that genuinely belongs is stated switched off and dark | A screen is where marks appear even when the brief never asked for one — the writer can decline to put one at the centre of the frame |
+| Render (`image_gen.with_no_marks`) | A prompt NAMING a mark-carrying surface gains that surface's blank-state clause, positive on both backends, split by surface class, matched on the AUTHOR's scene | A blanket "no logos" is a prohibition about content; what holds is a statement of what the surface SHOWS. Positive on gpt-image too, so a hand-written or retried prompt gets the same phrasing. Matching excludes both the blanket constraint and the repair round, which each say "screens blank" themselves — otherwise a mark verdict's retry summons a screen into a scene that never had one |
+| Check (`inspect_render_quality`) | The gate names screens as the place to look, and reads at `detail="high"` | At `low` a 1536×1024 cover is downsampled to ~512px, where four logo tiles on a laptop screen are not resolvable. The gate was asked a question it could not see the answer to |
+
+**The gate is still fail-OPEN (R7).** Being part of the mark control changes what it detects, never
+what it blocks — a vision outage leaves the human `pending_review` gate standing alone, exactly as
+before.
+
+The regression lives on the render side (`tests/unit/utilities/ai/test_image_render_mark_guard.py`),
+mirroring `test_image_preset_drift.py` on the author side, and makes no live model call: every
+assertion is against the string handed to a patched renderer or vision client. `NEGATION_MARKERS`
+moved into `image_brief` so both guards grep ONE list.
+
+**What is NOT closed by this:** ed9's own cover, which is a production asset, not code. Two states are
+possible and only the box can say which. If the edition is still queued (`draft`/`approved`), it is in
+the newsletter review queue carrying the NEEDS YOUR APPROVAL badge, and the owner clears it there —
+**Remove cover** drops the file and the edition publishes coverless, **Generate with AI** re-renders
+it through the control above. If ed9 has since reached its slot, `_approved_cover_path` already
+dropped the unapproved cover at publish, so the render never reached LinkedIn and what remains is an
+orphan PNG under `images/newsletter_covers/1/`. **Neither state was reachable from this branch** —
+both are prod, and re-rendering is a prod render.
