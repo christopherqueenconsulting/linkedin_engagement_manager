@@ -408,7 +408,12 @@ Three properties now, in `client.ts` + `contexts/AuthContext.tsx`:
   deduped across a burst, and skipped entirely when no `lem_session` is held, which is also what
   stops a post-teardown burst from re-asking. Only a 401 back ends the session. A 200, a 5xx or a
   network failure leaves it alone: absence of proof that it died is not proof that it died. The
-  original error still rejects, so the failing panel surfaces its own failure.
+  original error still rejects, so the failing panel surfaces its own failure. The probe carries the
+  stored value in the `session_token` **field**, exactly as `loadSession` does — that field is the
+  only place `get_session_user_id` resolves an explicit token from (`X-Session-Token` is a presence
+  check at the edge and nothing more), so a probe without it would carry no credential in the
+  cookie-less fallback and 401 about a live session. Normally the value is the `cookie` sentinel,
+  which the server ignores in favour of the cookie.
 - **The session route's own 401 stays with the auth layer.** `AuthProvider` boots on it (drop the
   stored sentinel) and `login()` answers it by falling back to holding the token — the path that
   exists so a cookie a browser refused is never turned into a lockout. A teardown from underneath

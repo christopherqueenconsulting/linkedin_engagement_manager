@@ -76,11 +76,19 @@ let sessionProbe: Promise<void> | null = null
  * mount fires a dozen requests at once, and twelve simultaneous 401s are still one question.
  * Anything other than a 401 back (200, a 5xx, a network failure) leaves the session alone: the
  * absence of proof that it died is not proof that it died.
+ *
+ * The stored value is sent as `session_token`, exactly as `AuthContext.loadSession` sends it, and
+ * that is load-bearing rather than symmetry: the server resolves an explicit token from that FIELD
+ * and reads `X-Session-Token` only as a presence check at the edge. In the cookie-less fallback
+ * (`login()` holds a real token because the browser refused the cookie) a probe without the field
+ * carries no credential the resolver reads, so it would 401 about a perfectly live session — the
+ * corroboration becoming the single point of amplification it was added to remove. Normally the
+ * value is the non-secret `cookie` sentinel, which the server ignores in favour of the cookie.
  */
-function confirmSessionEnded(): Promise<void> {
+function confirmSessionEnded(storedToken: string): Promise<void> {
   if (!sessionProbe) {
     sessionProbe = api
-      .get(SESSION_ROUTE)
+      .get(SESSION_ROUTE, { params: { session_token: storedToken } })
       .then(() => undefined)
       .catch((error) => {
         if (error?.response?.status === 401) {
@@ -100,10 +108,11 @@ api.interceptors.response.use(
     // No stored session means there is nothing to tear down and nothing to corroborate — a signed
     // out visitor's 401 is just a 401. It is also what stops a burst of 401s AFTER a teardown from
     // re-probing: the sentinel is gone by then.
-    if (error.response?.status === 401 &&
-        !isSessionRoute(error.config) &&
-        localStorage.getItem('lem_session')) {
-      void confirmSessionEnded()
+    if (error.response?.status === 401 && !isSessionRoute(error.config)) {
+      const storedToken = localStorage.getItem('lem_session')
+      if (storedToken) {
+        void confirmSessionEnded(storedToken)
+      }
     }
     // The server refused because this bundle sent no X-LEM-Client (issue #957) — it predates the
     // release that added it, i.e. a tab left open across that deploy. That is the stale-bundle case

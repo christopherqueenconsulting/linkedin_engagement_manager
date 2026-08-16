@@ -188,6 +188,7 @@ describe('a 403 client_header_required', () => {
 // only `/auth/session` answers the question "am I signed in?".
 describe('a 401', () => {
   const requested: string[] = []
+  const probes: InternalAxiosRequestConfig[] = []
 
   // Routes by URL, so a test can describe a PARTIAL outage — the shape the old interceptor could
   // not tell apart from a dead session.
@@ -195,6 +196,7 @@ describe('a 401', () => {
     api.defaults.adapter = async (config: InternalAxiosRequestConfig) => {
       const url = config.url ?? ''
       requested.push(url)
+      if (url.startsWith('/auth/session')) probes.push(config)
       const status = statusFor(url)
       const response = {
         data: { detail: 'x' }, status, statusText: '', headers: {}, config,
@@ -214,6 +216,7 @@ describe('a 401', () => {
 
   beforeEach(() => {
     requested.length = 0
+    probes.length = 0
     ended = 0
     window.addEventListener(SESSION_ENDED_EVENT, onEnded)
     localStorage.setItem('lem_session', 'cookie')
@@ -287,6 +290,32 @@ describe('a 401', () => {
     expect(probeCount()).toBe(1)  // the request itself, no second one behind it
     expect(localStorage.getItem('lem_session')).toBe('cookie')
     expect(ended).toBe(0)
+  })
+
+  // The cookie-less fallback: `login()` holds a REAL token because the browser refused the cookie,
+  // and every call site sends it in the `session_token` FIELD — which is the only place the server
+  // resolves an explicit token from (`X-Session-Token` is a presence check at the edge, nothing
+  // more). A probe without that field would carry no credential the resolver reads, 401 about a
+  // live session, and make the corroboration the amplifier it exists to remove.
+  it('corroborates with the credential the app is actually using', async () => {
+    localStorage.setItem('lem_session', 'a-real-token')
+    respondBy((url) => (url.startsWith('/auth/session') ? 200 : 401))
+
+    await expect(api.get('/user/timezone')).rejects.toMatchObject({ response: { status: 401 } })
+    await vi.waitFor(() => expect(probes).toHaveLength(1))
+
+    expect(probes[0].params).toEqual({ session_token: 'a-real-token' })
+    expect(localStorage.getItem('lem_session')).toBe('a-real-token')
+    expect(ended).toBe(0)
+  })
+
+  it('sends the cookie sentinel when that is what is held — the server reads the cookie instead', async () => {
+    respondBy((url) => (url.startsWith('/auth/session') ? 200 : 401))
+
+    await expect(api.get('/user/timezone')).rejects.toMatchObject({ response: { status: 401 } })
+    await vi.waitFor(() => expect(probes).toHaveLength(1))
+
+    expect(probes[0].params).toEqual({ session_token: 'cookie' })
   })
 
   it('asks nothing when no session is held — a signed-out 401 is just a 401', async () => {
