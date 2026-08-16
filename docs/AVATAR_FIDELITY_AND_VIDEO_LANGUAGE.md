@@ -368,7 +368,9 @@ Two consequences for the hold decision:
 **Confirmed on the issue thread 2026-08-16 (`1A 2A`).** The rate is produced by declaring the
 attributes and re-reading the telemetry ≈2026-08-28 — production frames, no extra vision spend —
 rather than from a curated offline set; `scripts/avatar_likeness_eval.py` stays available for a
-labelled set that arrives sooner. The inert state itself is now tracked as **#1598**: today it is
+labelled set that arrives sooner. The declaration is an owner action with no agent path, so it is
+listed in `docs/OWNER_ACTION_TRACKER.md` §4 against the hold flag — an issue comment is not a
+tracker, and nothing else would notice the ≈2026-08-28 re-read finding the same zero-checked state. The inert state itself is now tracked as **#1598**: today it is
 visible in neither place it could be noticed — the SPA never says that blank attributes leave both
 the probe and #744's subject clause with nothing to work on, and `reason` is `text()` rather than
 `label()`, so "the probe is inert on this account" cannot be filtered or counted in PostHog without
