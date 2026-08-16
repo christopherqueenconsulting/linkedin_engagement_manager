@@ -1,12 +1,13 @@
-"""Unit tests for recording a stored video's asset measures — issue #1517.
+"""Unit tests for recording a stored video's asset measures — issues #1517 and #1363.
 
 `purge_post_assets` (#148) deletes the MP4 at publish and the nightly quality beat scores content
 that has already shipped, so store time is the ONLY moment the measurement and the file exist
-together. What these pin is that moment: the measures are taken off the bytes that ship (after the
-caption burn and C2PA re-writes, before the URL is persisted), on BOTH store paths, and nothing is
-ever recorded that the probe did not read.
+together. What these pin is that moment: the measures AND the representative keyframes are taken
+off the bytes that ship (after the caption burn and C2PA re-writes, before the URL is persisted),
+on BOTH store paths, and nothing is ever recorded that the probe did not read.
 
-The receipt format itself is covered by `tests/unit/utilities/test_video_receipt.py`.
+The receipt format is covered by `tests/unit/utilities/test_video_receipt.py`, the keyframe timing
+and naming by `tests/unit/utilities/test_video_frames.py`.
 """
 import os
 from datetime import datetime as _real_datetime
@@ -15,7 +16,7 @@ from unittest.mock import patch
 
 import pytest
 
-from cqc_lem.utilities import content_quality as cq
+from cqc_lem.utilities import content_quality as cq, video_frames
 from cqc_lem.utilities.content_quality import VIDEO_PROBE_OK, VIDEO_PROBE_UNREADABLE
 from cqc_lem.utilities.video_receipt import read_video_receipt, video_receipt_path
 
@@ -23,6 +24,7 @@ pytestmark = pytest.mark.unit
 
 _RCP = "cqc_lem.app.run_content_plan"
 _CQ = "cqc_lem.utilities.content_quality"
+_VF = "cqc_lem.utilities.video_frames"
 
 
 class _MondayDatetime(_real_datetime):
@@ -48,11 +50,48 @@ class TestRecordVideoAssetMeasures:
     def test_records_what_the_probe_read(self, tmp_path):
         from cqc_lem.app.run_content_plan import _record_video_asset_measures
         video = _valid_mp4(tmp_path)
-        with patch(f"{_CQ}.probe_video_asset", return_value=_measures()) as probe:
+        with patch(f"{_CQ}.probe_video_asset", return_value=_measures()) as probe, \
+             patch(f"{_VF}.retain_keyframes", return_value=["open.jpg"]):
             path = _record_video_asset_measures(7, video, user_id=3)
         assert probe.call_args.args[0] == video
         assert path == video_receipt_path(video)
         assert read_video_receipt(path) == _measures()
+
+    def test_keyframes_are_retained_off_the_measured_duration(self, tmp_path):
+        # R1/R8 are graded on pixels a receipt cannot carry, and the MP4 is deleted at publish
+        # (#1363, owner decision `2A`). The duration is the one just measured, so the mid/close
+        # frames land where the clip actually is.
+        from cqc_lem.app.run_content_plan import _record_video_asset_measures
+        video = _valid_mp4(tmp_path)
+        with patch(f"{_CQ}.probe_video_asset", return_value=_measures()), \
+             patch(f"{_VF}.retain_keyframes", return_value=["a.jpg", "b.jpg", "c.jpg"]) as retain, \
+             patch(f"{_RCP}.log_warning") as warn:
+            assert _record_video_asset_measures(7, video, user_id=3) == video_receipt_path(video)
+        assert retain.call_args.args == (video, 8)
+        warn.assert_not_called()
+
+    def test_no_retained_keyframes_warns_but_keeps_the_receipt(self, tmp_path):
+        # ffprobe just READ this file, so ffmpeg pulling no frame from it is one fault costing
+        # every video post its R1/R8 evidence — not an expected no-op. The measures still stand.
+        from cqc_lem.app.run_content_plan import _record_video_asset_measures
+        video = _valid_mp4(tmp_path)
+        with patch(f"{_CQ}.probe_video_asset", return_value=_measures()), \
+             patch(f"{_VF}.retain_keyframes", return_value=[]), \
+             patch(f"{_RCP}.log_warning") as warn:
+            assert _record_video_asset_measures(7, video, user_id=3) == video_receipt_path(video)
+        assert read_video_receipt(video_receipt_path(video)) == _measures()
+        assert warn.call_count == 1
+
+    def test_a_raising_retention_never_reaches_the_caller(self, tmp_path):
+        from cqc_lem.app.run_content_plan import _record_video_asset_measures
+        video = _valid_mp4(tmp_path)
+        with patch(f"{_CQ}.probe_video_asset", return_value=_measures()), \
+             patch(f"{_VF}.retain_keyframes", side_effect=RuntimeError("ffmpeg")), \
+             patch(f"{_RCP}.log_warning") as warn:
+            assert _record_video_asset_measures(7, video) is None
+        # The receipt was already written — the measures survive a failed frame grab.
+        assert read_video_receipt(video_receipt_path(video)) == _measures()
+        assert warn.call_count == 1
 
     def test_an_unread_probe_records_nothing_and_warns(self, tmp_path):
         # Unmeasured is never zero (#630): a receipt saying "0 seconds, ok" would read as a
@@ -138,6 +177,9 @@ class TestTheStoredUrlResolvesToTheRecording:
         stored: dict = {}
         monkeypatch.setattr(rcp, "assets_dir", str(tmp_path))
         monkeypatch.setattr(cq, "assets_dir", str(tmp_path))
+        monkeypatch.setattr(video_frames.shutil, "which", lambda name: "/usr/bin/ffmpeg")
+        monkeypatch.setattr(video_frames.subprocess, "run",
+                            lambda cmd, **kw: Path(cmd[-1]).write_bytes(b"jpeg-bytes"))
         with patch(f"{_RCP}.save_video_url_to_dir",
                    side_effect=lambda url, directory: _valid_mp4(Path(directory))), \
              patch(f"{_RCP}._accept_probed_video", return_value=True), \
@@ -149,13 +191,19 @@ class TestTheStoredUrlResolvesToTheRecording:
             api_url = rcp._store_video_asset(7, "https://runway.test/clip.mp4")
 
         assert api_url == stored["url"]
-        # purge_post_assets (#148) at publish: the MP4 goes, the receipt stays.
-        os.remove(str(tmp_path / "videos" / "runwayml" / "clip.mp4"))
+        # purge_post_assets (#148) at publish: the MP4 goes, the receipt and the keyframes stay.
+        stored_mp4 = str(tmp_path / "videos" / "runwayml" / "clip.mp4")
+        os.remove(stored_mp4)
         result = cq.score_video_asset(video_url=api_url)
         assert result["video_duration_seconds"] == 8
         assert result["video_aspect_ratio"] == "9:16"
         assert result["video_asset_probe"] == VIDEO_PROBE_OK
         assert result["video_render_ok"] is True
+        # R1/R8 evidence outlives the purge too, resolved from the same stored URL (#1363).
+        assert [label for label, _ in
+                video_frames.retained_keyframes(cq.resolve_local_video_path(api_url))] == [
+            "open", "mid", "close"]
+        assert not os.path.exists(stored_mp4)
 
 
 class TestBirthPathRecordsMeasures:

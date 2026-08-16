@@ -52,84 +52,103 @@ class TestVideoPosts:
         assert tool.video_posts(None) == []
 
 
-class TestFrameTimestamps:
-    def test_an_unread_duration_only_yields_the_opening_frame(self, tool):
-        assert tool.frame_timestamps(None) == [("open", tool.OPEN_FRAME_SECONDS)]
-        assert tool.frame_timestamps("n/a") == [("open", tool.OPEN_FRAME_SECONDS)]
+class TestFramesFor:
+    """Frame timing and extraction are pinned in `tests/unit/utilities/test_video_frames.py`.
 
-    def test_a_clip_shorter_than_the_offsets_only_yields_the_opening_frame(self, tool):
-        assert tool.frame_timestamps(0.5) == [("open", tool.OPEN_FRAME_SECONDS)]
+    What is this script's own is the CHOICE: extract from a clip still on disk, or fall back to the
+    keyframes the store path retained beside a video the publish-time purge has already deleted —
+    and report which of the two the reader is looking at.
+    """
 
-    def test_a_normal_clip_yields_open_mid_and_close(self, tool):
-        assert tool.frame_timestamps(6) == [("open", 0.5), ("mid", 3.0), ("close", 5.7)]
-
-
-class TestExtractFrames:
-    def test_no_ffmpeg_writes_nothing(self, tool, tmp_path, monkeypatch):
-        video = tmp_path / "clip.mp4"
+    @pytest.fixture
+    def clip(self, tmp_path):
+        video = tmp_path / "videos" / "runwayml" / "clip.mp4"
+        video.parent.mkdir(parents=True)
         video.write_bytes(b"\x00\x00\x00\x18ftypmp42")
-        monkeypatch.setattr(tool.shutil, "which", lambda name: None)
-        assert tool.extract_frames(str(video), str(tmp_path / "frames"), "post1", 6) == []
+        return video
 
-    def test_a_missing_asset_writes_nothing(self, tool, tmp_path, monkeypatch):
-        monkeypatch.setattr(tool.shutil, "which", lambda name: "/usr/bin/ffmpeg")
-        assert tool.extract_frames(str(tmp_path / "gone.mp4"), str(tmp_path), "post1", 6) == []
-        assert tool.extract_frames(None, str(tmp_path), "post1", 6) == []
+    def _ffmpeg(self, tool, monkeypatch):
+        from cqc_lem.utilities import video_frames
 
-    def test_an_unwritable_frames_dir_costs_the_frames_not_the_run(self, tool, tmp_path,
+        monkeypatch.setattr(video_frames.shutil, "which", lambda name: "/usr/bin/ffmpeg")
+        monkeypatch.setattr(
+            video_frames.subprocess, "run",
+            lambda cmd, **kwargs: pathlib.Path(cmd[-1]).write_bytes(b"jpeg-bytes"))
+
+    def test_a_clip_still_on_disk_is_extracted_and_named_as_such(self, tool, clip, tmp_path,
+                                                                 monkeypatch):
+        self._ffmpeg(tool, monkeypatch)
+        frames, source = tool.frames_for(str(clip), str(tmp_path / "frames"), "post7", 6)
+        assert [pathlib.Path(f).name for f in frames] == ["post7_open.jpg", "post7_mid.jpg",
+                                                          "post7_close.jpg"]
+        assert source == "extracted"
+
+    def test_a_shipped_post_falls_back_to_the_retained_keyframes(self, tool, clip, tmp_path,
+                                                                 monkeypatch):
+        from cqc_lem.utilities.video_frames import keyframe_path
+
+        for label in ("open", "mid"):
+            pathlib.Path(keyframe_path(str(clip), label)).write_bytes(b"jpeg-bytes")
+        clip.unlink()  # what purge_post_assets does the moment the post publishes
+        self._ffmpeg(tool, monkeypatch)
+
+        frames, source = tool.frames_for(str(clip), str(tmp_path / "frames"), "post7", 6)
+        assert source == "retained"
+        # Copied into the frames directory so the audit doc can reference one path per frame.
+        assert [pathlib.Path(f).name for f in frames] == ["post7_open.jpg", "post7_mid.jpg"]
+        assert all(pathlib.Path(f).exists() for f in frames)
+
+    def test_an_uncopyable_retained_frame_is_still_named_where_it_lives(self, tool, clip, tmp_path,
+                                                                        monkeypatch):
+        from cqc_lem.utilities.video_frames import keyframe_path
+
+        retained = pathlib.Path(keyframe_path(str(clip), "open"))
+        retained.write_bytes(b"jpeg-bytes")
+        clip.unlink()
+        self._ffmpeg(tool, monkeypatch)
+        monkeypatch.setattr(tool.shutil, "copyfile",
+                            lambda *a, **k: (_ for _ in ()).throw(OSError(30, "Read-only")))
+
+        frames, source = tool.frames_for(str(clip), str(tmp_path / "frames"), "post7", 6)
+        assert frames == [str(retained)] and source == "retained"
+
+    def test_nothing_to_show_reports_no_source(self, tool, tmp_path, monkeypatch):
+        self._ffmpeg(tool, monkeypatch)
+        assert tool.frames_for(str(tmp_path / "gone.mp4"), str(tmp_path / "frames"),
+                               "post7", 6) == ([], None)
+        assert tool.frames_for(None, str(tmp_path / "frames"), "post7", 6) == ([], None)
+
+    def test_an_unwritable_frames_dir_costs_the_frames_not_the_run(self, tool, clip, tmp_path,
                                                                    monkeypatch):
         # The documented run is a prod-image sidecar with the checkout mounted READ-ONLY, so
         # makedirs on the default frames dir raises — and must not take the measured corpus with it.
-        video = tmp_path / "clip.mp4"
-        video.write_bytes(b"\x00\x00\x00\x18ftypmp42")
-        monkeypatch.setattr(tool.shutil, "which", lambda name: "/usr/bin/ffmpeg")
+        self._ffmpeg(tool, monkeypatch)
 
         def readonly(*args, **kwargs):
             raise OSError(30, "Read-only file system")
 
         monkeypatch.setattr(tool.os, "makedirs", readonly)
-        assert tool.extract_frames(str(video), str(tmp_path / "frames"), "post1", 6) == []
+        assert tool.frames_for(str(clip), str(tmp_path / "frames"), "post1", 6) == ([], None)
 
-    def test_writes_one_frame_per_timestamp(self, tool, tmp_path, monkeypatch):
-        video = tmp_path / "clip.mp4"
-        video.write_bytes(b"\x00\x00\x00\x18ftypmp42")
-        monkeypatch.setattr(tool.shutil, "which", lambda name: "/usr/bin/ffmpeg")
+    def test_an_unwritable_frames_dir_still_names_the_retained_keyframes(self, tool, clip,
+                                                                        tmp_path, monkeypatch):
+        # The read-only sidecar is the DOCUMENTED way to run this, and a shipped post's frames
+        # already exist on the assets volume. Dropping them because the audit directory could not
+        # be created would leave every shipped post as ungradable as it was before #1363.
+        from cqc_lem.utilities.video_frames import keyframe_path
 
-        def fake_run(cmd, **kwargs):
-            pathlib.Path(cmd[-1]).write_bytes(b"jpeg-bytes")
-            return None
+        retained = [pathlib.Path(keyframe_path(str(clip), label)) for label in ("open", "mid")]
+        for frame in retained:
+            frame.write_bytes(b"jpeg-bytes")
+        clip.unlink()  # what purge_post_assets does the moment the post publishes
+        self._ffmpeg(tool, monkeypatch)
 
-        monkeypatch.setattr(tool.subprocess, "run", fake_run)
-        frames = tool.extract_frames(str(video), str(tmp_path / "frames"), "post7", 6)
-        assert [pathlib.Path(f).name for f in frames] == ["post7_open.jpg", "post7_mid.jpg",
-                                                          "post7_close.jpg"]
+        def readonly(*args, **kwargs):
+            raise OSError(30, "Read-only file system")
 
-    def test_an_empty_output_is_not_reported_as_a_frame(self, tool, tmp_path, monkeypatch):
-        video = tmp_path / "clip.mp4"
-        video.write_bytes(b"\x00\x00\x00\x18ftypmp42")
-        monkeypatch.setattr(tool.shutil, "which", lambda name: "/usr/bin/ffmpeg")
-
-        def fake_run(cmd, **kwargs):
-            pathlib.Path(cmd[-1]).write_bytes(b"")
-            return None
-
-        monkeypatch.setattr(tool.subprocess, "run", fake_run)
-        assert tool.extract_frames(str(video), str(tmp_path), "post7", None) == []
-
-    def test_an_ffmpeg_crash_costs_one_frame_not_the_run(self, tool, tmp_path, monkeypatch):
-        video = tmp_path / "clip.mp4"
-        video.write_bytes(b"\x00\x00\x00\x18ftypmp42")
-        monkeypatch.setattr(tool.shutil, "which", lambda name: "/usr/bin/ffmpeg")
-
-        def fake_run(cmd, **kwargs):
-            if cmd[-1].endswith("_mid.jpg"):
-                raise OSError("ffmpeg died")
-            pathlib.Path(cmd[-1]).write_bytes(b"jpeg-bytes")
-            return None
-
-        monkeypatch.setattr(tool.subprocess, "run", fake_run)
-        frames = tool.extract_frames(str(video), str(tmp_path), "post7", 6)
-        assert [pathlib.Path(f).name for f in frames] == ["post7_open.jpg", "post7_close.jpg"]
+        monkeypatch.setattr(tool.os, "makedirs", readonly)
+        frames, source = tool.frames_for(str(clip), str(tmp_path / "frames"), "post7", 6)
+        assert frames == [str(f) for f in retained] and source == "retained"
 
 
 class TestSampleReport:
@@ -206,6 +225,15 @@ class TestSummarize:
                                   self._row(2, frames=["c.jpg"])])
         assert summary["frames"] == ["a.jpg", "b.jpg", "c.jpg"]
 
+    def test_retained_and_extracted_frames_are_counted_apart(self, tool):
+        # Only a RETAINED frame depicts the clip LinkedIn received; an extracted one came from a
+        # video still on disk, i.e. one that has not published yet.
+        summary = tool.summarize([
+            self._row(1, frames=["a.jpg", "b.jpg"], frames_source="retained"),
+            self._row(2, frames=["c.jpg"], frames_source="extracted"),
+            self._row(3, frames=[], frames_source=None)])
+        assert summary["frames_by_source"] == {"retained": 2, "extracted": 1}
+
     def test_renders_without_raising_on_an_empty_corpus(self, tool):
         assert "NOT ENOUGH" in tool._render(tool.summarize([]))
 
@@ -255,8 +283,8 @@ class TestCollect:
                             lambda post_id: {"caption_text": "hook", "caption_srt_url": None})
         monkeypatch.setattr(tool, "score_video_asset", lambda **kwargs: _probe())
         calls = []
-        monkeypatch.setattr(tool, "extract_frames",
-                            lambda *args, **kwargs: calls.append(args) or [])
+        monkeypatch.setattr(tool, "frames_for",
+                            lambda *args, **kwargs: calls.append(args) or ([], None))
 
         summary = tool.collect([1], limit=10, frames_dir="/tmp/frames")
         assert [r["post_id"] for r in summary["per_post"]] == [2, 1]
@@ -275,7 +303,7 @@ class TestCollect:
         def fail(*args, **kwargs):
             raise AssertionError("--no-frames must not touch ffmpeg")
 
-        monkeypatch.setattr(tool, "extract_frames", fail)
+        monkeypatch.setattr(tool, "frames_for", fail)
         summary = tool.collect([1], limit=10, frames_dir="/tmp/frames", with_frames=False)
         assert summary["per_post"][0]["frames"] == []
 
@@ -299,8 +327,9 @@ class TestCollect:
         monkeypatch.setattr(tool, "score_video_asset",
                             lambda **kwargs: probes.append(kwargs) or _probe())
         framed = []
-        monkeypatch.setattr(tool, "extract_frames",
-                            lambda path, out_dir, prefix, duration: framed.append(prefix) or [])
+        monkeypatch.setattr(tool, "frames_for",
+                            lambda path, out_dir, prefix, duration:
+                            framed.append(prefix) or ([], None))
 
         summary = tool.collect([1, 2], limit=2, frames_dir="/tmp/frames")
         assert [r["post_id"] for r in summary["per_post"]] == [11, 12]
@@ -310,6 +339,14 @@ class TestCollect:
 
 
 class TestRender:
+    def test_every_frame_is_printed_with_where_it_came_from(self, tool):
+        summary = tool.summarize([
+            TestSummarize()._row(1, frames=["assets/1363/post1_open.jpg"],
+                                 frames_source="retained")])
+        rendered = tool._render(summary)
+        assert "Frames (1 retained):" in rendered
+        assert "assets/1363/post1_open.jpg  [retained]" in rendered
+
     def test_the_slop_count_carries_its_denominator(self, tool):
         rows = [TestSummarize()._row(i, asset_available=False, video_asset_probe="missing")
                 for i in range(10)]

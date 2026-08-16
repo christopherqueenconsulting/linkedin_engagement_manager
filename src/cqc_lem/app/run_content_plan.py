@@ -1545,9 +1545,9 @@ def _caption_video_asset(post_id: int, video_file_path: str, content: Optional[s
 def _record_video_asset_measures(post_id: int, video_file_path: str,
                                  user_id: Optional[int] = None,
                                  task_name: str = "") -> Optional[str]:
-    """Record the stored video's duration, aspect ratio and probe state beside the file (#1517).
+    """Record the stored video's measures — and its representative keyframes — beside the file.
 
-    The ONE place a video's asset measures become durable, so both store paths — the initial
+    The ONE place a video's asset measures become durable (#1517), so both store paths — the initial
     generation and the regenerate/backfill healer — record the same reading of the same bytes.
     Call it LAST, after captioning and C2PA signing: those rewrite the file, and the measurement
     has to describe the version that actually ships.
@@ -1556,6 +1556,11 @@ def _record_video_asset_measures(post_id: int, video_file_path: str,
     publishes, and `auto_nightly_content_quality` scores content that has already shipped — so
     without this the nightly beat re-probes a deleted file and writes `NULL / NULL / missing` for
     every video post. `score_video_asset` reads the receipt back.
+
+    The keyframes are the same argument for the half a receipt cannot carry (#1363, owner decision
+    `2A`): rubric rows R1 and R8 are graded on pixels, and the pixels only exist before publication.
+    Both sidecars survive the purge without a carve-out — it removes the exact `.mp4` named by
+    `posts.video_url`, and neither of these is that path.
 
     Nothing is recorded unless the probe actually read the file: a receipt is a measurement, and an
     unmeasured video must keep reading as unmeasured rather than as a clean zero (#630). That makes
@@ -1566,6 +1571,7 @@ def _record_video_asset_measures(post_id: int, video_file_path: str,
     Never raises: telemetry does not cost a user their video, which is already stored.
     """
     from cqc_lem.utilities.content_quality import VIDEO_PROBE_OK, probe_video_asset
+    from cqc_lem.utilities.video_frames import retain_keyframes
     from cqc_lem.utilities.video_receipt import write_video_receipt
 
     try:
@@ -1576,7 +1582,16 @@ def _record_video_asset_measures(post_id: int, video_file_path: str,
                         user_id=user_id, post_id=post_id,
                         task_name=task_name or "record_video_asset_measures")
             return None
-        return write_video_receipt(video_file_path, post_id, measures)
+        receipt_path = write_video_receipt(video_file_path, post_id, measures)
+        frames = retain_keyframes(video_file_path, measures.get("duration_seconds"))
+        if not frames:
+            # WARNING, not DEBUG: ffprobe just READ this file, so ffmpeg failing to pull a single
+            # frame from it is not an expected no-op — it is one fault (a worker image without
+            # ffmpeg is the obvious one) costing every video post its R1/R8 evidence forever.
+            log_warning("Could not retain the stored video's keyframes — this post's opening and "
+                        "closing frames cannot be graded after publish", user_id=user_id,
+                        post_id=post_id, task_name=task_name or "record_video_asset_measures")
+        return receipt_path
     except Exception as e:
         log_warning("Could not record the stored video's asset measures — this post's video "
                     "dimensions will be blank in content_quality_scores", exc=e, user_id=user_id,

@@ -277,7 +277,11 @@ poetry run python scripts/sample_shipped_videos.py --no-frames           # probe
 - **Frames come out at three points** — `open` (0.5s), `mid`, `close` — into
   `docs/content-quality-audits/assets/1363/`, which is what R1 and R8 are actually graded on. The
   opening frame is sampled at 0.5s rather than at t=0 because frame zero of a Runway render is
-  routinely a near-black fade-in and says nothing about the hook.
+  routinely a near-black fade-in and says nothing about the hook. A SHIPPED post has no MP4 left to
+  extract from, so its frames are the keyframes the store path retained beside it (§8) — copied in
+  and reported as `retained`, never pooled with frames `extracted` here. Only a retained frame
+  depicts the clip LinkedIn received; an extracted one came from a video still on disk, i.e. one
+  that has not published yet.
 - **Unmeasured is never zero.** A clip whose duration ffprobe could not read is excluded from the
   5–10s band denominator rather than counted as a failure, and a corpus below `MIN_CORPUS` prints
   `NOT ENOUGH` next to every rate. The same rule the nightly telemetry follows (#630): an audit that
@@ -370,13 +374,31 @@ for a post scored days after it shipped:
 | `video_render_ok` | ✅ | receipt (`has_video_stream`) — the file's later absence is by design, not a failed render |
 | `video_model_tier` | ✅ | the stored URL, which never needed the file |
 | Caption text + `.srt` sidecar | ✅ | `posts.caption_text` / `caption_srt_url` (#1278) |
-| Representative frames (R1/R8), pixel/legibility review | ❌ | needs the MP4 — **#1363**'s keyframe-retention decision |
+| Representative frames (R1/R8) | ✅ | `<video>.frame-{open,mid,close}.jpg`, retained at store time (#1363, below) |
+| Any other pixel/legibility review | ❌ | needs the whole MP4, which is gone by design |
 
 Two rules the receipt keeps: a video whose probe did not READ the file gets no receipt at all (an
 unmeasured clip must not become a recorded `0 seconds, ok` — #630), and a receipt that will not
 parse is treated as absent, so the reader falls back to a live probe instead of scoring a guess.
 Nothing here is retroactive: posts that shipped before this landed have no receipt and keep reading
 `missing`.
+
+#### The keyframe-retention call — owner decision `2A`
+
+A receipt carries numbers, and the frames row above is pixels. The owner answered this issue's
+decision comment `1A 2A`: **retain the keyframes**, at a cost of three JPEGs per video post against
+the megabytes #148 reclaims. `_record_video_asset_measures` now writes them in the same breath as
+the receipt — `retain_keyframes` (`utilities/video_frames.py`) pulls `open` (0.5s), `mid` and
+`close` into `<video>.frame-<label>.jpg` sidecars beside the MP4, which survive the purge for the
+same reason the receipt does, and `sample_shipped_videos.py` reads them back for any post whose
+clip is already gone.
+
+The same "unscored is never zero" rule, one level down: a frame is only reported when ffmpeg
+actually wrote a non-empty file, and a clip whose duration was never read retains the OPENING frame
+only — inventing a midpoint for an unmeasured clip is how an audit cites a frame that does not
+depict what it claims. Retaining nothing after a probe that read the file warns, and never costs the
+receipt (the measures are written first). Not retroactive either: video that shipped before this
+landed has no frames and never will.
 
 ### The exemplar — fallback note taken
 
@@ -391,7 +413,11 @@ a human step, available any time someone wants to upgrade this section, and neve
 
 | Acceptance box | State |
 |---|---|
-| 6–10 shipped video samples with bodies **and** assets available | **Unblocked for video shipped after #1517** — the asset MEASURES now survive the purge, so a re-run grades current-pipeline posts. The ten rows above stay ungradable: nothing recorded a receipt for them |
+| 6–10 shipped video samples with bodies **and** assets available | **Unblocked for video shipped after #1517** — the asset MEASURES now survive the purge, so a re-run grades current-pipeline posts. Still owed: a run once ~6 video posts have shipped since. The ten rows above stay ungradable, nothing recorded a receipt for them |
 | Named real reference exemplar or explicit fallback note | **Done** — fallback note above, per #1140's clause (decision `2A`) |
-| Representative frames embedded/referenced in the audit doc | **Not produced** — frame extraction needs a readable MP4, which #1517 deliberately did not retain; it turns on #1363's own keyframe-retention decision |
+| Representative frames embedded/referenced in the audit doc | **Unblocked** — keyframes are retained at store time (decision `2A`, above) and the sampler copies them into `docs/content-quality-audits/assets/1363/`. Still owed: the frames themselves, from the same re-run |
 | Any new findings filed as follow-up issues | **Done** — F7 → **#1517** |
+
+Both remaining boxes now turn on ONE thing — a sampler run where the production database and the
+`lem_assets` volume are reachable, once enough video has shipped carrying receipts and keyframes.
+Nothing further is blocked on tooling or on a decision.
