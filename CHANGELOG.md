@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.153.2](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.153.1...v0.153.2) (2026-08-16)
+
+
+### Bug Fixes
+
+* **account:** saving profile settings actually writes, and clearing a URL is a write (closes [#1574](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1574)) ([#1579](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1579)) ([5ba0cce](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/5ba0cce0553e2f4618b3151f2ea0bbee48e4af7f))
+
 ## [0.153.1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.153.0...v0.153.1) (2026-08-16)
 
 
