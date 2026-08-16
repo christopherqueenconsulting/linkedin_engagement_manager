@@ -2547,15 +2547,18 @@ def appreciation_verdict(reading: dict) -> str:
     # The mentions half's own cross-check (#1374): the page's sentences, read through none of the
     # card locators, which is what finally splits its zero reading in two.
     lines = reading.get("page_mentions")
-    if not cards and lines:
-        return (f"ZERO cards resolved while the page itself renders {lines} 'mentioned/tagged you' "
-                f"line(s) — the card locator chain has rotated and production is silently dead{note}")
-    if not cards and lines == 0:
+    if not cards:
+        if lines:
+            return (f"ZERO cards resolved while the page itself renders {lines} 'mentioned/tagged "
+                    f"you' line(s) — the card locator chain has rotated and production is silently "
+                    f"dead{note}")
+        # An unreadable cross-check (None) grounds nothing, so it keeps the old two-way answer; a
+        # page that read cleanly and rendered no sentence is the surface agreeing it is empty.
+        if lines is None:
+            return ("no cards resolved — either the surface is genuinely empty or the card locator "
+                    f"chain has rotated; production sends nothing either way{note}")
         return ("no cards resolved and the page renders no 'mentioned/tagged you' line either — the "
                 f"surface is genuinely empty, so production correctly sends nothing{note}")
-    if not cards:
-        return ("no cards resolved — either the surface is genuinely empty or the card locator "
-                f"chain has rotated; production sends nothing either way{note}")
     if not reading.get("dated"):
         return (f"{cards} card(s) resolved but none carried a readable date — production skips "
                 f"every one of them, so this trigger is silently dead{note}")
