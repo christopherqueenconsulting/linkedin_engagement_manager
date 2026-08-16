@@ -155,6 +155,114 @@ class TestDeterminism:
             + "\n---\n".join(f"exit {rc}\n{out}" for rc, out in sorted(outputs)))
 
 
+class TestPrivateHelperAdoption:
+    """A helper that runs no SQL of its own belongs to no aggregate, and strands its callers there.
+
+    That is what the residue slices ran into: 8 table-less helpers were holding 21 members behind
+    them, and every aggregate reported `0 movable` without naming the reason.
+    """
+
+    def test_a_private_helper_follows_its_only_reader(self, tool):
+        adopted = tool.adopt_private_helpers(
+            {"get_avatar_training": "avatar"}, {},
+            {"_avatar_row_to_dict": {"get_avatar_training"}})
+        assert adopted["_avatar_row_to_dict"] == "avatar"
+
+    def test_adoption_is_transitive(self, tool):
+        """A helper whose reader is itself an adopted helper still has one unambiguous owner."""
+        adopted = tool.adopt_private_helpers(
+            {"get_draft": "groups"}, {},
+            {"_row": {"get_draft"}, "_column_list": {"_row"}})
+        assert adopted["_column_list"] == "groups"
+
+    def test_two_aggregates_reading_it_leaves_it_behind(self, tool):
+        """Shared vocabulary belongs in platform/db/shared.py, which is a human's call."""
+        adopted = tool.adopt_private_helpers(
+            {"a": "users", "b": "posts"}, {}, {"_shared": {"a", "b"}})
+        assert "_shared" not in adopted
+
+    def test_a_public_name_is_never_adopted(self, tool):
+        """The limit that keeps the rule from walking the facade's API into a repository.
+
+        Applied to public names, adoption is transitive enough to drag `is_premium_subscriber`
+        (billing) into `users` on the strength of one caller that was itself dragged there.
+        """
+        adopted = tool.adopt_private_helpers(
+            {"update_engagement_preferences": "users"}, {},
+            {"max_catchup_touches_allowed": {"update_engagement_preferences"}})
+        assert "max_catchup_touches_allowed" not in adopted
+
+    def test_a_helper_with_no_readers_in_db_py_is_left_alone(self, tool):
+        assert tool.adopt_private_helpers({"a": "users"}, {}, {"_orphan": set()}) == {"a": "users"}
+
+    def test_an_ambiguous_function_is_never_adopted(self, tool):
+        """It spans aggregates by its own SQL; one caller does not settle that."""
+        adopted = tool.adopt_private_helpers(
+            {"reader": "posts"}, {"_spanning": ["outreach", "posts"]}, {"_spanning": {"reader"}})
+        assert "_spanning" not in adopted
+
+
+class TestAppendingToAnExistingModule:
+    """After the ten first-pass slices every further move lands in a module that already exists."""
+
+    HEADER = ('"""Docstring."""\n\nfrom typing import Optional\n\n'
+              "from cqc_lem.platform.db.connection import db_cursor\n\n\n"
+              "def already_here() -> Optional[dict]:\n    return None\n")
+
+    def test_what_was_already_there_survives(self, tool):
+        out = tool.append_to_module(self.HEADER, [], "def moved():\n    return 1\n")
+        assert "def already_here()" in out and "def moved()" in out
+
+    def test_only_the_imports_the_module_lacks_are_added(self, tool):
+        out = tool.append_to_module(
+            self.HEADER,
+            ["from typing import (\n    Optional,\n    Union,\n)",
+             "from cqc_lem.platform.db.connection import db_cursor"],
+            "def moved():\n    return 1\n")
+        assert out.count("from cqc_lem.platform.db.connection import db_cursor") == 1
+        assert "Union" in out
+        assert out.count("Optional") == self.HEADER.count("Optional")
+
+    def test_a_missing_import_lands_above_the_appended_code(self, tool):
+        out = tool.append_to_module(
+            self.HEADER, ["import json"], "def moved():\n    return json.loads('{}')\n")
+        assert out.index("import json") < out.index("def moved()")
+
+
+class TestFacadeRewrites:
+    def test_the_aggregates_existing_import_block_is_extended_not_duplicated(self, tool):
+        src = ("from cqc_lem.platform.db.repositories.avatar import (\n"
+               "    add_avatar_credits,\n"
+               "    insert_avatar_training,\n"
+               ")\n"
+               "from cqc_lem.utilities.crypto import (\n    decrypt,\n)\n")
+        out = tool.merge_facade_import(src, "avatar", ["get_active_avatar"])
+        assert out.count("from cqc_lem.platform.db.repositories.avatar import") == 1
+        assert "    get_active_avatar,\n" in out
+        assert "    add_avatar_credits,\n" in out
+
+    def test_a_first_pass_aggregate_still_gets_a_new_block(self, tool):
+        src = "from cqc_lem.utilities.crypto import (\n    decrypt,\n)\n"
+        out = tool.merge_facade_import(src, "groups", ["get_user_groups"])
+        assert out.startswith("from cqc_lem.platform.db.repositories.groups import (\n")
+
+    def test_dunder_all_gains_the_names_without_reordering_the_rest(self, tool):
+        """The list is ten sorted runs, not one sorted list — re-sorting it is a 900-line diff."""
+        src = '__all__ = [\n    "b_two",\n    "a_one",\n    "c_three",\n]\n'
+        out = tool.merge_dunder_all(src, ["d_four", "a_zero"])
+        assert out == ('__all__ = [\n    "b_two",\n    "a_one",\n    "c_three",\n'
+                       '    "a_zero",\n    "d_four",\n]\n')
+
+    def test_a_name_already_exported_is_not_added_twice(self, tool):
+        src = '__all__ = [\n    "a_one",\n]\n'
+        assert tool.merge_dunder_all(src, ["a_one"]).count('"a_one"') == 1
+
+    def test_a_db_py_without_dunder_all_is_refused(self, tool):
+        """No `__all__` means ruff F401 and CodeQL both read the re-exports as dead imports."""
+        with pytest.raises(SystemExit):
+            tool.merge_dunder_all("x = 1\n", ["get_user_groups"])
+
+
 class TestEveryTableOwnerIsReal:
     def test_no_owner_entry_names_a_table_that_does_not_exist(self, tool):
         """A typo here silently assigns functions to the wrong module, or to none at all."""

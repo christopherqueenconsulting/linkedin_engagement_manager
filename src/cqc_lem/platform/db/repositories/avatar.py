@@ -415,3 +415,84 @@ def release_avatar_sample_render(user_id: int, avatar_id: int, *,
     except mysql.connector.Error as err:
         log_error(f"Could not release the sample-render claim for avatar {avatar_id}", exc=err)
         return False
+
+
+_AVATAR_COLUMNS = """id, training_id, model_ref, trigger_word, status, is_active,
+                     gender_presentation, age_band, attributes_confirmed_at,
+                     approval_status, approved_at, sample_paths, samples_generated_at,
+                     sample_regen_count, created_at, updated_at"""
+def _avatar_row_to_dict(row: dict) -> dict:
+    """One shape for an avatar row everywhere — the guardrails read approval_status and the
+    subject clause reads the declared attributes, so neither may depend on which query ran.
+    """
+    try:
+        samples = json.loads(row.get("sample_paths") or "[]")
+    except (TypeError, ValueError):
+        samples = []
+    return {
+        "id": row["id"],
+        "training_id": row["training_id"],
+        "model_ref": row["model_ref"],
+        "trigger_word": row["trigger_word"],
+        "status": row["status"],
+        "is_active": bool(row.get("is_active")),
+        "gender_presentation": row.get("gender_presentation"),
+        "age_band": row.get("age_band"),
+        "attributes_confirmed_at": (row["attributes_confirmed_at"].isoformat()
+                                    if row.get("attributes_confirmed_at") else None),
+        "approval_status": row.get("approval_status") or AVATAR_APPROVAL_PENDING,
+        "approved_at": row["approved_at"].isoformat() if row.get("approved_at") else None,
+        "sample_paths": samples if isinstance(samples, list) else [],
+        "samples_generated_at": (row["samples_generated_at"].isoformat()
+                                 if row.get("samples_generated_at") else None),
+        "sample_regen_count": int(row.get("sample_regen_count") or 0),
+        "created_at": row["created_at"].isoformat() if row.get("created_at") else None,
+        "updated_at": row["updated_at"].isoformat() if row.get("updated_at") else None,
+    }
+def get_avatar_trainings(user_id: int) -> list[dict]:
+    """Every avatar this user has trained, newest first, normalised for the API. [] on a read error."""
+    try:
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(
+                f"""SELECT {_AVATAR_COLUMNS}
+                    FROM avatar_trainings
+                    WHERE user_id = %s
+                    ORDER BY created_at DESC""",
+                (user_id,),
+            )
+            return [_avatar_row_to_dict(r) for r in cursor.fetchall()]
+    except mysql.connector.Error as err:
+        log_error("Could not fetch avatar trainings", exc=err, user_id=user_id)
+        return []
+def get_avatar_training(user_id: int, avatar_id: int) -> Optional[dict]:
+    """One avatar row, scoped to its owner so an id from another account can never be read."""
+    try:
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(
+                f"""SELECT {_AVATAR_COLUMNS}
+                    FROM avatar_trainings
+                    WHERE id = %s AND user_id = %s
+                    LIMIT 1""",
+                (avatar_id, user_id),
+            )
+            row = cursor.fetchone()
+            return _avatar_row_to_dict(row) if row else None
+    except mysql.connector.Error as err:
+        log_error(f"Could not fetch avatar {avatar_id}", exc=err, user_id=user_id)
+        return None
+def get_active_avatar(user_id: int) -> Optional[dict]:
+    """The account's active avatar row, or None when nothing is active or the read failed."""
+    try:
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(
+                f"""SELECT {_AVATAR_COLUMNS}
+                    FROM avatar_trainings
+                    WHERE user_id = %s AND is_active = 1
+                    LIMIT 1""",
+                (user_id,),
+            )
+            row = cursor.fetchone()
+            return _avatar_row_to_dict(row) if row else None
+    except mysql.connector.Error as err:
+        log_error("Could not fetch active avatar", exc=err, user_id=user_id)
+        return None
