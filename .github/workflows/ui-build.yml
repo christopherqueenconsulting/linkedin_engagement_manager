@@ -29,6 +29,9 @@ jobs:
       - name: npm ci (strict — matches the Docker build)
         working-directory: src/cqc_lem/ui
         run: npm ci
+      - name: Generated API types match the committed schema
+        working-directory: src/cqc_lem/ui
+        run: npm run check:api-types
 
       # Cheaper and earlier than the bundle canary below: the canary can only fire once a build has
       # inlined the value, this fires on the diff that reintroduces the read. Both, because they
