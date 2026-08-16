@@ -68,10 +68,12 @@ What changed in response:
 - The exact-text route stays **exact** (`normalize-space()='top'`), never `contains`. A `contains`
   match on 'recent' would happily resolve someone's post — the #1013 wrong-entity hazard.
 - `probe_feed_sort` now also reports **`sort_candidates`**: the first 20 displayed interactive
-  elements inside `main`, in document order, each with tag / role / `aria-label` / `data-testid` /
+  elements inside `main`, in document order — minus the off-feed links the walk skips, and taken
+  from at most `scan_limit` (200) elements — each with tag / role / `aria-label` / `data-testid` /
   text / `href` / `aria-haspopup`. `visible_controls` alone could not re-ground this drift — it
   reports `<button>` labels, and the finding *was* that there are no buttons there. It is emitted
   before `visible_controls` because the issue body truncates the evidence blob at 6000 chars.
+  The filter and the bound are the 2026-08-16 grounding finding, described in full below.
 - **A missing control is only a WARNING once the page proves it rendered posts.** The production
   lookup passes `warn_on_miss=False` and hands the miss to `report_zero_walk` against
   `button[aria-label^='Hide post by']` — a per-post anchor the sort chain does not use. A dead
@@ -108,6 +110,17 @@ box took the last 3, and the sort control sits immediately after. `feed_sort_can
 link whose own `href` does not name `/feed` — the same rule the chain's link route already enforces,
 since a trigger that navigates has to stay on the feed (#1030). Rows with an unreadable or absent
 `href` are kept: dropping what we could not read would hide the element the capture exists to find.
+
+Re-measured on the filtered walk (two further `--feed-sort` runs, both `ok`): the control now lands
+**fifth** in `sort_candidates`, behind `Try Premium Page` and the share box's three, and ahead of the
+first post's furniture —
+
+```json
+{"tag": "div", "role": "button", "text": "Sort by: Recent"}
+```
+
+— reading `Recent`, not `Top`, because the capture is taken AFTER the flip. So the next re-grounding
+pass gets the element in the capture written for it, not just in `selector_evidence`.
 
 ## A short comment thread has NO sort control — the miss was never drift (#1117, follow-up of #818)
 
