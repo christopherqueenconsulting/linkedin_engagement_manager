@@ -209,4 +209,34 @@ describe('CatchupTouches — date range filter', () => {
     fireEvent.click(screen.getByRole('button', { name: /Show all dates/i }))
     await waitFor(() => expect(lastGetUrl()).not.toContain('start_date'))
   })
+
+  it('sends no bound at all for a custom range with no usable dates, and does not blame it', async () => {
+    // `start_date=` is a 422 (`datetime_from_date_parsing`), and this component has no error state —
+    // a failed query renders as an empty queue, so an unusable date would read as "nothing in this
+    // range" instead of the unbounded list the user is actually still looking at.
+    get.mockResolvedValue({ data: { detail: { touches: [], total: 0 } } })
+    harness(<CatchupTouches userTimezone="America/New_York" />)
+
+    await waitFor(() => expect(get).toHaveBeenCalled())
+    fireEvent.change(screen.getByLabelText('Date range preset'), { target: { value: 'custom' } })
+
+    await waitFor(() => expect(screen.getByText('No catch-up touches yet.')).toBeTruthy())
+    expect(screen.getByLabelText('Custom start date')).toBeTruthy()
+    expect(lastGetUrl()).not.toContain('start_date')
+    expect(lastGetUrl()).not.toContain('end_date')
+  })
+
+  it('sends only the end bound when a custom range fills one side', async () => {
+    get.mockResolvedValue({ data: { detail: { touches: [], total: 0 } } })
+    harness(<CatchupTouches userTimezone="America/New_York" />)
+
+    await waitFor(() => expect(get).toHaveBeenCalled())
+    fireEvent.change(screen.getByLabelText('Date range preset'), { target: { value: 'custom' } })
+    fireEvent.change(screen.getByLabelText('Custom end date'), { target: { value: '2026-08-15' } })
+
+    await waitFor(() => expect(lastGetUrl()).toContain('end_date=2026-08-16T03%3A59%3A59.999Z'))
+    expect(lastGetUrl()).not.toContain('start_date')
+    await waitFor(() =>
+      expect(screen.getByText('No catch-up touches yet in this date range.')).toBeTruthy())
+  })
 })

@@ -73,18 +73,24 @@ export default function CatchupTouches({ userTimezone }: { userTimezone: string 
   const { start: filterStartDate, end: filterEndDate } = resolveDateRange(
     dateRange, userTimezone, customStartDate, customEndDate
   )
+  // The BOUNDS actually sent, not the wall dates they came from: a `custom` range with an empty (or,
+  // where the browser falls back to a text input, an unparseable) date resolves to null, and sending
+  // `start_date=` is a 422 the queue would render as "no touches in this date range" — the exact
+  // silent-empty this filter exists to explain. No bound is a wider query, never a failed one.
+  const startBound = filterStartDate ? zonedDateToUtcStart(filterStartDate, userTimezone) : null
+  const endBound = filterEndDate ? zonedDateToUtcEnd(filterEndDate, userTimezone) : null
 
   const { data, isLoading } = useQuery({
     queryKey: ['catchup-touches', sessionToken, filter, sortBy, sortOrder,
-               dateRange, filterStartDate, filterEndDate],
+               dateRange, startBound, endBound],
     queryFn: () => {
       const p = new URLSearchParams({
         session_token: sessionToken!, page: '1', page_size: '50',
         sort_by: sortBy, sort_order: sortOrder,
       })
       if (filter !== 'ALL') p.set('status_filter', filter)
-      if (filterStartDate) p.set('start_date', zonedDateToUtcStart(filterStartDate, userTimezone) ?? '')
-      if (filterEndDate) p.set('end_date', zonedDateToUtcEnd(filterEndDate, userTimezone) ?? '')
+      if (startBound) p.set('start_date', startBound)
+      if (endBound) p.set('end_date', endBound)
       return api
         .get(`/catchup/touches?${p.toString()}`)
         .then((r) => r.data.detail as { touches: CatchupTouch[]; total: number })
@@ -102,9 +108,10 @@ export default function CatchupTouches({ userTimezone }: { userTimezone: string 
     ? (sortOrder === 'desc' ? 'most recent' : 'oldest')
     : (sortOrder === 'desc' ? 'highest-scoring' : 'lowest-scoring')
   // One string, not interpolated JSX: an empty queue is the state a test (and a reader) checks by
-  // its exact sentence, and React would otherwise split it across text nodes.
+  // its exact sentence, and React would otherwise split it across text nodes. It blames the range
+  // only when a bound was actually SENT — a `custom` preset with no usable dates narrows nothing.
   const emptyMessage = `No catch-up touches ${filter === 'ALL' ? 'yet' : `with status ${filter}`}`
-    + `${dateRange === 'ALL' ? '' : ' in this date range'}.`
+    + `${startBound || endBound ? ' in this date range' : ''}.`
 
   const flash = (ok: boolean, text: string) => { setMsg({ ok, text }); setTimeout(() => setMsg(null), 4000) }
   const invalidate = () => qc.invalidateQueries({ queryKey: ['catchup-touches'] })
