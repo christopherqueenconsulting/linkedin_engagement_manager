@@ -115,11 +115,15 @@ describe('api client', () => {
     expect(headers['X-Session-Token']).toBeUndefined()
   })
 
-  it('sends it alongside an explicit token too', async () => {
+  // Issue #1357. The header was never read by `get_session_user_id` — an explicit token resolves
+  // from the `session_token` FIELD — so it counted only at the edge presence check, which no longer
+  // reads it either. Holding a REAL token is the case that used to send it, and is the case that
+  // must not: a credential in a header nothing consumes is exposure with nothing bought.
+  it('never sends X-Session-Token, not even holding a real token', async () => {
     localStorage.setItem('lem_session', 'a-real-token')
     const headers = await sentHeaders('post', '/create_weekly_content/')
     expect(headers['X-LEM-Client']).toBe('spa')
-    expect(headers['X-Session-Token']).toBe('a-real-token')
+    expect(headers['X-Session-Token']).toBeUndefined()
   })
 
   it('sends nothing for the cookie sentinel — it is not a token', async () => {
@@ -294,8 +298,8 @@ describe('a 401', () => {
 
   // The cookie-less fallback: `login()` holds a REAL token because the browser refused the cookie,
   // and every call site sends it in the `session_token` FIELD — which is the only place the server
-  // resolves an explicit token from (`X-Session-Token` is a presence check at the edge, nothing
-  // more). A probe without that field would carry no credential the resolver reads, 401 about a
+  // resolves an explicit token from, there being no header form of it since #1357. A probe without
+  // that field would carry no credential the resolver reads, 401 about a
   // live session, and make the corroboration the amplifier it exists to remove.
   it('corroborates with the credential the app is actually using', async () => {
     localStorage.setItem('lem_session', 'a-real-token')

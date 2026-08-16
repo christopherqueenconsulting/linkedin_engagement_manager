@@ -42,13 +42,10 @@ api.interceptors.request.use((config) => {
   if (typeof FormData !== 'undefined' && config.data instanceof FormData) {
     config.headers['Content-Type'] = 'multipart/form-data'
   }
-  // Since #745 (2b) the session normally rides in an httpOnly cookie the browser attaches itself,
-  // and localStorage holds only the 'cookie' sentinel — there is nothing to put in this header.
-  // It is still sent when a real token is held (cookie-less fallback, tutorial capture harness).
-  const token = localStorage.getItem('lem_session')
-  if (token && token !== 'cookie') {
-    config.headers['X-Session-Token'] = token
-  }
+  // No `X-Session-Token` header is sent (#1357). The server never resolved a user from it — an
+  // explicit token authenticates from the `session_token` FIELD, which every call site already
+  // sends — so it read only as a presence check at the edge gate, and that read is gone. Sending a
+  // real token in a header nothing consumes is exposure without a payer.
   return config
 })
 
@@ -78,8 +75,8 @@ let sessionProbe: Promise<void> | null = null
  * absence of proof that it died is not proof that it died.
  *
  * The stored value is sent as `session_token`, exactly as `AuthContext.loadSession` sends it, and
- * that is load-bearing rather than symmetry: the server resolves an explicit token from that FIELD
- * and reads `X-Session-Token` only as a presence check at the edge. In the cookie-less fallback
+ * that is load-bearing rather than symmetry: that FIELD is the only place the server resolves an
+ * explicit token from — there is no header form of it (#1357). In the cookie-less fallback
  * (`login()` holds a real token because the browser refused the cookie) a probe without the field
  * carries no credential the resolver reads, so it would 401 about a perfectly live session — the
  * corroboration becoming the single point of amplification it was added to remove. Normally the

@@ -237,6 +237,22 @@ class TestCapture:
         assert "lem_session" in script_args[0]
         assert script_args[1] == "tok-123" and script_args[2] == "demo@lem.test"
 
+    def test_demo_session_is_also_seeded_as_the_cookie_the_edge_gate_reads(self, monkeypatch):
+        """Issue #1357. `localStorage` alone authenticates at the ROUTE (the SPA sends the token in
+        the `session_token` field) but carries nothing `_has_session_credential` can see, and the
+        `X-Session-Token` header that used to clear that gate is gone. With `API_ACCESS_TOKENS` set
+        the harness would 401 at the edge on every protected call and film a logged-out screen.
+        """
+        monkeypatch.setattr(vt, "TUTORIAL_DEMO_SESSION_TOKEN", "tok-123")
+        driver = _driver()
+        element = MagicMock()
+        element.text = "x"
+        with patch("cqc_lem.utilities.selenium_util.find_first", return_value=element):
+            vt.capture_flow(_flow(steps=1, requires_auth=True), driver=driver)
+        cookie = driver.add_cookie.call_args[0][0]
+        assert cookie["name"] == vt.SESSION_COOKIE_NAME
+        assert cookie["value"] == "tok-123"
+
     def test_owned_driver_is_always_quit(self):
         driver = _driver()
         with patch("cqc_lem.utilities.selenium_util.get_docker_driver", return_value=driver), \

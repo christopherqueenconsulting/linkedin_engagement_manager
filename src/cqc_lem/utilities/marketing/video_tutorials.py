@@ -38,6 +38,7 @@ from cqc_lem.utilities.env_constants import (
     ELEVENLABS_COST_PER_1K_CHARS,
     ELEVENLABS_MODEL,
     ELEVENLABS_VOICE_ID,
+    SESSION_COOKIE_NAME,
     TUTORIAL_BURN_CAPTIONS,
     TUTORIAL_DEMO_EMAIL,
     TUTORIAL_DEMO_SESSION_TOKEN,
@@ -296,6 +297,14 @@ def _produced_before(record: Optional[dict], cutoff: datetime) -> bool:
 def _seed_demo_session(driver, base_url: str) -> None:
     """Put the demo account's session token where the SPA's AuthContext reads it, so protected
     routes render the real product instead of the login modal.
+
+    The token is seeded in BOTH places a signed-in browser holds it, because the two answer
+    different questions: `localStorage` is what `AuthContext` boots from and what the SPA sends in
+    the `session_token` field, and the session COOKIE is what the `/api` edge gate accepts as a
+    credential when `API_ACCESS_TOKENS` is set. Until #1357 the cookie was unnecessary here — the
+    SPA also sent an `X-Session-Token` header that cleared that gate — but that header authenticated
+    nobody and is gone, so a harness holding only `localStorage` would 401 at the edge on every
+    protected call and capture a logged-out screen.
     """
     driver.get(f"{base_url}/")
     driver.execute_script(
@@ -303,6 +312,8 @@ def _seed_demo_session(driver, base_url: str) -> None:
         "window.localStorage.setItem('lem_email', arguments[1]);",
         TUTORIAL_DEMO_SESSION_TOKEN, TUTORIAL_DEMO_EMAIL or "demo@example.com",
     )
+    driver.add_cookie({"name": SESSION_COOKIE_NAME, "value": TUTORIAL_DEMO_SESSION_TOKEN,
+                       "path": "/"})
 
 
 def capture_flow(flow: TutorialFlow, driver=None) -> dict:
