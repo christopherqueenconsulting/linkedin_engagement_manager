@@ -160,7 +160,8 @@ class TestBestEffortEnrichmentWarns:
                 patch(f"{_RCP}.optimize_post_hook", side_effect=lambda t, **k: t), \
                 patch(f"{_RCP}.humanize_text", side_effect=lambda t, **k: t), \
                 patch(f"{_RCP}._score_and_persist_authenticity"), \
-                patch(f"{_RCP}._review_generated_post", side_effect=lambda *a, **k: a[7]), \
+                patch(f"{_RCP}._review_generated_post",
+                      side_effect=lambda ctx, content, *a, **k: content), \
                 patch(f"{_RCP}.shape_for_dwell", side_effect=lambda t: t), \
                 patch(f"{_RCP}.contains_meeting_ask", return_value=True), \
                 patch(f"{_RCP}.get_newsletter_settings", side_effect=_boom), \

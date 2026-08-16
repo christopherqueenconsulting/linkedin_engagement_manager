@@ -2393,13 +2393,8 @@ def _fabricated_specifics(content: str, story: Optional[dict],
 
 
 @llm_step("review")
-def _review_generated_post(user_id: int, stage: str, post_type: str, user_profile: LinkedInProfile,
-                           blueprint: dict, post_id: int, lead_magnet_cta: str, content: str,
-                           recent_texts: list, prefs: dict = None,
-                           profile_synthesis: Optional[str] = None,
+def _review_generated_post(ctx: PostDraftContext, content: str, recent_texts: list,
                            story: Optional[dict] = None,
-                           story_directive: Optional[str] = None,
-                           content_mix: Optional[str] = None,
                            cta_keyword: Optional[str] = None) -> str:
     """The post-generation REVIEW GATE (the newsletter's dedup maturity applied to posts): compare
     the finished post against the user's recent posts with `post_similarity_report` — embedding
@@ -2418,7 +2413,26 @@ def _review_generated_post(user_id: int, stage: str, post_type: str, user_profil
     `_gate_findings_for_post` can hold a still-over draft at PENDING without paying a second
     embedding call: this is the only place that measurement exists, because the post history and the
     `post_similarity_report` call both live here.
+
+    Args:
+        ctx: everything the draft under review was written from (issue #1217) — the same context
+            its regeneration is dispatched with, so the retry cannot be steered off the post that
+            was planned.
+        content: the finished draft to grade.
+        recent_texts: the user's recent posts, already loaded by the caller.
+        story: the story-bank entry the draft was anchored to, or None when the bank grounded
+            nothing (which switches the fabrication check off entirely — see `_fabricated_specifics`).
+        cta_keyword: this post's sanctioned lead-magnet trigger word, exempt from the slop lint's
+            engagement-bait check.
+
+    Returns:
+        The draft that ships — the first one, or the single regeneration when it graded better.
     """
+    user_id, post_id = ctx.user_id, ctx.post_id
+    prefs, profile_synthesis = ctx.prefs, ctx.profile_synthesis
+    user_profile, blueprint = ctx.user_profile, ctx.blueprint
+    lead_magnet_cta = ctx.lead_magnet_cta
+
     similarity = post_similarity_report(content, recent_texts, prefs)
     score, threshold, match = similarity["score"], similarity["threshold"], similarity["match"]
     too_similar = similarity["too_similar"]
@@ -2478,11 +2492,11 @@ def _review_generated_post(user_id: int, stage: str, post_type: str, user_profil
     if slopped:
         retry_directive += slop_retry_directive(slop["hard"])
     try:
-        second = create_text_post(user_id, stage, post_type, user_profile, refine_final_post=True,
-                                  blueprint=blueprint, post_id=post_id,
-                                  lead_magnet_cta=lead_magnet_cta,
-                                  history_directive=retry_directive, similarity_check=False,
-                                  story_directive=story_directive, content_mix=content_mix)
+        # Back into the generate/refine CORE, not into create_text_post (issue #1217): the profile,
+        # story anchor, blueprint and lead magnet are already settled, and re-entering the whole
+        # function is what used to make the once-per-post gates a flag-suppression problem.
+        second, _ = _compose_draft(ctx.with_history_directive(retry_directive),
+                                   cta_keyword=cta_keyword, bait_exempt_keyword=cta_keyword)
     except Exception as e:
         log_warning("Review-gate retry generation failed; keeping first draft", exc=e,
                     user_id=user_id, post_id=post_id, task_name="create_text_post")
@@ -2525,105 +2539,75 @@ def _review_generated_post(user_id: int, stage: str, post_type: str, user_profil
     return second
 
 
-def _draft_as_other_type(ctx: PostDraftContext, post_types: list, unavailable: str) -> tuple:
-    """Re-draft this post as a different type after `unavailable`'s source produced nothing.
-
-    A user with no blog (or no sitemap) still gets their slot filled — as some other archetype, not
-    as an empty post. Returns `(content, post_type)` because the type that actually shipped is what
-    the review gate downstream has to be told about.
-
-    The retry keeps the blueprint, story anchor, CTA and history directive already chosen
-    (`with_post_type`), so this is the SAME planned post written from another source rather than a
-    fresh one — and it stands the once-per-post gates down, which is what stops the outer call and
-    the retry both refining and reviewing one draft. Three copies of that argument list used to sit
-    inline; the type breaking up (issue #1217) replaces the recursion itself with a bounded loop.
-    """
-    post_types.remove(unavailable)
-    retry = ctx.with_post_type(random.choice(post_types))
-    content = create_text_post(retry.user_id, retry.stage, retry.post_type, retry.user_profile,
-                               refine_final_post=retry.refine_final_post,
-                               blueprint=retry.blueprint, post_id=retry.post_id,
-                               lead_magnet_cta=retry.lead_magnet_cta,
-                               history_directive=retry.history_directive,
-                               similarity_check=retry.similarity_check,
-                               story_directive=retry.story_directive,
-                               content_mix=retry.content_mix)
-    return content, retry.post_type
+# The post types the planner can write, and how many SOURCES one draft may try before it ships
+# whatever the last generator handed back. The type fallback used to be `create_text_post` calling
+# itself (issue #1217), which re-ran the profile scrape, story selection, blueprint choice and
+# lead-magnet read on every miss and was bounded only by the menu emptying. `_compose_draft`'s loop
+# re-runs the GENERATE step alone, and each miss drops the exhausted type off the menu, so three
+# attempts are three distinct sources — one more than the two types that can miss at all.
+_POST_TYPES = ["thought_leadership", "blog_summary", "website_content", "industry_news",
+               "personal_story", "engagement_prompt"]
+_DRAFT_SOURCE_ATTEMPTS = 3
 
 
-@llm_pipeline("post_generation", feature=FEATURE_CONTENT)
-def create_text_post(user_id: int, stage: str, post_type: str = None, user_profile: LinkedInProfile=None,
-                     refine_final_post: bool = True, blueprint: dict = None, post_id: int = None,
-                     lead_magnet_cta: str = None, history_directive: str = None,
-                     similarity_check: bool = True, story_directive: str = None,
-                     content_mix: str = None, day_weekday: int = None):
-    """Generate a text post for LinkedIn based on the user's profile, blog, or website content.
+def _resolve_user_profile(user_id: int) -> LinkedInProfile:
+    """The profile a post is written from, scraped live with the cached DB profile as the fallback.
 
-    Parameters:
-    - user_id: ID of user to grab user profile
-    - stage: Buyer journey stage for the post.
-    - content_mix: this post's 70/20/10 class from the plan governor (issue #618). 'promo' is the
-      one-in-ten soft-promo slot and is forced into a case-study shape; anything else sells nothing.
-    - day_weekday: the slot's LOCAL weekday, which picks the day-type archetype family (issue #621).
+    Args:
+        user_id: the author.
 
     Returns:
-    - str: Generated text post content.
+        The live profile, else the user's cached DB profile, else a neutral placeholder — never
+        None, because the generators call `model_dump_json()` on whatever they are handed.
     """
-    final_content = None
+    user_email, user_password = get_user_password_pair_by_id(user_id)
+    driver, wait = get_driver_wait_pair(session_name='Create Text Post', user_id=user_id)
+    try:
+        user_profile = get_my_profile(driver, wait, user_email, user_password, user_id=user_id)
+    except Exception as e:
+        log_info(f"Error getting user profile: {e}")
+        user_profile = None
+    finally:
+        quit_gracefully(driver)
 
-    content_mix = normalize_content_mix(content_mix)
-
-    # Define possible post types
-    post_types = ["thought_leadership", "blog_summary", "website_content", "industry_news", "personal_story",
-                  "engagement_prompt"]
-
-    if post_type is None:
-        # Randomly select a post type
-        post_type = random.choice(post_types)
-
+    # get_my_profile RETURNS None on a failed scrape as well as raising (issue #1101), and a
+    # DOM change makes that the normal failure — so the fallback ladder has to cover both or
+    # None reaches the generators and dies on `None.model_dump_json()`.
     if user_profile is None:
-        user_email, user_password = get_user_password_pair_by_id(user_id)
-        driver, wait = get_driver_wait_pair(session_name='Create Text Post', user_id=user_id)
+        # Prefer the user's cached DB profile (no Selenium) — the old hardcoded "John Doe,
+        # Software Developer at ABC Inc." dummy leaked a tech persona into generated posts
+        # whenever the live profile load hiccupped. Neutral dummy only as a last resort.
         try:
-            user_profile = get_my_profile(driver, wait, user_email, user_password, user_id=user_id)
-        except Exception as e:
-            log_info(f"Error getting user profile: {e}")
+            user_profile = load_profile_for_user(user_id)
+        except Exception as e2:
+            # DEBUG: load_profile_for_user warns on both of its own failure paths, so a second
+            # record here files a duplicate issue for one lost profile (issue #1038).
+            log_debug(f"Cached profile unavailable: {e2}")
             user_profile = None
-        finally:
-            quit_gracefully(driver)
+    if user_profile is None:
+        user_profile = LinkedInProfile(full_name="LinkedIn Member", job_title="Professional")
+    return user_profile
 
-        # get_my_profile RETURNS None on a failed scrape as well as raising (issue #1101), and a
-        # DOM change makes that the normal failure — so the fallback ladder has to cover both or
-        # None reaches the generators and dies on `None.model_dump_json()`.
-        if user_profile is None:
-            # Prefer the user's cached DB profile (no Selenium) — the old hardcoded "John Doe,
-            # Software Developer at ABC Inc." dummy leaked a tech persona into generated posts
-            # whenever the live profile load hiccupped. Neutral dummy only as a last resort.
-            try:
-                user_profile = load_profile_for_user(user_id)
-            except Exception as e2:
-                # DEBUG: load_profile_for_user warns on both of its own failure paths, so a second
-                # record here files a duplicate issue for one lost profile (issue #1038).
-                log_debug(f"Cached profile unavailable: {e2}")
-                user_profile = None
-        if user_profile is None:
-            user_profile = LinkedInProfile(full_name="LinkedIn Member", job_title="Professional")
 
-    # User-declared focus topics + business/personal goals steer the post's angle and enforce the
-    # anti-self-promo guardrail (see _alignment_directive) so posts don't drift into promoting
-    # whatever the user is currently building.
-    prefs = get_engagement_preferences(user_id)
+def _resolve_post_history(user_id: int, post_id: Optional[int], similarity_check: bool,
+                          history_directive: Optional[str]) -> Tuple[list, str]:
+    """The user's recent posts and the AVOID block the writer is steered with.
 
-    # Stable VOICE synthesis (cached weekly; lazily generated on first use) replaces the bloated full
-    # profile JSON as the voice/credibility source — keeps posts in the user's voice without dragging
-    # in their volatile recent activity / current projects (LEM-drift).
-    profile_synthesis = get_or_create_profile_synthesis(user_id, user_profile)
+    Post-history dedup steering (the newsletter's avoid_subjects/avoid_openers, applied to posts):
+    recent posts' opening lines + subject fingerprints ride into the generation prompt as an
+    explicit AVOID block, and the same history feeds the review gate's similarity check.
 
-    # Post-history dedup steering (the newsletter's avoid_subjects/avoid_openers, applied to posts):
-    # recent posts' opening lines + subject fingerprints ride into the generation prompt as an
-    # explicit AVOID block, and the same history feeds the pre-persist similarity gate below.
-    # Recursive calls (fallbacks / the similarity retry) receive an explicit history_directive so
-    # the history is fetched at most once per outermost call.
+    Args:
+        user_id: the author.
+        post_id: the planned post row, for log context only.
+        similarity_check: False when some other pass owns the gate, which also makes the history
+            read pointless — the directive is then whatever the caller supplied.
+        history_directive: a directive the caller already built, which wins over deriving one.
+
+    Returns:
+        `(recent_texts, history_directive)`. An unreadable history is never fatal: the post is
+        written with no dedup steering rather than not written.
+    """
     recent_texts: list = []
     if similarity_check:
         try:
@@ -2633,50 +2617,85 @@ def create_text_post(user_id: int, stage: str, post_type: str = None, user_profi
                         exc=e, user_id=user_id, post_id=post_id, task_name="create_text_post")
     if history_directive is None:
         history_directive = history_avoidance_directive(recent_texts)
+    return recent_texts, history_directive
 
-    # Story bank (issue #620): anchor the post to ONE thing the user actually did, and make that
-    # entry the ONLY personal specific the writer may state. An empty bank — or a bank with nothing
-    # related to the user's focus topics — ships the explicit no-fabrication fallback instead, so a
-    # missing story degrades to an industry observation rather than an invented anecdote. Recursive
-    # calls (type fallbacks / the review-gate retry) receive the directive so the whole post stays
-    # anchored to the same entry and the bank is read at most once per outermost call. Selected
-    # BEFORE the blueprint so the promo demotion below can still steer shape selection.
-    story = None
-    story_selected_here = story_directive is None
-    if story_selected_here:
-        story = _select_story_for_post(user_id, prefs, blueprint)
-        story_directive = _story_bank.story_directive(story)
-        if story:
-            log_info(f"Story bank anchor for post_id={post_id}: "
-                    f"[{story.get('kind')}] {story.get('title')}")
-        else:
-            # DEBUG: an empty bank is the documented resting state for a user who has not filled
-            # one in, and it fires on EVERY post they write. Same shape as db.get_ready_to_post_posts
-            # logging INFO only when the list is non-empty.
-            log_debug("No story bank entry available — writing a non-story archetype")
 
-    # Integration seam (#618 x #620): the promo slot demands a case study built on ONE real outcome
-    # number, but without a story-bank anchor the fabrication detector has no allow-list and is
-    # skipped entirely — so the one post most likely to invent a client figure would ship unchecked.
-    # A promo post the bank cannot ground is demoted to audience-value content instead (and NOT
-    # forced into the case_snapshot blueprint below). The plan row keeps its 'promo' class, which
-    # only makes the dashboard's mix-compliance ratio conservative.
-    if story_selected_here and story is None and content_mix == ContentMix.PROMO.value:
+def _resolve_story_anchor(user_id: int, post_id: Optional[int], prefs: dict,
+                          blueprint: Optional[dict], story_directive: Optional[str],
+                          content_mix: Optional[str]) -> Tuple[Optional[dict], str, Optional[str]]:
+    """The ONE thing the user actually did that this post is anchored to (issue #620).
+
+    That entry is the ONLY personal specific the writer may state. An empty bank — or a bank with
+    nothing related to the user's focus topics — ships the explicit no-fabrication fallback instead,
+    so a missing story degrades to an industry observation rather than an invented anecdote.
+    Selected BEFORE the blueprint so the promo demotion below can still steer shape selection.
+
+    Args:
+        user_id: the author.
+        post_id: the planned post row, for log context.
+        prefs: engagement preferences, whose focus topics narrow which entries are usable.
+        blueprint: the caller's pre-chosen shape, if any, which biases entry selection.
+        story_directive: a directive the caller already built — when set, the entry was chosen by
+            an earlier pass and this is a no-op that keeps the whole post on the same anchor.
+        content_mix: this post's 70/20/10 class.
+
+    Returns:
+        `(story, story_directive, content_mix)` — content_mix demoted out of 'promo' when the bank
+        could not ground a case study. Integration seam (#618 x #620): the promo slot demands a
+        case study built on ONE real outcome number, but without an anchor the fabrication detector
+        has no allow-list and is skipped entirely, so the one post most likely to invent a client
+        figure would ship unchecked. The plan row keeps its 'promo' class, which only makes the
+        dashboard's mix-compliance ratio conservative.
+    """
+    if story_directive is not None:
+        return None, story_directive, content_mix
+
+    story = _select_story_for_post(user_id, prefs, blueprint)
+    story_directive = _story_bank.story_directive(story)
+    if story:
+        log_info(f"Story bank anchor for post_id={post_id}: "
+                 f"[{story.get('kind')}] {story.get('title')}")
+    else:
+        # DEBUG: an empty bank is the documented resting state for a user who has not filled
+        # one in, and it fires on EVERY post they write. Same shape as db.get_ready_to_post_posts
+        # logging INFO only when the list is non-empty.
+        log_debug("No story bank entry available — writing a non-story archetype")
+
+    if story is None and content_mix == ContentMix.PROMO.value:
         log_warning("Promo slot has no story-bank anchor — demoting this post to 'value' so a "
                     "case study cannot be invented", user_id=user_id, post_id=post_id,
                     task_name="create_text_post")
         content_mix = ContentMix.VALUE.value
+    return story, story_directive, content_mix
 
-    # ONE assigned SHAPE per post from the SHARED framework core (content_framework): rotate away
-    # from this user's recently used post archetypes/hook styles (V51 history) exactly the way
-    # newsletter editions rotate — chosen in code, no extra LLM call.
-    # Close the feedback loop (issue #389 / B4): bias shape selection away from the user's
-    # historically under-performing archetypes/hooks while keeping rotation + exploration.
+
+def _resolve_blueprint(user_id: int, blueprint: Optional[dict], content_mix: Optional[str],
+                       day_weekday: Optional[int], story: Optional[dict],
+                       story_selected_here: bool) -> dict:
+    """The ONE assigned SHAPE this post is written to, plus its verified-fact allow-list.
+
+    Rotates away from this user's recently used post archetypes/hook styles exactly the way
+    newsletter editions rotate — chosen in code, no extra LLM call — and biases away from their
+    historically under-performing shapes (issue #389 / B4).
+
+    Args:
+        user_id: the author.
+        blueprint: the caller's pre-chosen shape; when set, nothing is selected.
+        content_mix: this post's 70/20/10 class. The promo slot's shape is not negotiable — the
+            governor requires a case study (client as hero, real outcome number).
+        day_weekday: the slot's LOCAL weekday, which narrows the archetype menu to that day-type's
+            family (issue #621); rotation and performance weighting still apply WITHIN it.
+        story: the story-bank entry this post is anchored to, if any.
+        story_selected_here: True when the anchor was chosen for THIS call. The no-fabrication
+            allow-list a fact-anchored archetype (#619) writes against is exactly that entry — a
+            number from some OTHER entry was never in this prompt, so stating one is still
+            inventing. A caller that supplied both already paired them.
+
+    Returns:
+        The blueprint, copied rather than mutated so a caller's dict is never changed behind its
+        back — every post-prompt builder threads `fact_anchors` through on it already.
+    """
     if blueprint is None:
-        # The day-type calendar (issue #621) narrows the archetype menu to this slot's family;
-        # rotation, recency avoidance and performance weighting still apply WITHIN it. The promo
-        # slot's shape is not negotiable, though: the governor requires a case study (client as
-        # hero, real outcome number), and an explicit `guidance` hint wins over the day-type family.
         day_type = day_type_for_weekday(day_weekday) if day_weekday is not None else None
         blueprint = _select_post_blueprint(
             user_id,
@@ -2685,178 +2704,235 @@ def create_text_post(user_id: int, stage: str, post_type: str = None, user_profi
         if day_type:
             log_info(f"Day type for weekday {day_weekday}: {day_type['label']}")
     log_info(f"Post blueprint: format={blueprint.get('format')} hook={blueprint.get('hook_style')} "
-            f"cta={blueprint.get('cta_style')}")
-
-    # The no-fabrication allow-list a fact-anchored archetype (#619) writes against is exactly the
-    # entry the story bank handed us above — a number from some OTHER bank entry was never in this
-    # prompt, so the writer stating one would still be inventing. Carried ON the blueprint because
-    # that is what every post-prompt builder (and the recursive type fallbacks) already thread
-    # through — on a copy, so a blueprint the caller owns is never mutated behind its back. Only
-    # when the story was selected HERE: a recursive call was handed both, already paired.
+             f"cta={blueprint.get('cta_style')}")
     if story_selected_here:
         blueprint = {**blueprint,
                      "fact_anchors": _story_bank.fact_sources(story) if story else []}
+    return blueprint
 
-    # Lead-magnet soft-ask: on a deterministic 1-in-N rotation (keyed off post_id so it's stable and
-    # testable), weave the user's configured "comment KEYWORD and I'll DM it to you" CTA into the
-    # post — the compliant way to share a resource and what fires the keyword listener in the
-    # automation. Only SOME posts get it (all = spammy/pattern-flagged). Recursive fallbacks reuse
-    # the already-computed directive so the same post stays consistent. No-op unless the user enabled
-    # the lead magnet with a non-empty keyword.
-    lead_magnet = None
-    include_cta = False
-    if lead_magnet_cta is None:
-        try:
-            lead_magnet = get_lead_magnet_settings(user_id)
-            include_cta = should_include_lead_magnet_cta(lead_magnet, post_id)
-            lead_magnet_cta = lead_magnet_cta_directive(lead_magnet, include_cta)
-            if lead_magnet_cta:
-                log_info(f"Lead-magnet CTA included on post_id={post_id} "
-                        f"(keyword '{lead_magnet.get('keyword')}')")
-        except Exception as e:
-            log_warning("Could not read the lead-magnet settings — this post ships without the "
-                        "comment-keyword mechanic", exc=e, user_id=user_id, post_id=post_id,
-                        task_name="create_text_post")
-            lead_magnet, include_cta, lead_magnet_cta = None, False, ""
 
-    # Everything this draft is written from, settled (issue #1220). The type-fallback path below is
-    # the one place that needed all of it at once and was repeating the whole argument list.
-    draft = PostDraftContext(user_id=user_id, stage=stage, post_type=post_type,
-                             user_profile=user_profile, prefs=prefs,
-                             profile_synthesis=profile_synthesis, blueprint=blueprint,
-                             post_id=post_id, lead_magnet_cta=lead_magnet_cta,
-                             history_directive=history_directive, story_directive=story_directive,
-                             content_mix=content_mix, refine_final_post=refine_final_post,
-                             similarity_check=similarity_check)
+def _resolve_lead_magnet(user_id: int, post_id: Optional[int],
+                         lead_magnet_cta: Optional[str]) -> Tuple[Optional[dict], bool, str]:
+    """This post's lead-magnet soft-ask, on the deterministic 1-in-N rotation.
 
-    # Generate the post based on the selected type
-    log_info(f"Creating text post of type: {post_type} for stage: {stage}")
-    if post_type == "thought_leadership":
-        final_content = get_thought_leadership_post_from_ai(user_profile, stage, prefs=prefs,
-                                                            profile_synthesis=profile_synthesis,
-                                                            blueprint=blueprint,
-                                                            lead_magnet_cta=lead_magnet_cta,
-                                                            post_id=post_id,
-                                                            history_directive=history_directive,
-                                                            story_directive=story_directive,
-                                                            content_mix=content_mix,
-                                                            user_id=user_id)
-    elif post_type == "blog_summary":
-        # Get the users blog url
-        user_main_blog_url = get_user_blog_url(user_id)
+    "Comment KEYWORD and I'll DM it to you" is the compliant way to share a resource and what fires
+    the keyword listener in the automation. Only SOME posts get it (all = spammy/pattern-flagged),
+    and the rotation is keyed off post_id so it is stable and testable.
+
+    Args:
+        user_id: the author.
+        post_id: the planned post row, which keys the rotation.
+        lead_magnet_cta: a directive an earlier pass already built — when set, this is a no-op so
+            the same post stays consistent.
+
+    Returns:
+        `(lead_magnet, include_cta, lead_magnet_cta)`. Unreadable settings ship the post without
+        the comment-keyword mechanic rather than failing it. No-op unless the user enabled the
+        lead magnet with a non-empty keyword.
+    """
+    if lead_magnet_cta is not None:
+        return None, False, lead_magnet_cta
+    try:
+        lead_magnet = get_lead_magnet_settings(user_id)
+        include_cta = should_include_lead_magnet_cta(lead_magnet, post_id)
+        lead_magnet_cta = lead_magnet_cta_directive(lead_magnet, include_cta)
+        if lead_magnet_cta:
+            log_info(f"Lead-magnet CTA included on post_id={post_id} "
+                     f"(keyword '{lead_magnet.get('keyword')}')")
+        return lead_magnet, include_cta, lead_magnet_cta
+    except Exception as e:
+        log_warning("Could not read the lead-magnet settings — this post ships without the "
+                    "comment-keyword mechanic", exc=e, user_id=user_id, post_id=post_id,
+                    task_name="create_text_post")
+        return None, False, ""
+
+
+def _draft_from_source(ctx: PostDraftContext) -> Tuple[Optional[str], bool]:
+    """Write ONE draft in `ctx.post_type`'s archetype, and say whether that type had a SOURCE.
+
+    Args:
+        ctx: the settled inputs this draft is written from.
+
+    Returns:
+        `(content, source_available)`. `source_available` is False only when this user has nothing
+        to write this type FROM — no blog, no sitemap, or a sitemap with nothing relevant in it —
+        which is the one condition the type-fallback loop retries. A generator that simply returned
+        nothing is NOT a missing source: the type was writable and the model failed, and re-rolling
+        the type would hide that.
+    """
+    steering = dict(prefs=ctx.prefs, profile_synthesis=ctx.profile_synthesis,
+                    blueprint=ctx.blueprint, lead_magnet_cta=ctx.lead_magnet_cta,
+                    history_directive=ctx.history_directive,
+                    story_directive=ctx.story_directive, content_mix=ctx.content_mix)
+    # Only the ai_helper generators take the post/user ids (they research and cost-attribute per
+    # post); the two source-backed ones are handed their source instead.
+    attribution = dict(post_id=ctx.post_id, user_id=ctx.user_id)
+
+    if ctx.post_type == "blog_summary":
+        user_main_blog_url = get_user_blog_url(ctx.user_id)
         blog_post_url, blog_post_content = get_main_blog_url_content(user_main_blog_url)
-        if blog_post_url and blog_post_content:
-            process_selected_post(blog_post_url, blog_post_content)
-            final_content = get_blog_summary_post_from_ai(blog_post_url, blog_post_content, user_profile, stage,
-                                                          prefs=prefs, profile_synthesis=profile_synthesis,
-                                                          blueprint=blueprint, lead_magnet_cta=lead_magnet_cta,
-                                                          history_directive=history_directive,
-                                                          story_directive=story_directive,
-                                                          content_mix=content_mix)
-        else:
+        if not (blog_post_url and blog_post_content):
             log_info("No blog post found for this user. Generating another post type")
-            final_content, post_type = _draft_as_other_type(draft, post_types, "blog_summary")
-    elif post_type == "website_content":
-        # Get the users sitemap url
-        sitemap_url = get_user_sitemap_url(user_id)
-        if sitemap_url:
-            content = generate_website_content_post(sitemap_url, user_profile, stage, prefs=prefs,
-                                                    profile_synthesis=profile_synthesis,
-                                                    blueprint=blueprint, lead_magnet_cta=lead_magnet_cta,
-                                                    history_directive=history_directive,
-                                                    story_directive=story_directive,
-                                                    content_mix=content_mix)
-            if content:
-                final_content = content
-            else:
-                log_info("No relevant content found in the sitemap. Generating another post type")
-                final_content, post_type = _draft_as_other_type(draft, post_types,
-                                                                "website_content")
-        else:
+            return None, False
+        process_selected_post(blog_post_url, blog_post_content)
+        return get_blog_summary_post_from_ai(blog_post_url, blog_post_content, ctx.user_profile,
+                                             ctx.stage, **steering), True
+
+    if ctx.post_type == "website_content":
+        sitemap_url = get_user_sitemap_url(ctx.user_id)
+        if not sitemap_url:
             log_info("No sitemap found for this user. Generating another post type")
-            final_content, post_type = _draft_as_other_type(draft, post_types, "website_content")
-    elif post_type == "industry_news":
-        final_content = get_industry_news_post_from_ai(user_profile, stage, prefs=prefs,
-                                                       profile_synthesis=profile_synthesis,
-                                                       blueprint=blueprint, lead_magnet_cta=lead_magnet_cta,
-                                                       post_id=post_id,
-                                                       history_directive=history_directive,
-                                                       story_directive=story_directive,
-                                                       content_mix=content_mix,
-                                                       user_id=user_id)
-    elif post_type == "personal_story":
-        final_content = get_personal_story_post_from_ai(user_profile, stage, prefs=prefs,
-                                                        profile_synthesis=profile_synthesis,
-                                                        blueprint=blueprint, lead_magnet_cta=lead_magnet_cta,
-                                                        post_id=post_id,
-                                                        history_directive=history_directive,
-                                                        story_directive=story_directive,
-                                                        content_mix=content_mix,
-                                                        user_id=user_id)
-    else:
-        final_content = generate_engagement_prompt_post(user_profile, stage, prefs=prefs,
-                                                        profile_synthesis=profile_synthesis,
-                                                        blueprint=blueprint, lead_magnet_cta=lead_magnet_cta,
-                                                        post_id=post_id,
-                                                        history_directive=history_directive,
-                                                        story_directive=story_directive,
-                                                        content_mix=content_mix,
-                                                        user_id=user_id)
+            return None, False
+        content = generate_website_content_post(sitemap_url, ctx.user_profile, ctx.stage,
+                                                **steering)
+        if not content:
+            log_info("No relevant content found in the sitemap. Generating another post type")
+            return None, False
+        return content, True
 
-    # The sanctioned 'comment KEYWORD' ask for THIS post: the refinement passes preserve it, the
-    # bait strip exempts it, and the slop lint's bait check must not read it as engagement bait.
-    _cta_kw = (str(lead_magnet.get("keyword")).strip()
-               if include_cta and lead_magnet else None) or None
+    if ctx.post_type == "thought_leadership":
+        return get_thought_leadership_post_from_ai(ctx.user_profile, ctx.stage,
+                                                   **steering, **attribution), True
+    if ctx.post_type == "industry_news":
+        return get_industry_news_post_from_ai(ctx.user_profile, ctx.stage,
+                                              **steering, **attribution), True
+    if ctx.post_type == "personal_story":
+        return get_personal_story_post_from_ai(ctx.user_profile, ctx.stage,
+                                               **steering, **attribution), True
+    return generate_engagement_prompt_post(ctx.user_profile, ctx.stage,
+                                           **steering, **attribution), True
 
-    if refine_final_post:
-        # Both refinement passes get the user's prefs so the LLM rewrites can't re-introduce
-        # emojis/hashtags the user turned off (or flatten a configured tone).
-        final_content = get_ai_linked_post_refinement(final_content, prefs=prefs,
-                                                      preserve_cta_keyword=_cta_kw)
-        # Hook + save-worthy pass: strong first line before the '…more' fold; save-worthy framing.
-        final_content = optimize_post_hook(final_content, prefs=prefs,
-                                           preserve_cta_keyword=_cta_kw)
-        final_content = sanitize_for_linkedin(final_content)
-        # Guardrail: strip classic engagement-bait CTAs (penalized), keeping lead-magnet CTAs —
-        # including one whose configured trigger word collides with the bait regex (e.g. 'YES').
-        final_content = strip_engagement_bait(
-            final_content,
-            exempt_keyword=(lead_magnet or {}).get("keyword") if include_cta else None)
-        final_content = final_content.strip()
 
-    # Humanization pass (issue #416 — A5): the final anti-AI-tell rewrite, BEFORE the review gate
-    # (generate -> A2 proof -> humanize -> review -> A1). READER mode only, never fabricates, fails
-    # open. Outermost call only (mirrors the A1/review gates). The lead-magnet CTA mechanic is
-    # re-verified/repaired by ensure_lead_magnet_cta below, so a rewrite that reworded it is
-    # recovered deterministically.
-    if final_content and refine_final_post and similarity_check:
-        final_content = humanize_text(final_content, content_type="post",
-                                      profile_synthesis=profile_synthesis, prefs=prefs)
+def _refine_draft(content: str, ctx: PostDraftContext, cta_keyword: Optional[str],
+                  bait_exempt_keyword: Optional[str]) -> str:
+    """The two LLM rewrite passes plus the deterministic bait strip, in order.
 
-    # Review gate (runs once, in the outermost call): deterministic near-duplicate check against the
-    # user's recent posts with ONE avoid-directive retry, plus a cheap focus-alignment check. Never
-    # a hard block — worst case it logs a warning and keeps the best attempt.
-    if final_content and refine_final_post and similarity_check:
-        final_content = _review_generated_post(user_id, stage, post_type, user_profile, blueprint,
-                                               post_id, lead_magnet_cta, final_content,
-                                               recent_texts, prefs, profile_synthesis,
-                                               story=story, story_directive=story_directive,
-                                               content_mix=content_mix, cta_keyword=_cta_kw)
+    Both passes get the user's prefs so the rewrites can't re-introduce emojis/hashtags the user
+    turned off (or flatten a configured tone), and the hook pass puts a strong first line before
+    the '…more' fold.
 
-        # Dwell shaping (issue #391 — C2): deterministic, no-LLM repair of the structural dwell
-        # killer every LLM rewrite above can re-introduce — wall-of-text paragraphs. Runs on
-        # whichever draft the review gate kept, reflows ONLY over-long paragraphs, and never
-        # truncates, so the CTA/proof/hashtag lines survive. The hook-before-fold and read-time
-        # targets are steered in the prompt (content_framework.dwell_directive) and measured into
-        # the persisted dwell-proxy score when the post is saved.
-        final_content = shape_for_dwell(final_content)
+    Args:
+        content: the raw draft.
+        ctx: the settled inputs, read for the user's preferences.
+        cta_keyword: the sanctioned "comment KEYWORD" trigger the rewrites must preserve.
+        bait_exempt_keyword: the same keyword as the bait strip's exemption — a configured trigger
+            word can collide with the bait regex (e.g. 'YES') and must survive it.
 
-    # Artifact-CTA policy (issue #618): a meeting ask ("book a call", "DM me to discuss") is the CTA
-    # shape 2026 demotes hardest, and every LLM pass above can write one back in even though the
-    # prompt bans it. Deterministic repair, run on whatever draft the review gate kept: drop the ask
-    # and — only when the user genuinely has an artifact (their lead magnet, else their newsletter) —
-    # close on that instead. What survives is still lint-checked by the review gate.
-    if final_content and refine_final_post and similarity_check and contains_meeting_ask(final_content):
+    Returns:
+        The refined draft.
+    """
+    content = get_ai_linked_post_refinement(content, prefs=ctx.prefs,
+                                            preserve_cta_keyword=cta_keyword)
+    content = optimize_post_hook(content, prefs=ctx.prefs, preserve_cta_keyword=cta_keyword)
+    content = sanitize_for_linkedin(content)
+    # Guardrail: strip classic engagement-bait CTAs (penalized), keeping lead-magnet CTAs.
+    content = strip_engagement_bait(content, exempt_keyword=bait_exempt_keyword)
+    return content.strip()
+
+
+@llm_step("compose")
+def _compose_draft(ctx: PostDraftContext, cta_keyword: Optional[str] = None,
+                   bait_exempt_keyword: Optional[str] = None
+                   ) -> Tuple[Optional[str], PostDraftContext]:
+    """Write one post: generate, fall back a BOUNDED number of times, refine.
+
+    Dispatch to the archetype's generator; when that type has no SOURCE for this user, drop it off
+    the menu and re-draw, up to `_DRAFT_SOURCE_ATTEMPTS` times; then run the refinement passes.
+
+    THE core step (issue #1217). The review gate's regeneration re-enters here, not
+    `create_text_post`, so a retry re-runs generation and refinement only — the profile scrape,
+    story selection, blueprint choice and lead-magnet read stay settled, and the once-per-post
+    gates live outside this call and cannot run twice on one post. `@llm_step` rides the core for
+    the same reason CLAUDE.md gives: decorate the shared step, not its call sites, or the first
+    draft and its retry attribute to different places.
+
+    Args:
+        ctx: the settled inputs this post is written from.
+        cta_keyword: the sanctioned lead-magnet trigger word the refinement passes must preserve.
+        bait_exempt_keyword: that keyword as the bait strip's exemption.
+
+    Returns:
+        `(content, ctx)` — the returned ctx names the type that actually shipped, which is what the
+        review gate downstream has to be told about.
+    """
+    menu = list(_POST_TYPES)
+    content = None
+    for _ in range(_DRAFT_SOURCE_ATTEMPTS):
+        log_info(f"Creating text post of type: {ctx.post_type} for stage: {ctx.stage}")
+        content, source_available = _draft_from_source(ctx)
+        if source_available:
+            break
+        if ctx.post_type in menu:
+            menu.remove(ctx.post_type)
+        if not menu:
+            break
+        ctx = ctx.with_post_type(random.choice(menu))
+
+    if ctx.refine_final_post:
+        content = _refine_draft(content, ctx, cta_keyword, bait_exempt_keyword)
+    return content, ctx
+
+
+def _apply_once_per_post_gates(ctx: PostDraftContext, content: str, recent_texts: list,
+                               story: Optional[dict], cta_keyword: Optional[str]) -> str:
+    """Humanize, review and reflow the finished draft — the passes that run ONCE per post.
+
+    Order is the contract (generate -> A2 proof -> humanize -> review -> A1): the humanization pass
+    is the final anti-AI-tell rewrite (issue #416 — A5), READER mode only, never fabricates, fails
+    open; the review gate then runs the deterministic near-duplicate/proof/fabrication/slop checks
+    with ONE avoid-directive retry. Never a hard block — worst case it warns and keeps the best
+    attempt; the GATES are what hold a still-failing draft out of auto-publish.
+
+    Args:
+        ctx: the settled inputs, including the once-per-post markers that switch this whole step
+            off for a caller that is only drafting.
+        content: the refined draft.
+        recent_texts: the user's recent posts, for the similarity check.
+        story: the story-bank entry the draft was anchored to, if any.
+        cta_keyword: the sanctioned lead-magnet trigger word, exempt from the slop lint.
+
+    Returns:
+        The draft that ships.
+    """
+    if not (content and ctx.refine_final_post and ctx.similarity_check):
+        return content
+
+    content = humanize_text(content, content_type="post",
+                            profile_synthesis=ctx.profile_synthesis, prefs=ctx.prefs)
+    content = _review_generated_post(ctx, content, recent_texts, story=story,
+                                     cta_keyword=cta_keyword)
+    # Dwell shaping (issue #391 — C2): deterministic, no-LLM repair of the structural dwell
+    # killer every LLM rewrite above can re-introduce — wall-of-text paragraphs. Runs on
+    # whichever draft the review gate kept, reflows ONLY over-long paragraphs, and never
+    # truncates, so the CTA/proof/hashtag lines survive. The hook-before-fold and read-time
+    # targets are steered in the prompt (content_framework.dwell_directive) and measured into
+    # the persisted dwell-proxy score when the post is saved.
+    return shape_for_dwell(content)
+
+
+def _repair_post_ctas(ctx: PostDraftContext, content: str, lead_magnet: Optional[dict],
+                      include_cta: bool) -> str:
+    """Deterministic CTA repair, run LAST because every LLM pass above can undo it.
+
+    Two repairs, both verified in prod. A meeting ask ("book a call", "DM me to discuss") is the CTA
+    shape 2026 demotes hardest and the rewrites write it back in even though the prompt bans it
+    (issue #618) — it is dropped and, only when the user genuinely has an artifact (their lead
+    magnet, else their newsletter), replaced with that. The "comment KEYWORD" mechanic gets reworded
+    into a generic ask or dropped entirely, which silently kills the auto-DM keyword listener — so
+    it is verified and repaired after every rewrite (no-op when already present; variant chosen by
+    post_id so repaired CTAs stay non-identical).
+
+    Args:
+        ctx: the settled inputs.
+        content: the draft the review gate kept.
+        lead_magnet: the user's lead-magnet settings, or None when unreadable/not selected.
+        include_cta: whether THIS post is on the lead-magnet rotation.
+
+    Returns:
+        The repaired draft. What survives is still lint-checked by the review gate above.
+    """
+    user_id, post_id, prefs = ctx.user_id, ctx.post_id, ctx.prefs
+    if content and ctx.refine_final_post and ctx.similarity_check and contains_meeting_ask(content):
         try:
             newsletter = get_newsletter_settings(user_id)
         except Exception as e:
@@ -2865,44 +2941,50 @@ def create_text_post(user_id: int, stage: str, post_type: str = None, user_profi
                         task_name="create_text_post")
             newsletter = None
         repaired = replace_meeting_ask_cta(
-            final_content, lead_magnet=lead_magnet, newsletter=newsletter, post_id=post_id,
+            content, lead_magnet=lead_magnet, newsletter=newsletter, post_id=post_id,
             use_emojis=bool((prefs or {}).get("use_emojis")))
-        if repaired and repaired != final_content:
+        if repaired and repaired != content:
             log_warning("Meeting-ask CTA replaced with an artifact CTA (70/20/10 promo policy): "
-                        f"{'; '.join(meeting_ask_excerpts(final_content))}",
+                        f"{'; '.join(meeting_ask_excerpts(content))}",
                         user_id=user_id, post_id=post_id, task_name="create_text_post")
-            final_content = repaired
+            content = repaired
 
-    # The refinement passes above (and any review-gate retry) are LLM rewrites — verified in prod to
-    # reword the "comment KEYWORD" mechanic into a generic ask or drop it entirely, which silently
-    # kills the auto-DM keyword listener. Deterministic verify-and-repair runs LAST, after every
-    # rewrite, so the mechanic ships on every selected post (no-op when already present; variant
-    # chosen by post_id so repaired CTAs stay non-identical).
-    if include_cta and final_content:
-        repaired = ensure_lead_magnet_cta(final_content, lead_magnet, post_id,
+    if include_cta and content:
+        repaired = ensure_lead_magnet_cta(content, lead_magnet, post_id,
                                           use_emojis=bool((prefs or {}).get("use_emojis")))
-        if repaired != final_content:
+        if repaired != content:
             log_info("Lead-magnet CTA lost in refinement - repaired deterministically",
                      post_id=post_id, user_id=user_id, task_name="create_text_post")
-            final_content = repaired
+            content = repaired
+    return content
 
-    # Authenticity gate (issue #382 — 360Brew defense): score the finished draft for generic-AI risk
-    # + profile-topic consistency and persist the score. Runs LAST here, on the draft this function
-    # returns (issue #1264): the review gate above regenerates the post on a similarity / A2-proof /
-    # fabrication / slop failure, and its retry re-enters with `similarity_check=False` — the same
-    # flag guarding this call — so scoring earlier persisted the score of a draft that was thrown
-    # away. Still exactly ONE judge call per shipped post: the retry never reaches this line. The
-    # gate itself is a status demotion (APPROVED -> PENDING) applied by the content-plan
-    # status-setter, which reads the persisted score back — mirroring the deterministic similarity
-    # gate's demote-not-block posture.
-    if final_content and refine_final_post and similarity_check and post_id is not None:
-        _score_and_persist_authenticity(user_id, post_id, final_content, user_profile,
-                                        profile_synthesis, prefs)
 
-    # Count the story-bank entry as used so the NEXT post rotates to different raw material. Only
-    # the outermost call (the one that actually selected an entry) writes, and only when a post
-    # really came out of it — a failed generation must not burn the anecdote.
-    if story and final_content and story.get("id"):
+def _persist_draft_outcome(ctx: PostDraftContext, content: Optional[str],
+                           story: Optional[dict]) -> None:
+    """Score and record what this post cost the user's material — the writes a draft leaves behind.
+
+    Three of them. The authenticity gate (issue #382 — 360Brew defense) scores the finished draft
+    for generic-AI risk + profile-topic consistency and persists it; it runs on the draft this
+    function's caller RETURNS (issue #1264), because the review gate regenerates on a
+    similarity / A2-proof / fabrication / slop failure and scoring earlier persisted the score of a
+    draft that was thrown away. Still exactly ONE judge call per shipped post. The gate itself is a
+    status demotion (APPROVED -> PENDING) applied by the content-plan status-setter, mirroring the
+    deterministic similarity gate's demote-not-block posture. The story-bank entry is counted as
+    used so the NEXT post rotates to different raw material — only when a post really came out of
+    it, because a failed generation must not burn the anecdote. The assigned shape is persisted so
+    FUTURE posts rotate away from it (the newsletter's V50 shape history, applied via V51).
+
+    Args:
+        ctx: the settled inputs, including the markers that make this the once-per-post pass.
+        content: the draft that ships, or None when generation produced nothing.
+        story: the story-bank entry the post was anchored to, if any.
+    """
+    user_id, post_id = ctx.user_id, ctx.post_id
+    if content and ctx.refine_final_post and ctx.similarity_check and post_id is not None:
+        _score_and_persist_authenticity(user_id, post_id, content, ctx.user_profile,
+                                        ctx.profile_synthesis, ctx.prefs)
+
+    if story and content and story.get("id"):
         try:
             record_story_bank_use(user_id, int(story["id"]))
         except Exception as e:
@@ -2912,17 +2994,98 @@ def create_text_post(user_id: int, stage: str, post_type: str = None, user_profi
                         "the same anchor", exc=e, user_id=user_id, post_id=post_id,
                         task_name="create_text_post")
 
-    # Persist the assigned shape so FUTURE posts rotate away from it (the newsletter's V50 shape
-    # history, applied to posts via V51). Only the outermost call (which knows the post row) writes.
-    if post_id is not None and final_content and blueprint:
+    if post_id is not None and content and ctx.blueprint:
         try:
-            update_db_post_shape(post_id, blueprint.get("format"), blueprint.get("hook_style"),
-                                 topic=blueprint.get("subject"))
+            update_db_post_shape(post_id, ctx.blueprint.get("format"),
+                                 ctx.blueprint.get("hook_style"), topic=ctx.blueprint.get("subject"))
         except Exception as e:
             log_warning("Could not persist the post's shape — future posts will not rotate away "
                         "from it", exc=e, user_id=user_id, post_id=post_id,
                         task_name="create_text_post")
 
+
+@llm_pipeline("post_generation", feature=FEATURE_CONTENT)
+def create_text_post(user_id: int, stage: str, post_type: str = None,
+                     user_profile: LinkedInProfile = None,
+                     refine_final_post: bool = True, blueprint: dict = None, post_id: int = None,
+                     lead_magnet_cta: str = None, history_directive: str = None,
+                     similarity_check: bool = True, story_directive: str = None,
+                     content_mix: str = None, day_weekday: int = None) -> Optional[str]:
+    """Generate a text post for LinkedIn based on the user's profile, blog, or website content.
+
+    Four beats, in order (issue #1217): SETTLE what the post is written from into one
+    `PostDraftContext`, COMPOSE the draft from it — the bounded generate/refine core every retry
+    re-enters — then run the once-per-post gates and the writes the draft leaves behind. Every
+    argument below is an INPUT to the settling; nothing here is a recursion flag.
+
+    Args:
+        user_id: ID of user to grab user profile.
+        stage: Buyer journey stage for the post.
+        post_type: the archetype to write; drawn at random from `_POST_TYPES` when unset.
+        user_profile: the author's profile; scraped when unset.
+        refine_final_post: run the refinement passes and, with `similarity_check`, the once-per-post
+            gates. A caller that only wants a raw draft turns it off.
+        blueprint: a pre-chosen shape; selected when unset.
+        post_id: the planned post row this draft fills.
+        lead_magnet_cta: a pre-built CTA directive; resolved from the user's settings when unset.
+        history_directive: a pre-built AVOID block; derived from post history when unset.
+        similarity_check: run the review gate (and load the history it needs).
+        story_directive: a pre-built story anchor; selected from the bank when unset.
+        content_mix: this post's 70/20/10 class from the plan governor (issue #618). 'promo' is the
+            one-in-ten soft-promo slot and is forced into a case-study shape; anything else sells
+            nothing.
+        day_weekday: the slot's LOCAL weekday, which picks the day-type archetype family (#621).
+
+    Returns:
+        The generated text post, or None when generation produced nothing.
+    """
+    content_mix = normalize_content_mix(content_mix)
+    if post_type is None:
+        post_type = random.choice(_POST_TYPES)
+    if user_profile is None:
+        user_profile = _resolve_user_profile(user_id)
+
+    # User-declared focus topics + business/personal goals steer the post's angle and enforce the
+    # anti-self-promo guardrail (see _alignment_directive) so posts don't drift into promoting
+    # whatever the user is currently building.
+    prefs = get_engagement_preferences(user_id)
+    # Stable VOICE synthesis (cached weekly; lazily generated on first use) replaces the bloated full
+    # profile JSON as the voice/credibility source — keeps posts in the user's voice without dragging
+    # in their volatile recent activity / current projects (LEM-drift).
+    profile_synthesis = get_or_create_profile_synthesis(user_id, user_profile)
+
+    recent_texts, history_directive = _resolve_post_history(user_id, post_id, similarity_check,
+                                                            history_directive)
+    story_selected_here = story_directive is None
+    story, story_directive, content_mix = _resolve_story_anchor(user_id, post_id, prefs, blueprint,
+                                                                story_directive, content_mix)
+    blueprint = _resolve_blueprint(user_id, blueprint, content_mix, day_weekday, story,
+                                   story_selected_here)
+    lead_magnet, include_cta, lead_magnet_cta = _resolve_lead_magnet(user_id, post_id,
+                                                                     lead_magnet_cta)
+
+    # Everything this draft is written from, settled (issue #1220). The generate step and the two
+    # retries around it read it instead of re-threading a dozen arguments each.
+    ctx = PostDraftContext(user_id=user_id, stage=stage, post_type=post_type,
+                           user_profile=user_profile, prefs=prefs,
+                           profile_synthesis=profile_synthesis, blueprint=blueprint,
+                           post_id=post_id, lead_magnet_cta=lead_magnet_cta,
+                           history_directive=history_directive, story_directive=story_directive,
+                           content_mix=content_mix, refine_final_post=refine_final_post,
+                           similarity_check=similarity_check)
+
+    # The sanctioned 'comment KEYWORD' ask for THIS post: the refinement passes preserve it, the
+    # bait strip exempts it, and the slop lint's bait check must not read it as engagement bait.
+    cta_keyword = (str(lead_magnet.get("keyword")).strip()
+                   if include_cta and lead_magnet else None) or None
+    bait_exempt_keyword = (lead_magnet or {}).get("keyword") if include_cta else None
+
+    final_content, ctx = _compose_draft(ctx, cta_keyword=cta_keyword,
+                                        bait_exempt_keyword=bait_exempt_keyword)
+    final_content = _apply_once_per_post_gates(ctx, final_content, recent_texts, story,
+                                               cta_keyword)
+    final_content = _repair_post_ctas(ctx, final_content, lead_magnet, include_cta)
+    _persist_draft_outcome(ctx, final_content, story)
     return final_content
 
 

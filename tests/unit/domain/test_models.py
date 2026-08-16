@@ -122,13 +122,28 @@ class TestPostDraftContext:
         assert retry.content_mix == "value"
         assert retry.post_id == 7
 
-    def test_a_retry_stands_the_once_per_post_gates_down(self):
-        """Refinement, authenticity, humanization and the review gate run in the OUTERMOST call."""
+    def test_a_retry_leaves_the_once_per_post_markers_alone(self):
+        """Issue #1217: the once-per-post gates run AROUND the bounded generate loop.
+
+        Refinement, humanization, the review gate and the authenticity score sit outside it, so a
+        fallback attempt that stood the markers down would switch them off for the whole post
+        rather than for one attempt.
+        """
         retry = self._draft().with_post_type("industry_news")
-        assert retry.refine_final_post is False and retry.similarity_check is False
+        assert retry.refine_final_post is True and retry.similarity_check is True
+
+    def test_a_regeneration_changes_only_the_steering_it_failed(self):
+        retry = self._draft().with_history_directive("TOO SIMILAR — avoid Y")
+        assert retry.history_directive == "TOO SIMILAR — avoid Y"
+        assert retry.post_type == "blog_summary"
+        assert retry.blueprint == {"format": "case_snapshot"}
+        assert retry.story_directive == "anchor on Y"
+        assert retry.refine_final_post is True and retry.similarity_check is True
 
     def test_the_original_is_untouched(self):
         draft = self._draft()
         draft.with_post_type("industry_news")
+        draft.with_history_directive("avoid Y")
         assert draft.post_type == "blog_summary"
+        assert draft.history_directive == "avoid X"
         assert draft.refine_final_post is True and draft.similarity_check is True

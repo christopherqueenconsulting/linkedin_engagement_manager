@@ -104,9 +104,12 @@ class PostDraftContext:
     a ten-keyword argument block four times; the fallback path is `with_post_type`, so a retry can
     never quietly drop one of them.
 
-    `refine_final_post` / `similarity_check` are the OUTERMOST-call markers: the refinement,
-    authenticity, humanization and review gates run once per post, so a fallback draft carries them
-    False. Shared with the `create_text_post` breakup (issue #1217) — reuse this, don't redefine it.
+    `refine_final_post` / `similarity_check` are the once-per-post markers: the refinement,
+    authenticity, humanization and review gates run once per post, and a caller that is writing a
+    draft some other pass will finish (a regenerate flow, a fallback caption) turns them off. Since
+    the `create_text_post` breakup (issue #1217) a RETRY never turns them off itself: the type
+    fallback and the review gate's regeneration are bounded loops around the generate step alone, so
+    the gates sit outside the loop and cannot run twice on one post.
     """
 
     user_id: int
@@ -128,7 +131,18 @@ class PostDraftContext:
         """The same draft, retried as another post type after its source produced nothing.
 
         The retry is not a fresh post: it keeps the blueprint, story anchor and CTA already chosen
-        so the fallback stays the post that was planned, and it stands the outermost-call markers
-        down so the once-per-post gates do not run twice on one draft.
+        so the fallback stays the post that was planned. It leaves the once-per-post markers alone
+        (issue #1217): the fallback is one turn of a bounded loop around the generate step, and the
+        gates those markers guard run after that loop, so standing them down here would disable
+        them for the whole post rather than for one attempt.
         """
-        return replace(self, post_type=post_type, refine_final_post=False, similarity_check=False)
+        return replace(self, post_type=post_type)
+
+    def with_history_directive(self, history_directive: str) -> "PostDraftContext":
+        """The same draft, rewritten against an explicit avoid / proof / no-invention directive.
+
+        The review gate's ONE regeneration (issue #1217): everything the post was written from
+        stays settled — profile, story anchor, blueprint, CTA — and only the steering the first
+        draft failed changes, so the retry is the planned post written again rather than a new one.
+        """
+        return replace(self, history_directive=history_directive)
