@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.153.3](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.153.2...v0.153.3) (2026-08-16)
+
+
+### Bug Fixes
+
+* **dms:** restore the catch-up event types the nurture migration dropped (closes [#1576](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1576)) ([#1580](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1580)) ([34b22f4](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/34b22f4e56189163e977d4cf5026df9e1f705907))
+
+
+### Documentation
+
+* **models:** decline the deepseek-v4-pro tags — Extra high usage, no win available (closes [#1583](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1583)) ([#1584](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1584)) ([76d4cd8](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/76d4cd82ed2c2f561c2a127f06a02465df5f771d))
+
 ## [0.153.2](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.153.1...v0.153.2) (2026-08-16)
 
 
