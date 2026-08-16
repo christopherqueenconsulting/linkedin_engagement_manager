@@ -367,3 +367,20 @@ external corroboration for R4 and for keeping the avatar path. Sources:
 The machinery grades from §3 are unchanged. What this pass adds is that the machinery being right
 does not make the output right: R2 held in the prompt layer and still leaked once, and the largest
 defect found here (P1) is not in the image engine at all — it is in the carousel's text layout.
+
+### 7.5 What #1377 changed for the NEXT pass (P3, P4)
+
+Both findings were the same gap from two sides — nothing tied a stored media URL to the render
+behind it. `utilities/media_provenance.py` is now that tie; full posture in `docs/image-stack.md`
+("Media retention, and what a dangling URL means").
+
+| §7.2 said | Now |
+|---|---|
+| P3 — dangling URLs, nothing detects them | `auto_media_integrity_scan` grades every media-bearing row weekly and emits one `media_integrity` event. **Read it from PostHog, not the volume** — the count that matters is `dangling` (media gone from a row that has NOT published). The three sampled rows that started this are all `posted`, which the report classes as `missing_expected`: `purge_post_assets` removes a published post's local media on purpose, and that is now written down rather than accidental |
+| P4 — `focal_concept` never persisted, so R6 is unauditable | A generated render stores its brief beside itself, keyed by the stored URL: `read_brief_receipt(posts.image_url)` returns `focal_concept`, the render prompt, surface, preset and the gate verdict. It survives publication like the caption sidecar |
+
+Two limits this pass should still state rather than paper over. The receipts only exist for renders
+made AFTER #1377 shipped — every image in §7.1 stays unauditable for R6, permanently, and inferring
+intent from `posts.topic` is still the only option for them. And a render is only covered where the
+brief reaches the store: **post images and post videos**. Newsletter covers and carousel slides
+write no receipt yet, so R6 on those surfaces is still scored the way §7.1 scored it.

@@ -519,7 +519,7 @@ class TestCreateContent:
         content, video_url = create_content(user_id=1, post_type="video", stage="decision")
         assert content == "Video post content"
         assert video_url == "https://video.url"
-        mock_video.assert_called_once_with(1, "decision", post_id=None)
+        mock_video.assert_called_once_with(1, "decision", post_id=None, brief_info=None)
 
     @patch("cqc_lem.app.run_content_plan.create_text_post", return_value="  Trimmed content  ")
     def test_text_content_is_stripped(self, mock_text):
@@ -857,7 +857,8 @@ class TestRegeneratePostAllTypes:
         assert result.startswith("Guided video caption")
         mock_text.assert_called_once_with(1, "awareness", user_profile=ANY, post_id=10, content_mix="authority")
         mock_guidance.assert_called_once_with("New video caption", "shorter", prefs={"use_emojis": False}, profile_synthesis="synth")
-        mock_video_src.assert_called_once_with(1, "Guided video caption", ANY, 10)
+        # `brief_info` is the out-param the source frame's brief comes back in (issue #1377).
+        mock_video_src.assert_called_once_with(1, "Guided video caption", ANY, 10, brief_info={})
         mock_update_video.assert_called_once()
         from cqc_lem.app.run_content_plan import update_db_post_status
         update_db_post_status.assert_called_once_with(10, PostStatus.PENDING)

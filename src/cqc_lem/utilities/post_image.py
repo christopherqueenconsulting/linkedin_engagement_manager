@@ -21,6 +21,11 @@ Storage:
 
 ``posts.image_url`` stores the PUBLIC ``/api/assets?file_name=`` URL rather than a path, because
 that is the value the publish step hands to LinkedIn.
+
+A GENERATED image also gets a brief receipt beside it (``media_provenance``, issue #1377) — the
+render prompt, its focal concept and the vision gate's verdict, keyed by that same stored URL. An
+uploaded one gets none: there is no brief behind the author's own artwork, and writing an empty
+receipt would make an unauthored image read as one that depicted nothing.
 """
 
 import os
@@ -32,6 +37,7 @@ from urllib.parse import parse_qs, quote, urlparse
 
 from cqc_lem import assets_dir
 from cqc_lem.utilities.logger import log_debug, log_info, log_warning
+from cqc_lem.utilities.media_provenance import write_brief_receipt
 
 POST_IMAGE_SUBDIR = "images/posts"
 POST_IMAGE_PREVIEW_SUBDIR = "images/post_previews"
@@ -294,18 +300,21 @@ def generate_image_for_post(user_id: int, text: str, post_id: Optional[int] = No
                     action_type="post_image")
         return None, "Could not write an image prompt"
 
+    render_info: dict = {}
     try:
         if avatar:
             from cqc_lem.utilities.ai.image_gen import render_avatar_image_gated
             rendered = render_avatar_image_gated(
                 brief.prompt, avatar=avatar, user_id=user_id, surface="post_image",
-                ratio=DEFAULT_IMAGE_RATIO, focal_concept=brief.focal_concept, post_id=post_id)
+                ratio=DEFAULT_IMAGE_RATIO, focal_concept=brief.focal_concept, post_id=post_id,
+                render_info=render_info)
         else:
             from cqc_lem.utilities.ai.image_gen import render_image_gated
             rendered = render_image_gated(brief.prompt, surface="post_image",
                                           ratio=DEFAULT_IMAGE_RATIO,
                                           focal_concept=brief.focal_concept,
-                                          user_id=user_id, post_id=post_id)
+                                          user_id=user_id, post_id=post_id,
+                                          render_info=render_info)
     except Exception as e:
         log_warning("Post image generation failed", exc=e, user_id=user_id, post_id=post_id,
                     action_type="post_image")
@@ -319,5 +328,9 @@ def generate_image_for_post(user_id: int, text: str, post_id: Optional[int] = No
     stored = store_rendered_post_image(user_id, rendered, post_id=post_id)
     if not stored:
         return None, "Could not store the generated image"
+    # Recorded against the STORED url, not the temp render: the receipt is keyed by the value that
+    # lands on `posts.image_url`, which is the only handle a later audit has (issue #1377).
+    write_brief_receipt(stored, brief, post_id=post_id, user_id=user_id,
+                        gate_verdict=render_info.get("gate_verdict"))
     log_info("Generated post image", user_id=user_id, post_id=post_id, action_type="post_image")
     return stored, None

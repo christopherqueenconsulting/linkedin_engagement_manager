@@ -102,6 +102,16 @@ case, distinguishable from a pass), alongside the surface, issue categories, att
 whether the gate actually ran (`checked`). This is the trend line for image quality; it does not
 change the gate's decision or thresholds.
 
+## Media integrity (issue #1377)
+`auto_media_integrity_scan` emits ONE `media_integrity` event a week, account-wide
+(`DISTINCT_SYSTEM`), grading `posts.image_url` / `video_url` against the assets volume.
+**`dangling` is the only defect counter** — media gone from a post that has NOT published — and it
+is never summed with `missing_expected`, which is `purge_post_assets` clearing a published post's
+local copy on purpose. `has_dangling` is the `label()` an alert tile filters on; `with_brief` is how
+much of the corpus carries a render-brief receipt, i.e. how much of it rubric row R6 can be scored
+against at all. The event exists because the image audits have to read a production volume and
+production rows to answer any of this — PostHog is the side of that line they can reach.
+
 ## Motion-prompt lint (issue #1277) — `docs/content-core.md`
 One `motion_prompt_check` event per graded motion prompt, emitted BEFORE a Runway credit is spent:
 `verdict` (`pass` / `warn` / `regenerate` / `hold` / `unchecked`) next to `enforced`, plus the model,

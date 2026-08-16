@@ -158,7 +158,10 @@ class TestGenerateImageForPost:
         brief = ImageBrief(prompt="a prompt", ratio="1:1", surface="post_image",
                            style_preset="post_image", focal_concept="the idea")
 
+        # Both bindings: the store reads this module's, and the brief receipt written beside it
+        # resolves the volume through the package (issue #1377).
         with patch(f"{_PI}.assets_dir", str(assets)), \
+             patch("cqc_lem.assets_dir", str(assets)), \
              patch("cqc_lem.utilities.linkedin.helper.load_profile_for_user", return_value=None), \
              patch("cqc_lem.utilities.avatar.guardrails.resolve_avatar_for", return_value=avatar), \
              patch("cqc_lem.utilities.ai.image_brief.build_image_brief",
@@ -190,6 +193,7 @@ class TestGenerateImageForPost:
         brief = ImageBrief(prompt="a prompt", ratio="1:1", surface="post_image",
                            style_preset="post_image", focal_concept="the idea")
         with patch(f"{_PI}.assets_dir", str(assets)), \
+             patch("cqc_lem.assets_dir", str(assets)), \
              patch("cqc_lem.utilities.linkedin.helper.load_profile_for_user", return_value=None), \
              patch("cqc_lem.utilities.avatar.guardrails.resolve_avatar_for", return_value=None), \
              patch("cqc_lem.utilities.ai.image_brief.build_image_brief", return_value=brief), \
@@ -223,6 +227,59 @@ class TestGenerateImageForPost:
     def test_a_render_that_produced_nothing_is_reported(self, tmp_path):
         (url, reason), _, _, _ = self._generate(tmp_path, rendered=None)
         assert url is None and reason == "Image generation returned nothing"
+
+    def test_the_brief_is_recoverable_from_the_stored_url(self, tmp_path):
+        """Issue #1377 (P4): `focal_concept` is what rubric row R6 grades a render against.
+
+        Before this it existed only inside the call, so every shipped image was permanently
+        unauditable — the last audit had to infer intent from the post's topic and say so.
+        """
+        from cqc_lem.utilities.media_provenance import read_brief_receipt
+        (url, _reason), _render, _lora, assets = self._generate(tmp_path)
+        with patch("cqc_lem.assets_dir", str(assets)):
+            recovered = read_brief_receipt(url)
+        assert recovered["focal_concept"] == "the idea"
+        assert recovered["surface"] == "post_image" and recovered["post_id"] == 42
+
+    def test_the_gate_verdict_rides_along_with_it(self, tmp_path):
+        """The gate verdict is recorded with the brief.
+
+        It exists only inside the render call, so recording it is what lets an audit tell a render
+        the gate passed from one it never looked at.
+        """
+        from cqc_lem.utilities.ai.image_brief import ImageBrief
+        from cqc_lem.utilities.media_provenance import read_brief_receipt
+        from cqc_lem.utilities.post_image import generate_image_for_post
+        rendered_path = str(tmp_path / "render.png")
+        with open(rendered_path, "wb") as fh:
+            fh.write(b"png")
+        assets = tmp_path / "assets"
+        assets.mkdir(exist_ok=True)
+        brief = ImageBrief(prompt="a prompt", ratio="1:1", surface="post_image",
+                           style_preset="post_image", focal_concept="the idea")
+
+        def _render(*_args, render_info=None, **_kwargs):
+            render_info["gate_verdict"] = "rejected"
+            return rendered_path
+
+        with patch(f"{_PI}.assets_dir", str(assets)), \
+             patch("cqc_lem.assets_dir", str(assets)), \
+             patch("cqc_lem.utilities.linkedin.helper.load_profile_for_user", return_value=None), \
+             patch("cqc_lem.utilities.avatar.guardrails.resolve_avatar_for", return_value=None), \
+             patch("cqc_lem.utilities.ai.image_brief.build_image_brief", return_value=brief), \
+             patch("cqc_lem.utilities.ai.image_gen.render_image_gated", side_effect=_render):
+            url, _reason = generate_image_for_post(9, "Post text", post_id=42)
+            assert read_brief_receipt(url)["gate_verdict"] == "rejected"
+
+    def test_an_uploaded_image_gets_no_receipt(self, tmp_path):
+        """A receipt is a RECORD, never a default — there is no brief behind the author's own file."""
+        from cqc_lem.utilities.media_provenance import read_brief_receipt
+        from cqc_lem.utilities.post_image import save_post_image_bytes
+        assets = tmp_path / "assets"
+        assets.mkdir(exist_ok=True)
+        with patch(f"{_PI}.assets_dir", str(assets)), patch("cqc_lem.assets_dir", str(assets)):
+            url = save_post_image_bytes(9, _image_bytes(), post_id=42)
+            assert read_brief_receipt(url) is None
 
 
 class TestManualGenerationCap:

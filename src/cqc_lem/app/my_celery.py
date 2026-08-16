@@ -195,6 +195,14 @@ app.conf.update(
             # scored week (issue #630).
             'schedule': crontab(hour='9', minute='45', day_of_week='monday')
         },
+        'media-integrity-scan': {
+            'task': 'cqc_lem.app.run_scheduler.auto_media_integrity_scan',
+            # Mondays 03:10 UTC — after the 02:40 nightly content-quality pass, so the two reads of
+            # the same assets volume never overlap, and well clear of the 05:00 release window that
+            # would otherwise be purging media under it. Weekly because a dangling URL is a durable
+            # state, not an event (issue #1377).
+            'schedule': crontab(hour='3', minute='10', day_of_week='monday')
+        },
         'generate-newsletter-drafts': {
             'task': 'cqc_lem.app.run_scheduler.auto_generate_newsletter_drafts',
             'schedule': crontab(hour='10', minute='0')  # Daily: top up each user's newsletter draft queue for review

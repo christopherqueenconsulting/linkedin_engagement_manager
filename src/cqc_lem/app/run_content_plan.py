@@ -166,6 +166,7 @@ from cqc_lem.utilities.linkedin.profile import LinkedInProfile
 from cqc_lem.utilities.linkedin.rate_limit import acquire_run_lock, release_run_lock
 from cqc_lem.utilities.linkedin_formatter import sanitize_for_linkedin, strip_engagement_bait
 from cqc_lem.utilities.logger import log_debug, log_error, log_info, log_warning
+from cqc_lem.utilities.media_provenance import write_brief_receipt
 from cqc_lem.utilities.notifications import notify_content_generation_ready
 from cqc_lem.utilities.observability import (
     FEATURE_CONTENT,
@@ -483,7 +484,8 @@ def get_min_key(d):
 
 
 def create_content(user_id: int, post_type: str, stage: str, post_id: int = None,
-                   content_mix: str = None, day_weekday: int = None):
+                   content_mix: str = None, day_weekday: int = None,
+                   brief_info: dict = None):
     """Create content based on the specified post type and buyer journey stage.
 
     `content_mix` is the post's 70/20/10 class from the plan governor (issue #618) — it steers the
@@ -492,12 +494,17 @@ def create_content(user_id: int, post_type: str, stage: str, post_id: int = None
     `day_weekday` is the slot's LOCAL weekday (Mon=0 … Sun=6); it selects the day-type calendar's
     archetype family for text posts (issue #621) so a Wednesday reads as a story and a Thursday as
     a spiky POV. Carousels and videos carry their own template menus and are unaffected.
+
+    `brief_info` is the VIDEO path's out-param only (issue #1377): a text post's image is stored by
+    `generate_image_for_post`, which records its own brief, but a video's file is downloaded and
+    stored by the caller, so the brief has to travel there.
     """
     video_url = None
     content = None
 
     if post_type == PostType.VIDEO.value:
-        content, video_url = create_video_content(user_id, stage, post_id=post_id)
+        content, video_url = create_video_content(user_id, stage, post_id=post_id,
+                                                  brief_info=brief_info)
     elif post_type in (PostType.CAROUSEL.value, PostType.DOCUMENT.value):
         # A document post IS a carousel deck — same generated slides, published as a
         # native PDF instead of a multi-image share (see share_document_on_linkedin).
@@ -1123,7 +1130,8 @@ def _persist_video_model(post_id: Optional[int], model: Optional[str]) -> None:
 
 
 @attribute_llm_cost(FEATURE_CONTENT)
-def _generate_video_src(user_id: int, text_content: str, profile, post_id: int = None):
+def _generate_video_src(user_id: int, text_content: str, profile, post_id: int = None,
+                        brief_info: dict = None):
     """Generate a video source URL honoring the post's quality tier + video credits.
 
     The account avatar (when active) drives the source frame on BOTH tiers so the user's
@@ -1136,6 +1144,11 @@ def _generate_video_src(user_id: int, text_content: str, profile, post_id: int =
     Records the model that actually ran on `posts.video_model` (issue #1410) — see
     `_persist_video_model` for why the write lives here and not at the storage step.
     Returns the remote Runway URL (http) or a local Pexels path, or None.
+
+    `brief_info`, when passed, is filled with `{"brief": ImageBrief}` for the source frame so the
+    caller can record it beside the stored MP4 (issue #1377). It is CLEARED on the Pexels fallback:
+    that clip is stock footage this brief never described, and filing the brief under it would be a
+    fabricated provenance claim.
     """
     from cqc_lem.utilities.ai.ai_helper import generate_post_image
     from cqc_lem.utilities.ai.video_models import is_premium, supports_audio
@@ -1178,9 +1191,11 @@ def _generate_video_src(user_id: int, text_content: str, profile, post_id: int =
         # the aspect ratio it is handed, so briefing 1:1 and rendering the premium source frame at
         # 9:16 asked for a square composition and cropped it vertical (issue #1141).
         source_frame_ratio = "9:16" if is_premium(model) else DEFAULT_IMAGE_RATIO
+        # `brief_info` catches the brief object the wrapper otherwise discards — the focal concept
+        # this frame is graded on, recorded beside the stored MP4 (issue #1377).
         image_prompt = get_flux_image_prompt_from_ai(text_content, profile=profile,
                                                     ratio=source_frame_ratio, avatar=avatar,
-                                                    surface="video")
+                                                    surface="video", brief_info=brief_info)
         # Audio-capable (premium/Veo) renders need the user's language in the prompt — Veo has no
         # language parameter and invents a voiceover otherwise (issue #548). Silent models skip
         # the lookup entirely.
@@ -1240,6 +1255,9 @@ def _generate_video_src(user_id: int, text_content: str, profile, post_id: int =
                         exc=e, user_id=user_id, post_id=post_id, task_name="create_video_content")
         if deducted and user_id:
             refund_video_credits(user_id, deducted, post_id)
+        # Whatever ships from here is stock footage, not this brief's render (issue #1377).
+        if brief_info is not None:
+            brief_info.pop("brief", None)
         try:
             from cqc_lem.utilities.content_quality import VIDEO_MODEL_PEXELS
             from cqc_lem.utilities.pexels_helper import download_pexels_video
@@ -1261,8 +1279,14 @@ def _generate_video_src(user_id: int, text_content: str, profile, post_id: int =
 
 
 @attribute_llm_cost(FEATURE_CONTENT)
-def create_video_content(user_id: int, stage: str, post_id: int = None) -> tuple[str, str | None]:
+def create_video_content(user_id: int, stage: str, post_id: int = None,
+                         brief_info: dict = None) -> tuple[str, str | None]:
     """Write a video post: the text first, then a video generated to match it.
+
+    `brief_info` is passed straight through to `_generate_video_src`, which fills it with the source
+    frame's brief so the caller — the one that STORES the file — can record it beside the MP4
+    (issue #1377). The store is where it has to happen: the receipt is keyed by the stored path, and
+    nothing here has one yet.
 
     Returns:
         `(text_content, video_url)`. The URL is None when BOTH the generator and the Pexels stock
@@ -1274,7 +1298,8 @@ def create_video_content(user_id: int, stage: str, post_id: int = None) -> tuple
     text_content = create_text_post(user_id, stage, post_id=post_id)
     # Load profile once so the image prompt is brand/role-aligned
     user_profile = load_profile_for_user(user_id)
-    video_url = _generate_video_src(user_id, text_content, user_profile, post_id)
+    video_url = _generate_video_src(user_id, text_content, user_profile, post_id,
+                                    brief_info=brief_info)
     return text_content, video_url
 
 
@@ -1600,12 +1625,16 @@ def _record_video_asset_measures(post_id: int, video_file_path: str,
 
 
 def _store_video_asset(post_id: int, video_src_url: str, content: Optional[str] = None,
-                       user_id: Optional[int] = None) -> Optional[str]:
+                       user_id: Optional[int] = None, brief=None) -> Optional[str]:
     """Download a generated video into the shared assets volume, probe it, and attach C2PA
     credentials to AI output. Persist posts.video_url and return the public API asset URL only when
     the probe passes. The ONE place a regenerated video is stored — both the asset-only healer and
     the full post regenerate use it. Returns None when the file is empty or unparseable and the
     probe is advisory, leaving the post for the missing-asset gate / backfill healer.
+
+    `brief` is the source frame's `ImageBrief` when one was authored; it is recorded beside the
+    stored file (issue #1377). None — a Pexels fallback, or a caller that has no brief in hand —
+    records nothing rather than an empty receipt.
     """
     videos_dir = os.path.join(assets_dir, 'videos', 'runwayml')
     create_folder_if_not_exists(videos_dir)
@@ -1646,6 +1675,8 @@ def _store_video_asset(post_id: int, video_src_url: str, content: Optional[str] 
                                  task_name="regenerate_post_video_task")
     video_file_name = os.path.basename(video_file_path)
     api_video_url = f"{API_URL_FINAL}/api/assets?file_name=videos/runwayml/{video_file_name}"
+    # Keyed by the URL the row is about to carry, so the brief can be walked back from it (#1377).
+    write_brief_receipt(api_video_url, brief, post_id=post_id, user_id=user_id)
     update_db_post_video_url(post_id, api_video_url)
     return api_video_url
 
@@ -1675,13 +1706,15 @@ def regenerate_video_for_post(post_id: int) -> Optional[str]:
                     task_name="regenerate_post_video_task")
 
     # Honors the post's video_quality tier + premium video credits (deduct/refund).
-    video_src_url = _generate_video_src(user_id, text_content, user_profile, post_id)
+    brief_info: dict = {}
+    video_src_url = _generate_video_src(user_id, text_content, user_profile, post_id,
+                                        brief_info=brief_info)
     if not video_src_url:
         return None
 
     try:
         api_video_url = _store_video_asset(post_id, video_src_url, content=text_content,
-                                           user_id=user_id)
+                                           user_id=user_id, brief=brief_info.get("brief"))
     except Exception as e:
         # A hard probe failure (or any other storage error) should not strand the post; log it
         # and let the missing-asset gate hold it for review / backfill.
@@ -1870,12 +1903,15 @@ def regenerate_post(post_id: int, guidance: str = None) -> Optional[str]:
         content = _apply_guidance_to_text_post(user_id, post_id, content, user_profile, guidance)
 
         # The new caption drives the new video asset so the visuals match the words (issue #794).
-        video_src_url = _generate_video_src(user_id, content, user_profile, post_id)
+        brief_info: dict = {}
+        video_src_url = _generate_video_src(user_id, content, user_profile, post_id,
+                                            brief_info=brief_info)
         api_video_url = None
         if video_src_url:
             try:
                 api_video_url = _store_video_asset(post_id, video_src_url, content=content,
-                                                   user_id=user_id)
+                                                   user_id=user_id,
+                                                   brief=brief_info.get("brief"))
             except Exception as e:
                 # Losing the download must not lose the regenerated caption too — persist it and
                 # let the missing-asset gate hold the post, exactly as a failed render does.
@@ -3680,9 +3716,13 @@ def _create_content_for_planned_post(post: dict, prefs: dict) -> bool:
     content_mix = post.get('content_mix')
     day_weekday = _slot_weekday(user_id, post.get('scheduled_time'))
 
+    # Filled by the video path with the source frame's brief, so the store below can record it
+    # beside the MP4 (issue #1377). Empty for every other post type.
+    brief_info: dict = {}
     try:
         content, video_url = create_content(user_id, post_type, stage, post_id=post_id,
-                                            content_mix=content_mix, day_weekday=day_weekday)
+                                            content_mix=content_mix, day_weekday=day_weekday,
+                                            brief_info=brief_info)
     except Exception as e:
         # ERROR, symmetric with the storing-half handler at the bottom of this function, which has
         # always been log_error: both end the same way — record_post_failed, and the user's planned
@@ -3764,6 +3804,12 @@ def _create_content_for_planned_post(post: dict, prefs: dict) -> bool:
                 api_video_url = (f"{API_URL_FINAL}/api/assets?file_name=videos/runwayml/"
                                  f"{video_file_name}")
                 log_info(f"Video URL: {api_video_url}")
+
+                # The source frame's brief, keyed by the URL the row is about to carry (#1377).
+                # Nothing is written when the Pexels fallback ran — it cleared the key, because
+                # stock footage was never what this brief described.
+                write_brief_receipt(api_video_url, brief_info.get("brief"), post_id=post_id,
+                                    user_id=user_id)
 
                 # Update the database with the video url
                 update_db_post_video_url(post_id, api_video_url)

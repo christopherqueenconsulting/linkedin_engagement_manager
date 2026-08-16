@@ -376,6 +376,15 @@ EVENTS = {spec.event: spec for spec in (
         flag("enforced"), prop("attempt"), prop("checked"), prop("passes"), prop("chars"),
         items("checks"), prop("hard_count"), prop("warn_count"), items("evidence"),
     )),
+    # Stored media URLs graded against the assets volume (issue #1377). Account-wide, so it never
+    # lands on a user. `dangling` is the only defect counter — media gone from a post that has NOT
+    # published — and it is deliberately not summed with `missing_expected`, which is
+    # `purge_post_assets` doing its job at publish. `with_brief` is coverage of the brief receipts,
+    # i.e. how much of the corpus rubric row R6 can be scored against at all.
+    EventSpec("media_integrity", (
+        count("checked"), count("present"), count("dangling"), count("missing_expected"),
+        count("unresolvable"), count("with_brief"), items("dangling_posts"), label("has_dangling"),
+    ), DISTINCT_SYSTEM),
 
     # --- Engagement lanes ---------------------------------------------------------------------
     EventSpec("feed_scan", (
@@ -1541,6 +1550,17 @@ def track_image_gate_verdict(
                                          "attempt_count": attempt_count, "checked": checked,
                                          "acceptable": acceptable, "user_id": user_id,
                                          "post_id": post_id})
+
+
+def track_media_integrity(summary: dict) -> None:
+    """Emit ONE `media_integrity` reading per scan (issue #1377).
+
+    `summary` is `media_provenance.integrity_summary`'s output. `has_dangling` is derived here and
+    is a `label()` on purpose: it is what an alert tile filters on, and PostHog matches a filter
+    against the ingested type — a boolean row would make `has_dangling = "True"` match nothing.
+    """
+    _emit(EVENTS["media_integrity"],
+          {**(summary or {}), "has_dangling": bool((summary or {}).get("dangling"))})
 
 
 def track_slop_retry(

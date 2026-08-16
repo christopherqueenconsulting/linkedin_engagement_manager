@@ -336,7 +336,9 @@ def render_avatar_image_gated(prompt: str, *, avatar: dict, user_id: Optional[in
     RETURNED (issue #1430). ``posts.avatar_media`` cannot answer that question: it is a sticky
     per-POST flag that any earlier avatar render sets and nothing clears, so on a re-render or a
     gate retry that fell back to base Flux it still reads true — which would file a fallback
-    frame's likeness verdict under the LoRA render it is meant to be separated from.
+    frame's likeness verdict under the LoRA render it is meant to be separated from. It also
+    carries ``gate_verdict`` for the same reason: the verdict is only in hand here, and the brief
+    receipt stored beside the render (issue #1377) is what makes it auditable afterwards.
     """
     from cqc_lem.utilities.ai.ai_helper import _record_avatar_media
     from cqc_lem.utilities.avatar.attributes import apply_subject_clause
@@ -381,6 +383,8 @@ def render_avatar_image_gated(prompt: str, *, avatar: dict, user_id: Optional[in
             gate_verdict = "accepted" if last_verdict.acceptable else "rejected"
         else:
             gate_verdict = "unchecked"
+        if render_info is not None:
+            render_info["gate_verdict"] = gate_verdict
         track_image_gate_verdict(
             surface=surface,
             verdict=gate_verdict,
@@ -399,12 +403,18 @@ def render_image_gated(prompt: str, *, surface: str, ratio: str = "1:1",
                        quality: Optional[str] = None,
                        user_id: Optional[int] = None,
                        post_id: Optional[int] = None,
-                       image_model: str = DEFAULT_IMAGE_MODEL) -> str:
+                       image_model: str = DEFAULT_IMAGE_MODEL,
+                       render_info: Optional[dict] = None) -> str:
     """Render with the bounded vision gate. Returns the best candidate's path.
 
     Surfaces outside IMAGE_QUALITY_GATE_SURFACES get one advisory-only pass (verdict logged,
     render kept). After the attempt budget, the last render ships — for covers the human
     review queue is still behind this gate.
+
+    ``render_info``, when passed, is filled with ``{"gate_verdict": "accepted"|"rejected"|
+    "unchecked"}`` — the same out-param shape the avatar renderer uses. The verdict exists only
+    inside this call, and recording it beside the stored render (issue #1377) is what lets a later
+    audit tell a render the gate passed from one it never looked at.
     """
     from cqc_lem.utilities.observability import track_image_gate_verdict
 
@@ -436,6 +446,8 @@ def render_image_gated(prompt: str, *, surface: str, ratio: str = "1:1",
             gate_verdict = "accepted" if last_verdict.acceptable else "rejected"
         else:
             gate_verdict = "unchecked"
+        if render_info is not None:
+            render_info["gate_verdict"] = gate_verdict
         track_image_gate_verdict(
             surface=surface,
             verdict=gate_verdict,

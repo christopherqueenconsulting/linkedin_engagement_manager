@@ -128,6 +128,12 @@ from cqc_lem.utilities.observability import FEATURE_CONTENT, FEATURE_NEWSLETTER,
 # the safety net working, not a defect.
 BACKFILL_URGENT_HOURS = 4
 
+# How many media-bearing post rows one integrity report walks (issue #1377). Newest first, because
+# a row that dangles keeps dangling and the ones nobody has looked at yet are the recent ones. Each
+# row costs a `stat` on the assets volume and nothing else, so this is bounded for the DB read, not
+# for the file checks.
+MEDIA_INTEGRITY_SCAN_LIMIT = 500
+
 
 def _skip_if_throttled(name: str, measurement_only: bool = False, **context) -> bool:
     """True when Selenium engagement should NOT fan out — either a manual automation pause OR an open
@@ -873,6 +879,48 @@ def auto_weekly_content_quality(self, days: int = None):
             alerted += 1
     return (f"Content quality rollup reported for {reported}/{len(users)} user(s); "
             f"{alerted} regression alert(s)")
+
+
+@shared_task.task(bind=True, base=QueueOnce, once={'graceful': True})
+def auto_media_integrity_scan(self, limit: int = None):
+    """Weekly read-only report on stored media URLs vs. the assets volume (issue #1377).
+
+    Reports, never repairs: it deletes no file and clears no row. A `posted` post whose local media
+    is gone is the CORRECT end state — `purge_post_assets` removes it the moment LinkedIn re-hosts
+    the media — so those are counted separately as `missing_expected` and never alerted on. The
+    reading that matters is a media URL with no file behind it on a post that has NOT published
+    yet: that URL is still going to be served to the SPA and to the publish run, as a 404.
+
+    Whether such a row should be CLEARED is a product decision this task deliberately does not make
+    (`docs/image-stack.md`, "Media retention"), which is why an unexpected dangle escalates through
+    `log_error` — a grouped `$exception` that reaches a human — rather than through a repair.
+
+    The `media_integrity` event is the half that needs no production credentials: the image audits
+    (#1141, #1292) read PostHog because the volume and the DB both need the VPS, and this is what
+    puts the answer on the side of that line they can reach.
+    """
+    from cqc_lem.utilities.db import get_posts_with_media
+    from cqc_lem.utilities.logger import log_error
+    from cqc_lem.utilities.media_provenance import integrity_summary, scan_post_media
+    from cqc_lem.utilities.observability import track_media_integrity
+
+    posts = get_posts_with_media(limit=MEDIA_INTEGRITY_SCAN_LIMIT if limit is None
+                                 else max(1, int(limit)))
+    if not posts:
+        # DEBUG, not INFO: a fleet with no media rows is an expected no-op, and a DB read that
+        # failed already logged where it happened.
+        log_debug("No post carries a media URL — nothing to grade",
+                  task_name="auto_media_integrity_scan")
+        return "No media rows to check"
+    summary = integrity_summary(scan_post_media(posts))
+    track_media_integrity(summary)
+    if summary["dangling"]:
+        log_error(f"{summary['dangling']} post media URL(s) point at files that are gone before "
+                  f"publication — posts {', '.join(summary['dangling_posts']) or 'unknown'}",
+                  action_type="post", task_name="auto_media_integrity_scan")
+    return (f"Media integrity: {summary['checked']} URL(s) checked, {summary['present']} present, "
+            f"{summary['dangling']} dangling, {summary['missing_expected']} purged at publish, "
+            f"{summary['with_brief']} with a recorded brief")
 
 
 def _max_dt(*dts):

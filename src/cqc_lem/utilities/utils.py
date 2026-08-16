@@ -364,11 +364,12 @@ def purge_post_assets(post_id, video_url=None):
     carousel slide directory (images/carousel/<post_id>/). Path-safe (only deletes
     inside assets_dir) and tolerant of already-missing files. Returns removed paths.
 
-    Four sidecars deliberately survive it: the caption `.srt` (issue #1278), the video measurement
-    receipt (`.probe.json`, issue #1517), the retained video keyframes (`.frame-*.jpg`, issue #1363)
-    and the deck render receipt (issue #1513) — all are read AFTER the post publishes, which is
-    exactly when this runs. The first three survive without a carve-out, because only the exact
-    `.mp4` named by `video_url` is removed.
+    Five sidecars deliberately survive it: the caption `.srt` (issue #1278), the video measurement
+    receipt (`.probe.json`, issue #1517), the retained video keyframes (`.frame-*.jpg`, issue #1363),
+    the deck render receipt (issue #1513) and the render brief receipt (`.brief.json`, issue #1377) —
+    all are read AFTER the post publishes, which is exactly when this runs. The first three survive
+    without a carve-out, because only the exact `.mp4` named by `video_url` is removed; a video's
+    brief receipt rides that same rule, and only the IMAGE one needs naming below.
     """
     import shutil
     from urllib.parse import parse_qs, urlparse
@@ -376,6 +377,7 @@ def purge_post_assets(post_id, video_url=None):
     from cqc_lem import assets_dir
     from cqc_lem.utilities.deck_render import deck_render_receipt_path
     from cqc_lem.utilities.logger import log_info, log_warning
+    from cqc_lem.utilities.media_provenance import is_brief_receipt
 
     removed = []
     assets_real = os.path.realpath(assets_dir)
@@ -415,16 +417,20 @@ def purge_post_assets(post_id, video_url=None):
     for media_dir in (carousel_dir, os.path.join(assets_dir, "images", "posts", str(post_id))):
         if os.path.isdir(media_dir) and _within_assets(media_dir):
             try:
-                # The render receipt (issue #1513) SURVIVES the purge, for the same reason the
-                # caption sidecar does: this runs the moment the deck publishes, and the nightly
-                # quality beat only scores posts that already shipped — purge the receipt here and
-                # every deck reads as unmeasured forever. A few hundred bytes against the megabytes
-                # of slides this reclaims.
-                receipt = deck_render_receipt_path(media_dir)
-                if os.path.isfile(receipt):
+                # Two sidecars SURVIVE the purge, for the same reason the caption one does: this
+                # runs the moment the post publishes, and both readers only ever look at content
+                # that already shipped. The deck render receipt (#1513) — purge it and every deck
+                # reads as unmeasured forever — and the brief receipt (#1377), which is the only
+                # record of what a render was ASKED to depict. A few hundred bytes each against the
+                # megabytes of slides this reclaims. Unlike the video's sidecars they need naming
+                # here, because this branch clears the whole directory rather than one file.
+                keep = {path for path in
+                        (os.path.join(media_dir, entry) for entry in os.listdir(media_dir))
+                        if path == deck_render_receipt_path(media_dir) or is_brief_receipt(path)}
+                if keep:
                     for entry in os.listdir(media_dir):
                         target = os.path.join(media_dir, entry)
-                        if target == receipt:
+                        if target in keep:
                             continue
                         if os.path.isdir(target):
                             shutil.rmtree(target)

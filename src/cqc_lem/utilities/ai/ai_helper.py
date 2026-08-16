@@ -2993,16 +2993,25 @@ def _profile_visual_context(profile: "LinkedInProfile | None",
 
 def get_flux_image_prompt_from_ai(post_content: str, *, profile: "LinkedInProfile | None" = None,
                                   ratio: str = "1:1", avatar: "dict | None" = None,
-                                  surface: str = "post_image") -> str:
+                                  surface: str = "post_image",
+                                  brief_info: "dict | None" = None) -> str:
     """Compatibility wrapper over the ONE brief engine (utilities/ai/image_brief.py).
 
     Kept because ~4 call sites (and their tests) pass a plain prompt string around; new code
     should call ``build_image_brief`` directly and keep the brief's ``focal_concept`` for the
     vision gate.
+
+    ``brief_info``, when passed, is filled with ``{"brief": ImageBrief}`` — the whole brief this
+    call authored, for a caller that stores the render and has to record what it was asked to
+    depict (issue #1377). It is an out-param rather than a changed return type precisely because
+    the string return is what those call sites are built on.
     """
     from cqc_lem.utilities.ai.image_brief import build_image_brief
-    return build_image_brief(post_content, surface=surface, ratio=ratio,
-                             profile=profile, avatar=avatar).prompt
+    brief = build_image_brief(post_content, surface=surface, ratio=ratio,
+                              profile=profile, avatar=avatar)
+    if brief_info is not None:
+        brief_info["brief"] = brief
+    return brief.prompt
 
 
 def get_flux_image_via_replicate(prompt: str, ref: str = DEFAULT_IMAGE_MODEL, *,
