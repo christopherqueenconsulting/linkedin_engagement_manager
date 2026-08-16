@@ -620,6 +620,53 @@ class TestFeedSortCandidates:
         assert len(rows) == 20
         assert [r["text"] for r in rows[:2]] == ["c0", "c1"]
 
+    def test_the_left_rails_off_feed_links_never_spend_the_cap(self):
+        """The rail is what the capture was spending itself on.
+
+        The 2026-08-16 grounding run: 17 rail links + the share box filled all 20 slots and the real
+        control (`div[role='button']` reading `Sort by: Top`) never made the capture.
+        """
+        rail = [self._candidate(tag="a", text=f"rail{i}",
+                                **{"href": "https://www.linkedin.com/company/16204362/admin/"})
+                for i in range(17)]
+        share = [self._candidate(text=t, **{"role": "button"})
+                 for t in ("Start a post", "Video", "Photo")]
+        control = self._candidate(text="Sort by: Top", **{"role": "button"})
+        driver = MagicMock()
+        driver.find_elements.return_value = rail + share + [control]
+        texts = [r["text"] for r in llv.feed_sort_candidates(driver)]
+        assert "Sort by: Top" in texts
+        assert not [t for t in texts if t.startswith("rail")]
+
+    def test_a_link_that_stays_on_the_feed_is_still_a_candidate(self):
+        """The shipped chain's last route IS a link — one whose own href names `/feed`."""
+        driver = MagicMock()
+        driver.find_elements.return_value = [
+            self._candidate(tag="a", text="Recent",
+                            **{"href": "https://www.linkedin.com/feed/?sortBy=recent"}),
+            self._candidate(tag="a", text="Jobs", **{"href": "https://www.linkedin.com/jobs/"}),
+        ]
+        assert [r["text"] for r in llv.feed_sort_candidates(driver)] == ["Recent"]
+
+    def test_an_unreadable_href_is_kept_because_a_dropped_row_hides_the_control(self):
+        stale = self._candidate(text="Sort by: Top", **{"role": "button"})
+        stale.get_attribute.side_effect = RuntimeError("stale element")
+        driver = MagicMock()
+        driver.find_elements.return_value = [stale]
+        assert len(llv.feed_sort_candidates(driver)) == 1
+
+    def test_the_walk_is_bounded_even_when_every_element_is_filtered_out(self):
+        """Filtering means the cap can no longer stop the walk.
+
+        A rail-only page must not turn one capture into thousands of round trips.
+        """
+        rows = [self._candidate(tag="a", text=f"rail{i}",
+                                **{"href": "https://www.linkedin.com/jobs/"}) for i in range(500)]
+        driver = MagicMock()
+        driver.find_elements.return_value = rows
+        assert llv.feed_sort_candidates(driver, scan_limit=25) == []
+        assert sum(1 for r in rows if r.is_displayed.called) == 25
+
     def test_the_selector_is_scoped_to_main_and_covers_non_button_affordances(self):
         selector = llv.SORT_CANDIDATE_SELECTOR
         assert "[role='button']" in selector and "[aria-haspopup]" in selector

@@ -79,10 +79,35 @@ What changed in response:
   a defect worth paging on. The returned state is `FEED_SORT_MISSING` in all three cases, so #817's
   "an unsorted scan is never read as recency-sorted" is unchanged.
 
-**Still ungrounded:** the real live DOM of whatever now renders the sort. The widened chain is
-written from what the evidence *rules out*, not from a positive sighting, so the next `--feed-sort`
-probe run is what closes this section — either `feed_sort` grades `ok`, or `sort_candidates` finally
-shows the element and the chain gets a precise route.
+### What it actually is — positive sighting, 2026-08-16
+
+Two `--feed-sort` runs against a live session (user 1, debug node) both graded **`ok`** and flipped
+the feed to Recent — `control_found: true`, `sort_before: "top"`, `option_found: true`,
+`sort_after: "recent"`. The control the widened chain resolved to:
+
+```json
+{"tag": "div", "role": "button", "text": "Sort by: Top"}
+```
+
+Read the absences, they are the finding: **no `aria-label`, no `data-testid`, and not a `<button>`**.
+So the chain hangs on route 3 — the visible-`sort by` text route — with the affordance clause
+(`@role='button'`) doing the work the tag used to do. Routes 1 and 2 were both blind on this reading,
+and the exact-name route cannot cover it either: the label is `Sort by: Top`, not `Top`. Dropping the
+text route as "redundant with the aria-label one" leaves nothing behind it, which is what
+`TestTheLiveControlThisChainWasGroundedOn` (`tests/unit/app/test_feed_sort.py`) exists to fail on.
+
+The production evidence scan (#1270) saw the same widget from the other side: four **nested** divs
+all reading `Sort by: Recent`, only ONE of them carrying `role='button'`. That is why the affordance
+clause is the filter and the text is only the label — a text-only route would resolve a wrapper.
+
+**The capture that was still blind.** On the same run, `sort_candidates` — the capture written to
+re-ground this very chain — did not contain the control. `main` does not open at the share box:
+it opens at the **left rail**, whose off-feed links (`/in/<me>/`, two `/company/<id>/admin/`s,
+Premium, Saved items, Groups, Newsletters, Events, Sales Navigator) took 17 of the 20 rows, the share
+box took the last 3, and the sort control sits immediately after. `feed_sort_candidates` now drops a
+link whose own `href` does not name `/feed` — the same rule the chain's link route already enforces,
+since a trigger that navigates has to stay on the feed (#1030). Rows with an unreadable or absent
+`href` are kept: dropping what we could not read would hide the element the capture exists to find.
 
 ## A short comment thread has NO sort control — the miss was never drift (#1117, follow-up of #818)
 
