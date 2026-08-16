@@ -74,9 +74,13 @@ instruction-following gpt-image, the same thing phrased positively for FLUX — 
 NAMES a mark-carrying surface, that surface's blank-state clause on top (`_MARK_MAGNETS`, #1376).
 Those clauses are positive on BOTH backends and split by surface class, because on FLUX naming a
 thing summons it: a scene with a laptop must not be handed a clause that mentions posters. Matching
-runs on the scene with the blanket constraint stripped back out — `_NO_MARKS_FLUX` itself says
-"screens are blank", so matching the whole string would make every FLUX render look like it
-described a screen.
+runs on the **author's scene** with the blanket constraint stripped back out — `_NO_MARKS_FLUX`
+itself says "screens are blank", so matching the whole string would make every FLUX render look like
+it described a screen. From attempt 2 the gate's repair round is on the prompt too, and it is
+excluded for the same reason (`scene=` on `with_no_marks`): `repair_directive`'s FLUX counter for a
+mark verdict also says "screens blank", and its gpt-image phrasing quotes the gate's issue strings
+verbatim ("garbled text on whiteboard") — so matching the retry would summon a screen into a
+screenless scene on exactly the retries a mark verdict triggers.
 
 ### The vision quality gate
 

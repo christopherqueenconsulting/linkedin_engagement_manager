@@ -94,7 +94,8 @@ _MARK_MAGNET_PATTERNS: tuple[tuple[re.Pattern, str], ...] = tuple(
     (re.compile(rf"\b(?:{words})\b", re.IGNORECASE), clause) for words, clause in _MARK_MAGNETS)
 
 
-def with_no_marks(prompt: str, backend: str = "gpt-image") -> str:
+def with_no_marks(prompt: str, backend: str = "gpt-image", *,
+                  scene: Optional[str] = None) -> str:
     """The render prompt plus the no-marks constraint for that backend, added at most once.
 
     A prompt that NAMES a mark-carrying surface — a screen, a whiteboard, a page — also gets that
@@ -102,15 +103,25 @@ def with_no_marks(prompt: str, backend: str = "gpt-image") -> str:
     (issue #1376). The match runs against the SCENE, with either blanket constraint stripped back
     out first: `_NO_MARKS_FLUX` itself says "screens are blank", so matching the whole string would
     make every FLUX render look like it described a screen.
+
+    Args:
+        prompt: the text actually handed to the renderer; the clause is appended to THIS.
+        backend: ``flux`` or ``gpt-image``; decides the blanket constraint's phrasing.
+        scene: the AUTHOR's brief, when the prompt is no longer only that. A repair round appends
+            `repair_directive`, whose own counter says "screens blank" and whose gpt-image phrasing
+            quotes the gate's issue strings verbatim ("garbled text on whiteboard") — matching on
+            that would hand a screenless satchel scene a clause naming a screen, on the backend
+            where naming a thing summons it. Defaults to ``prompt``.
     """
     suffix = _NO_MARKS_FLUX if backend == "flux" else _NO_MARKS_GPT
     if _NO_MARKS_GPT in prompt or _NO_MARKS_FLUX in prompt:
         marked = prompt
     else:
         marked = f"{prompt}{suffix}"
-    scene = prompt.replace(_NO_MARKS_GPT, "").replace(_NO_MARKS_FLUX, "")
+    source = prompt if scene is None else scene
+    source = source.replace(_NO_MARKS_GPT, "").replace(_NO_MARKS_FLUX, "")
     for pattern, clause in _MARK_MAGNET_PATTERNS:
-        if clause not in marked and pattern.search(scene):
+        if clause not in marked and pattern.search(source):
             marked = f"{marked}{clause}"
     return marked
 
@@ -270,13 +281,17 @@ def _render_with_backend(prompt: str, *, ratio: str = "1:1",
                          user_id: Optional[int] = None,
                          post_id: Optional[int] = None,
                          image_model: str = DEFAULT_IMAGE_MODEL,
-                         surface: Optional[str] = None) -> tuple[str, str]:
+                         surface: Optional[str] = None,
+                         scene: Optional[str] = None) -> tuple[str, str]:
     """One render, plus the backend that actually produced it (``gpt-image`` or ``flux``).
 
     Which backend ran is not answerable from configuration: under the default ``auto`` gpt-image
     leads and FLUX silently catches its failures. The gate's repair round has to phrase itself
     for the renderer that will READ it, and a config-derived answer names the defect back at FLUX
     on exactly the runs where gpt-image is down (issue #1141).
+
+    ``scene`` is the author's brief when ``prompt`` carries a repair round on top of it — it is
+    what the mark-magnet clauses are matched against (issue #1376).
     """
     backend = (IMAGE_BACKEND or "auto").strip().lower()
     if backend not in ("auto", "gpt-image", "flux"):
@@ -285,15 +300,15 @@ def _render_with_backend(prompt: str, *, ratio: str = "1:1",
 
     if backend in ("auto", "gpt-image"):
         try:
-            return _render_via_gpt_image(with_no_marks(prompt, "gpt-image"), ratio=ratio,
-                                         quality=quality, user_id=user_id,
+            return _render_via_gpt_image(with_no_marks(prompt, "gpt-image", scene=scene),
+                                         ratio=ratio, quality=quality, user_id=user_id,
                                          post_id=post_id, surface=surface), "gpt-image"
         except Exception as e:
             if backend == "gpt-image":
                 raise
             log_warning("gpt-image render failed — falling back to FLUX", exc=e,
                         user_id=user_id, post_id=post_id, api_provider="openai", surface=surface)
-    return _render_via_flux(with_no_marks(prompt, "flux"), ratio=ratio,
+    return _render_via_flux(with_no_marks(prompt, "flux", scene=scene), ratio=ratio,
                             image_model=image_model, user_id=user_id, surface=surface), "flux"
 
 
@@ -409,7 +424,7 @@ def render_avatar_image_gated(prompt: str, *, avatar: dict, user_id: Optional[in
     for attempt in range(1, attempts + 1):
         # The likeness path talks to Replicate directly, so it never passes through
         # render_image_from_prompt where the constraint is otherwise added. Always FLUX.
-        marked = with_no_marks(current_prompt, "flux")
+        marked = with_no_marks(current_prompt, "flux", scene=prompt)
         path, used_avatar = generate_image_with_avatar(
             apply_subject_clause(marked, avatar), avatar["model_ref"],
             ratio=ratio, fallback_prompt=marked, surface=surface)
@@ -482,9 +497,12 @@ def render_image_gated(prompt: str, *, surface: str, ratio: str = "1:1",
     for attempt in range(1, attempts + 1):
         # The backend that RENDERED, not the one configured: under `auto` a gpt-image failure
         # falls through to FLUX, and the retry has to be phrased for whichever one answered.
+        # `scene=prompt`: from attempt 2 `current_prompt` carries the repair round too, and the
+        # mark-magnet clauses must stay derived from what the AUTHOR described (issue #1376).
         path, used_backend = _render_with_backend(current_prompt, ratio=ratio, quality=quality,
                                                  user_id=user_id, post_id=post_id,
-                                                 image_model=image_model, surface=surface)
+                                                 image_model=image_model, surface=surface,
+                                                 scene=prompt)
         verdict = inspect_render_quality(path, focal_concept or prompt[:200])
         last_verdict = verdict
         if verdict.acceptable or not verdict.checked:

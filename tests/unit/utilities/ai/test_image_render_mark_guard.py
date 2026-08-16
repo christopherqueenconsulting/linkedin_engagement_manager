@@ -123,6 +123,57 @@ class TestTheConstraintSurvivesEveryPathToARenderer:
         assert gpt.call_count == 2
         assert "switched off and uniformly dark" in gpt.call_args[0][0]
 
+    def test_the_repair_round_never_summons_a_surface_the_scene_never_had(self):
+        """The clause set comes from the AUTHOR's scene, never from the repair round.
+
+        `repair_directive`'s FLUX counter for a mark verdict says "screens blank", and its
+        gpt-image phrasing quotes the gate's issue strings verbatim ("garbled text on
+        whiteboard"). Matching the retry prompt would therefore hand a screenless, boardless
+        scene a clause naming a screen — on the backend where naming a thing summons it, and on
+        exactly the retries a mark verdict triggers.
+        """
+        satchel = "A worn leather satchel on a station bench, soft morning light, 50mm at f/2"
+        verdicts = [QualityVerdict(acceptable=False, issues=["a company logo rendered into it"]),
+                    QualityVerdict(acceptable=True)]
+        with patch.object(image_gen, "_render_via_gpt_image", side_effect=RuntimeError("down")), \
+             patch.object(image_gen, "_render_via_flux", return_value="/tmp/f.webp") as flux, \
+             patch.object(image_gen, "inspect_render_quality", side_effect=verdicts):
+            image_gen.render_image_gated(satchel, surface="newsletter", user_id=1)
+        assert flux.call_count == 2
+        retried = flux.call_args[0][0]
+        assert "Render this scene again with" in retried, "the repair round did not run"
+        for clause in _clauses():
+            assert clause not in retried
+
+    def test_a_repair_round_on_a_gpt_image_render_is_equally_clean(self):
+        satchel = "A worn leather satchel on a station bench, soft morning light, 50mm at f/2"
+        verdicts = [QualityVerdict(acceptable=False, issues=["garbled text on whiteboard"]),
+                    QualityVerdict(acceptable=True)]
+        with patch.object(image_gen, "_render_via_gpt_image", return_value="/tmp/g.png") as gpt, \
+             patch.object(image_gen, "inspect_render_quality", side_effect=verdicts):
+            image_gen.render_image_gated(satchel, surface="newsletter", user_id=1)
+        assert gpt.call_count == 2
+        for clause in _clauses():
+            assert clause not in gpt.call_args[0][0]
+
+    def test_the_avatar_repair_round_is_clean_too(self):
+        """The likeness path builds its retry the same way, and always renders on FLUX."""
+        satchel = "A worn leather satchel on a station bench, soft morning light, 50mm at f/2"
+        avatar = {"model_ref": "owner/lora:v1", "trigger_word": "TOK",
+                  "gender_presentation": "man", "age_band": "40s"}
+        verdicts = [QualityVerdict(acceptable=False, issues=["a company logo rendered into it"]),
+                    QualityVerdict(acceptable=True)]
+        with patch("cqc_lem.utilities.avatar.replicate_avatar.generate_image_with_avatar",
+                   return_value=("/tmp/a.png", True)) as lora, \
+             patch("cqc_lem.utilities.ai.ai_helper._record_avatar_media"), \
+             patch.object(image_gen, "inspect_render_quality", side_effect=verdicts):
+            image_gen.render_avatar_image_gated(satchel, avatar=avatar, user_id=3,
+                                                surface="newsletter")
+        assert lora.call_count == 2
+        for clause in _clauses():
+            assert clause not in lora.call_args[0][0]
+            assert clause not in lora.call_args[1]["fallback_prompt"]
+
     def test_the_avatar_path_carries_it(self):
         avatar = {"model_ref": "owner/lora:v1", "trigger_word": "TOK",
                   "gender_presentation": "man", "age_band": "40s"}

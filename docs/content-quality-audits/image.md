@@ -399,7 +399,7 @@ So the control is aimed at the **surface**, not at a caller:
 | Half | What changed | Why that half |
 |---|---|---|
 | Author (`image_brief._SYSTEM_PROMPT`) | Build the scene around a tangible object rather than a screen; a screen that genuinely belongs is stated switched off and dark | A screen is where marks appear even when the brief never asked for one — the writer can decline to put one at the centre of the frame |
-| Render (`image_gen.with_no_marks`) | A prompt NAMING a mark-carrying surface gains that surface's blank-state clause, positive on both backends, split by surface class | A blanket "no logos" is a prohibition about content; what holds is a statement of what the surface SHOWS. Positive on gpt-image too, so a hand-written or retried prompt gets the same phrasing |
+| Render (`image_gen.with_no_marks`) | A prompt NAMING a mark-carrying surface gains that surface's blank-state clause, positive on both backends, split by surface class, matched on the AUTHOR's scene | A blanket "no logos" is a prohibition about content; what holds is a statement of what the surface SHOWS. Positive on gpt-image too, so a hand-written or retried prompt gets the same phrasing. Matching excludes both the blanket constraint and the repair round, which each say "screens blank" themselves — otherwise a mark verdict's retry summons a screen into a scene that never had one |
 | Check (`inspect_render_quality`) | The gate names screens as the place to look, and reads at `detail="high"` | At `low` a 1536×1024 cover is downsampled to ~512px, where four logo tiles on a laptop screen are not resolvable. The gate was asked a question it could not see the answer to |
 
 **The gate is still fail-OPEN (R7).** Being part of the mark control changes what it detects, never
