@@ -826,6 +826,18 @@ class TestPostHogHogqlQuery:
         assert kwargs["headers"]["Authorization"] == "Bearer phx_key"
         assert kwargs["json"]["query"] == {"kind": "HogQLQuery", "query": "SELECT 1"}
 
+    def test_the_runtime_scoped_key_outranks_the_shared_one(self):
+        # Issue #1453: this is an app-runtime read, so it rides the runtime key.
+        response = MagicMock()
+        response.json.return_value = {"results": []}
+        with patch.dict("os.environ", {"POSTHOG_PERSONAL_API_KEY": "phx_shared",
+                                       "POSTHOG_RUNTIME_API_KEY": "phx_runtime",
+                                       "POSTHOG_PROJECT_ID": "475262"}), \
+             patch("requests.post", return_value=response) as post:
+            from cqc_lem.utilities.observability import posthog_hogql_query
+            posthog_hogql_query("SELECT 1")
+        assert post.call_args[1]["headers"]["Authorization"] == "Bearer phx_runtime"
+
     def test_none_on_failure_so_a_caller_never_reads_it_as_zero(self):
         with patch.dict("os.environ", {"POSTHOG_PERSONAL_API_KEY": "phx_key",
                                        "POSTHOG_PROJECT_ID": "475262"}), \

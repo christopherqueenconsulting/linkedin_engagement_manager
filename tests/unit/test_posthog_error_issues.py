@@ -530,9 +530,36 @@ class TestMain:
         assert mod.main(["--print-sql"]) == 0
         assert "$exception" in capsys.readouterr().out
 
-    def test_missing_api_key_is_an_error(self, mod, monkeypatch):
+    def test_missing_api_key_is_an_error(self, mod, monkeypatch, capsys):
         monkeypatch.delenv("POSTHOG_PERSONAL_API_KEY", raising=False)
         assert mod.main([]) == 1
+        err = capsys.readouterr().err
+        # Names BOTH vars — the reader has to know which one to set (issue #1453).
+        assert "POSTHOG_QUERY_API_KEY" in err and "POSTHOG_PERSONAL_API_KEY" in err
+
+    def test_the_query_scoped_key_outranks_the_shared_one(self, mod, monkeypatch):
+        monkeypatch.setenv("POSTHOG_PERSONAL_API_KEY", "phx_shared")
+        monkeypatch.setenv("POSTHOG_QUERY_API_KEY", "phx_query")
+        with patch.object(mod, "PostHogQueryClient") as client:
+            client.return_value.query.return_value = []
+            assert mod.main([]) == 0
+        assert client.call_args.args[0] == "phx_query"
+
+    def test_the_shared_key_still_works_alone(self, mod, monkeypatch):
+        # Additive rollout: the cron keeps filing before the scoped key exists.
+        monkeypatch.setenv("POSTHOG_PERSONAL_API_KEY", "phx_shared")
+        monkeypatch.delenv("POSTHOG_QUERY_API_KEY", raising=False)
+        with patch.object(mod, "PostHogQueryClient") as client:
+            client.return_value.query.return_value = []
+            assert mod.main([]) == 0
+        assert client.call_args.args[0] == "phx_shared"
+
+    def test_another_purpose_s_key_is_still_an_error(self, mod, monkeypatch):
+        monkeypatch.delenv("POSTHOG_PERSONAL_API_KEY", raising=False)
+        monkeypatch.setenv("POSTHOG_RUNTIME_API_KEY", "phx_runtime")
+        with patch.object(mod, "PostHogQueryClient") as client:
+            assert mod.main([]) == 1
+        client.assert_not_called()
 
     def test_dry_run_reports_pending_with_exit_2(self, mod, monkeypatch):
         monkeypatch.setenv("POSTHOG_PERSONAL_API_KEY", "phx_test")

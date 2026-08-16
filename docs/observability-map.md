@@ -165,4 +165,6 @@ shared project → un-scoped leaks across customers); resolves against ONE `Insi
 endpoint is `blocked_endpoint` until it exists. `GET /user/posthog-stats` is server-side only — the
 personal API key never reaches the browser; any failure → `available: false` for that panel.
 **Release annotations**: `scripts/posthog_annotate.py` posts `"vX.Y.Z deployed"` per deploy (needs
-the `POSTHOG_PERSONAL_API_KEY` GH secret); absent/outage → no-op, never a failed release.
+a GH secret — `POSTHOG_ANNOTATION_API_KEY`, falling back to `POSTHOG_PERSONAL_API_KEY`, #1453);
+absent/outage → no-op, never a failed release. Which key each PostHog consumer reads is resolved in
+ONE place, `utilities/posthog_keys.py` (`docs/kpi-dashboards.md`).

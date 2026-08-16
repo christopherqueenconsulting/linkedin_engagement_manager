@@ -7,7 +7,9 @@ behaviour because PostHog was unreachable would be worse than one that can't be 
 
 So the contract here is **fail-open to the env var**, in both directions:
 
-- No `POSTHOG_PERSONAL_API_KEY`, no project key, `POSTHOG_FLAGS_ENABLED=false`, definitions not
+- No runtime personal API key (`POSTHOG_RUNTIME_API_KEY`, falling back to
+  `POSTHOG_PERSONAL_API_KEY` — `posthog_keys.py` resolves it), no project key,
+  `POSTHOG_FLAGS_ENABLED=false`, definitions not
   loaded, flag not defined in PostHog, evaluation inconclusive, SDK raises — every one of those
   paths returns the env var's value. A deployment that never creates a single PostHog flag behaves
   EXACTLY as it did before this module existed.
@@ -43,6 +45,7 @@ from typing import Dict, Optional
 import posthog
 
 from cqc_lem.utilities.logger import log_debug, log_warning
+from cqc_lem.utilities.posthog_keys import runtime_api_key
 
 # Same sentinel observability.py uses for events with no user — one PostHog person, one convention.
 SYSTEM_DISTINCT_ID = "system"
@@ -230,7 +233,7 @@ def local_evaluation_available() -> bool:
         return False
     if not (os.getenv("POSTHOG_API_KEY") or "").strip():
         return False
-    if not (os.getenv("POSTHOG_PERSONAL_API_KEY") or "").strip():
+    if not runtime_api_key():
         return False
     return not getattr(posthog, "disabled", False)
 
@@ -261,7 +264,7 @@ def _ensure_loaded() -> bool:
             # import cycle, and so the config is applied before setup() builds the client.
             import cqc_lem.utilities.observability  # noqa: F401
 
-            posthog.personal_api_key = (os.getenv("POSTHOG_PERSONAL_API_KEY") or "").strip()
+            posthog.personal_api_key = runtime_api_key()
             posthog.poll_interval = _poll_interval()
             client = posthog.setup()
             # setup() REUSES an existing client, and the first capture() may well have built one

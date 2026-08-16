@@ -249,8 +249,10 @@ scripts/posthog_error_issues.py                      # dry run (exit 2 = issues 
 scripts/posthog_error_issues.py --apply --hours 24   # file them
 ```
 
-Needs `POSTHOG_PERSONAL_API_KEY` (scope `query:read`) — the wrapper reads it from `/opt/lem/.env` —
-and an authenticated `gh` CLI.
+Needs `POSTHOG_QUERY_API_KEY` (scope `query:read`), falling back to `POSTHOG_PERSONAL_API_KEY` when
+unset (issue #1453, `docs/kpi-dashboards.md`) — the wrapper reads either from `/opt/lem/.env` —
+and an authenticated `gh` CLI. A key this lane can't use fails SILENTLY: no issues are filed, and
+absence looks exactly like a quiet day, so verify it against a window known to contain exceptions.
 
 ## Alerts (PostHog UI)
 

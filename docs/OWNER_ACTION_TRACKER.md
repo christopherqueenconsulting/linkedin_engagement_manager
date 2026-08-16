@@ -136,6 +136,15 @@ survey, endpoint/insight_variable…). A key provisioned for one script silently
 symptoms are `blocked_goal`, `blocked_endpoint`, or empty `subscribed_users`. **I could not read the
 live key's scopes.** If a PostHog script misbehaves, check scopes before debugging the script.
 
+**Split in progress (#1453).** The code half is done: each purpose reads its own key
+(`POSTHOG_ANNOTATION_API_KEY` / `POSTHOG_RUNTIME_API_KEY` / `POSTHOG_QUERY_API_KEY`) and falls back
+to `POSTHOG_PERSONAL_API_KEY`, so nothing changes until a scoped key exists. **Owner half, in this
+order:** create the three scoped keys in the PostHog UI (project `475262`), populate one consumer at
+a time, verify that consumer, and revoke the shared key LAST. Three consumers fail SILENTLY — flags
+read their env defaults, the SPA stats panel goes empty, the error cron files nothing — so verify
+per surface, not by "the deploy was green". Full table + verification steps:
+`docs/kpi-dashboards.md` § Purpose-scoped personal keys.
+
 ---
 
 ## 4. Feature flags that are OFF, and what each needs first

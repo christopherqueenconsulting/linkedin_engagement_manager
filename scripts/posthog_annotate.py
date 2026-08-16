@@ -14,7 +14,10 @@ CLI:
   --content    Override the default "<TAG> deployed" text.
   --dry-run    Print the payload; no network call.
 Env:
-  POSTHOG_PERSONAL_API_KEY  Personal API key. Scope: annotation read+write. Absent = the call is
+  POSTHOG_ANNOTATION_API_KEY  Purpose-scoped personal API key (scope: annotation read+write) —
+                            issue #1453. Falls back to POSTHOG_PERSONAL_API_KEY when unset, so an
+                            environment that hasn't been split yet is unaffected.
+  POSTHOG_PERSONAL_API_KEY  The shared fallback key. Both absent = the call is
                             skipped and this script exits 0 — a missing key degrades the release
                             pipeline to "no annotation", never a failed deploy.
   POSTHOG_PROJECT_ID        PostHog project id (default 475262 — "CQC LEM").
@@ -30,7 +33,17 @@ import argparse
 import os
 import sys
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional
+
+# The CI deploy job runs this on a bare runner (`pip install requests`, no package install), so the
+# key resolver is reached by path, not by installation. posthog_keys.py is stdlib-only for exactly
+# this reason — keep it that way or this import starts needing a venv.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from cqc_lem.utilities.posthog_keys import (  # noqa: E402
+    missing_key_message,
+    resolve_posthog_key,
+)
 
 DEFAULT_APP_HOST = "https://us.posthog.com"
 DEFAULT_PROJECT_ID = "475262"  # "CQC LEM" — not a secret; the key that reaches it is.
@@ -74,9 +87,9 @@ def main(argv: Optional[list] = None) -> int:
         print(payload)
         return 0
 
-    api_key = os.getenv("POSTHOG_PERSONAL_API_KEY", "")
+    api_key = resolve_posthog_key("annotation")
     if not api_key:
-        print("POSTHOG_PERSONAL_API_KEY is not set — skipping the release annotation.",
+        print(f"{missing_key_message('annotation')} — skipping the release annotation.",
               file=sys.stderr)
         return 0
 

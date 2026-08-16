@@ -35,7 +35,9 @@ Options:
   --min-occurrences N    Ignore issues with fewer exceptions than this in the window (default 1).
   --max-new N            Cap issues filed per run (default 10); the rest wait for the next run.
 Env:
-  POSTHOG_PERSONAL_API_KEY  Personal API key with query:read (required for network).
+  POSTHOG_QUERY_API_KEY     Purpose-scoped personal API key with query:read (issue #1453).
+                            Falls back to POSTHOG_PERSONAL_API_KEY when unset.
+  POSTHOG_PERSONAL_API_KEY  The shared fallback key (required for network if the scoped one is unset).
   POSTHOG_PROJECT_ID        PostHog project id (default 475262 — "CQC LEM").
   POSTHOG_APP_HOST          App host for the API (default https://us.posthog.com).
   ERROR_ISSUE_REPO          owner/name to file into (default this repo).
@@ -49,7 +51,18 @@ import os
 import re
 import subprocess
 import sys
+from pathlib import Path
 from typing import Optional
+
+# Run from a dedicated cron clone by scripts/error_to_issues.sh, whose python is a venv belonging to
+# a DIFFERENT checkout — so reach the key resolver by path (inserted first, ahead of any editable
+# install) rather than by whatever `cqc_lem` that venv happens to point at. posthog_keys.py is
+# stdlib-only so this costs nothing.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from cqc_lem.utilities.posthog_keys import (  # noqa: E402
+    missing_key_message,
+    resolve_posthog_key,
+)
 
 DEFAULT_PROJECT_ID = "475262"  # "CQC LEM" — not a secret; the key that reaches it is.
 DEFAULT_APP_HOST = "https://us.posthog.com"
@@ -555,9 +568,9 @@ def main(argv: Optional[list] = None) -> int:
         print(hogql)
         return 0
 
-    api_key = os.getenv("POSTHOG_PERSONAL_API_KEY", "")
+    api_key = resolve_posthog_key("query")
     if not api_key:
-        print("POSTHOG_PERSONAL_API_KEY is not set — cannot reach PostHog.", file=sys.stderr)
+        print(f"{missing_key_message('query')} — cannot reach PostHog.", file=sys.stderr)
         return 1
     project_id = os.getenv("POSTHOG_PROJECT_ID", DEFAULT_PROJECT_ID)
     app_host = os.getenv("POSTHOG_APP_HOST", DEFAULT_APP_HOST)
