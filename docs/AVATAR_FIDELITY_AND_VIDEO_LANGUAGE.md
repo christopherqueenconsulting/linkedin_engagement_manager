@@ -361,8 +361,21 @@ Two consequences for the hold decision:
    negative can hold, and there are none. It would also be untested in production the first time
    an account does declare its attributes.
 2. The prerequisite is an operator action, not a code change: **declare the attributes on the active
-   avatars** (Avatars SPA → attribute controls), after which the probe starts returning checked
-   verdicts and the rate becomes measurable from telemetry as well as from the harness.
+   avatars** (Avatars SPA → attribute controls, which render for every `status === 'succeeded'`
+   avatar, active ones included), after which the probe starts returning checked verdicts and the
+   rate becomes measurable from telemetry as well as from the harness.
+
+**Confirmed on the issue thread 2026-08-16 (`1A 2A`).** The rate is produced by declaring the
+attributes and re-reading the telemetry ≈2026-08-28 — production frames, no extra vision spend —
+rather than from a curated offline set; `scripts/avatar_likeness_eval.py` stays available for a
+labelled set that arrives sooner. The declaration is an owner action with no agent path, so it is
+listed in `docs/OWNER_ACTION_TRACKER.md` §4 against the hold flag — an issue comment is not a
+tracker, and nothing else would notice the ≈2026-08-28 re-read finding the same zero-checked state. The inert state itself is now tracked as **#1598**: today it is
+visible in neither place it could be noticed — the SPA never says that blank attributes leave both
+the probe and #744's subject clause with nothing to work on, and `reason` is `text()` rather than
+`label()`, so "the probe is inert on this account" cannot be filtered or counted in PostHog without
+scanning the free text. Until one of those readings exists, the two measurement acceptance boxes on
+#1430 stay open.
 
 ### 5.2 Escalation path — probe/human disagreement (procedure)
 
@@ -422,4 +435,7 @@ written for the hold being ON, and steps 1–2 apply equally while it is off.
    switches on the #744 subject-clause work, which is inert on those accounts for the same reason.
    The measurement machinery (the `used_avatar` split, the eval harness, the verdict fixture) and
    the escalation procedure ship with #1430, which stays **open** for the two measurement
-   acceptance boxes.
+   acceptance boxes. **Re-confirmed 2026-08-16** (`1A 2A` on #1430): same measurement path, and the
+   silent inert state gets its own visibility work in **#1598** so the next account that never fills
+   its attributes in is readable from the SPA and countable in PostHog, not only from a free-text
+   telemetry scan.

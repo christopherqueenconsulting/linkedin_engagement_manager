@@ -152,6 +152,7 @@ not the heading.
 | `POSTHOG_SURVEYS_ENABLED` | Precondition now met (`UI_POSTHOG_KEY` exists). Still needs `posthog_surveys.py --apply --launch` |
 | `REQUIRE_STRONG_FACTOR_AFTER` | Unset — mandatory passkey/TOTP enrolment is built and dormant. `docs/strong-authentication.md:373-376`: *"Nobody has scheduled the deadline yet."* Operator decision |
 | `EARLY_ADOPTER_TRIAL_ENABLED` | Explicitly `False`; `EARLY_ADOPTER_COUPON_ID` empty |
+| `AVATAR_LIKENESS_VIDEO_HOLD_ENABLED` | #1430 — stays `false` until a false-negative rate exists, and that rate is blocked on **you**: the active avatars declare no `gender_presentation` / `age_band`, so every one of the 152 `avatar_likeness_probe` events is `checked=false`. Declare both on the active avatars in the Avatars SPA (the controls render on every succeeded avatar, active ones included), then the ≈2026-08-28 telemetry re-read has something to grade. The same declaration switches on #744's subject clause, inert today for the same reason |
 | `AI_DETECTOR_ENABLED`, `C2PA_ENABLED`, `COMMENT_RESEARCH_ENABLED` | Deliberately off; each needs its own key/cert. No action |
 | Avatar surfaces, `roster_auto_follow`, `roster_auto_connect`, `cover_image_auto` | Per-user, opt-in by design |
 
