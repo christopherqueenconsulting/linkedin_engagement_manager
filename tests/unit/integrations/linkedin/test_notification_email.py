@@ -168,6 +168,49 @@ class TestGmailForwardingConfirmation:
         assert is_gmail_forwarding_confirmation("Gmail Team <forwarding-noreply@google.com>",
                                                 "(#123) Gmail Forwarding Confirmation", "") is True
 
+    @pytest.mark.parametrize("sender", [
+        "forwarding-noreply@google.com",
+        "Gmail Team <forwarding-noreply@google.com>",
+        "FORWARDING-NOREPLY@GOOGLE.COM",
+        "forwarding-noreply@google.com.",          # absolute FQDN naming the same host
+        "forwarding-noreply@mail.google.com",      # true subdomain
+    ])
+    def test_accepts_the_real_gmail_mailbox(self, sender):
+        from cqc_lem.integrations.linkedin.notification_email import _is_gmail_forwarding_sender
+        assert _is_gmail_forwarding_sender(sender) is True
+
+    @pytest.mark.parametrize("sender", [
+        # The whole point of #1152: a full local-part+domain substring still passes a substring test.
+        "forwarding-noreply@google.com.attacker.net",
+        '"forwarding-noreply@google.com"@evil.test',   # the mailbox quoted INTO the local part
+        "forwarding-noreply@google.com@evil.test",
+        "forwarding-noreply@notgoogle.com",            # suffix without the dot boundary
+        "forwarding-noreply@google.com.co",            # lookalike TLD
+        "not-forwarding-noreply@google.com",           # local part is a superstring
+        "forwarding-noreply.x@google.com",
+        "someone@google.com",                          # right domain, wrong mailbox
+        "forwarding-noreply@evil.test <forwarding-noreply@google.com>",  # unparseable, fails closed
+        "forwarding-noreply",                          # not an address at all
+        "",
+    ])
+    def test_rejects_lookalike_senders(self, sender):
+        from cqc_lem.integrations.linkedin.notification_email import _is_gmail_forwarding_sender
+        assert _is_gmail_forwarding_sender(sender) is False
+
+    def test_spoofed_sender_is_not_a_confirmation(self):
+        """A lookalike sender with nothing else confirmation-ish no longer auto-confirms forwarding."""
+        from cqc_lem.integrations.linkedin.notification_email import is_gmail_forwarding_confirmation
+        assert is_gmail_forwarding_confirmation("forwarding-noreply@google.com.attacker.net",
+                                                "Your invoice is ready",
+                                                "Payment due in 14 days") is False
+
+    def test_local_part_extraction_takes_the_last_at(self):
+        from cqc_lem.integrations.linkedin.notification_email import _sender_local_part
+        assert _sender_local_part('"news@linkedin.com"@evil.test') == '"news@linkedin.com"'
+        assert _sender_local_part("Gmail Team <forwarding-noreply@google.com>") == "forwarding-noreply"
+        assert _sender_local_part("garbage") == ""
+        assert _sender_local_part("news@evil.test <news@linkedin.com>") == ""
+
     def test_detects_from_subject(self):
         from cqc_lem.integrations.linkedin.notification_email import is_gmail_forwarding_confirmation
         assert is_gmail_forwarding_confirmation("x@y.com", "Gmail Forwarding Confirmation - Receive Mail", "") is True
