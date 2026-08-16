@@ -140,7 +140,8 @@ model_list:
   # owner spend decision, not a roster refresh. Re-evaluate only if the plan changes.
   # NOTE: openai/deepseek-v4-pro (`:0813` and `:preview`) was EVALUATED and DECLINED 2026-08-16
   # (issue #1583), unbenchmarked and deliberately so. It is an EXTRA HIGH usage-level model — +2
-  # levels against every Ollama deployment in this file, all of which are Low or Medium — and the
+  # levels against every SERVING-tier Ollama deployment here, all of which are Low or Medium (the
+  # lem-agent-* lane's glm-5.2 / minimax-m3 are HIGH, so +1 there) — and the
   # #842 standing spend policy buys a usage-level increase on this tier only, and only on a STRICT
   # judge-rate win over the champion. qwen3.5:397b's last measured judge rate here is 100%, so no
   # run can produce that win; it could only tie, at Extra-high metering per call. Unlike kimi-k3

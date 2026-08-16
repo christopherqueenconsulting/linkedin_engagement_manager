@@ -80,8 +80,10 @@ class TestRoster:
     def test_no_tier_carries_the_extra_high_deepseek_pro_family(self):
         """Guard the #1583 decline — the `-pro` family is EXTRA HIGH usage.
 
-        That is +2 usage levels against every Ollama deployment in this config, all of which are Low
-        or Medium. The #842 standing spend policy allows a usage-level increase on lem-complex alone and only
+        That is +2 usage levels against every SERVING-tier Ollama deployment, all of which are Low or
+        Medium (+1 against the lem-agent-* lane, where glm-5.2 and minimax-m3 are High — covered here
+        too, because that lane pins one model per tier with no benchmark gate to catch a swap).
+        The #842 standing spend policy allows a usage-level increase on lem-complex alone and only
         on a strict judge-rate win over the champion, whose last measured judge rate there is 100%.
         So this is a spend decision no benchmark can currently unblock, not a quality one — which is
         exactly why it needs an assertion: nothing else here would notice the family being adopted

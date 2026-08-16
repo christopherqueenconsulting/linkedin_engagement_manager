@@ -399,15 +399,18 @@ serves a build you rejected". Since #1237 the scan treats that as its own re-poi
 
 | Tag | What it is | Decision |
 |---|---|---|
-| `deepseek-v4-pro:0813` | **Extra high (4)** usage level, 1M context, text-only, 1.6T total / 49B active MoE with three thinking modes (ollama.com/library/deepseek-v4-pro). 893GB, published 2026-08-13 — a genuinely new build: it is the one the bare `deepseek-v4-pro` name now points at | **Decline.** +2 usage levels against every incumbent, and the standing spend policy buys an increase only on `lem-complex` and only on a **strict** judge-rate win over the champion. See below for why no run can produce one today. |
+| `deepseek-v4-pro:0813` | **Extra high (4)** usage level, 1M context, text-only, 1.6T total / 49B active MoE with three thinking modes (ollama.com/library/deepseek-v4-pro). 893GB, published 2026-08-13 — a genuinely new build: it is the one the bare `deepseek-v4-pro` name now points at | **Decline.** +2 usage levels against every serving-tier incumbent (+1 against the `lem-agent-*` lane's High models), and the standing spend policy buys an increase only on `lem-complex` and only on a **strict** judge-rate win over the champion. See below for why no run can produce one today. |
 | `deepseek-v4-pro:preview` | Same model page, so the same **Extra high (4)** level. 1600GB, published 2026-04-24 — the same `size`/`modified_at` the committed snapshot carried under the *bare* `deepseek-v4-pro`, i.e. a versioned name for a build LEM has never deployed | **Decline**, on the same policy, plus there is nothing to trade: it is the *older* of the two builds at the identical usage level. |
 
 Three things worth reading beyond the two verdicts:
 
 - **The decline is a spend call, not a quality claim, and it is decidable without a run.** Every
-  Ollama deployment in `.litellm/config.yaml` is Low (`gemma4:31b`) or Medium (`gpt-oss:20b`,
-  `gpt-oss:120b`, `deepseek-v4-flash:preview`, `qwen3.5:397b`); Extra high is **+2** levels on every
-  one of them. The standing spend policy above allows an increase on `lem-complex` alone, on a
+  Ollama deployment in the **serving** tiers is Low (`gemma4:31b`) or Medium (`gpt-oss:20b`,
+  `gpt-oss:120b`, `deepseek-v4-flash:preview`, `qwen3.5:397b`), so Extra high is **+2** levels on
+  every one of them. (The `lem-agent-*` lane is the exception to the "+2" arithmetic, not to the
+  verdict: `glm-5.2` and `minimax-m3` are **High (3)**, so adopting there would be +1 — and that
+  lane pins one model per tier with no benchmark gate at all, which is a reason for MORE caution,
+  not less.) The standing spend policy above allows an increase on `lem-complex` alone, on a
   strict judge-rate win — and the champion `qwen3.5:397b`'s last measured judge rate on that tier is
   **100%** (`bm-20260802-20ae40`). A strict win over 100% does not exist, so a benchmark run could
   at best tie, at Extra-high metering for every one of its calls. If the champion is ever
