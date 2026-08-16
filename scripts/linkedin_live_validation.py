@@ -2489,6 +2489,39 @@ def recommendation_read() -> tuple:
     return (_recommendation_reading, _RECOMMENDATION_RENDER_ATTEMPTS, "image")
 
 
+# The mentions cross-check (#1374), carried so a run against an image that predates it still grades
+# the zero reading instead of reporting the same "empty or rotated, no way to tell" it did before.
+FALLBACK_MENTION_TEXT_RE = re.compile(r"\b(mentioned|tagged)\s+you\b", re.IGNORECASE)
+
+
+def _carried_mentions_page_native_count(driver) -> Optional[int]:
+    """`_mentions_page_native_count`'s answer without the image.
+
+    How many mention sentences the page renders itself, counted through no part of the card locator
+    chain. None = unreadable.
+    """
+    for tag in ("main", "body"):
+        try:
+            root = driver.find_element(By.TAG_NAME, tag)
+        except Exception:
+            continue
+        try:
+            text = root.text
+        except Exception:
+            return None
+        return len(FALLBACK_MENTION_TEXT_RE.findall(text)) if isinstance(text, str) else None
+    return None
+
+
+def mentions_page_read() -> tuple:
+    """(the mentions cross-check to drive, where it came from)."""
+    try:
+        from cqc_lem.app.engagement.outreach import _mentions_page_native_count
+    except ImportError:
+        return (_carried_mentions_page_native_count, "script")
+    return (_mentions_page_native_count, "image")
+
+
 def appreciation_verdict(reading: dict) -> str:
     """What one reading proves about an appreciation source (#968, rebuilt for #1007).
 
@@ -2511,6 +2544,15 @@ def appreciation_verdict(reading: dict) -> str:
         return (f"ZERO cards resolved on a page that renders dated recommendations "
                 f"({reading.get('profile_anchors') or 0} profile link(s) on it) — the card read has "
                 f"rotated again and production is silently dead{note}")
+    # The mentions half's own cross-check (#1374): the page's sentences, read through none of the
+    # card locators, which is what finally splits its zero reading in two.
+    lines = reading.get("page_mentions")
+    if not cards and lines:
+        return (f"ZERO cards resolved while the page itself renders {lines} 'mentioned/tagged you' "
+                f"line(s) — the card locator chain has rotated and production is silently dead{note}")
+    if not cards and lines == 0:
+        return ("no cards resolved and the page renders no 'mentioned/tagged you' line either — the "
+                f"surface is genuinely empty, so production correctly sends nothing{note}")
     if not cards:
         return ("no cards resolved — either the surface is genuinely empty or the card locator "
                 f"chain has rotated; production sends nothing either way{note}")
@@ -2522,14 +2564,35 @@ def appreciation_verdict(reading: dict) -> str:
             f"{reading.get('lookback_days')}-day window — production would thank those{note}")
 
 
+def appreciation_page_evidence(reading: Optional[dict]) -> Optional[bool]:
+    """Does the PAGE itself still show what the card read should have resolved?
+
+    True = drift is provable, False = the page agrees the surface is empty, None = no independent
+    cross-check was taken or it could not be read. Each surface answers through its own anchor —
+    `page_dated` for recommendations (#1007), the page's mention sentences for mentions (#1374) —
+    and neither is any part of the card chain it grades, which is the whole point.
+    """
+    reading = dict(reading or {})
+    if "page_mentions" in reading:
+        lines = reading.get("page_mentions")
+        return None if lines is None else bool(lines)
+    if "page_dated" in reading:
+        return bool(reading.get("page_dated"))
+    return None
+
+
 def appreciation_state(reading: Optional[dict]) -> str:
     """Three-state grade for ONE appreciation surface. Cards that resolved but never date is the
-    silently-dead trigger this probe exists to catch — drift. No cards at all cannot be told apart
-    from an empty section, so it grades unknown and is never filed as a defect.
+    silently-dead trigger this probe exists to catch — drift.
+
+    No cards at all is graded by the page-native cross-check, never by the card read alone: the page
+    still showing what the chain missed is drift, the page agreeing it is empty is unknown (nothing
+    was proved about the chain, so it is never filed as a defect), and an unreadable cross-check is
+    unknown for the same reason it always was.
     """
     reading = dict(reading or {})
     if not int(reading.get("cards") or 0):
-        return STATE_UNKNOWN
+        return STATE_DRIFT if appreciation_page_evidence(reading) else STATE_UNKNOWN
     return STATE_OK if reading.get("dated") else STATE_DRIFT
 
 
@@ -2565,7 +2628,7 @@ def probe_appreciation_sources(driver, user_id: int, profile_url: str = "",
     lookback = appreciation_lookback_days()
 
     def _read(url: str, card_locators, person_locators, age_of, event_type: str,
-              require=None, name_of=None) -> dict:
+              require=None, name_of=None, page_native=None) -> dict:
         driver.get(url)
         sleep(5)
         cards = find_all_first(driver, card_locators)
@@ -2594,6 +2657,12 @@ def probe_appreciation_sources(driver, user_id: int, profile_url: str = "",
                    "people": [r for r in rows if r["in_window"] and r["profile_url"]
                               and not r["already_thanked"]],
                    "rows": rows[:10]}
+        if page_native is not None:
+            # Taken on EVERY run, not only a zero one: the count is what makes a green reading
+            # evidence that the chain sees what the page shows, rather than that it saw something.
+            read, source = page_native
+            reading["page_mentions"] = read(driver)
+            reading["crosscheck_source"] = source
         return graded(reading, appreciation_state(reading), appreciation_verdict(reading))
 
     def _read_recommendations(own: str) -> dict:
@@ -2654,7 +2723,7 @@ def probe_appreciation_sources(driver, user_id: int, profile_url: str = "",
     report["mentions"] = _read(_MENTIONS_URL, _MENTION_CARD_LOCATORS, _MENTION_ACTOR_LOCATORS,
                                _parse_relative_age_days, "collaboration",
                                require=lambda t: bool(_MENTION_TEXT_RE.search(t or "")),
-                               name_of=_mention_actor_name)
+                               name_of=_mention_actor_name, page_native=mentions_page_read())
     # Two surfaces, one report: worst-wins, so a dead recommendations trigger is not hidden by a
     # healthy mentions feed.
     sections = (report["recommendations_received"], report["mentions"])

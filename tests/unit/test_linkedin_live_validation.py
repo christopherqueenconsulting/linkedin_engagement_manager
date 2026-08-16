@@ -977,6 +977,97 @@ class TestAppreciationSourcesProbe:
         verdict = llv.appreciation_verdict({"cards": 0, "page_dated": True, "profile_anchors": 24})
         assert "silently dead" in verdict and "24 profile link(s)" in verdict
 
+    def test_zero_cards_beside_the_pages_own_mention_lines_is_named_as_rotation(self):
+        """#1374: `cards: 0` on the mentions feed graded `unknown` forever.
+
+        That is the same answer an empty month gets. The page's own sentences split the two.
+        """
+        verdict = llv.appreciation_verdict({"cards": 0, "page_mentions": 3})
+        assert "3 'mentioned/tagged you' line(s)" in verdict and "silently dead" in verdict
+        assert llv.appreciation_state({"cards": 0, "page_mentions": 3}) == llv.STATE_DRIFT
+
+    def test_a_page_that_shows_no_mention_line_confirms_the_surface_is_empty(self):
+        """Still `unknown`, but the prose no longer says "no way to tell".
+
+        The chain resolving nothing on an empty page proves nothing about the chain.
+        """
+        reading = {"cards": 0, "page_mentions": 0}
+        assert "genuinely empty" in llv.appreciation_verdict(reading)
+        assert llv.appreciation_state(reading) == llv.STATE_UNKNOWN
+
+    def test_an_unreadable_cross_check_grades_exactly_as_it_did_before(self):
+        reading = {"cards": 0, "page_mentions": None}
+        assert "no cards resolved — either" in llv.appreciation_verdict(reading)
+        assert llv.appreciation_state(reading) == llv.STATE_UNKNOWN
+        assert llv.appreciation_page_evidence(reading) is None
+
+    def test_zero_recommendation_cards_on_a_dated_page_is_drift_not_unknown(self):
+        """The verdict already called this "silently dead", so the state has to agree.
+
+        The weekly sweep files issues from the STATE, so an `unknown` here means it never sees the
+        defect the verdict describes.
+        """
+        assert llv.appreciation_state({"cards": 0, "page_dated": True}) == llv.STATE_DRIFT
+        assert llv.appreciation_state({"cards": 0, "page_dated": False}) == llv.STATE_UNKNOWN
+
+    def test_the_carried_cross_check_counts_the_pages_own_sentences(self):
+        driver = MagicMock()
+        root = MagicMock()
+        root.text = "Jane mentioned you in a post 2h\nAmit tagged you in a comment 3d"
+        driver.find_element.return_value = root
+        assert llv._carried_mentions_page_native_count(driver) == 2
+
+    def test_the_carried_cross_check_is_none_when_the_page_cannot_be_read(self):
+        driver = MagicMock()
+        driver.find_element.side_effect = Exception("session died mid-read")
+        assert llv._carried_mentions_page_native_count(driver) is None
+
+    def test_the_image_owns_the_cross_check_when_it_has_one(self, monkeypatch):
+        from cqc_lem.app.engagement.outreach import _mentions_page_native_count
+        read, source = llv.mentions_page_read()
+        assert (read, source) == (_mentions_page_native_count, "image")
+
+    def test_an_image_without_the_cross_check_falls_back_to_the_carried_copy(self, monkeypatch):
+        """Same posture as the #1007 recommendation read.
+
+        A probe run against an older image still grades this branch's reading rather than dying on
+        the import.
+        """
+        import builtins
+
+        real_import = builtins.__import__
+
+        def _no_crosscheck(name, *a, **k):
+            if (name == "cqc_lem.app.engagement.outreach"
+                    and "_mentions_page_native_count" in (a[2] or ())):
+                raise ImportError("cannot import name '_mentions_page_native_count'")
+            return real_import(name, *a, **k)
+
+        monkeypatch.setattr(builtins, "__import__", _no_crosscheck)
+        read, source = llv.mentions_page_read()
+        assert read is llv._carried_mentions_page_native_count and source == "script"
+
+    def test_the_mentions_reading_carries_the_cross_check(self):
+        """The count rides in the report so a human reading one run sees WHY it was graded that way."""
+        from unittest.mock import patch
+
+        driver = _fake_driver(current_url="https://www.linkedin.com/notifications/")
+        root = MagicMock()
+        root.text = "Jane Doe mentioned you in a post 2h"
+        driver.find_element.return_value = root
+        with patch("cqc_lem.utilities.selenium_util.find_all_first", return_value=[]), \
+             patch("cqc_lem.utilities.db.has_appreciation_touch", return_value=False), \
+             patch("cqc_lem.app.engagement.outreach.getText", side_effect=lambda el: el.text):
+            report = llv.probe_appreciation_sources(driver, 1, "https://www.linkedin.com/in/me/",
+                                                    sleep=lambda s: None)
+
+        mentions = report["mentions"]
+        assert mentions["cards"] == 0 and mentions["page_mentions"] == 1
+        assert mentions["state"] == llv.STATE_DRIFT
+        assert mentions["crosscheck_source"] in ("image", "script")
+        # Worst-wins: a rotated mentions chain is the whole report's state.
+        assert report["state"] == llv.STATE_DRIFT
+
     def test_probe_reads_both_surfaces_and_never_claims_a_ledger_row(self, monkeypatch):
         """It grounds the PRODUCTION card reads + parsers (the scrapers themselves are gated
         off until this run happens), and it must stay read-only.

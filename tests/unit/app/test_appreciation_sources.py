@@ -318,6 +318,82 @@ class TestCollaborators:
                 == "https://www.linkedin.com/in/jane-doe-1234")
 
 
+class TestZeroMentionCardsIsGradedNotAssumed:
+    """#1374: an empty mentions feed and a rotated card wrapper were the same reading.
+
+    The probe read `cards: 0` on a surface #982 had resolved a card on, and nothing in production
+    could tell the two apart. Every rung of `_MENTION_CARD_LOCATORS` is about the card container, so
+    the cross-check has to be the page's OWN sentences — the SDUI invariant from #1013: zero is not
+    "nothing to do" until the page agrees.
+    """
+
+    def _run(self, page_text, raises=False):
+        from cqc_lem.app.engagement.outreach import get_recent_collaborators
+        driver = MagicMock()
+        if raises:
+            from selenium.common.exceptions import WebDriverException
+            driver.find_element.side_effect = WebDriverException("session died mid-read")
+        else:
+            root = MagicMock()
+            root.text = page_text
+            driver.find_element.return_value = root
+        with patch(f"{_OUT}.find_all_first", return_value=[]), \
+             patch(f"{_OUT}.wait_for_ajax"), \
+             patch(f"{_OUT}.getText", side_effect=lambda el: el.text), \
+             patch("cqc_lem.utilities.linkedin.zero_walk.log_warning") as warn, \
+             patch("cqc_lem.utilities.linkedin.zero_walk.log_debug") as debug:
+            got = get_recent_collaborators(driver, MagicMock(), 1)
+        return got, warn, debug
+
+    def test_zero_cards_while_the_page_still_says_mentioned_you_is_drift(self):
+        got, warn, _ = self._run("Notifications\nJane Doe mentioned you in a post 2h\n"
+                                 "Amit tagged you in a comment 3d")
+        assert got == {}
+        assert warn.call_count == 1
+        assert "selector drift" in warn.call_args[0][0]
+
+    def test_a_page_that_shows_no_mention_line_is_an_ordinary_quiet_day(self):
+        """DEBUG, not WARNING.
+
+        The beat re-queues every ~60s, so warning on a quiet feed would escalate to ERROR and file a
+        grouped $exception for a no-op.
+        """
+        got, warn, debug = self._run("Notifications\nNo new notifications")
+        assert got == {} and warn.call_count == 0 and debug.call_count == 1
+
+    def test_an_unreadable_page_is_never_recorded_as_an_empty_one(self):
+        got, warn, _ = self._run(None, raises=True)
+        assert got == {} and warn.call_count == 0
+
+    def test_the_count_is_taken_from_the_page_not_the_card_chain(self):
+        from cqc_lem.app.engagement.outreach import _mentions_page_native_count
+        driver = MagicMock()
+        root = MagicMock()
+        root.text = "Jane mentioned you in a post 2h\nAmit tagged you in a comment 3d"
+        driver.find_element.return_value = root
+        with patch(f"{_OUT}.getText", side_effect=lambda el: el.text):
+            assert _mentions_page_native_count(driver, 1) == 2
+        # `find_element` is what was asked, so nothing here rides on the card locators at all.
+        assert driver.find_elements.call_count == 0
+
+    def test_a_body_fallback_covers_a_page_with_no_main(self):
+        from selenium.common.exceptions import NoSuchElementException
+
+        from cqc_lem.app.engagement.outreach import _mentions_page_native_count
+        driver = MagicMock()
+        root = MagicMock()
+        root.text = "Jane mentioned you in a post 2h"
+        driver.find_element.side_effect = [NoSuchElementException("no main"), root]
+        with patch(f"{_OUT}.getText", side_effect=lambda el: el.text):
+            assert _mentions_page_native_count(driver, 1) == 1
+
+    def test_a_text_read_that_answers_nothing_readable_is_none_not_zero(self):
+        from cqc_lem.app.engagement.outreach import _mentions_page_native_count
+        driver = MagicMock()
+        with patch(f"{_OUT}.getText", return_value=None):
+            assert _mentions_page_native_count(driver, 1) is None
+
+
 class TestDispatchDedup:
     """`automate_appreciation_dms_for_user` re-queues itself every ~60s, so the ledger claim is the
     only thing standing between one thank-you and a thank-you a minute.

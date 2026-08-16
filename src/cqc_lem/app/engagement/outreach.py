@@ -436,6 +436,7 @@ _CATCHUP_CARD_CROSSCHECK_SEL = "main div[role='listitem']"
 
 zero_walk_verdict = _zw.zero_walk_verdict
 _report_zero_walk = _zw.report_zero_walk
+_grade_zero_walk = _zw.grade_zero_walk
 
 
 # Ordered fallback chain for the invitation-manager cards. The pre-SDUI `invitation-card__container`
@@ -734,6 +735,37 @@ def _card_text(card: WebElement) -> str:
         return ""
 
 
+def _mentions_page_native_count(driver, user_id: int = None) -> "int | None":
+    """How many mention sentences the mentions page renders ITSELF, counted without the card chain.
+
+    Every rung of `_MENTION_CARD_LOCATORS` is about the card CONTAINER, so a single SDUI wrapper
+    rename answers zero to all four and reads exactly like a month with no mentions (#1374). The
+    page's own text depends on none of them, and it is the same sentence production requires of a
+    card, so a non-zero count here is cards the walk should have seen.
+
+    None when the text could not be read at all: "we could not ask the page" must never be recorded
+    as "the page said zero" (see `utilities/linkedin/zero_walk.py`).
+    """
+    root = None
+    for tag in ("main", "body"):
+        try:
+            root = driver.find_element(By.TAG_NAME, tag)
+            break
+        except WebDriverException:
+            continue
+    if root is None:
+        log_debug("Mentions page rendered neither <main> nor <body>", user_id=user_id,
+                  action_type="scrape")
+        return None
+    try:
+        text = getText(root)
+    except WebDriverException as e:
+        log_debug(f"Could not read the mentions page text: {e}", user_id=user_id,
+                  action_type="scrape")
+        return None
+    return len(_MENTION_TEXT_RE.findall(text)) if isinstance(text, str) else None
+
+
 def _recommendation_reading(driver, user_id: int = None) -> dict:
     """One JS read of the recommendations page: the resolved cards plus the two numbers that tell
     an empty section apart from selectors that have rotated again.
@@ -843,7 +875,12 @@ def get_recent_collaborators(driver, wait, user_id: int = None) -> dict[str, str
 
     cards = find_all_first(driver, _MENTION_CARD_LOCATORS)
     if not cards:
-        log_debug("No mention notifications rendered", user_id=user_id, action_type="scrape")
+        # #1374: zero cards is not "no mentions" until the page agrees. Grade it against the page's
+        # own sentences — evidence the four card locators do not depend on — so a rotated wrapper
+        # reads as drift (WARNING) instead of another quiet day, and a genuinely empty feed still
+        # logs DEBUG. Unreadable grounds nothing either way.
+        _grade_zero_walk(_mentions_page_native_count(driver, user_id), "Mention card walk",
+                         user_id=user_id, action_type="scrape", url=_MENTIONS_URL)
         return {}
 
     lookback = appreciation_lookback_days()
