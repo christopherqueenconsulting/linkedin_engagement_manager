@@ -387,6 +387,16 @@ class TestZeroMentionCardsIsGradedNotAssumed:
         with patch(f"{_OUT}.getText", side_effect=lambda el: el.text):
             assert _mentions_page_native_count(driver, 1) == 1
 
+    def test_a_text_read_that_dies_mid_session_is_none_not_zero(self):
+        """The element resolved and then the read failed — still "we could not ask", never "zero"."""
+        from selenium.common.exceptions import WebDriverException
+
+        from cqc_lem.app.engagement.outreach import _mentions_page_native_count
+        driver = MagicMock()
+        driver.find_element.return_value = MagicMock()
+        with patch(f"{_OUT}.getText", side_effect=WebDriverException("session died mid-read")):
+            assert _mentions_page_native_count(driver, 1) is None
+
     def test_a_text_read_that_answers_nothing_readable_is_none_not_zero(self):
         from cqc_lem.app.engagement.outreach import _mentions_page_native_count
         driver = MagicMock()

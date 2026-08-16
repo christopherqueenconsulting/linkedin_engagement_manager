@@ -2712,8 +2712,11 @@ def probe_appreciation_sources(driver, user_id: int, profile_url: str = "",
                "people": [r for r in rows if r["in_window"] and r["profile_url"]
                           and not r["already_thanked"] and not r["is_self"]],
                "rows": rows[:10]}
-        out["verdict"] = appreciation_verdict(out)
-        return out
+        # Stamped through `graded` like every other probe reading: this half printed a verdict but
+        # never a `state`, so `worst_state` below dropped it (a None is not in `_STATE_RANK`) and a
+        # recommendations chain whose own verdict says "production is silently dead" left the report
+        # reading `unknown` — invisible to the sweep, which files from the state.
+        return graded(out, appreciation_state(out), appreciation_verdict(out))
 
     own = _own_profile_url(driver, user_id) if not profile_url else profile_url.rstrip("/")
     report = {"own_profile_url": own}

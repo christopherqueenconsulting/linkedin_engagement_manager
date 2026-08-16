@@ -1010,6 +1010,51 @@ class TestAppreciationSourcesProbe:
         assert llv.appreciation_state({"cards": 0, "page_dated": True}) == llv.STATE_DRIFT
         assert llv.appreciation_state({"cards": 0, "page_dated": False}) == llv.STATE_UNKNOWN
 
+    def test_the_recommendations_section_is_stamped_with_a_state_like_every_other_reading(self):
+        """A grade nothing stamps onto the reading grades nothing.
+
+        The recommendations half printed a verdict but no `state`, so `worst_state` dropped it and a
+        chain whose own verdict reads "production is silently dead" left the report `unknown` — the
+        sweep files from the state, so it could never see it. Worst-wins has to mean it.
+        """
+        from unittest.mock import patch
+
+        driver = _fake_driver(current_url="https://www.linkedin.com/in/me")
+        # Zero rows resolved on a page still rendering "Month D, YYYY" — the rotated read.
+        driver.execute_script.return_value = {"rows": [], "anchors": 24, "page_dated": True}
+        root = MagicMock()
+        root.text = "No new notifications"
+        driver.find_element.return_value = root
+        with patch("cqc_lem.utilities.selenium_util.find_all_first", return_value=[]), \
+             patch("cqc_lem.utilities.db.has_appreciation_touch", return_value=False), \
+             patch("cqc_lem.app.engagement.outreach.getText", side_effect=lambda el: el.text):
+            report = llv.probe_appreciation_sources(driver, 1, "https://www.linkedin.com/in/me/",
+                                                    sleep=lambda s: None)
+
+        rec = report["recommendations_received"]
+        assert "silently dead" in rec["verdict"]
+        assert rec["state"] == llv.STATE_DRIFT
+        # The mentions half agrees it is empty, so only the recommendations grade can carry this.
+        assert report["mentions"]["state"] == llv.STATE_UNKNOWN
+        assert report["state"] == llv.STATE_DRIFT
+
+    def test_a_healthy_recommendations_read_is_stamped_ok(self):
+        """The same stamp in the other direction — a dated card that resolved is not `unknown`."""
+        from unittest.mock import patch
+
+        driver = _fake_driver(current_url="https://www.linkedin.com/in/me")
+        driver.execute_script.return_value = {
+            "rows": [{"href": "https://www.linkedin.com/in/jane", "name": "Jane Doe",
+                      "text": "Jane Doe\nJuly 24, 2026, Jane was my client"}],
+            "anchors": 24, "page_dated": True}
+        with patch("cqc_lem.utilities.selenium_util.find_all_first", return_value=[]), \
+             patch("cqc_lem.utilities.db.has_appreciation_touch", return_value=False), \
+             patch("cqc_lem.app.engagement.outreach._parse_recommendation_date", return_value=3.0):
+            report = llv.probe_appreciation_sources(driver, 1, "https://www.linkedin.com/in/me/",
+                                                    sleep=lambda s: None)
+
+        assert report["recommendations_received"]["state"] == llv.STATE_OK
+
     def test_the_carried_cross_check_counts_the_pages_own_sentences(self):
         driver = MagicMock()
         root = MagicMock()
