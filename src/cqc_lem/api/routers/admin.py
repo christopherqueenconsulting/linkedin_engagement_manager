@@ -27,7 +27,7 @@ from enum import StrEnum
 from typing import Any, List, Optional
 
 from celery import states as celery_states
-from fastapi import APIRouter, Depends, Header, HTTPException, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from fastapi.security import APIKeyHeader, HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, model_validator
 
@@ -36,17 +36,25 @@ from cqc_lem.app.engagement.feed import automate_commenting, consolidate_duplica
 from cqc_lem.app.engagement.outreach import automate_appreciation_dms_for_user, send_private_dm
 from cqc_lem.app.engagement.posting import automate_reply_commenting
 from cqc_lem.utilities.db import (
+    AuthAuditEvent,
     FeedbackStatus,
     PostType,
+    admin_email_allowlist,
+    count_admin_users,
+    count_users_for_admin,
     get_feedback_by_id,
     get_feedback_list,
     get_post_buyer_stage,
     get_post_type,
     get_post_user_id,
+    get_user_for_admin,
     get_user_geo,
     is_user_admin,
+    list_users_for_admin,
+    record_auth_event,
     record_feedback_review,
     replace_video_url_base,
+    set_user_admin,
     update_user_location,
 )
 from cqc_lem.utilities.env_constants import (
@@ -710,6 +718,265 @@ def admin_set_youtube_token(request: YouTubeTokenRequest,
     log_info("YouTube refresh token installed via admin endpoint", task_name="admin_youtube_token")
     return ResponseModel(status_code=200, detail={"stored": True, "status": state.get("status"),
                                                   "reason": state.get("reason")})
+
+
+# ---------------------------------------------------------------------------
+# User management (issue #1450) — the admin's view of other accounts, and the ONE write on it.
+#
+# Session gated (`_require_user_admin`), never `X-Admin-Secret`: a human clicks these. Absent from
+# every entry in `_SCOPE_SURFACES` by design — surfaces match on PATH not method, so listing users
+# under the `agent` scope would hand a headless token the role write on the same path prefix.
+# `tests/unit/api/test_admin_users_api.py` pins that absence.
+#
+# Design, the schema→screen mapping and the adversarial review: `docs/admin-user-management.md`.
+# ---------------------------------------------------------------------------
+
+class SubscriptionStatusFilter(StrEnum):
+    """The `users.subscription_status` MySQL ENUM.
+
+    Declared so an unknown filter is a 422 and not a SQL parameter nobody validated.
+    """
+
+    ACTIVE = 'active'
+    INACTIVE = 'inactive'
+    TRIAL = 'trial'
+    CANCELLED = 'cancelled'
+    PAST_DUE = 'past_due'
+
+
+class LinkedInConnectionFilter(StrEnum):
+    """The `users.linkedin_connection_status` MySQL ENUM."""
+
+    CONNECTED = 'connected'
+    EXPIRED = 'expired'
+    DISCONNECTED = 'disconnected'
+
+
+class AdminUserRoleRequest(BaseModel):
+    """Body of `POST /admin/users/{user_id}/admin` — grant (`true`) or revoke (`false`).
+
+    `user_id` is the TARGET and rides in the path; the ACTOR is whoever `_require_user_admin`
+    resolves from this session, never a parameter.
+    """
+
+    session_token: str
+    is_admin: bool
+
+
+def _admin_flags(row: dict) -> tuple:
+    """`(effective, via_column, via_allowlist)` for one row.
+
+    The SAME question `is_user_admin` answers, off data already fetched rather than a query per row.
+    """
+    via_column = bool(row.get("is_admin"))
+    via_allowlist = (row.get("email") or "").strip().lower() in admin_email_allowlist()
+    return (via_column or via_allowlist), via_column, via_allowlist
+
+
+def _admin_user_summary(row: dict) -> dict[str, Any]:
+    """The list row.
+
+    Built field by field: every credential column is excluded by not being named, and there is no
+    `has_password`-shaped boolean either — a present/absent answer over a credential is still an
+    oracle (`docs/admin-user-management.md` §2).
+    """
+    effective, via_column, via_allowlist = _admin_flags(row)
+    return {
+        "id": row.get("id"),
+        "email": row.get("email"),
+        "linkedin_email": row.get("linkedin_email"),
+        "is_admin": effective,
+        "admin_via_column": via_column,
+        "admin_via_allowlist": via_allowlist,
+        "subscription_status": row.get("subscription_status"),
+        "subscription_tier": row.get("subscription_tier"),
+        "trial_ends_at": _main._utc_iso(row.get("trial_ends_at")),
+        "linkedin_connection_status": row.get("linkedin_connection_status"),
+        "last_login": _main._utc_iso(row.get("last_login")),
+        "signed_up_at": _main._utc_iso(row.get("signed_up_at")),
+        "activated_at": _main._utc_iso(row.get("activated_at")),
+    }
+
+
+def _admin_user_detail(row: dict) -> dict[str, Any]:
+    """The drawer.
+
+    The long tail an admin opens a row to read — never latitude/longitude (someone's home at 7
+    decimal places), never `proxy_url` (it embeds user:pass) or `reply_inbound_token`.
+    """
+    detail = _admin_user_summary(row)
+    detail.update({
+        "public_uid": row.get("public_uid"),
+        "linkedin_display_name": row.get("linkedin_display_name"),
+        "email_verified_at": _main._utc_iso(row.get("email_verified_at")),
+        "trial_started_at": _main._utc_iso(row.get("trial_started_at")),
+        "subscription_current_period_end": _main._utc_iso(row.get("subscription_current_period_end")),
+        "timezone": row.get("timezone"),
+        "city": row.get("city"),
+        "country": row.get("country"),
+        "locale": row.get("locale"),
+        "content_language": row.get("content_language"),
+        "location_source": row.get("location_source"),
+        "blog_url": row.get("blog_url"),
+        "sitemap_url": row.get("sitemap_url"),
+        "company_linked_in_url": row.get("company_linked_in_url"),
+        "auto_schedule_posts": bool(row.get("auto_schedule_posts")),
+        "content_buffer_days": row.get("content_buffer_days"),
+        "content_buffer_max_posts": row.get("content_buffer_max_posts"),
+        "last_login_inactivate_delay": row.get("last_login_inactivate_delay"),
+        "avatar_disabled": bool(row.get("avatar_disabled")),
+        "avatar_use_post_image": bool(row.get("avatar_use_post_image")),
+        "avatar_use_carousel": bool(row.get("avatar_use_carousel")),
+        "avatar_use_video": bool(row.get("avatar_use_video")),
+        "avatar_use_newsletter": bool(row.get("avatar_use_newsletter")),
+        "avatar_caption_overlay": bool(row.get("avatar_caption_overlay")),
+        "updated_at": _main._utc_iso(row.get("updated_at")),
+        "linkedin_connected_at": _main._utc_iso(row.get("linkedin_connected_at")),
+        "voice_set_at": _main._utc_iso(row.get("voice_set_at")),
+        "first_post_approved_at": _main._utc_iso(row.get("first_post_approved_at")),
+        "caps_enabled_at": _main._utc_iso(row.get("caps_enabled_at")),
+        # Read-only, and deliberately so: an admin editing another person's caps or voice changes
+        # what LinkedIn sees as that person's writing, with no consent trail.
+        "max_comments_per_day": row.get("max_comments_per_day"),
+        "max_dms_per_day": row.get("max_dms_per_day"),
+        "posts_per_week": row.get("posts_per_week"),
+        "comment_length": row.get("comment_length"),
+    })
+    return detail
+
+
+@router.get("/users", responses={
+    200: {"description": "User list returned"},
+    401: {"description": "Invalid or expired session"},
+    403: {"description": "Admin access required"},
+})
+def admin_user_list(
+    session_token: str,
+    q: Optional[str] = None,
+    subscription_status: Optional[SubscriptionStatusFilter] = None,
+    linkedin_connection_status: Optional[LinkedInConnectionFilter] = None,
+    is_admin: Optional[bool] = None,
+    limit: int = Query(25, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+) -> ResponseModel[dict[str, Any]]:
+    """One page of accounts for the admin User Management screen (issue #1450).
+
+    Two queries and nothing per row: the page itself (one LEFT JOIN to `onboarding_state`) and its
+    COUNT under the same filters. `is_admin` filters on the EFFECTIVE answer — the column OR the
+    `ADMIN_USER_EMAILS` allowlist — so the filter and each row's badge can never disagree.
+    """
+    _require_user_admin(session_token)
+    filters = {
+        "search": q,
+        "subscription_status": subscription_status.value if subscription_status else None,
+        "linkedin_connection_status": (linkedin_connection_status.value
+                                       if linkedin_connection_status else None),
+        "is_admin": is_admin,
+    }
+    rows = list_users_for_admin(limit=limit, offset=offset, **filters)
+    return ResponseModel(status_code=200, detail={
+        "items": [_admin_user_summary(r) for r in rows],
+        "total": count_users_for_admin(**filters),
+        "limit": limit,
+        "offset": offset,
+    })
+
+
+@router.get("/users/{user_id}", responses={
+    200: {"description": "User detail returned"},
+    401: {"description": "Invalid or expired session"},
+    403: {"description": "Admin access required"},
+    404: {"description": "No such user"},
+})
+def admin_user_detail(user_id: int, session_token: str) -> ResponseModel[dict[str, Any]]:
+    """Everything behind a row — the 26 columns a table cannot carry, minus every credential."""
+    _require_user_admin(session_token)
+    row = get_user_for_admin(user_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="User not found")
+    return ResponseModel(status_code=200, detail=_admin_user_detail(row))
+
+
+@router.post("/users/{user_id}/admin", responses={
+    200: {"description": "Role change applied (or already in that state)"},
+    401: {"description": "Invalid or expired session"},
+    403: {"description": "Admin access required, or step-up required"},
+    404: {"description": "No such user"},
+    409: {"description": "Refused: self-revoke, the last admin, or an allowlist admin"},
+    503: {"description": "The admin count could not be read"},
+})
+def admin_set_user_role(user_id: int, request: AdminUserRoleRequest,
+                        http_request: Request = None) -> ResponseModel[dict[str, Any]]:
+    """Grant or remove another account's admin role — the ONE write on this surface (issue #1450).
+
+    Four refusals, each for a failure that has a name:
+
+    * **Self-revoke** is refused outright. The last-admin count would catch the lockout, but a
+      second admin demoting themselves mid-incident is an ordinary mistake with no legitimate
+      version — the deliberate one is asking the other admin to do it.
+    * **The last effective admin** may not be demoted. "Effective" is the column OR the
+      `ADMIN_USER_EMAILS` allowlist, i.e. exactly what `is_user_admin` decides with; a guard that
+      counted the column alone would refuse a safe revoke on an allowlist-run deployment and, worse,
+      allow the last column-admin to go on one that is not.
+    * **An allowlist admin** cannot be revoked here at all: the column is already 0, so the write
+      would change nothing and report success while the person stays an admin. `ADMIN_USER_EMAILS`
+      is env, and env is where that is undone.
+    * **An unreadable admin count** is 503, never a guess. 0 admins is the one answer that must not
+      be inferred from a DB fault.
+
+    Step-up gated: granting admin is not touching a credential, it is minting the authority to
+    touch everyone's.
+    """
+    actor_id = _require_user_admin(request.session_token)
+    # Deferred: `routers.user` and `routers.admin` are both imported by `main`, so a module-level
+    # import here would run one router's body during the other's. The ONE step-up refusal shape
+    # (403 `step_up_required` + the methods available) is worth reaching for rather than restating.
+    from cqc_lem.api.routers.user import _require_step_up
+    _require_step_up(actor_id, request.session_token, "admin_role_change",
+                     http_request=http_request)
+
+    target = get_user_for_admin(user_id)
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+    effective, via_column, via_allowlist = _admin_flags(target)
+
+    if not request.is_admin and int(user_id) == int(actor_id):
+        raise HTTPException(status_code=409,
+                            detail="You cannot remove your own admin access. Ask another admin.")
+    if not request.is_admin and via_allowlist:
+        raise HTTPException(
+            status_code=409,
+            detail="This account is an admin through the ADMIN_USER_EMAILS allowlist. Remove the "
+                   "address there — clearing the flag here would change nothing.")
+    if request.is_admin == effective and via_column == request.is_admin:
+        # Already in the requested state. Said explicitly, because MySQL reports zero changed rows
+        # for a no-op UPDATE and that is indistinguishable from "no such user".
+        return ResponseModel(status_code=200, detail={
+            "user_id": user_id, "is_admin": effective, "changed": False})
+
+    if not request.is_admin:
+        admin_count = count_admin_users()
+        if admin_count is None:
+            raise HTTPException(status_code=503,
+                                detail="Could not verify how many admins remain. Try again.")
+        if admin_count <= 1:
+            raise HTTPException(
+                status_code=409,
+                detail="This is the last admin account. Grant admin to someone else first.")
+
+    if not set_user_admin(user_id, request.is_admin):
+        raise HTTPException(status_code=500, detail="Could not update the admin role")
+
+    event = AuthAuditEvent.ADMIN_GRANTED if request.is_admin else AuthAuditEvent.ADMIN_REVOKED
+    # Keyed on the TARGET, actor in `details` — the reading `user_id` already has on every other
+    # row in that table, and it is what puts the change in the affected user's own Security card.
+    record_auth_event(event, user_id=user_id, success=True,
+                      ip=_main._client_ip(http_request), user_agent=_main._user_agent(http_request),
+                      details={"actor_user_id": actor_id})
+    log_info("Admin role changed", user_id=actor_id, task_name="admin_set_user_role",
+             target_user_id=user_id, admin_action=str(event))
+    return ResponseModel(status_code=200, detail={
+        "user_id": user_id, "is_admin": request.is_admin, "changed": True})
 
 
 from cqc_lem.api import main as _main  # noqa: E402  — last; see the module docstring

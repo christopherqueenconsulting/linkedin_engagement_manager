@@ -29,6 +29,7 @@ const Account = lazyWithChunkRecovery(() => import('./pages/Account'))
 const Avatars = lazyWithChunkRecovery(() => import('./pages/Avatars'))
 const ContentStudio = lazyWithChunkRecovery(() => import('./pages/ContentStudio'))
 const AdminFeedbackPage = lazyWithChunkRecovery(() => import('./pages/AdminFeedbackPage'))
+const AdminUsersPage = lazyWithChunkRecovery(() => import('./pages/AdminUsersPage'))
 
 const queryClient = new QueryClient()
 
@@ -94,6 +95,10 @@ function AppRoutes() {
               <Route
                 path="content"
                 element={<ProtectedRoute><ContentStudio /></ProtectedRoute>}
+              />
+              <Route
+                path="admin/users"
+                element={<AdminRoute><AdminUsersPage /></AdminRoute>}
               />
               <Route
                 path="admin/feedback"

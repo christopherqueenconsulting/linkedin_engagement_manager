@@ -3734,6 +3734,192 @@ def is_user_admin(user_id: int) -> bool:
         return False
 
 
+# ---------------------------------------------------------------------------
+# Admin user management (issue #1450) — the reads and the ONE write behind `/api/admin/users`.
+#
+# These live next to `is_user_admin` on purpose: admin is `users.is_admin` OR the ADMIN_USER_EMAILS
+# allowlist, and the list badge, the `is_admin` filter and the last-admin guard all have to answer
+# that with the SAME predicate. A second definition of "is an admin" that drifted from
+# `is_user_admin` would show a badge the gate disagrees with, or — the case that matters — let the
+# last effective admin be demoted because the guard only counted the column.
+#
+# Design + the adversarial review that shaped it: `docs/admin-user-management.md`.
+# ---------------------------------------------------------------------------
+
+# Explicit field lists, never `SELECT *`. Every credential-bearing column is excluded BY NOT BEING
+# NAMED: password/access_token/refresh_token (encrypted at rest), proxy_url (embeds user:pass),
+# reply_inbound_token (a bearer secret in an email address), the Stripe ids, and latitude/longitude
+# (someone's home, at 7 decimal places — city/country answers every question this screen has).
+_ADMIN_USER_LIST_FIELDS = (
+    "u.id, u.email, u.linkedin_email, u.is_admin, u.subscription_status, u.subscription_tier, "
+    "u.trial_ends_at, u.linkedin_connection_status, u.last_login, "
+    "o.started_at AS signed_up_at, o.activated_at"
+)
+
+_ADMIN_USER_DETAIL_FIELDS = (
+    _ADMIN_USER_LIST_FIELDS + ", "
+    "u.public_uid, u.linkedin_display_name, u.email_verified_at, u.trial_started_at, "
+    "u.subscription_current_period_end, u.timezone, u.city, u.country, u.locale, "
+    "u.content_language, u.location_source, u.blog_url, u.sitemap_url, u.company_linked_in_url, "
+    "u.auto_schedule_posts, u.content_buffer_days, u.content_buffer_max_posts, "
+    "u.last_login_inactivate_delay, u.avatar_disabled, u.avatar_use_post_image, "
+    "u.avatar_use_carousel, u.avatar_use_video, u.avatar_use_newsletter, "
+    "u.avatar_caption_overlay, u.updated_at, "
+    "o.linkedin_connected_at, o.voice_set_at, o.first_post_approved_at, o.caps_enabled_at, "
+    "p.max_comments_per_day, p.max_dms_per_day, p.posts_per_week, p.comment_length"
+)
+
+# One LEFT JOIN, never a lookup per row. `onboarding_state.started_at` is the closest thing to a
+# signup date — `users` has no `created_at`, only an `updated_at` every write moves.
+_ADMIN_USER_LIST_FROM = "FROM users u LEFT JOIN onboarding_state o ON o.user_id = u.id"
+_ADMIN_USER_DETAIL_FROM = (_ADMIN_USER_LIST_FROM +
+                           " LEFT JOIN engagement_preferences p ON p.user_id = u.id")
+
+
+def _effective_admin_sql(prefix: str = "u") -> tuple:
+    """The SQL half of `is_user_admin`: the column OR the allowlist, as a WHERE fragment + params.
+
+    Returns the column test alone when the allowlist is empty — an `IN ()` is a MySQL syntax error,
+    and an allowlist nobody configured adds nobody (see `admin_email_allowlist`).
+    """
+    allowed = sorted(admin_email_allowlist())
+    if not allowed:
+        return f"{prefix}.is_admin = 1", []
+    placeholders = ", ".join(["%s"] * len(allowed))
+    return f"({prefix}.is_admin = 1 OR LOWER({prefix}.email) IN ({placeholders}))", allowed
+
+
+def _like_term(search: str) -> str:
+    """A substring LIKE term with the caller's own wildcards neutralised.
+
+    `%` and `_` in a support ticket's email fragment are literal characters, not operators — an
+    unescaped `_` silently matches any character and widens the result set the operator is reading.
+    """
+    escaped = search.strip().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%{escaped}%"
+
+
+def _admin_user_filters(search: Optional[str] = None,
+                        subscription_status: Optional[str] = None,
+                        linkedin_connection_status: Optional[str] = None,
+                        is_admin: Optional[bool] = None) -> tuple:
+    """The shared WHERE for the list and its COUNT, so the two can never disagree about the page.
+
+    Status values are validated against their vocabularies at the route (FastAPI enums, 422 on
+    anything else); they are parameters here regardless.
+    """
+    clauses: list = []
+    params: list = []
+    if search and search.strip():
+        # Substring, not prefix: a support request often carries a domain, not a full address.
+        clauses.append("(u.email LIKE %s ESCAPE '\\\\' OR u.linkedin_email LIKE %s ESCAPE '\\\\')")
+        term = _like_term(search)
+        params.extend([term, term])
+    if subscription_status:
+        clauses.append("u.subscription_status = %s")
+        params.append(str(subscription_status))
+    if linkedin_connection_status:
+        clauses.append("u.linkedin_connection_status = %s")
+        params.append(str(linkedin_connection_status))
+    if is_admin is not None:
+        # Filters on the EFFECTIVE answer, so the filter and the row's badge always agree.
+        fragment, fragment_params = _effective_admin_sql()
+        clauses.append(fragment if is_admin else f"NOT {fragment}")
+        params.extend(fragment_params)
+    where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+    return where, params
+
+
+def list_users_for_admin(search: Optional[str] = None,
+                         subscription_status: Optional[str] = None,
+                         linkedin_connection_status: Optional[str] = None,
+                         is_admin: Optional[bool] = None,
+                         limit: int = 25, offset: int = 0) -> list:
+    """One page of the admin user list, newest signup first (issue #1450).
+
+    Ordered by `u.id DESC`: the id is a monotonic AUTO_INCREMENT, so it IS the signup order —
+    without the NULLs of a LEFT-JOINed timestamp and without depending on the join at all.
+    """
+    where, params = _admin_user_filters(search, subscription_status,
+                                        linkedin_connection_status, is_admin)
+    try:
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(
+                f"SELECT {_ADMIN_USER_LIST_FIELDS} {_ADMIN_USER_LIST_FROM}{where} "
+                "ORDER BY u.id DESC LIMIT %s OFFSET %s",
+                (*params, int(limit), int(offset)))
+            return cursor.fetchall() or []
+    except mysql.connector.Error as err:
+        log_error("Could not list users for the admin panel", exc=err)
+        return []
+
+
+def count_users_for_admin(search: Optional[str] = None,
+                          subscription_status: Optional[str] = None,
+                          linkedin_connection_status: Optional[str] = None,
+                          is_admin: Optional[bool] = None) -> int:
+    """How many users match the same filters — the denominator the pager renders."""
+    where, params = _admin_user_filters(search, subscription_status,
+                                        linkedin_connection_status, is_admin)
+    try:
+        with db_cursor() as cursor:
+            cursor.execute(f"SELECT COUNT(*) {_ADMIN_USER_LIST_FROM}{where}", tuple(params))
+            row = cursor.fetchone()
+            return int(row[0]) if row else 0
+    except mysql.connector.Error as err:
+        log_error("Could not count users for the admin panel", exc=err)
+        return 0
+
+
+def get_user_for_admin(user_id: int) -> Optional[dict]:
+    """The detail drawer's row, or None when there is no such user."""
+    try:
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(
+                f"SELECT {_ADMIN_USER_DETAIL_FIELDS} {_ADMIN_USER_DETAIL_FROM} WHERE u.id = %s",
+                (int(user_id),))
+            return cursor.fetchone()
+    except mysql.connector.Error as err:
+        log_error(f"Could not read user {user_id} for the admin panel", exc=err)
+        return None
+
+
+def count_admin_users() -> Optional[int]:
+    """How many EFFECTIVE admins the deployment has — the input to the last-admin guard.
+
+    `None`, never 0, when the count could not be read. 0 means "nobody is an admin", which is the
+    one answer that must never be guessed: it would refuse every revoke on a DB hiccup, including
+    the ones an operator is running to fix a lockout. The route answers 503 on `None`.
+    """
+    fragment, params = _effective_admin_sql()
+    try:
+        with db_cursor() as cursor:
+            cursor.execute(f"SELECT COUNT(*) FROM users u WHERE {fragment}", tuple(params))
+            row = cursor.fetchone()
+            return int(row[0]) if row else 0
+    except mysql.connector.Error as err:
+        log_error("Could not count admin users", exc=err)
+        return None
+
+
+def set_user_admin(user_id: int, is_admin: bool) -> bool:
+    """Flip `users.is_admin` for one account.
+
+    The GUARDS are the route's job, not this function's — it is the write, and a write that also
+    decided policy would be two things to keep in step.
+
+    False when no row changed, so "user 999 does not exist" cannot read as a successful grant.
+    """
+    try:
+        with db_cursor(commit=True) as cursor:
+            cursor.execute("UPDATE users SET is_admin = %s WHERE id = %s",
+                           (1 if is_admin else 0, int(user_id)))
+            return cursor.rowcount > 0
+    except mysql.connector.Error as err:
+        log_error(f"Could not set admin flag for user_id {user_id}", exc=err)
+        return False
+
+
 def get_feedback_list(status: Optional[Union["FeedbackStatus", str]] = None,
                       source: Optional[Union["FeedbackSource", str]] = None,
                       limit: int = 50, offset: int = 0) -> list:

@@ -309,6 +309,12 @@ class AuthAuditEvent(StrEnum):
     # boundary emits. `details` carries the KIND of identifier and the path, never the value: the
     # caller-supplied half is somebody else's address and the audit log is not where it accumulates.
     FOREIGN_TARGET_DENIED = "foreign_target_denied"
+    # An admin granted or removed another account's admin role from `/admin/users` (#1450). Keyed
+    # on the TARGET account like every other event here — the acting admin rides in `details` as
+    # `actor_user_id` — so the person it happened to sees it in their own Security card. No
+    # migration: `auth_audit_log.event` is VARCHAR(50), not an ENUM.
+    ADMIN_GRANTED = "admin_granted"
+    ADMIN_REVOKED = "admin_revoked"
 
 
 class FollowStatus(StrEnum):
