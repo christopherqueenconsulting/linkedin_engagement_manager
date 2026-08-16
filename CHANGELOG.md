@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.154.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.153.3...v0.154.0) (2026-08-16)
+
+
+### Features
+
+* **admin:** add the user management surface behind is_user_admin (closes [#1450](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1450)) ([#1604](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1604)) ([83fe09a](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/83fe09a3bed4314d83946b67d9421e990c933842))
+* **content-quality:** retain a shipped video's keyframes so R1/R8 stay gradable ([#1363](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1363)) ([#1595](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1595)) ([e312e9d](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/e312e9dd2e94d18ae639dea7f603b29b01b7a566))
+
+
+### Bug Fixes
+
+* **agents:** fold the v2 phase guard into selfreview (closes [#1396](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1396)) ([#1606](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1606)) ([d798307](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/d798307b8486cdd9bf8f239512067f021853d066))
+* **image:** state what a named screen shows, so a render prompt cannot leak marks (refs [#1376](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1376)) ([#1607](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1607)) ([3c6bd10](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/3c6bd10bb0553ad9e54a6c05a3e82b839f73d433))
+* **media:** tie a stored media URL to the render behind it (closes [#1377](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1377)) ([#1608](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1608)) ([23b841f](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/23b841fa939589a4dfd6d795c38f1e79f1df08f8))
+* **outreach:** grade the zero-card mentions read against the page itself (closes [#1374](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1374)) ([#1609](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1609)) ([81922a5](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/81922a5fdda44bf9640d5b6b825f60fcf191ef1d))
+* **sdui:** ground the home-feed sort chain on a live sighting (closes [#1108](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1108)) ([#1594](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1594)) ([265d58f](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/265d58fffd593bd9522cefe03c9dce76400d5934))
+* **ui:** corroborate a 401 before signing the tab out (closes [#1358](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1358)) ([#1610](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1610)) ([ad60367](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/ad60367eb10c07b853b39ce490404a8d34beab4f))
+
+
+### Documentation
+
+* **avatars:** record the 2026-08-16 likeness-measurement path (refs [#1430](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1430)) ([#1599](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1599)) ([b909cea](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/b909cea509be06d11454907489a268fe51b03794))
+* **engagement:** settle reciprocity's input and the unknown probe grade (closes [#1091](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1091)) ([#1592](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1592)) ([00bc18c](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/00bc18c9699c8aa0afe4c7f44c680b9a77593341))
+* **invites:** record the stale-invite flip as done, with the two nights that prove it (closes [#1006](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1006)) ([#1596](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1596)) ([13310d5](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/13310d5dac520ad8cf7203d27dc683ff3bf71ad2))
+
 ## [0.153.3](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.153.2...v0.153.3) (2026-08-16)
 
 
