@@ -2223,6 +2223,10 @@ _ENGAGEMENT_DEFAULTS: dict = {
     # and independent of the follow toggle: an invite is heavier and less reversible than a follow,
     # and it spends the account's ONE combined invite budget.
     "roster_auto_connect": False,
+    # Direct dispatch for cold profile-viewer outreach (issue #1137). OFF by default: with it off
+    # both branches of engage_with_profile_viewer file an approval-gated row instead of sending,
+    # which is the only lane where a stranger hears from us with nobody having looked first.
+    "profile_viewer_dm_auto_send": False,
 }
 _ENGAGEMENT_JSON_FIELDS = ("include_topics", "exclude_topics", "include_keywords",
                            "exclude_keywords", "include_authors", "exclude_authors", "post_types",
@@ -2230,7 +2234,8 @@ _ENGAGEMENT_JSON_FIELDS = ("include_topics", "exclude_topics", "include_keywords
                            "posting_days")
 _ENGAGEMENT_BOOL_FIELDS = ("use_emojis", "use_hashtags", "reply_to_own_comments",
                            "feed_fallback_when_empty", "link_in_first_comment",
-                           "text_post_images", "roster_auto_follow", "roster_auto_connect")
+                           "text_post_images", "roster_auto_follow", "roster_auto_connect",
+                           "profile_viewer_dm_auto_send")
 _ENGAGEMENT_COLS = ("tone", "comment_length", "comment_style", "use_emojis", "use_hashtags",
                     "include_topics", "exclude_topics", "include_keywords", "exclude_keywords",
                     "include_authors", "exclude_authors", "post_types", "focus_topics",
@@ -2248,7 +2253,7 @@ _ENGAGEMENT_COLS = ("tone", "comment_length", "comment_style", "use_emojis", "us
                     "catchup_message_source", "min_catchup_contact_interval_days",
                     "max_catchup_touches_per_contact_days", "posts_per_week", "posting_days",
                     "text_post_images", "roster_auto_follow", "max_follows_per_day",
-                    "roster_auto_connect")
+                    "roster_auto_connect", "profile_viewer_dm_auto_send")
 
 VALID_REPLY_MODES = ("event", "scheduled", "off")
 # Approval posture for the proactive connect flow (issue #398 owner review).
@@ -2681,6 +2686,14 @@ SCHEDULED_DM_SOURCE_NURTURE = 'nurture'
 # draft cap and its own delivery count; the one-open-draft rule is deliberately SHARED across the
 # two (both write to the same thread, so two queued messages would read as spam to one person).
 SCHEDULED_DM_SOURCE_ARTIFACT = 'artifact'
+# scheduled_dms.source for a profile-viewer DM held for approval (issue #1137) — the cold lane, so
+# its draft is the thing the operator sees before it can reach anyone. Its own source value is what
+# lets the send path re-start the 'profile_viewer' follow-up ladder at the moment the DM actually
+# LANDS, rather than when it was drafted for a decision that may never come.
+SCHEDULED_DM_SOURCE_PROFILE_VIEWER = 'profile_viewer'
+# connection_requests.source for the same lane's other branch. `connection_requests` already carries
+# `source` as targeting provenance (issue #486), so the person approving sees which walk found them.
+CONNECTION_REQUEST_SOURCE_PROFILE_VIEWER = 'profile_viewer'
 
 
 

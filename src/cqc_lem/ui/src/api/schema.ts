@@ -3937,6 +3937,8 @@ export interface components {
             posting_days: number[];
             /** Posts Per Week */
             posts_per_week: number;
+            /** Profile Viewer Dm Auto Send */
+            profile_viewer_dm_auto_send: boolean;
             /** Reply Check Mode */
             reply_check_mode: string;
             /** Reply Inbound Address */
@@ -4142,6 +4144,11 @@ export interface components {
              * @default 3
              */
             posts_per_week: number;
+            /**
+             * Profile Viewer Dm Auto Send
+             * @default false
+             */
+            profile_viewer_dm_auto_send: boolean;
             /**
              * Reply Check Mode
              * @default event

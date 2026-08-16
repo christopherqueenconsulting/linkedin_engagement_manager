@@ -348,6 +348,12 @@ class TestProfileViewerBranch:
     """Both sides of the 1st-vs-other branch the dead badge silently collapsed into one."""
 
     def _engage(self, connection, activities=()):
+        """Run one engagement with `profile_viewer_dm_auto_send` ON.
+
+        Which BRANCH a viewer takes is what this class is about, and the #1137 approval gate is a
+        question about what each branch then does — so the toggle is held ON here to keep the
+        dispatch mocks below the branch's observable outcome.
+        """
         from cqc_lem.app.engagement import outreach as ra
         profile_data = {"full_name": "Jane Doe", "connection": connection,
                         "profile_url": "https://www.linkedin.com/in/jane-doe",
@@ -359,6 +365,8 @@ class TestProfileViewerBranch:
              patch(f"{_OUT}.get_current_profile",
                    return_value=(MagicMock(), MagicMock(), "chris@example.com", my_profile)), \
              patch(f"{_OUT}.get_linkedin_profile_from_url", return_value=profile_data), \
+             patch(f"{_OUT}.get_engagement_preferences",
+                   return_value={"profile_viewer_dm_auto_send": True}), \
              patch(f"{_OUT}.get_or_create_profile_synthesis", return_value="voice"), \
              patch(f"{_OUT}.generate_and_post_comment", return_value=True) as commented, \
              patch(f"{_OUT}.summarize_recent_activity", return_value="they shipped a thing"), \

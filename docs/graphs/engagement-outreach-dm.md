@@ -111,10 +111,13 @@ flowchart TD
    directly** — no `scheduled_dms` row, no human approval step.
 6. **Profile-viewer engagement** (`engage_with_profile_viewer`) branches on connection degree: a
    1st-degree viewer who has nothing new to comment on gets a `build_dm_from_template("profile_viewer", ...)`
-   message deduped against DM history (`ai_check_message_history`) and sent via
-   **`send_private_dm.apply_async` directly**; a non-1st-degree viewer gets a personalized
-   connection request via **`invite_to_connect.apply_async` directly**. Neither branch touches
-   `scheduled_dms`.
+   message deduped against DM history (`ai_check_message_history`); a non-1st-degree viewer gets a
+   personalized connection request. **Both branches were direct dispatch until issue #1137**
+   (`send_private_dm.apply_async` / `invite_to_connect.apply_async`, neither touching
+   `scheduled_dms`) — that is the state the rubric below scores. The redesign it produced has
+   SHIPPED: the ONE `profile_viewer_dm_auto_send` preference (default OFF) now files a PENDING
+   `scheduled_dms` / `connection_requests` row instead, and direct dispatch is what the toggle turns
+   back on. See "Proposed redesign" below and `docs/engagement-automation.md`.
 7. **Template follow-up sequence steps ≥1** (`process_user_followups`, the non-REPLIED /
    non-UNKNOWN branch): `build_dm_from_template(event_type, step=f["next_step"])` renders the next
    templated message and sends it via **`send_private_dm.apply_async` directly**, then
@@ -237,7 +240,7 @@ second dispatch path — the toggle already IS the human-in-the-loop decision th
 toggle check is the literal first statement, with no path around it — reverting T6 was the *correct*
 call, not just the safe one.
 
-### Proposed redesign
+### Proposed redesign — SHIPPED in issue #1137
 
 ```mermaid
 flowchart TD
@@ -272,3 +275,15 @@ recipient, or self-directed action).
 should be updated to add a `GATE4` node mirroring `GATE6`'s shape (this write-up was prose-only at
 the time of the win); worth adding a Verifier bullet for the new toggle mirroring the existing
 nurture-path bullet, so the new gate is checkable the same way.
+
+**As built (#1137).** Two things the diagram above leaves open, decided in the build:
+
+* **The follow-up ladder moved to the SEND.** Direct dispatch starts the `profile_viewer` sequence
+  the moment it fires; the gated path cannot, because a draft nobody approves would otherwise queue
+  follow-ups for a conversation that never began. `send_scheduled_dm` starts it when a
+  `source='profile_viewer'` DM actually lands, so gating the lane does not silently delete its
+  follow-ups (or the reply check behind them, which is what makes nurture reachable — #623).
+* **Both queue paths dedup before writing.** The DM shares the one-open-draft-per-thread rule with
+  #485 nurture and #624 artifact (two queued messages read as spam to the one person receiving
+  them); the invite reuses `get_requested_person_keys`, the same ever-requested dedup the nightly
+  sourcing scan uses, because the analytics page lists the same viewer day after day.

@@ -1335,6 +1335,10 @@
             "title": "Posts Per Week",
             "type": "integer"
           },
+          "profile_viewer_dm_auto_send": {
+            "title": "Profile Viewer Dm Auto Send",
+            "type": "boolean"
+          },
           "reply_check_mode": {
             "title": "Reply Check Mode",
             "type": "string"
@@ -1436,6 +1440,7 @@
           "roster_auto_follow",
           "max_follows_per_day",
           "roster_auto_connect",
+          "profile_viewer_dm_auto_send",
           "max_catchup_touches_per_day",
           "catchup_touch_mode",
           "catchup_event_types",
@@ -1742,6 +1747,11 @@
             "default": 3,
             "title": "Posts Per Week",
             "type": "integer"
+          },
+          "profile_viewer_dm_auto_send": {
+            "default": false,
+            "title": "Profile Viewer Dm Auto Send",
+            "type": "boolean"
           },
           "reply_check_mode": {
             "default": "event",

@@ -113,6 +113,7 @@ class TestPartialUpdateKeepsTheRest:
         "posts_per_week": 5, "posting_days": '[0, 2, 4, 6]',
         "text_post_images": 0,
         "roster_auto_follow": 1, "max_follows_per_day": 4, "roster_auto_connect": 1,
+        "profile_viewer_dm_auto_send": 1,
     }
     # Round-tripped through the upsert, every column persists back exactly as it was stored.
     _EXPECTED = dict(_STORED)
