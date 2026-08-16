@@ -142,7 +142,10 @@ to `POSTHOG_PERSONAL_API_KEY`, so nothing changes until a scoped key exists. **O
 order:** create the three scoped keys in the PostHog UI (project `475262`), populate one consumer at
 a time, verify that consumer, and revoke the shared key LAST. Three consumers fail SILENTLY — flags
 read their env defaults, the SPA stats panel goes empty, the error cron files nothing — so verify
-per surface, not by "the deploy was green". Full table + verification steps:
+per surface, not by "the deploy was green". **Before the revoke, settle `scripts/benchmark_models.py`:**
+the weekly `weekly_model_check.sh` cron sources the shared key from `/opt/lem/.env` for it, so that
+lane is a stored-credential consumer, not a hand-run one, and it degrades silently to the in-runner
+judge when the key goes. Full table + verification steps:
 `docs/kpi-dashboards.md` § Purpose-scoped personal keys.
 
 ---

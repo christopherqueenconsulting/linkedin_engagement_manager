@@ -22,9 +22,11 @@ nothing changes there, so the keys can be created and populated one consumer at 
 key revoked last (`docs/kpi-dashboards.md`). An unset scoped var is the normal state, never an error.
 
 The provisioning scripts (`posthog_provision`, `posthog_flags`, `posthog_surveys`,
-`posthog_experiments`, `posthog_dashboards`, `posthog_ops_destination`, `benchmark_models`) are run
-by hand and deliberately do NOT appear here: they need a broad operator key that is exported into a
-shell for the run and stored nowhere.
+`posthog_experiments`, `posthog_dashboards`, `posthog_ops_destination`) are run by hand and
+deliberately do NOT appear here: they need a broad operator key that is exported into a shell for
+the run and stored nowhere. `scripts/benchmark_models.py` also reads the shared key and is NOT one
+of them — `scripts/weekly_model_check.sh` (host cron) sources it from `/opt/lem/.env` — so it needs
+its own decision before the shared key is revoked (`docs/kpi-dashboards.md`).
 
 **stdlib-only, and it stays that way** — `scripts/posthog_annotate.py` runs on a bare CI runner with
 only `requests` installed, and `scripts/posthog_error_issues.py` runs from a cron clone, so both put
