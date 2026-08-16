@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import api from '../../api/client'
 import { useAuth } from '../../contexts/useAuth'
+import { sectionSaveCallbacks, useRegisterSaveSection } from './settingsSave'
 
 export default function ContentProfileCard() {
   const { user, sessionToken } = useAuth()
@@ -81,9 +82,18 @@ export default function ContentProfileCard() {
     },
   })
 
+  // Every other card in the Settings hub plugs into Save All and the unsaved-changes guard; this
+  // one never did, so an edited Blog URL was dropped without a word by the dock that says it saved
+  // everything, and navigating away took the edit with it. Same complaint as the rest of #1574 —
+  // the user pressed Save and nothing was written.
+  const isDirty = (blogEdit !== null && blogEdit !== (settingsData?.blog_url ?? '')) ||
+    (sitemapEdit !== null && sitemapEdit !== (settingsData?.sitemap_url ?? ''))
+  useRegisterSaveSection('content-profile', 'Content & Profile', isDirty,
+    () => saveMutation.mutateAsync().then(() => true))
+
   function handleSave(e: React.FormEvent) {
     e.preventDefault()
-    saveMutation.mutate()
+    saveMutation.mutate(undefined, sectionSaveCallbacks('content-profile'))
   }
 
   return (

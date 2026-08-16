@@ -3,6 +3,13 @@ import type { ReactNode } from 'react'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import ContentProfileCard from './ContentProfileCard'
+import { SaveAllBar, SettingsSaveProvider } from './SettingsSaveContext'
+
+const capture = vi.fn()
+vi.mock('../../utils/analytics', () => ({
+  capture: (...args: unknown[]) => capture(...args),
+  EVENTS: { prefsSaved: 'prefs_saved' },
+}))
 
 const get = vi.fn()
 const put = vi.fn()
@@ -28,9 +35,19 @@ function harness(ui: ReactNode) {
 const blogField = () => screen.getByPlaceholderText('https://yourblog.com') as HTMLInputElement
 const save = () => screen.getByRole('button', { name: /^Save$/i })
 
+function hubHarness(ui: ReactNode) {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  return render(
+    <QueryClientProvider client={client}>
+      <SettingsSaveProvider>{ui}<SaveAllBar /></SettingsSaveProvider>
+    </QueryClientProvider>
+  )
+}
+
 beforeEach(() => {
   get.mockReset()
   put.mockReset()
+  capture.mockReset()
   localStorage.clear()
 })
 afterEach(cleanup)
@@ -79,6 +96,37 @@ describe('ContentProfileCard (issue #1574)', () => {
     fireEvent.click(save())
     await waitFor(() => expect(screen.getByText('Settings saved!')).toBeTruthy())
     expect(get).toHaveBeenCalledTimes(2)
+  })
+
+  it('is a Save All section, so the dock does not report saving an edit it dropped', async () => {
+    get.mockResolvedValue(settings('https://old.example.com', null))
+    put.mockResolvedValue({ data: { detail: 'ok' } })
+    hubHarness(<ContentProfileCard />)
+    await waitFor(() => expect(blogField().value).toBe('https://old.example.com'))
+    expect(screen.queryByRole('button', { name: /Save All/ })).toBeNull()
+    fireEvent.change(blogField(), { target: { value: 'https://new.example.com' } })
+    const saveAll = await screen.findByRole('button', { name: /Save All/ })
+    fireEvent.click(saveAll)
+    await waitFor(() =>
+      expect(capture).toHaveBeenCalledWith('prefs_saved', { section: 'content-profile', ok: true })
+    )
+    expect(put).toHaveBeenCalledWith('/user/', {
+      session_token: 'tok',
+      blog_url: 'https://new.example.com',
+      sitemap_url: null,
+    })
+  })
+
+  it('reports its own Save button under the same section id as Save All', async () => {
+    get.mockResolvedValue(settings(null, null))
+    put.mockResolvedValue({ data: { detail: 'ok' } })
+    harness(<ContentProfileCard />)
+    await waitFor(() => expect(blogField()).toBeTruthy())
+    fireEvent.change(blogField(), { target: { value: 'https://new.example.com' } })
+    fireEvent.click(save())
+    await waitFor(() =>
+      expect(capture).toHaveBeenCalledWith('prefs_saved', { section: 'content-profile', ok: true })
+    )
   })
 
   it('reports a failed save', async () => {
