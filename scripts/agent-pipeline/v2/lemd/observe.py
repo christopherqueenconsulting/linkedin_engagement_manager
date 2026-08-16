@@ -54,15 +54,31 @@ ACT_PARK = "park"                # stop and ASK — a state no lane can move
 #: true of every park that reaches it through `act()` and FALSE of both rows below — neither has
 #: spent anything. A Decision Comment that misstates why it was raised is worse than a terse one:
 #: the owner picks an option against the reason they were given.
+#:
+#: Each detail also names what the RETRY options cannot do here, and that half is load-bearing. A
+#: budget park is released by the un-park itself — the ledger reset IS the fix, so `1A`/`1B` really
+#: do restart it. These two are raised from a GitHub fact the un-park does not touch: the issue goes
+#: back on the queue, the next observation re-reads the same linked PR state, and it parks again on
+#: the spot. Offering "try again" without saying that costs the owner a round trip per answer and
+#: ends at `agent:abandoned` after `LEMD_MAX_PARK_LAPS` of them. So the sentence that actually
+#: unblocks it is written down: the linkage is what is read, so changing the linkage (or closing the
+#: issue) is what moves it. Whether the pipeline should re-attempt a rejected approach on the
+#: owner's say-so is a product call, tracked separately.
 PARK_DETAILS: dict[str, str] = {
     "work_shipped_needs_close": (
         "The newest pull request linked to this issue is **merged**, so the work has shipped and "
-        "this issue is just still open. Nothing is in flight and nothing here will move it."
+        "this issue is just still open. Nothing is in flight and nothing here will move it. Note "
+        "that `1A`/`1B` will not restart it — the merged link is what stopped it and re-queueing "
+        "re-reads the same fact. Closing this is the real answer; if scope genuinely remains, file "
+        "it as a fresh issue."
     ),
     "approach_rejected": (
         "The newest pull request linked to this issue was **closed without merging**, so the "
         "approach was rejected. Restarting would redo work that has already been turned down, so "
-        "the pipeline stopped instead."
+        "the pipeline stopped instead. Note that `1A`/`1B` will not restart it either — the closed "
+        "link is what stopped it, so re-queueing parks it again immediately. To have it "
+        "re-attempted, remove the `Closes #<this issue>` line from that pull request's body (which "
+        "drops the link the pipeline reads) or file a fresh issue."
     ),
 }
 

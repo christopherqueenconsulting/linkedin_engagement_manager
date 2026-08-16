@@ -340,6 +340,20 @@ def test_every_decide_raised_park_reason_carries_a_detail():
     assert raised <= set(observe.PARK_DETAILS)
 
 
+def test_every_detail_says_the_retry_options_cannot_move_it():
+    """`park.sh` offers `1A`/`1B` unconditionally, and for these two they are unachievable.
+
+    A budget park is released by the un-park itself — the ledger reset IS the fix. These are raised
+    from a GitHub fact the un-park does not touch, so an owner who answers `1A` gets the issue back
+    on the queue, re-observed, and parked again on the spot: `LEMD_MAX_PARK_LAPS` round trips and
+    then `agent:abandoned`. The options are fixed text in the action, so the honest sentence has to
+    ride in the detail — asserted here so it cannot quietly drift back out.
+    """
+    for reason, detail in observe.PARK_DETAILS.items():
+        assert "`1A`/`1B` will not restart it" in detail, reason
+        assert "fresh issue" in detail, reason
+
+
 def test_the_park_script_recommends_closing_rather_than_retrying():
     """`1B` (rebase and retry) is the right advice for a spent budget and wrong for both of these.
 
