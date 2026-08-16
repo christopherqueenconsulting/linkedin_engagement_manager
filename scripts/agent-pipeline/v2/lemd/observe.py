@@ -36,12 +36,35 @@ ACT_UNPARK = "unpark"            # gh-only: the owner answered — release the h
 ACT_DISARM = "disarm"            # gh-only: a hold appeared on an armed PR — take the arm off
 ACT_ABANDON = "abandon"          # gh-only: stop asking — this question has been asked enough
 ACT_CLOSE = "close"              # terminal bookkeeping
+ACT_PARK = "park"                # stop and ASK — a state no lane can move
 
-# There is deliberately no ACT_PARK. Escalation to the owner is not a decision this function makes —
-# it happens at DISPATCH, when `act()` finds the ledger spent and queues `park.sh` via `_park()`.
-# An `ACT_PARK` constant existed here for months and was never returned, while three branches wrote
-# `state=parked` through ACT_NONE and produced no comment, no label and no disarm. If `decide()`
-# ever needs to escalate, add it back and wire `_observe_one` to it in the same change.
+# `ACT_PARK` is back, and the terms it was removed under (#1386) are the terms it returns under: it
+# is RETURNED by `decide()`, WIRED in `_observe_one`, and reaches `park.sh` through the same gh-pool
+# action a budget park uses — all in one change, with a test that it is reachable so the
+# dead-constant situation cannot recur. It existed for months without any of that, while three
+# branches wrote `state=parked` through ACT_NONE and produced no comment, no label and no disarm.
+#
+# The case that needed it (#1405): an issue whose newest linked PR is MERGED or CLOSED-unmerged is a
+# genuine ASK, not a "not ours". Escalation still happens at DISPATCH for a spent ledger — `act()`
+# queues `park.sh` via `_park()` — and this joins that path rather than opening a second one.
+
+#: What `park.sh` prints as the one-line detail above its options, per park reason.
+#:
+#: Without an entry the action falls back to "the automated lane exhausted its budget", which is
+#: true of every park that reaches it through `act()` and FALSE of both rows below — neither has
+#: spent anything. A Decision Comment that misstates why it was raised is worse than a terse one:
+#: the owner picks an option against the reason they were given.
+PARK_DETAILS: dict[str, str] = {
+    "work_shipped_needs_close": (
+        "The newest pull request linked to this issue is **merged**, so the work has shipped and "
+        "this issue is just still open. Nothing is in flight and nothing here will move it."
+    ),
+    "approach_rejected": (
+        "The newest pull request linked to this issue was **closed without merging**, so the "
+        "approach was rejected. Restarting would redo work that has already been turned down, so "
+        "the pipeline stopped instead."
+    ),
+}
 
 
 @dataclass(frozen=True)
@@ -74,6 +97,12 @@ class Snapshot:
     #: a run that pushed and then died, which is RESUMABLE, not in flight. `None` = could not tell,
     #: which waits.
     has_open_pr: bool | None = None
+    #: For an ISSUE whose work exists: the state of the NEWEST linked PR — `OPEN`, `MERGED`,
+    #: `CLOSED`, or None. `has_open_pr` cannot answer this: it returns True for ANY linked ref by
+    #: design, because `False` is what licenses a re-dispatch and a ref of unknown state must never
+    #: do that. So `MERGED` and `CLOSED` both read as in-flight there and wait for ever (#1405).
+    #: None covers "nothing linked" AND "could not read it", which are the same decision: wait.
+    linked_pr_state: str | None = None
     #: The owner's newest reply to the latest Decision Comment, when this item is held. Read ONLY
     #: for held items — every other decision is reached without the extra call.
     answer: answers.Answer | None = None
@@ -199,7 +228,20 @@ def _work_in_flight_or_stranded(snap: Snapshot, ttl_review: int,
     Re-dispatching `start` RESUMES: the worktree is created on the existing branch, so the agent
     continues rather than starting over. And it is bounded by the `start` budget like any other
     dispatch, so a branch that cannot be finished parks and ASKS instead of waiting silently.
+
+    The two PARK rows sit above the wait deliberately (#1405). `has_open_pr` answers True for any
+    linked ref whatever its state, so a merged or closed-unmerged PR reads as in flight here and the
+    wait never ends: the next observation re-reads the same linkage and gets the same answer.
+    Neither state is "not ours" — a merged PR means the work shipped and only the issue is still
+    open, a closed-unmerged one means a human rejected the approach — so both ASK rather than
+    restart. Restarting a rejected approach would redo work that was already turned down.
     """
+    if snap.linked_pr_state == "MERGED":
+        return Decision(ACT_PARK, db.STATE_PARKED, "work_shipped_needs_close", mode="park",
+                        park_reason="work_shipped_needs_close")
+    if snap.linked_pr_state == "CLOSED":
+        return Decision(ACT_PARK, db.STATE_PARKED, "approach_rejected", mode="park",
+                        park_reason="approach_rejected")
     if snap.has_open_pr or snap.has_open_pr is None:
         # In flight, or unreadable. Unreadable waits: re-dispatching onto a live PR forks the work,
         # and one more TTL costs nothing by comparison.
@@ -601,15 +643,23 @@ def snapshot_issue(slug: str, number: int, *, owner: str | None = None,
     labels = frozenset(github.label_names(facts))
     work = None
     has_open_pr = None
+    linked_state = None
     if labels & WORK_SENSITIVE_LABELS:
         # Only asked when it can change the answer — this is two API calls, and every other issue
         # decision is reached without them. `agent:working` is in the set because a stranded claim
         # is told from an honest one by exactly this question, and asking it is what stops the
         # recovery path forking a branch that already exists.
-        work = _work_exists_for_issue(slug, number)
+        #
+        # `linked_pr_state` goes FIRST because all three questions here start from the same
+        # `closedByPullRequestsReferences` read, and it is the only one of the three that needs the
+        # refs themselves. Handing its answer to the other two is what keeps #1405's cost at the one
+        # extra `pr view` the STATE needs: an issue with linkage now makes the same two calls it
+        # always did, and an issue with nothing linked never reaches the `pr view` at all.
+        linked_state = github.linked_pr_state(slug, number)
+        work = _work_exists_for_issue(slug, number, linked_state=linked_state)
         if work:
             # Only asked when work exists, because it is only then that the answer changes anything.
-            has_open_pr = _open_pr_for_issue(slug, number)
+            has_open_pr = _open_pr_for_issue(slug, number, linked_state=linked_state)
     return Snapshot(
         kind="issue",
         number=number,
@@ -617,13 +667,16 @@ def snapshot_issue(slug: str, number: int, *, owner: str | None = None,
         state=(facts.get("state") or "OPEN").upper(),
         work_exists=work,
         has_open_pr=has_open_pr,
+        # `""` (read, nothing linked) is a fact about the READ, useful only to the two helpers
+        # above. `decide` asks a state question, so it sees the same None a failed read gives it.
+        linked_pr_state=linked_state or None,
         answer=_answer_for(slug, "issue", number, labels, owner),
         answer_routed=answer_routed,
         readable=True,
     )
 
 
-def _open_pr_for_issue(slug: str, number: int) -> bool | None:
+def _open_pr_for_issue(slug: str, number: int, *, linked_state: str | None = None) -> bool | None:
     """Is this issue's existing work an OPEN pull request?
 
     LINKED PRs are asked FIRST, and that ordering is the whole correctness of this function. The
@@ -632,9 +685,25 @@ def _open_pr_for_issue(slug: str, number: int) -> bool | None:
     PR is open and healthy — and this function's `False` is what licenses a re-dispatch. Getting
     that backwards forks live work, which is the one outcome the wait state exists to prevent.
 
+    Args:
+        slug: `owner/repo`.
+        number: The issue number.
+        linked_state: `github.linked_pr_state`'s answer, when a caller has already read it — a
+            state, `""` for "read, nothing linked", or None for "not read / unreadable". A resolved
+            state means linkage EXISTS, which is all this function asks: it deliberately answers
+            True for a merged or closed ref too, exactly as the unaided read does, because `False`
+            is what licenses a re-dispatch. Which state it is in is `decide`'s question (#1405), and
+            keeping that separation here is what makes the two park rows removable without changing
+            this answer.
+
     Returns:
         True / False, or None when either read failed.
     """
+    if linked_state:
+        return True
+    if linked_state == "":
+        # Read already, and empty — go straight to the fallback rather than asking GitHub twice.
+        return github.open_pr_for_branch(slug, f"feature/claude-issue-{number}")
     try:
         linked = github.gh_json(
             ["issue", "view", str(number), "--repo", slug, "--json",
@@ -654,17 +723,29 @@ def _open_pr_for_issue(slug: str, number: int) -> bool | None:
     return github.open_pr_for_branch(slug, f"feature/claude-issue-{number}")
 
 
-def _work_exists_for_issue(slug: str, number: int) -> bool | None:
+def _work_exists_for_issue(slug: str, number: int, *,
+                           linked_state: str | None = None) -> bool | None:
     """Has a previous run left anything behind for this issue?
 
     Two sources, cheapest first, and BOTH from GitHub rather than the local checkout: what decides
     this is whether the work left the box. A local branch proves only that `git checkout -b` ran,
     which every attempt does before it does anything useful.
 
+    Args:
+        slug: `owner/repo`.
+        number: The issue number.
+        linked_state: `github.linked_pr_state`'s answer, when a caller has already read it. This
+            function only ever asked whether linkage EXISTS, which that answer already carries — a
+            state means yes, `""` means read-and-no, None means ask for yourself.
+
     Returns:
         True on a linked PR or an existing remote branch, False when both are readable and absent,
         and None when either read failed — "I could not tell" is not "there is nothing there".
     """
+    if linked_state:
+        return True
+    if linked_state == "":
+        return github.branch_exists(slug, f"feature/claude-issue-{number}")
     try:
         linked = github.gh_json(
             ["issue", "view", str(number), "--repo", slug, "--json",

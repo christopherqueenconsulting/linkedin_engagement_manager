@@ -66,16 +66,33 @@ else
   gh issue edit "$NUMBER" --repo "$SLUG" --add-assignee "$ASSIGNEE" >/dev/null 2>&1
 fi
 
+# WHICH option carries the ✅ depends on why we stopped. `B` (rebase and retry) is right for a lane
+# that ran out of budget — the default, and every park `act()` raises. It is wrong advice for the
+# parks `decide()` raises (#1405): a merged linked PR means the work already shipped and a
+# closed-unmerged one means the approach was turned down, and retrying either is the one thing not
+# to do. An unrecognised reason keeps the retry recommendation, so this can only ever soften.
+REC="B"
+case "$REASON" in
+  work_shipped_needs_close|approach_rejected) REC="C" ;;
+esac
+MARK=" ✅ *recommended*"
+A_MARK=""; B_MARK=""; C_MARK=""
+case "$REC" in
+  A) A_MARK="$MARK" ;;
+  C) C_MARK="$MARK" ;;
+  *) B_MARK="$MARK" ;;
+esac
+
 BODY="🛑 **Human decision needed** — the pipeline has parked this ${KIND} (\`${REASON}\`).
 
 ${DETAIL:-The automated lane exhausted its budget for this work and stopped rather than repeating a run that has not been converging.}
 
 ### 1. How should we proceed?
-- **A. Try again as-is** — I have fixed the underlying problem.
-- **B. Rebase onto latest main and retry** — main has moved since this was last attempted.  ✅ *recommended*
-- **C. Close this** — I will handle it manually.
+- **A. Try again as-is** — I have fixed the underlying problem.${A_MARK}
+- **B. Rebase onto latest main and retry** — main has moved since this was last attempted.${B_MARK}
+- **C. Close this** — I will handle it manually.${C_MARK}
 
-**My recommendation: \`1B\`.** Reply with the question number and letter — e.g. \`1B\` — or \`ok\` to take the recommendation. (A bare \`B\` is NOT recognised as an answer; the answer lane needs the number.)"
+**My recommendation: \`1${REC}\`.** Reply with the question number and letter — e.g. \`1B\` — or \`ok\` to take the recommendation. (A bare \`B\` is NOT recognised as an answer; the answer lane needs the number.)"
 
 if [ "$KIND" = "pr" ]; then
   gh pr comment "$NUMBER" --repo "$SLUG" --body "$BODY" >/dev/null 2>&1
