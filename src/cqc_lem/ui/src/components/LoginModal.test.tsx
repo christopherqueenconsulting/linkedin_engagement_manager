@@ -4,9 +4,14 @@ import LoginModal from './LoginModal'
 
 const post = vi.fn()
 const login = vi.fn()
+const auth: { sessionEndedReason: string | null } = { sessionEndedReason: null }
 vi.mock('../api/client', () => ({ default: { post: (...args: unknown[]) => post(...args) } }))
 vi.mock('../contexts/useAuth', () => ({
-  useAuth: () => ({ closeLoginModal: vi.fn(), login: (...a: unknown[]) => login(...a) }),
+  useAuth: () => ({
+    closeLoginModal: vi.fn(),
+    login: (...a: unknown[]) => login(...a),
+    sessionEndedReason: auth.sessionEndedReason,
+  }),
 }))
 vi.mock('../utils/attribution', () => ({ getAttribution: () => ({}) }))
 vi.mock('../utils/analytics', () => ({ recordSignup: vi.fn() }))
@@ -18,6 +23,7 @@ vi.mock('../utils/webauthn', () => ({
 beforeEach(() => {
   post.mockReset()
   login.mockReset()
+  auth.sessionEndedReason = null
 })
 afterEach(cleanup)
 
@@ -122,6 +128,24 @@ describe('LoginModal — strong authentication (issue #745, phase 2c)', () => {
     await waitFor(() => expect(login).toHaveBeenCalledWith('tok3', 'me@example.com'))
     expect(post.mock.calls[0][0]).toBe('/auth/passkey/login/begin')
     expect(post.mock.calls[0][1]).toEqual({})
+  })
+})
+
+// Issue #1358. A session that ends by itself used to be a silent `window.location.href = '/'` —
+// which is how a partial backend outage got reported as "I cannot log in" for most of a day.
+describe('LoginModal after a session ended on its own', () => {
+  it('says why the sign-in form is up', () => {
+    auth.sessionEndedReason = 'Your session expired, so you were signed out.'
+    render(<LoginModal />)
+    const notice = screen.getByRole('status')
+    expect(notice.textContent).toContain('Your session expired')
+    // Still a sign-in form, not an error page: the way out is right there.
+    expect(screen.getByPlaceholderText('your@email.com')).toBeTruthy()
+  })
+
+  it('shows nothing when the user opened it themselves', () => {
+    render(<LoginModal />)
+    expect(screen.queryByRole('status')).toBeNull()
   })
 })
 

@@ -1,5 +1,7 @@
 import axios from 'axios'
+import type { InternalAxiosRequestConfig } from 'axios'
 import { NEW_VERSION_MESSAGE, RELOADING_MESSAGE, recoverFromChunkError } from '../utils/chunkReload'
+import { announceSessionEnded } from '../utils/sessionEnd'
 
 // `baseURL` must stay RELATIVE. It is what makes every request same-origin whatever the host (dev
 // server, docker-compose, the prod nginx edge), and a custom header on a same-origin request is
@@ -50,13 +52,58 @@ api.interceptors.request.use((config) => {
   return config
 })
 
+// The ONE route whose 401 is an answer about the SESSION rather than about an endpoint (#1358).
+// Every other 401 says only that this request was not served — a route that lost its cookie
+// resolution (#1154/#1354), a scope narrowing, a handler asking the wrong question. Promoting one
+// of those to a global sign-out is what turned a partial outage into a lockout, so a 401 elsewhere
+// is now corroborated here before anything is torn down.
+const SESSION_ROUTE = '/auth/session'
+
+// A 401 from the session route is the auth layer's own business, and is deliberately NOT handled
+// here: `AuthProvider` boots on it (clear the stored sentinel) and `login()` answers it by falling
+// back to holding the token, which a teardown from underneath would break.
+function isSessionRoute(config: InternalAxiosRequestConfig | undefined): boolean {
+  return (config?.url ?? '').split('?')[0].endsWith(SESSION_ROUTE)
+}
+
+/** The corroborating request while it is in flight — one per burst, not one per 401. */
+let sessionProbe: Promise<void> | null = null
+
+/**
+ * Ask `/auth/session` whether the session is actually gone, and end it only if the answer is yes.
+ *
+ * One extra request, on a path that is already failing, and deduped across a burst — a dashboard
+ * mount fires a dozen requests at once, and twelve simultaneous 401s are still one question.
+ * Anything other than a 401 back (200, a 5xx, a network failure) leaves the session alone: the
+ * absence of proof that it died is not proof that it died.
+ */
+function confirmSessionEnded(): Promise<void> {
+  if (!sessionProbe) {
+    sessionProbe = api
+      .get(SESSION_ROUTE)
+      .then(() => undefined)
+      .catch((error) => {
+        if (error?.response?.status === 401) {
+          localStorage.removeItem('lem_session')
+          localStorage.removeItem('lem_email')
+          announceSessionEnded()
+        }
+      })
+      .finally(() => { sessionProbe = null })
+  }
+  return sessionProbe
+}
+
 api.interceptors.response.use(
   (r) => r,
   (error) => {
-    if (error.response?.status === 401) {
-      localStorage.removeItem('lem_session')
-      localStorage.removeItem('lem_email')
-      window.location.href = '/'
+    // No stored session means there is nothing to tear down and nothing to corroborate — a signed
+    // out visitor's 401 is just a 401. It is also what stops a burst of 401s AFTER a teardown from
+    // re-probing: the sentinel is gone by then.
+    if (error.response?.status === 401 &&
+        !isSessionRoute(error.config) &&
+        localStorage.getItem('lem_session')) {
+      void confirmSessionEnded()
     }
     // The server refused because this bundle sent no X-LEM-Client (issue #957) — it predates the
     // release that added it, i.e. a tab left open across that deploy. That is the stale-bundle case

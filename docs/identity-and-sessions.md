@@ -56,7 +56,8 @@ src.cqc_lem.api.main:app`, which is what the start script said until #1354) mean
 `session_cookie_middleware` publishes the cookie where no `api/routers/*.py` handler can read it.
 Cookie auth then returns `None` for every router-served route while the handful of routes still
 defined in `main.py` keep working, so **sign-in succeeds and everything after it 401s** — which the
-SPA's 401 interceptor turns into "cannot get past the login screen". Nothing raises. The guards are
+SPA's 401 interceptor turned into "cannot get past the login screen" (the amplification #1358 then
+removed: see *A 401 is about the endpoint* below). Nothing raises. The guards are
 `_guard_canonical_module()` (CRITICAL on an aliased import) and
 `tests/unit/api/test_canonical_module_identity.py`, which pins the uvicorn target in
 `compose/local/fastapi/start*`.
@@ -313,8 +314,8 @@ Enforcement is in `api/main._require_client_header()`, called from the **one res
 (`get_session_user_id`) on its cookie branch, before the scope check and before anything writes —
 the same argument as the session-scope narrowing (#905): the credential this defends against is the
 one the browser attaches by itself, so the check belongs where that credential is read, not at ~150
-call sites. Refusal is **403 `client_header_required`**, never 401, because the SPA's axios
-interceptor reads any 401 as a dead session and signs the user out.
+call sites. Refusal is **403 `client_header_required`**, never 401, because a 401 is the SPA's
+sign-out signal — corroborated since #1358, but still a sign-out, and "your app is stale" is not one.
 
 It applies to **every** state-changing cookie-authenticated `/api` request, not only those four —
 `POST`, `PUT`, `PATCH` and `DELETE` alike. The four are what made the gap visible; covering only
@@ -386,6 +387,41 @@ already covers.
 
 If a future change adds CORS with credentials, sets `SESSION_COOKIE_SAMESITE=none`, or adds another
 form-encoded/query-only mutating endpoint, this section is the thing that has to be revisited first.
+
+## A 401 is about the endpoint, not about the session (issue #1358)
+
+`/api/auth/session` is the ONE route whose 401 answers "am I signed in?". Every other 401 answers
+only "this request was not served" — a route that lost its cookie resolution, a scope narrowing, a
+handler asking the wrong question. Until #1358 `ui/src/api/client.ts` promoted any of them to a
+global verdict: clear `lem_session`, `window.location.href = '/'`.
+
+That is what made #1354 a lockout instead of a broken panel. `/api/dashboard/stats/` and
+`/api/activity/` answered **200** throughout, the passkey login itself returned 200 — and the first
+401 from a moved route discarded a session the browser had just been handed, then threw away the
+client state that would have explained it. Users reported "cannot log in" for most of a working day
+and login was never the thing that was broken. In the database every `sessions` row minted during
+the incident has `last_seen_at = created_at + 1s`.
+
+Three properties now, in `client.ts` + `contexts/AuthContext.tsx`:
+
+- **Corroborate before tearing down.** A 401 from anywhere else fires ONE `/auth/session` request —
+  deduped across a burst, and skipped entirely when no `lem_session` is held, which is also what
+  stops a post-teardown burst from re-asking. Only a 401 back ends the session. A 200, a 5xx or a
+  network failure leaves it alone: absence of proof that it died is not proof that it died. The
+  original error still rejects, so the failing panel surfaces its own failure.
+- **The session route's own 401 stays with the auth layer.** `AuthProvider` boots on it (drop the
+  stored sentinel) and `login()` answers it by falling back to holding the token — the path that
+  exists so a cookie a browser refused is never turned into a lockout. A teardown from underneath
+  would break exactly that.
+- **No hard redirect.** The teardown is announced as a window event (`SESSION_ENDED_EVENT`,
+  `utils/sessionEnd.ts` — the same shape as the chunk-reload notice) and `AuthProvider` performs it
+  as a state change. React Router moves the tab to the logged-out tree, client state and error
+  boundaries survive, and `sessionEndedReason` gives `LoginModal` something to say. A deliberate
+  `logout()` carries no reason — the user knows why that happened.
+
+Proof: `ui/src/api/client.test.ts` (the #1354 shape — session valid, some endpoints 401, some 200,
+user stays in; one probe per burst; sign-out once the session route agrees; never a redirect) and
+`ui/src/contexts/AuthContext.test.tsx`.
 
 ## Per-device sessions
 
