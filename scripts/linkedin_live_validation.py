@@ -1443,28 +1443,62 @@ def menu_item_labels(driver, limit: int = 40) -> list:
     return labels
 
 
-def feed_sort_candidates(driver, limit: int = 20) -> list:
+def _is_off_feed_link(element) -> bool:
+    """True for a link that navigates AWAY from the feed — never the home-feed sort trigger.
+
+    The 2026-08-16 grounding run measured why this filter has to exist: `main` does NOT open at the
+    share box the way the docstring below assumed. It opens at the LEFT RAIL, and its links
+    (`/in/<me>/`, two `/company/<id>/admin/`s, Premium, Saved items, Groups, Newsletters, Events,
+    Sales Navigator) took 17 of the 20 slots, the share box took the last 3, and the sort control —
+    a `div[role='button']` reading `Sort by: Top`, sitting immediately below the share box — never
+    made the capture at all. So on the very run that proved the chain works, the capture written to
+    re-ground the chain was still blind.
+
+    Keying on the href's own destination rather than on position keeps the same rule the shipped
+    chain's link route already enforces: a trigger that navigates has to stay on `/feed`, because a
+    link pointing anywhere else cannot be the control and clicking it walks the session off the page
+    the scan is about to read (#1030, and the #1012 wrong-entity hazard by URL). An unreadable href
+    is kept — dropping a row we could not read would hide exactly the element a re-grounding pass is
+    looking for.
+    """
+    try:
+        href = element.get_attribute("href")
+    except Exception:
+        return False
+    if not href:
+        return False
+    return "/feed" not in str(href).lower()
+
+
+def feed_sort_candidates(driver, limit: int = 20, scan_limit: int = 200) -> list:
     """Every interactive affordance in `main`, in DOCUMENT order, with its usable anchors.
 
     `visible_controls` could not re-ground #1108 and that is the whole reason this exists: it
     enumerates `<button>` labels only, so when the live feed rendered no button between the global
     nav and the first post, the capture proved the shipped chain was dead without showing what had
     replaced it — "re-ground from the evidence below" with nothing sort-shaped in the evidence.
-    Document order is the point: `main` opens at the share box, so wherever the control moved it is
-    in the first rows, and the cap is spent on the header instead of on post furniture.
+    Document order is the point: wherever the control moved it is near the top of the main column,
+    and the cap is spent on the header instead of on post furniture — but only once the rail's
+    off-feed links are out of the way (`_is_off_feed_link`, measured 2026-08-16).
+
+    `scan_limit` bounds the walk, not the capture: filtering means the cap can no longer be reached
+    by reading `limit` elements, and a feed with thousands of links must not turn one capture into
+    thousands of round trips.
     """
     out = []
     try:
         elements = driver.find_elements(By.CSS_SELECTOR, SORT_CANDIDATE_SELECTOR)
     except Exception as e:
         return [{"error": f"{type(e).__name__}: {e}"}]
-    for element in elements:
+    for element in elements[:scan_limit]:
         if len(out) >= limit:
             break
         try:
             if not element.is_displayed():
                 continue
         except Exception:
+            continue
+        if _is_off_feed_link(element):
             continue
         evidence = element_evidence(element)
         for key, attr in (("data_testid", "data-testid"), ("aria_haspopup", "aria-haspopup"),

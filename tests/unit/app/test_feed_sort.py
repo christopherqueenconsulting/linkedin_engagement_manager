@@ -469,6 +469,60 @@ class TestFeedSortLocators:
         assert "sort" not in _FEED_CARD_CROSSCHECK_SEL.lower()
 
 
+class TestTheLiveControlThisChainWasGroundedOn:
+    """#1108, live-grounded 2026-08-16 (`--feed-sort`, user 1, verdict `ok`, flipped to Recent).
+
+    The element the chain resolved to, exactly as the probe reported it:
+
+        {"tag": "div", "role": "button", "text": "Sort by: Top"}
+
+    No `aria-label`, no `data-testid` — routes 1 and 2 cannot see it, so the visible-text route is
+    what carries this surface today. These tests pin that, because the honest-looking cleanup ('the
+    text route is redundant, the aria-label one covers it') ships a chain that resolves nothing.
+    """
+
+    @staticmethod
+    def _routes():
+        from cqc_lem.app.engagement.feed import _FEED_SORT_LOCATORS
+        return [s for _by, s in _FEED_SORT_LOCATORS]
+
+    def test_the_visible_text_route_is_the_one_holding_this_surface_up(self):
+        text_routes = [s for s in self._routes() if "'sort by'" in s]
+        assert text_routes, "the chain lost the route the live control resolves through"
+        for selector in text_routes:
+            # `contains`, not `=`: the live label is 'Sort by: Top', not 'Sort by'.
+            assert "contains(translate(normalize-space()" in selector, selector
+            assert "@role='button'" in selector, selector
+            assert "@aria-label" not in selector and "@data-testid" not in selector, selector
+
+    def test_the_label_routes_ahead_of_it_could_not_have_matched_the_live_control(self):
+        """Recorded, not incidental: the live control carries neither anchor.
+
+        Routes 1 and 2 stay first because a labelled control is the better read WHEN one exists —
+        but they were both blind on this reading, which is what makes the text route load-bearing.
+        """
+        anchored = [s for s in self._routes() if "@aria-label" in s or "@data-testid" in s]
+        assert len(anchored) >= 2
+        for selector in anchored:
+            assert "'sort'" in selector, selector
+
+    def test_the_exact_name_route_does_not_cover_the_live_label_either(self):
+        """'sort by: top' is not 'top'.
+
+        The exact route stays exact (#1013), so it can never be the fallback for this shape —
+        dropping the text route leaves nothing behind it.
+        """
+        exact = [s for s in self._routes() if "='top'" in s]
+        assert exact
+        for selector in exact:
+            assert "contains(" not in selector, selector
+
+    def test_the_live_labels_read_as_the_sort_they_name(self):
+        from cqc_lem.app.engagement.feed import FEED_SORT_RECENT, FEED_SORT_TOP, _feed_sort_state
+        assert _feed_sort_state(_control("Sort by: Top")) == FEED_SORT_TOP
+        assert _feed_sort_state(_control("Sort by: Recent")) == FEED_SORT_RECENT
+
+
 class TestIsHomeFeed:
     @pytest.mark.parametrize("url,expected", [
         ("https://www.linkedin.com/feed/", True),
