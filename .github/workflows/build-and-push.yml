@@ -72,12 +72,48 @@ jobs:
           cache-from: type=registry,ref=${{ env.IMAGE }}:buildcache
           cache-to: type=registry,ref=${{ env.IMAGE }}:buildcache,mode=max
 
+  # #1133: the ONE human gate this graph has, placed at the expensive-mistake point rather than
+  # per-PR review. `deploy`'s required-reviewer gate is gone (see its own comment below) so green
+  # releases auto-deploy — right for the overwhelming majority, wrong for a release carrying a
+  # one-way Flyway migration or a risk:security/risk:live-linkedin/risk:product-decision PR. This
+  # job never fails the WORKFLOW (a flag is correct, expected behavior, not an error) — it only
+  # writes `flagged`, which `deploy`'s own `if:` reads. Logic lives in scripts/release_risk_check.py
+  # (tested; stdlib + `gh` CLI only) so it can be unit-tested instead of debugged as inline YAML.
+  # Full design + the 3 gauntlet-loop rounds that shaped it: docs/graphs/deploy-release.md.
+  release-risk-check:
+    name: Release risk check
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: read
+      pull-requests: write
+    outputs:
+      flagged: ${{ steps.check.outputs.flagged }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Flag a migration-bearing or risk:*-labelled release
+        id: check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python3 scripts/release_risk_check.py --tag "${{ needs.build-and-push.outputs.tag }}"
+
   deploy:
     name: Deploy to Hostinger VPS
-    needs: build-and-push
+    needs: [build-and-push, release-risk-check]
     runs-on: ubuntu-latest
     # Protected environment. The required-reviewer gate was removed so green
     # releases auto-deploy; re-add reviewers in repo settings to restore it.
+    #
+    # `release-risk-check` above is the narrower gate that replaces it for the risky subset only
+    # (#1133): a migration or a risk:*-labelled PR in this release skips this job entirely and
+    # parks the release on a Decision Comment for the owner's manual
+    # `gh workflow run deploy-vps.yml -f tag=vX.Y.Z`. Everything else deploys exactly as before,
+    # with no added latency — the check runs in parallel with nothing waiting on it upstream.
+    if: needs.release-risk-check.outputs.flagged != 'true'
     environment: production
     env:
       CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
