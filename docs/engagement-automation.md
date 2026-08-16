@@ -495,6 +495,19 @@ empty-dict stubs, so only new connections ever produced a DM and the
   recommended and stays a DEBUG no-op. Without that split the two readings are the same number,
   which is precisely how the dead ladder survived a merge. It is the page-vs-reader half only —
   the reader-vs-parser half is the undated-cards warning above, and both are needed.
+- **The mentions half has the same tripwire, read off the page's own sentences (#1374).** Every rung
+  of `_MENTION_CARD_LOCATORS` is about the card CONTAINER, so one SDUI wrapper rename answers zero to
+  all four and reads exactly like a month with no mentions — which is the reading a probe run came
+  back with on 2026-08-10 (`cards: 0`, `state: unknown`) on the same surface #982 had resolved a card
+  on. `_mentions_page_native_count` counts "mentioned/tagged you" in the page's text, through no part
+  of that chain, and `grade_zero_walk` decides what the zero means: the page still saying it while
+  nothing resolves is drift and WARNS, the page saying nothing either is a quiet day at DEBUG, and an
+  unreadable page is `unknown` and grounds nothing. Counting the same sentence production requires of
+  a card is what makes it evidence rather than a second guess. The probe carries the identical read
+  (`page_mentions` beside `cards`, `crosscheck_source` naming whether the image or the piped script
+  answered) so its zero grades the same way. **The 2026-08-16 run settles the original question: 2
+  cards, 2 dated, 2 in window, `page_mentions: 2` — the chain is intact and the August 10 feed was
+  genuinely empty.**
 - **`appreciation_touches` is the claim, and it is what makes this safe.** The beat re-queues
   itself every ~60s inside its window, so a standing list without a durable claim is a DM a minute.
   One row per (user, person, event_type); the unique key is the guarantee. `_dispatch_appreciation_dms`
