@@ -849,6 +849,7 @@ def _admin_user_detail(row: dict) -> dict[str, Any]:
     200: {"description": "User list returned"},
     401: {"description": "Invalid or expired session"},
     403: {"description": "Admin access required"},
+    503: {"description": "The user list could not be read"},
 })
 def admin_user_list(
     session_token: str,
@@ -864,6 +865,9 @@ def admin_user_list(
     Two queries and nothing per row: the page itself (one LEFT JOIN to `onboarding_state`) and its
     COUNT under the same filters. `is_admin` filters on the EFFECTIVE answer — the column OR the
     `ADMIN_USER_EMAILS` allowlist — so the filter and each row's badge can never disagree.
+
+    Either query failing is **503**, never an empty page: "no account matches that filter" is an
+    answer an operator acts on, and a DB fault must not be able to say it.
     """
     _require_user_admin(session_token)
     filters = {
@@ -874,9 +878,12 @@ def admin_user_list(
         "is_admin": is_admin,
     }
     rows = list_users_for_admin(limit=limit, offset=offset, **filters)
+    total = count_users_for_admin(**filters)
+    if rows is None or total is None:
+        raise HTTPException(status_code=503, detail="Could not read the user list. Try again.")
     return ResponseModel(status_code=200, detail={
         "items": [_admin_user_summary(r) for r in rows],
-        "total": count_users_for_admin(**filters),
+        "total": total,
         "limit": limit,
         "offset": offset,
     })

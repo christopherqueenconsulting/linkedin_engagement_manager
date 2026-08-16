@@ -117,6 +117,42 @@ describe('AdminUsersPage (issue #1450)', () => {
     })
   })
 
+  // `q` becomes an unindexable `LIKE '%…%'` over `users`, so a query per keystroke is a table
+  // scan per keystroke — the search is debounced into the applied term like ContentStudio's.
+  it('does not query on every keystroke while the operator is still typing', async () => {
+    get.mockResolvedValue(listPayload([]))
+    harness(<AdminUsersPage />)
+    await waitFor(() => expect(get).toHaveBeenCalled())
+    const box = screen.getByLabelText('Search by email')
+    fireEvent.change(box, { target: { value: 'a' } })
+    fireEvent.change(box, { target: { value: 'ac' } })
+    fireEvent.change(box, { target: { value: 'acme' } })
+    await waitFor(() => {
+      const params = get.mock.calls[get.mock.calls.length - 1][1].params
+      expect(params.q).toBe('acme')
+    })
+    const asked = get.mock.calls.map((c) => (c[1] as { params: { q?: string } }).params.q)
+    expect(asked).not.toContain('a')
+    expect(asked).not.toContain('ac')
+  })
+
+  it('keeps the drawer in its own full-width row, not inside the email cell', async () => {
+    get.mockImplementation((url: string) => {
+      if (url === '/admin/users') return Promise.resolve(listPayload([row()]))
+      return Promise.resolve({ data: { detail: { ...row(), public_uid: 'pub-1' } } })
+    })
+    harness(<AdminUsersPage />)
+    await waitFor(() => expect(table().getByText('member@x.com')).toBeTruthy())
+    // The email cell holds only the toggle, before AND after opening — a 22-field detail nested
+    // there would stretch that column to half the table and shift every other one sideways.
+    const emailCell = table().getByText('member@x.com').closest('td') as HTMLElement
+    fireEvent.click(table().getByText('member@x.com'))
+    await waitFor(() => expect(table().getByText('pub-1')).toBeTruthy())
+    expect(within(emailCell).queryByText('pub-1')).toBeNull()
+    const drawerCell = table().getByText('pub-1').closest('td') as HTMLElement
+    expect(drawerCell.getAttribute('colspan')).toBe('7')
+  })
+
   it('fetches the detail on demand, not once per row up front', async () => {
     get.mockImplementation((url: string) => {
       if (url === '/admin/users') return Promise.resolve(listPayload([row()]))

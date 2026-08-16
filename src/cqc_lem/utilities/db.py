@@ -3834,11 +3834,16 @@ def list_users_for_admin(search: Optional[str] = None,
                          subscription_status: Optional[str] = None,
                          linkedin_connection_status: Optional[str] = None,
                          is_admin: Optional[bool] = None,
-                         limit: int = 25, offset: int = 0) -> list:
+                         limit: int = 25, offset: int = 0) -> Optional[list]:
     """One page of the admin user list, newest signup first (issue #1450).
 
     Ordered by `u.id DESC`: the id is a monotonic AUTO_INCREMENT, so it IS the signup order —
     without the NULLs of a LEFT-JOINed timestamp and without depending on the join at all.
+
+    `None`, never `[]`, when the page could not be read. This is the heaviest query on the surface
+    (a LEFT JOIN plus an unindexable `LIKE '%…%'`), so it is the one that can time out while the
+    session behind it still resolves — and an empty list is how the screen says "this deployment
+    has no users matching that filter". The route answers 503 rather than render that lie.
     """
     where, params = _admin_user_filters(search, subscription_status,
                                         linkedin_connection_status, is_admin)
@@ -3851,14 +3856,18 @@ def list_users_for_admin(search: Optional[str] = None,
             return cursor.fetchall() or []
     except mysql.connector.Error as err:
         log_error("Could not list users for the admin panel", exc=err)
-        return []
+        return None
 
 
 def count_users_for_admin(search: Optional[str] = None,
                           subscription_status: Optional[str] = None,
                           linkedin_connection_status: Optional[str] = None,
-                          is_admin: Optional[bool] = None) -> int:
-    """How many users match the same filters — the denominator the pager renders."""
+                          is_admin: Optional[bool] = None) -> Optional[int]:
+    """How many users match the same filters — the denominator the pager renders.
+
+    `None`, never 0, on a fault, for the same reason as `list_users_for_admin`: a 0 total pages the
+    screen to "No users" while the rows it fetched are sitting right above it.
+    """
     where, params = _admin_user_filters(search, subscription_status,
                                         linkedin_connection_status, is_admin)
     try:
@@ -3868,7 +3877,7 @@ def count_users_for_admin(search: Optional[str] = None,
             return int(row[0]) if row else 0
     except mysql.connector.Error as err:
         log_error("Could not count users for the admin panel", exc=err)
-        return 0
+        return None
 
 
 def get_user_for_admin(user_id: int) -> Optional[dict]:

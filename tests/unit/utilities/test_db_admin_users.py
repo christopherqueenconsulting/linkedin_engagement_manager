@@ -100,8 +100,16 @@ class TestListUsersForAdmin:
                           "stripe_customer_id", "stripe_subscription_id", "*"):
             assert forbidden not in sql
 
-    def test_a_db_error_is_an_empty_page_not_an_exception(self, fake_cursor):
+    def test_a_db_error_is_none_never_an_empty_page(self, fake_cursor):
+        # `[]` is how this screen says "no account matches that filter" — an answer an operator
+        # acts on. A fault must not be able to say it, so the route answers 503 on None.
         conn, cur = fake_cursor(execute_error=mysql.connector.Error("db down"))
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import list_users_for_admin
+            assert list_users_for_admin() is None
+
+    def test_a_genuinely_empty_page_is_still_an_empty_list(self, fake_cursor):
+        conn, _ = fake_cursor(fetch_all=[])
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import list_users_for_admin
             assert list_users_for_admin() == []
@@ -117,11 +125,12 @@ class TestCountUsersForAdmin:
         assert sql.startswith("SELECT COUNT(*)")
         assert params == ("active",)
 
-    def test_a_db_error_reads_as_zero(self, fake_cursor):
+    def test_a_db_error_is_none_never_zero(self, fake_cursor):
+        # A 0 total pages the screen to "No users" while the rows it fetched sit right above it.
         conn, _ = fake_cursor(execute_error=mysql.connector.Error("db down"))
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import count_users_for_admin
-            assert count_users_for_admin() == 0
+            assert count_users_for_admin() is None
 
 
 class TestGetUserForAdmin:

@@ -164,7 +164,8 @@ and answers no question that is being asked at one user. Named in the follow-up 
 Two queries per page load — one `COUNT(*)`, one `SELECT … LIMIT/OFFSET` with a single LEFT JOIN to
 `onboarding_state` — and nothing per row. The detail drawer is one further query, on click.
 `limit` defaults to 25 and is capped at 100 by `Query(..., le=100)`, so no caller can ask for the
-whole table.
+whole table. The search box debounces into the query rather than firing on each keystroke (§4.4,
+Finding P), and either query failing is a **503**, never an empty page (Finding Q).
 
 Where it stops working: **OFFSET pagination degrades once the offset itself is large** (MySQL walks
 and discards the skipped rows), and the `q` substring match is `LIKE '%…%'`, which cannot use the
@@ -282,6 +283,27 @@ query per row. The count is a second query, not a `SQL_CALC_FOUND_ROWS`.
 
 **Finding N (changed the design) — an uncapped `limit`.** The first draft took `limit: int = 25`
 with no bound. **Changed:** `Query(25, ge=1, le=100)`, matching the feedback panel's shape.
+
+**Finding P (changed the code, second review pass) — a query per keystroke.** The search box fed
+`q` straight into the query key, and `q` becomes the one clause on this screen that cannot use an
+index (`LIKE '%…%'`). Typing an address was therefore a table scan per character. **Changed:** the
+raw input is debounced (400ms) into an applied term before it reaches the query, the same shape
+`ContentStudio.tsx` already uses for its keyword search.
+
+**Finding Q (changed the code, second review pass) — a failed READ could say "no such account".**
+`list_users_for_admin` returned `[]` and `count_users_for_admin` returned `0` on a
+`mysql.connector.Error`, so a fault rendered "No users match the current filters." — the same
+screen an operator reads to conclude an account does not exist. This is Finding B's argument
+applied to the reads it was never applied to: the list is the heaviest query here (a join plus that
+`LIKE`), so it is the one that can time out while the session behind it still resolves. **Changed:**
+both return `None` on a fault and the route answers **503**; a genuinely empty page is still `[]`
+and still 200.
+
+**Finding R (changed the code, second review pass) — the detail drawer distorted the table.** It
+rendered as a `<div>` inside the email `<td>`, so opening a 22-field detail stretched the first
+column to roughly half the table and shifted every other column sideways for as long as it was
+open. **Changed:** its own `<tr>` with `colSpan={7}`, pinned by a test asserting the email cell does
+not contain the drawer.
 
 ## 5. What ships in this PR
 

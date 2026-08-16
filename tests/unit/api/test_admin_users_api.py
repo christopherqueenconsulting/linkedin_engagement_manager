@@ -94,6 +94,34 @@ class TestUserList:
             r = api_client.get("/api/admin/users", params={"session_token": "tok", "limit": 5000})
         assert r.status_code == 422
 
+    def test_an_unreadable_page_is_503_not_an_empty_list(self, api_client):
+        # "No account matches that filter" is an answer an operator acts on; a DB fault must not
+        # be able to give it.
+        session, admin, _ = _auth(_ADMIN)
+        with session, admin, \
+             patch(f"{_ROUTER}.list_users_for_admin", return_value=None), \
+             patch(f"{_ROUTER}.count_users_for_admin", return_value=0):
+            r = api_client.get("/api/admin/users", params={"session_token": "tok"})
+        assert r.status_code == 503
+
+    def test_an_unreadable_total_is_503_too(self, api_client):
+        session, admin, _ = _auth(_ADMIN)
+        with session, admin, \
+             patch(f"{_ROUTER}.list_users_for_admin", return_value=[]), \
+             patch(f"{_ROUTER}.count_users_for_admin", return_value=None):
+            r = api_client.get("/api/admin/users", params={"session_token": "tok"})
+        assert r.status_code == 503
+
+    def test_a_genuinely_empty_page_is_still_a_200(self, api_client):
+        session, admin, _ = _auth(_ADMIN)
+        with session, admin, \
+             patch(f"{_ROUTER}.list_users_for_admin", return_value=[]), \
+             patch(f"{_ROUTER}.count_users_for_admin", return_value=0):
+            r = api_client.get("/api/admin/users", params={"session_token": "tok"})
+        assert r.status_code == 200
+        assert r.json()["detail"]["items"] == []
+        assert r.json()["detail"]["total"] == 0
+
     def test_an_allowlist_admin_is_badged_as_one(self, api_client):
         session, admin, _ = _auth(_ADMIN)
         with session, admin, \

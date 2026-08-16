@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { Fragment, useEffect, useState } from 'react'
 import TableScroll from '../components/TableScroll'
 import { useAuth } from '../contexts/useAuth'
 import { useAdminUserDetail, useAdminUsers, useSetUserAdmin } from '../hooks/useAdminUsers'
@@ -92,16 +92,24 @@ function UserDetail({ userId, sessionToken }: { userId: number; sessionToken: st
 export default function AdminUsersPage() {
   const { sessionToken, user } = useAuth()
   const [search, setSearch] = useState('')
+  // The applied term, debounced out of the raw input like ContentStudio's search: `q` becomes an
+  // unindexable `LIKE '%…%'` over `users`, so a query per keystroke is a table scan per keystroke.
+  const [appliedSearch, setAppliedSearch] = useState('')
   const [subscriptionFilter, setSubscriptionFilter] = useState('')
   const [connectionFilter, setConnectionFilter] = useState('')
   const [adminOnly, setAdminOnly] = useState(false)
   const [page, setPage] = useState(0)
   const [openId, setOpenId] = useState<number | null>(null)
 
+  useEffect(() => {
+    const t = setTimeout(() => setAppliedSearch(search.trim()), 400)
+    return () => clearTimeout(t)
+  }, [search])
+
   const token = sessionToken || ''
   const { data, isLoading, error, refetch } = useAdminUsers({
     sessionToken: token,
-    q: search || undefined,
+    q: appliedSearch || undefined,
     subscriptionStatus: subscriptionFilter || undefined,
     connectionStatus: connectionFilter || undefined,
     isAdmin: adminOnly ? true : undefined,
@@ -207,87 +215,94 @@ export default function AdminUsersPage() {
             </thead>
             <tbody className="divide-y divide-gray-100">
               {items.map((item) => (
-                <tr key={item.id} className="hover:bg-gray-50 align-top">
-                  <td className="px-4 py-3">
-                    <button
-                      onClick={() => setOpenId(openId === item.id ? null : item.id)}
-                      className="text-blue-600 hover:underline text-left"
-                      aria-expanded={openId === item.id}
-                    >
-                      {item.email}
-                    </button>
-                    {item.id === user?.userId && (
-                      <span className="ml-2 text-xs text-gray-400">(you)</span>
-                    )}
-                    {openId === item.id && (
-                      <div className="mt-3 p-3 bg-gray-50 rounded-lg">
-                        <UserDetail userId={item.id} sessionToken={token} />
-                      </div>
-                    )}
-                  </td>
-                  <td className="px-4 py-3">
-                    {item.is_admin ? (
-                      <span
-                        data-testid={`admin-badge-${item.id}`}
-                        className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800"
-                      >
-                        Admin
-                        {item.admin_via_allowlist && !item.admin_via_column && ' (env)'}
-                      </span>
-                    ) : (
-                      <span className="text-gray-400">—</span>
-                    )}
-                  </td>
-                  <td className="px-4 py-3">
-                    <span className={classNames(
-                      'inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium',
-                      item.subscription_status === 'active' && 'bg-green-100 text-green-800',
-                      item.subscription_status === 'trial' && 'bg-amber-100 text-amber-800',
-                      !['active', 'trial'].includes(item.subscription_status ?? '')
-                        && 'bg-gray-100 text-gray-600'
-                    )}>
-                      {SUBSCRIPTION_LABELS[item.subscription_status ?? ''] ?? 'Unknown'}
-                    </span>
-                    {item.subscription_tier && (
-                      <span className="ml-2 text-xs text-gray-500">{item.subscription_tier}</span>
-                    )}
-                  </td>
-                  <td className="px-4 py-3">
-                    <span className={classNames(
-                      item.linkedin_connection_status === 'connected'
-                        ? 'text-gray-800' : 'text-amber-700'
-                    )}>
-                      {CONNECTION_LABELS[item.linkedin_connection_status ?? ''] ?? 'Unknown'}
-                    </span>
-                  </td>
-                  <td className="px-4 py-3 text-gray-500">{when(item.last_login)}</td>
-                  <td className="px-4 py-3 text-gray-500">{when(item.signed_up_at)}</td>
-                  <td className="px-4 py-3 text-right">
-                    <div className="flex flex-col items-end gap-1">
+                <Fragment key={item.id}>
+                  <tr className="hover:bg-gray-50 align-top">
+                    <td className="px-4 py-3">
                       <button
-                        onClick={() => handleRole(item)}
-                        disabled={role.isPending}
-                        className={classNames(
-                          'text-xs px-2.5 py-1 rounded disabled:opacity-50',
-                          item.is_admin
-                            ? 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-                            : 'bg-blue-600 text-white hover:bg-blue-700'
-                        )}
+                        onClick={() => setOpenId(openId === item.id ? null : item.id)}
+                        className="text-blue-600 hover:underline text-left"
+                        aria-expanded={openId === item.id}
                       >
-                        {role.isPending && actedId === item.id
-                          ? 'Working…'
-                          : item.is_admin ? 'Remove admin' : 'Make admin'}
+                        {item.email}
                       </button>
-                      {actedId === item.id && !role.isPending && roleError && (
-                        <p className="text-xs max-w-xs text-right text-amber-700">{roleError}</p>
+                      {item.id === user?.userId && (
+                        <span className="ml-2 text-xs text-gray-400">(you)</span>
                       )}
-                      {actedId === item.id && !role.isPending && !roleError
-                        && role.data?.changed === false && (
-                        <p className="text-xs text-gray-500">Already in that state</p>
+                    </td>
+                    <td className="px-4 py-3">
+                      {item.is_admin ? (
+                        <span
+                          data-testid={`admin-badge-${item.id}`}
+                          className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800"
+                        >
+                          Admin
+                          {item.admin_via_allowlist && !item.admin_via_column && ' (env)'}
+                        </span>
+                      ) : (
+                        <span className="text-gray-400">—</span>
                       )}
-                    </div>
-                  </td>
-                </tr>
+                    </td>
+                    <td className="px-4 py-3">
+                      <span className={classNames(
+                        'inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium',
+                        item.subscription_status === 'active' && 'bg-green-100 text-green-800',
+                        item.subscription_status === 'trial' && 'bg-amber-100 text-amber-800',
+                        !['active', 'trial'].includes(item.subscription_status ?? '')
+                          && 'bg-gray-100 text-gray-600'
+                      )}>
+                        {SUBSCRIPTION_LABELS[item.subscription_status ?? ''] ?? 'Unknown'}
+                      </span>
+                      {item.subscription_tier && (
+                        <span className="ml-2 text-xs text-gray-500">{item.subscription_tier}</span>
+                      )}
+                    </td>
+                    <td className="px-4 py-3">
+                      <span className={classNames(
+                        item.linkedin_connection_status === 'connected'
+                          ? 'text-gray-800' : 'text-amber-700'
+                      )}>
+                        {CONNECTION_LABELS[item.linkedin_connection_status ?? ''] ?? 'Unknown'}
+                      </span>
+                    </td>
+                    <td className="px-4 py-3 text-gray-500">{when(item.last_login)}</td>
+                    <td className="px-4 py-3 text-gray-500">{when(item.signed_up_at)}</td>
+                    <td className="px-4 py-3 text-right">
+                      <div className="flex flex-col items-end gap-1">
+                        <button
+                          onClick={() => handleRole(item)}
+                          disabled={role.isPending}
+                          className={classNames(
+                            'text-xs px-2.5 py-1 rounded disabled:opacity-50',
+                            item.is_admin
+                              ? 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                              : 'bg-blue-600 text-white hover:bg-blue-700'
+                          )}
+                        >
+                          {role.isPending && actedId === item.id
+                            ? 'Working…'
+                            : item.is_admin ? 'Remove admin' : 'Make admin'}
+                        </button>
+                        {actedId === item.id && !role.isPending && roleError && (
+                          <p className="text-xs max-w-xs text-right text-amber-700">{roleError}</p>
+                        )}
+                        {actedId === item.id && !role.isPending && !roleError
+                          && role.data?.changed === false && (
+                          <p className="text-xs text-gray-500">Already in that state</p>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                  {/* Its OWN full-width row, not a div inside the email cell: a 22-field detail
+                      nested in the first column stretches that column to half the table and shifts
+                      every other one sideways for as long as the drawer is open. */}
+                  {openId === item.id && (
+                    <tr className="bg-gray-50">
+                      <td colSpan={7} className="px-4 py-3">
+                        <UserDetail userId={item.id} sessionToken={token} />
+                      </td>
+                    </tr>
+                  )}
+                </Fragment>
               ))}
               {items.length === 0 && !isLoading && (
                 <tr>
