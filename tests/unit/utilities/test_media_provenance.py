@@ -167,6 +167,13 @@ class TestScanPostMedia:
         assert rows[0].state == mp.MEDIA_MISSING and rows[0].expected
         assert not rows[0].dangling
 
+    def test_the_purged_status_is_the_enum_not_a_literal(self):
+        # This one comparison decides defect vs no-op, so it must not drift from the column's
+        # vocabulary — `posts.status` is a MySQL ENUM and `PostStatus` is its Python mirror.
+        from cqc_lem.platform.db.enums import PostStatus
+
+        assert mp._PURGED_AT_PUBLISH_STATUSES == (PostStatus.POSTED.value,)
+
     def test_a_missing_file_before_publication_is_the_defect(self, tmp_path):
         with patch("cqc_lem.assets_dir", str(tmp_path)):
             rows = mp.scan_post_media([{"id": 91, "user_id": 1, "status": "scheduled",

@@ -381,9 +381,12 @@ EVENTS = {spec.event: spec for spec in (
     # published — and it is deliberately not summed with `missing_expected`, which is
     # `purge_post_assets` doing its job at publish. `with_brief` is coverage of the brief receipts,
     # i.e. how much of the corpus rubric row R6 can be scored against at all.
+    # `rows` + `truncated` are the coverage half: the scan is capped, so `dangling = 0` only means
+    # "nothing dangles in the rows it reached". Without them a capped walk reads as a clean corpus.
     EventSpec("media_integrity", (
         count("checked"), count("present"), count("dangling"), count("missing_expected"),
-        count("unresolvable"), count("with_brief"), items("dangling_posts"), label("has_dangling"),
+        count("unresolvable"), count("with_brief"), count("rows"), items("dangling_posts"),
+        label("has_dangling"), label("truncated"),
     ), DISTINCT_SYSTEM),
 
     # --- Engagement lanes ---------------------------------------------------------------------
@@ -1555,12 +1558,16 @@ def track_image_gate_verdict(
 def track_media_integrity(summary: dict) -> None:
     """Emit ONE `media_integrity` reading per scan (issue #1377).
 
-    `summary` is `media_provenance.integrity_summary`'s output. `has_dangling` is derived here and
-    is a `label()` on purpose: it is what an alert tile filters on, and PostHog matches a filter
-    against the ingested type — a boolean row would make `has_dangling = "True"` match nothing.
+    `summary` is `media_provenance.integrity_summary`'s output plus the caller's coverage keys
+    (`rows`, `truncated`). `has_dangling` is derived here and is a `label()` on purpose: it is what
+    an alert tile filters on, and PostHog matches a filter against the ingested type — a boolean row
+    would make `has_dangling = "True"` match nothing. `truncated` is a `label()` for the same
+    reason, and it is what stops a capped walk being read as a clean corpus.
     """
+    reading = dict(summary or {})
     _emit(EVENTS["media_integrity"],
-          {**(summary or {}), "has_dangling": bool((summary or {}).get("dangling"))})
+          {**reading, "has_dangling": bool(reading.get("dangling")),
+           "truncated": bool(reading.get("truncated"))})
 
 
 def track_slop_retry(

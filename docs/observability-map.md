@@ -109,8 +109,11 @@ change the gate's decision or thresholds.
 is never summed with `missing_expected`, which is `purge_post_assets` clearing a published post's
 local copy on purpose. `has_dangling` is the `label()` an alert tile filters on; `with_brief` is how
 much of the corpus carries a render-brief receipt, i.e. how much of it rubric row R6 can be scored
-against at all. The event exists because the image audits have to read a production volume and
-production rows to answer any of this — PostHog is the side of that line they can reach.
+against at all. `rows` + `truncated` are the COVERAGE half and are not optional reading: the scan is
+capped at the newest `MEDIA_INTEGRITY_SCAN_LIMIT` rows, so `dangling = 0` on a `truncated` reading
+only ever meant "nothing dangles in the rows it reached". `truncated` is a `label()` for the same
+reason `has_dangling` is. The event exists because the image audits have to read a production volume
+and production rows to answer any of this — PostHog is the side of that line they can reach.
 
 ## Motion-prompt lint (issue #1277) — `docs/content-core.md`
 One `motion_prompt_check` event per graded motion prompt, emitted BEFORE a Runway credit is spent:

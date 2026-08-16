@@ -197,11 +197,12 @@ app.conf.update(
         },
         'media-integrity-scan': {
             'task': 'cqc_lem.app.run_scheduler.auto_media_integrity_scan',
-            # Mondays 03:10 UTC — after the 02:40 nightly content-quality pass, so the two reads of
-            # the same assets volume never overlap, and well clear of the 05:00 release window that
+            # Mondays 03:50 UTC — after the 02:40 nightly content-quality pass, so the two reads of
+            # the same assets volume never overlap, and past the 03:10 secrets re-seal and the 03:30
+            # lead re-score rather than on top of them. Well clear of the 05:00 release window that
             # would otherwise be purging media under it. Weekly because a dangling URL is a durable
             # state, not an event (issue #1377).
-            'schedule': crontab(hour='3', minute='10', day_of_week='monday')
+            'schedule': crontab(hour='3', minute='50', day_of_week='monday')
         },
         'generate-newsletter-drafts': {
             'task': 'cqc_lem.app.run_scheduler.auto_generate_newsletter_drafts',

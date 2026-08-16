@@ -144,6 +144,97 @@ class TestPexelsFallbackKeepsNoBrief:
         assert brief_info["brief"].focal_concept == "a steering wheel, not a brake pedal"
 
 
+class TestTheGateVerdictReachesTheReceipt:
+    """The source frame's gate verdict has to travel out to reach the stored receipt.
+
+    The verdict only exists inside the render call, so unless `_generate_video_src` hands it out
+    `gate_verdict` is null on every video ever stored — and the receipt cannot tell a graded render
+    from one nothing looked at.
+    """
+
+    def _render(self, brief_info, verdict, *, avatar):
+        """Drive `_generate_video_src` to a successful render.
+
+        `avatar=True` takes the gated source-frame branch (`generate_post_image`); `avatar=False`
+        takes the ungated `render_image_from_prompt` one, which grades nothing and therefore has no
+        verdict to hand back.
+        """
+        def _prompt(*_args, brief_info=None, **_kwargs):
+            brief_info["brief"] = _brief()
+            return "scene"
+
+        def _frame(*_args, render_info=None, **_kwargs):
+            if render_info is not None and verdict:
+                render_info["gate_verdict"] = verdict
+            return "/tmp/frame.png"
+
+        with patch("cqc_lem.utilities.db.get_post_video_quality", return_value="standard"), \
+             patch("cqc_lem.utilities.db.get_default_video_quality", return_value="standard"), \
+             patch("cqc_lem.utilities.avatar.guardrails.resolve_avatar_for",
+                   return_value={"model_ref": "user/lora"} if avatar else None), \
+             patch(f"{_RCP}._check_avatar_likeness"), \
+             patch("cqc_lem.utilities.ai.ai_helper.generate_post_image", side_effect=_frame), \
+             patch("cqc_lem.utilities.ai.image_gen.render_image_from_prompt",
+                   return_value="/tmp/frame.png"), \
+             patch(f"{_RCP}.get_flux_image_prompt_from_ai", side_effect=_prompt), \
+             patch(f"{_RCP}.get_runway_ml_video_prompt_from_ai", return_value="motion"), \
+             patch(f"{_RCP}._persist_video_model"), \
+             patch(f"{_RCP}.create_runway_video", return_value="https://runway.test/clip.mp4"):
+            from cqc_lem.app.run_content_plan import _generate_video_src
+            return _generate_video_src(1, "text", None, post_id=9, brief_info=brief_info)
+
+    def test_the_source_frames_verdict_travels_to_the_caller(self):
+        brief_info: dict = {}
+        assert self._render(brief_info, "accepted", avatar=True) == "https://runway.test/clip.mp4"
+        assert brief_info["gate_verdict"] == "accepted"
+
+    def test_an_ungraded_frame_reports_no_verdict_rather_than_a_made_up_one(self):
+        # The no-avatar standard tier renders through `render_image_from_prompt`, which is not the
+        # gated entry point — so there is no verdict, and the receipt must say nothing rather than
+        # inherit one.
+        brief_info: dict = {}
+        self._render(brief_info, "accepted", avatar=False)
+        assert "gate_verdict" not in brief_info
+
+    def test_the_stored_receipt_carries_the_verdict(self, tmp_path, monkeypatch):
+        import cqc_lem.app.run_content_plan as rcp
+        monkeypatch.setattr(rcp, "assets_dir", str(tmp_path))
+        monkeypatch.setattr("cqc_lem.assets_dir", str(tmp_path))
+        with patch(f"{_RCP}.save_video_url_to_dir",
+                   side_effect=lambda url, directory: _valid_mp4(directory)), \
+             patch(f"{_RCP}._accept_probed_video", return_value=True), \
+             patch(f"{_RCP}._caption_video_asset"), \
+             patch(f"{_RCP}._record_video_asset_measures"), \
+             patch("cqc_lem.utilities.c2pa_helper.add_ai_content_credentials"), \
+             patch(f"{_RCP}.update_db_post_video_url"):
+            api_url = rcp._store_video_asset(7, "https://runway.test/clip.mp4", user_id=3,
+                                             brief=_brief(), gate_verdict="rejected")
+        assert read_brief_receipt(api_url)["gate_verdict"] == "rejected"
+
+    def test_the_pexels_fallback_drops_the_verdict_with_the_brief(self):
+        brief_info: dict = {"brief": _brief(), "gate_verdict": "accepted"}
+
+        def _prompt(*_args, brief_info=None, **_kwargs):
+            brief_info["brief"] = _brief()
+            return "scene"
+
+        with patch("cqc_lem.utilities.db.get_post_video_quality", return_value="standard"), \
+             patch("cqc_lem.utilities.db.get_default_video_quality", return_value="standard"), \
+             patch("cqc_lem.utilities.db.get_active_avatar", return_value=None), \
+             patch(f"{_RCP}.get_flux_image_prompt_from_ai", side_effect=_prompt), \
+             patch(f"{_RCP}.get_runway_ml_video_prompt_from_ai", return_value="motion"), \
+             patch("cqc_lem.utilities.ai.image_gen.render_image_from_prompt",
+                   return_value="/tmp/frame.png"), \
+             patch(f"{_RCP}.create_runway_video", side_effect=RuntimeError("runway down")), \
+             patch(f"{_RCP}._persist_video_model"), \
+             patch(f"{_RCP}.create_folder_if_not_exists"), \
+             patch("cqc_lem.utilities.pexels_helper.download_pexels_video",
+                   return_value="/tmp/stock.mp4"):
+            from cqc_lem.app.run_content_plan import _generate_video_src
+            _generate_video_src(1, "text", None, post_id=9, brief_info=brief_info)
+        assert brief_info == {}
+
+
 class TestTheWrapperKeepsTheBrief:
     def test_the_prompt_helper_hands_back_the_whole_brief_when_asked(self):
         brief_info: dict = {}

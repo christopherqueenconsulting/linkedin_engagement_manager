@@ -155,11 +155,17 @@ report below readable at all:
 | `missing` + NOT expected | **the defect.** A row that has not published, whose media is already gone: still going to be served to the SPA and to the publish run, as a 404 |
 | `unresolvable` | not one of our `/api/assets` URLs at all (a hand-edited row) — never counted as missing |
 
-`auto_media_integrity_scan` (weekly, Mondays 03:10 UTC) grades the newest
+`auto_media_integrity_scan` (weekly, Mondays 03:50 UTC) grades the newest
 `MEDIA_INTEGRITY_SCAN_LIMIT` media-bearing rows and emits ONE `media_integrity` event. It is a
 REPORT: it deletes no file and clears no row, because deciding whether a dangling row should be
 cleared is a separate question from noticing it. An unexpected dangle also goes out through
 `log_error`, so it reaches a human as a grouped `$exception`.
+
+The walk is capped, and **the cap is never silent**: `rows` says how many rows were graded and
+`truncated` says whether the cap is why it stopped. The ordering is `id DESC`, so a bound cap drops
+the OLDEST rows — and `dangling = 0` out of a truncated walk is a different claim from `dangling = 0`
+out of a whole corpus. A reader that ignores `truncated` will eventually read a capped scan as a
+clean one.
 
 **The brief receipt.** A generated render stores `<file stem>.brief.json` beside itself —
 `focal_concept`, the render prompt, surface, preset and the vision gate's verdict — keyed by the URL

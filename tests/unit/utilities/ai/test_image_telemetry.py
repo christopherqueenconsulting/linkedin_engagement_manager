@@ -166,3 +166,22 @@ class TestTheVerdictReachesTheCaller:
                                       post_id=9, render_info=render_info)
         assert render_info["gate_verdict"] == "rejected"
         assert render_info["used_avatar"] is True
+
+    def test_generate_post_image_reports_the_verdict_on_the_base_flux_branch_too(self, tmp_path):
+        # Both branches of `generate_post_image` are gated, so only one of them reporting would
+        # make a base-Flux render read as ungraded in the brief receipt beside it (issue #1377).
+        from cqc_lem.utilities.ai.ai_helper import generate_post_image
+
+        img = tmp_path / "a.png"
+        img.write_bytes(b"png")
+        render_info: dict = {}
+        with patch("cqc_lem.utilities.observability.track_image_gate_verdict"), \
+             patch("cqc_lem.utilities.avatar.guardrails.resolve_avatar_for", return_value=None), \
+             patch.object(image_gen, "_render_with_backend",
+                          return_value=(str(img), "gpt-image")), \
+             patch.object(image_gen, "client") as mock_client:
+            mock_client.chat.completions.create.return_value = self._verdict_response(
+                {"acceptable": True, "relevance": 4, "issues": []})
+            generate_post_image("p", 3, post_id=9, render_info=render_info)
+        assert render_info["gate_verdict"] == "accepted"
+        assert render_info["used_avatar"] is False

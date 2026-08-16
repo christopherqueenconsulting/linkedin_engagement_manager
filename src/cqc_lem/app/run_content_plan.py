@@ -1145,10 +1145,11 @@ def _generate_video_src(user_id: int, text_content: str, profile, post_id: int =
     `_persist_video_model` for why the write lives here and not at the storage step.
     Returns the remote Runway URL (http) or a local Pexels path, or None.
 
-    `brief_info`, when passed, is filled with `{"brief": ImageBrief}` for the source frame so the
-    caller can record it beside the stored MP4 (issue #1377). It is CLEARED on the Pexels fallback:
-    that clip is stock footage this brief never described, and filing the brief under it would be a
-    fabricated provenance claim.
+    `brief_info`, when passed, is filled with `{"brief": ImageBrief}` for the source frame — plus
+    `gate_verdict` when the frame went through the vision gate — so the caller can record it beside
+    the stored MP4 (issue #1377). BOTH keys are CLEARED on the Pexels fallback: that clip is stock
+    footage this brief never described, and filing the brief (or a verdict passed on a frame that
+    never shipped) under it would be a fabricated provenance claim.
     """
     from cqc_lem.utilities.ai.ai_helper import generate_post_image
     from cqc_lem.utilities.ai.video_models import is_premium, supports_audio
@@ -1241,6 +1242,11 @@ def _generate_video_src(user_id: int, text_content: str, profile, post_id: int =
                                       user_id=user_id, post_id=post_id)
         if not src:
             raise RuntimeError("no video output")
+        # The gate looked at the SOURCE FRAME, so the verdict only exists here — carried out so the
+        # receipt beside the MP4 can say whether this render was graded (issue #1377). Absent on the
+        # premium text->video branch, which renders no frame to grade.
+        if brief_info is not None and render_info.get("gate_verdict"):
+            brief_info["gate_verdict"] = render_info["gate_verdict"]
         _persist_video_model(post_id, model)
         log_info(f"_generate_video_src: model={model} audio={audio} -> {str(src)[:60]}")
         return src
@@ -1258,6 +1264,7 @@ def _generate_video_src(user_id: int, text_content: str, profile, post_id: int =
         # Whatever ships from here is stock footage, not this brief's render (issue #1377).
         if brief_info is not None:
             brief_info.pop("brief", None)
+            brief_info.pop("gate_verdict", None)
         try:
             from cqc_lem.utilities.content_quality import VIDEO_MODEL_PEXELS
             from cqc_lem.utilities.pexels_helper import download_pexels_video
@@ -1625,16 +1632,18 @@ def _record_video_asset_measures(post_id: int, video_file_path: str,
 
 
 def _store_video_asset(post_id: int, video_src_url: str, content: Optional[str] = None,
-                       user_id: Optional[int] = None, brief=None) -> Optional[str]:
+                       user_id: Optional[int] = None, brief=None,
+                       gate_verdict: Optional[str] = None) -> Optional[str]:
     """Download a generated video into the shared assets volume, probe it, and attach C2PA
     credentials to AI output. Persist posts.video_url and return the public API asset URL only when
     the probe passes. The ONE place a regenerated video is stored — both the asset-only healer and
     the full post regenerate use it. Returns None when the file is empty or unparseable and the
     probe is advisory, leaving the post for the missing-asset gate / backfill healer.
 
-    `brief` is the source frame's `ImageBrief` when one was authored; it is recorded beside the
-    stored file (issue #1377). None — a Pexels fallback, or a caller that has no brief in hand —
-    records nothing rather than an empty receipt.
+    `brief` is the source frame's `ImageBrief` when one was authored, and `gate_verdict` the vision
+    gate's reading of that frame; both are recorded beside the stored file (issue #1377). A `brief`
+    of None — a Pexels fallback, or a caller that has no brief in hand — records nothing rather than
+    an empty receipt.
     """
     videos_dir = os.path.join(assets_dir, 'videos', 'runwayml')
     create_folder_if_not_exists(videos_dir)
@@ -1676,7 +1685,8 @@ def _store_video_asset(post_id: int, video_src_url: str, content: Optional[str] 
     video_file_name = os.path.basename(video_file_path)
     api_video_url = f"{API_URL_FINAL}/api/assets?file_name=videos/runwayml/{video_file_name}"
     # Keyed by the URL the row is about to carry, so the brief can be walked back from it (#1377).
-    write_brief_receipt(api_video_url, brief, post_id=post_id, user_id=user_id)
+    write_brief_receipt(api_video_url, brief, post_id=post_id, user_id=user_id,
+                        gate_verdict=gate_verdict)
     update_db_post_video_url(post_id, api_video_url)
     return api_video_url
 
@@ -1714,7 +1724,8 @@ def regenerate_video_for_post(post_id: int) -> Optional[str]:
 
     try:
         api_video_url = _store_video_asset(post_id, video_src_url, content=text_content,
-                                           user_id=user_id, brief=brief_info.get("brief"))
+                                           user_id=user_id, brief=brief_info.get("brief"),
+                                           gate_verdict=brief_info.get("gate_verdict"))
     except Exception as e:
         # A hard probe failure (or any other storage error) should not strand the post; log it
         # and let the missing-asset gate hold it for review / backfill.
@@ -1911,7 +1922,8 @@ def regenerate_post(post_id: int, guidance: str = None) -> Optional[str]:
             try:
                 api_video_url = _store_video_asset(post_id, video_src_url, content=content,
                                                    user_id=user_id,
-                                                   brief=brief_info.get("brief"))
+                                                   brief=brief_info.get("brief"),
+                                                   gate_verdict=brief_info.get("gate_verdict"))
             except Exception as e:
                 # Losing the download must not lose the regenerated caption too — persist it and
                 # let the missing-asset gate hold the post, exactly as a failed render does.
@@ -3809,7 +3821,8 @@ def _create_content_for_planned_post(post: dict, prefs: dict) -> bool:
                 # Nothing is written when the Pexels fallback ran — it cleared the key, because
                 # stock footage was never what this brief described.
                 write_brief_receipt(api_video_url, brief_info.get("brief"), post_id=post_id,
-                                    user_id=user_id)
+                                    user_id=user_id,
+                                    gate_verdict=brief_info.get("gate_verdict"))
 
                 # Update the database with the video url
                 update_db_post_video_url(post_id, api_video_url)

@@ -36,6 +36,7 @@ from dataclasses import dataclass
 from typing import Any, Mapping, Optional
 from urllib.parse import parse_qs, urlparse
 
+from cqc_lem.platform.db.enums import PostStatus
 from cqc_lem.utilities.logger import log_warning
 
 BRIEF_RECEIPT_SUFFIX = ".brief.json"
@@ -47,10 +48,12 @@ MEDIA_PRESENT = "present"
 MEDIA_MISSING = "missing"
 MEDIA_UNRESOLVABLE = "unresolvable"
 
-# The statuses whose local media is SUPPOSED to be gone. Only `posted` qualifies: `purge_post_assets`
+# The statuses whose local media is SUPPOSED to be gone. Only POSTED qualifies: `purge_post_assets`
 # runs on a successful publish and on nothing else, so a missing file under any other status is an
-# asset that went away while the post still needed it.
-_PURGED_AT_PUBLISH_STATUSES = ("posted",)
+# asset that went away while the post still needed it. The enum, never the literal — `platform/db/
+# enums.py` is pure values and safe to import anywhere, and this comparison decides whether a row is
+# a defect or a no-op, so it must not drift from the column's vocabulary.
+_PURGED_AT_PUBLISH_STATUSES = (PostStatus.POSTED.value,)
 
 # The brief fields a receipt carries. `focal_concept` is the one row 6 of the image rubric is graded
 # on ("the render depicts the brief's stated idea"); the rest is what makes a bad render diagnosable

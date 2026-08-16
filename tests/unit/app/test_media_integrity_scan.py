@@ -88,6 +88,29 @@ class TestMediaIntegrityScan:
         _result, _track, _error, reader = self._run(tmp_path, [], limit=10)
         assert reader.call_args.kwargs["limit"] == 10
 
+    def test_a_capped_walk_says_so_instead_of_reading_as_a_clean_corpus(self, tmp_path):
+        # The cap is `id DESC`, so what it drops is the OLDEST rows. `dangling: 0` out of a walk
+        # that stopped at the limit is a different claim from `dangling: 0` over the whole corpus,
+        # and an audit reading PostHog has nothing else to tell them apart with.
+        directory = tmp_path / "images" / "posts" / "84"
+        directory.mkdir(parents=True)
+        (directory / "img_a1.webp").write_text("bytes")
+        rows = [{"id": 84 - n, "user_id": 1, "status": "approved",
+                 "image_url": _url("images/posts/84/img_a1.webp"), "video_url": None}
+                for n in range(2)]
+        _result, track, _error, _ = self._run(tmp_path, rows, limit=2)
+        summary = track.call_args.args[0]
+        assert summary["rows"] == 2 and summary["truncated"] is True
+        assert "(capped)" in _result
+
+    def test_an_uncapped_walk_is_not_reported_as_truncated(self, tmp_path):
+        rows = [{"id": 84, "user_id": 1, "status": "posted",
+                 "image_url": _url("images/posts/84/gone.webp"), "video_url": None}]
+        result, track, _error, _ = self._run(tmp_path, rows, limit=50)
+        summary = track.call_args.args[0]
+        assert summary["rows"] == 1 and summary["truncated"] is False
+        assert "(capped)" not in result and "1 row(s)" in result
+
     def test_it_never_removes_a_file_or_touches_a_row(self, tmp_path):
         directory = tmp_path / "images" / "posts" / "84"
         directory.mkdir(parents=True)

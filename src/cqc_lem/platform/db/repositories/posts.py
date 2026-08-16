@@ -1819,8 +1819,11 @@ def get_posts_with_media(limit: int = 500) -> list:
     """Every post row carrying an `image_url` or a `video_url`, newest first (issue #1377).
 
     The input to the media-integrity report, so it is deliberately NOT scoped to a user or to a
-    window: a dangling URL is a property of the row, and the rows that dangle longest are the oldest
-    ones. `limit` bounds the walk because each row costs a `stat` on the assets volume.
+    window: a dangling URL is a property of the row, not of a time range. `limit` bounds the walk
+    because each row costs a `stat` on the assets volume — and because it is `id DESC` the rows it
+    drops are the OLDEST, which is why the caller reports whether the cap bound at all. A row that
+    dangles keeps dangling and is still there next week; a row just written is the one whose media
+    can still be repaired before it publishes.
 
     Each row is `{id, user_id, status, post_type, image_url, video_url}` — status is what decides
     whether a missing file is `purge_post_assets` doing its job or an asset that went away while the
