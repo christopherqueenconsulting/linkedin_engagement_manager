@@ -4,7 +4,12 @@
 grade a corpus, because the agent worktree has no production MySQL credentials and no stored assets.
 This is the sampler that closes that gap the moment it is run somewhere the database and the
 `assets_dir` volume are both reachable: it pulls 6-10 published video posts, probes each stored MP4,
-extracts representative frames, and prints the scorecard the audit doc is missing.
+collects representative frames, and prints the scorecard the audit doc is missing.
+
+A SHIPPED post no longer has its MP4 — `purge_post_assets` (#148) deletes it at publish — so its
+frames are the keyframes the store path retained beside it (#1363) and its measures come from the
+`.probe.json` receipt (#1517). Frames extracted here and frames retained there are reported
+separately: only the retained ones depict the clip LinkedIn actually received.
 
 Read-only: it opens no browser, writes nothing to the database and calls no LLM. It re-uses the
 existing readers (`db.get_posted_posts`, `db.get_post_video_url`, `db.get_post_captions`) and the
@@ -27,7 +32,6 @@ import argparse
 import json
 import os
 import shutil
-import subprocess
 import sys
 from collections import Counter
 from typing import Any, Iterable, Mapping, Optional, Sequence
@@ -44,6 +48,7 @@ from cqc_lem.utilities.content_quality import (  # noqa: E402
     score_item,
     score_video_asset,
 )
+from cqc_lem.utilities.video_frames import extract_frames, retained_keyframes  # noqa: E402
 
 # The corpus band the issue asks for: fewer than MIN_CORPUS cannot support a scorecard, and more
 # than MAX_SAMPLES is not a bigger answer — it is a slower one, over older renders.
@@ -54,12 +59,9 @@ MAX_SAMPLES = 10
 DURATION_BAND = (5, 10)
 # Where the frames go by default — beside the audit doc that references them.
 DEFAULT_FRAMES_DIR = os.path.join("docs", "content-quality-audits", "assets", "1363")
-# Rubric row R1 grades the first 2-3 seconds, so the opening frame is sampled EARLY rather than at
-# t=0: frame zero of a Runway render is routinely a near-black fade-in and says nothing about the
-# hook. The closing frame backs off the end for the same reason (R8).
-OPEN_FRAME_SECONDS = 0.5
-CLOSE_FRAME_BACKOFF_SECONDS = 0.3
-FRAME_TIMEOUT_SECONDS = 30
+# Frame timing, naming and the extraction itself live in `utilities/video_frames.py` — the same
+# module the store path retains keyframes with, so an extracted frame and a retained one are the
+# same frame of the same clip.
 # The 2026-08-14 production run sampled 10 shipped video posts and graded none of them: every
 # stored MP4 was gone. That is the DESIGNED behaviour, not a broken mount — `purge_post_assets`
 # (#148) deletes the local copy the moment LinkedIn re-hosts the media — and a report that prints
@@ -89,27 +91,14 @@ def video_posts(posts: Optional[Iterable[Mapping[str, Any]]], limit: int = MAX_S
     return rows[:max(0, limit)]
 
 
-def frame_timestamps(duration: Optional[float]) -> list:
-    """`(label, seconds)` pairs to grab from a clip of `duration` seconds.
+def frames_for(video_path: Optional[str], out_dir: str, prefix: str,
+               duration: Optional[float]) -> tuple:
+    """`(frame paths, source)` for one sampled post — extracted now, or retained at store time.
 
-    An unknown or implausibly short duration yields the opening frame only — inventing a midpoint
-    for a clip whose length was never read is how a scorecard ends up citing a frame that does not
-    depict what it claims.
-    """
-    try:
-        seconds = float(duration)
-    except (TypeError, ValueError):
-        return [("open", OPEN_FRAME_SECONDS)]
-    if seconds <= OPEN_FRAME_SECONDS + CLOSE_FRAME_BACKOFF_SECONDS:
-        return [("open", OPEN_FRAME_SECONDS)]
-    return [("open", OPEN_FRAME_SECONDS),
-            ("mid", round(seconds / 2, 2)),
-            ("close", round(seconds - CLOSE_FRAME_BACKOFF_SECONDS, 2))]
-
-
-def extract_frames(video_path: Optional[str], out_dir: str, prefix: str,
-                   duration: Optional[float]) -> list:
-    """Write one JPEG per `frame_timestamps` entry and return the paths that actually landed.
+    Extraction needs the MP4, which after publication is gone by design (`purge_post_assets`, #148).
+    So a shipped post is graded on the keyframes the store path retained beside it (#1363), and the
+    source is reported rather than assumed: a frame pulled from a clip that is still on disk was NOT
+    taken from what LinkedIn received, and the audit has to be able to tell those apart.
 
     Best-effort in every direction — no ffmpeg, an unreadable clip, a non-zero exit or a zero-byte
     output simply contributes no frame. The scorecard reports the frames it has; a sampler that
@@ -118,30 +107,31 @@ def extract_frames(video_path: Optional[str], out_dir: str, prefix: str,
     read-only, where creating `docs/content-quality-audits/assets/1363/` raises — and losing the
     whole measured corpus because an image file could not be written is exactly backwards.
     """
-    path = str(video_path or "").strip()
-    if not path or not os.path.exists(path):
-        return []
-    ffmpeg = shutil.which("ffmpeg")
-    if not ffmpeg:
-        return []
     try:
         os.makedirs(out_dir, exist_ok=True)
     except OSError:
-        return []
-    written: list = []
-    for label, seconds in frame_timestamps(duration):
-        out_path = os.path.join(out_dir, f"{prefix}_{label}.jpg")
+        return [], None
+    def out_path(label: str) -> str:
+        return os.path.join(out_dir, f"{prefix}_{label}.jpg")
+
+    extracted = extract_frames(video_path, duration, out_path)
+    if extracted:
+        return extracted, "extracted"
+    retained = retained_keyframes(video_path)
+    if not retained:
+        return [], None
+    # Copied into the frames directory so the audit doc can reference one path per frame; if that
+    # copy fails (the read-only sidecar mount §8 was run from), the volume path is still named —
+    # a frame the reader has to fetch by hand beats a frame they are never told exists.
+    collected = []
+    for label, path in retained:
         try:
-            # -ss BEFORE -i seeks by keyframe, which is what a 5-10s render wants: it is fast and
-            # the frame it lands on is the one a scrolling viewer actually sees.
-            subprocess.run([ffmpeg, "-y", "-ss", str(seconds), "-i", path,
-                            "-frames:v", "1", "-q:v", "2", out_path],
-                           capture_output=True, check=False, timeout=FRAME_TIMEOUT_SECONDS)
-        except (OSError, subprocess.SubprocessError):
-            continue
-        if os.path.exists(out_path) and os.path.getsize(out_path) > 0:
-            written.append(out_path)
-    return written
+            shutil.copyfile(path, out_path(label))
+        except OSError:
+            collected.append(path)
+        else:
+            collected.append(out_path(label))
+    return collected, "retained"
 
 
 def sample_report(post: Mapping[str, Any], video_url: Optional[str],
@@ -172,6 +162,7 @@ def sample_report(post: Mapping[str, Any], video_url: Optional[str],
         "captioned": bool(caption_text),
         "caption_srt": bool((captions or {}).get("caption_srt_url")),
         "frames": list(frames or []),
+        "frames_source": None,
     }
 
 
@@ -206,6 +197,12 @@ def summarize(rows: Sequence[Mapping[str, Any]]) -> dict:
         "hook_within_budget": sum(1 for r in graded if r.get("hook_within_budget")),
         "slop_hard": sum(int(r.get("slop_hard") or 0) for r in graded),
         "frames": [f for r in rows for f in (r.get("frames") or [])],
+        # Where the pixels came from, counted separately: frames RETAINED at store time depict the
+        # clip that shipped, frames EXTRACTED now depict a clip still on disk, i.e. one that has
+        # not published yet. Pooling them would let an audit cite a pre-publish render as evidence
+        # of what LinkedIn received.
+        "frames_by_source": dict(Counter(str(r.get("frames_source")) for r in rows
+                                         for _ in (r.get("frames") or [])).most_common()),
         "per_post": list(rows),
     }
 
@@ -215,7 +212,7 @@ def collect(user_ids: Sequence[int], limit: int, frames_dir: str,
     """Read the corpus through the db facade, probe each stored asset, then frame what is REPORTED.
 
     `--limit` is applied per user AND again across users, so the default run (every active user)
-    scores more rows than it reports. Frames are therefore extracted only after that second
+    scores more rows than it reports. Frames are therefore collected only after that second
     truncation: a JPEG in the frames directory belongs to a post in the scorecard, or the audit
     doc ends up citing a representative frame for a video the corpus does not contain.
     Each asset is probed exactly once, inside `sample_report` — the duration the frame timestamps
@@ -234,9 +231,9 @@ def collect(user_ids: Sequence[int], limit: int, frames_dir: str,
     sampled = rows[:max(0, limit)]
     if with_frames:
         for row in sampled:
-            row["frames"] = extract_frames(row.get("local_path"), frames_dir,
-                                           f"post{row.get('post_id')}",
-                                           row.get("video_duration_seconds"))
+            row["frames"], row["frames_source"] = frames_for(row.get("local_path"), frames_dir,
+                                                             f"post{row.get('post_id')}",
+                                                             row.get("video_duration_seconds"))
     return summarize(sampled)
 
 
@@ -285,11 +282,14 @@ def _render(summary: Mapping[str, Any]) -> str:
                      f"{'yes' if row.get('captioned') else 'no'} | "
                      f"{row.get('video_asset_probe')}")
     lines.append("")
-    lines.append("Frames written:")
-    for frame in summary["frames"] or []:
-        lines.append(f"  {frame}")
+    sources = summary.get("frames_by_source") or {}
+    lines.append("Frames ({}):".format(
+        ", ".join(f"{count} {name}" for name, count in sources.items()) or "none"))
+    for row in summary["per_post"]:
+        for frame in row.get("frames") or []:
+            lines.append(f"  {frame}  [{row.get('frames_source')}]")
     if not summary["frames"]:
-        lines.append("  — none — (no ffmpeg, or no readable local asset)")
+        lines.append("  — none — (no ffmpeg, and no keyframes retained beside the stored video)")
     hint = purge_hint(summary)
     if hint:
         lines.extend(["", hint])

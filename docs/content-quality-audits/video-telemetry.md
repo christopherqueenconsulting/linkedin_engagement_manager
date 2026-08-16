@@ -138,6 +138,27 @@ Two rules, both the "unscored is never zero" rule in a different coat:
 Nothing is retroactive: video posts that shipped before #1517 have no receipt and keep reading
 `missing`.
 
+### The pixels are retained the same way (#1363)
+
+A receipt carries numbers, and rubric rows R1 (the first 2-3 seconds) and R8 (the closing frame) are
+graded on what the clip LOOKS like. So the same moment that writes the receipt also writes the
+representative keyframes: `retain_keyframes` (`utilities/video_frames.py`) pulls `open` (0.5s), `mid`
+and `close` out of the stored MP4 into `<video>.frame-<label>.jpg` sidecars beside it — three JPEGs
+per video post, which is the cost the owner accepted (decision `2A` on #1363) against the megabytes
+#148 reclaims. They survive the purge for the same reason the receipt does: it removes the exact
+`.mp4` named by `video_url`, and a sidecar sharing that stem is not that path.
+
+The same rules apply, one level down. A frame is EXTRACTED, never inferred: nothing is reported
+unless ffmpeg wrote a non-empty file, and a clip whose duration was never read retains the opening
+frame ONLY — a midpoint invented for an unmeasured clip is a frame that does not depict what it
+claims. Retaining nothing after a probe that READ the file warns (ffprobe answered, so ffmpeg
+failing on the same bytes is one fault costing every video post its R1/R8 evidence), and it never
+costs the receipt: the measures are written first.
+
+`scripts/sample_shipped_videos.py` reads them back and reports frames it EXTRACTED from a clip still
+on disk apart from frames RETAINED at store time — only the second kind depicts what LinkedIn
+received.
+
 ---
 
 ## 4. Rollup additions (future, not in this PR)

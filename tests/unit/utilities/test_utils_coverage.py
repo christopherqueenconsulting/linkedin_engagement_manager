@@ -7,6 +7,7 @@ different side effect.
 """
 
 import json
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -234,6 +235,25 @@ class TestPurgePostAssets:
             removed = purge_post_assets(9, video_url=url)
         assert not video.exists() and str(video) in removed
         assert srt.exists() and str(srt) not in removed
+
+    def test_keeps_the_retained_keyframes_the_audit_grades(self, tmp_path):
+        """Issue #1363: R1/R8 are graded on pixels, and only after the post has shipped.
+
+        The keyframes are sidecars sharing the MP4's stem for exactly this reason — the purge
+        removes the one `.mp4` it resolved, so they need no carve-out. If that ever stops being
+        true, the shipped corpus goes back to having no frames at all.
+        """
+        from cqc_lem.utilities.utils import purge_post_assets
+        from cqc_lem.utilities.video_frames import keyframe_path
+        video, _carousel_dir = self._setup_assets(tmp_path)
+        frames = [Path(keyframe_path(str(video), label)) for label in ("open", "mid", "close")]
+        for frame in frames:
+            frame.write_bytes(b"jpeg-bytes")
+        url = "https://api.example.com/api/assets?file_name=videos/runwayml/clip.mp4"
+        with patch("cqc_lem.assets_dir", str(tmp_path)):
+            removed = purge_post_assets(9, video_url=url)
+        assert not video.exists() and str(video) in removed
+        assert all(frame.exists() and str(frame) not in removed for frame in frames)
 
     def test_a_video_with_no_sidecar_is_still_purged(self, tmp_path):
         from cqc_lem.utilities.utils import purge_post_assets
