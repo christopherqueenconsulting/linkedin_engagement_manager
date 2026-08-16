@@ -83,6 +83,64 @@ class TestCatchupTouchDb:
         assert "status = %s" in list_sql and "event_type = %s" in list_sql
         assert "ORDER BY score DESC" in list_sql
 
+    def test_list_sorts_by_date_when_asked(self, fake_cursor):
+        """Issue #1464: 'newest first' orders the whole QUERY, not the page score already picked.
+
+        The tiebreak flips to score so equal timestamps still come back in a stable order.
+        """
+        conn, cur = fake_cursor(lastrowid=7, fetch_one={"c": 0})
+        cur.fetchall.return_value = []
+        with patch(f"{_GET_CONN}", return_value=conn):
+            from cqc_lem.utilities.db import get_catchup_touches
+            get_catchup_touches(1, sort_by="date", sort_order="desc")
+        assert "ORDER BY created_at DESC, score DESC" in cur.execute.call_args_list[-1][0][0]
+
+    def test_list_sort_order_directs_the_chosen_column(self, fake_cursor):
+        conn, cur = fake_cursor(lastrowid=7, fetch_one={"c": 0})
+        cur.fetchall.return_value = []
+        with patch(f"{_GET_CONN}", return_value=conn):
+            from cqc_lem.utilities.db import get_catchup_touches
+            get_catchup_touches(1, sort_by="date", sort_order="asc")
+        assert "ORDER BY created_at ASC, score DESC" in cur.execute.call_args_list[-1][0][0]
+
+    @pytest.mark.parametrize("sort_by", ["nonsense", "id; DROP TABLE catchup_touches", "", None])
+    def test_unknown_sort_column_falls_back_to_score(self, sort_by, fake_cursor):
+        """The column is interpolated, so anything off the whitelist must never reach the SQL."""
+        conn, cur = fake_cursor(lastrowid=7, fetch_one={"c": 0})
+        cur.fetchall.return_value = []
+        with patch(f"{_GET_CONN}", return_value=conn):
+            from cqc_lem.utilities.db import get_catchup_touches
+            get_catchup_touches(1, sort_by=sort_by)
+        list_sql = cur.execute.call_args_list[-1][0][0]
+        assert "ORDER BY score DESC, created_at DESC" in list_sql
+        assert "DROP TABLE" not in list_sql
+
+    def test_date_range_bounds_created_at_on_both_queries(self, fake_cursor):
+        """The count runs the same WHERE as the page, or the 'not listed' line lies about the range."""
+        from datetime import datetime, timezone
+        conn, cur = fake_cursor(lastrowid=7, fetch_one={"c": 0})
+        cur.fetchall.return_value = []
+        start = datetime(2026, 8, 1, tzinfo=timezone.utc)
+        end = datetime(2026, 8, 15, 23, 59, tzinfo=timezone.utc)
+        with patch(f"{_GET_CONN}", return_value=conn):
+            from cqc_lem.utilities.db import get_catchup_touches
+            get_catchup_touches(1, start_date=start, end_date=end)
+        count_sql, count_params = cur.execute.call_args_list[-2][0]
+        list_sql, list_params = cur.execute.call_args_list[-1][0]
+        assert "created_at >= %s" in count_sql and "created_at <= %s" in count_sql
+        assert "created_at >= %s" in list_sql and "created_at <= %s" in list_sql
+        # Bounds are parameterized and stored naive-UTC, matching how the rows were written.
+        assert count_params[1:] == (start.replace(tzinfo=None), end.replace(tzinfo=None))
+        assert list_params[1:3] == (start.replace(tzinfo=None), end.replace(tzinfo=None))
+
+    def test_no_date_range_leaves_the_where_clause_alone(self, fake_cursor):
+        conn, cur = fake_cursor(lastrowid=7, fetch_one={"c": 0})
+        cur.fetchall.return_value = []
+        with patch(f"{_GET_CONN}", return_value=conn):
+            from cqc_lem.utilities.db import get_catchup_touches
+            get_catchup_touches(1)
+        assert "created_at >=" not in cur.execute.call_args_list[-1][0][0]
+
     def test_list_serializes_datetimes(self, fake_cursor):
         from datetime import datetime
         conn, cur = fake_cursor(lastrowid=7, fetch_one={"c": 1})

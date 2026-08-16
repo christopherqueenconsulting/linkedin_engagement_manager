@@ -2,7 +2,9 @@ import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import api from '../../api/client'
 import { useAuth } from '../../contexts/useAuth'
-import { formatInTimezone } from '../../utils/datetime'
+import { formatInTimezone, zonedDateToUtcStart, zonedDateToUtcEnd } from '../../utils/datetime'
+import { DATE_RANGE_FILTERS, resolveDateRange } from '../../utils/dateRange'
+import type { DateRangeFilter } from '../../utils/dateRange'
 import { CATCHUP_EVENTS } from '../account/types'
 import { maskProps } from '../../utils/analytics'
 
@@ -45,19 +47,44 @@ const STATUS_COLORS: Record<string, string> = {
 // dashboard activity feed showed the same touches going out (issue #1360).
 const STATUSES = ['ALL', 'pending', 'approved', 'sending', 'sent', 'skipped', 'failed', 'canceled']
 
+type SortBy = 'score' | 'date'
+const SORT_BY_OPTIONS: { label: string; value: SortBy }[] = [
+  { label: 'Fit score', value: 'score' },
+  { label: 'Date drafted', value: 'date' },
+]
+
+// A touch is drafted when the milestone was SEEN, so every row's date is in the past — the Content
+// Studio's forward-looking preset (it filters scheduled_time) would always return nothing here.
+const CATCHUP_DATE_RANGES = DATE_RANGE_FILTERS.filter((d) => d.value !== 'next30days')
+
 export default function CatchupTouches({ userTimezone }: { userTimezone: string }) {
   const { sessionToken } = useAuth()
   const qc = useQueryClient()
   const [filter, setFilter] = useState('ALL')
+  const [sortBy, setSortBy] = useState<SortBy>('score')
+  const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc')
+  const [dateRange, setDateRange] = useState<DateRangeFilter>('ALL')
+  const [customStartDate, setCustomStartDate] = useState('')
+  const [customEndDate, setCustomEndDate] = useState('')
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null)
   // Per-touch message edits (keyed by id) so each card edits independently.
   const [edits, setEdits] = useState<Record<number, string>>({})
 
+  const { start: filterStartDate, end: filterEndDate } = resolveDateRange(
+    dateRange, userTimezone, customStartDate, customEndDate
+  )
+
   const { data, isLoading } = useQuery({
-    queryKey: ['catchup-touches', sessionToken, filter],
+    queryKey: ['catchup-touches', sessionToken, filter, sortBy, sortOrder,
+               dateRange, filterStartDate, filterEndDate],
     queryFn: () => {
-      const p = new URLSearchParams({ session_token: sessionToken!, page: '1', page_size: '50' })
+      const p = new URLSearchParams({
+        session_token: sessionToken!, page: '1', page_size: '50',
+        sort_by: sortBy, sort_order: sortOrder,
+      })
       if (filter !== 'ALL') p.set('status_filter', filter)
+      if (filterStartDate) p.set('start_date', zonedDateToUtcStart(filterStartDate, userTimezone) ?? '')
+      if (filterEndDate) p.set('end_date', zonedDateToUtcEnd(filterEndDate, userTimezone) ?? '')
       return api
         .get(`/catchup/touches?${p.toString()}`)
         .then((r) => r.data.detail as { touches: CatchupTouch[]; total: number })
@@ -65,11 +92,19 @@ export default function CatchupTouches({ userTimezone }: { userTimezone: string 
     enabled: !!sessionToken,
   })
   const touches = data?.touches ?? []
-  // The request is page 1 of 50 with no pager, and the API orders by score DESC — so on ALL a big
-  // archive of sent/skipped rows can outrank the few PENDING drafts that still need a decision.
-  // Say so out loud rather than let the list read as complete (the same silence as issue #1360).
+  // The request is page 1 of 50 with no pager, so on ALL a big archive of sent/skipped rows can
+  // outrank the few PENDING drafts that still need a decision. Say so out loud rather than let the
+  // list read as complete (the same silence as issue #1360) — and name the sort that decided WHICH
+  // 50 arrived, since a date sort hides a different 50 than the score sort does (issue #1464).
   const total = data?.total ?? 0
   const hiddenByPaging = Math.max(0, total - touches.length)
+  const sortSummary = sortBy === 'date'
+    ? (sortOrder === 'desc' ? 'most recent' : 'oldest')
+    : (sortOrder === 'desc' ? 'highest-scoring' : 'lowest-scoring')
+  // One string, not interpolated JSX: an empty queue is the state a test (and a reader) checks by
+  // its exact sentence, and React would otherwise split it across text nodes.
+  const emptyMessage = `No catch-up touches ${filter === 'ALL' ? 'yet' : `with status ${filter}`}`
+    + `${dateRange === 'ALL' ? '' : ' in this date range'}.`
 
   const flash = (ok: boolean, text: string) => { setMsg({ ok, text }); setTimeout(() => setMsg(null), 4000) }
   const invalidate = () => qc.invalidateQueries({ queryKey: ['catchup-touches'] })
@@ -127,21 +162,84 @@ export default function CatchupTouches({ userTimezone }: { userTimezone: string 
         ))}
       </div>
 
+      {/* Sort + date-range filter (issue #1464) */}
+      <div className="flex items-center gap-3 flex-wrap">
+        <label className="flex items-center gap-1.5 text-xs text-gray-600">
+          <span>Sort by</span>
+          <select
+            value={sortBy}
+            onChange={(e) => setSortBy(e.target.value as SortBy)}
+            aria-label="Sort catch-up touches by"
+            className="border border-gray-300 rounded-lg px-2 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-blue-500"
+          >
+            {SORT_BY_OPTIONS.map((o) => (
+              <option key={o.value} value={o.value}>{o.label}</option>
+            ))}
+          </select>
+        </label>
+        <button
+          onClick={() => setSortOrder((o) => (o === 'asc' ? 'desc' : 'asc'))}
+          className="flex items-center gap-1 text-gray-600 border border-gray-300 rounded-lg px-3 py-1.5 hover:border-blue-400 transition-colors text-xs font-medium"
+        >
+          {sortBy === 'date'
+            ? (sortOrder === 'asc' ? '↑ Oldest first' : '↓ Newest first')
+            : (sortOrder === 'asc' ? '↑ Lowest score first' : '↓ Highest score first')}
+        </button>
+        <label className="flex items-center gap-1.5 text-xs text-gray-600">
+          <span>Date</span>
+          <select
+            value={dateRange}
+            onChange={(e) => setDateRange(e.target.value as DateRangeFilter)}
+            aria-label="Date range preset"
+            className="border border-gray-300 rounded-lg px-2 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-blue-500"
+          >
+            {CATCHUP_DATE_RANGES.map((d) => (
+              <option key={d.value} value={d.value}>{d.label}</option>
+            ))}
+          </select>
+        </label>
+        {dateRange === 'custom' && (
+          <div className="flex items-center gap-1.5 text-xs text-gray-600">
+            <input
+              type="date"
+              value={customStartDate}
+              onChange={(e) => setCustomStartDate(e.target.value)}
+              aria-label="Custom start date"
+              className="border border-gray-300 rounded-lg px-2 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-blue-500"
+            />
+            <span>to</span>
+            <input
+              type="date"
+              value={customEndDate}
+              onChange={(e) => setCustomEndDate(e.target.value)}
+              aria-label="Custom end date"
+              className="border border-gray-300 rounded-lg px-2 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-blue-500"
+            />
+          </div>
+        )}
+      </div>
+
       {!isLoading && hiddenByPaging > 0 && (
         <p className="text-xs text-gray-500">
-          Showing the {touches.length} highest-scoring of {total} touches — {hiddenByPaging} not
-          listed. Pick a status above to narrow the list.
+          Showing the {touches.length} {sortSummary} of {total} touches — {hiddenByPaging} not
+          listed. Pick a status or date range above to narrow the list.
         </p>
       )}
 
       {isLoading && <p className="text-gray-400 text-sm">Loading catch-up touches…</p>}
       {!isLoading && touches.length === 0 && (
         <div className="text-center py-10 bg-white rounded-lg border border-gray-200 text-sm text-gray-500 space-y-2">
-          <p>No catch-up touches {filter === 'ALL' ? 'yet' : `with status ${filter}`}.</p>
+          <p>{emptyMessage}</p>
           {filter !== 'ALL' && (
             <button onClick={() => setFilter('ALL')}
               className="px-3 py-1 border border-gray-300 rounded text-xs font-semibold text-gray-600 hover:bg-gray-50">
               Show all statuses
+            </button>
+          )}
+          {dateRange !== 'ALL' && (
+            <button onClick={() => setDateRange('ALL')}
+              className="px-3 py-1 border border-gray-300 rounded text-xs font-semibold text-gray-600 hover:bg-gray-50">
+              Show all dates
             </button>
           )}
         </div>
