@@ -4872,8 +4872,14 @@ export interface components {
          *
          *     `next_publish` is the slot AFTER the last edition already queued — when a NEW draft would go
          *     out, not when the next send is.
+         *
+         *     `auto_publish_newsletters` rides along from the user's settings so the queue can say what
+         *     actually happens at a draft's slot (publish, or wait for approval) instead of asserting one
+         *     universal truth — it is read here, never written.
          */
         NewsletterDraftDetail: {
+            /** Auto Publish Newsletters */
+            auto_publish_newsletters: boolean;
             /** Editions */
             editions: components["schemas"]["NewsletterEdition"][];
             /** Generate Lead Days */
@@ -4968,6 +4974,8 @@ export interface components {
         NewsletterSettingsDetail: {
             /** Align With Blog */
             align_with_blog: boolean;
+            /** Auto Publish Newsletters */
+            auto_publish_newsletters: boolean;
             /** Cadence */
             cadence: string;
             /** Cover Image Auto */
@@ -5010,6 +5018,11 @@ export interface components {
              * @default true
              */
             align_with_blog: boolean;
+            /**
+             * Auto Publish Newsletters
+             * @default false
+             */
+            auto_publish_newsletters: boolean;
             /**
              * Cadence
              * @default weekly

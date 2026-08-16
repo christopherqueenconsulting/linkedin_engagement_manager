@@ -171,3 +171,39 @@ describe('NewsletterQueue pending-cover legibility', () => {
     expect(screen.queryByText(/this schedules the edition only/)).toBeNull()
   })
 })
+
+// Issue #1135: a draft's slot no longer means one universal thing. What happens there depends on
+// the account's own `auto_publish_newsletters` setting, so the copy has to report it rather than
+// assert it — telling an opted-out user their draft "auto-publishes" is the failure mode.
+describe('NewsletterQueue slot copy', () => {
+  const serveWithSetting = (autoPublish: boolean, status: NewsletterEdition['status'] = 'draft') =>
+    get.mockImplementation(() =>
+      Promise.resolve({
+        data: {
+          detail: {
+            editions: [{ ...edition(1, 'First up'), status }],
+            next_publish: null,
+            auto_publish_newsletters: autoPublish,
+          },
+        },
+      }))
+
+  it('says a draft auto-publishes when the account opted into that', async () => {
+    serveWithSetting(true)
+    harness(queue())
+    await waitFor(() => expect(screen.getByText(/Auto-publishes/)).toBeTruthy())
+  })
+
+  it('says a draft waits for approval when the account did not', async () => {
+    serveWithSetting(false)
+    harness(queue())
+    await waitFor(() => expect(screen.getByText(/publishes only once you approve it/)).toBeTruthy())
+    expect(screen.queryByText(/Auto-publishes/)).toBeNull()
+  })
+
+  it('still says an APPROVED edition publishes at its slot — the toggle only governs drafts', async () => {
+    serveWithSetting(false, 'approved')
+    harness(queue())
+    await waitFor(() => expect(screen.getByText(/Auto-publishes/)).toBeTruthy())
+  })
+})

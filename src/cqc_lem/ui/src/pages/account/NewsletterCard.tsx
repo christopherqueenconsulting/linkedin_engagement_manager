@@ -134,6 +134,21 @@ export default function NewsletterCard() {
             </div>
           </div>
 
+          {/* Autonomous publishing (issue #1135): a generated edition rests at 'draft', so without
+              this on, its slot arrives and it waits for you rather than shipping on silence. */}
+          <div className="border-t border-gray-100 pt-4 flex items-center justify-between">
+            <div>
+              <p className="text-sm font-medium text-gray-700">Publish drafts without my approval</p>
+              <p className="text-xs text-gray-500">
+                When this is on, a queued draft publishes at its scheduled slot on its own. When it's
+                off, an edition only publishes after you approve it on the Newsletters review tab —
+                its slot passes and the draft keeps waiting.
+              </p>
+            </div>
+            <Toggle on={newsletter.auto_publish_newsletters} ariaLabel="Publish drafts without my approval"
+              onClick={() => setNl({ auto_publish_newsletters: !newsletter.auto_publish_newsletters })} />
+          </div>
+
           {/* Cover images (issue #893): upload your own per edition, or let us generate one.
               Generation costs money per edition, so it is opt-in and every generated cover waits
               for your approval before it publishes. */}

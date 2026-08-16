@@ -64,6 +64,15 @@ weakened. What changed is that the state is legible *before* the slot:
 | Email | `auto_notify_pending_covers` (daily 10:30 UTC, after the 10:00 top-up) emails the author for any edition publishing within `NEWSLETTER_COVER_REMINDER_LEAD_HOURS` (36) whose cover is still pending. ONE-SHOT per edition via a Redis claim, released on a failed send; **fails open** — a Redis outage degrades to at most one email per run, never to silence |
 | Publish | `_approved_cover_path` logs INFO when it drops a pending cover. INFO deliberately: publishing cover-less is the DESIGNED outcome, and a repeated `log_warning` would file a defect against working behaviour |
 
+**"An edition never waits on its COVER" is not "an edition always ships" (issue #1135).** The body
+has its own, separate gate: `auto_publish_newsletters` on `newsletter_settings`. A generated edition
+rests at `draft`, and `get_editions_due_to_publish` now selects `status='approved' OR (status='draft'
+AND auto_publish_newsletters=1)` — so for an opted-out account the slot passes and the draft keeps
+waiting in the queue, while the cover rule above is unchanged either way. Existing rows were
+backfilled to `true` (no behavior change on deploy day); new rows default to `false`. The cover
+deliberately gets no equivalent opt-out — a generated cover is a public brand asset regardless of
+what the body's setting says.
+
 ## The deterministic gate
 
 Both sources pass `inspect_cover_bytes` first — this is what stops an unusable image reaching a

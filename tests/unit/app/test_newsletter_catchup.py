@@ -26,10 +26,11 @@ class TestPublishNextDueEditionForUser:
 
     def test_single_due_publishes_without_reschedule(self):
         from cqc_lem.app import run_scheduler as rs
-        pending = [{"id": 5, "scheduled_for": datetime(2026, 7, 21, 13, 0)},   # due
-                   {"id": 6, "scheduled_for": datetime(2026, 7, 28, 13, 0)}]   # future
+        pending = [{"id": 5, "status": "approved", "scheduled_for": datetime(2026, 7, 21, 13, 0)},   # due
+                   {"id": 6, "status": "approved", "scheduled_for": datetime(2026, 7, 28, 13, 0)}]   # future
         dispatch = MagicMock()
         with patch(f"{_DB}.get_pending_newsletter_editions", return_value=pending), \
+             patch(f"{_DB}.get_newsletter_settings", return_value={}), \
              patch(f"{_RS}._reschedule_pending_editions_forward") as resched:
             n = rs._publish_next_due_edition_for_user(1, datetime(2026, 7, 22, 3, 0), dispatch)
         assert n == 1
@@ -38,11 +39,12 @@ class TestPublishNextDueEditionForUser:
 
     def test_backlog_publishes_oldest_only_and_shifts_rest_in_order(self):
         from cqc_lem.app import run_scheduler as rs
-        pending = [{"id": 2, "scheduled_for": datetime(2026, 7, 14, 13, 0)},   # due (oldest)
-                   {"id": 3, "scheduled_for": datetime(2026, 7, 21, 13, 0)},   # due (backlog)
-                   {"id": 4, "scheduled_for": datetime(2026, 7, 28, 13, 0)}]   # future
+        pending = [{"id": 2, "status": "approved", "scheduled_for": datetime(2026, 7, 14, 13, 0)},   # due (oldest)
+                   {"id": 3, "status": "approved", "scheduled_for": datetime(2026, 7, 21, 13, 0)},   # due (backlog)
+                   {"id": 4, "status": "approved", "scheduled_for": datetime(2026, 7, 28, 13, 0)}]   # future
         dispatch = MagicMock()
         with patch(f"{_DB}.get_pending_newsletter_editions", return_value=pending), \
+             patch(f"{_DB}.get_newsletter_settings", return_value={}), \
              patch(f"{_RS}._reschedule_pending_editions_forward", return_value=2) as resched:
             n = rs._publish_next_due_edition_for_user(1, datetime(2026, 7, 23, 3, 0), dispatch)
         assert n == 1
@@ -50,6 +52,49 @@ class TestPublishNextDueEditionForUser:
         resched.assert_called_once()
         shifted_ids = [e["id"] for e in resched.call_args.args[1]]
         assert shifted_ids == [3, 4]                        # everything after the oldest, in order
+
+
+class TestUnapprovedDraftIsHeldAtTheSlot:
+    """Issue #1135 — the worker boundary mirrors `get_editions_due_to_publish`'s OR-condition.
+
+    The queued message outlives the query that selected the user, so the setting is re-read here.
+    """
+
+    def test_due_draft_is_held_when_auto_publish_is_off(self):
+        from cqc_lem.app import run_scheduler as rs
+        pending = [{"id": 5, "status": "draft", "scheduled_for": datetime(2026, 7, 21, 13, 0)}]
+        dispatch = MagicMock()
+        with patch(f"{_DB}.get_pending_newsletter_editions", return_value=pending), \
+             patch(f"{_DB}.get_newsletter_settings", return_value={"auto_publish_newsletters": False}), \
+             patch(f"{_RS}.log_debug") as dbg:
+            n = rs._publish_next_due_edition_for_user(1, datetime(2026, 7, 22, 3, 0), dispatch)
+        assert n == 0
+        dispatch.assert_not_called()
+        # Expected, recurring no-op — DEBUG, never a warning (the escalation contract).
+        dbg.assert_called_once()
+
+    def test_due_draft_publishes_when_auto_publish_is_on(self):
+        from cqc_lem.app import run_scheduler as rs
+        pending = [{"id": 5, "status": "draft", "scheduled_for": datetime(2026, 7, 21, 13, 0)}]
+        dispatch = MagicMock()
+        with patch(f"{_DB}.get_pending_newsletter_editions", return_value=pending), \
+             patch(f"{_DB}.get_newsletter_settings", return_value={"auto_publish_newsletters": True}):
+            n = rs._publish_next_due_edition_for_user(1, datetime(2026, 7, 22, 3, 0), dispatch)
+        assert n == 1
+        dispatch.assert_called_once_with(5)
+
+    def test_approved_edition_publishes_past_a_held_older_draft(self):
+        """An opted-out user's approved edition still goes out — the hold skips it, never blocks it."""
+        from cqc_lem.app import run_scheduler as rs
+        pending = [{"id": 2, "status": "draft", "scheduled_for": datetime(2026, 7, 14, 13, 0)},
+                   {"id": 3, "status": "approved", "scheduled_for": datetime(2026, 7, 21, 13, 0)}]
+        dispatch = MagicMock()
+        with patch(f"{_DB}.get_pending_newsletter_editions", return_value=pending), \
+             patch(f"{_DB}.get_newsletter_settings", return_value={"auto_publish_newsletters": False}), \
+             patch(f"{_RS}._reschedule_pending_editions_forward", return_value=1):
+            n = rs._publish_next_due_edition_for_user(1, datetime(2026, 7, 23, 3, 0), dispatch)
+        assert n == 1
+        dispatch.assert_called_once_with(3)
 
 
 class TestRescheduleForward:

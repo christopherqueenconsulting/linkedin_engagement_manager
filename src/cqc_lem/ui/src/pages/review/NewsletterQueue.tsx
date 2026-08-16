@@ -328,9 +328,14 @@ export default function NewsletterQueue(
           <div className="bg-white rounded-lg border border-gray-200 shadow-sm p-5 space-y-3">
             <div>
               <h3 className="text-sm font-semibold text-gray-700">Review draft</h3>
+              {/* What happens at the slot depends on the account's own setting (issue #1135), so
+                  this reports it rather than asserting one universal truth. An APPROVED edition
+                  publishes either way — the toggle only decides whether an untouched draft does. */}
               {draftEdit.scheduled_for && (
                 <p className="text-xs text-gray-500">
-                  Auto-publishes {formatInTimezone(draftEdit.scheduled_for, userTimezone)} unless you skip it.
+                  {draftEdit.status === 'approved' || data?.auto_publish_newsletters
+                    ? `Auto-publishes ${formatInTimezone(draftEdit.scheduled_for, userTimezone)} unless you skip it.`
+                    : `Scheduled for ${formatInTimezone(draftEdit.scheduled_for, userTimezone)} — it publishes only once you approve it.`}
                 </p>
               )}
             </div>

@@ -1396,14 +1396,27 @@ def _publish_next_due_edition_for_user(user_id: int, now: datetime, dispatch) ->
     editions forward onto future cadence slots (order preserved) so a subscriber never receives
     several editions at once. `dispatch(edition_id)` queues the actual Selenium publish. Returns 1 if
     an edition was dispatched, else 0.
+
+    A due edition still sitting at 'draft' publishes only when the user opted into
+    `auto_publish_newsletters` (issue #1135) — the same condition `get_editions_due_to_publish`
+    applies in SQL, re-read here so the decision does not live only in the query that selected the
+    user. An overdue draft for an opted-out user is an expected, recurring no-op, so it is DEBUG.
     """
-    from cqc_lem.utilities.db import get_pending_newsletter_editions
+    from cqc_lem.utilities.db import get_newsletter_settings, get_pending_newsletter_editions
     pending = get_pending_newsletter_editions(user_id)  # ordered by scheduled_for ASC
     due = [e for e in pending
            if e.get("scheduled_for") is not None and e["scheduled_for"] <= now]
     if not due:
         return 0
-    oldest = due[0]
+    auto_publish = bool(get_newsletter_settings(user_id).get("auto_publish_newsletters"))
+    publishable = [e for e in due if e.get("status") == "approved" or auto_publish]
+    if len(publishable) < len(due):
+        log_debug(f"Holding {len(due) - len(publishable)} due newsletter draft(s) for approval "
+                  f"(auto_publish_newsletters off)",
+                  user_id=user_id, task_name="auto_publish_scheduled_editions")
+    if not publishable:
+        return 0
+    oldest = publishable[0]
     dispatch(oldest["id"])
     if len(due) > 1:
         remaining = [e for e in pending if e["id"] != oldest["id"]]
