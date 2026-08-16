@@ -117,6 +117,72 @@ def test_no_files_is_the_common_case():
     assert rrc.added_migration_files([]) == []
 
 
+# ---------------------------------------------------------------- collect_migration_files (300 cap)
+
+
+def _padding_files(count: int) -> list[dict]:
+    return [{"filename": f"src/pad_{i}.py", "status": "modified"} for i in range(count)]
+
+
+def test_an_untruncated_compare_is_read_straight_off_the_payload(monkeypatch):
+    """Below the cap, no per-commit calls at all — the common case stays one API read."""
+
+    def no_calls(args, **kw):
+        raise AssertionError(f"must not shell out below the cap: {args}")
+
+    monkeypatch.setattr(rrc, "_run_gh", no_calls)
+    compare = {
+        "files": [{"filename": "compose/local/database/migrations/V1__x.sql", "status": "added"}],
+        "commits": [{"sha": "abc"}],
+    }
+    assert rrc.collect_migration_files(REPO, compare) == [
+        "compose/local/database/migrations/V1__x.sql"
+    ]
+
+
+def test_a_migration_hidden_past_the_300_file_cap_is_still_found(monkeypatch):
+    """The cap is silent and unpaginated, so the range's commits get walked individually.
+
+    Measured against the real `v0.147.0...v0.148.0` range: the compare API answers with exactly 300
+    files and `?page=2` returns an EMPTY files array — a migration beyond entry 300 would otherwise
+    be invisible to the one thing this gate exists to catch.
+    """
+    commit_payload = json.dumps(
+        {
+            "files": [
+                {"filename": "compose/local/database/migrations/V9__late.sql", "status": "added"}
+            ]
+        }
+    )
+    monkeypatch.setattr(rrc, "_run_gh", lambda args, **kw: _completed(0, commit_payload))
+    compare = {"files": _padding_files(rrc.COMPARE_FILES_CAP), "commits": [{"sha": "deadbeef"}]}
+    assert rrc.collect_migration_files(REPO, compare) == [
+        "compose/local/database/migrations/V9__late.sql"
+    ]
+
+
+def test_a_truncated_compare_keeps_what_the_visible_files_already_proved(monkeypatch):
+    """An unreadable per-commit read never erases a migration the compare payload already named."""
+    monkeypatch.setattr(rrc, "_run_gh", lambda args, **kw: _completed(1, "", "boom"))
+    files = _padding_files(rrc.COMPARE_FILES_CAP - 1)
+    files.append({"filename": "compose/local/database/migrations/V1__x.sql", "status": "added"})
+    compare = {"files": files, "commits": [{"sha": "deadbeef"}]}
+    assert rrc.collect_migration_files(REPO, compare) == [
+        "compose/local/database/migrations/V1__x.sql"
+    ]
+
+
+def test_a_commit_without_a_sha_is_skipped_not_crashed_on(monkeypatch):
+    monkeypatch.setattr(rrc, "_run_gh", lambda args, **kw: _completed(0, json.dumps({"files": []})))
+    compare = {"files": _padding_files(rrc.COMPARE_FILES_CAP), "commits": [{}]}
+    assert rrc.collect_migration_files(REPO, compare) == []
+
+
+def test_fetch_commit_files_is_none_when_the_shape_is_wrong(monkeypatch):
+    monkeypatch.setattr(rrc, "_run_gh", lambda args, **kw: _completed(0, json.dumps({"sha": "a"})))
+    assert rrc.fetch_commit_files(REPO, "a") is None
+
+
 # ---------------------------------------------------------------- extract_pr_numbers
 
 
@@ -462,15 +528,50 @@ def test_main_flags_but_skips_the_comment_when_no_comment_is_passed(monkeypatch,
     assert posted == []
 
 
-def test_main_never_fails_the_job_on_a_flag():
-    """The exit code must stay 0 even flagged.
+def test_main_flags_a_risk_labelled_pr_and_still_exits_zero(monkeypatch, tmp_path):
+    """The whole risk:* path end to end — commit subject to PR to issue label to `flagged=true`.
 
-    The verdict lives in the output, not the exit code, or the workflow run itself would go red
-    for correctly-working behavior.
+    The exit code must stay 0 while flagged: the verdict lives in the OUTPUT, not the exit code, or
+    the workflow run itself would go red for correctly-working behavior.
     """
-    # Covered structurally by every other test in this block asserting rc == 0; restated here as
-    # its own case so a future edit that adds `return 1` on a flag fails a NAMED test.
-    assert True
+    monkeypatch.setenv("GH_TOKEN", "x")
+    out = tmp_path / "gh_output"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(out))
+    releases = json.dumps(
+        [
+            {"tagName": "v1.0.2", "createdAt": "2026-08-16T00:00:00Z"},
+            {"tagName": "v1.0.1", "createdAt": "2026-08-15T00:00:00Z"},
+        ]
+    )
+    compare = json.dumps(
+        {
+            "files": [],
+            "commits": [{"sha": "a1", "commit": {"message": "feat: a thing (#1554)"}}],
+            "total_commits": 1,
+        }
+    )
+    router = _fake_gh_router(
+        {
+            "release list": releases,
+            "compare": compare,
+            "closingIssuesReferences": json.dumps(
+                {"closingIssuesReferences": [{"number": 1133}]}
+            ),
+            "labels": json.dumps({"labels": [{"name": "risk:product-decision"}]}),
+        }
+    )
+    monkeypatch.setattr(rrc, "_run_gh", router)
+    posted = {}
+    monkeypatch.setattr(
+        rrc, "post_decision_comment", lambda repo, pr, body: posted.update(body=body) or True
+    )
+    monkeypatch.setattr(rrc, "fetch_release_pr_number", lambda repo, tag: 1585)
+
+    rc = rrc.main(["release_risk_check.py", "--tag", "v1.0.2"])
+    assert rc == 0
+    assert "flagged=true" in out.read_text()
+    assert "#1554" in posted["body"]
+    assert "risk:product-decision" in posted["body"]
 
 
 def test_main_fails_open_when_no_previous_release_is_resolvable(monkeypatch, tmp_path):

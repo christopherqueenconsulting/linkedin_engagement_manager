@@ -77,6 +77,14 @@ RELEASE_PR_HEAD_REF = "release-please--branches--main"
 
 GH_TIMEOUT_SECONDS = 60
 
+#: GitHub's compare API returns AT MOST 300 entries in `.files`, silently, with no truncation flag
+#: and no pagination escape (`?page=2` on that endpoint answers with an EMPTY files array — measured
+#: against `v0.147.0...v0.148.0`, a real range that returns exactly 300). A release range that hits
+#: the cap can therefore hide a migration from `added_migration_files`, which is precisely the miss
+#: this gate exists to prevent — so at the cap we stop trusting `.files` and walk the range's commits
+#: one at a time instead.
+COMPARE_FILES_CAP = 300
+
 
 # ────────────────────────────────────────────────────────────── pure decision logic
 
@@ -311,6 +319,64 @@ def fetch_compare(repo: str, base: str, head: str) -> dict | None:
     return data if isinstance(data, dict) else None
 
 
+def fetch_commit_files(repo: str, sha: str) -> list[dict] | None:
+    """`GET /repos/{repo}/commits/{sha}` — one commit's own file list (with per-file status).
+
+    Args:
+        repo: `owner/name`.
+        sha: The commit to read.
+
+    Returns:
+        The commit's `files` array, or `None` when the call or its shape is unreadable.
+    """
+    data = _gh_json(["gh", "api", f"repos/{repo}/commits/{sha}"])
+    if not isinstance(data, dict):
+        return None
+    files = data.get("files")
+    return files if isinstance(files, list) else None
+
+
+def collect_migration_files(repo: str, compare: dict) -> list[str]:
+    """Added migration paths in the range, working around the compare API's 300-file cap.
+
+    Below the cap the compare payload is complete, so this is just `added_migration_files`. AT the
+    cap the file list is truncated with no flag and no pagination (see `COMPARE_FILES_CAP`), so the
+    range's commits are walked individually — a real release range carries ~20 commits, so this
+    costs a handful of extra reads in the rare case it runs at all, and nothing in the common one.
+
+    Args:
+        repo: `owner/name`.
+        compare: The compare-API payload (`files`, `commits`, `total_commits`).
+
+    Returns:
+        Sorted, de-duplicated migration paths added anywhere in the range.
+    """
+    files = compare.get("files") or []
+    found = set(added_migration_files(files))
+    if len(files) < COMPARE_FILES_CAP:
+        return sorted(found)
+
+    commits = compare.get("commits") or []
+    print(
+        f"::warning title=release-risk-check compare truncated::the compare API returned "
+        f"{len(files)} files (its hard cap) — walking {len(commits)} commit(s) individually so a "
+        "migration cannot hide past the cap."
+    )
+    for commit in commits:
+        sha = commit.get("sha") if isinstance(commit, dict) else None
+        if not sha:
+            continue
+        commit_files = fetch_commit_files(repo, sha)
+        if commit_files is None:
+            print(
+                f"::warning title=release-risk-check commit unreadable::could not read {sha}; its "
+                "files are not covered by the migration check."
+            )
+            continue
+        found.update(added_migration_files(commit_files))
+    return sorted(found)
+
+
 def fetch_release_pr_number(repo: str, tag: str) -> int | None:
     """Which release-please PR's merge commit this tag points at.
 
@@ -446,8 +512,15 @@ def main(argv: list[str]) -> int:
         write_github_outputs({"flagged": "false"})
         return 0
 
-    migration_files = added_migration_files(compare.get("files", []))
-    commit_messages = [c.get("commit", {}).get("message", "") for c in compare.get("commits", [])]
+    migration_files = collect_migration_files(args.repo, compare)
+    commits = compare.get("commits") or []
+    total_commits = compare.get("total_commits")
+    if isinstance(total_commits, int) and total_commits > len(commits):
+        print(
+            f"::warning title=release-risk-check commit list truncated::the compare API returned "
+            f"{len(commits)} of {total_commits} commits — PRs beyond that are not label-checked."
+        )
+    commit_messages = [c.get("commit", {}).get("message", "") for c in commits]
     pr_numbers = extract_pr_numbers(commit_messages)
     risky_prs = gather_risky_prs(args.repo, pr_numbers)
 

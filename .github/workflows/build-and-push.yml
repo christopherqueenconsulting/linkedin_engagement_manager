@@ -82,7 +82,10 @@ jobs:
   # Full design + the 3 gauntlet-loop rounds that shaped it: docs/graphs/deploy-release.md.
   release-risk-check:
     name: Release risk check
-    needs: build-and-push
+    # Deliberately NOT `needs: build-and-push` — this job only reads the GitHub API, so running it
+    # alongside the ~10 min image build is what keeps an UNFLAGGED release at exactly today's
+    # latency (an acceptance criterion of #1133). It resolves the tag the same way
+    # `build-and-push`'s `ver` step does rather than waiting on that job's output.
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -96,10 +99,14 @@ jobs:
 
       - name: Flag a migration-bearing or risk:*-labelled release
         id: check
+        # The tag rides in through the environment, never interpolated into the shell line: a git
+        # ref may legally contain `"`, `$`, `;` and backticks, so `--tag "${{ ... }}"` would be a
+        # script-injection seam on a value this job does not control.
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.event.release.tag_name || github.event.inputs.tag || github.ref_name }}
         run: |
-          python3 scripts/release_risk_check.py --tag "${{ needs.build-and-push.outputs.tag }}"
+          python3 scripts/release_risk_check.py --tag "$RELEASE_TAG"
 
   deploy:
     name: Deploy to Hostinger VPS
@@ -112,7 +119,13 @@ jobs:
     # (#1133): a migration or a risk:*-labelled PR in this release skips this job entirely and
     # parks the release on a Decision Comment for the owner's manual
     # `gh workflow run deploy-vps.yml -f tag=vX.Y.Z`. Everything else deploys exactly as before,
-    # with no added latency — the check runs in parallel with nothing waiting on it upstream.
+    # with no added latency — the check runs CONCURRENTLY with the image build, so it has long
+    # finished by the time this job would have started.
+    #
+    # No `always()` here on purpose: if the check job itself dies (runner/checkout failure — the
+    # script's own reads all fail open and it always exits 0), `deploy` is skipped rather than
+    # deploying past an unread gate. The workflow run goes red, and the manual entrypoint above is
+    # the same one a flagged release uses.
     if: needs.release-risk-check.outputs.flagged != 'true'
     environment: production
     env:
