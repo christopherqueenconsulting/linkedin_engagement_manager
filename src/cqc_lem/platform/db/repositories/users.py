@@ -655,33 +655,57 @@ def get_linkedin_profile_url_by_user_id(user_id: int) -> Optional[str]:
 # and UPDATE the column directly, which walked around every one of them — #914 removed its last
 # caller, so what was left was a loaded footgun one keyword argument from being fired again.
 _ALLOWED_USER_CLAUSES = frozenset({"blog_url = %s", "sitemap_url = %s"})
-def update_user(user_id: int, blog_url: Optional[str] = None,
-                sitemap_url: Optional[str] = None) -> bool:
+
+
+class _Unset:
+    """Type of `UNSET` — see `update_user`."""
+
+
+#: "This column was not supplied, leave it alone." Distinct from `None`, which is the caller
+#: asking for the column to be CLEARED (issue #1574).
+UNSET = _Unset()
+
+
+def update_user(user_id: int, blog_url: Optional[str] | _Unset = UNSET,
+                sitemap_url: Optional[str] | _Unset = UNSET) -> bool:
     """Update the blog and/or sitemap URL on a user row; False when neither was supplied.
 
     Only fields that were passed become SET clauses, and each generated clause is re-checked against
     `_ALLOWED_USER_CLAUSES` before it is interpolated — see the note above that set for why `email` is
     deliberately not reachable from here.
+
+    Two things a falsy check used to swallow, both of which read to the user as "saving my profile
+    settings does nothing" (issue #1574). Passing `None` or `""` CLEARS the column, so removing a
+    blog URL is a real write instead of a no-op the SPA still reports as saved — omitting the
+    argument entirely is how a caller leaves a column alone. And a statement that MATCHED the row
+    but changed nothing (re-saving the same URL) is a success: MySQL reports 0 changed rows for it,
+    so returning False there answered a plain re-save with "Update failed".
     """
-    if not any([blog_url, sitemap_url]):
-        return False
-    connection = _connection.get_db_connection()
-    cursor = connection.cursor()
+    supplied = [("blog_url = %s", blog_url), ("sitemap_url = %s", sitemap_url)]
     fields, values = [], []
-    if blog_url:
-        fields.append("blog_url = %s")
-        values.append(blog_url)
-    if sitemap_url:
-        fields.append("sitemap_url = %s")
-        values.append(sitemap_url)
+    for clause, value in supplied:
+        if isinstance(value, _Unset):
+            continue
+        fields.append(clause)
+        # "" and None are the same intent — an empty column, stored as NULL.
+        values.append(value or None)
+    if not fields:
+        return False
     for clause in fields:
         if clause not in _ALLOWED_USER_CLAUSES:
             raise ValueError(f"Disallowed SQL clause: {clause!r}")
+    connection = _connection.get_db_connection()
+    cursor = connection.cursor()
     values.append(user_id)
     try:
         cursor.execute(f"UPDATE users SET {', '.join(fields)} WHERE id = %s", values)
         connection.commit()
-        return cursor.rowcount > 0
+        if cursor.rowcount > 0:
+            return True
+        # 0 CHANGED rows is either "the values already matched" or "no such user". Only the second
+        # is a failure, so ask which one it was rather than reporting a failed save either way.
+        cursor.execute("SELECT 1 FROM users WHERE id = %s", (user_id,))
+        return cursor.fetchone() is not None
     except mysql.connector.Error as err:
         log_error(f"Could not update user {user_id}", exc=err)
         return False

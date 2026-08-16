@@ -173,6 +173,31 @@ class TestUpdateUser:
                                                "blog_url": "https://blog.example.com"})
         assert resp.status_code == 404
 
+    def test_clearing_a_url_is_written_not_swallowed(self, api_client, signed_in):
+        """Issue #1574: an empty blog URL is the user REMOVING it.
+
+        Testing the values for truth answered 200 "unchanged" and stored nothing, so the Account
+        page reported a save that never happened.
+        """
+        with patch(f"{_USER}.update_user", return_value=True) as upd:
+            resp = api_client.put(self.BASE, json={"session_token": SESSION_TOKEN,
+                                                   "blog_url": None,
+                                                   "sitemap_url": "https://x.com/sitemap.xml"})
+        assert resp.status_code == 200
+        assert "updated" in resp.json()["detail"]
+        assert upd.call_args[1] == {"blog_url": None, "sitemap_url": "https://x.com/sitemap.xml"}
+
+    def test_an_unsent_url_is_not_passed_at_all(self, api_client, signed_in):
+        """A field the client omitted must not reach `update_user`.
+
+        Omission is "leave it alone"; only what was sent is written.
+        """
+        with patch(f"{_USER}.update_user", return_value=True) as upd:
+            resp = api_client.put(self.BASE, json={"session_token": SESSION_TOKEN,
+                                                   "blog_url": "https://blog.example.com"})
+        assert resp.status_code == 200
+        assert upd.call_args[1] == {"blog_url": "https://blog.example.com"}
+
     def test_new_email_is_no_longer_an_account_takeover_lever(self, api_client, signed_in):
         """`new_email` no longer moves the address — and says so rather than answering 200."""
         with patch(f"{_USER}.update_user", return_value=True) as upd:
