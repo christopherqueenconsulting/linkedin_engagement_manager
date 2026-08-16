@@ -130,6 +130,26 @@ class TestFramesFor:
         monkeypatch.setattr(tool.os, "makedirs", readonly)
         assert tool.frames_for(str(clip), str(tmp_path / "frames"), "post1", 6) == ([], None)
 
+    def test_an_unwritable_frames_dir_still_names_the_retained_keyframes(self, tool, clip,
+                                                                        tmp_path, monkeypatch):
+        # The read-only sidecar is the DOCUMENTED way to run this, and a shipped post's frames
+        # already exist on the assets volume. Dropping them because the audit directory could not
+        # be created would leave every shipped post as ungradable as it was before #1363.
+        from cqc_lem.utilities.video_frames import keyframe_path
+
+        retained = [pathlib.Path(keyframe_path(str(clip), label)) for label in ("open", "mid")]
+        for frame in retained:
+            frame.write_bytes(b"jpeg-bytes")
+        clip.unlink()  # what purge_post_assets does the moment the post publishes
+        self._ffmpeg(tool, monkeypatch)
+
+        def readonly(*args, **kwargs):
+            raise OSError(30, "Read-only file system")
+
+        monkeypatch.setattr(tool.os, "makedirs", readonly)
+        frames, source = tool.frames_for(str(clip), str(tmp_path / "frames"), "post7", 6)
+        assert frames == [str(f) for f in retained] and source == "retained"
+
 
 class TestSampleReport:
     def test_scores_the_body_and_the_asset_in_one_row(self, tool, monkeypatch):

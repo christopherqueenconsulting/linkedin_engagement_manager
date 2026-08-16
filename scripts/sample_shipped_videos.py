@@ -106,25 +106,40 @@ def frames_for(video_path: Optional[str], out_dir: str, prefix: str,
     DIRECTORY: this is meant to be run from a prod-image sidecar with the checkout mounted
     read-only, where creating `docs/content-quality-audits/assets/1363/` raises — and losing the
     whole measured corpus because an image file could not be written is exactly backwards.
+
+    An unwritable frames directory costs the COPY, never the report. A retained keyframe already
+    exists on the assets volume, so it is named where it lives rather than dropped: the read-only
+    sidecar is the documented way to run this, and a run that reported no frames there would leave
+    every shipped post exactly as ungradable as before #1363.
     """
     try:
         os.makedirs(out_dir, exist_ok=True)
     except OSError:
-        return [], None
+        # Nothing can be WRITTEN here, so extraction is skipped outright; the retained sidecars
+        # below need no destination to be reported.
+        writable = False
+    else:
+        writable = True
+
     def out_path(label: str) -> str:
         return os.path.join(out_dir, f"{prefix}_{label}.jpg")
 
-    extracted = extract_frames(video_path, duration, out_path)
-    if extracted:
-        return extracted, "extracted"
+    if writable:
+        extracted = extract_frames(video_path, duration, out_path)
+        if extracted:
+            return extracted, "extracted"
     retained = retained_keyframes(video_path)
     if not retained:
         return [], None
     # Copied into the frames directory so the audit doc can reference one path per frame; if that
-    # copy fails (the read-only sidecar mount §8 was run from), the volume path is still named —
-    # a frame the reader has to fetch by hand beats a frame they are never told exists.
+    # copy fails or the directory was never creatable (the read-only sidecar mount §8 was run
+    # from), the volume path is still named — a frame the reader has to fetch by hand beats a
+    # frame they are never told exists.
     collected = []
     for label, path in retained:
+        if not writable:
+            collected.append(path)
+            continue
         try:
             shutil.copyfile(path, out_path(label))
         except OSError:
