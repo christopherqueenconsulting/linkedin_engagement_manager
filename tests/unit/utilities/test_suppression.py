@@ -42,7 +42,7 @@ def _default_thresholds(monkeypatch):
     for name in ("SUPPRESSION_TRIPWIRE_ENABLED", "SUPPRESSION_DROP_RATIO",
                  "SUPPRESSION_CONSECUTIVE_DAYS", "SUPPRESSION_BASELINE_DAYS",
                  "SUPPRESSION_MIN_BASELINE_POSTS", "SUPPRESSION_PAUSE_SECONDS",
-                 "SUPPRESSION_COMMENT_DAYS"):
+                 "SUPPRESSION_COMMENT_DAYS", "COMMENT_QUALITY_MIN_SAMPLE"):
         monkeypatch.delenv(name, raising=False)
     yield
 
