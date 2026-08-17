@@ -325,7 +325,13 @@ def _has_session_credential(request: Request) -> bool:
     middleware runs before routing and has no database, so validating here would mean a second
     session lookup on every request that answers nothing the route does not already answer.
 
-    ONE shape: the httpOnly session cookie. `X-Session-Token` used to count here too and was
+    ONE shape: the `lem_session` cookie. Normally the httpOnly one the login response set; in the
+    SPA's cookie-less fallback (#1611) it is the same token written from script, because a browser
+    that refused a `Secure` cookie still authenticates at the route on the `session_token` field and
+    would otherwise be refused HERE, before the resolver it would have satisfied ever ran. Either
+    way this reads a cookie and judges nothing — see `docs/identity-and-sessions.md`.
+
+    `X-Session-Token` used to count here too and was
     removed in #1357, because it was the one credential in this check that could never become a
     user: `get_session_user_id` resolves an explicit token from the `session_token` FIELD and has
     never read that header, so a caller carrying only the header cleared this gate and was then

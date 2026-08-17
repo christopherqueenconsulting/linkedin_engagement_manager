@@ -6,6 +6,7 @@ import { AuthContext } from './useAuth'
 import type { AuthUser, SessionDetail } from './useAuth'
 import { identifyUser, resetAnalytics } from '../utils/analytics'
 import { SESSION_ENDED_EVENT, SESSION_ENDED_MESSAGE } from '../utils/sessionEnd'
+import { clearFallbackSessionCookie, writeFallbackSessionCookie } from '../utils/sessionCookie'
 
 const SESSION_KEY = 'lem_session'
 
@@ -68,6 +69,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     const storedToken = localStorage.getItem(SESSION_KEY)
     if (!storedToken) return
+    // A stored value that is NOT the sentinel is a cookie-less fallback session (issue #1611), and
+    // this is the first thing that runs in it: re-write the cookie the `/api` edge gate reads before
+    // any panel asks for anything. Needed on every boot, not only after `login()` — the browser that
+    // refused the server's cookie may equally have dropped ours, and a session stored by a bundle
+    // that predates this one has no cookie at all.
+    if (storedToken !== COOKIE_SESSION) writeFallbackSessionCookie(storedToken)
     loadSession(storedToken)
       .catch(() => {
         localStorage.removeItem(SESSION_KEY)
@@ -102,6 +109,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       // The cookie did not stick — an http:// origin with Secure cookies, or a browser blocking
       // them. Fall back to holding the token so a valid login is never turned into a lockout; the
       // cookie is the upgrade, not a hard requirement.
+      //
+      // Holding it in localStorage alone was NOT enough (issue #1611): the route resolves the token
+      // from the `session_token` field, but the `/api` edge gate runs before routing and reads only
+      // a bearer or the `lem_session` cookie, so with API_ACCESS_TOKENS set every panel 401'd. So
+      // write the same token into a cookie this browser will actually keep — see `sessionCookie.ts`
+      // for why that costs no exposure the localStorage copy did not already cost.
+      writeFallbackSessionCookie(token)
       localStorage.setItem(SESSION_KEY, token)
       setSessionToken(token)
       loadSession(token).catch(() => {})
@@ -120,6 +134,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     // The two-factor nudge is dismissed per BROWSER, so the next person to sign in on this machine
     // would otherwise inherit a dismissal they never made — and never be warned about the deadline.
     localStorage.removeItem('lem_strong_factor_prompt_dismissed')
+    // The fallback's own credential (issue #1611). It is JS-written, so it is JS-cleared — leaving
+    // it behind would keep handing the edge gate a token this browser has finished with. A no-op on
+    // a normal session: a browser discards a `document.cookie` write aimed at an httpOnly cookie.
+    clearFallbackSessionCookie()
     setSessionToken(null)
     setUser(null)
     setIsAdmin(false)
