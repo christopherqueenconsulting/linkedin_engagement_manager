@@ -106,9 +106,16 @@ def resolve_previous_release(releases: list[dict], tag: str) -> str | None:
 
     Returns:
         The next-older tag's name, or `None` when `tag` is absent from `releases` (outside the
-        `--limit` window) or is already the oldest entry present.
+        `--limit` window) or is already the oldest entry present. Entries missing either field are
+        dropped rather than raising — an unreadable release row must degrade to "fail open", the
+        same as an unreadable API call, never to a traceback that skips an unflagged deploy.
     """
-    ordered = sorted(releases, key=lambda r: r["createdAt"], reverse=True)
+    usable = [
+        r
+        for r in releases
+        if isinstance(r, dict) and isinstance(r.get("createdAt"), str) and r.get("tagName")
+    ]
+    ordered = sorted(usable, key=lambda r: r["createdAt"], reverse=True)
     names = [r["tagName"] for r in ordered]
     try:
         idx = names.index(tag)
@@ -206,15 +213,37 @@ def format_decision_comment(tag: str, previous_tag: str, verdict: Verdict) -> st
 
 
 def _run_gh(args: list[str], *, input_text: str | None = None) -> subprocess.CompletedProcess:
-    """One place every `gh` invocation goes through, so tests mock exactly here."""
-    return subprocess.run(
-        args,
-        capture_output=True,
-        text=True,
-        input=input_text,
-        timeout=GH_TIMEOUT_SECONDS,
-        check=False,
-    )
+    """One place every `gh` invocation goes through, so tests mock exactly here.
+
+    A hung `gh` (`TimeoutExpired` at `GH_TIMEOUT_SECONDS`) or a missing/unrunnable binary
+    (`OSError`) is reported as a non-zero `CompletedProcess`, never raised: every caller here
+    already degrades a non-zero exit to "unreadable, fail open", and an escaping exception would do
+    the opposite — a traceback exits non-zero, the job goes red, and `deploy`'s `needs:` skips a
+    release that was never flagged. That is exactly the single point of failure this script's
+    fail-open posture exists to avoid.
+
+    Args:
+        args: The full `gh` argv.
+        input_text: Optional stdin payload.
+
+    Returns:
+        The completed process, or a synthetic failed one carrying the error text on stderr.
+    """
+    try:
+        return subprocess.run(
+            args,
+            capture_output=True,
+            text=True,
+            input=input_text,
+            timeout=GH_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return subprocess.CompletedProcess(
+            args=args, returncode=124, stdout="", stderr=f"timed out after {GH_TIMEOUT_SECONDS}s"
+        )
+    except OSError as exc:
+        return subprocess.CompletedProcess(args=args, returncode=127, stdout="", stderr=str(exc))
 
 
 def _gh_json(args: list[str]) -> object | None:

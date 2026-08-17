@@ -308,9 +308,20 @@ flowchart TD
   Y --> Z["Persist .last_good_tag /\n.active_color — UNCHANGED"]
   Z --> AA["Maintenance mode, drain,\nconverge workers — UNCHANGED"]
 
-  R --> AF["Cloudflare purge — UNCHANGED"]
-  R --> AG["PostHog release annotation — UNCHANGED,\nstill fires at build time regardless\nof hold state"]
+  S --> AF["Cloudflare purge — UNCHANGED,\nbut it is a STEP OF THE deploy JOB,\nso a flagged release does NOT purge"]
+  S --> AG["PostHog release annotation — UNCHANGED,\nalso a STEP OF THE deploy JOB,\nso a flagged release is NOT annotated"]
 ```
+
+**One consequence of the hold, stated plainly:** the Cloudflare purge and the PostHog release
+annotation are *steps of the `deploy` job*, not of `build-and-push`. A flagged release therefore
+skips both, and `deploy-vps.yml` — the manual unblock entrypoint — has never done either. So a
+migration release shipped by hand gets no CDN purge (a tab open across it can hold a stale
+`index.html`; the three-layer mitigation in `docs/spa-deploy-freshness.md` still applies) and no
+release annotation on PostHog insight graphs. That is a pre-existing property of the manual
+entrypoint, not new code — but this gate makes that entrypoint the routine path for ~36% of
+releases, so it is written down here rather than discovered later. Closing it means adding those
+two steps to `deploy-vps.yml`, which is downstream of "deploy job fires" and explicitly out of
+scope for #1133.
 
 **What changed:** one new `release-risk-check` job between `build-and-push` and `deploy`, keyed on a
 migration-path filter. On a flag, the automatic `deploy` job is skipped and a Decision Comment is

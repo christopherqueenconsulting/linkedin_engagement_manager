@@ -54,6 +54,21 @@ def test_a_tag_outside_the_fetched_window_resolves_to_nothing():
     assert rrc.resolve_previous_release(releases, "v9.9.9") is None
 
 
+def test_a_malformed_release_row_is_dropped_not_raised_on():
+    """A row missing `createdAt`/`tagName` must degrade to fail-open, never to a traceback.
+
+    A raise here exits the script non-zero, which reds the job and makes `deploy`'s `needs:` skip a
+    release nothing flagged — the exact single point of failure this gate must not become.
+    """
+    releases = [
+        {"tagName": "v1.0.2", "createdAt": "2026-08-16T00:00:00Z"},
+        {"tagName": "v1.0.1"},  # no createdAt
+        {"createdAt": "2026-08-15T00:00:00Z"},  # no tagName
+        {"tagName": "v1.0.0", "createdAt": "2026-08-14T00:00:00Z"},
+    ]
+    assert rrc.resolve_previous_release(releases, "v1.0.2") == "v1.0.0"
+
+
 def test_never_trusts_the_apis_own_order():
     """The acceptance criterion, made concrete: feed it already out of order."""
     releases = [
@@ -262,6 +277,46 @@ def test_fetch_releases_returns_the_parsed_list(monkeypatch):
 def test_fetch_releases_fails_open_on_a_gh_error(monkeypatch):
     monkeypatch.setattr(rrc, "_run_gh", lambda args, **kw: _completed(1, "", "rate limited"))
     assert rrc.fetch_releases(REPO, 20) is None
+
+
+def test_a_hung_gh_call_is_a_failed_result_not_a_raised_timeout(monkeypatch):
+    """`subprocess.run(timeout=...)` RAISES — and an escaping raise is fail-CLOSED.
+
+    The script promises every read fails open; a traceback exits non-zero, reds the job, and
+    `deploy`'s `needs:` then skips a release that was never flagged.
+    """
+
+    def hang(*a, **kw):
+        raise subprocess.TimeoutExpired(cmd=["gh"], timeout=rrc.GH_TIMEOUT_SECONDS)
+
+    monkeypatch.setattr(rrc.subprocess, "run", hang)
+    result = rrc._run_gh(["gh", "api", "whatever"])
+    assert result.returncode != 0
+    assert "timed out" in result.stderr
+
+
+def test_a_missing_gh_binary_is_a_failed_result_not_a_raised_oserror(monkeypatch):
+    def missing(*a, **kw):
+        raise FileNotFoundError("gh")
+
+    monkeypatch.setattr(rrc.subprocess, "run", missing)
+    result = rrc._run_gh(["gh", "api", "whatever"])
+    assert result.returncode != 0
+    assert rrc._gh_json(["gh", "api", "whatever"]) is None
+
+
+def test_main_fails_open_when_every_gh_call_hangs(monkeypatch, tmp_path):
+    """End to end: a hung GitHub API deploys unflagged, exit 0, never a red job."""
+    monkeypatch.setenv("GH_TOKEN", "x")
+    out = tmp_path / "gh_output"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(out))
+
+    def hang(*a, **kw):
+        raise subprocess.TimeoutExpired(cmd=["gh"], timeout=rrc.GH_TIMEOUT_SECONDS)
+
+    monkeypatch.setattr(rrc.subprocess, "run", hang)
+    assert rrc.main(["release_risk_check.py", "--tag", "v1.0.2"]) == 0
+    assert "flagged=false" in out.read_text()
 
 
 def test_fetch_compare_returns_files_and_commits(monkeypatch):
