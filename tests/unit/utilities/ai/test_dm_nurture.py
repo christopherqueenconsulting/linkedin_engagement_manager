@@ -201,7 +201,7 @@ class TestRecipientContext:
         assert got["job_title"] == "VP Engineering"
 
     @pytest.mark.parametrize("event_type,phrase", [
-        ("connection_accepted", "accepted your connection request"),
+        ("connection_accepted", "sent you a connection invitation"),
         ("profile_viewer", "viewed your profile"),
         ("funnel", "commented on their post"),
     ])
@@ -217,6 +217,28 @@ class TestRecipientContext:
         assert thread_origin(event_type) is None
         with patch("cqc_lem.utilities.db.get_profile_facts", return_value={}):
             assert "thread_origin" not in recipient_context(event_type=event_type)
+
+    def test_connection_accepted_does_not_reverse_who_invited_whom(self):
+        """The source is `accept_connection_request` — THEY invited US and the user accepted.
+
+        The prompt takes these as ground truth, so claiming they accepted our request would put a
+        false statement about a real relationship into a message to a real person.
+        """
+        from cqc_lem.utilities.ai.dm_nurture import thread_origin
+        origin = thread_origin("connection_accepted").lower()
+        assert "they sent you a connection invitation" in origin
+        assert "accepted your" not in origin
+
+    def test_collaboration_says_mention_not_a_shared_project(self):
+        """`get_recent_collaborators` walks the MENTIONS feed, not a shared project.
+
+        LinkedIn exposes no collaboration event, and #968 already had to rewrite the default
+        template for thanking someone for work neither party may have done together.
+        """
+        from cqc_lem.utilities.ai.dm_nurture import thread_origin
+        origin = thread_origin("collaboration").lower()
+        assert "mentioned you" in origin
+        assert "worked together" not in origin and "project" not in origin
 
 
 class TestFormatRecipientContext:

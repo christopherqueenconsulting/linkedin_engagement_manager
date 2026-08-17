@@ -203,10 +203,20 @@ def nurture_delay_hours(intent: str) -> int:
 # `event_type` -> what actually put us in this person's inbox. Kept in step with the enum
 # `dm_followups.event_type` declares (tests/unit/utilities/test_dm_event_vocabulary.py owns that
 # list); an event type with no phrase here contributes nothing rather than a guess.
+#
+# Every phrase must say what the SOURCE actually observed, in the right direction. The prompt hands
+# these to the model as ground truth, so a phrase that overstates the relationship is exactly the
+# fabrication this whole feature is gated against — #968 already had to rewrite the 'collaboration'
+# DEFAULT TEMPLATE for thanking someone for a project neither party may have worked on, and the same
+# wording must not come back in through the prompt. Two that read backwards if you skim the name:
+#   'connection_accepted' — the source is `accept_connection_request`, i.e. THEY invited US and the
+#       user accepted; nothing here says our invite was accepted.
+#   'collaboration' — LinkedIn exposes no collaboration event, so the source is
+#       `get_recent_collaborators`, which walks the MENTIONS feed.
 _THREAD_ORIGINS: "dict[str, str]" = {
-    "connection_accepted": "they accepted your connection request",
+    "connection_accepted": "they sent you a connection invitation and you accepted it",
     "recommendation_received": "they wrote you a LinkedIn recommendation",
-    "collaboration": "LinkedIn lists the two of you as having worked together",
+    "collaboration": "they mentioned you in a post or a comment of theirs",
     "profile_viewer": "they viewed your profile",
     "funnel": "you commented on their post first, then messaged them",
     "job_change": "they started a new role",

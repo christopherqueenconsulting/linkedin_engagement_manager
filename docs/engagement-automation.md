@@ -156,6 +156,15 @@ people we have never scraped.
 | `job_title` / `company_name` / `industry` | `db.get_profile_facts` — the by-URL `profiles` scrape cache, the same reader the nightly lead scorer uses for ICP fit | omitted; someone we never scraped is simply absent from that table |
 | `thread_origin` | the follow-up row's `event_type`, mapped through `_THREAD_ORIGINS` | omitted — including on a `nurture` row, where the event type IS the sequence and the original trigger is not on the row |
 
+**A `_THREAD_ORIGINS` phrase must say what its source actually observed, in the right direction** —
+the prompt hands it to the model as ground truth, so an overstated one is a false claim about a real
+relationship in a message to a real person. The two that read backwards from their names:
+`connection_accepted` comes from `accept_connection_request`, so THEY invited US and the user
+accepted (never "they accepted your request"); `collaboration` comes from `get_recent_collaborators`,
+which walks the **mentions** feed, because LinkedIn exposes no collaboration event — #968 already had
+to rewrite that event's default DM template for claiming a shared project, and the same wording must
+not return through the prompt.
+
 - **Missing is the normal case, not a fault.** The resolver returns whatever it found (`{}` is
   valid), `format_recipient_context` renders only the fields present, and a draft is never dropped
   for want of context — it is just less specific, which is the pre-#1625 behaviour. An unscraped
