@@ -208,9 +208,12 @@ def pr_facts(slug: str, pr: int, *, timeout: int = 30) -> dict[str, Any]:
     # "this PR needs auto-merge armed" from "this PR is armed and waiting", and re-decides the
     # former every pass. That is the #1120 shape — 45 enqueue requests against a budget of 12 —
     # reproduced in a scheduler built to prevent it.
+    # `files`, `reviewRequests` and `latestReviews` ride this call rather than adding one of their
+    # own: they are read on every observation of every open PR (#1642), and a second `pr view` per
+    # observation is the kind of per-pass cost v2 exists to remove.
     fields = (
         "number,state,isDraft,mergeStateStatus,headRefName,headRefOid,labels,author,"
-        "headRepositoryOwner,updatedAt,mergedAt,autoMergeRequest"
+        "headRepositoryOwner,updatedAt,mergedAt,autoMergeRequest,files,reviewRequests,latestReviews"
     )
     return gh_json(
         ["pr", "view", str(pr), "--repo", slug, "--json", fields],
@@ -479,6 +482,70 @@ def post_comment(slug: str, kind: str, number: int, body: str, *, timeout: int =
     """
     cmd = "pr" if kind == "pr" else "issue"
     run_gh([cmd, "comment", str(number), "--repo", slug, "--body", body], timeout=timeout)
+
+
+def request_reviewer(slug: str, pr: int, login: str, *, timeout: int = 30) -> None:
+    """Ask `login` for a review on this PR — the request GitHub itself never sends (#1642).
+
+    `require_code_owner_reviews` only auto-requests a reviewer at `required_approving_review_count`
+    >= 1, and this repository deliberately keeps that at 0 (CI Gates, CLAUDE.md). So a pipeline-
+    authored PR touching an owned path blocks with an empty Reviewers sidebar and no notification.
+
+    Idempotent on GitHub's side: re-requesting someone already requested changes nothing. Raises
+    `GitHubUnavailable` like every other call here — callers decide whether a failed request is
+    worth taking a pass down for (it is not).
+    """
+    run_gh(["pr", "edit", str(pr), "--repo", slug, "--add-reviewer", login], timeout=timeout)
+
+
+def owner_review_pending(facts: dict[str, Any], owner: str) -> bool:
+    """Is the owner neither a requested reviewer nor the author of a LIVE review here?
+
+    The two halves of #1642's acceptance, in one predicate. "Never asked" is the open-a-PR case.
+    "Asked, reviewed, and that review was then DISMISSED" is the `dismiss_stale_reviews` case — a
+    pushed commit silently invalidates a prior approval, so the ask has to be repeatable.
+
+    Any OTHER review state counts as live and suppresses the request. That is deliberate: an owner
+    who left `CHANGES_REQUESTED` has spoken, and re-requesting them the moment they leave the
+    requested-reviewer list (which submitting a review does) would nag them on a loop for a PR whose
+    next move belongs to the `agent:revise` lane.
+
+    Args:
+        facts: A `pr_facts` payload.
+        owner: The owner's GitHub login.
+
+    Returns:
+        True when a review request would add signal.
+    """
+    if not owner:
+        return False
+    if (facts.get("state") or "OPEN").upper() != "OPEN" or facts.get("isDraft"):
+        # Nothing is owed on a merged, closed or draft PR. A park DRAFTS the PR, so this is also
+        # what keeps the pipeline from pinging the owner for a review on work it just parked.
+        return False
+    who = owner.lower()
+    if ((facts.get("author") or {}).get("login") or "").lower() == who:
+        # GitHub refuses a review request from a PR's own author, so asking would only ever error.
+        return False
+    for req in (facts.get("reviewRequests") or []):
+        if ((req or {}).get("login") or "").lower() == who:
+            return False
+    for review in (facts.get("latestReviews") or []):
+        login = (((review or {}).get("author") or {}).get("login") or "").lower()
+        if login != who:
+            continue
+        return ((review.get("state") or "").upper() == "DISMISSED")
+    return True
+
+
+def changed_paths(facts: dict[str, Any]) -> tuple[str, ...]:
+    """Repo-relative paths this PR touches, from a `pr_facts` payload.
+
+    `gh` pages this list itself, but a PR large enough to be truncated would only under-report — and
+    under-reporting here costs a delayed reviewer request, not a missed one, because
+    `awaiting_owner_review` asks again off GitHub's own verdict (#1642).
+    """
+    return tuple((f or {}).get("path") or "" for f in (facts.get("files") or []))
 
 
 def is_upstream(facts: dict[str, Any], slug: str) -> bool:

@@ -368,6 +368,18 @@ class Daemon:
             )
             return
 
+        # Before any of the action branches below, because several of them RETURN — and a review
+        # request is owed on a PR whatever the pipeline is about to do with it. It is a
+        # notification, not a transition: nothing here changes the item's state.
+        if kind == "pr" and snap.owner_review_pending and observe.admissible(snap)[0] and (
+                snap.codeowned or decision.next_state == db.STATE_WAIT_OWNER_REVIEW):
+            # Two triggers, one call. `codeowned` fires the moment the PR is first observed, which
+            # is what puts the owner in the Reviewers sidebar while CI is still running.
+            # `awaiting_owner_review` is the authoritative fallback: GitHub has said a code-owner
+            # review is the ONLY gate left, so the ask is owed even if the path match missed.
+            self._request_owner_review(
+                number, "codeowners_path" if snap.codeowned else "owner_review_required")
+
         if decision.action == observe.ACT_PARK:
             # Through `_park` rather than a bespoke write, so an escalation `decide()` raises is the
             # SAME park a spent ledger raises: one gh-pool action, one comment keyed on the head,
@@ -447,6 +459,35 @@ class Daemon:
             wake_at=wake_at, head_sha=snap.head_sha or row["head_sha"],
             branch=snap.branch or row["branch"], dirty=0, pending_mode=None,
         )
+
+    def _request_owner_review(self, number: int, reason: str) -> None:
+        """Put the owner in the Reviewers sidebar of a PR only they can unblock (#1642).
+
+        GitHub does not do this itself: `require_code_owner_reviews` auto-requests a reviewer only
+        at `required_approving_review_count` >= 1, and this repository keeps that at 0 on purpose.
+        Measured 2026-08-17 — five PRs sat green, armed and BLOCKED for hours with an empty
+        Reviewers sidebar, findable only by grepping this daemon's own decision log.
+
+        Best-effort, exactly like the comment below it: there is nothing to retry into inside an
+        observation pass, and the next TTL wake re-reads the same facts and asks again.
+        """
+        requested = True
+        try:
+            github.request_reviewer(self.cfg.slug, number, self.cfg.assignee)
+            LOG.info("requested owner review on PR #%s (%s)", number, reason)
+        except github.GitHubUnavailable as exc:
+            requested = False
+            LOG.warning("owner-review request failed for PR #%s: %s", number, exc)
+        # In the ledger because that is where the absence of this signal was eventually FOUND. An
+        # operator asking "was the owner ever told?" should not have to read the daemon's log.
+        self._write_decision({
+            "ts": int(time.time()),
+            "shadow": self.cfg.shadow,
+            "stage": "owner_review_request",
+            "kind": "pr", "number": number,
+            "reason": reason,
+            "requested": requested,
+        })
 
     def _notify_owner_review_needed(self, kind: str, number: int) -> None:
         """Tell the owner once that a PR is done and only waiting on their CODEOWNERS approval.
