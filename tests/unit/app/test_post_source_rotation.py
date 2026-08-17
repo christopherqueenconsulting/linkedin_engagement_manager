@@ -54,6 +54,24 @@ class TestNextSourceInRotation:
 
         assert _next_source_in_rotation("affiliate_promo", ["industry_news"]) == "industry_news"
 
+    def test_the_slot_spreads_the_replacement_instead_of_funnelling_one_source(self):
+        # A user with no blog misses blog_summary on EVERY slot that lands on it; the replacement
+        # has to vary with the slot, or that user's plan collapses onto one source.
+        from cqc_lem.app.run_content_plan import _POST_TYPES, _next_source_in_rotation
+
+        menu = [t for t in _POST_TYPES if t != "blog_summary"]
+        blog_slot = _POST_TYPES.index("blog_summary")
+        picked = {_next_source_in_rotation("blog_summary", menu,
+                                           post_id=blog_slot + len(_POST_TYPES) * i)
+                  for i in range(len(menu))}
+        assert picked == set(menu)
+
+    def test_an_unusable_slot_id_still_takes_the_next_in_rotation(self):
+        from cqc_lem.app.run_content_plan import _POST_TYPES, _next_source_in_rotation
+
+        menu = [t for t in _POST_TYPES if t != "blog_summary"]
+        assert _next_source_in_rotation("blog_summary", menu, post_id="not-an-id") == "website_content"
+
 
 def _run_draft(post_id, blog_url=None):
     """create_text_post with every source but the generators mocked; returns the type that shipped."""

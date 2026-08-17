@@ -2627,8 +2627,13 @@ def _post_source_for_slot(post_id: Optional[int]) -> str:
     user writes ~13 posts a month, and an unweighted draw over six sources leaves roughly a one in
     ten chance that `blog_summary` (or `personal_story`) never comes up at all in a month — which is
     what "no new story or blog-aligned posts" reads like from the outside. Rotating on the planned
-    row's own id gives every source a turn across consecutive slots and stores no new state: a plan
+    row's own id spreads the sources across consecutive rows and stores no new state: a plan
     inserts its rows in one pass, so their ids advance by one per slot.
+
+    That spread is not a per-user COVERAGE guarantee, and must not be read as one: only the text
+    and video rows of a plan reach this function (carousels and documents spend an id on their own
+    generator), so a user's text drafts land on a subsequence of the rotation. What it does buy is
+    that the pick is stable and evenly distributed over the ids rather than re-rolled per draft.
 
     Args:
         post_id: the planned post row this draft fills.
@@ -2645,21 +2650,34 @@ def _post_source_for_slot(post_id: Optional[int]) -> str:
         return random.choice(_POST_TYPES)
 
 
-def _next_source_in_rotation(current: str, menu: list) -> str:
-    """The next still-writable source after `current`, in rotation order.
+def _next_source_in_rotation(current: str, menu: list, post_id: Optional[int] = None) -> str:
+    """The replacement source after `current` reported no source, kept in rotation.
 
     The fallback half of `_post_source_for_slot`: a user with no blog rolls off `blog_summary` on
     every slot that lands on it, and re-drawing at random there re-opens the same starvation the
     rotation exists to close.
 
+    The replacement has to keep rotating ACROSS slots as well, which is why the slot's id picks it
+    whenever there is one. Always stepping to the next menu entry would funnel every `blog_summary`
+    AND every `website_content` slot of a user with neither source onto the same successor — that
+    user would get half their posts as `industry_news` and one in six as `personal_story`, which is
+    the starvation of issue #1526 the other way round.
+
     Args:
         current: the archetype that just reported no source.
-        menu: the archetypes not yet exhausted for this draft — never empty.
+        menu: the archetypes not yet exhausted for this draft — never empty, and never holds
+            `current`.
+        post_id: the planned row this draft fills; the slot the replacement rotates on.
 
     Returns:
-        The next menu entry after `current`, wrapping; the first entry when `current` is not part
-        of the rotation at all.
+        The menu entry this slot rotates onto; with no usable slot, the next entry after `current`,
+        wrapping, or the first entry when `current` is not part of the rotation at all.
     """
+    if post_id is not None:
+        try:
+            return menu[int(post_id) % len(menu)]
+        except (TypeError, ValueError):
+            pass
     if current in _POST_TYPES:
         start = _POST_TYPES.index(current)
         for candidate in _POST_TYPES[start + 1:] + _POST_TYPES[:start]:
@@ -2984,7 +3002,7 @@ def _compose_draft(ctx: PostDraftContext, cta_keyword: Optional[str] = None,
             menu.remove(ctx.post_type)
         if not menu:
             break
-        ctx = ctx.with_post_type(_next_source_in_rotation(ctx.post_type, menu))
+        ctx = ctx.with_post_type(_next_source_in_rotation(ctx.post_type, menu, ctx.post_id))
 
     if ctx.refine_final_post:
         content = _refine_draft(content, ctx, cta_keyword, bait_exempt_keyword)

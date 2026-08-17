@@ -49,7 +49,18 @@ The archetype a text post is written FROM — `thought_leadership`, `blog_summar
 unweighted random draw per post. At 3/week that is ~13 draws a month over six sources, so a source
 could go a whole month without coming up (reported as "no new story or blog-aligned posts").
 
-`_post_source_for_slot` rotates on the planned row's id instead, so consecutive slots cover every
-source; `_next_source_in_rotation` keeps rotating when a source is missing (no blog, no sitemap)
-rather than re-drawing into the same starvation. A draft with no planned row — a preview, a one-off
-regeneration — has no slot to rotate on and keeps the random draw.
+`_post_source_for_slot` rotates on the planned row's id instead, so consecutive rows walk the
+source list; `_next_source_in_rotation` keeps rotating when a source is missing (no blog, no
+sitemap) rather than re-drawing into the same starvation. A draft with no planned row — a preview,
+a one-off regeneration — has no slot to rotate on and keeps the random draw.
+
+Two things the rotation deliberately is NOT:
+
+- **It is not a per-user coverage guarantee.** Only the text and video rows of a plan reach
+  `create_text_post`; a carousel or document spends an id on its own generator. A user's text
+  drafts therefore land on a subsequence of the rotation — evenly distributed and stable per slot,
+  not one-of-each-per-month.
+- **The fallback is not "always the next entry".** A user with neither a blog nor a sitemap misses
+  its source on both `blog_summary` and `website_content` slots, and stepping to the next entry
+  every time would land both of them on `industry_news` — half that user's posts from one source.
+  The replacement rotates on the slot's id too, so the misses spread across the rest of the menu.
