@@ -264,6 +264,13 @@ def _cadence_slots(user_id: int, start_date: datetime, end_date: datetime) -> li
         log_info(f"Posting cadence capped by the configured days for user {user_id}: "
                  f"{posts_per_week}/week requested, {len(weekdays)} eligible day(s)",
                  user_id=user_id, task_name="plan_content_for_user")
+    elif len(posting_days) > posts_per_week:
+        # DEBUG, not a warning: the shipped default is 3/week over Mon-Fri, so this is the ordinary
+        # case rather than a defect. It is logged at all because the days a user switched on and
+        # never sees a post on is what issue #1526 was reported as — the SPA's C31 finding is the
+        # user-facing half of the same fact.
+        log_debug(f"Cadence fills {posts_per_week} of the {len(posting_days)} day(s) switched on "
+                  f"for user {user_id}: {sorted(weekdays)}")
 
     slots = []
     day = start_date.date()
@@ -2613,6 +2620,72 @@ _POST_TYPES = ["thought_leadership", "blog_summary", "website_content", "industr
 _DRAFT_SOURCE_ATTEMPTS = 3
 
 
+def _post_source_for_slot(post_id: Optional[int]) -> str:
+    """The source archetype a planned post is written from — ROTATED, not drawn at random.
+
+    The cadence is the reason this cannot stay a random draw (issue #1526). At the default 3/week a
+    user writes ~13 posts a month, and an unweighted draw over six sources leaves roughly a one in
+    ten chance that `blog_summary` (or `personal_story`) never comes up at all in a month — which is
+    what "no new story or blog-aligned posts" reads like from the outside. Rotating on the planned
+    row's own id spreads the sources across consecutive rows and stores no new state: a plan
+    inserts its rows in one pass, so their ids advance by one per slot.
+
+    That spread is not a per-user COVERAGE guarantee, and must not be read as one: only the text
+    and video rows of a plan reach this function (carousels and documents spend an id on their own
+    generator), so a user's text drafts land on a subsequence of the rotation. What it does buy is
+    that the pick is stable and evenly distributed over the ids rather than re-rolled per draft.
+
+    Args:
+        post_id: the planned post row this draft fills.
+
+    Returns:
+        The archetype to write. A draft with no planned row (a preview, a one-off regeneration)
+        keeps the random draw — there is no slot to rotate on.
+    """
+    if post_id is None:
+        return random.choice(_POST_TYPES)
+    try:
+        return _POST_TYPES[int(post_id) % len(_POST_TYPES)]
+    except (TypeError, ValueError):
+        return random.choice(_POST_TYPES)
+
+
+def _next_source_in_rotation(current: str, menu: list, post_id: Optional[int] = None) -> str:
+    """The replacement source after `current` reported no source, kept in rotation.
+
+    The fallback half of `_post_source_for_slot`: a user with no blog rolls off `blog_summary` on
+    every slot that lands on it, and re-drawing at random there re-opens the same starvation the
+    rotation exists to close.
+
+    The replacement has to keep rotating ACROSS slots as well, which is why the slot's id picks it
+    whenever there is one. Always stepping to the next menu entry would funnel every `blog_summary`
+    AND every `website_content` slot of a user with neither source onto the same successor — that
+    user would get half their posts as `industry_news` and one in six as `personal_story`, which is
+    the starvation of issue #1526 the other way round.
+
+    Args:
+        current: the archetype that just reported no source.
+        menu: the archetypes not yet exhausted for this draft — never empty, and never holds
+            `current`.
+        post_id: the planned row this draft fills; the slot the replacement rotates on.
+
+    Returns:
+        The menu entry this slot rotates onto; with no usable slot, the next entry after `current`,
+        wrapping, or the first entry when `current` is not part of the rotation at all.
+    """
+    if post_id is not None:
+        try:
+            return menu[int(post_id) % len(menu)]
+        except (TypeError, ValueError):
+            pass
+    if current in _POST_TYPES:
+        start = _POST_TYPES.index(current)
+        for candidate in _POST_TYPES[start + 1:] + _POST_TYPES[:start]:
+            if candidate in menu:
+                return candidate
+    return menu[0]
+
+
 def _resolve_user_profile(user_id: int) -> LinkedInProfile:
     """The profile a post is written from, scraped live with the cached DB profile as the fallback.
 
@@ -2929,7 +3002,7 @@ def _compose_draft(ctx: PostDraftContext, cta_keyword: Optional[str] = None,
             menu.remove(ctx.post_type)
         if not menu:
             break
-        ctx = ctx.with_post_type(random.choice(menu))
+        ctx = ctx.with_post_type(_next_source_in_rotation(ctx.post_type, menu, ctx.post_id))
 
     if ctx.refine_final_post:
         content = _refine_draft(content, ctx, cta_keyword, bait_exempt_keyword)
@@ -3084,7 +3157,7 @@ def create_text_post(user_id: int, stage: str, post_type: str = None,
     Args:
         user_id: ID of user to grab user profile.
         stage: Buyer journey stage for the post.
-        post_type: the archetype to write; drawn at random from `_POST_TYPES` when unset.
+        post_type: the archetype to write; taken from the `_POST_TYPES` rotation when unset.
         user_profile: the author's profile; scraped when unset.
         refine_final_post: run the refinement passes and, with `similarity_check`, the once-per-post
             gates. A caller that only wants a raw draft turns it off.
@@ -3104,7 +3177,7 @@ def create_text_post(user_id: int, stage: str, post_type: str = None,
     """
     content_mix = normalize_content_mix(content_mix)
     if post_type is None:
-        post_type = random.choice(_POST_TYPES)
+        post_type = _post_source_for_slot(post_id)
     if user_profile is None:
         user_profile = _resolve_user_profile(user_id)
 

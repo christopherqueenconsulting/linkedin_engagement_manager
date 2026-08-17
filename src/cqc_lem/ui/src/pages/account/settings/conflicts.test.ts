@@ -242,6 +242,21 @@ describe('conflict matrix', () => {
       .toBeUndefined()
   })
 
+  it('C31 says which switched-on days the cadence actually fills (issue #1526)', () => {
+    // Mon-Fri at 3/week is the shipped default, so it informs rather than alarms.
+    const untouched = find(ctx({ eng: eng({ posts_per_week: 3, posting_days: [0, 1, 2, 3, 4] }) }), 'C31')
+    expect(untouched?.severity).toBe('inform')
+    // Days the user deliberately switched on and never gets a post on are a real gap.
+    const allSeven = find(ctx({ eng: eng({ posts_per_week: 3, posting_days: [0, 1, 2, 3, 4, 5, 6] }) }), 'C31')
+    expect(allSeven?.severity).toBe('warn')
+    expect(allSeven?.anchor).toBe('posts_per_week')
+    expect(allSeven?.message).toMatch(/Tue, Wed, Thu/)
+    expect(allSeven?.fix?.patch).toEqual({ posts_per_week: 7 })
+    // Cadence matching the day count leaves nothing unused.
+    expect(find(ctx({ eng: eng({ posts_per_week: 5, posting_days: [0, 1, 2, 3, 4] }) }), 'C31'))
+      .toBeUndefined()
+  })
+
   it('never warns about a clean, default configuration', () => {
     const warnings = evaluateConflicts(ctx()).filter((f) => f.severity !== 'inform')
     expect(warnings).toEqual([])

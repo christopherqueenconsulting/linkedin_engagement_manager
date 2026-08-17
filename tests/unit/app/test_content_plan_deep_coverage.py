@@ -217,13 +217,14 @@ class TestCreateTextPost:
         assert result == "Blog post"
         assert m["blog"].call_args[0][:2] == ("https://blog.x.com/p1", "post body")
 
-    def test_blog_summary_without_blog_falls_back_to_other_type(self):
+    def test_blog_summary_without_blog_falls_back_to_the_next_in_rotation(self):
+        # Rotation order, not a re-draw (issue #1526): website_content is next and has no sitemap
+        # in this harness either, so industry_news is what ships.
         from cqc_lem.app.run_content_plan import create_text_post
-        with _TextPostHarness() as m, \
-             patch(f"{_RCP}.random.choice", return_value="thought_leadership"):
+        with _TextPostHarness() as m:
             result = create_text_post(1, "awareness", post_type="blog_summary",
                                       user_profile=_profile(), refine_final_post=False)
-        assert result == "TL post"
+        assert result == "News post"
         m["blog"].assert_not_called()
 
     def test_website_content_with_sitemap(self):
@@ -237,16 +238,14 @@ class TestCreateTextPost:
     def test_website_content_empty_result_falls_back(self):
         from cqc_lem.app.run_content_plan import create_text_post
         with _TextPostHarness(sitemap_url="https://x.com/sitemap.xml",
-                              website_content=None), \
-             patch(f"{_RCP}.random.choice", return_value="personal_story"):
+                              website_content=None):
             result = create_text_post(1, "awareness", post_type="website_content",
                                       user_profile=_profile(), refine_final_post=False)
-        assert result == "Story post"
+        assert result == "News post"
 
     def test_website_content_without_sitemap_falls_back(self):
         from cqc_lem.app.run_content_plan import create_text_post
-        with _TextPostHarness() as m, \
-             patch(f"{_RCP}.random.choice", return_value="industry_news"):
+        with _TextPostHarness() as m:
             result = create_text_post(1, "awareness", post_type="website_content",
                                       user_profile=_profile(), refine_final_post=False)
         assert result == "News post"
@@ -267,16 +266,17 @@ class TestCreateTextPost:
                                  post_id=42, lead_magnet_cta="comment GUIDE",
                                  history_directive="avoid X", story_directive="anchor on Y",
                                  content_mix="value", refine_final_post=False)
-        with _TextPostHarness() as m, \
-             patch(f"{_RCP}.random.choice", return_value="thought_leadership"):
+        with _TextPostHarness() as m:
             content, shipped = _compose_draft(draft)
-        assert (content, shipped.post_type) == ("TL post", "thought_leadership")
-        assert m["tl"].call_args[0] == ("profile", "awareness")
-        assert m["tl"].call_args[1] == {"prefs": {"tone": "warm"}, "profile_synthesis": "brief",
-                                        "blueprint": {"format": "listicle"}, "post_id": 42,
-                                        "user_id": 3, "lead_magnet_cta": "comment GUIDE",
-                                        "history_directive": "avoid X",
-                                        "story_directive": "anchor on Y", "content_mix": "value"}
+        # blog_summary and website_content both miss their source here, so the rotation lands on
+        # industry_news — the attempt whose argument set this pins.
+        assert (content, shipped.post_type) == ("News post", "industry_news")
+        assert m["news"].call_args[0] == ("profile", "awareness")
+        assert m["news"].call_args[1] == {"prefs": {"tone": "warm"}, "profile_synthesis": "brief",
+                                          "blueprint": {"format": "listicle"}, "post_id": 42,
+                                          "user_id": 3, "lead_magnet_cta": "comment GUIDE",
+                                          "history_directive": "avoid X",
+                                          "story_directive": "anchor on Y", "content_mix": "value"}
 
     def test_the_type_fallback_is_bounded_and_the_gates_run_once(self):
         """Issue #1217: the fallback is a loop around the GENERATE step, not a self-call.
@@ -288,14 +288,12 @@ class TestCreateTextPost:
         """
         from cqc_lem.app.run_content_plan import create_text_post
         with _TextPostHarness() as m, \
-             patch(f"{_RCP}.random.choice",
-                   side_effect=["website_content", "personal_story"]), \
              patch(f"{_RCP}.get_recent_post_texts", return_value=[]), \
              patch(f"{_RCP}._review_generated_post",
                    side_effect=lambda ctx, content, *a, **kw: content) as review:
             result = create_text_post(1, "awareness", post_type="blog_summary",
                                       user_profile=_profile(), post_id=42)
-        assert result == "refined:Story post"
+        assert result == "refined:News post"
         m["blog"].assert_not_called()
         m["website"].assert_not_called()  # its source was missing too
         review.assert_called_once()
