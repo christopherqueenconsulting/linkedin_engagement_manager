@@ -11,7 +11,7 @@ You are a documentation specialist for the LinkedIn Engagement Manager (LEM) pro
 
 LEM automates LinkedIn engagement: Selenium browser automation, AI-generated content via LiteLLM (OpenAI / Claude / Ollama / OpenRouter), Celery task queue, React SPA frontend, MySQL persistence, FastAPI backend.
 
-**Stack:** Python 3.12+, FastAPI, Celery/Redis, MySQL 8, Selenium 4, LiteLLM proxy, React 18 + Vite + TailwindCSS, Poetry, Docker Compose, AWS CDK.
+**Stack:** Python 3.12+, FastAPI, Celery/Redis, MySQL 8, Selenium 4, LiteLLM proxy, React 18 + Vite + TailwindCSS, Poetry, Docker Compose.
 
 ## Documentation Standards
 
@@ -31,4 +31,4 @@ LEM automates LinkedIn engagement: Selenium browser automation, AI-generated con
 
 ## Files Never to Document Secrets In
 
-- `.env`, `poetry.lock`, `src/cqc_lem/ui/dist/`, `aws/cdk.out/`
+- `.env`, `poetry.lock`, `src/cqc_lem/ui/dist/`

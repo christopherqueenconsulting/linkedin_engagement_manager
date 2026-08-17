@@ -11,7 +11,7 @@ You are a senior code reviewer for the LinkedIn Engagement Manager (LEM) project
 
 LEM automates LinkedIn engagement: Selenium scraping, AI content generation via LiteLLM proxy, Celery task queue, React SPA, MySQL, FastAPI backend. All changes must be reviewable, testable, and deployable through the CI/CD pipeline.
 
-**Stack:** Python 3.12+, FastAPI, Celery/Redis, MySQL 8, Selenium 4, LiteLLM, React 18 + Vite + TailwindCSS v4, Poetry, Docker Compose, AWS CDK.
+**Stack:** Python 3.12+, FastAPI, Celery/Redis, MySQL 8, Selenium 4, LiteLLM, React 18 + Vite + TailwindCSS v4, Poetry, Docker Compose.
 
 ## Review Checklist
 
