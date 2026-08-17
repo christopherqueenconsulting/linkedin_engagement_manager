@@ -84,7 +84,10 @@ export default function FeatureNarrative() {
             data-testid={`feature-beat-${beat.key}`}
             className="grid items-center gap-8 lg:grid-cols-2 lg:gap-14"
           >
-            <div className={index % 2 === 1 ? 'lg:order-2' : undefined}>
+            {/* `min-w-0` on both columns for the same reason as the hero (issue #1556): without it
+                the panel column's min-content width becomes the page's, and a phone lays the whole
+                front page out wider than the screen and zooms out to fit. */}
+            <div className={`min-w-0 ${index % 2 === 1 ? 'lg:order-2' : ''}`.trim()}>
               <p className="text-sm font-semibold uppercase tracking-wide text-brand-600">
                 {beat.eyebrow}
               </p>
@@ -99,7 +102,7 @@ export default function FeatureNarrative() {
                 ))}
               </ul>
             </div>
-            <div className={index % 2 === 1 ? 'lg:order-1' : undefined}>
+            <div className={`min-w-0 ${index % 2 === 1 ? 'lg:order-1' : ''}`.trim()}>
               <ProductPanel variant={beat.panel} />
             </div>
           </article>

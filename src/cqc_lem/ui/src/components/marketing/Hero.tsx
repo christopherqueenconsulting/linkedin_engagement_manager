@@ -13,8 +13,11 @@ export default function Hero() {
 
   return (
     <Section analyticsName="hero" tone="white" className="pt-12 sm:pt-16">
+      {/* `min-w-0` on both columns, not decoration (issue #1556): a grid item's automatic minimum
+          size is its min-content width, and ProductPanel's rows hold non-wrapping (`truncate`)
+          titles, so the panel column asked for 498px on a 375px phone and took the page with it. */}
       <div className="grid items-center gap-12 lg:grid-cols-2">
-        <div>
+        <div className="min-w-0">
           <h1 className="text-4xl sm:text-5xl font-bold leading-tight tracking-tight text-ink-900">
             Your LinkedIn content and engagement, running every day — inside the limits you set
           </h1>
@@ -46,7 +49,7 @@ export default function Hero() {
             {TRIAL_DAYS}-day free trial. No credit card. Cancel any time.
           </p>
         </div>
-        <div className="lg:pl-4">
+        <div className="min-w-0 lg:pl-4">
           <ProductPanel variant="queue" />
         </div>
       </div>
