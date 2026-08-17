@@ -199,7 +199,10 @@ from cqc_lem.platform.db.repositories.engagement import (
 from cqc_lem.platform.db.repositories.feedback import (
     _FAQ_COLUMNS,
     _LEN_STORY_TITLE,
+    _STORY_BANK_COLS,
     STORY_BANK_KINDS,
+    _clean_story_row,
+    _prefixed_feedback_columns,
     apply_faq_entry_version,
     count_feedback_filed_by_user,
     count_story_bank_entries,
@@ -214,6 +217,7 @@ from cqc_lem.platform.db.repositories.feedback import (
     get_latest_review_feedback_id,
     get_open_feedback_clusters,
     get_published_faq_entries,
+    get_story_bank_entries,
     get_survey_prompts_sent,
     has_review_feedback,
     insert_feedback,
@@ -1116,6 +1120,10 @@ __all__ = [
     "_profile_url_variants",
     "get_profile_facts",
     "set_user_admin",
+    "_STORY_BANK_COLS",
+    "_clean_story_row",
+    "_prefixed_feedback_columns",
+    "get_story_bank_entries",
 ]
 
 # Load .env file
@@ -2719,31 +2727,10 @@ def suggest_engagement_targets(user_id: int, limit: int = 20) -> list:
 
 # What "a seeded bank" means — the onboarding nudge and the SPA both aim the user at this many.
 STORY_BANK_TARGET_ENTRIES = 5
-_STORY_BANK_COLS = ("id", "kind", "title", "body", "happened_at", "used_count", "last_used_at",
-                    "active")
 
 
-def _clean_story_row(row: dict) -> dict:
-    row["active"] = bool(row.get("active"))
-    row["used_count"] = int(row.get("used_count") or 0)
-    return row
 
 
-def get_story_bank_entries(user_id: int, active_only: bool = False) -> list:
-    """The user's story bank, least-recently-used first — the rotation order the selector consumes
-    directly (never-used entries sort ahead of used ones, oldest use next).
-    """
-    try:
-        with db_cursor(dictionary=True) as cursor:
-            sql = f"SELECT {', '.join(_STORY_BANK_COLS)} FROM story_bank WHERE user_id=%s"
-            if active_only:
-                sql += " AND active=1"
-            sql += " ORDER BY used_count ASC, last_used_at IS NOT NULL, last_used_at ASC, id ASC"
-            cursor.execute(sql, (user_id,))
-            return [_clean_story_row(r) for r in (cursor.fetchall() or [])]
-    except mysql.connector.Error as err:
-        log_error("Could not list story bank entries", exc=err, user_id=user_id)
-        return []
 
 
 
@@ -3490,8 +3477,6 @@ def get_user_cost(user_id: int, start_date, end_date) -> dict:
 
 
 
-def _prefixed_feedback_columns(alias: str = "f") -> str:
-    return ", ".join(f"{alias}.{c.strip()}" for c in _FEEDBACK_COLUMNS.split(","))
 
 
 def _admin_reporter_join(alias: str = "f") -> tuple:

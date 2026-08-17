@@ -531,3 +531,28 @@ def get_latest_review_feedback_id(user_id: int) -> Optional[int]:
     except mysql.connector.Error as err:
         log_error("Could not look up review feedback", exc=err, user_id=user_id)
         return None
+
+
+_STORY_BANK_COLS = ("id", "kind", "title", "body", "happened_at", "used_count", "last_used_at",
+                    "active")
+def _clean_story_row(row: dict) -> dict:
+    row["active"] = bool(row.get("active"))
+    row["used_count"] = int(row.get("used_count") or 0)
+    return row
+def get_story_bank_entries(user_id: int, active_only: bool = False) -> list:
+    """The user's story bank, least-recently-used first — the rotation order the selector consumes
+    directly (never-used entries sort ahead of used ones, oldest use next).
+    """
+    try:
+        with db_cursor(dictionary=True) as cursor:
+            sql = f"SELECT {', '.join(_STORY_BANK_COLS)} FROM story_bank WHERE user_id=%s"
+            if active_only:
+                sql += " AND active=1"
+            sql += " ORDER BY used_count ASC, last_used_at IS NOT NULL, last_used_at ASC, id ASC"
+            cursor.execute(sql, (user_id,))
+            return [_clean_story_row(r) for r in (cursor.fetchall() or [])]
+    except mysql.connector.Error as err:
+        log_error("Could not list story bank entries", exc=err, user_id=user_id)
+        return []
+def _prefixed_feedback_columns(alias: str = "f") -> str:
+    return ", ".join(f"{alias}.{c.strip()}" for c in _FEEDBACK_COLUMNS.split(","))
