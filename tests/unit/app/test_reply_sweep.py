@@ -488,6 +488,38 @@ class TestReplyToCommentsOnOpenPost:
         assert not hasattr(_posting, "send_private_dm")
         assert not hasattr(_posting, "send_scheduled_dm")
 
+    def test_lead_magnet_is_not_drafted_for_a_commenter_we_cannot_dm(self):
+        """The sweep already read the degree badge off the card (issue #1528).
+
+        So a 2nd-degree commenter's un-sendable draft never has to reach the queue at all.
+        """
+        from cqc_lem.app.engagement.posting import _reply_to_comments_on_open_post
+        driver = _sweep_driver()
+        with patch(f"{_POST}.get_post_url_from_log_for_user", return_value="https://li/feed/update/urn:li:share:1/"), \
+             patch(f"{_POST}.get_post_content", return_value="post body"), \
+             patch(f"{_POST}.click_first", return_value=None), \
+             patch(f"{_POST}._comment_items_from_thread",
+                   return_value=[_FakeComment("Send me GUIDE please", author="Jane Doe • 2nd")]), \
+             patch(f"{_POST}.get_lead_magnet_settings",
+                   return_value={"enabled": True, "keyword": "GUIDE", "message": "Here: {blog_url}"}), \
+             patch(f"{_POST}.get_user_blog_url", return_value="https://blog"), \
+             patch(f"{_POST}.has_received_lead_magnet", return_value=False), \
+             patch(f"{_POST}.has_open_scheduled_dm", return_value=False), \
+             patch(f"{_POST}.count_scheduled_dms_created_today", return_value=0), \
+             patch(f"{_POST}.insert_scheduled_dm") as ins, \
+             patch(f"{_POST}.record_lead_magnet_sent") as rec, \
+             patch(f"{_POST}.upsert_engager"), \
+             patch(f"{_POST}.generate_thread_reply", return_value="reply"), \
+             patch(f"{_POST}.get_engagement_preferences", return_value={"max_dms_per_day": 5}), \
+             patch(f"{_POST}._flag_lead_signal", return_value=None), \
+             patch(f"{_POST}._reply_to_comment_inline", return_value=True) as rep, \
+             patch(f"{_POST}.insert_new_log"):
+            _reply_to_comments_on_open_post(driver, MagicMock(), 1, 9, self._profile(), "synth")
+        ins.assert_not_called()
+        rec.assert_not_called()
+        # The PUBLIC reply is unaffected — a 2nd-degree commenter is still someone to talk to.
+        rep.assert_called_once()
+
     def test_bails_when_profile_slug_unresolvable(self):
         """LOOP SAFETY: with no profile slug we can't dedup our own / already-replied comments, so
         the sweep must skip replying entirely rather than risk duplicate/self replies.

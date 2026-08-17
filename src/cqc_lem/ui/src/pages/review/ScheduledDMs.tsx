@@ -36,6 +36,11 @@ const STATUS_COLORS: Record<string, string> = {
 
 const STATUSES = ['ALL', 'pending', 'approved', 'scheduled', 'sent', 'failed', 'canceled']
 
+function errorText(err: unknown, fallback: string): string {
+  const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+  return typeof detail === 'string' ? detail : fallback
+}
+
 export default function ScheduledDMs(
   { userTimezone, timezoneResolved }: { userTimezone: string; timezoneResolved: boolean },
 ) {
@@ -96,10 +101,22 @@ export default function ScheduledDMs(
     createMutation.mutate({ status, scheduledUtc })
   }
 
+  // Approve and Cancel used to report NOTHING (issue #1528). A refused write — a stale row, a
+  // scope refusal, a dropped connection — left the badge exactly where it was and said nothing, so
+  // the only reading available to the operator was that the button is dead. Both outcomes are
+  // flashed now: the failure names itself, and the success says what will happen next.
   const actionMutation = useMutation({
     mutationFn: (v: { id: number; action: 'approve' | 'cancel' }) =>
       api.put('/dm', { session_token: sessionToken, dm_id: v.id, action: v.action }),
-    onSuccess: () => invalidate(),
+    onSuccess: (_r, v) => {
+      invalidate()
+      flash(true, v.action === 'approve'
+        ? 'Approved — it will send at its scheduled time.'
+        : 'Canceled — this DM will not be sent.')
+    },
+    onError: (err, v) => flash(false, errorText(err, v.action === 'approve'
+      ? 'Could not approve this DM — try again.'
+      : 'Could not cancel this DM — try again.')),
   })
 
   const canSubmit = url.trim() && body.trim() && when && timezoneResolved

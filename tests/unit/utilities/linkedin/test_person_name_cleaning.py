@@ -91,3 +91,25 @@ class TestConnectionDegree:
         # A missing badge is UNKNOWN, not "not connected" — callers must fail open.
         assert helper.is_first_degree("Jane Doe") is False
         assert helper.is_first_degree("") is False
+
+
+class TestCanOpenDmThread:
+    """A lane that OPENS a DM thread must not draft one for someone we cannot message (issue #1528).
+
+    Otherwise the operator approves a message that can never be delivered.
+    """
+
+    def test_a_first_degree_connection_can_be_messaged(self, helper):
+        assert helper.can_open_dm_thread("Jane Doe • 1st") is True
+
+    @pytest.mark.parametrize("raw", ["Jane Doe • 2nd", "Jane Doe • 3rd", "Jane Doe • 3rd+"])
+    def test_a_second_or_third_degree_person_cannot(self, helper, raw):
+        assert helper.can_open_dm_thread(raw) is False
+
+    @pytest.mark.parametrize("raw", ["Jane Doe", "", None])
+    def test_an_unreadable_badge_fails_open(self, helper, raw):
+        """Opposite default to `is_first_degree`, on purpose.
+
+        A selector drift that stops rendering the badge must not silently stop every delivery.
+        """
+        assert helper.can_open_dm_thread(raw) is True
