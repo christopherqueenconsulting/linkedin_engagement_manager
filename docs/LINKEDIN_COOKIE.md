@@ -15,6 +15,18 @@ valid `li_at` is saved, the password step (and its 2FA challenge) is skipped ent
 `li_at` is an **httpOnly** cookie — page JavaScript can't read it, which is why the
 one-click capture uses a browser extension (the `chrome.cookies` API can).
 
+**Since issue #745, `li_at` is the DEFAULT engagement login, not a nicety.** Every Selenium
+engagement lane logs in through `login_to_linkedin`, which tries stored cookies first; the stored
+password is the fallback, and the fallback is the path that draws a challenge. An account with no
+valid `li_at` is therefore an account whose engagement lanes are one challenge away from doing
+nothing — which is exactly how automation can look "configured" while sending zero comments,
+replies and DMs.
+
+Where the two login paths meet is `_persist_session_cookies`, and that is also where a sign-in is
+recorded for session-health reporting — see [LinkedIn session health](linkedin-session-health.md).
+When LinkedIn does challenge, the PIN is answered without a human at the keyboard by the
+email-reply path in [Email-reply verification PIN](EMAIL_PIN_VERIFICATION.md).
+
 ## Option A — one-click browser extension (least steps)
 
 The source lives at `src/cqc_lem/browser_extension/` (a minimal Chrome/Edge MV3 extension)

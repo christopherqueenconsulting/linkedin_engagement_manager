@@ -80,16 +80,34 @@ country via `REGION_PROXIES`, with **WARP (#2)** as the free `DEFAULT`. Users do
 nothing. Combined with the existing one-time device approval + cookie persistence,
 this removes the "new location" challenge without per-GB spend or user onboarding.
 
-## Auth note
+## Browser identity — how credentials actually reach the proxy
 
-Chrome's `--proxy-server` can't carry inline `user:pass`. The options above are all
-auth-less from the browser (they authenticate by *source IP* — lock the regional nodes
-to the VPS's IP). Credentialed commercial proxies additionally need an auth-handler
-extension (follow-up).
+Chrome's `--proxy-server` **cannot carry inline `user:pass`**, and never will. The regional-node
+options above sidestep that by authenticating on *source IP* (lock the nodes to the VPS's IP).
+A credentialed commercial proxy — one whose sticky-session and geo target live in the *username*,
+as DataImpulse's do — cannot.
+
+`_build_proxy_auth_extension_b64` in `utilities/selenium_util.py` is the ONE place that gap is
+closed, and it is the only sanctioned way credentials reach a browser session:
+
+- It builds an **MV3 Chrome extension in memory** whose service worker answers
+  `chrome.webRequest.onAuthRequired` with the username/password.
+- **MV3, not MV2, is load-bearing.** MV2 background pages are disabled in current Chrome (149+),
+  so the historical MV2-background-page recipe silently stops answering the auth challenge — the
+  session then looks like a proxy failure, not an extension failure. The MV3 service worker needs
+  the `webRequestAuthProvider` permission, which is what re-enables a *blocking*
+  `onAuthRequired` listener for a normal extension.
+- The credentials are `json.dumps`-escaped into the background script, so the `;` and `.`
+  separators inside a sticky-session username survive intact.
+- The result is a **base64 zip handed to `options.add_encoded_extension`** — never written to disk,
+  so there is no temp file to leak or clean up.
+
+**Never URL-embed proxy credentials.** A `http://user:pass@host:port` proxy URL is not carried by
+Chrome, and putting one in a log line or an env dump is how the credential escapes.
 
 ## Status / follow-ups
 
-- App side (DB field, resolver, Selenium wiring, tests) — **done, config-driven**.
+- App side (DB field, resolver, Selenium wiring, MV3 auth extension, tests) — **done,
+  config-driven**.
 - Provision the regional nodes (Terraform/CDK or cloud-init) + lock to the box IP.
 - `GET/PUT /user/proxy` + Settings UI (only needed for the opt-in override).
-- Auth-handler extension for credentialed proxies.

@@ -74,6 +74,58 @@ be read as recency-sorted:
 
 Live grounding: `scripts/linkedin_live_validation.py --feed-sort`.
 
+## Replies on our own posts, and the seed comment (`sweep_reply_comments`, `auto_seed_comment_on_post`)
+
+Two different jobs on the user's own post: **seed** the thread, then **answer** it.
+
+### The seed comment is the user's own FIRST comment (`auto_seed_comment_on_post`, issue #344)
+
+A value-adding open question or behind-the-scenes insight — no links — posted so the thread that
+drives reach has somewhere to start, and so link-in-first-comment suppression is beaten by adding
+real value rather than by hiding a link.
+
+- **Posts through LinkedIn's socialActions API** (`w_member_social`, the same token that publishes
+  posts), NOT Selenium. Commenting on your OWN post needs no browser and no login, so this lane is
+  immune to the feed-navigation 429 that gates everything else here. Everything it needs — post
+  body, voice synthesis, profile, prefs — is a DB read.
+- **Grounded on the `posts` row** (`get_post_content`), falling back to the POST log only when the
+  row is gone. Historical POST logs stored a *status string*, which is why seed comments once read
+  as if they were about the `/posts` API instead of the post's subject.
+- **Idempotent** on `has_user_commented_on_post_url`: a retried or re-dispatched task must not leave
+  a SECOND comment (duplicate own-comments are what `consolidate_duplicate_comments_for_user` exists
+  to clean up).
+- A link **held back at publish time** (issue #392 — C3) is appended deterministically by
+  `append_link_to_comment`; a link on its own still ships when the generator came back empty, since
+  losing the link entirely is the worse failure.
+- **No pinning.** LinkedIn exposes no pin API, and the seed's thread-starting value stands without it.
+
+**The seed counts against the self-comment cap.** `SELF_COMMENT_MAX_PER_POST` (default 2 in
+`utilities/golden_hour.py`, env-clamped to 1–5) is enforced on the **COUNT of our own comments on
+that post URL**, not on which task ran — so the seed and the second wave can never stack into
+thread-stuffing however either is re-dispatched, and neither task has to know the other ran.
+
+### Replying is a SWEEP, not a per-post poll (`sweep_reply_comments`)
+
+The default post-publish path walks new comments across the user's RECENT posts in **ONE Selenium
+session**, triggered either by a forwarded comment-notification email (event mode) or by the
+scheduled dispatcher. It replaced a 24h-per-post polling loop that was itself driving the 429.
+
+- `sweep_slot` is part of the `QueueOnce` key, so the golden-hour amplifier can enqueue several
+  distinct sweeps for one user while same-user-same-slot still dedups. `attempt` is the in-window
+  retry counter and is deliberately **NOT** in the key, so a retry still dedups against a
+  concurrently-queued sweep of the same slot.
+- Every post swept emits a golden-hour report (below), so the amplifier's silence can be diagnosed
+  rather than guessed at.
+- 429-safe: a rate-limited session logs a clean skip and returns; a later trigger or sweep retries.
+
+`automate_reply_commenting` (`app/engagement/posting.py`) is the **single-post** variant, retained
+for the manual/API trigger and back-compat. It re-queues itself with a widening future-forward
+ladder (0 / 5 / 10 / 15 / 30 / 60 min) until `loop_for_duration` runs out — the duration expiring is
+its exit condition, which is why both branches of that bookkeeping log at DEBUG.
+
+Both paths share `_reply_to_comments_on_open_post`, which is also the only writer of `post_engagers`
+(see Reciprocity capture, below).
+
 ## Golden-hour presence & second wave (`utilities/golden_hour.py`, issue #622)
 
 The ONE place the first-hour amplifier's timing is decided.
@@ -133,6 +185,64 @@ first case, with `post_outcome` agreeing at 1–2 comments per post.
   `scripts/sdui_drift_issues.py` files only `drift`, and no telemetry event or streak alert rides on
   it. A run of posts with zero third-party comments is read off impressions/`post_outcome`, not off
   a reciprocity alarm — making the empty table louder does not create engagement.
+
+## DM templates, sequences and follow-ups (`build_dm_from_template`, `dm_templates`, `dm_followups`, `process_user_followups`)
+
+A DM sequence is three tables' worth of state: a per-user template per `(event_type, step)` in
+`dm_templates`, a due row per prospect-step in `dm_followups`, and one Celery task that drains them.
+
+### Rendering a message (`build_dm_from_template`)
+
+Template text → placeholder render (`{first_name}` / `{headline}` / `{blog_url}` / `{event_detail}`,
+headline falling back to `"my professional field"`) → LLM refinement to the user's voice, ≤300 chars
+→ humanization pass (issue #416 — A5) → deterministic slop lint with a bounded re-refine
+(`lint_repaired`, issue #625 — D1).
+
+Two fail-open decisions in that chain, both deliberate:
+
+- The humanization pass **keeps the pre-humanize text** if the rewrite would exceed the 300-char DM
+  budget.
+- **A still-slopped DM is SENT**, with the offending patterns named in the log. A DM has no review
+  queue, so dropping it would silently break the outreach sequence — the louder failure is the
+  quiet one. Refinement raising at all falls back to the plainly-rendered template.
+
+`None` comes back **only** when no template exists for that `(event_type, step)`, and `None` is what
+ends a sequence: the caller marks the row `stopped`.
+
+### Scheduling the next step — and the reply check that has no step (`enqueue_next_followup`, issue #623)
+
+If a template exists for the next step it is scheduled at `now + delay_hours`, `due_at` stored as
+naive UTC to match `get_due_followups`.
+
+When there is **NO** next step, a **reply check** is scheduled at that same step anyway. This is the
+fix for a silent months-long dead end: the stock templates are step-0 only, so the no-next-step
+branch used to end the thread the moment the first DM went out — nothing was queued in
+`dm_followups`, `process_user_followups` therefore never ran, nobody's reply was ever read, and the
+issue #485 auto-nurture that turns a reply into an approval-gated next message could not fire.
+`scheduled_dms` had zero rows in production from V53 onward. The check costs one thread open: a
+reply becomes a nurture draft, and silence falls into the existing "no template for this step"
+branch and stops the sequence. Default wait 48h (`DM_REPLY_CHECK_DELAY_HOURS`).
+
+### Draining the due rows (`process_user_followups`, `max_per_run=20`)
+
+One Selenium session per run. `resolve_self_name` is resolved **once per run** — the saved display
+name from Settings, with the scraped profile as fallback — and an empty result means every thread
+reads `UNKNOWN` and nothing is sent, which is the intended outcome, logged as a warning naming the
+setting to fix.
+
+Per due row, `check_dm_replied` decides everything:
+
+| `ThreadState` | What happens |
+|---|---|
+| `UNKNOWN` | **SKIP and leave the row due.** We could not read the thread, so we do not know whether they answered — sending anyway is the one irreversible mistake in this lane (issue #731). The next run re-reads it, and the miss is a greppable warning |
+| `REPLIED` | Read the inbound message once and use it twice: buying-intent flagging (issue #483) and auto-nurture (issue #485). Stop the old sequence **FIRST** — the nurture path enqueues its own re-check, and a blanket stop afterwards would cancel it. If nurture produced no draft, the catch-up funnel (issue #482) is the fallback, and even that is skipped when the reply was an explicit stop intent |
+| not replied, `event_type` is the nurture re-check | Mark `stopped`. Nurture **never** auto-sends a template — the drafted message is the operator's to approve |
+| not replied, ordinary step | Render the template, dispatch `send_private_dm`, log `FOLLOWUP`, mark `sent`, and enqueue the next step |
+
+**An empty due-list is a WARNING, not a DEBUG no-op.** This task is only dispatched for users who
+already have due rows, so "nothing due" means the row was consumed between dispatch and run — or
+that nothing is being enqueued at all, which is exactly how the nurture queue stayed empty for
+months (issue #623).
 
 ## DM conversation auto-nurture (`_nurture_after_reply`, `utilities/ai/dm_nurture.py`)
 

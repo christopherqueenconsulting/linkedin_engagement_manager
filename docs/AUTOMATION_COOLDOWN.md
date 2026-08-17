@@ -4,6 +4,29 @@ LinkedIn rate-limits by egress IP. When the account's residential proxy gets 429
 task that navigates LinkedIn re-confirms the throttle. Two mechanisms keep this from becoming a
 self-sustaining doom loop and let a throttled account recover.
 
+## The breaker is a harder gate than pacing, and it is never a flag
+
+`utilities/human_pacing.py` and `utilities/linkedin/rate_limit.py` both slow LinkedIn traffic down,
+and they are not interchangeable:
+
+| | Human pacing (#626) | The 429 breaker |
+|---|---|---|
+| What it does when it fires | **Delays** an action — the action still happens | **Blocks** the LinkedIn navigation for the whole cooldown; the caller skips |
+| Who can turn it off | `HUMAN_PACING_ENABLED` | **Nobody.** It is not behind a feature flag and never will be |
+| Tunable per user | yes, that is the point | no — it is an account-safety control |
+
+**Safety controls are NOT feature flags** (`utilities/flags.py` says so explicitly, alongside the
+automation pause and the per-day caps). Never wrap the breaker in one: a flag fails open to its env
+var by design, and a safety control that fails open on an unresolvable flag lookup is not a safety
+control. If the breaker needs to be lifted, that is `clear_rate_limit()` after a successful login,
+or the operator kill-switch below — both of which are observable actions, not a config read.
+
+Note that both mechanisms **no-op when Redis is unavailable** — the breaker's state lives in Redis
+and an unavailable Redis returns no handle. That is a deliberate fail-open (an outage of our own
+infrastructure must not become a permanent halt), and it is the one condition under which "the
+breaker is the harder gate" stops being true. It is also why "Redis was down once" is never cached:
+the handle is retried on the next call.
+
 ## 1. Adaptive circuit-breaker escalation (automatic)
 
 `utilities/linkedin/rate_limit.py` tracks **consecutive** 429 trips (a Redis counter cleared only by a
