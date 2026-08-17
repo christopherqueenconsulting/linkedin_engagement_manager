@@ -749,7 +749,7 @@ class TestInsertPostDbError:
         from cqc_lem.utilities.db import PostType, insert_post
 
         with patch("cqc_lem.platform.db.connection.get_db_connection") as mock_conn, \
-             patch("cqc_lem.utilities.db.get_user_id", return_value=42), \
+             patch("cqc_lem.platform.db.repositories.posts.get_user_id", return_value=42), \
              patch("cqc_lem.utilities.db.prune_superseded_cookies"):
             mock_conn.return_value = mock_database_connection["connection"]
             mock_database_connection["cursor"].execute.side_effect = mysql.connector.Error("err")
@@ -768,7 +768,7 @@ class TestInsertPostDbError:
 
         slides = ["First slide", "Second slide"]
         with patch("cqc_lem.platform.db.connection.get_db_connection") as mock_conn, \
-             patch("cqc_lem.utilities.db.get_user_id", return_value=42), \
+             patch("cqc_lem.platform.db.repositories.posts.get_user_id", return_value=42), \
              patch("cqc_lem.utilities.db.prune_superseded_cookies"):
             mock_conn.return_value = mock_database_connection["connection"]
             mock_database_connection["cursor"].rowcount = 1
@@ -789,7 +789,7 @@ class TestInsertPostDbError:
         from cqc_lem.utilities.db import PostType, insert_post
 
         with patch("cqc_lem.platform.db.connection.get_db_connection") as mock_conn, \
-             patch("cqc_lem.utilities.db.get_user_id", return_value=42), \
+             patch("cqc_lem.platform.db.repositories.posts.get_user_id", return_value=42), \
              patch("cqc_lem.utilities.db.prune_superseded_cookies"):
             mock_conn.return_value = mock_database_connection["connection"]
             mock_database_connection["cursor"].rowcount = 1

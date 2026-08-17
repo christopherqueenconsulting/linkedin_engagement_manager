@@ -13,7 +13,6 @@ values, the OAuth tokens and the stored password, keyed per user+column off `LEM
 under it, and a value that will not decrypt reads as None rather than as ciphertext.
 """
 
-import hashlib
 import json
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Optional, Union
@@ -74,6 +73,8 @@ from cqc_lem.platform.db.repositories.auth import (
     SESSION_SCOPE_AGENT,
     SESSION_SCOPE_ENROLL,
     TOTP_SECRET_FIELD,
+    _credential_id_hash,
+    add_passkey_factor,
     claim_auth_challenge_attempt,
     clear_challenge_attempts,
     confirm_totp_factor,
@@ -91,6 +92,7 @@ from cqc_lem.platform.db.repositories.auth import (
     get_app_credential,
     get_app_credential_updated_at,
     get_auth_audit_events,
+    get_passkey_by_credential_id,
     get_pin_lockout,
     get_session_auth_state,
     get_session_id,
@@ -141,8 +143,11 @@ from cqc_lem.platform.db.repositories.avatar import (
 )
 from cqc_lem.platform.db.repositories.billing import (
     COST_ROLLUP_COLUMNS,
+    _affiliate_row,
     accrue_monthly_fixed_costs,
     convert_affiliate_referral,
+    ensure_affiliate_enrollment,
+    get_affiliate_enrollment,
     get_affiliate_referral_counts,
     get_affiliate_referral_for_referred,
     get_affiliate_reward_totals,
@@ -153,6 +158,8 @@ from cqc_lem.platform.db.repositories.billing import (
     insert_cost_ledger_entry,
     mark_affiliate_notice_seen,
     record_affiliate_referral,
+    set_affiliate_promo_opt_in,
+    set_affiliate_status,
 )
 from cqc_lem.platform.db.repositories.engagement import (
     CLAIM_STALE_MINUTES,
@@ -194,7 +201,10 @@ from cqc_lem.platform.db.repositories.engagement import (
 from cqc_lem.platform.db.repositories.feedback import (
     _FAQ_COLUMNS,
     _LEN_STORY_TITLE,
+    _STORY_BANK_COLS,
     STORY_BANK_KINDS,
+    _clean_story_row,
+    _prefixed_feedback_columns,
     apply_faq_entry_version,
     count_feedback_filed_by_user,
     count_story_bank_entries,
@@ -209,6 +219,7 @@ from cqc_lem.platform.db.repositories.feedback import (
     get_latest_review_feedback_id,
     get_open_feedback_clusters,
     get_published_faq_entries,
+    get_story_bank_entries,
     get_survey_prompts_sent,
     has_review_feedback,
     insert_feedback,
@@ -427,6 +438,7 @@ from cqc_lem.platform.db.repositories.posts import (
     has_scheduled_post_today,
     insert_occasion_post,
     insert_planned_post,
+    insert_post,
     mark_post_avatar_media,
     post_avatar_media_state,
     post_used_avatar_media,
@@ -463,6 +475,7 @@ from cqc_lem.platform.db.repositories.users import (
     SECRET_FIELD_COOKIE_VALUE,
     SECRET_FIELD_PASSWORD,
     SECRET_FIELD_REFRESH_TOKEN,
+    _profile_url_variants,
     _store_cookie_rows,
     add_linkedin_profile,
     add_user,
@@ -490,6 +503,7 @@ from cqc_lem.platform.db.repositories.users import (
     get_onboarding_nudges_sent,
     get_onboarding_state,
     get_or_create_reply_inbound_token,
+    get_profile_facts,
     get_profile_synthesis,
     get_survey_candidate_user_ids,
     get_user_access_token,
@@ -529,6 +543,7 @@ from cqc_lem.platform.db.repositories.users import (
     set_last_recorded_skills,
     set_linkedin_session_email_sent_at,
     set_profile_synthesis,
+    set_user_admin,
     update_avatar_preferences,
     update_company_linked_in_url_for_user,
     update_linkedin_connection_status,
@@ -567,7 +582,7 @@ from cqc_lem.utilities.crypto import (
 from cqc_lem.utilities.env_constants import (
     SESSION_IDLE_HOURS,
 )
-from cqc_lem.utilities.logger import log_error, log_info, log_warning
+from cqc_lem.utilities.logger import log_error, log_info
 
 # Re-exported for the ~2,400 call sites that still say `from cqc_lem.utilities.db import X`.
 # `__all__` is the one declaration ruff (F401) and CodeQL (py/unused-import) both understand —
@@ -1100,6 +1115,22 @@ __all__ = [
     "get_current_group_post_draft",
     "get_group_post_draft",
     "get_open_group_post_draft",
+    "_affiliate_row",
+    "ensure_affiliate_enrollment",
+    "get_affiliate_enrollment",
+    "set_affiliate_promo_opt_in",
+    "set_affiliate_status",
+    "_profile_url_variants",
+    "get_profile_facts",
+    "set_user_admin",
+    "_STORY_BANK_COLS",
+    "_clean_story_row",
+    "_prefixed_feedback_columns",
+    "get_story_bank_entries",
+    "_credential_id_hash",
+    "add_passkey_factor",
+    "get_passkey_by_credential_id",
+    "insert_post",
 ]
 
 # Load .env file
@@ -1297,47 +1328,6 @@ def store_linkedin_li_at(user_id: int, li_at: str, jsessionid: Optional[str] = N
 
 
 
-def insert_post(email: str, content: str, scheduled_time: datetime, post_type: PostType,
-                video_url: Optional[str] = None, carousel_slides: Optional[list[str]] = None,
-                video_quality: str = "standard", status: PostStatus = PostStatus.PENDING,
-                use_avatar: Optional[bool] = None, image_url: Optional[str] = None) -> bool:
-    """Insert a fully-formed post for the account behind `email`.
-
-    `use_avatar` is deliberately three-valued: NULL means the composer expressed no preference for this
-    post, so the per-user opt-ins decide (issue #744); 0/1 is an explicit compose-time choice. An unknown
-    email is logged and returns False rather than raising.
-    """
-    user_id = get_user_id(email)
-
-    success = False
-
-    if not user_id:
-        # WARNING, not INFO: the post is silently dropped. Once is a bad argument; repeatedly is
-        # something systematically composing posts against an account that does not exist.
-        log_warning("Cannot insert post — no user for that email")
-        return success
-
-    try:
-        with db_cursor(commit=True) as cursor:
-            scheduled_time = to_naive_utc(scheduled_time)
-
-            slides_json = json.dumps(carousel_slides) if carousel_slides else None
-
-            # use_avatar is deliberately three-valued: NULL = the user expressed no preference for this
-            # post, so the per-user opt-ins decide (issue #744). 0/1 is an explicit compose-time choice.
-            cursor.execute("""
-                INSERT INTO posts (content, scheduled_time, post_type, user_id, video_url, carousel_slides, video_quality, status, use_avatar, image_url)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            """, (content, scheduled_time, post_type.value, user_id, video_url, slides_json,
-                  video_quality or "standard", status.value,
-                  None if use_avatar is None else int(bool(use_avatar)), image_url))
-
-            success = cursor.rowcount == 1
-    except mysql.connector.Error as e:
-        success = False
-        log_error("Could not insert post", exc=e)
-
-    return success
 
 
 
@@ -1981,60 +1971,10 @@ def list_user_sessions(user_id: int, current_token: Optional[str] = None) -> lis
 
 
 
-def _credential_id_hash(credential_id: Optional[str]) -> Optional[str]:
-    """SHA-256 of a base64url credential id — what carries the UNIQUE index and every lookup.
-
-    A credential id is public (the browser hands it to any site that asks), so this is a length
-    normaliser, not a secret-protection measure: raw ids run past what MySQL will index.
-    """
-    if not credential_id:
-        return None
-    return hashlib.sha256(credential_id.encode("utf-8")).hexdigest()
 
 
-def add_passkey_factor(user_id: int, credential_id: str, public_key: str, sign_count: int = 0,
-                       label: Optional[str] = None, transports: Optional[str] = None) -> Optional[int]:
-    """Store a verified passkey. Confirmed on insert — a registration response only reaches here
-    after `verify_registration_response` accepted it, so there is no unproven state to hold.
-    """
-    try:
-        with db_cursor(commit=True) as cursor:
-            now = datetime.now(timezone.utc)
-            cursor.execute(
-                """INSERT INTO user_auth_factors
-                   (user_id, kind, label, credential_id, credential_id_hash, public_key, sign_count,
-                    transports, confirmed_at)
-                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
-                (user_id, AUTH_FACTOR_PASSKEY, (label or "Passkey")[:120], credential_id,
-                 _credential_id_hash(credential_id), public_key, int(sign_count),
-                 (transports or None), now),
-            )
-            return cursor.lastrowid
-    except mysql.connector.Error as err:
-        if err.errno == errorcode.ER_DUP_ENTRY:
-            log_warning("Passkey already registered", user_id=user_id)
-            return None
-        log_error("Could not store passkey", exc=err, user_id=user_id)
-        return None
 
 
-def get_passkey_by_credential_id(credential_id: str) -> Optional[dict]:
-    """The stored passkey for a credential id, with the user it belongs to. This is how a
-    discoverable-credential login resolves WHO is signing in — the assertion names the credential,
-    not the account.
-    """
-    try:
-        with db_cursor(dictionary=True) as cursor:
-            cursor.execute(
-                """SELECT id, user_id, credential_id, public_key, sign_count, label
-                   FROM user_auth_factors
-                   WHERE credential_id_hash = %s AND kind = %s AND confirmed_at IS NOT NULL""",
-                (_credential_id_hash(credential_id), AUTH_FACTOR_PASSKEY),
-            )
-            return cursor.fetchone()
-    except mysql.connector.Error as err:
-        log_error("Could not look up passkey", exc=err)
-        return None
 
 
 
@@ -2703,31 +2643,10 @@ def suggest_engagement_targets(user_id: int, limit: int = 20) -> list:
 
 # What "a seeded bank" means — the onboarding nudge and the SPA both aim the user at this many.
 STORY_BANK_TARGET_ENTRIES = 5
-_STORY_BANK_COLS = ("id", "kind", "title", "body", "happened_at", "used_count", "last_used_at",
-                    "active")
 
 
-def _clean_story_row(row: dict) -> dict:
-    row["active"] = bool(row.get("active"))
-    row["used_count"] = int(row.get("used_count") or 0)
-    return row
 
 
-def get_story_bank_entries(user_id: int, active_only: bool = False) -> list:
-    """The user's story bank, least-recently-used first — the rotation order the selector consumes
-    directly (never-used entries sort ahead of used ones, oldest use next).
-    """
-    try:
-        with db_cursor(dictionary=True) as cursor:
-            sql = f"SELECT {', '.join(_STORY_BANK_COLS)} FROM story_bank WHERE user_id=%s"
-            if active_only:
-                sql += " AND active=1"
-            sql += " ORDER BY used_count ASC, last_used_at IS NOT NULL, last_used_at ASC, id ASC"
-            cursor.execute(sql, (user_id,))
-            return [_clean_story_row(r) for r in (cursor.fetchall() or [])]
-    except mysql.connector.Error as err:
-        log_error("Could not list story bank entries", exc=err, user_id=user_id)
-        return []
 
 
 
@@ -3078,43 +2997,8 @@ def get_lead_activity(user_id: int, days: int = 90) -> list:
         connection.close()
 
 
-def _profile_url_variants(profile_url: str) -> list:
-    """Every spelling of one profile URL worth looking up. Activity rows carry tracking
-    querystrings and inconsistent trailing slashes (`/in/jane?trk=feed` vs `/in/jane/`) while
-    `profiles` stores whichever form the scraper saw, so an exact match would miss most people —
-    same reason get_linked_in_profile_by_url() queries both slash variants.
-    """
-    raw = str(profile_url or "").strip()
-    if not raw:
-        return []
-    base = raw.split("#", 1)[0].split("?", 1)[0].rstrip("/")
-    if not base:
-        return [raw]
-    return list(dict.fromkeys([raw, base, base + "/"]))
 
 
-def get_profile_facts(profile_urls: list) -> dict:
-    """ICP facts (title / company / industry) for the profiles we HAVE scraped, keyed by the
-    profile URL as stored in `profiles` (callers match on the /in/ slug, not the raw string).
-    People we never scraped simply aren't in the result — the scorer treats them as neutral.
-    """
-    urls = list(dict.fromkeys(v for u in (profile_urls or []) if u
-                              for v in _profile_url_variants(u)))
-    if not urls:
-        return {}
-    try:
-        with db_cursor(dictionary=True) as cursor:
-            placeholders = ", ".join(["%s"] * len(urls))
-            cursor.execute(
-                "SELECT profile_url, "
-                "JSON_UNQUOTE(JSON_EXTRACT(data, '$.job_title')) AS job_title, "
-                "JSON_UNQUOTE(JSON_EXTRACT(data, '$.company_name')) AS company_name, "
-                "JSON_UNQUOTE(JSON_EXTRACT(data, '$.industry')) AS industry "
-                f"FROM profiles WHERE profile_url IN ({placeholders})", tuple(urls))
-            return {r["profile_url"]: r for r in cursor.fetchall() if r.get("profile_url")}
-    except mysql.connector.Error as err:
-        log_error("Could not read profile facts", exc=err)
-        return {}
 
 
 
@@ -3509,8 +3393,6 @@ def get_user_cost(user_id: int, start_date, end_date) -> dict:
 
 
 
-def _prefixed_feedback_columns(alias: str = "f") -> str:
-    return ", ".join(f"{alias}.{c.strip()}" for c in _FEEDBACK_COLUMNS.split(","))
 
 
 def _admin_reporter_join(alias: str = "f") -> tuple:
@@ -3794,22 +3676,6 @@ def count_admin_users() -> Optional[int]:
         return None
 
 
-def set_user_admin(user_id: int, is_admin: bool) -> bool:
-    """Flip `users.is_admin` for one account.
-
-    The GUARDS are the route's job, not this function's — it is the write, and a write that also
-    decided policy would be two things to keep in step.
-
-    False when no row changed, so "user 999 does not exist" cannot read as a successful grant.
-    """
-    try:
-        with db_cursor(commit=True) as cursor:
-            cursor.execute("UPDATE users SET is_admin = %s WHERE id = %s",
-                           (1 if is_admin else 0, int(user_id)))
-            return cursor.rowcount > 0
-    except mysql.connector.Error as err:
-        log_error(f"Could not set admin flag for user_id {user_id}", exc=err)
-        return False
 
 
 def get_feedback_list(status: Optional[Union["FeedbackStatus", str]] = None,
@@ -4081,123 +3947,14 @@ def extend_trial_for_user(user_id: int, feedback_id: Optional[int] = None) -> di
 # transaction with its ledger row: a grant that lands without its ledger entry is free service nobody
 # can account for, and a ledger row without the extension is a promise we broke.
 
-def _affiliate_row(row: Optional[dict]) -> Optional[dict]:
-    """Normalize an enrollment row for callers: booleans as booleans, status as a plain string."""
-    if not row:
-        return None
-    return {
-        "user_id": int(row["user_id"]),
-        "status": str(row["status"]),
-        "referral_code": str(row.get("referral_code") or ""),
-        "enrolled_at": row.get("enrolled_at"),
-        "opted_out_at": row.get("opted_out_at"),
-        "notice_seen_at": row.get("notice_seen_at"),
-        "promo_content_opt_in": bool(row.get("promo_content_opt_in")),
-        "promo_consent_at": row.get("promo_consent_at"),
-        "promo_consent_version": row.get("promo_consent_version"),
-    }
 
 
-def get_affiliate_enrollment(user_id: int) -> Optional[dict]:
-    """The user's affiliate row, or None when they have never been enrolled.
-
-    The row here carries columns only — no `created` key. That flag exists solely on what
-    `ensure_affiliate_enrollment` returns, because only the call that wrote the row can know it.
-    """
-    try:
-        with db_cursor(dictionary=True) as cursor:
-            cursor.execute(
-                "SELECT user_id, status, referral_code, enrolled_at, opted_out_at, notice_seen_at, "
-                "promo_content_opt_in, promo_consent_at, promo_consent_version "
-                "FROM affiliate_enrollments WHERE user_id=%s",
-                (user_id,),
-            )
-            return _affiliate_row(cursor.fetchone())
-    except mysql.connector.Error as err:
-        log_error("Could not read affiliate enrollment", exc=err, user_id=user_id)
-        return None
 
 
-def ensure_affiliate_enrollment(user_id: int, status: str = 'enrolled',
-                                referral_code: Optional[str] = None) -> Optional[dict]:
-    """Create the user's affiliate row if it doesn't exist, then return it.
-
-    Idempotent by INSERT IGNORE rather than read-then-write: two requests racing on a first page
-    load must not produce two rows or a duplicate-key 500. An existing row is never re-statused
-    here — an opted-out user staying opted out is the entire point of the opt-out.
-
-    The returned row carries `created` — whether THIS call is the one that enrolled them. Every
-    Account page load calls this, so it is the only way the caller can emit an enrollment event once
-    instead of on every render. It is a synthetic key, not a column: `get_affiliate_enrollment`
-    never sets it, and nothing that serializes the row to a client reads it (`affiliate_state`
-    builds its payload field by field).
-
-    On a DB error this returns None, so a caller can never read `created=False` from a write that
-    did not happen — the row will not exist either, and the next call re-inserts it.
-    """
-    code = str(referral_code or user_id)
-    connection = _connection.get_db_connection()
-    cursor = connection.cursor()
-    created = False
-    try:
-        cursor.execute(
-            "INSERT IGNORE INTO affiliate_enrollments (user_id, status, referral_code, enrolled_at) "
-            "VALUES (%s,%s,%s,%s)",
-            (user_id, str(status), code,
-             datetime.now(timezone.utc) if str(status) == str(AffiliateStatus.ENROLLED) else None),
-        )
-        created = cursor.rowcount == 1
-        connection.commit()
-    except mysql.connector.Error as err:
-        log_error("Could not create affiliate enrollment", exc=err, user_id=user_id)
-        return None
-    finally:
-        cursor.close()
-        connection.close()
-    row = get_affiliate_enrollment(user_id)
-    if row is not None:
-        row["created"] = created
-    return row
 
 
-def set_affiliate_status(user_id: int, enrolled: bool) -> Optional[dict]:
-    """Opt the user in or out of (A) affiliate status. Immediate — the caller reflects the resulting
-    trial length back to the user, and the reward side (grant/revoke of the enrollment bonus) is the
-    caller's separate, ledgered step so a status flip can never silently move money.
-    """
-    status = AffiliateStatus.ENROLLED if enrolled else AffiliateStatus.OPTED_OUT
-    now = datetime.now(timezone.utc)
-    try:
-        with db_cursor(commit=True) as cursor:
-            cursor.execute(
-                "UPDATE affiliate_enrollments SET status=%s, "
-                "enrolled_at=IF(%s, COALESCE(enrolled_at,%s), enrolled_at), "
-                "opted_out_at=IF(%s, opted_out_at, %s) WHERE user_id=%s",
-                (str(status), enrolled, now, enrolled, now, user_id),
-            )
-    except mysql.connector.Error as err:
-        log_error("Could not update affiliate status", exc=err, user_id=user_id)
-        return None
-    return get_affiliate_enrollment(user_id)
 
 
-def set_affiliate_promo_opt_in(user_id: int, enabled: bool, consent_version: str) -> Optional[dict]:
-    """(B) — whether LEM may publish promotional content about LEM from the user's own LinkedIn
-    account. Enabling stamps the consent timestamp AND the version of the copy consented to;
-    disabling clears both, so a re-enable can never inherit an old consent record.
-    """
-    now = datetime.now(timezone.utc) if enabled else None
-    try:
-        with db_cursor(commit=True) as cursor:
-            cursor.execute(
-                "UPDATE affiliate_enrollments SET promo_content_opt_in=%s, promo_consent_at=%s, "
-                "promo_consent_version=%s WHERE user_id=%s",
-                (1 if enabled else 0, now, str(consent_version) if enabled else None, user_id),
-            )
-    except mysql.connector.Error as err:
-        log_error("Could not update affiliate promo consent", exc=err, user_id=user_id)
-        return None
-    return get_affiliate_enrollment(user_id)
 
 
 

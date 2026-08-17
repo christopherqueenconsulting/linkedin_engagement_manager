@@ -26,6 +26,7 @@ from cqc_lem.platform.db.enums import (
     PostStatus,
     PostType,
 )
+from cqc_lem.platform.db.repositories.users import get_user_id
 from cqc_lem.platform.db.shared import (
     DEFAULT_CONTENT_BUFFER_DAYS,
     DEFAULT_CONTENT_BUFFER_MAX_POSTS,
@@ -1947,3 +1948,46 @@ def has_post_with_status(user_id: int, statuses: tuple) -> bool:
     except mysql.connector.Error as err:
         log_error(f"Could not check posts for user_id {user_id}", exc=err)
         return False
+
+
+def insert_post(email: str, content: str, scheduled_time: datetime, post_type: PostType,
+                video_url: Optional[str] = None, carousel_slides: Optional[list[str]] = None,
+                video_quality: str = "standard", status: PostStatus = PostStatus.PENDING,
+                use_avatar: Optional[bool] = None, image_url: Optional[str] = None) -> bool:
+    """Insert a fully-formed post for the account behind `email`.
+
+    `use_avatar` is deliberately three-valued: NULL means the composer expressed no preference for this
+    post, so the per-user opt-ins decide (issue #744); 0/1 is an explicit compose-time choice. An unknown
+    email is logged and returns False rather than raising.
+    """
+    user_id = get_user_id(email)
+
+    success = False
+
+    if not user_id:
+        # WARNING, not INFO: the post is silently dropped. Once is a bad argument; repeatedly is
+        # something systematically composing posts against an account that does not exist.
+        log_warning("Cannot insert post — no user for that email")
+        return success
+
+    try:
+        with db_cursor(commit=True) as cursor:
+            scheduled_time = to_naive_utc(scheduled_time)
+
+            slides_json = json.dumps(carousel_slides) if carousel_slides else None
+
+            # use_avatar is deliberately three-valued: NULL = the user expressed no preference for this
+            # post, so the per-user opt-ins decide (issue #744). 0/1 is an explicit compose-time choice.
+            cursor.execute("""
+                INSERT INTO posts (content, scheduled_time, post_type, user_id, video_url, carousel_slides, video_quality, status, use_avatar, image_url)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """, (content, scheduled_time, post_type.value, user_id, video_url, slides_json,
+                  video_quality or "standard", status.value,
+                  None if use_avatar is None else int(bool(use_avatar)), image_url))
+
+            success = cursor.rowcount == 1
+    except mysql.connector.Error as e:
+        success = False
+        log_error("Could not insert post", exc=e)
+
+    return success
