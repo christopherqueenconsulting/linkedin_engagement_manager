@@ -292,11 +292,11 @@ flowchart TD
   O --> P["build-and-push.yml"]
   P --> R["build-and-push job:\ndocker build, push\nghcr.io/.../cqc-lem:tag + :latest\n— ALWAYS runs, unattended, unchanged"]
 
-  R --> RC{"NEW: release-risk-check job\n(reads the SAME risk:* label vocabulary\nas agent-issue-shipping, plus a path filter)\n\nDiff source: THIS run's own tag,\nnever list position 0/1 —\nneeds.build-and-push.outputs.tag\n(== github.ref_name off the release\nevent that triggered this workflow).\nFetch gh release list\n--json tagName,createdAt --limit 20,\nlocate the entry matching that tag,\ntake the NEXT-OLDER entry from THAT\nposition as 'previous release'\n(never .last_good_tag — VPS-local,\nunreachable from the Actions runner)\n\nDoes the commit range between that\nprevious tag and this run's own tag\ncontain EITHER:\n(a) a new file under\ncompose/local/database/migrations/, OR\n(b) a merged PR that closed an issue\nlabelled risk:security /\nrisk:live-linkedin / risk:product-decision?"}
+  R --> RC{"NEW: release-risk-check job\n\nDiff source: THIS run's own tag,\nnever list position 0/1 —\nthe release tag this workflow ran on.\nFetch gh release list\n--json tagName,createdAt --limit 20,\nlocate the entry matching that tag,\ntake the NEXT-OLDER entry from THAT\nposition as 'previous release'\n(never .last_good_tag — VPS-local,\nunreachable from the Actions runner)\n\nDoes the commit range between that\nprevious tag and this run's own tag\nadd a new file under\ncompose/local/database/migrations/ ?\n\n(AS SHIPPED, #1590: migrations only.\nThe risk:* label half of this design\nwas dropped — see 'What shipped' below)"}
 
   RC -- "no — the common case" --> S["deploy job, environment: production\nfires immediately, unattended\n(EXACTLY today's behavior)"]
 
-  RC -- "yes" --> HOLD["Skip the automatic deploy job.\nPost a Decision Comment on the\nrelease PR: which migration file(s) /\nwhich risk:* PR(s), what's about to\ncut over, recommended action"]
+  RC -- "yes" --> HOLD["Skip the automatic deploy job.\nPost a Decision Comment on the\nrelease PR: which migration file(s),\nwhat's about to cut over,\nrecommended action"]
   HOLD --> NOTE["Decision Comment is AUDIT / NOTIFICATION\nONLY. No automation watches or parses\nreplies on this PR — release-please PRs\ncarry no agent:ready/needs-human labels\nand tick.sh never looks at them."]
   NOTE --> MANUAL["Owner (@gitchrisqueen) manually runs\n(CLI or Actions 'Run workflow' UI):\ngh workflow run deploy-vps.yml\n-f tag=vX.Y.Z\n— the SAME existing manual entrypoint,\nno new workflow, no new label,\nno new verification code, no bot\nre-triggering anything"]
   MANUAL --> T
@@ -312,11 +312,24 @@ flowchart TD
   R --> AG["PostHog release annotation — UNCHANGED,\nstill fires at build time regardless\nof hold state"]
 ```
 
-**What changed:** one new `release-risk-check` job between `build-and-push` and `deploy`, reusing the
-exact `risk:*` label vocabulary and a migration-path filter. On a flag, the automatic `deploy` job is
-skipped and a Decision Comment is posted; unblocking is a genuinely manual `gh workflow run
-deploy-vps.yml -f tag=vX.Y.Z` by the owner — stated plainly rather than dressed up as automated reply
-parsing, since nothing in this repo watches comments on a release-please PR.
+**What changed:** one new `release-risk-check` job between `build-and-push` and `deploy`, keyed on a
+migration-path filter. On a flag, the automatic `deploy` job is skipped and a Decision Comment is
+posted; unblocking is a genuinely manual `gh workflow run deploy-vps.yml -f tag=vX.Y.Z` by the
+owner — stated plainly rather than dressed up as automated reply parsing, since nothing in this repo
+watches comments on a release-please PR.
+
+**What shipped (#1133 / PR #1590) — narrower than the design above.** The reviewed design flagged on
+EITHER a migration OR a merged PR that closed a `risk:security` / `risk:live-linkedin` /
+`risk:product-decision` issue. Replaying the built script against the last 14 real releases flagged
+**10 of 14 (71%)**: `risk:product-decision` alone accounted for 15 of the 20 label hits, and
+migrations for 5 of the 14. That would have made manual dispatch the normal way LEM reaches
+production on a cadence whose whole point is that it does not need the owner — parked on a comment
+nothing watches. It was also a second ask: `scripts/agent-pipeline/stage-pr.sh` already holds every
+`risk:*` PR for a human to merge, so the deploy gate re-asked a question already answered on that
+exact change. So the shipped job gates **migrations only**. A migration is the one thing in a release
+range that no human re-reads at merge time AND that rolling the image back to `.last_good_tag` cannot
+undo. Owner decision on PR #1590; the `risk:*` half is not deferred work, it is deliberately not
+built.
 
 **What did not change:** the 4×/day batching cadence, `release:now`, `TRUSTED_LABELLERS`, and
 everything downstream of "deploy job fires" (`scripts/deploy.sh`, `/health`, blue/green flip,

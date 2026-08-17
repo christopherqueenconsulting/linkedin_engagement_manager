@@ -1,8 +1,13 @@
-"""`release-risk-check` job logic (#1133): flag a migration-bearing or risk:*-labelled release.
+"""`release-risk-check` job logic (#1133): flag a migration-bearing release.
 
 Two layers, tested separately per the pattern in `test_pipeline_selfmod_gate.py`: pure decision
 functions (no I/O) get direct unit tests; the thin `gh`-CLI I/O layer is exercised with
 `_run_gh` monkeypatched so nothing here ever shells out for real.
+
+Scope note: the `risk:*`-label half of the original design was dropped by owner decision on PR
+#1590 (it would have flagged 10 of the last 14 real releases, and `stage-pr.sh` already holds those
+PRs for a human to merge). An added migration is the only signal, so the tests that follow are the
+only vocabulary this gate has.
 """
 
 from __future__ import annotations
@@ -12,8 +17,6 @@ import subprocess
 import sys
 from pathlib import Path
 from unittest.mock import patch
-
-import pytest
 
 _ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(_ROOT / "scripts"))
@@ -161,6 +164,18 @@ def test_a_migration_hidden_past_the_300_file_cap_is_still_found(monkeypatch):
     ]
 
 
+def test_a_truncated_commit_list_is_warned_about_but_still_walked(monkeypatch, capsys):
+    """The commits array has its own 250 limit — say so rather than implying full coverage."""
+    monkeypatch.setattr(rrc, "_run_gh", lambda args, **kw: _completed(0, json.dumps({"files": []})))
+    compare = {
+        "files": _padding_files(rrc.COMPARE_FILES_CAP),
+        "commits": [{"sha": "a1"}],
+        "total_commits": 300,
+    }
+    assert rrc.collect_migration_files(REPO, compare) == []
+    assert "commit list truncated" in capsys.readouterr().out
+
+
 def test_a_truncated_compare_keeps_what_the_visible_files_already_proved(monkeypatch):
     """An unreadable per-commit read never erases a migration the compare payload already named."""
     monkeypatch.setattr(rrc, "_run_gh", lambda args, **kw: _completed(1, "", "boom"))
@@ -183,100 +198,54 @@ def test_fetch_commit_files_is_none_when_the_shape_is_wrong(monkeypatch):
     assert rrc.fetch_commit_files(REPO, "a") is None
 
 
-# ---------------------------------------------------------------- extract_pr_numbers
-
-
-def test_reads_the_squash_merge_pr_number_off_the_subject_line():
-    messages = ["fix(dms): restore the catch-up event types (closes #1576) (#1580)"]
-    assert rrc.extract_pr_numbers(messages) == [1580]
-
-
-def test_only_reads_the_subject_never_the_squash_body():
-    """A commit's squash body must never be misread as the commit's own PR marker.
-
-    The body concatenates every commit message from the PR and can legitimately mention other
-    PR/issue numbers.
-    """
-    message = (
-        "fix(dms): restore the catch-up event types (closes #1576) (#1580)\n\n"
-        "* fix(dms): restore the catch-up event types (closes #1576)\n\n"
-        "Follow-up to (#1234) and issue #9999.\n"
-    )
-    assert rrc.extract_pr_numbers([message]) == [1580]
-
-
-def test_a_commit_without_a_trailing_pr_marker_contributes_nothing():
-    assert rrc.extract_pr_numbers(["docs: fix a typo"]) == []
-
-
-def test_numbers_are_deduplicated_and_sorted():
-    messages = ["a (#20)", "b (#5)", "c (#5)"]
-    assert rrc.extract_pr_numbers(messages) == [5, 20]
-
-
-# ---------------------------------------------------------------- risk_labels_for_issues / decide
-
-
-def test_finds_a_risk_label_among_an_issues_labels():
-    issue_labels = {1133: ["priority:medium", "risk:product-decision", "needs-human"]}
-    assert rrc.risk_labels_for_issues(issue_labels) == ["risk:product-decision"]
-
-
-def test_non_risk_labels_are_invisible_to_this_check():
-    issue_labels = {1: ["bug", "priority:high"]}
-    assert rrc.risk_labels_for_issues(issue_labels) == []
-
-
-def test_labels_across_several_closed_issues_are_unioned_and_deduped():
-    issue_labels = {1: ["risk:security"], 2: ["risk:security", "risk:live-linkedin"]}
-    assert rrc.risk_labels_for_issues(issue_labels) == ["risk:live-linkedin", "risk:security"]
+# ---------------------------------------------------------------- decide
 
 
 def test_a_migration_alone_is_enough_to_flag():
-    verdict = rrc.decide(migration_files=["compose/local/database/migrations/V1__x.sql"], risky_prs=[])
-    assert verdict.flagged
-
-
-def test_a_risky_pr_alone_is_enough_to_flag():
-    pr = rrc.RiskyPR(number=1, issue_numbers=(2,), labels=("risk:security",))
-    verdict = rrc.decide(migration_files=[], risky_prs=[pr])
+    verdict = rrc.decide(migration_files=["compose/local/database/migrations/V1__x.sql"])
     assert verdict.flagged
 
 
 def test_the_common_case_is_unflagged():
-    verdict = rrc.decide(migration_files=[], risky_prs=[])
+    verdict = rrc.decide(migration_files=[])
     assert not verdict.flagged
+
+
+def test_summarize_counts_the_migration_files():
+    verdict = rrc.decide(migration_files=["a.sql", "b.sql"])
+    assert rrc.summarize(verdict) == "2 new migration file(s)"
+
+
+def test_summarize_says_nothing_found_when_clean():
+    assert rrc.summarize(rrc.decide(migration_files=[])) == "nothing found"
 
 
 # ---------------------------------------------------------------- format_decision_comment
 
 
 def test_comment_names_the_specific_migration_files():
-    verdict = rrc.decide(
-        migration_files=["compose/local/database/migrations/V1__x.sql"], risky_prs=[]
-    )
+    verdict = rrc.decide(migration_files=["compose/local/database/migrations/V1__x.sql"])
     body = rrc.format_decision_comment("v1.0.2", "v1.0.1", verdict)
     assert "compose/local/database/migrations/V1__x.sql" in body
 
 
-def test_comment_names_the_specific_risky_prs_and_their_labels():
-    pr = rrc.RiskyPR(number=1580, issue_numbers=(1576,), labels=("risk:security",))
-    verdict = rrc.decide(migration_files=[], risky_prs=[pr])
+def test_comment_says_why_a_migration_is_the_thing_gated():
+    """The reason is the whole justification for the narrowed scope — it must be in the comment."""
+    verdict = rrc.decide(migration_files=["x"])
     body = rrc.format_decision_comment("v1.0.2", "v1.0.1", verdict)
-    assert "#1580" in body
-    assert "#1576" in body
-    assert "risk:security" in body
+    assert "one-way" in body
+    assert "rolling the image back" in body
 
 
 def test_comment_states_plainly_there_is_no_automated_unblock():
-    verdict = rrc.decide(migration_files=["x"], risky_prs=[])
+    verdict = rrc.decide(migration_files=["x"])
     body = rrc.format_decision_comment("v1.0.2", "v1.0.1", verdict)
     assert "audit / notification only" in body
     assert "Nothing in this repo watches replies" in body
 
 
 def test_comment_gives_the_exact_manual_unblock_command():
-    verdict = rrc.decide(migration_files=["x"], risky_prs=[])
+    verdict = rrc.decide(migration_files=["x"])
     body = rrc.format_decision_comment("v1.0.2", "v1.0.1", verdict)
     assert "gh workflow run deploy-vps.yml -f tag=v1.0.2" in body
 
@@ -313,63 +282,6 @@ def test_fetch_release_pr_number_prefers_the_release_please_head_ref(monkeypatch
 def test_fetch_release_pr_number_is_none_when_no_pr_is_associated(monkeypatch):
     monkeypatch.setattr(rrc, "_run_gh", lambda args, **kw: _completed(0, "[]"))
     assert rrc.fetch_release_pr_number(REPO, "v1.0.2") is None
-
-
-def test_fetch_pr_closing_issues_reads_the_graphql_linkage(monkeypatch):
-    payload = json.dumps({"closingIssuesReferences": [{"number": 1576}, {"number": 1577}]})
-    monkeypatch.setattr(rrc, "_run_gh", lambda args, **kw: _completed(0, payload))
-    assert rrc.fetch_pr_closing_issues(REPO, 1580) == [1576, 1577]
-
-
-def test_fetch_issue_labels_reads_label_names(monkeypatch):
-    payload = json.dumps({"labels": [{"name": "risk:security"}, {"name": "bug"}]})
-    monkeypatch.setattr(rrc, "_run_gh", lambda args, **kw: _completed(0, payload))
-    assert rrc.fetch_issue_labels(REPO, 1576) == ["risk:security", "bug"]
-
-
-def test_gather_risky_prs_flags_a_pr_whose_closed_issue_carries_a_risk_label(monkeypatch):
-    def fake_gh(args, **kw):
-        joined = " ".join(args)
-        if "closingIssuesReferences" in joined:
-            return _completed(0, json.dumps({"closingIssuesReferences": [{"number": 1133}]}))
-        if "labels" in joined:
-            return _completed(0, json.dumps({"labels": [{"name": "risk:product-decision"}]}))
-        raise AssertionError(f"unexpected gh call: {args}")
-
-    monkeypatch.setattr(rrc, "_run_gh", fake_gh)
-    got = rrc.gather_risky_prs(REPO, [1507])
-    assert got == [rrc.RiskyPR(number=1507, issue_numbers=(1133,), labels=("risk:product-decision",))]
-
-
-def test_gather_risky_prs_ignores_a_pr_whose_closed_issue_has_no_risk_label(monkeypatch):
-    def fake_gh(args, **kw):
-        joined = " ".join(args)
-        if "closingIssuesReferences" in joined:
-            return _completed(0, json.dumps({"closingIssuesReferences": [{"number": 1}]}))
-        if "labels" in joined:
-            return _completed(0, json.dumps({"labels": [{"name": "bug"}]}))
-        raise AssertionError(f"unexpected gh call: {args}")
-
-    monkeypatch.setattr(rrc, "_run_gh", fake_gh)
-    assert rrc.gather_risky_prs(REPO, [1]) == []
-
-
-def test_gather_risky_prs_caches_repeated_issue_lookups(monkeypatch):
-    """Two PRs closing the SAME issue must not double the issue-view calls."""
-    issue_view_calls = []
-
-    def fake_gh(args, **kw):
-        joined = " ".join(args)
-        if "closingIssuesReferences" in joined:
-            return _completed(0, json.dumps({"closingIssuesReferences": [{"number": 9}]}))
-        if "labels" in joined:
-            issue_view_calls.append(args)
-            return _completed(0, json.dumps({"labels": [{"name": "risk:security"}]}))
-        raise AssertionError(f"unexpected gh call: {args}")
-
-    monkeypatch.setattr(rrc, "_run_gh", fake_gh)
-    rrc.gather_risky_prs(REPO, [10, 11])
-    assert len(issue_view_calls) == 1
 
 
 def test_post_decision_comment_pipes_the_body_over_stdin(monkeypatch):
@@ -457,6 +369,38 @@ def test_main_passes_an_unflagged_release_with_no_comment_posted(monkeypatch, tm
     assert posted == []
 
 
+def test_a_risk_labelled_pr_alone_no_longer_flags_a_release(monkeypatch, tmp_path):
+    """The narrowed scope, made concrete (owner decision on PR #1590).
+
+    A release whose only notable content is a PR closing a `risk:*` issue deploys automatically —
+    `stage-pr.sh` already held that PR for a human to merge, so re-asking here parked ~71% of real
+    releases on a comment nothing watches. No issue/PR label lookup is even attempted: the router
+    below has no stub for one, so an attempt would fail the test.
+    """
+    monkeypatch.setenv("GH_TOKEN", "x")
+    out = tmp_path / "gh_output"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(out))
+    releases = json.dumps(
+        [
+            {"tagName": "v1.0.2", "createdAt": "2026-08-16T00:00:00Z"},
+            {"tagName": "v1.0.1", "createdAt": "2026-08-15T00:00:00Z"},
+        ]
+    )
+    compare = json.dumps(
+        {
+            "files": [{"filename": "src/cqc_lem/app/engagement/feed.py", "status": "modified"}],
+            "commits": [{"sha": "a1", "commit": {"message": "feat: a thing (#1554)"}}],
+            "total_commits": 1,
+        }
+    )
+    router = _fake_gh_router({"release list": releases, "compare": compare})
+    monkeypatch.setattr(rrc, "_run_gh", router)
+
+    rc = rrc.main(["release_risk_check.py", "--tag", "v1.0.2"])
+    assert rc == 0
+    assert "flagged=false" in out.read_text()
+
+
 def test_main_flags_a_migration_and_posts_the_decision_comment(monkeypatch, tmp_path):
     monkeypatch.setenv("GH_TOKEN", "x")
     out = tmp_path / "gh_output"
@@ -499,6 +443,36 @@ def test_main_flags_a_migration_and_posts_the_decision_comment(monkeypatch, tmp_
     assert "compose/local/database/migrations/V1__x.sql" in posted["body"]
 
 
+def test_main_stays_exit_zero_while_flagged(monkeypatch, tmp_path):
+    """The verdict lives in the OUTPUT, never the exit code.
+
+    A non-zero exit would turn the workflow run red for behavior working exactly as designed.
+    """
+    monkeypatch.setenv("GH_TOKEN", "x")
+    out = tmp_path / "gh_output"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(out))
+    releases = json.dumps(
+        [
+            {"tagName": "v1.0.2", "createdAt": "2026-08-16T00:00:00Z"},
+            {"tagName": "v1.0.1", "createdAt": "2026-08-15T00:00:00Z"},
+        ]
+    )
+    compare = json.dumps(
+        {
+            "files": [
+                {"filename": "compose/local/database/migrations/V1__x.sql", "status": "added"}
+            ],
+            "commits": [],
+        }
+    )
+    router = _fake_gh_router({"release list": releases, "compare": compare})
+    monkeypatch.setattr(rrc, "_run_gh", router)
+    monkeypatch.setattr(rrc, "fetch_release_pr_number", lambda repo, tag: None)
+
+    assert rrc.main(["release_risk_check.py", "--tag", "v1.0.2"]) == 0
+    assert "flagged=true" in out.read_text()
+
+
 def test_main_flags_but_skips_the_comment_when_no_comment_is_passed(monkeypatch, tmp_path):
     monkeypatch.setenv("GH_TOKEN", "x")
     out = tmp_path / "gh_output"
@@ -526,52 +500,6 @@ def test_main_flags_but_skips_the_comment_when_no_comment_is_passed(monkeypatch,
     assert rc == 0
     assert "flagged=true" in out.read_text()
     assert posted == []
-
-
-def test_main_flags_a_risk_labelled_pr_and_still_exits_zero(monkeypatch, tmp_path):
-    """The whole risk:* path end to end — commit subject to PR to issue label to `flagged=true`.
-
-    The exit code must stay 0 while flagged: the verdict lives in the OUTPUT, not the exit code, or
-    the workflow run itself would go red for correctly-working behavior.
-    """
-    monkeypatch.setenv("GH_TOKEN", "x")
-    out = tmp_path / "gh_output"
-    monkeypatch.setenv("GITHUB_OUTPUT", str(out))
-    releases = json.dumps(
-        [
-            {"tagName": "v1.0.2", "createdAt": "2026-08-16T00:00:00Z"},
-            {"tagName": "v1.0.1", "createdAt": "2026-08-15T00:00:00Z"},
-        ]
-    )
-    compare = json.dumps(
-        {
-            "files": [],
-            "commits": [{"sha": "a1", "commit": {"message": "feat: a thing (#1554)"}}],
-            "total_commits": 1,
-        }
-    )
-    router = _fake_gh_router(
-        {
-            "release list": releases,
-            "compare": compare,
-            "closingIssuesReferences": json.dumps(
-                {"closingIssuesReferences": [{"number": 1133}]}
-            ),
-            "labels": json.dumps({"labels": [{"name": "risk:product-decision"}]}),
-        }
-    )
-    monkeypatch.setattr(rrc, "_run_gh", router)
-    posted = {}
-    monkeypatch.setattr(
-        rrc, "post_decision_comment", lambda repo, pr, body: posted.update(body=body) or True
-    )
-    monkeypatch.setattr(rrc, "fetch_release_pr_number", lambda repo, tag: 1585)
-
-    rc = rrc.main(["release_risk_check.py", "--tag", "v1.0.2"])
-    assert rc == 0
-    assert "flagged=true" in out.read_text()
-    assert "#1554" in posted["body"]
-    assert "risk:product-decision" in posted["body"]
 
 
 def test_main_fails_open_when_no_previous_release_is_resolvable(monkeypatch, tmp_path):
@@ -610,16 +538,3 @@ def test_main_fails_open_when_the_compare_call_is_unreadable(monkeypatch, tmp_pa
     rc = rrc.main(["release_risk_check.py", "--tag", "v1.0.2"])
     assert rc == 0
     assert "flagged=false" in out.read_text()
-
-
-@pytest.mark.parametrize("label", rrc.RISK_LABELS)
-def test_every_documented_risk_label_is_actually_recognized(label):
-    """The vocabulary the issue names must be exactly what the code checks.
-
-    Not a superset that silently ignores one, or a subset that silently adds one.
-    """
-    assert rrc.risk_labels_for_issues({1: [label]}) == [label]
-
-
-def test_the_risk_label_vocabulary_is_exactly_three_and_matches_the_issue():
-    assert set(rrc.RISK_LABELS) == {"risk:security", "risk:live-linkedin", "risk:product-decision"}

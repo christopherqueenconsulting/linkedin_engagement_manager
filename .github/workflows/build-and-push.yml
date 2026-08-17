@@ -75,9 +75,13 @@ jobs:
   # #1133: the ONE human gate this graph has, placed at the expensive-mistake point rather than
   # per-PR review. `deploy`'s required-reviewer gate is gone (see its own comment below) so green
   # releases auto-deploy — right for the overwhelming majority, wrong for a release carrying a
-  # one-way Flyway migration or a risk:security/risk:live-linkedin/risk:product-decision PR. This
-  # job never fails the WORKFLOW (a flag is correct, expected behavior, not an error) — it only
-  # writes `flagged`, which `deploy`'s own `if:` reads. Logic lives in scripts/release_risk_check.py
+  # one-way Flyway migration (an image rollback does not roll back applied DDL). A migration is the
+  # ONLY signal here: the reviewed design also flagged risk:security/risk:live-linkedin/
+  # risk:product-decision releases, but replaying that against the last 14 real releases flagged 10
+  # of them, and those PRs are already held for a human to merge by
+  # scripts/agent-pipeline/stage-pr.sh — narrowed by owner decision on PR #1590. This job never
+  # fails the WORKFLOW (a flag is correct, expected behavior, not an error) — it only writes
+  # `flagged`, which `deploy`'s own `if:` reads. Logic lives in scripts/release_risk_check.py
   # (tested; stdlib + `gh` CLI only) so it can be unit-tested instead of debugged as inline YAML.
   # Full design + the 3 gauntlet-loop rounds that shaped it: docs/graphs/deploy-release.md.
   release-risk-check:
@@ -89,7 +93,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      issues: read
+      # `pull-requests: write` is only for the audit Decision Comment on the flagged release's own
+      # PR. No `issues: read` — nothing here reads a label any more.
       pull-requests: write
     outputs:
       flagged: ${{ steps.check.outputs.flagged }}
@@ -97,7 +102,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
-      - name: Flag a migration-bearing or risk:*-labelled release
+      - name: Flag a migration-bearing release
         id: check
         # The tag rides in through the environment, never interpolated into the shell line: a git
         # ref may legally contain `"`, `$`, `;` and backticks, so `--tag "${{ ... }}"` would be a
@@ -116,7 +121,7 @@ jobs:
     # releases auto-deploy; re-add reviewers in repo settings to restore it.
     #
     # `release-risk-check` above is the narrower gate that replaces it for the risky subset only
-    # (#1133): a migration or a risk:*-labelled PR in this release skips this job entirely and
+    # (#1133): a newly added Flyway migration in this release skips this job entirely and
     # parks the release on a Decision Comment for the owner's manual
     # `gh workflow run deploy-vps.yml -f tag=vX.Y.Z`. Everything else deploys exactly as before,
     # with no added latency — the check runs CONCURRENTLY with the image build, so it has long

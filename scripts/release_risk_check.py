@@ -1,46 +1,50 @@
 #!/usr/bin/env python3
-"""Flag a migration-bearing or `risk:*`-labelled release before it auto-deploys (#1133).
+"""Flag a migration-bearing release before it auto-deploys (#1133).
 
 `.github/workflows/build-and-push.yml`'s `deploy` job runs on `environment: production` with its
 required-reviewer gate deliberately removed — "green releases auto-deploy" per the workflow's own
 comment. That is the right default for the overwhelming majority of releases, but a Flyway migration
-is one-way against production data, and a release carrying a `risk:security` /
-`risk:live-linkedin` / `risk:product-decision` PR deserves a second look before it reaches every
-user's traffic. This script is the `release-risk-check` job's brain, called between `build-and-push`
-and `deploy` — see `docs/graphs/deploy-release.md` for the reviewed design (3 gauntlet-loop rounds).
+is one-way against production data: rolling the image back to `.last_good_tag` does not roll back
+applied DDL. This script is the `release-risk-check` job's brain, running alongside `build-and-push`
+and read by `deploy`'s `if:` — see `docs/graphs/deploy-release.md` for the reviewed design (3
+gauntlet-loop rounds).
 
-Diff source, deliberately: **this run's own tag** (`needs.build-and-push.outputs.tag`), never
-`.last_good_tag` (VPS-local, unreachable from the Actions runner). `gh release list` is sorted
-EXPLICITLY by `createdAt` here — never trusted as already sorted, because a second release (a
-`release:now` fast-lane release, or the next scheduled window) can publish mid-build and reorder the
-API's default response. The "previous release" is the next-older entry from THIS tag's own position
-in that sorted list, not list index 0/1.
+Scope, deliberately narrowed by owner decision on PR #1590: **a newly ADDED migration file is the
+only signal here.** The reviewed design also flagged a release carrying a `risk:security` /
+`risk:live-linkedin` / `risk:product-decision` PR; replaying that rule against the last 14 real
+releases flagged 10 of them (71%), which would have made manual dispatch the normal way LEM reaches
+production. Those PRs are already held for a human to merge by
+`scripts/agent-pipeline/stage-pr.sh`, so gating them again at deploy time re-asked a question the
+owner had already answered on that exact change. A migration is the one thing in a release range
+that no human re-reads at merge time AND that an image rollback cannot undo — so it is the one thing
+gated here.
 
-A release is flagged when the commit range between the previous release and this tag contains
-EITHER:
-  (a) a newly ADDED file under `compose/local/database/migrations/`, or
-  (b) a merged PR that closed an issue labelled `risk:security` / `risk:live-linkedin` /
-      `risk:product-decision`.
+Diff source, deliberately: **this run's own tag**, never `.last_good_tag` (VPS-local, unreachable
+from the Actions runner). `gh release list` is sorted EXPLICITLY by `createdAt` here — never trusted
+as already sorted, because a second release (a `release:now` fast-lane release, or the next
+scheduled window) can publish mid-build and reorder the API's default response. The "previous
+release" is the next-older entry from THIS tag's own position in that sorted list, not list index
+0/1.
 
 On a flag, the workflow skips the automatic `deploy` job (this script only writes the `flagged`
 GitHub Actions output the job's `if:` reads — it never exits non-zero for a flag, since that would
 turn the *workflow run* red for working exactly as designed) and this script posts a Decision Comment
-on the release PR naming what triggered it. That comment is AUDIT / NOTIFICATION ONLY: nothing in
+on the release PR naming the migration file(s). That comment is AUDIT / NOTIFICATION ONLY: nothing in
 this repo watches replies on a release-please PR (it carries no `agent:ready`/`needs-human` flow
 label, and `tick.sh` never reads it) — the comment says so plainly rather than implying an automated
 unblock exists. The unblock is the owner running the existing manual entrypoint:
 
     gh workflow run deploy-vps.yml -f tag=vX.Y.Z
 
-Every read here (release list, compare, the release PR lookup, PR/issue label lookups) fails OPEN —
-an unreadable GitHub API degrades to "nothing found here", never to blocking a routine deploy. That
+Every read here (release list, compare, per-commit files, the release PR lookup) fails OPEN — an
+unreadable GitHub API degrades to "nothing found here", never to blocking a routine deploy. That
 mirrors every other convenience gate in this repo (`docs/feature-flags.md`, `codeql_pr_gate.py`): a
 transient API hiccup must not become a new single point of failure for the 4x-daily release cadence
 the batching window exists to protect. The one thing that does NOT fail open is an already-decided
-flag: once evidence of a migration or a risk:* PR has been found, nothing here backs off from it.
+flag: once a migration has been found, nothing here backs off from it.
 
 CLI:
-  --tag TAG              This run's own release tag (required; == `needs.build-and-push.outputs.tag`).
+  --tag TAG              This run's own release tag (required).
   --repo OWNER/REPO      Defaults to $GITHUB_REPOSITORY, else the hardcoded default.
   --release-limit N      `gh release list --limit` (default 20, per the acceptance criteria).
   --no-comment           Skip posting the Decision Comment even when flagged (used by tests / a
@@ -51,7 +55,7 @@ Env:
   GITHUB_OUTPUT            Where `flagged`/`previous_tag` are written for the workflow's `if:`.
 
 Exit: always 0. The verdict is carried entirely in the `flagged` GitHub Actions output, never in the
-process exit code — a flag is expected, routine behavior for a `risk:*` release, not a script error.
+process exit code — a flag is expected, routine behavior for a migration release, not a script error.
 """
 
 from __future__ import annotations
@@ -59,16 +63,11 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import re
 import subprocess
 import sys
 from dataclasses import dataclass
 
 DEFAULT_REPO = "christopherqueenconsulting/linkedin_engagement_manager"
-
-#: The label vocabulary this check reads. Deliberately the same three names
-#: `docs/graphs/agent-issue-shipping.md`'s risk:* gate uses — one vocabulary, not two.
-RISK_LABELS = ("risk:security", "risk:live-linkedin", "risk:product-decision")
 
 MIGRATIONS_PREFIX = "compose/local/database/migrations/"
 
@@ -90,21 +89,11 @@ COMPARE_FILES_CAP = 300
 
 
 @dataclass(frozen=True)
-class RiskyPR:
-    """A merged PR in the commit range that closed a `risk:*`-labelled issue."""
-
-    number: int
-    issue_numbers: tuple[int, ...]
-    labels: tuple[str, ...]
-
-
-@dataclass(frozen=True)
 class Verdict:
     """The gate's answer: whether to skip the automatic deploy, and why."""
 
     flagged: bool
     migration_files: tuple[str, ...]
-    risky_prs: tuple[RiskyPR, ...]
 
 
 def resolve_previous_release(releases: list[dict], tag: str) -> str | None:
@@ -149,70 +138,24 @@ def added_migration_files(files: list[dict]) -> list[str]:
     )
 
 
-def extract_pr_numbers(commit_messages: list[str]) -> list[int]:
-    """Pull the squash-merge PR number off each commit's SUBJECT line.
-
-    Root `CLAUDE.md`: "the repo squashes with COMMIT_MESSAGES" — every commit in the range therefore
-    carries its PR number as a trailing `(#N)` on the first line. Only the subject is read; the
-    squash body concatenates every commit message from the PR and can legitimately mention other
-    issue/PR numbers that are not this commit's own.
-
-    Args:
-        commit_messages: Full (possibly multi-line) commit message text per commit.
-
-    Returns:
-        Sorted, de-duplicated PR numbers.
-    """
-    numbers = set()
-    for message in commit_messages:
-        subject = message.split("\n", 1)[0].strip()
-        m = re.search(r"\(#(\d+)\)\s*$", subject)
-        if m:
-            numbers.add(int(m.group(1)))
-    return sorted(numbers)
-
-
-def risk_labels_for_issues(issue_labels: dict[int, list[str]]) -> list[str]:
-    """Which `RISK_LABELS` appear across a PR's closed issues.
-
-    Args:
-        issue_labels: Map of issue number -> that issue's label names.
-
-    Returns:
-        Sorted risk labels found across every issue's label set.
-    """
-    found: set[str] = set()
-    for labels in issue_labels.values():
-        found.update(label for label in labels if label in RISK_LABELS)
-    return sorted(found)
-
-
-def decide(*, migration_files: list[str], risky_prs: list[RiskyPR]) -> Verdict:
+def decide(*, migration_files: list[str]) -> Verdict:
     """Should the automatic `deploy` job be skipped for this release?
 
     Args:
         migration_files: Newly added migration paths in the commit range.
-        risky_prs: Merged PRs in the range that closed a `risk:*`-labelled issue.
 
     Returns:
-        A `Verdict`. Either signal alone is enough — this is deliberately an OR, not a severity
-        score: a lone migration is exactly as one-way as a migration alongside a `risk:security` PR.
+        A `Verdict`. One added migration is enough — this is presence, not a severity score: a lone
+        migration is exactly as one-way as five of them.
     """
-    return Verdict(
-        flagged=bool(migration_files) or bool(risky_prs),
-        migration_files=tuple(migration_files),
-        risky_prs=tuple(risky_prs),
-    )
+    return Verdict(flagged=bool(migration_files), migration_files=tuple(migration_files))
 
 
 def summarize(verdict: Verdict) -> str:
     """One-line reason string for logs and the `::warning::` annotation."""
-    parts = []
-    if verdict.migration_files:
-        parts.append(f"{len(verdict.migration_files)} new migration file(s)")
-    if verdict.risky_prs:
-        parts.append(f"{len(verdict.risky_prs)} risk:*-labelled PR(s)")
-    return ", ".join(parts) if parts else "nothing found"
+    if not verdict.migration_files:
+        return "nothing found"
+    return f"{len(verdict.migration_files)} new migration file(s)"
 
 
 def format_decision_comment(tag: str, previous_tag: str, verdict: Verdict) -> str:
@@ -224,29 +167,21 @@ def format_decision_comment(tag: str, previous_tag: str, verdict: Verdict) -> st
         verdict: Must be flagged — this is only ever called after that check.
 
     Returns:
-        Markdown naming the specific migration file(s) / PR(s), stating plainly that this comment
-        is audit-only (nothing watches replies here), and giving the exact manual unblock command.
+        Markdown naming the specific migration file(s), stating plainly that this comment is
+        audit-only (nothing watches replies here), and giving the exact manual unblock command.
     """
     lines = [
         f"### :warning: `release-risk-check` flagged `{tag}`",
         "",
-        f"The automatic `deploy` job was **skipped**. Diffed against the previous release "
-        f"`{previous_tag}` (`gh release list`, sorted explicitly by `createdAt`, the next-older "
-        f"entry from this run's own tag — never `.last_good_tag`, which is VPS-local and "
-        f"unreachable from the Actions runner).",
+        f"The automatic `deploy` job was **skipped**: this release adds a Flyway migration, which is "
+        f"one-way against production data (rolling the image back does not roll back applied DDL). "
+        f"Diffed against the previous release `{previous_tag}` (`gh release list`, sorted explicitly "
+        f"by `createdAt`, the next-older entry from this run's own tag — never `.last_good_tag`, "
+        f"which is VPS-local and unreachable from the Actions runner).",
         "",
+        f"**Migration file(s) added ({len(verdict.migration_files)}):**",
     ]
-    if verdict.migration_files:
-        lines.append(f"**Migration file(s) added ({len(verdict.migration_files)}):**")
-        lines.extend(f"- `{path}`" for path in verdict.migration_files)
-        lines.append("")
-    if verdict.risky_prs:
-        lines.append(f"**PR(s) closing a `risk:*`-labelled issue ({len(verdict.risky_prs)}):**")
-        for pr in verdict.risky_prs:
-            closes = ", ".join(f"#{n}" for n in pr.issue_numbers)
-            labels = ", ".join(f"`{label}`" for label in pr.labels)
-            lines.append(f"- #{pr.number} (closes {closes}) — {labels}")
-        lines.append("")
+    lines.extend(f"- `{path}`" for path in verdict.migration_files)
     audit_only_note = (
         "**This comment is audit / notification only.** Nothing in this repo watches replies on "
         "a release-please PR — it carries no `agent:ready`/`needs-human` flow label, and "
@@ -254,6 +189,7 @@ def format_decision_comment(tag: str, previous_tag: str, verdict: Verdict) -> st
     )
     lines.extend(
         [
+            "",
             audit_only_note,
             "",
             "To ship this release, the owner runs the existing manual entrypoint:",
@@ -362,6 +298,13 @@ def collect_migration_files(repo: str, compare: dict) -> list[str]:
         f"{len(files)} files (its hard cap) — walking {len(commits)} commit(s) individually so a "
         "migration cannot hide past the cap."
     )
+    total_commits = compare.get("total_commits")
+    if isinstance(total_commits, int) and total_commits > len(commits):
+        print(
+            f"::warning title=release-risk-check commit list truncated::the compare API returned "
+            f"{len(commits)} of {total_commits} commits — files touched only by the commits beyond "
+            "that are not covered by this walk."
+        )
     for commit in commits:
         sha = commit.get("sha") if isinstance(commit, dict) else None
         if not sha:
@@ -391,48 +334,6 @@ def fetch_release_pr_number(repo: str, tag: str) -> int | None:
             return pr.get("number")
     first = data[0]
     return first.get("number") if isinstance(first, dict) else None
-
-
-def fetch_pr_closing_issues(repo: str, pr_number: int) -> list[int]:
-    """Issue numbers this PR's merge closed, per GitHub's own linkage (not comment-text parsing)."""
-    data = _gh_json(["gh", "pr", "view", str(pr_number), "--repo", repo, "--json", "closingIssuesReferences"])
-    if not isinstance(data, dict):
-        return []
-    refs = data.get("closingIssuesReferences") or []
-    return [r["number"] for r in refs if isinstance(r, dict) and "number" in r]
-
-
-def fetch_issue_labels(repo: str, issue_number: int) -> list[str]:
-    """Label names on one issue."""
-    data = _gh_json(["gh", "issue", "view", str(issue_number), "--repo", repo, "--json", "labels"])
-    if not isinstance(data, dict):
-        return []
-    labels = data.get("labels") or []
-    return [label["name"] for label in labels if isinstance(label, dict) and "name" in label]
-
-
-def gather_risky_prs(repo: str, pr_numbers: list[int]) -> list[RiskyPR]:
-    """For each PR number, resolve the issues it closed and flag it if any carries a risk:* label.
-
-    An issue's labels are looked up once per issue number even if several PRs in the range close
-    the same issue — a cheap cache, not a correctness requirement (a repeated `gh issue view` would
-    just answer the same way twice).
-    """
-    label_cache: dict[int, list[str]] = {}
-    risky: list[RiskyPR] = []
-    for pr_number in pr_numbers:
-        issue_numbers = fetch_pr_closing_issues(repo, pr_number)
-        if not issue_numbers:
-            continue
-        issue_labels: dict[int, list[str]] = {}
-        for issue_number in issue_numbers:
-            if issue_number not in label_cache:
-                label_cache[issue_number] = fetch_issue_labels(repo, issue_number)
-            issue_labels[issue_number] = label_cache[issue_number]
-        hits = risk_labels_for_issues(issue_labels)
-        if hits:
-            risky.append(RiskyPR(number=pr_number, issue_numbers=tuple(issue_numbers), labels=tuple(hits)))
-    return risky
 
 
 def post_decision_comment(repo: str, pr_number: int, body: str) -> bool:
@@ -513,24 +414,14 @@ def main(argv: list[str]) -> int:
         return 0
 
     migration_files = collect_migration_files(args.repo, compare)
-    commits = compare.get("commits") or []
-    total_commits = compare.get("total_commits")
-    if isinstance(total_commits, int) and total_commits > len(commits):
-        print(
-            f"::warning title=release-risk-check commit list truncated::the compare API returned "
-            f"{len(commits)} of {total_commits} commits — PRs beyond that are not label-checked."
-        )
-    commit_messages = [c.get("commit", {}).get("message", "") for c in commits]
-    pr_numbers = extract_pr_numbers(commit_messages)
-    risky_prs = gather_risky_prs(args.repo, pr_numbers)
 
-    verdict = decide(migration_files=migration_files, risky_prs=risky_prs)
+    verdict = decide(migration_files=migration_files)
     write_github_outputs(
         {"flagged": "true" if verdict.flagged else "false", "previous_tag": previous_tag}
     )
 
     if not verdict.flagged:
-        print(f"PASS: no migration files or risk:*-labelled PRs between {previous_tag} and {args.tag}.")
+        print(f"PASS: no migration files added between {previous_tag} and {args.tag}.")
         return 0
 
     reason = summarize(verdict)
