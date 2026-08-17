@@ -1,5 +1,9 @@
 # Content-quality audit — LEM's NATIVE VIDEO POSTS
 
+One caption rule that is easy to get backwards: an avatar-led clip (`posts.avatar_media`) is
+**SIDECAR-ONLY** unless `avatar_caption_overlay` is set. Burning a caption over a rendered face is a
+visible quality regression, so the default ships the `.srt` beside the file instead of over it.
+
 Issue #1282. Re-audited 2026-08-10 against `main` @ `fccbd6fe`.
 
 The deterministic gates LEM already runs answer "did the pipeline deliver *a* video asset?". This

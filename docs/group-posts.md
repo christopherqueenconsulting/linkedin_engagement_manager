@@ -1,5 +1,11 @@
 # Weekly group post — statuses, media, and what actually works in a group
 
+Undoing a skip **RESTORES** the row that was skipped — it never regenerates a new draft. The restored
+row dies at the slot it is WAITING ON, which is the first slot after the row was last written, never
+`created_at` alone (a carried-forward draft has already passed that). `can_undo_skip` tells the SPA
+whether the control should be live at all; a late undo is a 409, as is a restore that would make a
+SECOND open draft.
+
 The weekly group post is two beats with a review window between them (issue #932): Sunday drafts,
 Tuesday publishes whatever draft is still `ready`. This document covers what the author can do to
 that draft in between — issue #1224, filed from in-app feedback that the Content Studio could only

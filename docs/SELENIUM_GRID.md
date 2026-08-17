@@ -1,5 +1,10 @@
 # Selenium Grid — the horizontal browser path (Phase 2)
 
+Every session in either topology is created through `get_docker_driver()`, which connects to
+`selenium-chrome:4444`, polls the endpoint until it is ready, and sets a 1920×1080 window. Never
+instantiate `webdriver.Chrome()` directly — a driver built any other way skips the readiness poll and
+the window size, and the window size is what several SDUI reads depend on.
+
 **Status:** built, NOT enabled in prod · **Issue:** #556 · **Plan:** `docs/scaling-plan.md` §5b/§5c
 
 Prod runs **one `selenium/standalone-chrome`** with 8 session slots. §4 of the scaling plan puts the

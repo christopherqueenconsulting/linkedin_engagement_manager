@@ -1,5 +1,18 @@
 # Engagement automation internals
 
+## Profile freshness — the on-demand re-scrape (issue #1076)
+
+Every comment and DM is written in a voice distilled from the user's own profile, so a stale profile
+is a stale voice. `POST /user/linkedin-profile/refresh` is the ONE on-demand re-scrape:
+`claim_profile_refresh` takes a Redis window (1/user/day, fails OPEN) BEFORE dispatch, then
+`update_stale_profile(force_refresh=True)` bypasses **both** profile caches — by-user AND by-URL —
+and re-distils the voice brief. Without `force_refresh` a profile cached within the last day is just
+read back, which is right for the beat and wrong for someone who edited their profile a minute ago.
+
+It always answers **202**, never 429: a second press the same day is an expected no-op and logs at
+DEBUG. It is absent from `_AGENT_SESSION_SURFACE`, so a headless token can never spend a Chrome slot
+on it. Without the button, a profile edit waits for the ≤7-day `auto_refresh_profile_syntheses` beat.
+
 Full design detail for the engagement subsystems that CLAUDE.md's "Engagement automation"
 section only names. This doc is the load-bearing detail; CLAUDE.md keeps the one-line invariant +
 pointer.
@@ -318,6 +331,11 @@ The ONE way LEM opens (and reads) a 1:1 thread.
   live.
 
 ### Reading a thread and SENDING into one are different questions (issue #1030)
+
+`send_dm_now` NAVIGATES to an addressed composer via `open_addressed_composer` rather than clicking
+its way there, and it refuses unless `composer_recipient` names someone — `compose_url_for` carries
+both `recipient=` and `profileUrn=`. Sent means the message LANDED (`_dm_send_landed`), never that
+the Send control took a click.
 
 The ladder answers "can I read this thread". A send needs more, so `send_dm_now` does **not** use it.
 
@@ -779,6 +797,11 @@ that ceiling and drags the acceptance rate the outreach features are judged on.
   `rows_seen` is the tell.
 
 ## Connect escalation when following doesn't unblock commenting (issue #979)
+
+The invite budget is SHARED with every other invite lane, and this one is deliberately the junior
+claimant: it may spend at most `ceil(remaining/3)` of `max_invites_per_day` on any run, so a roster
+escalation can never starve the company-page drip or a direct connect. `requested` is written BEFORE
+dispatch, so one target gets ONE shot even if the task is redelivered.
 
 The rung above follow. The ladder per roster target is **blocked → follow (#962) → still blocked →
 needs connection → (opt-in) auto-connect**, and every step of it is evidence-driven: a

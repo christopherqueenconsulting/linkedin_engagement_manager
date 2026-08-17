@@ -1,5 +1,8 @@
 # YouTube publishing — keeping the OAuth refresh token alive (issue #742)
 
+The token is installed with `POST /admin/youtube-token` — a DB-first credential in `app_credentials`,
+so rotating it needs no deploy. `YOUTUBE_REFRESH_TOKEN` only seeds it.
+
 The marketing tutorial pipeline (#505, `utilities/marketing/video_tutorials.py`) publishes to
 YouTube Data API v3 with an OAuth **refresh token**. A refresh token dies on somebody else's
 schedule, and before #742 nothing would have noticed until a run that already cost real money

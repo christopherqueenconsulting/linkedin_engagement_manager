@@ -1,5 +1,10 @@
 # Unified content core — full posture
 
+The review gate is the ONLY place post similarity is measured, and it **RECORDS** the verdict on
+`posts.gate_reason`; the gate pass then re-reads that value rather than measuring again, so holding a
+post costs no second embedding call. `rescore_post` is the one path that measures live, because it
+runs on text the author has just edited.
+
 The TL;DR for the unified content core (newsletter + post + comment) lives in
 [CLAUDE.md](../CLAUDE.md) under **Known Gotchas → Unified content core**. This file holds the
 load-bearing detail any contributor needs before changing the comment contract, the story bank

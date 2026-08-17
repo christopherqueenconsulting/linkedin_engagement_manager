@@ -1,5 +1,9 @@
 # The image stack — ONE engine, two modules
 
+`utilities/post_video.py` (#1443) is the VIDEO counterpart to `post_image.py` and lives in a
+**SEPARATE** preview directory behind its own ownership gate, so an `image_url` can never be handed
+an MP4. Only the weekly group post reads the `*_media_*` union of the two.
+
 Full posture for LEM's AI still-image generation. CLAUDE.md keeps the one-line invariant + this
 pointer.
 
