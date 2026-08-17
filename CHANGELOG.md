@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.156.1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.156.0...v0.156.1) (2026-08-17)
+
+
+### Bug Fixes
+
+* **api:** stop the edge cache answering /api reads with a pre-write copy (closes [#1527](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1527)) ([#1627](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1627)) ([febf5d6](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/febf5d60d471b02fe6e7e9fec3ad776af8620b2a))
+* **auth:** give the cookie-less login fallback a credential the /api edge gate reads (closes [#1611](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1611)) ([#1631](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1631)) ([49a414b](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/49a414b2d0e8238dfd45c2561f44ede4070d52f1))
+
 ## [0.156.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.155.0...v0.156.0) (2026-08-17)
 
 
