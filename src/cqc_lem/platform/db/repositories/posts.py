@@ -720,8 +720,11 @@ def mark_post_gate_demoted(post_id: int) -> bool:
     """Record that this post's text went through the review gate's REPAIR pass (issue #1134).
 
     Write-once and one-way: the flag says a deterministic check failed on some draft of this post
-    and an editor pass fixed it. Nothing clears it, because nothing can un-happen it — a later
-    re-score grades the text it has, not how the text got there.
+    and the review gate sent it to the editor to be repaired. It does NOT promise the edit landed —
+    the flag is written before the editor answers, so a repair that came back empty (the first draft
+    ships as written) still raises it, which is the safe direction: the check DID fail on the text
+    that ships. Nothing clears it, because nothing can un-happen it — a later re-score grades the
+    text it has, not how the text got there.
     """
     try:
         with db_cursor(commit=True) as cursor:

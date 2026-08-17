@@ -111,6 +111,36 @@ class TestTheRepairIsTheEditorNotTheWriter:
         finding = refine.call_args.kwargs["repair_findings"][0]
         assert finding["remediation"] and finding["explanation"]
 
+    def test_a_slop_failure_reaches_the_editor_as_the_slop_finding(self):
+        """Every deterministic check routes through the SAME repair brief, the lint included.
+
+        Similarity is the check the other tests here drive, so the lint's own branch of
+        `_review_gate_findings` would otherwise never run — and a `slop_finding` built with the
+        wrong arguments would ship silently.
+        """
+        from cqc_lem.app import run_content_plan as rcp
+        failing = {"passes": False,
+                   "hard": [{"check": "contrastive", "detail": "“it's not X, it's Y”"}],
+                   "warnings": [{"check": "rule_of_three", "detail": "three-beat list"}]}
+        clean = {"passes": True, "hard": [], "warnings": []}
+        with patch(f"{_RCP}.post_similarity_report", side_effect=[dict(_CLEAR), dict(_CLEAR)]), \
+             patch(f"{_RCP}.slop_lint_report", side_effect=[failing, clean]), \
+             patch(f"{_RCP}.get_post_gate_reason", return_value=[]), \
+             patch(f"{_RCP}.update_db_post_gate_reason"), \
+             patch(f"{_RCP}.mark_post_gate_demoted") as marked, \
+             patch(f"{_RCP}.humanize_text", side_effect=lambda text, **_: text), \
+             patch(f"{_RCP}._check_post_alignment", return_value=True), \
+             patch(f"{_RCP}.get_ai_linked_post_refinement", return_value=_REPAIRED) as refine:
+            out = rcp._review_generated_post(_ctx(), _DRAFT, ["an earlier post"], story=None)
+        assert out == _REPAIRED
+        marked.assert_called_with(77)
+        finding = refine.call_args.kwargs["repair_findings"][0]
+        assert finding["gate"] == "ai_slop"
+        # The exact construction that fired, and the advisory warning alongside it — what the
+        # review queue would have shown the author.
+        assert any("it's not X, it's Y" in d for d in finding["details"])
+        assert any("rule_of_three" in d for d in finding["details"])
+
     def test_a_clean_draft_is_never_repaired_or_flagged(self):
         out, refine, marked = _review([_CLEAR])
         assert out == _DRAFT
@@ -393,6 +423,28 @@ class TestTheRepairBriefReachesTheEditorsPrompt:
         from cqc_lem.utilities.quality_gates import proof_finding
         sent = self._sent(preserve_cta_keyword="AUDIT", repair_findings=[proof_finding()])
         assert sent.index("PRESERVE") < sent.index("REQUIRED REPAIRS")
+
+    def test_the_brief_never_forbids_the_change_a_finding_asks_for(self):
+        """The scope clause and the similarity remediation must not cancel each other out.
+
+        `similarity_finding`'s own remediation is "change the angle, not the words — pick a
+        different example, argue the opposite side", so a blanket "change as little as possible"
+        would make the one check a minimal edit cannot fix unanswerable.
+        """
+        from cqc_lem.utilities.quality_gates import similarity_finding
+        sent = self._sent(repair_findings=[similarity_finding(0.84, 0.78, "an earlier post",
+                                                              measure="embedding")])
+        assert "Change the angle" in sent
+        assert "as little" not in sent
+        assert "different angle or example" in sent
+
+    def test_the_editor_is_told_to_read_past_an_authors_own_next_step(self):
+        """Some remediations name a step only a human can take, and reach the model verbatim."""
+        from cqc_lem.utilities.quality_gates import fact_grounding_finding
+        sent = self._sent(repair_findings=[fact_grounding_finding(placeholders=["[[revenue]]"])])
+        # The finding tells the AUTHOR to re-score the post; the header says act only on the text.
+        assert "re-score" in sent
+        assert "act only on the part of it that is about this draft" in sent
 
 
 class TestTheNewFindingShapes:
