@@ -24,7 +24,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any
 
-from . import answers, db, github
+from . import answers, codeowners, db, github
 
 LOG = logging.getLogger("lemd.observe")
 
@@ -131,6 +131,16 @@ class Snapshot:
     park_laps: int = 0
     #: The reason it is parked for, carried so an abandon can name it.
     parked_reason: str | None = None
+    #: For a PR: does it touch a path `.github/CODEOWNERS` assigns an owner to (#1642)? Read here
+    #: rather than decided by `decide` on purpose — asking the owner for a review is a NOTIFICATION,
+    #: not a state transition, so it must also happen on a PR whose decision is `dispatch` or
+    #: `ci_running`. Defaults False, which is the fail-safe direction: a miss only delays the
+    #: request until `owner_review_required`, GitHub's own verdict, which asks again.
+    codeowned: bool = False
+    #: For a PR: is the owner neither a requested reviewer nor the author of a live review? See
+    #: `github.owner_review_pending` — a DISMISSED approval (what `dismiss_stale_reviews` does to a
+    #: prior one on every push) reads as pending again, and that is the recurrence half of #1642.
+    owner_review_pending: bool = False
     readable: bool = True           # False when any required read failed
 
 
@@ -618,6 +628,12 @@ def snapshot_pr(slug: str, number: int, *, owner: str | None = None,
         return Snapshot(kind="pr", number=number, readable=False)
 
     labels = frozenset(github.label_names(facts))
+    pending = github.owner_review_pending(facts, owner or "")
+    # Only asked when it can change anything. The CODEOWNERS read is cached for an hour, but the
+    # path match runs per observation, and there is nothing to match FOR once the owner is already
+    # holding a live review or a standing request.
+    codeowned = bool(pending and codeowners.matches_any(
+        github.changed_paths(facts), codeowners.rules_for(slug)))
     return Snapshot(
         kind="pr",
         number=number,
@@ -636,6 +652,8 @@ def snapshot_pr(slug: str, number: int, *, owner: str | None = None,
         phase_gap=reviews.phase_gap,
         answer=_answer_for(slug, "pr", number, labels, owner),
         answer_routed=answer_routed,
+        codeowned=codeowned,
+        owner_review_pending=pending,
         readable=True,
     )
 

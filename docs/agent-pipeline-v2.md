@@ -139,6 +139,45 @@ two such PRs held both WIP slots for 7 hours while every `ready` issue behind th
 The daemon posts ONE `gh pr comment` on the transition into this state (`_notify_owner_review_needed`)
 so the wait is not also silent.
 
+**The reviewer request GitHub never sends (#1642).** A comment is not a review request: with
+`required_approving_review_count: 0`, GitHub's auto-request never fires, so a code-owner-gated PR
+sits `BLOCKED` with an EMPTY Reviewers sidebar, `reviewDecision: null` and no notification. Measured
+2026-08-17 on #1600, #1602, #1616, #1618 and #1620 — hours each, found only by grepping this
+daemon's decision log. So `_observe_one` asks explicitly (`github.request_reviewer` →
+`gh pr edit --add-reviewer`), on **two triggers, one call**:
+
+| Trigger | When it fires | Why it exists |
+|---|---|---|
+| `codeowners_path` | the FIRST observation of the PR — while CI is still running | puts the owner in the Reviewers sidebar the moment the PR opens, not at the end of CI |
+| `owner_review_required` | the transition into `awaiting_owner_review` | authoritative fallback: GitHub has said a code-owner review is the last gate, so the ask is owed even if the path match missed |
+
+The path match is `lemd/codeowners.py` — a **documented subset** of gitignore syntax (anchored
+directory prefixes, anchored file paths, `*`/`?`/`**`), matched last-rule-wins as GitHub does it,
+over the `files` list that now rides the existing `pr_facts` call. The rules are fetched from the
+base branch and cached for an hour. Being wrong is cheap in one direction only, and the two triggers
+are built on that: a MISS costs a delayed request the `awaiting_owner_review` row then makes anyway,
+so an unreadable or unparseable CODEOWNERS yields NO rules rather than assumed ownership.
+
+The ask is gated on `github.owner_review_pending` — the owner is neither a requested reviewer nor
+the author of a **live** review. A `DISMISSED` review reads as pending again, which is what makes
+this recur: `dismiss_stale_reviews: true` silently invalidates a prior approval on the next push
+(#1616 carried exactly that). "Live" is an explicit PASS LIST — `OPINIONATED_REVIEW_STATES`,
+`APPROVED` and `CHANGES_REQUESTED` and nothing else — because suppressing on a state that did not
+satisfy the code-owner gate re-creates the silence this exists to end. `COMMENTED` is the state
+that makes that concrete and is NOT live: leaving one inline remark submits a COMMENTED review,
+which removes the owner from `reviewRequests` without approving anything. Re-asking cannot loop —
+the request itself puts the owner back in `reviewRequests`, so a non-live review costs one
+re-request per round. A merged, closed, draft or owner-authored PR is never asked about (GitHub
+refuses a self-request, and a park drafts the PR).
+
+Every request writes one `stage: "owner_review_request"` row to `logs/lemd-decisions.ndjson`
+(`{kind, number, reason, requested}`), because the ABSENCE of this signal was what had to be grepped
+for the first time:
+
+```bash
+jq -c 'select(.stage=="owner_review_request")' logs/lemd-decisions.ndjson | tail -5
+```
+
 **The WIP gate, and what it is not counting.** `db.wip_count()` counts PRs in `WIP_STATES`;
 `db.HUMAN_HELD_STATES` (`awaiting_owner_review`, `parked`) names the ones held out of it, and
 `db.wip_excluded()` reports them. When the gate holds new starts, `act()` logs the excluded PRs by
