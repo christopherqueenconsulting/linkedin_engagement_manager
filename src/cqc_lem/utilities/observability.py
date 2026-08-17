@@ -354,9 +354,14 @@ EVENTS = {spec.event: spec for spec in (
     # substitutes when LoRA inference fails — a frame that legitimately carries no likeness. A raw
     # checked-negative rate mixes them, so it can never decide the hold flag. Three-valued as a
     # string ("true"/"false"/"unknown") because an unreadable flag is not a fallback render.
+    # `unchecked_cause` is WHY a probe never ran, as a countable label rather than the free text of
+    # `reason` (issue #1598): production carried 152 unchecked events and reading the cause off them
+    # took a scan of the distinct reasons. Closed vocabulary, owned by
+    # `avatar.likeness_probe.UNCHECKED_CAUSES`, and "none" — never null — on a checked row, so the
+    # inert rate is a breakdown on one property instead of a filter on two.
     EventSpec("avatar_likeness_probe", (
         prop("user_id"), prop("post_id"), label("present"), flag("checked"), text("reason"),
-        label("used_avatar"),
+        label("used_avatar"), label("unchecked_cause"),
     )),
     EventSpec("image_gate_verdict", (
         label("surface"), label("verdict"), items("issues"), prop("attempt_count"),
@@ -1158,7 +1163,8 @@ def track_avatar_likeness_probe(
     Args:
         user_id: The account the frame was rendered for.
         post_id: The post the frame belongs to.
-        verdict: The ``probe_avatar_likeness`` reading (``present`` / ``checked`` / ``reason``).
+        verdict: The ``probe_avatar_likeness`` reading (``present`` / ``checked`` / ``reason`` /
+            ``unchecked_cause``).
         used_avatar: ``"true"`` / ``"false"`` / ``"unknown"`` — whether the PROBED frame is a real
             LoRA render (issue #1430), read from the renderer and only falling back to the sticky
             per-post ``posts.avatar_media`` flag. A checked-negative on a ``"false"`` frame
@@ -1169,8 +1175,16 @@ def track_avatar_likeness_probe(
             arrive this way: `_emit` applies it after the coercions, so the string contract
             cannot see it.
     """
+    reading = dict(verdict or {})
+    # A label() coerces None to None, so a reading that arrived without a cause would ingest a null
+    # that no PostHog filter matches — the exact silence #1598 exists to end. The probe always sets
+    # one; anything else is reported as "unknown" (or "none" when it did check), never dropped.
+    # The vocabulary lives in `avatar.likeness_probe`; importing it here would close a cycle through
+    # `ai.client`, so `test_likeness_probe.py` pins these two literals to it.
+    reading["unchecked_cause"] = (reading.get("unchecked_cause")
+                                  or ("none" if reading.get("checked") else "unknown"))
     _emit(EVENTS["avatar_likeness_probe"],
-          {**dict(verdict or {}), "user_id": user_id, "post_id": post_id,
+          {**reading, "user_id": user_id, "post_id": post_id,
            "used_avatar": used_avatar}, extra)
 
 

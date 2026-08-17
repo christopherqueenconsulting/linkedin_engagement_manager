@@ -31,6 +31,27 @@ frame? Ignore incidental people in the background. Answer ONLY with a JSON objec
 {{"present": true|false, "reason": "<one-sentence explanation>"}}"""
 
 
+# Why a probe did not check — the CLOSED vocabulary behind `avatar_likeness_probe.unchecked_cause`
+# (issue #1598). It is carried on the verdict rather than re-derived from `reason`, which is the
+# vision model's free text: 152 production events all read `checked=false` and learning WHY took a
+# scan of the distinct reasons. `UNCHECKED_UNKNOWN` is for a verdict that reached the tracker
+# without a cause — countable, so a hand-rolled reading is noticed rather than silently ingested
+# as a null that no filter matches.
+CHECKED = "none"
+UNCHECKED_NO_DECLARED_ATTRIBUTES = "no_declared_attributes"
+UNCHECKED_NO_IMAGE = "no_image"
+UNCHECKED_VISION_ERROR = "vision_error"
+UNCHECKED_UNKNOWN = "unknown"
+
+UNCHECKED_CAUSES: frozenset[str] = frozenset({
+    CHECKED,
+    UNCHECKED_NO_DECLARED_ATTRIBUTES,
+    UNCHECKED_NO_IMAGE,
+    UNCHECKED_VISION_ERROR,
+    UNCHECKED_UNKNOWN,
+})
+
+
 class AvatarLikenessHold(RuntimeError):
     """A checked probe declined the source frame while the video hold flag was ON.
 
@@ -68,7 +89,8 @@ def probe_avatar_likeness(
     false positive would block a user's own video posts.
 
     Returns:
-        ``{"present": bool|None, "checked": bool, "reason": str}``.
+        ``{"present": bool|None, "checked": bool, "reason": str, "unchecked_cause": str}`` —
+        ``unchecked_cause`` is one of :data:`UNCHECKED_CAUSES`, ``"none"`` when the probe did check.
     """
     clause = subject_clause(avatar)
     if not clause:
@@ -76,12 +98,14 @@ def probe_avatar_likeness(
             "present": None,
             "checked": False,
             "reason": "No declared likeness attributes to verify",
+            "unchecked_cause": UNCHECKED_NO_DECLARED_ATTRIBUTES,
         }
     if not image_path or not os.path.exists(image_path):
         return {
             "present": None,
             "checked": False,
             "reason": "No image file to check",
+            "unchecked_cause": UNCHECKED_NO_IMAGE,
         }
 
     try:
@@ -114,6 +138,7 @@ def probe_avatar_likeness(
                 "present": None,
                 "checked": False,
                 "reason": "Empty vision response",
+                "unchecked_cause": UNCHECKED_VISION_ERROR,
             }
         parsed = json.loads(raw)
         present = bool(parsed.get("present"))
@@ -122,6 +147,7 @@ def probe_avatar_likeness(
             "present": present,
             "checked": True,
             "reason": reason or ("Likeness confirmed" if present else "Likeness not confirmed"),
+            "unchecked_cause": CHECKED,
         }
     except Exception as e:
         log_debug(
@@ -135,6 +161,7 @@ def probe_avatar_likeness(
             "present": None,
             "checked": False,
             "reason": f"Probe error: {e}",
+            "unchecked_cause": UNCHECKED_VISION_ERROR,
         }
 
 

@@ -125,6 +125,112 @@ class TestProbeAvatarLikeness:
         assert "proxy down" in verdict["reason"]
 
 
+class TestUncheckedCause:
+    """Why a probe never ran, carried as a closed vocabulary rather than free text (issue #1598).
+
+    Production read 152 unchecked events and finding the cause meant scanning `reason`, which is
+    whatever the vision model wrote.
+    """
+
+    def test_no_declared_attributes(self, tmp_path):
+        from cqc_lem.utilities.avatar.likeness_probe import (
+            UNCHECKED_NO_DECLARED_ATTRIBUTES,
+            probe_avatar_likeness,
+        )
+        verdict = probe_avatar_likeness(_make_image(tmp_path), {"gender_presentation": None})
+        assert verdict["unchecked_cause"] == UNCHECKED_NO_DECLARED_ATTRIBUTES
+
+    def test_a_declination_alone_is_the_same_inert_state(self, tmp_path):
+        """`prefer-not-to-say` renders no noun, so on its own the clause is still empty."""
+        from cqc_lem.utilities.avatar.likeness_probe import (
+            UNCHECKED_NO_DECLARED_ATTRIBUTES,
+            probe_avatar_likeness,
+        )
+        verdict = probe_avatar_likeness(
+            _make_image(tmp_path),
+            {"gender_presentation": "prefer-not-to-say", "age_band": None})
+        assert verdict["unchecked_cause"] == UNCHECKED_NO_DECLARED_ATTRIBUTES
+
+    def test_missing_image(self):
+        from cqc_lem.utilities.avatar.likeness_probe import (
+            UNCHECKED_NO_IMAGE,
+            probe_avatar_likeness,
+        )
+        assert probe_avatar_likeness("/no/such/image.png", _AVATAR)["unchecked_cause"] == \
+            UNCHECKED_NO_IMAGE
+
+    def test_empty_vision_response(self, tmp_path):
+        from cqc_lem.utilities.ai.client import client
+        from cqc_lem.utilities.avatar.likeness_probe import (
+            UNCHECKED_VISION_ERROR,
+            probe_avatar_likeness,
+        )
+        with patch.object(client, "chat") as mock_chat:
+            mock_chat.completions.create.return_value = SimpleNamespace(choices=[
+                SimpleNamespace(message=SimpleNamespace(content=""))
+            ])
+            verdict = probe_avatar_likeness(_make_image(tmp_path), _AVATAR)
+        assert verdict["unchecked_cause"] == UNCHECKED_VISION_ERROR
+
+    def test_vision_exception(self, tmp_path):
+        from cqc_lem.utilities.ai.client import client
+        from cqc_lem.utilities.avatar.likeness_probe import (
+            UNCHECKED_VISION_ERROR,
+            probe_avatar_likeness,
+        )
+        with patch.object(client, "chat") as mock_chat:
+            mock_chat.completions.create.side_effect = RuntimeError("proxy down")
+            verdict = probe_avatar_likeness(_make_image(tmp_path), _AVATAR)
+        assert verdict["unchecked_cause"] == UNCHECKED_VISION_ERROR
+
+    @pytest.mark.parametrize("present", [True, False])
+    def test_a_checked_verdict_reports_none_not_a_missing_property(self, tmp_path, present):
+        from cqc_lem.utilities.ai.client import client
+        from cqc_lem.utilities.avatar.likeness_probe import CHECKED, probe_avatar_likeness
+        with patch.object(client, "chat") as mock_chat:
+            mock_chat.completions.create.return_value = _vision_response(present)
+            verdict = probe_avatar_likeness(_make_image(tmp_path), _AVATAR)
+        assert verdict["unchecked_cause"] == CHECKED
+
+    def test_every_cause_the_probe_can_report_is_in_the_vocabulary(self, tmp_path):
+        from cqc_lem.utilities.ai.client import client
+        from cqc_lem.utilities.avatar.likeness_probe import (
+            UNCHECKED_CAUSES,
+            probe_avatar_likeness,
+        )
+        path = _make_image(tmp_path)
+        verdicts = [
+            probe_avatar_likeness(path, {}),
+            probe_avatar_likeness("/no/such/image.png", _AVATAR),
+        ]
+        with patch.object(client, "chat") as mock_chat:
+            mock_chat.completions.create.side_effect = RuntimeError("proxy down")
+            verdicts.append(probe_avatar_likeness(path, _AVATAR))
+        with patch.object(client, "chat") as mock_chat:
+            mock_chat.completions.create.return_value = _vision_response(True)
+            verdicts.append(probe_avatar_likeness(path, _AVATAR))
+        assert {v["unchecked_cause"] for v in verdicts} <= UNCHECKED_CAUSES
+
+    @pytest.mark.parametrize("verdict,expected", [
+        ({"checked": True, "present": True, "reason": "ok"}, "none"),
+        ({"checked": False, "present": None, "reason": "hand-rolled"}, "unknown"),
+    ])
+    def test_the_trackers_fallback_stays_inside_this_vocabulary(self, verdict, expected):
+        """`observability` cannot import this module (that closes a cycle through `ai.client`).
+
+        So its two fallback literals are pinned here instead — a rename landing in only one of the
+        two files would ship a value no PostHog breakdown has a bucket for.
+        """
+        from cqc_lem.utilities.avatar.likeness_probe import UNCHECKED_CAUSES
+        from cqc_lem.utilities.observability import track_avatar_likeness_probe
+
+        with patch("cqc_lem.utilities.observability.posthog") as mock_ph:
+            track_avatar_likeness_probe(1, 2, verdict, used_avatar="true")
+        cause = mock_ph.capture.call_args.kwargs["properties"]["unchecked_cause"]
+        assert cause == expected
+        assert cause in UNCHECKED_CAUSES
+
+
 class TestExtractFirstFrame:
     def test_success(self, tmp_path):
         from cqc_lem.utilities.avatar.likeness_probe import extract_first_frame

@@ -268,6 +268,48 @@ class TestLabelledEventsEndToEnd:
         assert mock_ph.capture.call_args.kwargs["properties"]["feed_sort"] == "False"
 
 
+class TestAvatarLikenessProbeCause:
+    """The unchecked CAUSE has to be countable, not free text (issue #1598).
+
+    #1430 read 152 `avatar_likeness_probe` events, every one `checked=false`, and learning why took
+    a scan of the distinct `reason` strings — which is whatever the vision model wrote.
+    """
+
+    def test_the_cause_is_declared_a_label_so_a_breakdown_can_count_it(self):
+        field = _fields("avatar_likeness_probe").get("unchecked_cause")
+        assert field is not None
+        assert field.filtered, "a prop() cause is exactly the un-countable state #1598 removes"
+
+    def test_the_probes_cause_reaches_the_event(self):
+        with patch(f"{_MOD}.posthog") as mock_ph:
+            observability.track_avatar_likeness_probe(
+                1, 9, {"present": None, "checked": False,
+                       "reason": "No declared likeness attributes to verify",
+                       "unchecked_cause": "no_declared_attributes"},
+                used_avatar="true")
+        assert mock_ph.capture.call_args.kwargs["properties"]["unchecked_cause"] == \
+            "no_declared_attributes"
+
+    @pytest.mark.parametrize("verdict", [
+        {"present": True, "checked": True, "reason": "ok"},
+        {"present": None, "checked": False, "reason": "no idea"},
+        {},
+        None,
+    ])
+    def test_every_path_lands_a_string_never_a_null_no_filter_matches(self, verdict):
+        with patch(f"{_MOD}.posthog") as mock_ph:
+            observability.track_avatar_likeness_probe(1, 9, verdict)
+        assert isinstance(
+            mock_ph.capture.call_args.kwargs["properties"]["unchecked_cause"], str)
+
+    def test_a_checked_row_says_none_rather_than_dropping_out_of_the_breakdown(self):
+        with patch(f"{_MOD}.posthog") as mock_ph:
+            observability.track_avatar_likeness_probe(
+                1, 9, {"present": True, "checked": True, "reason": "ok",
+                       "unchecked_cause": "none"})
+        assert mock_ph.capture.call_args.kwargs["properties"]["unchecked_cause"] == "none"
+
+
 class TestSpecConstructors:
     def test_label_marks_the_field_filtered_and_stringifies(self):
         field = label("status")
