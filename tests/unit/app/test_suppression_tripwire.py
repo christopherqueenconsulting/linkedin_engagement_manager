@@ -46,8 +46,15 @@ class _Harness:
         es.enter_context(patch(f"{RS}.get_active_user_ids", return_value=list(users)))
         es.enter_context(patch("cqc_lem.utilities.db.get_post_performance_rows",
                                return_value=list(rows)))
-        es.enter_context(patch("cqc_lem.utilities.db.get_comment_outcomes",
-                               return_value=list(comment_rows)))
+        if callable(comment_rows):
+            # A window-aware fake: the point of #1136 is that the SAME account reads differently at
+            # 3 days than at 7, so the stub has to honour the `days` the task asked for.
+            self.outcomes = es.enter_context(patch(
+                "cqc_lem.utilities.db.get_comment_outcomes",
+                side_effect=lambda user_id, days=7: list(comment_rows(days))))
+        else:
+            self.outcomes = es.enter_context(patch("cqc_lem.utilities.db.get_comment_outcomes",
+                                                   return_value=list(comment_rows)))
         self.notify = es.enter_context(
             patch("cqc_lem.utilities.notifications.notify_suppression_tripwire", return_value=True))
         self.track = es.enter_context(
@@ -64,7 +71,8 @@ def _default_thresholds(monkeypatch):
     for name in ("SUPPRESSION_TRIPWIRE_ENABLED", "SUPPRESSION_DROP_RATIO",
                  "SUPPRESSION_CONSECUTIVE_DAYS", "SUPPRESSION_BASELINE_DAYS",
                  "SUPPRESSION_MIN_BASELINE_POSTS", "SUPPRESSION_PAUSE_SECONDS",
-                 "SUPPRESSION_COMMENT_DAYS"):
+                 "SUPPRESSION_COMMENT_DAYS", "COMMENT_QUALITY_MIN_SAMPLE",
+                 "COMMENT_DEMOTION_HOLD_RATE"):
         monkeypatch.delenv(name, raising=False)
     yield
 
@@ -156,6 +164,52 @@ class TestCommentDemotionPath:
             h = _Harness(es, _rows(8500, 8400), comment_rows=self._outcomes(12, 1))
             result = h.run()
         assert "0 newly tripped" in result and not h.pause.called
+
+
+class TestDemotionSpikeIsNotDiluted:
+    """Issue #1136: a demotion spike must move the rate while it is still a spike.
+
+    The beat runs daily, so at a 7-day window five demoted comments today are averaged against the
+    fifteen healthy ones from earlier in the week and the rate never crosses the threshold — the
+    check ran the morning the spike started and reported the account healthy.
+    """
+
+    def _spiking_account(self, days: int) -> list:
+        """5 demoted readings in the last 3 days, 15 healthy ones in the 4 before that."""
+        def _row(visible):
+            return {"status": "checked", "reply_count": 0, "like_count": 0, "author_replied": 0,
+                    "our_reply_sent": 0, "visible_most_relevant": visible}
+        rows = [_row(0) for _ in range(5)]
+        if days > 3:
+            rows += [_row(1) for _ in range(15)]
+        return rows
+
+    def test_the_spike_trips_the_pause_at_the_shipped_window(self):
+        with ExitStack() as es:
+            h = _Harness(es, _rows(8500, 8400), comment_rows=self._spiking_account)
+            result = h.run()
+        assert h.outcomes.call_args.kwargs["days"] == 3
+        assert "1 newly tripped" in result
+        assert h.pause.called and "Comment demotion" in h.record.call_args.args[1]
+
+    def test_the_same_spike_was_invisible_at_the_old_seven_day_window(self, monkeypatch):
+        monkeypatch.setenv("SUPPRESSION_COMMENT_DAYS", "7")
+        with ExitStack() as es:
+            h = _Harness(es, _rows(8500, 8400), comment_rows=self._spiking_account)
+            result = h.run()
+        assert h.outcomes.call_args.kwargs["days"] == 7
+        assert "0 newly tripped" in result and not h.pause.called
+
+    def test_the_narrow_window_alone_is_not_enough_without_the_scaled_floor(self):
+        # The window and the floor are ONE change: 3 days of readings rarely reach the weekly floor
+        # of 10, so a narrowed window pinned to it would only ever 'watch' — and watch pauses
+        # nothing. This is the failure mode the derived floor exists to prevent.
+        from cqc_lem.utilities.comment_outcomes import quality_verdict, summarize_outcomes
+        from cqc_lem.utilities.suppression import comment_min_sample
+
+        summary = summarize_outcomes(self._spiking_account(3))
+        assert quality_verdict(summary, min_sample=10)["status"] == "watch"
+        assert quality_verdict(summary, min_sample=comment_min_sample())["status"] == "hold"
 
 
 class TestFleet:

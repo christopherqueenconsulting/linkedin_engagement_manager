@@ -27,11 +27,31 @@ def _rows(baseline: int, recent: int) -> list:
     return [post(i, baseline) for i in range(10)] + [post(10 + i, recent) for i in range(3)]
 
 
-def _stack(es, *, user_id=42, rows=None, trip=None, pause_reason=None, pause_remaining=0):
+@pytest.fixture(autouse=True)
+def _default_thresholds(monkeypatch):
+    """Score the banner off the code defaults, never a checkout's `.env`.
+
+    `tests/conftest.py` calls `load_dotenv()`, so a checkout carrying a `.env` would otherwise
+    decide what these tests assert.
+    """
+    for name in ("SUPPRESSION_TRIPWIRE_ENABLED", "SUPPRESSION_COMMENT_DAYS",
+                 "COMMENT_QUALITY_MIN_SAMPLE", "COMMENT_DEMOTION_HOLD_RATE"):
+        monkeypatch.delenv(name, raising=False)
+    yield
+
+
+def _demoted(count: int) -> list:
+    """`count` readable comment-outcome readings, every one demoted out of 'Most relevant'."""
+    return [{"status": "checked", "reply_count": 0, "like_count": 0, "author_replied": 0,
+             "our_reply_sent": 0, "visible_most_relevant": 0} for _ in range(count)]
+
+
+def _stack(es, *, user_id=42, rows=None, comment_rows=(), trip=None, pause_reason=None,
+           pause_remaining=0):
     es.enter_context(patch(f"{_M}.get_session_user_id", return_value=user_id))
     es.enter_context(patch(f"{_USER}.get_post_performance_rows",
                            return_value=list(rows if rows is not None else _rows(8500, 8400))))
-    es.enter_context(patch(f"{_USER}.get_comment_outcomes", return_value=[]))
+    es.enter_context(patch(f"{_USER}.get_comment_outcomes", return_value=list(comment_rows)))
     es.enter_context(patch(f"{_RL}.suppression_trip_state", return_value=trip))
     es.enter_context(patch(f"{_RL}.automation_pause_remaining", return_value=pause_remaining))
     es.enter_context(patch(f"{_RL}.automation_pause_reason", return_value=pause_reason))
@@ -73,6 +93,29 @@ class TestStatusEndpoint:
                    pause_reason="suppression:42", pause_remaining=1000)
             detail = api_client.get("/api/user/automation-status?session_token=t").json()["detail"]
         assert detail["tripped"] is True and detail["recovered"] is True
+
+    def test_the_banner_is_scored_on_the_beats_floor_not_a_stricter_one(self, api_client):
+        # Issue #1136: the beat scores the comment signal over 3 days with a floor of 5, so this
+        # verdict — the one the user reads to decide their reach recovered — must use the same
+        # floor. On the weekly floor of 10 these five readings would only 'watch', and the banner
+        # would say healthy about the very condition that paused the account.
+        with ExitStack() as es:
+            _stack(es, comment_rows=_demoted(5))
+            detail = api_client.get("/api/user/automation-status?session_token=t").json()["detail"]
+        assert detail["current"]["tripped"] is True
+        comments = next(s for s in detail["current"]["signals"] if s["name"] == "comment_demotion")
+        assert comments["status"] == "tripped" and comments["visibility_sample"] == 5
+
+    def test_a_wider_window_moves_the_banners_floor_with_it(self, api_client, monkeypatch):
+        # The floor is DERIVED, never pinned: back at the weekly window the same five readings are
+        # under the weekly floor of 10 again, so nothing is claimed off a thin sample.
+        monkeypatch.setenv("SUPPRESSION_COMMENT_DAYS", "7")
+        with ExitStack() as es:
+            _stack(es, comment_rows=_demoted(5))
+            detail = api_client.get("/api/user/automation-status?session_token=t").json()["detail"]
+        assert detail["current"]["tripped"] is False
+        comments = next(s for s in detail["current"]["signals"] if s["name"] == "comment_demotion")
+        assert comments["status"] == "watch"
 
     def test_a_foreign_pause_is_not_attributed_to_the_tripwire(self, api_client):
         with ExitStack() as es:

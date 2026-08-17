@@ -105,6 +105,18 @@ piece is which channel to ping.
 
 **Your action:** create a Slack incoming webhook → set the var → `python scripts/posthog_ops_destination.py --apply`.
 
+### 2.6 `SUPPRESSION_COMMENT_DAYS` is pinned to 7 in prod · issue #1136
+
+#1136 narrows the comment-demotion half of the suppression tripwire from a rolling week to 3 days,
+because the beat runs daily and a week-wide window averages a demotion spike against up to six
+healthy days. `/opt/lem/.env` carries the old `.env.example` value `SUPPRESSION_COMMENT_DAYS=7`, and
+an explicit env var wins over the new default — so **the merge is a no-op in production until this
+line changes**. The readable-comment floor is derived
+(`ceil(COMMENT_QUALITY_MIN_SAMPLE * days / 7)`, 5 at 3 days), so there is no second knob to touch.
+
+**Your action (~1 min, at the next deploy):** in `/opt/lem/.env` set `SUPPRESSION_COMMENT_DAYS=3`
+or delete the line, then restart the stack. Confirmed by the owner 2026-08-17 (PR #1617, option 2A).
+
 ---
 
 ## 3. Credentials — the reconciliation you asked for

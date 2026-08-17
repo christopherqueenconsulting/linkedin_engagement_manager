@@ -2876,13 +2876,21 @@ def _suppression_status(user_id: int) -> dict:
         suppression_trip_state,
     )
     from cqc_lem.utilities.post_stats import build_engagement_trend
-    from cqc_lem.utilities.suppression import comment_history_days, evaluate_suppression, history_days, tripwire_enabled
+    from cqc_lem.utilities.suppression import (
+        comment_history_days,
+        comment_min_sample,
+        evaluate_suppression,
+        history_days,
+        tripwire_enabled,
+    )
 
     window = history_days()
     comment_window = comment_history_days()
     trend = build_engagement_trend(get_post_performance_rows(user_id, days=window))
+    # Same window AND same floor as the beat: this verdict is what the user reads to decide their
+    # reach has recovered, so it must be scored on the condition that paused them, not a stricter one.
     quality = comment_quality_report(get_comment_outcomes(user_id, days=comment_window),
-                                     days=comment_window)
+                                     days=comment_window, min_sample=comment_min_sample())
     verdict = evaluate_suppression(trend, comment_quality=quality)
     trip = suppression_trip_state(user_id)
     pause_remaining = automation_pause_remaining()

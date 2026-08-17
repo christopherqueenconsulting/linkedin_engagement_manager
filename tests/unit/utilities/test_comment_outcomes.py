@@ -136,3 +136,40 @@ class TestReport:
         report = comment_quality_report(None)
         assert report["sample_size"] == 0 and report["verdict"]["status"] == VERDICT_UNKNOWN
         assert report["unreadable_readings"] == 0
+
+
+class TestMinSampleOverride:
+    """Issue #1136: a caller reading a SHORTER window than the weekly one may scale the floor down.
+
+    Omitting the parameter has to leave the weekly call site untouched — that is the whole reason it
+    is optional rather than required.
+    """
+
+    def test_omitting_min_sample_is_byte_for_byte_todays_behaviour(self):
+        # The acceptance criterion for auto_weekly_comment_quality's call site: identical output.
+        for rows in ([], [_row(visible_most_relevant=0) for _ in range(5)],
+                     [_row(visible_most_relevant=0) for _ in range(10)],
+                     [_row() for _ in range(12)],
+                     [_row(visible_most_relevant=None), _row(visible_most_relevant=0)]):
+            assert quality_verdict(summarize_outcomes(rows)) == \
+                quality_verdict(summarize_outcomes(rows), min_sample=min_visibility_sample())
+            assert comment_quality_report(rows, days=7) == \
+                comment_quality_report(rows, days=7, min_sample=None)
+
+    def test_a_lower_floor_turns_a_watch_into_a_hold(self):
+        rows = [_row(visible_most_relevant=0) for _ in range(5)]
+        assert quality_verdict(summarize_outcomes(rows))["status"] == VERDICT_WATCH
+        v = quality_verdict(summarize_outcomes(rows), min_sample=5)
+        assert v["status"] == VERDICT_HOLD and v["min_sample"] == 5
+
+    def test_the_report_threads_it_through(self):
+        rows = [_row(visible_most_relevant=0) for _ in range(5)]
+        report = comment_quality_report(rows, days=3, min_sample=5)
+        assert report["days"] == 3 and report["verdict"]["status"] == VERDICT_HOLD
+
+    def test_a_zero_floor_cannot_make_an_empty_sample_conclusive(self):
+        # Same reason min_visibility_sample() floors at 1: no override may act on nothing.
+        v = quality_verdict(summarize_outcomes([]), min_sample=0)
+        assert v["status"] == VERDICT_UNKNOWN and v["min_sample"] == 1
+        one = quality_verdict(summarize_outcomes([_row(visible_most_relevant=0)]), min_sample=0)
+        assert one["status"] == VERDICT_HOLD  # one READABLE demoted reading is still a reading
