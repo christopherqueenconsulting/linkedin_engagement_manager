@@ -36,17 +36,43 @@ function count(source: string, needle: RegExp): number {
   return (source.match(needle) ?? []).length
 }
 
-/** Every quoted `className` in a file, paired with the tag it was written on. */
+// These invariants are about MARKUP, and every one of them ships next to a comment explaining the
+// class it asks for — so a grep over the raw source passes on the explanation alone. Strip comments
+// first, or the guard cannot fail for the regression it exists to catch.
+function withoutComments(source: string): string {
+  return source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^[ \t]*\/\/.*$/gm, '')
+}
+
+/**
+ * Every `className` in a file, paired with the tag it was written on — quoted (`className="…"`)
+ * and expression (`className={…}`) alike, since a conditional or template-literal class is exactly
+ * where a display utility gets handed to a component that cannot honour it.
+ */
 function classNamesByTag(source: string): { tag: string; value: string }[] {
+  const code = withoutComments(source)
   const pairs: { tag: string; value: string }[] = []
-  const attribute = /className=(["'])([^"']*)\1/g
+  const attribute = /className=(?:(["'])([^"']*)\1|\{((?:[^{}]|\{[^{}]*\})*)\})/g
   let match: RegExpExecArray | null
-  while ((match = attribute.exec(source)) !== null) {
-    const opening = source.lastIndexOf('<', match.index)
-    const tag = /^<([A-Za-z][\w.]*)/.exec(source.slice(opening, match.index))?.[1] ?? ''
-    pairs.push({ tag, value: match[2] })
+  while ((match = attribute.exec(code)) !== null) {
+    const opening = code.lastIndexOf('<', match.index)
+    const tag = /^<([A-Za-z][\w.]*)/.exec(code.slice(opening, match.index))?.[1] ?? ''
+    pairs.push({ tag, value: match[2] ?? match[3] ?? '' })
   }
   return pairs
+}
+
+/** The opening tag of the element each `<ProductPanel>` in a file sits inside. */
+function panelWrappers(source: string): string[] {
+  const code = withoutComments(source)
+  const wrappers: string[] = []
+  const panel = /<ProductPanel\b/g
+  let match: RegExpExecArray | null
+  while ((match = panel.exec(code)) !== null) {
+    const opening = code.lastIndexOf('<div', match.index)
+    const end = opening === -1 ? -1 : code.indexOf('>', opening)
+    wrappers.push(end === -1 ? '' : code.slice(opening, end + 1))
+  }
+  return wrappers
 }
 
 const files = sourceFiles(SRC).map((path) => ({
@@ -93,7 +119,7 @@ describe('page-width invariants (issue #1556)', () => {
   it('keeps the table floor from widening the page it sits on', () => {
     const source = files.find(({ rel }) => rel === 'components/TableScroll.tsx')?.source ?? ''
     expect(source, 'TableScroll.tsx is where the scroll region is defined').not.toBe('')
-    expect(source).toContain("contain: 'inline-size'")
+    expect(withoutComments(source)).toContain("contain: 'inline-size'")
   })
 
   // `hidden` and `inline-flex` are the same property at the same specificity, so which one wins is
@@ -112,11 +138,14 @@ describe('page-width invariants (issue #1556)', () => {
   })
 
   // A grid item's automatic minimum size is its min-content width, so a column holding a panel of
-  // non-wrapping rows cannot shrink to the phone unless it is told it may.
+  // non-wrapping rows cannot shrink to the phone unless it is told it may. Asserted on the element
+  // the panel is written INSIDE, not on the file: a file-wide grep passes on any other `min-w-0`
+  // in it, including the comment saying why the column needs one.
   it('lets every grid column holding a product panel shrink below its content', () => {
-    const offenders = files
-      .filter(({ source }) => /<ProductPanel/.test(source))
-      .filter(({ source }) => !/min-w-0/.test(source))
+    const rendering = files.filter(({ source }) => /<ProductPanel\b/.test(withoutComments(source)))
+    expect(rendering.length, 'the marketing page renders <ProductPanel>').toBeGreaterThan(0)
+    const offenders = rendering
+      .filter(({ source }) => panelWrappers(source).some((tag) => !/\bmin-w-0\b/.test(tag)))
       .map(({ rel }) => rel)
     expect(offenders, 'a grid column around <ProductPanel> needs `min-w-0`').toEqual([])
   })
