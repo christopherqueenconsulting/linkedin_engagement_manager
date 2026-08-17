@@ -5,6 +5,7 @@ secret-sealing rules described there apply here unchanged; `cqc_lem.utilities.db
 re-exports every name below, so existing importers and patch targets keep resolving.
 """
 
+import hashlib
 import json
 from datetime import (
     datetime,
@@ -14,6 +15,7 @@ from datetime import (
 from typing import Optional
 
 import mysql.connector
+from mysql.connector import errorcode
 
 from cqc_lem.platform.db import connection as _connection
 from cqc_lem.platform.db.connection import db_cursor
@@ -820,4 +822,56 @@ def get_app_credential_updated_at(name: str) -> Optional[datetime]:
             return (row or {}).get("updated_at")
     except mysql.connector.Error as err:
         log_warning(f"Could not read app credential timestamp for {name}", exc=err)
+        return None
+
+
+def _credential_id_hash(credential_id: Optional[str]) -> Optional[str]:
+    """SHA-256 of a base64url credential id — what carries the UNIQUE index and every lookup.
+
+    A credential id is public (the browser hands it to any site that asks), so this is a length
+    normaliser, not a secret-protection measure: raw ids run past what MySQL will index.
+    """
+    if not credential_id:
+        return None
+    return hashlib.sha256(credential_id.encode("utf-8")).hexdigest()
+def add_passkey_factor(user_id: int, credential_id: str, public_key: str, sign_count: int = 0,
+                       label: Optional[str] = None, transports: Optional[str] = None) -> Optional[int]:
+    """Store a verified passkey. Confirmed on insert — a registration response only reaches here
+    after `verify_registration_response` accepted it, so there is no unproven state to hold.
+    """
+    try:
+        with db_cursor(commit=True) as cursor:
+            now = datetime.now(timezone.utc)
+            cursor.execute(
+                """INSERT INTO user_auth_factors
+                   (user_id, kind, label, credential_id, credential_id_hash, public_key, sign_count,
+                    transports, confirmed_at)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                (user_id, AUTH_FACTOR_PASSKEY, (label or "Passkey")[:120], credential_id,
+                 _credential_id_hash(credential_id), public_key, int(sign_count),
+                 (transports or None), now),
+            )
+            return cursor.lastrowid
+    except mysql.connector.Error as err:
+        if err.errno == errorcode.ER_DUP_ENTRY:
+            log_warning("Passkey already registered", user_id=user_id)
+            return None
+        log_error("Could not store passkey", exc=err, user_id=user_id)
+        return None
+def get_passkey_by_credential_id(credential_id: str) -> Optional[dict]:
+    """The stored passkey for a credential id, with the user it belongs to. This is how a
+    discoverable-credential login resolves WHO is signing in — the assertion names the credential,
+    not the account.
+    """
+    try:
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(
+                """SELECT id, user_id, credential_id, public_key, sign_count, label
+                   FROM user_auth_factors
+                   WHERE credential_id_hash = %s AND kind = %s AND confirmed_at IS NOT NULL""",
+                (_credential_id_hash(credential_id), AUTH_FACTOR_PASSKEY),
+            )
+            return cursor.fetchone()
+    except mysql.connector.Error as err:
+        log_error("Could not look up passkey", exc=err)
         return None
