@@ -398,9 +398,13 @@ class TestCatalogSnapshot:
 
         An empty string would read as a build CHANGE against a real digest the week the catalog
         starts publishing them — and would move every committed snapshot entry for nothing.
+
+        Pure-logic test: reads a synthetic payload only, per the `FROZEN_TAGS` rule above — the
+        live `_tags()` fixture stopped having a no-digest entry the week Ollama started publishing
+        digests for every model (2026-08-16), and pinning a NAME against that moving fixture is
+        exactly the anti-pattern the rule exists to prevent.
         """
         assert "digest" not in mhc.parse_catalog({"models": [{"name": "x", "digest": " "}]})["x"]
-        assert "digest" not in mhc.parse_catalog(_tags())["gpt-oss:20b"]
 
     def test_the_tags_payload_round_trips_a_digest_too(self):
         catalog = mhc.parse_catalog({"models": [{"name": "x", "digest": "abc123"},
