@@ -1,7 +1,7 @@
 """Every gated `/api` route resolves its caller from the SESSION — as a standing invariant.
 
 Issue #950 loosened a global edge control: the `/api` middleware used to demand a valid bearer
-token, and now takes a session credential too (a cookie or `X-Session-Token`) whose validity it
+token, and now takes a session credential too (the `lem_session` cookie) whose validity it
 deliberately does not check. That is only safe because of a claim — "since #914 every `/api`
 handler resolves its caller through `get_session_user_id`" — and a claim asserted in prose is worth
 nothing the day someone adds a route that leans on the bearer alone. That route would silently

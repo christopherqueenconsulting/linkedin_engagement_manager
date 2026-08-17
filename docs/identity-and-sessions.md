@@ -171,13 +171,22 @@ So the SPA ships none, and the token's contract is now written down rather than 
   anything; without it, a change to Vite's inlining would turn the canary into a silent pass.
   (`VITE_POSTHOG_KEY` is deliberately not canaried — a write-only third-party ingest key is *meant*
   to be public, which is exactly what qualifies it as the control.)
-- **The middleware asks only "did this caller bring A credential"** — a valid bearer, or a session
-  credential (the `lem_session` cookie, or the `X-Session-Token` header the SPA sends on the
-  cookie-less fallback). Presence, not validity: the middleware runs before routing and has no
+- **The middleware asks only "did this caller bring A credential"** — a valid bearer, or the
+  `lem_session` cookie. Presence, not validity: the middleware runs before routing and has no
   database, and the route's own `require_session_user_id()` already fails closed. It is an edge
   filter that keeps credential-less traffic off the handlers — and only the naive kind, since one
   arbitrary cookie byte clears it. **It is not authorisation** — a forged cookie clears it and is
   then refused by the route, which is the same 401 from one step further in.
+- **Nothing in the check may be a credential no resolver reads (#1357).** An `X-Session-Token`
+  header counted here until then, and it was the one entry that could never become a user:
+  `get_session_user_id` resolves an explicit token from the `session_token` **field** and has never
+  read a header. So a caller following the documentation cleared this gate and was then 401'd by the
+  route — the same failure shape as #1354, an error pointing at the wrong thing. The header is gone
+  from the check, from `ui/src/api/client.ts`, and from this document; `API_ACCESS_TOKENS` (#950) is
+  the non-browser credential and there is no second one. A cookie-less browser session (the
+  `login()` fallback for a browser that refused the cookie) still authenticates at the route on the
+  `session_token` field, but it carries nothing this edge check can see — with `API_ACCESS_TOKENS`
+  set, its non-`/api/auth/` requests are refused at the edge. Tracked in #1611.
 - **That safety argument is a TEST, not a paragraph.** Loosening a global edge control is only safe
   while every gated route really does resolve its caller, so
   `tests/unit/api/test_api_route_identity.py` walks the live route table and asserts it: every
@@ -232,7 +241,7 @@ Every non-browser caller of `/api`, and what it authenticates on:
 | Caller | Credential |
 |---|---|
 | SPA (`ui/src/api/client.ts`) | session cookie — **no bearer** |
-| Tutorial capture harness (`marketing/video_tutorials.py`) | drives the SPA with a real session token in `localStorage` → `X-Session-Token` |
+| Tutorial capture harness (`marketing/video_tutorials.py`) | drives the SPA with a real session token seeded in BOTH `localStorage` (what `AuthContext` boots from and what rides in the `session_token` field) and the `lem_session` cookie (what the edge gate accepts) |
 | Browser extension (`browser_extension/popup.js`) | none — posts only to the public, self-authenticating `/api/user/linkedin-cookie` with the user's `session_token` in the body |
 | `scripts/generate_media_variants.sh` | bearer **+** `X-Admin-Secret` (an `/api/admin/*` route) |
 | Postman collection (`docs/postman/`) | bearer, from the server `.env` |
@@ -410,8 +419,8 @@ Three properties now, in `client.ts` + `contexts/AuthContext.tsx`:
   network failure leaves it alone: absence of proof that it died is not proof that it died. The
   original error still rejects, so the failing panel surfaces its own failure. The probe carries the
   stored value in the `session_token` **field**, exactly as `loadSession` does — that field is the
-  only place `get_session_user_id` resolves an explicit token from (`X-Session-Token` is a presence
-  check at the edge and nothing more), so a probe without it would carry no credential in the
+  only place `get_session_user_id` resolves an explicit token from, and since #1357 there is no
+  header form of it at all — so a probe without it would carry no credential in the
   cookie-less fallback and 401 about a live session. Normally the value is the `cookie` sentinel,
   which the server ignores in favour of the cookie.
 - **The session route's own 401 stays with the auth layer.** `AuthProvider` boots on it (drop the

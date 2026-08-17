@@ -325,13 +325,15 @@ def _has_session_credential(request: Request) -> bool:
     middleware runs before routing and has no database, so validating here would mean a second
     session lookup on every request that answers nothing the route does not already answer.
 
-    Two shapes, because the SPA has two: the httpOnly cookie (normal), and the `X-Session-Token`
-    header the axios interceptor sends when it holds a real token instead — a plain-http origin
-    where `Secure` cookies never stuck, and the tutorial capture harness.
+    ONE shape: the httpOnly session cookie. `X-Session-Token` used to count here too and was
+    removed in #1357, because it was the one credential in this check that could never become a
+    user: `get_session_user_id` resolves an explicit token from the `session_token` FIELD and has
+    never read that header, so a caller carrying only the header cleared this gate and was then
+    401'd by the route — the failure reading as "my token is wrong" rather than "that header is not
+    wired up". A presence check for something no resolver reads is weaker than it looks, not a
+    fallback. The non-browser credential is `API_ACCESS_TOKENS` (#950), checked by the caller below.
     """
-    if (request.cookies.get(SESSION_COOKIE_NAME) or "").strip():
-        return True
-    return bool((request.headers.get("X-Session-Token") or "").strip())
+    return bool((request.cookies.get(SESSION_COOKIE_NAME) or "").strip())
 
 
 @app.middleware("http")

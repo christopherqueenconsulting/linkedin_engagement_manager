@@ -9,6 +9,7 @@ this middleware on its cookie alone, and a caller with neither credential still 
 from unittest.mock import patch
 
 import pytest
+from starlette.requests import Request
 
 from cqc_lem.utilities.env_constants import SESSION_COOKIE_NAME
 
@@ -143,18 +144,40 @@ class TestGateMiddleware:
                               headers={"Cookie": f"{SESSION_COOKIE_NAME}=whatever"})
         assert resp.status_code != 401
 
-    def test_session_header_passes_gate_without_a_bearer(self, main_mod, api_client):
-        # The cookie-less fallback (plain-http origin) and the tutorial capture harness.
+    def test_session_header_alone_does_not_pass_the_gate(self, main_mod, api_client):
+        """Issue #1357: `X-Session-Token` is not a credential, so it must not clear the edge gate.
+
+        It cleared it until #1357 while `get_session_user_id` never read it — the resolver takes an
+        explicit token from the `session_token` FIELD — so a caller carrying only the header got
+        past the middleware and was then 401'd by the route, an error pointing at the wrong thing.
+        A header nothing resolves now fails at the edge instead, which is the same answer one step
+        earlier.
+        """
         with patch.object(main_mod, "_API_ACCESS_TOKEN_SET", {self.TOKEN}):
             resp = api_client.get(self.GATED_PROBE, headers={"X-Session-Token": "real-token"})
-        assert resp.status_code != 401
+        assert resp.status_code == 401
+
+    def test_presence_check_reads_only_the_cookie(self, main_mod):
+        """The same claim at the function, not through the stack — the acceptance criterion of #1357.
+
+        Asserted on a real Request scope rather than a mock so a header spelled differently (case,
+        underscores) cannot pass by accident.
+        """
+        def _request(headers):
+            raw = [(k.lower().encode(), v.encode()) for k, v in headers.items()]
+            return Request({"type": "http", "method": "GET", "path": self.GATED_PROBE,
+                            "headers": raw, "query_string": b""})
+
+        assert main_mod._has_session_credential(
+            _request({"X-Session-Token": "real-token"})) is False
+        assert main_mod._has_session_credential(
+            _request({"Cookie": f"{SESSION_COOKIE_NAME}=real-token"})) is True
 
     @pytest.mark.parametrize("headers", [
         {"Cookie": f"{SESSION_COOKIE_NAME}="},        # present but empty
         # Whitespace only — the quoted form is the one that survives cookie parsing as "  ",
         # so the cookie has to be stripped like the header is, not just tested for presence.
         {"Cookie": f'{SESSION_COOKIE_NAME}="  "'},
-        {"X-Session-Token": "   "},                   # whitespace only
         {"Cookie": "some_other_cookie=1"},            # a different cookie is not a credential
     ])
     def test_empty_or_unrelated_session_credential_is_401(self, main_mod, api_client, headers):
