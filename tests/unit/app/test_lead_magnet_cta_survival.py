@@ -110,14 +110,14 @@ class TestCreateTextPostCtaSurvival:
         assert len(outs) == 6  # 6-variant menu keyed by post_id % 6
 
 
-class TestReviewGateRetryCtaSurvival:
-    def test_the_regeneration_is_composed_with_the_keyword_protected(self):
-        """Issue #1217: the retry re-enters the compose core carrying the trigger word.
+class TestReviewGateRepairCtaSurvival:
+    def test_the_repair_is_run_with_the_keyword_protected(self):
+        """Issues #1217 / #1134: the second attempt carries the trigger word.
 
         The old recursive retry passed neither `preserve_cta_keyword` nor the bait exemption, so a
         regenerated post's mechanic could only be put back by the deterministic repair afterwards —
         and a trigger word colliding with the bait regex was stripped out of the retry before the
-        repair ever saw it.
+        repair ever saw it. The repair pass that replaced it hands the editor the same protection.
         """
         from cqc_lem.app import run_content_plan as rcp
         from cqc_lem.domain.models import PostDraftContext
@@ -131,11 +131,16 @@ class TestReviewGateRetryCtaSurvival:
         with patch(f"{_RCP}.post_similarity_report", side_effect=verdicts), \
              patch(f"{_RCP}._record_post_similarity_finding"), \
              patch(f"{_RCP}._check_post_alignment", return_value=True), \
-             patch(f"{_RCP}._compose_draft", return_value=(_GENERATED, ctx)) as compose:
+             patch(f"{_RCP}._persist_gate_findings"), \
+             patch(f"{_RCP}.humanize_text", side_effect=lambda text, **_: text), \
+             patch(f"{_RCP}.get_ai_linked_post_refinement", return_value=_GENERATED) as repair:
             out = rcp._review_generated_post(ctx, _REWORDED, ["an earlier post"], story=None,
                                              cta_keyword="AUDIT")
         assert out == _GENERATED
-        assert compose.call_args.kwargs == {"cta_keyword": "AUDIT", "bait_exempt_keyword": "AUDIT"}
+        assert repair.call_args.kwargs["preserve_cta_keyword"] == "AUDIT"
+        # The bait strip runs over the editor's output too, exempting the same word — a trigger
+        # word that collides with the bait regex must survive the repair as well.
+        assert "AUDIT" in out
 
 
 class TestRegeneratePostCtaSurvival:

@@ -46,6 +46,7 @@ from cqc_lem.utilities.ai.content_alignment import (
     intention_directive as _intention_directive,
     lead_magnet_preserve_note as _lead_magnet_preserve_note,
     mechanical_edit_text as _mechanical_edit_text,
+    repair_directive as _repair_directive,
     select_focus_topic as _select_focus_topic,
     style_directive as _style_directive,
     voice_reference as _voice_reference,
@@ -1630,7 +1631,9 @@ def get_industries_of_profile_from_ai(linked_in_profile: LinkedInProfile, indust
 
 @llm_step("refine")
 def get_ai_linked_post_refinement(original_message: str, character_limit: int = 3000,
-                                  prefs: dict = None, preserve_cta_keyword: str = None):
+                                  prefs: dict = None, preserve_cta_keyword: str = None,
+                                  repair_findings: list = None,
+                                  repair_source_material: str = None):
     """Final editorial pass over a finished draft — capitalization, clarity, readability.
 
     Pref-aware on purpose. The formatting rules used to be hardcoded, instructing emoji bullets and
@@ -1642,6 +1645,19 @@ def get_ai_linked_post_refinement(original_message: str, character_limit: int = 
     characters. `preserve_cta_keyword` is the exact comment keyword a lead-magnet post pays out on —
     the DM automation matches it literally, so a rewrite that paraphrases it breaks delivery
     silently.
+
+    `repair_findings` (issue #1134) turns this same editor into the review gate's REPAIR pass: the
+    structured findings of the deterministic checks a draft failed, appended as explicit
+    fix-this-and-nothing-else instructions. It is what makes the second attempt an independent
+    EDIT rather than a second draft from the same writer — omitted, this is the ordinary first-pass
+    refinement and the prompt is byte-for-byte what it always was.
+
+    `repair_source_material` is the story-bank directive the WRITER was given for this post, and it
+    has to ride along with the findings: a proof or fabrication finding asks the editor to add or
+    replace a first-person specific while banning invention, which is unanswerable for a model that
+    can see only the draft. It is the writer's own material verbatim, so the editor may draw from
+    exactly what the writer could and nothing more. Omitted, the prompt is byte-for-byte what it
+    always was.
     """
     character_limit_string = (f"""\nThe refined LinkedIn Post needs to be less than or equal to {character_limit} characters including white spaces and punctuations. You may use symbols, abbreviations, and other and short-hand.
                                Ideally, Posts between 1,300 and 2,000 characters tend to perform well by providing enough detail while maintaining readability.\n\n""") if character_limit > 0 else ""
@@ -1666,6 +1682,12 @@ def get_ai_linked_post_refinement(original_message: str, character_limit: int = 
     # Selected lead-magnet posts carry a REQUIRED comment-keyword CTA that this rewrite must not
     # paraphrase away (the DM automation watches comments for the exact word).
     prompt += _lead_magnet_preserve_note(preserve_cta_keyword)
+    # The repair brief, when this pass IS the review gate's repair (issue #1134). Appended after the
+    # CTA note so the keyword rule is read before the fixes, never traded away for one — and the
+    # author's own material goes ABOVE the fixes, so "never invent a specific" is read as a pointer
+    # at material the editor can actually see rather than a dead end.
+    prompt += str(repair_source_material or "")
+    prompt += _repair_directive(repair_findings)
 
     # myprint(f"Prompt: {prompt}")
 

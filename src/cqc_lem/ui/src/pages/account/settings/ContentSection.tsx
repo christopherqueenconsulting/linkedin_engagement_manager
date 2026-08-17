@@ -57,6 +57,12 @@ export default function ContentSection() {
         <Toggle on={!!prefs?.auto_schedule_posts}
           onClick={() => prefs && setPrefs({ auto_schedule_posts: !prefs.auto_schedule_posts })} />
       </Field>
+      <Field settingKey="hold_repaired_posts_for_review">
+        <Toggle on={eng.hold_repaired_posts_for_review ?? true}
+          onClick={() => setEng({
+            hold_repaired_posts_for_review: !(eng.hold_repaired_posts_for_review ?? true),
+          })} />
+      </Field>
       <Field settingKey="link_in_first_comment">
         <Toggle on={eng.link_in_first_comment}
           onClick={() => setEng({ link_in_first_comment: !eng.link_in_first_comment })} />

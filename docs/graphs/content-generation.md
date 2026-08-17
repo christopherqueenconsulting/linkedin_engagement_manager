@@ -12,6 +12,11 @@ approve/hold decision in one task.
 
 ## Current state
 
+**As reviewed** — this is the graph the rubric below scores, i.e. the state BEFORE the redesign at
+the end of this document shipped (issue #1134). The one step it now gets wrong is I1: the review
+gate's second attempt is an editor repair, not another draft from the writer. Everything else still
+reads true.
+
 ```mermaid
 flowchart TD
   A["plan_content_for_user\n(monthly cadence slots, day-type calendar,\n70/20/10 mix via assign_content_mix)"] --> B["_top_up_buffer_for_user /\n_create_content_for_planned_post\n(fills ONE slot near its scheduled time)"]
@@ -248,3 +253,33 @@ unchanged, since `mark_repaired` defaults to `False` and none of them pass it.
 callers at two when there are three — doesn't affect correctness, worth correcting in the write-up.
 Add a one-line code comment on `_persist_gate_findings` warning future editors that a forgotten
 `mark_repaired=True` fails safe (under-protects) rather than over-triggers.
+
+### Shipped (issue #1134)
+
+The redesign above is the code as it stands. Three corrections to the write-up, made while building
+it:
+
+- **There are THREE pre-existing callers of `_persist_gate_findings`**, not two — the generation-time
+  gate pass, `rescore_post`'s promote-on-pass path, and `_finish_regenerated_post`. All three are
+  unchanged and stay at `mark_repaired=False`; the docstring says so, and says which way a forgotten
+  `mark_repaired=True` fails (safe: the post under-reports having been repaired).
+- **The retry did not call `create_text_post` any more when this landed** — #1217 had already moved
+  it to `_compose_draft`, the generate/refine core. That is still the same author having a second go
+  at the same brief, which is what the redesign replaces: `_repair_draft` hands the failing draft to
+  `get_ai_linked_post_refinement` with the findings, then re-runs the deterministic passes
+  (sanitise, bait strip, humanize) so the repaired text is graded on the same footing.
+- **The two missing finding shapes are `proof_finding` and `fabrication_finding`** in
+  `utilities/quality_gates.py`. Neither is built by `evaluate_post_gates` — they exist so the repair
+  brief and the review queue speak one vocabulary, and nothing is ever HELD on them. Both are built
+  `demoted=False` for exactly that reason: `demoting_findings` and the SPA's `holdingFindings` read
+  that flag as "this is the finding holding the draft", which these two never are.
+- **The editor needs the writer's material, not just the findings.** The redesign as written handed
+  `get_ai_linked_post_refinement` the findings alone, which makes a proof or fabrication finding
+  unanswerable: it asks for a real first-person specific while forbidding invention, and the editor
+  can see only the draft. `_repair_draft` therefore also passes `ctx.story_directive` — the exact
+  string `_draft_from_source` gave the writer, carrying the bank's own "these facts are the ONLY
+  personal specifics allowed" rule — as `repair_source_material`, above the repairs in the prompt.
+
+`_may_auto_approve(user_id, post_id, auto_schedule, findings)` is the one approve decision, read by
+both call sites. It fails OPEN on an unreadable flag or prefs row, matching the gates' own posture:
+a DB hiccup costs the extra review, never the publish.

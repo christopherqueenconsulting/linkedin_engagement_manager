@@ -648,6 +648,10 @@ class EngagementPreferencesRequest(BaseModel):
     # and independent of roster_auto_follow. No cap of its own — roster invites take at most a
     # minority share of whatever max_invites_per_day has left.
     roster_auto_connect: bool = False
+    # Hold a post the review gate had to repair (issue #1134), ON by default. Independent of
+    # auto_schedule_posts, which lives on the users row: this only decides what auto-scheduling
+    # does with a draft that passed only on its second, edited attempt.
+    hold_repaired_posts_for_review: bool = True
     # Catch-up congratulations (issue #482)
     max_catchup_touches_per_day: int = CATCHUP_TOUCHES_MAX_STANDARD
     catchup_touch_mode: str = "pre_review"  # 'pre_review' (default) | 'auto_approve'

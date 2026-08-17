@@ -1,6 +1,7 @@
 """Unit tests for the post review gate in create_text_post: pre-generation avoid steering built
-from the user's recent posts, the deterministic similarity gate with its single avoid-directive
-retry, and the cheap focus-alignment check — none of which may ever hard-block the pipeline.
+from the user's recent posts, the deterministic similarity gate with its single EDITOR repair pass
+(issue #1134 — the writer is never re-invoked), and the cheap focus-alignment check — none of which
+may ever hard-block the pipeline.
 """
 
 from unittest.mock import MagicMock, patch
@@ -45,10 +46,22 @@ _NEUTRAL_BLUEPRINT = {"subject": None, "angle": "", "format": "personal_lesson",
                       "structure": [], "hook_style": "micro_story", "cta_style": "reply_question"}
 
 
-def _run(outputs, recent=None, prefs=None, post_id=77, log=None):
-    """Drive create_text_post with a generator that returns `outputs` in order."""
+def _run(outputs, recent=None, prefs=None, post_id=77, log=None, repaired=None):
+    """Drive create_text_post with a generator that returns `outputs` in order.
+
+    `repaired` is what the EDITOR returns when the review gate briefs it with findings (issue
+    #1134); an exception makes the repair fail. Every other refinement call is the identity.
+    """
     from cqc_lem.app import run_content_plan as rcp
     gen = MagicMock(side_effect=list(outputs))
+
+    def _refine(content, **kwargs):
+        if not kwargs.get("repair_findings"):
+            return content
+        if isinstance(repaired, Exception):
+            raise repaired
+        return repaired if repaired is not None else content
+
     patches = [
         patch(f"{_RCP}.get_engagement_preferences", return_value=prefs or {}),
         patch(f"{_RCP}.get_or_create_profile_synthesis", return_value="voice"),
@@ -62,10 +75,15 @@ def _run(outputs, recent=None, prefs=None, post_id=77, log=None):
         patch(f"{_RCP}.update_db_post_shape"),
         patch(f"{_RCP}.get_thought_leadership_post_from_ai", gen),
         # Identity refinement passes so the gate sees the generator output verbatim.
-        patch(f"{_RCP}.get_ai_linked_post_refinement", side_effect=lambda c, **kw: c),
+        patch(f"{_RCP}.get_ai_linked_post_refinement", side_effect=_refine),
         patch(f"{_RCP}.optimize_post_hook", side_effect=lambda c, **kw: c),
         patch(f"{_RCP}.sanitize_for_linkedin", side_effect=lambda c, **kw: c),
         patch(f"{_RCP}.strip_engagement_bait", side_effect=lambda c, **kw: c),
+        patch(f"{_RCP}.humanize_text", side_effect=lambda c, **kw: c),
+        # The repair path records what it repaired (issue #1134) — no DB in a unit test.
+        patch(f"{_RCP}.update_db_post_gate_reason"),
+        patch(f"{_RCP}.get_post_gate_reason", return_value=[]),
+        patch(f"{_RCP}.mark_post_gate_demoted"),
         # Authenticity gate is exercised in test_authenticity_gate.py — no-op it here so the
         # similarity-gate tests stay focused (and don't attempt a real LLM/DB call).
         patch(f"{_RCP}._score_and_persist_authenticity"),
@@ -120,33 +138,40 @@ class TestSimilarityGate:
         assert out == _FRESH
         assert gen.call_count == 1
 
-    def test_near_duplicate_triggers_one_retry_with_avoid_directive(self):
-        out, gen = _run([_NEAR_DUP, _FRESH], recent=[_RECENT])
+    def test_near_duplicate_is_repaired_once_by_the_editor(self):
+        """Issue #1134: the WRITER is not asked again — the editor is handed this draft to fix."""
+        from cqc_lem.app import run_content_plan as rcp
+        with patch(f"{_RCP}._repair_draft", wraps=rcp._repair_draft) as repair:
+            out, gen = _run([_NEAR_DUP], recent=[_RECENT], repaired=_FRESH)
         assert out == _FRESH
-        assert gen.call_count == 2
-        retry_directive = gen.call_args_list[1].kwargs["history_directive"]
-        assert "TOO SIMILAR" in retry_directive
-        assert _RECENT[:80] in retry_directive  # the offending post is named explicitly
+        assert gen.call_count == 1
+        repair.assert_called_once()
+        findings = repair.call_args.args[2]
+        # _NEAR_DUP has no first-person proof either, so both checks are in the same brief.
+        assert [f["gate"] for f in findings] == ["similarity", "personal_proof"]
+        # The offending post is named explicitly, in the finding the review queue would show.
+        assert "Why routing LLM calls by complexity" in " ".join(findings[0]["details"])
 
-    def test_second_attempt_still_similar_keeps_it_and_warns(self):
+    def test_a_repair_that_is_still_similar_keeps_it_and_warns(self):
         log = MagicMock()
-        out, gen = _run([_NEAR_DUP, _NEAR_DUP], recent=[_RECENT], log=log)
+        out, gen = _run([_NEAR_DUP], recent=[_RECENT], log=log, repaired=_NEAR_DUP)
         assert out == _NEAR_DUP  # never loops, never blocks
-        assert gen.call_count == 2
+        assert gen.call_count == 1
         assert any("still similar" in str(c.args[0]) for c in log.call_args_list)
 
-    def test_retry_failure_keeps_first_draft(self):
+    def test_repair_failure_keeps_first_draft(self):
         log = MagicMock()
-        out, gen = _run([_NEAR_DUP, RuntimeError("llm down")], recent=[_RECENT], log=log)
+        out, gen = _run([_NEAR_DUP], recent=[_RECENT], log=log,
+                        repaired=RuntimeError("llm down"))
         assert out == _NEAR_DUP
-        assert gen.call_count == 2
+        assert gen.call_count == 1
 
     def test_threshold_env_override_allows_similar_content(self, monkeypatch):
         monkeypatch.setenv("POST_SIMILARITY_MAX", "0.99")
         monkeypatch.setenv("POST_PROOF_REGEN_ENABLED", "off")  # isolate the similarity gate
         out, gen = _run([_NEAR_DUP], recent=[_RECENT])
         assert out == _NEAR_DUP
-        assert gen.call_count == 1  # ceiling raised → no retry
+        assert gen.call_count == 1  # ceiling raised → no repair
 
     def test_no_recent_posts_no_gate(self, monkeypatch):
         monkeypatch.setenv("POST_PROOF_REGEN_ENABLED", "off")  # isolate the similarity gate
@@ -171,13 +196,15 @@ class TestEmbeddingFirstSimilarityGate:
         """Draft vector plus `count - 1` history vectors, at a chosen cosine to the draft."""
         return [[1.0, 0.0]] + [[cosine, (1 - cosine ** 2) ** 0.5]] * (count - 1)
 
-    def test_a_semantic_duplicate_over_the_ceiling_takes_the_one_retry_path(self):
+    def test_a_semantic_duplicate_over_the_ceiling_takes_the_one_repair_path(self):
         assert fw.text_similarity(self._SEMANTIC_DUP, _RECENT) < fw.POST_SIMILARITY_MAX_DEFAULT
-        with patch(f"{_FW}.embed_comments", side_effect=[self._vectors(0.9), self._vectors(0.1)]):
-            out, gen = _run([self._SEMANTIC_DUP, _FRESH], recent=[_RECENT])
+        from cqc_lem.app import run_content_plan as rcp
+        with patch(f"{_FW}.embed_comments", side_effect=[self._vectors(0.9), self._vectors(0.1)]), \
+             patch(f"{_RCP}._repair_draft", wraps=rcp._repair_draft) as repair:
+            out, gen = _run([self._SEMANTIC_DUP], recent=[_RECENT], repaired=_FRESH)
         assert out == _FRESH
-        assert gen.call_count == 2  # exactly one retry, same path the lexical gate has always taken
-        assert "TOO SIMILAR" in gen.call_args_list[1].kwargs["history_directive"]
+        assert gen.call_count == 1  # exactly one repair, and never a second draft from the writer
+        assert [f["gate"] for f in repair.call_args.args[2]] == ["similarity"]
 
     def test_under_the_ceiling_ships_untouched_and_costs_one_call(self):
         with patch(f"{_FW}.embed_comments", return_value=self._vectors(0.5)) as embed:
@@ -186,12 +213,13 @@ class TestEmbeddingFirstSimilarityGate:
         assert gen.call_count == 1
         assert embed.call_count == 1  # a clean draft costs exactly ONE lem-embedding call
 
-    def test_still_similar_after_the_retry_keeps_it_and_names_the_measure(self):
+    def test_still_similar_after_the_repair_keeps_it_and_names_the_measure(self):
         log = MagicMock()
         with patch(f"{_FW}.embed_comments", return_value=self._vectors(0.95)):
-            out, gen = _run([self._SEMANTIC_DUP, self._SEMANTIC_DUP], recent=[_RECENT], log=log)
+            out, gen = _run([self._SEMANTIC_DUP], recent=[_RECENT], log=log,
+                            repaired=self._SEMANTIC_DUP)
         assert out == self._SEMANTIC_DUP  # never loops, never blocks
-        assert gen.call_count == 2
+        assert gen.call_count == 1
         warning = next(str(c.args[0]) for c in log.call_args_list if "still similar" in str(c.args[0]))
         assert "embedding score" in warning
 
@@ -201,13 +229,13 @@ class TestEmbeddingFirstSimilarityGate:
         with patch(f"{_FW}.embed_comments", return_value=self._vectors(0.9)):
             out, gen = _run([self._SEMANTIC_DUP], recent=[_RECENT])
         assert out == self._SEMANTIC_DUP
-        assert gen.call_count == 1  # ceiling raised above the score → no retry
+        assert gen.call_count == 1  # ceiling raised above the score → no repair
 
     def test_an_embedding_outage_still_gates_on_token_overlap(self):
         with patch(f"{_FW}.embed_comments", return_value=None):
-            out, gen = _run([_NEAR_DUP, _FRESH], recent=[_RECENT])
+            out, gen = _run([_NEAR_DUP], recent=[_RECENT], repaired=_FRESH)
         assert out == _FRESH
-        assert gen.call_count == 2
+        assert gen.call_count == 1
 
 
 class TestAlignmentCheck:
@@ -252,7 +280,7 @@ class TestAlignmentCheck:
 
 class TestProofGate:
     """A2 personal-expertise gate: a finished post lacking a concrete first-person lived detail is
-    regenerated once (never hard-blocked); one that already carries proof ships untouched.
+    repaired once (never hard-blocked); one that already carries proof ships untouched.
     """
 
     def test_post_with_proof_passes_untouched(self):
@@ -260,36 +288,38 @@ class TestProofGate:
         assert out == _WITH_PROOF
         assert gen.call_count == 1
 
-    def test_post_without_proof_triggers_one_retry_with_proof_directive(self):
-        out, gen = _run([_NO_PROOF, _WITH_PROOF], recent=[])
+    def test_post_without_proof_is_repaired_once_with_the_proof_finding(self):
+        from cqc_lem.app import run_content_plan as rcp
+        with patch(f"{_RCP}._repair_draft", wraps=rcp._repair_draft) as repair:
+            out, gen = _run([_NO_PROOF], recent=[], repaired=_WITH_PROOF)
         assert out == _WITH_PROOF
-        assert gen.call_count == 2
-        retry_directive = gen.call_args_list[1].kwargs["history_directive"]
-        assert "FIRST-PERSON PROOF" in retry_directive
+        assert gen.call_count == 1
+        assert [f["gate"] for f in repair.call_args.args[2]] == ["personal_proof"]
 
-    def test_second_attempt_still_no_proof_keeps_it_and_warns(self):
+    def test_a_repair_still_without_proof_keeps_it_and_warns(self):
         log = MagicMock()
-        out, gen = _run([_NO_PROOF, _NO_PROOF], recent=[], log=log)
+        out, gen = _run([_NO_PROOF], recent=[], log=log, repaired=_NO_PROOF)
         assert out == _NO_PROOF  # never loops, never blocks
-        assert gen.call_count == 2
+        assert gen.call_count == 1
         assert any("lived detail" in str(c.args[0]) for c in log.call_args_list)
 
-    def test_proof_directive_sourced_from_synthesis(self):
-        # get_or_create_profile_synthesis is patched to "voice" in _run; the retry proof directive
-        # sources its concrete detail from that synthesis text.
-        _, gen = _run([_NO_PROOF, _WITH_PROOF], recent=[])
-        retry_directive = gen.call_args_list[1].kwargs["history_directive"]
-        assert "voice" in retry_directive
+    def test_the_proof_finding_is_sourced_from_the_synthesis(self):
+        # get_or_create_profile_synthesis is patched to "voice" in _run; the finding points the
+        # editor at that synthesis rather than letting it invent a lived detail.
+        from cqc_lem.app import run_content_plan as rcp
+        with patch(f"{_RCP}._repair_draft", wraps=rcp._repair_draft) as repair:
+            _run([_NO_PROOF], recent=[], repaired=_WITH_PROOF)
+        assert "voice" in " ".join(repair.call_args.args[2][0]["details"])
 
     def test_proof_regen_disabled_logs_but_keeps_first_draft(self, monkeypatch):
         monkeypatch.setenv("POST_PROOF_REGEN_ENABLED", "off")
         log = MagicMock()
         out, gen = _run([_NO_PROOF], recent=[], log=log)
         assert out == _NO_PROOF
-        assert gen.call_count == 1  # detector still runs, but regeneration is off
+        assert gen.call_count == 1  # detector still runs, but the repair is off
         assert any("lived detail" in str(c.args[0]) for c in log.call_args_list)
 
-    def test_retry_failure_keeps_first_draft(self):
-        out, gen = _run([_NO_PROOF, RuntimeError("llm down")], recent=[])
+    def test_repair_failure_keeps_first_draft(self):
+        out, gen = _run([_NO_PROOF], recent=[], repaired=RuntimeError("llm down"))
         assert out == _NO_PROOF
-        assert gen.call_count == 2
+        assert gen.call_count == 1

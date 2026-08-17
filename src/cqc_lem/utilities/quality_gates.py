@@ -23,6 +23,13 @@ GATE_FACT_GROUNDING = "fact_grounding"
 GATE_SLOP = "ai_slop"
 GATE_SLIDE_SLOP = "slide_ai_slop"
 GATE_AFFILIATE_PROMO = "affiliate_promo"
+# The two review-gate checks that had no finding shape until the repair pass needed one (issue
+# #1134). Both are built ONLY by `_review_generated_post`, never by `evaluate_post_gates` — they
+# describe why a draft was sent to the editor for repair, so nothing holds a post on them, and both
+# are therefore built ADVISORY (`demoted=False`): `demoting_findings` and the SPA's
+# `holdingFindings` read that flag as "this is why the draft is stuck", which these never are.
+GATE_PERSONAL_PROOF = "personal_proof"
+GATE_FABRICATION = "fabrication"
 
 GATE_LABELS = {
     GATE_AUTHENTICITY: "Authenticity",
@@ -35,6 +42,8 @@ GATE_LABELS = {
     GATE_SLOP: "AI-slop patterns",
     GATE_SLIDE_SLOP: "AI-slop patterns on the slides",
     GATE_AFFILIATE_PROMO: "Affiliate promotion",
+    GATE_PERSONAL_PROOF: "Missing personal proof",
+    GATE_FABRICATION: "Unsourced personal specifics",
 }
 
 # The user-tunable thresholds behind these gates, in the units the SPA edits them in. Bounds are
@@ -297,6 +306,51 @@ def affiliate_promo_finding(disclosure: Optional[str] = None) -> dict:
                      "does not sound like you, or delete the referral link and the disclosure line "
                      "to turn it back into an ordinary post."),
         details=[d for d in [str(disclosure or "").strip()] if d])
+
+
+def proof_finding(profile_synthesis: Optional[str] = None) -> dict:
+    """The A2 personal-proof slot is empty — the draft states nothing only this author could (#1134).
+
+    The sibling of `slop_finding` for the one review-gate check that never had a finding shape: the
+    repair pass needs the failure in the same structured form as the rest, so the editor is told
+    what to fix in the same vocabulary the review queue would have shown the author.
+    """
+    voice = str(profile_synthesis or "").strip()
+    return build_finding(
+        GATE_PERSONAL_PROOF,
+        explanation=("This draft carries no concrete first-person lived detail — the one thing in a "
+                     "post that cannot be written by anyone else. Without it the post reads as "
+                     "interchangeable thought leadership, which LinkedIn's 2026 ranking demotes."),
+        remediation=("Add one specific thing you actually did: a real number you measured, a client "
+                     "moment, the mistake you made and what it cost. Do not invent one — use a "
+                     "detail already in the draft's source material."),
+        # ADVISORY, never a hold: no gate builds this finding, so a post carrying it is not being
+        # held by it, and the SPA paints a `demoted` finding as the reason a draft is stuck.
+        demoted=False,
+        details=[f"Author voice reference: {voice[:400]}"] if voice else None)
+
+
+def fabrication_finding(specifics: Optional[list] = None) -> dict:
+    """First-person specifics in the draft that appear in NOTHING we supplied the writer (#1134).
+
+    The story-bank half of the no-fabrication rule (#620), as a structured finding. Distinct from
+    `fact_grounding_finding`, which grades a fact-anchored archetype's NUMBERS against the verified
+    anchor list: this one fires on any invented personal specific, whatever the archetype.
+    """
+    invented = [str(s).strip() for s in (specifics or []) if str(s).strip()]
+    return build_finding(
+        GATE_FABRICATION,
+        explanation=(f"This draft states {len(invented)} first-person specific(s) that appear in "
+                     f"none of the material it was written from — the model invented them about "
+                     f"you, and an invented detail under your name is the fastest way to lose the "
+                     f"audience's trust."),
+        remediation=("Cut each one, or replace it with a detail from your story bank. Never swap in "
+                     "a different invented specific."),
+        # ADVISORY for the same reason `proof_finding` is: nothing evaluates this gate, so it must
+        # never render as the finding holding the post.
+        demoted=False,
+        score=float(len(invented)), threshold=0.0,
+        details=[f"Unsourced specific: {s}" for s in invented[:10]])
 
 
 def parse_gate_findings(raw: Any) -> list[dict]:

@@ -62,7 +62,6 @@ from cqc_lem.utilities.ai.content_alignment import (
     lead_magnet_cta_directive,
     meeting_ask_excerpts,
     normalize_content_mix,
-    personal_proof_directive,
     profile_topic_dna,
     replace_meeting_ask_cta,
     score_authenticity,
@@ -79,7 +78,6 @@ from cqc_lem.utilities.ai.content_framework import (
     dwell_score_min,
     fact_anchored_formats,
     fact_grounding_report,
-    fact_retry_directive,
     has_first_person_proof,
     history_avoidance_directive,
     occasion_stage,
@@ -89,7 +87,7 @@ from cqc_lem.utilities.ai.content_framework import (
     shape_for_dwell,
     weekly_post_slots,
 )
-from cqc_lem.utilities.ai.slop_lint import lint_report as slop_lint_report, slop_retry_directive, violation_reasons
+from cqc_lem.utilities.ai.slop_lint import lint_report as slop_lint_report, violation_reasons
 from cqc_lem.utilities.content_generation_status import (
     ContentGenerationEmptyReason,
     mark_empty,
@@ -121,6 +119,7 @@ from cqc_lem.utilities.db import (
     get_post_authenticity_score,
     get_post_content,
     get_post_content_mix,
+    get_post_ever_gate_demoted,
     get_post_gate_reason,
     get_post_type_counts,
     get_recent_post_shape_history,
@@ -134,6 +133,7 @@ from cqc_lem.utilities.db import (
     get_user_sitemap_url,
     get_user_timezone,
     insert_planned_post,
+    mark_post_gate_demoted,
     normalize_posting_days,
     record_story_bank_use,
     update_db_post_authenticity_score,
@@ -187,11 +187,13 @@ from cqc_lem.utilities.quality_gates import (
     affiliate_promo_finding,
     authenticity_finding,
     demoting_findings,
+    fabrication_finding,
     fact_grounding_finding,
     focus_finding,
     malformed_asset_finding,
     meeting_cta_finding,
     missing_asset_finding,
+    proof_finding,
     similarity_finding,
     slide_slop_finding,
     slop_finding,
@@ -2338,15 +2340,80 @@ def _post_archetype_or_none(post_id: int) -> Optional[str]:
         return None
 
 
-def _persist_gate_findings(user_id: int, post_id: int, findings: list[dict]) -> None:
+def _persist_gate_findings(user_id: int, post_id: int, findings: list[dict],
+                           mark_repaired: bool = False) -> None:
     """Best-effort write of the gate findings onto the post (issue #421). The reason is review UX —
     losing it must never fail generation or a re-score.
+
+    `mark_repaired` (issue #1134) additionally raises `posts.ever_gate_demoted`, and ONLY the review
+    gate's repair path passes it. Every pre-existing caller — the generation-time gate pass, the
+    re-score's promote-on-pass path, the regenerate path — stays at the default and is untouched.
+    A forgotten `mark_repaired=True` therefore fails SAFE in the boring direction: the post
+    under-reports having been repaired and auto-approves as it did before this change; it can never
+    hold a post that was never repaired.
+
+    Args:
+        user_id: the author, for log context.
+        post_id: the post the findings belong to. None (a preview draft with no row) writes nothing.
+        findings: the structured findings to record, replacing whatever was there.
+        mark_repaired: True only from the repair path — this draft's text was fixed by the editor
+            rather than written clean.
     """
+    if post_id is None:
+        return
     try:
         update_db_post_gate_reason(post_id, findings)
     except Exception as e:
         log_warning("Could not persist the gate findings — a held post will show no reason", exc=e,
                     user_id=user_id, post_id=post_id, task_name="create_content")
+    if not mark_repaired:
+        return
+    try:
+        mark_post_gate_demoted(post_id)
+    except Exception as e:
+        log_warning("Could not record that this post went through the repair pass — it will "
+                    "auto-schedule without the repaired-post hold", exc=e, user_id=user_id,
+                    post_id=post_id, task_name="create_content")
+
+
+def _may_auto_approve(user_id: int, post_id: int, auto_schedule: bool,
+                      findings: list[dict]) -> bool:
+    """The ONE approve decision (issue #1134), shared by generation time and the re-score.
+
+    Both call sites read it, so the promote-on-pass path and the generation-time status setter can
+    never drift. Three things have to hold: the user asked for auto-scheduling, nothing in THIS pass's findings
+    demotes, and the post did not reach a passing verdict by being repaired — unless the user
+    switched `hold_repaired_posts_for_review` off. A draft that failed a deterministic check and
+    passed only after the editor pass is precisely the post nobody has ever read, so the default is
+    to put it in front of its author once; the toggle is what keeps that a configurable choice
+    rather than autonomy silently taken away.
+
+    Fail-open on both reads, matching the gates' own posture ("never blocks when unscored"): an
+    unreadable flag or prefs row costs the extra review, never the publish.
+
+    Args:
+        user_id: the author, whose toggle decides what a repaired post costs.
+        post_id: the post being approved.
+        auto_schedule: the user's `auto_schedule_posts` preference, already read by the caller.
+        findings: this pass's gate findings.
+
+    Returns:
+        True when the post may go APPROVED without a human reading it.
+    """
+    if not auto_schedule or demoting_findings(findings):
+        return False
+    if post_id is None or not get_post_ever_gate_demoted(post_id):
+        return True
+    # The `.get` default only decides the UNREADABLE-prefs case: a real row always carries the key
+    # (db fills every default in), and an unreadable one hands back {} — where holding a post the
+    # user may well have wanted scheduled is the wrong way to fail, so that case does not hold.
+    hold = bool(_engagement_prefs_or_empty(user_id).get("hold_repaired_posts_for_review", False))
+    if hold:
+        # INFO, not a warning: holding a repaired post is this feature working, and it fires on
+        # every repaired post a user with the default toggle writes.
+        log_info("Holding this post for review — its text was repaired after failing a quality "
+                 "check", user_id=user_id, post_id=post_id, task_name="create_content")
+    return not hold
 
 
 def _engagement_prefs_or_empty(user_id: int) -> dict:
@@ -2413,10 +2480,17 @@ def rescore_post(post_id: int) -> dict:
     detail = "Still held for review" if not passed else "Passed every quality gate"
     if passed and status == PostStatus.PENDING.value:
         auto_schedule = bool((get_user_preferences(user_id) or {}).get("auto_schedule_posts", True))
-        if auto_schedule:
+        # Same helper as the generation-time decision (issue #1134), so a repaired post cannot be
+        # promoted here by a re-score that the author never actually read. `_persist_gate_findings`
+        # above is a PRE-EXISTING caller and stays at `mark_repaired=False`: re-scoring grades the
+        # text, it does not repair it.
+        if _may_auto_approve(user_id, post_id, auto_schedule, findings):
             update_db_post_status(post_id, PostStatus.APPROVED)
             status = PostStatus.APPROVED.value
             detail = "Passed every quality gate — approved and queued"
+        elif auto_schedule:
+            detail = ("Passed every quality gate — approve it when you're ready "
+                      "(this draft was repaired after failing a check, so it waits for you)")
         else:
             detail = ("Passed every quality gate — approve it when you're ready "
                       "(auto-scheduling is off)")
@@ -2472,6 +2546,101 @@ def _fabricated_specifics(content: str, story: Optional[dict],
         content, _story_bank.fact_sources(story, profile_synthesis, *extra_sources))
 
 
+def _review_gate_findings(similarity: Optional[dict], *, proof_missing: bool,
+                          fabricated: Optional[list], fact_report: Optional[dict],
+                          slop: Optional[dict],
+                          profile_synthesis: Optional[str] = None) -> list[dict]:
+    """The review gate's deterministic failures as structured findings (issue #1134).
+
+    The same vocabulary `evaluate_post_gates` speaks, built from the measurements the review gate
+    has already taken — so the editor's repair brief and the reason recorded on the post are one
+    thing, not two paraphrases of it. Pass a verdict as None/empty to say that check passed.
+
+    Args:
+        similarity: the near-duplicate verdict, only when it failed. None leaves the similarity
+            finding to `_record_post_similarity_finding`, which owns that half of `gate_reason`.
+        proof_missing: the A2 personal-proof slot came back empty.
+        fabricated: first-person specifics the supplied material does not contain.
+        fact_report: the fact-grounding report, only when it found unverified specifics.
+        slop: the slop-lint report, only when a HARD check fired.
+        profile_synthesis: the author's voice brief, which the proof finding points the editor at.
+
+    Returns:
+        The findings, in the order the checks are named in the review gate. Empty when the draft
+        under measurement failed nothing.
+    """
+    findings: list[dict] = []
+    if similarity:
+        findings.append(similarity_finding(similarity["score"], similarity["threshold"],
+                                           similarity["match"], measure=similarity["measure"]))
+    if proof_missing:
+        findings.append(proof_finding(profile_synthesis))
+    if fabricated:
+        findings.append(fabrication_finding(fabricated))
+    if fact_report and fact_report.get("unverified"):
+        findings.append(fact_grounding_finding(fact_report["unverified_values"],
+                                               fact_report.get("placeholders")))
+    if slop and not slop.get("passes", True):
+        findings.append(slop_finding(violation_reasons(slop["hard"]),
+                                     violation_reasons(slop.get("warnings"))))
+    return findings
+
+
+def _repair_draft(ctx: PostDraftContext, content: str, findings: list[dict],
+                  cta_keyword: Optional[str], story: Optional[dict] = None) -> Optional[str]:
+    """Hand a failing draft to the EDITOR to fix (issue #1134) — the review gate's repair pass.
+
+    This is the whole point of the change: a deterministic check failing used to be answered by the
+    writer composing again against the same brief, which is a second attempt by the same author,
+    not a second opinion. `get_ai_linked_post_refinement` is a different prompt family — an editor
+    revising a finished draft — and it is handed the findings themselves, so it is fixing named
+    faults in THIS text rather than writing new text that might miss them differently.
+
+    The editor is handed the WRITER's own story-bank directive alongside the findings. Without it
+    the two findings that name a first-person specific — proof and fabrication — are unanswerable:
+    they ask for a real lived detail to be added or substituted while banning invention, and the
+    editor can see only the draft. The writer had that material (it is `ctx.story_directive`, the
+    same string `_draft_from_source` used), and it carries the bank's own absolute rule that its
+    facts are the ONLY personal specifics allowed — so passing it both enables the repair and
+    bounds it. No entry means the no-story directive, which is that rule with nothing to draw on.
+
+    The deterministic passes the first draft went through run again over the edit (LinkedIn
+    sanitisation, the engagement-bait strip, then the humanize pass), so the repaired draft is
+    graded on the same footing as the one it replaces.
+
+    Fails soft: any exception, or an editor that returns nothing, leaves the caller with the first
+    draft — the gates still hold it, which is exactly what they are for.
+
+    Args:
+        ctx: the settled inputs this post was written from.
+        content: the failing draft.
+        findings: what to fix, from `_review_gate_findings`.
+        cta_keyword: the sanctioned lead-magnet trigger word the edit must preserve.
+        story: the story-bank entry the draft was anchored to, used only to rebuild the directive
+            when the context never carried one.
+
+    Returns:
+        The repaired draft, or None when the repair produced nothing usable.
+    """
+    try:
+        repaired = get_ai_linked_post_refinement(
+            content, prefs=ctx.prefs, preserve_cta_keyword=cta_keyword,
+            repair_findings=findings,
+            repair_source_material=ctx.story_directive or _story_bank.story_directive(story))
+        if not repaired:
+            return None
+        repaired = strip_engagement_bait(sanitize_for_linkedin(repaired),
+                                         exempt_keyword=cta_keyword).strip()
+        if not repaired:
+            return None
+        return humanize_text(repaired, content_type="post",
+                             profile_synthesis=ctx.profile_synthesis, prefs=ctx.prefs)
+    except Exception as e:
+        log_warning("Review-gate repair pass failed; keeping first draft", exc=e,
+                    user_id=ctx.user_id, post_id=ctx.post_id, task_name="create_text_post")
+        return None
+
+
 @llm_step("review")
 def _review_generated_post(ctx: PostDraftContext, content: str, recent_texts: list,
                            story: Optional[dict] = None,
@@ -2484,10 +2653,17 @@ def _review_generated_post(ctx: PostDraftContext, content: str, recent_texts: li
     fact-anchored archetype (#619) the numbers get a second pass too — any figure the post asserts
     that NOTHING in the user's verified bank backs. Too similar (> POST_EMBEDDING_SIMILARITY_MAX, or
     > POST_SIMILARITY_MAX on the degraded path),
-    missing proof, fabricated specifics, or unverified numbers → regenerate ONCE with an explicit
-    avoid/proof/no-invention directive; still failing → log a structured warning and keep the second
-    attempt (never loop, never hard-block — the GATES are what hold a still-failing draft out of
-    auto-publish). Also runs the cheap focus-alignment check on whatever content ships.
+    missing proof, fabricated specifics, or unverified numbers → REPAIR the draft ONCE through the
+    editor (`_repair_draft`, issue #1134) with the failures named as structured findings; still
+    failing → log a structured warning and keep the repaired draft (never loop, never hard-block —
+    the GATES are what hold a still-failing draft out of auto-publish). Also runs the cheap
+    focus-alignment check on whatever content ships.
+
+    Repairing rather than re-writing is the point (issue #1134): the retry used to re-enter the
+    generate/refine core, which is the same author having a second go at the same brief. The
+    failure is now handed to a different prompt family — an editor revising THIS text — and the
+    fact that a draft needed that is recorded once on `posts.ever_gate_demoted`, because no later
+    pass can re-derive it: by the time the gates run, the draft that failed is gone.
 
     The similarity verdict on the draft this returns is RECORDED on the post (issue #1452) so
     `_gate_findings_for_post` can hold a still-over draft at PENDING without paying a second
@@ -2496,8 +2672,8 @@ def _review_generated_post(ctx: PostDraftContext, content: str, recent_texts: li
 
     Args:
         ctx: everything the draft under review was written from (issue #1217) — the same context
-            its regeneration is dispatched with, so the retry cannot be steered off the post that
-            was planned.
+            the repair pass reads its prefs and voice brief from, so the edit cannot be steered off
+            the post that was planned.
         content: the finished draft to grade.
         recent_texts: the user's recent posts, already loaded by the caller.
         story: the story-bank entry the draft was anchored to, or None when the bank grounded
@@ -2506,7 +2682,7 @@ def _review_generated_post(ctx: PostDraftContext, content: str, recent_texts: li
             engagement-bait check.
 
     Returns:
-        The draft that ships — the first one, or the single regeneration when it graded better.
+        The draft that ships — the first one, or the single repaired edit of it.
     """
     user_id, post_id = ctx.user_id, ctx.post_id
     prefs, profile_synthesis = ctx.prefs, ctx.profile_synthesis
@@ -2514,7 +2690,7 @@ def _review_generated_post(ctx: PostDraftContext, content: str, recent_texts: li
     lead_magnet_cta = ctx.lead_magnet_cta
 
     similarity = post_similarity_report(content, recent_texts, prefs)
-    score, threshold, match = similarity["score"], similarity["threshold"], similarity["match"]
+    score, threshold = similarity["score"], similarity["threshold"]
     too_similar = similarity["too_similar"]
     missing_proof = not has_first_person_proof(content)
     proof_regen = missing_proof and _proof_regen_enabled()
@@ -2559,60 +2735,63 @@ def _review_generated_post(ctx: PostDraftContext, content: str, recent_texts: li
                        + ", ".join(fact_report["unverified_values"][:5]) + ")")
     if slopped:
         reasons.append("trips the AI-slop lint (" + "; ".join(violation_reasons(slop["hard"])) + ")")
-    log_info(f"Post {'; '.join(reasons)} — retrying once with an explicit avoid/proof directive")
+    log_info(f"Post {'; '.join(reasons)} — repairing once with the editor pass")
 
-    retry_directive = history_avoidance_directive(
-        recent_texts, offending_text=match if too_similar else None)
-    if proof_regen:
-        retry_directive += personal_proof_directive(profile_synthesis)
-    if fabrication_regen:
-        retry_directive += _story_bank.fabrication_repair_directive(fabricated)
-    if unverified:
-        retry_directive += fact_retry_directive(fact_report)
-    if slopped:
-        retry_directive += slop_retry_directive(slop["hard"])
-    try:
-        # Back into the generate/refine CORE, not into create_text_post (issue #1217): the profile,
-        # story anchor, blueprint and lead magnet are already settled, and re-entering the whole
-        # function is what used to make the once-per-post gates a flag-suppression problem.
-        second, _ = _compose_draft(ctx.with_history_directive(retry_directive),
-                                   cta_keyword=cta_keyword, bait_exempt_keyword=cta_keyword)
-    except Exception as e:
-        log_warning("Review-gate retry generation failed; keeping first draft", exc=e,
-                    user_id=user_id, post_id=post_id, task_name="create_text_post")
-        second = None
+    # The failure, in the structured form the review queue speaks (issue #1134) — it is both what
+    # the editor is briefed with and what is recorded on the post, so the author and the model are
+    # told the same thing about the same draft.
+    findings = _review_gate_findings(
+        similarity if too_similar else None,
+        proof_missing=proof_regen, fabricated=fabricated if fabrication_regen else [],
+        fact_report=fact_report if unverified else None, slop=slop if slopped else None,
+        profile_synthesis=profile_synthesis)
+    _persist_gate_findings(user_id, post_id, findings, mark_repaired=True)
+
+    second = _repair_draft(ctx, content, findings, cta_keyword, story=story)
     if not second:
         # The first draft is what ships, so ITS verdict is the one the gate pass must read.
         _record_post_similarity_finding(post_id, similarity, user_id=user_id)
         _check_post_alignment(content, prefs, user_id, post_id, user_profile, profile_synthesis)
         return content
 
-    # Re-graded, not re-used: the retry is a different draft, and the second embedding call only
-    # happens on the retry path (a clean first draft still costs exactly one).
+    # Re-graded, not re-used: the repaired draft is different text, and the second embedding call
+    # only happens on the repair path (a clean first draft still costs exactly one).
     second_similarity = post_similarity_report(second, recent_texts, prefs)
+    still_fabricated = _fabricated_specifics(second, story, profile_synthesis, lead_magnet_cta)
+    second_fact_report = fact_grounding_report(second, anchors) if fact_report is not None else None
+    second_slop = slop_lint_report(second, "post", exempt_keyword=cta_keyword)
+    # Recorded BEFORE the similarity verdict is merged in: this write replaces the column, and
+    # `_record_post_similarity_finding` is what owns the similarity half of it. An empty list is
+    # the meaningful case, not a no-op — it clears the first draft's findings off a post whose
+    # repair worked. Still `mark_repaired=True`: the flag is about the text having been repaired,
+    # which no later verdict can undo.
+    _persist_gate_findings(user_id, post_id, _review_gate_findings(
+        None,  # the similarity finding is `_record_post_similarity_finding`'s to write
+        proof_missing=not has_first_person_proof(second), fabricated=still_fabricated,
+        fact_report=second_fact_report if (second_fact_report or {}).get("unverified") else None,
+        slop=second_slop if not second_slop["passes"] else None,
+        profile_synthesis=profile_synthesis), mark_repaired=True)
     _record_post_similarity_finding(post_id, second_similarity, user_id=user_id)
     if second_similarity["too_similar"]:
-        log_warning(f"Post still similar to a recent post after retry "
+        log_warning(f"Post still similar to a recent post after repair "
                     f"({second_similarity['measure']} score {second_similarity['score']:.2f} > "
                     f"max {second_similarity['threshold']:.2f}); the similarity gate will hold it "
                     f"for review",
                     user_id=user_id, post_id=post_id, task_name="create_text_post")
     if not has_first_person_proof(second):
-        log_warning("Post still lacks a concrete first-person lived detail after retry "
-                    "(A2 proof slot); keeping second attempt",
+        log_warning("Post still lacks a concrete first-person lived detail after repair "
+                    "(A2 proof slot); keeping the repaired draft",
                     user_id=user_id, post_id=post_id, task_name="create_text_post")
-    still_fabricated = _fabricated_specifics(second, story, profile_synthesis, lead_magnet_cta)
     if still_fabricated:
-        log_warning(f"Post still states first-person specifics not in the story bank after retry "
-                    f"({', '.join(still_fabricated)}); keeping second attempt",
+        log_warning(f"Post still states first-person specifics not in the story bank after repair "
+                    f"({', '.join(still_fabricated)}); keeping the repaired draft",
                     user_id=user_id, post_id=post_id, task_name="create_text_post")
-    if fact_report is not None and fact_grounding_report(second, anchors)["unverified"]:
-        log_warning("Post still states unverified specifics after retry — the fact-grounding gate "
+    if second_fact_report is not None and second_fact_report["unverified"]:
+        log_warning("Post still states unverified specifics after repair — the fact-grounding gate "
                     "will hold it for review",
                     user_id=user_id, post_id=post_id, task_name="create_text_post")
-    second_slop = slop_lint_report(second, "post", exempt_keyword=cta_keyword)
     if not second_slop["passes"]:
-        log_warning("Post still trips the AI-slop lint after retry — the ai_slop gate will hold it "
+        log_warning("Post still trips the AI-slop lint after repair — the ai_slop gate will hold it "
                     "for review: " + "; ".join(violation_reasons(second_slop["hard"])),
                     user_id=user_id, post_id=post_id, task_name="create_text_post")
     _check_post_alignment(second, prefs, user_id, post_id, user_profile, profile_synthesis)
@@ -3936,7 +4115,6 @@ def _create_content_for_planned_post(post: dict, prefs: dict) -> bool:
         # Respect the user's auto_schedule_posts preference (fetched once per user by the caller):
         # True → APPROVED (Celery will pick it up); False → PENDING (manual review required)
         auto_schedule = bool((prefs or {}).get("auto_schedule_posts", True))
-        new_status = PostStatus.APPROVED if auto_schedule else PostStatus.PENDING
 
         # Quality gates (issues #382 / #421): a video/carousel post whose media failed to generate,
         # or a draft the authenticity judge scored below the user's minimum, is held PENDING for
@@ -3945,11 +4123,16 @@ def _create_content_for_planned_post(post: dict, prefs: dict) -> bool:
         # never upgrades a PENDING, never blocks when unscored.
         gate_findings = _gate_findings_for_post(user_id, post_id, content, post_type, video_url)
         held_by = demoting_findings(gate_findings)
-        if held_by and new_status == PostStatus.APPROVED:
-            new_status = PostStatus.PENDING
+        if held_by and auto_schedule:
             log_warning(f"post_id {post_id}: held PENDING for review — "
                         f"{'; '.join(f['explanation'] for f in held_by)}",
                         user_id=user_id, post_id=post_id, task_name="create_content")
+        # The ONE approve decision (issue #1134) — also the place a REPAIRED post is held even
+        # though every gate now passes. `mark_repaired` is deliberately not passed here: this is a
+        # pre-existing call site and the flag is only ever raised by the repair path itself.
+        new_status = (PostStatus.APPROVED
+                      if _may_auto_approve(user_id, post_id, auto_schedule, gate_findings)
+                      else PostStatus.PENDING)
         _persist_gate_findings(user_id, post_id, gate_findings)
 
         log_info(f"Updating post_id: {post_id} Status={new_status}")
