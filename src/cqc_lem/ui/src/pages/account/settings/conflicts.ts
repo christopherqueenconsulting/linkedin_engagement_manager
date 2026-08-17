@@ -1,6 +1,7 @@
 import type { EngagementTarget, EngPrefs, LeadMagnet, NewsletterSettings, UserPrefs } from '../types'
 import { ROSTER_BLOCKED_BADGE_STREAK } from '../types'
 import { FIELD_LIMITS } from '../fieldLimits'
+import { DEFAULT_POSTING_DAYS, weekdayLabels, weeklyPostSlots } from './options'
 import type { SectionKey } from './sections'
 
 // When a blocked roster stops being a per-row badge and becomes an account-level problem (issue
@@ -323,7 +324,7 @@ export function evaluateConflicts(ctx: ConflictContext): Finding[] {
   }
   // C28 — the day allow-list is the harder bound (issue #581). Silently publishing fewer times
   // than the cadence says is exactly the kind of gap a settings screen exists to surface.
-  const days = eng.posting_days?.length ? eng.posting_days : [0, 1, 2, 3, 4]
+  const days = eng.posting_days?.length ? eng.posting_days : DEFAULT_POSTING_DAYS
   if (cadence > days.length) {
     out.push({
       id: 'C28', severity: 'warn', section: 'content', anchor: 'posting_days',
@@ -333,6 +334,21 @@ export function evaluateConflicts(ctx: ConflictContext): Finding[] {
       ...(days.length >= 2
         ? { fix: { label: `Match the cadence to ${days.length} a week`, patch: { posts_per_week: days.length } } }
         : {}),
+    })
+  }
+  // C31 — the mirror of C28 (issue #1526): more days switched on than the cadence fills. The
+  // cadence is the count and the allow-list only says which days are eligible, so the extra days
+  // are silently unused — reported as "I picked 7 days and still only get 3". Severity depends on
+  // whether the user actually chose those days: Mon-Fri is the shipped default and must not render
+  // as an alarm on a settings screen nobody has touched, but a day someone deliberately switched on
+  // and never gets a post is exactly the silent gap this screen exists to surface.
+  if (days.length > cadence) {
+    const chosen = days.length !== DEFAULT_POSTING_DAYS.length
+      || days.some((d, i) => d !== DEFAULT_POSTING_DAYS[i])
+    out.push({
+      id: 'C31', severity: chosen ? 'warn' : 'inform', section: 'content', anchor: 'posts_per_week',
+      message: `You have ${days.length} days switched on but publish ${cadence} times a week, so the plan uses ${weekdayLabels(weeklyPostSlots(cadence, days))} and leaves the other ${days.length - cadence} unused.`,
+      fix: { label: `Publish on all ${days.length} days`, patch: { posts_per_week: days.length } },
     })
   }
   // C29 — the company-page cap is bounded by the account-wide invite cap (issue #732), so a bigger

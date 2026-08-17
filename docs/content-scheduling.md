@@ -28,3 +28,28 @@ day-type calendar is shaped.
 Best-posting-time logic decides only the HOUR within an eligible day. An empty or invalid day set
 is normalized back to Mon–Fri rather than left empty (an empty set would mean zero eligible days,
 silently halting the plan).
+
+### More days switched on than the cadence fills (issue #1526)
+
+Because the cadence is the count, switching a day on does NOT add a post — it only makes that day
+eligible. Switching on all seven with `posts_per_week=3` still publishes three times a week, which
+was reported as a hard limit that could not be raised. Both halves of the plan now say so:
+
+- The settings screen carries finding **C31** (`ui/.../settings/conflicts.ts`) naming the days the
+  cadence actually fills, with a one-click fix that raises `posts_per_week` to the number of days
+  switched on. It is never a block: `inform` while the day set is the untouched Mon–Fri default, and
+  `warn` once the user has deliberately switched a day on that never carries a post.
+- `_cadence_slots` logs the same fact at DEBUG. It is the ordinary case at the shipped default, so
+  it is never a warning.
+
+## Source rotation (issue #1526)
+
+The archetype a text post is written FROM — `thought_leadership`, `blog_summary`,
+`website_content`, `industry_news`, `personal_story`, `engagement_prompt` — used to be an
+unweighted random draw per post. At 3/week that is ~13 draws a month over six sources, so a source
+could go a whole month without coming up (reported as "no new story or blog-aligned posts").
+
+`_post_source_for_slot` rotates on the planned row's id instead, so consecutive slots cover every
+source; `_next_source_in_rotation` keeps rotating when a source is missing (no blog, no sitemap)
+rather than re-drawing into the same starvation. A draft with no planned row — a preview, a one-off
+regeneration — has no slot to rotate on and keeps the random draw.
