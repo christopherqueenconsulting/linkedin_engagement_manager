@@ -157,14 +157,18 @@ class TestTotpAtRest:
     def test_a_code_cannot_be_used_twice_across_the_drift_window(self, user_id, encryption_key):
         secret = pyotp.random_base32()
         db.upsert_totp_factor(user_id, secret)
-        assert af.confirm_totp_enrollment(user_id, pyotp.TOTP(secret).now()) is True
+        # Both codes come off ONE captured moment: a second `.now()` taken after the step rolls
+        # over is a different step, which the counter is supposed to accept — the replay claim is
+        # only about the same step, so re-reading the clock tests nothing and flakes at the boundary.
+        totp = pyotp.TOTP(secret)
+        moment = int(time.time())
+        assert af.confirm_totp_enrollment(user_id, totp.at(moment)) is True
 
         # The confirmation already spent this step, so the same code must not verify again.
-        assert af.verify_totp_code(user_id, pyotp.TOTP(secret).now()) is False
+        assert af.verify_totp_code(user_id, totp.at(moment)) is False
         # ...and a code from the FUTURE step does, which is what proves the guard is the counter
         # and not a blanket refusal.
-        future = pyotp.TOTP(secret).at(int(time.time()) + 30)
-        assert af.verify_totp_code(user_id, future) is True
+        assert af.verify_totp_code(user_id, totp.at(moment + totp.interval)) is True
 
 
 class TestRecoveryCodes:

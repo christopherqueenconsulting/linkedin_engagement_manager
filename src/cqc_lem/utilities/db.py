@@ -113,15 +113,20 @@ from cqc_lem.platform.db.repositories.auth import (
     verify_pin_for_email,
 )
 from cqc_lem.platform.db.repositories.avatar import (
+    _AVATAR_COLUMNS,
     AVATAR_APPROVAL_APPROVED,
     AVATAR_APPROVAL_REJECTED,
+    _avatar_row_to_dict,
     add_avatar_credits,
     add_video_credits,
     claim_avatar_sample_render,
     deduct_avatar_credit,
     deduct_video_credits,
+    get_active_avatar,
     get_avatar_credit_balance,
     get_avatar_credit_ledger_entry_by_session,
+    get_avatar_training,
+    get_avatar_trainings,
     get_video_credit_balance,
     get_video_credit_ledger_entry_by_session,
     insert_avatar_training,
@@ -217,10 +222,15 @@ from cqc_lem.platform.db.repositories.feedback import (
     upsert_story_bank_entries,
 )
 from cqc_lem.platform.db.repositories.groups import (
+    _GROUP_POST_DRAFT_COLUMNS,
+    _group_post_draft_row,
     create_group_post_draft,
     disable_user_groups,
+    get_current_group_post_draft,
     get_enabled_group_ids,
+    get_group_post_draft,
     get_next_group_for_post,
+    get_open_group_post_draft,
     get_post_enabled_group_ids,
     get_user_groups,
     record_group_post,
@@ -1076,6 +1086,16 @@ __all__ = [
     "get_db_connection",
     "reset_connection_pool",
     "to_naive_utc",
+    "_AVATAR_COLUMNS",
+    "_avatar_row_to_dict",
+    "get_active_avatar",
+    "get_avatar_training",
+    "get_avatar_trainings",
+    "_GROUP_POST_DRAFT_COLUMNS",
+    "_group_post_draft_row",
+    "get_current_group_post_draft",
+    "get_group_post_draft",
+    "get_open_group_post_draft",
 ]
 
 # Load .env file
@@ -2933,80 +2953,16 @@ def get_catchup_touch_user_id(touch_id: int) -> Optional[int]:
 
 
 
-def _group_post_draft_row(row: dict) -> dict:
-    row = dict(row)
-    for col in ("created_at", "updated_at", "published_at"):
-        val = row.get(col)
-        row[col] = val.isoformat() if hasattr(val, "isoformat") else val
-    return row
 
 
 
 
-_GROUP_POST_DRAFT_COLUMNS = ("id, user_id, group_id, group_name, content, media_url, media_type, "
-                             "status, created_at, updated_at, published_at")
 
 
-def get_open_group_post_draft(user_id: int) -> Optional[dict]:
-    """The user's ONE open group-post draft, or None when nothing is waiting.
-
-    This is the row the weekly publish run consumes and the one the draft beat checks for before
-    writing another.
-
-    READY only: a SKIPPED draft is not open, so skipping this week lets the next beat draft afresh.
-    The SPA reads `get_current_group_post_draft` instead, because a user who skipped by accident has
-    to be able to see the draft to restore it (issue #1224).
-    """
-    try:
-        with db_cursor(dictionary=True) as cursor:
-            cursor.execute(
-                f"SELECT {_GROUP_POST_DRAFT_COLUMNS} FROM group_post_drafts "
-                "WHERE user_id=%s AND status=%s ORDER BY id DESC LIMIT 1",
-                (user_id, str(GroupPostDraftStatus.READY)))
-            row = cursor.fetchone()
-            return _group_post_draft_row(row) if row else None
-    except mysql.connector.Error as err:
-        log_error("Could not read the open group post draft", exc=err, user_id=user_id)
-        return None
 
 
-def get_current_group_post_draft(user_id: int) -> Optional[dict]:
-    """The group-post draft the Content Studio shows (issue #1224).
-
-    The user's newest draft that is still THEIRS to decide: READY, or SKIPPED and therefore
-    restorable.
-
-    An open draft always wins over a skipped one, whatever their ids say, so restoring an old skip
-    can never hide the post that is about to ship. PUBLISHED and FAILED rows are history and are
-    never returned — there is nothing left to edit on them.
-    """
-    try:
-        with db_cursor(dictionary=True) as cursor:
-            cursor.execute(
-                f"SELECT {_GROUP_POST_DRAFT_COLUMNS} FROM group_post_drafts "
-                "WHERE user_id=%s AND status IN (%s, %s) "
-                "ORDER BY status = %s DESC, id DESC LIMIT 1",
-                (user_id, str(GroupPostDraftStatus.READY), str(GroupPostDraftStatus.SKIPPED),
-                 str(GroupPostDraftStatus.READY)))
-            row = cursor.fetchone()
-            return _group_post_draft_row(row) if row else None
-    except mysql.connector.Error as err:
-        log_error("Could not read the current group post draft", exc=err, user_id=user_id)
-        return None
 
 
-def get_group_post_draft(draft_id: int) -> Optional[dict]:
-    """One group-post draft by id, normalised for the API, or None when missing or unreadable."""
-    try:
-        with db_cursor(dictionary=True) as cursor:
-            cursor.execute(
-                f"SELECT {_GROUP_POST_DRAFT_COLUMNS} FROM group_post_drafts WHERE id=%s",
-                (draft_id,))
-            row = cursor.fetchone()
-            return _group_post_draft_row(row) if row else None
-    except mysql.connector.Error as err:
-        log_error("Could not read group post draft", exc=err, task_name="get_group_post_draft")
-        return None
 
 
 
@@ -3468,93 +3424,14 @@ def list_existing_double_sent_catchups() -> list[dict]:
 
 
 
-_AVATAR_COLUMNS = """id, training_id, model_ref, trigger_word, status, is_active,
-                     gender_presentation, age_band, attributes_confirmed_at,
-                     approval_status, approved_at, sample_paths, samples_generated_at,
-                     sample_regen_count, created_at, updated_at"""
 
 
-def _avatar_row_to_dict(row: dict) -> dict:
-    """One shape for an avatar row everywhere — the guardrails read approval_status and the
-    subject clause reads the declared attributes, so neither may depend on which query ran.
-    """
-    try:
-        samples = json.loads(row.get("sample_paths") or "[]")
-    except (TypeError, ValueError):
-        samples = []
-    return {
-        "id": row["id"],
-        "training_id": row["training_id"],
-        "model_ref": row["model_ref"],
-        "trigger_word": row["trigger_word"],
-        "status": row["status"],
-        "is_active": bool(row.get("is_active")),
-        "gender_presentation": row.get("gender_presentation"),
-        "age_band": row.get("age_band"),
-        "attributes_confirmed_at": (row["attributes_confirmed_at"].isoformat()
-                                    if row.get("attributes_confirmed_at") else None),
-        "approval_status": row.get("approval_status") or AVATAR_APPROVAL_PENDING,
-        "approved_at": row["approved_at"].isoformat() if row.get("approved_at") else None,
-        "sample_paths": samples if isinstance(samples, list) else [],
-        "samples_generated_at": (row["samples_generated_at"].isoformat()
-                                 if row.get("samples_generated_at") else None),
-        "sample_regen_count": int(row.get("sample_regen_count") or 0),
-        "created_at": row["created_at"].isoformat() if row.get("created_at") else None,
-        "updated_at": row["updated_at"].isoformat() if row.get("updated_at") else None,
-    }
 
 
-def get_avatar_trainings(user_id: int) -> list[dict]:
-    """Every avatar this user has trained, newest first, normalised for the API. [] on a read error."""
-    try:
-        with db_cursor(dictionary=True) as cursor:
-            cursor.execute(
-                f"""SELECT {_AVATAR_COLUMNS}
-                    FROM avatar_trainings
-                    WHERE user_id = %s
-                    ORDER BY created_at DESC""",
-                (user_id,),
-            )
-            return [_avatar_row_to_dict(r) for r in cursor.fetchall()]
-    except mysql.connector.Error as err:
-        log_error("Could not fetch avatar trainings", exc=err, user_id=user_id)
-        return []
 
 
-def get_avatar_training(user_id: int, avatar_id: int) -> Optional[dict]:
-    """One avatar row, scoped to its owner so an id from another account can never be read."""
-    try:
-        with db_cursor(dictionary=True) as cursor:
-            cursor.execute(
-                f"""SELECT {_AVATAR_COLUMNS}
-                    FROM avatar_trainings
-                    WHERE id = %s AND user_id = %s
-                    LIMIT 1""",
-                (avatar_id, user_id),
-            )
-            row = cursor.fetchone()
-            return _avatar_row_to_dict(row) if row else None
-    except mysql.connector.Error as err:
-        log_error(f"Could not fetch avatar {avatar_id}", exc=err, user_id=user_id)
-        return None
 
 
-def get_active_avatar(user_id: int) -> Optional[dict]:
-    """The account's active avatar row, or None when nothing is active or the read failed."""
-    try:
-        with db_cursor(dictionary=True) as cursor:
-            cursor.execute(
-                f"""SELECT {_AVATAR_COLUMNS}
-                    FROM avatar_trainings
-                    WHERE user_id = %s AND is_active = 1
-                    LIMIT 1""",
-                (user_id,),
-            )
-            row = cursor.fetchone()
-            return _avatar_row_to_dict(row) if row else None
-    except mysql.connector.Error as err:
-        log_error("Could not fetch active avatar", exc=err, user_id=user_id)
-        return None
 
 
 

@@ -12,6 +12,11 @@ Usage:
     python scripts/restructure/split_db_aggregate.py <aggregate> [--dry-run]
     python scripts/restructure/split_db_aggregate.py <aggregate> --verify [--base origin/main]
 
+A module that already exists is APPENDED to, not overwritten: after the ten first-pass slices the
+remaining members are residue, and rewriting `avatar.py` from the leftovers would delete the 18
+functions that landed in it earlier. `--verify` reads the aggregate's pre-move bodies from both
+sides for the same reason.
+
 Three things this script refuses to do, each because it silently corrupted an earlier attempt:
 
 1. Move a function that calls a `db.py` function staying behind. The facade would have to import
@@ -176,6 +181,43 @@ def free_names(text: str, already_bound: set[str]) -> set[str]:
     return used - bound - set(dir(builtins)) - {"__name__"}
 
 
+def adopt_private_helpers(votes: dict[str, str], ambiguous: dict[str, list],
+                          callers: dict[str, set]) -> dict[str, str]:
+    """Assign a table-less private helper to the aggregate every one of its readers belongs to.
+
+    Assignment is by the tables a function's SQL names, so a helper that runs no SQL of its own --
+    `_avatar_row_to_dict`, `_group_post_draft_row` -- belongs to no aggregate and therefore stays in
+    db.py. Movability is transitive, so it then strands every function that calls it: after the ten
+    first-pass slices, 8 helpers were holding 21 members behind them, and re-running any aggregate
+    reported 0 movable rather than saying why.
+
+    Two deliberate limits, because this rule infers ownership rather than reading it off the SQL:
+
+    * **Private names only.** Adoption is transitive too, and applied to public names it walks the
+      facade's own API into a repository on the strength of one caller: `is_premium_subscriber`
+      (billing) gets dragged into `users` because `max_catchup_touches_allowed` reads it and that
+      was itself dragged there by `update_engagement_preferences`. A leading underscore is the
+      module's own statement that the name is internal.
+    * **Unanimous readers.** A helper two aggregates read is shared vocabulary and belongs in
+      `platform/db/shared.py`, which is a human's call -- the same rule the constants already follow.
+
+    A helper nothing in db.py calls is left alone: its readers are outside this module, so it has no
+    aggregate to infer and no caller it can strand.
+    """
+    adopted = dict(votes)
+    while True:
+        gained = False
+        for name, readers in callers.items():
+            if name in adopted or name in ambiguous or not name.startswith("_") or not readers:
+                continue
+            owners = {adopted.get(r) for r in readers}
+            if len(owners) == 1 and None not in owners:
+                adopted[name] = owners.pop()
+                gained = True
+        if not gained:
+            return adopted
+
+
 def open_alerts_in(spans: list[tuple[int, int]]) -> list[str]:
     """Open CodeQL alerts sitting inside the line ranges about to move.
 
@@ -235,23 +277,125 @@ def module_bindings(src: str) -> dict[str, str]:
     return out
 
 
+def append_to_module(existing: str, blocks: list[str], moved_src: str) -> str:
+    """Add `moved_src` to a repository module that already exists, with only the imports it lacks.
+
+    Emitting the whole computed import header again would redeclare names the module already binds;
+    emitting none would leave the appended functions reading free names. Only what is missing goes
+    in, placed after the last import so `ruff check --select I --fix` can fold it into the block.
+    """
+    tree = ast.parse(existing)
+    bound = set()
+    last_import = 0
+    for node in tree.body:
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            bound |= {(a.asname or a.name).split(".")[0] for a in node.names}
+            last_import = max(last_import, node.end_lineno)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            bound.add(node.name)
+        elif isinstance(node, ast.Assign):
+            bound |= {t.id for t in node.targets if isinstance(t, ast.Name)}
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            bound.add(node.target.id)
+
+    missing = []
+    for block in blocks:
+        # A block is `import x`, `from m import a` or a parenthesised `from m import (\n a,\n b,\n)`.
+        # Keep only the names this module does not already bind, so the merge is by NAME rather
+        # than by whole statement -- `from typing import Optional` is already here in every module,
+        # while `Union` alongside it may not be.
+        #
+        # Read the names off the PARSED statement, not off the text. A line-anchored regex sees the
+        # names in the parenthesised form and none at all in `from m import a`, so a single missing
+        # import was dropped in silence and the appended code referenced a free name.
+        stmt = ast.parse(block).body[0]
+        if isinstance(stmt, ast.Import):
+            if any((a.asname or a.name).split(".")[0] not in bound for a in stmt.names):
+                missing.append(block)
+            continue
+        wanted = [f"{a.name} as {a.asname}" if a.asname else a.name
+                  for a in stmt.names if (a.asname or a.name).split(".")[0] not in bound]
+        if not wanted:
+            continue
+        head = f"from {'.' * stmt.level}{stmt.module or ''}"
+        if len(wanted) == 1 and " import (" not in block:
+            missing.append(f"{head} import {wanted[0]}")
+        else:
+            missing.append(f"{head} import (\n" + "".join(f"    {n},\n" for n in wanted) + ")")
+
+    lines = existing.splitlines(keepends=True)
+    if missing:
+        lines[last_import:last_import] = [b + "\n" for b in missing]
+    return "".join(lines).rstrip("\n") + "\n\n\n" + moved_src.strip() + "\n"
+
+
+def merge_facade_import(src: str, aggregate: str, exported: list[str]) -> str:
+    """Re-export the moved names from db.py, extending the aggregate's block if it has one.
+
+    A second `from cqc_lem.platform.db.repositories.avatar import (...)` statement is legal Python
+    and ruff would fold it, but the file a human reviews is the one written here.
+    """
+    module = f"cqc_lem.platform.db.repositories.{aggregate}"
+    lines = src.splitlines(keepends=True)
+    for node in ast.parse(src).body:
+        if isinstance(node, ast.ImportFrom) and node.module == module:
+            names = sorted({a.name for a in node.names} | set(exported))
+            block = (f"from {module} import (\n"
+                     + "".join(f"    {n},\n" for n in names) + ")\n")
+            lines[node.lineno - 1:node.end_lineno] = [block]
+            return "".join(lines)
+    block = (f"from {module} import (\n"
+             + "".join(f"    {n},\n" for n in exported) + ")\n")
+    anchor = "from cqc_lem.utilities.crypto import ("
+    return src.replace(anchor, block + anchor, 1)
+
+
+def merge_dunder_all(src: str, exported: list[str]) -> str:
+    """Add the moved names to `__all__` as one sorted run at the end.
+
+    `__all__` is what keeps ruff (F401) and CodeQL (py/unused-import) from deleting the re-exports,
+    so a name that misses it is not a style problem -- it is a re-export with a countdown on it.
+
+    The list is already ten sorted runs, one per slice, not one sorted list. Two alternatives were
+    worse: re-sorting it globally is a ~900-line reordering that buries the ~80 lines of SQL a slice
+    actually moves (and shifts every db.py line a CodeQL alert is keyed to), while inserting each
+    name before the first entry that sorts after it scatters this slice's names through the FIRST
+    run rather than keeping them together. A run per slice is what the file already is.
+    """
+    lines = src.splitlines(keepends=True)
+    for node in ast.parse(src).body:
+        is_all = isinstance(node, ast.Assign) and any(
+            isinstance(t, ast.Name) and t.id == "__all__" for t in node.targets)
+        if not is_all:
+            continue
+        current = [e.value for e in node.value.elts if isinstance(e, ast.Constant)]
+        current += sorted(n for n in set(exported) if n not in current)
+        body = "".join(f'    "{n}",\n' for n in current)
+        lines[node.lineno - 1:node.end_lineno] = [f"__all__ = [\n{body}]\n"]
+        return "".join(lines)
+    raise SystemExit("db.py has no __all__ to extend -- refusing to write a re-export ruff will cut")
+
+
 def verify(aggregate: str, base: str) -> int:
     """Assert every moved body is byte-identical to the one on `base`, and that none went missing."""
     # An aggregate whose module already exists on `base` was moved by an EARLIER commit, so its
-    # functions are legitimately absent from base's db.py and every one would report as INVENTED.
-    # That is a meaningless run, not a finding -- say so rather than printing 30 scary names.
+    # functions are legitimately absent from base's db.py. Reading `before` from db.py alone would
+    # report every one of them as INVENTED -- 30 scary names describing nothing. They are not
+    # unverifiable, though: they are on `base` at the OTHER path, so the pre-move state of this
+    # aggregate is the union of the two files. That keeps a residue slice checked as strictly as a
+    # first-pass one, which the earlier "nothing to check here" short-circuit did not.
     rel = f"src/cqc_lem/platform/db/repositories/{aggregate}.py"
     already = subprocess.run(["git", "cat-file", "-e", f"{base}:{rel}"],
                              capture_output=True, cwd=REPO).returncode == 0
-    if already:
-        print(f"  {aggregate} already exists on {base} -- verify it against the commit before its"
-              f" move, e.g. --base {base}~1. Nothing to check here.")
-        return 0
 
     old = subprocess.run(
         ["git", "show", f"{base}:src/cqc_lem/utilities/db.py"],
         capture_output=True, text=True, cwd=REPO, check=True).stdout
+    old_module = subprocess.run(
+        ["git", "show", f"{base}:{rel}"],
+        capture_output=True, text=True, cwd=REPO, check=True).stdout if already else ""
     before = function_bodies(old)
+    before.update(function_bodies(old_module))
     moved = function_bodies((REPOSITORIES / f"{aggregate}.py").read_text())
     # "Lost" means gone from the CODEBASE, so every repository counts as a destination, not just
     # this one. Scoping it to db.py + the aggregate under test reported each function moved by a
@@ -268,6 +412,7 @@ def verify(aggregate: str, base: str) -> int:
 
     # Constants and classes travel too, and one of them is the encryption AAD.
     binds_before = module_bindings(old)
+    binds_before.update(module_bindings(old_module))
     binds_moved = module_bindings((REPOSITORIES / f"{aggregate}.py").read_text())
     const_altered = sorted(
         k for k in binds_moved if k in binds_before and binds_before[k] != binds_moved[k])
@@ -320,15 +465,19 @@ def main() -> int:
             ambiguous[name] = winners        # genuinely spans aggregates -- a human decides
             continue
         votes[name] = winners[0]
-    members = {n for n, agg in votes.items() if agg == args.aggregate}
     touching = sorted(n for n, aggs in ambiguous.items() if args.aggregate in aggs)
 
     calls = collections.defaultdict(set)
+    callers = collections.defaultdict(set)
     for name, node in nodes.items():
         for sub in ast.walk(node):
             is_call = isinstance(sub, ast.Call) and isinstance(sub.func, ast.Name)
             if is_call and sub.func.id in nodes and sub.func.id != name:
                 calls[name].add(sub.func.id)
+                callers[sub.func.id].add(name)
+
+    votes = adopt_private_helpers(votes, ambiguous, callers)
+    members = {n for n, agg in votes.items() if agg == args.aggregate}
     # Fixpoint, not a single pass. Movability is TRANSITIVE: if A calls B and B has to stay
     # behind, A cannot leave either, or it would reference a name that is no longer in scope. A
     # one-pass `calls[f] <= members` check misses that, marks A movable, and the breakage only
@@ -448,20 +597,21 @@ def main() -> int:
     init = REPOSITORIES / "__init__.py"
     if not init.exists():
         init.write_text('"""Per-aggregate SQL modules split out of `cqc_lem.utilities.db`."""\n')
-    (REPOSITORIES / f"{args.aggregate}.py").write_text(header + moved_src.strip() + "\n")
+    target = REPOSITORIES / f"{args.aggregate}.py"
+    if target.exists():
+        # A residue slice. Overwriting is what a first-pass slice does and it would silently drop
+        # everything the earlier pass put here -- 18 avatar functions for the sake of 4.
+        target.write_text(append_to_module(target.read_text(), blocks, moved_src))
+    else:
+        target.write_text(header + moved_src.strip() + "\n")
 
     kept = list(lines)
     for start, end in sorted(all_spans, reverse=True):
         del kept[start:end]
     new_db = "".join(kept)
     exported = sorted(movable | set(travelling))
-    import_block = (
-        f"from cqc_lem.platform.db.repositories.{args.aggregate} import (\n"
-        + "".join(f"    {n},\n" for n in exported) + ")\n")
-    anchor = "from cqc_lem.utilities.crypto import ("
-    new_db = new_db.replace(anchor, import_block + anchor, 1)
-    new_db = new_db.replace(
-        "__all__ = [\n", "__all__ = [\n" + "".join(f'    "{n}",\n' for n in exported), 1)
+    new_db = merge_facade_import(new_db, args.aggregate, exported)
+    new_db = merge_dunder_all(new_db, exported)
     DB.write_text(new_db)
 
     print(f"  wrote {REPOSITORIES / (args.aggregate + '.py')}")
