@@ -228,6 +228,32 @@ class TestAppendingToAnExistingModule:
             self.HEADER, ["import json"], "def moved():\n    return json.loads('{}')\n")
         assert out.index("import json") < out.index("def moved()")
 
+    def test_a_single_name_from_import_the_module_lacks_is_still_added(self, tool):
+        """The one-name form carries no name on a line of its own, so a text scan finds none.
+
+        Dropping it is the worst outcome available here: the appended function reads a free name and
+        the module raises NameError the first time that line runs, which no import-time check sees.
+        """
+        out = tool.append_to_module(
+            self.HEADER,
+            ["from cqc_lem.platform.db.enums import GroupPostDraftStatus"],
+            "def moved():\n    return GroupPostDraftStatus.READY\n")
+        assert "from cqc_lem.platform.db.enums import GroupPostDraftStatus" in out
+        assert out.index("GroupPostDraftStatus") < out.index("def moved()")
+
+    def test_an_aliased_import_keeps_its_alias(self, tool):
+        """`connection as _connection` is how every module reaches the patchable connection seam."""
+        out = tool.append_to_module(
+            self.HEADER,
+            ["from cqc_lem.platform.db import connection as _connection"],
+            "def moved():\n    return _connection.get_db_connection()\n")
+        assert "from cqc_lem.platform.db import connection as _connection" in out
+
+    def test_a_single_name_from_import_already_bound_is_not_repeated(self, tool):
+        out = tool.append_to_module(
+            self.HEADER, ["from typing import Optional"], "def moved():\n    return None\n")
+        assert out.count("from typing import Optional") == 1
+
 
 class TestFacadeRewrites:
     def test_the_aggregates_existing_import_block_is_extended_not_duplicated(self, tool):

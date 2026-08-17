@@ -304,16 +304,20 @@ def append_to_module(existing: str, blocks: list[str], moved_src: str) -> str:
         # Keep only the names this module does not already bind, so the merge is by NAME rather
         # than by whole statement -- `from typing import Optional` is already here in every module,
         # while `Union` alongside it may not be.
-        names = re.findall(r"^\s*([\w.]+(?: as \w+)?),?\s*$", block, re.M)
-        head = block.split(" import ")[0]
-        if block.startswith("import "):
-            if block[len("import "):].split(" as ")[0].split(".")[0] not in bound:
+        #
+        # Read the names off the PARSED statement, not off the text. A line-anchored regex sees the
+        # names in the parenthesised form and none at all in `from m import a`, so a single missing
+        # import was dropped in silence and the appended code referenced a free name.
+        stmt = ast.parse(block).body[0]
+        if isinstance(stmt, ast.Import):
+            if any((a.asname or a.name).split(".")[0] not in bound for a in stmt.names):
                 missing.append(block)
             continue
-        wanted = [n for n in names
-                  if (n.split(" as ")[-1] if " as " in n else n).split(".")[0] not in bound]
+        wanted = [f"{a.name} as {a.asname}" if a.asname else a.name
+                  for a in stmt.names if (a.asname or a.name).split(".")[0] not in bound]
         if not wanted:
             continue
+        head = f"from {'.' * stmt.level}{stmt.module or ''}"
         if len(wanted) == 1 and " import (" not in block:
             missing.append(f"{head} import {wanted[0]}")
         else:
