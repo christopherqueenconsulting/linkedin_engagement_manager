@@ -81,7 +81,7 @@ optional = true
 [tool.poetry.group.dev.dependencies]
 # Development Tools
 jupyter = "^1.0.0"
-setuptools = ">=67.6.1,<84.0.0"
+setuptools = ">=67.6.1,<85.0.0"
 grandalf = "^0.8"
 watchdog = ">=5.0.3,<7.0.0"
 
