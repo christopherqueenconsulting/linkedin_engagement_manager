@@ -2,9 +2,10 @@
 
 Everything here is post-processing of model output, and each piece is paired with a prompt directive
 that tries to prevent the problem upstream — `PLAIN_PUNCTUATION_DIRECTIVE` before
-`normalize_public_text`, `linkedin_post_format_directive` before `enforce_post_readability`. The
-directive is the prevention, the function is the safety net; a model that ignores the directive is
-the normal case, not the exception, which is why neither half is optional.
+`normalize_public_text` and `normalize_currency_symbols`, `linkedin_post_format_directive` before
+`enforce_post_readability`. The directive is the prevention, the function is the safety net; a model
+that ignores the directive is the normal case, not the exception, which is why neither half is
+optional.
 
 Two things the safety net is deliberately careful NOT to touch: URLs are masked out of every
 markdown transform in `sanitize_for_linkedin` and come back byte-identical, and intentional glyphs
@@ -78,13 +79,80 @@ def strip_non_bmp(text: str) -> str:
     return "".join(c for c in text if ord(c) <= 0xFFFF)
 
 
+# Non-USD currency symbols a model reaches for when it means dollars (issue #1529: a post about
+# telephony markups priced them in rupees). Money is USD everywhere this product touches it, so a
+# foreign symbol sitting on a bare number is a glyph defect of the same family as a smart quote —
+# EXCEPT when the copy is genuinely about that currency, which is what the context words decide.
+# Each entry maps the symbol to the tokens that make it deliberate: the ISO code, the currency name,
+# and the place the reader would name alongside it.
+_FOREIGN_CURRENCY_CONTEXT = {
+    "₹": ("inr", "rupee", "rupees", "india", "indian"),
+    "€": ("eur", "euro", "euros", "europe", "european", "eurozone"),
+    "£": ("gbp", "pound", "pounds", "sterling", "uk", "britain", "british", "england"),
+    "¥": ("jpy", "yen", "cny", "yuan", "rmb", "japan", "japanese", "china", "chinese"),
+    "₩": ("krw", "korea", "korean"),
+    "₽": ("rub", "ruble", "rubles", "rouble", "roubles", "russia", "russian"),
+    "₪": ("ils", "shekel", "shekels", "israel", "israeli"),
+    "₫": ("vnd", "dong", "vietnam", "vietnamese"),
+    "₴": ("uah", "hryvnia", "ukraine", "ukrainian"),
+    "₦": ("ngn", "naira", "nigeria", "nigerian"),
+    "₱": ("php", "peso", "pesos", "philippines", "philippine"),
+    "฿": ("thb", "baht", "thailand", "thai"),
+    "₺": ("lira", "turkey", "turkish"),
+}
+# "won" (KRW) and "try" (TRY) are left OUT of the context words above on purpose: both are ordinary
+# English words, so including them would disable the rewrite on almost any post that happens to say
+# "we won the account" or "try this".
+# Only a symbol ATTACHED to a number is rewritten — "₹1,200" and "₹ 1,200" are the defect; a symbol
+# used as a glyph in prose ("the ₹ symbol") is left alone. The optional space is absorbed so the
+# output is US style.
+_FOREIGN_CURRENCY_RES = {
+    symbol: re.compile(rf"{re.escape(symbol)}[ \t]?(?=\d)") for symbol in _FOREIGN_CURRENCY_CONTEXT
+}
+
+
+def normalize_currency_symbols(text: str, default_symbol: str = "$") -> str:
+    """Rewrite a stray non-USD currency symbol on a number to `default_symbol` ("$").
+
+    The safety net for a model that prices a US dollar figure in rupees, euros or yen — every money
+    figure this product generates is USD (issue #1529). A symbol is left exactly as written when the
+    text names that currency itself (its ISO code, its name, or its country), so a post genuinely
+    about "€2M in European ARR" keeps its euros. A symbol not attached to a number is never touched.
+
+    Deliberately NOT part of `normalize_public_text`: that pass also runs over text SCRAPED from
+    LinkedIn (other people's cards), where rewriting a currency would corrupt what we read. Call it
+    only on our OWN outgoing drafts.
+
+    Masks URLs itself, so it is safe to call standalone on a draft that has not been through
+    `sanitize_for_linkedin` — a currency symbol inside a query string publishes byte-identical
+    either way. Called from inside `sanitize_for_linkedin` the mask finds nothing, because that
+    function has already masked them.
+    """
+    if not text:
+        return text
+    text, urls = _mask_urls(text)
+    lowered = text.lower()
+    for symbol, context_words in _FOREIGN_CURRENCY_CONTEXT.items():
+        if symbol not in text:
+            continue
+        if any(re.search(rf"(?<!\w){word}(?!\w)", lowered) for word in context_words):
+            continue
+        text = _FOREIGN_CURRENCY_RES[symbol].sub(default_symbol, text)
+    return _unmask_urls(text, urls)
+
+
 # Drop-in directive for AI system prompts so models avoid the fancy punctuation in the first place
-# (normalize_public_text is the safety net; this is the prevention).
+# (normalize_public_text is the safety net; this is the prevention). The CURRENCY sentence is the
+# prevention half of normalize_currency_symbols and rides along here because it is the same class of
+# defect — the wrong glyph for a plain ASCII one — and every prompt that must not emit a smart quote
+# must not price a dollar figure in rupees either.
 PLAIN_PUNCTUATION_DIRECTIVE = (
     "PUNCTUATION: Use only plain ASCII punctuation. NEVER use em dashes or en dashes - use a comma, "
     "period, or a plain hyphen instead. Do NOT use curly/smart quotes (use straight ' and \") and do "
     "NOT use the ellipsis character - type three periods. Avoid any other non-standard Unicode "
-    "punctuation; these read as AI-generated."
+    "punctuation; these read as AI-generated. CURRENCY: money figures are US dollars - write them "
+    "with a plain '$' (for example $1,200). NEVER use another currency symbol for a dollar amount; "
+    "use one only when the text is explicitly about that currency."
 )
 
 
@@ -211,7 +279,8 @@ def sanitize_for_linkedin(text: str) -> str:
 
     LinkedIn does not render standard markdown. This function removes formatting
     markers while preserving the underlying text, emojis, hashtags, and line breaks.
-    Also normalizes rogue typographic characters (em dashes, smart quotes, ...) to plain ASCII.
+    Also normalizes rogue typographic characters (em dashes, smart quotes, ...) to plain ASCII, and
+    rewrites a stray non-USD currency symbol sitting on a number (`normalize_currency_symbols`).
     URLs are exempt from every markdown transform and survive byte-identical.
     """
     if not text:
@@ -219,6 +288,9 @@ def sanitize_for_linkedin(text: str) -> str:
 
     text = normalize_public_text(text)
     text, urls = _mask_urls(text)
+    # A currency symbol inside a URL's query string is never rewritten: the URLs are already
+    # masked here, so the function's own mask is a no-op.
+    text = normalize_currency_symbols(text)
 
     # Remove markdown headers (# through ######) at line start, keep the text
     text = re.sub(r"^#{1,6}\s+", "", text, flags=re.MULTILINE)

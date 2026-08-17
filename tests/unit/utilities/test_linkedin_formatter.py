@@ -7,6 +7,7 @@ from cqc_lem.utilities.linkedin_formatter import (
     PLAIN_PUNCTUATION_DIRECTIVE,
     contains_engagement_bait,
     is_bait_keyword,
+    normalize_currency_symbols,
     normalize_public_text,
     sanitize_for_linkedin,
     strip_engagement_bait,
@@ -148,6 +149,78 @@ class TestNormalizePublicText:
     def test_directive_is_ascii_and_nonempty(self):
         assert PLAIN_PUNCTUATION_DIRECTIVE
         assert PLAIN_PUNCTUATION_DIRECTIVE.isascii()
+
+    def test_directive_states_the_currency_rule(self):
+        # The prevention half of normalize_currency_symbols (issue #1529).
+        assert "CURRENCY" in PLAIN_PUNCTUATION_DIRECTIVE
+        assert "$" in PLAIN_PUNCTUATION_DIRECTIVE
+
+
+@pytest.mark.unit
+class TestNormalizeCurrencySymbols:
+    """Issue #1529: a generated post priced US telephony markups in rupees."""
+
+    @pytest.mark.parametrize("text,expected", [
+        ("Markups run ₹1,200 per seat.", "Markups run $1,200 per seat."),
+        ("Markups run ₹ 1,200 per seat.", "Markups run $1,200 per seat."),
+        ("We cut it from €400 to €250.", "We cut it from $400 to $250."),
+        ("A £5k retainer.", "A $5k retainer."),
+        ("¥900 a month.", "$900 a month."),
+        ("Down to ฿75 per line.", "Down to $75 per line."),
+    ])
+    def test_rewrites_a_stray_symbol_on_a_number(self, text, expected):
+        assert normalize_currency_symbols(text) == expected
+
+    @pytest.mark.parametrize("text", [
+        "We closed €2M in European ARR last quarter.",
+        "EUR pricing starts at €99.",
+        "Our India team quotes ₹1,200 per seat.",
+        "INR billing lands at ₹ 1,200.",
+        "The UK list price is £5k.",
+        "Tokyo clients pay ¥900,000 in yen.",
+    ])
+    def test_leaves_a_deliberate_currency_alone(self, text):
+        assert normalize_currency_symbols(text) == text
+
+    @pytest.mark.parametrize("text", [
+        "The ₹ symbol keeps showing up in drafts.",
+        "Prices are in dollars: $1,200 per seat.",
+        "",
+    ])
+    def test_leaves_everything_else_alone(self, text):
+        assert normalize_currency_symbols(text) == text
+
+    def test_none_is_returned_unchanged(self):
+        assert normalize_currency_symbols(None) is None
+
+    def test_default_symbol_is_configurable(self):
+        assert normalize_currency_symbols("₹1,200", default_symbol="USD ") == "USD 1,200"
+
+    def test_common_english_words_never_disable_the_rewrite(self):
+        # "won" (KRW) and "try" (TRY) are ordinary English, so they are not context words.
+        assert normalize_currency_symbols("We won the account at ₩900.") == \
+            "We won the account at $900."
+        assert normalize_currency_symbols("Try it for ₺300.") == "Try it for $300."
+
+    def test_sanitize_for_linkedin_applies_it_to_outgoing_drafts(self):
+        out = sanitize_for_linkedin("**Telephony markups** run ₹1,200 per seat.")
+        assert out == "Telephony markups run $1,200 per seat."
+
+    def test_a_currency_symbol_inside_a_url_survives(self):
+        url = "https://host/pricing?cur=₹100"
+        assert sanitize_for_linkedin(f"Details: {url}") == f"Details: {url}"
+
+    def test_a_url_survives_a_standalone_call_too(self):
+        # The function masks URLs itself, so the call sites that run it on a draft that has NOT been
+        # through sanitize_for_linkedin (the post pipeline's final pass, the carousel caption, the
+        # group post draft) cannot rewrite a query string.
+        url = "https://host/pricing?cur=₹100"
+        assert normalize_currency_symbols(f"Seats are ₹1,200. {url}") == f"Seats are $1,200. {url}"
+
+    def test_scraped_text_normalization_is_untouched(self):
+        # normalize_public_text also runs over other people's scraped cards, so it must NOT rewrite
+        # their currency.
+        assert normalize_public_text("They charge ₹1,200.") == "They charge ₹1,200."
 
 
 @pytest.mark.unit

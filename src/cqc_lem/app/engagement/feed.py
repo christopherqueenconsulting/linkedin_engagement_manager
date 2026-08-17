@@ -210,7 +210,7 @@ from cqc_lem.utilities.linkedin.sort_evidence import (
     build_sort_control_scan_js,
     scan_sort_control_candidates,
 )
-from cqc_lem.utilities.linkedin_formatter import strip_non_bmp
+from cqc_lem.utilities.linkedin_formatter import normalize_currency_symbols, strip_non_bmp
 from cqc_lem.utilities.logger import log_debug, log_error, log_info, log_warning
 from cqc_lem.utilities.observability import (
     FEATURE_COMMENT,
@@ -3440,9 +3440,13 @@ def auto_draft_group_post(self, user_id: int, group_id: str, group_name: str = N
                   task_name="auto_draft_group_post")
         return "No cached profile to draft from"
     with llm_attribution(user_id=user_id, feature=FEATURE_CONTENT):
-        text = strip_non_bmp(generate_group_post(
+        # The user owns ready/skipped on this draft, never its text, so the draft is what publishes
+        # — normalize a stray non-USD symbol here, the way every other generated post does
+        # (issue #1529). `strip_non_bmp` is the shared Selenium-typing helper and stays currency-
+        # blind: it also runs over comments and invite notes written about someone ELSE's content.
+        text = strip_non_bmp(normalize_currency_symbols(generate_group_post(
             my_profile, group_name=group_name, prefs=get_engagement_preferences(user_id),
-            profile_synthesis=get_or_create_profile_synthesis(user_id, my_profile)) or "")
+            profile_synthesis=get_or_create_profile_synthesis(user_id, my_profile)) or ""))
     if not text.strip():
         return "No group post generated"
     draft_id = create_group_post_draft(user_id, group_id, text, group_name=group_name)
