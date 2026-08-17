@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.155.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.154.0...v0.155.0) (2026-08-17)
+
+
+### Features
+
+* **content:** publish an occasion draft through LinkedIn's native composer (refs [#1088](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1088)) ([#1622](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1622)) ([7d059d5](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/7d059d52d865fab023c95c2f310e4c8cbb4e7092))
+
+
+### Bug Fixes
+
+* **auth:** remove X-Session-Token, the credential nothing resolved (closes [#1357](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1357)) ([#1612](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1612)) ([409ec28](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/409ec284d2ac74b1a943f7178d7464aa8e957645))
+* **content-generation:** price a generated post in dollars, not rupees (closes [#1529](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1529)) ([#1624](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1624)) ([e85ceec](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/e85ceec68955e2b1bdee0538d00aa40fc1521a34))
+* **dms:** stop drafting DMs nobody can send, and say what approve did (closes [#1528](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1528)) ([#1626](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1626)) ([50280a6](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/50280a6801ec140149198a431af259c2da6c5ee8))
+* **scheduling:** say which days the cadence fills, and rotate post sources (closes [#1526](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1526)) ([#1619](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1619)) ([b39f270](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/b39f270dc7985b3ef43bbcc60a341b9dc25119a8))
+* **security:** match the Gmail confirmation sender by mailbox, not substring ([75f50c5](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/75f50c56337e34384b283d63c4badbbbebe0b58e)), closes [#1152](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1152)
+* **security:** match the Gmail confirmation sender by mailbox, not substring (closes [#1152](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1152)) ([#1613](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1613)) ([75f50c5](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/75f50c56337e34384b283d63c4badbbbebe0b58e))
+* **suppression:** read the comment-demotion signal over 3 days with a floor that scales (closes [#1136](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1136)) ([#1617](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1617)) ([8c0d8c3](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/8c0d8c31ddfc149ab64c9ea6ff85c7662a0d40c0))
+* **ui:** stop the front page laying itself out wider than the phone (closes [#1556](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1556)) ([#1629](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1629)) ([9dd44a5](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/9dd44a557bf2cd0c0bd4c92df16886fb900bac6e))
+
+
+### Documentation
+
+* **content-quality:** correct the slop_retry read date with the measured authoring cadence (refs [#1530](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1530)) ([#1628](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1628)) ([cf66d9d](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/cf66d9d16a5ee5577cdd9d6d6e51a25167b3fc05))
+
 ## [0.154.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.153.3...v0.154.0) (2026-08-16)
 
 
