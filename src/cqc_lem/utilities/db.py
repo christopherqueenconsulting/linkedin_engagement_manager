@@ -141,8 +141,11 @@ from cqc_lem.platform.db.repositories.avatar import (
 )
 from cqc_lem.platform.db.repositories.billing import (
     COST_ROLLUP_COLUMNS,
+    _affiliate_row,
     accrue_monthly_fixed_costs,
     convert_affiliate_referral,
+    ensure_affiliate_enrollment,
+    get_affiliate_enrollment,
     get_affiliate_referral_counts,
     get_affiliate_referral_for_referred,
     get_affiliate_reward_totals,
@@ -153,6 +156,8 @@ from cqc_lem.platform.db.repositories.billing import (
     insert_cost_ledger_entry,
     mark_affiliate_notice_seen,
     record_affiliate_referral,
+    set_affiliate_promo_opt_in,
+    set_affiliate_status,
 )
 from cqc_lem.platform.db.repositories.engagement import (
     CLAIM_STALE_MINUTES,
@@ -1100,6 +1105,11 @@ __all__ = [
     "get_current_group_post_draft",
     "get_group_post_draft",
     "get_open_group_post_draft",
+    "_affiliate_row",
+    "ensure_affiliate_enrollment",
+    "get_affiliate_enrollment",
+    "set_affiliate_promo_opt_in",
+    "set_affiliate_status",
 ]
 
 # Load .env file
@@ -4081,123 +4091,14 @@ def extend_trial_for_user(user_id: int, feedback_id: Optional[int] = None) -> di
 # transaction with its ledger row: a grant that lands without its ledger entry is free service nobody
 # can account for, and a ledger row without the extension is a promise we broke.
 
-def _affiliate_row(row: Optional[dict]) -> Optional[dict]:
-    """Normalize an enrollment row for callers: booleans as booleans, status as a plain string."""
-    if not row:
-        return None
-    return {
-        "user_id": int(row["user_id"]),
-        "status": str(row["status"]),
-        "referral_code": str(row.get("referral_code") or ""),
-        "enrolled_at": row.get("enrolled_at"),
-        "opted_out_at": row.get("opted_out_at"),
-        "notice_seen_at": row.get("notice_seen_at"),
-        "promo_content_opt_in": bool(row.get("promo_content_opt_in")),
-        "promo_consent_at": row.get("promo_consent_at"),
-        "promo_consent_version": row.get("promo_consent_version"),
-    }
 
 
-def get_affiliate_enrollment(user_id: int) -> Optional[dict]:
-    """The user's affiliate row, or None when they have never been enrolled.
-
-    The row here carries columns only — no `created` key. That flag exists solely on what
-    `ensure_affiliate_enrollment` returns, because only the call that wrote the row can know it.
-    """
-    try:
-        with db_cursor(dictionary=True) as cursor:
-            cursor.execute(
-                "SELECT user_id, status, referral_code, enrolled_at, opted_out_at, notice_seen_at, "
-                "promo_content_opt_in, promo_consent_at, promo_consent_version "
-                "FROM affiliate_enrollments WHERE user_id=%s",
-                (user_id,),
-            )
-            return _affiliate_row(cursor.fetchone())
-    except mysql.connector.Error as err:
-        log_error("Could not read affiliate enrollment", exc=err, user_id=user_id)
-        return None
 
 
-def ensure_affiliate_enrollment(user_id: int, status: str = 'enrolled',
-                                referral_code: Optional[str] = None) -> Optional[dict]:
-    """Create the user's affiliate row if it doesn't exist, then return it.
-
-    Idempotent by INSERT IGNORE rather than read-then-write: two requests racing on a first page
-    load must not produce two rows or a duplicate-key 500. An existing row is never re-statused
-    here — an opted-out user staying opted out is the entire point of the opt-out.
-
-    The returned row carries `created` — whether THIS call is the one that enrolled them. Every
-    Account page load calls this, so it is the only way the caller can emit an enrollment event once
-    instead of on every render. It is a synthetic key, not a column: `get_affiliate_enrollment`
-    never sets it, and nothing that serializes the row to a client reads it (`affiliate_state`
-    builds its payload field by field).
-
-    On a DB error this returns None, so a caller can never read `created=False` from a write that
-    did not happen — the row will not exist either, and the next call re-inserts it.
-    """
-    code = str(referral_code or user_id)
-    connection = _connection.get_db_connection()
-    cursor = connection.cursor()
-    created = False
-    try:
-        cursor.execute(
-            "INSERT IGNORE INTO affiliate_enrollments (user_id, status, referral_code, enrolled_at) "
-            "VALUES (%s,%s,%s,%s)",
-            (user_id, str(status), code,
-             datetime.now(timezone.utc) if str(status) == str(AffiliateStatus.ENROLLED) else None),
-        )
-        created = cursor.rowcount == 1
-        connection.commit()
-    except mysql.connector.Error as err:
-        log_error("Could not create affiliate enrollment", exc=err, user_id=user_id)
-        return None
-    finally:
-        cursor.close()
-        connection.close()
-    row = get_affiliate_enrollment(user_id)
-    if row is not None:
-        row["created"] = created
-    return row
 
 
-def set_affiliate_status(user_id: int, enrolled: bool) -> Optional[dict]:
-    """Opt the user in or out of (A) affiliate status. Immediate — the caller reflects the resulting
-    trial length back to the user, and the reward side (grant/revoke of the enrollment bonus) is the
-    caller's separate, ledgered step so a status flip can never silently move money.
-    """
-    status = AffiliateStatus.ENROLLED if enrolled else AffiliateStatus.OPTED_OUT
-    now = datetime.now(timezone.utc)
-    try:
-        with db_cursor(commit=True) as cursor:
-            cursor.execute(
-                "UPDATE affiliate_enrollments SET status=%s, "
-                "enrolled_at=IF(%s, COALESCE(enrolled_at,%s), enrolled_at), "
-                "opted_out_at=IF(%s, opted_out_at, %s) WHERE user_id=%s",
-                (str(status), enrolled, now, enrolled, now, user_id),
-            )
-    except mysql.connector.Error as err:
-        log_error("Could not update affiliate status", exc=err, user_id=user_id)
-        return None
-    return get_affiliate_enrollment(user_id)
 
 
-def set_affiliate_promo_opt_in(user_id: int, enabled: bool, consent_version: str) -> Optional[dict]:
-    """(B) — whether LEM may publish promotional content about LEM from the user's own LinkedIn
-    account. Enabling stamps the consent timestamp AND the version of the copy consented to;
-    disabling clears both, so a re-enable can never inherit an old consent record.
-    """
-    now = datetime.now(timezone.utc) if enabled else None
-    try:
-        with db_cursor(commit=True) as cursor:
-            cursor.execute(
-                "UPDATE affiliate_enrollments SET promo_content_opt_in=%s, promo_consent_at=%s, "
-                "promo_consent_version=%s WHERE user_id=%s",
-                (1 if enabled else 0, now, str(consent_version) if enabled else None, user_id),
-            )
-    except mysql.connector.Error as err:
-        log_error("Could not update affiliate promo consent", exc=err, user_id=user_id)
-        return None
-    return get_affiliate_enrollment(user_id)
 
 
 
