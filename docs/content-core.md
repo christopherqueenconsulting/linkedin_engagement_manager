@@ -71,9 +71,13 @@ Load-bearing details:
   gate — similarity, A2 proof, fabrication, fact grounding, slop — answers a failure the same way:
   the failing draft plus the structured findings go to `get_ai_linked_post_refinement`, the editor
   that already runs one step earlier, which is a different prompt family from the writer. The writer
-  is never asked for a second draft of the same brief. `proof_finding` / `fabrication_finding` exist
-  for that brief (`quality_gates.py`); neither is built by `evaluate_post_gates` and nothing is ever
-  held on them. Because a repaired draft that then passes everything is the post nobody has read —
+  is never asked for a second draft of the same brief. The editor is handed the WRITER's own story
+  directive (`ctx.story_directive`) alongside the findings — a proof or fabrication finding asks for
+  a real lived detail to be added or substituted while banning invention, which a model that can see
+  only the draft cannot answer honestly. `proof_finding` / `fabrication_finding` exist
+  for that brief (`quality_gates.py`); neither is built by `evaluate_post_gates`, nothing is ever
+  held on them, and both are therefore ADVISORY (`demoted=False`) — the SPA paints a demoting
+  finding as the reason a draft is stuck. Because a repaired draft that then passes everything is the post nobody has read —
   and no later pass can tell, the failing draft being gone — the repair path writes
   `posts.ever_gate_demoted` once, and `_may_auto_approve` (the ONE approve decision, read by the
   generation-time status setter AND `rescore_post`) holds it for the author unless the per-user

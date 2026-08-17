@@ -270,7 +270,15 @@ it:
   (sanitise, bait strip, humanize) so the repaired text is graded on the same footing.
 - **The two missing finding shapes are `proof_finding` and `fabrication_finding`** in
   `utilities/quality_gates.py`. Neither is built by `evaluate_post_gates` — they exist so the repair
-  brief and the review queue speak one vocabulary, and nothing is ever HELD on them.
+  brief and the review queue speak one vocabulary, and nothing is ever HELD on them. Both are built
+  `demoted=False` for exactly that reason: `demoting_findings` and the SPA's `holdingFindings` read
+  that flag as "this is the finding holding the draft", which these two never are.
+- **The editor needs the writer's material, not just the findings.** The redesign as written handed
+  `get_ai_linked_post_refinement` the findings alone, which makes a proof or fabrication finding
+  unanswerable: it asks for a real first-person specific while forbidding invention, and the editor
+  can see only the draft. `_repair_draft` therefore also passes `ctx.story_directive` — the exact
+  string `_draft_from_source` gave the writer, carrying the bank's own "these facts are the ONLY
+  personal specifics allowed" rule — as `repair_source_material`, above the repairs in the prompt.
 
 `_may_auto_approve(user_id, post_id, auto_schedule, findings)` is the one approve decision, read by
 both call sites. It fails OPEN on an unreadable flag or prefs row, matching the gates' own posture:

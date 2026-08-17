@@ -80,6 +80,32 @@ class TestTheRepairIsTheEditorNotTheWriter:
             rcp._review_generated_post(_ctx(), _DRAFT, ["an earlier post"], story=None)
         compose.assert_not_called()
 
+    def test_the_editor_gets_the_writers_own_story_material(self):
+        """The proof/fabrication findings are unanswerable without it.
+
+        Both ask the editor to add or substitute a real first-person specific while forbidding
+        invention — and the editor can see only the draft. `ctx.story_directive` is the exact
+        string the writer was given, so the edit may draw on what the writer could and no more.
+        """
+        _, refine, _ = _review([_OVER, _CLEAR])
+        assert refine.call_args.kwargs["repair_source_material"] == "STORY DIRECTIVE"
+
+    def test_with_no_anchored_entry_the_editor_still_gets_the_no_invention_rule(self):
+        """An unanchored draft must not silently drop the bank's absolute rule."""
+        from dataclasses import replace
+
+        from cqc_lem.app import run_content_plan as rcp
+        ctx = replace(_ctx(), story_directive=None)
+        with patch(f"{_RCP}.post_similarity_report", side_effect=[dict(_OVER), dict(_CLEAR)]), \
+             patch(f"{_RCP}.get_post_gate_reason", return_value=[]), \
+             patch(f"{_RCP}.update_db_post_gate_reason"), \
+             patch(f"{_RCP}.mark_post_gate_demoted"), \
+             patch(f"{_RCP}.humanize_text", side_effect=lambda text, **_: text), \
+             patch(f"{_RCP}._check_post_alignment", return_value=True), \
+             patch(f"{_RCP}.get_ai_linked_post_refinement", return_value=_REPAIRED) as refine:
+            rcp._review_generated_post(ctx, _DRAFT, ["an earlier post"], story=None)
+        assert "do NOT invent" in refine.call_args.kwargs["repair_source_material"]
+
     def test_the_repair_brief_names_the_fix_the_review_queue_would_show(self):
         _, refine, _ = _review([_OVER, _CLEAR])
         finding = refine.call_args.kwargs["repair_findings"][0]
@@ -348,6 +374,20 @@ class TestTheRepairBriefReachesTheEditorsPrompt:
     def test_the_ordinary_refinement_prompt_is_untouched(self):
         assert "REQUIRED REPAIRS" not in self._sent()
         assert "REQUIRED REPAIRS" not in self._sent(repair_findings=[])
+        assert "STORY BANK" not in self._sent(repair_source_material=None)
+
+    def test_the_authors_material_is_read_before_the_fixes(self):
+        """Otherwise "never invent a specific" is an instruction with nowhere to go.
+
+        The material has to be ABOVE the repairs so the ban reads as a pointer at facts the editor
+        can see, which is the same order the writer's own prompt puts them in.
+        """
+        from cqc_lem.utilities.ai.story_bank import story_directive
+        from cqc_lem.utilities.quality_gates import proof_finding
+        material = story_directive({"kind": "anecdote", "body": "Cut onboarding 12 days to 3."})
+        sent = self._sent(repair_source_material=material, repair_findings=[proof_finding()])
+        assert "Cut onboarding 12 days to 3." in sent
+        assert sent.index("STORY BANK") < sent.index("REQUIRED REPAIRS")
 
     def test_the_cta_keyword_rule_is_read_before_the_fixes(self):
         from cqc_lem.utilities.quality_gates import proof_finding

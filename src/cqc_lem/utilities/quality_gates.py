@@ -25,7 +25,9 @@ GATE_SLIDE_SLOP = "slide_ai_slop"
 GATE_AFFILIATE_PROMO = "affiliate_promo"
 # The two review-gate checks that had no finding shape until the repair pass needed one (issue
 # #1134). Both are built ONLY by `_review_generated_post`, never by `evaluate_post_gates` — they
-# describe why a draft was sent to the editor for repair, so nothing holds a post on them.
+# describe why a draft was sent to the editor for repair, so nothing holds a post on them, and both
+# are therefore built ADVISORY (`demoted=False`): `demoting_findings` and the SPA's
+# `holdingFindings` read that flag as "this is why the draft is stuck", which these never are.
 GATE_PERSONAL_PROOF = "personal_proof"
 GATE_FABRICATION = "fabrication"
 
@@ -322,6 +324,9 @@ def proof_finding(profile_synthesis: Optional[str] = None) -> dict:
         remediation=("Add one specific thing you actually did: a real number you measured, a client "
                      "moment, the mistake you made and what it cost. Do not invent one — use a "
                      "detail already in the draft's source material."),
+        # ADVISORY, never a hold: no gate builds this finding, so a post carrying it is not being
+        # held by it, and the SPA paints a `demoted` finding as the reason a draft is stuck.
+        demoted=False,
         details=[f"Author voice reference: {voice[:400]}"] if voice else None)
 
 
@@ -341,6 +346,9 @@ def fabrication_finding(specifics: Optional[list] = None) -> dict:
                      f"audience's trust."),
         remediation=("Cut each one, or replace it with a detail from your story bank. Never swap in "
                      "a different invented specific."),
+        # ADVISORY for the same reason `proof_finding` is: nothing evaluates this gate, so it must
+        # never render as the finding holding the post.
+        demoted=False,
         score=float(len(invented)), threshold=0.0,
         details=[f"Unsourced specific: {s}" for s in invented[:10]])
 

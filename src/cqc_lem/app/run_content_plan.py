@@ -2587,7 +2587,7 @@ def _review_gate_findings(similarity: Optional[dict], *, proof_missing: bool,
 
 
 def _repair_draft(ctx: PostDraftContext, content: str, findings: list[dict],
-                  cta_keyword: Optional[str]) -> Optional[str]:
+                  cta_keyword: Optional[str], story: Optional[dict] = None) -> Optional[str]:
     """Hand a failing draft to the EDITOR to fix (issue #1134) — the review gate's repair pass.
 
     This is the whole point of the change: a deterministic check failing used to be answered by the
@@ -2595,6 +2595,14 @@ def _repair_draft(ctx: PostDraftContext, content: str, findings: list[dict],
     not a second opinion. `get_ai_linked_post_refinement` is a different prompt family — an editor
     revising a finished draft — and it is handed the findings themselves, so it is fixing named
     faults in THIS text rather than writing new text that might miss them differently.
+
+    The editor is handed the WRITER's own story-bank directive alongside the findings. Without it
+    the two findings that name a first-person specific — proof and fabrication — are unanswerable:
+    they ask for a real lived detail to be added or substituted while banning invention, and the
+    editor can see only the draft. The writer had that material (it is `ctx.story_directive`, the
+    same string `_draft_from_source` used), and it carries the bank's own absolute rule that its
+    facts are the ONLY personal specifics allowed — so passing it both enables the repair and
+    bounds it. No entry means the no-story directive, which is that rule with nothing to draw on.
 
     The deterministic passes the first draft went through run again over the edit (LinkedIn
     sanitisation, the engagement-bait strip, then the humanize pass), so the repaired draft is
@@ -2608,14 +2616,17 @@ def _repair_draft(ctx: PostDraftContext, content: str, findings: list[dict],
         content: the failing draft.
         findings: what to fix, from `_review_gate_findings`.
         cta_keyword: the sanctioned lead-magnet trigger word the edit must preserve.
+        story: the story-bank entry the draft was anchored to, used only to rebuild the directive
+            when the context never carried one.
 
     Returns:
         The repaired draft, or None when the repair produced nothing usable.
     """
     try:
-        repaired = get_ai_linked_post_refinement(content, prefs=ctx.prefs,
-                                                 preserve_cta_keyword=cta_keyword,
-                                                 repair_findings=findings)
+        repaired = get_ai_linked_post_refinement(
+            content, prefs=ctx.prefs, preserve_cta_keyword=cta_keyword,
+            repair_findings=findings,
+            repair_source_material=ctx.story_directive or _story_bank.story_directive(story))
         if not repaired:
             return None
         repaired = strip_engagement_bait(sanitize_for_linkedin(repaired),
@@ -2736,7 +2747,7 @@ def _review_generated_post(ctx: PostDraftContext, content: str, recent_texts: li
         profile_synthesis=profile_synthesis)
     _persist_gate_findings(user_id, post_id, findings, mark_repaired=True)
 
-    second = _repair_draft(ctx, content, findings, cta_keyword)
+    second = _repair_draft(ctx, content, findings, cta_keyword, story=story)
     if not second:
         # The first draft is what ships, so ITS verdict is the one the gate pass must read.
         _record_post_similarity_finding(post_id, similarity, user_id=user_id)
