@@ -183,10 +183,36 @@ So the SPA ships none, and the token's contract is now written down rather than 
   read a header. So a caller following the documentation cleared this gate and was then 401'd by the
   route — the same failure shape as #1354, an error pointing at the wrong thing. The header is gone
   from the check, from `ui/src/api/client.ts`, and from this document; `API_ACCESS_TOKENS` (#950) is
-  the non-browser credential and there is no second one. A cookie-less browser session (the
-  `login()` fallback for a browser that refused the cookie) still authenticates at the route on the
-  `session_token` field, but it carries nothing this edge check can see — with `API_ACCESS_TOKENS`
-  set, its non-`/api/auth/` requests are refused at the edge. Tracked in #1611.
+  the non-browser credential and there is no second one.
+- **The cookie-less fallback carries the cookie too (#1611).** `AuthContext.login()` falls back to
+  holding the real token when the browser refused the httpOnly one — a plain-http origin dropping a
+  `Secure` cookie — so that a valid login is never turned into a lockout. Holding it in
+  `localStorage` alone was not enough: the token authenticates at the ROUTE (the `session_token`
+  field) but this edge check runs before routing, has no database and must not consume a POST body,
+  so it saw no credential and 401'd every non-`/api/auth/` request from a session that was perfectly
+  live. That reads as a broken app rather than a broken session, and #1358 correctly declines to
+  sign anyone out over it. The fallback now also writes `lem_session=<token>` with `document.cookie`
+  (`ui/src/utils/sessionCookie.ts`) — on login AND on every boot from a stored real token, since the
+  browser that refused the server's cookie may equally drop ours. That is the one credential this
+  check and the resolver both already read, and it adds no server surface. It is
+  `Path=/; SameSite=Lax`, and necessarily not httpOnly, which `document.cookie` cannot set.
+  `Secure` tracks the PAGE: absent on a plain-http origin (a refused `Secure` cookie is the failure
+  this exists for, and a browser drops one written from http anyway), present on https — where
+  omitting it WOULD widen exposure, because `localStorage` is scoped by scheme and a cookie is not,
+  so the live token would ride the first `http://` request to that host in cleartext. Otherwise
+  exposure is unchanged: the fallback already held that same raw token in `localStorage`, equally
+  readable by a script on the page. CSRF is unchanged too — a cookie-authenticated write still needs
+  `X-LEM-Client`, and the fallback's own writes take the explicit-token branch, which no forger
+  reaches without the token. The cookie NAME is the server's `SESSION_COOKIE_NAME`, so a deployment
+  that overrides that env var must override the SPA constant with it. It is cleared at every moment
+  this browser stops holding the session — `clearLocalSession()` (sign-out and session-ended), the
+  boot that abandons a stored session, and the start of the next `login()`. The last two are not
+  tidiness: a script-written cookie is NOT replaced by the next login's `Set-Cookie` in the very
+  browser that refuses that cookie, so a stale one left behind would answer the sentinel probe as
+  its own owner and sign the next person in as somebody else. Proven in
+  `tests/unit/api/test_cookieless_fallback_session.py` (a read and a write complete with
+  `API_ACCESS_TOKENS` set) and `ui/src/utils/sessionCookie.test.ts` (the attributes, `Secure` on
+  both sides of the scheme).
 - **That safety argument is a TEST, not a paragraph.** Loosening a global edge control is only safe
   while every gated route really does resolve its caller, so
   `tests/unit/api/test_api_route_identity.py` walks the live route table and asserts it: every
