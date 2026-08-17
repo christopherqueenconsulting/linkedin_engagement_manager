@@ -1,0 +1,479 @@
+#!/usr/bin/env python3
+"""Flag a migration-bearing release before it auto-deploys (#1133).
+
+`.github/workflows/build-and-push.yml`'s `deploy` job runs on `environment: production` with its
+required-reviewer gate deliberately removed — "green releases auto-deploy" per the workflow's own
+comment. That is the right default for the overwhelming majority of releases, but a Flyway migration
+is one-way against production data: rolling the image back to `.last_good_tag` does not roll back
+applied DDL. This script is the `release-risk-check` job's brain, running alongside `build-and-push`
+and read by `deploy`'s `if:` — see `docs/graphs/deploy-release.md` for the reviewed design (3
+gauntlet-loop rounds).
+
+Scope, deliberately narrowed by owner decision on PR #1590: **a newly ADDED migration file is the
+only signal here.** The reviewed design also flagged a release carrying a `risk:security` /
+`risk:live-linkedin` / `risk:product-decision` PR; replaying that rule against the last 14 real
+releases flagged 10 of them (71%), which would have made manual dispatch the normal way LEM reaches
+production. Those PRs are already held for a human to merge by
+`scripts/agent-pipeline/stage-pr.sh`, so gating them again at deploy time re-asked a question the
+owner had already answered on that exact change. A migration is the one thing in a release range
+that no human re-reads at merge time AND that an image rollback cannot undo — so it is the one thing
+gated here.
+
+Diff source, deliberately: **this run's own tag**, never `.last_good_tag` (VPS-local, unreachable
+from the Actions runner). `gh release list` is sorted EXPLICITLY by `createdAt` here — never trusted
+as already sorted, because a second release (a `release:now` fast-lane release, or the next
+scheduled window) can publish mid-build and reorder the API's default response. The "previous
+release" is the next-older entry from THIS tag's own position in that sorted list, not list index
+0/1.
+
+On a flag, the workflow skips the automatic `deploy` job (this script only writes the `flagged`
+GitHub Actions output the job's `if:` reads — it never exits non-zero for a flag, since that would
+turn the *workflow run* red for working exactly as designed) and this script posts a Decision Comment
+on the release PR naming the migration file(s). That comment is AUDIT / NOTIFICATION ONLY: nothing in
+this repo watches replies on a release-please PR (it carries no `agent:ready`/`needs-human` flow
+label, and `tick.sh` never reads it) — the comment says so plainly rather than implying an automated
+unblock exists. The unblock is the owner running the existing manual entrypoint:
+
+    gh workflow run deploy-vps.yml -f tag=vX.Y.Z
+
+Every read here (release list, compare, per-commit files, the release PR lookup) fails OPEN — an
+unreadable GitHub API degrades to "nothing found here", never to blocking a routine deploy. That
+mirrors every other convenience gate in this repo (`docs/feature-flags.md`, `codeql_pr_gate.py`): a
+transient API hiccup must not become a new single point of failure for the 4x-daily release cadence
+the batching window exists to protect. The one thing that does NOT fail open is an already-decided
+flag: once a migration has been found, nothing here backs off from it.
+
+CLI:
+  --tag TAG              This run's own release tag (required).
+  --repo OWNER/REPO      Defaults to $GITHUB_REPOSITORY, else the hardcoded default.
+  --release-limit N      `gh release list --limit` (default 20, per the acceptance criteria).
+  --no-comment           Skip posting the Decision Comment even when flagged (used by tests / a
+                          dry run); the `flagged` output is still written.
+
+Env:
+  GH_TOKEN / GITHUB_TOKEN  Read by the `gh` CLI itself. Missing = fail open with a loud warning.
+  GITHUB_OUTPUT            Where `flagged`/`previous_tag` are written for the workflow's `if:`.
+
+Exit: always 0. The verdict is carried entirely in the `flagged` GitHub Actions output, never in the
+process exit code — a flag is expected, routine behavior for a migration release, not a script error.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import subprocess
+import sys
+from dataclasses import dataclass
+
+DEFAULT_REPO = "christopherqueenconsulting/linkedin_engagement_manager"
+
+MIGRATIONS_PREFIX = "compose/local/database/migrations/"
+
+#: The head branch release-please always uses for its standing accumulator PR.
+RELEASE_PR_HEAD_REF = "release-please--branches--main"
+
+GH_TIMEOUT_SECONDS = 60
+
+#: GitHub's compare API returns AT MOST 300 entries in `.files`, silently, with no truncation flag
+#: and no pagination escape (`?page=2` on that endpoint answers with an EMPTY files array — measured
+#: against `v0.147.0...v0.148.0`, a real range that returns exactly 300). A release range that hits
+#: the cap can therefore hide a migration from `added_migration_files`, which is precisely the miss
+#: this gate exists to prevent — so at the cap we stop trusting `.files` and walk the range's commits
+#: one at a time instead.
+COMPARE_FILES_CAP = 300
+
+
+# ────────────────────────────────────────────────────────────── pure decision logic
+
+
+@dataclass(frozen=True)
+class Verdict:
+    """The gate's answer: whether to skip the automatic deploy, and why."""
+
+    flagged: bool
+    migration_files: tuple[str, ...]
+
+
+def resolve_previous_release(releases: list[dict], tag: str) -> str | None:
+    """Find the release immediately older than `tag`, sorting explicitly first.
+
+    Args:
+        releases: `gh release list --json tagName,createdAt` output — NOT assumed to already be in
+            any particular order (an acceptance criterion of #1133: never trust API default order).
+        tag: This run's own tag.
+
+    Returns:
+        The next-older tag's name, or `None` when `tag` is absent from `releases` (outside the
+        `--limit` window) or is already the oldest entry present. Entries missing either field are
+        dropped rather than raising — an unreadable release row must degrade to "fail open", the
+        same as an unreadable API call, never to a traceback that skips an unflagged deploy.
+    """
+    usable = [
+        r
+        for r in releases
+        if isinstance(r, dict) and isinstance(r.get("createdAt"), str) and r.get("tagName")
+    ]
+    ordered = sorted(usable, key=lambda r: r["createdAt"], reverse=True)
+    names = [r["tagName"] for r in ordered]
+    try:
+        idx = names.index(tag)
+    except ValueError:
+        return None
+    if idx + 1 >= len(names):
+        return None
+    return names[idx + 1]
+
+
+def added_migration_files(files: list[dict]) -> list[str]:
+    """Which entries of a GitHub compare-API `files` array are a newly ADDED migration.
+
+    Args:
+        files: `.files` from `GET /repos/{repo}/compare/{base}...{head}` — each entry has
+            `filename` and `status` (`added`/`modified`/`removed`/`renamed`/...).
+
+    Returns:
+        Sorted migration paths whose status is `added`. Only ADDED counts — migrations are
+        additive-only (root `CLAUDE.md`), so an edit to an existing one is a different kind of
+        problem, not this check's job.
+    """
+    return sorted(
+        f["filename"]
+        for f in files
+        if f.get("status") == "added" and f.get("filename", "").startswith(MIGRATIONS_PREFIX)
+    )
+
+
+def decide(*, migration_files: list[str]) -> Verdict:
+    """Should the automatic `deploy` job be skipped for this release?
+
+    Args:
+        migration_files: Newly added migration paths in the commit range.
+
+    Returns:
+        A `Verdict`. One added migration is enough — this is presence, not a severity score: a lone
+        migration is exactly as one-way as five of them.
+    """
+    return Verdict(flagged=bool(migration_files), migration_files=tuple(migration_files))
+
+
+def summarize(verdict: Verdict) -> str:
+    """One-line reason string for logs and the `::warning::` annotation."""
+    if not verdict.migration_files:
+        return "nothing found"
+    return f"{len(verdict.migration_files)} new migration file(s)"
+
+
+def format_decision_comment(tag: str, previous_tag: str, verdict: Verdict) -> str:
+    """Build the markdown body posted to the release PR when `verdict.flagged`.
+
+    Args:
+        tag: This run's tag.
+        previous_tag: The tag it was diffed against.
+        verdict: Must be flagged — this is only ever called after that check.
+
+    Returns:
+        Markdown naming the specific migration file(s), stating plainly that this comment is
+        audit-only (nothing watches replies here), and giving the exact manual unblock command.
+    """
+    lines = [
+        f"### :warning: `release-risk-check` flagged `{tag}`",
+        "",
+        f"The automatic `deploy` job was **skipped**: this release adds a Flyway migration, which is "
+        f"one-way against production data (rolling the image back does not roll back applied DDL). "
+        f"Diffed against the previous release `{previous_tag}` (`gh release list`, sorted explicitly "
+        f"by `createdAt`, the next-older entry from this run's own tag — never `.last_good_tag`, "
+        f"which is VPS-local and unreachable from the Actions runner).",
+        "",
+        f"**Migration file(s) added ({len(verdict.migration_files)}):**",
+    ]
+    lines.extend(f"- `{path}`" for path in verdict.migration_files)
+    audit_only_note = (
+        "**This comment is audit / notification only.** Nothing in this repo watches replies on "
+        "a release-please PR — it carries no `agent:ready`/`needs-human` flow label, and "
+        "`tick.sh` never reads this thread. There is no automated unblock."
+    )
+    lines.extend(
+        [
+            "",
+            audit_only_note,
+            "",
+            "To ship this release, the owner runs the existing manual entrypoint:",
+            "",
+            "```",
+            f"gh workflow run deploy-vps.yml -f tag={tag}",
+            "```",
+        ]
+    )
+    return "\n".join(lines)
+
+
+# ────────────────────────────────────────────────────────────── thin I/O layer (gh CLI)
+
+
+def _run_gh(args: list[str], *, input_text: str | None = None) -> subprocess.CompletedProcess:
+    """One place every `gh` invocation goes through, so tests mock exactly here.
+
+    A hung `gh` (`TimeoutExpired` at `GH_TIMEOUT_SECONDS`) or a missing/unrunnable binary
+    (`OSError`) is reported as a non-zero `CompletedProcess`, never raised: every caller here
+    already degrades a non-zero exit to "unreadable, fail open", and an escaping exception would do
+    the opposite — a traceback exits non-zero, the job goes red, and `deploy`'s `needs:` skips a
+    release that was never flagged. That is exactly the single point of failure this script's
+    fail-open posture exists to avoid.
+
+    Args:
+        args: The full `gh` argv.
+        input_text: Optional stdin payload.
+
+    Returns:
+        The completed process, or a synthetic failed one carrying the error text on stderr.
+    """
+    try:
+        return subprocess.run(
+            args,
+            capture_output=True,
+            text=True,
+            input=input_text,
+            timeout=GH_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return subprocess.CompletedProcess(
+            args=args, returncode=124, stdout="", stderr=f"timed out after {GH_TIMEOUT_SECONDS}s"
+        )
+    except OSError as exc:
+        return subprocess.CompletedProcess(args=args, returncode=127, stdout="", stderr=str(exc))
+
+
+def _gh_json(args: list[str]) -> object | None:
+    """Run a `gh` subcommand and parse its stdout as JSON.
+
+    Returns:
+        The parsed JSON, or `None` on any failure (non-zero exit, empty output, bad JSON) — the
+        caller decides what "unreadable" means for that call; this layer never raises.
+    """
+    result = _run_gh(args)
+    if result.returncode != 0:
+        print(
+            f"::warning title=release-risk-check gh call failed::`{' '.join(args)}` exited "
+            f"{result.returncode}: {(result.stderr or '').strip()[:300]}"
+        )
+        return None
+    out = (result.stdout or "").strip()
+    if not out:
+        return None
+    try:
+        return json.loads(out)
+    except json.JSONDecodeError as exc:
+        print(f"::warning title=release-risk-check gh call unreadable::{exc}")
+        return None
+
+
+def fetch_releases(repo: str, limit: int) -> list[dict] | None:
+    """`gh release list --json tagName,createdAt --limit N`."""
+    data = _gh_json(
+        ["gh", "release", "list", "--repo", repo, "--json", "tagName,createdAt", "--limit", str(limit)]
+    )
+    return data if isinstance(data, list) else None
+
+
+def fetch_compare(repo: str, base: str, head: str) -> dict | None:
+    """`GET /repos/{repo}/compare/{base}...{head}` — files (with status) + commits, no local clone."""
+    data = _gh_json(["gh", "api", f"repos/{repo}/compare/{base}...{head}"])
+    return data if isinstance(data, dict) else None
+
+
+def fetch_commit_files(repo: str, sha: str) -> list[dict] | None:
+    """`GET /repos/{repo}/commits/{sha}` — one commit's own file list (with per-file status).
+
+    Args:
+        repo: `owner/name`.
+        sha: The commit to read.
+
+    Returns:
+        The commit's `files` array, or `None` when the call or its shape is unreadable.
+    """
+    data = _gh_json(["gh", "api", f"repos/{repo}/commits/{sha}"])
+    if not isinstance(data, dict):
+        return None
+    files = data.get("files")
+    return files if isinstance(files, list) else None
+
+
+def collect_migration_files(repo: str, compare: dict) -> list[str]:
+    """Added migration paths in the range, working around the compare API's 300-file cap.
+
+    Below the cap the compare payload is complete, so this is just `added_migration_files`. AT the
+    cap the file list is truncated with no flag and no pagination (see `COMPARE_FILES_CAP`), so the
+    range's commits are walked individually — a real release range carries ~20 commits, so this
+    costs a handful of extra reads in the rare case it runs at all, and nothing in the common one.
+
+    Args:
+        repo: `owner/name`.
+        compare: The compare-API payload (`files`, `commits`, `total_commits`).
+
+    Returns:
+        Sorted, de-duplicated migration paths added anywhere in the range.
+    """
+    files = compare.get("files") or []
+    found = set(added_migration_files(files))
+    if len(files) < COMPARE_FILES_CAP:
+        return sorted(found)
+
+    commits = compare.get("commits") or []
+    print(
+        f"::warning title=release-risk-check compare truncated::the compare API returned "
+        f"{len(files)} files (its hard cap) — walking {len(commits)} commit(s) individually so a "
+        "migration cannot hide past the cap."
+    )
+    total_commits = compare.get("total_commits")
+    if isinstance(total_commits, int) and total_commits > len(commits):
+        print(
+            f"::warning title=release-risk-check commit list truncated::the compare API returned "
+            f"{len(commits)} of {total_commits} commits — files touched only by the commits beyond "
+            "that are not covered by this walk."
+        )
+    for commit in commits:
+        sha = commit.get("sha") if isinstance(commit, dict) else None
+        if not sha:
+            continue
+        commit_files = fetch_commit_files(repo, sha)
+        if commit_files is None:
+            print(
+                f"::warning title=release-risk-check commit unreadable::could not read {sha}; its "
+                "files are not covered by the migration check."
+            )
+            continue
+        found.update(added_migration_files(commit_files))
+    return sorted(found)
+
+
+def fetch_release_pr_number(repo: str, tag: str) -> int | None:
+    """Which release-please PR's merge commit this tag points at.
+
+    Uses "list pull requests associated with a commit" against the TAG directly (GitHub resolves
+    it) rather than requiring a local checkout to dereference it to a SHA first.
+    """
+    data = _gh_json(["gh", "api", f"repos/{repo}/commits/{tag}/pulls"])
+    if not isinstance(data, list) or not data:
+        return None
+    for pr in data:
+        if isinstance(pr, dict) and pr.get("head", {}).get("ref") == RELEASE_PR_HEAD_REF:
+            return pr.get("number")
+    first = data[0]
+    return first.get("number") if isinstance(first, dict) else None
+
+
+def post_decision_comment(repo: str, pr_number: int, body: str) -> bool:
+    """`gh pr comment` the release PR. Best-effort — a failure here never re-enables the deploy."""
+    result = _run_gh(
+        ["gh", "pr", "comment", str(pr_number), "--repo", repo, "--body-file", "-"], input_text=body
+    )
+    if result.returncode != 0:
+        print(
+            f"::warning title=Decision Comment not posted::gh pr comment on #{pr_number} exited "
+            f"{result.returncode}: {(result.stderr or '').strip()[:300]}"
+        )
+        return False
+    return True
+
+
+def write_github_outputs(outputs: dict[str, str]) -> None:
+    """Write `key=value` lines to `$GITHUB_OUTPUT`, the wire between this job and `deploy`'s `if:`."""
+    path = os.getenv("GITHUB_OUTPUT", "")
+    if not path:
+        return
+    try:
+        with open(path, "a", encoding="utf-8") as fh:
+            for key, value in outputs.items():
+                fh.write(f"{key}={value}\n")
+    except OSError as exc:
+        print(f"::warning title=release-risk-check could not write outputs::{exc}")
+
+
+# ────────────────────────────────────────────────────────────── CLI
+
+
+def parse_args(argv: list[str]) -> argparse.Namespace:
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--tag", required=True, help="This run's own release tag.")
+    ap.add_argument("--repo", default=os.getenv("GITHUB_REPOSITORY", DEFAULT_REPO))
+    ap.add_argument("--release-limit", type=int, default=20)
+    ap.add_argument("--no-comment", action="store_true", help="Never post the Decision Comment.")
+    return ap.parse_args(argv[1:])
+
+
+def main(argv: list[str]) -> int:
+    args = parse_args(argv)
+
+    if not (os.getenv("GH_TOKEN") or os.getenv("GITHUB_TOKEN")):
+        print(
+            "::warning title=release-risk-check skipped::no GH_TOKEN/GITHUB_TOKEN in scope; cannot "
+            "read release history. Deploying unflagged (fail open)."
+        )
+        write_github_outputs({"flagged": "false"})
+        return 0
+
+    releases = fetch_releases(args.repo, args.release_limit)
+    if releases is None:
+        print(
+            f"::warning title=release-risk-check degraded::could not list releases for {args.repo}; "
+            "deploying unflagged (fail open)."
+        )
+        write_github_outputs({"flagged": "false"})
+        return 0
+
+    previous_tag = resolve_previous_release(releases, args.tag)
+    if previous_tag is None:
+        print(
+            f"PASS: no earlier release found before {args.tag} within the last {args.release_limit} "
+            "— nothing to diff, deploying."
+        )
+        write_github_outputs({"flagged": "false"})
+        return 0
+
+    compare = fetch_compare(args.repo, previous_tag, args.tag)
+    if compare is None:
+        print(
+            f"::warning title=release-risk-check degraded::could not diff {previous_tag}...{args.tag}; "
+            "deploying unflagged (fail open)."
+        )
+        write_github_outputs({"flagged": "false"})
+        return 0
+
+    migration_files = collect_migration_files(args.repo, compare)
+
+    verdict = decide(migration_files=migration_files)
+    write_github_outputs(
+        {"flagged": "true" if verdict.flagged else "false", "previous_tag": previous_tag}
+    )
+
+    if not verdict.flagged:
+        print(f"PASS: no migration files added between {previous_tag} and {args.tag}.")
+        return 0
+
+    reason = summarize(verdict)
+    print(f"FLAGGED: {reason} between {previous_tag} and {args.tag}.")
+    print(
+        f"::warning title=Release risk flagged::{reason} — automatic deploy of {args.tag} skipped. "
+        f"The owner must run 'gh workflow run deploy-vps.yml -f tag={args.tag}' to ship it manually."
+    )
+
+    if args.no_comment:
+        return 0
+
+    pr_number = fetch_release_pr_number(args.repo, args.tag)
+    body = format_decision_comment(args.tag, previous_tag, verdict)
+    if pr_number is None:
+        print(
+            f"::warning title=Decision Comment not posted::could not resolve the release PR for "
+            f"{args.tag}; see the run log above for the same detail."
+        )
+        return 0
+    post_decision_comment(args.repo, pr_number, body)
+    return 0
+
+
+if __name__ == "__main__":  # pragma: no cover - CLI
+    raise SystemExit(main(sys.argv))
