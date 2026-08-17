@@ -141,7 +141,7 @@ def test_an_unreadable_lookup_is_none_not_false(monkeypatch):
 def test_the_lookup_is_skipped_when_no_work_exists(monkeypatch):
     """Cost: one extra API call, and only for an issue that already produced something."""
     calls = []
-    monkeypatch.setattr(observe, "_work_exists_for_issue", lambda *a: False)
+    monkeypatch.setattr(observe, "_work_exists_for_issue", lambda *a, **k: False)
     monkeypatch.setattr(github, "open_pr_for_branch", lambda *a, **k: calls.append(a))
     monkeypatch.setattr(github, "gh_json", lambda *a, **k: {"number": 1, "state": "OPEN",
                                                             "labels": [{"name": "agent:ready"}]})

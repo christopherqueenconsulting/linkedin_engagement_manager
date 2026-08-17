@@ -624,6 +624,32 @@ def record_unpark(conn: sqlite3.Connection, kind: str, number: int, reason: str,
     )
 
 
+def lap_key(conn: sqlite3.Connection, kind: str, number: int, reason: str,
+            head_sha: str | None) -> str:
+    """What one lap of (item, reason) is counted against — the head, or a stand-in for it.
+
+    A PR's laps key on its head SHA, so the 6-hourly re-decision of a standing park is the same park
+    being re-observed rather than a new one. An ISSUE has no head: every key would be `""`, and
+    `record_park`'s `INSERT OR IGNORE` collapses them onto a single row, so an issue could never
+    reach `LEMD_MAX_PARK_LAPS` however many times it went round. That was harmless while every
+    issue-side park came from a spent ledger — the un-park's ledger reset made the next observation
+    dispatch rather than re-park — and stops being harmless with a park `decide()` raises from a
+    GitHub fact the un-park does not change (#1405), which re-raises the moment the hold comes off.
+
+    What moves for an issue is the OWNER releasing it, so the un-park count is the stand-in: one lap
+    per park-since-release. Read BEFORE the un-park is recorded, so the release and the park it
+    releases share a key and only the NEXT park starts a lap.
+    """
+    if head_sha:
+        return head_sha
+    row = conn.execute(
+        "SELECT COUNT(*) AS n FROM park_history "
+        "WHERE kind=? AND number=? AND reason=? AND event='unpark'",
+        (kind, number, reason or "unknown"),
+    ).fetchone()
+    return "unpark:%d" % (int(row["n"]) if row else 0)
+
+
 def park_laps(conn: sqlite3.Connection, kind: str, number: int, reason: str) -> int:
     """How many times this item has been parked for this reason, at distinct heads.
 

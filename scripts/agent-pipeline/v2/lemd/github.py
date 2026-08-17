@@ -268,6 +268,63 @@ def open_pr_for_branch(slug: str, branch: str, *, timeout: int = 30) -> bool | N
     return bool(rows)
 
 
+def linked_pr_state(slug: str, number: int, *, timeout: int = 30) -> str | None:
+    """The state of the NEWEST pull request GitHub says will close this issue.
+
+    `closedByPullRequestsReferences` carries id/number/repository/url and no `state`, so telling an
+    open PR from a merged or a closed-unmerged one costs a second read. That is the whole cost of
+    this function, and it is why callers gate it on linkage already existing: an issue with nothing
+    linked never reaches the `pr view`.
+
+    NEWEST, by PR number, because an issue can accumulate refs — #1091 carries both #1592 and
+    #1597 — and only the most recent one describes where the work stands now. An older merged ref
+    under a live PR must not read as "shipped".
+
+    Returns:
+        `OPEN` / `MERGED` / `CLOSED`; `""` when the linkage was READ and there is nothing linked;
+        None when either read failed or the newest ref carries no usable number. `""` and None are
+        the same DECISION — neither licenses a park, both wait — and are separate answers anyway
+        because they are different READS: `""` tells the caller the refs question is already
+        answered, which is what lets one linkage read serve all three of the questions
+        `snapshot_issue` asks instead of three.
+    """
+    try:
+        linked = gh_json(
+            ["issue", "view", str(number), "--repo", slug, "--json",
+             "closedByPullRequestsReferences"],
+            timeout=timeout,
+        ) or {}
+    except GitHubUnavailable as exc:
+        LOG.warning("issue #%s PR linkage unreadable: %s", number, exc)
+        return None
+    raw = linked.get("closedByPullRequestsReferences") or []
+    if not raw:
+        # READ and empty — not the same answer as a read that failed, even though both wait.
+        return ""
+    refs = [r for r in raw if isinstance(r, dict) and r.get("number")]
+    if not refs:
+        # Linked to SOMETHING this cannot address. Not `""`: that would tell the caller there is no
+        # linkage, and the caller would then license a re-dispatch off the branch convention alone.
+        LOG.warning("issue #%s has %d linked PR ref(s) with no usable number", number, len(raw))
+        return None
+    newest = max(refs, key=lambda r: int(r["number"]))
+    # The ref names its own repository, so a cross-repo link is read where it actually lives rather
+    # than looked up under this repo's slug, where the number would resolve to a different PR.
+    repo = newest.get("repository") or {}
+    owner = ((repo.get("owner") or {}).get("login") or "").strip()
+    name = (repo.get("name") or "").strip()
+    ref_slug = f"{owner}/{name}" if owner and name else slug
+    try:
+        facts = gh_json(
+            ["pr", "view", str(newest["number"]), "--repo", ref_slug, "--json", "state"],
+            timeout=timeout,
+        ) or {}
+    except GitHubUnavailable as exc:
+        LOG.warning("linked PR #%s state unreadable: %s", newest["number"], exc)
+        return None
+    return (facts.get("state") or "").upper() or None
+
+
 def merge_queue_state(slug: str, pr: int, *, timeout: int = 30) -> str:
     """The PR's merge-queue entry state, or "" when it holds no entry.
 

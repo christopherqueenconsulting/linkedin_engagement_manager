@@ -80,15 +80,21 @@ def test_an_unheld_draft_is_not_ignored_either():
     assert d(snap).next_state != db.STATE_IGNORED
 
 
-def test_decide_has_no_park_action_to_return():
-    """The constant is gone, so the dead branch cannot come back by accident.
+def test_the_park_action_is_returned_and_wired_not_merely_defined():
+    """`ACT_PARK` is back (#1405), and this is the condition it came back under.
 
-    Escalation happens at DISPATCH — `act()` finds the ledger spent and queues `park.sh` through
-    `_park()`. If `decide()` ever needs to escalate, the constant is re-added and wired in the same
-    change, which is exactly what did not happen last time.
+    It was deleted in #1386 for being a constant `decide()` never returned, leaving a branch in the
+    daemon nothing could reach. This test replaces the "it must not exist" assertion with the
+    property that actually mattered: if it exists, it is RETURNED and it is WIRED. A constant that
+    stops being reachable fails here rather than rotting for months.
     """
-    assert not hasattr(observe, "ACT_PARK")
-    assert "ACT_PARK" not in (_V2 / "lemd" / "daemon.py").read_text()
+    assert observe.ACT_PARK == "park"
+    got = observe.decide(
+        observe.Snapshot(kind="issue", number=1405, labels=frozenset({"agent:ready"}),
+                         work_exists=True, has_open_pr=True, linked_pr_state="CLOSED"),
+        **TTLS)
+    assert got.action == observe.ACT_PARK
+    assert "observe.ACT_PARK" in (_V2 / "lemd" / "daemon.py").read_text()
 
 
 def test_the_real_park_path_is_still_reachable():

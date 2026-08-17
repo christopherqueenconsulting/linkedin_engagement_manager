@@ -351,7 +351,7 @@ class Daemon:
         # debugging churn would have gone looking for a claim storm that was purely a log artefact.
         persisted = decision.next_state
         if decision.action in (observe.ACT_DISPATCH, observe.ACT_MERGE, observe.ACT_UNPARK,
-                               observe.ACT_DISARM, observe.ACT_ABANDON):
+                               observe.ACT_DISARM, observe.ACT_ABANDON, observe.ACT_PARK):
             persisted = db.STATE_READY
         self._emit(row, snap, decision, persisted)
 
@@ -366,6 +366,16 @@ class Daemon:
                 head_sha=snap.head_sha or row["head_sha"],
                 branch=snap.branch or row["branch"], dirty=0, wake_at=None,
             )
+            return
+
+        if decision.action == observe.ACT_PARK:
+            # Through `_park` rather than a bespoke write, so an escalation `decide()` raises is the
+            # SAME park a spent ledger raises: one gh-pool action, one comment keyed on the head,
+            # and — the half that is easy to drop — one counted lap. Without the lap this park is
+            # the only one in v2 that cannot ever be abandoned, so a rejected approach the owner
+            # keeps un-parking would ask for ever, which is precisely the shape #1390 exists to
+            # bound.
+            self._park(row, decision.park_reason or "needs_human")
             return
 
         if decision.action == observe.ACT_ABANDON:
@@ -662,9 +672,15 @@ class Daemon:
                                         args=[str(number), row["head_sha"] or ""],
                                         item_id=row["id"])
         if mode == "park":
+            reason = row["parked_reason"] or "parked"
+            # The fourth argument is the one-line detail `park.sh` prints above its options. Left
+            # empty the action falls back to "the lane exhausted its budget", which is true of every
+            # park `act()` raises and false of the ones `decide()` raises (#1405) — and an owner
+            # picks an option against the reason they were given.
             return self.sup.dispatch_gh(
                 action="park", kind=kind, number=number,
-                args=[kind, str(number), row["parked_reason"] or "parked"], item_id=row["id"])
+                args=[kind, str(number), reason, observe.PARK_DETAILS.get(reason, "")],
+                item_id=row["id"])
         if mode == "abandon":
             return self.sup.dispatch_gh(
                 action="abandon", kind=kind, number=number,
@@ -688,7 +704,12 @@ class Daemon:
         exits early on a repeat — so a park that `park.sh` declines to re-announce would never be
         counted, which is exactly the lap that proves a loop.
         """
-        db.record_park(self.conn, row["kind"], row["number"], reason, row["head_sha"])
+        # `lap_key` rather than the head directly: an ISSUE has no head, and keying every one of its
+        # laps on `""` collapses them onto a single row (see `db.lap_key`). `decide()`'s own parks
+        # (#1405) are the first that re-raise deterministically the moment a hold comes off, so
+        # without it the give-up rule they rely on would not exist for them.
+        db.record_park(self.conn, row["kind"], row["number"], reason,
+                       db.lap_key(self.conn, row["kind"], row["number"], reason, row["head_sha"]))
         db.upsert_item(self.conn, kind=row["kind"], number=row["number"], state=db.STATE_READY,
                        pending_mode="park", parked_reason=reason, dirty=0, wake_at=None)
 
@@ -760,8 +781,13 @@ class Daemon:
                 # the upsert guard exists precisely to stop writes landing on an active item.
                 # Re-observe immediately rather than on a TTL — the labels this action just rewrote
                 # ARE the next decision, and the owner is waiting on it.
-                db.record_unpark(self.conn, child.kind, child.number,
-                                 item["parked_reason"] or "", item["head_sha"])
+                # Same key the park was recorded under, read BEFORE this row lands so the two share
+                # it: the release closes the lap it releases, and only the NEXT park opens one.
+                unpark_reason = item["parked_reason"] or ""
+                db.record_unpark(
+                    self.conn, child.kind, child.number, unpark_reason,
+                    db.lap_key(self.conn, child.kind, child.number, unpark_reason,
+                               item["head_sha"]))
                 answer_id = self._answer_ids.pop((child.kind, child.number), None)
                 db.force_state(self.conn, item["id"], db.STATE_READY, dirty=1,
                                pending_mode=None, parked_reason=None, wake_at=None,
