@@ -46,13 +46,25 @@ jobs:
         # against branch protection 2026-08-03) — this job surfaces the failure
         # on the PR but does not block merge on its own.
         #
+        # --size-only keeps this step's meaning EXACTLY what it has always been:
+        # the size of the root file, nothing else. The structure rules are a
+        # separate step below so a red line here still means one thing.
+        #
         # --baseline-ref tells apart a PR that INHERITED an already-over-cap
         # main from one that PUSHED it over — see the script's printed note.
-        run: python3 scripts/check_claude_md_size.py --baseline-ref FETCH_HEAD
+        run: python3 scripts/check_claude_md_size.py --size-only --baseline-ref FETCH_HEAD
       - name: Annotate where the relocated detail goes
         if: failure()
         run: |
           echo "::error::CLAUDE.md exceeded the 40,000-char harness cap. Move detail to docs/*.md and leave CLAUDE.md as the map (locations, symbols, constants, invariants, where to find the detail). See CONTRIBUTING.md."
+      - name: Check CLAUDE.md's fixed shape (report-only for now)
+        # The structure linter: a closed section set, per-section char budgets, the row
+        # contract on the index tables, and pointers that resolve. Report-only while the
+        # budgets are still frozen at their measured sizes and the trim has not landed —
+        # its output IS the trim worklist. It becomes a real gate in the PR that ratchets
+        # the budgets down, via a tests/unit/ check riding `Unit Tests (Python 3.12)`.
+        continue-on-error: true
+        run: python3 scripts/check_claude_md_size.py
 
   drift:
     name: CLAUDE.md drift watch (main)
