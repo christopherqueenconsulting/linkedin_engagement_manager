@@ -37,7 +37,7 @@ linkedin-api-client = "^0.3.0"
 beautifulsoup4 = "^4.12"
 
 # --- AI / external APIs ---
-openai = ">=1.52.2,<3.0.0"
+openai = ">=1.52.2,<4.0.0"
 googlenews = "^1.6.15"
 runwayml = ">=2.1,<6.0"
 replicate = "^1.0.4"
