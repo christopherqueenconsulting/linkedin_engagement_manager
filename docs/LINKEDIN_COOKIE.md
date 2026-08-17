@@ -24,8 +24,8 @@ replies and DMs.
 
 Where the two login paths meet is `_persist_session_cookies`, and that is also where a sign-in is
 recorded for session-health reporting — see [LinkedIn session health](linkedin-session-health.md).
-When LinkedIn does challenge, the PIN is answered without a human at the keyboard by the
-email-reply path in [Email-reply verification PIN](EMAIL_PIN_VERIFICATION.md).
+When LinkedIn does challenge, the PIN is answered without a human at the keyboard by
+`linkedin/verification_pin.py` — see [Email-reply verification PIN](EMAIL_PIN_VERIFICATION.md).
 
 ## Option A — one-click browser extension (least steps)
 

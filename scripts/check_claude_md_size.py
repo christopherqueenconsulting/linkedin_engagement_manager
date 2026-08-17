@@ -543,21 +543,43 @@ def _check_tables(rel: str, sec: Section, spec: dict, schema: dict, cm019_level:
 
             if _NOANCHOR_RE.search(raw):
                 continue
-            anchors = _doc_anchors(REPO_ROOT / doc)
-            # Containment, not equality: a doc heading legitimately carries more than the row's
-            # name ("Feed commenting on the SDUI feed (`comment_on_feed_inline`, #622)" is the
-            # right heading for the "Feed commenting" row). What must not happen is a row whose
-            # name appears nowhere in the doc it points at.
-            term = _normalize_anchor(_row_name(cells))
-            if anchors and term and not any(term in a for a in anchors):
+            if not _row_is_anchored(cells, REPO_ROOT / doc):
                 out.append(Violation(
                     "CM019", rel, line,
-                    f'row "{_row_name(cells)}" points at {doc}, which has no heading or bold term '
-                    f"matching it — the row's detail has no home to be trimmed into. Add the heading, or "
-                    f"annotate the row with <!-- claude-md-lint: no-anchor <reason> -->",
+                    f'row "{_row_name(cells)}" points at {doc}, but that doc names neither the row nor '
+                    f"any symbol from its \"ONE place\" cell — so the row's detail has no home to be "
+                    f"trimmed into, and the pointer is probably aimed at the wrong doc. Add the "
+                    f"section, fix the pointer, or annotate the row with "
+                    f"<!-- claude-md-lint: no-anchor <reason> -->",
                     cm019_level,
                 ))
     return out
+
+
+def _row_is_anchored(cells: Sequence[str], doc: Path) -> bool:
+    """Does the doc a row points at actually cover that row? (CM019)
+
+    Two ways to prove it, because a doc legitimately words its headings differently from the
+    row that indexes it:
+
+    * the row's bolded NAME appears in a heading or bold term, or
+    * any backticked SYMBOL from the row's "ONE place" cell appears anywhere in the doc.
+
+    The symbol test is the stronger evidence — a doc that discusses `_read_groups_directory`
+    is provably the doc that owns the groups walk, whatever its headings are called. Demanding
+    the doc repeat the row's exact wording would be a spelling rule, not a coverage rule.
+    """
+    try:
+        text = doc.read_text(encoding="utf-8")
+    except OSError:
+        return True  # CM008 already reports a doc that cannot be read.
+    for symbol in _BACKTICK_RE.findall(cells[1] if len(cells) > 1 else ""):
+        stem = symbol.strip().strip("`").split("(")[0].strip()
+        if len(stem) > 3 and stem in text:
+            return True
+    anchors = _doc_anchors(doc)
+    term = _normalize_anchor(_row_name(cells))
+    return bool(anchors) and bool(term) and any(term in a for a in anchors)
 
 
 def _row_pointer(cells: Sequence[str], match: dict, section_pointer: Optional[str],

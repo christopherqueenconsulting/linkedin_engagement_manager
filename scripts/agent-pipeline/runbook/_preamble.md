@@ -15,6 +15,11 @@ Repo: `christopherqueenconsulting/linkedin_engagement_manager`. Owner/escalation
 - **Obey `CLAUDE.md`** in the repo root — it overrides your defaults (logging via `cqc_lem.utilities.logger`,
   type hints, enums for status, no raw SQL outside `utilities/db.py`, LLM calls via the client aliases,
   Selenium via `get_docker_driver()`, no hardcoded secrets).
+- **CLAUDE.md is FIXED-SHAPE: you may EDIT a row, never ADD one.** Adding a `##` section, a `###`
+  subsection or a table row is a schema change and fails CI. The behaviour you shipped belongs in the
+  `docs/*.md` the owning row points at (indexed in `docs/README.md`); the row itself gets edited in
+  place, under its char budget. Net chars added to `CLAUDE.md` by a feature PR should be **≤ 0**.
+  Check with `python3 scripts/check_claude_md_size.py`.
 - **DB migrations:** follow the repo's **db-migration** skill (`.claude/skills/db-migration/SKILL.md`) —
   timestamp versions (`V$(date -u +%Y%m%d%H%M%S)__name.sql`), never bare integers, never rename a merged one.
 - **Stay scoped to the single issue.** Do not refactor unrelated code or touch other issues' files.
