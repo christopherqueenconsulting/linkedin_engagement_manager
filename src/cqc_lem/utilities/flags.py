@@ -79,6 +79,7 @@ NEWSLETTER_EDITOR = "newsletter-editor-enabled"
 BRAND_SHOWCASE = "brand-showcase-enabled"
 VIDEO_MOTION_LINT_HOLD = "video-motion-lint-hold"
 VIDEO_CAPTIONS = "video-captions-enabled"
+OCCASION_NATIVE_PUBLISH = "occasion-native-publish-enabled"
 
 FLAGS: Dict[str, FlagSpec] = {
     spec.key: spec for spec in (
@@ -167,6 +168,18 @@ FLAGS: Dict[str, FlagSpec] = {
                          "muted autoplay (issue #1278). OFF by default — it re-encodes every "
                          "video post once and changes what the feed shows. Avatar-led videos need "
                          "the separate per-user `avatar_caption_overlay` opt-in on top of this."),
+        ),
+        FlagSpec(
+            key=OCCASION_NATIVE_PUBLISH,
+            env_var="OCCASION_NATIVE_PUBLISH_ENABLED",
+            default=False,
+            owner="content",
+            description=("Automated Selenium publishing of approved occasion/milestone drafts "
+                         "through LinkedIn's native 'Celebrate an occasion' composer (issue "
+                         "#1088). OFF by default: it is the one lane that WRITES a post through a "
+                         "browser, and its composer chain has to be live-grounded before the flag "
+                         "is flipped. With it off, #1074's copy-and-paste handoff is exactly what "
+                         "it was."),
         ),
     )
 }

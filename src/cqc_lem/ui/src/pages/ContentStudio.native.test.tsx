@@ -134,6 +134,23 @@ describe('ContentStudio native-publish state (issue #1074)', () => {
     )
   })
 
+  it('warns instead of telling the author to paste an unconfirmed publish again (issue #1088)', async () => {
+    // A native-publish attempt whose outcome never answered lands the draft at 'error'. The post
+    // may already be live, and an occasion post published twice is public and un-deletable — so
+    // this state must not carry the ordinary "paste the text below" instruction.
+    mockPosts([{ ...POST_BASE, status: 'error', manual_publish: true }])
+    harness(<ContentStudio />)
+
+    await waitFor(() => expect(screen.getByText('We shipped it.')).toBeDefined())
+    fireEvent.click(screen.getByText('We shipped it.'))
+
+    await waitFor(() => expect(screen.getByText('Post natively on LinkedIn')).toBeDefined())
+    expect(screen.getByText(/may already be on LinkedIn/i)).toBeDefined()
+    expect(screen.queryByText(/paste the text\s+below/i)).toBeNull()
+    // The way OUT of the state is still there — that is the whole point of holding it for a human.
+    expect(screen.getByRole('button', { name: /I posted this/i })).toBeDefined()
+  })
+
   it('leaves an ordinary post alone', async () => {
     mockPosts([{ ...POST_BASE, status: 'approved', manual_publish: false }])
     harness(<ContentStudio />)

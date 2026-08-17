@@ -144,7 +144,54 @@ entity the REST API has no equivalent for, so these drafts are written by LEM an
   saying they published it; it is refused for any post that is NOT `manual_publish`, because for
   those 'posted' is written by the task that holds the LinkedIn URN.
 
-Phase 2 — driving the occasion composer with Selenium — is tracked separately on #1088.
+#### Phase 2 — driving that composer with Selenium (issue #1088)
+
+The route has no API, so Phase 2 is a browser doing exactly what the author would: Start a post →
+More → Celebrate an occasion → pick the occasion → type → Post. `utilities/linkedin/share_composer.py`
+is the ONE place it is driven (mechanics only — the share-box trigger chain moved there too, because
+the group composer opens the same control and a second copy is drift waiting to happen);
+`app.engagement.posting.auto_publish_occasion_post` owns the policy. Four things are load-bearing:
+
+- **OFF by default, `occasion-native-publish-enabled`.** Read at BOTH ends — `auto_check_scheduled_posts`
+  never queues the message with it off, and the task refuses if it is flipped off mid-flight. With it
+  off, everything above is unchanged: the author still copies the draft across by hand. The flag must
+  not be flipped on until `scripts/linkedin_live_validation.py --occasion-composer` has been run live
+  and its JSON recorded on #1088 — with the flag off, nothing else drives those anchors.
+- **A separate queue, never a loosened filter.** `get_ready_occasion_posts` asks for
+  `manual_publish = 1`, the exact mirror of the `= 0` that keeps `post_to_linkedin` off these rows.
+  Two queries, so one row can never reach both the API path and the browser path.
+- **The row is CLAIMED (`scheduled`) before Chrome opens.** An occasion announcement published twice
+  is public and un-deletable, and the read that would tell us it already went out is the read that can
+  fail. So the claim is released back to `approved` only for the states that provably left nothing on
+  LinkedIn (no share box / no occasion affordance / no matching occasion type / no editor / no Post
+  button / a browser fault), and each of those grades a `zero_walk` verdict rather than skipping
+  quietly. A Post click the feed never confirmed is held at `error` for a human — the row is still
+  `manual_publish`, so the Content Studio's "I posted this" control is exactly where it was, and at
+  that status the panel says *check LinkedIn first* instead of its usual "paste the text below":
+  the draft the author is being shown may already be live. A claim whose worker died mid-composer
+  is recovered the same way, by `get_orphaned_occasion_claims` — never re-queued, because a dead
+  worker proves nothing about whether Post was pressed, and because `get_orphaned_scheduled_posts`
+  excludes `manual_publish` rows (re-queueing one would publish through the API the very post that
+  exists because the API cannot carry it).
+- **The occasion TYPE is an exact allow-list.** `OCCASION_TYPE_LABELS` maps each archetype to its
+  own label and nothing near it: "Certification" sits next to "Educational milestone" in LinkedIn's
+  menu, and clicking it publishes a claim the author never made (#1012). A type that does not
+  resolve aborts the run; it never settles for the neighbour, and never falls through to publish the
+  body as an ordinary update — which is the post #1074 exists to avoid.
+
+Bounded by the same `posting_days` the content plan is (fails open on an unreadable preference), and
+a blocked attempt holds its run lock for an hour so a rotated composer costs one Chrome session, not
+six.
+
+**The 2026-08-17 grounding pass did NOT clear the route, and the flag stays off because of it.**
+`--occasion-composer` resolved the share-box trigger (`div[role='button']`, text "Start a post"),
+clicked it, and **nothing opened** — no `role='dialog'`, no overlay container, no `role='textbox'`,
+and the URL never moved off `/feed/`. So every anchor below the trigger is still unproven: this run
+says nothing about them. The trigger is the SHARED chain `auto_post_to_group` opens too, so that is a
+production finding in its own right and is tracked separately; re-run `--occasion-composer` once it
+is fixed, and read `modal_containers` / `composer_controls` before touching any occasion label.
+`--probe-composer` grading `ok` on the same session is not a contradiction: it falls back to a
+page-wide control scan when the dialog lookup misses, so it graded the FEED's 84 controls.
 
 ## Carousels
 

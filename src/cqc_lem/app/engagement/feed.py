@@ -202,6 +202,10 @@ from cqc_lem.utilities.linkedin.rate_limit import (
     release_run_lock,
 )
 from cqc_lem.utilities.linkedin.session import get_current_profile
+from cqc_lem.utilities.linkedin.share_composer import (
+    SHARE_BOX_LOCATORS,
+    SHARE_BOX_TEXT_SIGNALS,
+)
 from cqc_lem.utilities.linkedin.sort_evidence import (
     build_sort_control_scan_js,
     scan_sort_control_candidates,
@@ -3452,20 +3456,14 @@ def auto_draft_group_post(self, user_id: int, group_id: str, group_name: str = N
 # instead of a copy of it (issue #1013): `--group-composer` imports these. An inlined duplicate
 # grounds whatever the probe's author last pasted — that is how the reaction probe reported
 # cards_found: 0 against a build whose walk was already fixed.
-_GROUP_SHARE_BOX_LOCATORS = [
-    # LinkedIn SDUI now renders the share-box trigger as a non-button clickable (e.g.
-    # `div[role='button']`) whose text is "Start a post". The old `//button` chain missed it even
-    # though the page plainly contained the label (#1107).
-    (By.XPATH,
-     "//*[self::button or @role='button']["
-     f"contains({_X_LOWER_TEXT},'start a post') "
-     f"or contains({_X_LOWER_TEXT},'start a public post') "
-     f"or contains({_X_LOWER_ARIA},'start a post') "
-     f"or contains({_X_LOWER_ARIA},'create a post') "
-     f"or (contains({_X_LOWER_TEXT},'start a') and contains({_X_LOWER_TEXT},'post'))"
-     "]"),
-]
-_GROUP_SHARE_BOX_TEXT_SIGNALS = ("start a post", "start a public post", "create a post")
+#
+# The share-box trigger itself now lives in `utilities/linkedin/share_composer.py` (#1088): the
+# group composer and the native occasion composer open the SAME control, and a second copy of that
+# chain is exactly the drift this comment warns about. It is imported back under the name this
+# module's body already used, so one spelling still greps to one place — and `--group-composer` /
+# `--composer` keep importing it from here.
+_GROUP_SHARE_BOX_LOCATORS = SHARE_BOX_LOCATORS
+_GROUP_SHARE_BOX_TEXT_SIGNALS = SHARE_BOX_TEXT_SIGNALS
 _GROUP_EDITOR_LOCATORS = [(By.CSS_SELECTOR, "div[role='textbox']")]
 _GROUP_POST_BUTTON_LOCATORS = [(By.XPATH, "//button[normalize-space()='Post']")]
 
