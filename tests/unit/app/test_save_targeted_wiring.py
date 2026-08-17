@@ -114,7 +114,7 @@ class TestFactGroundingGate:
             assert rcp._post_archetype_or_none(7) is None
 
 
-class TestReviewGateSpendsItsRetryOnFabrication:
+class TestReviewGateSpendsItsRepairOnFabrication:
     def _review(self, first, second, blueprint, entries=()):
         from cqc_lem.app import run_content_plan as rcp
         from cqc_lem.domain.models import PostDraftContext
@@ -123,17 +123,22 @@ class TestReviewGateSpendsItsRetryOnFabrication:
         with patch(f"{_RCP}.has_first_person_proof", return_value=True), \
              patch(f"{_RCP}._check_post_alignment"), \
              patch(f"{_RCP}.get_story_bank_entries", return_value=list(entries)), \
-             patch(f"{_RCP}._compose_draft", return_value=(second, ctx)) as regen:
+             patch(f"{_RCP}.humanize_text", side_effect=lambda text, **_: text), \
+             patch(f"{_RCP}.update_db_post_gate_reason"), \
+             patch(f"{_RCP}.get_post_gate_reason", return_value=[]), \
+             patch(f"{_RCP}.mark_post_gate_demoted"), \
+             patch(f"{_RCP}.get_ai_linked_post_refinement", return_value=second) as repair:
             out = rcp._review_generated_post(ctx, first, [])
-        return out, regen
+        return out, repair
 
-    def test_a_fabricating_receipt_is_regenerated_once_with_the_offending_numbers_named(self):
-        out, regen = self._review(_RECEIPT_WITH_INVENTED_NUMBERS, _RECEIPT_WITH_PLACEHOLDERS,
-                                  {"format": "build_receipt"})
+    def test_a_fabricating_receipt_is_repaired_once_with_the_offending_numbers_named(self):
+        out, repair = self._review(_RECEIPT_WITH_INVENTED_NUMBERS, _RECEIPT_WITH_PLACEHOLDERS,
+                                   {"format": "build_receipt"})
         assert out == _RECEIPT_WITH_PLACEHOLDERS
-        directive = regen.call_args.args[0].history_directive
-        assert "INVENTED SPECIFICS" in directive
-        assert "20" in directive and "62%" in directive
+        findings = repair.call_args.kwargs["repair_findings"]
+        assert [f["gate"] for f in findings] == ["fact_grounding"]
+        details = " ".join(findings[0]["details"])
+        assert "20" in details and "62%" in details
 
     def test_the_same_draft_under_another_archetype_is_left_alone(self):
         out, regen = self._review(_RECEIPT_WITH_INVENTED_NUMBERS, "second draft",
@@ -147,7 +152,7 @@ class TestReviewGateSpendsItsRetryOnFabrication:
         assert out == _RECEIPT_WITH_PLACEHOLDERS
         regen.assert_not_called()
 
-    def test_a_still_fabricating_retry_is_kept_and_left_to_the_gate(self):
+    def test_a_still_fabricating_repair_is_kept_and_left_to_the_gate(self):
         out, _ = self._review(_RECEIPT_WITH_INVENTED_NUMBERS, "We ran 90 jobs in 2 hours.",
                               {"format": "build_receipt"})
         assert out == "We ran 90 jobs in 2 hours."

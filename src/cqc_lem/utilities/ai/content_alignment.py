@@ -1063,6 +1063,35 @@ def personal_proof_directive(profile_synthesis: Optional[str] = None) -> str:
     return directive
 
 
+def repair_directive(findings: Optional[list] = None) -> str:
+    """What the EDITOR is told to fix, built from the review gate's structured findings (#1134).
+
+    The repair pass hands a failing draft to `get_ai_linked_post_refinement` — an editor revising
+    text — instead of asking the writer for a second draft of the same brief. So the instruction is
+    the findings themselves: each one already carries the plain-English explanation and the specific
+    remediation the review queue would have shown the author, which is exactly the brief an editor
+    needs. Empty string when there is nothing to repair, so callers can append unconditionally.
+
+    Ordered as the caller ordered them, capped at the first six so one pathological draft cannot
+    crowd the draft itself out of the prompt.
+    """
+    items = [f for f in (findings or []) if isinstance(f, dict) and f.get("explanation")]
+    if not items:
+        return ""
+    directive = (
+        "\n\nREQUIRED REPAIRS — this draft failed the following checks. Fix every one of them in "
+        "your edit, changing as little else as possible, and NEVER invent a fact, number, client "
+        "or outcome to satisfy one:\n")
+    for i, f in enumerate(items[:6], start=1):
+        directive += f"{i}. {str(f.get('label') or f.get('gate')).strip()}: {f['explanation']}\n"
+        remediation = str(f.get("remediation") or "").strip()
+        if remediation:
+            directive += f"   How to fix it: {remediation}\n"
+        for detail in [str(d).strip() for d in (f.get("details") or []) if str(d).strip()][:5]:
+            directive += f"   - {detail}\n"
+    return directive
+
+
 def voice_reference(profile, profile_synthesis: Optional[str] = None) -> str:
     """The VOICE/TONE/credibility reference string dropped into a generation prompt. Prefers the
     compact, stable synthesis; falls back to the guarded full profile JSON only when no synthesis was

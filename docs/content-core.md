@@ -67,6 +67,18 @@ Load-bearing details:
 - **The user's `post_similarity_max_pct` setting governs the fallback only.** It is a percentage on
   the token-overlap scale, where two unrelated posts sit at 0.2-0.4; cosine puts them near 0.5, so
   applying that percentage to cosine would hold nearly everything.
+- **The ONE retry is a REPAIR, not another draft** (#1134). Every deterministic check in the review
+  gate — similarity, A2 proof, fabrication, fact grounding, slop — answers a failure the same way:
+  the failing draft plus the structured findings go to `get_ai_linked_post_refinement`, the editor
+  that already runs one step earlier, which is a different prompt family from the writer. The writer
+  is never asked for a second draft of the same brief. `proof_finding` / `fabrication_finding` exist
+  for that brief (`quality_gates.py`); neither is built by `evaluate_post_gates` and nothing is ever
+  held on them. Because a repaired draft that then passes everything is the post nobody has read —
+  and no later pass can tell, the failing draft being gone — the repair path writes
+  `posts.ever_gate_demoted` once, and `_may_auto_approve` (the ONE approve decision, read by the
+  generation-time status setter AND `rescore_post`) holds it for the author unless the per-user
+  `hold_repaired_posts_for_review` (default ON) is switched off. Both reads fail OPEN: an unreadable
+  flag or prefs row costs the extra review, never the publish.
 - **Over the ceiling is ONE retry, then HELD** (#1452). The retry is the path the lexical gate always
   took; what changed is where the still-over draft ends up. It no longer auto-publishes — it lands
   **PENDING** carrying the `similarity` finding, which NAMES the measure that fired because a cosine

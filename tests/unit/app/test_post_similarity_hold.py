@@ -39,8 +39,8 @@ _OTHER_FINDING = {"gate": "malformed_asset", "label": "Unusable media file", "sc
 def _review(verdicts, second=_SECOND, existing=None, write=None):
     """Drive `_review_generated_post` with a scripted list of similarity verdicts.
 
-    `verdicts[0]` grades the first draft; `verdicts[1]` (when the gate regenerates) grades the
-    retry. Returns (content, post_similarity_report mock, update_db_post_gate_reason mock).
+    `verdicts[0]` grades the first draft; `verdicts[1]` (when the gate repairs it) grades the
+    repaired draft. Returns (content, post_similarity_report mock, update_db_post_gate_reason mock).
     """
     from cqc_lem.app import run_content_plan as rcp
     from cqc_lem.domain.models import PostDraftContext
@@ -50,14 +50,16 @@ def _review(verdicts, second=_SECOND, existing=None, write=None):
                            story_directive="STORY DIRECTIVE")
     sim = MagicMock(side_effect=list(verdicts))
     upd = write or MagicMock()
-    retry = (patch(f"{_RCP}._compose_draft", side_effect=second)
-             if isinstance(second, Exception) else
-             patch(f"{_RCP}._compose_draft", return_value=(second, ctx)))
+    repair = (patch(f"{_RCP}.get_ai_linked_post_refinement", side_effect=second)
+              if isinstance(second, Exception) else
+              patch(f"{_RCP}.get_ai_linked_post_refinement", return_value=second))
     with patch(f"{_RCP}.post_similarity_report", sim), \
          patch(f"{_RCP}.get_post_gate_reason", return_value=list(existing or [])), \
          patch(f"{_RCP}.update_db_post_gate_reason", upd), \
+         patch(f"{_RCP}.mark_post_gate_demoted"), \
+         patch(f"{_RCP}.humanize_text", side_effect=lambda text, **_: text), \
          patch(f"{_RCP}._check_post_alignment", return_value=True), \
-         retry:
+         repair:
         out = rcp._review_generated_post(ctx, _DRAFT, ["an earlier post"], story=None)
     return out, sim, upd
 
@@ -71,8 +73,13 @@ def _preview_ctx():
 
 
 def _written(upd):
-    """The findings list the review gate persisted (post_id, findings)."""
-    upd.assert_called_once()
+    """The findings list the post ENDS the review gate with.
+
+    The repair path (issue #1134) writes more than once — the failing draft's findings brief the
+    editor and are recorded, the repaired draft's replace them, and the similarity verdict is
+    merged in last. What the gate pass downstream reads is the LAST of those writes.
+    """
+    assert upd.call_args, "the review gate wrote nothing"
     return upd.call_args.args[1]
 
 
@@ -111,8 +118,9 @@ class TestTheReviewGateRecordsItsVerdict:
     def test_a_retry_that_cleared_the_ceiling_records_nothing_to_hold(self):
         out, _, upd = _review([_OVER, _CLEAR])
         assert out == _SECOND
-        # Nothing was on the post and the shipped draft is clean — the common path never writes.
-        upd.assert_not_called()
+        # The repair path writes (the failing draft's findings brief the editor and are recorded),
+        # but what the post is LEFT with holds nothing.
+        assert _written(upd) == []
 
     def test_a_clean_first_draft_never_regenerates_or_writes(self):
         out, sim, upd = _review([_CLEAR])
@@ -143,7 +151,7 @@ class TestTheReviewGateRecordsItsVerdict:
     def test_an_unwritable_gate_reason_costs_the_hold_not_the_post(self):
         out, _, upd = _review([_OVER, _OVER], write=MagicMock(side_effect=RuntimeError("no db")))
         assert out == _SECOND
-        upd.assert_called_once()
+        assert upd.call_count >= 1
 
     def test_a_preview_with_no_post_row_records_nothing(self):
         from cqc_lem.app import run_content_plan as rcp
@@ -151,11 +159,15 @@ class TestTheReviewGateRecordsItsVerdict:
         with patch(f"{_RCP}.post_similarity_report", return_value=dict(_OVER)), \
              patch(f"{_RCP}.get_post_gate_reason") as read, \
              patch(f"{_RCP}.update_db_post_gate_reason", upd), \
+             patch(f"{_RCP}.mark_post_gate_demoted") as marked, \
+             patch(f"{_RCP}.humanize_text", side_effect=lambda text, **_: text), \
              patch(f"{_RCP}._check_post_alignment", return_value=True), \
-             patch(f"{_RCP}._compose_draft", return_value=(_SECOND, _preview_ctx())):
+             patch(f"{_RCP}.get_ai_linked_post_refinement", return_value=_SECOND):
             rcp._review_generated_post(_preview_ctx(), _DRAFT, ["an earlier post"], story=None)
         read.assert_not_called()
         upd.assert_not_called()
+        # No row to flag either (issue #1134) — a preview is not a post that was repaired.
+        marked.assert_not_called()
 
 
 class TestTheGenerationGatePassReadsIt:

@@ -716,6 +716,40 @@ def get_post_gate_reason(post_id: int) -> list:
     except mysql.connector.Error as err:
         log_error("Could not get gate reason", exc=err, post_id=post_id)
         return []
+def mark_post_gate_demoted(post_id: int) -> bool:
+    """Record that this post's text went through the review gate's REPAIR pass (issue #1134).
+
+    Write-once and one-way: the flag says a deterministic check failed on some draft of this post
+    and an editor pass fixed it. Nothing clears it, because nothing can un-happen it — a later
+    re-score grades the text it has, not how the text got there.
+    """
+    try:
+        with db_cursor(commit=True) as cursor:
+            cursor.execute(
+                "UPDATE posts SET ever_gate_demoted = 1 WHERE id = %s", (post_id,)
+            )
+            # rowcount is 0 when the flag was ALREADY 1 (MySQL reports rows CHANGED), which is the
+            # normal second call on one post — so success is "the statement ran", not "it changed
+            # something". A missing row would be a 0 too; the caller is best-effort either way.
+            success = cursor.rowcount >= 0
+    except mysql.connector.Error as e:
+        success = False
+        log_error("Could not mark the post as gate-demoted", exc=e, post_id=post_id)
+    return success
+def get_post_ever_gate_demoted(post_id: int) -> bool:
+    """Did this post's text ever go through the repair pass (issue #1134)?
+
+    Fail-soft like every reader here: an unreadable flag answers False, so a DB hiccup costs the
+    extra review rather than silently converting a user's auto-scheduling into manual review.
+    """
+    try:
+        with db_cursor() as cursor:
+            cursor.execute("SELECT ever_gate_demoted FROM posts WHERE id = %s", (post_id,))
+            row = cursor.fetchone()
+            return bool(row[0]) if row and row[0] is not None else False
+    except mysql.connector.Error as err:
+        log_error("Could not read the post's gate-demoted flag", exc=err, post_id=post_id)
+        return False
 def update_db_post_dwell_score(post_id: int, score: Optional[int]) -> bool:
     """Persist the deterministic 0-100 dwell-proxy score for a post (issue #391, dwell_score column).
     Advisory metric stored next to authenticity_score — it is never read back to gate a status, so a

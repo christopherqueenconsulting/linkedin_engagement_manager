@@ -95,61 +95,72 @@ def _ctx(lead_magnet_cta=""):
 
 
 def _review(content, story=_STORY, second="second draft", lead_magnet_cta="", **env):
+    """Drive the review gate; `repair` is the EDITOR call the repair path makes (issue #1134)."""
     from cqc_lem.app import run_content_plan as rcp
-    with patch(f"{_RCP}._compose_draft", return_value=(second, _ctx())) as retry, \
+    with patch(f"{_RCP}.get_ai_linked_post_refinement", return_value=second) as repair, \
+         patch(f"{_RCP}.humanize_text", side_effect=lambda text, **_: text), \
+         patch(f"{_RCP}.update_db_post_gate_reason"), \
+         patch(f"{_RCP}.get_post_gate_reason", return_value=[]), \
+         patch(f"{_RCP}.mark_post_gate_demoted"), \
          patch(f"{_RCP}._check_post_alignment", return_value=True), \
          patch.dict("os.environ", env, clear=False):
         out = rcp._review_generated_post(_ctx(lead_magnet_cta), content, [], story=story)
-    return out, retry
+    return out, repair
 
 
 class TestFabricationGate:
     _SOURCED = "I cut a client's onboarding from 12 days to 3."
     _INVENTED = "I cut onboarding from 12 days to 3, and I grew their revenue 47%."
 
-    def test_sourced_specifics_ship_without_a_retry(self):
-        out, retry = _review(self._SOURCED)
+    def test_sourced_specifics_ship_without_a_repair(self):
+        out, repair = _review(self._SOURCED)
         assert out == self._SOURCED
-        retry.assert_not_called()
+        repair.assert_not_called()
 
-    def test_invented_specific_triggers_one_regeneration(self):
-        out, retry = _review(self._INVENTED)
+    def test_invented_specific_triggers_one_repair(self):
+        out, repair = _review(self._INVENTED)
         assert out == "second draft"
-        retry.assert_called_once()
-        # The regeneration is dispatched with the SAME settled inputs, only re-steered.
-        assert retry.call_args.args[0].story_directive == "STORY DIRECTIVE"
-        assert "47" in retry.call_args.args[0].history_directive
+        repair.assert_called_once()
+        # The EDITOR is handed THIS draft plus the finding naming what it invented (issue #1134) —
+        # not a fresh brief the writer could answer with a different invention.
+        assert repair.call_args.args[0] == self._INVENTED
+        findings = repair.call_args.kwargs["repair_findings"]
+        assert [f["gate"] for f in findings] == ["fabrication"]
+        assert any("47" in d for d in findings[0]["details"])
 
     def test_lead_magnet_cta_numbers_are_not_flagged_as_fabricated(self):
         # The CTA directive is material WE handed the writer — a number in the user's configured
         # resource name ("my 5-step checklist") must not trigger a spurious regeneration that
-        # would then be steered to strip the CTA mechanic.
+        # would then be handed to the editor to strip the CTA mechanic.
         cta = "Lead magnet: comment AUDIT and I'll DM you my 5-step checklist."
         content = ("I cut a client's onboarding from 12 days to 3. "
                    "Comment AUDIT and I'll DM you my 5-step checklist.")
-        out, retry = _review(content, lead_magnet_cta=cta)
+        out, repair = _review(content, lead_magnet_cta=cta)
         assert out == content
-        retry.assert_not_called()
+        repair.assert_not_called()
 
-    def test_regeneration_can_be_switched_off(self):
-        out, retry = _review(self._INVENTED, POST_FABRICATION_REGEN_ENABLED="off")
+    def test_the_repair_can_be_switched_off(self):
+        out, repair = _review(self._INVENTED, POST_FABRICATION_REGEN_ENABLED="off")
         assert out == self._INVENTED
-        retry.assert_not_called()
+        repair.assert_not_called()
 
     def test_no_story_means_no_allow_list_and_no_gate(self):
         # Without an entry every number would look fabricated — the check must not run at all.
-        out, retry = _review(self._INVENTED, story=None)
+        out, repair = _review(self._INVENTED, story=None)
         assert out == self._INVENTED
-        retry.assert_not_called()
+        repair.assert_not_called()
 
-    def test_a_still_fabricating_retry_is_kept_not_looped(self):
-        out, retry = _review(self._INVENTED, second="I still invented 91% growth.")
+    def test_a_still_fabricating_repair_is_kept_not_looped(self):
+        out, repair = _review(self._INVENTED, second="I still invented 91% growth.")
         assert out == "I still invented 91% growth."
-        assert retry.call_count == 1
+        assert repair.call_count == 1
 
-    def test_failed_retry_keeps_the_first_draft(self):
+    def test_failed_repair_keeps_the_first_draft(self):
         from cqc_lem.app import run_content_plan as rcp
-        with patch(f"{_RCP}._compose_draft", side_effect=RuntimeError("llm down")), \
+        with patch(f"{_RCP}.get_ai_linked_post_refinement", side_effect=RuntimeError("llm down")), \
+             patch(f"{_RCP}.update_db_post_gate_reason"), \
+             patch(f"{_RCP}.get_post_gate_reason", return_value=[]), \
+             patch(f"{_RCP}.mark_post_gate_demoted"), \
              patch(f"{_RCP}._check_post_alignment", return_value=True):
             out = rcp._review_generated_post(_ctx(), self._INVENTED, [], story=_STORY)
         assert out == self._INVENTED

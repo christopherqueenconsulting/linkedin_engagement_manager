@@ -2,11 +2,13 @@
 
 Not the one the review gate threw away.
 
-`_review_generated_post` regenerates the post once on a similarity / A2-proof / fabrication / slop
+`_review_generated_post` repairs the post once on a similarity / A2-proof / fabrication / slop
 failure, so scoring the draft as it is generated would score one that was thrown away. Scoring
 therefore has to run AFTER the review gate, and still exactly once per shipped post — since issue
-#1217 the retry re-enters `_compose_draft`, which is generate + refine only, so the scoring call
-sits outside it by construction rather than being suppressed by `similarity_check=False`.
+#1217 the second attempt has lived outside `create_text_post`, so the scoring call sits outside it
+by construction rather than being suppressed by `similarity_check=False`. Since issue #1134 that
+second attempt is the EDITOR repairing the draft rather than the writer composing another, which
+this file also pins: the writer is called exactly once on the repair path.
 """
 
 from unittest.mock import MagicMock, patch
@@ -38,10 +40,14 @@ _NEUTRAL_BLUEPRINT = {"subject": None, "angle": "", "format": "personal_lesson",
                       "structure": [], "hook_style": "micro_story", "cta_style": "reply_question"}
 
 
-def _run(outputs, recent=None, post_id=77, lead_magnet=None):
+def _run(outputs, recent=None, post_id=77, lead_magnet=None, repaired=None):
     """Drive create_text_post with a generator returning `outputs` in order.
 
     The authenticity judge and its DB write are captured rather than mocked away.
+
+    `repaired` is what the EDITOR hands back when the review gate briefs it with findings (issue
+    #1134) — an exception to make the repair fail. Every other call to the refinement pass stays
+    the identity function, so the gates see the generator output verbatim.
 
     Returns (content, generator_mock, score_authenticity_mock, update_score_mock).
     """
@@ -49,6 +55,14 @@ def _run(outputs, recent=None, post_id=77, lead_magnet=None):
     gen = MagicMock(side_effect=list(outputs))
     scorer = MagicMock(return_value={"score": 88, "reasons": [], "flagged": False})
     upd = MagicMock()
+
+    def _refine(content, **kwargs):
+        if not kwargs.get("repair_findings"):
+            return content
+        if isinstance(repaired, Exception):
+            raise repaired
+        return repaired if repaired is not None else content
+
     patches = [
         patch(f"{_RCP}.get_engagement_preferences", return_value={}),
         patch(f"{_RCP}.get_or_create_profile_synthesis", return_value="voice"),
@@ -59,7 +73,10 @@ def _run(outputs, recent=None, post_id=77, lead_magnet=None):
         patch(f"{_RCP}.update_db_post_shape"),
         patch(f"{_RCP}.get_thought_leadership_post_from_ai", gen),
         # Identity refinement passes so the gates see the generator output verbatim.
-        patch(f"{_RCP}.get_ai_linked_post_refinement", side_effect=lambda c, **kw: c),
+        patch(f"{_RCP}.get_ai_linked_post_refinement", side_effect=_refine),
+        patch(f"{_RCP}.mark_post_gate_demoted"),
+        patch(f"{_RCP}.update_db_post_gate_reason"),
+        patch(f"{_RCP}.get_post_gate_reason", return_value=[]),
         patch(f"{_RCP}.optimize_post_hook", side_effect=lambda c, **kw: c),
         patch(f"{_RCP}.sanitize_for_linkedin", side_effect=lambda c, **kw: c),
         patch(f"{_RCP}.strip_engagement_bait", side_effect=lambda c, **kw: c),
@@ -80,19 +97,24 @@ def _run(outputs, recent=None, post_id=77, lead_magnet=None):
 
 
 class TestAuthenticityScoresTheShippedDraft:
-    def test_regenerated_post_is_the_one_scored(self):
-        """The review gate regenerated: the judge must see the SECOND draft, not the discarded one."""
-        out, gen, scorer, upd = _run([_NEAR_DUP, _FRESH], recent=[_RECENT])
+    def test_repaired_post_is_the_one_scored(self):
+        """The review gate repaired the draft: the judge must see the REPAIRED text.
+
+        And the writer is called exactly once (issue #1134) — the second attempt is an edit of this
+        draft, not another draft of the same brief.
+        """
+        out, gen, scorer, upd = _run([_NEAR_DUP], recent=[_RECENT], repaired=_FRESH)
         assert out == _FRESH
-        assert gen.call_count == 2  # the gate did regenerate
+        assert gen.call_count == 1
         scorer.assert_called_once()
         assert scorer.call_args.args[0] == _FRESH
         assert _NEAR_DUP not in [c.args[0] for c in scorer.call_args_list]
         upd.assert_called_once_with(77, 88)
 
     def test_kept_first_draft_is_the_one_scored(self):
-        """The retry failed and the gate kept the first draft — that draft is what gets scored."""
-        out, gen, scorer, upd = _run([_NEAR_DUP, RuntimeError("llm down")], recent=[_RECENT])
+        """The repair failed and the gate kept the first draft — that draft is what gets scored."""
+        out, gen, scorer, upd = _run([_NEAR_DUP], recent=[_RECENT],
+                                     repaired=RuntimeError("llm down"))
         assert out == _NEAR_DUP
         scorer.assert_called_once()
         assert scorer.call_args.args[0] == _NEAR_DUP
@@ -107,10 +129,10 @@ class TestAuthenticityScoresTheShippedDraft:
         assert scorer.call_args.args[0] == _FRESH
         upd.assert_called_once_with(77, 88)
 
-    def test_regeneration_still_scores_exactly_once(self):
-        """The retry re-enters create_text_post — it must NOT bring a second judge call with it."""
-        _, gen, scorer, _ = _run([_NEAR_DUP, _FRESH], recent=[_RECENT])
-        assert gen.call_count == 2
+    def test_a_repair_still_scores_exactly_once(self):
+        """The repair pass runs inside the review gate — it must NOT bring a second judge call."""
+        _, gen, scorer, _ = _run([_NEAR_DUP], recent=[_RECENT], repaired=_FRESH)
+        assert gen.call_count == 1
         assert scorer.call_count == 1
 
     def test_deterministically_repaired_cta_is_part_of_what_is_scored(self):
