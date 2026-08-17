@@ -38,6 +38,7 @@ from datetime import datetime, timezone
 from typing import Optional, Tuple
 from urllib.parse import urlparse
 
+import pytz
 from selenium.webdriver import ActionChains
 from selenium.webdriver.common.by import By
 
@@ -65,6 +66,7 @@ from cqc_lem.utilities.audience_stats import (
     parse_search_appearances,
 )
 from cqc_lem.utilities.db import (
+    DEFAULT_POSTING_DAYS,
     SCHEDULED_DM_SOURCE_ARTIFACT,
     SCHEDULED_DM_SOURCE_NURTURE,
     LeadSignalChannel,
@@ -82,6 +84,7 @@ from cqc_lem.utilities.db import (
     get_engagement_preferences,
     get_lead_magnet_settings,
     get_linkedin_profile_url_by_user_id,
+    get_post_archetype,
     get_post_content,
     get_post_manual_publish,
     get_post_message_from_log_for_user,
@@ -89,6 +92,7 @@ from cqc_lem.utilities.db import (
     get_post_type,
     get_post_types_for_user,
     get_post_url_from_log_for_user,
+    get_post_user_id,
     get_post_video_url,
     get_recent_commented_rows_with_text,
     get_recent_navigable_commented_posts,
@@ -97,10 +101,12 @@ from cqc_lem.utilities.db import (
     get_uncaptured_posted_post_ids,
     get_user_blog_url,
     get_user_password_pair_by_id,
+    get_user_timezone,
     has_open_scheduled_dm,
     has_received_lead_magnet,
     insert_new_log,
     insert_scheduled_dm,
+    normalize_posting_days,
     record_comment_followup,
     record_comment_outcome,
     record_follower_stat,
@@ -114,6 +120,7 @@ from cqc_lem.utilities.db import (
     upsert_engager,
 )
 from cqc_lem.utilities.dm_templates import render_dm_placeholders
+from cqc_lem.utilities.flags import OCCASION_NATIVE_PUBLISH, flag_enabled
 from cqc_lem.utilities.golden_hour import _record_golden_hour_report, _reply_outcome
 from cqc_lem.utilities.human_pacing import (
     ACTION_REPLY,
@@ -124,7 +131,10 @@ from cqc_lem.utilities.lead_scoring import (
     _href_is_profile,
     profile_slug,
 )
-from cqc_lem.utilities.linkedin import zero_walk as _zw
+
+# The native occasion composer's mechanics (#1088). Imported as a MODULE so its state constants and
+# its drive function are one patch target — the task here owns the policy and nothing else.
+from cqc_lem.utilities.linkedin import share_composer as _occasion, zero_walk as _zw
 
 # The SDUI mechanics every engagement cluster shares moved down to `utilities/linkedin/*` (#1154).
 # They are imported by their ORIGINAL names, underscore and all: the bodies moved verbatim, so one
@@ -188,8 +198,10 @@ from cqc_lem.utilities.selenium_util import (
 )
 
 __all__ = [
-    # The ten tasks. `run_automation` re-exports every one of these by name, because
-    # `run_scheduler` and `api/*` still import them from there.
+    # The publishing tasks and the sweeps that follow them. `run_scheduler` and `api/*` import each
+    # by name from THIS module (#1206 deleted the `run_automation` shim); only the pinned Celery
+    # `name=` still spells `run_automation`.
+    "auto_publish_occasion_post",
     "auto_scrape_post_stats",
     "automate_reply_commenting",
     "capture_follower_stats",
@@ -2107,3 +2119,187 @@ def post_to_linkedin(self, user_id: int, post_id: int):
                        message="Failed to create post using /posts API endpoint.")
 
         return "Failed to create post using /posts API endpoint"
+
+
+# How long a blocked native-publish attempt keeps its lock. The dispatcher scans every 10 minutes,
+# so without a bound a rotated composer would open a Chrome session six times an hour for a post
+# that cannot publish — spending slots the engagement lanes need on a question already answered.
+# Released the moment the run resolves the row either way.
+_OCCASION_PUBLISH_RETRY_SECONDS = 3600
+
+# The publish states that leave nothing behind on LinkedIn: nothing was typed, or it was typed and
+# never submitted, so the row goes back on the queue for the next attempt. Everything NOT in here
+# either published or may have — those are never retried automatically (see the task).
+_OCCASION_RETRYABLE_STATES = frozenset({
+    _occasion.NO_SHARE_BOX,
+    _occasion.NO_OCCASION_ENTRY,
+    _occasion.NO_OCCASION_TYPE,
+    _occasion.NO_EDITOR,
+    _occasion.NO_POST_BUTTON,
+    _occasion.DRIVER_ERROR,
+})
+
+
+def _occasion_publish_day_allowed(user_id: int) -> bool:
+    """Is TODAY one of the weekdays this user lets LEM publish on (`posting_days`, issue #581)?
+
+    The automated lane is bounded by the same cadence preference the content plan is: a user who
+    switched weekends off did not switch them off for one kind of post. It bounds only the
+    AUTOMATION — #1074's copy-and-paste handoff is untouched, so the author can still publish an
+    occasion by hand on any day.
+
+    Fails OPEN. An unreadable preference must not silently strand a dated announcement; the cost of
+    being wrong the other way is a post going out on a day the user would have allowed anyway.
+
+    Args:
+        user_id: The post's owner.
+
+    Returns:
+        True when today (in the user's own timezone) is an allowed posting day.
+    """
+    try:
+        prefs = get_engagement_preferences(user_id) or {}
+        days = (normalize_posting_days(prefs.get("posting_days"))
+                if prefs.get("posting_days") is not None else list(DEFAULT_POSTING_DAYS))
+        local_now = datetime.now(pytz.timezone(get_user_timezone(user_id)))
+    except Exception as e:
+        log_warning("Could not read the posting-day bound for a native publish — allowing it",
+                    exc=e, user_id=user_id, task_name="auto_publish_occasion_post")
+        return True
+    return local_now.weekday() in days
+
+
+@shared_task.task(name='cqc_lem.app.run_automation.auto_publish_occasion_post',
+                  bind=True, base=QueueOnce, once={'graceful': True, 'unlock_before_run': True,
+                                                   'keys': ['post_id']},
+                  queue='se_content')
+def auto_publish_occasion_post(self, user_id: int, post_id: int):
+    """Publish ONE approved occasion/milestone draft through LinkedIn's native composer (#1088).
+
+    Phase 2 of #1074. The occasion entity has no REST equivalent, so `post_to_linkedin` refuses
+    these rows outright and always will — this task is the browser doing what the author would
+    otherwise do by hand, and it exists only while `occasion-native-publish-enabled` is on.
+
+    The row is CLAIMED (`scheduled`) before Chrome opens, for the reason every write-through-a-
+    browser lane claims first: an occasion announcement published twice is a public, un-deletable
+    embarrassment, and the outcome read that would tell us it already went out is exactly the read
+    that can fail. So the claim is released back to `approved` only for the states that provably
+    left nothing on LinkedIn, and a click whose outcome never answered is held at `error` for a
+    human — who still has the Content Studio's "I posted this" control to resolve it.
+
+    Returns a short status string naming what happened, for the Celery result and the logs.
+    """
+    task_name = "auto_publish_occasion_post"
+    if not flag_enabled(OCCASION_NATIVE_PUBLISH, user_id):
+        # DEBUG: OFF is the shipped default, so this is the expected no-op, not a degraded run.
+        log_debug("Native occasion publishing is off — leaving the draft for the author",
+                  user_id=user_id, post_id=post_id, task_name=task_name)
+        return "Native occasion publishing is off"
+
+    # Cross-checks at the choke point, in the same spirit as post_to_linkedin's: the dispatcher's
+    # query already filters on all three, so any of them failing here means some OTHER caller
+    # reached this task with a row it must never touch.
+    if get_post_user_id(post_id) != user_id:
+        log_warning("Refused to publish an occasion post for a different account",
+                    user_id=user_id, post_id=post_id, task_name=task_name)
+        return f"Post {post_id} is not this user's — skipped"
+    if not get_post_manual_publish(post_id):
+        log_warning("Refused to native-publish a post that publishes through the API",
+                    user_id=user_id, post_id=post_id, task_name=task_name)
+        return f"Post {post_id} publishes through the API — skipped"
+    status = get_post_status(post_id)
+    if status != PostStatus.APPROVED.value:
+        # DEBUG: the row moving on between the scan and this run is the claim working.
+        log_debug(f"Occasion post {post_id} is '{status}', not approved — skipping",
+                  user_id=user_id, post_id=post_id, task_name=task_name)
+        return f"Post {post_id} is '{status}' — skipped"
+
+    archetype = get_post_archetype(post_id)
+    if archetype not in _occasion.OCCASION_TYPE_LABELS:
+        log_warning("Occasion draft has no composer mapping for its archetype — the author "
+                    "publishes this one by hand", user_id=user_id, post_id=post_id,
+                    task_name=task_name)
+        return f"Post {post_id} has no occasion type mapping — skipped"
+
+    if not _occasion_publish_day_allowed(user_id):
+        # DEBUG: the user's own cadence bound, doing its job.
+        log_debug("Today is not one of this user's posting days — the occasion draft waits",
+                  user_id=user_id, post_id=post_id, task_name=task_name)
+        return f"Post {post_id} waits for an allowed posting day"
+
+    content = get_post_content(post_id)
+    if not (content or "").strip():
+        log_warning("Occasion draft has no content to publish", user_id=user_id, post_id=post_id,
+                    task_name=task_name)
+        return f"Post {post_id} has no content — skipped"
+
+    # Bounds how often a BLOCKED post re-opens a browser (see the constant). Held across the run and
+    # released only when the row is resolved, so a drifted composer costs one session an hour.
+    lock_name = f"occasion_publish:{post_id}"
+    lock_token = acquire_run_lock(lock_name, ttl_seconds=_OCCASION_PUBLISH_RETRY_SECONDS)
+    if lock_token is None:
+        # DEBUG: the cool-down is the guard working.
+        log_debug(f"Occasion post {post_id} attempted recently — waiting out the retry window",
+                  user_id=user_id, post_id=post_id, task_name=task_name)
+        return f"Post {post_id} is inside its retry window — skipped"
+
+    # Claim BEFORE the browser opens: the dispatcher's query only sees 'approved', so this is what
+    # stops a second tick starting a duplicate announcement while this one is mid-composer. A claim
+    # that did not land means the row is still in that query, so nothing may be published against it
+    # — the whole guarantee rests on this write.
+    if not update_db_post_status(post_id, PostStatus.SCHEDULED):
+        log_warning("Could not claim the occasion draft — refusing to publish unclaimed",
+                    user_id=user_id, post_id=post_id, task_name=task_name)
+        release_run_lock(lock_name, lock_token)
+        return f"Post {post_id} could not be claimed — skipped"
+
+    try:
+        driver, wait, user_email, my_profile = get_current_profile(
+            user_id=user_id, session_name="Occasion Post")
+    except Exception as e:
+        log_error("Error getting profile for the native occasion publish", exc=e, user_id=user_id,
+                  post_id=post_id, task_name=task_name)
+        update_db_post_status(post_id, PostStatus.APPROVED)
+        release_run_lock(lock_name, lock_token)
+        return f"Failed: {e}"
+
+    try:
+        result = _occasion.publish_occasion_natively(driver, wait, archetype, content,
+                                                     user_id=user_id, post_id=post_id)
+    finally:
+        quit_gracefully(driver)
+
+    if result.state == _occasion.PUBLISHED:
+        update_db_post_status(post_id, PostStatus.POSTED)
+        # The log message is the post BODY, the same convention post_to_linkedin follows — the
+        # sweeps and the seed-comment grounding read it back, and a status string there is what
+        # made a model write about the API instead of the post (#344).
+        insert_new_log(user_id=user_id, action_type=LogActionType.POST,
+                       result=LogResultType.SUCCESS, post_id=post_id, message=content)
+        release_run_lock(lock_name, lock_token)
+        log_info("Occasion post published natively", user_id=user_id, post_id=post_id,
+                 action_type="post", task_name=task_name)
+        return f"Post {post_id} published natively"
+
+    if result.state in _OCCASION_RETRYABLE_STATES:
+        # Nothing reached LinkedIn, so the row goes back on the queue. The LOCK is deliberately NOT
+        # released — the next attempt waits out the cool-down instead of re-opening Chrome on the
+        # next 10-minute scan for a composer that has already answered.
+        update_db_post_status(post_id, PostStatus.APPROVED)
+        log_warning(f"Native occasion publish blocked: {result.reason}", user_id=user_id,
+                    post_id=post_id, action_type="post", task_name=task_name,
+                    zero_walk=result.zero_walk)
+        return f"Post {post_id} not published: {result.reason}"
+
+    # The Post button was clicked and the feed never confirmed it. The post may be live, so this is
+    # the one outcome that is never retried: it is held for a human, who can mark it posted from the
+    # Content Studio (the row is still `manual_publish`, so that control is exactly where it was).
+    update_db_post_status(post_id, PostStatus.ERROR)
+    insert_new_log(user_id=user_id, action_type=LogActionType.POST, result=LogResultType.FAILURE,
+                   post_id=post_id,
+                   message="Occasion post was submitted but could not be confirmed on the feed — "
+                           "check LinkedIn, then mark it posted or re-approve it.")
+    log_error(f"Native occasion publish unconfirmed: {result.reason}", user_id=user_id,
+              post_id=post_id, action_type="post", task_name=task_name)
+    release_run_lock(lock_name, lock_token)
+    return f"Post {post_id} flagged 'error' — {result.reason}"

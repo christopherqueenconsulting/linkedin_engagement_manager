@@ -559,6 +559,11 @@ SURFACES = (
     {"key": "group_composer", "surface": "Group share box / post editor",
      "code": "engagement.feed.auto_post_to_group", "flag": "--group-composer",
      "arg": "<group-id>", "sweep": False},
+    {"key": "occasion_composer",
+     "surface": "Share box → More → Celebrate an occasion → occasion type",
+     "code": "linkedin.share_composer.publish_occasion_natively / "
+             "engagement.posting.auto_publish_occasion_post",
+     "flag": "--occasion-composer", "arg": "[archetype]", "sweep": True},
     {"key": "group_membership", "surface": "Groups directory + a group page's membership controls",
      "code": "engagement.feed._enumerate_joined_groups / auto_comment_in_groups",
      "flag": "--group-membership", "sweep": True},
@@ -3266,6 +3271,289 @@ def probe_catchup_cards(driver, sleep=time.sleep) -> dict:
     return graded(reading, catchup_state(reading), catchup_verdict(reading))
 
 
+# ──────────────────────── native occasion composer (#1074 Phase 2 / #1088) ───────────────────
+# The composer route "Start a post → More → Celebrate an occasion → <occasion type>", which is the
+# only place LinkedIn's occasion entity exists. Grounding it is a PRECONDITION of flipping
+# `occasion-native-publish-enabled` on: with the flag off nothing drives these anchors, so a live
+# reading is the only evidence the chain is real.
+#
+# Read-only, and structurally so: the run cannot type (`_guard_send_keys` refuses every printable
+# character) and cannot press the composer's `Post` button (`_guard_click` refuses `^post$`). What
+# it DOES click are navigation controls — the share box, the composer's overflow, the occasion
+# affordance and one occasion type — none of which commit anything. "Celebrate an occasion" is not
+# the reaction the guard's `^celebrate$` pattern refuses; that one is a bare label on a feed card.
+_CARRIED_OCCASION_ENTRY_LOCATORS = [
+    (By.XPATH, "//div[@role='dialog']//*[self::button or @role='button']["
+               "contains(translate(@aria-label,'ABCDEFGHIJKLMNOPQRSTUVWXYZ',"
+               "'abcdefghijklmnopqrstuvwxyz'),'celebrate an occasion') "
+               "or contains(translate(normalize-space(),'ABCDEFGHIJKLMNOPQRSTUVWXYZ',"
+               "'abcdefghijklmnopqrstuvwxyz'),'celebrate an occasion')]"),
+]
+_CARRIED_OCCASION_MORE_LOCATORS = [
+    (By.XPATH, "//div[@role='dialog']//*[self::button or @role='button']["
+               "contains(translate(@aria-label,'ABCDEFGHIJKLMNOPQRSTUVWXYZ',"
+               "'abcdefghijklmnopqrstuvwxyz'),'more') or normalize-space()='More']"),
+]
+_CARRIED_OCCASION_TYPE_LABELS = {"project_launch": ("project launch",),
+                                 "educational_milestone": ("educational milestone",)}
+
+
+# Containers a LinkedIn overlay is PLAUSIBLY mounted in, none of them `role='dialog'`. The point is
+# not to add these to any shipped chain — it is to say, when the dialog lookup misses, whether an
+# overlay opened somewhere else or nothing opened at all.
+_MODAL_CANDIDATE_SEL = ("[aria-modal='true'], .artdeco-modal, [class*='share-box'], "
+                        "[class*='share-creation'], [data-testid*='modal'], "
+                        "[data-testid*='share'], [data-testid*='composer']")
+
+
+def _modal_container_evidence(driver, limit: int = 8) -> list:
+    """Visible overlay-ish containers on the page, described by their own attributes.
+
+    Read only when the `role='dialog'` lookup missed: it is the difference between "the composer
+    opened in a container this chain does not key on" (re-ground the container) and "the click
+    opened nothing" (re-ground the trigger) — two findings with two different fixes.
+    """
+    out = []
+    try:
+        found = driver.find_elements(By.CSS_SELECTOR, _MODAL_CANDIDATE_SEL)
+    except Exception as e:
+        return [f"<enumeration stopped: {type(e).__name__}>"]
+    for element in found:
+        try:
+            if not element.is_displayed():
+                continue
+            out.append({"tag": element.tag_name,
+                        "class": (element.get_attribute("class") or "")[:120],
+                        "data_testid": element.get_attribute("data-testid"),
+                        "role": element.get_attribute("role"),
+                        "aria_label": element.get_attribute("aria-label")})
+        except Exception:
+            continue
+        if len(out) >= limit:
+            break
+    return out
+
+
+def composer_affordance_labels(root, limit: int = 60) -> list:
+    """Every clickable label under `root`, `<button>` or not.
+
+    `visible_button_labels` reads `<button>` only, and LinkedIn's composer files several of its
+    affordances on `div[role='button']` / `li` — which is exactly the set this probe is trying to
+    re-ground, so a button-only scan would report them missing from the evidence as well as from the
+    chain.
+    """
+    labels = []
+    try:
+        found = root.find_elements(By.CSS_SELECTOR, "button, [role='button'], [role='menuitem'], li")
+    except Exception as e:
+        return [f"<enumeration stopped: {type(e).__name__}>"]
+    for element in found:
+        try:
+            if not element.is_displayed():
+                continue
+            label = (element.get_attribute("aria-label") or element.text or "").strip()
+        except Exception:
+            continue
+        label = re.sub(r"\s+", " ", label)[:80]
+        if label and label not in labels:
+            labels.append(label)
+        if len(labels) >= limit:
+            break
+    return labels
+
+
+def _occasion_composer_chains() -> tuple:
+    """The occasion composer's chains from the running image when it has them, else a carried copy.
+
+    Same posture as `_share_box_chains` (#817/#1007): the probe is piped into the DEPLOYED image, so
+    a pre-merge pass cannot import a module that has not shipped yet — and the reading NAMES its
+    source, so a pre-merge grounding is never mistaken for a deployed one.
+    """
+    try:
+        from cqc_lem.utilities.linkedin import share_composer as sc
+        return (list(sc.OCCASION_ENTRY_LOCATORS), list(sc.OCCASION_MORE_LOCATORS),
+                dict(sc.OCCASION_TYPE_LABELS), sc.occasion_type_locators, "image")
+    except Exception:
+        def _carried_type_locators(labels) -> list:
+            out = []
+            for label in labels or ():
+                text = str(label).strip().lower()
+                if text:
+                    out.append((By.XPATH,
+                                "//div[@role='dialog']//*[self::button or @role='button' "
+                                "or @role='radio' or self::li][contains(translate(@aria-label,"
+                                "'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),"
+                                f"'{text}') or contains(translate(normalize-space(),"
+                                "'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),"
+                                f"'{text}')]"))
+            return out
+        return (_CARRIED_OCCASION_ENTRY_LOCATORS, _CARRIED_OCCASION_MORE_LOCATORS,
+                dict(_CARRIED_OCCASION_TYPE_LABELS), _carried_type_locators, "script")
+
+
+def occasion_composer_state(reading: Optional[dict]) -> str:
+    """Three-state grade for one occasion-composer read.
+
+    Unlike the group composer, a missing affordance here is never "this surface legitimately has
+    none": every LinkedIn member's composer carries the occasion route, so a feed that rendered and
+    a share box that opened make every later miss DRIFT. Only a page that never rendered — or a
+    share box that never resolved on it — grounds nothing.
+    """
+    reading = dict(reading or {})
+    if not str(reading.get("page_text") or "").strip():
+        return STATE_UNKNOWN
+    if not reading.get("share_box_present"):
+        return STATE_DRIFT
+    if not reading.get("dialog_present"):
+        return STATE_DRIFT
+    if not (reading.get("occasion_entry_present") and reading.get("occasion_type_present")):
+        return STATE_DRIFT
+    return STATE_OK if (reading.get("editor_present") and reading.get("post_button_present")) \
+        else STATE_DRIFT
+
+
+def occasion_composer_verdict(reading: Optional[dict]) -> str:
+    """Prose for one occasion-composer read — what it proves, or what to re-ground and from where."""
+    reading = dict(reading or {})
+    if occasion_composer_state(reading) == STATE_OK:
+        return ("the whole occasion route resolved (share box → occasion → "
+                f"{reading.get('archetype')} → editor + Post) — the publish chain is grounded")
+    if not str(reading.get("page_text") or "").strip():
+        return "the feed did not render at all — this reading grounds nothing; re-run it"
+    if not reading.get("share_box_present"):
+        return "the feed rendered but no share box resolved — re-ground from `visible_controls`"
+    if not reading.get("dialog_present"):
+        if reading.get("modal_containers") or reading.get("editor_page_wide"):
+            return ("the composer opened, but NOT in a `div[role=dialog]` — every occasion locator "
+                    "is scoped to that container, so re-ground the container from "
+                    "`modal_containers` before touching the occasion labels")
+        return ("the share-box control resolved and was clicked, and NOTHING opened — no dialog, "
+                "no overlay container, no editor. The trigger is what to re-ground (`share_box` "
+                "names the element that was clicked); the occasion anchors below it were never "
+                "reached and this run says nothing about them")
+    if not reading.get("occasion_entry_present"):
+        return ("the composer opened but 'Celebrate an occasion' did not resolve, on its first row "
+                "or behind the overflow — re-ground from `composer_controls`")
+    if not reading.get("occasion_type_present"):
+        return (f"the occasion menu opened but no option matched {reading.get('archetype')} — "
+                "re-ground OCCASION_TYPE_LABELS from `occasion_options`, and never widen it to a "
+                "neighbouring occasion")
+    return (f"the occasion form opened but "
+            f"{'the editor' if not reading.get('editor_present') else 'the Post button'} did not "
+            f"resolve — re-ground from `form_controls`")
+
+
+def probe_occasion_composer(driver, archetype: str = "project_launch", sleep=time.sleep) -> dict:
+    """#1088: walk the native occasion composer and report a hit count for every locator on the way.
+
+    Nothing is typed and the Post button is never clicked — the guards make both impossible — so no
+    post can result from running this. What it produces is the evidence the flag flip needs: which
+    step of the route resolves, and the page's own control labels at the step that did not.
+    """
+    from selenium.webdriver import ActionChains
+    from selenium.webdriver.support.ui import WebDriverWait
+
+    from cqc_lem.utilities.selenium_util import click_first, find_first
+
+    entry_locators, more_locators, type_labels, type_locators, chain_source = \
+        _occasion_composer_chains()
+    share_box_locators, share_source = _share_box_chains()
+    wait = WebDriverWait(driver, 10)
+    driver.get(FEED_URL)
+    sleep(5)
+
+    reading = {"archetype": archetype, "chain_source": chain_source,
+               "share_chain_source": share_source,
+               "known_archetypes": sorted(type_labels),
+               "page_text": page_text_sample(driver)}
+
+    share_box = click_first(driver, wait, share_box_locators, "Share box", required=False,
+                            warn_on_miss=False, max_try=1)
+    reading["share_box_present"] = share_box is not None
+    reading["share_box"] = element_evidence(share_box) if share_box is not None else None
+    if share_box is None:
+        reading["visible_controls"] = visible_button_labels(driver)
+        return graded(reading, occasion_composer_state(reading), occasion_composer_verdict(reading))
+    sleep(3)
+    # Whether a composer container actually opened is a DIFFERENT question from whether the occasion
+    # affordance is on it, and the first live pass (2026-08-17) could not tell them apart: every
+    # locator below is scoped to `div[role='dialog']`, so a share-box click that opened nothing
+    # reports the same "occasion missing" as a rotated occasion label. The dialog's OWN controls are
+    # what re-grounds either one — a page-wide label scan on the feed answers with the feed's cards.
+    dialog = find_first(driver, wait, [(By.CSS_SELECTOR, "div[role='dialog']")], "Composer dialog",
+                        visible_only=True, required=False, warn_on_miss=False, max_try=1)
+    reading["dialog_present"] = dialog is not None
+    reading["composer_controls"] = composer_affordance_labels(
+        dialog if dialog is not None else driver)
+    if dialog is None:
+        # Which of the two failures it is, in the page's own terms: a modal-ish container that is
+        # NOT `role='dialog'` says the composer opened somewhere this chain does not key on, while
+        # nothing at all says the click never opened one. `editor_page_wide` is the same question
+        # asked of the thing the composer exists to render.
+        reading["page_controls"] = visible_button_labels(driver)
+        reading["url_after_open"] = getattr(driver, "current_url", "")
+        reading["modal_containers"] = _modal_container_evidence(driver)
+        reading["editor_page_wide"] = find_first(
+            driver, wait, [(By.CSS_SELECTOR, "div[role='textbox']")], "Composer editor",
+            visible_only=True, required=False, warn_on_miss=False, max_try=1) is not None
+        return graded(reading, occasion_composer_state(reading), occasion_composer_verdict(reading))
+
+    entry = click_first(driver, wait, entry_locators, "Celebrate an occasion", required=False,
+                        warn_on_miss=False, max_try=1)
+    reading["occasion_on_first_row"] = entry is not None
+    if entry is None:
+        # Expected on most variants — the affordance is filed behind the composer's overflow.
+        reading["overflow_present"] = click_first(driver, wait, more_locators, "Composer overflow",
+                                                  required=False, warn_on_miss=False,
+                                                  max_try=1) is not None
+        sleep(2)
+        entry = click_first(driver, wait, entry_locators, "Celebrate an occasion", required=False,
+                            warn_on_miss=False, max_try=1)
+    reading["occasion_entry_present"] = entry is not None
+    if entry is None:
+        return graded(reading, occasion_composer_state(reading), occasion_composer_verdict(reading))
+    sleep(3)
+
+    # The menu's own options, before anything is picked: this is the list OCCASION_TYPE_LABELS is
+    # re-grounded from, and the reason a miss must never be widened to a neighbour (#1012).
+    reading["occasion_options"] = composer_affordance_labels(dialog)
+    # Per-archetype hit counts — every mapped archetype is asked, not just the one being walked, so
+    # one pass grounds the whole map.
+    reading["type_hits"] = {
+        key: len(driver.find_elements(*locator)) if locator else 0
+        for key, labels in sorted(type_labels.items())
+        for locator in [next(iter(type_locators(labels)), None)]
+    }
+
+    picked = click_first(driver, wait, type_locators(type_labels.get(archetype) or ()),
+                         "Occasion type", required=False, warn_on_miss=False, max_try=1)
+    reading["occasion_type_present"] = picked is not None
+    if picked is None:
+        return graded(reading, occasion_composer_state(reading), occasion_composer_verdict(reading))
+    sleep(3)
+
+    editor = find_first(driver, wait, [(By.CSS_SELECTOR, "div[role='dialog'] div[role='textbox']")],
+                        "Occasion post editor", required=False, warn_on_miss=False, max_try=1,
+                        visible_only=True)
+    post_button = find_first(driver, wait,
+                             [(By.XPATH, "//div[@role='dialog']//button[normalize-space()='Post']")],
+                             "Occasion Post button", required=False, warn_on_miss=False, max_try=1,
+                             visible_only=True)
+    reading.update({"editor_present": editor is not None,
+                    "editor": element_evidence(editor) if editor is not None else None,
+                    "post_button_present": post_button is not None,
+                    "post_button": element_evidence(post_button) if post_button is not None
+                    else None,
+                    "form_controls": composer_affordance_labels(driver)})
+    try:
+        ActionChains(driver).send_keys(Keys.ESCAPE).perform()
+    except Exception:
+        # Courtesy only — the driver is quit right after, and a failed Escape must not lose the
+        # anchors this probe exists to report.
+        pass
+    return graded(reading, occasion_composer_state(reading), occasion_composer_verdict(reading))
+
+
 # ────────────────────────────────── group share box (#932) ───────────────────────────────────
 def group_composer_state(reading: Optional[dict]) -> str:
     """Three-state grade for one group-composer read. A share box that opened an editor with a Post
@@ -4585,6 +4873,7 @@ def run_sweep(driver, user_id: int, runners: Optional[dict] = None,
         "feed_sort": lambda: probe_feed_sort(driver),
         "feed_reactions": lambda: probe_feed_reactions(driver),
         "composer": lambda: probe_composer(driver),
+        "occasion_composer": lambda: probe_occasion_composer(driver),
         "profile_views": lambda: probe_profile_viewers(driver),
         "profile_scrape": lambda: probe_profile_scrape(
             driver, profile_url or _sweep_own_profile(driver, user_id)),
@@ -4753,6 +5042,13 @@ def build_parser() -> "argparse.ArgumentParser":
     parser.add_argument("--group-composer", metavar="GROUP_ID",
                         help="open this group's share box and report whether the editor and Post "
                              "button resolve (#932). Types nothing and NEVER clicks Post.")
+    parser.add_argument("--occasion-composer", metavar="ARCHETYPE", nargs="?",
+                        const="project_launch", default=None,
+                        help="walk LinkedIn's native occasion composer (Start a post -> More -> "
+                             "Celebrate an occasion -> occasion type) and report a hit count per "
+                             "locator (#1088). Grounding this is a precondition of flipping "
+                             "OCCASION_NATIVE_PUBLISH_ENABLED on. Types nothing and NEVER clicks "
+                             "Post.")
     parser.add_argument("--group-membership", metavar="GROUP_ID", nargs="?", const="", default=None,
                         help="report whether LinkedIn says this user is still IN the groups LEM "
                              "comments in (#1052): the groups directory as the shipped sync reads "
@@ -4803,6 +5099,7 @@ def main(argv: Optional[list] = None) -> int:
             or args.sent_invites or args.profile_views or args.connect_dialog
             or args.profile_scrape or args.profile_experiences or args.catchup_cards
             or args.group_composer or args.group_membership is not None
+            or args.occasion_composer is not None
             or args.group_feed_composer is not None
             or args.company_invite or args.permalink_comment or args.newsletter_url
             or args.newsletter_edition
@@ -4902,6 +5199,10 @@ def main(argv: Optional[list] = None) -> int:
             report["catchup_cards"] = probe_catchup_cards(driver)
         if args.group_composer:
             report["group_composer"] = probe_group_composer(driver, args.group_composer)
+
+        if args.occasion_composer is not None:
+            report["occasion_composer"] = probe_occasion_composer(
+                driver, args.occasion_composer or "project_launch")
         if args.group_membership is not None:
             report["group_membership"] = probe_group_membership(
                 driver, args.user_id, group_id=args.group_membership or None)

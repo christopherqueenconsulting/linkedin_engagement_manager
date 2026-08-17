@@ -887,6 +887,49 @@ def get_ready_to_post_posts(pre_post_time: datetime = None, post_time_delta_minu
         posts = []
 
     return posts
+def get_ready_occasion_posts(post_time_delta_minutes: int = 20) -> list:
+    """Approved `manual_publish` drafts whose slot is due — the native-composer queue (issue #1088).
+
+    The MIRROR of `get_ready_to_post_posts`, and deliberately a separate query rather than a
+    loosened filter on that one: `manual_publish = 0` there is what keeps `post_to_linkedin` off a
+    row the REST API cannot carry, and the whole point of this lane is that these rows publish
+    through a BROWSER instead. Two queries cannot accidentally hand the same row to both paths.
+
+    Args:
+        post_time_delta_minutes: How far into the future a slot may be and still count as due, the
+            same lookahead the publishing beat uses.
+
+    Returns:
+        `(post_id, scheduled_time, user_id)` rows, oldest slot first. `[]` on a read failure, for
+        the same reason `get_ready_to_post_posts` answers empty: the caller iterates it directly,
+        and the 24h lookback recovers anything a failed tick missed.
+    """
+    now = datetime.now(timezone.utc)
+    pre_post_time = now + timedelta(minutes=post_time_delta_minutes)
+    yesterday = now - timedelta(days=1)
+
+    try:
+        with db_cursor() as cursor:
+            cursor.execute(
+                """SELECT p.id, p.scheduled_time, p.user_id
+                   FROM posts AS p
+                   WHERE status = 'approved' AND manual_publish = 1
+                     AND scheduled_time BETWEEN %s AND %s
+                   ORDER BY scheduled_time ASC""",
+                (yesterday, pre_post_time,))
+            posts = cursor.fetchall()
+            ready = [post[0] for post in posts]
+            if ready:
+                log_info(f"Occasion posts ready to publish natively: {ready}")
+            else:
+                # An empty queue is the ordinary state — these are seeded by hand, ~1/month.
+                log_debug("Occasion posts ready to publish natively: []")
+    except mysql.connector.Error as err:
+        log_error("Could not read the native-publish queue", exc=err,
+                  task_name="auto_check_scheduled_posts")
+        posts = []
+
+    return posts
 def get_orphaned_scheduled_posts(lookback_hours: int = 2) -> list:
     """Return posts stuck in 'scheduled' status that never reached 'posted'.
 

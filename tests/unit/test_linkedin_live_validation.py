@@ -1678,6 +1678,97 @@ class TestCatchupProbe:
 
 
 @pytest.mark.unit
+class TestOccasionComposerProbe:
+    """#1088: grounding this route is the precondition for flipping the native-publish flag on."""
+
+    def test_a_feed_that_never_rendered_grounds_nothing(self):
+        assert llv.occasion_composer_state({"page_text": "  "}) == llv.STATE_UNKNOWN
+        assert "grounds nothing" in llv.occasion_composer_verdict({"page_text": ""})
+
+    def test_a_rendered_feed_with_no_share_box_is_drift(self):
+        """EVERY member's composer carries the occasion route, unlike a group's share box.
+
+        So a miss here is never 'this surface legitimately has none'.
+        """
+        reading = {"page_text": "Start a post", "share_box_present": False}
+        assert llv.occasion_composer_state(reading) == llv.STATE_DRIFT
+
+    def test_a_share_box_that_opened_no_dialog_says_so_on_its_own(self):
+        """The first live pass (2026-08-17) could not tell this apart from a rotated occasion label.
+
+        Every occasion locator is dialog-scoped, so a share-box click that opened nothing reports
+        the same "occasion missing" — and the fix is in a different place entirely.
+        """
+        reading = {"page_text": "x", "share_box_present": True, "dialog_present": False}
+        assert llv.occasion_composer_state(reading) == llv.STATE_DRIFT
+        assert "NOTHING opened" in llv.occasion_composer_verdict(reading)
+
+    def test_an_overlay_that_is_not_a_dialog_is_a_different_finding(self):
+        """Two failures, two fixes: re-ground the CONTAINER, or re-ground the TRIGGER."""
+        reading = {"page_text": "x", "share_box_present": True, "dialog_present": False,
+                   "modal_containers": [{"tag": "div", "class": "share-box"}]}
+        assert "re-ground the container" in llv.occasion_composer_verdict(reading)
+        assert "NOTHING opened" not in llv.occasion_composer_verdict(reading)
+
+    def test_a_composer_with_no_occasion_affordance_is_drift(self):
+        reading = {"page_text": "x", "share_box_present": True, "dialog_present": True,
+                   "occasion_entry_present": False}
+        assert llv.occasion_composer_state(reading) == llv.STATE_DRIFT
+        assert "Celebrate an occasion" in llv.occasion_composer_verdict(reading)
+
+    def test_an_unmatched_occasion_type_says_never_to_widen_the_map(self):
+        reading = {"page_text": "x", "share_box_present": True, "dialog_present": True,
+                   "occasion_entry_present": True, "occasion_type_present": False,
+                   "archetype": "educational_milestone"}
+        assert llv.occasion_composer_state(reading) == llv.STATE_DRIFT
+        assert "never widen" in llv.occasion_composer_verdict(reading)
+
+    def test_the_whole_route_resolving_is_ok(self):
+        reading = {"page_text": "x", "share_box_present": True, "dialog_present": True,
+                   "occasion_entry_present": True, "occasion_type_present": True,
+                   "editor_present": True, "post_button_present": True,
+                   "archetype": "project_launch"}
+        assert llv.occasion_composer_state(reading) == llv.STATE_OK
+
+    def test_the_affordance_scan_reads_more_than_buttons(self):
+        """The occasion route's affordances are `div[role='button']` / `li`, not `<button>`.
+
+        A button-only scan reports them missing from the EVIDENCE as well as from the chain.
+        """
+        root = MagicMock()
+        selectors = []
+
+        def _find(by, value):
+            selectors.append(value)
+            return []
+
+        root.find_elements.side_effect = _find
+        llv.composer_affordance_labels(root)
+        assert "[role='button']" in selectors[0]
+        assert "li" in selectors[0]
+
+    def test_the_carried_chains_name_themselves_when_the_image_has_none(self, monkeypatch):
+        """A pre-merge pass must never read as a deployed grounding (#817/#1007)."""
+        import builtins
+
+        real_import = builtins.__import__
+
+        def _no_share_composer(name, *args, **kwargs):
+            if name == "cqc_lem.utilities.linkedin":
+                raise ImportError("not in this image")
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", _no_share_composer)
+        *_, source = llv._occasion_composer_chains()
+        assert source == "script"
+
+    def test_the_carried_copy_covers_the_same_archetypes_as_the_image(self):
+        from cqc_lem.utilities.linkedin import share_composer as sc
+
+        assert set(llv._CARRIED_OCCASION_TYPE_LABELS) == set(sc.OCCASION_TYPE_LABELS)
+
+
+@pytest.mark.unit
 class TestGroupComposerProbe:
     def test_an_admin_only_group_is_unknown_not_drift(self):
         """Production already records such a group unpostable and rotates past it — that is correct

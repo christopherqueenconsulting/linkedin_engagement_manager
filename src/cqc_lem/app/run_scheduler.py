@@ -41,6 +41,7 @@ from cqc_lem.app.engagement.outreach import (
     send_scheduled_dm,
 )
 from cqc_lem.app.engagement.posting import (
+    auto_publish_occasion_post,
     post_to_linkedin,
     sweep_comment_followups,
     sweep_comment_outcomes,
@@ -67,6 +68,7 @@ from cqc_lem.utilities.db import (
     get_orphaned_connection_requests,
     get_orphaned_scheduled_dms,
     get_orphaned_scheduled_posts,
+    get_ready_occasion_posts,
     get_ready_to_post_posts,
     get_user_timezone,
     get_users_with_reply_mode,
@@ -103,6 +105,7 @@ from cqc_lem.utilities.env_constants import (
     NEWSLETTER_COVER_REMINDER_LEAD_HOURS,
     SELENIUM_KEEP_VIDEOS_X_DAYS,
 )
+from cqc_lem.utilities.flags import OCCASION_NATIVE_PUBLISH, flag_enabled
 from cqc_lem.utilities.human_pacing import (
     ACTION_INVITE,
     PACE_RESPONSIVE,
@@ -273,10 +276,34 @@ def auto_check_scheduled_posts(self):
         )
         post_to_linkedin.apply_async(kwargs={'user_id': user_id, 'post_id': post_id})
 
-    if len(posts) == 0 and len(orphaned) == 0:
+    # Occasion/milestone drafts (issue #1088). A SEPARATE queue on purpose: the rows above are
+    # excluded from every query here by `manual_publish = 0`, which is what keeps `post_to_linkedin`
+    # off a post the REST API cannot carry — so the browser lane gets its own read rather than a
+    # loosened filter that could hand one row to both paths.
+    #
+    # The flag is resolved PER USER, after the query rather than before it: these rows are seeded by
+    # hand (~1 a month), so the read is almost always empty and costs nothing — while a system-level
+    # pre-check would gate out every user a %-rollout had switched ON. The task re-reads it, so a
+    # flag flipped off between here and the run still publishes nothing.
+    occasion = 0
+    for post_id, _slot, user_id in get_ready_occasion_posts(
+            post_time_delta_minutes=CQC_LEM_POST_TIME_DELTA_MINUTES):
+        if not flag_enabled(OCCASION_NATIVE_PUBLISH, user_id):
+            # DEBUG: OFF is the shipped default, so the author publishing it by hand (#1074) is the
+            # expected outcome, not a degraded one.
+            log_debug("Native occasion publishing is off for this user — leaving the draft",
+                      user_id=user_id, post_id=post_id, task_name="auto_check_scheduled_posts")
+            continue
+        # Dispatched WITHOUT an eta: the task claims the row itself and the composer walk is
+        # minutes long, so the 20-minute lookahead is lead time, not a deadline to hit.
+        auto_publish_occasion_post.apply_async(kwargs={'user_id': user_id, 'post_id': post_id})
+        occasion += 1
+
+    if len(posts) == 0 and len(orphaned) == 0 and occasion == 0:
         return "No Post to Schedule"
     else:
-        return f"Started Process for {len(posts)} post(s); re-queued {len(orphaned)} orphaned post(s)"
+        return (f"Started Process for {len(posts)} post(s); re-queued {len(orphaned)} orphaned "
+                f"post(s); dispatched {occasion} native occasion post(s)")
 
 
 @shared_task.task(bind=True, base=QueueOnce, once={'graceful': True, }, reject_on_worker_lost=True)
