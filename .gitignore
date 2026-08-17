@@ -233,3 +233,9 @@ deploy/
 # either, this just makes that explicit.
 docs/triage/
 state/
+
+# Agent-pipeline flock state — slot-*.lock, br-*.lock, triage.lock, .worktree-sweep, written live
+# by tick.sh / lib/guards.sh / status.sh / triage_issues.py. Same reason as the deploy state above:
+# tracking it dirties the tree on every tick, conflicts across the per-agent worktrees, and lets a
+# checkout clobber locks a running dispatch is holding.
+locks/
