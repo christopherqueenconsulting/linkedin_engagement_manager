@@ -50,9 +50,11 @@ GRADED_OUTCOMES = ("cleared", "traded", "worsened", "persisted", "lost")
 UNSTEERED = "unsteered"
 _SURFACE_RE = re.compile(r"[A-Za-z0-9_-]+")
 
-# Below this many steered rows the report states the sample and refuses to read a rate off it. A
-# newsletter is a weekly cadence, so a fortnight of editions is single digits — the floor is what
-# stops a two-edition window being quoted as a clear-rate.
+# Below this many steered rows the report states the sample and refuses to read a rate off it.
+# Newsletter editions are authored in small bursts, not weekly — five drafting days in the 45 to
+# 2026-08-17, 1-6 editions each (F10, second read) — so a fortnight is single digits and only the
+# editions that trip a HARD check are steered at all. The floor is what stops a two-edition window
+# being quoted as a clear-rate.
 DEFAULT_MIN_ROWS = 10
 
 
