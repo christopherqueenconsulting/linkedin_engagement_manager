@@ -300,6 +300,20 @@ class TestTheStoredColumn:
         field = EngagementPreferencesRequest.model_fields["profile_viewer_dm_auto_send"]
         assert field.default is False
 
+    @pytest.mark.parametrize("name", ["SCHEDULED_DM_SOURCE_PROFILE_VIEWER",
+                                      "CONNECTION_REQUEST_SOURCE_PROFILE_VIEWER"])
+    def test_both_source_values_are_declared_exports_of_the_facade(self, name):
+        """`db.__all__` is the one declaration that says these are read from another module.
+
+        Both are used only in `app/engagement/outreach.py`; without the export CodeQL reads them as
+        dead globals and the PR gate blocks on `py/unused-global-variable`, which is the same reason
+        the names surrounding them in the list are there.
+        """
+        from cqc_lem.utilities import db
+
+        assert db.__all__.count(name) == 1
+        assert getattr(db, name) == "profile_viewer"
+
 
 class TestRosterConnectEscalationIsUntouched:
     """The issue's round-2 revert: `roster_auto_connect=false` already IS the human in the loop.
