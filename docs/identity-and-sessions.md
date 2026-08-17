@@ -1,5 +1,20 @@
 # Identity & sessions — hardening (issue #745, PR 2b)
 
+**In the SPA a 401 is evidence about the ENDPOINT, not about the session** (#1358): only
+`/auth/session` ends a session, and only after the answer has been corroborated. Any other route
+answering 401 is a statement about that route — an edge check with no database, a stale chunk, a
+route that never authenticated — and signing the user out over it turns a live session into a
+lockout.
+
+The published schema is PUBLIC, which is why every operation answers with `ResponseModel[T]` (#1219).
+FastAPI serializes THROUGH `T`, so `T` is always a CONTAINER type and no operation may `$ref` the
+bare envelope — a bare envelope would publish a response shape that says nothing about the payload.
+
+One detail that looks like an oversight and is not: `sessions.session_token` stores an **UNKEYED**
+`SHA-256(token)`. It is deliberately not an HMAC keyed on `LEM_SECRET_KEY`, because rotating that key
+would then invalidate every stored session hash and log every user out at once. The hash exists to
+stop a database read yielding usable session tokens; it is not a secret-bearing construction.
+
 The design, threat model and the rest of the Phase-2 plan live in
 [`AUTH_SECURITY_DESIGN.md`](AUTH_SECURITY_DESIGN.md); [`secrets-at-rest.md`](secrets-at-rest.md) is
 2a (encryption of the LinkedIn secrets). This file is the **operator + reviewer** half of 2b: what

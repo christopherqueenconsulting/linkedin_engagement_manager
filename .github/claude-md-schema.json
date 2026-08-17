@@ -22,71 +22,108 @@
   "default_row_max": 320,
   "reference_row_max": 140,
   "cm019_level": "warn",
-  "preamble": { "budget": 250, "target": 250 },
+  "preamble": {
+    "budget": 250,
+    "target": 250
+  },
   "sections": [
     {
       "name": "Project Overview",
       "budget": 900,
-      "target": 900
+      "target": 600
     },
     {
       "name": "Tech Stack",
       "budget": 600,
-      "target": 600,
+      "target": 475,
       "tables": [
-        { "header": ["Layer", "Technology"], "kind": "reference", "max_rows": 10 }
+        {
+          "header": [
+            "Layer",
+            "Technology"
+          ],
+          "kind": "reference",
+          "max_rows": 10
+        }
       ]
     },
     {
       "name": "Directory Map",
       "budget": 2400,
-      "target": 2400,
+      "target": 2275,
       "directory_map": true
     },
     {
       "name": "Code Conventions",
       "budget": 2400,
-      "target": 2400
+      "target": 1925
     },
     {
       "name": "AI Call Pattern",
       "budget": 3650,
-      "target": 2600,
+      "target": 2650,
       "tables": [
-        { "header": ["Alias", "Use case"], "kind": "reference", "max_rows": 7 }
+        {
+          "header": [
+            "Alias",
+            "Use case"
+          ],
+          "kind": "reference",
+          "max_rows": 7
+        }
       ]
     },
     {
       "name": "Selenium Pattern",
       "budget": 1100,
-      "target": 1100
+      "target": 700
     },
     {
       "name": "Feature Areas",
       "budget": 18400,
-      "target": 9000,
+      "target": 8575,
       "subsections": [
         "Content generation & scheduling",
         "Engagement automation",
         "Engagement configuration",
-        "Marketing video tutorials",
-        "Anti-bot / session infra"
+        "Marketing video tutorials"
       ],
       "tables": [
         {
-          "header": ["Area", "The ONE place", "The invariant that bites", "Doc"],
+          "header": [
+            "Area",
+            "The ONE place",
+            "The invariant that bites",
+            "Doc"
+          ],
           "kind": "index",
           "max_rows": 5,
           "pointer": "cell:3"
         },
         {
-          "header": ["Lane", "The ONE place", "The invariant that bites"],
+          "header": [
+            "Lane",
+            "The ONE place",
+            "The invariant that bites"
+          ],
           "kind": "index",
           "max_rows": 18,
           "pointer": "section:docs/engagement-automation.md"
-        },
+        }
+      ]
+    },
+    {
+      "name": "Anti-bot & session infra",
+      "budget": 3300,
+      "target": 3075,
+      "tables": [
         {
-          "header": ["Surface", "The ONE place", "The invariant that bites", "Doc"],
+          "header": [
+            "Surface",
+            "The ONE place",
+            "The invariant that bites",
+            "Doc"
+          ],
           "kind": "index",
           "max_rows": 11,
           "pointer": "cell:3"
@@ -96,20 +133,25 @@
     {
       "name": "Agent Working Method",
       "budget": 2000,
-      "target": 2000
+      "target": 1775
     },
     {
       "name": "Testing Standards",
       "budget": 700,
-      "target": 700
+      "target": 625
     },
     {
       "name": "Observability",
       "budget": 5450,
-      "target": 3000,
+      "target": 3650,
       "tables": [
         {
-          "header": ["Surface", "The ONE place", "The invariant that bites", "Doc"],
+          "header": [
+            "Surface",
+            "The ONE place",
+            "The invariant that bites",
+            "Doc"
+          ],
           "kind": "index",
           "max_rows": 13,
           "pointer": "cell:3"
@@ -119,30 +161,38 @@
     {
       "name": "CI Gates",
       "budget": 900,
-      "target": 900
+      "target": 775
     },
     {
       "name": "Production Deployment & Environment",
       "budget": 1800,
-      "target": 1800,
+      "target": 1625,
       "tables": [
-        { "header": ["Path", "Owner", "Purpose"], "kind": "reference", "max_rows": 2 }
+        {
+          "header": [
+            "Path",
+            "Owner",
+            "Purpose"
+          ],
+          "kind": "reference",
+          "max_rows": 2
+        }
       ]
     },
     {
       "name": "Known Gotchas",
       "budget": 4100,
-      "target": 2400
+      "target": 2450
     },
     {
       "name": "Agent pipeline (v2)",
       "budget": 700,
-      "target": 700
+      "target": 550
     },
     {
       "name": "Git Safety & Multi-Agent Concurrency Rules",
       "budget": 2600,
-      "target": 2600
+      "target": 1950
     }
   ]
 }

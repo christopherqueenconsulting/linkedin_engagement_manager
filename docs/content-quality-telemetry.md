@@ -1,5 +1,13 @@
 # Content-quality telemetry (issue #630)
 
+## Keyframe sidecars — the pixels a receipt cannot carry (issue #1363)
+
+A receipt records numbers about a clip; it cannot record what the clip LOOKED like. So
+`utilities/video_frames.py` retains `open` / `mid` / `close` keyframes alongside the measurement, as
+`<video>.frame-*.jpg` sidecars. They survive `purge_post_assets` for the same reason the receipt
+does — the MP4 is deleted at publish, and a frame that was never captured cannot be captured later.
+An unmeasured clip retains the opening frame ONLY.
+
 Full design detail for `utilities/content_quality.py` and the two beats that drive it. CLAUDE.md
 keeps the one-line invariant + this pointer.
 
