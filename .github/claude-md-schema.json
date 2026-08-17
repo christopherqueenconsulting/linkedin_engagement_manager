@@ -3,15 +3,19 @@
   "_comment": [
     "The fixed shape of CLAUDE.md. Enforced by scripts/check_claude_md_size.py.",
     "",
-    "Each section carries BOTH a `budget` (enforced right now) and a `target` (where it is",
-    "going). This is a ratchet, the same shape .ruff-baseline uses: `budget` may only ever",
-    "move DOWN, and `budget >= target` always. The hard ceilings that make the ratchet",
-    "meaningful -- HARD_TOTAL_BUDGET and MAX_SECTION_BUDGET -- are CONSTANTS IN THE LINTER,",
-    "not fields here, so relaxing the guard means editing code and its unit test in the same",
-    "PR rather than nudging a number in a data file.",
+    "Each section carries a `target` and a `budget`, and they mean different things:",
+    "  target -- the size this section was trimmed TO. Targets sum to <= HARD_TOTAL_BUDGET.",
+    "  budget -- what CI enforces: target + ~5% working room, so a one-word fix to a row is not",
+    "            a build failure. Budgets sum to well under the harness cap.",
     "",
-    "Budgets are frozen at the sizes measured on main at 453b1f01 (2026-08-17). They ratchet",
-    "down to `target` once the trim lands. See CONTRIBUTING.md."
+    "It is a ratchet, the same shape .ruff-baseline uses: a budget may only ever move DOWN, and",
+    "`budget >= target` always. The two ceilings that make the ratchet meaningful --",
+    "HARD_TOTAL_BUDGET and MAX_SECTION_BUDGET -- are CONSTANTS IN THE LINTER, not fields here, so",
+    "relaxing the guard means editing code and its unit test in the same PR rather than nudging a",
+    "number in a data file.",
+    "",
+    "The working room is for FIXING a row, not for growing the file. Growth is supposed to go into",
+    "the docs/*.md a row points at; max_rows and row_max are what enforce that."
   ],
   "root": "CLAUDE.md",
   "doc_index": "docs/README.md",
@@ -21,21 +25,21 @@
   },
   "default_row_max": 320,
   "reference_row_max": 140,
-  "cm019_level": "warn",
+  "cm019_level": "error",
   "preamble": {
-    "budget": 250,
-    "target": 250
+    "budget": 70,
+    "target": 60
   },
   "sections": [
     {
       "name": "Project Overview",
-      "budget": 900,
+      "budget": 630,
       "target": 600
     },
     {
       "name": "Tech Stack",
-      "budget": 600,
-      "target": 475,
+      "budget": 500,
+      "target": 470,
       "tables": [
         {
           "header": [
@@ -49,19 +53,19 @@
     },
     {
       "name": "Directory Map",
-      "budget": 2400,
-      "target": 2275,
+      "budget": 2380,
+      "target": 2260,
       "directory_map": true
     },
     {
       "name": "Code Conventions",
-      "budget": 2400,
-      "target": 1925
+      "budget": 2020,
+      "target": 1920
     },
     {
       "name": "AI Call Pattern",
-      "budget": 3650,
-      "target": 2650,
+      "budget": 2780,
+      "target": 2640,
       "tables": [
         {
           "header": [
@@ -75,13 +79,13 @@
     },
     {
       "name": "Selenium Pattern",
-      "budget": 1100,
+      "budget": 740,
       "target": 700
     },
     {
       "name": "Feature Areas",
-      "budget": 18400,
-      "target": 8575,
+      "budget": 9000,
+      "target": 8730,
       "subsections": [
         "Content generation & scheduling",
         "Engagement automation",
@@ -114,8 +118,8 @@
     },
     {
       "name": "Anti-bot & session infra",
-      "budget": 3300,
-      "target": 3075,
+      "budget": 3260,
+      "target": 3100,
       "tables": [
         {
           "header": [
@@ -132,18 +136,18 @@
     },
     {
       "name": "Agent Working Method",
-      "budget": 2000,
-      "target": 1775
+      "budget": 1850,
+      "target": 1760
     },
     {
       "name": "Testing Standards",
-      "budget": 700,
-      "target": 625
+      "budget": 640,
+      "target": 610
     },
     {
       "name": "Observability",
-      "budget": 5450,
-      "target": 3650,
+      "budget": 3820,
+      "target": 3630,
       "tables": [
         {
           "header": [
@@ -160,13 +164,13 @@
     },
     {
       "name": "CI Gates",
-      "budget": 900,
-      "target": 775
+      "budget": 800,
+      "target": 760
     },
     {
       "name": "Production Deployment & Environment",
-      "budget": 1800,
-      "target": 1625,
+      "budget": 1690,
+      "target": 1610,
       "tables": [
         {
           "header": [
@@ -181,18 +185,18 @@
     },
     {
       "name": "Known Gotchas",
-      "budget": 4100,
-      "target": 2450
+      "budget": 2720,
+      "target": 2590
     },
     {
       "name": "Agent pipeline (v2)",
-      "budget": 700,
-      "target": 550
+      "budget": 570,
+      "target": 540
     },
     {
       "name": "Git Safety & Multi-Agent Concurrency Rules",
-      "budget": 2600,
-      "target": 1950
+      "budget": 2040,
+      "target": 1940
     }
   ]
 }
