@@ -79,6 +79,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       .catch(() => {
         localStorage.removeItem(SESSION_KEY)
         localStorage.removeItem('lem_email')
+        // Abandoning the stored session has to abandon its cookie with it. This branch is reached on
+        // ANY failure, including a 5xx or a dropped connection, so the token may still be LIVE — and
+        // unlike the server's own cookie, a script-written one is not replaced by the next login's
+        // `Set-Cookie` in the very browser that refuses it. Leaving it would let the next person to
+        // sign in on this machine have `loadSession(COOKIE_SESSION)` answered by the PREVIOUS
+        // session's cookie, i.e. signed in as somebody else.
+        clearFallbackSessionCookie()
       })
       .finally(() => setIsLoading(false))
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -94,6 +101,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   )
 
   function login(token: string, email: string) {
+    // Any script-written cookie still here belongs to a session this login replaces, and the probe
+    // below asks the server to resolve THE COOKIE. The server's own `Set-Cookie` has already landed
+    // by now and shadows this write (httpOnly), so on a normal login it is a no-op — but in the
+    // cookie-refusing browser this whole fallback exists for, nothing else would ever overwrite the
+    // stale one, and the probe would come back as its owner rather than as `token`'s.
+    clearFallbackSessionCookie()
     // The token is NOT stored: the login response already set the httpOnly cookie, and what goes
     // into localStorage is the sentinel — a marker that a session exists, worth nothing if stolen.
     localStorage.setItem(SESSION_KEY, COOKIE_SESSION)

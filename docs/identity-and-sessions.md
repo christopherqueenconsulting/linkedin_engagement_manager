@@ -195,17 +195,24 @@ So the SPA ships none, and the token's contract is now written down rather than 
   (`ui/src/utils/sessionCookie.ts`) — on login AND on every boot from a stored real token, since the
   browser that refused the server's cookie may equally drop ours. That is the one credential this
   check and the resolver both already read, and it adds no server surface. It is
-  `Path=/; SameSite=Lax`, deliberately NOT `Secure` (a refused `Secure` cookie is the failure it
-  exists for) and necessarily not httpOnly, which `document.cookie` cannot set. Exposure is
-  unchanged: the fallback already held that same raw token in `localStorage`, equally readable by a
-  script on the page. CSRF is unchanged too — a cookie-authenticated write still needs
+  `Path=/; SameSite=Lax`, and necessarily not httpOnly, which `document.cookie` cannot set.
+  `Secure` tracks the PAGE: absent on a plain-http origin (a refused `Secure` cookie is the failure
+  this exists for, and a browser drops one written from http anyway), present on https — where
+  omitting it WOULD widen exposure, because `localStorage` is scoped by scheme and a cookie is not,
+  so the live token would ride the first `http://` request to that host in cleartext. Otherwise
+  exposure is unchanged: the fallback already held that same raw token in `localStorage`, equally
+  readable by a script on the page. CSRF is unchanged too — a cookie-authenticated write still needs
   `X-LEM-Client`, and the fallback's own writes take the explicit-token branch, which no forger
   reaches without the token. The cookie NAME is the server's `SESSION_COOKIE_NAME`, so a deployment
-  that overrides that env var must override the SPA constant with it. `clearLocalSession()` deletes
-  the cookie alongside every other per-browser key. Proven in
+  that overrides that env var must override the SPA constant with it. It is cleared at every moment
+  this browser stops holding the session — `clearLocalSession()` (sign-out and session-ended), the
+  boot that abandons a stored session, and the start of the next `login()`. The last two are not
+  tidiness: a script-written cookie is NOT replaced by the next login's `Set-Cookie` in the very
+  browser that refuses that cookie, so a stale one left behind would answer the sentinel probe as
+  its own owner and sign the next person in as somebody else. Proven in
   `tests/unit/api/test_cookieless_fallback_session.py` (a read and a write complete with
-  `API_ACCESS_TOKENS` set) and `ui/src/utils/sessionCookie.test.ts` (the attributes, `Secure`
-  included — its absence is the point).
+  `API_ACCESS_TOKENS` set) and `ui/src/utils/sessionCookie.test.ts` (the attributes, `Secure` on
+  both sides of the scheme).
 - **That safety argument is a TEST, not a paragraph.** Loosening a global edge control is only safe
   while every gated route really does resolve its caller, so
   `tests/unit/api/test_api_route_identity.py` walks the live route table and asserts it: every

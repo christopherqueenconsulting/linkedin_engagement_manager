@@ -163,6 +163,30 @@ describe('the cookie-less login fallback', () => {
     expect(writeFallbackSessionCookie).not.toHaveBeenCalled()
   })
 
+  it('is dropped by a boot that abandons the stored session', async () => {
+    // The catch fires on ANY failure, a 5xx included, so the token may still be live — and in the
+    // browser that refuses the server's cookie nothing else would ever overwrite ours.
+    localStorage.setItem('lem_session', 'real-token')
+    get.mockRejectedValue(new Error('500'))
+
+    renderSignedOut()
+
+    await waitFor(() => expect(clearFallbackSessionCookie).toHaveBeenCalled())
+  })
+
+  it('is dropped by a fresh login before the sentinel is resolved against it', async () => {
+    // Otherwise the next person to sign in on this machine has that probe answered by the PREVIOUS
+    // session's cookie — signed in as somebody else.
+    renderSignedOut()
+    get.mockResolvedValue({ data: { detail: { user_id: 7, email: 'user@example.com' } } })
+
+    await act(async () => { screen.getByText('sign in').click() })
+
+    expect(clearFallbackSessionCookie).toHaveBeenCalled()
+    expect(clearFallbackSessionCookie.mock.invocationCallOrder[0])
+      .toBeLessThan(get.mock.invocationCallOrder[0])
+  })
+
   it('is cleared by a sign-out, like every other per-browser key', async () => {
     await renderSignedIn()
     post.mockResolvedValue({ data: {} })

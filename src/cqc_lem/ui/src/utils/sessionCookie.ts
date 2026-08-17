@@ -14,10 +14,18 @@
 //
 // Exposure is unchanged: the fallback already holds this exact token in `localStorage`, which is
 // equally readable by any script on the page. The cookie cannot be httpOnly (`document.cookie` may
-// not set that) and is deliberately not `Secure` — a refused `Secure` cookie is the whole failure
-// this exists for. CSRF is unaffected: a cookie-authenticated write still has to carry
+// not set that). CSRF is unaffected: a cookie-authenticated write still has to carry
 // `X-LEM-Client` (#957), which a cross-site form cannot set, and `SameSite=Lax` keeps the cookie off
 // cross-site writes exactly as the server's own does.
+//
+// `Secure` is the ONE attribute that tracks the page instead of being fixed. On a plain-http origin
+// it has to be absent — a refused `Secure` cookie is the whole failure this exists for, and a
+// browser drops a `Secure` cookie written from http anyway, so setting it there would refuse the fix
+// to the case it was written for. On an https origin it has to be PRESENT: `localStorage` is scoped
+// by scheme, a cookie is not, so a non-`Secure` cookie hands the live token to the first `http://`
+// request anyone makes to this host, in cleartext — an exposure the `localStorage` copy never had.
+// The https fallback is reachable (a proxy stripping `Set-Cookie`, a browser refusing the server's
+// cookie), so this is not a theoretical branch.
 
 // Must match the server's `SESSION_COOKIE_NAME` (`utilities/env_constants.py`, default
 // `lem_session`) — both `_has_session_credential` and `session_cookie_middleware` read the cookie
@@ -29,7 +37,17 @@ export const SESSION_COOKIE_NAME = 'lem_session'
 // would drop the tab straight back into the 401 this fixes.
 const MAX_AGE_SECONDS = 30 * 24 * 3600
 
-const ATTRIBUTES = 'Path=/; SameSite=Lax'
+/**
+ * `Path=/; SameSite=Lax`, plus `Secure` exactly when the page itself is secure (see the header).
+ *
+ * The scheme is read off `document.URL` rather than `location.protocol`: they answer the same
+ * question, and jsdom's `location` is unforgeable, so reading it there would make the https branch —
+ * the one that matters for exposure — the one branch no test could reach.
+ */
+function attributes(): string {
+  const base = 'Path=/; SameSite=Lax'
+  return document.URL.startsWith('https:') ? `${base}; Secure` : base
+}
 
 /**
  * Carry the fallback session's real token in the cookie the `/api` edge gate reads.
@@ -40,16 +58,17 @@ const ATTRIBUTES = 'Path=/; SameSite=Lax'
  */
 export function writeFallbackSessionCookie(token: string): void {
   if (typeof document === 'undefined' || !token) return
-  document.cookie = `${SESSION_COOKIE_NAME}=${token}; Max-Age=${MAX_AGE_SECONDS}; ${ATTRIBUTES}`
+  document.cookie = `${SESSION_COOKIE_NAME}=${token}; Max-Age=${MAX_AGE_SECONDS}; ${attributes()}`
 }
 
 /**
- * Drop it on sign-out, alongside every other per-browser key.
+ * Drop it whenever this browser stops holding the session — a sign-out, a session that ended on its
+ * own, a stored session abandoned at boot, or a fresh `login()` replacing whatever came before.
  *
  * Safe on a normal cookie session too: a browser discards a `document.cookie` write aimed at an
  * httpOnly cookie, so this can only ever remove the one this module wrote.
  */
 export function clearFallbackSessionCookie(): void {
   if (typeof document === 'undefined') return
-  document.cookie = `${SESSION_COOKIE_NAME}=; Max-Age=0; ${ATTRIBUTES}`
+  document.cookie = `${SESSION_COOKIE_NAME}=; Max-Age=0; ${attributes()}`
 }
