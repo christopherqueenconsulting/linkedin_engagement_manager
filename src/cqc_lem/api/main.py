@@ -58,6 +58,7 @@ from cqc_lem.api.response_schemas import (
     PostsPage,
 )
 from cqc_lem.api.spa_assets import (
+    NO_STORE_CACHE_CONTROL,
     VITE_BASE_URL_PLACEHOLDER,
     ArchivedStaticFiles,
     public_base_url,
@@ -230,6 +231,46 @@ async def observability_middleware(request: Request, call_next):
             status_code=status_code,
             latency_ms=int((time.time() - start) * 1000),
         )
+
+
+# The ONE `/api` path that is meant to be cached. `get_assets` is public by design (LinkedIn
+# fetches these URLs unauthenticated when publishing) and every stored name carries a random
+# token, so the bytes behind one URL never change — the opposite of the payloads below.
+#
+# Matched on a path-segment boundary for the same reason `_is_public_api_path` below is: a bare
+# `startswith` would hand a future `/api/assets-admin` the exemption too, and an exemption is
+# exactly the thing that must not spread by accident.
+_CACHEABLE_API_PREFIX = "/api/assets"
+
+
+def _is_cacheable_api_path(path: str) -> bool:
+    return path == _CACHEABLE_API_PREFIX or path.startswith(_CACHEABLE_API_PREFIX + "/")
+
+
+async def api_cache_control_middleware(request: Request, call_next):
+    """Mark every `/api` payload uncacheable, the way the HTML shell already is (issue #1527).
+
+    FastAPI sends no `Cache-Control` of its own, and this app is served through a Cloudflare tunnel
+    that caches a GET without one: measured on prod, a second identical `GET /api/app-info` comes
+    back `cf-cache-status: HIT`. That makes a write invisible. The reporter skipped a group post,
+    pressed "Put back in the queue" and generated an image for it — the `PUT`s answered 200, the
+    SPA re-fetched `/api/user/group-post-draft`, and the refetch was served from the edge copy
+    written before either write, so the draft still read SKIPPED with no image. A full page reload
+    showed the same thing, which is the tell: the request never reached the origin at all.
+
+    It is also what stops one account being served another's data. The SPA sends the same query
+    string for every caller (`session_token=cookie` — the session rides in an httpOnly cookie since
+    #745), so a shared cache keyed on the URL has one entry for a per-user payload.
+
+    Set on the response rather than per route: a route that forgets is exactly the case that goes
+    unnoticed, and the header is only meaningful in front of a cache nothing here can see.
+    """
+    response = await call_next(request)
+    path = request.url.path
+    if path.startswith("/api/") and not _is_cacheable_api_path(path):
+        response.headers["Cache-Control"] = NO_STORE_CACHE_CONTROL
+        response.headers["Pragma"] = "no-cache"
+    return response
 
 
 # Credential gate for /api routes. Active only when API_ACCESS_TOKENS is set, so local/dev (and
@@ -431,6 +472,14 @@ async def session_cookie_middleware(request: Request, call_next):
         _request_path.reset(path_reset)
         _request_object.reset(request_reset)
         _request_session_scope.reset(scope_reset)
+
+
+# Registered LAST on purpose, which makes it the OUTERMOST middleware: Starlette runs the most
+# recently added one first, and `api_token_middleware` answers a credential-less /api request with
+# its own 401 without ever calling `call_next`. Registered where it is defined, that refusal — the
+# response every request gets in production before the caller signs in — would leave the origin
+# with no `Cache-Control` at all, which is the one thing this middleware exists to prevent.
+app.middleware("http")(api_cache_control_middleware)
 
 
 # ---------------------------------------------------------------------------

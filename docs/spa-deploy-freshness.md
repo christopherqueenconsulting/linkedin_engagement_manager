@@ -45,3 +45,31 @@ several builds behind can keep working while running old client code against a n
   runs the bundle while hidden, so deferring its first read would baseline it onto a build it
   isn't actually running.
 - An unreachable endpoint or blank version raises nothing and never becomes the baseline.
+
+## The same hazard one layer down — `/api` payloads (issue #1527)
+
+The shell is not the only thing an edge cache will hold. FastAPI sends no `Cache-Control` of its
+own, and the Cloudflare tunnel in front of this app caches a GET that arrives without one —
+measured on prod, a second identical `GET /api/app-info` came back `cf-cache-status: HIT`. So
+`api/main.api_cache_control_middleware` stamps `no-store` on every `/api/…` response, which is
+where that contract now lives for the API half.
+
+Two things it fixes, both reported as "the app ignored what I did":
+
+- **A write goes invisible.** #1527: a group-post draft was skipped, restored and given a generated
+  image; both `PUT`s answered 200, the SPA re-fetched `/api/user/group-post-draft`, and the edge
+  answered from the copy taken before either write — so the card still read SKIPPED with no image.
+  A full page reload showed the same thing, which is the tell: the request never reached the origin.
+- **One account is served another's payload.** The SPA sends the same query string for every caller
+  (`session_token=cookie` — the session rides in an httpOnly cookie since #745), so a cache keyed on
+  the URL has ONE entry for a per-user body.
+
+It is registered LAST, which makes it the outermost middleware — `api_token_middleware` answers a
+credential-less `/api` request with its own 401 without calling the rest of the stack, and that
+refusal is a response too.
+
+`/api/assets` is the single exemption, matched on a path-segment boundary (never a bare prefix, so
+a future `/api/assets-admin` does not inherit it): public by design (LinkedIn fetches those URLs
+unauthenticated when publishing) and every stored name carries a random token, so the bytes behind
+one URL never change. Verify after a deploy by requesting any `/api` path twice and reading
+`cf-cache-status` — a second `HIT` means the zone is overriding the header, not honouring it.
