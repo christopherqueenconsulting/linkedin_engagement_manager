@@ -31,6 +31,7 @@ def _nurture_patches(**overrides):
         "build_dm_from_template": "fallback text",
         "insert_scheduled_dm": 99,
         "get_dm_history_for_profile": [],
+        "recipient_context": {"first_name": "Jane", "job_title": "VP Engineering"},
     }
     defaults.update(overrides)
     return {name: patch(f"{_OUT}.{name}", return_value=val) for name, val in defaults.items()}
@@ -183,6 +184,35 @@ class TestNurtureAfterReply:
         from cqc_lem.app.engagement.outreach import _nurture_after_reply
         with patch(f"{_OUT}.classify_reply_intent", side_effect=RuntimeError("boom")):
             assert _nurture_after_reply(1, _followup(), "Sounds good", MagicMock()) is None
+
+
+class TestNurtureRecipientContext:
+    """Issue #1625 — the lane resolves who the contact is and hands it to the draft."""
+
+    def test_the_resolver_is_asked_for_this_thread_and_never_opens_a_browser(self):
+        _got, mocks, _enq = _run_nurture()
+        kwargs = mocks["recipient_context"].call_args.kwargs
+        assert kwargs["profile_url"] == "https://x/in/jane"
+        assert kwargs["first_name"] == "Jane"
+        # The follow-up's own event_type is what says why the thread exists.
+        assert kwargs["event_type"] == "connection_accepted"
+        assert kwargs["user_id"] == 1
+
+    def test_the_context_reaches_the_draft_prompt(self):
+        _got, mocks, _enq = _run_nurture()
+        assert mocks["generate_nurture_dm"].call_args.kwargs["recipient_context"] == {
+            "first_name": "Jane", "job_title": "VP Engineering"}
+
+    def test_an_empty_context_still_produces_a_draft(self):
+        got, mocks, _enq = _run_nurture(recipient_context={})
+        assert got == 99
+        assert mocks["generate_nurture_dm"].call_args.kwargs["recipient_context"] == {}
+
+    def test_the_template_fallback_is_still_the_last_resort(self):
+        # It answers nobody's reply, so it is logged — but a draft beats no draft.
+        got, mocks, _enq = _run_nurture(generate_nurture_dm=None)
+        assert got == 99
+        assert mocks["insert_scheduled_dm"].call_args[0][2] == "fallback text"
 
 
 class TestProcessUserFollowupsNurture:

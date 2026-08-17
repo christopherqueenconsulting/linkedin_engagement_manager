@@ -184,3 +184,129 @@ def nurture_guidance(intent: str) -> str:
 def nurture_delay_hours(intent: str) -> int:
     """How long to hold the drafted next message before its send slot."""
     return _NURTURE_DELAY_HOURS.get(str(intent), _NURTURE_DELAY_HOURS[str(ReplyIntent.NEUTRAL)])
+
+
+# ── Who the recipient actually is (issue #1625) ───────────────────────────────────────────────
+# The draft used to know their first name and nothing else, so a short or neutral reply left it
+# with nothing to be specific about. Everything below is read from data LEM ALREADY HOLDS — no
+# profile visit is made to write a draft, because a Chrome session per draft is a cost/account
+# risk the draft does not justify. Two sources, both free:
+#
+#   1. `profiles` — the by-URL scrape cache, read through `db.get_profile_facts`, the same reader
+#      the nightly lead scorer uses for ICP fit. Someone we have never scraped simply isn't in it.
+#   2. The `dm_followups` row that opened the sequence — its `event_type` IS why we messaged them
+#      first, and the caller already has it, so it costs no read at all.
+#
+# Missing is the NORMAL case, not a fault: the resolver returns whatever it found and the prompt
+# renders only the fields present. A draft is never dropped for want of context.
+
+# `event_type` -> what actually put us in this person's inbox. Kept in step with the enum
+# `dm_followups.event_type` declares (tests/unit/utilities/test_dm_event_vocabulary.py owns that
+# list); an event type with no phrase here contributes nothing rather than a guess.
+#
+# Every phrase must say what the SOURCE actually observed, in the right direction. The prompt hands
+# these to the model as ground truth, so a phrase that overstates the relationship is exactly the
+# fabrication this whole feature is gated against — #968 already had to rewrite the 'collaboration'
+# DEFAULT TEMPLATE for thanking someone for a project neither party may have worked on, and the same
+# wording must not come back in through the prompt. Two that read backwards if you skim the name:
+#   'connection_accepted' — the source is `accept_connection_request`, i.e. THEY invited US and the
+#       user accepted; nothing here says our invite was accepted.
+#   'collaboration' — LinkedIn exposes no collaboration event, so the source is
+#       `get_recent_collaborators`, which walks the MENTIONS feed.
+_THREAD_ORIGINS: "dict[str, str]" = {
+    "connection_accepted": "they sent you a connection invitation and you accepted it",
+    "recommendation_received": "they wrote you a LinkedIn recommendation",
+    "collaboration": "they mentioned you in a post or a comment of theirs",
+    "profile_viewer": "they viewed your profile",
+    "funnel": "you commented on their post first, then messaged them",
+    "job_change": "they started a new role",
+    "promotion": "they were promoted",
+    "work_anniversary": "they hit a work anniversary",
+    "birthday": "it was their birthday",
+    "education": "they finished a course or degree",
+    "in_the_news": "they were mentioned in the news",
+    "manual": "you started this thread yourself",
+    # 'nurture' means this IS the nurture sequence continuing; the original trigger is not on the
+    # row, so saying anything here would be an invention.
+}
+
+# Values `get_profile_facts` can hand back that mean "we don't know". The column is
+# `JSON_UNQUOTE(JSON_EXTRACT(data, ...))`, and a Pydantic `None` serializes as JSON `null`, which
+# comes back as the four-character STRING 'null' — putting "their title is null" in a prompt.
+_UNKNOWN_FACTS = {"", "none", "null"}
+
+_RECIPIENT_FIELD_LABELS: "list[tuple[str, str]]" = [
+    ("first_name", "First name"),
+    ("job_title", "Their title"),
+    ("company_name", "Their company"),
+    ("industry", "Their industry"),
+    ("thread_origin", "Why this conversation exists"),
+]
+
+
+def thread_origin(event_type: str = None) -> "str | None":
+    """Plain-language reason this DM thread was opened, from the follow-up row's `event_type`.
+
+    None for an event type with no phrase (including `nurture`, which is the sequence itself) —
+    the prompt then omits the line instead of guessing why we are in their inbox.
+    """
+    return _THREAD_ORIGINS.get(str(event_type or "").strip().lower())
+
+
+def recipient_context(profile_url: str = None, first_name: str = None, event_type: str = None,
+                      user_id: int = None) -> dict:
+    """What we know about the person we are drafting to, from stored data only (issue #1625).
+
+    Returns a dict of the fields we actually have — any of `first_name`, `job_title`,
+    `company_name`, `industry`, `thread_origin` — and `{}` when we know nothing about them, which
+    is the pre-#1625 behaviour and still drafts a message.
+
+    Never raises and never navigates: a profile we have not scraped is a quieter draft, not a
+    dropped one.
+    """
+    context: dict = {}
+    name = str(first_name or "").strip()
+    if name:
+        context["first_name"] = name
+
+    facts: dict = {}
+    if profile_url:
+        try:
+            from cqc_lem.utilities.db import get_profile_facts
+            rows = get_profile_facts([profile_url]) or {}
+            facts = next((row for row in rows.values() if row), {})
+        except Exception as e:
+            # A read fault, not an absent profile — the latter is an empty dict from a clean read.
+            log_warning("Could not read stored profile facts for a nurture draft", exc=e,
+                        user_id=user_id, action_type="dm")
+
+    for field in ("job_title", "company_name", "industry"):
+        value = str(facts.get(field) or "").strip()
+        if value.lower() not in _UNKNOWN_FACTS:
+            context[field] = value
+
+    origin = thread_origin(event_type)
+    if origin:
+        context["thread_origin"] = origin
+
+    if not facts:
+        # Expected for anyone we have never scraped — DEBUG, never a warning (see utilities/CLAUDE.md).
+        log_debug(f"Nurture recipient context: no stored profile for {profile_url or 'an unknown URL'}",
+                  user_id=user_id, action_type="dm")
+    return context
+
+
+def format_recipient_context(context: dict = None) -> str:
+    """Render `recipient_context()` as the prompt block, or `""` when there is nothing to say.
+
+    The heading is doing real work: it tells the model these are observations we already made, not
+    licence to infer their team size, budget, stack or problem from a job title.
+    """
+    lines = [f"- {label}: {context[key]}"
+             for key, label in _RECIPIENT_FIELD_LABELS if str((context or {}).get(key) or "").strip()]
+    if not lines:
+        return ""
+    return ("Who I am writing to — everything I know about them, and nothing more. Use it to be "
+            "specific and relevant. Do NOT recite it back to them, and do NOT infer anything from "
+            "it (team size, budget, tools, goals, or what they need):\n"
+            + "\n".join(lines) + "\n\n")

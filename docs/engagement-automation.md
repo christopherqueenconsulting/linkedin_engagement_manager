@@ -141,6 +141,44 @@ disinterest / neutral) and becomes an **approval-gated** context-aware next mess
 `pending` row in `scheduled_dms` (`source='nurture'`), one open draft per thread, per-day draft
 cap, explicit disinterest stops the thread for good.
 
+### Who the recipient is comes from stored data, never a page visit (issue #1625)
+
+The draft used to know their first name and nothing else, so a short or neutral reply left it with
+nothing to be specific about and it read as filler. `dm_nurture.recipient_context()` is the ONE
+place that gap is filled, and it reads only what LEM already holds — **no profile visit is opened
+to write a draft**. A Chrome session per draft was the alternative and was rejected: it is an
+account-risk and cost decision the draft does not justify, and the lane must keep working on the
+people we have never scraped.
+
+| Field | Source | When it is missing |
+|---|---|---|
+| `first_name` | the `dm_followups` row the caller already has | omitted from the prompt |
+| `job_title` / `company_name` / `industry` | `db.get_profile_facts` — the by-URL `profiles` scrape cache, the same reader the nightly lead scorer uses for ICP fit | omitted; someone we never scraped is simply absent from that table |
+| `thread_origin` | the follow-up row's `event_type`, mapped through `_THREAD_ORIGINS` | omitted — including on a `nurture` row, where the event type IS the sequence and the original trigger is not on the row |
+
+**A `_THREAD_ORIGINS` phrase must say what its source actually observed, in the right direction** —
+the prompt hands it to the model as ground truth, so an overstated one is a false claim about a real
+relationship in a message to a real person. The two that read backwards from their names:
+`connection_accepted` comes from `accept_connection_request`, so THEY invited US and the user
+accepted (never "they accepted your request"); `collaboration` comes from `get_recent_collaborators`,
+which walks the **mentions** feed, because LinkedIn exposes no collaboration event — #968 already had
+to rewrite that event's default DM template for claiming a shared project, and the same wording must
+not return through the prompt.
+
+- **Missing is the normal case, not a fault.** The resolver returns whatever it found (`{}` is
+  valid), `format_recipient_context` renders only the fields present, and a draft is never dropped
+  for want of context — it is just less specific, which is the pre-#1625 behaviour. An unscraped
+  profile logs DEBUG; only a failed *read* warns.
+- **Context is not licence to invent.** The block is headed "everything I know about them, and
+  nothing more", and the system prompt forbids inferring team size, budget, tools, problems or
+  goals from a title or company, on top of the existing no-prices/no-timelines rules. The draft
+  stays approval-gated either way.
+- `JSON_UNQUOTE(JSON_EXTRACT(...))` hands back the four-character string `'null'` for a JSON null,
+  so `_UNKNOWN_FACTS` filters it — otherwise the prompt reads "their title is null".
+- When the LLM produces nothing the lane still falls back to `build_dm_from_template`, which
+  ignores their reply entirely. That fallback is unchanged but now logs at INFO, so how often the
+  least-relevant draft in the queue fires is readable.
+
 ## Message-thread resolution ladder (`utilities/linkedin/message_thread.py`, issue #731)
 
 The ONE way LEM opens (and reads) a 1:1 thread.
