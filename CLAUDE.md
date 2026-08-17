@@ -357,7 +357,11 @@ local dev → PR to main → CI gates pass → release-please tags vX.Y.Z → bu
 - **Stale lazy chunks after a deploy** (#743, `docs/spa-deploy-freshness.md`): a tab open across a
   release fetches a chunk hash the new image no longer has. Three layers — asset retention from a
   shared archive volume, a loop-guarded one-shot reload on import failure, `/api/app-info` polling
-  that prompts rather than reloads.
+  that prompts rather than reloads. **The same doc holds the API half** (#1527): the Cloudflare
+  tunnel CACHES any `/api` GET that arrives without a `Cache-Control`, so a write reads as ignored
+  and a per-user body is keyed on a URL every caller sends identically. `api/main.py`'s
+  `api_cache_control_middleware` is the ONE place that is answered — `no-store` on every `/api`
+  response, `/api/assets` the single exemption (public by design, random file names).
 
 ## Agent pipeline (v2)
 
