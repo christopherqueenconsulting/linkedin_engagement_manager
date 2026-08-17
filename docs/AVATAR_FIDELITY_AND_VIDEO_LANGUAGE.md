@@ -365,17 +365,36 @@ Two consequences for the hold decision:
    avatar, active ones included), after which the probe starts returning checked verdicts and the
    rate becomes measurable from telemetry as well as from the harness.
 
+**Counting inert probes — read `unchecked_cause`, not `reason` (issue #1598).** The table above was
+produced by scanning the distinct `reason` strings, which is the vision model's free text and only
+happened to be one value. The event now carries `unchecked_cause` as a `label()` — a string on
+**every** row, including checked ones — from the closed vocabulary in
+`utilities/avatar/likeness_probe.UNCHECKED_CAUSES`:
+
+| `unchecked_cause` | What it means |
+|---|---|
+| `none` | The probe checked. `present` carries the verdict. |
+| `no_declared_attributes` | The subject clause was empty — no `gender_presentation` / `age_band` to verify. **The state this whole section measured.** `prefer-not-to-say` with no age band lands here too: it is a declaration, but it renders no noun. |
+| `no_image` | No stored frame at the path handed to the probe. |
+| `vision_error` | The vision call failed, timed out, or answered with something unparseable. |
+| `unknown` | A reading reached `track_avatar_likeness_probe` carrying no cause — a hand-rolled verdict, not a probe result. Countable so it is noticed rather than ingested as a null no filter matches. |
+
+So the inert rate is one PostHog breakdown on `unchecked_cause` (or a filter
+`unchecked_cause = "no_declared_attributes"`), never a free-text scan, and the ≈2026-08-28 re-read
+below is a chart rather than an inspection. The SPA half of the same issue says it where the account
+owner is: an avatar with neither attribute stored — and one that declined WITHOUT an age band, which
+is equally inert — carries a prompt on its attribute block naming both consequences (the probe has
+nothing to verify, and §4's subject clause contributes nothing to the image prompt). A declination is
+never re-asked; that prompt names only the age band.
+
 **Confirmed on the issue thread 2026-08-16 (`1A 2A`).** The rate is produced by declaring the
 attributes and re-reading the telemetry ≈2026-08-28 — production frames, no extra vision spend —
 rather than from a curated offline set; `scripts/avatar_likeness_eval.py` stays available for a
 labelled set that arrives sooner. The declaration is an owner action with no agent path, so it is
 listed in `docs/OWNER_ACTION_TRACKER.md` §4 against the hold flag — an issue comment is not a
-tracker, and nothing else would notice the ≈2026-08-28 re-read finding the same zero-checked state. The inert state itself is now tracked as **#1598**: today it is
-visible in neither place it could be noticed — the SPA never says that blank attributes leave both
-the probe and #744's subject clause with nothing to work on, and `reason` is `text()` rather than
-`label()`, so "the probe is inert on this account" cannot be filtered or counted in PostHog without
-scanning the free text. Until one of those readings exists, the two measurement acceptance boxes on
-#1430 stay open.
+tracker, and nothing else would notice the ≈2026-08-28 re-read finding the same zero-checked state.
+The inert state was invisible in both places it could have been noticed until **#1598** made it
+visible in each: the SPA prompt and the `unchecked_cause` label described above.
 
 ### 5.2 Escalation path — probe/human disagreement (procedure)
 

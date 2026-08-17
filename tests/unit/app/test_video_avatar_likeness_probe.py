@@ -216,6 +216,29 @@ class TestAvatarLikenessProbeInVideoGeneration:
         assert result == "https://runway.video/abc.mp4"
         assert track.call_args.kwargs["used_avatar"] == "unknown"
 
+    def test_the_unchecked_cause_reaches_the_tracker_unaltered(self):
+        """The cause rides the verdict (issue #1598) rather than being re-read off `reason`.
+
+        `reason` is the vision model's free text; the video lane must not parse it to say why a
+        probe stayed inert.
+        """
+        verdict = {"present": None, "checked": False,
+                   "reason": "No declared likeness attributes to verify",
+                   "unchecked_cause": "no_declared_attributes"}
+        with patch("cqc_lem.utilities.avatar.guardrails.resolve_avatar_for",
+                   return_value=_AVATAR), \
+             patch("cqc_lem.utilities.db.get_default_video_quality", return_value="standard"), \
+             patch(f"{_RCP}.get_flux_image_prompt_from_ai", return_value="image prompt"), \
+             patch(f"{_RCP}.get_runway_ml_video_prompt_from_ai", return_value="motion"), \
+             patch("cqc_lem.utilities.ai.ai_helper.generate_post_image",
+                   return_value="/tmp/avatar_frame.webp"), \
+             patch(f"{_RCP}.create_runway_video", return_value="https://runway.video/abc.mp4"), \
+             patch(f"{_LIKENESS}.probe_avatar_likeness", return_value=verdict), \
+             patch("cqc_lem.utilities.db.post_avatar_media_state", return_value=True), \
+             patch(f"{_OBS}.track_avatar_likeness_probe") as track:
+            _generate_video_src(post_id=18)
+        assert track.call_args.args[2]["unchecked_cause"] == "no_declared_attributes"
+
     def test_hold_flag_drops_to_fallback_on_failed_probe(self):
         with patch(f"{_RCP}.AVATAR_LIKENESS_VIDEO_HOLD_ENABLED", True), \
              patch("cqc_lem.utilities.avatar.guardrails.resolve_avatar_for",

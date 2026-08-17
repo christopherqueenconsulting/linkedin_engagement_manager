@@ -35,6 +35,22 @@ const GENDER_OPTIONS = [
 ]
 const AGE_OPTIONS = ['', '20s', '30s', '40s', '50s', '60s', '70+']
 
+// Mirrors `attributes.normalize_gender_presentation` / `normalize_age_band`: a value the Python
+// side does not recognise declares nothing, exactly like a blank one, so the prompt below has to
+// read the stored row the same way `subject_clause()` does.
+const KNOWN_GENDERS = new Set(GENDER_OPTIONS.map((o) => o.value).filter(Boolean))
+const KNOWN_AGE_BANDS = new Set(AGE_OPTIONS.filter(Boolean))
+
+function declaredGender(value: string | null): string | null {
+  const key = (value ?? '').trim().toLowerCase().replace(/_/g, '-')
+  return KNOWN_GENDERS.has(key) ? key : null
+}
+
+function declaredAgeBand(value: string | null): string | null {
+  const band = (value ?? '').trim().toLowerCase()
+  return KNOWN_AGE_BANDS.has(band) ? band : null
+}
+
 const GUARDRAILS = [
   { key: 'avatar_use_post_image', label: 'Post images',    hint: 'Standalone images generated for a post' },
   { key: 'avatar_use_carousel',   label: 'Carousel slides', hint: 'Slide artwork on personal-story carousels' },
@@ -543,6 +559,16 @@ function AvatarReviewPanel({ training, sessionToken }: { training: Training; ses
   const gallery = samples?.samples ?? []
   const regenRemaining = samples?.sample_regen_remaining ?? 0
 
+  // What is STORED decides this, not the unsaved selects: an avatar whose row carries neither
+  // attribute leaves `subject_clause()` empty, which is the state #1430 measured 152 times and
+  // could see in neither place (issue #1598). "Prefer not to say" is a declaration and is never
+  // re-asked — but on its own it also yields an empty clause, so that case names the age band
+  // (the one value still missing) instead of the choice already made.
+  const storedGender = declaredGender(training.gender_presentation)
+  const storedAgeBand = declaredAgeBand(training.age_band)
+  const nothingDeclared = !storedGender && !storedAgeBand
+  const declinedWithoutAgeBand = storedGender === 'prefer-not-to-say' && !storedAgeBand
+
   return (
     <div className="border-t border-gray-100 pt-4 space-y-4">
       {/* Declared attributes */}
@@ -552,6 +578,27 @@ function AvatarReviewPanel({ training, sessionToken }: { training: Training; ses
           Written into every image prompt so the generator can’t invent someone else. You choose
           these — we never guess them from your photos, and leaving them blank adds nothing.
         </p>
+        {nothingDeclared && (
+          <p
+            data-testid={`avatar-attributes-undeclared-${training.id}`}
+            className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mb-2"
+          >
+            Nothing declared yet, so two things are switched off for this avatar: the likeness check
+            on generated video frames has nothing to verify and reports every frame unchecked, and
+            no description of you goes into your image prompts — leaving the generator free to
+            render someone else. Pick either value below and save.
+          </p>
+        )}
+        {declinedWithoutAgeBand && (
+          <p
+            data-testid={`avatar-attributes-age-only-${training.id}`}
+            className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mb-2"
+          >
+            “Prefer not to say” is saved and we won’t ask again. On its own it describes no one,
+            though: add an age band and the likeness check on generated video frames has something
+            to verify, and your image prompts start carrying that description.
+          </p>
+        )}
         <div className="flex flex-wrap items-end gap-3">
           <label className="text-xs text-gray-600">
             <span className="block mb-1">Gender presentation</span>
