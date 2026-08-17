@@ -496,6 +496,17 @@ class TestEditions:
         # APPROVED editions to an inner join.
         assert "LEFT JOIN newsletter_settings s ON s.user_id = e.user_id" in sql
 
+    def test_pending_cover_sweep_selects_the_edition_status(self, fake_cursor):
+        """Issue #1135 — the reminder's wording turns on whether the BODY reaches that slot."""
+        conn, cur = fake_cursor(fetch_all=[])
+        import datetime
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import get_editions_with_pending_cover
+            get_editions_with_pending_cover(datetime.datetime(2026, 7, 7),
+                                            datetime.datetime(2026, 7, 9))
+        sql = " ".join(cur.execute.call_args[0][0].split())
+        assert "SELECT id, user_id, title, status, scheduled_for" in sql
+
     def test_get_edition(self, fake_cursor):
         row = {"id": 3, "user_id": 1, "title": "T", "subtitle": "S", "body": "B",
                "status": "draft", "scheduled_for": None, "published_url": None}

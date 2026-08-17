@@ -263,7 +263,7 @@ export default function NewsletterQueue(
         <p className="text-gray-600 text-sm mb-2 max-w-sm">No newsletter drafts queued yet.</p>
         <p className="text-gray-400 text-xs max-w-sm">
           Enable your newsletter and set how many drafts to keep ready on the Account page — drafts will
-          appear here for review before they auto-publish.
+          appear here for you to review, edit and approve.
         </p>
       </div>
     )
@@ -395,11 +395,17 @@ export default function NewsletterQueue(
                 <>
                   <img src={draftEdit.cover_image_url} alt="Newsletter cover"
                     className="w-full rounded-lg border border-gray-200 object-cover" />
+                  {/* The consequence clause depends on the account's own publish gate (#1135):
+                      for an opted-out draft the edition does NOT reach its slot at all, so
+                      promising it "publishes on time" is the reassurance that stops the author
+                      acting on the thing this box exists to make them act on. */}
                   {draftEdit.cover_image_status !== 'approved' && (
                     <p className="text-xs text-yellow-700 bg-yellow-50 border border-yellow-200 rounded-lg px-3 py-2">
                       A generated cover is a public brand asset, so it only goes out once you
-                      approve it here. If this edition reaches its slot unapproved, it publishes
-                      on time <strong>without a cover</strong>.
+                      approve it here.{' '}
+                      {draftEdit.status === 'approved' || data?.auto_publish_newsletters
+                        ? <>If this edition reaches its slot unapproved, it publishes on time <strong>without a cover</strong>.</>
+                        : <>This edition also waits on your approval, so approve both in one visit — otherwise it goes out <strong>without a cover</strong> whenever you do.</>}
                     </p>
                   )}
                 </>

@@ -420,11 +420,14 @@ def get_editions_with_pending_cover(now, until) -> list:
     edition ships cover-less, so this is the last window in which the author can still act. The
     status literal mirrors `newsletter_cover.COVER_STATUS_PENDING` — kept as a literal here so this
     layer stays free of the utilities tree, like the 'draft'/'approved' statuses above.
+
+    The edition's own `status` rides along because the reminder's wording depends on whether the
+    BODY reaches that slot at all (issue #1135) — a draft does so only for an opted-in account.
     """
     try:
         with db_cursor(dictionary=True) as cursor:
             cursor.execute(
-                "SELECT id, user_id, title, scheduled_for FROM newsletter_editions "
+                "SELECT id, user_id, title, status, scheduled_for FROM newsletter_editions "
                 "WHERE status IN ('draft', 'approved') AND cover_image_path IS NOT NULL "
                 "AND cover_image_status = 'pending_review' "
                 "AND scheduled_for > %s AND scheduled_for <= %s "

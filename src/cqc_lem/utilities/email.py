@@ -433,17 +433,29 @@ def send_linkedin_token_expiring_email(to_email: str, days_remaining: Optional[i
 
 
 def send_newsletter_draft_ready_email(to_email: str, edition_title: str,
-                                      scheduled_for: str, account_url: Optional[str] = None) -> bool:
-    """Email a user that their newsletter draft is ready to review before it auto-publishes."""
+                                      scheduled_for: str, account_url: Optional[str] = None,
+                                      auto_publish: bool = True) -> bool:
+    """Email a user that their newsletter draft is ready to review.
+
+    What happens if they do nothing is the account's own call since issue #1135
+    (`auto_publish_newsletters`), so this names the real outcome instead of asserting one. Telling
+    an opted-out author their draft ships by itself is the failure mode: they act on that and the
+    edition waits forever. Defaults to True — existing rows were backfilled to auto-publishing.
+    """
     url = account_url or _account_url()
     title = edition_title or "Your next edition"
+    outcome = (f"<p>If you do nothing, it will <strong>auto-publish as-is on {scheduled_for}"
+               f"</strong> so your cadence never breaks.</p>"
+               if auto_publish else
+               f"<p>It is scheduled for <strong>{scheduled_for}</strong>, but it publishes only "
+               f"once you <strong>approve</strong> it — if you do nothing, that slot passes and "
+               f"the draft keeps waiting.</p>")
     html = f"""
     <html><body style="font-family:Arial,Helvetica,sans-serif;color:#222;">
     <h2>Your newsletter draft is ready to review</h2>
     <p>We drafted your next LinkedIn newsletter edition, <strong>{title}</strong>.
     Review, edit, approve, or skip it before it goes out.</p>
-    <p>If you do nothing, it will <strong>auto-publish as-is on {scheduled_for}</strong> so your
-    cadence never breaks.</p>
+    {outcome}
     <p><a href="{url}" style="background:#0a66c2;color:#fff;padding:10px 16px;border-radius:6px;
     text-decoration:none;">Review your draft</a></p>
     <p style="color:#888;font-size:12px;">You can edit the title, subtitle, and body, or skip this
@@ -462,12 +474,17 @@ def _newsletter_queue_url() -> str:
 
 
 def send_newsletter_cover_pending_email(to_email: str, edition_title: str, scheduled_for: str,
-                                        queue_url: Optional[str] = None) -> bool:
+                                        queue_url: Optional[str] = None,
+                                        edition_publishes: bool = True) -> bool:
     """Email a user whose edition is about to publish with a cover still awaiting approval (#1432).
 
     The draft-ready email cannot carry this: the cover is rendered asynchronously and lands
     minutes AFTER that email goes out. So this is the only message that can say the cover is
     waiting, and it names the consequence — the edition publishes cover-less if nothing happens.
+
+    `edition_publishes` is whether the BODY reaches the slot at all (issue #1135): an unapproved
+    draft on an opted-out account does not, so "the edition itself still publishes on time" would
+    be a false reassurance about the very thing it is asking the author to act on.
     """
     url = queue_url or _newsletter_queue_url()
     title = edition_title or "Your next edition"
@@ -477,14 +494,19 @@ def send_newsletter_cover_pending_email(to_email: str, edition_title: str, sched
     safe_title = html_escape(title)
     safe_when = html_escape(str(scheduled_for))
     safe_url = html_escape(url)
+    slot = (f"<p>That edition publishes <strong>{safe_when}</strong>. If the cover isn't approved "
+            f"by then, it goes out <strong>without a cover image</strong> — the edition itself "
+            f"still publishes on time.</p>"
+            if edition_publishes else
+            f"<p>That edition is scheduled for <strong>{safe_when}</strong>, but it publishes only "
+            f"once you approve the edition itself — so approve the cover in the same visit, or it "
+            f"goes out <strong>without a cover image</strong> whenever you do.</p>")
     html = f"""
     <html><body style="font-family:Arial,Helvetica,sans-serif;color:#222;">
     <h2>Your newsletter cover is waiting for you</h2>
     <p>We generated a cover image for <strong>{safe_title}</strong>, but a generated cover is a
     public brand asset so it only goes out once you've looked at it.</p>
-    <p>That edition publishes <strong>{safe_when}</strong>. If the cover isn't approved by
-    then, it goes out <strong>without a cover image</strong> — the edition itself still
-    publishes on time.</p>
+    {slot}
     <p><a href="{safe_url}" style="background:#0a66c2;color:#fff;padding:10px 16px;border-radius:6px;
     text-decoration:none;">Review the cover</a></p>
     <p style="color:#888;font-size:12px;">Open the edition in your newsletter queue and use

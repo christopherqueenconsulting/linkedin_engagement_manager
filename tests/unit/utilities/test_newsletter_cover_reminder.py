@@ -38,6 +38,8 @@ class TestNotifyNewsletterCoverPending:
         assert client.set.call_args[1] == {"nx": True, "ex": 30 * 86400}
         to_email, title, when = send.call_args[0]
         assert (to_email, title) == ("u@e.com", "My Edition")
+        # Issue #1135: the caller decides whether the BODY reaches that slot; True is the default.
+        assert send.call_args[1]["edition_publishes"] is True
         assert "August 20" in when
 
     def test_second_pass_on_the_same_edition_is_silent(self):
@@ -120,6 +122,16 @@ class TestNotifyNewsletterCoverPending:
             assert notify_newsletter_cover_pending(3, 12, "My Edition", "soon") is False
 
 
+    def test_passes_the_publish_gate_through_to_the_copy(self):
+        """Issue #1135 — an opted-out draft is not told the edition ships on time regardless."""
+        from cqc_lem.utilities.notifications import notify_newsletter_cover_pending
+        with patch(f"{_RATE}.shared_redis_client", return_value=_redis()), \
+             patch(f"{_MOD}.get_user_email", return_value="u@e.com"), \
+             patch(f"{_EMAIL}.send_newsletter_cover_pending_email", return_value=True) as send:
+            notify_newsletter_cover_pending(3, 12, "My Edition", "soon", edition_publishes=False)
+        assert send.call_args[1]["edition_publishes"] is False
+
+
 class TestNewsletterCoverPendingEmail:
     def test_names_the_consequence_and_deep_links_to_the_queue(self, monkeypatch):
         monkeypatch.setenv("LEM_APP_URL", "https://app.example.com/")
@@ -142,6 +154,27 @@ class TestNewsletterCoverPendingEmail:
         with patch(f"{_EMAIL}._dispatch_email", return_value=True) as dispatch:
             send_newsletter_cover_pending_email("u@e.com", "", "tomorrow")
         assert "Your next edition" in dispatch.call_args[0][1]
+
+    def test_an_edition_that_wont_reach_its_slot_is_not_told_it_publishes_on_time(self):
+        """Issue #1135 — the body has its own gate now, so this reassurance is conditional.
+
+        For an opted-out draft the edition does NOT publish on time, and saying it does is the
+        line that stops the author acting on the very screen this email points them at.
+        """
+        from cqc_lem.utilities.email import send_newsletter_cover_pending_email
+        with patch(f"{_EMAIL}._dispatch_email", return_value=True) as dispatch:
+            send_newsletter_cover_pending_email("u@e.com", "My Edition", "tomorrow",
+                                                edition_publishes=False)
+        html = " ".join(dispatch.call_args[0][2].split())
+        assert "publishes on time" not in html
+        assert "publishes only once you approve the edition itself" in html
+        assert "without a cover image" in html          # the cover consequence still stands
+
+    def test_an_auto_publishing_account_keeps_the_original_reassurance(self):
+        from cqc_lem.utilities.email import send_newsletter_cover_pending_email
+        with patch(f"{_EMAIL}._dispatch_email", return_value=True) as dispatch:
+            send_newsletter_cover_pending_email("u@e.com", "My Edition", "tomorrow")
+        assert "publishes on time" in " ".join(dispatch.call_args[0][2].split())
 
     def test_a_title_with_markup_characters_cannot_break_the_body(self):
         # Titles are LLM-authored, so '&' and angle brackets reach this template unfiltered. Raw,

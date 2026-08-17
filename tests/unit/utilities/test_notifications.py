@@ -80,6 +80,32 @@ def test_newsletter_draft_ready_sends():
         assert notify_newsletter_draft_ready(3, "My Edition", datetime(2026, 7, 7, 13, 0)) is True
         snd.assert_called_once()
         assert snd.call_args[0][1] == "My Edition"
+        # Issue #1135: existing rows were backfilled to auto-publishing, so True is the default.
+        assert snd.call_args[1]["auto_publish"] is True
+
+
+def test_newsletter_draft_ready_carries_the_publish_gate():
+    """Issue #1135 — an opted-out author must be told the draft is waiting on THEM."""
+    from cqc_lem.utilities.notifications import notify_newsletter_draft_ready
+    with patch(f"{_MOD}.get_user_email", return_value="u@e.com"), \
+         patch(f"{_MOD}.send_newsletter_draft_ready_email", return_value=True) as snd:
+        notify_newsletter_draft_ready(3, "My Edition", "2026-07-07", auto_publish=False)
+    assert snd.call_args[1]["auto_publish"] is False
+
+
+def test_newsletter_draft_ready_email_copy_reports_the_real_outcome():
+    """The one email an opted-out author gets — it cannot say "it will auto-publish as-is"."""
+    from cqc_lem.utilities.email import send_newsletter_draft_ready_email
+    with patch("cqc_lem.utilities.email._dispatch_email", return_value=True) as dispatch:
+        send_newsletter_draft_ready_email("u@e.com", "My Edition", "Tuesday", auto_publish=False)
+    html = " ".join(dispatch.call_args[0][2].split())
+    assert "auto-publish as-is" not in html
+    assert "it publishes only once you <strong>approve</strong> it" in html
+    assert "Tuesday" in html
+
+    with patch("cqc_lem.utilities.email._dispatch_email", return_value=True) as dispatch:
+        send_newsletter_draft_ready_email("u@e.com", "My Edition", "Tuesday")
+    assert "auto-publish as-is on Tuesday" in " ".join(dispatch.call_args[0][2].split())
 
 
 def test_newsletter_draft_ready_no_email():

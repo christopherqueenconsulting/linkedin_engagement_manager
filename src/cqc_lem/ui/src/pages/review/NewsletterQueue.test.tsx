@@ -27,10 +27,14 @@ const edition = (id: number, title: string): NewsletterEdition => ({
   scheduled_for: `2026-08-2${id}T13:00:00`,
 })
 
-/** Answers every read with the same queue — which is what a background refetch re-reads. */
-const serveQueue = (editions: NewsletterEdition[]) =>
+/** Answers every read with the same queue — which is what a background refetch re-reads.
+ *  `autoPublish` defaults to true: that is the shape of an account that existed before issue
+ *  #1135 (every stored row was backfilled to it), so these cases keep reading as they did. */
+const serveQueue = (editions: NewsletterEdition[], autoPublish = true) =>
   get.mockImplementation(() =>
-    Promise.resolve({ data: { detail: { editions, next_publish: null } } }))
+    Promise.resolve({
+      data: { detail: { editions, next_publish: null, auto_publish_newsletters: autoPublish } },
+    }))
 
 function harness(ui: ReactNode) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
@@ -169,6 +173,23 @@ describe('NewsletterQueue pending-cover legibility', () => {
     await waitFor(() => expect(screen.getByText('PUBLISHES WITH THIS EDITION')).toBeTruthy())
     expect(screen.queryByText(/Cover needs your approval/)).toBeNull()
     expect(screen.queryByText(/this schedules the edition only/)).toBeNull()
+  })
+
+  // Issue #1135: "it publishes on time without a cover" is the reassurance that stops an author
+  // acting — and for an opted-out draft it is simply false, because the edition waits too.
+  it('does not promise an opted-out draft publishes on time without the cover', async () => {
+    serveQueue([withCover(1, 'pending_review')], false)
+    harness(queue())
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Approve cover' })).toBeTruthy())
+    expect(screen.queryByText(/reaches its slot unapproved/)).toBeNull()
+    expect(screen.getByText(/This edition also waits on your approval/)).toBeTruthy()
+  })
+
+  it('keeps the original wording for an APPROVED edition on an opted-out account', async () => {
+    serveQueue([{ ...withCover(1, 'pending_review'), status: 'approved' }], false)
+    harness(queue())
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Approve cover' })).toBeTruthy())
+    expect(screen.getByText(/reaches its slot unapproved/)).toBeTruthy()
   })
 })
 

@@ -251,7 +251,7 @@ COVER_PENDING_EMAIL_KEY = "lem:newsletter_cover_pending_email:{edition_id}"
 
 
 def notify_newsletter_cover_pending(user_id: int, edition_id: int, edition_title: str,
-                                    scheduled_for) -> bool:
+                                    scheduled_for, edition_publishes: bool = True) -> bool:
     """Email the author that an edition nearing its slot still has an unapproved cover (#1432).
 
     ONE-SHOT per edition: the reminder is about a specific slot, so re-sending it every time the
@@ -260,6 +260,9 @@ def notify_newsletter_cover_pending(user_id: int, edition_id: int, edition_title
     reminder that never left must not silence the next pass. **Fails open**: a Redis outage
     degrades to at most one email per beat run, never to silence, because silence is the exact
     defect this exists to fix. Returns True only if an email was actually sent.
+
+    `edition_publishes` says whether the BODY reaches that slot at all (issue #1135) — an
+    unapproved draft on an account that did not opt into `auto_publish_newsletters` does not.
     """
     key = COVER_PENDING_EMAIL_KEY.format(edition_id=edition_id)
     claimed_client = None
@@ -282,7 +285,8 @@ def notify_newsletter_cover_pending(user_id: int, edition_id: int, edition_title
             from cqc_lem.utilities.email import send_newsletter_cover_pending_email
             when = scheduled_for.strftime("%A, %B %d at %I:%M %p UTC") if hasattr(
                 scheduled_for, "strftime") else str(scheduled_for)
-            sent = send_newsletter_cover_pending_email(email, edition_title, when)
+            sent = send_newsletter_cover_pending_email(email, edition_title, when,
+                                                       edition_publishes=edition_publishes)
         if sent:
             log_info("Sent newsletter cover-pending reminder", user_id=user_id,
                      action_type="newsletter_cover")
@@ -299,8 +303,13 @@ def notify_newsletter_cover_pending(user_id: int, edition_id: int, edition_title
     return sent
 
 
-def notify_newsletter_draft_ready(user_id: int, edition_title: str, scheduled_for) -> bool:
-    """Email the user that their newsletter draft is ready to review and when it auto-publishes.
+def notify_newsletter_draft_ready(user_id: int, edition_title: str, scheduled_for,
+                                  auto_publish: bool = True) -> bool:
+    """Email the user that their newsletter draft is ready to review, and what its slot will do.
+
+    `auto_publish` is the account's `auto_publish_newsletters` (issue #1135) — this email is the
+    ONE place an opted-out author is told the draft needs their approval, so asserting the old
+    "it auto-publishes" universally would tell exactly the people who must act that they need not.
     Non-fatal — returns True only if an email was actually sent.
     """
     try:
@@ -309,12 +318,14 @@ def notify_newsletter_draft_ready(user_id: int, edition_title: str, scheduled_fo
             return False
         when = scheduled_for.strftime("%A, %B %d at %I:%M %p UTC") if hasattr(
             scheduled_for, "strftime") else str(scheduled_for)
-        sent = send_newsletter_draft_ready_email(email, edition_title, when)
+        sent = send_newsletter_draft_ready_email(email, edition_title, when,
+                                                 auto_publish=auto_publish)
         if sent:
             log_info(f"Sent newsletter draft-ready email to user_id {user_id}")
         return sent
     except Exception as e:
-        # WARNING: the user is never told their draft is waiting, and it auto-publishes on the
-        # slot either way. One bounced send is a warning; a broken mailer is the defect.
+        # WARNING: the user is never told their draft is waiting. On an auto-publishing account it
+        # then ships unreviewed; on an opted-out one it never ships at all. One bounced send is a
+        # warning; a broken mailer is the defect.
         log_warning("Could not send newsletter draft-ready email", exc=e, user_id=user_id)
         return False

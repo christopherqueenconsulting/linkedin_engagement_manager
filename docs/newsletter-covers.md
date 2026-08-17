@@ -73,6 +73,15 @@ backfilled to `true` (no behavior change on deploy day); new rows default to `fa
 deliberately gets no equivalent opt-out — a generated cover is a public brand asset regardless of
 what the body's setting says.
 
+What that costs is **every sentence that promised the edition ships anyway**. Three of the surfaces
+in the table above asserted it, and each one was telling exactly the authors who now have to act
+that they need not: the editor's under-the-cover copy, the cover-reminder email
+(`send_newsletter_cover_pending_email`, `edition_publishes=`), and — worst of the three, because it
+is the ONLY message an opted-out author gets about a new draft at all — the draft-ready email
+(`send_newsletter_draft_ready_email`, `auto_publish=`). All three now report the account's setting.
+The rule for anything added here: **a "publishes on time" clause is conditional, a "without a cover"
+clause is not.** An APPROVED edition publishes either way, so it keeps the original wording.
+
 ## The deterministic gate
 
 Both sources pass `inspect_cover_bytes` first — this is what stops an unusable image reaching a
