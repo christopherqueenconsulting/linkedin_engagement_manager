@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.157.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.156.1...v0.157.0) (2026-08-17)
+
+
+### Features
+
+* **outreach:** give a nurture DM draft the contact it is writing to (closes [#1625](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1625)) ([#1635](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1635)) ([a26f0a8](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/a26f0a84b5a183650eb5f587be9be33496930a3a))
+* **ui:** sort and date-range filter the catch-up queue (closes [#1464](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1464)) ([#1600](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1600)) ([f3993b0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/f3993b0ba5bfb18841a1bb78499c309dd8036612))
+
+
+### Bug Fixes
+
+* **agents:** park an issue whose linked PR is merged or closed unmerged (closes [#1405](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1405)) ([#1602](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1602)) ([7cd88cf](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/7cd88cfde6adb3c10274a342ca96734340a23e56))
+
 ## [0.156.1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.156.0...v0.156.1) (2026-08-17)
 
 
