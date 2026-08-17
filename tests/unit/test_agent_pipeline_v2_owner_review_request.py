@@ -10,8 +10,10 @@ silently invalidating a prior approval on the next push: the ask is not once, it
 So three properties are tested here rather than assumed:
 
 * **The ask happens at OPEN**, off a CODEOWNERS path match, not at the end of CI.
-* **A dismissed approval is pending again**, and any OTHER review state is not — an owner who left
-  `CHANGES_REQUESTED` has spoken, and re-requesting them on every observation would nag on a loop.
+* **Only an OPINIONATED review suppresses the ask** — `APPROVED` or `CHANGES_REQUESTED`, a pass
+  list. A dismissed approval is pending again, and so is a `COMMENTED` one: submitting either
+  removes the owner from `reviewRequests` without satisfying the code-owner gate, so reading one as
+  "reviewed" restores the exact silence this exists to end.
 * **A missed path match is not a silent wait**: `awaiting_owner_review` is GitHub's own verdict that
   a code-owner review is the last gate, and it asks there too.
 """
@@ -266,6 +268,33 @@ def test_changes_requested_is_not_re_requested():
     """Submitting a review REMOVES them from `reviewRequests`, so this would nag on a loop."""
     facts = _facts(latestReviews=[
         {"author": {"login": "gitchrisqueen"}, "state": "CHANGES_REQUESTED"}])
+    assert github.owner_review_pending(facts, "gitchrisqueen") is False
+
+
+def test_a_comment_only_review_is_pending_again():
+    """The regression that would re-create #1642 in a shape nobody would look for.
+
+    Leaving ONE inline remark submits a `COMMENTED` review. That removes the owner from
+    `reviewRequests` while satisfying no part of the code-owner gate — so reading it as "reviewed"
+    would put the PR back exactly where the issue found five of them: BLOCKED, green, armed, with
+    an empty Reviewers sidebar and nothing left that would ever ask again.
+    """
+    facts = _facts(latestReviews=[
+        {"author": {"login": "gitchrisqueen"}, "state": "COMMENTED"}])
+    assert github.owner_review_pending(facts, "gitchrisqueen") is True
+
+
+def test_an_unknown_review_state_is_pending_again():
+    """A pass list, not a deny list: only APPROVED/CHANGES_REQUESTED suppress the ask."""
+    facts = _facts(latestReviews=[{"author": {"login": "gitchrisqueen"}, "state": "PENDING"}])
+    assert github.owner_review_pending(facts, "gitchrisqueen") is True
+    assert github.OPINIONATED_REVIEW_STATES == {"APPROVED", "CHANGES_REQUESTED"}
+
+
+def test_a_comment_only_review_still_suppresses_while_the_request_stands():
+    """What bounds the re-ask: the request itself, so a COMMENTED review costs one, not a loop."""
+    facts = _facts(reviewRequests=[{"login": "gitchrisqueen"}],
+                   latestReviews=[{"author": {"login": "gitchrisqueen"}, "state": "COMMENTED"}])
     assert github.owner_review_pending(facts, "gitchrisqueen") is False
 
 

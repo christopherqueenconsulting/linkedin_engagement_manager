@@ -46,6 +46,13 @@ FAILED_CONCLUSIONS = frozenset({"FAILURE", "ERROR", "TIMED_OUT", "CANCELLED", "S
 #: a PR and an unknown conclusion reading as green.
 PASSED_CONCLUSIONS = frozenset({"SUCCESS", "NEUTRAL", "SKIPPED"})
 
+#: The ONLY review states that mean the owner has SPOKEN about a PR (#1642). A pass list, not a
+#: "dismissed" deny list: every other state — `COMMENTED`, `DISMISSED`, `PENDING`, anything GitHub
+#: adds later — leaves the code-owner gate unsatisfied while still removing the owner from
+#: `reviewRequests`, so reading one of those as "reviewed" restores the empty-sidebar silence this
+#: whole mechanism exists to end.
+OPINIONATED_REVIEW_STATES = frozenset({"APPROVED", "CHANGES_REQUESTED"})
+
 #: Reviewer identities and the marker MODE=selfreview posts, pinned to the same strings tick.sh
 #: uses (`COPILOT`, `CLAUDE_REVIEW_MARKER`). During migration both runners must agree on what counts
 #: as a review, or v2's shadow decisions diverge from v1's for a reason that is not a defect.
@@ -502,13 +509,19 @@ def owner_review_pending(facts: dict[str, Any], owner: str) -> bool:
     """Is the owner neither a requested reviewer nor the author of a LIVE review here?
 
     The two halves of #1642's acceptance, in one predicate. "Never asked" is the open-a-PR case.
-    "Asked, reviewed, and that review was then DISMISSED" is the `dismiss_stale_reviews` case — a
+    "Asked, reviewed, and that review no longer counts" is the `dismiss_stale_reviews` case — a
     pushed commit silently invalidates a prior approval, so the ask has to be repeatable.
 
-    Any OTHER review state counts as live and suppresses the request. That is deliberate: an owner
-    who left `CHANGES_REQUESTED` has spoken, and re-requesting them the moment they leave the
-    requested-reviewer list (which submitting a review does) would nag them on a loop for a PR whose
-    next move belongs to the `agent:revise` lane.
+    Which states count as live is an explicit PASS LIST (`OPINIONATED_REVIEW_STATES`), for the same
+    reason `PASSED_CONCLUSIONS` is one: the two mistakes do not cost the same. Suppressing on a
+    state that did not actually satisfy the code-owner gate re-creates #1642 exactly — the PR sits
+    BLOCKED with an empty Reviewers sidebar and nothing ever asks again. `COMMENTED` is the state
+    that makes this concrete and is NOT live: leaving one inline remark submits a COMMENTED review,
+    which removes the owner from `reviewRequests` without approving anything.
+
+    Re-asking is bounded by the same thing that bounds the first ask — the request itself puts the
+    owner back in `reviewRequests`, which suppresses the next observation — so a non-live review
+    costs exactly one re-request per round, never a loop.
 
     Args:
         facts: A `pr_facts` payload.
@@ -534,7 +547,7 @@ def owner_review_pending(facts: dict[str, Any], owner: str) -> bool:
         login = (((review or {}).get("author") or {}).get("login") or "").lower()
         if login != who:
             continue
-        return ((review.get("state") or "").upper() == "DISMISSED")
+        return (review.get("state") or "").upper() not in OPINIONATED_REVIEW_STATES
     return True
 
 

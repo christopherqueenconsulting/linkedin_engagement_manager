@@ -161,11 +161,14 @@ so an unreadable or unparseable CODEOWNERS yields NO rules rather than assumed o
 The ask is gated on `github.owner_review_pending` — the owner is neither a requested reviewer nor
 the author of a **live** review. A `DISMISSED` review reads as pending again, which is what makes
 this recur: `dismiss_stale_reviews: true` silently invalidates a prior approval on the next push
-(#1616 carried exactly that). Any OTHER review state (`APPROVED`, `CHANGES_REQUESTED`, `COMMENTED`)
-counts as live and suppresses the request — submitting a review removes them from `reviewRequests`,
-so re-asking would nag on a loop for a PR whose next move belongs to the `agent:revise` lane. A
-merged, closed, draft or owner-authored PR is never asked about (GitHub refuses a self-request, and
-a park drafts the PR).
+(#1616 carried exactly that). "Live" is an explicit PASS LIST — `OPINIONATED_REVIEW_STATES`,
+`APPROVED` and `CHANGES_REQUESTED` and nothing else — because suppressing on a state that did not
+satisfy the code-owner gate re-creates the silence this exists to end. `COMMENTED` is the state
+that makes that concrete and is NOT live: leaving one inline remark submits a COMMENTED review,
+which removes the owner from `reviewRequests` without approving anything. Re-asking cannot loop —
+the request itself puts the owner back in `reviewRequests`, so a non-live review costs one
+re-request per round. A merged, closed, draft or owner-authored PR is never asked about (GitHub
+refuses a self-request, and a park drafts the PR).
 
 Every request writes one `stage: "owner_review_request"` row to `logs/lemd-decisions.ndjson`
 (`{kind, number, reason, requested}`), because the ABSENCE of this signal was what had to be grepped
