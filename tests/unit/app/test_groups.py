@@ -830,16 +830,52 @@ class TestPostToGroup:
         return patch(f"{_FEED}.get_current_profile",
                      return_value=(driver, MagicMock(), "e", MagicMock()))
 
+    @staticmethod
+    def _deep(editor=None, media_input=None):
+        """Stand in for the shadow-aware lookup, answering by WHICH selector was asked for.
+
+        Since #1621 the editor and the composer's file input both come through
+        `find_deep_elements` — the composer mounts in a shadow root, where `find_elements` and
+        every XPath are blind.
+        """
+        from cqc_lem.app.engagement import feed
+
+        def _fn(driver, css, **kwargs):
+            if css == feed._GROUP_EDITOR_CSS:
+                return [editor] if editor is not None else []
+            return [media_input] if media_input is not None else []
+        return _fn
+
+    @staticmethod
+    def _control(post_button=None, trigger=None, confirm=None):
+        """Stand in for the container-scoped label match, answering by which control was asked for."""
+        from cqc_lem.app.engagement import feed
+
+        def _fn(container, labels, exact=False, css=None):
+            asked = tuple(labels or ())
+            if asked == tuple(feed._GROUP_POST_BUTTON_LABELS):
+                return post_button
+            if asked == tuple(feed._GROUP_MEDIA_TRIGGER_LABELS):
+                return trigger
+            if asked == tuple(feed._GROUP_MEDIA_CONFIRM_LABELS):
+                return confirm
+            return None
+        return _fn
+
     def test_publishes_the_reviewed_draft_and_stamps_rotation(self):
         """Issue #932: the published text is the draft the user could read and revise — nothing is
         generated here. Only a post that actually shipped moves the rotation on.
         """
         from cqc_lem.app.engagement.feed import auto_post_to_group
+        box = MagicMock()
         with self._driver_patches(), \
              patch(f"{_FEED}.get_group_post_draft", return_value=dict(_READY_DRAFT)), \
              patch(f"{_FEED}.generate_group_post") as gen, \
              patch(f"{_FEED}.click_first", return_value=MagicMock()), \
-             patch(f"{_FEED}.find_first", return_value=MagicMock()) as box, \
+             patch(f"{_FEED}.find_composer_container", return_value=MagicMock()), \
+             patch(f"{_FEED}.find_deep_elements", side_effect=self._deep(editor=box)), \
+             patch(f"{_FEED}.find_composer_control",
+                   side_effect=self._control(post_button=MagicMock())), \
              patch(f"{_FEED}.record_group_post") as rec, \
              patch(f"{_FEED}.update_group_post_draft") as upd, \
              patch(f"{_FEED}.record_group_post_run") as run, patch(f"{_FEED}.quit_gracefully"):
@@ -847,7 +883,7 @@ class TestPostToGroup:
                                             draft_id=11)
         assert result == "Posted to group"
         gen.assert_not_called()
-        box.return_value.send_keys.assert_called_once_with("A useful insight.")
+        box.send_keys.assert_called_once_with("A useful insight.")
         rec.assert_called_once_with(1, "123")
         assert str(upd.call_args.kwargs["status"]) == "published"
         # record_group_post stamps both columns itself — the success path never double-stamps.
@@ -871,7 +907,11 @@ class TestPostToGroup:
              patch(f"{_FEED}.get_group_post_draft", return_value=draft), \
              patch(f"{_FEED}.post_media_abs_path", return_value="/assets/i.png"), \
              patch(f"{_FEED}.click_first", return_value=MagicMock()), \
-             patch(f"{_FEED}.find_first", side_effect=[media_input, MagicMock(), box]), \
+             patch(f"{_FEED}.find_composer_container", return_value=MagicMock()), \
+             patch(f"{_FEED}.find_deep_elements",
+                   side_effect=self._deep(editor=box, media_input=media_input)), \
+             patch(f"{_FEED}.find_composer_control",
+                   side_effect=self._control(post_button=MagicMock(), confirm=MagicMock())), \
              patch(f"{_FEED}.record_group_post"), patch(f"{_FEED}.update_group_post_draft"), \
              patch(f"{_FEED}.record_group_post_run"), patch(f"{_FEED}.quit_gracefully"):
             result = auto_post_to_group.run(user_id=1, group_id="123", draft_id=11)
@@ -889,15 +929,18 @@ class TestPostToGroup:
         draft = {**_READY_DRAFT, "media_url": "http://x/api/assets?file_name=i.png",
                  "media_type": "image"}
         box = MagicMock()
-        # gone_from_disk never reaches a lookup; no_control misses the input twice (before and
-        # after the media button) and then resolves the editor.
-        find_results = [box] if failure == "gone_from_disk" else [None, None, box]
+        # gone_from_disk never reaches a lookup; no_control finds no file input and no media
+        # trigger — inside the composer or page-wide — and then resolves the editor.
         with self._driver_patches(), \
              patch(f"{_FEED}.get_group_post_draft", return_value=draft), \
              patch(f"{_FEED}.post_media_abs_path",
                    return_value=None if failure == "gone_from_disk" else "/assets/i.png"), \
              patch(f"{_FEED}.click_first", return_value=MagicMock()), \
-             patch(f"{_FEED}.find_first", side_effect=find_results), \
+             patch(f"{_FEED}.find_first", return_value=None), \
+             patch(f"{_FEED}.find_composer_container", return_value=MagicMock()), \
+             patch(f"{_FEED}.find_deep_elements", side_effect=self._deep(editor=box)), \
+             patch(f"{_FEED}.find_composer_control",
+                   side_effect=self._control(post_button=MagicMock())), \
              patch(f"{_FEED}.log_warning") as warned, \
              patch(f"{_FEED}.record_group_post") as rec, \
              patch(f"{_FEED}.update_group_post_draft") as upd, \
@@ -916,7 +959,10 @@ class TestPostToGroup:
              patch(f"{_FEED}.get_group_post_draft", return_value=dict(_READY_DRAFT)), \
              patch(f"{_FEED}.post_media_abs_path") as resolved, \
              patch(f"{_FEED}.click_first", return_value=MagicMock()), \
-             patch(f"{_FEED}.find_first", return_value=MagicMock()), \
+             patch(f"{_FEED}.find_composer_container", return_value=MagicMock()), \
+             patch(f"{_FEED}.find_deep_elements", side_effect=self._deep(editor=MagicMock())), \
+             patch(f"{_FEED}.find_composer_control",
+                   side_effect=self._control(post_button=MagicMock())), \
              patch(f"{_FEED}.record_group_post"), patch(f"{_FEED}.update_group_post_draft"), \
              patch(f"{_FEED}.record_group_post_run"), patch(f"{_FEED}.quit_gracefully"):
             assert auto_post_to_group.run(user_id=1, group_id="123", draft_id=11) == "Posted to group"
@@ -958,17 +1004,20 @@ class TestPostToGroup:
         `_unpostable` does) would cost the week AND blame a healthy group. The draft stays `ready`
         for the next weekly slot.
         """
-        from cqc_lem.app.engagement.feed import _IMAGE_READY_POLLS, auto_post_to_group
+        from cqc_lem.app.engagement.feed import auto_post_to_group
         draft = {**_READY_DRAFT, "media_url": "http://x/api/assets?file_name=i.png",
                  "media_type": "image"}
         # input found, then a composer with no commit control at all (an expected variant), then the
         # editor lookup that misses.
-        lookups = [MagicMock()] + [None] * _IMAGE_READY_POLLS + [None]
         with self._driver_patches(), \
              patch(f"{_FEED}.get_group_post_draft", return_value=draft), \
              patch(f"{_FEED}.post_media_abs_path", return_value="/assets/i.png"), \
              patch(f"{_FEED}.click_first", return_value=MagicMock()), \
-             patch(f"{_FEED}.find_first", side_effect=lookups), \
+             patch(f"{_FEED}.find_first", return_value=None), \
+             patch(f"{_FEED}.find_composer_container", return_value=MagicMock()), \
+             patch(f"{_FEED}.find_deep_elements",
+                   side_effect=self._deep(media_input=MagicMock())), \
+             patch(f"{_FEED}.find_composer_control", side_effect=self._control()), \
              patch(f"{_FEED}.log_warning") as warned, \
              patch(f"{_FEED}.record_group_post") as rec, \
              patch(f"{_FEED}.update_group_post_draft") as upd, \
@@ -988,7 +1037,11 @@ class TestPostToGroup:
              patch(f"{_FEED}.get_group_post_draft", return_value=draft), \
              patch(f"{_FEED}.post_media_abs_path", return_value="/assets/v.mp4"), \
              patch(f"{_FEED}.click_first", return_value=MagicMock()), \
-             patch(f"{_FEED}.find_first", side_effect=[MagicMock(), MagicMock(), MagicMock()]), \
+             patch(f"{_FEED}.find_composer_container", return_value=MagicMock()), \
+             patch(f"{_FEED}.find_deep_elements",
+                   side_effect=self._deep(editor=MagicMock(), media_input=MagicMock())), \
+             patch(f"{_FEED}.find_composer_control",
+                   side_effect=self._control(post_button=MagicMock(), confirm=MagicMock())), \
              patch(f"{_FEED}.record_group_post"), patch(f"{_FEED}.update_group_post_draft"), \
              patch(f"{_FEED}.record_group_post_run"), patch(f"{_FEED}.quit_gracefully"):
             result = auto_post_to_group.run(user_id=1, group_id="123", draft_id=11)
@@ -1004,7 +1057,9 @@ class TestPostToGroup:
         with self._driver_patches(), \
              patch(f"{_FEED}.get_group_post_draft", return_value=dict(_READY_DRAFT)), \
              patch(f"{_FEED}.click_first", return_value=MagicMock()), \
-             patch(f"{_FEED}.find_first", return_value=None), \
+             patch(f"{_FEED}.find_composer_container", return_value=MagicMock()), \
+             patch(f"{_FEED}.find_deep_elements", side_effect=self._deep()), \
+             patch(f"{_FEED}.find_composer_control", side_effect=self._control()), \
              patch(f"{_FEED}.record_group_post"), \
              patch(f"{_FEED}.update_group_post_draft") as upd, \
              patch(f"{_FEED}.record_group_post_run") as run, patch(f"{_FEED}.quit_gracefully"):
@@ -1012,6 +1067,30 @@ class TestPostToGroup:
         assert result == "Group post editor not found"
         assert str(upd.call_args.kwargs["status"]) == "failed"
         run.assert_called_once_with(1, "123")
+
+    def test_a_composer_that_never_opened_rotates_past_the_group(self):
+        """#1621: the share box was clicked and no composer container resolved.
+
+        Nothing of ours is on screen, so this is the same fact as an unpostable group — but it is
+        named separately, because a composer that opened somewhere the lookup cannot reach is what
+        stamped healthy drafts FAILED for weeks.
+        """
+        from cqc_lem.app.engagement.feed import auto_post_to_group
+        with self._driver_patches(), \
+             patch(f"{_FEED}.get_group_post_draft", return_value=dict(_READY_DRAFT)), \
+             patch(f"{_FEED}.click_first", return_value=MagicMock()), \
+             patch(f"{_FEED}.find_composer_container", return_value=None), \
+             patch(f"{_FEED}.find_deep_elements", side_effect=self._deep(editor=MagicMock())), \
+             patch(f"{_FEED}.find_composer_control",
+                   side_effect=self._control(post_button=MagicMock())), \
+             patch(f"{_FEED}.record_group_post") as rec, \
+             patch(f"{_FEED}.update_group_post_draft") as upd, \
+             patch(f"{_FEED}.record_group_post_run") as run, patch(f"{_FEED}.quit_gracefully"):
+            result = auto_post_to_group.run(user_id=1, group_id="123", draft_id=11)
+        assert result == "Group composer did not open"
+        rec.assert_not_called()
+        run.assert_called_once_with(1, "123")
+        assert str(upd.call_args.kwargs["status"]) == "failed"
 
     @pytest.mark.parametrize("draft", [
         None,
@@ -1056,12 +1135,16 @@ class TestPostToGroup:
         draft was written for THAT group, so it dies with the group's turn (#932).
         """
         from cqc_lem.app.engagement.feed import auto_post_to_group
-        clicks = {"share_box": [None], "editor": [MagicMock()],
-                  "post_button": [MagicMock(), None]}[miss]
+        editor = None if miss == "editor" else MagicMock()
+        post_button = None if miss == "post_button" else MagicMock()
         with self._driver_patches(), \
              patch(f"{_FEED}.get_group_post_draft", return_value=dict(_READY_DRAFT)), \
-             patch(f"{_FEED}.click_first", side_effect=clicks), \
-             patch(f"{_FEED}.find_first", return_value=None if miss == "editor" else MagicMock()), \
+             patch(f"{_FEED}.click_first",
+                   return_value=None if miss == "share_box" else MagicMock()), \
+             patch(f"{_FEED}.find_composer_container", return_value=MagicMock()), \
+             patch(f"{_FEED}.find_deep_elements", side_effect=self._deep(editor=editor)), \
+             patch(f"{_FEED}.find_composer_control",
+                   side_effect=self._control(post_button=post_button)), \
              patch(f"{_FEED}.record_group_post") as rec, \
              patch(f"{_FEED}.update_group_post_draft") as upd, \
              patch(f"{_FEED}.record_group_post_run") as run, patch(f"{_FEED}.quit_gracefully"):

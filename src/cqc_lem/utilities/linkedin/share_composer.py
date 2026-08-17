@@ -47,7 +47,11 @@ from cqc_lem.utilities.linkedin.cards import (
 from cqc_lem.utilities.linkedin.zero_walk import grade_zero_walk, page_native_count
 from cqc_lem.utilities.linkedin_formatter import strip_non_bmp
 from cqc_lem.utilities.logger import log_debug, log_info
-from cqc_lem.utilities.selenium_util import click_first, find_first
+from cqc_lem.utilities.selenium_util import (
+    click_first,
+    find_deep_elements,
+    find_labelled,
+)
 
 FEED_URL = "https://www.linkedin.com/feed/"
 
@@ -68,23 +72,32 @@ SHARE_BOX_LOCATORS = [
 ]
 SHARE_BOX_TEXT_SIGNALS = ("start a post", "start a public post", "create a post")
 
+# --- the composer container -----------------------------------------------------------------
+# Where the composer MOUNTS, which is a different question from what opens it (#1621). LinkedIn's
+# redesigned share box (`share-box-v2__modal-phoenix-redesign`) renders inside the open shadow root
+# of `div#interop-outlet`, and neither `driver.find_elements` nor any XPath can cross that boundary
+# — so the shipped `//div[@role='dialog']` chain answered "no composer" against a composer that was
+# on screen, and every step below it inherited the miss. `find_deep_elements` is the one lookup
+# that walks shadow roots, and everything scoped to the container is CSS + a Python label match for
+# the same reason: XPath cannot address a shadow tree at all.
+COMPOSER_CONTAINER_CSS = "div[role='dialog'], [aria-modal='true']"
+# Candidates for anything clickable inside the composer. `li` is here because the occasion TYPE menu
+# renders its options as list rows on some variants.
+COMPOSER_AFFORDANCE_CSS = ("button, [role='button'], [role='menuitem'], [role='radio'], "
+                           "[role='option'], li")
+COMPOSER_EDITOR_CSS = "[role='textbox']"
+
 # --- the occasion composer ----------------------------------------------------------------------
 # The composer shows a few attach affordances inline and files the rest behind an overflow control,
 # so "Celebrate an occasion" is tried DIRECTLY first: opening a menu we did not have to is the same
 # mistake `_attach_group_media` documents about the media overlay — one more surface to get back out
-# of. Both chains are scoped to the open dialog, because an unscoped 'More' on a LinkedIn page
-# belongs to some feed card's overflow menu.
-OCCASION_ENTRY_LOCATORS = [
-    (By.XPATH, "//div[@role='dialog']//*[self::button or @role='button']["
-               f"contains({_X_LOWER_ARIA},'celebrate an occasion') "
-               f"or contains({_X_LOWER_TEXT},'celebrate an occasion')]"),
-    (By.XPATH, "//div[@role='dialog']//*[self::button or @role='button']["
-               f"contains({_X_LOWER_ARIA},'celebrate') or contains({_X_LOWER_TEXT},'celebrate')]"),
-]
-OCCASION_MORE_LOCATORS = [
-    (By.XPATH, "//div[@role='dialog']//*[self::button or @role='button']["
-               f"contains({_X_LOWER_ARIA},'more') or normalize-space()='More']"),
-]
+# of. Both label sets are matched INSIDE the resolved container, because an unscoped 'More' on a
+# LinkedIn page belongs to some feed card's overflow menu.
+OCCASION_ENTRY_LABELS = ("celebrate an occasion", "celebrate")
+OCCASION_MORE_LABELS = ("more",)
+# The composer's own commit control, matched EXACTLY: "Post" is the button, and "Schedule post" is
+# the one beside it that publishes on someone else's timetable (#1012's rule applied to a commit).
+POST_BUTTON_LABELS = ("post",)
 
 # The occasion TYPE, per `content_framework` occasion archetype. Exact labels only, and never a
 # near neighbour: LinkedIn's menu carries "Certification" and "New position" alongside these two,
@@ -96,21 +109,16 @@ OCCASION_TYPE_LABELS: dict = {
     "educational_milestone": ("educational milestone",),
 }
 
-OCCASION_EDITOR_LOCATORS = [(By.CSS_SELECTOR, "div[role='dialog'] div[role='textbox']"),
-                            (By.CSS_SELECTOR, "div[role='textbox']")]
-OCCASION_POST_BUTTON_LOCATORS = [
-    (By.XPATH, "//div[@role='dialog']//button[normalize-space()='Post']"),
-    (By.XPATH, "//button[normalize-space()='Post']"),
-]
-
 # The page-native anchors the zero-walk cross-checks read. Each is INDEPENDENT of the chain it
-# grades — asking a rotated chain about itself answers zero to both questions (#1013).
-DIALOG_CONTROL_SEL = "div[role='dialog'] button, div[role='dialog'] [role='button']"
-DIALOG_OPTION_SEL = ("div[role='dialog'] button, div[role='dialog'] [role='button'], "
-                     "div[role='dialog'] [role='radio'], div[role='dialog'] li")
+# grades — asking a rotated chain about itself answers zero to both questions (#1013). They are
+# counted through the shadow-aware lookup too: counting them in the light DOM alone would grade a
+# shadow-mounted composer as an empty page, which is the mistake this whole issue is.
+DIALOG_CONTROL_SEL = "button, [role='button']"
+DIALOG_OPTION_SEL = "button, [role='button'], [role='radio'], [role='option'], li"
 
 # What the run did. Only PUBLISHED means an occasion post is live.
 PUBLISHED = "published"
+NO_COMPOSER = "no_composer"
 NO_SHARE_BOX = "no_share_box"
 NO_OCCASION_ENTRY = "no_occasion_entry"
 NO_OCCASION_TYPE = "no_occasion_type"
@@ -145,35 +153,58 @@ class OccasionPublishResult(NamedTuple):
     zero_walk: Optional[str] = None
 
 
-def occasion_type_locators(labels) -> list:
-    """Locators for ONE occasion type, built from its exact allow-listed labels.
+def occasion_type_labels(labels) -> list:
+    """The lowercase labels ONE archetype may click, cleaned.
 
     Args:
-        labels: The lowercase labels this archetype may click, from `OCCASION_TYPE_LABELS`.
+        labels: The archetype's row from `OCCASION_TYPE_LABELS`.
 
     Returns:
-        A dialog-scoped locator chain, most exact first. Empty when no label was given, which is
-        what makes an unmapped archetype resolve nothing instead of clicking the first option it
-        finds.
+        The usable labels. Empty when nothing was given, which is what makes an unmapped archetype
+        resolve nothing instead of clicking the first option it finds.
     """
-    locators = []
-    for label in labels or ():
-        text = str(label).strip().lower()
-        if not text:
+    return [str(label).strip().lower() for label in (labels or ()) if str(label).strip()]
+
+
+def find_composer_container(driver, user_id: int = None, post_id: int = None):
+    """The open composer, wherever LinkedIn mounted it — shadow root included.
+
+    The redesigned share box lives in `div#interop-outlet`'s shadow root, so the light-DOM lookup
+    this replaced could not see it and every occasion step below it inherited that miss (#1621). A
+    container that carries the editor wins over one that does not: a LinkedIn feed page ships hidden
+    `role='dialog'` surfaces of its own (the video player's error and caption dialogs), and the
+    visibility filter alone is not the whole answer once one of them is shown.
+
+    Args:
+        driver: The Selenium driver, on the page whose composer was just opened.
+        user_id: For the structured log context.
+        post_id: For the structured log context.
+
+    Returns:
+        The container element, or None when no composer is open. A miss is never warned here — the
+        caller grades it against the container count, because "nothing opened" and "the page never
+        rendered" are different facts.
+    """
+    containers = find_deep_elements(driver, COMPOSER_CONTAINER_CSS, visible_only=True, limit=8)
+    for container in containers:
+        try:
+            if container.find_elements(By.CSS_SELECTOR, COMPOSER_EDITOR_CSS):
+                return container
+        except WebDriverException:
             continue
-        locators.append((
-            By.XPATH,
-            "//div[@role='dialog']//*[self::button or @role='button' or @role='radio' or self::li]["
-            f"{_X_LOWER_ARIA}='{text}' or {_X_LOWER_TEXT}='{text}']"))
-    for label in labels or ():
-        text = str(label).strip().lower()
-        if not text:
-            continue
-        locators.append((
-            By.XPATH,
-            "//div[@role='dialog']//*[self::button or @role='button' or @role='radio' or self::li]["
-            f"contains({_X_LOWER_ARIA},'{text}') or contains({_X_LOWER_TEXT},'{text}')]"))
-    return locators
+    if containers:
+        log_debug("Composer container resolved with no editor in it", user_id=user_id,
+                  post_id=post_id)
+        return containers[0]
+    return None
+
+
+def find_composer_control(container, labels, exact: bool = False,
+                          css: str = COMPOSER_AFFORDANCE_CSS):
+    """One control inside the open composer, matched on its own label, most exact label first."""
+    if container is None:
+        return None
+    return find_labelled(container, css, labels, exact=exact)
 
 
 def landing_probe(text: str) -> str:
@@ -231,14 +262,23 @@ def occasion_post_landed(driver, text: str, polls: int = _LANDING_POLLS,
     return False if rendered_any else None
 
 
-def _graded_miss(driver, state: str, reason: str, selector: str, what: str,
+def _graded_miss(driver, state: str, reason: str, selector: str, what: str, container=None,
                  **context) -> OccasionPublishResult:
     """Grade a step that resolved nothing against a page-native anchor and package the result.
 
     The verdict is what separates "this composer has rotated" from "the page never loaded", and it
     is the reason a blocked run records the drift funnel instead of returning quietly.
+
+    `container` scopes the cross-check to the open composer, and it must: counting the anchor
+    page-wide would answer with the FEED's controls, which is how a composer that never opened
+    graded the same as one that did (#1621).
     """
-    verdict = grade_zero_walk(page_native_count(driver, selector), what, **context)
+    if container is not None:
+        count = len(find_deep_elements(driver, selector, visible_only=True, limit=40,
+                                       root=container))
+    else:
+        count = page_native_count(driver, selector)
+    verdict = grade_zero_walk(count, what, **context)
     return OccasionPublishResult(state, reason, verdict)
 
 
@@ -307,53 +347,64 @@ def publish_occasion_natively(driver, wait, archetype: str, text: str, user_id: 
                 _FEED_POST_TEXT_SEL, "Occasion composer share box", **context)
         sleep(random.uniform(2, 3))
 
-        entry = click_first(driver, wait, OCCASION_ENTRY_LOCATORS, "Celebrate an occasion",
-                            required=False, warn_on_miss=False, max_try=1,
-                            user_id=user_id, post_id=post_id)
+        container = find_composer_container(driver, user_id=user_id, post_id=post_id)
+        if container is None:
+            # The trigger was clicked and nothing composer-shaped is on screen. Graded against the
+            # feed's cards again, for the same reason the share box is: it says whether this run is
+            # looking at a rendered LinkedIn at all.
+            return _graded_miss(
+                driver, NO_COMPOSER, "composer did not open",
+                _FEED_POST_TEXT_SEL, "Occasion composer container", **context)
+
+        entry = find_composer_control(container, OCCASION_ENTRY_LABELS)
         if entry is None:
-            # The affordance is filed behind the composer's overflow control on most variants, so
+            # The affordance is filed behind the composer's overflow control on some variants, so
             # a first miss is EXPECTED and must not warn — it is the reason the overflow exists.
             log_debug("Occasion entry not on the composer's first row — opening the overflow",
                       **context)
-            click_first(driver, wait, OCCASION_MORE_LOCATORS, "Composer overflow", required=False,
-                        warn_on_miss=False, max_try=1, user_id=user_id, post_id=post_id)
-            sleep(random.uniform(1, 2))
-            entry = click_first(driver, wait, OCCASION_ENTRY_LOCATORS, "Celebrate an occasion",
-                                required=False, warn_on_miss=False, max_try=1,
-                                user_id=user_id, post_id=post_id)
+            overflow = find_composer_control(container, OCCASION_MORE_LABELS, exact=True)
+            if overflow is not None:
+                overflow.click()
+                sleep(random.uniform(1, 2))
+            entry = find_composer_control(container, OCCASION_ENTRY_LABELS)
         if entry is None:
             return _graded_miss(
                 driver, NO_OCCASION_ENTRY, "celebrate an occasion control not found",
-                DIALOG_CONTROL_SEL, "Occasion composer entry", **context)
+                DIALOG_CONTROL_SEL, "Occasion composer entry", container=container, **context)
+        entry.click()
         sleep(random.uniform(2, 3))
 
-        if click_first(driver, wait, occasion_type_locators(labels), "Occasion type",
-                       required=False, warn_on_miss=False, user_id=user_id,
-                       post_id=post_id) is None:
+        # The type menu can mount in its OWN container (a menu over the composer), so the container
+        # is re-read before the option is asked for.
+        menu = find_composer_container(driver, user_id=user_id, post_id=post_id) or container
+        picked = find_composer_control(menu, occasion_type_labels(labels), exact=True) \
+            or find_composer_control(menu, occasion_type_labels(labels))
+        if picked is None:
             # Deliberately terminal. The neighbouring options in this menu are other occasions —
             # settling for one would publish a claim about the author nobody made (#1012).
             return _graded_miss(
                 driver, NO_OCCASION_TYPE, "occasion type not found",
-                DIALOG_OPTION_SEL, "Occasion type menu", **context)
+                DIALOG_OPTION_SEL, "Occasion type menu", container=menu, **context)
+        picked.click()
         sleep(random.uniform(2, 3))
 
-        box = find_first(driver, wait, OCCASION_EDITOR_LOCATORS, "Occasion post editor",
-                         visible_only=True, required=False, warn_on_miss=False,
-                         user_id=user_id, post_id=post_id)
+        form = find_composer_container(driver, user_id=user_id, post_id=post_id) or container
+        box = next(iter(find_deep_elements(driver, COMPOSER_EDITOR_CSS, visible_only=True, limit=4,
+                                           root=form)), None)
         if box is None:
             return _graded_miss(
                 driver, NO_EDITOR, "occasion post editor not found",
-                DIALOG_CONTROL_SEL, "Occasion post editor", **context)
+                DIALOG_CONTROL_SEL, "Occasion post editor", container=form, **context)
         box.click()
         box.send_keys(body)
         sleep(random.uniform(1, 2))
 
-        if click_first(driver, wait, OCCASION_POST_BUTTON_LOCATORS, "Occasion Post button",
-                       required=False, warn_on_miss=False, user_id=user_id,
-                       post_id=post_id) is None:
+        post_button = find_composer_control(form, POST_BUTTON_LABELS, exact=True)
+        if post_button is None:
             return _graded_miss(
                 driver, NO_POST_BUTTON, "occasion post button not found",
-                DIALOG_CONTROL_SEL, "Occasion Post button", **context)
+                DIALOG_CONTROL_SEL, "Occasion Post button", container=form, **context)
+        post_button.click()
         sleep(random.uniform(3, 5))
 
         landed = occasion_post_landed(driver, body, sleep=sleep)

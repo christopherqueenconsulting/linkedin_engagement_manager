@@ -203,8 +203,12 @@ from cqc_lem.utilities.linkedin.rate_limit import (
 )
 from cqc_lem.utilities.linkedin.session import get_current_profile
 from cqc_lem.utilities.linkedin.share_composer import (
+    COMPOSER_EDITOR_CSS,
+    POST_BUTTON_LABELS,
     SHARE_BOX_LOCATORS,
     SHARE_BOX_TEXT_SIGNALS,
+    find_composer_container,
+    find_composer_control,
 )
 from cqc_lem.utilities.linkedin.sort_evidence import (
     build_sort_control_scan_js,
@@ -222,6 +226,7 @@ from cqc_lem.utilities.observability import (
 from cqc_lem.utilities.post_video import post_media_abs_path
 from cqc_lem.utilities.selenium_util import (
     click_first,
+    find_deep_elements,
     find_first,
     get_driver_wait,
     get_driver_wait_pair,
@@ -3468,8 +3473,13 @@ def auto_draft_group_post(self, user_id: int, group_id: str, group_name: str = N
 # `--composer` keep importing it from here.
 _GROUP_SHARE_BOX_LOCATORS = SHARE_BOX_LOCATORS
 _GROUP_SHARE_BOX_TEXT_SIGNALS = SHARE_BOX_TEXT_SIGNALS
-_GROUP_EDITOR_LOCATORS = [(By.CSS_SELECTOR, "div[role='textbox']")]
-_GROUP_POST_BUTTON_LOCATORS = [(By.XPATH, "//button[normalize-space()='Post']")]
+# The editor and the commit control are looked up INSIDE the resolved composer container now, not on
+# the page (#1621): LinkedIn's redesigned share box mounts in `#interop-outlet`'s shadow root, where
+# a page-level `div[role='textbox']` lookup — and any XPath at all — can never reach them. These two
+# spellings are what the container-scoped lookup asks for; the container itself comes from
+# `share_composer.find_composer_container`.
+_GROUP_EDITOR_CSS = COMPOSER_EDITOR_CSS
+_GROUP_POST_BUTTON_LABELS = POST_BUTTON_LABELS
 
 # Media on a group post (issue #1224). The file input is tried FIRST and the trigger only when it
 # is absent: LinkedIn renders the hidden `<input type=file>` up front in most variants, and clicking
@@ -3520,6 +3530,11 @@ _GROUP_MEDIA_CONFIRM_LOCATORS = [
     (By.XPATH, f"//button[normalize-space()='Next'{_X_NOT_IN_MESSAGING}]"),
     (By.XPATH, f"//button[normalize-space()='Done'{_X_NOT_IN_MESSAGING}]"),
 ]
+# The same two controls, and the media affordance, as LABELS — what the composer-scoped lookup
+# matches on when the composer is shadow-mounted and no XPath can reach it (#1621). Exact for the
+# commit controls, because "Next" is the step and "Next post" would be somebody else's card.
+_GROUP_MEDIA_CONFIRM_LABELS = ("next", "done")
+_GROUP_MEDIA_TRIGGER_LABELS = ("add media", "add a photo", "add photo", "add a video", "add video")
 
 # What the media chain did to the composer, which is a different question from whether the media
 # went on (issue #1224). `LEFT_OPEN` is the one that matters downstream: the uploader's overlay is
@@ -3574,7 +3589,38 @@ def _media_control_ready(element: WebElement) -> bool:
         return False
 
 
-def _await_media_confirm(driver, polls: int) -> Tuple[str, Optional[WebElement]]:
+def _group_media_input(driver, wait, container=None) -> Optional[WebElement]:
+    """The composer's own hidden `<input type=file>` — inside the composer first, page-wide after.
+
+    The composer-scoped read goes through the shadow-aware lookup because that is where the
+    redesigned composer lives (#1621); the page-wide XPath chain stays as the last resort it always
+    was, messaging overlay excluded (#1012). The input is never visible, so neither read filters on
+    visibility.
+    """
+    if container is not None:
+        found = find_deep_elements(driver, "input[type='file']", visible_only=False, limit=4,
+                                   root=container)
+        if found:
+            return found[0]
+    return find_first(driver, wait, _GROUP_MEDIA_INPUT_LOCATORS, "Group media input",
+                      visible_only=False, required=False, warn_on_miss=False, max_try=1)
+
+
+def _group_media_trigger(driver, wait, container=None) -> Optional[WebElement]:
+    """The composer's styled "Add media" affordance — inside the composer first, page-wide after.
+
+    Returned rather than clicked, so the caller owns the one press: this control OPENS an overlay,
+    and a helper that clicks on the way out hides that from the state machine tracking it.
+    """
+    if container is not None:
+        found = find_composer_control(container, _GROUP_MEDIA_TRIGGER_LABELS)
+        if found is not None:
+            return found
+    return find_first(driver, wait, _GROUP_MEDIA_TRIGGER_LOCATORS, "Group media button",
+                      required=False, warn_on_miss=False, max_try=1, visible_only=True)
+
+
+def _await_media_confirm(driver, polls: int, container=None) -> Tuple[str, Optional[WebElement]]:
     """Poll the media overlay until its commit control is clickable.
 
     Returns `(state, element)` — `_CONFIRM_READY` with the control, `_CONFIRM_ABSENT` when this
@@ -3596,9 +3642,12 @@ def _await_media_confirm(driver, polls: int) -> Tuple[str, Optional[WebElement]]
     seen = False
     for attempt in range(max(1, polls)):
         time.sleep(random.uniform(*_MEDIA_POLL_SECONDS))
-        confirm = find_first(driver, poll_wait, _GROUP_MEDIA_CONFIRM_LOCATORS,
-                             "Group media confirm", visible_only=True,
-                             required=False, warn_on_miss=False, max_try=1)
+        confirm = (find_composer_control(container, _GROUP_MEDIA_CONFIRM_LABELS, exact=True)
+                   if container is not None else None)
+        if confirm is None:
+            confirm = find_first(driver, poll_wait, _GROUP_MEDIA_CONFIRM_LOCATORS,
+                                 "Group media confirm", visible_only=True,
+                                 required=False, warn_on_miss=False, max_try=1)
         if confirm is None:
             if not seen and attempt + 1 >= _CONFIRM_ABSENT_POLLS:
                 return _CONFIRM_ABSENT, None
@@ -3624,7 +3673,7 @@ def _media_is_video(media_type: Optional[str], path: str) -> bool:
 
 
 def _attach_group_media(driver, wait, media_url: str, user_id: int = None,
-                        media_type: Optional[str] = None) -> str:
+                        media_type: Optional[str] = None, container=None) -> str:
     """Hand the draft's image/video to the open group composer.
 
     Returns what the attempt did to the COMPOSER, not just whether it worked: `_MEDIA_ATTACHED`,
@@ -3647,17 +3696,14 @@ def _attach_group_media(driver, wait, media_url: str, user_id: int = None,
         return _MEDIA_UNTOUCHED
     opened = False
     try:
-        file_input = find_first(driver, wait, _GROUP_MEDIA_INPUT_LOCATORS, "Group media input",
-                                visible_only=False, required=False, warn_on_miss=False, max_try=1)
+        file_input = _group_media_input(driver, wait, container)
         if file_input is None:
-            trigger = click_first(driver, wait, _GROUP_MEDIA_TRIGGER_LOCATORS, "Group media button",
-                                  required=False, warn_on_miss=False, max_try=1)
+            trigger = _group_media_trigger(driver, wait, container)
             if trigger is not None:
+                trigger.click()
                 opened = True
                 time.sleep(random.uniform(1, 2))
-                file_input = find_first(driver, wait, _GROUP_MEDIA_INPUT_LOCATORS,
-                                        "Group media input", visible_only=False, required=False,
-                                        warn_on_miss=False, max_try=1)
+                file_input = _group_media_input(driver, wait, container)
         if file_input is None:
             log_warning("Group composer media control not found — posting the text alone",
                         user_id=user_id, task_name="auto_post_to_group")
@@ -3669,7 +3715,8 @@ def _attach_group_media(driver, wait, media_url: str, user_id: int = None,
         # image needs seconds, and committing early is what leaves an empty media frame on the post.
         state, confirm = _await_media_confirm(
             driver,
-            _VIDEO_READY_POLLS if _media_is_video(media_type, path) else _IMAGE_READY_POLLS)
+            _VIDEO_READY_POLLS if _media_is_video(media_type, path) else _IMAGE_READY_POLLS,
+            container=container)
         if state == _CONFIRM_BUSY:
             # The control resolved and never became clickable: the upload did not finish inside the
             # window, so OUR overlay is still covering the composer and the caller must not read a
@@ -3755,10 +3802,16 @@ def auto_post_to_group(self, user_id: int, group_id: str, group_name: str = None
             return _unpostable("Group share box control drifted" if has_share_signal
                                else "Group share box not found")
         time.sleep(random.uniform(2, 3))
+        # WHERE the composer opened, before anything is asked of it (#1621). The redesigned share box
+        # mounts inside a shadow root, so a page-level lookup for the editor reads a working composer
+        # as a group that refuses member posts — which is what stamped healthy drafts FAILED.
+        composer = find_composer_container(driver, user_id=user_id)
+        if composer is None:
+            return _unpostable("Group composer did not open")
         # Media goes in BEFORE the text: LinkedIn's uploader takes over the composer while it
         # transcodes, and text typed first is what the overlay discards.
         media_state = (_attach_group_media(driver, wait, draft["media_url"], user_id=user_id,
-                                           media_type=draft.get("media_type"))
+                                           media_type=draft.get("media_type"), container=composer)
                        if draft.get("media_url") else _MEDIA_UNTOUCHED)
         media_attached = media_state == _MEDIA_ATTACHED
 
@@ -3773,16 +3826,20 @@ def auto_post_to_group(self, user_id: int, group_id: str, group_name: str = None
             return reason
 
         _lost = _composer_blocked if media_state != _MEDIA_UNTOUCHED else _unpostable
-        box = find_first(driver, wait, _GROUP_EDITOR_LOCATORS, "Group post editor",
-                         visible_only=True, required=False)
+        # Re-read after the media step: the uploader replaces the composer's container on some
+        # variants, and the element captured before it would be stale.
+        composer = find_composer_container(driver, user_id=user_id) or composer
+        box = next(iter(find_deep_elements(driver, _GROUP_EDITOR_CSS, visible_only=True, limit=4,
+                                           root=composer)), None)
         if box is None:
             return _lost("Group post editor not found")
         box.click()
         box.send_keys(text)
         time.sleep(random.uniform(1, 2))
-        if click_first(driver, wait, _GROUP_POST_BUTTON_LOCATORS, "Group Post button",
-                       required=False) is None:
+        post_button = find_composer_control(composer, _GROUP_POST_BUTTON_LABELS, exact=True)
+        if post_button is None:
             return _lost("Group Post button not found")
+        post_button.click()
         time.sleep(random.uniform(3, 5))
         # Only a post that actually shipped advances the rotation — a failed run leaves this group
         # next in line rather than skipping its turn.

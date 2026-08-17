@@ -187,16 +187,18 @@ class TestProbeComposer:
         driver = MagicMock()
         button = MagicMock()
         button.get_attribute.return_value = "Add a document"
+        button.is_displayed.return_value = True
         dialog = MagicMock()
         dialog.find_elements.return_value = [button]
         monkeypatch.setattr("cqc_lem.utilities.selenium_util.click_first",
                             lambda *a, **k: MagicMock())
-        monkeypatch.setattr("cqc_lem.utilities.selenium_util.find_first",
-                            lambda *a, **k: dialog)
+        monkeypatch.setattr(llv, "_composer_container", lambda d: (dialog, "image"))
 
         report = llv.probe_composer(driver, sleep=lambda s: None)
         assert report["opened"] is True
+        assert report["container_present"] is True
         assert report["document_affordance"] == "Add a document"
+        assert report["state"] == llv.STATE_OK
 
     def test_a_stale_control_mid_enumeration_still_reports_what_was_captured(self, monkeypatch):
         driver = MagicMock()
@@ -204,13 +206,36 @@ class TestProbeComposer:
         dialog.find_elements.side_effect = Exception("stale element")
         monkeypatch.setattr("cqc_lem.utilities.selenium_util.click_first",
                             lambda *a, **k: MagicMock())
-        monkeypatch.setattr("cqc_lem.utilities.selenium_util.find_first",
-                            lambda *a, **k: dialog)
+        monkeypatch.setattr(llv, "_composer_container", lambda d: (dialog, "image"))
 
         report = llv.probe_composer(driver, sleep=lambda s: None)
         assert report["opened"] is True
         assert report["controls"] == ["<enumeration stopped: Exception>"]
         assert report["document_affordance"] is None
+
+    def test_a_composer_that_never_opened_can_never_grade_ok(self, monkeypatch):
+        """#1621: the reason this drift went unnoticed for weeks.
+
+        The trigger resolved, the click landed, no composer container opened — and this probe
+        graded `ok` on the FEED's own 84 controls, because it fell back to a page-wide button scan
+        whenever its container lookup missed. A closed composer must never produce an `ok`.
+        """
+        driver = _fake_driver()
+        feed_button = MagicMock()
+        feed_button.get_attribute.return_value = "Start a post"
+        feed_button.is_displayed.return_value = True
+        driver.find_elements.side_effect = lambda *a, **k: [feed_button]
+        monkeypatch.setattr("cqc_lem.utilities.selenium_util.click_first",
+                            lambda *a, **k: MagicMock())
+        monkeypatch.setattr(llv, "_composer_container", lambda d: (None, "none"))
+
+        report = llv.probe_composer(driver, sleep=lambda s: None)
+        assert report["opened"] is True
+        assert report["container_present"] is False
+        assert report["controls"] == []
+        assert report["state"] == llv.STATE_DRIFT
+        # …and the evidence that says which fix it needs rides along.
+        assert "deep_overlay" in report
 
     def test_reports_a_composer_that_never_opened(self, monkeypatch):
         monkeypatch.setattr("cqc_lem.utilities.selenium_util.click_first", lambda *a, **k: None)
@@ -836,7 +861,17 @@ class TestProbeScriptProvenance:
         monkeypatch.setattr("cqc_lem.utilities.selenium_util.quit_gracefully", lambda d: None)
 
     def test_this_script_declares_the_1270_capture(self):
-        assert llv.probe_script_reading()["capabilities"] == ["feed_sort.selector_evidence"]
+        assert "feed_sort.selector_evidence" in llv.probe_script_reading()["capabilities"]
+
+    def test_this_script_declares_the_1621_captures(self):
+        """The share-box DOM nest, the shadow-aware overlay scan and the activation ladder.
+
+        Absent from a piped copy they read as "the page had nothing", which is exactly the
+        confusion the capability list exists to end.
+        """
+        capabilities = llv.probe_script_reading()["capabilities"]
+        assert {"occasion_composer.share_box_dom", "occasion_composer.deep_overlay",
+                "occasion_composer.share_box_activation"} <= set(capabilities)
 
     def test_a_script_without_the_capture_says_so_rather_than_omitting_it(self, monkeypatch):
         monkeypatch.setattr(llv, "_PROBE_CAPABILITY_SYMBOLS",

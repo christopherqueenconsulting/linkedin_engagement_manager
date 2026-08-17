@@ -399,6 +399,35 @@ share box as "group is unpostable": if `<main>`/`<body>` still contains "Start a
 "Start a public post", or "Create a post", the control has drifted and the run warns rather
 than silently rotating past a postable group.
 
+## The share-box composer opens inside a SHADOW ROOT on the feed (#1621)
+
+Live-grounded 2026-08-17 (`/feed/`, user 1, debug node). The trigger above is fine — it resolves,
+the click lands, and the composer opens. It just opens somewhere `driver.find_elements` cannot
+look: the modal (`div[role='dialog'].artdeco-modal.share-box-v2__modal.share-box-v2__modal-phoenix-redesign`,
+744×592, carrying `Dismiss / Post to Anyone / Text editor for creating content / Add media /
+Create an event / Celebrate an occasion / More / Schedule post / Post`) is mounted in the OPEN
+shadow root of `div#interop-outlet.theme--light`.
+
+Nothing in the light DOM crosses that boundary — not a CSS lookup through the driver, and **not
+any XPath at all**. So the shipped `//div[@role='dialog']` scope answered "no composer" against a
+composer that was on screen, and every step under it (occasion affordance, editor, Post) inherited
+the miss. The hit test rules the other candidate causes out: `elementFromPoint` at the trigger's
+own centre returns its own descendant, so the sticky nav is not stealing this click.
+
+The one lookup that walks shadow roots is `selenium_util.find_deep_elements`;
+`share_composer.find_composer_container` is the ONE place the composer container is resolved, and
+everything scoped to it matches **CSS + a Python label match** (`find_labelled`) because XPath
+cannot address a shadow tree. A non-exact label match is bounded on word boundaries: LinkedIn
+renders an option's title and its description in one node ("Project Launch Share a new project
+milestone"), so an exact match cannot be required everywhere — and a bare substring would let
+"post" match "Repost".
+
+**The same modal is NOT shadow-mounted on a group page.** The 2026-08-17 `--group-composer` run on
+group 3063585 found the identical `share-box-v2__modal` with `shadow_path: []` — light DOM — so the
+group lane's editor and Post button still resolved with the old chain. Read that as a rollout
+difference, not a rule: one lookup that works either way is why both lanes now go through the
+container resolver.
+
 ## The comment composer has no `<form>`
 
 "Submit" means clicking the Comment/Post button next to the composer (`_composer_submitted`).

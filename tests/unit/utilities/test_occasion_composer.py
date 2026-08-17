@@ -55,14 +55,11 @@ class TestTheArchetypeMap:
                 assert not any(bad in label for bad in forbidden)
 
     def test_an_unmapped_archetype_resolves_nothing(self):
-        assert sc.occasion_type_locators(()) == []
-        assert sc.occasion_type_locators(("  ",)) == []
+        assert sc.occasion_type_labels(()) == []
+        assert sc.occasion_type_labels(("  ",)) == []
 
-    def test_a_mapped_archetype_asks_for_an_exact_match_first(self):
-        locators = sc.occasion_type_locators(("project launch",))
-        assert locators
-        assert "='project launch'" in locators[0][1]
-        assert "contains(" in locators[-1][1]
+    def test_a_mapped_archetype_carries_its_label(self):
+        assert sc.occasion_type_labels(("Project Launch",)) == ["project launch"]
 
 
 class TestLandingProbe:
@@ -111,39 +108,76 @@ class TestOccasionPostLanded:
 
 
 class _Chain:
-    """Drives `click_first` / `find_first` by the LABEL each call passes.
+    """Drives the walk by the STEP each lookup asks for, not by call position.
 
-    A failing test then says which step of the composer walk broke, instead of counting call
-    positions.
+    Since #1621 the steps below the trigger are label matches inside the resolved composer
+    container rather than page-level locator chains, so the step is named by the labels the walk
+    passes — a failing test still says which step broke.
     """
 
-    def __init__(self, missing=(), missing_first=()):
+    def __init__(self, missing=(), missing_first=(), container_controls=3):
         self.missing = set(missing)
         self.missing_first = set(missing_first)
+        self.container_controls = container_controls
         self.clicked = []
         self.typed = []
 
-    def click(self, driver, wait, locators, label, **kwargs):
-        self.clicked.append(label)
-        if label in self.missing:
+    @staticmethod
+    def _step(labels) -> str:
+        labels = tuple(labels or ())
+        if labels == tuple(sc.OCCASION_ENTRY_LABELS):
+            return "Celebrate an occasion"
+        if labels == tuple(sc.OCCASION_MORE_LABELS):
+            return "Composer overflow"
+        if labels == tuple(sc.POST_BUTTON_LABELS):
+            return "Occasion Post button"
+        return "Occasion type"
+
+    def _resolve(self, step):
+        self.clicked.append(step)
+        if step in self.missing:
             return None
-        if label in self.missing_first and self.clicked.count(label) == 1:
+        if step in self.missing_first and self.clicked.count(step) == 1:
             return None
         return MagicMock()
 
-    def find(self, driver, wait, locators, label, **kwargs):
-        if label in self.missing:
+    def click(self, driver, wait, locators, label, **kwargs):
+        """The share box — still an ordinary light-DOM locator chain."""
+        return self._resolve(label)
+
+    def container(self, driver, **kwargs):
+        if "Composer container" in self.missing:
             return None
-        box = MagicMock()
-        box.send_keys.side_effect = lambda text: self.typed.append(text)
-        return box
+        return MagicMock()
+
+    def control(self, container, labels, exact=False, css=None):
+        if container is None:
+            return None
+        return self._resolve(self._step(labels))
+
+    def deep(self, driver, css, **kwargs):
+        """Two different questions ride this one helper: the editor, and the zero-walk cross-check.
+
+        The cross-check counts the CONTAINER's own controls (#1621) — page-wide it would answer
+        with the feed's, which is the reading that made a closed composer grade the same as an
+        open one.
+        """
+        if css == sc.COMPOSER_EDITOR_CSS:
+            if "Occasion post editor" in self.missing:
+                return []
+            box = MagicMock()
+            box.send_keys.side_effect = lambda text: self.typed.append(text)
+            return [box]
+        return [MagicMock() for _ in range(self.container_controls)]
 
 
 class TestPublishOccasionNatively:
     def _run(self, chain, landed=True, page_native=3, archetype="project_launch", body=_BODY):
         driver = MagicMock()
         with patch(f"{_MOD}.click_first", side_effect=chain.click), \
-             patch(f"{_MOD}.find_first", side_effect=chain.find), \
+             patch(f"{_MOD}.find_composer_container", side_effect=chain.container), \
+             patch(f"{_MOD}.find_composer_control", side_effect=chain.control), \
+             patch(f"{_MOD}.find_deep_elements", side_effect=chain.deep), \
              patch(f"{_MOD}.page_native_count", return_value=page_native), \
              patch(f"{_MOD}.occasion_post_landed", return_value=landed):
             return sc.publish_occasion_natively(driver, MagicMock(), archetype, body,
@@ -182,6 +216,7 @@ class TestPublishOccasionNatively:
 
     @pytest.mark.parametrize("missing,state", [
         ({"Share box"}, sc.NO_SHARE_BOX),
+        ({"Composer container"}, sc.NO_COMPOSER),
         ({"Celebrate an occasion", "Composer overflow"}, sc.NO_OCCASION_ENTRY),
         ({"Occasion type"}, sc.NO_OCCASION_TYPE),
         ({"Occasion post editor"}, sc.NO_EDITOR),
@@ -220,12 +255,77 @@ class TestPublishOccasionNatively:
         assert result.state == sc.UNCONFIRMED
         assert result.zero_walk == zero_walk
 
+    def test_a_composer_that_never_opened_stops_before_the_occasion_anchors(self):
+        """A trigger that pressed and opened nothing says NOTHING about the occasion labels.
+
+        Reporting it as a missing occasion control is what sent #1088 hunting the wrong anchors
+        for a day (#1621).
+        """
+        chain = _Chain(missing={"Composer container"})
+        result = self._run(chain)
+
+        assert result.state == sc.NO_COMPOSER
+        assert chain.clicked == ["Share box"]
+        assert chain.typed == []
+
+    def test_the_zero_walk_reads_the_composer_not_the_page(self):
+        """The cross-check counts the CONTAINER's controls.
+
+        Counted page-wide it would answer with the feed's cards on every miss — always 'drift',
+        which is a verdict that has stopped meaning anything (#1621).
+        """
+        chain = _Chain(missing={"Occasion Post button"}, container_controls=0)
+        result = self._run(chain)
+
+        assert result.state == sc.NO_POST_BUTTON
+        assert result.zero_walk == "empty"
+
     def test_a_browser_fault_is_a_result_not_an_exception(self):
         driver = MagicMock()
         driver.get.side_effect = WebDriverException("session died")
         result = sc.publish_occasion_natively(driver, MagicMock(), "project_launch", _BODY,
                                               sleep=_no_sleep)
         assert result.state == sc.DRIVER_ERROR
+
+
+class TestFindComposerContainer:
+    """Where the composer MOUNTED, which #1621 proved is a different question from what opens it."""
+
+    def _container(self, editors=1):
+        container = MagicMock()
+        container.find_elements.return_value = [MagicMock()] * editors
+        return container
+
+    def test_the_container_carrying_the_editor_wins(self):
+        """The composer is the container with the editor in it.
+
+        A feed page ships hidden `role='dialog'` surfaces of its own — the video player's error
+        and caption dialogs — and visibility alone does not tell them apart.
+        """
+        decoy, composer = self._container(editors=0), self._container()
+        with patch(f"{_MOD}.find_deep_elements", return_value=[decoy, composer]):
+            assert sc.find_composer_container(MagicMock()) is composer
+
+    def test_a_container_without_an_editor_is_still_better_than_nothing(self):
+        decoy = self._container(editors=0)
+        with patch(f"{_MOD}.find_deep_elements", return_value=[decoy]):
+            assert sc.find_composer_container(MagicMock()) is decoy
+
+    def test_nothing_open_answers_none(self):
+        with patch(f"{_MOD}.find_deep_elements", return_value=[]):
+            assert sc.find_composer_container(MagicMock()) is None
+
+    def test_a_container_that_cannot_be_read_is_skipped_not_raised(self):
+        broken, composer = MagicMock(), self._container()
+        broken.find_elements.side_effect = WebDriverException("detached")
+        with patch(f"{_MOD}.find_deep_elements", return_value=[broken, composer]):
+            assert sc.find_composer_container(MagicMock()) is composer
+
+    def test_the_lookup_is_shadow_aware(self):
+        """The whole point: `driver.find_elements` cannot reach `#interop-outlet`'s shadow root."""
+        with patch(f"{_MOD}.find_deep_elements", return_value=[]) as deep:
+            sc.find_composer_container(MagicMock())
+        assert deep.call_args.args[1] == sc.COMPOSER_CONTAINER_CSS
 
 
 class TestTheShareBoxChainIsShared:

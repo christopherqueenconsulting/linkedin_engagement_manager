@@ -2163,6 +2163,7 @@ _OCCASION_PUBLISH_RETRY_SECONDS = 3600
 # either published or may have — those are never retried automatically (see the task).
 _OCCASION_RETRYABLE_STATES = frozenset({
     _occasion.NO_SHARE_BOX,
+    _occasion.NO_COMPOSER,
     _occasion.NO_OCCASION_ENTRY,
     _occasion.NO_OCCASION_TYPE,
     _occasion.NO_EDITOR,

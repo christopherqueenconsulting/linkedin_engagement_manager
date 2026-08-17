@@ -15,6 +15,7 @@ SDUI markup requires.
 import base64
 import io
 import json
+import re
 import time
 import zipfile
 from datetime import datetime, timedelta
@@ -854,6 +855,147 @@ def click_first(driver: WebDriver, wait: WebDriverWait, locators: list[tuple[str
         emit(f"Click miss: {label}", action_type="scrape", user_id=user_id, post_id=post_id)
         return None
     return element
+
+
+# Every element matching a CSS selector, in the document AND in every OPEN shadow root under it.
+# `driver.find_elements` cannot cross a shadow boundary and neither can XPath, so a surface that
+# LinkedIn mounts in a shadow root reads EXACTLY like a surface that never opened (#1621) — which
+# is how the share-box composer went unseen while the trigger was working the whole time.
+_SHADOW_QUERY_JS = """
+const css = arguments[0];
+const visibleOnly = arguments[1];
+const limit = arguments[2];
+const root = arguments[3] || document;
+const out = [];
+function visible(el) {
+  const rect = el.getBoundingClientRect();
+  return !!(rect.width || rect.height);
+}
+function scan(node, depth) {
+  if (!node || depth > 6 || out.length >= limit) return;
+  let found;
+  try { found = node.querySelectorAll(css); } catch (e) { return; }
+  for (const el of found) {
+    if (visibleOnly && !visible(el)) continue;
+    if (out.indexOf(el) === -1) out.push(el);
+    if (out.length >= limit) return;
+  }
+  let all;
+  try { all = node.querySelectorAll('*'); } catch (e) { return; }
+  for (const el of all) {
+    if (el.shadowRoot) scan(el.shadowRoot, depth + 1);
+    if (out.length >= limit) return;
+  }
+}
+scan(root, 0);
+return out;
+"""
+
+
+def find_deep_elements(driver: WebDriver, css: str, *, visible_only: bool = True,
+                       limit: int = 20, root: WebElement = None) -> list[WebElement]:
+    """Every element matching `css`, shadow roots included, in document order.
+
+    The one lookup that crosses a shadow boundary. Everything else in this module stays on
+    `find_elements`, which is right for ordinary markup and blind to a shadow-mounted surface —
+    LinkedIn's redesigned share-box composer mounts inside `#interop-outlet`'s open shadow root, so
+    a `div[role='dialog']` lookup answered "no composer" while the composer was on screen (#1621).
+
+    Args:
+        driver: The Selenium driver.
+        css: A CSS selector. **CSS only** — XPath cannot address a shadow tree at all.
+        visible_only: Skip zero-box elements. LinkedIn ships hidden duplicates (a video player's
+            `role='dialog'` error surface sits on every feed page), and a hidden match is the one
+            most likely to be clicked by mistake.
+        limit: Stop after this many matches, so a broad selector cannot walk the whole page.
+        root: Search inside this element instead of the document.
+
+    Returns:
+        The matching elements, or `[]` when the query could not run — never raises, because every
+        caller's fallback for "nothing matched" is already the fallback for "could not look".
+    """
+    try:
+        found = driver.execute_script(_SHADOW_QUERY_JS, css, bool(visible_only), int(limit), root)
+    except WebDriverException:
+        return []
+    return [el for el in (found or []) if el is not None]
+
+
+def element_label(element: WebElement) -> str:
+    """The label an element answers to — its `aria-label`, else its text — lowercased and collapsed.
+
+    Text matching moves into Python wherever a lookup is scoped to a shadow-mounted container: an
+    XPath `contains(normalize-space(), …)` cannot run there, and a CSS attribute selector cannot see
+    text at all.
+    """
+    for value in (_safe_attribute(element, "aria-label"), _safe_text(element)):
+        if value and value.strip():
+            return " ".join(str(value).split()).lower()
+    return ""
+
+
+def _safe_attribute(element: WebElement, name: str) -> Optional[str]:
+    try:
+        return element.get_attribute(name)
+    except WebDriverException:
+        return None
+
+
+def _safe_text(element: WebElement) -> Optional[str]:
+    try:
+        return element.text
+    except WebDriverException:
+        return None
+
+
+def find_labelled(root, css: str, labels, *, exact: bool = False,
+                  visible_only: bool = True) -> Optional[WebElement]:
+    """The first element under `root` matching `css` whose own label matches one of `labels`.
+
+    Ordered by `labels`, not by document order: the caller's first label is its most exact intent,
+    and settling for a later one when an earlier matches is how a walk clicks the control next to
+    the one it wanted (#1012). `exact=True` requires the whole label to equal the entry, which is
+    what an occasion TYPE and a commit button both need.
+
+    A non-exact match is bounded on WORD boundaries, never a bare substring: LinkedIn renders an
+    option's title and its description in one node ("Project Launch Share a new project milestone"),
+    so an exact match cannot be required everywhere — and a bare substring would let "post" match
+    "repost".
+
+    Args:
+        root: A driver or an element. An element scopes the search to its own subtree — including
+            when that subtree lives in a shadow root, which is why this takes CSS and not XPath.
+        css: The candidate selector (buttons, menu items, list rows).
+        labels: Lowercase labels, most exact first.
+        exact: Match the whole label rather than a substring.
+        visible_only: Skip elements the page is not showing.
+
+    Returns:
+        The element, or None when nothing matched.
+    """
+    wanted = [str(label).strip().lower() for label in (labels or ()) if str(label).strip()]
+    if not wanted:
+        return None
+    try:
+        candidates = root.find_elements(By.CSS_SELECTOR, css)
+    except WebDriverException:
+        return None
+    readable = []
+    for element in candidates:
+        try:
+            if visible_only and not element.is_displayed():
+                continue
+        except WebDriverException:
+            continue
+        label = element_label(element)
+        if label:
+            readable.append((label, element))
+    for wanted_label in wanted:
+        pattern = re.compile(rf"\b{re.escape(wanted_label)}\b")
+        for label, element in readable:
+            if label == wanted_label or (not exact and pattern.search(label)):
+                return element
+    return None
 
 
 def find_all_first(driver: WebDriver, locators: list[tuple[str, str]]) -> list[WebElement]:
