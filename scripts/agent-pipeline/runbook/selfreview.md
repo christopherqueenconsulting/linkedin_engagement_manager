@@ -13,6 +13,10 @@ Your review is only worth running if it would catch what the author missed — h
    gaps, CLAUDE.md convention violations (logger, db.py-only SQL, enums, tier aliases, get_docker_driver),
    security/injection issues, test gaps on changed behavior, and silent failure modes. Style nits are NOT
    findings — flag only what you would block a human PR for.
+   **A diff that ADDS a `CLAUDE.md` section, subsection or table row is a REAL finding** — so is a row
+   over its char budget, a row with no `docs/*.md` pointer, and a raised budget in
+   `.github/claude-md-schema.json` or a raised ceiling in `scripts/check_claude_md_size.py`. That file
+   is a fixed-shape index; the fix is to EDIT the owning row and put the posture in its doc.
    **If issue #$ISSUE carries the `template:agent-task` label** (`gh issue view $ISSUE --json labels`),
    its body has a structured `### Acceptance` section — walk it **item-by-item** against the diff+tests:
    for each `- [ ]` line, decide whether the diff actually satisfies it and whether a test proves that

@@ -27,7 +27,7 @@ feedback — this is distinct from Copilot's threads (that's MODE=review). Workt
        (`agent:ready` + a `priority:` label, plus `risk:` if it needs the owner at merge). Either way, link it in
        your reply comment so the owner can see the ask was captured rather than dropped.
      Anything you deliberately did NOT do must be named in your reply — silence reads as "done".
-2. Implement each requested change, scoped to this PR, following `CLAUDE.md`. If a request is ambiguous or you
+2. Implement each requested change, scoped to this PR, following `CLAUDE.md` (including its fixed-shape rule — see the preamble: EDIT a row, never ADD one). If a request is ambiguous or you
    think it's wrong, implement your best interpretation AND leave a reply explaining — never silently skip it.
 3. Add/adjust tests; run `poetry run pytest tests/unit -q` on the touched areas if feasible.
 4. Commit (Claude co-author trailer) + `git push`.

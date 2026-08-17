@@ -34,6 +34,8 @@ Read CLAUDE.md for the invariants that apply to what you touched. At minimum:
 `poetry run pytest tests/unit -q` green, and `poetry run ruff check src/ tests/ --output-format=concise | wc -l`
 no higher than `.ruff-baseline`.
 
+If you touched any `CLAUDE.md`, also run `python3 scripts/check_claude_md_size.py`. **CLAUDE.md is a fixed-shape index, not a changelog — a feature does not earn a row.** Adding a `##` section, a `###` subsection or a table row to any `CLAUDE.md` is a schema change and fails CI. EDIT the row that already owns the behaviour, and put the posture in the `docs/*.md` that row points at (index it in `docs/README.md`). Net chars added to CLAUDE.md by a feature PR should be **≤ 0**. Check with `python3 scripts/check_claude_md_size.py`.
+
 If a guard or test fails in a way you would have to WEAKEN it to satisfy, stop and report. This
 repo has found eleven checks that passed while asserting nothing; do not add a twelfth.
 
@@ -41,6 +43,10 @@ repo has found eleven checks that passed while asserting nothing; do not add a t
 
 Remove `/home/lem/agent-pipeline/PAUSED`, run `tick.sh`, or change branch protection, required
 checks, labels or merge-queue configuration. Those are owner actions.
+
+Never raise a `budget` in `.github/claude-md-schema.json`, or `HARD_TOTAL_BUDGET` /
+`MAX_SECTION_BUDGET` in `scripts/check_claude_md_size.py`, to make a check pass. Those numbers are the
+guard; a section that is full means its detail belongs in a doc, not that the number is wrong.
 
 ## Never pin a model
 

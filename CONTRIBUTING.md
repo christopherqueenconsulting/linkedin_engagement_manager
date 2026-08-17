@@ -215,41 +215,80 @@ poetry run ruff check --fix src/ tests/
 
 ## Pull Request Process
 
-### CLAUDE.md size cap (40,000 chars — enforced)
+### CLAUDE.md is a fixed-shape file (schema-enforced)
 
-`CLAUDE.md` is the context window every Claude Code session loads. Keep it under
-**40,000 chars** — over that, the harness 413s the load and the session restarts
-cold. Move detail to `docs/*.md` and leave CLAUDE.md as the map (locations,
-symbols, constants, invariants, where to find the detail). Subsections already
-follow this `Full posture: docs/<file>.md` pattern.
+`CLAUDE.md` is the context window every Claude Code session loads. The harness caps it at
+**40,000 chars** — over that, the load 413s and the session restarts cold.
 
-The guard is three layers (`.github/workflows/claude-md-size.yml`):
+A size cap alone was not enough. Between 2026-07-06 and 2026-08-17 the file went 15,003 →
+53,622 → hand-trimmed to 39,806 → 46,494: a sawtooth, because nothing constrained the file's
+*shape*. Every merged feature appended a row, nothing ever removed one, and each hand-trim
+lost invariants because most rows had no doc to be moved into.
 
-- **PR check** (`size` job): runs on every PR touching `CLAUDE.md` or
-  `scripts/check_claude_md_size.py`, fails red over the cap, and — since #1000 —
-  also compares against the PR's base branch so the check output says whether
-  an over-cap PR *caused* the overage or merely *inherited* an already-over-cap
-  `main`. NOT in branch protection's required status checks (confirmed
-  2026-08-03), so a red run does not block merge on its own — treat it as
-  required anyway.
-- **`main`-push drift watch** (`drift` job, issue #1000): the PR check only
-  fires when a diff touches `CLAUDE.md`, so a squash/rebase merge that leaves
-  `main` over the cap without a matching PR diff used to go undetected until
-  the next unrelated PR inherited it. This job runs on every push to `main`,
-  warns at 38,000 chars (before the 40,000 cap), and files/updates a tracking
-  issue — it never fails the build, since a docs-cap regression on `main`
-  shouldn't redden the branch.
-- **`scripts/check_claude_md_size.py`**: stdlib-only Python script behind both
-  jobs above; prints the current size, exits 1 over the cap by default. Run it
-  locally before pushing:
-  ```bash
-  python3 scripts/check_claude_md_size.py
-  ```
+So the file now has a schema, in **`.github/claude-md-schema.json`**: a closed and ordered
+set of `##` sections, a char budget per section, and a row contract on the index tables.
 
-Bumping the cap is NOT a code change to make here — it's a harness-level decision
-on context-window budgets. If 40k is genuinely no longer enough, raise it in
-both `scripts/check_claude_md_size.py` and `.github/workflows/claude-md-size.yml`
-in the same PR.
+#### The rule
+
+> **CLAUDE.md is a fixed-shape index, not a changelog. A feature does not earn a row.**
+> Adding a `##` section, a `###` subsection, or a table row to any `CLAUDE.md` is a schema
+> change and fails CI. When you ship behaviour: (1) find the row that already owns it and
+> **EDIT that row in place**, under its char budget; (2) put the full posture in the
+> `docs/*.md` that row points at, or in the directory-scoped `CLAUDE.md` if the invariant can
+> only be violated by editing that tree; (3) if no row owns it, write the doc, index it in
+> `docs/README.md`, and edit the nearest row's pointer. **Net chars added to CLAUDE.md by a
+> feature PR should be ≤ 0.** Run `python3 scripts/check_claude_md_size.py` before you push.
+
+#### What a row must keep
+
+Four fields, three of them structurally enforced. An agent holding all four can only
+*under-specify* and go read the doc; an agent holding **no row at all** invents one.
+
+1. **The bolded name** (+ issue refs) — the grep handle.
+2. **The ONE place** — a backticked symbol or path.
+3. **One clause of the invariant naming the FAILURE DIRECTION** — *fails CLOSED* / *fails
+   OPEN* / *`unknown` is never actioned* / *never a gate*. This is why "delete the row, put
+   it all in the doc" is wrong.
+4. **The pointer.** `—` is not a pointer.
+
+#### docs/*.md vs a directory-scoped CLAUDE.md
+
+Prefer `docs/*.md`. Reach for a scoped `CLAUDE.md` (`src/cqc_lem/utilities/`,
+`src/cqc_lem/app/engagement/`) only when the answer to *"can this invariant only be violated
+by editing a file in this tree?"* is yes — a scoped file auto-loads only once you are already
+working there, so a cross-tree planning session never sees it. Cross-tree rules (Selenium
+capacity, the pinned task-name wire identifier, identity/session rules) stay in the root.
+
+#### The rules
+
+| Code | What it catches |
+|---|---|
+| `CM000` | the schema exceeding the ceilings in the linter, or a budget below its own target |
+| `CM001`–`CM003` | an unknown `##`, a missing required one, or sections out of order |
+| `CM004`/`CM005` | a section over budget / the file over the binding limit |
+| `CM006`–`CM009` | a row over its char cap, with no pointer, with a dead pointer, or a table over `max_rows` |
+| `CM010`–`CM012` | heading depth past `###`, an unknown `###`, a wrong cell count |
+| `CM013`/`CM014` | a tracked doc missing from `docs/README.md`, or an index entry that does not resolve |
+| `CM015`–`CM018` | a scoped file over cap, a bad `same` pointer, a scoped file the root never names, a Directory Map path that does not exist |
+| `CM019`–`CM022` | a row pointing at a doc that covers neither it nor its symbol; an unknown table; a row with no bolded name or no symbol |
+
+#### Where it is enforced
+
+- **The gate** is `tests/unit/test_claude_md_structure.py`, so it rides
+  **`Unit Tests (Python 3.12)`** — already a required context, already running on
+  `pull_request` and `merge_group` with no `paths:` filter. There is deliberately no separate
+  required check: a required context *with* a paths filter never reports on a PR that does
+  not match it, and inside the merge queue that evicts the PR.
+- **`CLAUDE.md Structure`** (`.github/workflows/claude-md-size.yml`) prints the violations
+  somewhere legible next to the size line. Not required; the unit lane is the gate.
+- **The `drift` job** watches `main`, files/updates/**closes** a tracking issue, and never
+  fails the build.
+
+Bumping the 40,000-char cap is NOT a code change to make here — it is a harness-level
+decision on context-window budgets. **Raising a section budget is not a change to make here
+either**: `HARD_TOTAL_BUDGET` and `MAX_SECTION_BUDGET` live in
+`scripts/check_claude_md_size.py` precisely so that relaxing the guard is a code-and-test
+diff a reviewer will see. A section that is full means its detail belongs in a doc.
 
 ### Commit Messages (Conventional Commits — required)
 

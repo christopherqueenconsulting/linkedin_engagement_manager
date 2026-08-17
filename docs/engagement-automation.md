@@ -796,7 +796,7 @@ that ceiling and drags the acceptance rate the outreach features are judged on.
   carrying only withdrawals would reproduce exactly the invisible-stub problem this replaced;
   `rows_seen` is the tell.
 
-## Connect escalation when following doesn't unblock commenting (issue #979)
+## Connect escalation when following doesn't unblock commenting (`advance_roster_connect`, issue #979)
 
 The invite budget is SHARED with every other invite lane, and this one is deliberately the junior
 claimant: it may spend at most `ceil(remaining/3)` of `max_invites_per_day` on any run, so a roster

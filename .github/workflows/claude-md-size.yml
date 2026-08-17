@@ -30,7 +30,7 @@ concurrency:
 
 jobs:
   size:
-    name: CLAUDE.md ≤ 40,000 chars
+    name: CLAUDE.md Structure
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
@@ -42,9 +42,8 @@ jobs:
         run: git fetch origin "${{ github.event.pull_request.base.ref }}"
       - name: Check CLAUDE.md is within the harness cap
         # scripts/check_claude_md_size.py is stdlib-only and exits 1 over the cap.
-        # NOT currently in branch protection's required status checks (confirmed
-        # against branch protection 2026-08-03) — this job surfaces the failure
-        # on the PR but does not block merge on its own.
+        # This job is not itself a required context; the gate is the tests/unit/
+        # check that rides `Unit Tests (Python 3.12)` (see the last step).
         #
         # --size-only keeps this step's meaning EXACTLY what it has always been:
         # the size of the root file, nothing else. The structure rules are a
@@ -57,13 +56,14 @@ jobs:
         if: failure()
         run: |
           echo "::error::CLAUDE.md exceeded the 40,000-char harness cap. Move detail to docs/*.md and leave CLAUDE.md as the map (locations, symbols, constants, invariants, where to find the detail). See CONTRIBUTING.md."
-      - name: Check CLAUDE.md's fixed shape (report-only for now)
+      - name: Check CLAUDE.md's fixed shape
         # The structure linter: a closed section set, per-section char budgets, the row
-        # contract on the index tables, and pointers that resolve. Report-only while the
-        # budgets are still frozen at their measured sizes and the trim has not landed —
-        # its output IS the trim worklist. It becomes a real gate in the PR that ratchets
-        # the budgets down, via a tests/unit/ check riding `Unit Tests (Python 3.12)`.
-        continue-on-error: true
+        # contract on the index tables, and pointers that resolve.
+        #
+        # This job is NOT a required context, and does not need to be: the same check runs
+        # as a test in tests/unit/, so it rides `Unit Tests (Python 3.12)`, which IS
+        # required and already runs on pull_request AND merge_group with no paths filter.
+        # This step exists to put the violations somewhere legible, next to the size line.
         run: python3 scripts/check_claude_md_size.py
 
   drift:
@@ -84,31 +84,56 @@ jobs:
         # the next step file/update a tracking issue while there's still
         # runway to trim deliberately, per issue #1000.
         run: python3 scripts/check_claude_md_size.py --warn-at
-      - name: File or update the drift issue
-        if: steps.size.outputs.status != 'ok'
+      - name: File, update or close the drift issue
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           STATUS="${{ steps.size.outputs.status }}"
           SIZE="${{ steps.size.outputs.size }}"
+          COUNT="${{ steps.size.outputs.violations }}"
+          CODES="${{ steps.size.outputs.codes }}"
           PREFIX="CLAUDE.md size drift:"
-          if [ "$STATUS" = "over" ]; then
-            TITLE="$PREFIX already over the 40,000-char cap (${SIZE} chars on main)"
-          else
-            TITLE="$PREFIX approaching the 40,000-char cap (${SIZE} chars on main)"
-          fi
-          BODY="\`CLAUDE.md\` is now **${SIZE} chars** on \`main\` (warn threshold 38,000; hard cap 40,000, enforced on PRs by \`.github/workflows/claude-md-size.yml\`). Move detail to \`docs/*.md\` and leave CLAUDE.md as the map — see CONTRIBUTING.md § CLAUDE.md size cap. Commit: ${GITHUB_SHA}."
+          case "$STATUS" in
+            over)      TITLE="$PREFIX already over the 40,000-char cap (${SIZE} chars on main)" ;;
+            warn)      TITLE="$PREFIX approaching the 40,000-char cap (${SIZE} chars on main)" ;;
+            structure) TITLE="$PREFIX ${COUNT} structure violation(s) on main (${CODES})" ;;
+            *)         TITLE="" ;;
+          esac
+          BODY="\`CLAUDE.md\` is now **${SIZE} chars** on \`main\` (warn threshold 38,000; hard cap 40,000). Move detail to \`docs/*.md\` and leave CLAUDE.md as the map — see CONTRIBUTING.md § CLAUDE.md is a fixed-shape file. Commit: ${GITHUB_SHA}."
           # Listed and filtered client-side rather than handed to --search: the
           # search index tokenizes/lags, and a miss here re-files a duplicate.
           # Piped through the standalone jq binary (not gh's built-in --jq,
           # which doesn't support --arg) so $p is never string-interpolated
-          # into the filter expression.
-          EXISTING=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --limit 200 \
+          # into the filter expression. Sorted so the LOWEST-numbered match is the
+          # one we speak to and the rest get named rather than orphaned.
+          MATCHES=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --limit 200 \
             --json number,title | jq -r --arg p "$PREFIX" \
-            '[.[] | select(.title | startswith($p))][0].number // empty')
+            '[.[] | select(.title | startswith($p)) | .number] | sort | .[]')
+          EXISTING=$(printf '%s' "$MATCHES" | head -n1)
+          DUPES=$(printf '%s' "$MATCHES" | tail -n +2 | sed 's/^/#/' | paste -sd', ' -)
+          [ -n "$DUPES" ] && BODY="$BODY"$'\n\n'"Also open, please close as duplicates: $DUPES."
+
+          if [ "$STATUS" = "ok" ]; then
+            # Back under budget. An issue that never closes is one nobody reads the next
+            # time, so say so and close it rather than leaving a stale title standing.
+            if [ -n "$EXISTING" ]; then
+              gh issue comment "$EXISTING" --repo "$GITHUB_REPOSITORY" \
+                --body "Back under budget at ${SIZE} chars, structure clean. Closing. Commit: ${GITHUB_SHA}."
+              gh issue close "$EXISTING" --repo "$GITHUB_REPOSITORY"
+            fi
+            exit 0
+          fi
+
           if [ -n "$EXISTING" ]; then
             gh issue comment "$EXISTING" --repo "$GITHUB_REPOSITORY" --body "$BODY"
+            # Re-title, or the issue keeps saying "approaching" long after it went over —
+            # which is exactly the state issue #1205 was found in. Only when it changed,
+            # so a quiet main does not add a timeline event on every push.
+            CURRENT=$(gh issue view "$EXISTING" --repo "$GITHUB_REPOSITORY" --json title -q .title)
+            if [ "$CURRENT" != "$TITLE" ]; then
+              gh issue edit "$EXISTING" --repo "$GITHUB_REPOSITORY" --title "$TITLE"
+            fi
           else
             gh issue create --repo "$GITHUB_REPOSITORY" --title "$TITLE" --body "$BODY" \
               --label infrastructure --label priority:medium --label agent:ready

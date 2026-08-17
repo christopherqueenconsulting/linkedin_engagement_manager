@@ -40,7 +40,7 @@ A fresh worktree on branch `$BRANCH` (from origin/main) is ready. Implement issu
    - Do **not** proceed to step 3 — no worktree change, no commit.
    If `Acceptance` IS testable against `Verifier`, proceed to step 3 exactly as on any other issue; this
    gate's only job is the STOP-before-code decision, not how you implement once past it.
-3. Implement the smallest correct change that satisfies the acceptance criteria, following `CLAUDE.md`.
+3. Implement the smallest correct change that satisfies the acceptance criteria, following `CLAUDE.md` (including its fixed-shape rule — see the preamble: EDIT a row, never ADD one).
    Reuse existing utilities named in the issue; don't invent parallel helpers.
 4. Add/extend tests. Run unit tests locally if you can.
 5. Commit atomically with a clear conventional-commit message.
