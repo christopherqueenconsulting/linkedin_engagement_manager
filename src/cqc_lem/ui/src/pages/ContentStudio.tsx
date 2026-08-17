@@ -1080,12 +1080,24 @@ export default function ContentStudio() {
                 {editingPost.manual_publish && (
                   <div className="border border-amber-300 bg-amber-50 rounded-lg p-4 space-y-3">
                     <p className="text-sm font-semibold text-amber-900">Post natively on LinkedIn</p>
-                    <p className="text-xs text-amber-800">
-                      LinkedIn's occasion posts can only be created in its own composer, so LEM won't
-                      publish this one. On LinkedIn: <span className="font-semibold">Start a post →
-                      More → Celebrate an occasion</span>, pick the occasion, then paste the text
-                      below.
-                    </p>
+                    {/* Since #1088 a native-publish attempt that could not be confirmed lands the
+                        draft at 'error' — the post may already be live. The default copy below
+                        tells the author to paste it across, and an occasion post published twice is
+                        public and un-deletable, so this status has to say "check first" instead. */}
+                    {editingPost.status === 'error' ? (
+                      <p className="text-xs text-red-700 font-medium">
+                        This one is held. If LEM attempted it for you, it may already be on LinkedIn —
+                        check your profile first: if it's there, press "I posted this". Only paste it
+                        across if it is not.
+                      </p>
+                    ) : (
+                      <p className="text-xs text-amber-800">
+                        LinkedIn's occasion posts can only be created in its own composer, so LEM won't
+                        publish this one. On LinkedIn: <span className="font-semibold">Start a post →
+                        More → Celebrate an occasion</span>, pick the occasion, then paste the text
+                        below.
+                      </p>
+                    )}
                     <div className="flex flex-wrap items-center gap-2">
                       <button
                         type="button"

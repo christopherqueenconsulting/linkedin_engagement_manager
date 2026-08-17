@@ -66,6 +66,7 @@ from cqc_lem.utilities.db import (
     get_engagement_preferences,
     get_orphaned_catchup_touches,
     get_orphaned_connection_requests,
+    get_orphaned_occasion_claims,
     get_orphaned_scheduled_dms,
     get_orphaned_scheduled_posts,
     get_ready_occasion_posts,
@@ -185,6 +186,13 @@ def _stagger_due(user_id: int, fanout: Tuple[str, int, int], task_name: str) -> 
     return due
 
 
+# How stale a native-publish claim must be before it counts as abandoned (issue #1088). The
+# composer walk is minutes long, so this only ever catches a worker that died — and it outlives
+# `_OCCASION_PUBLISH_RETRY_SECONDS`, so a run still holding its retry lock is never recovered out
+# from under itself.
+_OCCASION_CLAIM_ORPHAN_LOOKBACK_HOURS = 2
+
+
 @shared_task.task(bind=True, base=QueueOnce, once={'graceful': True, }, reject_on_worker_lost=True)
 def auto_check_scheduled_posts(self):
     """Checks if there are any posts to publish."""
@@ -299,11 +307,23 @@ def auto_check_scheduled_posts(self):
         auto_publish_occasion_post.apply_async(kwargs={'user_id': user_id, 'post_id': post_id})
         occasion += 1
 
-    if len(posts) == 0 and len(orphaned) == 0 and occasion == 0:
+    # A native-publish claim its worker never resolved (a deploy restart mid-composer). It is NOT
+    # re-queued — a dead worker proves nothing about whether Post was pressed, and re-running is how
+    # one occasion announcement becomes two — so it is held at `error` exactly like an unconfirmed
+    # click, where the author sees it and can mark it posted. Recovered whatever the flag says: a
+    # claim outlives the flag being switched back off.
+    stranded = get_orphaned_occasion_claims(lookback_hours=_OCCASION_CLAIM_ORPHAN_LOOKBACK_HOURS)
+    for post_id, _slot, user_id in stranded:
+        log_warning("Native-publish claim was abandoned mid-run — holding it for the author",
+                    post_id=post_id, user_id=user_id, task_name="auto_check_scheduled_posts")
+        update_db_post_status(post_id, PostStatus.ERROR)
+
+    if len(posts) == 0 and len(orphaned) == 0 and occasion == 0 and len(stranded) == 0:
         return "No Post to Schedule"
     else:
         return (f"Started Process for {len(posts)} post(s); re-queued {len(orphaned)} orphaned "
-                f"post(s); dispatched {occasion} native occasion post(s)")
+                f"post(s); dispatched {occasion} native occasion post(s); held "
+                f"{len(stranded)} abandoned native-publish claim(s)")
 
 
 @shared_task.task(bind=True, base=QueueOnce, once={'graceful': True, }, reject_on_worker_lost=True)

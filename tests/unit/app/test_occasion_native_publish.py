@@ -53,9 +53,38 @@ class TestTheNativePublishQueue:
 
             assert get_ready_occasion_posts() == []
 
+    def test_the_abandoned_claim_read_asks_for_the_rows_the_orphan_sweep_excludes(
+            self, mock_database_connection):
+        """`get_orphaned_scheduled_posts` filters `manual_publish = 0`, so nothing else sees these.
+
+        A claim its worker never resolved is `scheduled` + `manual_publish = 1`, which is a state
+        only `auto_publish_occasion_post` writes.
+        """
+        from cqc_lem.utilities.db import get_orphaned_occasion_claims
+
+        with patch("cqc_lem.platform.db.connection.get_db_connection") as mock_conn:
+            mock_conn.return_value = mock_database_connection["connection"]
+            mock_database_connection["cursor"].fetchall.return_value = []
+
+            get_orphaned_occasion_claims()
+
+        sql = " ".join(mock_database_connection["cursor"].execute.call_args[0][0].split())
+        assert "manual_publish = 1" in sql
+        assert "status = 'scheduled'" in sql
+
+    def test_the_abandoned_claim_read_answers_empty_on_a_read_failure(
+            self, mock_database_connection):
+        from cqc_lem.utilities.db import get_orphaned_occasion_claims
+
+        with patch("cqc_lem.platform.db.connection.get_db_connection") as mock_conn:
+            mock_conn.return_value = mock_database_connection["connection"]
+            mock_database_connection["cursor"].execute.side_effect = mysql.connector.Error("boom")
+
+            assert get_orphaned_occasion_claims() == []
+
 
 class TestTheDispatcher:
-    def _run(self, flag_on: bool, due=((7, MagicMock(), 3),)):
+    def _run(self, flag_on: bool, due=((7, MagicMock(), 3),), stranded=()):
         from cqc_lem.app.run_scheduler import auto_check_scheduled_posts
 
         with patch("cqc_lem.app.run_scheduler.get_ready_to_post_posts", return_value=[]), \
@@ -64,8 +93,12 @@ class TestTheDispatcher:
              patch("cqc_lem.app.run_scheduler.flag_enabled", return_value=flag_on) as flag, \
              patch("cqc_lem.app.run_scheduler.get_ready_occasion_posts",
                    return_value=list(due)) as query, \
+             patch("cqc_lem.app.run_scheduler.get_orphaned_occasion_claims",
+                   return_value=list(stranded)), \
+             patch("cqc_lem.app.run_scheduler.update_db_post_status") as status, \
              patch("cqc_lem.app.run_scheduler.auto_publish_occasion_post") as task:
             result = auto_check_scheduled_posts.run()
+        task.status_write = status
         return result, flag, query, task
 
     def test_the_flag_is_resolved_for_the_ROW_S_owner_not_the_system(self):
@@ -90,6 +123,29 @@ class TestTheDispatcher:
 
         task.apply_async.assert_not_called()
         assert result == "No Post to Schedule"
+
+    def test_an_abandoned_claim_is_held_for_a_human_never_re_queued(self):
+        """A worker lost mid-composer leaves the row claimed at `scheduled`.
+
+        The orphan sweep excludes `manual_publish` rows on purpose, so without this recovery the
+        draft is stranded forever. It must NOT go back on the queue: a dead worker proves nothing
+        about whether Post was pressed, and re-running is how one occasion becomes two.
+        """
+        from cqc_lem.utilities.db import PostStatus
+
+        result, _, _, task = self._run(flag_on=True, due=(), stranded=((9, MagicMock(), 3),))
+
+        task.apply_async.assert_not_called()
+        task.status_write.assert_called_once_with(9, PostStatus.ERROR)
+        assert "1 abandoned native-publish claim" in result
+
+    def test_an_abandoned_claim_is_recovered_even_with_the_flag_off(self):
+        """The claim outlives the flag being switched back off — the row would never resolve."""
+        from cqc_lem.utilities.db import PostStatus
+
+        _, _, _, task = self._run(flag_on=False, due=(), stranded=((9, MagicMock(), 3),))
+
+        task.status_write.assert_called_once_with(9, PostStatus.ERROR)
 
 
 def _publish_result(state=sc.PUBLISHED, reason="published natively", zero_walk=None):
@@ -221,6 +277,24 @@ class TestAutoPublishOccasionPost:
         # composer that has already answered.
         mocks["release_run_lock"].assert_not_called()
         mocks["insert_new_log"].assert_not_called()
+
+    @pytest.mark.parametrize("state,zero_walk,warns", [
+        (sc.NO_SHARE_BOX, "drift", False),
+        (sc.NO_OCCASION_TYPE, "empty", False),
+        (sc.NO_EDITOR, "unknown", False),
+        (sc.DRIVER_ERROR, None, True),
+    ])
+    def test_a_graded_step_does_not_warn_twice_for_one_blocked_run(self, state, zero_walk, warns):
+        """`grade_zero_walk` already owns the WARNING for a drift verdict.
+
+        Warning again here would file a SECOND grouped `$exception` for one blocked run, and an
+        `empty`/`unknown` verdict grounds nothing and must not warn at all. A browser fault grades
+        nothing, so there this line is the only signal there is.
+        """
+        with patch(f"{_MOD}.log_warning") as warn:
+            self._run(result=_publish_result(state, "blocked", zero_walk))
+
+        assert warn.called is warns
 
     def test_an_unconfirmed_click_is_held_for_a_human_and_never_retried(self):
         """The one outcome that must not go back on the queue.

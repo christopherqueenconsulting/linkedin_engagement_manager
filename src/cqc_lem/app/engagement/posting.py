@@ -2286,9 +2286,14 @@ def auto_publish_occasion_post(self, user_id: int, post_id: int):
         # released — the next attempt waits out the cool-down instead of re-opening Chrome on the
         # next 10-minute scan for a composer that has already answered.
         update_db_post_status(post_id, PostStatus.APPROVED)
-        log_warning(f"Native occasion publish blocked: {result.reason}", user_id=user_id,
-                    post_id=post_id, action_type="post", task_name=task_name,
-                    zero_walk=result.zero_walk)
+        # DEBUG when the step graded itself: `grade_zero_walk` already owns the WARNING for a drift
+        # verdict, and warning again here would file a SECOND grouped `$exception` for one blocked
+        # run — while an `empty`/`unknown` verdict grounds nothing and must not warn at all. A
+        # browser fault grades nothing, so there it is this line or no signal (utilities/CLAUDE.md).
+        blocked = log_warning if result.zero_walk is None else log_debug
+        blocked(f"Native occasion publish blocked: {result.reason}", user_id=user_id,
+                post_id=post_id, action_type="post", task_name=task_name,
+                zero_walk=result.zero_walk)
         return f"Post {post_id} not published: {result.reason}"
 
     # The Post button was clicked and the feed never confirmed it. The post may be live, so this is

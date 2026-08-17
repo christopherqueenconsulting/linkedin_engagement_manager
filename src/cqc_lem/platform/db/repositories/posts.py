@@ -930,6 +930,52 @@ def get_ready_occasion_posts(post_time_delta_minutes: int = 20) -> list:
         posts = []
 
     return posts
+def get_orphaned_occasion_claims(lookback_hours: int = 2) -> list:
+    """Native-publish claims a worker took and never resolved (issue #1088).
+
+    `auto_publish_occasion_post` writes 'scheduled' on a `manual_publish` row BEFORE Chrome opens,
+    and resolves it either way when the run ends. A worker lost mid-composer (a deploy restart, an
+    OOM) leaves that claim behind — and `get_orphaned_scheduled_posts` deliberately excludes these
+    rows, because re-queueing one would publish through the API the very post that exists because
+    the API cannot carry it. So without this read, an abandoned claim is stranded forever: never
+    published, and never shown to the author as anything but 'scheduled'.
+
+    These are handed to a HUMAN, never re-queued. A dead worker proves nothing about whether the
+    Post button was pressed, and re-running into a duplicate occasion announcement is the one
+    outcome this lane refuses (#1013 — success is the OUTCOME being present).
+
+    Args:
+        lookback_hours: How stale a claim must be before it counts as abandoned. The default
+            outlives the task's own retry lock, so an in-flight run is never recovered out from
+            under itself.
+
+    Returns:
+        `(post_id, scheduled_time, user_id)` rows, oldest first. `[]` on a read failure.
+    """
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=lookback_hours)
+
+    try:
+        with db_cursor() as cursor:
+            cursor.execute(
+                """SELECT p.id, p.scheduled_time, p.user_id
+                   FROM posts AS p
+                   WHERE status = 'scheduled' AND manual_publish = 1
+                     AND scheduled_time <= %s
+                   ORDER BY scheduled_time ASC""",
+                (cutoff,))
+            posts = cursor.fetchall()
+            stranded = [post[0] for post in posts]
+            if stranded:
+                log_info(f"Abandoned native-publish claims to hand back: {stranded}")
+            else:
+                # Finding none is the healthy case and is the answer on almost every tick.
+                log_debug("Abandoned native-publish claims to hand back: []")
+    except mysql.connector.Error as err:
+        log_error("Could not read the abandoned native-publish claims", exc=err,
+                  task_name="auto_check_scheduled_posts")
+        posts = []
+
+    return posts
 def get_orphaned_scheduled_posts(lookback_hours: int = 2) -> list:
     """Return posts stuck in 'scheduled' status that never reached 'posted'.
 
@@ -937,10 +983,11 @@ def get_orphaned_scheduled_posts(lookback_hours: int = 2) -> list:
     has already been transitioned from 'approved' → 'scheduled'. Without this
     recovery query, those posts stay stuck forever.
 
-    A `manual_publish` post is excluded for the same reason it is excluded upstream: only
-    `auto_check_scheduled_posts` writes 'scheduled', and it never sees one — so a manual-publish row
-    in that state is a bug, and re-queueing it would publish through the API the very post that
-    exists because the API cannot carry it (issue #1074).
+    A `manual_publish` post is excluded because re-queueing it would publish through the API the
+    very post that exists because the API cannot carry it (issue #1074). Since #1088 those rows DO
+    reach 'scheduled' — it is the claim `auto_publish_occasion_post` takes before Chrome opens — so
+    an abandoned one is recovered by `get_orphaned_occasion_claims` instead, which hands it to a
+    human rather than re-queueing it.
     """
     now = datetime.now(timezone.utc)
     cutoff = now - timedelta(hours=lookback_hours)

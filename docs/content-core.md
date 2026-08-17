@@ -166,7 +166,13 @@ the group composer opens the same control and a second copy is drift waiting to 
   LinkedIn (no share box / no occasion affordance / no matching occasion type / no editor / no Post
   button / a browser fault), and each of those grades a `zero_walk` verdict rather than skipping
   quietly. A Post click the feed never confirmed is held at `error` for a human — the row is still
-  `manual_publish`, so the Content Studio's "I posted this" control is exactly where it was.
+  `manual_publish`, so the Content Studio's "I posted this" control is exactly where it was, and at
+  that status the panel says *check LinkedIn first* instead of its usual "paste the text below":
+  the draft the author is being shown may already be live. A claim whose worker died mid-composer
+  is recovered the same way, by `get_orphaned_occasion_claims` — never re-queued, because a dead
+  worker proves nothing about whether Post was pressed, and because `get_orphaned_scheduled_posts`
+  excludes `manual_publish` rows (re-queueing one would publish through the API the very post that
+  exists because the API cannot carry it).
 - **The occasion TYPE is an exact allow-list.** `OCCASION_TYPE_LABELS` maps each archetype to its
   own label and nothing near it: "Certification" sits next to "Educational milestone" in LinkedIn's
   menu, and clicking it publishes a claim the author never made (#1012). A type that does not
