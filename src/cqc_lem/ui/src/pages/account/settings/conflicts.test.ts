@@ -45,7 +45,8 @@ const newsletter = (over: Partial<NewsletterSettings> = {}): NewsletterSettings 
   enabled: true, title: 'Brief', topic: null, cadence: 'weekly', align_with_blog: true,
   newsletter_url: null, last_published_at: null,
   publish_day: 1, publish_hour: 9, generate_lead_days: 3, max_queued_drafts: 1,
-  invite_connections_enabled: false, max_invites_per_run: 50, cover_image_auto: false, ...over,
+  invite_connections_enabled: false, max_invites_per_run: 50, cover_image_auto: false,
+  auto_publish_newsletters: false, ...over,
 })
 
 const ctx = (over: Partial<ConflictContext> = {}): ConflictContext => ({
