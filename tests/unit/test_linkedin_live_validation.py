@@ -1765,6 +1765,33 @@ class TestOccasionComposerProbe:
                    "archetype": "project_launch"}
         assert llv.occasion_composer_state(reading) == llv.STATE_OK
 
+    def test_the_type_reading_matches_the_way_the_walk_picks(self):
+        """`type_hits` and the pick are ONE question (#1621).
+
+        The live menu renders each option's title and description in one node
+        ("Project Launch Share a new project milestone"), so an exact-only count answers False for
+        every archetype on the same run that clicks one — a reading that contradicts the walk
+        re-grounds `OCCASION_TYPE_LABELS` from nothing.
+        """
+        option = MagicMock()
+        option.get_attribute.side_effect = lambda name: None
+        option.text = "Project Launch Share a new project milestone"
+        option.is_displayed.return_value = True
+        menu = MagicMock()
+        menu.find_elements.return_value = [option]
+
+        assert llv._composer_control(menu, ["project launch"], exact=True) is None
+        assert llv._composer_type_control(menu, ("project launch",)) is option
+        assert llv._composer_type_control(menu, ("educational milestone",)) is None
+
+    def test_an_unmapped_archetype_still_resolves_no_option(self):
+        """An empty label set must click NOTHING — the fallback never widens to "first option"."""
+        menu = MagicMock()
+        menu.find_elements.return_value = [MagicMock()]
+
+        assert llv._composer_type_control(menu, ()) is None
+        assert llv._composer_type_control(menu, ("  ",)) is None
+
     def test_the_affordance_scan_reads_more_than_buttons(self):
         """The occasion route's affordances are `div[role='button']` / `li`, not `<button>`.
 
@@ -1822,6 +1849,21 @@ class TestGroupComposerProbe:
         reading = {"page_text": "x", "share_box_present": True, "editor_present": True,
                    "post_button_present": True}
         assert llv.group_composer_state(reading) == llv.STATE_OK
+
+    def test_a_composer_that_never_opened_is_never_blamed_on_the_editor(self):
+        """#1621: the editor was never asked a real question, so naming it is the old mislabelling.
+
+        The reader is sent to `deep_overlay` — the one reading that says whether the composer
+        mounted somewhere the container lookup cannot reach.
+        """
+        reading = {"page_text": "x", "share_box_present": True, "dialog_present": False,
+                   "editor_present": False, "post_button_present": False}
+        verdict = llv.group_composer_verdict(reading)
+
+        assert llv.group_composer_state(reading) == llv.STATE_DRIFT
+        assert "NO composer container resolved" in verdict
+        assert "deep_overlay" in verdict
+        assert "did not resolve" not in verdict
 
 
 def _group_driver(page_text: str, scripts: list):

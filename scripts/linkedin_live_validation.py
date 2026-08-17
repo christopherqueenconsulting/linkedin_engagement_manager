@@ -3766,6 +3766,19 @@ def _composer_control(container, labels, exact: bool = False, css: str = None):
     return None
 
 
+def _composer_type_control(container, labels, css: str = None):
+    """One occasion TYPE option — exact first, then the word-bounded fallback the walk uses.
+
+    Both questions this probe asks about the type menu (which archetype is present, and which one
+    to click) go through here, so `type_hits` can never disagree with `occasion_type_present`.
+    """
+    wanted = [str(label).strip().lower() for label in (labels or ()) if str(label).strip()]
+    if not wanted:
+        return None
+    return (_composer_control(container, wanted, exact=True, css=css)
+            or _composer_control(container, wanted, css=css))
+
+
 def occasion_composer_state(reading: Optional[dict]) -> str:
     """Three-state grade for one occasion-composer read.
 
@@ -3915,16 +3928,16 @@ def probe_occasion_composer(driver, archetype: str = "project_launch", sleep=tim
     # re-grounded from, and the reason a miss must never be widened to a neighbour (#1012).
     reading["occasion_options"] = composer_affordance_labels(menu)
     # Per-archetype hits — every mapped archetype is asked, not just the one being walked, so one
-    # pass grounds the whole map.
+    # pass grounds the whole map. Asked the SAME way the walk picks (exact, then the word-bounded
+    # fallback): exact alone answers False for every archetype on the live menu, whose options carry
+    # title and description in one node ("Project Launch Share a new project milestone"), while the
+    # same run clicks one of them — a reading that contradicts the walk grounds nothing.
     reading["type_hits"] = {
-        key: bool(_composer_control(menu, [str(label).strip().lower() for label in labels],
-                                    exact=True, css=affordance_css))
+        key: bool(_composer_type_control(menu, labels, affordance_css))
         for key, labels in sorted(type_labels.items())
     }
 
-    wanted = [str(label).strip().lower() for label in (type_labels.get(archetype) or ())]
-    picked = (_composer_control(menu, wanted, exact=True, css=affordance_css)
-              or _composer_control(menu, wanted, css=affordance_css))
+    picked = _composer_type_control(menu, type_labels.get(archetype) or (), affordance_css)
     reading["occasion_type_present"] = picked is not None
     if picked is None:
         return graded(reading, occasion_composer_state(reading), occasion_composer_verdict(reading))
@@ -3983,6 +3996,13 @@ def group_composer_verdict(reading: Optional[dict]) -> str:
         return ("no share box on this group — production records it unpostable and rotates past "
                 "it, which is correct for an announcement/admin-only group. Probe a group you can "
                 "post in to ground the chain")
+    if reading.get("dialog_present") is False:
+        # The trigger was pressed and no composer container resolved anywhere, shadow roots
+        # included — so the editor and the Post button were never asked a real question. Naming
+        # them here is the mislabelling #1621 is about; `dialog_controls` is empty on purpose in
+        # this case, because a page-wide list would describe the GROUP PAGE behind the composer.
+        return ("the group share box was clicked and NO composer container resolved — re-ground "
+                "the CONTAINER from `deep_overlay`; nothing below it was asked a real question")
     return (f"the share box opened but "
             f"{'the editor' if not reading.get('editor_present') else 'the Post button'} did not "
             f"resolve — re-ground from `dialog_controls`")
@@ -4035,8 +4055,14 @@ def probe_group_composer(driver, group_id: str, sleep=time.sleep) -> dict:
                     "post_button": element_evidence(post_button) if post_button is not None
                     else None,
                     "deep_overlay": deep_overlay_evidence(driver),
-                    "dialog_controls": composer_affordance_labels(
-                        container if container is not None else driver)})
+                    # The COMPOSER's own controls, never the page's: falling back page-wide when
+                    # nothing opened is what let a closed composer be described by the surface
+                    # behind it (#1621). The group page's own controls still ship — under a name
+                    # that says what they are.
+                    "dialog_controls": composer_affordance_labels(container)
+                    if container is not None else [],
+                    **({} if container is not None
+                       else {"page_controls": visible_button_labels(driver)})})
     try:
         ActionChains(driver).send_keys(Keys.ESCAPE).perform()
     except Exception:
