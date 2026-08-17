@@ -470,6 +470,9 @@ def open_probe_session(get_current_profile: Callable, user_id: int, require_debu
 # apart from the JSON alone, which is the same distinction the capture itself exists to make.
 _PROBE_CAPABILITY_SYMBOLS = {
     "feed_sort.selector_evidence": "_feed_sort_evidence_scan",
+    "occasion_composer.share_box_dom": "share_box_dom_evidence",
+    "occasion_composer.share_box_activation": "share_box_activation_ladder",
+    "occasion_composer.deep_overlay": "deep_overlay_evidence",
 }
 
 
@@ -833,11 +836,16 @@ def _share_box_chains() -> tuple:
 def probe_composer(driver, sleep=time.sleep) -> dict:
     """Open the feed composer, capture its attach-control labels (the document-upload anchors
     LEM has never needed, because documents publish through the API), then close it.
+
+    Every label reported here comes from the COMPOSER's own container. It used to fall back to a
+    page-wide `<button>` scan when the container lookup missed, which is how this probe graded `ok`
+    against a composer that never opened — it was describing the feed's 84 controls (#1621). A run
+    that resolves no container is drift now, and says so.
     """
     from selenium.webdriver import ActionChains
     from selenium.webdriver.support.ui import WebDriverWait
 
-    from cqc_lem.utilities.selenium_util import click_first, find_first
+    from cqc_lem.utilities.selenium_util import click_first
 
     wait = WebDriverWait(driver, 10)
     driver.get(FEED_URL)
@@ -862,19 +870,8 @@ def probe_composer(driver, sleep=time.sleep) -> dict:
                       "the load) — this reading grounds nothing; re-run it")
     sleep(3)
 
-    dialog = find_first(driver, wait, [(By.CSS_SELECTOR, "div[role='dialog']")], "Composer dialog",
-                        visible_only=True, required=False)
-    controls = []
-    root = dialog if dialog is not None else driver
-    try:
-        for button in root.find_elements(By.TAG_NAME, "button"):
-            label = (button.get_attribute("aria-label") or button.text or "").strip()
-            if label:
-                controls.append(label)
-    except Exception as e:
-        # Best-effort capture: the composer re-renders while we enumerate, so a stale element
-        # mid-loop is expected. Report whatever we collected instead of losing the whole probe.
-        controls.append(f"<enumeration stopped: {type(e).__name__}>")
+    dialog, container_source = _composer_container(driver)
+    controls = composer_affordance_labels(dialog) if dialog is not None else []
 
     try:
         ActionChains(driver).send_keys(Keys.ESCAPE).perform()
@@ -882,9 +879,19 @@ def probe_composer(driver, sleep=time.sleep) -> dict:
         # Closing the composer is courtesy only — the driver is quit right after in main(), and
         # a failed Escape must not mask the anchors this probe exists to report.
         pass
-    reading = {"opened": True, "controls": controls,
+    reading = {"opened": True, "container_present": dialog is not None,
+               "container_source": container_source, "controls": controls,
                "document_affordance": find_document_affordance(controls),
                "chain_source": chain_source}
+    if dialog is None:
+        # The trigger was pressed and no composer container resolved anywhere — shadow roots
+        # included. Whatever the feed still shows behind it is not this probe's subject.
+        reading["deep_overlay"] = deep_overlay_evidence(driver)
+        reading["page_controls"] = visible_button_labels(driver)
+        return graded(reading, STATE_DRIFT,
+                      "the share-box control was clicked and NO composer container resolved — "
+                      "re-ground the container from `deep_overlay`; the control labels this probe "
+                      "reports are the composer's own, never the feed's")
     if not controls:
         return graded(reading, STATE_DRIFT,
                       "the composer opened but carries no readable control labels — its dialog "
@@ -3282,18 +3289,17 @@ def probe_catchup_cards(driver, sleep=time.sleep) -> dict:
 # it DOES click are navigation controls — the share box, the composer's overflow, the occasion
 # affordance and one occasion type — none of which commit anything. "Celebrate an occasion" is not
 # the reaction the guard's `^celebrate$` pattern refuses; that one is a bare label on a feed card.
-_CARRIED_OCCASION_ENTRY_LOCATORS = [
-    (By.XPATH, "//div[@role='dialog']//*[self::button or @role='button']["
-               "contains(translate(@aria-label,'ABCDEFGHIJKLMNOPQRSTUVWXYZ',"
-               "'abcdefghijklmnopqrstuvwxyz'),'celebrate an occasion') "
-               "or contains(translate(normalize-space(),'ABCDEFGHIJKLMNOPQRSTUVWXYZ',"
-               "'abcdefghijklmnopqrstuvwxyz'),'celebrate an occasion')]"),
-]
-_CARRIED_OCCASION_MORE_LOCATORS = [
-    (By.XPATH, "//div[@role='dialog']//*[self::button or @role='button']["
-               "contains(translate(@aria-label,'ABCDEFGHIJKLMNOPQRSTUVWXYZ',"
-               "'abcdefghijklmnopqrstuvwxyz'),'more') or normalize-space()='More']"),
-]
+#
+# Every anchor below the trigger is a LABEL matched inside the resolved composer container, not an
+# XPath (#1621): the composer mounts in `div#interop-outlet`'s open shadow root, where no XPath can
+# reach and `driver.find_elements` sees nothing at all.
+_CARRIED_COMPOSER_CONTAINER_CSS = "div[role='dialog'], [aria-modal='true']"
+_CARRIED_COMPOSER_AFFORDANCE_CSS = ("button, [role='button'], [role='menuitem'], [role='radio'], "
+                                    "[role='option'], li")
+_CARRIED_COMPOSER_EDITOR_CSS = "[role='textbox']"
+_CARRIED_OCCASION_ENTRY_LABELS = ("celebrate an occasion", "celebrate")
+_CARRIED_OCCASION_MORE_LABELS = ("more",)
+_CARRIED_POST_BUTTON_LABELS = ("post",)
 _CARRIED_OCCASION_TYPE_LABELS = {"project_launch": ("project launch",),
                                  "educational_milestone": ("educational milestone",)}
 
@@ -3334,6 +3340,308 @@ def _modal_container_evidence(driver, limit: int = 8) -> list:
     return out
 
 
+# Every element on the feed whose own text or aria-label says "start a post", described with the
+# ancestors around it. The shipped chain matches on `self::button or @role='button'` plus that text,
+# and the 2026-08-17 reading proved that resolves SOMETHING while clicking it opens nothing — which
+# is the one question control labels cannot answer, because the label sits on a wrapper and the
+# handler sits somewhere else. This reports the whole nest so the trigger can be re-grounded from
+# the page rather than guessed at.
+#
+# The signals are carried, not imported, for the same reason the chains are: this file is piped into
+# whatever image is deployed.
+_SHARE_BOX_TEXT_SIGNALS = ("start a post", "start a public post", "create a post")
+
+# The two nodes the 2026-08-17 nest offers, asked for separately: the `div[role='button']` wrapper
+# the shipped chain resolves, and the `[aria-label='Start a post']` node inside it. Which of them
+# the handler is on is exactly what the activation ladder is measuring.
+_SHARE_BOX_ROLE_BUTTON_LOCATORS = [
+    (By.XPATH, "//*[self::button or @role='button']"
+               "[contains(translate(@aria-label,'ABCDEFGHIJKLMNOPQRSTUVWXYZ',"
+               "'abcdefghijklmnopqrstuvwxyz'),'start a post') "
+               "or contains(translate(normalize-space(),'ABCDEFGHIJKLMNOPQRSTUVWXYZ',"
+               "'abcdefghijklmnopqrstuvwxyz'),'start a post')]"),
+]
+_SHARE_BOX_LABELLED_LOCATORS = [
+    (By.XPATH, "//*[contains(translate(@aria-label,'ABCDEFGHIJKLMNOPQRSTUVWXYZ',"
+               "'abcdefghijklmnopqrstuvwxyz'),'start a post')]"),
+]
+
+_SHARE_BOX_DOM_JS = """
+const signals = arguments[0];
+const limit = arguments[1];
+function describe(el) {
+  if (!el || !el.tagName) return null;
+  let cls = el.className;
+  if (cls && cls.baseVal !== undefined) cls = cls.baseVal;
+  const rect = el.getBoundingClientRect();
+  return {
+    tag: el.tagName.toLowerCase(),
+    role: el.getAttribute('role'),
+    aria_label: el.getAttribute('aria-label'),
+    testid: el.getAttribute('data-testid') || el.getAttribute('data-test-id'),
+    id: el.id || null,
+    class: String(cls || '').slice(0, 140),
+    tabindex: el.getAttribute('tabindex'),
+    displayed: !!(el.offsetParent || rect.width || rect.height),
+    width: Math.round(rect.width),
+    height: Math.round(rect.height),
+    text: (el.innerText || '').replace(/\\s+/g, ' ').trim().slice(0, 60)
+  };
+}
+function matches(value) {
+  const text = (value || '').toLowerCase();
+  return signals.some(s => text.indexOf(s) !== -1);
+}
+function hitTest(el) {
+  const rect = el.getBoundingClientRect();
+  if (!rect.width || !rect.height) return null;
+  const cx = Math.round(rect.left + rect.width / 2);
+  const cy = Math.round(rect.top + rect.height / 2);
+  const hit = document.elementFromPoint(cx, cy);
+  return {x: cx, y: cy, in_viewport: cy >= 0 && cy <= window.innerHeight,
+          at_point: describe(hit),
+          covered: !!(hit && hit !== el && !el.contains(hit))};
+}
+const seen = [];
+const out = [];
+const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+let node;
+while ((node = walker.nextNode())) {
+  if (!matches(node.nodeValue)) continue;
+  const el = node.parentElement;
+  if (!el || seen.indexOf(el) !== -1) continue;
+  seen.push(el);
+  const chain = [];
+  let cur = el;
+  for (let i = 0; i < 6 && cur && cur.tagName !== 'BODY'; i++) {
+    chain.push(describe(cur));
+    cur = cur.parentElement;
+  }
+  const clickable = [];
+  const nested = el.querySelectorAll('button, [role="button"], [role="textbox"], input, textarea');
+  for (let i = 0; i < nested.length && i < 5; i++) clickable.push(describe(nested[i]));
+  out.push({source: 'text', chain: chain, nested_clickables: clickable,
+            hit_test: hitTest(el)});
+  if (out.length >= limit) break;
+}
+if (out.length < limit) {
+  const labelled = document.querySelectorAll('[aria-label]');
+  for (let i = 0; i < labelled.length && out.length < limit; i++) {
+    const el = labelled[i];
+    if (!matches(el.getAttribute('aria-label')) || seen.indexOf(el) !== -1) continue;
+    seen.push(el);
+    out.push({source: 'aria', chain: [describe(el), describe(el.parentElement)],
+              nested_clickables: [], hit_test: hitTest(el)});
+  }
+}
+return out;
+"""
+
+
+def share_box_dom_evidence(driver, limit: int = 6) -> list:
+    """The DOM nest around every "Start a post" label on the page.
+
+    Read BEFORE the trigger is clicked, and independent of the shipped chain — asking a chain that
+    resolves the wrong node to describe itself answers with the wrong node (#1013). Each entry is
+    the matching element and up to five ancestors, plus any clickable it CONTAINS, which is what
+    separates "the chain grabbed a wrapper" from "the click was stolen".
+    """
+    try:
+        found = driver.execute_script(_SHARE_BOX_DOM_JS, list(_SHARE_BOX_TEXT_SIGNALS), int(limit))
+    except Exception as e:
+        return [f"<enumeration stopped: {type(e).__name__}>"]
+    return found or []
+
+
+# The composer container, asked of the WHOLE document — shadow roots and same-origin iframes
+# included. `driver.find_elements` sees neither, so "no dialog on the page" and "a dialog this
+# reader cannot reach" answer identically without this (#1621).
+_DEEP_OVERLAY_JS = """
+const out = {dialogs: 0, textboxes: 0, aria_modals: 0, shadow_hosts: 0, iframes: [],
+             shadow_overlays: [], containers: []};
+function describe(el) {
+  if (!el || !el.tagName) return null;
+  let cls = el.className;
+  if (cls && cls.baseVal !== undefined) cls = cls.baseVal;
+  const rect = el.getBoundingClientRect();
+  return {tag: el.tagName.toLowerCase(), role: el.getAttribute('role'),
+          aria_label: el.getAttribute('aria-label'),
+          aria_modal: el.getAttribute('aria-modal'),
+          testid: el.getAttribute('data-testid') || el.getAttribute('data-test-id'),
+          id: el.id || null, class: String(cls || '').slice(0, 140),
+          displayed: !!(rect.width || rect.height),
+          width: Math.round(rect.width), height: Math.round(rect.height)};
+}
+function affordances(root) {
+  const labels = [];
+  let nodes;
+  try {
+    nodes = root.querySelectorAll('button, [role="button"], [role="menuitem"], [role="textbox"], li');
+  } catch (e) { return labels; }
+  for (const el of nodes) {
+    const label = (el.getAttribute('aria-label') || el.innerText || '')
+      .replace(/\\s+/g, ' ').trim().slice(0, 60);
+    if (label && labels.indexOf(label) === -1) labels.push(label);
+    if (labels.length >= 40) break;
+  }
+  return labels;
+}
+function scan(root, depth, path) {
+  if (!root || depth > 6) return;
+  let nodes;
+  try { nodes = root.querySelectorAll('*'); } catch (e) { return; }
+  for (const el of nodes) {
+    const role = el.getAttribute && el.getAttribute('role');
+    const modal = el.getAttribute && el.getAttribute('aria-modal') === 'true';
+    if (role === 'dialog') out.dialogs++;
+    if (role === 'textbox') out.textboxes++;
+    if (modal) out.aria_modals++;
+    if ((role === 'dialog' || modal) && out.containers.length < 5) {
+      const entry = describe(el);
+      entry.shadow_path = path;
+      entry.affordances = affordances(el);
+      entry.editors = el.querySelectorAll('[role="textbox"]').length;
+      out.containers.push(entry);
+    }
+    if (el.shadowRoot) {
+      out.shadow_hosts++;
+      const inner = el.shadowRoot.querySelector('[role="dialog"], [role="textbox"]');
+      if (inner && out.shadow_overlays.length < 5) {
+        out.shadow_overlays.push({host: el.tagName.toLowerCase(),
+                                  host_class: String(el.className || '').slice(0, 120),
+                                  host_id: el.id || null,
+                                  role: inner.getAttribute('role')});
+      }
+      scan(el.shadowRoot, depth + 1, path.concat([el.tagName.toLowerCase()]));
+    }
+  }
+}
+scan(document, 0, []);
+for (const frame of document.querySelectorAll('iframe')) {
+  if (out.iframes.length >= 5) break;
+  out.iframes.push({src: (frame.getAttribute('src') || '').slice(0, 120),
+                    title: frame.getAttribute('title'),
+                    displayed: !!(frame.offsetParent)});
+}
+return out;
+"""
+
+
+def deep_overlay_evidence(driver) -> dict:
+    """Composer containers anywhere in the document, including shadow roots and iframes."""
+    try:
+        return driver.execute_script(_DEEP_OVERLAY_JS) or {}
+    except Exception as e:
+        return {"error": type(e).__name__}
+
+
+# The carried half of `selenium_util.find_deep_elements` — a shadow-aware element query, for images
+# that predate it. Same rule, written twice on purpose: without it a pre-merge pass cannot ground
+# the fix it is checking.
+_CARRIED_DEEP_QUERY_JS = """
+const css = arguments[0];
+const limit = arguments[1];
+const out = [];
+function visible(el) {
+  const rect = el.getBoundingClientRect();
+  return !!(rect.width || rect.height);
+}
+function scan(node, depth) {
+  if (!node || depth > 6 || out.length >= limit) return;
+  let found;
+  try { found = node.querySelectorAll(css); } catch (e) { return; }
+  for (const el of found) {
+    if (!visible(el)) continue;
+    if (out.indexOf(el) === -1) out.push(el);
+    if (out.length >= limit) return;
+  }
+  let all;
+  try { all = node.querySelectorAll('*'); } catch (e) { return; }
+  for (const el of all) {
+    if (el.shadowRoot) scan(el.shadowRoot, depth + 1);
+    if (out.length >= limit) return;
+  }
+}
+scan(document, 0);
+return out;
+"""
+
+
+def carried_deep_elements(driver, css: str, limit: int = 20) -> list:
+    """Visible elements matching `css`, shadow roots included — the script's own copy."""
+    try:
+        return [el for el in (driver.execute_script(_CARRIED_DEEP_QUERY_JS, css, int(limit)) or [])
+                if el is not None]
+    except Exception:
+        return []
+
+
+def _composer_container_open(driver) -> bool:
+    """Did SOMETHING composer-shaped open — a dialog, an editor, or a modal — anywhere on the page?"""
+    reading = deep_overlay_evidence(driver)
+    return bool(reading.get("dialogs") or reading.get("textboxes") or reading.get("aria_modals"))
+
+
+def share_box_activation_ladder(driver, sleep=time.sleep) -> dict:
+    """Which way of pressing the share box actually opens the composer — asked one way at a time.
+
+    Read only when the shipped chain's own click opened nothing. Every rung presses the SAME
+    trigger the chain resolved; the differences are how (a longer wait, a hovered click, keyboard
+    activation, the inner labelled node, a scripted click), because those are the five ways a
+    live SDUI trigger has been seen to differ from `WebElement.click()`. Nothing is typed — the
+    read-only guard refuses printable characters — and the ladder stops at the first rung that
+    opens a container, so a working route is never pressed twice.
+    """
+    from selenium.webdriver import ActionChains
+    from selenium.webdriver.support.ui import WebDriverWait
+
+    from cqc_lem.utilities.selenium_util import find_first
+
+    wait = WebDriverWait(driver, 10)
+    attempts = []
+    outer = find_first(driver, wait, _SHARE_BOX_ROLE_BUTTON_LOCATORS, "Share box (role=button)",
+                       visible_only=True, required=False, warn_on_miss=False, max_try=1)
+    inner = find_first(driver, wait, _SHARE_BOX_LABELLED_LOCATORS, "Share box (aria-label)",
+                       visible_only=True, required=False, warn_on_miss=False, max_try=1)
+
+    def rung(name, action, target):
+        if target is None:
+            attempts.append({"method": name, "attempted": False, "opened": False,
+                             "detail": "no element to press"})
+            return False
+        try:
+            action(target)
+        except Exception as e:
+            attempts.append({"method": name, "attempted": True, "opened": False,
+                             "detail": f"{type(e).__name__}"})
+            return False
+        sleep(3)
+        opened = _composer_container_open(driver)
+        attempts.append({"method": name, "attempted": True, "opened": opened,
+                         "url": getattr(driver, "current_url", "")})
+        return opened
+
+    # A composer that is merely SLOW is not a rotated trigger, so the wait is asked first.
+    sleep(5)
+    if _composer_container_open(driver):
+        attempts.append({"method": "wait_longer", "attempted": True, "opened": True,
+                         "url": getattr(driver, "current_url", "")})
+        return {"attempts": attempts, "opened_by": "wait_longer"}
+    attempts.append({"method": "wait_longer", "attempted": True, "opened": False})
+
+    ladder = (
+        ("action_chain_click", lambda el: ActionChains(driver).move_to_element(el).click().perform(),
+         outer),
+        ("keyboard_enter", lambda el: el.send_keys(Keys.ENTER), outer),
+        ("inner_label_click", lambda el: el.click(), inner),
+        ("js_click", lambda el: driver.execute_script("arguments[0].click();", el), outer),
+    )
+    for name, action, target in ladder:
+        if rung(name, action, target):
+            return {"attempts": attempts, "opened_by": name}
+    return {"attempts": attempts, "opened_by": None}
+
+
 def composer_affordance_labels(root, limit: int = 60) -> list:
     """Every clickable label under `root`, `<button>` or not.
 
@@ -3363,32 +3671,112 @@ def composer_affordance_labels(root, limit: int = 60) -> list:
 
 
 def _occasion_composer_chains() -> tuple:
-    """The occasion composer's chains from the running image when it has them, else a carried copy.
+    """The occasion composer's anchors from the running image when it has them, else a carried copy.
 
     Same posture as `_share_box_chains` (#817/#1007): the probe is piped into the DEPLOYED image, so
     a pre-merge pass cannot import a module that has not shipped yet — and the reading NAMES its
     source, so a pre-merge grounding is never mistaken for a deployed one.
+
+    Returns:
+        `(entry_labels, more_labels, post_labels, type_labels, affordance_css, editor_css, source)`.
     """
     try:
         from cqc_lem.utilities.linkedin import share_composer as sc
-        return (list(sc.OCCASION_ENTRY_LOCATORS), list(sc.OCCASION_MORE_LOCATORS),
-                dict(sc.OCCASION_TYPE_LABELS), sc.occasion_type_locators, "image")
+        return (tuple(sc.OCCASION_ENTRY_LABELS), tuple(sc.OCCASION_MORE_LABELS),
+                tuple(sc.POST_BUTTON_LABELS), dict(sc.OCCASION_TYPE_LABELS),
+                sc.COMPOSER_AFFORDANCE_CSS, sc.COMPOSER_EDITOR_CSS, "image")
     except Exception:
-        def _carried_type_locators(labels) -> list:
-            out = []
-            for label in labels or ():
-                text = str(label).strip().lower()
-                if text:
-                    out.append((By.XPATH,
-                                "//div[@role='dialog']//*[self::button or @role='button' "
-                                "or @role='radio' or self::li][contains(translate(@aria-label,"
-                                "'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),"
-                                f"'{text}') or contains(translate(normalize-space(),"
-                                "'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),"
-                                f"'{text}')]"))
-            return out
-        return (_CARRIED_OCCASION_ENTRY_LOCATORS, _CARRIED_OCCASION_MORE_LOCATORS,
-                dict(_CARRIED_OCCASION_TYPE_LABELS), _carried_type_locators, "script")
+        return (_CARRIED_OCCASION_ENTRY_LABELS, _CARRIED_OCCASION_MORE_LABELS,
+                _CARRIED_POST_BUTTON_LABELS, dict(_CARRIED_OCCASION_TYPE_LABELS),
+                _CARRIED_COMPOSER_AFFORDANCE_CSS, _CARRIED_COMPOSER_EDITOR_CSS, "script")
+
+
+def _composer_container(driver) -> tuple:
+    """The open composer container the shipped code would resolve, and where it came from.
+
+    The image's own `find_composer_container` when it has one, so the probe grades what production
+    does; otherwise the carried shadow-aware query, which is the same rule written twice on purpose
+    (a pre-merge pass has to be able to ground the fix that has not shipped yet).
+
+    Returns:
+        `(element_or_None, source)` — source is `image`, `script`, or `none` when nothing opened.
+    """
+    try:
+        from cqc_lem.utilities.linkedin.share_composer import find_composer_container
+        container = find_composer_container(driver)
+        return container, ("image" if container is not None else "none")
+    except Exception:
+        pass
+    containers = carried_deep_elements(driver, _CARRIED_COMPOSER_CONTAINER_CSS, limit=8)
+    for container in containers:
+        try:
+            if container.find_elements(By.CSS_SELECTOR, _CARRIED_COMPOSER_EDITOR_CSS):
+                return container, "script"
+        except Exception:
+            continue
+    if containers:
+        return containers[0], "script"
+    return None, "none"
+
+
+def _composer_editor(container, css: str = None):
+    """The composer's own text editor, scoped to the container it mounted in."""
+    if container is None:
+        return None
+    try:
+        for element in container.find_elements(By.CSS_SELECTOR,
+                                               css or _CARRIED_COMPOSER_EDITOR_CSS):
+            if element.is_displayed():
+                return element
+    except Exception:
+        return None
+    return None
+
+
+def _composer_control(container, labels, exact: bool = False, css: str = None):
+    """One labelled control inside the composer — the image's matcher when it has one."""
+    if container is None:
+        return None
+    css = css or _CARRIED_COMPOSER_AFFORDANCE_CSS
+    try:
+        from cqc_lem.utilities.selenium_util import find_labelled
+        return find_labelled(container, css, labels, exact=exact)
+    except Exception:
+        pass
+    wanted = [str(label).strip().lower() for label in (labels or ()) if str(label).strip()]
+    try:
+        candidates = container.find_elements(By.CSS_SELECTOR, css)
+    except Exception:
+        return None
+    readable = []
+    for element in candidates:
+        try:
+            if not element.is_displayed():
+                continue
+            label = (element.get_attribute("aria-label") or element.text or "").strip()
+        except Exception:
+            continue
+        label = re.sub(r"\s+", " ", label).lower()
+        if label:
+            readable.append((label, element))
+    for want in wanted:
+        for label, element in readable:
+            if label == want or (not exact and want in label):
+                return element
+    return None
+
+
+def _composer_type_control(container, labels, css: str = None):
+    """One occasion TYPE option — exact first, then the word-bounded fallback the walk uses.
+
+    Both questions this probe asks about the type menu (which archetype is present, and which one
+    to click) go through here, so `type_hits` can never disagree with `occasion_type_present`.
+    """
+    wanted = [str(label).strip().lower() for label in (labels or ()) if str(label).strip()]
+    if not wanted:
+        return None
+    return (_composer_control(container, wanted, exact=True, css=css)
+            or _composer_control(container, wanted, css=css))
 
 
 def occasion_composer_state(reading: Optional[dict]) -> str:
@@ -3423,8 +3811,13 @@ def occasion_composer_verdict(reading: Optional[dict]) -> str:
     if not reading.get("share_box_present"):
         return "the feed rendered but no share box resolved — re-ground from `visible_controls`"
     if not reading.get("dialog_present"):
+        deep = reading.get("deep_overlay") or {}
+        if deep.get("dialogs") or deep.get("textboxes") or deep.get("aria_modals"):
+            return ("the composer opened somewhere the container lookup cannot reach — "
+                    "`deep_overlay` found it (shadow roots and iframes included) while the shipped "
+                    "lookup did not, so re-ground the CONTAINER, not the trigger")
         if reading.get("modal_containers") or reading.get("editor_page_wide"):
-            return ("the composer opened, but NOT in a `div[role=dialog]` — every occasion locator "
+            return ("the composer opened, but NOT in a `div[role=dialog]` — every occasion lookup "
                     "is scoped to that container, so re-ground the container from "
                     "`modal_containers` before touching the occasion labels")
         return ("the share-box control resolved and was clicked, and NOTHING opened — no dialog, "
@@ -3453,10 +3846,10 @@ def probe_occasion_composer(driver, archetype: str = "project_launch", sleep=tim
     from selenium.webdriver import ActionChains
     from selenium.webdriver.support.ui import WebDriverWait
 
-    from cqc_lem.utilities.selenium_util import click_first, find_first
+    from cqc_lem.utilities.selenium_util import click_first
 
-    entry_locators, more_locators, type_labels, type_locators, chain_source = \
-        _occasion_composer_chains()
+    (entry_labels, more_labels, post_labels, type_labels, affordance_css, editor_css,
+     chain_source) = _occasion_composer_chains()
     share_box_locators, share_source = _share_box_chains()
     wait = WebDriverWait(driver, 10)
     driver.get(FEED_URL)
@@ -3465,7 +3858,10 @@ def probe_occasion_composer(driver, archetype: str = "project_launch", sleep=tim
     reading = {"archetype": archetype, "chain_source": chain_source,
                "share_chain_source": share_source,
                "known_archetypes": sorted(type_labels),
-               "page_text": page_text_sample(driver)}
+               "page_text": page_text_sample(driver),
+               # Read BEFORE the click: what the page's own "Start a post" nest looks like is the
+               # only thing that re-grounds a trigger which resolves and then opens nothing (#1621).
+               "share_box_dom": share_box_dom_evidence(driver)}
 
     share_box = click_first(driver, wait, share_box_locators, "Share box", required=False,
                             warn_on_miss=False, max_try=1)
@@ -3477,12 +3873,17 @@ def probe_occasion_composer(driver, archetype: str = "project_launch", sleep=tim
     sleep(3)
     # Whether a composer container actually opened is a DIFFERENT question from whether the occasion
     # affordance is on it, and the first live pass (2026-08-17) could not tell them apart: every
-    # locator below is scoped to `div[role='dialog']`, so a share-box click that opened nothing
-    # reports the same "occasion missing" as a rotated occasion label. The dialog's OWN controls are
-    # what re-grounds either one — a page-wide label scan on the feed answers with the feed's cards.
-    dialog = find_first(driver, wait, [(By.CSS_SELECTOR, "div[role='dialog']")], "Composer dialog",
-                        visible_only=True, required=False, warn_on_miss=False, max_try=1)
+    # locator below is scoped to the composer, so a share-box click that opened nothing reports the
+    # same "occasion missing" as a rotated occasion label. The container's OWN controls are what
+    # re-grounds either one — a page-wide label scan on the feed answers with the feed's cards.
+    #
+    # The lookup is shadow-aware because the composer is shadow-mounted (#1621): the light-DOM
+    # `div[role='dialog']` read that used to sit here reported "nothing opened" against a composer
+    # that was on screen, which is the whole defect.
+    dialog, container_source = _composer_container(driver)
     reading["dialog_present"] = dialog is not None
+    reading["container_source"] = container_source
+    reading["container"] = element_evidence(dialog) if dialog is not None else None
     reading["composer_controls"] = composer_affordance_labels(
         dialog if dialog is not None else driver)
     if dialog is None:
@@ -3493,58 +3894,72 @@ def probe_occasion_composer(driver, archetype: str = "project_launch", sleep=tim
         reading["page_controls"] = visible_button_labels(driver)
         reading["url_after_open"] = getattr(driver, "current_url", "")
         reading["modal_containers"] = _modal_container_evidence(driver)
-        reading["editor_page_wide"] = find_first(
-            driver, wait, [(By.CSS_SELECTOR, "div[role='textbox']")], "Composer editor",
-            visible_only=True, required=False, warn_on_miss=False, max_try=1) is not None
+        reading["editor_page_wide"] = bool(driver.find_elements(By.CSS_SELECTOR,
+                                                                "div[role='textbox']"))
+        # `find_elements` cannot see into a shadow root or an iframe, so "nothing opened" and "the
+        # composer opened where this reader cannot look" are the same answer without this.
+        reading["deep_overlay"] = deep_overlay_evidence(driver)
+        # And WHICH press opens it, when the shipped one does not (#1621).
+        reading["share_box_activation"] = share_box_activation_ladder(driver, sleep=sleep)
         return graded(reading, occasion_composer_state(reading), occasion_composer_verdict(reading))
 
-    entry = click_first(driver, wait, entry_locators, "Celebrate an occasion", required=False,
-                        warn_on_miss=False, max_try=1)
+    entry = _composer_control(dialog, entry_labels, css=affordance_css)
     reading["occasion_on_first_row"] = entry is not None
     if entry is None:
-        # Expected on most variants — the affordance is filed behind the composer's overflow.
-        reading["overflow_present"] = click_first(driver, wait, more_locators, "Composer overflow",
-                                                  required=False, warn_on_miss=False,
-                                                  max_try=1) is not None
+        # Expected on some variants — the affordance is filed behind the composer's overflow.
+        overflow = _composer_control(dialog, more_labels, exact=True, css=affordance_css)
+        reading["overflow_present"] = overflow is not None
+        if overflow is not None:
+            overflow.click()
         sleep(2)
-        entry = click_first(driver, wait, entry_locators, "Celebrate an occasion", required=False,
-                            warn_on_miss=False, max_try=1)
+        entry = _composer_control(dialog, entry_labels, css=affordance_css)
     reading["occasion_entry_present"] = entry is not None
     if entry is None:
         return graded(reading, occasion_composer_state(reading), occasion_composer_verdict(reading))
+    entry.click()
     sleep(3)
 
+    # The type menu can mount in its own container over the composer, so the container is re-read
+    # before the option is asked for — the same thing the shipped walk does.
+    menu, menu_source = _composer_container(driver)
+    menu = menu if menu is not None else dialog
+    reading["menu_source"] = menu_source
     # The menu's own options, before anything is picked: this is the list OCCASION_TYPE_LABELS is
     # re-grounded from, and the reason a miss must never be widened to a neighbour (#1012).
-    reading["occasion_options"] = composer_affordance_labels(dialog)
-    # Per-archetype hit counts — every mapped archetype is asked, not just the one being walked, so
-    # one pass grounds the whole map.
+    reading["occasion_options"] = composer_affordance_labels(menu)
+    # Per-archetype hits — every mapped archetype is asked, not just the one being walked, so one
+    # pass grounds the whole map. Asked the SAME way the walk picks (exact, then the word-bounded
+    # fallback): exact alone answers False for every archetype on the live menu, whose options carry
+    # title and description in one node ("Project Launch Share a new project milestone"), while the
+    # same run clicks one of them — a reading that contradicts the walk grounds nothing.
     reading["type_hits"] = {
-        key: len(driver.find_elements(*locator)) if locator else 0
+        key: bool(_composer_type_control(menu, labels, affordance_css))
         for key, labels in sorted(type_labels.items())
-        for locator in [next(iter(type_locators(labels)), None)]
     }
 
-    picked = click_first(driver, wait, type_locators(type_labels.get(archetype) or ()),
-                         "Occasion type", required=False, warn_on_miss=False, max_try=1)
+    picked = _composer_type_control(menu, type_labels.get(archetype) or (), affordance_css)
     reading["occasion_type_present"] = picked is not None
     if picked is None:
         return graded(reading, occasion_composer_state(reading), occasion_composer_verdict(reading))
+    picked.click()
     sleep(3)
 
-    editor = find_first(driver, wait, [(By.CSS_SELECTOR, "div[role='dialog'] div[role='textbox']")],
-                        "Occasion post editor", required=False, warn_on_miss=False, max_try=1,
-                        visible_only=True)
-    post_button = find_first(driver, wait,
-                             [(By.XPATH, "//div[@role='dialog']//button[normalize-space()='Post']")],
-                             "Occasion Post button", required=False, warn_on_miss=False, max_try=1,
-                             visible_only=True)
+    form, form_source = _composer_container(driver)
+    form = form if form is not None else dialog
+    reading["form_source"] = form_source
+    editor = _composer_editor(form, editor_css)
+    post_button = _composer_control(form, post_labels, exact=True, css=affordance_css)
     reading.update({"editor_present": editor is not None,
                     "editor": element_evidence(editor) if editor is not None else None,
                     "post_button_present": post_button is not None,
                     "post_button": element_evidence(post_button) if post_button is not None
                     else None,
-                    "form_controls": composer_affordance_labels(driver)})
+                    # Scoped to the FORM, never the page: a page-wide scan here answers with the
+                    # feed behind the modal, which is what a re-grounding pass must never be handed
+                    # (#1621).
+                    "form_controls": composer_affordance_labels(form),
+                    "form_container": element_evidence(form) if form is not None else None,
+                    "deep_overlay_after_type": deep_overlay_evidence(driver)})
     try:
         ActionChains(driver).send_keys(Keys.ESCAPE).perform()
     except Exception:
@@ -3581,6 +3996,13 @@ def group_composer_verdict(reading: Optional[dict]) -> str:
         return ("no share box on this group — production records it unpostable and rotates past "
                 "it, which is correct for an announcement/admin-only group. Probe a group you can "
                 "post in to ground the chain")
+    if reading.get("dialog_present") is False:
+        # The trigger was pressed and no composer container resolved anywhere, shadow roots
+        # included — so the editor and the Post button were never asked a real question. Naming
+        # them here is the mislabelling #1621 is about; `dialog_controls` is empty on purpose in
+        # this case, because a page-wide list would describe the GROUP PAGE behind the composer.
+        return ("the group share box was clicked and NO composer container resolved — re-ground "
+                "the CONTAINER from `deep_overlay`; nothing below it was asked a real question")
     return (f"the share box opened but "
             f"{'the editor' if not reading.get('editor_present') else 'the Post button'} did not "
             f"resolve — re-ground from `dialog_controls`")
@@ -3597,21 +4019,20 @@ def probe_group_composer(driver, group_id: str, sleep=time.sleep) -> dict:
     from selenium.webdriver import ActionChains
     from selenium.webdriver.support.ui import WebDriverWait
 
-    from cqc_lem.app.engagement.feed import (
-        _GROUP_EDITOR_LOCATORS,
-        _GROUP_POST_BUTTON_LOCATORS,
-        _GROUP_SHARE_BOX_LOCATORS,
-    )
-    from cqc_lem.utilities.selenium_util import click_first, find_first
+    from cqc_lem.utilities.selenium_util import click_first
 
+    (_entry_labels, _more_labels, post_labels, _type_labels, affordance_css, editor_css,
+     chain_source) = _occasion_composer_chains()
+    share_box_locators, share_source = _share_box_chains()
     wait = WebDriverWait(driver, 10)
     url = f"https://www.linkedin.com/groups/{group_id}/"
     driver.get(url)
     sleep(6)
     reading = {"group_id": str(group_id), "url": getattr(driver, "current_url", url),
+               "chain_source": chain_source, "share_chain_source": share_source,
                "page_text": page_text_sample(driver)}
 
-    share_box = click_first(driver, wait, _GROUP_SHARE_BOX_LOCATORS, "Group share box",
+    share_box = click_first(driver, wait, share_box_locators, "Group share box",
                             required=False, warn_on_miss=False, max_try=1)
     reading["share_box_present"] = share_box is not None
     if share_box is None:
@@ -3619,16 +4040,29 @@ def probe_group_composer(driver, group_id: str, sleep=time.sleep) -> dict:
         return graded(reading, group_composer_state(reading), group_composer_verdict(reading))
 
     sleep(3)
-    editor = find_first(driver, wait, _GROUP_EDITOR_LOCATORS, "Group post editor",
-                        required=False, warn_on_miss=False, max_try=1, visible_only=True)
-    post_button = find_first(driver, wait, _GROUP_POST_BUTTON_LOCATORS, "Group Post button",
-                             required=False, warn_on_miss=False, max_try=1, visible_only=True)
-    reading.update({"editor_present": editor is not None,
+    # Same container question as the occasion route, and the same answer: the group's composer is
+    # the SAME share box, so it mounts in the same shadow root and a light-DOM editor lookup reads
+    # a working composer as a group that refuses member posts (#1621).
+    container, container_source = _composer_container(driver)
+    editor = _composer_editor(container, editor_css)
+    post_button = _composer_control(container, post_labels, exact=True, css=affordance_css)
+    reading.update({"dialog_present": container is not None,
+                    "container_source": container_source,
+                    "container": element_evidence(container) if container is not None else None,
+                    "editor_present": editor is not None,
                     "editor": element_evidence(editor) if editor is not None else None,
                     "post_button_present": post_button is not None,
                     "post_button": element_evidence(post_button) if post_button is not None
                     else None,
-                    "dialog_controls": visible_button_labels(driver)})
+                    "deep_overlay": deep_overlay_evidence(driver),
+                    # The COMPOSER's own controls, never the page's: falling back page-wide when
+                    # nothing opened is what let a closed composer be described by the surface
+                    # behind it (#1621). The group page's own controls still ship — under a name
+                    # that says what they are.
+                    "dialog_controls": composer_affordance_labels(container)
+                    if container is not None else [],
+                    **({} if container is not None
+                       else {"page_controls": visible_button_labels(driver)})})
     try:
         ActionChains(driver).send_keys(Keys.ESCAPE).perform()
     except Exception:
