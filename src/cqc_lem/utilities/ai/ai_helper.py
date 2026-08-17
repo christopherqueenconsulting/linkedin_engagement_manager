@@ -1368,16 +1368,20 @@ def generate_lead_response(their_message: str, profile: "LinkedInProfile", chann
 def generate_nurture_dm(their_message: str, intent: str, profile: "LinkedInProfile",
                         first_name: str = None, template_hint: str = None,
                         history: list = None, prefs: dict = None,
-                        profile_synthesis: str = None) -> "str | None":
+                        profile_synthesis: str = None,
+                        recipient_context: dict = None) -> "str | None":
     """Draft the NEXT message in a live DM thread after a lead replied (issue #485) — the
     context-aware step between "they answered" and "we followed up well".
 
     `intent` branches the brief (interested -> propose a call, objection -> address it, not-now ->
     light touch, neutral -> stay human); `template_hint` is the operator's own nurture template for
-    this step, used as the intended direction rather than text to copy. Never invent prices,
-    timelines, or capabilities. The draft is APPROVAL-GATED; a human sends it.
+    this step, used as the intended direction rather than text to copy. `recipient_context`
+    (issue #1625, built by `dm_nurture.recipient_context`) is what we know about the person —
+    title, company, industry, why the thread exists — so a short or neutral reply still has
+    something concrete to be relevant about; absent, the draft is simply less specific. Never
+    invent prices, timelines, or capabilities. The draft is APPROVAL-GATED; a human sends it.
     """
-    from cqc_lem.utilities.ai.dm_nurture import nurture_guidance
+    from cqc_lem.utilities.ai.dm_nurture import format_recipient_context, nurture_guidance
     system_prompt = {
         "role": "system",
         "content": f"""You are writing the next direct message in a REAL LinkedIn conversation you
@@ -1386,12 +1390,15 @@ def generate_nurture_dm(their_message: str, intent: str, profile: "LinkedInProfi
         {nurture_guidance(intent)}
         Respond to what they ACTUALLY said — quote nothing, but make it obvious you read it. NEVER
         invent prices, timelines, package names, client names, or capabilities; if the answer depends
-        on details you do not have, say what it depends on and ask. No hard sell, no hype, no links,
+        on details you do not have, say what it depends on and ask. What you are told about them is
+        the ONLY thing you know about them: never infer their team size, budget, tools, problems or
+        goals from a job title or a company, and never imply you have read something of theirs that
+        you were not shown. No hard sell, no hype, no links,
         no hashtags, no emoji spam, no "just following up" or "circling back". Never repeat a message
         you have already sent them.
         2-4 sentences, under 300 characters. Output ONLY the message text.""",
     }
-    ctx = ""
+    ctx = format_recipient_context(recipient_context)
     if history:
         prior = "\n".join(f"- {m}" for m in list(history)[-3:] if m)
         if prior:
@@ -1399,7 +1406,7 @@ def generate_nurture_dm(their_message: str, intent: str, profile: "LinkedInProfi
     if template_hint:
         ctx += (f"My own template for this step — use its INTENT and direction, not its wording:\n"
                 f"{template_hint}\n\n")
-    if first_name:
+    if first_name and "first_name" not in (recipient_context or {}):
         ctx += f"Their first name: {first_name}\n\n"
     user_prompt = {"role": "user", "content":
         f"My voice:\n{_voice_reference(profile, profile_synthesis)}\n\n{ctx}"

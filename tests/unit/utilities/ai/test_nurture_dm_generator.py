@@ -79,3 +79,42 @@ class TestGenerateNurtureDm:
              patch(f"{_AI}._humanize_text", side_effect=lambda c, **kw: c):
             ai_helper.generate_nurture_dm("ok", "neutral", _profile(), history=[None, ""])
         assert "do not repeat it" not in call.call_args.kwargs["messages"][1]["content"]
+
+
+class TestRecipientContextReachesThePrompt:
+    """Issue #1625 — the draft could not be specific because it did not know who it was writing to."""
+
+    _WHO = {"first_name": "Jane", "job_title": "VP Engineering", "company_name": "Acme",
+            "industry": "SaaS", "thread_origin": "they viewed your profile"}
+
+    def _user_prompt(self, **kw):
+        from cqc_lem.utilities.ai import ai_helper
+        with patch(f"{_AI}._call_llm", return_value=_resp("hi")) as call, \
+             patch(f"{_AI}._humanize_text", side_effect=lambda c, **kw2: c):
+            ai_helper.generate_nurture_dm("ok", "neutral", _profile(), **kw)
+        return call.call_args.kwargs["messages"]
+
+    def test_every_known_field_reaches_the_user_prompt(self):
+        user = self._user_prompt(recipient_context=self._WHO)[1]["content"]
+        for value in ("Jane", "VP Engineering", "Acme", "SaaS", "they viewed your profile"):
+            assert value in user
+
+    def test_the_first_name_is_not_stated_twice(self):
+        # first_name is rendered inside the context block; the standalone line is the no-context path.
+        user = self._user_prompt(first_name="Jane", recipient_context=self._WHO)[1]["content"]
+        assert user.count("Jane") == 1
+        assert "Their first name: Jane" not in user
+
+    def test_the_standalone_name_line_survives_without_a_context_block(self):
+        user = self._user_prompt(first_name="Jane")[1]["content"]
+        assert "Their first name: Jane" in user
+
+    def test_no_context_adds_no_block(self):
+        user = self._user_prompt()[1]["content"]
+        assert "everything I know about them" not in user
+
+    def test_the_context_may_not_be_inferred_from(self):
+        messages = self._user_prompt(recipient_context=self._WHO)
+        assert "nothing more" in messages[1]["content"]
+        system = " ".join(messages[0]["content"].split())  # the prompt is indented + wrapped
+        assert "never infer their team size, budget, tools, problems or goals" in system

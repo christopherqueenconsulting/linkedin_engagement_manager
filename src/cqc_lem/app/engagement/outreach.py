@@ -88,7 +88,12 @@ from cqc_lem.utilities.ai.ai_helper import (
 from cqc_lem.utilities.ai.content_alignment import (
     humanize_text,
 )
-from cqc_lem.utilities.ai.dm_nurture import classify_reply_intent, is_stop_intent, nurture_delay_hours
+from cqc_lem.utilities.ai.dm_nurture import (
+    classify_reply_intent,
+    is_stop_intent,
+    nurture_delay_hours,
+    recipient_context,
+)
 from cqc_lem.utilities.connection_targeting import (
     SOURCE_ADJACENT_POST,
     SOURCE_OWN_POST,
@@ -1139,18 +1144,30 @@ def _nurture_after_reply(user_id: int, followup: dict, their_message: str,
         step = (int(followup.get("next_step") or 0) + 1
                 if str(followup.get("event_type")) == NURTURE_EVENT_TYPE else 0)
         tmpl = get_dm_template(user_id, NURTURE_EVENT_TYPE, step)
+        # Who they are, from stored data only — no profile visit is opened to write a draft (#1625).
+        # The follow-up row's own event_type is what says why this thread exists; on a 'nurture' row
+        # that IS the sequence, so it contributes no origin line rather than inventing one.
+        who = recipient_context(profile_url=profile_url, first_name=first_name,
+                                event_type=followup.get("event_type"), user_id=user_id)
         message = None
         try:
             message = generate_nurture_dm(
                 their_message, intent, my_profile, first_name=first_name,
                 template_hint=(tmpl or {}).get("template_text"),
                 history=get_dm_history_for_profile(user_id, profile_url),
-                prefs=prefs, profile_synthesis=profile_synthesis)
+                prefs=prefs, profile_synthesis=profile_synthesis, recipient_context=who)
         except Exception as e:
             log_warning("Nurture draft failed; falling back to the template", exc=e,
                         user_id=user_id, action_type="dm")
         if not message:
             message = build_dm_from_template(user_id, NURTURE_EVENT_TYPE, first_name, my_profile, step=step)
+            if message:
+                # The template answers nobody's reply — it is the least relevant thing this queue can
+                # hold, so how often it fires is worth reading. INFO, not WARNING: it is a designed
+                # fallback, and warning on it would file a defect every time the slop lint trims a draft.
+                log_info(f"DM nurture: fell back to the '{NURTURE_EVENT_TYPE}' template for "
+                         f"{first_name or profile_url} (step {step}) — that draft does not answer "
+                         f"their reply", user_id=user_id, action_type="dm")
         if not message:
             log_warning(f"DM nurture: no draft could be produced for {first_name or profile_url} "
                         f"(step {step}) — the LLM returned nothing and no 'nurture' template exists "
