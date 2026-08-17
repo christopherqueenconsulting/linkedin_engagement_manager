@@ -414,6 +414,12 @@ now gated by **ONE** preference, `profile_viewer_dm_auto_send` (default OFF).
   artifact (this is the coldest of the three, so it is the one that yields), and the invite reuses
   `get_requested_person_keys` — ever-requested, any status, the same rule the nightly sourcing scan
   follows. A skip is DEBUG; it is the designed no-op, not a missed opportunity.
+- **The queued invite backlog stays inside the SHARED cap.** `count_open_connection_requests` counts
+  a PENDING row as spent `max_invites_per_day`, and nothing ages one out, so `_queue_profile_viewer_connect`
+  files only while `max_invites_per_day - sent_today - open_requests > 0` — exactly the arithmetic
+  `_connect_target_budget` (#486) and `roster_connect_budget` (#979) spend. Without it, cap-many
+  unapproved viewer drafts would hold BOTH of those lanes at zero permanently; direct dispatch never
+  could, because an invite it sent counted only for the day it was sent.
 - **Out of scope, deliberately:** roster connect escalation (T6). `roster_auto_connect=false`
   already means zero exposure with no dispatch path around it — that toggle IS the human in the
   loop. Full rubric and the round-2 revert: `docs/graphs/engagement-outreach-dm.md`.

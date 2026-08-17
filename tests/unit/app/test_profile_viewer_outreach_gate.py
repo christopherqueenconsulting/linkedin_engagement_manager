@@ -33,13 +33,15 @@ _UNSET = object()
 
 def _engage(connection: str, *, auto_send=False, prefs_row=_UNSET, activities=(),
             commented=False, message="Hi Jane", open_draft=False, requested_keys=(),
-            dm_id=7, request_id=9):
+            dm_id=7, request_id=9, max_invites=10, invites_sent=0, open_requests=0):
     """Run ONE profile-viewer engagement and hand back every dispatch/queue mock.
 
     `prefs_row` replaces the whole preference dict (so a test can model a read that came back
-    empty); left alone, the row carries just the toggle.
+    empty); left alone, the row carries the toggle plus the shared invite cap the queue path is
+    bounded by.
     """
-    row = {"profile_viewer_dm_auto_send": auto_send} if prefs_row is _UNSET else prefs_row
+    row = ({"profile_viewer_dm_auto_send": auto_send, "max_invites_per_day": max_invites}
+           if prefs_row is _UNSET else prefs_row)
     profile_data = {"full_name": "Jane Doe", "connection": connection,
                     "profile_url": "https://www.linkedin.com/in/jane-doe",
                     "recent_activities": list(activities)}
@@ -67,6 +69,8 @@ def _engage(connection: str, *, auto_send=False, prefs_row=_UNSET, activities=()
         "insert_scheduled_dm": dm_id,
         "insert_connection_request": request_id,
         "get_user_id": 1,
+        "count_invites_sent_today": invites_sent,
+        "count_open_connection_requests": open_requests,
     }
     with ExitStack() as stack:
         mocks = {name: stack.enter_context(patch(f"{_OUT}.{name}", return_value=value))
@@ -180,7 +184,18 @@ class TestTheGateFailsClosed:
         _, mocks = _engage("2nd", prefs_row=row)
 
         mocks["invite"].apply_async.assert_not_called()
-        mocks["conn"].assert_called_once()
+
+    @pytest.mark.parametrize("row", [None, {}, {"profile_viewer_dm_auto_send": None}])
+    def test_an_unreadable_preference_drafts_the_dm_branch_instead_of_sending(self, row):
+        """Same read, the other branch: gated means DRAFTED, not silently dropped.
+
+        The DM queue carries no invite budget, so an unreadable row still files the draft — it is
+        only the invite half that a cap-less answer holds back.
+        """
+        _, mocks = _engage("1st", prefs_row=row)
+
+        mocks["dm"].apply_async.assert_not_called()
+        mocks["sched"].assert_called_once()
 
 
 class TestDedupBeforeQueueing:
@@ -220,6 +235,45 @@ class TestDedupBeforeQueueing:
         mocks["invite"].apply_async.assert_not_called()
         assert "Did not queue a connection request" in result
         assert not _log_result(mocks)
+
+
+class TestTheQueuedInviteBacklogStaysInsideTheSharedCap:
+    """A PENDING `connection_requests` row is counted as SPENT invite budget by two other lanes.
+
+    `count_open_connection_requests` never ages a row out, so filing without checking the cap would
+    let an unapproved viewer backlog park at cap-many rows and hold `_connect_target_budget` (#486
+    sourcing) and `roster_connect_budget` (#979) at zero for good. Direct dispatch never did that —
+    a sent invite counts only for the day it was sent.
+    """
+
+    def test_a_spent_budget_queues_nothing(self):
+        result, mocks = _engage("2nd", max_invites=10, invites_sent=4, open_requests=6)
+
+        mocks["conn"].assert_not_called()
+        mocks["invite"].apply_async.assert_not_called()
+        assert "Did not queue a connection request" in result
+
+    def test_an_account_that_sends_no_invites_queues_nothing(self):
+        _, mocks = _engage("2nd", max_invites=0)
+
+        mocks["conn"].assert_not_called()
+
+    def test_remaining_budget_still_queues(self):
+        _, mocks = _engage("2nd", max_invites=10, invites_sent=4, open_requests=5)
+
+        mocks["conn"].assert_called_once()
+
+    def test_the_cap_never_holds_back_the_dm_branch(self):
+        """The DM half spends `max_dms_per_day` at SEND time, not the invite cap."""
+        _, mocks = _engage("1st", max_invites=0)
+
+        mocks["sched"].assert_called_once()
+
+    def test_direct_dispatch_is_not_bounded_by_the_queue_depth(self):
+        """Toggle ON is the pre-#1137 path exactly — `invite_to_connect` carries its own caps."""
+        _, mocks = _engage("2nd", auto_send=True, max_invites=10, open_requests=99)
+
+        mocks["invite"].apply_async.assert_called_once()
 
 
 class TestAFailedInsertIsNotASuccess:

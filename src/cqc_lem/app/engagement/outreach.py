@@ -1783,14 +1783,34 @@ def _queue_profile_viewer_dm(user_id: int, profile_url: str, message: str, first
 
 
 def _queue_profile_viewer_connect(user_id: int, profile_url: str, message: str,
-                                  viewer_name: str) -> Optional[int]:
+                                  viewer_name: str, prefs: dict) -> Optional[int]:
     """File a cold profile-viewer invite as a PENDING `connection_requests` row (issue #1137).
 
     Returns the row id, or None when nothing was queued. ONE request per person ever:
     `get_requested_person_keys` is the same dedup the nightly sourcing scan uses, so someone who
     declined — or who is still sitting in the queue — is never re-filed by a later visit. Approval
     and sending stay on #398's existing beat and review surface; no new table, no new UI.
+
+    Bounded by the SAME budget `_connect_target_budget` and `roster_connect_budget` spend, for the
+    reason they both spend it: an OPEN request is already counted against `max_invites_per_day` by
+    `count_open_connection_requests`, and a pending row never ages out. Filing without that check is
+    what turns a lane nobody approves into a permanent zero for the other two — a backlog of cap-many
+    unapproved viewer drafts would silently stop the #486 sourcing scan and the #979 roster ladder
+    from filing anything, forever. Direct dispatch never had that effect: an invite it sent counted
+    only for the day it was sent.
     """
+    try:
+        cap = max(0, int(prefs.get("max_invites_per_day") or 0))
+    except (TypeError, ValueError):
+        cap = 0
+    if cap - count_invites_sent_today(user_id) - count_open_connection_requests(user_id) <= 0:
+        # DEBUG: the queue holding a day's worth of invites is the cap working, not a fault. The
+        # viewer is skipped rather than deferred — `has_engaged_url_with_x_days` already ends this
+        # visit, and the analytics page lists them again while they keep visiting.
+        log_debug(f"Profile viewer: the invite budget is already spoken for; not queueing "
+                  f"{viewer_name}", user_id=user_id, action_type="connection_targeting",
+                  task_name="engage_with_profile_viewer")
+        return None
     name = clean_person_name(viewer_name) or None
     key = person_key(name, profile_url)
     if key and key in get_requested_person_keys(user_id):
@@ -1876,8 +1896,8 @@ def engage_with_profile_viewer(self, user_id: int, viewer_url, viewer_name):
                 # "invite a stranger" are the same decision seen from two sides. OFF (the default)
                 # files an approval-gated row on each side instead of dispatching; ON is the
                 # pre-#1137 behaviour, unchanged.
-                auto_send = bool((get_engagement_preferences(acting_user_id) or {})
-                                 .get("profile_viewer_dm_auto_send"))
+                prefs = get_engagement_preferences(acting_user_id) or {}
+                auto_send = bool(prefs.get("profile_viewer_dm_auto_send"))
 
                 if profile.is_1st_connection:
                     log_info("We Are 1st Connections")
@@ -1980,7 +2000,8 @@ def engage_with_profile_viewer(self, user_id: int, viewer_url, viewer_name):
                         # row and the review surface that approves one — this lane files into it
                         # rather than growing a second queue.
                         request_id = _queue_profile_viewer_connect(
-                            acting_user_id, str(profile.profile_url), refined_response, viewer_name)
+                            acting_user_id, str(profile.profile_url), refined_response, viewer_name,
+                            prefs)
                         if request_id:
                             result = (f"Profile Viewer Engagement Completed. Queued a connection "
                                       f"request to {viewer_name} for approval")
