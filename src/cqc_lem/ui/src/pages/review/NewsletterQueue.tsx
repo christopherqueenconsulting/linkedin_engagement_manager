@@ -298,10 +298,15 @@ export default function NewsletterQueue(
             {e.subtitle && <p className="text-xs text-gray-500 line-clamp-1">{e.subtitle}</p>}
             {/* A pending cover is only approvable inside the editor below, so the LIST has to say
                 it exists (issue #1432) — every edition in production shipped cover-less because
-                nothing outside the open editor ever mentioned the cover was waiting. */}
+                nothing outside the open editor ever mentioned the cover was waiting. The
+                "publishes without it" half is conditional (issue #1135): a draft on an opted-out
+                account does not reach its slot at all, so that clause would be a false
+                reassurance on the very row it is asking the author to open. */}
             {e.cover_image_status === 'pending_review' && (
               <p className="mt-1.5 text-xs font-medium text-yellow-700">
-                🖼️ Cover needs your approval — publishes without it otherwise
+                {e.status === 'approved' || data?.auto_publish_newsletters
+                  ? '🖼️ Cover needs your approval — publishes without it otherwise'
+                  : '🖼️ Cover needs your approval — approve it along with the edition'}
               </p>
             )}
             {(e.format || e.hook_style) && (

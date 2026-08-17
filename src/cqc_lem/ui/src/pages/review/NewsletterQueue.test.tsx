@@ -185,6 +185,23 @@ describe('NewsletterQueue pending-cover legibility', () => {
     expect(screen.getByText(/This edition also waits on your approval/)).toBeTruthy()
   })
 
+  // The queue ROW carries the same claim as the editor, and it is the one an author reads without
+  // opening anything — so it has to drop "publishes without it otherwise" for a held draft too.
+  it('does not promise the row publishes without the cover for an opted-out draft', async () => {
+    serveQueue([withCover(1, 'pending_review')], false)
+    harness(queue())
+    await waitFor(() => expect(screen.getByText('Edition 1')).toBeTruthy())
+    expect(screen.queryByText(/publishes without it otherwise/)).toBeNull()
+    expect(screen.getByText(/approve it along with the edition/)).toBeTruthy()
+  })
+
+  it('keeps the row wording for an APPROVED edition on an opted-out account', async () => {
+    serveQueue([{ ...withCover(1, 'pending_review'), status: 'approved' }], false)
+    harness(queue())
+    await waitFor(() => expect(screen.getByText('Edition 1')).toBeTruthy())
+    expect(screen.getByText(/publishes without it otherwise/)).toBeTruthy()
+  })
+
   it('keeps the original wording for an APPROVED edition on an opted-out account', async () => {
     serveQueue([{ ...withCover(1, 'pending_review'), status: 'approved' }], false)
     harness(queue())

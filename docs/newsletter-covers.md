@@ -58,8 +58,8 @@ weakened. What changed is that the state is legible *before* the slot:
 
 | Where | What it says |
 |---|---|
-| Queue list row | `🖼️ Cover needs your approval — publishes without it otherwise` on any edition whose cover is `pending_review` |
-| Editor, under the cover | That an unapproved cover means the edition publishes on time **without a cover** |
+| Queue list row | `🖼️ Cover needs your approval` on any edition whose cover is `pending_review` — `— publishes without it otherwise` only when the edition itself reaches that slot (see #1135 below) |
+| Editor, under the cover | That an unapproved cover means the edition publishes on time **without a cover** — again only when the edition itself reaches that slot |
 | Above `Approve & Schedule` | That the button schedules the EDITION only, and the cover still needs its own approval |
 | Email | `auto_notify_pending_covers` (daily 10:30 UTC, after the 10:00 top-up) emails the author for any edition publishing within `NEWSLETTER_COVER_REMINDER_LEAD_HOURS` (36) whose cover is still pending. ONE-SHOT per edition via a Redis claim, released on a failed send; **fails open** — a Redis outage degrades to at most one email per run, never to silence |
 | Publish | `_approved_cover_path` logs INFO when it drops a pending cover. INFO deliberately: publishing cover-less is the DESIGNED outcome, and a repeated `log_warning` would file a defect against working behaviour |
@@ -73,12 +73,13 @@ backfilled to `true` (no behavior change on deploy day); new rows default to `fa
 deliberately gets no equivalent opt-out — a generated cover is a public brand asset regardless of
 what the body's setting says.
 
-What that costs is **every sentence that promised the edition ships anyway**. Three of the surfaces
+What that costs is **every sentence that promised the edition ships anyway**. Four of the surfaces
 in the table above asserted it, and each one was telling exactly the authors who now have to act
-that they need not: the editor's under-the-cover copy, the cover-reminder email
-(`send_newsletter_cover_pending_email`, `edition_publishes=`), and — worst of the three, because it
+that they need not: the queue ROW's `— publishes without it otherwise` (the one an author reads
+without opening anything), the editor's under-the-cover copy, the cover-reminder email
+(`send_newsletter_cover_pending_email`, `edition_publishes=`), and — worst of the four, because it
 is the ONLY message an opted-out author gets about a new draft at all — the draft-ready email
-(`send_newsletter_draft_ready_email`, `auto_publish=`). All three now report the account's setting.
+(`send_newsletter_draft_ready_email`, `auto_publish=`). All four now report the account's setting.
 The rule for anything added here: **a "publishes on time" clause is conditional, a "without a cover"
 clause is not.** An APPROVED edition publishes either way, so it keeps the original wording.
 
