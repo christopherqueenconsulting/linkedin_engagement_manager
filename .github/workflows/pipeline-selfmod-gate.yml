@@ -1,0 +1,59 @@
+name: Pipeline Self-Modification Gate
+
+# A change to the machinery that would deploy it does not get to merge itself. Agents merge their
+# own PRs (required_approving_review_count is 0, and CODEOWNERS enforces nothing at that setting),
+# so without this the deploy automation in #1398 closes the loop: an agent could rewrite its own
+# trust boundary and have it running with the owner's credentials minutes later. Verdict logic
+# lives in scripts/pipeline_selfmod_gate.py (#1413, unit-tested) — this workflow only collects the
+# PR facts and calls it.
+#
+# NOTE: this check is not yet marked "required" in branch protection. That is a separate, owner-only
+# `gh api` action taken after this workflow has run green at least once on a real PR (#1397).
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  pull_request_review:
+    types: [submitted, dismissed]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+# Supersede a PR's own in-flight runs when it is pushed to again. Not gated to pull_request-only
+# here because pull_request_review runs never overlap with a concurrent pull_request run for the
+# same head ref in a way that would evict a merge-queue entry -- this workflow never runs in
+# merge_group.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  gate:
+    name: Pipeline Self-Modification Gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Collect the PR facts
+        id: facts
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          gh pr view "$PR" --json files --jq '[.files[].path]' > /tmp/changed.json
+          gh pr view "$PR" --json reviews \
+            --jq '[.reviews[] | select(.state=="APPROVED") | .author.login] | unique' \
+            > /tmp/approvers.json
+          echo "changed=$(cat /tmp/changed.json)"     >> "$GITHUB_OUTPUT"
+          echo "approvers=$(cat /tmp/approvers.json)" >> "$GITHUB_OUTPUT"
+      - name: Decide
+        env:
+          CHANGED: ${{ steps.facts.outputs.changed }}
+          AUTHOR: ${{ github.event.pull_request.user.login }}
+          APPROVERS: ${{ steps.facts.outputs.approvers }}
+        run: |
+          python3 scripts/pipeline_selfmod_gate.py \
+            --changed "$CHANGED" \
+            --author "$AUTHOR" \
+            --approvers "$APPROVERS" \
+            --owner "gitchrisqueen"
