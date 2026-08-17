@@ -280,6 +280,72 @@ Three things follow, and they are the reason this is a dated entry rather than a
 **`SLOP_LINT_MAX_ATTEMPTS_NEWSLETTER` therefore stays at 2**, unchanged, on the same grounds #1434
 gave: the third `lem-complex` call is still unpriced.
 
+#### F10, #1530 second read (2026-08-17): still **0 rows**, and the reason has changed
+
+The first read blamed the deploy clock: the instrument had shipped hours earlier and the beat had
+not come round. Two days on, the count is the same and neither of that read's two excuses survives —
+so what follows is the corrected expectation, not a repeat.
+
+**What was measured** (HogQL over `events`, the same window the script reads):
+
+* `slop_retry`, trailing 30 days: **0 rows**, and the event is still absent from the project
+  taxonomy.
+* **#1536 is live, so this is no longer a newsletter-only instrument.** It merged 2026-08-15 01:41
+  UTC and shipped in **v0.152.0**; prod reports **0.154.0**. `lint_repaired` (seed comments,
+  replies, DMs, post drafts) and the affiliate promo loop have been emitting for ~2 days against
+  ~100 `llm_call` rows a day on `feature=comment` — and have produced no `slop_retry` row. A HARD
+  slop check tripping on a short-form draft is rarer than short-form volume suggests.
+* **No edition has been authored since the instrument deployed.** Authoring is
+  `generate_newsletter_edition`, and **four** paths reach it, so no single task's run history is the
+  authoring record: the daily beat `auto_generate_newsletter_drafts` (which calls
+  `_topup_newsletter_drafts_for_user` **inline**, so it authors under its OWN task name), the
+  on-demand `generate_newsletter_drafts_for_user`, `regenerate_newsletter_edition` (the SPA's
+  Regenerate button) and `auto_publish_newsletter_edition`. Any of the four can emit a
+  `surface=newsletter` row. The signal that actually tracks authoring is a `feature=newsletter`
+  `llm_call` row on **`lem-complex`** — one per edition drafted — and there are **none on 2026-08-15
+  or 2026-08-16**, i.e. none since v0.151.0 reached prod (released 2026-08-14 20:50 UTC).
+
+**The cadence assumption behind "mid-September" was wrong, and the task-run history is not what
+corrects it.** The first read reasoned from "editions publish weekly"; it is not weekly, but neither
+is it `generate_newsletter_drafts_for_user`'s run history. Measured off `lem-complex`
+`feature=newsletter` calls over 45 days, drafting fired on **five days — 2026-07-29, 08-05, 08-11,
+08-12, 08-14** (2, 2, 6, 2, 33 calls; mock rows from test runs excluded, see below). Three of those
+sit at **10:00–10:03 UTC** — the daily beat authoring — on days `generate_newsletter_drafts_for_user`
+never ran at all; and that task's own last run (**2026-08-14 03:38:47 UTC**, ~14 h before v0.151.0
+merged at 17:52 UTC) drew **no** `lem-complex` call, so it authored nothing. The beat is a top-up in
+the sense that it authors nothing while the queue is full — but when the queue is short it IS the
+authoring path, so counting only the on-demand task undercounts editions and counting the beat's
+daily run overcounts them. The 2026-08-14 15:44–16:07 UTC block (33 `lem-complex`, and 33 each of
+`lem-medium`/`lem-simple`) matches neither the beat nor that day's task runs — read it as an off-beat
+measurement run, not an authoring burst, until something attributes it.
+
+What that leaves for the floor: real bursts are **small** — 1–3 editions on a beat day, 6 calls on
+the largest genuine one — and only an edition that trips a HARD check produces a steered row at all.
+So the newsletter surface alone is **still unlikely to clear the 10-row floor by 2026-09-15**, which
+is what keeps the owner's `1A` intact; the number of authoring days between now and then is closer to
+four or five than to two or three.
+
+**The decision on the record (owner, 2026-08-15, `1A 2A` on #1530):** re-read ~**2026-09-15**; if
+the sample is still thin then, keep waiting and re-read monthly rather than deciding the newsletter
+budget off a pooled cross-surface rate — a `lem-medium` comment loop and a `lem-complex` weekly
+edition are different money and different prompts, which is why the budget is per-surface at all.
+**`SLOP_LINT_MAX_ATTEMPTS_NEWSLETTER` therefore stays at 2.**
+
+Two things the next read should check before quoting any number, because they are the shapes that
+would make a low row count mean something other than "not enough editions yet":
+
+* Whether any `slop_retry` row exists at all after a post-deploy authoring burst. A burst that runs
+  and emits nothing is no longer a sampling story — it is either editions that never trip a HARD
+  check (the good outcome F10 has been circling) or an instrument that is not reaching PostHog.
+* Whether the cross-surface rows arrive from `lint_repaired` and the affiliate loop only. The
+  comment quality gate (`_gated_comment`) regenerates on its own budget and emits nothing, so
+  `surface="comment"` is the `lint_repaired` paths, never the surface's whole retry volume.
+* **Exclude test rows from any `llm_call` count taken as corroboration.** Unit runs land rows whose
+  `model` renders as `<MagicMock …>` — 1,305 of 2,461 on 2026-08-14 and 4,324 of 8,362 on 2026-08-11
+  — so a raw daily count is up to half harness noise. Filter `properties.model NOT LIKE '%MagicMock%'`
+  (every count quoted in this entry already does). `slop_retry` itself is unaffected today at 0 rows,
+  but the same runs would populate it once the emitters are exercised in tests.
+
 ### Findings carried forward from #1142
 
 F1 (prompts targeted the wrong channel), F2 (`NEWSLETTER_BANNED_SCAFFOLDS` → #1285), F3
