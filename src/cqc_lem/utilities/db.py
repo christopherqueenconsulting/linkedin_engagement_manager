@@ -468,6 +468,7 @@ from cqc_lem.platform.db.repositories.users import (
     SECRET_FIELD_COOKIE_VALUE,
     SECRET_FIELD_PASSWORD,
     SECRET_FIELD_REFRESH_TOKEN,
+    _profile_url_variants,
     _store_cookie_rows,
     add_linkedin_profile,
     add_user,
@@ -495,6 +496,7 @@ from cqc_lem.platform.db.repositories.users import (
     get_onboarding_nudges_sent,
     get_onboarding_state,
     get_or_create_reply_inbound_token,
+    get_profile_facts,
     get_profile_synthesis,
     get_survey_candidate_user_ids,
     get_user_access_token,
@@ -534,6 +536,7 @@ from cqc_lem.platform.db.repositories.users import (
     set_last_recorded_skills,
     set_linkedin_session_email_sent_at,
     set_profile_synthesis,
+    set_user_admin,
     update_avatar_preferences,
     update_company_linked_in_url_for_user,
     update_linkedin_connection_status,
@@ -1110,6 +1113,9 @@ __all__ = [
     "get_affiliate_enrollment",
     "set_affiliate_promo_opt_in",
     "set_affiliate_status",
+    "_profile_url_variants",
+    "get_profile_facts",
+    "set_user_admin",
 ]
 
 # Load .env file
@@ -3088,43 +3094,8 @@ def get_lead_activity(user_id: int, days: int = 90) -> list:
         connection.close()
 
 
-def _profile_url_variants(profile_url: str) -> list:
-    """Every spelling of one profile URL worth looking up. Activity rows carry tracking
-    querystrings and inconsistent trailing slashes (`/in/jane?trk=feed` vs `/in/jane/`) while
-    `profiles` stores whichever form the scraper saw, so an exact match would miss most people —
-    same reason get_linked_in_profile_by_url() queries both slash variants.
-    """
-    raw = str(profile_url or "").strip()
-    if not raw:
-        return []
-    base = raw.split("#", 1)[0].split("?", 1)[0].rstrip("/")
-    if not base:
-        return [raw]
-    return list(dict.fromkeys([raw, base, base + "/"]))
 
 
-def get_profile_facts(profile_urls: list) -> dict:
-    """ICP facts (title / company / industry) for the profiles we HAVE scraped, keyed by the
-    profile URL as stored in `profiles` (callers match on the /in/ slug, not the raw string).
-    People we never scraped simply aren't in the result — the scorer treats them as neutral.
-    """
-    urls = list(dict.fromkeys(v for u in (profile_urls or []) if u
-                              for v in _profile_url_variants(u)))
-    if not urls:
-        return {}
-    try:
-        with db_cursor(dictionary=True) as cursor:
-            placeholders = ", ".join(["%s"] * len(urls))
-            cursor.execute(
-                "SELECT profile_url, "
-                "JSON_UNQUOTE(JSON_EXTRACT(data, '$.job_title')) AS job_title, "
-                "JSON_UNQUOTE(JSON_EXTRACT(data, '$.company_name')) AS company_name, "
-                "JSON_UNQUOTE(JSON_EXTRACT(data, '$.industry')) AS industry "
-                f"FROM profiles WHERE profile_url IN ({placeholders})", tuple(urls))
-            return {r["profile_url"]: r for r in cursor.fetchall() if r.get("profile_url")}
-    except mysql.connector.Error as err:
-        log_error("Could not read profile facts", exc=err)
-        return {}
 
 
 
@@ -3804,22 +3775,6 @@ def count_admin_users() -> Optional[int]:
         return None
 
 
-def set_user_admin(user_id: int, is_admin: bool) -> bool:
-    """Flip `users.is_admin` for one account.
-
-    The GUARDS are the route's job, not this function's — it is the write, and a write that also
-    decided policy would be two things to keep in step.
-
-    False when no row changed, so "user 999 does not exist" cannot read as a successful grant.
-    """
-    try:
-        with db_cursor(commit=True) as cursor:
-            cursor.execute("UPDATE users SET is_admin = %s WHERE id = %s",
-                           (1 if is_admin else 0, int(user_id)))
-            return cursor.rowcount > 0
-    except mysql.connector.Error as err:
-        log_error(f"Could not set admin flag for user_id {user_id}", exc=err)
-        return False
 
 
 def get_feedback_list(status: Optional[Union["FeedbackStatus", str]] = None,
