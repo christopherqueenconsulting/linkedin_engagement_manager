@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.156.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.155.0...v0.156.0) (2026-08-17)
+
+
+### Features
+
+* **avatar:** surface an undeclared likeness attribute — SPA prompt + countable telemetry (closes [#1598](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1598)) ([#1630](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1630)) ([b395835](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/b395835c17ae7994175ddf82c6fe8dd7c2821e49))
+* **avatar:** surface an undeclared likeness attribute in the SPA and count it (closes [#1598](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1598)) ([b395835](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/b395835c17ae7994175ddf82c6fe8dd7c2821e49))
+
+
+### Bug Fixes
+
+* **selenium:** resolve the share-box composer where it actually mounts — inside a shadow root (closes [#1621](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1621)) ([#1634](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1634)) ([bf96a90](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/bf96a902e751be1fc185047d765f18de76bbfd2e))
+
 ## [0.155.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.154.0...v0.155.0) (2026-08-17)
 
 
