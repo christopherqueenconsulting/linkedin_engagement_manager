@@ -64,7 +64,12 @@ Two things it fixes, both reported as "the app ignored what I did":
   (`session_token=cookie` — the session rides in an httpOnly cookie since #745), so a cache keyed on
   the URL has ONE entry for a per-user body.
 
-`/api/assets` is the single exemption: public by design (LinkedIn fetches those URLs
+It is registered LAST, which makes it the outermost middleware — `api_token_middleware` answers a
+credential-less `/api` request with its own 401 without calling the rest of the stack, and that
+refusal is a response too.
+
+`/api/assets` is the single exemption, matched on a path-segment boundary (never a bare prefix, so
+a future `/api/assets-admin` does not inherit it): public by design (LinkedIn fetches those URLs
 unauthenticated when publishing) and every stored name carries a random token, so the bytes behind
 one URL never change. Verify after a deploy by requesting any `/api` path twice and reading
 `cf-cache-status` — a second `HIT` means the zone is overriding the header, not honouring it.

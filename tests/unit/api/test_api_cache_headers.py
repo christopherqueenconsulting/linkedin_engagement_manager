@@ -67,6 +67,32 @@ def test_assets_route_stays_cacheable(api_client):
     assert "Cache-Control" not in response.headers
 
 
+def test_exemption_does_not_leak_to_a_neighbouring_path(api_client):
+    """The exemption is `/api/assets` and its subtree — never a path that merely starts with it.
+
+    A bare prefix match would hand a future `/api/assets-admin` the one route allowed to be cached,
+    which is how an exemption spreads without anyone deciding it should.
+    """
+    response = api_client.get("/api/assets-admin")
+
+    assert response.headers["Cache-Control"] == NO_STORE_CACHE_CONTROL
+
+
+def test_edge_credential_filter_refusal_is_no_store(api_client):
+    """The 401 `api_token_middleware` answers with itself, never reaching the route.
+
+    That refusal is what an unauthenticated caller gets in production (`API_ACCESS_TOKENS` is set
+    there), and it short-circuits before `call_next` — so it only carries the header because this
+    middleware is registered LAST and therefore wraps it.
+    """
+    with patch("cqc_lem.api.main._API_ACCESS_TOKEN_SET", {"a-token"}):
+        response = api_client.get("/api/user/group-post-draft", params={"session_token": "nope"})
+
+    assert response.status_code == 401
+    assert response.headers["Cache-Control"] == NO_STORE_CACHE_CONTROL
+    assert response.headers["Pragma"] == "no-cache"
+
+
 def test_non_api_route_is_left_alone(api_client):
     """The health probe is not `/api`.
 

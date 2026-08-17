@@ -236,10 +236,17 @@ async def observability_middleware(request: Request, call_next):
 # The ONE `/api` path that is meant to be cached. `get_assets` is public by design (LinkedIn
 # fetches these URLs unauthenticated when publishing) and every stored name carries a random
 # token, so the bytes behind one URL never change — the opposite of the payloads below.
+#
+# Matched on a path-segment boundary for the same reason `_is_public_api_path` below is: a bare
+# `startswith` would hand a future `/api/assets-admin` the exemption too, and an exemption is
+# exactly the thing that must not spread by accident.
 _CACHEABLE_API_PREFIX = "/api/assets"
 
 
-@app.middleware("http")
+def _is_cacheable_api_path(path: str) -> bool:
+    return path == _CACHEABLE_API_PREFIX or path.startswith(_CACHEABLE_API_PREFIX + "/")
+
+
 async def api_cache_control_middleware(request: Request, call_next):
     """Mark every `/api` payload uncacheable, the way the HTML shell already is (issue #1527).
 
@@ -260,7 +267,7 @@ async def api_cache_control_middleware(request: Request, call_next):
     """
     response = await call_next(request)
     path = request.url.path
-    if path.startswith("/api/") and not path.startswith(_CACHEABLE_API_PREFIX):
+    if path.startswith("/api/") and not _is_cacheable_api_path(path):
         response.headers["Cache-Control"] = NO_STORE_CACHE_CONTROL
         response.headers["Pragma"] = "no-cache"
     return response
@@ -457,6 +464,14 @@ async def session_cookie_middleware(request: Request, call_next):
         _request_path.reset(path_reset)
         _request_object.reset(request_reset)
         _request_session_scope.reset(scope_reset)
+
+
+# Registered LAST on purpose, which makes it the OUTERMOST middleware: Starlette runs the most
+# recently added one first, and `api_token_middleware` answers a credential-less /api request with
+# its own 401 without ever calling `call_next`. Registered where it is defined, that refusal — the
+# response every request gets in production before the caller signs in — would leave the origin
+# with no `Cache-Control` at all, which is the one thing this middleware exists to prevent.
+app.middleware("http")(api_cache_control_middleware)
 
 
 # ---------------------------------------------------------------------------
