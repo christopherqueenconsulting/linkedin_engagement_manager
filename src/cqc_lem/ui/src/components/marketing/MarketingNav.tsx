@@ -51,15 +51,21 @@ export default function MarketingNav() {
           >
             Log in
           </button>
-          <CtaButton
-            section="nav"
-            cta="nav_trial"
-            label="Start free trial from the top navigation"
-            onClick={openLoginModal}
-            className="hidden sm:inline-flex px-4 py-2 text-sm"
-          >
-            Start free trial
-          </CtaButton>
+          {/* The WRAPPER is what hides below `sm`, not the button (issue #1556). `hidden` handed to
+              CtaButton lost to the `inline-flex` in its own base classes — same specificity, and
+              Tailwind emits `inline-flex` last — so this 162px button stayed on screen at 375px and
+              pushed the nav row to 443px. */}
+          <span className="hidden sm:block">
+            <CtaButton
+              section="nav"
+              cta="nav_trial"
+              label="Start free trial from the top navigation"
+              onClick={openLoginModal}
+              className="px-4 py-2 text-sm"
+            >
+              Start free trial
+            </CtaButton>
+          </span>
           <button
             type="button"
             aria-expanded={menuOpen}

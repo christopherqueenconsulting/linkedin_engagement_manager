@@ -239,6 +239,49 @@ describe('accessibility (issue #1300)', () => {
   })
 })
 
+// A phone browser lays a document out at its min-content width whenever that is wider than the
+// screen, then zooms the whole thing down to fit — so on a 375px iPhone the front page rendered at
+// ~610px with the hero, the copy and the buttons all running off the right edge (issue #1556).
+// These assert the three structures that made the page ask for that room. Widths themselves are
+// not assertable here: jsdom has no layout engine, so what is guarded is the markup that decides
+// them.
+describe('mobile viewport (issue #1556)', () => {
+  it('hides the nav trial CTA below `sm` on the wrapper, where hiding actually works', () => {
+    const { container } = renderApp()
+    const cta = container.querySelector('nav [data-cta="nav_trial"]') as HTMLElement
+    expect(cta).not.toBeNull()
+    // The button's own base classes set `inline-flex`, and Tailwind emits that after `hidden`, so
+    // a `hidden` on the button itself never applied.
+    expect(cta.className).not.toContain('hidden')
+    expect(cta.parentElement?.className).toContain('hidden')
+    expect(cta.parentElement?.className).toContain('sm:block')
+  })
+
+  it('lets the hero columns shrink to the screen', () => {
+    const { container } = renderApp()
+    const grid = container.querySelector('[data-section="hero"] div[class*="grid"]') as HTMLElement
+    expect(grid).not.toBeNull()
+    for (const column of [...grid.children] as HTMLElement[]) {
+      expect(column.className, `hero column "${column.className}" pins the page open`).toContain(
+        'min-w-0',
+      )
+    }
+  })
+
+  it('lets every feature beat column shrink to the screen', () => {
+    const { container } = renderApp()
+    const beats = container.querySelectorAll('[data-testid^="feature-beat-"]')
+    expect(beats.length).toBeGreaterThan(0)
+    for (const beat of [...beats]) {
+      for (const column of [...beat.children] as HTMLElement[]) {
+        expect(column.className, `beat column "${column.className}" pins the page open`).toContain(
+          'min-w-0',
+        )
+      }
+    }
+  })
+})
+
 describe('landing analytics (issue #1300)', () => {
   it('reports which section a CTA was clicked in', () => {
     renderApp()
