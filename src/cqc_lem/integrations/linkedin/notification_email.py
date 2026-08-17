@@ -30,6 +30,12 @@ _REACTION_PHRASES = ("liked", "reacted to", "celebrates", "loves", "supports",
 # another domain someone can register a lookalike under.
 _LINKEDIN_SENDER_DOMAINS = ("linkedin.com",)
 
+# The ONE mailbox Gmail sends a forwarding-confirmation from. Split into local part + domain because
+# both halves have to be checked as whole tokens: `forwarding-noreply@google.com.attacker.net` is a
+# different sender that a substring test over the joined address cannot tell apart.
+_GMAIL_FORWARDING_LOCAL_PARTS = ("forwarding-noreply",)
+_GMAIL_FORWARDING_SENDER_DOMAINS = ("google.com",)
+
 
 def reply_inbound_address(token: str) -> str:
     """The forwarding address the user points a Gmail filter at. Host is LINKEDIN_PARSE_DOMAIN if
@@ -84,6 +90,30 @@ def _sender_domain(sender: str) -> str:
     return domain.strip().rstrip(".").lower()
 
 
+def _sender_local_part(sender: str) -> str:
+    """The lowercased local part of an RFC5322 `From` value, or `""` when it doesn't carry one.
+
+    The mirror of _sender_domain: everything BEFORE the last `@`, so a quoted local part that itself
+    contains an `@` stays whole. A value parseaddr can't read yields `""`.
+    """
+    _, address = parseaddr(sender or "")
+    local, at, _ = address.rpartition("@")
+    if not at:
+        return ""
+    return local.strip().lower()
+
+
+def _domain_matches(domain: str, allowed: tuple[str, ...]) -> bool:
+    """True when `domain` IS one of `allowed` or a true subdomain of one.
+
+    The ONE domain rule both sender checks share, so they cannot drift apart. An empty domain never
+    matches.
+    """
+    if not domain:
+        return False
+    return any(domain == d or domain.endswith(f".{d}") for d in allowed)
+
+
 def _is_linkedin_sender(sender: str) -> bool:
     """True only when the From address's DOMAIN is LinkedIn's, or a true subdomain of it.
 
@@ -92,10 +122,20 @@ def _is_linkedin_sender(sender: str) -> bool:
     contain "linkedin.com" while being sent by neither. Only an exact match or a `.linkedin.com`
     suffix counts, so the dot boundary is what a lookalike has to get past.
     """
-    domain = _sender_domain(sender)
-    if not domain:
-        return False
-    return any(domain == d or domain.endswith(f".{d}") for d in _LINKEDIN_SENDER_DOMAINS)
+    return _domain_matches(_sender_domain(sender), _LINKEDIN_SENDER_DOMAINS)
+
+
+def _is_gmail_forwarding_sender(sender: str) -> bool:
+    """True only when the From address IS Gmail's forwarding-confirmation mailbox.
+
+    Both halves are compared as whole tokens against the same dot-boundary domain rule
+    `_is_linkedin_sender` uses. A full local-part-plus-domain substring test looks tighter than a
+    bare-domain one but is not: `forwarding-noreply@google.com.attacker.net` contains
+    "forwarding-noreply@google.com" and is sent by whoever registered attacker.net. An unreadable
+    From fails closed — this decides whether we auto-click a forwarding verify link.
+    """
+    return (_sender_local_part(sender) in _GMAIL_FORWARDING_LOCAL_PARTS
+            and _domain_matches(_sender_domain(sender), _GMAIL_FORWARDING_SENDER_DOMAINS))
 
 
 def is_linkedin_notification(sender: str, subject: str, text: str = "") -> bool:
@@ -130,7 +170,7 @@ def is_gmail_forwarding_confirmation(sender: str, subject: str, text: str = "") 
     """True when the inbound email is a Gmail 'Forwarding Confirmation' asking us to verify the
     forwarding address (from forwarding-noreply@google.com).
     """
-    if "forwarding-noreply@google.com" in (sender or "").lower():
+    if _is_gmail_forwarding_sender(sender):
         return True
     subj = (subject or "").lower()
     body = (text or "").lower()
