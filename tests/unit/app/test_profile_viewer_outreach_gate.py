@@ -88,7 +88,13 @@ def _engage(connection: str, *, auto_send=False, prefs_row=_UNSET, activities=()
     dm, invite = mocks["send_private_dm"], mocks["invite_to_connect"]
     followup, logged = mocks["enqueue_next_followup"], mocks["insert_new_log"]
     return result, {"sched": sched, "conn": conn, "dm": dm, "invite": invite,
-                    "followup": followup, "log": logged}
+                    "followup": followup, "log": logged,
+                    # The paid-for half of each branch: the template render + history dedup on the
+                    # DM side, the activity summary + refinement pass on the invite side.
+                    "draft": mocks["build_dm_from_template"],
+                    "history_check": mocks["ai_check_message_history"],
+                    "summarize": mocks["summarize_recent_activity"],
+                    "refine": mocks["get_ai_message_refinement"]}
 
 
 def _log_result(mocks):
@@ -224,6 +230,39 @@ class TestDedupBeforeQueueing:
             SCHEDULED_DM_SOURCE_PROFILE_VIEWER, SCHEDULED_DM_SOURCE_NURTURE,
             SCHEDULED_DM_SOURCE_ARTIFACT}
 
+    def test_a_blocked_dm_visit_never_pays_to_write_the_draft(self):
+        """An open draft is this lane's STEADY state, not its exception.
+
+        The walk re-lists the same viewer on every loop for as long as they sit inside the lookback
+        window, and only the first visit can queue anything — so asking the dedup question after
+        the message was written would spend a template render plus the history-dedup call on every
+        later visit, forever, on a draft that can never be filed.
+        """
+        _, mocks = _engage("1st", open_draft=True)
+
+        mocks["draft"].assert_not_called()
+        mocks["history_check"].assert_not_called()
+
+    def test_a_blocked_invite_visit_never_pays_to_write_the_note(self):
+        """Worse on this side: `get_requested_person_keys` is permanent, so it is EVERY later visit."""
+        from cqc_lem.utilities.lead_scoring import person_key
+
+        key = person_key("Jane Doe", "https://www.linkedin.com/in/jane-doe")
+        _, mocks = _engage("2nd", requested_keys=[key])
+
+        mocks["summarize"].assert_not_called()
+        mocks["refine"].assert_not_called()
+
+    def test_direct_dispatch_still_drafts_for_someone_already_requested(self):
+        """Toggle ON is the pre-#1137 path: no queue to collide with, so no dedup question."""
+        from cqc_lem.utilities.lead_scoring import person_key
+
+        key = person_key("Jane Doe", "https://www.linkedin.com/in/jane-doe")
+        _, mocks = _engage("2nd", auto_send=True, requested_keys=[key])
+
+        mocks["summarize"].assert_called_once()
+        mocks["invite"].apply_async.assert_called_once()
+
     def test_someone_already_requested_is_never_re_filed(self):
         """The viewer list repeats people; one invite per person, ever, is the existing #398 rule."""
         from cqc_lem.utilities.lead_scoring import person_key
@@ -257,6 +296,8 @@ class TestTheQueuedInviteBacklogStaysInsideTheSharedCap:
         _, mocks = _engage("2nd", max_invites=0)
 
         mocks["conn"].assert_not_called()
+        # And spends nothing writing a note it cannot file.
+        mocks["summarize"].assert_not_called()
 
     def test_remaining_budget_still_queues(self):
         _, mocks = _engage("2nd", max_invites=10, invites_sent=4, open_requests=5)

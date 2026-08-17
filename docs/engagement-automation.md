@@ -414,6 +414,14 @@ now gated by **ONE** preference, `profile_viewer_dm_auto_send` (default OFF).
   artifact (this is the coldest of the three, so it is the one that yields), and the invite reuses
   `get_requested_person_keys` — ever-requested, any status, the same rule the nightly sourcing scan
   follows. A skip is DEBUG; it is the designed no-op, not a missed opportunity.
+- **Both dedups are read BEFORE the draft is written**, not just before the insert
+  (`_profile_viewer_dm_blocked` / `_profile_viewer_connect_blocked`). A blocked visit is this lane's
+  STEADY state rather than its exception: the walk re-lists the same viewer every loop for as long
+  as they sit inside the lookback window, only the first visit can queue anything, and the invite
+  half's dedup is PERMANENT. Asking at insert time would spend a template render + history-dedup
+  call (DM), or an activity summary + personalised draft + refinement pass (invite), on every later
+  visit, forever, for a row that can never be written. Direct dispatch asks neither question — it
+  has no queue to collide with, which is the pre-#1137 behaviour the toggle restores.
 - **The queued invite backlog stays inside the SHARED cap.** `count_open_connection_requests` counts
   a PENDING row as spent `max_invites_per_day`, and nothing ages one out, so `_queue_profile_viewer_connect`
   files only while `max_invites_per_day - sent_today - open_requests > 0` — exactly the arithmetic
