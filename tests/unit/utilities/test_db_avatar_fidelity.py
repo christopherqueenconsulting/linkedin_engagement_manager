@@ -8,7 +8,7 @@ import pytest
 
 pytestmark = pytest.mark.unit
 
-_DB = "cqc_lem.utilities.db"
+_POSTS = "cqc_lem.platform.db.repositories.posts"
 
 
 class TestAvatarRowSerialization:
@@ -317,7 +317,7 @@ class TestInsertPostUseAvatar:
         from cqc_lem.utilities.db import PostStatus, PostType
         conn, cur = fake_cursor(rowcount=1)
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn), \
-             patch(f"{_DB}.get_user_id", return_value=3):
+             patch(f"{_POSTS}.get_user_id", return_value=3):
             from cqc_lem.utilities.db import insert_post
             assert insert_post("a@b.c", "body", datetime(2026, 7, 30, 9, 0), PostType.TEXT,
                                status=PostStatus.PENDING, use_avatar=value) is True

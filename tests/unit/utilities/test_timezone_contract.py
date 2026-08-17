@@ -21,7 +21,7 @@ import pytest
 
 pytestmark = pytest.mark.unit
 
-_DB = "cqc_lem.utilities.db"
+_POSTS = "cqc_lem.platform.db.repositories.posts"
 
 
 # One zone per interesting offset shape: DST + negative, DST + positive, half-hour, no DST at all.
@@ -183,7 +183,7 @@ class TestSchedulingWritesNormalizeToUtc:
     def test_insert_post(self, fake_cursor):
         conn, cur = fake_cursor()
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn), \
-             patch(f"{_DB}.get_user_id", return_value=1):
+             patch(f"{_POSTS}.get_user_id", return_value=1):
             from cqc_lem.utilities.db import PostType, insert_post
             insert_post("a@b.co", "body", self.AWARE, PostType.TEXT)
         stored = cur.execute.call_args[0][1][1]

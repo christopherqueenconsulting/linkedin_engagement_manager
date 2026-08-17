@@ -438,6 +438,7 @@ from cqc_lem.platform.db.repositories.posts import (
     has_scheduled_post_today,
     insert_occasion_post,
     insert_planned_post,
+    insert_post,
     mark_post_avatar_media,
     post_avatar_media_state,
     post_used_avatar_media,
@@ -581,7 +582,7 @@ from cqc_lem.utilities.crypto import (
 from cqc_lem.utilities.env_constants import (
     SESSION_IDLE_HOURS,
 )
-from cqc_lem.utilities.logger import log_error, log_info, log_warning
+from cqc_lem.utilities.logger import log_error, log_info
 
 # Re-exported for the ~2,400 call sites that still say `from cqc_lem.utilities.db import X`.
 # `__all__` is the one declaration ruff (F401) and CodeQL (py/unused-import) both understand —
@@ -1129,6 +1130,7 @@ __all__ = [
     "_credential_id_hash",
     "add_passkey_factor",
     "get_passkey_by_credential_id",
+    "insert_post",
 ]
 
 # Load .env file
@@ -1326,47 +1328,6 @@ def store_linkedin_li_at(user_id: int, li_at: str, jsessionid: Optional[str] = N
 
 
 
-def insert_post(email: str, content: str, scheduled_time: datetime, post_type: PostType,
-                video_url: Optional[str] = None, carousel_slides: Optional[list[str]] = None,
-                video_quality: str = "standard", status: PostStatus = PostStatus.PENDING,
-                use_avatar: Optional[bool] = None, image_url: Optional[str] = None) -> bool:
-    """Insert a fully-formed post for the account behind `email`.
-
-    `use_avatar` is deliberately three-valued: NULL means the composer expressed no preference for this
-    post, so the per-user opt-ins decide (issue #744); 0/1 is an explicit compose-time choice. An unknown
-    email is logged and returns False rather than raising.
-    """
-    user_id = get_user_id(email)
-
-    success = False
-
-    if not user_id:
-        # WARNING, not INFO: the post is silently dropped. Once is a bad argument; repeatedly is
-        # something systematically composing posts against an account that does not exist.
-        log_warning("Cannot insert post — no user for that email")
-        return success
-
-    try:
-        with db_cursor(commit=True) as cursor:
-            scheduled_time = to_naive_utc(scheduled_time)
-
-            slides_json = json.dumps(carousel_slides) if carousel_slides else None
-
-            # use_avatar is deliberately three-valued: NULL = the user expressed no preference for this
-            # post, so the per-user opt-ins decide (issue #744). 0/1 is an explicit compose-time choice.
-            cursor.execute("""
-                INSERT INTO posts (content, scheduled_time, post_type, user_id, video_url, carousel_slides, video_quality, status, use_avatar, image_url)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            """, (content, scheduled_time, post_type.value, user_id, video_url, slides_json,
-                  video_quality or "standard", status.value,
-                  None if use_avatar is None else int(bool(use_avatar)), image_url))
-
-            success = cursor.rowcount == 1
-    except mysql.connector.Error as e:
-        success = False
-        log_error("Could not insert post", exc=e)
-
-    return success
 
 
 

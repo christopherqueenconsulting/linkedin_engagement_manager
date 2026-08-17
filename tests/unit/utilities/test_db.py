@@ -784,7 +784,7 @@ class TestInsertPost:
         from cqc_lem.utilities.db import PostType, insert_post
 
         with patch("cqc_lem.platform.db.connection.get_db_connection") as mock_conn, \
-             patch("cqc_lem.utilities.db.get_user_id") as mock_get_user:
+             patch("cqc_lem.platform.db.repositories.posts.get_user_id") as mock_get_user:
             mock_conn.return_value = mock_database_connection["connection"]
             mock_get_user.return_value = 60
             mock_database_connection["cursor"].rowcount = 1
@@ -803,7 +803,7 @@ class TestInsertPost:
     def test_returns_false_when_user_not_found(self, mock_database_connection):
         from cqc_lem.utilities.db import PostType, insert_post
 
-        with patch("cqc_lem.utilities.db.get_user_id") as mock_get_user:
+        with patch("cqc_lem.platform.db.repositories.posts.get_user_id") as mock_get_user:
             mock_get_user.return_value = None
 
             result = insert_post(
@@ -819,7 +819,7 @@ class TestInsertPost:
         from cqc_lem.utilities.db import PostStatus, PostType, insert_post
 
         with patch("cqc_lem.platform.db.connection.get_db_connection") as mock_conn, \
-             patch("cqc_lem.utilities.db.get_user_id", return_value=60):
+             patch("cqc_lem.platform.db.repositories.posts.get_user_id", return_value=60):
             mock_conn.return_value = mock_database_connection["connection"]
             mock_database_connection["cursor"].rowcount = 1
 
@@ -835,7 +835,7 @@ class TestInsertPost:
         from cqc_lem.utilities.db import PostStatus, PostType, insert_post
 
         with patch("cqc_lem.platform.db.connection.get_db_connection") as mock_conn, \
-             patch("cqc_lem.utilities.db.get_user_id", return_value=60):
+             patch("cqc_lem.platform.db.repositories.posts.get_user_id", return_value=60):
             mock_conn.return_value = mock_database_connection["connection"]
             mock_database_connection["cursor"].rowcount = 1
 
@@ -878,7 +878,7 @@ class TestInsertPostExtended:
         from cqc_lem.utilities.db import PostType, insert_post
 
         with patch("cqc_lem.platform.db.connection.get_db_connection") as mock_conn, \
-             patch("cqc_lem.utilities.db.get_user_id") as mock_uid:
+             patch("cqc_lem.platform.db.repositories.posts.get_user_id") as mock_uid:
             mock_conn.return_value = mock_database_connection["connection"]
             mock_uid.return_value = 10
             mock_database_connection["cursor"].rowcount = 1
@@ -901,7 +901,7 @@ class TestInsertPostExtended:
         from cqc_lem.utilities.db import PostType, insert_post
 
         with patch("cqc_lem.platform.db.connection.get_db_connection") as mock_conn, \
-             patch("cqc_lem.utilities.db.get_user_id") as mock_uid:
+             patch("cqc_lem.platform.db.repositories.posts.get_user_id") as mock_uid:
             mock_conn.return_value = mock_database_connection["connection"]
             mock_uid.return_value = 10
             mock_database_connection["cursor"].rowcount = 1
