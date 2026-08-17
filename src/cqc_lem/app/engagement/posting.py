@@ -153,6 +153,7 @@ from cqc_lem.utilities.linkedin.composer import (
     _type_and_submit_reply,
     comment_author_identity,
 )
+from cqc_lem.utilities.linkedin.helper import can_open_dm_thread
 from cqc_lem.utilities.linkedin.poster import (
     object_urn_from_post_url,
     share_carousel_on_linkedin,
@@ -556,9 +557,26 @@ def _record_replied_to_comment(user_id: int, post_id: int, commenter_slug: str, 
                     post_id=post_id, action_type="reply")
 
 
+def _comment_asks_for_keyword(comment_text: str, keyword: str) -> bool:
+    r"""Did this comment use the lead-magnet keyword as a WORD?
+
+    A bare substring test is what made the delivery irrelevant to the person receiving it (issue
+    #1528): a keyword of `AUDIT` matched "auditing our stack", `GUIDE` matched "guidelines", and the
+    commenter — who never asked for anything — got a DM draft pushing a resource. The keyword is the
+    consent signal in "comment X and I'll send it", so it has to be the whole word.
+
+    Word edges are `\w` boundaries asserted around the escaped keyword rather than `\b`, so a
+    keyword the user saved with punctuation or spaces ("THE AUDIT", "#AUDIT") still matches.
+    """
+    keyword = (keyword or "").strip()
+    if not keyword:
+        return False
+    return re.search(rf"(?<!\w){re.escape(keyword)}(?!\w)", comment_text or "", re.IGNORECASE) is not None
+
+
 def _queue_artifact_delivery(user_id: int, profile_url: str, first_name: str, comment_text: str,
                              lead_magnet: dict, prefs: dict, post_id: int = None,
-                             blog_url: str = "") -> "int | None":
+                             blog_url: str = "", connection_degree: str = None) -> "int | None":
     """Deliver the owned asset a commenter asked for by keyword — as an APPROVAL-GATED draft in the
     operator's existing scheduled_dms queue, never as a direct send (issue #624).
 
@@ -568,6 +586,11 @@ def _queue_artifact_delivery(user_id: int, profile_url: str, first_name: str, co
     cap, and a human approval before anything leaves. `send_scheduled_dm` then re-checks the user's
     max_dms_per_day at send time, so the cap is enforced on delivery too.
 
+    `connection_degree` is the badge the reply sweep already read off the comment card. This lane
+    OPENS a new DM thread with a stranger, so a 2nd/3rd+ commenter's draft could never be delivered
+    — it sat in the queue until someone approved it and the send failed (issue #1528). An unreadable
+    badge still queues: `can_open_dm_thread` fails open.
+
     Returns the scheduled_dms id, or None when nothing was queued. Best-effort and NON-FATAL — a
     delivery that can't be drafted must never break the reply sweep it rides on.
     """
@@ -575,9 +598,16 @@ def _queue_artifact_delivery(user_id: int, profile_url: str, first_name: str, co
         delivery = resolve_artifact_delivery(lead_magnet)
         if delivery["kind"] != ARTIFACT_KIND_LEAD_MAGNET or not delivery["deliverable"]:
             return None
-        if delivery["keyword"].lower() not in (comment_text or "").lower():
+        if not _comment_asks_for_keyword(comment_text, delivery["keyword"]):
             return None
         if not profile_url or has_received_lead_magnet(user_id, profile_url):
+            return None
+        if not can_open_dm_thread(connection_degree):
+            # DEBUG, not a warning: a 2nd/3rd+ commenter is the ordinary case on a post that
+            # travelled, and the sweep re-reads the same card every pass — an expected no-op.
+            log_debug(f"Artifact delivery: {first_name or profile_url} is "
+                      f"{connection_degree} — a DM thread cannot be opened with them; skipping",
+                      user_id=user_id, post_id=post_id, action_type="dm")
             return None
         # One open draft per person, across BOTH mechanics: a commenter who is already mid-nurture
         # must not also get an artifact draft stacked on the same thread.
@@ -725,7 +755,8 @@ def _reply_to_comments_on_open_post(driver, wait, user_id: int, post_id: int, my
                     leads_flagged += 1
                 # Comment-gated artifact delivery (#624): approval-gated draft, never a direct send.
                 _queue_artifact_delivery(user_id, _eprofile, _ename, comment_text, lead_magnet,
-                                         prefs, post_id=post_id, blog_url=lead_magnet_blog_url)
+                                         prefs, post_id=post_id, blog_url=lead_magnet_blog_url,
+                                         connection_degree=_edegree)
         except Exception:
             # A card without a readable /in/ link is routine SDUI variance; only the
             # reciprocity/lead capture is skipped — the reply flow below still proceeds.

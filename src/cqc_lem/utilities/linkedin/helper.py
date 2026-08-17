@@ -134,6 +134,23 @@ def is_first_degree(raw: str) -> bool:
     return connection_degree(raw) == "1st"
 
 
+def can_open_dm_thread(raw: str) -> bool:
+    """Can we start a NEW DM thread with the person this badge belongs to?
+
+    Opening one needs a 1st-degree connection — `send_dm_now` addresses a compose URL and LinkedIn
+    simply will not accept a message to a 2nd/3rd+ person without InMail, so a draft queued for one
+    is un-sendable the moment it is approved (issue #1528). Continuing a thread that is ALREADY open
+    is a different question and is not gated here: they replied to us, so the thread exists whatever
+    the badge says.
+
+    False only when the badge SAYS a degree we cannot message. A missing badge is UNKNOWN, not "not
+    connected" (see `is_first_degree`), so this fails OPEN — a selector drift must never silently
+    stop every delivery.
+    """
+    degree = connection_degree(raw)
+    return degree is None or degree == "1st"
+
+
 def _text_is_transport_error(body: str) -> bool:
     """Chrome network/proxy error interstitial ("This site can't be reached", ERR_* codes) — a
     transport failure (flaky residential proxy, DNS, timeout), NOT a LinkedIn throttle. Kept separate

@@ -121,3 +121,91 @@ class TestQueueArtifactDelivery:
     def test_a_db_error_never_breaks_the_reply_sweep(self):
         with patch(f"{_POST}.has_received_lead_magnet", side_effect=RuntimeError("db down")):
             assert _queue() is None
+
+
+def _queued_ok(**overrides):
+    """Run `_queue` with every gate BUT the one under test held open."""
+    with patch(f"{_POST}.has_received_lead_magnet", return_value=False), \
+         patch(f"{_POST}.has_open_scheduled_dm", return_value=False), \
+         patch(f"{_POST}.count_scheduled_dms_created_today", return_value=0), \
+         patch(f"{_POST}.record_lead_magnet_sent"), \
+         patch(f"{_POST}.insert_scheduled_dm", return_value=7) as ins:
+        result = _queue(**overrides)
+    return result, ins
+
+
+class TestKeywordIsAWholeWord:
+    """The keyword is the CONSENT signal, so a substring of a longer word is not one (issue #1528).
+
+    A bare substring test hands the resource to people who never asked for it — which is what "the
+    drafted content is not relevant to the contact" looked like from the inbox.
+    """
+
+    def test_the_keyword_inside_a_longer_word_is_not_an_ask(self):
+        result, ins = _queued_ok(comment_text="We're auditing our stack this quarter")
+        assert result is None
+        ins.assert_not_called()
+
+    def test_the_keyword_as_a_word_is_an_ask(self):
+        result, ins = _queued_ok(comment_text="AUDIT please — this is exactly my problem")
+        assert result == 7
+        ins.assert_called_once()
+
+    def test_punctuation_around_the_keyword_still_counts(self):
+        for text in ("audit!", "(audit)", "yes — audit, thanks", "#audit"):
+            result, _ = _queued_ok(comment_text=text)
+            assert result == 7, text
+
+    def test_a_multi_word_keyword_matches_on_its_own_edges(self):
+        lm = {"enabled": True, "keyword": "THE AUDIT", "message": "Here you go: {blog_url}"}
+        assert _queued_ok(comment_text="send me the audit", lead_magnet=lm)[0] == 7
+        assert _queued_ok(comment_text="the auditing deck", lead_magnet=lm)[0] is None
+
+    def test_a_blank_keyword_delivers_nothing(self):
+        lm = {"enabled": True, "keyword": "  ", "message": "Here you go"}
+        result, ins = _queued_ok(comment_text="anything at all", lead_magnet=lm)
+        assert result is None
+        ins.assert_not_called()
+
+
+class TestOnlyPeopleWeCanActuallyDm:
+    """This lane OPENS a new DM thread, which needs a 1st-degree connection (issue #1528).
+
+    A draft for anyone else is un-sendable the moment the operator approves it.
+    """
+
+    def test_a_first_degree_commenter_gets_the_draft(self):
+        result, ins = _queued_ok(connection_degree="1st")
+        assert result == 7
+        ins.assert_called_once()
+
+    def test_a_second_degree_commenter_does_not(self):
+        result, ins = _queued_ok(connection_degree="2nd")
+        assert result is None
+        ins.assert_not_called()
+
+    def test_a_third_degree_commenter_does_not(self):
+        result, ins = _queued_ok(connection_degree="3rd+")
+        assert result is None
+        ins.assert_not_called()
+
+    def test_an_unread_badge_still_queues(self):
+        """Fails OPEN — SDUI omits the badge on some surfaces.
+
+        A drift there must not silently stop every delivery.
+        """
+        assert _queued_ok(connection_degree=None)[0] == 7
+        assert _queued_ok(connection_degree="")[0] == 7
+
+    def test_the_degree_gate_runs_before_the_message_is_written(self):
+        """No LLM/template render and no delivered-marker for someone we cannot message."""
+        with patch(f"{_POST}.has_received_lead_magnet", return_value=False), \
+             patch(f"{_POST}.has_open_scheduled_dm", return_value=False), \
+             patch(f"{_POST}.count_scheduled_dms_created_today", return_value=0), \
+             patch(f"{_POST}.render_dm_placeholders") as render, \
+             patch(f"{_POST}.record_lead_magnet_sent") as rec, \
+             patch(f"{_POST}.insert_scheduled_dm") as ins:
+            assert _queue(connection_degree="2nd") is None
+        render.assert_not_called()
+        rec.assert_not_called()
+        ins.assert_not_called()

@@ -206,6 +206,15 @@ comment-keyword mechanic whose payload is a DM; **newsletter** is a subscribe LI
   (`source='artifact'`); blocked by an open draft from EITHER mechanic in BOTH directions; capped
   on `max_dms_per_day` at drafting AND re-checked at send. `record_lead_magnet_sent` fires on
   QUEUE.
+- **The keyword is the CONSENT signal, so it has to be a whole WORD** (#1528). A bare substring
+  test matched `AUDIT` inside "auditing our stack" and delivered a resource to someone who never
+  asked — read from their inbox, that is a DM about something irrelevant to them.
+- **Only a commenter we can actually DM gets a draft** (#1528). This lane OPENS a new thread, and
+  LinkedIn allows that to a 1st-degree connection only, so a 2nd/3rd+ commenter's draft was
+  un-sendable the moment it was approved. The gate is `can_open_dm_thread` on the badge the sweep
+  already read off the card, and it **fails OPEN** — an unrendered badge is unknown, not "not
+  connected". A thread that is ALREADY open (#485 nurture) is never gated this way: they replied
+  to us, so the thread exists whatever the badge says.
 - Attribution rides on `GET /user/newsletter-subscribers` (`count_artifact_cta_deliveries`):
   subscriber growth reads against the CTAs that actually delivered. `newsletter_links` is None
   (not 0) with no URL.
