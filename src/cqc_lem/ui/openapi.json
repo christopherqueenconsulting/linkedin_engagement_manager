@@ -7958,7 +7958,7 @@
     },
     "/api/catchup/touches": {
       "get": {
-        "description": "Drafted LinkedIn Catch-up congratulations awaiting review (issue #482), highest-scoring first.",
+        "description": "Drafted LinkedIn Catch-up congratulations awaiting review (issue #482).\n\nHighest-scoring first by default; `sort_by=date` orders by when the touch was drafted, and\n`start_date`/`end_date` bound that same date so the queue can be narrowed to a range (#1464).",
         "operationId": "list_catchup_touches_endpoint_api_catchup_touches_get",
         "parameters": [
           {
@@ -8028,8 +8028,54 @@
             "required": false,
             "schema": {
               "default": "desc",
+              "pattern": "^(asc|desc)$",
               "title": "Sort Order",
               "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "sort_by",
+            "required": false,
+            "schema": {
+              "default": "score",
+              "pattern": "^(score|date)$",
+              "title": "Sort By",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "start_date",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Start Date"
+            }
+          },
+          {
+            "in": "query",
+            "name": "end_date",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "End Date"
             }
           }
         ],

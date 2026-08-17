@@ -802,10 +802,25 @@ def has_catchup_touch(user_id: int, profile_url: str, event_type: "CatchupEventT
     except mysql.connector.Error as err:
         log_error("Could not check catchup touch", exc=err, user_id=user_id)
         return False
+_CATCHUP_SORT_COLUMNS = {"score": "score", "date": "created_at"}
+
+
 def get_catchup_touches(user_id: int, status_filter: str = None, event_type_filter: str = None,
-                        page: int = 1, page_size: int = 25, sort_order: str = "desc") -> dict:
-    """Paginated list of a user's catch-up touches (mirrors get_connection_requests)."""
+                        page: int = 1, page_size: int = 25, sort_order: str = "desc",
+                        sort_by: str = "score", start_date: Optional[datetime] = None,
+                        end_date: Optional[datetime] = None) -> dict:
+    """Paginated list of a user's catch-up touches (mirrors get_connection_requests).
+
+    `sort_by` picks the PRIMARY key through `_CATCHUP_SORT_COLUMNS` (anything unknown falls back to
+    `score`) because the column name is interpolated rather than parameterized, and `sort_order`
+    directs it; the other column is the stable tiebreak. `start_date`/`end_date` bound `created_at`
+    — the date the queue shows and the reporter of issue #1464 filters on — coerced to naive UTC.
+
+    A read error returns an EMPTY page, never a partial one.
+    """
     order = "ASC" if str(sort_order).lower() == "asc" else "DESC"
+    sort_col = _CATCHUP_SORT_COLUMNS.get(str(sort_by or "").lower(), "score")
+    tiebreak = "created_at DESC" if sort_col == "score" else "score DESC"
     where = "WHERE user_id = %s"
     params: list = [user_id]
     if status_filter:
@@ -814,6 +829,12 @@ def get_catchup_touches(user_id: int, status_filter: str = None, event_type_filt
     if event_type_filter:
         where += " AND event_type = %s"
         params.append(event_type_filter)
+    if start_date is not None:
+        where += " AND created_at >= %s"
+        params.append(to_naive_utc(start_date))
+    if end_date is not None:
+        where += " AND created_at <= %s"
+        params.append(to_naive_utc(end_date))
     offset = max(0, (max(1, page) - 1) * page_size)
     try:
         with db_cursor(dictionary=True) as cursor:
@@ -821,7 +842,7 @@ def get_catchup_touches(user_id: int, status_filter: str = None, event_type_filt
             total = int(cursor.fetchone()["c"])
             cursor.execute(
                 f"SELECT {', '.join(_CATCHUP_COLS)} FROM catchup_touches {where} "
-                f"ORDER BY score DESC, created_at {order} LIMIT %s OFFSET %s",
+                f"ORDER BY {sort_col} {order}, {tiebreak} LIMIT %s OFFSET %s",
                 tuple(params + [page_size, offset]))
             rows = cursor.fetchall()
             for r in rows:

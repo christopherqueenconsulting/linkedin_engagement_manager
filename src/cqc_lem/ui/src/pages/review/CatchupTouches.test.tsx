@@ -113,4 +113,130 @@ describe('CatchupTouches — status filter', () => {
     fireEvent.click(screen.getByRole('button', { name: /Show all statuses/i }))
     await waitFor(() => expect(lastGetUrl()).not.toContain('status_filter'))
   })
+
+})
+
+// Issue #1464: the reporter wanted the queue sorted by date and narrowed to a date range. Both are
+// SERVER-side — page 1 of 50 is picked by the sort, so sorting the 50 already in hand would answer
+// a different question than the one asked.
+describe('CatchupTouches — date sorting', () => {
+  it('asks for the highest-scoring page by default', async () => {
+    get.mockResolvedValue({ data: { detail: { touches: [], total: 0 } } })
+    harness(<CatchupTouches userTimezone="America/New_York" />)
+
+    await waitFor(() => expect(get).toHaveBeenCalled())
+    expect(lastGetUrl()).toContain('sort_by=score')
+    expect(lastGetUrl()).toContain('sort_order=desc')
+  })
+
+  it('re-queries by date when the sort is switched', async () => {
+    get.mockResolvedValue({ data: { detail: { touches: [], total: 0 } } })
+    harness(<CatchupTouches userTimezone="America/New_York" />)
+
+    await waitFor(() => expect(get).toHaveBeenCalled())
+    fireEvent.change(screen.getByLabelText('Sort catch-up touches by'), { target: { value: 'date' } })
+
+    await waitFor(() => expect(lastGetUrl()).toContain('sort_by=date'))
+    expect(screen.getByRole('button', { name: /Newest first/i })).toBeTruthy()
+  })
+
+  it('flips the direction and says which way it is pointing', async () => {
+    get.mockResolvedValue({ data: { detail: { touches: [], total: 0 } } })
+    harness(<CatchupTouches userTimezone="America/New_York" />)
+
+    await waitFor(() => expect(get).toHaveBeenCalled())
+    fireEvent.change(screen.getByLabelText('Sort catch-up touches by'), { target: { value: 'date' } })
+    fireEvent.click(screen.getByRole('button', { name: /Newest first/i }))
+
+    await waitFor(() => expect(lastGetUrl()).toContain('sort_order=asc'))
+    expect(screen.getByRole('button', { name: /Oldest first/i })).toBeTruthy()
+  })
+
+  it('names the sort in the truncation notice, so 50 of 63 is never read as the top 50 by score', async () => {
+    get.mockResolvedValue({ data: { detail: { touches: [SENT_TOUCH], total: 63 } } })
+    harness(<CatchupTouches userTimezone="America/New_York" />)
+
+    await waitFor(() => expect(screen.getByText(/highest-scoring of 63/)).toBeTruthy())
+    fireEvent.change(screen.getByLabelText('Sort catch-up touches by'), { target: { value: 'date' } })
+    await waitFor(() => expect(screen.getByText(/most recent of 63/)).toBeTruthy())
+  })
+})
+
+describe('CatchupTouches — date range filter', () => {
+  it('sends no date bounds until a range is chosen', async () => {
+    get.mockResolvedValue({ data: { detail: { touches: [], total: 0 } } })
+    harness(<CatchupTouches userTimezone="America/New_York" />)
+
+    await waitFor(() => expect(get).toHaveBeenCalled())
+    expect(lastGetUrl()).not.toContain('start_date')
+    expect(lastGetUrl()).not.toContain('end_date')
+  })
+
+  it('bounds a custom range at the edges of the user timezone day', async () => {
+    get.mockResolvedValue({ data: { detail: { touches: [], total: 0 } } })
+    harness(<CatchupTouches userTimezone="America/New_York" />)
+
+    await waitFor(() => expect(get).toHaveBeenCalled())
+    fireEvent.change(screen.getByLabelText('Date range preset'), { target: { value: 'custom' } })
+    fireEvent.change(screen.getByLabelText('Custom start date'), { target: { value: '2026-08-01' } })
+    fireEvent.change(screen.getByLabelText('Custom end date'), { target: { value: '2026-08-15' } })
+
+    await waitFor(() => expect(lastGetUrl()).toContain('start_date=2026-08-01T04%3A00%3A00.000Z'))
+    expect(lastGetUrl()).toContain('end_date=2026-08-16T03%3A59%3A59.999Z')
+  })
+
+  it('never offers a forward-looking preset — every touch was drafted in the past', async () => {
+    get.mockResolvedValue({ data: { detail: { touches: [], total: 0 } } })
+    harness(<CatchupTouches userTimezone="America/New_York" />)
+
+    await waitFor(() => expect(get).toHaveBeenCalled())
+    const options = Array.from(
+      (screen.getByLabelText('Date range preset') as HTMLSelectElement).options,
+    ).map((o) => o.value)
+    expect(options).toContain('last7days')
+    expect(options).not.toContain('next30days')
+  })
+
+  it('blames the date range for an empty queue and offers a way out', async () => {
+    get.mockResolvedValue({ data: { detail: { touches: [], total: 0 } } })
+    harness(<CatchupTouches userTimezone="America/New_York" />)
+
+    await waitFor(() => expect(screen.getByText('No catch-up touches yet.')).toBeTruthy())
+    fireEvent.change(screen.getByLabelText('Date range preset'), { target: { value: 'today' } })
+
+    await waitFor(() =>
+      expect(screen.getByText('No catch-up touches yet in this date range.')).toBeTruthy())
+    fireEvent.click(screen.getByRole('button', { name: /Show all dates/i }))
+    await waitFor(() => expect(lastGetUrl()).not.toContain('start_date'))
+  })
+
+  it('sends no bound at all for a custom range with no usable dates, and does not blame it', async () => {
+    // `start_date=` is a 422 (`datetime_from_date_parsing`), and this component has no error state —
+    // a failed query renders as an empty queue, so an unusable date would read as "nothing in this
+    // range" instead of the unbounded list the user is actually still looking at.
+    get.mockResolvedValue({ data: { detail: { touches: [], total: 0 } } })
+    harness(<CatchupTouches userTimezone="America/New_York" />)
+
+    await waitFor(() => expect(get).toHaveBeenCalled())
+    fireEvent.change(screen.getByLabelText('Date range preset'), { target: { value: 'custom' } })
+
+    await waitFor(() => expect(screen.getByText('No catch-up touches yet.')).toBeTruthy())
+    expect(screen.getByLabelText('Custom start date')).toBeTruthy()
+    expect(lastGetUrl()).not.toContain('start_date')
+    expect(lastGetUrl()).not.toContain('end_date')
+  })
+
+  it('sends only the end bound when a custom range fills one side', async () => {
+    get.mockResolvedValue({ data: { detail: { touches: [], total: 0 } } })
+    harness(<CatchupTouches userTimezone="America/New_York" />)
+
+    await waitFor(() => expect(get).toHaveBeenCalled())
+    fireEvent.change(screen.getByLabelText('Date range preset'), { target: { value: 'custom' } })
+    fireEvent.change(screen.getByLabelText('Custom end date'), { target: { value: '2026-08-15' } })
+
+    await waitFor(() => expect(lastGetUrl()).toContain('end_date=2026-08-16T03%3A59%3A59.999Z'))
+    expect(lastGetUrl()).not.toContain('start_date')
+    await waitFor(() =>
+      expect(screen.getByText('No catch-up touches yet in this date range.')).toBeTruthy())
+  })
 })

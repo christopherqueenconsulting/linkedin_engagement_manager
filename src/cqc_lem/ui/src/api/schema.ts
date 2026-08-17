@@ -713,7 +713,10 @@ export interface paths {
         };
         /**
          * List Catchup Touches Endpoint
-         * @description Drafted LinkedIn Catch-up congratulations awaiting review (issue #482), highest-scoring first.
+         * @description Drafted LinkedIn Catch-up congratulations awaiting review (issue #482).
+         *
+         *     Highest-scoring first by default; `sort_by=date` orders by when the touch was drafted, and
+         *     `start_date`/`end_date` bound that same date so the queue can be narrowed to a range (#1464).
          */
         get: operations["list_catchup_touches_endpoint_api_catchup_touches_get"];
         put?: never;
@@ -7351,6 +7354,9 @@ export interface operations {
                 page?: number;
                 page_size?: number;
                 sort_order?: string;
+                sort_by?: string;
+                start_date?: string | null;
+                end_date?: string | null;
             };
             header?: never;
             path?: never;

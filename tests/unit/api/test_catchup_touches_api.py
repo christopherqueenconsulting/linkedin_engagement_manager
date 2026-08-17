@@ -32,6 +32,43 @@ class TestListTouches:
             resp = api_client.get("/api/catchup/touches", params={"session_token": _S})
         assert resp.status_code == 401
 
+    def test_defaults_are_the_highest_scoring_page_with_no_date_bounds(self, api_client):
+        """Issue #1464 adds sorting/filtering; the queue the SPA loaded before it must not move."""
+        payload = {"touches": [], "total": 0, "page": 1, "page_size": 25}
+        with patch(f"{_M}.get_session_user_id", return_value=_U), \
+             patch(f"{_M}.get_catchup_touches", return_value=payload) as lister:
+            resp = api_client.get("/api/catchup/touches", params={"session_token": _S})
+        assert resp.status_code == 200
+        kwargs = lister.call_args.kwargs
+        assert kwargs["sort_by"] == "score" and kwargs["sort_order"] == "desc"
+        assert kwargs["start_date"] is None and kwargs["end_date"] is None
+
+    def test_date_sort_and_range_reach_the_query(self, api_client):
+        from datetime import datetime
+        payload = {"touches": [], "total": 0, "page": 1, "page_size": 25}
+        with patch(f"{_M}.get_session_user_id", return_value=_U), \
+             patch(f"{_M}.get_catchup_touches", return_value=payload) as lister:
+            resp = api_client.get("/api/catchup/touches", params={
+                "session_token": _S, "sort_by": "date", "sort_order": "asc",
+                "start_date": "2026-08-01T00:00:00Z", "end_date": "2026-08-15T23:59:59Z"})
+        assert resp.status_code == 200
+        kwargs = lister.call_args.kwargs
+        assert kwargs["sort_by"] == "date" and kwargs["sort_order"] == "asc"
+        assert kwargs["start_date"] == datetime.fromisoformat("2026-08-01T00:00:00+00:00")
+        assert kwargs["end_date"] == datetime.fromisoformat("2026-08-15T23:59:59+00:00")
+
+    @pytest.mark.parametrize("params", [
+        {"sort_by": "created_at"},
+        {"sort_order": "sideways"},
+        {"start_date": "last tuesday"},
+    ])
+    def test_unusable_sort_or_date_is_refused_at_the_boundary(self, api_client, params):
+        with patch(f"{_M}.get_session_user_id", return_value=_U), \
+             patch(f"{_M}.get_catchup_touches") as lister:
+            resp = api_client.get("/api/catchup/touches", params={"session_token": _S, **params})
+        assert resp.status_code == 422
+        lister.assert_not_called()
+
 
 def _touch(**kw):
     base = {"id": 3, "user_id": _U, "message": "Congrats Jane!", "status": "pending"}

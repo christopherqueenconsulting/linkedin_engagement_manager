@@ -3061,16 +3061,29 @@ def refresh_leads_endpoint(request: LeadRefreshRequest) -> ResponseModel[str]:
 
 
 @router.get("/catchup/touches")
-def list_catchup_touches_endpoint(session_token: str, status_filter: Optional[str] = None,
-                                  event_type_filter: Optional[str] = None, page: int = 1,
-                                  page_size: int = 25, sort_order: str = "desc") -> ResponseModel[dict[str, Any]]:
-    """Drafted LinkedIn Catch-up congratulations awaiting review (issue #482), highest-scoring first."""
+def list_catchup_touches_endpoint(
+    session_token: str,
+    status_filter: Optional[str] = None,
+    event_type_filter: Optional[str] = None,
+    page: int = 1,
+    page_size: int = 25,
+    sort_order: str = Query(default="desc", pattern="^(asc|desc)$"),
+    sort_by: str = Query(default="score", pattern="^(score|date)$"),
+    start_date: Optional[datetime] = Query(default=None),
+    end_date: Optional[datetime] = Query(default=None),
+) -> ResponseModel[dict[str, Any]]:
+    """Drafted LinkedIn Catch-up congratulations awaiting review (issue #482).
+
+    Highest-scoring first by default; `sort_by=date` orders by when the touch was drafted, and
+    `start_date`/`end_date` bound that same date so the queue can be narrowed to a range (#1464).
+    """
     user_id = get_session_user_id(session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
     return ResponseModel(status_code=200, detail=get_catchup_touches(
         user_id, status_filter=status_filter, event_type_filter=event_type_filter,
-        page=page, page_size=page_size, sort_order=sort_order))
+        page=page, page_size=page_size, sort_order=sort_order, sort_by=sort_by,
+        start_date=start_date, end_date=end_date))
 
 
 @router.put("/catchup/touch")
