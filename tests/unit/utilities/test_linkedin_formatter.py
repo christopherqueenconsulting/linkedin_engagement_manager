@@ -210,6 +210,13 @@ class TestNormalizeCurrencySymbols:
         url = "https://host/pricing?cur=₹100"
         assert sanitize_for_linkedin(f"Details: {url}") == f"Details: {url}"
 
+    def test_a_url_survives_a_standalone_call_too(self):
+        # The function masks URLs itself, so the call sites that run it on a draft that has NOT been
+        # through sanitize_for_linkedin (the post pipeline's final pass, the carousel caption, the
+        # group post draft) cannot rewrite a query string.
+        url = "https://host/pricing?cur=₹100"
+        assert normalize_currency_symbols(f"Seats are ₹1,200. {url}") == f"Seats are $1,200. {url}"
+
     def test_scraped_text_normalization_is_untouched(self):
         # normalize_public_text also runs over other people's scraped cards, so it must NOT rewrite
         # their currency.

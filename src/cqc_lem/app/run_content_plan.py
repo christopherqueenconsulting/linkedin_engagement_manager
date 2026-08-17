@@ -164,7 +164,11 @@ from cqc_lem.utilities.env_constants import (
 from cqc_lem.utilities.linkedin.helper import get_my_profile, load_profile_for_user
 from cqc_lem.utilities.linkedin.profile import LinkedInProfile
 from cqc_lem.utilities.linkedin.rate_limit import acquire_run_lock, release_run_lock
-from cqc_lem.utilities.linkedin_formatter import sanitize_for_linkedin, strip_engagement_bait
+from cqc_lem.utilities.linkedin_formatter import (
+    normalize_currency_symbols,
+    sanitize_for_linkedin,
+    strip_engagement_bait,
+)
 from cqc_lem.utilities.logger import log_debug, log_error, log_info, log_warning
 from cqc_lem.utilities.media_provenance import write_brief_receipt
 from cqc_lem.utilities.notifications import notify_content_generation_ready
@@ -863,6 +867,12 @@ def create_carousel_content(user_id: int, stage: str, post_id: int = None,
                                                          guidance=guidance)
     log_info(f"Carousel AI content generated for user_id={user_id} stage={stage} "
             f"archetype={(blueprint or {}).get('format')}")
+    # A deck's caption is the one generated post text that never reaches `sanitize_for_linkedin`
+    # (JSON-mode output gets `normalize_public_text` + `enforce_post_readability` only), so without
+    # this a carousel could still ship priced in rupees (issue #1529). Applied to the CAPTION only:
+    # the slides are normalized string-by-string, and the context words that make a foreign symbol
+    # deliberate ("European ARR") routinely sit on a different slide from the figure.
+    post_text = normalize_currency_symbols(post_text)
 
     # The verification half of the split: the SLIDES are checked against EVERY active bank entry,
     # because a number out of the user's own material is by definition not one the model invented.
@@ -3148,6 +3158,13 @@ def create_text_post(user_id: int, stage: str, post_type: str = None,
     final_content = _apply_once_per_post_gates(ctx, final_content, recent_texts, story,
                                                cta_keyword)
     final_content = _repair_post_ctas(ctx, final_content, lead_magnet, include_cta)
+    # LAST word on the draft's currency glyphs (issue #1529). `_refine_draft`'s
+    # `sanitize_for_linkedin` runs BEFORE the humanization rewrite and the review gate's
+    # regeneration, and both of those are LLM passes that can price a dollar figure in rupees all
+    # over again — the humanizer already re-runs `normalize_public_text` on its output for exactly
+    # that reason, and currency is deliberately not part of that pass. Scored and persisted below
+    # on the text this returns, so the judge reads what ships.
+    final_content = normalize_currency_symbols(final_content)
     _persist_draft_outcome(ctx, final_content, story)
     return final_content
 

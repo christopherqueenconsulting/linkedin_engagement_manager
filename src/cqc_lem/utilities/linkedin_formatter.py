@@ -120,11 +120,17 @@ def normalize_currency_symbols(text: str, default_symbol: str = "$") -> str:
     about "€2M in European ARR" keeps its euros. A symbol not attached to a number is never touched.
 
     Deliberately NOT part of `normalize_public_text`: that pass also runs over text SCRAPED from
-    LinkedIn (other people's cards), where rewriting a currency would corrupt what we read. This
-    runs from `sanitize_for_linkedin`, which only ever sees our own outgoing drafts.
+    LinkedIn (other people's cards), where rewriting a currency would corrupt what we read. Call it
+    only on our OWN outgoing drafts.
+
+    Masks URLs itself, so it is safe to call standalone on a draft that has not been through
+    `sanitize_for_linkedin` — a currency symbol inside a query string publishes byte-identical
+    either way. Called from inside `sanitize_for_linkedin` the mask finds nothing, because that
+    function has already masked them.
     """
     if not text:
         return text
+    text, urls = _mask_urls(text)
     lowered = text.lower()
     for symbol, context_words in _FOREIGN_CURRENCY_CONTEXT.items():
         if symbol not in text:
@@ -132,7 +138,7 @@ def normalize_currency_symbols(text: str, default_symbol: str = "$") -> str:
         if any(re.search(rf"(?<!\w){word}(?!\w)", lowered) for word in context_words):
             continue
         text = _FOREIGN_CURRENCY_RES[symbol].sub(default_symbol, text)
-    return text
+    return _unmask_urls(text, urls)
 
 
 # Drop-in directive for AI system prompts so models avoid the fancy punctuation in the first place
@@ -282,7 +288,8 @@ def sanitize_for_linkedin(text: str) -> str:
 
     text = normalize_public_text(text)
     text, urls = _mask_urls(text)
-    # After masking, so a currency symbol inside a URL's query string is never rewritten.
+    # A currency symbol inside a URL's query string is never rewritten: the URLs are already
+    # masked here, so the function's own mask is a no-op.
     text = normalize_currency_symbols(text)
 
     # Remove markdown headers (# through ######) at line start, keep the text
