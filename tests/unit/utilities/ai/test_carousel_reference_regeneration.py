@@ -139,6 +139,19 @@ class TestTheRetryNeverCostsUsTheDraftWeHave:
         assert deck == _NARRATIVE
         assert "exact stack" in text
 
+    def test_a_retry_that_drops_a_required_slide_keeps_the_first_deck(self):
+        """The retry is a fresh reply, so it can drop `cover` exactly like a first draft can.
+
+        The shape gate (issue #1666) runs BEFORE this loop, so without a shape check here a
+        better-GRADING deck would replace a buildable one and die at `model_cls(**carousel_dict)` —
+        the very ValidationError the gate exists to stop, and by then only DEBUG records it.
+        """
+        no_cover = {k: v for k, v in _REFERENCE.items() if k != "cover"}
+        _, deck, call = _generate([_response(_NARRATIVE), _response(no_cover)],
+                                  blueprint={"format": "build_receipt"})
+        assert call.call_count == 2
+        assert deck == _NARRATIVE
+
 
 class TestStoryDirectiveReachesTheWriter:
     def test_the_one_anchored_story_rides_into_the_carousel_prompt(self):

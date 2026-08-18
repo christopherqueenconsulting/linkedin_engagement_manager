@@ -3721,6 +3721,17 @@ Return ONLY valid JSON. No explanation, no markdown fences."""
             log_warning("Carousel reference-gate retry failed — keeping the previous deck",
                         exc=exc, user_id=user_id, task_name="create_carousel_content")
             break
+        # The shape gate above already ran, so `carousel_dict` in hand is one the model can be
+        # built from — and this retry is a whole fresh reply that can drop a required slide just
+        # like the first one did (issue #1666). Grading it says nothing about its SHAPE: a deck
+        # with body slides but no `cover` grades fine and would then die at
+        # `model_cls(**carousel_dict)` with the post flagged 'error'. Keep the buildable draft.
+        retry_missing = missing_carousel_fields(model_cls, retry_deck)
+        if retry_missing:
+            log_warning("Carousel reference-gate retry came back missing required slide field(s) "
+                        "(" + ", ".join(retry_missing) + ") — keeping the previous deck",
+                        user_id=user_id, task_name="create_carousel_content")
+            break
         retry_report = _framework.deck_reference_report(retry_deck, retry_text,
                                                         save_targeted=save_targeted)
         if not retry_report["checked"]:

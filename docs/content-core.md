@@ -242,7 +242,11 @@ call naming the missing top-level keys (`_carousel_shape_directive`), keeping th
 that call errors or comes back no better. A deck it could not repair logs ONE ERROR naming the
 fields — not a pydantic message — and both construction sites (`create_carousel_content`, and the
 `POST /api/generate-carousel` preview route, which answers **502** with the field names) read the
-same function rather than letting the constructor raise. The production failure it closes: a reply
+same function rather than letting the constructor raise. Because the gate runs FIRST, the reference
+gate's own retry is shape-checked before it is accepted — that retry is a whole fresh reply, it can
+drop `cover` exactly like a first draft can, and grading says nothing about shape: a deck with body
+slides but no cover grades fine and would replace a buildable one. The production failure it closes:
+a reply
 that omitted the `carousel` key reached `EducationalContentCarousel(**{})` and filed 332 grouped
 `ValidationError: cover field required` exceptions naming pydantic, not the generator.
 
