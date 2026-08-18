@@ -33,8 +33,18 @@ INDEX_HTML = """<!doctype html><html><head>
 <link rel="stylesheet" href="/assets/index-abc123.css">
 </head><body><div id="root"></div></body></html>"""
 
-BUNDLE_WITH_KEY = f'e.init("{TOKEN}",{{api_host:"https://us.i.posthog.com",autocapture:!0}})'
-BUNDLE_WITHOUT_KEY = 'e.init(void 0,{api_host:"https://us.i.posthog.com",autocapture:!0})'
+# The shape a current build has: captures addressed at the reverse proxy, with `ui_host` — a
+# `*.posthog.com` URL that is NOT an ingestion host — inlined right beside it (issue #1677).
+PROXY = bc.DEFAULT_API_HOST
+UI_HOST = "https://us.posthog.com"
+BUNDLE_WITH_KEY = (
+    f'e.init("{TOKEN}",{{api_host:"{PROXY}",ui_host:"{UI_HOST}",autocapture:!0}})'
+)
+BUNDLE_WITHOUT_KEY = f'e.init(void 0,{{api_host:"{PROXY}",ui_host:"{UI_HOST}",autocapture:!0}})'
+# A bundle from before the switch — the one shape `api-host` must not wave through.
+BUNDLE_DIRECT_HOST = (
+    f'e.init("{TOKEN}",{{api_host:"https://us.i.posthog.com",autocapture:!0}})'
+)
 
 
 class _FakeSite:
@@ -100,7 +110,23 @@ def test_parse_asset_urls_dedupes_and_honours_the_cap():
 def test_find_project_tokens_and_hosts():
     assert bc.find_project_tokens(BUNDLE_WITH_KEY) == [TOKEN]
     assert bc.find_project_tokens(BUNDLE_WITHOUT_KEY) == []
-    assert bc.find_ingest_hosts(BUNDLE_WITH_KEY) == ["https://us.i.posthog.com"]
+    assert bc.find_ingest_hosts(BUNDLE_DIRECT_HOST) == ["https://us.i.posthog.com"]
+
+
+def test_find_ingest_hosts_never_reads_ui_host_as_an_ingestion_host():
+    """`ui_host` is a `*.posthog.com` URL that captures never go to (issue #1677).
+
+    The looser pattern this replaces matched it, so a bundle correctly pointed at the proxy would
+    have PASSed while REPORTING `https://us.posthog.com` as its ingestion host — a confident wrong
+    answer, which is worse for a preflight than a failure.
+    """
+    assert bc.find_ingest_hosts(BUNDLE_WITH_KEY) == []
+
+
+def test_find_ingest_hosts_finds_a_proxy_only_because_it_is_expected():
+    """A proxy origin is a LEM domain with nothing PostHog-shaped about it."""
+    assert bc.find_ingest_hosts(BUNDLE_WITH_KEY, PROXY) == [PROXY]
+    assert bc.find_ingest_hosts(BUNDLE_DIRECT_HOST, PROXY) == ["https://us.i.posthog.com"]
 
 
 def test_site_host_tolerates_a_missing_scheme_and_a_port():
@@ -155,6 +181,27 @@ def test_classify_api_host_fails_when_nothing_is_inlined():
     assert bc.classify_api_host(["https://us.i.posthog.com"])["ok"] is True
 
 
+def test_classify_api_host_names_the_expected_proxy_when_nothing_is_inlined():
+    result = bc.classify_api_host([], expected=PROXY)
+    assert result["ok"] is False and PROXY in result["detail"]
+
+
+def test_classify_api_host_fails_a_bundle_still_addressed_at_posthog_directly():
+    """A stale `api_host` is invisible from PostHog's side (issue #1677).
+
+    Events keep arriving from every visitor who was not blocking the direct domain — which is
+    exactly the population that never had a problem — so only the artifact can report it.
+    """
+    result = bc.classify_api_host(["https://us.i.posthog.com"], expected=PROXY)
+    assert result["ok"] is False
+    assert "https://us.i.posthog.com" in result["detail"] and PROXY in result["detail"]
+
+
+def test_classify_api_host_passes_when_the_proxy_is_the_inlined_host():
+    result = bc.classify_api_host([PROXY], expected=PROXY)
+    assert result["ok"] is True and result["detail"] == f"api_host: {PROXY}"
+
+
 # --- the ingest query --------------------------------------------------------------------------
 
 def test_pageview_hogql_pins_the_browser_lib_and_the_site_host():
@@ -196,15 +243,35 @@ def test_parse_query_rows_survives_a_non_json_body():
 # --- the artifact run --------------------------------------------------------------------------
 
 def test_check_artifacts_passes_on_a_correctly_built_bundle():
-    results = _named(bc.check_artifacts(SITE, _site(), expected_token=TOKEN))
+    results = _named(bc.check_artifacts(SITE, _site(), expected_token=TOKEN,
+                                        expected_api_host=PROXY))
     assert [r["ok"] for r in results.values()] == [True, True, True]
 
 
 def test_check_artifacts_fails_the_bundle_when_the_build_arg_was_empty():
-    results = _named(bc.check_artifacts(SITE, _site(with_key=False), expected_token=TOKEN))
+    results = _named(bc.check_artifacts(SITE, _site(with_key=False), expected_token=TOKEN,
+                                        expected_api_host=PROXY))
     assert results["shell"]["ok"] is True
     assert results["bundle"]["ok"] is False
     assert results["api-host"]["ok"] is True  # the host literal survives a keyless build
+
+
+def test_check_artifacts_fails_api_host_on_a_bundle_that_predates_the_proxy_switch():
+    site = _FakeSite({
+        f"{SITE}/": (200, INDEX_HTML),
+        f"{SITE}/assets/index-abc123.js": (200, BUNDLE_DIRECT_HOST),
+        f"{SITE}/assets/runtime-def456.js": (200, ""),
+    })
+    results = _named(bc.check_artifacts(SITE, site, expected_token=TOKEN,
+                                        expected_api_host=PROXY))
+    assert results["bundle"]["ok"] is True  # the key is fine; only the destination is stale
+    assert results["api-host"]["ok"] is False
+
+
+def test_check_artifacts_passes_api_host_on_a_proxied_bundle():
+    results = _named(bc.check_artifacts(SITE, _site(), expected_token=TOKEN,
+                                        expected_api_host=PROXY))
+    assert [r["ok"] for r in results.values()] == [True, True, True]
 
 
 def test_check_artifacts_never_fetches_the_lazy_posthog_chunk():
@@ -309,6 +376,32 @@ def test_main_runs_the_full_chain_and_passes(monkeypatch, capsys):
 def test_main_rejects_a_site_without_a_hostname_and_a_zero_asset_cap(capsys):
     assert bc.main(["--site", "not a url"]) == 2
     assert bc.main(["--site", SITE, "--max-assets", "0", "--skip-ingest"]) == 2
+
+
+def test_main_defaults_the_expected_api_host_to_the_proxy(monkeypatch, capsys):
+    """With no `--api-host` and no `$VITE_POSTHOG_HOST`, the proxy is what a build must carry."""
+    monkeypatch.delenv("VITE_POSTHOG_HOST", raising=False)
+    site = _FakeSite({
+        f"{SITE}/": (200, INDEX_HTML),
+        f"{SITE}/assets/index-abc123.js": (200, BUNDLE_DIRECT_HOST),
+        f"{SITE}/assets/runtime-def456.js": (200, ""),
+    })
+    monkeypatch.setattr(bc, "SiteReader", lambda timeout=30: site)
+    assert bc.main(["--site", SITE, "--project-token", TOKEN, "--skip-ingest"]) == 1
+    assert "FAIL  api-host" in capsys.readouterr().out
+
+
+def test_main_lets_the_build_env_move_the_expected_api_host(monkeypatch, capsys):
+    """`VITE_POSTHOG_HOST` is what a build actually reads, so it is what the check follows."""
+    monkeypatch.setenv("VITE_POSTHOG_HOST", "https://us.i.posthog.com")
+    site = _FakeSite({
+        f"{SITE}/": (200, INDEX_HTML),
+        f"{SITE}/assets/index-abc123.js": (200, BUNDLE_DIRECT_HOST),
+        f"{SITE}/assets/runtime-def456.js": (200, ""),
+    })
+    monkeypatch.setattr(bc, "SiteReader", lambda timeout=30: site)
+    assert bc.main(["--site", SITE, "--project-token", TOKEN, "--skip-ingest"]) == 0
+    assert "3 passed, 0 failed" in capsys.readouterr().out
 
 
 def test_main_defaults_the_expected_token_to_the_build_env(monkeypatch, capsys):

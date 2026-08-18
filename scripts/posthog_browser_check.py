@@ -17,7 +17,8 @@ ClickHouse, and prints one PASS/FAIL line per link:
 1. `shell`     — the live `index.html` is reachable and references JS assets.
 2. `bundle`    — a `phc_` project token is INLINED in that entry graph (the empty-build-arg case),
                  and matches the expected token when one is supplied.
-3. `api-host`  — the ingestion host is inlined, so captures are addressed somewhere real.
+3. `api-host`  — the EXPECTED ingestion host is inlined, so captures are addressed somewhere real
+                 and at the reverse proxy rather than at PostHog directly (issue #1677).
 4. `ingest`    — browser-sourced (`$lib = 'web'`) `$pageview` rows exist for that host inside the
                  window. Zero rows is a FAIL here, unlike `posthog_key_check.py`: this check's whole
                  question is whether events ARRIVE, so "the query ran and found nothing" is the bug.
@@ -34,6 +35,8 @@ CLI:
   --hours N           Ingestion window in hours (default 24).
   --project-token T   Token the bundle is expected to carry. Default: $VITE_POSTHOG_KEY, and with
                       neither the bundle check asserts presence only.
+  --api-host URL      api_host the bundle is expected to carry. Default: $VITE_POSTHOG_HOST, else
+                      the reverse proxy `analytics.ts` falls back to.
   --max-assets N      Cap on entry-graph assets fetched (default 8).
   --skip-ingest       Artifact checks only; makes no PostHog request and needs no API key.
   --timeout S         Per-request timeout in seconds (default 30).
@@ -43,6 +46,7 @@ Env:
   POSTHOG_PROJECT_ID      PostHog project id (default 475262 — "CQC LEM").
   POSTHOG_APP_HOST        App host for the API (default https://us.posthog.com).
   VITE_POSTHOG_KEY        Default for --project-token.
+  VITE_POSTHOG_HOST       Default for --api-host.
 Exit: 0 every check passed, 1 at least one failed, 2 on a usage error.
 """
 from __future__ import annotations
@@ -66,6 +70,10 @@ from cqc_lem.utilities.posthog_keys import (  # noqa: E402
 )
 
 DEFAULT_SITE = "https://lem.christopherqueenconsulting.com"
+#: The `api_host` the SPA is expected to inline — PostHog's managed reverse proxy (issue #1677).
+#: Kept in step with the `HOST` fallback in `ui/src/utils/analytics.ts`; the two disagreeing is
+#: itself the defect this check names.
+DEFAULT_API_HOST = "https://lemt.christopherqueenconsulting.com"
 DEFAULT_PROJECT_ID = "475262"  # "CQC LEM" — not a secret; the key that reaches it is.
 DEFAULT_APP_HOST = "https://us.posthog.com"
 DEFAULT_HOURS = 24
@@ -88,8 +96,12 @@ _TOKEN_RE = re.compile(r"phc_[A-Za-z0-9]{20,}")
 #: the lazily-imported `posthog-js` chunk this deliberately does not fetch.
 _ASSET_RE = re.compile(r"""(?:src|href)\s*=\s*["']([^"']+\.js)["']""", re.IGNORECASE)
 
-#: Any PostHog ingestion host, `us`/`eu` or a reverse proxy that keeps the suffix.
-_INGEST_HOST_RE = re.compile(r"https://[A-Za-z0-9.\-]+\.posthog\.com")
+#: A DIRECT PostHog ingestion host — `us.i.posthog.com`, `eu.i.posthog.com`, or a proxy that keeps
+#: the suffix. Anchored on `.i.posthog.com` rather than `.posthog.com` since issue #1677: `ui_host`
+#: (`https://us.posthog.com`) is now inlined right beside `api_host`, and the looser pattern matched
+#: it — so a bundle correctly pointed at the reverse proxy would have PASSed while REPORTING the app
+#: host as its ingestion host, which is worse than failing.
+_INGEST_HOST_RE = re.compile(r"https://[A-Za-z0-9.\-]+\.i\.posthog\.com")
 
 #: A plausible DNS hostname. Used to reject a `--site` typo before any request is made.
 _HOSTNAME_RE = re.compile(r"[A-Za-z0-9]([A-Za-z0-9\-.]*[A-Za-z0-9])?")
@@ -168,16 +180,24 @@ def find_project_tokens(text: str) -> list:
     return found
 
 
-def find_ingest_hosts(text: str) -> list:
-    """Every distinct PostHog ingestion host inlined in `text`, in first-seen order.
+def find_ingest_hosts(text: str, expected: str = "") -> list:
+    """Every distinct ingestion origin inlined in `text`, in first-seen order.
+
+    Two shapes count, because since issue #1677 the SPA addresses captures at a REVERSE PROXY. A
+    direct PostHog host is PostHog-shaped and is found by pattern; a proxy origin
+    (`https://lemt.…`) has nothing PostHog-shaped about it at all, so the only way to find one is
+    to look for the one we expect.
 
     Args:
         text: Bundle source.
+        expected: The `api_host` the bundle should carry, or "" to look for direct hosts only.
 
     Returns:
-        The matching `https://….posthog.com` origins.
+        The matching origins — `expected` first when it is present.
     """
     found = []
+    if expected and expected in (text or ""):
+        found.append(expected)
     for match in _INGEST_HOST_RE.finditer(text or ""):
         if match.group(0) not in found:
             found.append(match.group(0))
@@ -244,19 +264,33 @@ def classify_bundle(tokens: list, expected: str = "") -> dict:
                        "the bundle is reporting to a different project")}
 
 
-def classify_api_host(hosts: list) -> dict:
-    """Read the inlined ingestion host.
+def classify_api_host(hosts: list, expected: str = "") -> dict:
+    """Read the inlined ingestion host, and say whether it is the one we meant.
+
+    Unlike `classify_bundle`, a mismatch here is a FAIL rather than a presence-only pass. The
+    project key can legitimately differ between deployments; the `api_host` cannot — there is one
+    correct value, it is not a secret, and shipping the previous one is invisible from PostHog's
+    side (issue #1677): events keep arriving from everyone whose browser is not blocking the direct
+    domain, which is exactly the population that never had a problem.
 
     Args:
-        hosts: Every ingestion host found across the entry graph.
+        hosts: Every ingestion origin found across the entry graph.
+        expected: The `api_host` the bundle should carry, or "" to assert presence only.
 
     Returns:
         `{"ok": bool, "detail": str}`.
     """
     if not hosts:
+        missing = f" — expected {expected}" if expected else ""
         return {"ok": False,
-                "detail": "no PostHog ingestion host inlined — captures have nowhere to go"}
-    return {"ok": True, "detail": f"api_host: {', '.join(hosts)}"}
+                "detail": f"no ingestion host inlined{missing} — captures have nowhere to go"}
+    if not expected:
+        return {"ok": True, "detail": f"api_host: {', '.join(hosts)}"}
+    if expected in hosts:
+        return {"ok": True, "detail": f"api_host: {expected}"}
+    return {"ok": False,
+            "detail": (f"api_host is {', '.join(hosts)} — expected {expected}; the deployed bundle "
+                       "predates the reverse-proxy switch, so blocked visitors report nothing")}
 
 
 def pageview_hogql(host: str, hours: int = DEFAULT_HOURS) -> str:
@@ -437,7 +471,7 @@ class PostHogReader:
 
 
 def check_artifacts(site: str, reader: "SiteReader", expected_token: str = "",
-                    max_assets: int = DEFAULT_MAX_ASSETS) -> list:
+                    max_assets: int = DEFAULT_MAX_ASSETS, expected_api_host: str = "") -> list:
     """Run the three artifact checks against the deployed SPA.
 
     A transport error is a FAIL like any other: from a visitor's side an unreachable site and a
@@ -448,6 +482,7 @@ def check_artifacts(site: str, reader: "SiteReader", expected_token: str = "",
         reader: The site I/O client.
         expected_token: Token the bundle should carry, or "".
         max_assets: Cap on entry-graph assets fetched.
+        expected_api_host: `api_host` the bundle should carry, or "" to assert presence only.
 
     Returns:
         Three result dicts: `shell`, `bundle`, `api-host`.
@@ -476,13 +511,13 @@ def check_artifacts(site: str, reader: "SiteReader", expected_token: str = "",
         for token in find_project_tokens(source):
             if token not in tokens:
                 tokens.append(token)
-        for host in find_ingest_hosts(source):
+        for host in find_ingest_hosts(source, expected_api_host):
             if host not in hosts:
                 hosts.append(host)
     return [
         shell,
         {"name": "bundle", **classify_bundle(tokens, expected_token)},
-        {"name": "api-host", **classify_api_host(hosts)},
+        {"name": "api-host", **classify_api_host(hosts, expected_api_host)},
     ]
 
 
@@ -521,6 +556,8 @@ def main(argv: Optional[list] = None) -> int:
                         help="Ingestion window in hours (default 24).")
     parser.add_argument("--project-token", default=os.getenv("VITE_POSTHOG_KEY", ""),
                         help="Token the bundle is expected to carry (default $VITE_POSTHOG_KEY).")
+    parser.add_argument("--api-host", default=os.getenv("VITE_POSTHOG_HOST", "") or DEFAULT_API_HOST,
+                        help=f"api_host the bundle is expected to carry (default {DEFAULT_API_HOST}).")
     parser.add_argument("--max-assets", type=int, default=DEFAULT_MAX_ASSETS,
                         help="Cap on entry-graph assets fetched (default 8).")
     parser.add_argument("--skip-ingest", action="store_true",
@@ -539,7 +576,8 @@ def main(argv: Optional[list] = None) -> int:
 
     results = check_artifacts(normalize_site(args.site), SiteReader(timeout=args.timeout),
                               expected_token=(args.project_token or "").strip(),
-                              max_assets=args.max_assets)
+                              max_assets=args.max_assets,
+                              expected_api_host=(args.api_host or "").strip().rstrip("/"))
     if not args.skip_ingest:
         project_id = os.getenv("POSTHOG_PROJECT_ID", DEFAULT_PROJECT_ID)
         app_host = os.getenv("POSTHOG_APP_HOST", DEFAULT_APP_HOST)
