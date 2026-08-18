@@ -93,6 +93,39 @@ name. **The failure being muted here is the CLI's environment, never the app's:*
 inside `get_active_user_ids` stays an error, because in a Celery or API process a database that
 refuses the credentials means automation silently does nothing.
 
+### A group whose last occurrence predates the guard is history, not a live defect (#1673)
+
+The three guards above stop new leakage; they do not retract what was already ingested. A PostHog
+error-tracking group keeps its `active` status until someone resolves it, so every group the suite
+filled on or before 2026-08-14 still shows up on the error list — and gets re-filed by hand as a
+production bug against code that was working. #1673 was exactly that: `OSError: broker unreachable`,
+31 occurrences, read as a Celery broker outage.
+
+Three tells, checkable from the group itself before any code is read. **All three must hold** — any
+one alone is a coincidence, and resolving a group on a partial match buries a real defect:
+
+| Tell | What to look at |
+|---|---|
+| The message is a FIXTURE string | `grep -rn "<the exception message>" tests/` finds it as a `side_effect`, and `src/` never raises it. `broker unreachable`, `broker down`, `boom`, `db down`, `fail` are mocks, not products |
+| The actor is a TEST user | `distinct_id` on the sampled events is `42` — `SESSION_USER_ID` in `tests/unit/api/conftest.py`. Production is one real user, and it is not 42 |
+| It stopped when the guards landed | `last_seen` is **on or before 2026-08-14** (UTC). The three guards closed three different paths on that one day — #1451 (`capture_exception`) at 02:37Z, #1460 (the Logs handler) at 19:02Z, #1498 (autocapture) at 21:26Z — so a leaked group can carry a `last_seen` anywhere up to ~21:30Z that day. Nothing of this shape has been ingested since |
+
+All three held on #1673: the string exists only as `chain.return_value.apply_async.side_effect =
+OSError("broker unreachable")` in `tests/unit/api/test_content_generation_status_api.py`, which
+drives the real `except` in `create_weekly_content` into `log_error(exc=...)`. There was no broker
+incident to find.
+
+**Resolve the group in PostHog** — that is the fix, and the only one. `posthog_error_issues.py`
+already skips a resolved issue ("triage done in PostHog stays done"), so resolving is what stops a
+dead group costing triage time again; a code change would be inventing behaviour for a failure that
+never happened.
+
+The residue is large: measured 2026-08-18, **200+ groups are still `active` with no occurrence since
+the guard landed**, the biggest being `APIConnectionError: Connection error.` at 6,146 occurrences
+sourced literally at `tests/unit/conftest.py`. The daily cron cannot re-file any of them (it counts
+occurrences inside a 24h window), so they cost nothing automatically — they cost a human reading the
+error list. Resolve them in bulk from the PostHog UI rather than one GitHub issue at a time.
+
 ## Recurrence escalation: once is a warning, repeatedly is a defect
 
 `log_warning` never called `_capture()` — only `log_error`/`log_critical` did, and only with `exc=`.
