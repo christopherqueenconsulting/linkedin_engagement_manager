@@ -228,7 +228,8 @@ class TestEngagementPreferencesAreConfigured:
             assert has_engagement_preferences(1) is True
         conn, cursor = fake_cursor()
         cursor.execute.side_effect = mysql.connector.Error(msg="db down")
-        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn), patch("cqc_lem.platform.db.repositories.users.log_error"):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn), \
+             patch("cqc_lem.platform.db.repositories.users.log_error"):
             from cqc_lem.utilities.db import has_engagement_preferences
             assert has_engagement_preferences(1) is False
 

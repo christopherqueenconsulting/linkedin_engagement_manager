@@ -393,7 +393,8 @@ class TestPremiumCatchupAllowance:
             assert max_catchup_touches_allowed(1) == (10 if premium else 5)
 
     def test_lookup_failure_is_never_premium(self):
-        with patch("cqc_lem.platform.db.repositories.users.get_user_subscription_info", side_effect=RuntimeError("db down")):
+        with patch("cqc_lem.platform.db.repositories.users.get_user_subscription_info",
+                   side_effect=RuntimeError("db down")):
             from cqc_lem.utilities.db import is_premium_subscriber, max_catchup_touches_allowed
             assert is_premium_subscriber(1) is False
             assert max_catchup_touches_allowed(1) == 5
