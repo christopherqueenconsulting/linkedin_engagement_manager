@@ -13,6 +13,9 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from cqc_lem.utilities.carousel_creator import (
+    CAROUSEL_MODEL_BY_STAGE,
+    CAROUSEL_SCHEMA_HINTS,
+    DEFAULT_CAROUSEL_MODEL,
     CaseStudyCarousel,
     EducationalContentCarousel,
     IndustryInsightsCarousel,
@@ -29,6 +32,14 @@ _CC = "cqc_lem.utilities.carousel_creator"
 
 # Every stage value the SPA's carousel picker can send (`CAROUSEL_STAGES` in ComposePost.tsx).
 SPA_STAGES = ["awareness", "consideration", "decision", "personal"]
+
+# Every model the shared map can hand a caller — the mapped ones plus the unmapped-stage fallback.
+# Read off the map itself, never re-listed here: a stage added to the map with no schema hint is
+# the whole of #1681 again, so the guard below has to grow with the map on its own.
+MAPPED_MODELS = sorted(
+    {model for _, model in CAROUSEL_MODEL_BY_STAGE} | {DEFAULT_CAROUSEL_MODEL},
+    key=lambda m: m.__name__,
+)
 
 _SLIDE = {"title": "A Title Here", "content": "One short sentence of slide body copy."}
 
@@ -83,6 +94,18 @@ class TestTheResolverIsTheMap:
         # missing from the hint is a deck the construction site can legitimately reject.
         model_cls = carousel_model_for_stage(stage)
         hint = carousel_schema_hint(model_cls)
+        required = [name for name, field in model_cls.model_fields.items() if field.is_required()]
+        assert [name for name in required if name not in hint] == []
+
+    @pytest.mark.parametrize("model_cls", MAPPED_MODELS, ids=lambda m: m.__name__)
+    def test_every_model_the_map_can_return_carries_its_own_hint(self, model_cls):
+        # `carousel_schema_hint` falls back to the DEFAULT deck's hint for a model it does not
+        # know, which is exactly #1681 rebuilt: the prompt would ask for `insights` while the
+        # caller constructs the new model. Mapping a stage to a model without adding its hint has
+        # to fail here, not in production on a deck nobody can build.
+        assert model_cls in CAROUSEL_SCHEMA_HINTS
+        hint = carousel_schema_hint(model_cls)
+        assert hint.startswith(model_cls.__name__)
         required = [name for name, field in model_cls.model_fields.items() if field.is_required()]
         assert [name for name in required if name not in hint] == []
 

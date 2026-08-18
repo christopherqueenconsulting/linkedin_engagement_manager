@@ -74,10 +74,10 @@ class EducationalContentSlide(CarouselSlide):
 class EducationalContentCarousel(BaseModel):
     """The AWARENESS-stage deck: a cover, 1-4 tip/step slides, then a call to action.
 
-    Both `run_content_plan.create_carousel_content` and the `POST /api/generate-carousel` preview
-    route pick the carousel class from the buyer stage, and `ai_helper.generate_carousel_content`
-    names these fields verbatim in its prompt — so renaming one changes BOTH what the model is asked
-    to return and which builder `create_ppt` dispatches to.
+    Every site picks this class through `carousel_model_for_stage`, and `CAROUSEL_SCHEMA_HINTS`
+    names these fields verbatim in the generator's prompt — so renaming one field means editing that
+    hint in the same breath, or the LLM is asked for the old shape and `create_ppt` dispatches on
+    the new one.
     """
 
     cover: EducationalContentSlide = Field(..., description="Cover Slide: A bold title that clearly states the topic.")
@@ -127,9 +127,12 @@ class PersonalStorySlide(CarouselSlide):
 class PersonalStoryCarousel(BaseModel):
     """A personal-story deck: cover, 1-3 moments of the journey, a takeaway, then a CTA.
 
-    Only the `POST /api/generate-carousel` preview route selects it (stages `personal`/`story`); the
-    30-day plan's stage map never does. It is also the one deck whose slides may carry the user's
-    avatar likeness — `CAROUSEL_AVATAR_RELEVANT_TYPES` holds exactly its content type.
+    `CAROUSEL_MODEL_BY_STAGE` selects it for stages `personal`/`story`, which in practice only the
+    `POST /api/generate-carousel` preview route sends — `content_framework.POST_DAY_TYPES` gives the
+    30-day plan awareness/consideration/decision and nothing else. It is also the one deck whose
+    slides may carry the user's avatar likeness (`CAROUSEL_AVATAR_RELEVANT_TYPES` holds exactly its
+    content type), and that path stays unreached from the preview route, which renders without a
+    `user_id` — `_should_generate_with_replicate` needs one.
     """
 
     cover: PersonalStorySlide = Field(..., description="Cover Slide: Compelling title introducing the personal story.")
@@ -153,8 +156,8 @@ class IndustryInsightSlide(CarouselSlide):
 class IndustryInsightsCarousel(BaseModel):
     """The FALLBACK deck: cover, 1-4 trends/insights, then a CTA.
 
-    Every stage that is not awareness, consideration or decision lands here, in both stage maps — so
-    an unrecognised stage still produces a valid deck rather than failing.
+    `DEFAULT_CAROUSEL_MODEL` — a stage that matches no entry of `CAROUSEL_MODEL_BY_STAGE` lands
+    here, so an unrecognised stage still produces a valid deck rather than failing.
     """
 
     cover: IndustryInsightSlide = Field(...,
