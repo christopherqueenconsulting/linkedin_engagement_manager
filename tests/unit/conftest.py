@@ -22,6 +22,19 @@ from openai import APIConnectionError
 
 _BLOCKED_URL = "http://litellm.invalid/v1/chat/completions"
 
+#: Raised by `_no_real_llm_calls`, for the same reason `_BLOCKED_MYSQL_MESSAGE` exists below and one
+#: more. `APIConnectionError`'s SDK default is "Connection error." — the exact string a genuinely
+#: unreachable LiteLLM proxy produces (#986) — so the message is the ONLY thing that tells this guard
+#: apart from the outage it imitates. It is also what a leaked `$exception` titles its error group
+#: with: this fixture is the single largest piece of the 2026-08 test-pollution residue at 6,154
+#: occurrences, and read as a production incident until someone traced the frame (#1665).
+#: Asserted on by tests/unit/utilities/ai/test_client_connect_retry.py.
+_BLOCKED_LLM_MESSAGE = (
+    "unit-test fixture: LLM calls blocked by tests/unit/conftest.py. Patch the `client` the "
+    "module under test imported (e.g. the mock_openai_client fixture) instead of reaching a "
+    "real endpoint."
+)
+
 #: Raised by `_no_real_mysql`. The wording is asserted on by
 #: tests/unit/platform/db/test_connection_config.py, because a REFUSED real socket is also a
 #: `mysql.connector.Error` — only the message tells the two apart, so only the message can prove
@@ -74,7 +87,8 @@ def pytest_collection_modifyitems(config, items):
 
 
 def _blocked_llm_call(*args, **kwargs):
-    raise APIConnectionError(request=httpx.Request("POST", _BLOCKED_URL))
+    raise APIConnectionError(message=_BLOCKED_LLM_MESSAGE,
+                             request=httpx.Request("POST", _BLOCKED_URL))
 
 
 @pytest.fixture(autouse=True)
