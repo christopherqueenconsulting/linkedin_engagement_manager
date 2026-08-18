@@ -45,7 +45,7 @@ src/cqc_lem/
 │   │              + the shared engagement core (#1154): session (get_current_profile / browser_session), composer, cards
 │   ├── marketing/ video_tutorials.py — automated SPA tutorial videos
 │   ├── human_pacing.py  ONE cadence engine
-│   ├── db.py      DB facade — re-exports platform/db/ (no raw SQL outside those two)
+│   ├── db.py      DB facade — imports + `__all__` only; SQL lives in platform/db/
 │   ├── proxy.py   Per-user static residential proxy resolution
 │   ├── geocoding.py  Login Location city/state geocoding
 │   ├── logger.py  Structured logger — log_debug through log_critical
