@@ -268,10 +268,18 @@ def test_check_artifacts_fails_api_host_on_a_bundle_that_predates_the_proxy_swit
     assert results["api-host"]["ok"] is False
 
 
-def test_check_artifacts_passes_api_host_on_a_proxied_bundle():
+def test_check_artifacts_reports_the_proxy_and_never_the_ui_host():
+    """End-to-end over a real-shaped bundle carrying BOTH origins (issue #1677).
+
+    `find_ingest_hosts` is asserted on this above, but the value of the `api-host` line is what an
+    operator reads, so the whole run has to be the thing that never names `ui_host`.
+    """
     results = _named(bc.check_artifacts(SITE, _site(), expected_token=TOKEN,
                                         expected_api_host=PROXY))
-    assert [r["ok"] for r in results.values()] == [True, True, True]
+    detail = results["api-host"]["detail"]
+    assert results["api-host"]["ok"] is True
+    assert detail == f"api_host: {PROXY}"
+    assert UI_HOST not in detail
 
 
 def test_check_artifacts_never_fetches_the_lazy_posthog_chunk():
