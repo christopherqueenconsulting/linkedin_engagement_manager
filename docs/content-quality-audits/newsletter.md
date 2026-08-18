@@ -551,10 +551,10 @@ the same fail-open behaviour `generate_newsletter_edition` already had.
 | `SLOP_LINT_SEVERITY_CANNED_SCAFFOLD=hard` | Promote every surface (an explicit env value beats the per-surface default) |
 | `SLOP_LINT_EXTRA_SCAFFOLDS` | Extends BOTH the writer directive and the linter — never one side |
 
-**The measurement is still owed.** The severity call was made on the phrase list's provenance (every
-entry sampled from LEM's own newsletter prompt output) rather than on a hit rate, because the corpus
-the issue asks for does not exist yet — the #1142 audit found ONE shipped edition in the telemetry
-window. `scripts/sample_newsletter_scaffolds.py` is the sampler that produces it: read-only, run
+**The severity call was made on the phrase list's PROVENANCE** (every entry sampled from LEM's own
+newsletter prompt output) rather than on a hit rate, because the corpus the issue asked for did not
+exist when it shipped — the #1142 audit found ONE shipped edition in the telemetry window.
+`scripts/sample_newsletter_scaffolds.py` is the sampler that produces it: read-only, run
 against a database with real editions, it reports the per-edition hit rate, which phrases actually
 fire, which banned phrases are dead entries, how #630 has been scoring the same editions, and
 candidate phrases repeated across two or more editions that are not yet banned.
@@ -582,6 +582,51 @@ carry is structural (0.77 self-similarity), which is #1433, not a scaffold quest
 newsletters, so from the merge date a newsletter scaffold moves from `slop_warn` to `slop_hard`. The
 step is this severity landing, not quality moving. Content-quality telemetry is a trend line and
 never gates anything (`docs/content-quality-telemetry.md`); the newsletter publish flow is unchanged.
+
+### 7.1 The corpus pass (#1428), run 2026-08-18 — 6 editions, still `NOT ENOUGH`
+
+The sampler was run against the production database (owner-authorised on #1428, option `1B`:
+read-only, no writes, no LLM, no browser, through the `db.py` facade). The report:
+
+| Reading | Value |
+|---|---|
+| Editions sampled | **6** — every edition the database records as SHIPPED, one account. Under the 20-edition floor, so the report prints `NOT ENOUGH` |
+| Editions carrying a banned scaffold | **0 (0%)** |
+| `would_hold` / `held_today` | **0 / 0** — a HARD verdict regenerates nothing on this corpus |
+| Banned phrases that fired | none; `unused_phrases` is all 13 entries |
+| #630 telemetry rows (newsletter) | 3, of which 2 carry `slop_hard > 0` — those are F10's `contrastive_frame` / `banned_lexicon`, not this check |
+| Candidate phrases (≥2 editions, not yet banned) | 25 surfaced, none of them a scaffold (reviewed below) |
+
+**Severity: HARD stands, unchanged.** The 0% hit rate does not confirm the phrase list — 6 editions
+cannot, which is exactly what `NOT ENOUGH` says — but it does settle the cost question the ops knobs
+exist for: HARD would have regenerated **zero** editions, so the promotion is free on the corpus
+that exists. Nothing is re-tuned; `SURFACE_SEVERITIES` and the env knobs above are untouched.
+
+**No phrase was retired.** All 13 newsletter entries came back unused, and that is not evidence a
+single one is dead: every one of the 6 sampled editions was written **before** the #1142 writer
+contract reached production (`v0.145.0`, 06:04 UTC 2026-08-11 — §1), so the corpus predates the
+prompt that names them, and the list is one list — `NEWSLETTER_BANNED_SCAFFOLDS` feeds the writer
+directive AND the linter, so retiring an entry silently un-bans it in the prompt too.
+
+**No phrase was added.** The candidate shortlist splits in two, and neither half is runway:
+
+- **Restated research statistics** — "carousels achieve a 7% engagement rate" (4 editions),
+  "34% of LinkedIn users now use AI-assisted profile headlines" (3), "80% of all B2B social media
+  leads come through LinkedIn" (2), "the most cited domain for professional queries" (2). These are
+  the same FACTS reused edition to edition, which is the self-similarity finding (F9 / #1433, mean
+  0.77), not a canned scaffold. Banning a statistic would be banning the content, not the template.
+- **The comments-box CTA** — "in the comments below and let's" (2 editions) and "and I want to hear"
+  (2); 5 of the 6 editions route the reader to a comments box somewhere in the close. That is F8
+  exactly — and F8's CTA rule shipped in PR #1436 (merged 14:02 UTC 2026-08-11, released in
+  `v0.146.0` at 23:14 UTC that day), **after the last sampled edition's slot**. So this corpus is
+  the baseline the rule was written against and cannot say whether the rule holds. The provenance
+  rule wants a phrase sampled from what the CURRENT writer produces; re-check it on post-contract
+  editions.
+
+**What is still owed:** the same command, once **20 or more** editions have published. The published
+corpus grows about one edition a week (2026-07-07 → 2026-08-11 for these 6), which puts a 20-edition
+run around **2026-11**. #1428 stays open until then — the run above is the answer to "is the corpus
+there yet", not to "what is the hit rate".
 
 ---
 
