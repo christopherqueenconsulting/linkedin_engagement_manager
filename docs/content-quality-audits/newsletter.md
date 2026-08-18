@@ -595,7 +595,7 @@ read-only, no writes, no LLM, no browser, through the `db.py` facade). The repor
 | `would_hold` / `held_today` | **0 / 0** — a HARD verdict regenerates nothing on this corpus |
 | Banned phrases that fired | none; `unused_phrases` is all 13 entries |
 | #630 telemetry rows (newsletter) | 3, of which 2 carry `slop_hard > 0` — those are F10's `contrastive_frame` / `banned_lexicon`, not this check |
-| Candidate phrases (≥2 editions, not yet banned) | 25 surfaced, none of them a scaffold (reviewed below) |
+| Candidate phrases (≥2 editions, not yet banned) | **24** surfaced, none of them a scaffold (reviewed below). The shortlist is capped at `CANDIDATE_LIMIT = 25`, so 24 means nothing was truncated |
 
 **Severity: HARD stands, unchanged.** The 0% hit rate does not confirm the phrase list — 6 editions
 cannot, which is exactly what `NOT ENOUGH` says — but it does settle the cost question the ops knobs
@@ -610,18 +610,21 @@ directive AND the linter, so retiring an entry silently un-bans it in the prompt
 
 **No phrase was added.** The candidate shortlist splits in two, and neither half is runway:
 
-- **Restated research statistics** — "carousels achieve a 7% engagement rate" (4 editions),
-  "34% of LinkedIn users now use AI-assisted profile headlines" (3), "80% of all B2B social media
-  leads come through LinkedIn" (2), "the most cited domain for professional queries" (2). These are
-  the same FACTS reused edition to edition, which is the self-similarity finding (F9 / #1433, mean
-  0.77), not a canned scaffold. Banning a statistic would be banning the content, not the template.
-- **The comments-box CTA** — "in the comments below and let's" (2 editions) and "and I want to hear"
-  (2); 5 of the 6 editions route the reader to a comments box somewhere in the close. That is F8
-  exactly — and F8's CTA rule shipped in PR #1436 (merged 14:02 UTC 2026-08-11, released in
-  `v0.146.0` at 23:14 UTC that day), **after the last sampled edition's slot**. So this corpus is
-  the baseline the rule was written against and cannot say whether the rule holds. The provenance
-  rule wants a phrase sampled from what the CURRENT writer produces; re-check it on post-contract
-  editions.
+- **Restated research statistics** — counts below are the sampler's own, per n-gram, so the shorter
+  run and the longer one it sits inside are reported separately: "a 7 engagement rate" (4 editions),
+  "carousels achieve a 7 engagement rate" (3), "34 of linkedin users" (3), "34 of linkedin users now
+  use" (2), "80 of all b2b social media" (2), "most cited domain for professional queries" (2).
+  These are the same FACTS reused edition to edition, which is the self-similarity finding
+  (F9 / #1433, mean 0.77), not a canned scaffold. Banning a statistic would be banning the content,
+  not the template.
+- **The comments-box CTA** — "in the comments below and let's" (2 editions) and "and i want to hear"
+  (2). The sampler counts n-grams, not intent; the intent reading is F8's, which measured **7 of the
+  10** editions in §1 closing by routing the reader to a comments box (4 of the 5 published then).
+  That is F8 exactly — and F8's CTA rule shipped in PR #1436 (merged 14:05 UTC 2026-08-11, released
+  in `v0.146.0` at 23:14 UTC that day), **after every sampled edition was written** (§1: the whole
+  corpus predates `v0.145.0`, which is earlier still). So this corpus is the baseline the rule was
+  written against and cannot say whether the rule holds. The provenance rule wants a phrase sampled
+  from what the CURRENT writer produces; re-check it on post-contract editions.
 
 **What is still owed:** the same command, once **20 or more** editions have published. The published
 corpus grows about one edition a week (2026-07-07 → 2026-08-11 for these 6), which puts a 20-edition
