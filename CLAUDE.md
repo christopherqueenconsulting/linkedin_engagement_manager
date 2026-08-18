@@ -167,7 +167,7 @@ breaker every lane answers to).
 | **Human pacing** | `utilities/human_pacing.py` (#626) | The ONE cadence engine. Every draw is seeded on (user, action, date) and persisted, so a retry never re-rolls. Fails OPEN — the 429 breaker is the separate, harder gate |
 | **DM auto-nurture** | `_nurture_after_reply`, `ai/dm_nurture.py` | Approval-gated (`pending`, `source='nurture'`), ONE open draft per thread; explicit disinterest stops the thread for good |
 | **Reciprocity** (#1091) | `post_engagers` + `get_recent_engagers` | A third-party COMMENTER on our own post is the ONLY input — reactors never are, so an empty table is an AUDIENCE fact that raises nothing |
-| **DMs + follow-ups** (#1137) | `build_dm_from_template`, `process_user_followups`, `engage_with_profile_viewer` | Templated, voice-aligned, per-user paced. COLD outreach is gated by ONE toggle (`profile_viewer_dm_auto_send`, OFF) over BOTH branches — off files PENDING rows, sends NOTHING; unreadable prefs is OFF |
+| **DMs + follow-ups** (#1137) | `build_dm_from_template`, `process_user_followups`, `engage_with_profile_viewer` | Templated, voice-fit, paced. ONE toggle (`profile_viewer_dm_auto_send`, OFF) gates BOTH cold branches — off files PENDING rows, sends NOTHING; unreadable prefs=OFF |
 | **Appreciation sources** (#968) | `APPRECIATION_SOURCES_ENABLED` | Recommendations and collaborations are STANDING lists, not event queues — an **undated card is SKIPPED**. `appreciation_touches` is the durable CLAIM against double-thanking |
 | **Message-thread ladder** | `linkedin/message_thread.py` (#731) | A route counts only when the thread is **provably open** — never class names. `ThreadState` is three-valued and **UNKNOWN SKIPS**. Sent means the message LANDED, never that Send took a click |
 | **Owned-asset CTA loop** (#624) | `resolve_artifact_delivery` + `_queue_artifact_delivery` | The ONE map from a CTA to its asset, naming the CHANNEL. The keyword is CONSENT so it must be a whole WORD; `can_open_dm_thread` fails OPEN (#1528) |
@@ -290,7 +290,7 @@ local dev → PR to main → CI gates pass → release-please tags vX.Y.Z → bu
   (checkout tag, flyway migrate, compose up, /health check, auto-rollback to .last_good_tag)
 ```
 
-- The stack launches with **both** compose files — the prod overlay strips the dev bind-mount, so every app service runs the image's code; **editing files on disk does nothing until a new image ships**. `web_app` is an nginx edge routing to the active blue/green color; releases batch 4x daily (`docs/zero-downtime-deploys.md`), and **`release:now`** ships at merge instead (`docs/release-fast-lane.md`).
+- Stack launches with **both** compose files — prod overlay strips dev bind-mount, so app services run image code; **editing files on disk does nothing until new image ships**. `web_app` routes blue/green; releases batch 4x/day (`docs/zero-downtime-deploys.md`), and **`release:now`** ships at merge (`docs/release-fast-lane.md`).
 - **Runtime state (429 breaker, manual automation pause, reply-sweep cadence keys) lives in Redis**, not the DB or containers — it survives deploys.
 - A **local hotfix deploy** fallback exists when CI/release is blocked; it diverges prod from `main` until the fix lands via the normal PR flow. Compose layering + image refs: `docs/DEPLOYMENT.md`.
 
