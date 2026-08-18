@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.159.1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.159.0...v0.159.1) (2026-08-18)
+
+
+### Bug Fixes
+
+* **ui:** correct overstated proxy-egress safety claim on marketing page ([dcc638d](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/dcc638d424c3de2bb6385176f053f0d8dafd933c))
+* **ui:** correct overstated proxy-egress safety claim on marketing page ([#1300](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1300)) ([#1653](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1653)) ([dcc638d](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/dcc638d424c3de2bb6385176f053f0d8dafd933c))
+
+
+### Documentation
+
+* **newsletter:** record the [#1428](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1428) scaffold corpus run — 6 editions, still NOT ENOUGH ([#1656](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1656)) ([86fb8f6](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/86fb8f65ed320d0b8c209d6665118bb9b2d34ae2))
+
 ## [0.159.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.158.0...v0.159.0) (2026-08-18)
 
 
