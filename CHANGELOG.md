@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.159.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.158.0...v0.159.0) (2026-08-18)
+
+
+### Features
+
+* **outreach:** profile_viewer_dm_auto_send toggle gates cold profile-viewer outreach (closes [#1137](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1137)) ([#1616](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1616)) ([213eac1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/213eac149cc734d004ca42202be39d7b59a992e2))
+
+
+### Documentation
+
+* **content-quality:** close the [#1363](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1363) video audit and carry its production run on [#1654](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1654) (closes [#1363](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1363)) ([#1655](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1655)) ([12b23b1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/12b23b16ad09fa5a88552816413711f531e2f0b6))
+
 ## [0.158.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.157.0...v0.158.0) (2026-08-17)
 
 
