@@ -117,6 +117,25 @@ line changes**. The readable-comment floor is derived
 **Your action (~1 min, at the next deploy):** in `/opt/lem/.env` set `SUPPRESSION_COMMENT_DAYS=3`
 or delete the line, then restart the stack. Confirmed by the owner 2026-08-17 (PR #1617, option 2A).
 
+### 2.7 The shipped-video corpus sampler still needs its production run · issue #1654
+
+#1363 shipped every code half of the native-video audit — the sampler (#1506), the store-time
+measure receipt (#1517) and the retained `open`/`mid`/`close` keyframes (#1595) — and closed on your
+`1A 2A`. Both survive `purge_post_assets`, but only for video rendered **after #1595 deployed**, so
+the scorecard in `docs/content-quality-audits/video.md` §8 is still the empty 2026-08-14 run. The
+sampler reads production MySQL and the `lem_assets` volume, which no agent can reach.
+
+**Your action (~5 min, once ~6 native-video posts have shipped since the #1595 deploy):** from the
+prod-image sidecar you used on 2026-08-14,
+
+```sh
+poetry run python scripts/sample_shipped_videos.py --limit 10 --json   # readiness: sufficient_corpus
+poetry run python scripts/sample_shipped_videos.py --limit 10          # scorecard + frames
+```
+
+Paste both into #1654 and add `agent:ready` to it — it is filed without that label on purpose, so it
+cannot be dispatched before the corpus exists. An agent then writes §8 from your output.
+
 ---
 
 ## 3. Credentials — the reconciliation you asked for
