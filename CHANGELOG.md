@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.160.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.159.2...v0.160.0) (2026-08-18)
+
+
+### Features
+
+* **observability:** repeatable browser-install check for PostHog (closes [#1676](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1676)) ([#1679](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1679)) ([470ffd8](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/470ffd8a2472df676f106204a05208131d254815))
+* **observability:** route SPA PostHog ingestion through the reverse proxy (closes [#1677](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1677)) ([#1688](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1688)) ([647fae6](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/647fae6439694e9e6dead3b5a3304a217b3ce65a))
+
+
+### Documentation
+
+* **errors:** a group that stopped when the pytest guard landed is not a defect (closes [#1673](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1673)) ([#1682](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1682)) ([0c57dfa](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/0c57dfa8e8c4fbd5273b05f90129fd93d4a671da))
+
 ## [0.159.2](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.159.1...v0.159.2) (2026-08-18)
 
 
