@@ -172,16 +172,25 @@ symptoms are `blocked_goal`, `blocked_endpoint`, or empty `subscribed_users`. **
 live key's scopes.** If a PostHog script misbehaves, check scopes before debugging the script.
 
 **Split in progress (#1453).** The code half is done: each purpose reads its own key
-(`POSTHOG_ANNOTATION_API_KEY` / `POSTHOG_RUNTIME_API_KEY` / `POSTHOG_QUERY_API_KEY`) and falls back
-to `POSTHOG_PERSONAL_API_KEY`, so nothing changes until a scoped key exists. **Owner half, in this
-order:** create the three scoped keys in the PostHog UI (project `475262`), populate one consumer at
-a time, verify that consumer, and revoke the shared key LAST. Three consumers fail SILENTLY — flags
-read their env defaults, the SPA stats panel goes empty, the error cron files nothing — so verify
-per surface, not by "the deploy was green". **Before the revoke, settle `scripts/benchmark_models.py`:**
-the weekly `weekly_model_check.sh` cron sources the shared key from `/opt/lem/.env` for it, so that
-lane is a stored-credential consumer, not a hand-run one, and it degrades silently to the in-runner
-judge when the key goes. Full table + verification steps:
-`docs/kpi-dashboards.md` § Purpose-scoped personal keys.
+(`POSTHOG_ANNOTATION_API_KEY` / `POSTHOG_RUNTIME_API_KEY` / `POSTHOG_QUERY_API_KEY` /
+`POSTHOG_BENCHMARK_API_KEY`) and falls back to `POSTHOG_PERSONAL_API_KEY`, so nothing changes until
+a scoped key exists. `benchmark` is the fourth purpose your `1A` answer asked for — the weekly
+`weekly_model_check.sh` cron sources it from `/opt/lem/.env` for `benchmark_models.py`, so that lane
+is a stored-credential consumer, not a hand-run one.
+
+**Owner half, in this order:**
+
+1. Create the four scoped keys in the PostHog UI (project `475262`) — scopes in the table at
+   `docs/kpi-dashboards.md` § Purpose-scoped personal keys.
+2. Populate ONE consumer at a time: `POSTHOG_RUNTIME_API_KEY` + `POSTHOG_QUERY_API_KEY` +
+   `POSTHOG_BENCHMARK_API_KEY` in `/opt/lem/.env` (recreate the app containers for the runtime one),
+   `POSTHOG_QUERY_API_KEY` also wherever the `error-issues-cron` clone reads its environment, and
+   `POSTHOG_ANNOTATION_API_KEY` as a GitHub Actions secret.
+3. After each one: `python scripts/posthog_key_check.py --purpose <purpose>`. It is read-only, and
+   it names the env var that actually answered — a purpose still reporting `POSTHOG_PERSONAL_API_KEY`
+   has not been populated where that consumer reads.
+4. Run it with no filter (all PASS), then revoke the shared key, then run it once more. Every
+   consumer fails silently, so this command is the evidence; a green deploy is not.
 
 ---
 

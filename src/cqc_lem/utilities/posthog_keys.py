@@ -1,10 +1,12 @@
 """ONE place a PostHog personal API key is resolved, by PURPOSE (issue #1453).
 
-`POSTHOG_PERSONAL_API_KEY` was a single account-scoped key doing three unrelated jobs — a CI
+`POSTHOG_PERSONAL_API_KEY` was a single account-scoped key doing four unrelated jobs — a CI
 release annotation (write), the app's runtime reads (feature-flag local evaluation, the provisioned
-HogQL endpoints behind the SPA stats panel), and the daily error->issue cron's HogQL query. One key
-means one blast radius, and three of those consumers fail SILENTLY without it: flags fall back to
-their env vars, the endpoints panel goes empty, the cron files nothing. None of that raises.
+HogQL endpoints behind the SPA stats panel), the daily error->issue cron's HogQL query, and the
+weekly model benchmark's LLM-evaluation scoring. One key means one blast radius, and four of those
+five consumers fail SILENTLY without it: flags fall back to their env vars, the endpoints panel goes
+empty, the cron files nothing, the benchmark drops to its in-runner judge. None of that raises — the
+CI annotation is the only one that says anything, and its step is `continue-on-error`.
 
 So each purpose reads its OWN env var first and falls back to `POSTHOG_PERSONAL_API_KEY`:
 
@@ -13,6 +15,7 @@ So each purpose reads its OWN env var first and falls back to `POSTHOG_PERSONAL_
 | `annotation` | `POSTHOG_ANNOTATION_API_KEY` | `scripts/posthog_annotate.py` (CI deploy job) | `annotation:write` |
 | `runtime` | `POSTHOG_RUNTIME_API_KEY` | `flags.py`, `posthog_endpoints.py` | `feature_flag:read`, `query:read` |
 | `query` | `POSTHOG_QUERY_API_KEY` | `scripts/posthog_error_issues.py` (host cron) | `query:read` |
+| `benchmark` | `POSTHOG_BENCHMARK_API_KEY` | `scripts/benchmark_models.py` (weekly cron) | LLM-eval + `query:read` |
 
 `observability.posthog_hogql_query` is a runtime read too, so it rides the `runtime` key — the
 `query` one is the CRON's, and the two live in different environments.
@@ -21,12 +24,20 @@ The fallback is what makes the rollout ADDITIVE: until a scoped key exists in an
 nothing changes there, so the keys can be created and populated one consumer at a time and the old
 key revoked last (`docs/kpi-dashboards.md`). An unset scoped var is the normal state, never an error.
 
+`benchmark` is a purpose rather than an operator key for one reason: `scripts/benchmark_models.py`
+is NOT hand-run — `scripts/weekly_model_check.sh` (host cron) sources its key out of `/opt/lem/.env`
+— so the shared key is a *stored* credential for that lane, and revoking it would silently drop the
+weekly run onto the in-runner judge. It reads PostHog's LLM-evaluation API, a scope none of the
+other three cover, so widening `runtime` to carry it would widen the one key that lives in the app
+containers (issue #1453, owner decision `1A`).
+
 The provisioning scripts (`posthog_provision`, `posthog_flags`, `posthog_surveys`,
 `posthog_experiments`, `posthog_dashboards`, `posthog_ops_destination`) are run by hand and
 deliberately do NOT appear here: they need a broad operator key that is exported into a shell for
-the run and stored nowhere. `scripts/benchmark_models.py` also reads the shared key and is NOT one
-of them — `scripts/weekly_model_check.sh` (host cron) sources it from `/opt/lem/.env` — so it needs
-its own decision before the shared key is revoked (`docs/kpi-dashboards.md`).
+the run and stored nowhere.
+
+`scripts/posthog_key_check.py` is the read-only preflight over this table — one live read per
+surface, PASS/FAIL per purpose, naming the env var that actually supplied each key.
 
 **stdlib-only, and it stays that way** — `scripts/posthog_annotate.py` runs on a bare CI runner with
 only `requests` installed, and `scripts/posthog_error_issues.py` runs from a cron clone, so both put
@@ -42,6 +53,7 @@ FALLBACK_ENV_VAR = "POSTHOG_PERSONAL_API_KEY"
 ANNOTATION_ENV_VAR = "POSTHOG_ANNOTATION_API_KEY"
 RUNTIME_ENV_VAR = "POSTHOG_RUNTIME_API_KEY"
 QUERY_ENV_VAR = "POSTHOG_QUERY_API_KEY"
+BENCHMARK_ENV_VAR = "POSTHOG_BENCHMARK_API_KEY"
 
 #: Purpose -> the scoped env var read BEFORE the shared fallback. Adding a purpose means adding a
 #: row here, never a second resolution rule at a call site.
@@ -49,6 +61,7 @@ PURPOSE_ENV_VARS = {
     "annotation": ANNOTATION_ENV_VAR,
     "runtime": RUNTIME_ENV_VAR,
     "query": QUERY_ENV_VAR,
+    "benchmark": BENCHMARK_ENV_VAR,
 }
 
 
@@ -72,6 +85,26 @@ def key_env_vars(purpose: str) -> tuple:
     return (scoped, FALLBACK_ENV_VAR)
 
 
+def resolve_posthog_key_source(purpose: str) -> tuple:
+    """Resolve one purpose's key AND name the env var that supplied it.
+
+    The name is what makes a rollout auditable: mid-rollout the same key value can arrive from
+    either var, and "which one answered" is the only way to tell a populated scoped key from a
+    fallback that is still doing the work (`scripts/posthog_key_check.py` prints it).
+
+    Args:
+        purpose: One of the keys of `PURPOSE_ENV_VARS`.
+
+    Returns:
+        `(key, env_var_name)`, or `("", "")` when neither var is set.
+    """
+    for name in key_env_vars(purpose):
+        value = (os.getenv(name) or "").strip()
+        if value:
+            return (value, name)
+    return ("", "")
+
+
 def resolve_posthog_key(purpose: str) -> str:
     """Resolve the personal API key for one purpose, scoped var first, shared key second.
 
@@ -82,11 +115,7 @@ def resolve_posthog_key(purpose: str) -> str:
         The first non-empty key value, or `""` when neither var is set — every caller already
         treats an empty key as "this surface is not configured", so this never raises for it.
     """
-    for name in key_env_vars(purpose):
-        value = (os.getenv(name) or "").strip()
-        if value:
-            return value
-    return ""
+    return resolve_posthog_key_source(purpose)[0]
 
 
 def missing_key_message(purpose: str) -> str:
@@ -115,3 +144,8 @@ def runtime_api_key() -> str:
 def query_api_key() -> str:
     """The host-cron HogQL query key."""
     return resolve_posthog_key("query")
+
+
+def benchmark_api_key() -> str:
+    """The weekly model-benchmark key — PostHog's LLM-evaluation API."""
+    return resolve_posthog_key("benchmark")
