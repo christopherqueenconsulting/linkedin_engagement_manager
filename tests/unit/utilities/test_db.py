@@ -1012,7 +1012,7 @@ class TestSoftDeletePosts:
     def test_sets_status_to_rejected(self, mock_database_connection):
         from cqc_lem.utilities.db import soft_delete_posts
 
-        with patch("cqc_lem.utilities.db.bulk_update_posts") as mock_bulk:
+        with patch("cqc_lem.platform.db.repositories.posts.bulk_update_posts") as mock_bulk:
             mock_bulk.return_value = True
 
             result = soft_delete_posts([10, 11])

@@ -13,7 +13,6 @@ import pytest
 
 pytestmark = pytest.mark.unit
 
-_DB = "cqc_lem.utilities.db"
 
 
 def _err_conn(fake_cursor):
@@ -256,8 +255,8 @@ class TestUpdateUser:
 class TestActiveUserPasswordPairs:
     def test_collects_only_complete_pairs(self):
         with patch("cqc_lem.platform.db.connection.get_db_connection") as get_conn, \
-             patch(f"{_DB}.get_active_user_ids", return_value=[1, 2, 3]), \
-             patch(f"{_DB}.get_user_password_pair_by_id",
+             patch("cqc_lem.platform.db.repositories.users.get_active_user_ids", return_value=[1, 2, 3]), \
+             patch("cqc_lem.platform.db.repositories.users.get_user_password_pair_by_id",
                    side_effect=[("a@x.com", "pw1"), ("b@x.com", None), (None, None)]):
             from cqc_lem.utilities.db import get_active_user_password_pairs
             pairs = get_active_user_password_pairs()
@@ -266,7 +265,7 @@ class TestActiveUserPasswordPairs:
 
     def test_empty_when_no_active_users(self):
         with patch("cqc_lem.platform.db.connection.get_db_connection") as get_conn, \
-             patch(f"{_DB}.get_active_user_ids", return_value=[]):
+             patch("cqc_lem.platform.db.repositories.users.get_active_user_ids", return_value=[]):
             from cqc_lem.utilities.db import get_active_user_password_pairs
             assert get_active_user_password_pairs() == []
         get_conn.assert_not_called()

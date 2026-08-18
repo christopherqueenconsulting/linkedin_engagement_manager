@@ -33,13 +33,13 @@ class TestPruneSupersededCookies:
         assert prune_superseded_cookies(7) == 0  # never raises into the caller
 
     def test_store_cookies_triggers_prune(self, mock_database_connection):
-        with patch("cqc_lem.utilities.db.get_user_id", return_value=9), \
-             patch("cqc_lem.utilities.db.prune_superseded_cookies") as prune:
+        with patch("cqc_lem.platform.db.repositories.users.get_user_id", return_value=9), \
+             patch("cqc_lem.platform.db.repositories.users.prune_superseded_cookies") as prune:
             store_cookies("a@b.com", [_COOKIE])
             prune.assert_called_once_with(9)
 
     def test_store_cookies_skips_prune_when_user_unknown(self, mock_database_connection):
-        with patch("cqc_lem.utilities.db.get_user_id", return_value=None), \
-             patch("cqc_lem.utilities.db.prune_superseded_cookies") as prune:
+        with patch("cqc_lem.platform.db.repositories.users.get_user_id", return_value=None), \
+             patch("cqc_lem.platform.db.repositories.users.prune_superseded_cookies") as prune:
             store_cookies("nobody@example.com", [_COOKIE])
             prune.assert_not_called()

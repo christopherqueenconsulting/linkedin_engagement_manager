@@ -309,7 +309,7 @@ class TestReviewFeedback:
              patch("cqc_lem.utilities.feedback.issue_service.get_open_feedback_clusters",
                    return_value=[]), \
              patch("cqc_lem.platform.db.connection.get_db_connection", return_value=FakeConn()), \
-             patch("cqc_lem.utilities.db.datetime") as dt_mock:
+             patch("cqc_lem.platform.db.repositories.feedback.datetime") as dt_mock:
             dt_mock.now.return_value = datetime(2026, 8, 7, 23, 0, 0, tzinfo=timezone.utc)
 
             r1 = api_client.post("/api/admin/feedback/5/review", json={

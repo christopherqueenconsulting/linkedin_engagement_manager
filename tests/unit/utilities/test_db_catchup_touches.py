@@ -6,7 +6,6 @@ import pytest
 
 pytestmark = pytest.mark.unit
 
-_DB = "cqc_lem.utilities.db"
 _OUTREACH = "cqc_lem.platform.db.repositories.outreach"
 _GET_CONN = "cqc_lem.platform.db.connection.get_db_connection"
 
@@ -319,7 +318,7 @@ class TestCatchupEngagementPrefs:
         """Without a premium plan the cap tops out at 5/day, whatever the client sent."""
         conn, cur = fake_cursor(lastrowid=7)
         with patch(f"{_GET_CONN}", return_value=conn), \
-             patch(f"{_DB}.get_user_subscription_info", return_value=None):
+             patch("cqc_lem.platform.db.repositories.users.get_user_subscription_info", return_value=None):
             from cqc_lem.utilities.db import _ENGAGEMENT_COLS, update_engagement_preferences
             update_engagement_preferences(1, {"max_catchup_touches_per_day": given})
         values = cur.execute.call_args[0][1]
@@ -329,7 +328,7 @@ class TestCatchupEngagementPrefs:
     def test_premium_plan_unlocks_the_higher_cap_on_upsert(self, given, expected, fake_cursor):
         conn, cur = fake_cursor(lastrowid=7)
         with patch(f"{_GET_CONN}", return_value=conn), \
-             patch(f"{_DB}.get_user_subscription_info",
+             patch("cqc_lem.platform.db.repositories.users.get_user_subscription_info",
                    return_value={"subscription_tier": "professional", "subscription_status": "active"}):
             from cqc_lem.utilities.db import _ENGAGEMENT_COLS, update_engagement_preferences
             update_engagement_preferences(1, {"max_catchup_touches_per_day": given})
@@ -341,7 +340,7 @@ class TestCatchupEngagementPrefs:
     def test_message_source_is_validated_on_upsert(self, given, expected, fake_cursor):
         conn, cur = fake_cursor(lastrowid=7)
         with patch(f"{_GET_CONN}", return_value=conn), \
-             patch(f"{_DB}.get_user_subscription_info", return_value=None):
+             patch("cqc_lem.platform.db.repositories.users.get_user_subscription_info", return_value=None):
             from cqc_lem.utilities.db import _ENGAGEMENT_COLS, update_engagement_preferences
             update_engagement_preferences(1, {"catchup_message_source": given})
         values = cur.execute.call_args[0][1]
@@ -388,13 +387,13 @@ class TestPremiumCatchupAllowance:
         (None, False),
     ])
     def test_premium_detection(self, info, premium):
-        with patch(f"{_DB}.get_user_subscription_info", return_value=info):
+        with patch("cqc_lem.platform.db.repositories.users.get_user_subscription_info", return_value=info):
             from cqc_lem.utilities.db import is_premium_subscriber, max_catchup_touches_allowed
             assert is_premium_subscriber(1) is premium
             assert max_catchup_touches_allowed(1) == (10 if premium else 5)
 
     def test_lookup_failure_is_never_premium(self):
-        with patch(f"{_DB}.get_user_subscription_info", side_effect=RuntimeError("db down")):
+        with patch("cqc_lem.platform.db.repositories.users.get_user_subscription_info", side_effect=RuntimeError("db down")):
             from cqc_lem.utilities.db import is_premium_subscriber, max_catchup_touches_allowed
             assert is_premium_subscriber(1) is False
             assert max_catchup_touches_allowed(1) == 5

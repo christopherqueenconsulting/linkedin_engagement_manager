@@ -24,6 +24,22 @@ _DB = pathlib.Path("src/cqc_lem/utilities/db.py")
 _CANONICAL = "cqc_lem.platform.db.connection.get_db_connection"
 
 
+def _facade_module_aliases(text: str) -> set[str]:
+    """Local names this file binds to the facade MODULE itself, not to its path string.
+
+    `from cqc_lem.utilities import db` and `import cqc_lem.utilities.db as db` both hand back an
+    object whose attributes can be rebound with `patch.object`/`monkeypatch.setattr` — a facade
+    patch that carries no path string for a regex to find.
+    """
+    names = set(re.findall(r'^\s*import cqc_lem\.utilities\.db as (\w+)', text, re.M))
+    for imported in re.findall(r'^\s*from cqc_lem\.utilities import ([^\n#]+)', text, re.M):
+        for entry in imported.split(","):
+            parts = entry.strip().split()
+            if parts[:1] == ["db"]:
+                names.add(parts[2] if len(parts) == 3 and parts[1] == "as" else "db")
+    return names
+
+
 class TestOneCanonicalTarget:
     def test_the_canonical_target_actually_resolves(self):
         """The path this suite tells everyone to patch must be a real, importable target.
@@ -151,6 +167,30 @@ class TestOneCanonicalTarget:
                         # Flagging the looser condition retargeted 159 correct patches and broke
                         # 52 tests.
                         hazards.setdefault(sub.id, {}).setdefault(mod.stem, set()).add(node.name)
+            # Reaching the reader INDIRECTLY is the same hazard (issue #1614). A test calls
+            # `_admin_user_filters(...)`, which calls `_effective_admin_sql`, which is what actually
+            # reads `admin_email_allowlist` off this module's globals — so the facade patch is just
+            # as dead, and the "which function does the block exercise" half of the check below
+            # never matched the name the test actually calls. Two of these shipped red.
+            #
+            # Closed over the intra-module call graph only. Following calls OUT of the module would
+            # be the loose condition this file already warns about.
+            calls: dict[str, set[str]] = {}
+            for node in tree.body:
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    calls[node.name] = {
+                        sub.func.id for sub in ast.walk(node)
+                        if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Name)
+                    }
+            for sym, mods in hazards.items():
+                readers = mods.get(mod.stem)
+                if not readers:
+                    continue
+                while True:
+                    grown = {f for f, called in calls.items() if called & readers} - readers
+                    if not grown:
+                        break
+                    readers |= grown
         return hazards
 
     @staticmethod
@@ -181,6 +221,15 @@ class TestOneCanonicalTarget:
         aliases = re.findall(r'^(\w+)\s*=\s*["\']cqc_lem\.utilities\.db["\']', text, re.M)
         patterns = [rf'["\']cqc_lem\.utilities\.db\.{re.escape(sym)}["\']']
         patterns += [rf'\{{{re.escape(a)}\}}\.{re.escape(sym)}\b' for a in aliases]
+        # `patch.object(db, "sym")` is the same hazard with no path string in it, so neither pattern
+        # above sees it (issue #1614). It shipped red: `test_flag_migrations.py` patched
+        # `_select_engagement_row` on the facade while calling `get_engagement_preferences`, which
+        # had moved into users.py and reads it from there. Match it through whatever local name
+        # this file binds the facade MODULE to.
+        for mod_alias in _facade_module_aliases(text):
+            patterns.append(
+                rf'(?:patch\.object|monkeypatch\.setattr)\(\s*{re.escape(mod_alias)}\s*,\s*'
+                rf'["\']{re.escape(sym)}["\']')
         return [
             "\n".join(lines[i:i + 12])
             for i, line in enumerate(lines)
@@ -210,6 +259,42 @@ class TestOneCanonicalTarget:
                            "WIDGET_LIMIT": {"widgets": {"list_widgets"}}}, (
             "an intra-module callee AND an intra-module constant read must both be flagged; a "
             "function nobody calls and a constant nobody reads must not be")
+
+    def test_the_hazard_derivation_follows_intra_module_calls(self, tmp_path):
+        """A test rarely calls the function that does the reading — it calls the one above it.
+
+        `_admin_user_filters` -> `_effective_admin_sql` -> `admin_email_allowlist` is the real
+        shape, and while the derivation stopped at the direct reader the block check looked for a
+        name no test mentions. Two of these shipped red on #1614.
+        """
+        (tmp_path / "widgets.py").write_text(
+            "WIDGET_LIMIT = 5\n"
+            "\n"
+            "def _clause():\n"
+            "    return WIDGET_LIMIT\n"
+            "\n"
+            "def list_widgets():\n"
+            "    return _clause()\n")
+        hazards = self._repository_hazards(tmp_path)
+        assert hazards["WIDGET_LIMIT"]["widgets"] == {"_clause", "list_widgets"}, (
+            "the public entry point a test actually calls must be flagged too, not only the "
+            "private helper that does the read")
+
+    def test_patch_object_on_a_facade_alias_counts_as_a_facade_patch(self):
+        """The spelling with no path string in it — `patch.object(db, "sym")`.
+
+        `_facade_patch_blocks` matched only quoted `cqc_lem.utilities.db.<sym>` paths, so this one
+        was invisible to the guard and shipped red in `test_flag_migrations.py`.
+        """
+        text = ('from cqc_lem.utilities import db\n'
+                'with patch.object(db, "_select_engagement_row", return_value=None):\n'
+                '    db.get_engagement_preferences(1)\n')
+        assert _facade_module_aliases(text) == {"db"}
+        assert _facade_module_aliases("import cqc_lem.utilities.db as thedb\n") == {"thedb"}
+        assert _facade_module_aliases(
+            "from cqc_lem.utilities import db as facade, logger\n") == {"facade"}
+        assert len(self._facade_patch_blocks(text, "_select_engagement_row")) == 1
+        assert self._facade_patch_blocks(text, "get_engagement_preferences") == []
 
     def test_no_test_patches_an_intra_repository_call_on_the_facade(self):
         """Needs BOTH halves to fire, or it is noise.

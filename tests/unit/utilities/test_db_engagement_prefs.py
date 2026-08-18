@@ -7,7 +7,6 @@ import pytest
 
 pytestmark = pytest.mark.unit
 
-_DB = "cqc_lem.utilities.db"
 
 
 class TestGetEngagementPreferences:
@@ -126,7 +125,7 @@ class TestPartialUpdateKeepsTheRest:
     def _upsert(self, fake_cursor, call):
         conn, cursor = fake_cursor(fetch_one=dict(self._STORED), rowcount=1)
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn), \
-             patch(f"{_DB}.max_catchup_touches_allowed", return_value=10):
+             patch("cqc_lem.platform.db.repositories.users.max_catchup_touches_allowed", return_value=10):
             call()
         cols = list(__import__("cqc_lem.utilities.db", fromlist=["_ENGAGEMENT_COLS"])._ENGAGEMENT_COLS)
         return dict(zip(cols, cursor.execute.call_args[0][1][1:]))
@@ -160,7 +159,7 @@ class TestPartialUpdateKeepsTheRest:
     def test_new_row_still_gets_the_code_defaults(self, fake_cursor):
         conn, cursor = fake_cursor(fetch_one=None, rowcount=1)
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn), \
-             patch(f"{_DB}.max_catchup_touches_allowed", return_value=5):
+             patch("cqc_lem.platform.db.repositories.users.max_catchup_touches_allowed", return_value=5):
             from cqc_lem.utilities.db import set_default_video_quality
             set_default_video_quality(2, "premium")
         cols = list(__import__("cqc_lem.utilities.db", fromlist=["_ENGAGEMENT_COLS"])._ENGAGEMENT_COLS)
@@ -229,7 +228,7 @@ class TestEngagementPreferencesAreConfigured:
             assert has_engagement_preferences(1) is True
         conn, cursor = fake_cursor()
         cursor.execute.side_effect = mysql.connector.Error(msg="db down")
-        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn), patch(f"{_DB}.log_error"):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn), patch("cqc_lem.platform.db.repositories.users.log_error"):
             from cqc_lem.utilities.db import has_engagement_preferences
             assert has_engagement_preferences(1) is False
 
@@ -494,7 +493,7 @@ class TestRosterAutoFollowPrefs:
         from cqc_lem.utilities.db import _ENGAGEMENT_COLS, update_engagement_preferences
         conn, cursor = fake_cursor(fetch_one=self._row(), rowcount=1)
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn), \
-             patch(f"{_DB}.max_catchup_touches_allowed", return_value=10):
+             patch("cqc_lem.platform.db.repositories.users.max_catchup_touches_allowed", return_value=10):
             update_engagement_preferences(1, prefs)
         return dict(zip(list(_ENGAGEMENT_COLS), cursor.execute.call_args[0][1][1:]))
 

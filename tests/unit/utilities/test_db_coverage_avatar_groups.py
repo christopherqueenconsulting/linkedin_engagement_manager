@@ -14,7 +14,6 @@ import pytest
 
 pytestmark = pytest.mark.unit
 
-_DB = "cqc_lem.utilities.db"
 
 
 def _err_conn(fake_cursor):
@@ -212,7 +211,7 @@ class TestScheduledDms:
         ("no_row", None, None),
     ], ids=["row_present", "no_row"])
     def test_get_scheduled_dm_user_id(self, case_id, row, expected):
-        with patch(f"{_DB}.get_scheduled_dm", return_value=row):
+        with patch("cqc_lem.platform.db.repositories.outreach.get_scheduled_dm", return_value=row):
             from cqc_lem.utilities.db import get_scheduled_dm_user_id
             assert get_scheduled_dm_user_id(4) == expected
 

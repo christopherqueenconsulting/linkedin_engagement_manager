@@ -134,7 +134,10 @@ class TestFeedFallbackDefault:
     """The flag moves the FLEET default only; a user's saved row always wins."""
 
     def _prefs(self, row):
-        from cqc_lem.utilities import db
+        # Patched where it LIVES: `get_engagement_preferences` moved into `repositories/users.py`
+        # (issue #1614) and reads `_select_engagement_row` out of that module's globals, so a
+        # facade patch binds an object it never consults.
+        from cqc_lem.platform.db.repositories import users as db
         with patch.object(db, "_select_engagement_row", return_value=row):
             return db.get_engagement_preferences(1)
 

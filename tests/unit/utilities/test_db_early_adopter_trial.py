@@ -7,7 +7,6 @@ import pytest
 
 pytestmark = pytest.mark.unit
 
-_DB = "cqc_lem.utilities.db"
 _GET_CONN = "cqc_lem.platform.db.connection.get_db_connection"
 _BILLING = "cqc_lem.platform.db.repositories.billing"
 _FEEDBACK = "cqc_lem.platform.db.repositories.feedback"
@@ -231,7 +230,7 @@ class TestExtendTrialForUser:
         winner = {"cohort": "P0", "trial_days": 60, "trial_ends_at": STARTED + timedelta(days=60)}
         conn = _Conn(cur)
         with patch(f"{_GET_CONN}", return_value=conn), \
-                patch(f"{_DB}.get_early_adopter_grant", return_value=winner):
+                patch("cqc_lem.platform.db.repositories.billing.get_early_adopter_grant", return_value=winner):
             from cqc_lem.utilities.db import extend_trial_for_user
             result = extend_trial_for_user(5, feedback_id=1)
         assert (result["granted"], result["reason"]) == (True, "already_granted")
@@ -242,7 +241,7 @@ class TestExtendTrialForUser:
         cur = _Cursor(user=_user())
         cur.execute = MagicMock(side_effect=mysql.connector.Error("boom"))
         conn = _Conn(cur)
-        with patch(f"{_GET_CONN}", return_value=conn), patch(f"{_DB}.log_error"):
+        with patch(f"{_GET_CONN}", return_value=conn), patch("cqc_lem.platform.db.repositories.billing.log_error"):
             from cqc_lem.utilities.db import extend_trial_for_user
             result = extend_trial_for_user(5)
         assert (result["granted"], result["reason"]) == (False, "error")

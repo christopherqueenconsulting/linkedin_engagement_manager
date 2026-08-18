@@ -7,7 +7,6 @@ import pytest
 
 pytestmark = pytest.mark.unit
 
-_DB = "cqc_lem.utilities.db"
 
 
 class TestGetPlannedTasks:
@@ -98,13 +97,13 @@ class TestDefaultVideoQuality:
             assert get_default_video_quality(1) == "standard"
 
     def test_set_valid_delegates_to_upsert(self):
-        with patch(f"{_DB}.update_engagement_preferences", return_value=True) as up:
+        with patch("cqc_lem.platform.db.repositories.users.update_engagement_preferences", return_value=True) as up:
             from cqc_lem.utilities.db import set_default_video_quality
             assert set_default_video_quality(1, "premium") is True
         up.assert_called_once_with(1, {"default_video_quality": "premium"})
 
     def test_set_invalid_coerced_to_standard(self):
-        with patch(f"{_DB}.update_engagement_preferences", return_value=True) as up:
+        with patch("cqc_lem.platform.db.repositories.users.update_engagement_preferences", return_value=True) as up:
             from cqc_lem.utilities.db import set_default_video_quality
             set_default_video_quality(1, "bogus")
         up.assert_called_once_with(1, {"default_video_quality": "standard"})
