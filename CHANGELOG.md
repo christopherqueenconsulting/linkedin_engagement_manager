@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.159.2](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.159.1...v0.159.2) (2026-08-18)
+
+
+### Bug Fixes
+
+* **db:** ride out a momentarily unreachable MySQL instead of filing it (closes [#1660](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1660)) ([#1663](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1663)) ([314f50d](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/314f50d5e8038070999ddd063b60ad92393064fa))
+* **observability:** an operator CLI never files a production error-tracking issue (closes [#1661](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1661)) ([#1662](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1662)) ([aad81f0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/aad81f07f30fee0e0550c7aa294d81baa57c08e7))
+
 ## [0.159.1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.159.0...v0.159.1) (2026-08-18)
 
 
