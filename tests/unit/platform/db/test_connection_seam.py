@@ -409,10 +409,17 @@ class TestOneCanonicalTarget:
         assert missing == [], f"facade does not re-export: {missing}"
 
     def test_the_pool_flag_is_read_where_the_conftest_patches_it(self):
-        """tests/conftest.py disables pooling on `connection`; it must be read there."""
+        """tests/conftest.py disables pooling on `connection`; it must be read there.
+
+        The read moved into `_open_db_connection` when issue #1675 split ONE connection attempt out
+        of the retry loop, so both names in the checkout path count — what the patch needs is a
+        module-global read on `connection` at call time, not which of the two does it.
+        """
         conn_src = pathlib.Path("src/cqc_lem/platform/db/connection.py").read_text()
         tree = ast.parse(conn_src)
-        fn = next(n for n in tree.body
-                  if isinstance(n, ast.FunctionDef) and n.name == "get_db_connection")
-        names = {n.id for n in ast.walk(fn) if isinstance(n, ast.Name)}
+        checkout_path = {"get_db_connection", "_open_db_connection"}
+        names: set[str] = set()
+        for node in tree.body:
+            if isinstance(node, ast.FunctionDef) and node.name in checkout_path:
+                names |= {n.id for n in ast.walk(node) if isinstance(n, ast.Name)}
         assert "MYSQL_POOL_ENABLED" in names

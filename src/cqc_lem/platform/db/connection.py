@@ -7,6 +7,7 @@ the direct import resolve to the same objects.
 
 import os
 import threading
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -21,6 +22,8 @@ from mysql.connector.pooling import CNX_POOL_MAXSIZE, MySQLConnectionPool, Poole
 from cqc_lem.utilities.env_constants import (
     AWS_MYSQL_SECRET_NAME,
     AWS_REGION,
+    DB_CONNECT_RETRY_ATTEMPTS,
+    DB_CONNECT_RETRY_BACKOFF_SECONDS,
     MYSQL_POOL_ENABLED,
     MYSQL_POOL_SIZE,
 )
@@ -46,6 +49,27 @@ DbConnection = Union[PooledMySQLConnection, MySQLConnectionAbstract]
 #: MySQL's own default, and what `.env.example` / docker-compose ship. Used when MYSQL_PORT is
 #: unset so an environment that never exported it still connects.
 DEFAULT_MYSQL_PORT = 3306
+
+# The connector's client-side errnos for "the server was never reached": the compose DNS name did
+# not resolve (2005), the TCP connect failed (2003) or the socket could not be opened at all (2002).
+# All three are raised BEFORE the handshake, so no credentials were checked and no statement ran —
+# which is what makes retrying them safe. Every server-side errno is deliberately absent: 1045
+# (access denied) and 1049 (unknown database) are misconfiguration that a retry only delays.
+_UNREACHABLE_ERRNOS = frozenset({2002, 2003, 2005})
+
+# Attempts is operator-tunable and every wait doubles, so cap ONE wait: a mistyped value must not
+# park an API request (or a worker slot) for hours. The default schedule (1s, 2s) is untouched.
+_MAX_CONNECT_RETRY_DELAY = 30.0
+
+
+def _db_unreachable(exc: BaseException) -> bool:
+    """True only when MySQL was NEVER REACHED (issue #1675).
+
+    It is down, restarting, or its compose DNS name has not come back yet. Nothing was sent on such
+    a failure, so retrying cannot run a statement twice. Anything the server itself answered — bad
+    credentials, a missing database, a query error — is NOT this and is raised on the first attempt.
+    """
+    return isinstance(exc, mysql.connector.Error) and getattr(exc, "errno", None) in _UNREACHABLE_ERRNOS
 
 @dataclass
 class _PoolState:
@@ -169,26 +193,57 @@ def reset_connection_pool() -> None:
         _POOL_STATE.opened = 0
 
 
-def get_db_connection() -> DbConnection:
-    """Establishes a connection to the MySQL database and returns the connection object.
-
-    Connections come from a per-process pool when MYSQL_POOL_ENABLED (the default); calling
-    .close() on the returned object returns it to the pool rather than dropping the socket.
-
-    Raises:
-        mysql.connector.Error: If there is an error connecting to the database.
-    """
-    config = _get_mysql_config()
-
+def _open_db_connection(config: dict[str, Any]) -> DbConnection:
+    """One attempt at getting a connection: the process pool first, a direct socket as the fallback."""
     if MYSQL_POOL_ENABLED:
         try:
             connection = _get_pooled_connection(config)
             if connection is not None:
                 return connection
         except mysql.connector.Error as e:
+            if _db_unreachable(e):
+                # The pool is fine; the SERVER is not there. A direct connection would fail
+                # identically, so raise for the retry above rather than warning about the pool.
+                raise
             log_warning("MySQL connection pool unavailable - using a direct connection", exc=e)
 
     return mysql.connector.connect(**config)
+
+
+def get_db_connection() -> DbConnection:
+    """Establishes a connection to the MySQL database and returns the connection object.
+
+    Connections come from a per-process pool when MYSQL_POOL_ENABLED (the default); calling
+    .close() on the returned object returns it to the pool rather than dropping the socket.
+
+    A MySQL that was never reached is retried (see `_db_unreachable`, DB_CONNECT_RETRY_ATTEMPTS):
+    the database is a container LEM restarts on its own schedule, and a deploy that briefly took its
+    compose DNS name away failed one task outright (issue #1675).
+
+    Raises:
+        mysql.connector.Error: If there is an error connecting to the database.
+    """
+    config = _get_mysql_config()
+    attempts = max(1, DB_CONNECT_RETRY_ATTEMPTS)
+    backoff = max(0.0, DB_CONNECT_RETRY_BACKOFF_SECONDS)
+
+    # The LAST attempt is the one outside the loop, so its failure raises unchanged — there is no
+    # branch here that can fall through without either a connection or the connector's own error.
+    for attempt in range(attempts - 1):
+        try:
+            return _open_db_connection(config)
+        except Exception as exc:
+            if not _db_unreachable(exc):
+                raise
+            delay = min(backoff * (2 ** attempt), _MAX_CONNECT_RETRY_DELAY)
+            # DEBUG, not a warning: a database restart is expected on every deploy, and a blip we
+            # rode out is not a degraded outcome. Exhausting the budget still raises, and whoever
+            # owns that call logs it.
+            log_debug(f"MySQL is not reachable; retrying the connection in {delay:.0f}s",
+                      mysql_host=str(config.get('host')), attempt=attempt + 1, attempts=attempts)
+            time.sleep(delay)
+
+    return _open_db_connection(config)
 
 
 @contextmanager

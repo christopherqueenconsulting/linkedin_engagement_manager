@@ -231,6 +231,14 @@ AWS_MYSQL_SECRET_NAME=get_constant_from_env('AWS_MYSQL_SECRET_NAME')
 MYSQL_POOL_ENABLED = isTrue(get_constant_from_env('MYSQL_POOL_ENABLED', default_value='True'))
 MYSQL_POOL_SIZE = int(get_constant_from_env('MYSQL_POOL_SIZE', default_value='16'))
 
+# Riding out a MySQL container that is restarting or whose compose DNS name has not come back yet
+# (issue #1675: "Unknown MySQL server host 'mysql_db'"). Only failures where the server was NEVER
+# reached are retried, so no statement can run twice. Defaults wait ~3s in total, which is short
+# enough to sit in front of an API request; set attempts to 1 to turn the wait off.
+DB_CONNECT_RETRY_ATTEMPTS = int(get_constant_from_env('DB_CONNECT_RETRY_ATTEMPTS', default_value='3'))
+DB_CONNECT_RETRY_BACKOFF_SECONDS = float(
+    get_constant_from_env('DB_CONNECT_RETRY_BACKOFF_SECONDS', default_value='1'))
+
 NGROK_CUSTOM_DOMAIN=get_constant_from_env('NGROK_CUSTOM_DOMAIN')
 NGROK_FREE_DOMAIN=get_constant_from_env('NGROK_FREE_DOMAIN')
 NGROK_API_PREFIX=get_constant_from_env('NGROK_API_PREFIX')
