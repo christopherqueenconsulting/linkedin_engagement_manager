@@ -149,11 +149,14 @@ asset itself (motion-prompt length, frame presence, aspect ratio, render outcome
 in the nightly telemetry. Filed as **#1281** — the dimensions, data model and collection path it
 adds are specified in `docs/content-quality-audits/video-telemetry.md`.
 
-### F6 — Live corpus + exemplar sampling remains blocked on headless access → **#1363**
+### F6 — Live corpus + exemplar sampling remains blocked on headless access → **#1363** *(delivered)*, **#1654**
 
 The original reason #1282 was opened — real shipped video bodies/assets and a real LinkedIn
-exemplar — still cannot be satisfied headlessly. A separate follow-up issue (**#1363**) carries
-that scope so this PR can land the regression fix and updated audit doc.
+exemplar — still cannot be satisfied headlessly. A separate follow-up issue (**#1363**) carried
+that scope so this PR could land the regression fix and updated audit doc. #1363 delivered every
+code half of it — the sampler (#1506), the exemplar fallback note, the receipt (#1517) and the
+retained keyframes (#1595) — and closed; the one thing left, a sampler run against production once
+enough post-#1595 video has shipped, is **#1654** (§8).
 
 ### F7 — A shipped video's asset measures do not survive publication → **#1517** *(shipped)*
 
@@ -248,7 +251,7 @@ has, and only the restored contract can see anything wrong with it**.
 | **#1279** — avatar-likeness frame check | Avatar-policy work, telemetry-only default |
 | **#1280** — stored video asset probe | Touches the asset-backfill/storage path |
 | **#1281** — video-specific telemetry (`video-telemetry.md`) | Telemetry/schema change |
-| **#1363** — live corpus + exemplar sampling | Requires production MySQL credentials and/or live LinkedIn/Selenium access |
+| **#1363** — live corpus + exemplar sampling *(delivered; run remains on #1654)* | Requires production MySQL credentials and/or live LinkedIn/Selenium access |
 | **#1517** — persist the video asset measures at store time | Found by the 2026-08-14 run (§8); touches the generation/storage path and possibly the schema |
 
 Existing gates are untouched: `_post_missing_required_asset` still only checks presence; no new hold
@@ -413,15 +416,29 @@ in-repo gold standard named in §4 (`comment_contract_directive()`), and the rub
 stand as rubric-only judgements. Sourcing one needs an authenticated, non-headless LinkedIn session:
 a human step, available any time someone wants to upgrade this section, and never an agent one.
 
-### Where #1363 stands after this run
+### Where #1363 landed — owner decision `1A 2A`, and what moved to #1654
+
+#1363 is **closed as delivered**. Every half of it that code can satisfy shipped; the one thing left
+is a measurement, and the measurement needs data that did not exist while the issue was open —
+receipts and keyframes are written at STORE time, so they cover only video rendered after #1595
+deployed. The owner answered this issue's second decision comment `1A 2A`: close it, and carry the
+run itself on a Phase 2 follow-up.
 
 | Acceptance box | State |
 |---|---|
-| 6–10 shipped video samples with bodies **and** assets available | **Unblocked for video shipped after #1517** — the asset MEASURES now survive the purge, so a re-run grades current-pipeline posts. Still owed: a run once ~6 video posts have shipped since. The ten rows above stay ungradable, nothing recorded a receipt for them |
-| Named real reference exemplar or explicit fallback note | **Done** — fallback note above, per #1140's clause (decision `2A`) |
-| Representative frames embedded/referenced in the audit doc | **Unblocked** — keyframes are retained at store time (decision `2A`, above) and the sampler copies them into `docs/content-quality-audits/assets/1363/`. Still owed: the frames themselves, from the same re-run |
-| Any new findings filed as follow-up issues | **Done** — F7 → **#1517** |
+| Named real reference exemplar or explicit fallback note | **Done** — fallback note above, per #1140's clause (decision `2A` on PR #1506) |
+| Any new findings filed as follow-up issues | **Done** — F7 → **#1517** (shipped) |
+| 6–10 shipped video samples with bodies **and** assets available | **Code-complete, run outstanding → #1654.** The asset MEASURES survive the purge (#1517), so a re-run grades current-pipeline posts. The ten rows above stay ungradable — nothing recorded a receipt for them |
+| Representative frames embedded/referenced in the audit doc | **Code-complete, run outstanding → #1654.** Keyframes are retained at store time (decision `2A`) and the sampler copies them into `docs/content-quality-audits/assets/1363/` |
 
-Both remaining boxes now turn on ONE thing — a sampler run where the production database and the
-`lem_assets` volume are reachable, once enough video has shipped carrying receipts and keyframes.
-Nothing further is blocked on tooling or on a decision.
+**#1654** carries exactly one step apiece: the owner runs
+`poetry run python scripts/sample_shipped_videos.py --limit 10` from the prod-image sidecar and
+pastes the output, then an agent rewrites this section with the measured scorecard and the frames.
+It is filed WITHOUT `agent:ready` on purpose — dispatching before the corpus exists only re-derives
+the 2026-08-14 result — and the owner applies that label once the sampler's `--json` summary reports
+`"sufficient_corpus": true` (it reports the field either way; `false` is the refusal, not silence).
+
+**The floor that run has to clear (decision `2A`): `MIN_CORPUS = 6` posts shipped after the #1595
+deploy.** Not a provisional `n < 6` scorecard, and not a corpus topped up with pre-#148 renders —
+§7's rule again, since those predate the #1293 aspect fix (R5) and the #1278 caption burn (R2) and
+would grade a retired pipeline while reading as this one.
