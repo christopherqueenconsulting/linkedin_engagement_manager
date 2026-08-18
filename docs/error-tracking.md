@@ -97,17 +97,18 @@ refuses the credentials means automation silently does nothing.
 
 The three guards above stop new leakage; they do not retract what was already ingested. A PostHog
 error-tracking group keeps its `active` status until someone resolves it, so every group the suite
-filled before 2026-08-14 still shows up on the error list — and gets re-filed by hand as a
+filled on or before 2026-08-14 still shows up on the error list — and gets re-filed by hand as a
 production bug against code that was working. #1673 was exactly that: `OSError: broker unreachable`,
-91 occurrences, read as a Celery broker outage.
+31 occurrences, read as a Celery broker outage.
 
-Three tells, checkable from the group itself before any code is read:
+Three tells, checkable from the group itself before any code is read. **All three must hold** — any
+one alone is a coincidence, and resolving a group on a partial match buries a real defect:
 
 | Tell | What to look at |
 |---|---|
 | The message is a FIXTURE string | `grep -rn "<the exception message>" tests/` finds it as a `side_effect`, and `src/` never raises it. `broker unreachable`, `broker down`, `boom`, `db down`, `fail` are mocks, not products |
 | The actor is a TEST user | `distinct_id` on the sampled events is `42` — `SESSION_USER_ID` in `tests/unit/api/conftest.py`. Production is one real user, and it is not 42 |
-| It stopped when the guard landed | `last_seen` is at or before **2026-08-14T02:44Z** — #1451 merged at 02:37Z and nothing of this shape has been ingested since |
+| It stopped when the guards landed | `last_seen` is **on or before 2026-08-14** (UTC). The three guards closed three different paths on that one day — #1451 (`capture_exception`) at 02:37Z, #1460 (the Logs handler) at 19:02Z, #1498 (autocapture) at 21:26Z — so a leaked group can carry a `last_seen` anywhere up to ~21:30Z that day. Nothing of this shape has been ingested since |
 
 All three held on #1673: the string exists only as `chain.return_value.apply_async.side_effect =
 OSError("broker unreachable")` in `tests/unit/api/test_content_generation_status_api.py`, which
