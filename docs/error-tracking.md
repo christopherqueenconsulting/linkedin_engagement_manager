@@ -106,7 +106,7 @@ one alone is a coincidence, and resolving a group on a partial match buries a re
 
 | Tell | What to look at |
 |---|---|
-| The message is a FIXTURE string | `grep -rn "<the exception message>" tests/` finds it as a `side_effect`, and `src/` never raises it. `broker unreachable`, `broker down`, `boom`, `db down`, `fail` are mocks, not products |
+| The message is a FIXTURE string | `grep -rn "<the exception message>" tests/` finds it as a `side_effect`, and `src/` never raises it. `broker unreachable`, `broker down`, `boom`, `db down`, `fail` are mocks, not products. **A library DEFAULT message is not a fixture string and not a production one either** — see #1665 below, and read the frame instead |
 | The actor is a TEST user | `distinct_id` on the sampled events is `42` — `SESSION_USER_ID` in `tests/unit/api/conftest.py`. Production is one real user, and it is not 42 |
 | It stopped when the guards landed | `last_seen` is **on or before 2026-08-14** (UTC). The three guards closed three different paths on that one day — #1451 (`capture_exception`) at 02:37Z, #1460 (the Logs handler) at 19:02Z, #1498 (autocapture) at 21:26Z — so a leaked group can carry a `last_seen` anywhere up to ~21:30Z that day. Nothing of this shape has been ingested since |
 
@@ -121,10 +121,43 @@ dead group costing triage time again; a code change would be inventing behaviour
 never happened.
 
 The residue is large: measured 2026-08-18, **200+ groups are still `active` with no occurrence since
-the guard landed**, the biggest being `APIConnectionError: Connection error.` at 6,146 occurrences
+the guard landed**, the biggest being `APIConnectionError: Connection error.` at 6,154 occurrences
 sourced literally at `tests/unit/conftest.py`. The daily cron cannot re-file any of them (it counts
 occurrences inside a 24h window), so they cost nothing automatically — they cost a human reading the
 error list. Resolve them in bulk from the PostHog UI rather than one GitHub issue at a time.
+
+### When the message is the LIBRARY's default, tell 1 is inconclusive — read the SOURCE frame (#1665)
+
+That biggest group is also the one the first tell cannot settle, and #1665 filed it as a critical
+production incident on exactly that reading. `Connection error.` is not a fixture string anyone
+wrote: it is `openai.APIConnectionError`'s **default message**, and it is the literal string a
+LiteLLM proxy that is not accepting connections produces — the failure `AttributedOpenAI`'s
+connect-retry exists for (#986). So `grep -rn` finds it nowhere, `src/` "never raises it" is true and
+means nothing, and the tell reads as a real outage on a group that is 100% test.
+
+What settles it is the group's **`source` / top in-app frame**: `tests/unit/conftest.py`, the
+`_no_real_llm_calls` autouse guard, which has raised this exception on every un-mocked LLM call since
+#480 (2026-07-24). A production `APIConnectionError` cannot carry a frame under `tests/` — production
+runs a release image, which does not ship the test tree. The other two tells hold as usual here
+(`distinct_id: "system"`, `sessions: 0`, `$os_version: 24.04` — the dev box, not a container;
+`last_seen` 2026-08-14T02:44:51Z, seven minutes after #1451, nothing since).
+
+Generalised: **the message tell is about the message's AUTHOR, not its text.** A library default, an
+`errno` string, or anything the SDK writes for you proves nothing in either direction — fall through
+to the frame. Only a message a human typed into a `side_effect` is evidence on its own.
+
+**And when a group accuses a DEPENDENCY, ask that dependency's own success telemetry.** "Was the
+LiteLLM proxy reachable 2026-08-10 → 08-14" needs no container archaeology and no `docker` on the
+box: `$ai_generation` is emitted by the proxy's PostHog logger only on a call it actually served, and
+it fired every single day of the window — 9,198 on 08-10, the day the "outage" supposedly began. A
+proxy refusing connections cannot report generations. The same shape answers a DB or broker
+accusation.
+
+The other direction is the fix that stops the next one: a guard imitating a real failure must not
+imitate its message too. `_BLOCKED_LLM_MESSAGE` now names the fixture, per the
+`unit-test fixture: ` convention in `tests/conftest.py` (#1672), and
+`test_client_connect_retry.py` pins both halves — the guard says "unit-test fixture", a genuinely
+refused proxy still says `Connection error.`
 
 ## Recurrence escalation: once is a warning, repeatedly is a defect
 

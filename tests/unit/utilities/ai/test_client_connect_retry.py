@@ -160,3 +160,39 @@ class TestEveryEndpointIsCovered:
         """The tests above build their own client; pin the ONE instance every helper imports."""
         from cqc_lem.utilities.ai.client import AttributedOpenAI, client
         assert type(client).post is AttributedOpenAI.post
+
+
+class TestTheUnitLaneGuardIsTellableFromARealOutage:
+    """Only the message separates the unit-lane guard from the outage it imitates.
+
+    `_no_real_llm_calls` (tests/unit/conftest.py) raises the same exception CLASS a dead proxy does.
+    That mattered for real: the guard's events leaked into production PostHog before #1451 and
+    titled an error group `APIConnectionError: Connection error.` at 6,154 occurrences, which was
+    hand-filed as a production incident (#1665). The `unit-test fixture: ` naming convention
+    tests/conftest.py records is what keeps the two readable apart — pin both halves.
+    """
+
+    def test_the_guard_names_the_fixture_instead_of_the_sdk_default(self):
+        """A leaked `$exception` must title itself as a test, not as infrastructure."""
+        from openai import APIConnectionError
+
+        from cqc_lem.utilities.ai.client import client
+        with pytest.raises(APIConnectionError) as caught:
+            client.chat.completions.create(model="lem-medium",
+                                           messages=[{"role": "user", "content": "hi"}])
+        assert "unit-test fixture" in str(caught.value)
+        assert "tests/unit/conftest.py" in str(caught.value)
+
+    def test_a_genuinely_refused_proxy_still_reads_as_the_outage_it_is(self, monkeypatch):
+        """A REAL connection failure keeps the SDK's own wording.
+
+        Nothing here may quietly rename it, or the tell stops discriminating in the one direction
+        that hides a defect.
+        """
+        from openai import APIConnectionError
+        monkeypatch.setenv("LLM_CONNECT_RETRY_ATTEMPTS", "1")
+        transport = _RefusingTransport(refusals=99)
+        with patch("cqc_lem.utilities.ai.client.time.sleep"):
+            with pytest.raises(APIConnectionError) as caught:
+                _chat(_client(transport))
+        assert str(caught.value) == "Connection error."
