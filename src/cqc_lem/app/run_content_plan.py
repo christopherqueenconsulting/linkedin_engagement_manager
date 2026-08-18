@@ -833,6 +833,7 @@ def create_carousel_content(user_id: int, stage: str, post_id: int = None,
         carousel_model_for_stage,
         create_carousel_slide_images,
         create_ppt,
+        missing_carousel_fields,
     )
 
     # Same alignment inputs as text posts (best-effort — carousel generation never blocks on them).
@@ -933,14 +934,25 @@ def create_carousel_content(user_id: int, stage: str, post_id: int = None,
     )
 
     carousel_obj = None
-    try:
-        carousel_obj = model_cls(**carousel_dict)
-    except Exception as e:
-        # ERROR, not INFO: there is no raw-slide fallback any more — a deck that will not parse
-        # flags the post 'error' below and a human has to fix it. This is where the fault is
-        # DETECTED and the only place the exception is in hand, so it is the one that files.
-        log_error("Could not parse the generated carousel into a slide model", exc=e,
-                  user_id=user_id, post_id=post_id, task_name="create_carousel_content")
+    # Read the missing required slides off the model BEFORE constructing it (issue #1666): the
+    # pydantic ValidationError names its own message, not the fields the generator dropped, and an
+    # empty deck produced one grouped exception a human could not act on. `generate_carousel_content`
+    # already logged the generation failure at ERROR where it was detected, so this stays DEBUG —
+    # one condition gets ONE record, and the 'error' status below is what a human works from.
+    missing_fields = missing_carousel_fields(model_cls, carousel_dict)
+    if missing_fields:
+        log_debug(f"Generated carousel is missing required slide field(s): "
+                  f"{', '.join(missing_fields)}", user_id=user_id, post_id=post_id,
+                  task_name="create_carousel_content")
+    else:
+        try:
+            carousel_obj = model_cls(**carousel_dict)
+        except Exception as e:
+            # ERROR, not INFO: there is no raw-slide fallback any more — a deck that will not parse
+            # flags the post 'error' below and a human has to fix it. This is where the fault is
+            # DETECTED and the only place the exception is in hand, so it is the one that files.
+            log_error("Could not parse the generated carousel into a slide model", exc=e,
+                      user_id=user_id, post_id=post_id, task_name="create_carousel_content")
 
     slide_urls = []
     if carousel_obj is not None and post_id is not None:

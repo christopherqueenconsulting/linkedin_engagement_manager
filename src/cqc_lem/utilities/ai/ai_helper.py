@@ -3497,6 +3497,31 @@ def _loads_json_object(raw: "str | None") -> "dict | None":
     return None
 
 
+def _carousel_shape_directive(missing: list, schema_hint: str) -> str:
+    """The repair steer after a deck came back without every required slide.
+
+    Names the exact top-level keys the reply owed and repeats the schema, so the retry returns the
+    shape the model is constructed from instead of rewording the same partial deck (issue #1666).
+
+    Args:
+        missing: The required field names the previous reply did not supply.
+        schema_hint: The stage's schema description, repeated verbatim from the first prompt.
+
+    Returns:
+        The directive to append to the prompt, or "" when nothing was missing.
+    """
+    names = [str(m) for m in (missing or []) if str(m).strip()]
+    if not names:
+        return ""
+    return ("\n\nYOUR PREVIOUS RESPONSE WAS REJECTED — it did not carry the required carousel "
+            "structure. It was missing the top-level \"carousel\" key(s): "
+            + ", ".join(names) + ".\n"
+            "Return the FULL JSON object again with BOTH top-level keys \"post_text\" and "
+            f"\"carousel\", where \"carousel\" is a {schema_hint}. Every field listed there is "
+            "required unless marked optional — no field may be null, an empty object, or an empty "
+            "list. Return ONLY valid JSON.\n")
+
+
 def generate_carousel_content(user_id: int, stage: str, prefs: dict = None,
                               profile_synthesis: str = None, blueprint: dict = None,
                               fact_anchors: list = None,
@@ -3517,14 +3542,17 @@ def generate_carousel_content(user_id: int, stage: str, prefs: dict = None,
     30-day plan and the preview route (issue #1681). The prompt names THAT model's fields, so the
     shape asked for is the shape every construction site validates.
     """
+    from cqc_lem.utilities.carousel_creator import missing_carousel_fields
     from cqc_lem.utilities.db import get_user_password_pair_by_id
     from cqc_lem.utilities.linkedin.helper import get_my_profile
     from cqc_lem.utilities.linkedin.profile import LinkedInProfile as _Profile
     from cqc_lem.utilities.selenium_util import get_driver_wait_pair, quit_gracefully
 
     # The shared resolver, never a local stage map: the schema named in the prompt is read off the
-    # SAME model the caller builds the reply into (issue #1681).
-    schema_hint = carousel_schema_hint(carousel_model_for_stage(stage))
+    # SAME model the caller builds the reply into (issue #1681), and `model_cls` is that model — the
+    # shape checks below (#1666) validate against the exact class the prompt just described.
+    model_cls = carousel_model_for_stage(stage)
+    schema_hint = carousel_schema_hint(model_cls)
 
     # Attempt to load user profile for personalisation; fall back gracefully
     try:
@@ -3612,7 +3640,7 @@ Return ONLY valid JSON. No explanation, no markdown fences."""
         ),
     }
 
-    def _draft(extra_directive: str = "") -> tuple[str, dict]:
+    def _draft(extra_directive: str = "") -> tuple[str, dict, bool]:
         user_message = {"role": "user",
                         "content": [{"type": "text", "text": prompt + extra_directive}]}
         response = _call_llm(
@@ -3626,12 +3654,8 @@ Return ONLY valid JSON. No explanation, no markdown fences."""
         # AttributeError out of the task instead of taking the fallback one line below.
         raw = (response.choices[0].message.content or "").strip()
         parsed = _loads_json_object(raw)
+        parsed_ok = parsed is not None
         if parsed is None:
-            # ERROR, not WARNING: there is no degraded carousel. An empty deck fails
-            # `model_cls(**carousel_dict)` in run_content_plan, which flags the post 'error' for a
-            # human — so this is a task-level failure, logged where it is DETECTED.
-            log_error("generate_carousel_content: LLM returned no parseable JSON object",
-                      user_id=user_id, task_name="create_carousel_content")
             parsed = {}
         # QA guard: reflow a wall-of-text caption into scannable paragraphs and hard-cap the length,
         # even when the model ignored the format directive (JSON mode often drops line breaks).
@@ -3639,9 +3663,39 @@ Return ONLY valid JSON. No explanation, no markdown fences."""
             normalize_public_text(parsed.get("post_text",
                                              f"Explore our latest insights on {industry}.")),
             max_chars=_CAROUSEL_CAPTION_MAX_CHARS)
-        return text, _normalize_carousel_strings(parsed.get("carousel", {}))
+        return text, _normalize_carousel_strings(parsed.get("carousel", {})), parsed_ok
 
-    post_text, carousel_dict = _draft()
+    post_text, carousel_dict, parsed_ok = _draft()
+
+    # Deck-shape gate (issue #1666): a reply that parsed but carries no "carousel" key — or one
+    # whose deck omits a required slide — used to travel all the way to `model_cls(**carousel_dict)`
+    # and die there as a bare pydantic ValidationError, three layers from the model that dropped the
+    # field. Check the shape HERE, where the LLM can still be asked again, and give it ONE bounded
+    # repair call naming the exact fields it owes. Same posture as the reference gate below: a retry
+    # that errors or comes back worse never costs us the draft in hand.
+    missing = missing_carousel_fields(model_cls, carousel_dict)
+    if missing:
+        log_info("Carousel deck is missing required slide field(s) — regenerating: "
+                 + ", ".join(missing), user_id=user_id, task_name="create_carousel_content")
+        try:
+            retry_text, retry_deck, retry_parsed_ok = _draft(
+                _carousel_shape_directive(missing, schema_hint))
+        except Exception as exc:
+            log_warning("Carousel shape-gate retry failed — keeping the previous deck",
+                        exc=exc, user_id=user_id, task_name="create_carousel_content")
+        else:
+            if not missing_carousel_fields(model_cls, retry_deck):
+                post_text, carousel_dict, parsed_ok, missing = (retry_text, retry_deck,
+                                                                retry_parsed_ok, [])
+    if missing:
+        # ERROR, not WARNING: there is no degraded carousel. This deck fails
+        # `model_cls(**carousel_dict)` in run_content_plan, which flags the post 'error' for a
+        # human — so this is a task-level failure, logged where it is DETECTED. ONE record for the
+        # condition: the message names whether the reply parsed at all and which fields never came.
+        reason = ("LLM returned no parseable JSON object" if not parsed_ok
+                  else "deck is missing required slide field(s): " + ", ".join(missing))
+        log_error(f"generate_carousel_content: {reason}",
+                  user_id=user_id, task_name="create_carousel_content")
 
     # Reference-value gate (issue #728): a save-targeted deck — or any deck whose caption promises a
     # checklist / the exact stack / the numbers — must carry something reusable on every body slide.
@@ -3662,7 +3716,7 @@ Return ONLY valid JSON. No explanation, no markdown fences."""
         # unparseable retry grades as no-gradeable-slide (checked=False) — shipping THAT would
         # trade a narrative deck for an empty one plus the generic fallback caption.
         try:
-            retry_text, retry_deck = _draft(_framework.deck_retry_directive(report))
+            retry_text, retry_deck, _ = _draft(_framework.deck_retry_directive(report))
         except Exception as exc:
             log_warning("Carousel reference-gate retry failed — keeping the previous deck",
                         exc=exc, user_id=user_id, task_name="create_carousel_content")

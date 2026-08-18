@@ -1,6 +1,10 @@
 """Unit tests for the carousel generator's reference-value loop (issue #728): a deck whose slides
 carry nothing reusable is REGENERATED with a directive naming exactly what was missing, the retry is
 bounded, and a passing deck never costs a second call.
+
+Both fixture decks carry `cover` / `contents` / `call_to_action` — the `EducationalContentCarousel`
+shape the "awareness" stage builds — so the shape gate (issue #1666) passes them straight through
+and every call count below is the reference gate's alone.
 """
 
 import json
@@ -14,7 +18,7 @@ _AI = "cqc_lem.utilities.ai.ai_helper"
 
 _NARRATIVE = {
     "cover": {"title": "The build receipt", "content": "What it took."},
-    "insights": [
+    "contents": [
         {"title": "Release count is not the goal",
          "content": "Shipping often is a side effect of small reversible changes."},
         {"title": "Automation compounds",
@@ -24,7 +28,7 @@ _NARRATIVE = {
 }
 _REFERENCE = {
     "cover": {"title": "The 3 checks I run", "content": "The exact stack."},
-    "insights": [
+    "contents": [
         {"title": "1. Pin the tag", "content": "Set IMAGE_TAG to the release tag, never latest."},
         {"title": "2. Migrate first", "content": "Run `flyway migrate` before the app flips."},
     ],

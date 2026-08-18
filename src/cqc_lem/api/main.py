@@ -3297,6 +3297,7 @@ def list_carousel_templates() -> ResponseModel[dict[str, Any]]:
     200: {"description": "Carousel slides generated"},
     403: {"description": "Forbidden"},
     500: {"description": "Generation failed"},
+    502: {"description": "The generator returned a deck missing required slides"},
 })
 def generate_carousel_preview(request: GenerateCarouselPreviewRequest) -> ResponseModel[dict[str, Any]]:
     """Generate carousel slide images from AI content + chosen template.
@@ -3311,6 +3312,7 @@ def generate_carousel_preview(request: GenerateCarouselPreviewRequest) -> Respon
         DEFAULT_TEMPLATE,
         carousel_model_for_stage,
         create_carousel_slide_images,
+        missing_carousel_fields,
     )
     from cqc_lem.utilities.env_constants import API_URL_FINAL
 
@@ -3348,6 +3350,16 @@ def generate_carousel_preview(request: GenerateCarouselPreviewRequest) -> Respon
         # "personal" preview asked the generator for one deck shape and validated another.
         model_cls = carousel_model_for_stage(stage)
 
+        # The generator's own shape gate already spent its repair call, so a deck still missing a
+        # required slide is an upstream failure — say which slides, rather than handing the SPA a
+        # raw pydantic ValidationError dump from the constructor (issue #1666).
+        missing = missing_carousel_fields(model_cls, carousel_dict)
+        if missing:
+            raise HTTPException(
+                status_code=502,
+                detail="The carousel generator returned a deck missing required slide(s): "
+                       + ", ".join(missing) + ". Try again.")
+
         carousel_obj = model_cls(**carousel_dict)
         image_paths = create_carousel_slide_images(
             carousel_obj, post_id=0, output_dir=output_dir, template=carousel_template
@@ -3356,6 +3368,10 @@ def generate_carousel_preview(request: GenerateCarouselPreviewRequest) -> Respon
             f"{API_URL_FINAL}/api/assets?file_name=images/carousel/{preview_id}/{os.path.basename(p)}"
             for p in image_paths
         ]
+    except HTTPException:
+        # Already the answer we mean to send — re-wrapping it would bury a 502 inside a 500 whose
+        # detail is the repr of this exception.
+        raise
     except Exception as exc:
         log_info(f"generate-carousel: failed for user_id={user_id} — {exc}")
         raise HTTPException(status_code=500, detail=str(exc))

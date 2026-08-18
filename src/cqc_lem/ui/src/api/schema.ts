@@ -7979,6 +7979,13 @@ export interface operations {
                 };
                 content?: never;
             };
+            /** @description The generator returned a deck missing required slides */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
         };
     };
     invite_to_li_company_page_api_invite_to_li_company_page__post: {
