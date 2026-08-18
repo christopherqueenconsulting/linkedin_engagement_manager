@@ -830,10 +830,7 @@ def create_carousel_content(user_id: int, stage: str, post_id: int = None,
     """
     from cqc_lem.utilities.ai.ai_helper import generate_carousel_content
     from cqc_lem.utilities.carousel_creator import (
-        CaseStudyCarousel,
-        EducationalContentCarousel,
-        IndustryInsightsCarousel,
-        ProductDemoCarousel,
+        carousel_model_for_stage,
         create_carousel_slide_images,
         create_ppt,
     )
@@ -917,16 +914,10 @@ def create_carousel_content(user_id: int, stage: str, post_id: int = None,
                         "the same anchor", exc=e, user_id=user_id, post_id=post_id,
                         task_name="create_carousel_content")
 
-    # Map stage to carousel model class
+    # The shared stage map (issue #1681) — the same one the prompt's schema came from, so the deck
+    # in hand is built into the model it was written for.
     stage_lower = (stage or "").lower()
-    if "awareness" in stage_lower:
-        model_cls = EducationalContentCarousel
-    elif "consideration" in stage_lower:
-        model_cls = CaseStudyCarousel
-    elif "decision" in stage_lower:
-        model_cls = ProductDemoCarousel
-    else:
-        model_cls = IndustryInsightsCarousel
+    model_cls = carousel_model_for_stage(stage)
 
     # Pick a template that fits the buyer stage
     _template_by_stage = {
