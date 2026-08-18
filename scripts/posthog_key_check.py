@@ -7,10 +7,10 @@ stats panel, files nothing from the error cron, and drops the weekly benchmark o
 judge. Every one of those looks exactly like a quiet day, so "the deploy was green" is not evidence
 that a rollout step worked.
 
-This turns each of those absences into one loud line. For every purpose in
-`cqc_lem.utilities.posthog_keys.PURPOSE_ENV_VARS` it resolves the key the real consumer would
-resolve, performs ONE live read against the surface that consumer uses, and prints PASS/FAIL naming
-the env var that actually supplied the key — which is what distinguishes a populated scoped key from
+This turns each of those absences into one loud line. For every SURFACE below — one per job a key
+actually does, so a purpose whose consumer needs two scopes is checked twice — it resolves the key
+the real consumer would resolve, performs ONE live read against that surface, and prints PASS/FAIL
+naming the env var that actually supplied the key — which is what distinguishes a populated scoped key from
 a shared fallback still doing the work mid-rollout.
 
 **It only ever reads.** Every request is a GET, or a POST to a query/run endpoint that executes a
@@ -23,7 +23,7 @@ thin I/O client (mocked in tests).
 CLI:
   --purpose P     Check only this purpose (repeatable). Default: all of them.
   --list          Print the planned checks and exit; no network.
-  --hours N       Window for the error-cron HogQL check (default 24).
+  --hours N       Window for the HogQL checks: error cron, benchmark (default 24).
   --distinct-id D distinct_id the SPA stats endpoint is run for (default 0 — any id proves the
                   key and the provisioning; rows are not the point).
   --timeout S     Per-request timeout in seconds (default 30).
@@ -69,6 +69,7 @@ STATS_ENDPOINT_NAME = "lem-posts-engagement-weekly"
 BODY_NONE = None
 BODY_DISTINCT_ID = "distinct_id"
 BODY_HOGQL = "hogql"
+BODY_EVAL_HOGQL = "eval_hogql"
 
 #: One entry per SURFACE, not per purpose: `runtime` is one key doing two jobs, and a key that reads
 #: flag definitions but cannot run an endpoint has to fail loudly on the half that is broken.
@@ -117,6 +118,16 @@ SURFACES = (
         "method": "GET",
         "path": "/api/projects/{project_id}/llm_analytics/evaluations/?limit=1",
         "body": BODY_NONE,
+    },
+    {
+        "purpose": "benchmark",
+        "name": "judge-verdict HogQL",
+        "consumer": "benchmark_models.PostHogEvals.query (hogql_for_run)",
+        "proves": "query:read against $ai_evaluation — the evaluation scope alone is not enough, "
+                  "the run READS its verdicts back over HogQL and scores nothing without it",
+        "method": "POST",
+        "path": "/api/projects/{project_id}/query/",
+        "body": BODY_EVAL_HOGQL,
     },
 )
 
@@ -176,6 +187,25 @@ def error_hogql(hours: int = DEFAULT_HOURS) -> str:
             f"AND timestamp > now() - INTERVAL {window} HOUR")
 
 
+def evaluation_hogql(hours: int = DEFAULT_HOURS) -> str:
+    """The benchmark's verdict read-back, trimmed to a count.
+
+    `benchmark_models.hogql_for_run` reads five `$ai_evaluation` properties for ONE run id; the key
+    scope it depends on is the same for a count over the same event, and a count needs no run to
+    exist. Zero rows is a PASS here on purpose — this asks "may this key query?", not "did last
+    Sunday score?".
+
+    Args:
+        hours: Lookback window in hours, floored like `error_hogql`.
+
+    Returns:
+        A HogQL string.
+    """
+    window = max(1, int(hours or DEFAULT_HOURS))
+    return ("SELECT count() FROM events WHERE event = '$ai_evaluation' "
+            f"AND timestamp > now() - INTERVAL {window} HOUR")
+
+
 def request_spec(surface: dict, project_id: str, app_host: str,
                  hours: int = DEFAULT_HOURS,
                  distinct_id: str = DEFAULT_DISTINCT_ID) -> dict:
@@ -185,7 +215,7 @@ def request_spec(surface: dict, project_id: str, app_host: str,
         surface: An entry of `SURFACES`.
         project_id: PostHog project id.
         app_host: PostHog app host (trailing slash tolerated).
-        hours: Window for the HogQL surface.
+        hours: Window for the HogQL surfaces.
         distinct_id: distinct_id the stats endpoint is run for.
 
     Returns:
@@ -196,6 +226,8 @@ def request_spec(surface: dict, project_id: str, app_host: str,
         body = {"variables": {"distinct_id": str(distinct_id)}}
     elif surface["body"] == BODY_HOGQL:
         body = {"query": {"kind": "HogQLQuery", "query": error_hogql(hours)}}
+    elif surface["body"] == BODY_EVAL_HOGQL:
+        body = {"query": {"kind": "HogQLQuery", "query": evaluation_hogql(hours)}}
     return {
         "method": surface["method"],
         "url": app_host.rstrip("/") + surface["path"].format(project_id=project_id),
@@ -206,9 +238,14 @@ def request_spec(surface: dict, project_id: str, app_host: str,
 def is_read_only(surface: dict) -> bool:
     """Whether a surface is structurally incapable of writing to PostHog.
 
-    A GET is read-only by definition; the two POSTs are PostHog's read verbs (running a provisioned
-    endpoint, executing a HogQL query). Anything else would make this script able to change the
-    project it is supposed to be inspecting.
+    A GET is read-only by definition; the two POSTs are PostHog's read verbs (executing a HogQL
+    query, running a provisioned `/endpoints/` query). Anything else would make this script able to
+    change the project it is supposed to be inspecting.
+
+    `/run/` is NOT enough on its own: `/llm_analytics/evaluations/<id>/run/` is a `/run/` that
+    TRIGGERS a judge evaluation — real spend and a new `$ai_evaluation` event — so the endpoint
+    prefix is what makes the suffix safe, and `benchmark_models.PostHogEvals.run_evaluation` is the
+    live proof that path exists in this codebase.
 
     Args:
         surface: An entry of `SURFACES`.
@@ -218,8 +255,12 @@ def is_read_only(surface: dict) -> bool:
     """
     if surface["method"] == "GET":
         return True
+    if surface["method"] != "POST":
+        return False
     path = surface["path"].split("?")[0]
-    return surface["method"] == "POST" and path.endswith(("/query/", "/run/"))
+    if path.endswith("/query/"):
+        return True
+    return "/endpoints/" in path and path.endswith("/run/")
 
 
 def describe_key(purpose: str) -> dict:
@@ -342,7 +383,7 @@ def run_check(surface: dict, reader: "PostHogReader", project_id: str, app_host:
         reader: The I/O client.
         project_id: PostHog project id.
         app_host: PostHog app host.
-        hours: Window for the HogQL surface.
+        hours: Window for the HogQL surfaces.
         distinct_id: distinct_id the stats endpoint is run for.
 
     Returns:
@@ -368,7 +409,7 @@ def main(argv: Optional[list] = None) -> int:
     parser.add_argument("--list", action="store_true",
                         help="Print the planned checks and exit; no network.")
     parser.add_argument("--hours", type=int, default=DEFAULT_HOURS,
-                        help="Window for the error-cron HogQL check (default 24).")
+                        help="Window for the HogQL checks: error cron, benchmark (default 24).")
     parser.add_argument("--distinct-id", default=DEFAULT_DISTINCT_ID,
                         help="distinct_id the SPA stats endpoint is run for (default 0).")
     parser.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT_SECONDS,

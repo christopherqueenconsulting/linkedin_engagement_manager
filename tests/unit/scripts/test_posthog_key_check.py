@@ -50,6 +50,19 @@ class TestSurfaceTable:
         assert not kc.is_read_only({"method": "POST", "path": "/api/projects/{project_id}/annotations/"})
         assert not kc.is_read_only({"method": "PATCH", "path": "/api/projects/{project_id}/query/"})
 
+    def test_a_run_that_triggers_an_evaluation_is_not_read_only(self):
+        # `/run/` alone is not safe: benchmark_models.PostHogEvals.run_evaluation posts to exactly
+        # this shape and it costs judge spend + writes an $ai_evaluation event.
+        assert not kc.is_read_only({
+            "method": "POST",
+            "path": "/api/projects/{project_id}/llm_analytics/evaluations/abc/run/",
+        })
+        # …while the provisioned-endpoint /run/ this script really uses still passes.
+        assert kc.is_read_only({
+            "method": "POST",
+            "path": "/api/projects/{project_id}/endpoints/" + kc.STATS_ENDPOINT_NAME + "/run/",
+        })
+
     def test_every_known_purpose_has_at_least_one_surface(self):
         # A purpose with no surface would pass silently — exactly the hole this script closes.
         from cqc_lem.utilities.posthog_keys import PURPOSE_ENV_VARS
@@ -58,6 +71,14 @@ class TestSurfaceTable:
     def test_the_runtime_key_is_checked_on_both_of_its_jobs(self):
         runtime = [s["name"] for s in kc.SURFACES if s["purpose"] == "runtime"]
         assert len(runtime) == 2
+
+    def test_the_benchmark_key_is_checked_on_the_query_half_too(self):
+        # PostHogEvals reads its verdicts back over HogQL (hogql_for_run), so an evaluation-only
+        # key passes the GET and still scores nothing — the exact silent degradation this exists
+        # to catch.
+        benchmark = [s for s in kc.SURFACES if s["purpose"] == "benchmark"]
+        assert len(benchmark) == 2
+        assert any(s["path"].endswith("/query/") for s in benchmark)
 
     def test_the_stats_endpoint_name_matches_the_app_s_own(self):
         # The script keeps its own copy so it stays stdlib+requests; this is the anti-drift check.
@@ -99,6 +120,13 @@ class TestRequestSpec:
         assert spec["json"]["query"]["kind"] == "HogQLQuery"
         assert "INTERVAL 6 HOUR" in spec["json"]["query"]["query"]
 
+    def test_the_benchmark_hogql_reads_the_evaluation_event_not_the_exception_one(self):
+        surface = next(s for s in kc.SURFACES if s["name"] == "judge-verdict HogQL")
+        spec = kc.request_spec(surface, PROJECT, HOST, hours=6)
+        assert "$ai_evaluation" in spec["json"]["query"]["query"]
+        assert "$exception" not in spec["json"]["query"]["query"]
+        assert "INTERVAL 6 HOUR" in spec["json"]["query"]["query"]
+
     def test_a_trailing_slash_on_the_host_is_not_doubled(self):
         surface = kc.SURFACES[0]
         assert "//api/" not in kc.request_spec(surface, PROJECT, HOST + "/")["url"]
@@ -115,6 +143,16 @@ class TestErrorHogql:
     def test_a_negative_window_is_floored_to_one_hour_like_the_cron(self):
         # Same flooring as posthog_error_issues.build_query — never an invalid INTERVAL.
         assert "INTERVAL 1 HOUR" in kc.error_hogql(-5)
+
+
+class TestEvaluationHogql:
+    def test_it_reads_the_event_the_benchmark_scores_off(self):
+        assert "$ai_evaluation" in kc.evaluation_hogql()
+
+    @pytest.mark.parametrize("hours", [0, None, -5])
+    def test_the_window_is_floored_the_same_way(self, hours):
+        expected = kc.DEFAULT_HOURS if hours in (0, None) else 1
+        assert f"INTERVAL {expected} HOUR" in kc.evaluation_hogql(hours)
 
 
 class TestDescribeKey:
@@ -241,5 +279,6 @@ class TestMain:
         reader = _FakeReader([(200, "{}")] * 10)
         monkeypatch.setattr(kc, "PostHogReader", lambda **k: reader)
         assert kc.main(["--purpose", "benchmark"]) == 0
-        assert len(reader.calls) == 1
+        assert len(reader.calls) == 2
         assert "llm_analytics" in reader.calls[0]["url"]
+        assert reader.calls[1]["url"].endswith("/query/")

@@ -3,9 +3,10 @@
 `POSTHOG_PERSONAL_API_KEY` was a single account-scoped key doing four unrelated jobs — a CI
 release annotation (write), the app's runtime reads (feature-flag local evaluation, the provisioned
 HogQL endpoints behind the SPA stats panel), the daily error->issue cron's HogQL query, and the
-weekly model benchmark's LLM-evaluation scoring. One key means one blast radius, and every one of
-those consumers fails SILENTLY without it: flags fall back to their env vars, the endpoints panel
-goes empty, the cron files nothing, the benchmark drops to its in-runner judge. None of that raises.
+weekly model benchmark's LLM-evaluation scoring. One key means one blast radius, and four of those
+five consumers fail SILENTLY without it: flags fall back to their env vars, the endpoints panel goes
+empty, the cron files nothing, the benchmark drops to its in-runner judge. None of that raises — the
+CI annotation is the only one that says anything, and its step is `continue-on-error`.
 
 So each purpose reads its OWN env var first and falls back to `POSTHOG_PERSONAL_API_KEY`:
 
@@ -14,7 +15,7 @@ So each purpose reads its OWN env var first and falls back to `POSTHOG_PERSONAL_
 | `annotation` | `POSTHOG_ANNOTATION_API_KEY` | `scripts/posthog_annotate.py` (CI deploy job) | `annotation:write` |
 | `runtime` | `POSTHOG_RUNTIME_API_KEY` | `flags.py`, `posthog_endpoints.py` | `feature_flag:read`, `query:read` |
 | `query` | `POSTHOG_QUERY_API_KEY` | `scripts/posthog_error_issues.py` (host cron) | `query:read` |
-| `benchmark` | `POSTHOG_BENCHMARK_API_KEY` | `scripts/benchmark_models.py` (weekly cron) | LLM-evaluation |
+| `benchmark` | `POSTHOG_BENCHMARK_API_KEY` | `scripts/benchmark_models.py` (weekly cron) | LLM-eval + `query:read` |
 
 `observability.posthog_hogql_query` is a runtime read too, so it rides the `runtime` key — the
 `query` one is the CRON's, and the two live in different environments.

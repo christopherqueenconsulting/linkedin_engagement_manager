@@ -185,7 +185,7 @@ lives: each purpose reads its own env var and falls back to `POSTHOG_PERSONAL_AP
 | `annotation` | `POSTHOG_ANNOTATION_API_KEY` | `scripts/posthog_annotate.py` (GH Actions) | `annotation:write` |
 | `runtime` | `POSTHOG_RUNTIME_API_KEY` | `flags.py`, `posthog_endpoints.py`, `observability.posthog_hogql_query` (app containers) | `feature_flag:read`, `query:read` |
 | `query` | `POSTHOG_QUERY_API_KEY` | `scripts/posthog_error_issues.py` via `error_to_issues.sh` (host cron) | `query:read` |
-| `benchmark` | `POSTHOG_BENCHMARK_API_KEY` | `scripts/benchmark_models.py` via `weekly_model_check.sh` (host cron, Sun) | LLM-evaluation read+write |
+| `benchmark` | `POSTHOG_BENCHMARK_API_KEY` | `scripts/benchmark_models.py` via `weekly_model_check.sh` (host cron, Sun) | LLM-evaluation read+write, `query:read` |
 
 The provisioning scripts (`posthog_provision`, `posthog_dashboards`, `posthog_flags`,
 `posthog_surveys`, `posthog_experiments`, `posthog_ops_destination`) are run by hand and
@@ -196,7 +196,10 @@ run and stored nowhere is the right shape for them.
 hand-run: `scripts/weekly_model_check.sh` (host cron, Sun) sources its key out of `/opt/lem/.env`,
 so that key is a *stored* credential like the other three. It reads PostHog's LLM-evaluation API —
 a scope none of the others covers — so folding it into `runtime` would widen the one key that lives
-in the app containers. It gets `POSTHOG_BENCHMARK_API_KEY` instead (issue #1453, owner decision
+in the app containers. It needs `query:read` **as well**: the run creates and triggers the judge
+evaluations over the evaluation API but reads the verdicts back over HogQL
+(`PostHogEvals.query` / `hogql_for_run`), so an evaluation-only key scores nothing — which is why
+the preflight checks that half separately. It gets `POSTHOG_BENCHMARK_API_KEY` instead (issue #1453, owner decision
 `1A`). It still degrades to the in-runner judge without a key, but no longer silently: `main()`
 prints `Neither POSTHOG_BENCHMARK_API_KEY nor POSTHOG_PERSONAL_API_KEY is set — PostHog evaluations
 are unavailable; using the in-runner judge` to stderr, which lands in `/home/lem/model-check/model_check.log`.

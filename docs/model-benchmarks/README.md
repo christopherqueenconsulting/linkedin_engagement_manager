@@ -469,8 +469,10 @@ as the judge, otherwise the run falls back to the in-runner judge and says so in
 stderr. The personal key is resolved by PURPOSE (issue #1453,
 `src/cqc_lem/utilities/posthog_keys.py`): `POSTHOG_BENCHMARK_API_KEY` first, then the shared
 `POSTHOG_PERSONAL_API_KEY` — so an environment that has not been split yet is unaffected.
-`python scripts/posthog_key_check.py --purpose benchmark` answers "can this run actually score?"
-without running a benchmark.
+`python scripts/posthog_key_check.py --purpose benchmark` answers "does this personal key still
+reach both halves PostHog scoring needs — the evaluation API and HogQL?" without running a
+benchmark. It does not look at `POSTHOG_API_KEY`; the run itself says so on stderr when that one is
+the missing half.
 
 The report is the deliverable — `--results-out` for the JSON a later `--render` replays, and
 `--recommendations-out` for the swap list a follow-up config PR reads. Anything the standing spend
