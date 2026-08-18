@@ -1,114 +1,139 @@
 {
   "_comment": "Committed snapshot of ollama.com/api/tags, refreshed by scripts/model_health_check.py --catalog-apply. New tags here vs the live catalog become ONE agent:ready evaluation issue; do not hand-edit.",
-  "updated": "2026-08-09",
+  "updated": "2026-08-16",
   "models": {
     "deepseek-v4-flash:0731": {
       "modified_at": "2026-07-31T08:00:00-07:00",
       "size": 166878536440,
       "parameter_size": "",
-      "family": ""
+      "family": "",
+      "digest": "4de9bf66c0eb"
     },
     "deepseek-v4-flash:preview": {
       "modified_at": "2026-04-24T00:00:00Z",
       "size": 140000000000,
       "parameter_size": "",
-      "family": ""
+      "family": "",
+      "digest": "ac252c581d64"
     },
-    "deepseek-v4-pro": {
+    "deepseek-v4-pro:0813": {
+      "modified_at": "2026-08-13T08:00:00-07:00",
+      "size": 892744322880,
+      "parameter_size": "",
+      "family": "",
+      "digest": "db976f1eacdd"
+    },
+    "deepseek-v4-pro:preview": {
       "modified_at": "2026-04-24T00:00:00Z",
       "size": 1600000000000,
       "parameter_size": "",
-      "family": ""
+      "family": "",
+      "digest": "079ba36ea28c"
     },
     "gemma4:31b": {
       "modified_at": "2026-04-02T09:00:00-08:00",
       "size": 62546177752,
       "parameter_size": "",
-      "family": ""
+      "family": "",
+      "digest": "221b330d11a8"
     },
     "glm-5.1": {
       "modified_at": "2026-04-07T08:00:00-07:00",
       "size": 1507728316928,
       "parameter_size": "",
-      "family": ""
+      "family": "",
+      "digest": "882e35812821"
     },
     "glm-5.2": {
       "modified_at": "2026-06-16T08:00:00-07:00",
       "size": 0,
       "parameter_size": "",
-      "family": ""
+      "family": "",
+      "digest": "f553240f6dc4"
     },
     "gpt-oss:120b": {
       "modified_at": "2025-08-05T00:00:00Z",
       "size": 65290180781,
       "parameter_size": "",
-      "family": ""
+      "family": "",
+      "digest": "d98fe6ba01e6"
     },
     "gpt-oss:20b": {
       "modified_at": "2025-08-05T00:00:00Z",
       "size": 13780162412,
       "parameter_size": "",
-      "family": ""
+      "family": "",
+      "digest": "05afbac4bad6"
     },
     "kimi-k2.6": {
       "modified_at": "2026-04-20T00:00:00Z",
       "size": 595148192736,
       "parameter_size": "",
-      "family": ""
+      "family": "",
+      "digest": "4764ecb21f85"
     },
     "kimi-k2.7-code": {
       "modified_at": "2026-06-12T00:00:00Z",
       "size": 595148192736,
       "parameter_size": "",
-      "family": ""
+      "family": "",
+      "digest": "1a7e88d8c572"
     },
     "kimi-k3": {
       "modified_at": "2026-07-27T08:00:00-07:00",
       "size": 1560860324864,
       "parameter_size": "",
-      "family": ""
+      "family": "",
+      "digest": "d189309738f0"
     },
     "minimax-m2.7": {
       "modified_at": "2026-03-18T00:00:00Z",
       "size": 480836588544,
       "parameter_size": "",
-      "family": ""
+      "family": "",
+      "digest": "d1008bea3761"
     },
     "minimax-m3": {
       "modified_at": "2026-06-01T00:00:00Z",
       "size": 0,
       "parameter_size": "",
-      "family": ""
+      "family": "",
+      "digest": "9ce5291d9c0e"
     },
     "mistral-large-3:675b": {
       "modified_at": "2025-12-02T00:00:00Z",
       "size": 682000000000,
       "parameter_size": "",
-      "family": ""
+      "family": "",
+      "digest": "f7e3b2a16d5c"
     },
     "nemotron-3-nano:30b": {
       "modified_at": "2025-12-15T00:00:00Z",
       "size": 32645090390,
       "parameter_size": "",
-      "family": ""
+      "family": "",
+      "digest": "a4b4f1851393"
     },
     "nemotron-3-super": {
       "modified_at": "2026-03-11T00:00:00Z",
       "size": 230500000000,
       "parameter_size": "",
-      "family": ""
+      "family": "",
+      "digest": "da11955bb451"
     },
     "nemotron-3-ultra": {
       "modified_at": "2026-06-04T00:00:00Z",
       "size": 0,
       "parameter_size": "",
-      "family": ""
+      "family": "",
+      "digest": "4eecabff7a75"
     },
     "qwen3.5:397b": {
       "modified_at": "2026-02-16T00:00:00Z",
       "size": 397000000000,
       "parameter_size": "",
-      "family": ""
+      "family": "",
+      "digest": "b909ca2f1b7f"
     }
   }
 }

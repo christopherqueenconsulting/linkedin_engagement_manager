@@ -1063,6 +1063,46 @@ def personal_proof_directive(profile_synthesis: Optional[str] = None) -> str:
     return directive
 
 
+def repair_directive(findings: Optional[list] = None) -> str:
+    """What the EDITOR is told to fix, built from the review gate's structured findings (#1134).
+
+    The repair pass hands a failing draft to `get_ai_linked_post_refinement` — an editor revising
+    text — instead of asking the writer for a second draft of the same brief. So the instruction is
+    the findings themselves: each one already carries the plain-English explanation and the specific
+    remediation the review queue would have shown the author, which is exactly the brief an editor
+    needs. Empty string when there is nothing to repair, so callers can append unconditionally.
+
+    Two things about that reuse the header has to answer, because the findings are AUTHOR-facing
+    copy and the reader here is a model. The scope clause cannot be a blanket "change as little as
+    possible": the similarity finding's own remediation is "change the angle, not the words — pick a
+    different example, argue the opposite side", so a minimal edit is the one thing that cannot fix
+    it, and the two instructions would cancel out. And some remediations name a step only a human can
+    take (saving material to the story bank, re-scoring the post), which the editor is told to read
+    past rather than act on.
+
+    Ordered as the caller ordered them, capped at the first six so one pathological draft cannot
+    crowd the draft itself out of the prompt.
+    """
+    items = [f for f in (findings or []) if isinstance(f, dict) and f.get("explanation")]
+    if not items:
+        return ""
+    directive = (
+        "\n\nREQUIRED REPAIRS — this draft failed the following checks. Fix every one of them in "
+        "your edit and leave the rest of the draft alone. Make the change a fix actually calls for: "
+        "one of them may ask for a different angle or example rather than different wording. NEVER "
+        "invent a fact, number, client or outcome to satisfy one. Where a fix is phrased to the "
+        "author and mentions saving material or re-scoring the post, act only on the part of it "
+        "that is about this draft:\n")
+    for i, f in enumerate(items[:6], start=1):
+        directive += f"{i}. {str(f.get('label') or f.get('gate')).strip()}: {f['explanation']}\n"
+        remediation = str(f.get("remediation") or "").strip()
+        if remediation:
+            directive += f"   How to fix it: {remediation}\n"
+        for detail in [str(d).strip() for d in (f.get("details") or []) if str(d).strip()][:5]:
+            directive += f"   - {detail}\n"
+    return directive
+
+
 def voice_reference(profile, profile_synthesis: Optional[str] = None) -> str:
     """The VOICE/TONE/credibility reference string dropped into a generation prompt. Prefers the
     compact, stable synthesis; falls back to the guarded full profile JSON only when no synthesis was

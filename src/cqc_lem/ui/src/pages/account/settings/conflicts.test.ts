@@ -23,7 +23,8 @@ const eng = (over: Partial<EngPrefs> = {}): EngPrefs => ({
   min_catchup_contact_interval_days: 14, max_catchup_touches_per_contact_days: 2,
   posts_per_week: 3, posting_days: [0, 1, 2, 3, 4],
   text_post_images: true, roster_auto_follow: false, max_follows_per_day: 3,
-  roster_auto_connect: false, profile_viewer_dm_auto_send: false,
+  roster_auto_connect: false, hold_repaired_posts_for_review: true,
+  profile_viewer_dm_auto_send: false,
   gmail_forward_confirmation: { confirmed: true },
   // Read-only context the endpoint always returns alongside the row (issue #1446).
   reply_inbound_address: null, feed_reach: null,

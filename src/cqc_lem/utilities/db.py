@@ -404,6 +404,7 @@ from cqc_lem.platform.db.repositories.posts import (
     get_post_coverage_counts,
     get_post_dwell_score,
     get_post_engagement_rows,
+    get_post_ever_gate_demoted,
     get_post_first_comment_link,
     get_post_gate_reason,
     get_post_image_url,
@@ -440,6 +441,7 @@ from cqc_lem.platform.db.repositories.posts import (
     insert_planned_post,
     insert_post,
     mark_post_avatar_media,
+    mark_post_gate_demoted,
     post_avatar_media_state,
     post_used_avatar_media,
     record_content_quality_score,
@@ -704,6 +706,7 @@ __all__ = [
     "get_post_coverage_counts",
     "get_post_dwell_score",
     "get_post_engagement_rows",
+    "get_post_ever_gate_demoted",
     "get_post_first_comment_link",
     "get_post_gate_reason",
     "get_post_image_url",
@@ -739,6 +742,7 @@ __all__ = [
     "insert_occasion_post",
     "insert_planned_post",
     "mark_post_avatar_media",
+    "mark_post_gate_demoted",
     "post_avatar_media_state",
     "post_used_avatar_media",
     "record_content_quality_score",
@@ -2225,6 +2229,10 @@ _ENGAGEMENT_DEFAULTS: dict = {
     # and independent of the follow toggle: an invite is heavier and less reversible than a follow,
     # and it spends the account's ONE combined invite budget.
     "roster_auto_connect": False,
+    # Hold a post the review gate had to REPAIR (issue #1134). ON by default: a draft that failed a
+    # deterministic check and passed only after the editor pass is precisely the post nobody has
+    # read. Off restores the pre-#1134 behaviour — auto_schedule_posts alone decides.
+    "hold_repaired_posts_for_review": True,
     # Direct dispatch for cold profile-viewer outreach (issue #1137). OFF by default: with it off
     # both branches of engage_with_profile_viewer file an approval-gated row instead of sending,
     # which is the only lane where a stranger hears from us with nobody having looked first.
@@ -2237,6 +2245,7 @@ _ENGAGEMENT_JSON_FIELDS = ("include_topics", "exclude_topics", "include_keywords
 _ENGAGEMENT_BOOL_FIELDS = ("use_emojis", "use_hashtags", "reply_to_own_comments",
                            "feed_fallback_when_empty", "link_in_first_comment",
                            "text_post_images", "roster_auto_follow", "roster_auto_connect",
+                           "hold_repaired_posts_for_review",
                            "profile_viewer_dm_auto_send")
 _ENGAGEMENT_COLS = ("tone", "comment_length", "comment_style", "use_emojis", "use_hashtags",
                     "include_topics", "exclude_topics", "include_keywords", "exclude_keywords",
@@ -2255,7 +2264,8 @@ _ENGAGEMENT_COLS = ("tone", "comment_length", "comment_style", "use_emojis", "us
                     "catchup_message_source", "min_catchup_contact_interval_days",
                     "max_catchup_touches_per_contact_days", "posts_per_week", "posting_days",
                     "text_post_images", "roster_auto_follow", "max_follows_per_day",
-                    "roster_auto_connect", "profile_viewer_dm_auto_send")
+                    "roster_auto_connect", "hold_repaired_posts_for_review",
+                    "profile_viewer_dm_auto_send")
 
 VALID_REPLY_MODES = ("event", "scheduled", "off")
 # Approval posture for the proactive connect flow (issue #398 owner review).
@@ -4164,7 +4174,6 @@ def revoke_affiliate_enrollment_bonus(user_id: int) -> dict:
 # Named secrets that belong to the INSTALL, not to a user (the YouTube OAuth refresh token today).
 # Reads fall back to the env seed at the call site, so an empty table behaves exactly like the
 # pre-#742 env-only world; a write here is what lets a re-minted token land without a deploy.
-
 
 
 

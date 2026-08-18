@@ -311,7 +311,9 @@ local dev → PR to main → CI gates pass → release-please tags vX.Y.Z → bu
   per-content-type prompt helper. Comments carry a quality contract + similarity gate (#617) that
   SKIPS the post after `COMMENT_GATE_MAX_ATTEMPTS` failures; POSTS are graded by the same engine
   (`post_similarity_report`, #1265), ONE retry then **kept but HELD at PENDING** (#1452). The review
-  gate is the ONLY place it is measured. **Story bank** (#620) is the FACT half, the **deck reference
+  gate is the ONLY place it is measured. That ONE retry is a
+  **repair** (#1134): the EDITOR gets the findings + `story_directive`, and a repaired post is HELD
+  for review. **Story bank** (#620) is the FACT half, the **deck reference
   gate** (#728) the save-worthiness half, **slop lint** (#625) BLOCKS five HARD checks and WARNs the
   rest, severity PER SURFACE (`SURFACE_SEVERITIES`) — `canned_scaffold` is WARN on a post but HARD
   on a newsletter (#1285, `docs/content-quality-audits/newsletter.md`).

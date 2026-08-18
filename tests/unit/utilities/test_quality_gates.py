@@ -20,10 +20,12 @@ from cqc_lem.utilities.quality_gates import (  # noqa: E402
     authenticity_finding,
     clamp_threshold,
     demoting_findings,
+    fabrication_finding,
     focus_finding,
     malformed_asset_finding,
     missing_asset_finding,
     parse_gate_findings,
+    proof_finding,
     similarity_finding,
 )
 
@@ -74,6 +76,18 @@ class TestFindings:
         # #384 deliberately never blocks the pipeline on an off-niche post — it only warns.
         assert f["demoted"] is False
         assert "AI adoption" in f["remediation"]
+
+    def test_the_repair_pass_findings_are_advisory_not_holds(self):
+        """#1134: no gate builds these two, so neither may ever read as the reason a draft is stuck.
+
+        `_review_generated_post` persists them on `posts.gate_reason` to brief the editor and the
+        author in one vocabulary. `demoting_findings` here and `holdingFindings` in the SPA both
+        key off `demoted`, so building them demoting would paint an un-held post as held — and
+        would hold it outright the first time anyone fed a stored row back through the helper.
+        """
+        findings = [proof_finding("a voice brief"), fabrication_finding(["12 days"])]
+        assert [f["demoted"] for f in findings] == [False, False]
+        assert demoting_findings(findings) == []
 
     @pytest.mark.parametrize("post_type,expected", [("video", "video"), ("carousel", "slides"),
                                                     ("document", "slides")])

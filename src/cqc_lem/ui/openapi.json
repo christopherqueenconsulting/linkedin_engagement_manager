@@ -1201,6 +1201,10 @@
             "title": "Has Saved Preferences",
             "type": "boolean"
           },
+          "hold_repaired_posts_for_review": {
+            "title": "Hold Repaired Posts For Review",
+            "type": "boolean"
+          },
           "include_authors": {
             "items": {
               "type": "string"
@@ -1440,6 +1444,7 @@
           "roster_auto_follow",
           "max_follows_per_day",
           "roster_auto_connect",
+          "hold_repaired_posts_for_review",
           "profile_viewer_dm_auto_send",
           "max_catchup_touches_per_day",
           "catchup_touch_mode",
@@ -1594,6 +1599,11 @@
             },
             "title": "Focus Topics",
             "type": "array"
+          },
+          "hold_repaired_posts_for_review": {
+            "default": true,
+            "title": "Hold Repaired Posts For Review",
+            "type": "boolean"
           },
           "include_authors": {
             "default": [],

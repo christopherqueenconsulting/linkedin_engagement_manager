@@ -3895,6 +3895,8 @@ export interface components {
             gmail_forward_confirmation: components["schemas"]["GmailForwardConfirmation"] | null;
             /** Has Saved Preferences */
             has_saved_preferences: boolean;
+            /** Hold Repaired Posts For Review */
+            hold_repaired_posts_for_review: boolean;
             /** Include Authors */
             include_authors: string[];
             /** Include Keywords */
@@ -4050,6 +4052,11 @@ export interface components {
              * @default []
              */
             focus_topics: string[];
+            /**
+             * Hold Repaired Posts For Review
+             * @default true
+             */
+            hold_repaired_posts_for_review: boolean;
             /**
              * Include Authors
              * @default []
