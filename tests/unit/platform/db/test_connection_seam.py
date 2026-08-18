@@ -30,13 +30,24 @@ def _facade_module_aliases(text: str) -> set[str]:
     `from cqc_lem.utilities import db` and `import cqc_lem.utilities.db as db` both hand back an
     object whose attributes can be rebound with `patch.object`/`monkeypatch.setattr` — a facade
     patch that carries no path string for a regex to find.
+
+    Read off the AST rather than matched line by line: a line-anchored regex cannot see the
+    parenthesized form -- `from cqc_lem.utilities import (` with `db,` on the NEXT line -- which
+    binds exactly the same object and would take the guard silently blind for that whole file. No
+    test file spells it that way today, which is the reason to close it now rather than after one
+    does.
     """
-    names = set(re.findall(r'^\s*import cqc_lem\.utilities\.db as (\w+)', text, re.M))
-    for imported in re.findall(r'^\s*from cqc_lem\.utilities import ([^\n#]+)', text, re.M):
-        for entry in imported.split(","):
-            parts = entry.strip().split()
-            if parts[:1] == ["db"]:
-                names.add(parts[2] if len(parts) == 3 and parts[1] == "as" else "db")
+    names: set[str] = set()
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:  # pragma: no cover - every file this reads is importable Python
+        return names
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            names |= {alias.asname for alias in node.names
+                      if alias.name == "cqc_lem.utilities.db" and alias.asname}
+        elif isinstance(node, ast.ImportFrom) and node.module == "cqc_lem.utilities":
+            names |= {alias.asname or "db" for alias in node.names if alias.name == "db"}
     return names
 
 
@@ -293,6 +304,11 @@ class TestOneCanonicalTarget:
         assert _facade_module_aliases("import cqc_lem.utilities.db as thedb\n") == {"thedb"}
         assert _facade_module_aliases(
             "from cqc_lem.utilities import db as facade, logger\n") == {"facade"}
+        # The parenthesized spelling binds the same object, and a line-anchored regex cannot see
+        # past the opening paren — the guard would go quiet for the whole file, not just that line.
+        assert _facade_module_aliases(
+            "from cqc_lem.utilities import (\n    db,\n    logger,\n)\n") == {"db"}
+        assert _facade_module_aliases("from cqc_lem.utilities import logger\n") == set()
         assert len(self._facade_patch_blocks(text, "_select_engagement_row")) == 1
         assert self._facade_patch_blocks(text, "get_engagement_preferences") == []
 
