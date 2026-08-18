@@ -8,6 +8,7 @@ re-exports every name below, so existing importers and patch targets keep resolv
 from datetime import (
     date,
     datetime,
+    timedelta,
     timezone,
 )
 from typing import Optional
@@ -388,3 +389,307 @@ def set_affiliate_promo_opt_in(user_id: int, enabled: bool, consent_version: str
         log_error("Could not update affiliate promo consent", exc=err, user_id=user_id)
         return None
     return get_affiliate_enrollment(user_id)
+
+
+def cost_ledger_available() -> bool:
+    """True when the durable cost_ledger table exists. The margin report uses this to say whether a
+    $0 spend figure means "nothing spent" or "not capturing yet".
+    """
+    try:
+        with db_cursor() as cursor:
+            cursor.execute("SHOW TABLES LIKE 'cost_ledger'")
+            return cursor.fetchone() is not None
+    except mysql.connector.Error:
+        return False
+def get_user_cost(user_id: int, start_date, end_date) -> dict:
+    """One user's spend over a window, grouped by cost category (llm/media/proxy/infra/...)."""
+    return get_cost_rollup(start_date, end_date, group_by="category", user_id=user_id)
+# Cohorts are tried in order: P0 (the hand-picked launch group) fills first, then P1. Capacities
+# come from env at call time so the caps can be retuned without a migration or a code change.
+EARLY_ADOPTER_COHORTS = ("P0", "P1")
+# Statuses an extension may act on. A paying ('active'/'past_due') or churned ('cancelled') user is
+# not on a trial, so extending one would either be a no-op or silently reopen a closed account.
+# The subscription statuses for which `users.trial_ends_at` is a live date rather than a leftover:
+# a paid or cancelled account carries an old value that must never be extended or quoted back.
+TRIAL_EXTENDABLE_STATUSES = ("trial", "inactive")
+def _as_naive_utc(dt: Optional[datetime]) -> Optional[datetime]:
+    """MySQL DATETIME columns come back naive; our own timestamps are UTC-aware. Normalize both to
+    naive-UTC so they can be compared without a TypeError.
+    """
+    if dt is None or dt.tzinfo is None:
+        return dt
+    return dt.astimezone(timezone.utc).replace(tzinfo=None)
+def extend_trial_for_user(user_id: int, feedback_id: Optional[int] = None) -> dict:
+    """Claim an early-adopter cohort slot and extend the user's trial to
+    `trial_started_at + EARLY_ADOPTER_TRIAL_DAYS` (issue #499).
+
+    The caller owns the review gate; this owns atomicity. Everything below runs in ONE transaction:
+    the slot claim is a single conditional UPDATE (its rowcount IS the claim result, so two
+    concurrent requests can never both take the last slot), and the unique `user_id` on
+    early_adopter_grants means a duplicate request rolls the whole thing back — including the
+    counter — rather than burning a second slot.
+
+    Returns a dict the API can hand straight to the SPA:
+      granted, reason, cohort, trial_days, trial_ends_at
+    where reason is one of granted | already_granted | slots_exhausted | not_on_trial |
+    user_not_found | error.
+    """
+    from cqc_lem.utilities.env_constants import (
+        EARLY_ADOPTER_P0_SLOTS,
+        EARLY_ADOPTER_P1_SLOTS,
+        EARLY_ADOPTER_TRIAL_DAYS,
+        FREE_TRIAL_DAYS,
+    )
+    capacities = {"P0": EARLY_ADOPTER_P0_SLOTS, "P1": EARLY_ADOPTER_P1_SLOTS}
+
+    def _result(granted: bool, reason: str, cohort: Optional[str] = None,
+                trial_days: int = FREE_TRIAL_DAYS, trial_ends_at: Optional[datetime] = None) -> dict:
+        return {"granted": granted, "reason": reason, "cohort": cohort,
+                "trial_days": trial_days, "trial_ends_at": trial_ends_at}
+
+    connection = _connection.get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+    try:
+        connection.start_transaction()
+
+        cursor.execute(
+            "SELECT cohort, trial_days, trial_ends_at FROM early_adopter_grants WHERE user_id=%s FOR UPDATE",
+            (user_id,),
+        )
+        existing = cursor.fetchone()
+        if existing:
+            connection.rollback()
+            return _result(True, "already_granted", existing["cohort"],
+                           int(existing["trial_days"]), existing["trial_ends_at"])
+
+        cursor.execute(
+            "SELECT subscription_status, trial_started_at, trial_ends_at FROM users WHERE id=%s FOR UPDATE",
+            (user_id,),
+        )
+        user = cursor.fetchone()
+        if not user:
+            connection.rollback()
+            return _result(False, "user_not_found")
+        if user["subscription_status"] not in TRIAL_EXTENDABLE_STATUSES:
+            connection.rollback()
+            return _result(False, "not_on_trial")
+
+        claimed: Optional[str] = None
+        for cohort in EARLY_ADOPTER_COHORTS:
+            capacity = int(capacities.get(cohort, 0))
+            if capacity <= 0:
+                continue
+            cursor.execute(
+                "UPDATE early_adopter_slots SET used = used + 1 WHERE cohort=%s AND used < %s",
+                (cohort, capacity),
+            )
+            if cursor.rowcount == 1:
+                claimed = cohort
+                break
+        if not claimed:
+            connection.rollback()
+            return _result(False, "slots_exhausted")
+
+        started = _as_naive_utc(user["trial_started_at"]) or datetime.now(timezone.utc).replace(tzinfo=None)
+        new_end = started + timedelta(days=EARLY_ADOPTER_TRIAL_DAYS)
+        current_end = _as_naive_utc(user["trial_ends_at"])
+        # An extension must never shorten a trial the user already has.
+        if current_end and current_end > new_end:
+            new_end = current_end
+
+        cursor.execute(
+            "INSERT INTO early_adopter_grants (user_id, cohort, trial_days, feedback_id, trial_ends_at) "
+            "VALUES (%s,%s,%s,%s,%s)",
+            (user_id, claimed, EARLY_ADOPTER_TRIAL_DAYS, feedback_id, new_end),
+        )
+        cursor.execute(
+            "UPDATE users SET trial_started_at=%s, trial_ends_at=%s, subscription_status='trial', "
+            "subscription_tier=COALESCE(subscription_tier,'free_trial') WHERE id=%s",
+            (started, new_end, user_id),
+        )
+        connection.commit()
+        log_info("Early-adopter trial granted", user_id=user_id)
+        return _result(True, "granted", claimed, EARLY_ADOPTER_TRIAL_DAYS, new_end)
+    except mysql.connector.Error as err:
+        connection.rollback()
+        if err.errno == errorcode.ER_DUP_ENTRY:
+            # Two concurrent requests for the same user; the rollback released the slot this one took.
+            existing = get_early_adopter_grant(user_id)
+            if existing:
+                return _result(True, "already_granted", existing["cohort"],
+                               int(existing["trial_days"]), existing["trial_ends_at"])
+        log_error("Could not extend trial", exc=err, user_id=user_id)
+        return _result(False, "error")
+    finally:
+        cursor.close()
+        connection.close()
+def _affiliate_baseline_trial_end(cursor, user_id: int, started: datetime) -> datetime:
+    """The trial end a revoked enrollment bonus may never take the user below: their standard trial,
+    any early-adopter grant (#499), and every referral day they EARNED. Only the enrollment bonus is
+    contingent on status; nothing else the user holds is.
+    """
+    from cqc_lem.utilities.env_constants import FREE_TRIAL_DAYS
+    baseline = started + timedelta(days=FREE_TRIAL_DAYS)
+    cursor.execute("SELECT trial_ends_at FROM early_adopter_grants WHERE user_id=%s", (user_id,))
+    grant = cursor.fetchone()
+    grant_end = _as_naive_utc(grant["trial_ends_at"]) if grant else None
+    if grant_end and grant_end > baseline:
+        baseline = grant_end
+    cursor.execute(
+        "SELECT COALESCE(SUM(trial_days),0) AS days FROM affiliate_rewards WHERE user_id=%s AND kind=%s",
+        (user_id, str(AffiliateRewardKind.REFERRAL)),
+    )
+    earned = cursor.fetchone()
+    return baseline + timedelta(days=max(0, int((earned or {}).get("days") or 0)))
+def grant_affiliate_trial_days(user_id: int, days: int, kind: str,
+                               referral_id: Optional[int] = None,
+                               reason: Optional[str] = None) -> dict:
+    """Extend the user's trial by `days` and write the matching ledger row, in ONE transaction.
+
+    Capped twice: by `AFFILIATE_MAX_REWARD_DAYS` against the user's own ledger sum (a partial grant
+    is granted, not refused — the user gets what is left under the ceiling), and by the ENUM'd
+    `kind`. Only trialling users are extended; a paying subscriber has no trial to lengthen, and
+    silently paying them in a currency they can't spend would look like a granted reward in the UI.
+
+    Returns `{granted, reason, days, total_days, trial_ends_at}` where reason is one of
+    granted | already_granted | capped | not_on_trial | user_not_found | disabled | error.
+    """
+    from cqc_lem.utilities.marketing.affiliate import grantable_days, program_enabled
+
+    def _result(granted: bool, why: str, days_granted: int = 0, total: int = 0,
+                ends_at: Optional[datetime] = None) -> dict:
+        return {"granted": granted, "reason": why, "days": days_granted,
+                "total_days": total, "trial_ends_at": ends_at}
+
+    if not program_enabled():
+        return _result(False, "disabled")
+    if int(days) <= 0:
+        return _result(False, "capped")
+
+    connection = _connection.get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+    try:
+        connection.start_transaction()
+        cursor.execute(
+            "SELECT COALESCE(SUM(trial_days),0) AS total FROM affiliate_rewards WHERE user_id=%s FOR UPDATE",
+            (user_id,),
+        )
+        already = int((cursor.fetchone() or {}).get("total") or 0)
+
+        # One enrollment bonus at a time: the migration's UNIQUE key only constrains referral rows
+        # (repeated NULLs are legal), so the "already granted" check for the status bonus is held
+        # here, inside the same transaction that would pay it.
+        if str(kind) == str(AffiliateRewardKind.ENROLLMENT):
+            cursor.execute(
+                "SELECT COALESCE(SUM(trial_days),0) AS net FROM affiliate_rewards "
+                "WHERE user_id=%s AND kind IN (%s,%s) FOR UPDATE",
+                (user_id, str(AffiliateRewardKind.ENROLLMENT), str(AffiliateRewardKind.REVOKED)),
+            )
+            if int((cursor.fetchone() or {}).get("net") or 0) > 0:
+                connection.rollback()
+                return _result(True, "already_granted", 0, already)
+
+        payable = grantable_days(already, int(days))
+        if payable <= 0:
+            connection.rollback()
+            return _result(False, "capped", 0, already)
+
+        cursor.execute(
+            "SELECT subscription_status, trial_started_at, trial_ends_at FROM users WHERE id=%s FOR UPDATE",
+            (user_id,),
+        )
+        user = cursor.fetchone()
+        if not user:
+            connection.rollback()
+            return _result(False, "user_not_found")
+        if user["subscription_status"] not in TRIAL_EXTENDABLE_STATUSES:
+            connection.rollback()
+            return _result(False, "not_on_trial", 0, already)
+
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        started = _as_naive_utc(user["trial_started_at"]) or now
+        # Extend from whichever is later: a trial that already lapsed is extended from TODAY, or the
+        # reward would land entirely in the past and read as nothing happening.
+        current_end = _as_naive_utc(user["trial_ends_at"]) or now
+        new_end = max(current_end, now) + timedelta(days=payable)
+
+        cursor.execute(
+            "INSERT INTO affiliate_rewards (user_id, referral_id, kind, trial_days, reason, trial_ends_at) "
+            "VALUES (%s,%s,%s,%s,%s,%s)",
+            (user_id, referral_id, str(kind), payable, reason, new_end),
+        )
+        cursor.execute(
+            "UPDATE users SET trial_started_at=%s, trial_ends_at=%s, subscription_status='trial', "
+            "subscription_tier=COALESCE(subscription_tier,'free_trial') WHERE id=%s",
+            (started, new_end, user_id),
+        )
+        connection.commit()
+        log_info(f"Affiliate reward granted: +{payable} trial days ({kind})", user_id=user_id)
+        return _result(True, "granted", payable, already + payable, new_end)
+    except mysql.connector.Error as err:
+        connection.rollback()
+        if err.errno == errorcode.ER_DUP_ENTRY:
+            # A concurrent activation already paid this referral. Not an error — the invariant held.
+            return _result(True, "already_granted")
+        log_error("Could not grant affiliate trial days", exc=err, user_id=user_id)
+        return _result(False, "error")
+    finally:
+        cursor.close()
+        connection.close()
+def revoke_affiliate_enrollment_bonus(user_id: int) -> dict:
+    """Return an opted-out user to their standard trial: subtract the enrollment bonus still standing
+    and write the negative ledger row, in one transaction.
+
+    Never takes the trial below `_affiliate_baseline_trial_end` — the standard trial, any
+    early-adopter grant, and every referral day the user EARNED all survive an opt-out. That is what
+    keeps "your trial returns to the standard N days" true rather than punitive.
+    """
+    def _result(revoked: bool, why: str, days: int = 0,
+                ends_at: Optional[datetime] = None) -> dict:
+        return {"revoked": revoked, "reason": why, "days": days, "trial_ends_at": ends_at}
+
+    connection = _connection.get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+    try:
+        connection.start_transaction()
+        cursor.execute(
+            "SELECT COALESCE(SUM(trial_days),0) AS net FROM affiliate_rewards "
+            "WHERE user_id=%s AND kind IN (%s,%s) FOR UPDATE",
+            (user_id, str(AffiliateRewardKind.ENROLLMENT), str(AffiliateRewardKind.REVOKED)),
+        )
+        standing = int((cursor.fetchone() or {}).get("net") or 0)
+        if standing <= 0:
+            connection.rollback()
+            return _result(False, "nothing_to_revoke")
+
+        cursor.execute(
+            "SELECT trial_started_at, trial_ends_at FROM users WHERE id=%s FOR UPDATE",
+            (user_id,),
+        )
+        user = cursor.fetchone()
+        if not user:
+            connection.rollback()
+            return _result(False, "user_not_found")
+
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        started = _as_naive_utc(user["trial_started_at"]) or now
+        current_end = _as_naive_utc(user["trial_ends_at"]) or now
+        baseline = _affiliate_baseline_trial_end(cursor, user_id, started)
+        new_end = max(current_end - timedelta(days=standing), baseline)
+
+        cursor.execute(
+            "INSERT INTO affiliate_rewards (user_id, referral_id, kind, trial_days, reason, trial_ends_at) "
+            "VALUES (%s,%s,%s,%s,%s,%s)",
+            (user_id, None, str(AffiliateRewardKind.REVOKED), -standing, "opted_out", new_end),
+        )
+        cursor.execute("UPDATE users SET trial_ends_at=%s WHERE id=%s", (new_end, user_id))
+        connection.commit()
+        log_info(f"Affiliate enrollment bonus revoked: -{standing} trial days", user_id=user_id)
+        return _result(True, "revoked", standing, new_end)
+    except mysql.connector.Error as err:
+        connection.rollback()
+        log_error("Could not revoke affiliate enrollment bonus", exc=err, user_id=user_id)
+        return _result(False, "error")
+    finally:
+        cursor.close()
+        connection.close()

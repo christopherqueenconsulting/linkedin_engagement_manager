@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 from typing import Any, Optional, Union
 
 import mysql.connector
+from dotenv import load_dotenv
 from mysql.connector.abstracts import MySQLConnectionAbstract, MySQLCursorAbstract
 from mysql.connector.pooling import CNX_POOL_MAXSIZE, MySQLConnectionPool, PooledMySQLConnection
 
@@ -31,6 +32,15 @@ MYSQL_USER = os.getenv('MYSQL_USER')
 MYSQL_PASSWORD = os.getenv('MYSQL_PASSWORD')
 MYSQL_DATABASE = os.getenv('MYSQL_DATABASE')
 MYSQL_PORT = os.getenv('MYSQL_PORT')
+
+# Loaded AFTER the block above, deliberately. This call moved here from `utilities/db.py` (issue
+# #1614), where it ran at the END of that module -- i.e. after this one had already been imported
+# and had already read the five names above off the real environment. Hoisting it any earlier would
+# let a stale `.env` start deciding which MySQL a dev box connects to, which is a different program.
+# It stays because everything that imports the facade relies on it to populate `os.environ` for the
+# LATER readers (`env_constants` never calls it).
+load_dotenv()
+
 DbConnection = Union[PooledMySQLConnection, MySQLConnectionAbstract]
 
 #: MySQL's own default, and what `.env.example` / docker-compose ship. Used when MYSQL_PORT is

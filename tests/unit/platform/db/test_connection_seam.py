@@ -43,10 +43,47 @@ class TestOneCanonicalTarget:
             f"{len(bare)} bare call(s) in db.py — route them through `_connection.` so the one "
             "patchable definition is reached")
 
-    def test_db_py_routes_through_the_module(self):
+    def test_db_py_is_imports_and_dunder_all_only(self):
+        """The end state of the split (issue #1614), and the strongest form of the seam rule.
+
+        While db.py still ran SQL, the guard above was the best available: route its calls through
+        `_connection.` so the one patchable definition is reached. Now that no statement is left
+        here, there is nothing to route — so the rule becomes structural. A module that binds only
+        imports and `__all__` cannot re-introduce a second call path, and a future function added
+        back here would fail this before it could quietly acquire one.
+        """
+        tree = ast.parse(_DB.read_text())
+        offenders = []
+        for node in tree.body:
+            if isinstance(node, (ast.Import, ast.ImportFrom)):
+                continue
+            if isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant):
+                continue  # the module docstring
+            if isinstance(node, ast.Assign) and any(
+                    isinstance(t, ast.Name) and t.id == "__all__" for t in node.targets):
+                continue
+            offenders.append(f"{type(node).__name__} at line {node.lineno}")
+        assert offenders == [], (
+            "db.py is the facade: imports and `__all__`, nothing else. SQL belongs in "
+            "platform/db/repositories/<aggregate>.py, shared vocabulary in platform/db/shared.py. "
+            + ", ".join(offenders))
+
+    def test_db_py_holds_no_sql(self):
+        """Same claim from the other side — the text, not the shape.
+
+        The AST check above would pass a module that imported a helper and called it in a
+        comprehension inside `__all__`. This one is what the acceptance criterion on #1614 actually
+        says: no cursor, no connection handle, no statement.
+        """
         src = _DB.read_text()
-        assert "_connection.get_db_connection()" in src
-        assert "from cqc_lem.platform.db import connection as _connection" in src
+        # `db_cursor` appears as a re-exported NAME and must keep doing so; what may not appear is
+        # a CALL to it, a `_connection.` attribute read, or a statement in a string.
+        found = [t for t in (r"\bdb_cursor\s*\(", r"_connection\.", r"cursor\.execute")
+                 if re.search(t, src)]
+        sql = [n.value for n in ast.walk(ast.parse(src))
+               if isinstance(n, ast.Constant) and isinstance(n.value, str)
+               and re.search(r"\b(SELECT|INSERT INTO|UPDATE|DELETE FROM)\b", n.value)]
+        assert found == [] and sql == [], f"db.py still reaches the database: {found or sql}"
 
     # Everything `connection.py` owns. Reading these through the facade is fine — it is the same
     # object. REBINDING one on the facade is not: the real module keeps its own copy.
