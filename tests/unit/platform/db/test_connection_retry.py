@@ -163,3 +163,33 @@ class TestServerUnreachablePredicate:
 
     def test_an_error_without_an_errno_is_never_retryable(self):
         assert db._server_unreachable(DatabaseError("no errno here")) is False
+
+
+class TestPoolWarningIsNotAmplifiedByTheRetry:
+    """A retry must not turn ONE pool warning into an escalated, grouped `$exception`.
+
+    `log_warning` re-emits the SAME message at ERROR and files one grouped `$exception` once it
+    crosses `LOG_ESCALATE_THRESHOLD` (3). A pool that fails for a non-connect reason fails the same
+    way on every attempt, so warning per attempt would let a single call cross that on its own.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _pooling_enabled(self, monkeypatch):
+        monkeypatch.setattr(db, "MYSQL_POOL_ENABLED", True)
+        monkeypatch.setattr(db, "MYSQL_POOL_SIZE", 4)
+
+    def test_a_broken_pool_warns_once_across_every_attempt(self):
+        pool = MagicMock(name="pool")
+        pool.pool_name = "cqc-lem-test"
+        pool.pool_size = 4
+        pool.get_connection.side_effect = PoolError("Failed getting connection; pool exhausted")
+        pool.add_connection.side_effect = PoolError("Failed adding connection; queue is full")
+
+        with patch(_SLEEP), patch(_POOL_CLASS, return_value=pool), \
+                patch(_CONNECT, side_effect=_connect_error(2005)) as mock_connect, \
+                patch("cqc_lem.platform.db.connection.log_warning") as mock_warning:
+            with pytest.raises(DatabaseError):
+                db.get_db_connection()
+
+        assert mock_connect.call_count == 3
+        mock_warning.assert_called_once()

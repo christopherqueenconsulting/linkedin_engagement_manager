@@ -220,6 +220,8 @@ def get_db_connection() -> DbConnection:
     attempts = max(1, MYSQL_CONNECT_RETRY_ATTEMPTS)
     backoff = max(0.0, MYSQL_CONNECT_RETRY_BACKOFF_SECONDS)
 
+    pool_warned = False
+
     for attempt in range(attempts):
         try:
             if MYSQL_POOL_ENABLED:
@@ -232,7 +234,16 @@ def get_db_connection() -> DbConnection:
                         # The SERVER is unreachable, not the pool — a direct connection would fail
                         # the same way, so let the retry answer it instead of blaming the pool.
                         raise
-                    log_warning("MySQL connection pool unavailable - using a direct connection", exc=e)
+                    if not pool_warned:
+                        # ONE warning per call, however many attempts run. A pool that is broken
+                        # for a non-connect reason raises the same way on every attempt, and
+                        # log_warning escalates the SAME message to ERROR plus one grouped
+                        # $exception at LOG_ESCALATE_THRESHOLD (3) — so an unguarded warning in
+                        # here would let a single call file the very exception this retry exists
+                        # to stop.
+                        log_warning("MySQL connection pool unavailable - using a direct connection",
+                                    exc=e)
+                        pool_warned = True
 
             return mysql.connector.connect(**config)
         except mysql.connector.Error as exc:
