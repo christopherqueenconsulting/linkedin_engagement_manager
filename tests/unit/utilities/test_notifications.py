@@ -108,6 +108,23 @@ def test_newsletter_draft_ready_email_copy_reports_the_real_outcome():
     assert "auto-publish as-is on Tuesday" in " ".join(dispatch.call_args[0][2].split())
 
 
+def test_newsletter_draft_ready_title_with_markup_cannot_break_the_body():
+    """Titles are LLM-authored, so '&' and angle brackets reach this template unfiltered. Raw,
+    everything from '<' to the next '>' renders as a bogus tag and the sentence loses its subject;
+    the subject line is plain text and keeps the title as written.
+    """
+    from cqc_lem.utilities.email import send_newsletter_draft_ready_email
+    title = 'Q3 <b>Recap</b> & "More"'
+    with patch("cqc_lem.utilities.email._dispatch_email", return_value=True) as dispatch:
+        send_newsletter_draft_ready_email("u@e.com", title, "Tuesday <script>")
+    subject, html = dispatch.call_args[0][1], dispatch.call_args[0][2]
+    assert title in subject
+    assert "<b>Recap</b>" not in html
+    assert "Q3 &lt;b&gt;Recap&lt;/b&gt; &amp; &quot;More&quot;" in html
+    assert "<script>" not in html
+    assert "Tuesday &lt;script&gt;" in html
+
+
 def test_newsletter_draft_ready_no_email():
     from cqc_lem.utilities.notifications import notify_newsletter_draft_ready
     with patch(f"{_MOD}.get_user_email", return_value=None), \
