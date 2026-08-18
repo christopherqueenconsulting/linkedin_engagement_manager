@@ -325,7 +325,7 @@ def notify_newsletter_draft_ready(user_id: int, edition_title: str, scheduled_fo
         return sent
     except Exception as e:
         # WARNING: the user is never told their draft is waiting. On an auto-publishing account it
-        # then ships unreviewed; on an opted-out one it never ships at all. One bounced send is a
-        # warning; a broken mailer is the defect.
+        # then ships unreviewed; on an opted-out one it waits for manual approval (never auto-ships).
+        # One bounced send is a warning; a broken mailer is the defect.
         log_warning("Could not send newsletter draft-ready email", exc=e, user_id=user_id)
         return False

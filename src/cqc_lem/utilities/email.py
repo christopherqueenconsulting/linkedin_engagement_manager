@@ -442,12 +442,13 @@ def send_newsletter_draft_ready_email(to_email: str, edition_title: str,
     an opted-out author their draft ships by itself is the failure mode: they act on that and the
     edition waits forever. Defaults to True — existing rows were backfilled to auto-publishing.
     """
-    url = account_url or _account_url()
-    title = edition_title or "Your next edition"
-    outcome = (f"<p>If you do nothing, it will <strong>auto-publish as-is on {scheduled_for}"
+    url = html_escape(account_url or _account_url())
+    title = html_escape(edition_title or "Your next edition")
+    safe_scheduled_for = html_escape(scheduled_for)
+    outcome = (f"<p>If you do nothing, it will <strong>auto-publish as-is on {safe_scheduled_for}"
                f"</strong> so your cadence never breaks.</p>"
                if auto_publish else
-               f"<p>It is scheduled for <strong>{scheduled_for}</strong>, but it publishes only "
+               f"<p>It is scheduled for <strong>{safe_scheduled_for}</strong>, but it publishes only "
                f"once you <strong>approve</strong> it — if you do nothing, that slot passes and "
                f"the draft keeps waiting.</p>")
     html = f"""
@@ -463,7 +464,7 @@ def send_newsletter_draft_ready_email(to_email: str, edition_title: str,
     </body></html>
     """
     return _dispatch_email(
-        to_email, f"📝 Your newsletter draft is ready: {title}", html, high_priority=True)
+        to_email, f"📝 Your newsletter draft is ready: {edition_title or 'Your next edition'}", html, high_priority=True)
 
 
 def _newsletter_queue_url() -> str:

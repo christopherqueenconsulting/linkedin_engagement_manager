@@ -1259,9 +1259,10 @@ def auto_notify_pending_covers():
     A generated cover lands `pending_review` and `_approved_cover_path` drops it at publish time,
     so an edition whose cover is never approved ships cover-less — silently, and in production
     that was EVERY edition. The draft-ready email cannot carry the warning: the cover renders
-    asynchronously and lands after that email is sent. This beat is the pre-slot half — the
-    edition still publishes on time either way, the reminder only makes the drop legible while
-    the author can still act on it.
+    asynchronously and lands after that email is sent. This beat is the pre-slot half — for
+    auto-publishing accounts the edition still publishes on time (cover-less if unapproved); for
+    opted-out accounts the edition only publishes after manual approval, so the slot may pass
+    entirely. The reminder makes the pending cover legible while the author can still act on it.
     """
     from cqc_lem.utilities.db import get_editions_with_pending_cover, get_newsletter_settings
     from cqc_lem.utilities.notifications import notify_newsletter_cover_pending
