@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.158.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.157.0...v0.158.0) (2026-08-17)
+
+
+### Features
+
+* **ci:** wire the pipeline self-modification gate workflow ([#1588](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1588)) ([cbf2c0f](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/cbf2c0fdc6b1c48f97932d9672570acaead0a1e5))
+* **ci:** wire the pipeline self-modification gate workflow (closes [#1397](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1397)) ([cbf2c0f](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/cbf2c0fdc6b1c48f97932d9672570acaead0a1e5))
+* **content:** distinct repair-pass editor + hold_repaired_posts_for_review toggle (closes [#1134](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1134)) ([#1620](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1620)) ([c176d5b](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/c176d5bc7702be1c67b3abee0d3815f0a9734444))
+
+
+### Bug Fixes
+
+* **agents:** ask the owner for the review a CODEOWNERS-gated PR waits on (closes [#1642](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1642)) ([#1644](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1644)) ([a7a8485](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/a7a8485d424977529cddfd67514a4b20ee790acb))
+
+
+### Documentation
+
+* **agents:** add caveman response-style rules for GitHub Copilot ([#1650](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1650)) ([7d126cc](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/7d126cc5721706e01512a722331deac5c4ee97a7))
+* **claude:** trim CLAUDE.md to the fixed shape (46,494 → 33,802) ([#1648](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1648)) ([d826d90](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/d826d90d9d54099ce054cf4864dd5333645fedb0))
+* index every doc and give the pointer-less CLAUDE.md rows a home ([#1646](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1646)) ([44d072a](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/44d072a514c3b10a2e9d7c55085340d3450547f6))
+
 ## [0.157.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.156.1...v0.157.0) (2026-08-17)
 
 
