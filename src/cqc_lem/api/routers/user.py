@@ -652,6 +652,10 @@ class EngagementPreferencesRequest(BaseModel):
     # auto_schedule_posts, which lives on the users row: this only decides what auto-scheduling
     # does with a draft that passed only on its second, edited attempt.
     hold_repaired_posts_for_review: bool = True
+    # Direct dispatch for cold profile-viewer outreach (issue #1137), OFF by default. Off, both
+    # branches of that lane file an approval-gated row (PENDING scheduled_dms / connection_requests)
+    # instead of sending; on restores the pre-#1137 send-immediately behaviour.
+    profile_viewer_dm_auto_send: bool = False
     # Catch-up congratulations (issue #482)
     max_catchup_touches_per_day: int = CATCHUP_TOUCHES_MAX_STANDARD
     catchup_touch_mode: str = "pre_review"  # 'pre_review' (default) | 'auto_approve'

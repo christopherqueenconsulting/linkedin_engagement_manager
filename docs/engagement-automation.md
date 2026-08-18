@@ -385,6 +385,53 @@ comment-keyword mechanic whose payload is a DM; **newsletter** is a subscribe LI
   subscriber growth reads against the CTAs that actually delivered. `newsletter_links` is None
   (not 0) with no URL.
 
+## Profile-viewer outreach approval gate (`engage_with_profile_viewer`, issue #1137)
+
+Profile-viewer engagement is the one outreach lane that dispatched genuinely COLD contact with no
+per-user control: the person has not engaged with us, only looked. Both of its outbound branches are
+now gated by **ONE** preference, `profile_viewer_dm_auto_send` (default OFF).
+
+- **ONE toggle, both branches.** A visit resolves to exactly one of them — we are connected to this
+  viewer or we are not — so "DM a stranger" and "invite a stranger" are the same decision seen from
+  two sides, never two settings.
+- OFF (the default) files a **PENDING** row and dispatches nothing: `scheduled_dms`
+  (`source='profile_viewer'`) on the 1st-degree branch, `connection_requests`
+  (`source='profile_viewer'`) on the other. The invite branch reuses #398's table, its
+  `auto_check_connection_requests` beat and its existing Connections review UI — no new table, no
+  new review surface. ON restores the pre-#1137 direct dispatch exactly.
+- **The gate fails CLOSED.** `get_engagement_preferences` fails soft to an empty answer, and an
+  empty answer reads as OFF — otherwise the runs where we could not read the user's posture are
+  exactly the runs that send cold outreach unattended.
+- **The COMMENT half is never gated.** Commenting on a 1st-degree viewer's post is public,
+  reversible engagement, and it still wins over the DM fallback as it always did.
+- **The follow-up ladder starts at the SEND, not the draft.** Direct dispatch starts the
+  `profile_viewer` sequence when it fires; the gated path starts it in `send_scheduled_dm` when a
+  `source='profile_viewer'` DM actually LANDS. Starting it at draft time would queue follow-ups for
+  a conversation that may never be approved; not starting it at all would make gating the lane
+  silently delete its follow-ups and the reply check behind them (#623).
+- **Both queue paths dedup before writing**, because the analytics page lists the same viewer on
+  consecutive days: the DM shares the one-open-draft-per-thread rule with #485 nurture and #624
+  artifact (this is the coldest of the three, so it is the one that yields), and the invite reuses
+  `get_requested_person_keys` — ever-requested, any status, the same rule the nightly sourcing scan
+  follows. A skip is DEBUG; it is the designed no-op, not a missed opportunity.
+- **Both dedups are read BEFORE the draft is written**, not just before the insert
+  (`_profile_viewer_dm_blocked` / `_profile_viewer_connect_blocked`). A blocked visit is this lane's
+  STEADY state rather than its exception: the walk re-lists the same viewer every loop for as long
+  as they sit inside the lookback window, only the first visit can queue anything, and the invite
+  half's dedup is PERMANENT. Asking at insert time would spend a template render + history-dedup
+  call (DM), or an activity summary + personalised draft + refinement pass (invite), on every later
+  visit, forever, for a row that can never be written. Direct dispatch asks neither question — it
+  has no queue to collide with, which is the pre-#1137 behaviour the toggle restores.
+- **The queued invite backlog stays inside the SHARED cap.** `count_open_connection_requests` counts
+  a PENDING row as spent `max_invites_per_day`, and nothing ages one out, so `_queue_profile_viewer_connect`
+  files only while `max_invites_per_day - sent_today - open_requests > 0` — exactly the arithmetic
+  `_connect_target_budget` (#486) and `roster_connect_budget` (#979) spend. Without it, cap-many
+  unapproved viewer drafts would hold BOTH of those lanes at zero permanently; direct dispatch never
+  could, because an invite it sent counted only for the day it was sent.
+- **Out of scope, deliberately:** roster connect escalation (T6). `roster_auto_connect=false`
+  already means zero exposure with no dispatch path around it — that toggle IS the human in the
+  loop. Full rubric and the round-2 revert: `docs/graphs/engagement-outreach-dm.md`.
+
 ## Human pacing (`utilities/human_pacing.py`, issue #626)
 
 The ONE place cadence is decided.

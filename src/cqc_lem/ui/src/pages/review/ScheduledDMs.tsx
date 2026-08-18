@@ -23,7 +23,12 @@ interface ScheduledDm {
 // Auto-drafted rows (issue #485: the next message in a thread where the lead replied) land in this
 // same queue as 'pending'. The badge is what tells the operator they are approving a machine's
 // draft rather than something they wrote.
-const SOURCE_LABELS: Record<string, string> = { nurture: 'AUTO-DRAFTED REPLY' }
+// An unmapped source renders NO badge at all, so a lane that queues drafts has to name itself here
+// or its drafts arrive with no provenance (issue #1137).
+const SOURCE_LABELS: Record<string, string> = {
+  nurture: 'AUTO-DRAFTED REPLY',
+  profile_viewer: 'VIEWED YOUR PROFILE',
+}
 
 const STATUS_COLORS: Record<string, string> = {
   pending: 'bg-yellow-100 text-yellow-700',

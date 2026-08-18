@@ -1,3 +1,4 @@
+import Toggle from '../../../components/Toggle'
 import { CATCHUP_EVENTS } from '../types'
 import CsvInput from './CsvInput'
 import { useEngagementPrefs } from './engagementPrefsCtx'
@@ -42,6 +43,13 @@ export default function OutreachSection() {
               className={inputClass} />
           </Field>
         </Advanced>
+      </SectionCard>
+
+      <SectionCard title="Profile viewers" blurb="What happens when someone looks at your profile but has not engaged with you.">
+        <Field settingKey="profile_viewer_dm_auto_send">
+          <Toggle on={!!eng.profile_viewer_dm_auto_send}
+            onClick={() => setEng({ profile_viewer_dm_auto_send: !eng.profile_viewer_dm_auto_send })} />
+        </Field>
       </SectionCard>
 
       <SectionCard title="Catch-up congratulations" blurb="Milestones in your network that are worth a message. Their volume is capped under How Much & How Often.">

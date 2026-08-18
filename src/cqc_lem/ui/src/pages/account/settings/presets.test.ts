@@ -22,6 +22,7 @@ const base = (over: Partial<EngPrefs> = {}): EngPrefs => ({
   posts_per_week: 3, posting_days: [0, 1, 2, 3, 4],
   text_post_images: true, roster_auto_follow: false, max_follows_per_day: 3,
   roster_auto_connect: false, hold_repaired_posts_for_review: true,
+  profile_viewer_dm_auto_send: false,
   // Read-only context the endpoint always returns alongside the row (issue #1446).
   has_saved_preferences: true, max_catchup_touches_allowed: 5,
   catchup_contact_interval_bounds: { min_days: 0, max_days: 90 },

@@ -30,6 +30,8 @@ interface ConnectionRequest {
 const SOURCE_LABELS: Record<string, string> = {
   own_post: 'Engaged with your content',
   adjacent_post: 'Engaged with an adjacent author',
+  // Issue #1137 — without this the badge falls through to the raw column value.
+  profile_viewer: 'Viewed your profile',
 }
 
 const STATUS_COLORS: Record<string, string> = {

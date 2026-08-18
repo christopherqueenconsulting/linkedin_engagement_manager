@@ -104,8 +104,10 @@ from cqc_lem.utilities.connection_targeting import (
 from cqc_lem.utilities.date import convert_viewed_on_to_date
 from cqc_lem.utilities.db import (
     CATCHUP_CONTACT_CAP_WINDOW_DAYS,
+    CONNECTION_REQUEST_SOURCE_PROFILE_VIEWER,
     SCHEDULED_DM_SOURCE_ARTIFACT,
     SCHEDULED_DM_SOURCE_NURTURE,
+    SCHEDULED_DM_SOURCE_PROFILE_VIEWER,
     CatchupTouchStatus,
     ConnectionRequestStatus,
     LeadSignalChannel,
@@ -1748,6 +1750,121 @@ def automate_profile_viewer_engagement(self, user_id: int, loop_for_duration: in
     return result
 
 
+def _profile_viewer_dm_blocked(user_id: int, profile_url: str, viewer_name: str) -> bool:
+    """True when a queued profile-viewer DM could not be filed for this person (issue #1137).
+
+    Asked BEFORE the message is written as well as before the insert, because an open draft is the
+    STEADY STATE for this lane, not the exception: the walk re-lists the same viewer every loop for
+    as long as they sit inside the lookback window, and only the first visit can queue anything.
+    Answering this late would render the template and run the history-dedup call on every later
+    visit, forever, for a draft that can never be written.
+    """
+    if (has_open_scheduled_dm(user_id, profile_url, source=SCHEDULED_DM_SOURCE_PROFILE_VIEWER)
+            or has_open_scheduled_dm(user_id, profile_url, source=SCHEDULED_DM_SOURCE_NURTURE)
+            or has_open_scheduled_dm(user_id, profile_url, source=SCHEDULED_DM_SOURCE_ARTIFACT)):
+        # DEBUG: one open draft per conversation is the designed rule, and the analytics page lists
+        # the same viewer on consecutive runs — an expected no-op, not a missed opportunity.
+        log_debug(f"Profile viewer: {viewer_name} already has a queued draft; not queueing another",
+                  user_id=user_id, action_type="dm", task_name="engage_with_profile_viewer")
+        return True
+    return False
+
+
+def _queue_profile_viewer_dm(user_id: int, profile_url: str, message: str, first_name: str,
+                             viewer_name: str) -> Optional[int]:
+    """File a cold profile-viewer DM as a PENDING `scheduled_dms` row (issue #1137).
+
+    Returns the row id, or None when nothing was queued. The one-open-draft rule is SHARED with the
+    other two auto-drafting mechanics (#485 nurture, #624 artifact) for the reason it was shared
+    between those two: two queued messages read as spam to the one person receiving them, whichever
+    mechanic wrote them. This is the coldest of the three, so it is the one that yields.
+    """
+    if _profile_viewer_dm_blocked(user_id, profile_url, viewer_name):
+        return None
+    dm_id = insert_scheduled_dm(user_id, profile_url, message,
+                                datetime.now(timezone.utc).replace(tzinfo=None),
+                                recipient_name=first_name or None,
+                                status=ScheduledDmStatus.PENDING,
+                                source=SCHEDULED_DM_SOURCE_PROFILE_VIEWER)
+    if not dm_id:
+        log_warning(f"Profile viewer: drafted a DM for {viewer_name} but the scheduled_dms insert "
+                    f"failed — nothing will reach them", user_id=user_id, action_type="dm",
+                    task_name="engage_with_profile_viewer")
+        return None
+    log_info(f"Profile viewer: queued a DM to {viewer_name} for approval", user_id=user_id,
+             action_type="dm", task_name="engage_with_profile_viewer")
+    return dm_id
+
+
+def _profile_viewer_connect_blocked(user_id: int, profile_url: str, viewer_name: str,
+                                    prefs: dict) -> bool:
+    """True when a queued profile-viewer invite could not be filed for this person (issue #1137).
+
+    Asked BEFORE the note is written as well as before the insert. The `get_requested_person_keys`
+    half is PERMANENT — one request per person ever — so after the first visit every later visit by
+    the same viewer is a guaranteed no-op, and the walk re-lists them for as long as they stay in
+    the lookback window. Answering it only at insert time would spend an activity summary, a
+    personalised draft and a refinement pass on every one of those visits, on a note that can never
+    be filed.
+    """
+    try:
+        cap = max(0, int(prefs.get("max_invites_per_day") or 0))
+    except (TypeError, ValueError):
+        cap = 0
+    if cap - count_invites_sent_today(user_id) - count_open_connection_requests(user_id) <= 0:
+        # DEBUG: the queue holding a day's worth of invites is the cap working, not a fault. The
+        # viewer is skipped rather than deferred — `has_engaged_url_with_x_days` already ends this
+        # visit, and the analytics page lists them again while they keep visiting.
+        log_debug(f"Profile viewer: the invite budget is already spoken for; not queueing "
+                  f"{viewer_name}", user_id=user_id, action_type="connection_targeting",
+                  task_name="engage_with_profile_viewer")
+        return True
+    key = person_key(clean_person_name(viewer_name) or None, profile_url)
+    if key and key in get_requested_person_keys(user_id):
+        # DEBUG: an expected no-op — the viewer list repeats people, and one invite per person is
+        # the rule, not a failure to act.
+        log_debug(f"Profile viewer: {viewer_name} already has a connection request on file",
+                  user_id=user_id, action_type="connection_targeting",
+                  task_name="engage_with_profile_viewer")
+        return True
+    return False
+
+
+def _queue_profile_viewer_connect(user_id: int, profile_url: str, message: str,
+                                  viewer_name: str, prefs: dict) -> Optional[int]:
+    """File a cold profile-viewer invite as a PENDING `connection_requests` row (issue #1137).
+
+    Returns the row id, or None when nothing was queued. ONE request per person ever:
+    `get_requested_person_keys` is the same dedup the nightly sourcing scan uses, so someone who
+    declined — or who is still sitting in the queue — is never re-filed by a later visit. Approval
+    and sending stay on #398's existing beat and review surface; no new table, no new UI.
+
+    Bounded by the SAME budget `_connect_target_budget` and `roster_connect_budget` spend, for the
+    reason they both spend it: an OPEN request is already counted against `max_invites_per_day` by
+    `count_open_connection_requests`, and a pending row never ages out. Filing without that check is
+    what turns a lane nobody approves into a permanent zero for the other two — a backlog of cap-many
+    unapproved viewer drafts would silently stop the #486 sourcing scan and the #979 roster ladder
+    from filing anything, forever. Direct dispatch never had that effect: an invite it sent counted
+    only for the day it was sent.
+    """
+    if _profile_viewer_connect_blocked(user_id, profile_url, viewer_name, prefs):
+        return None
+    name = clean_person_name(viewer_name) or None
+    request_id = insert_connection_request(user_id, profile_url, message=message,
+                                           recipient_name=name,
+                                           status=ConnectionRequestStatus.PENDING,
+                                           source=CONNECTION_REQUEST_SOURCE_PROFILE_VIEWER)
+    if not request_id:
+        log_warning(f"Profile viewer: drafted a connection request for {viewer_name} but the "
+                    f"connection_requests insert failed — nothing will reach them", user_id=user_id,
+                    action_type="connection_targeting", task_name="engage_with_profile_viewer")
+        return None
+    log_info(f"Profile viewer: queued a connection request to {viewer_name} for approval",
+             user_id=user_id, action_type="connection_targeting",
+             task_name="engage_with_profile_viewer")
+    return request_id
+
+
 @shared_task.task(name='cqc_lem.app.run_automation.engage_with_profile_viewer',
                   bind=True, base=QueueOnce, once={'graceful': True, 'keys': ['user_id', 'viewer_url']},
                   reject_on_worker_lost=True, rate_limit='2/m', queue='se_outreach')
@@ -1757,6 +1874,11 @@ def engage_with_profile_viewer(self, user_id: int, viewer_url, viewer_name):
     A 1st-degree viewer gets a comment on ONE recent activity (at most one, then the walk stops) and
     a templated DM; anyone else gets a personalised connection request instead — you cannot DM a
     stranger, so the two branches are different actions, not the same action at different depths.
+
+    Both of those are COLD contact, and since issue #1137 both are approval-gated by the ONE
+    `profile_viewer_dm_auto_send` preference: OFF (the default) files a PENDING `scheduled_dms` /
+    `connection_requests` row for the operator instead of dispatching, ON keeps dispatching directly.
+    The comment half is never gated — commenting on someone's post is public, reversible engagement.
 
     Bounded to once per viewer per day by `has_engaged_url_with_x_days`, because the analytics page
     lists the same viewer on consecutive runs. Once the attempt actually starts, an ENGAGED row is
@@ -1798,6 +1920,15 @@ def engage_with_profile_viewer(self, user_id: int, viewer_url, viewer_name):
                 # message = profile.generate_personalized_message()
                 # myprint(message)
 
+                acting_user_id = get_user_id(my_profile.email)
+                # ONE toggle for BOTH branches (issue #1137). A visit resolves to exactly one of
+                # them — we are connected to this viewer or we are not — so "DM a stranger" and
+                # "invite a stranger" are the same decision seen from two sides. OFF (the default)
+                # files an approval-gated row on each side instead of dispatching; ON is the
+                # pre-#1137 behaviour, unchanged.
+                prefs = get_engagement_preferences(acting_user_id) or {}
+                auto_send = bool(prefs.get("profile_viewer_dm_auto_send"))
+
                 if profile.is_1st_connection:
                     log_info("We Are 1st Connections")
                     # engage with their content (
@@ -1832,8 +1963,16 @@ def engage_with_profile_viewer(self, user_id: int, viewer_url, viewer_name):
 
                         first_name = clean_person_name(viewer_name).split(" ")[0] or "there"
                         profile_url_str = str(profile.profile_url)
-                        acting_user_id = get_user_id(my_profile.email)
 
+                    # The gated path asks whether a draft could be FILED before it pays to write
+                    # one: an open draft is this lane's steady state, and the walk re-lists the
+                    # same viewer every loop. Direct dispatch skips the question — it has no queue
+                    # to collide with, and that is the pre-#1137 behaviour the toggle restores.
+                    if not able_to_comment and not auto_send and _profile_viewer_dm_blocked(
+                            acting_user_id, profile_url_str, viewer_name):
+                        result = f"Did not queue a DM to {viewer_name}"
+
+                    elif not able_to_comment:
                         # Retrieve past DM history with this profile to avoid repeating messages
                         past_dms = get_dm_history_for_profile(acting_user_id, profile_url_str)
                         message_history_json = json.dumps(past_dms)
@@ -1853,8 +1992,7 @@ def engage_with_profile_viewer(self, user_id: int, viewer_url, viewer_name):
                             message = ai_check_message_history(message_history_json, main_focus, message, user_name=first_name)
 
 
-                        if message:
-
+                        if message and auto_send:
                             # Send actual DM
                             kwargs = {'user_id': acting_user_id,
                                       'profile_url': profile_url_str,
@@ -1863,8 +2001,27 @@ def engage_with_profile_viewer(self, user_id: int, viewer_url, viewer_name):
                             enqueue_next_followup(acting_user_id, profile_url_str, first_name, "profile_viewer", 0)
                             result = f"Profile Viewer Engagement Completed. Sent DM to {viewer_name}"
                             engagement_successful = True
+                        elif message:
+                            # The ladder is NOT started here: `send_scheduled_dm` starts it when the
+                            # DM actually lands, so a draft nobody approves never queues follow-ups
+                            # for a conversation that never began.
+                            dm_id = _queue_profile_viewer_dm(acting_user_id, profile_url_str, message,
+                                                             first_name, viewer_name)
+                            if dm_id:
+                                result = (f"Profile Viewer Engagement Completed. Queued a DM to "
+                                          f"{viewer_name} for approval")
+                                engagement_successful = True
+                            else:
+                                result = f"Did not queue a DM to {viewer_name}"
                         else:
                             result = f"Message already sent to {viewer_name}"
+                elif not auto_send and _profile_viewer_connect_blocked(
+                        acting_user_id, str(profile.profile_url), viewer_name, prefs):
+                    # Same question, asked before the note is written rather than after: this
+                    # branch's dedup is PERMANENT (one request per person, ever), so from the
+                    # second visit onwards drafting one is guaranteed waste — an activity summary,
+                    # a personalised message and a refinement pass, per visit, thrown away.
+                    result = f"Did not queue a connection request to {viewer_name}"
                 else:
                     # myprint(f"We Are {profile.connection} Connections")
                     # If not 1st connections, send them a connection request
@@ -1876,13 +2033,27 @@ def engage_with_profile_viewer(self, user_id: int, viewer_url, viewer_name):
                     refined_response = get_ai_message_refinement(response)
                     log_info(f"Refined Response: {refined_response}")
 
-                    # Send connection request with this message
-                    kwargs = {'user_id': get_user_id(my_profile.email),
-                              'profile_url': str(profile.profile_url),
-                              'message': refined_response}
-                    invite_to_connect.apply_async(kwargs=kwargs)
-                    result = f"Profile Viewer Engagement Completed. Sent Connection Request to {viewer_name}"
-                    engagement_successful = True
+                    if auto_send:
+                        # Send connection request with this message
+                        kwargs = {'user_id': acting_user_id,
+                                  'profile_url': str(profile.profile_url),
+                                  'message': refined_response}
+                        invite_to_connect.apply_async(kwargs=kwargs)
+                        result = f"Profile Viewer Engagement Completed. Sent Connection Request to {viewer_name}"
+                        engagement_successful = True
+                    else:
+                        # `connection_requests` (#398) already has the beat that sends an APPROVED
+                        # row and the review surface that approves one — this lane files into it
+                        # rather than growing a second queue.
+                        request_id = _queue_profile_viewer_connect(
+                            acting_user_id, str(profile.profile_url), refined_response, viewer_name,
+                            prefs)
+                        if request_id:
+                            result = (f"Profile Viewer Engagement Completed. Queued a connection "
+                                      f"request to {viewer_name} for approval")
+                            engagement_successful = True
+                        else:
+                            result = f"Did not queue a connection request to {viewer_name}"
             else:
                 # WARNING: the viewer's profile scrape came back with nothing, so this whole
                 # engagement silently does nothing. Symmetric with get_my_profile's
@@ -2087,6 +2258,14 @@ def send_scheduled_dm(self, dm_id: int):
 
     dm_sent = send_dm_now(user_id, dm["recipient_profile_url"], dm["message"])
     update_scheduled_dm_status(dm_id, ScheduledDmStatus.SENT if dm_sent else ScheduledDmStatus.FAILED)
+    if dm_sent and dm.get("source") == SCHEDULED_DM_SOURCE_PROFILE_VIEWER:
+        # The direct-dispatch branch starts the 'profile_viewer' ladder the moment it sends, so the
+        # gated branch has to start it the moment it LANDS (issue #1137) — otherwise gating the lane
+        # would also silently drop its follow-ups and the reply check that turns a reply into a
+        # nurture draft. Started here and not at draft time: a draft nobody approves must never
+        # queue follow-ups for a conversation that never began.
+        enqueue_next_followup(user_id, dm["recipient_profile_url"],
+                              dm.get("recipient_name") or "", "profile_viewer", 0)
     return f"Scheduled DM {dm_id} -> {'sent' if dm_sent else 'failed'}"
 
 
