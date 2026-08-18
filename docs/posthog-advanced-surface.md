@@ -244,3 +244,56 @@ Two things follow for anyone re-checking this:
   never even fetched. Confirm the build first, then look for events.
 
 The replay half of the same check is in `docs/session-replay.md` § Verifying it.
+
+### The repeatable version of that check (issue #1676)
+
+"Confirm the build first, then look for events" was, until #1676, a manual chore: open the live
+site, read the bundle, then go hunting in Live Events. It got re-filed as a bug — *"$pageview events
+not being captured"* — while the SPA was in fact reporting normally, because **an absence proves
+nothing on its own**. `VITE_POSTHOG_KEY` is a Vite *build arg*, so an empty one makes `analytics.ts`
+short-circuit at `if (!KEY)`: posthog-js is never imported and the browser sends **no request at
+all**. At PostHog's end that looks exactly like a quiet day.
+
+`scripts/posthog_browser_check.py` collapses both halves into one command with an exit code. It is
+read-only — every site request is a GET, and the PostHog request is a HogQL query — so it is safe to
+run against production repeatedly:
+
+```bash
+# Artifacts only — no PostHog API key needed, proves the BUILD.
+python3 scripts/posthog_browser_check.py --skip-ingest \
+  --project-token "$VITE_POSTHOG_KEY"
+
+# Full chain, including ingestion. Needs POSTHOG_QUERY_API_KEY (or the shared fallback).
+python3 scripts/posthog_browser_check.py --hours 24
+```
+
+Four checks, one PASS/FAIL line each:
+
+| Check | Proves | The failure it names |
+|---|---|---|
+| `shell` | the live `index.html` loads and references JS | the SPA is not being served at all |
+| `bundle` | a `phc_` token is **inlined** in the static entry graph, and matches the expected one | the empty-build-arg case — analytics silently disabled, or the bundle reporting to a different project |
+| `api-host` | an ingestion host is inlined | captures addressed nowhere |
+| `ingest` | browser-sourced (`$lib = 'web'`) `$pageview` rows exist for that host in the window | the browser is not reaching PostHog |
+
+`ingest` is the one check where **zero rows is a FAIL** — the opposite of
+`scripts/posthog_key_check.py`, which passes on an empty result because it only asks *may this key
+query?*. Here the question is *did the browser report?*, so an empty answer is the defect. It filters
+to `$lib = 'web'` and to the site's own `$host` deliberately: this project also receives server-side
+captures from Celery and the API, which would otherwise mask a completely dead SPA.
+
+It never fetches the lazily-imported `posthog-js` chunk. It does not need to — `main.tsx` imports
+`initAnalytics` eagerly, so the `posthog.init(KEY, …)` call site, and therefore the inlined token,
+is always in the static entry graph.
+
+**Measured on 2026-08-18 (the #1676 report):** `shell`, `bundle` and `api-host` PASS from the
+script; the ingestion numbers below come from the same HogQL read `ingest` runs, issued directly
+(the box that ran the script had no `POSTHOG_QUERY_API_KEY`). The production bundle carried the
+correct project token with `api_host: https://us.i.posthog.com`, and the project had been receiving
+browser `$pageview` continuously — 717 events / 8 people over 30 days across `/`, `/content`,
+`/account`, `/avatars`, `/admin/*` and the legal pages, alongside `$autocapture`, `$pageleave`,
+`$web_vitals` and `$rageclick`, from posthog-js 1.407.3 through 1.417.0. PostHog **Web analytics**
+resolved 431 views / 56 sessions / 10.7% bounce over the prior 14 days, so the install was complete
+and no code change was warranted. If the report recurs, run the command above before assuming a
+defect: a browser extension or tracking protection blocking `us.i.posthog.com` on the reporter's own
+machine produces the same view of "no events" while everyone else's are landing.
