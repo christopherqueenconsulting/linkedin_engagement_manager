@@ -7,6 +7,7 @@ the direct import resolve to the same objects.
 
 import os
 import threading
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -15,12 +16,15 @@ from typing import Any, Optional, Union
 
 import mysql.connector
 from dotenv import load_dotenv
+from mysql.connector import errorcode
 from mysql.connector.abstracts import MySQLConnectionAbstract, MySQLCursorAbstract
 from mysql.connector.pooling import CNX_POOL_MAXSIZE, MySQLConnectionPool, PooledMySQLConnection
 
 from cqc_lem.utilities.env_constants import (
     AWS_MYSQL_SECRET_NAME,
     AWS_REGION,
+    MYSQL_CONNECT_RETRY_ATTEMPTS,
+    MYSQL_CONNECT_RETRY_BACKOFF_SECONDS,
     MYSQL_POOL_ENABLED,
     MYSQL_POOL_SIZE,
 )
@@ -46,6 +50,21 @@ DbConnection = Union[PooledMySQLConnection, MySQLConnectionAbstract]
 #: MySQL's own default, and what `.env.example` / docker-compose ship. Used when MYSQL_PORT is
 #: unset so an environment that never exported it still connects.
 DEFAULT_MYSQL_PORT = 3306
+
+#: Connector errnos that mean the client NEVER reached a MySQL server — the name did not resolve or
+#: the TCP connect was refused. Nothing was sent, so a retry cannot run a statement twice.
+#: CR_SERVER_GONE_ERROR (2006) and CR_SERVER_LOST (2013) are deliberately absent: those fire on an
+#: established connection, possibly mid-statement, where a retry could duplicate a write.
+_UNREACHABLE_ERRNOS = frozenset({
+    errorcode.CR_CONNECTION_ERROR,  # 2002 — local socket refused
+    errorcode.CR_CONN_HOST_ERROR,   # 2003 — host refused the TCP connect
+    errorcode.CR_UNKNOWN_HOST,      # 2005 — DNS could not resolve the host
+})
+
+#: Attempts are operator-tunable and every wait doubles, so an unbounded exponential would turn a
+#: mistyped value into a worker asleep for hours. Capping ONE wait keeps the worst case linear and
+#: leaves the default schedule (2s, 4s) untouched.
+_MAX_CONNECT_RETRY_DELAY = 30.0
 
 @dataclass
 class _PoolState:
@@ -169,26 +188,65 @@ def reset_connection_pool() -> None:
         _POOL_STATE.opened = 0
 
 
+def _server_unreachable(exc: BaseException) -> bool:
+    """True only when the connector never reached a server, so retrying is free of side effects.
+
+    Args:
+        exc: The exception raised while opening a connection.
+
+    Returns:
+        True when the failure is one of `_UNREACHABLE_ERRNOS`.
+    """
+    return isinstance(exc, mysql.connector.Error) and getattr(exc, "errno", None) in _UNREACHABLE_ERRNOS
+
+
 def get_db_connection() -> DbConnection:
     """Establishes a connection to the MySQL database and returns the connection object.
 
     Connections come from a per-process pool when MYSQL_POOL_ENABLED (the default); calling
     .close() on the returned object returns it to the pool rather than dropping the socket.
 
+    A MySQL that is momentarily unreachable is ridden out rather than reported (issue #1660):
+    Docker's embedded DNS lost the `mysql_db` service name for a beat, and every caller here
+    answers a connection failure with its own fallback — `[]`, None, False — so the blip did not
+    surface as a database outage, it surfaced as a scheduler run that engaged for nobody. Only the
+    errnos meaning nothing was ever sent are retried; a timeout or an error on an established
+    connection fails exactly as before, and an exhausted budget still raises for the caller to log.
+
     Raises:
         mysql.connector.Error: If there is an error connecting to the database.
     """
     config = _get_mysql_config()
+    attempts = max(1, MYSQL_CONNECT_RETRY_ATTEMPTS)
+    backoff = max(0.0, MYSQL_CONNECT_RETRY_BACKOFF_SECONDS)
 
-    if MYSQL_POOL_ENABLED:
+    for attempt in range(attempts):
         try:
-            connection = _get_pooled_connection(config)
-            if connection is not None:
-                return connection
-        except mysql.connector.Error as e:
-            log_warning("MySQL connection pool unavailable - using a direct connection", exc=e)
+            if MYSQL_POOL_ENABLED:
+                try:
+                    connection = _get_pooled_connection(config)
+                    if connection is not None:
+                        return connection
+                except mysql.connector.Error as e:
+                    if _server_unreachable(e):
+                        # The SERVER is unreachable, not the pool — a direct connection would fail
+                        # the same way, so let the retry answer it instead of blaming the pool.
+                        raise
+                    log_warning("MySQL connection pool unavailable - using a direct connection", exc=e)
 
-    return mysql.connector.connect(**config)
+            return mysql.connector.connect(**config)
+        except mysql.connector.Error as exc:
+            if attempt + 1 >= attempts or not _server_unreachable(exc):
+                raise
+            delay = min(backoff * (2 ** attempt), _MAX_CONNECT_RETRY_DELAY)
+            # DEBUG, not a warning: a blip we rode out is not a degraded outcome, and warning on
+            # every one of them would escalate an expected no-op into a grouped $exception.
+            log_debug(f"MySQL is not reachable yet; retrying in {delay:.0f}s",
+                      mysql_errno=getattr(exc, "errno", None))
+            time.sleep(delay)
+
+    # Unreachable: the loop above always returns or raises.
+    raise AssertionError("MySQL connect retry loop exited without a connection")
 
 
 @contextmanager

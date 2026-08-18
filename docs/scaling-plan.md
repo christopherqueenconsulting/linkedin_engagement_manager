@@ -94,6 +94,16 @@ lazily to its size as concurrent checkouts demand, reuses connections on `.close
 and falls back to a direct connection when a burst outruns the pool. Raise
 `max_connections` only if `Max_used_connections` approaches ~120.
 
+Issue #1660 added a bounded retry on top: Docker's embedded DNS lost the `mysql_db`
+service name for a beat, and because every caller answers a connection failure with
+its own fallback (`[]`, `None`, `False`), the blip did not read as a database outage —
+it read as a scheduler run that engaged for nobody. `get_db_connection()` now retries
+`MYSQL_CONNECT_RETRY_ATTEMPTS` times with a doubling `MYSQL_CONNECT_RETRY_BACKOFF_SECONDS`
+wait, **only** for errnos meaning the connection was never established (2002 / 2003 /
+2005) — nothing was sent, so no statement can run twice. A timeout, an auth refusal, or
+a `CR_SERVER_LOST` on an established connection fails immediately, exactly as before,
+and an exhausted budget still raises for the caller to log.
+
 ---
 
 ## 2. The real bottleneck: one browser, four slots

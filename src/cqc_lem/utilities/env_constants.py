@@ -231,6 +231,16 @@ AWS_MYSQL_SECRET_NAME=get_constant_from_env('AWS_MYSQL_SECRET_NAME')
 MYSQL_POOL_ENABLED = isTrue(get_constant_from_env('MYSQL_POOL_ENABLED', default_value='True'))
 MYSQL_POOL_SIZE = int(get_constant_from_env('MYSQL_POOL_SIZE', default_value='16'))
 
+# Riding out a MySQL that is momentarily unreachable (issue #1660). Docker's embedded DNS failed to
+# resolve the `mysql_db` service name once (errno 2005, "Unknown MySQL server host ... (-3)"), and
+# the caller answered with its own fallback — get_active_user_ids() returned [], so a whole
+# scheduler run silently engaged for nobody. Only errnos meaning the connection was NEVER
+# established are retried, so no statement can run twice. Set attempts to 1 to turn the wait off.
+MYSQL_CONNECT_RETRY_ATTEMPTS = int(get_constant_from_env('MYSQL_CONNECT_RETRY_ATTEMPTS',
+                                                         default_value='3'))
+MYSQL_CONNECT_RETRY_BACKOFF_SECONDS = float(
+    get_constant_from_env('MYSQL_CONNECT_RETRY_BACKOFF_SECONDS', default_value='2.0'))
+
 NGROK_CUSTOM_DOMAIN=get_constant_from_env('NGROK_CUSTOM_DOMAIN')
 NGROK_FREE_DOMAIN=get_constant_from_env('NGROK_FREE_DOMAIN')
 NGROK_API_PREFIX=get_constant_from_env('NGROK_API_PREFIX')
