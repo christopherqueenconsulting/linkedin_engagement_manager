@@ -185,30 +185,50 @@ lives: each purpose reads its own env var and falls back to `POSTHOG_PERSONAL_AP
 | `annotation` | `POSTHOG_ANNOTATION_API_KEY` | `scripts/posthog_annotate.py` (GH Actions) | `annotation:write` |
 | `runtime` | `POSTHOG_RUNTIME_API_KEY` | `flags.py`, `posthog_endpoints.py`, `observability.posthog_hogql_query` (app containers) | `feature_flag:read`, `query:read` |
 | `query` | `POSTHOG_QUERY_API_KEY` | `scripts/posthog_error_issues.py` via `error_to_issues.sh` (host cron) | `query:read` |
+| `benchmark` | `POSTHOG_BENCHMARK_API_KEY` | `scripts/benchmark_models.py` via `weekly_model_check.sh` (host cron, Sun) | LLM-evaluation read+write |
 
 The provisioning scripts (`posthog_provision`, `posthog_dashboards`, `posthog_flags`,
 `posthog_surveys`, `posthog_experiments`, `posthog_ops_destination`) are run by hand and
 deliberately keep reading `POSTHOG_PERSONAL_API_KEY` — an operator key exported into a shell for the
 run and stored nowhere is the right shape for them.
 
-**`scripts/benchmark_models.py` is the exception that blocks the last step.** It also reads the
-shared key, but it is NOT hand-run: `scripts/weekly_model_check.sh` (host cron, Sun) sources
-`POSTHOG_PERSONAL_API_KEY` out of `/opt/lem/.env` for it, so the shared key is a *stored* credential
-for that lane. It reads PostHog's evaluations API — a scope none of the three purposes above covers
-— and it degrades **silently**: with the project key present and the personal key gone, neither
-branch in `main()` fires, `evals` stays `None`, and the run falls back to the in-runner judge with
-nothing printed. So the shared key cannot simply be deleted from `/opt/lem/.env`; decide what
-`benchmark_models` gets (its own scoped key, or the shared key retained for that one lane) BEFORE
-revoking, and check a weekly report actually carries PostHog-scored cases afterwards.
+**Why the benchmark is a purpose and not an operator key.** `scripts/benchmark_models.py` is not
+hand-run: `scripts/weekly_model_check.sh` (host cron, Sun) sources its key out of `/opt/lem/.env`,
+so that key is a *stored* credential like the other three. It reads PostHog's LLM-evaluation API —
+a scope none of the others covers — so folding it into `runtime` would widen the one key that lives
+in the app containers. It gets `POSTHOG_BENCHMARK_API_KEY` instead (issue #1453, owner decision
+`1A`). It still degrades to the in-runner judge without a key, but no longer silently: `main()`
+prints `Neither POSTHOG_BENCHMARK_API_KEY nor POSTHOG_PERSONAL_API_KEY is set — PostHog evaluations
+are unavailable; using the in-runner judge` to stderr, which lands in `/home/lem/model-check/model_check.log`.
 
 **The fallback is the rollout.** Nothing changes in an environment until a scoped key exists there,
 so: create the scoped keys alongside the current one, populate ONE consumer, verify it, repeat, and
-revoke the shared key LAST — after `benchmark_models` is settled. If anything regresses, unset the
-scoped var and the shared key answers again.
+revoke the shared key LAST. If anything regresses, unset the scoped var and the shared key answers
+again.
 
-**Verify per surface, because three of them fail silently.** A wrong key in `flags.py` just makes
-every flag read its env default; in `posthog_endpoints.py` the SPA stats panel goes empty; in the
-error cron nothing gets filed and absence looks exactly like a quiet day. A green deploy is not
-evidence. Check `flags.local_evaluation_available()`, `GET /user/posthog-stats` returning populated
-panels, and `scripts/posthog_error_issues.py` (dry run) returning rows over a window known to
-contain exceptions.
+**Verify per surface, because they fail silently.** A wrong key in `flags.py` just makes every flag
+read its env default; in `posthog_endpoints.py` the SPA stats panel goes empty; in the error cron
+nothing gets filed and absence looks exactly like a quiet day; in the benchmark the scorecard still
+renders, scored by the fallback judge. A green deploy is not evidence.
+
+`scripts/posthog_key_check.py` is that verification as one command. It resolves each purpose's key
+exactly as its consumer does, performs ONE **read-only** request against that consumer's surface,
+and prints PASS/FAIL naming the env var that supplied the key — which is how you tell a populated
+scoped key from the shared fallback still doing the work:
+
+```bash
+python scripts/posthog_key_check.py --list              # what it will check; no network
+python scripts/posthog_key_check.py                     # every purpose
+python scripts/posthog_key_check.py --purpose runtime   # one consumer, after populating it
+```
+
+Exit 0 only when every checked surface passed; 1 if any failed (including "no key at all"), 2 on an
+unknown `--purpose`. It writes nothing to PostHog — every request is a GET, or a POST to `/query/`
+or an endpoint `/run/`, and `tests/unit/scripts/test_posthog_key_check.py` fails the build if a
+surface is ever added that could write. Run it after each consumer is populated and again
+immediately before revoking the shared key.
+
+The manual equivalents, if you want to check a surface by hand: `flags.local_evaluation_available()`,
+`GET /user/posthog-stats` returning populated panels, `scripts/posthog_error_issues.py --dry-run`
+returning rows over a window known to contain exceptions, and a weekly benchmark report whose cases
+carry `posthog-evals` rather than `in-runner-judge` scoring.

@@ -80,6 +80,13 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(_HERE, "..", "src"))
 sys.path.insert(0, _HERE)  # model_health_check is a sibling script, not a package module
 
+# Purpose-scoped personal key (issue #1453). This lane is a host cron, not a hand-run script, so its
+# key is a STORED credential — it gets its own purpose rather than riding the app's runtime key.
+from cqc_lem.utilities.posthog_keys import (  # noqa: E402
+    missing_key_message,
+    resolve_posthog_key,
+)
+
 DEFAULT_SUITE_DIR = "tests/benchmarks/model_tiers"
 DEFAULT_CONFIG = ".litellm/config.yaml"
 DEFAULT_OUT_DIR = "docs/model-benchmarks"
@@ -2187,7 +2194,7 @@ def main(argv: Optional[list] = None) -> int:
                   file=sys.stderr)
             return 1
         provider = ProviderClient(base_url, api_key)
-        personal_key = (os.environ.get("POSTHOG_PERSONAL_API_KEY") or "").strip()
+        personal_key = resolve_posthog_key("benchmark")
         project_key = (os.environ.get("POSTHOG_API_KEY") or "").strip()
         # BOTH keys or neither: the personal key reads the evaluation API, the project key emits the
         # generations it scores. One without the other would score nothing and report every case as
@@ -2199,6 +2206,12 @@ def main(argv: Optional[list] = None) -> int:
         elif personal_key and not project_key and not args.no_judge:
             print("  POSTHOG_API_KEY is unset — PostHog evaluations cannot score events that were "
                   "never emitted; using the in-runner judge", file=sys.stderr)
+        elif not personal_key and not args.no_judge:
+            # Say it OUT LOUD. The whole risk in the key split (issue #1453) is that revoking the
+            # shared key drops this lane onto the in-runner judge with a scorecard that still looks
+            # complete — the run succeeds, prints a leaderboard, and nothing names what went missing.
+            print(f"  {missing_key_message('benchmark')} — PostHog evaluations are unavailable; "
+                  "using the in-runner judge", file=sys.stderr)
 
     # Every model the run will score, champions included — a delta needs both sides.
     measured = sorted(set(models) | {m for m in champions.values() if m})

@@ -2101,6 +2101,69 @@ class TestCLI:
                  "--no-usage-levels"])
         boom.assert_not_called()
 
+    def _record_evals_key(self, monkeypatch) -> dict:
+        """Capture the key PostHogEvals is constructed with; the client itself stays inert."""
+        built = {}
+
+        def _record(key, *args, **kwargs):
+            built["key"] = key
+            return None  # the run continues on the in-runner judge — no evaluation I/O
+
+        monkeypatch.setattr(bm, "PostHogEvals", _record)
+        return built
+
+    def _run_for_key_resolution(self, monkeypatch, tmp_path, run_id):
+        """A minimal --run that reaches main()'s PostHog-key branch and stops there."""
+        monkeypatch.setenv("OLLAMA_CLOUD_URL", "https://ollama.example")
+        monkeypatch.setenv("OLLAMA_CLOUD_API_KEY", "key")
+        monkeypatch.setattr(bm.ProviderClient, "complete", lambda self, *a, **k: {
+            "text": "x", "error": None, "latency_ms": 1.0, "usage": {}})
+        return bm.main(["--run", "--models", "cand", "--suite-dir", str(SUITE_DIR),
+                        "--out-dir", str(tmp_path), "--run-id", run_id, "--today", "2026-07-27",
+                        "--tiers", "lem-simple", "--no-usage-levels"])
+
+    def test_the_evaluation_client_uses_the_benchmark_scoped_key(self, monkeypatch, tmp_path):
+        # Issue #1453 / owner decision 1A: this cron lane resolves its OWN purpose, so revoking the
+        # shared key with a scoped one in place must not change what the run can score.
+        monkeypatch.setenv("POSTHOG_PERSONAL_API_KEY", "phx_shared")
+        monkeypatch.setenv("POSTHOG_BENCHMARK_API_KEY", "phx_benchmark")
+        monkeypatch.setenv("POSTHOG_API_KEY", "phc_project")
+        built = self._record_evals_key(monkeypatch)
+        self._run_for_key_resolution(monkeypatch, tmp_path, "bm-k1")
+        assert built["key"] == "phx_benchmark"
+
+    def test_it_still_falls_back_to_the_shared_key(self, monkeypatch, tmp_path):
+        # The rollout is additive: until the scoped key exists, the lane behaves exactly as before.
+        monkeypatch.setenv("POSTHOG_PERSONAL_API_KEY", "phx_shared")
+        monkeypatch.delenv("POSTHOG_BENCHMARK_API_KEY", raising=False)
+        monkeypatch.setenv("POSTHOG_API_KEY", "phc_project")
+        built = self._record_evals_key(monkeypatch)
+        self._run_for_key_resolution(monkeypatch, tmp_path, "bm-k2")
+        assert built["key"] == "phx_shared"
+
+    def test_no_personal_key_says_so_instead_of_degrading_quietly(self, monkeypatch, tmp_path,
+                                                                  capsys):
+        # The revoke hazard: without this line the run still prints a full scorecard and nothing
+        # names that PostHog scored none of it.
+        monkeypatch.delenv("POSTHOG_PERSONAL_API_KEY", raising=False)
+        monkeypatch.setenv("POSTHOG_API_KEY", "phc_project")
+        self._run_for_key_resolution(monkeypatch, tmp_path, "bm-k3")
+        err = capsys.readouterr().err
+        assert "POSTHOG_BENCHMARK_API_KEY" in err
+        assert "in-runner judge" in err
+
+    def test_no_judge_stays_silent_about_the_missing_key(self, monkeypatch, tmp_path, capsys):
+        # --no-judge asked for deterministic-only; a missing judge key is not news there.
+        monkeypatch.delenv("POSTHOG_PERSONAL_API_KEY", raising=False)
+        monkeypatch.setenv("OLLAMA_CLOUD_URL", "https://ollama.example")
+        monkeypatch.setenv("OLLAMA_CLOUD_API_KEY", "key")
+        monkeypatch.setattr(bm.ProviderClient, "complete", lambda self, *a, **k: {
+            "text": "x", "error": None, "latency_ms": 1.0, "usage": {}})
+        bm.main(["--run", "--models", "cand", "--suite-dir", str(SUITE_DIR),
+                 "--out-dir", str(tmp_path), "--run-id", "bm-k4", "--today", "2026-07-27",
+                 "--tiers", "lem-simple", "--no-usage-levels", "--no-judge"])
+        assert "POSTHOG_BENCHMARK_API_KEY" not in capsys.readouterr().err
+
     def test_a_bad_suite_directory_exits_1(self, tmp_path, capsys):
         assert bm.main(["--print-suites", "--suite-dir", str(tmp_path)]) == 1
         assert "suite error" in capsys.readouterr().err

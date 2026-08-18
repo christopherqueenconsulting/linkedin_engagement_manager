@@ -245,7 +245,10 @@ import sys, json; print((json.load(sys.stdin).get('pr') or {}).get('body') or ''
   # and the tier's current champion run the same synthetic suites, and the run is committed as a
   # report PR. Strictly advisory — it never edits the config, never writes model_upgrades.yaml, and
   # any failure here must NOT touch the retirement-swap safety path that already ran above.
-  set -a; source <(sudo -n grep -E "^(BENCHMARK_[A-Z_]+|POSTHOG_API_KEY|POSTHOG_HOST|POSTHOG_PERSONAL_API_KEY|POSTHOG_PROJECT_ID)=" /opt/lem/.env) 2>/dev/null; set +a
+  # POSTHOG_BENCHMARK_API_KEY is this lane's purpose-scoped personal key (issue #1453); the shared
+  # POSTHOG_PERSONAL_API_KEY stays sourced as its fallback until it is revoked. Export BOTH —
+  # benchmark_models.py decides which one wins (src/cqc_lem/utilities/posthog_keys.py).
+  set -a; source <(sudo -n grep -E "^(BENCHMARK_[A-Z_]+|POSTHOG_API_KEY|POSTHOG_HOST|POSTHOG_BENCHMARK_API_KEY|POSTHOG_PERSONAL_API_KEY|POSTHOG_PROJECT_ID)=" /opt/lem/.env) 2>/dev/null; set +a
   if [ "${BENCHMARK_ENABLED:-false}" != "true" ]; then
     log "benchmark: BENCHMARK_ENABLED not set — skipping"
   else
