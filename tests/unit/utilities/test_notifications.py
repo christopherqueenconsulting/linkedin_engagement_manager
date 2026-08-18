@@ -108,6 +108,23 @@ def test_newsletter_draft_ready_email_copy_reports_the_real_outcome():
     assert "auto-publish as-is on Tuesday" in " ".join(dispatch.call_args[0][2].split())
 
 
+def test_newsletter_draft_ready_email_links_to_the_screen_that_can_approve(monkeypatch):
+    """Issue #1135 — the email now ASKS for an approval, so its button has to reach one.
+
+    Reviewing, approving and skipping an edition all live on the newsletter queue and nowhere
+    else; `/account` only holds the settings card. That was cosmetic while every draft shipped on
+    silence, and load-bearing the moment an opted-out edition publishes only on an approval.
+    """
+    monkeypatch.setenv("LEM_APP_URL", "https://app.example.com/")
+    from cqc_lem.utilities.email import send_newsletter_draft_ready_email
+    with patch("cqc_lem.utilities.email._dispatch_email", return_value=True) as dispatch:
+        send_newsletter_draft_ready_email("u@e.com", "My Edition", "Tuesday", auto_publish=False)
+    html = " ".join(dispatch.call_args[0][2].split())
+    assert 'href="https://app.example.com/content?tab=newsletters"' in html
+    assert "https://app.example.com/account" not in html
+    assert "from your account page" not in html
+
+
 def test_newsletter_draft_ready_title_with_markup_cannot_break_the_body():
     """Titles are LLM-authored, so '&' and angle brackets reach this template unfiltered. Raw,
     everything from '<' to the next '>' renders as a bogus tag and the sentence loses its subject;

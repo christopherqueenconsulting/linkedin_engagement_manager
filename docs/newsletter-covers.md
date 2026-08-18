@@ -83,6 +83,13 @@ is the ONLY message an opted-out author gets about a new draft at all — the dr
 The rule for anything added here: **a "publishes on time" clause is conditional, a "without a cover"
 clause is not.** An APPROVED edition publishes either way, so it keeps the original wording.
 
+The same change moved the draft-ready email's LINK. It used to point at `/account` — harmless while
+every draft shipped on silence, because the email was an FYI. Now it asks an opted-out author for
+the approval the edition will not publish without, and approving, editing and skipping an edition
+all live on the newsletter queue (`_newsletter_queue_url`), never on the settings card. **An email
+that asks for an action must land on the screen that can take it** — a CTA pointing somewhere else
+is the same false reassurance in link form, and it costs the edition, not just a click.
+
 ## The deterministic gate
 
 Both sources pass `inspect_cover_bytes` first — this is what stops an unusable image reaching a

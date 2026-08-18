@@ -105,6 +105,16 @@ describe('NewsletterCard — auto-publish toggle (issue #1135)', () => {
     await waitFor(() => expect(autoPublishToggle().getAttribute('aria-checked')).toBe('true'))
   })
 
+  // The card's headline blurb is the first thing a NEW account reads, and a new account defaults
+  // to opted OUT — so it must not open by promising the newsletter auto-publishes.
+  it('does not promise auto-publishing on the master enable toggle', async () => {
+    serve({ auto_publish_newsletters: false })
+    harness(<NewsletterCard />)
+    await waitFor(() => expect(autoPublishToggle()).toBeTruthy())
+    expect(screen.queryByText(/Auto-publish a recurring newsletter/)).toBeNull()
+    expect(screen.getByText(/We draft each edition for your review/)).toBeTruthy()
+  })
+
   it('carries every other setting through the same PUT, so turning it on blanks nothing', async () => {
     serve({ auto_publish_newsletters: false })
     harness(<NewsletterCard />)

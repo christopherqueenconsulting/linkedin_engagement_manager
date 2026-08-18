@@ -432,8 +432,15 @@ def send_linkedin_token_expiring_email(to_email: str, days_remaining: Optional[i
     return _dispatch_email(to_email, subject, html, high_priority=True)
 
 
+def _newsletter_queue_url() -> str:
+    """Deep link to the newsletter queue — the ONE screen that can approve an edition or a cover."""
+    import os
+    base = (os.getenv("LEM_APP_URL") or "https://lem.christopherqueenconsulting.com").rstrip("/")
+    return f"{base}/content?tab=newsletters"
+
+
 def send_newsletter_draft_ready_email(to_email: str, edition_title: str,
-                                      scheduled_for: str, account_url: Optional[str] = None,
+                                      scheduled_for: str, queue_url: Optional[str] = None,
                                       auto_publish: bool = True) -> bool:
     """Email a user that their newsletter draft is ready to review.
 
@@ -441,8 +448,13 @@ def send_newsletter_draft_ready_email(to_email: str, edition_title: str,
     (`auto_publish_newsletters`), so this names the real outcome instead of asserting one. Telling
     an opted-out author their draft ships by itself is the failure mode: they act on that and the
     edition waits forever. Defaults to True — existing rows were backfilled to auto-publishing.
+
+    The link is the newsletter QUEUE, not `/account`: reviewing, approving and skipping an edition
+    all live there and nowhere else. That was cosmetic while every draft shipped on silence — now
+    that an opted-out edition publishes ONLY on an approval, sending the one email that asks for it
+    to a screen that cannot give it is the same false-reassurance failure in link form.
     """
-    url = html_escape(account_url or _account_url())
+    url = html_escape(queue_url or _newsletter_queue_url())
     title = html_escape(edition_title or "Your next edition")
     safe_scheduled_for = html_escape(scheduled_for)
     outcome = (f"<p>If you do nothing, it will <strong>auto-publish as-is on {safe_scheduled_for}"
@@ -459,19 +471,13 @@ def send_newsletter_draft_ready_email(to_email: str, edition_title: str,
     {outcome}
     <p><a href="{url}" style="background:#0a66c2;color:#fff;padding:10px 16px;border-radius:6px;
     text-decoration:none;">Review your draft</a></p>
-    <p style="color:#888;font-size:12px;">You can edit the title, subtitle, and body, or skip this
-    edition entirely from your account page.</p>
+    <p style="color:#888;font-size:12px;">You can edit the title, subtitle, and body, approve it,
+    or skip this edition entirely from your newsletter queue.</p>
     </body></html>
     """
-    return _dispatch_email(
-        to_email, f"📝 Your newsletter draft is ready: {edition_title or 'Your next edition'}", html, high_priority=True)
-
-
-def _newsletter_queue_url() -> str:
-    """Deep link to the newsletter review queue — the ONE screen an author can approve a cover on."""
-    import os
-    base = (os.getenv("LEM_APP_URL") or "https://lem.christopherqueenconsulting.com").rstrip("/")
-    return f"{base}/content?tab=newsletters"
+    # The subject is plain text, so it takes the title as written rather than the escaped copy.
+    subject = f"📝 Your newsletter draft is ready: {edition_title or 'Your next edition'}"
+    return _dispatch_email(to_email, subject, html, high_priority=True)
 
 
 def send_newsletter_cover_pending_email(to_email: str, edition_title: str, scheduled_for: str,
