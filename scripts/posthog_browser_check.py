@@ -108,11 +108,28 @@ def site_host(site: str) -> str:
     Returns:
         The hostname, lowercased and without a port, or "" when `site` is not a usable http(s) URL.
     """
-    parsed = urlparse(site if "://" in site else f"https://{site}")
+    parsed = urlparse(normalize_site(site))
     if parsed.scheme not in ("http", "https"):
         return ""
     host = (parsed.hostname or "").lower()
     return host if _HOSTNAME_RE.fullmatch(host) else ""
+
+
+def normalize_site(site: str) -> str:
+    """`site` with a scheme, which is what `requests` needs and `site_host` already tolerated.
+
+    The two used to disagree: `site_host` assumed https for a bare hostname, so
+    `--site lem.example.com` passed validation and then reached `requests.get` unchanged, raising
+    `MissingSchema` and printing three `request failed` lines about a site that is up. A preflight
+    whose job is to tell "no key" apart from "site down" must not invent a third answer.
+
+    Args:
+        site: Site URL, with or without a scheme.
+
+    Returns:
+        The URL with `https://` prepended when no scheme was given.
+    """
+    return site if "://" in site else f"https://{site}"
 
 
 def parse_asset_urls(html: str, base_url: str, limit: int = DEFAULT_MAX_ASSETS) -> list:
@@ -393,6 +410,14 @@ class PostHogReader:
     def query(self, url: str, hogql: str, api_key: str) -> tuple:
         """Run one HogQL query.
 
+        Returns the body WHOLE. `posthog_key_check.py` truncates its bodies because it only ever
+        renders them as an error snippet, but this one is PARSED: a real HogQL response carries
+        `clickhouse`, `hogql`, `modifiers` and `timings` alongside `results` and runs well over a
+        kilobyte, so any cap makes `json.loads` fail on a healthy answer and `classify_ingest` read
+        it as zero rows — reporting "the browser is not reaching PostHog" about a working install,
+        the exact false alarm this script exists to prevent. Truncation happens where a snippet is
+        printed, not where the body is read.
+
         Args:
             url: The project's `/query/` URL.
             hogql: The query string.
@@ -408,7 +433,7 @@ class PostHogReader:
             json={"query": {"kind": "HogQLQuery", "query": hogql}},
             timeout=self.timeout,
         )
-        return response.status_code, (response.text or "")[:600]
+        return response.status_code, (response.text or "")
 
 
 def check_artifacts(site: str, reader: "SiteReader", expected_token: str = "",
@@ -512,7 +537,7 @@ def main(argv: Optional[list] = None) -> int:
         print("--max-assets must be at least 1", file=sys.stderr)
         return 2
 
-    results = check_artifacts(args.site, SiteReader(timeout=args.timeout),
+    results = check_artifacts(normalize_site(args.site), SiteReader(timeout=args.timeout),
                               expected_token=(args.project_token or "").strip(),
                               max_assets=args.max_assets)
     if not args.skip_ingest:

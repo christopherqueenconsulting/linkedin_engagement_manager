@@ -316,3 +316,92 @@ def test_main_defaults_the_expected_token_to_the_build_env(monkeypatch, capsys):
     monkeypatch.setattr(bc, "SiteReader", lambda timeout=30: _site())
     assert bc.main(["--site", SITE, "--skip-ingest"]) == 1
     assert "different project" in capsys.readouterr().out
+
+
+# --- the I/O clients ----------------------------------------------------------------------------
+
+class _FakeResponse:
+    """The one attribute pair the readers touch on a `requests` response."""
+
+    def __init__(self, status_code: int, text: str) -> None:
+        self.status_code = status_code
+        self.text = text
+
+
+def _realistic_query_body() -> str:
+    """A HogQL response the size PostHog actually returns — well over a kilobyte.
+
+    `results` is a few dozen bytes of it; `clickhouse`, `hogql`, `modifiers` and `timings` are the
+    rest. That is why the reader must not cap the body.
+    """
+    return json.dumps({
+        "cache_key": "cache_" + "0" * 32,
+        "clickhouse": "SELECT count() AS views FROM events WHERE " + "and(equals(a, b), " * 12 + "1" + ")" * 12,
+        "columns": ["views", "people", "last_seen"],
+        "hogql": bc.pageview_hogql("lem.example.com", 24),
+        "is_cached": False,
+        "modifiers": {f"modifier_{index}": "auto" for index in range(20)},
+        "results": [[717, 8, "2026-08-18T16:32:11Z"]],
+        "timings": [{"k": f".step_{index}", "t": 0.01} for index in range(10)],
+        "types": [["views", "UInt64"], ["people", "UInt64"], ["last_seen", "DateTime"]],
+    })
+
+
+def test_posthog_reader_returns_the_whole_body_so_a_healthy_answer_still_parses(monkeypatch):
+    """A capped body reads a WORKING install as the very defect this script disproves.
+
+    `json.loads` fails on the truncation, `classify_ingest` sees zero rows, and it prints "the
+    browser is not reaching PostHog" about a healthy deployment.
+    """
+    import requests
+
+    body = _realistic_query_body()
+    assert len(body) > 600, "the regression only bites on a body longer than the old cap"
+    sent = {}
+
+    def _post(url, headers=None, json=None, timeout=None):  # noqa: A002 - mirrors requests' kwarg
+        sent.update(url=url, headers=headers, payload=json, timeout=timeout)
+        return _FakeResponse(200, body)
+
+    monkeypatch.setattr(requests, "post", _post)
+    status, returned = bc.PostHogReader(timeout=7).query("https://us.posthog.com/api/q/", "SELECT 1",
+                                                         "phx_scoped")
+    assert (status, returned) == (200, body)
+    assert sent["timeout"] == 7
+    assert sent["payload"]["query"]["kind"] == "HogQLQuery"
+    result = bc.classify_ingest(status, returned, "lem.example.com", 24)
+    assert result["ok"] is True and "717 $pageview" in result["detail"]
+
+
+def test_site_reader_gets_the_url_with_no_cache(monkeypatch):
+    import requests
+
+    seen = {}
+
+    def _get(url, timeout=None, headers=None):
+        seen.update(url=url, timeout=timeout, headers=headers)
+        return _FakeResponse(200, INDEX_HTML)
+
+    monkeypatch.setattr(requests, "get", _get)
+    assert bc.SiteReader(timeout=5).get(SITE) == (200, INDEX_HTML)
+    assert seen["headers"]["Cache-Control"] == "no-cache"
+
+
+# --- the --site argument ------------------------------------------------------------------------
+
+def test_normalize_site_supplies_the_scheme_site_host_already_assumed():
+    assert bc.normalize_site("lem.example.com") == "https://lem.example.com"
+    assert bc.normalize_site("http://lem.example.com") == "http://lem.example.com"
+
+
+def test_main_fetches_a_scheme_less_site_instead_of_failing_transport(monkeypatch, capsys):
+    """A bare hostname must be FETCHED, not just validated.
+
+    `site_host` accepts one, so a site that is up would otherwise report three `request failed`
+    lines from `requests.MissingSchema`.
+    """
+    site = _site()
+    monkeypatch.setattr(bc, "SiteReader", lambda timeout=30: site)
+    assert bc.main(["--site", "lem.example.com", "--project-token", TOKEN, "--skip-ingest"]) == 0
+    assert site.calls[0] == "https://lem.example.com/"
+    assert "3 passed, 0 failed" in capsys.readouterr().out

@@ -286,7 +286,9 @@ It never fetches the lazily-imported `posthog-js` chunk. It does not need to —
 `initAnalytics` eagerly, so the `posthog.init(KEY, …)` call site, and therefore the inlined token,
 is always in the static entry graph.
 
-**Measured on 2026-08-18 (the #1676 report):** all four PASS. The production bundle carried the
+**Measured on 2026-08-18 (the #1676 report):** `shell`, `bundle` and `api-host` PASS from the
+script; the ingestion numbers below come from the same HogQL read `ingest` runs, issued directly
+(the box that ran the script had no `POSTHOG_QUERY_API_KEY`). The production bundle carried the
 correct project token with `api_host: https://us.i.posthog.com`, and the project had been receiving
 browser `$pageview` continuously — 717 events / 8 people over 30 days across `/`, `/content`,
 `/account`, `/avatars`, `/admin/*` and the legal pages, alongside `$autocapture`, `$pageleave`,
