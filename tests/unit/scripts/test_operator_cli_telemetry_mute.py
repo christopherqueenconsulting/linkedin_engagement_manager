@@ -14,6 +14,8 @@ the fix) has already happened, and re-importing these modules to watch it would 
 database they do not have.
 """
 
+import importlib.util
+import os
 import pathlib
 import re
 
@@ -64,4 +66,27 @@ def test_setdefault_not_assignment_so_an_operator_can_opt_back_in():
         source = pathlib.Path(path).read_text(encoding="utf-8")
         assert 'os.environ["LEM_TELEMETRY_MUTED"]' not in source, (
             f"{path} overwrites the mute instead of defaulting it, so an operator cannot opt in."
+        )
+
+
+class TestTheMuteDoesNotLeakIntoOtherTests:
+    """The mute is a PROCESS-wide env var, and importing a CLI here runs it in the pytest process.
+
+    Until the `_telemetry_not_muted` guard in tests/unit/conftest.py, executing one of these
+    modules left `LEM_TELEMETRY_MUTED=1` set for the whole session, so every later test asserting
+    on `posthog.capture` read `call_args` off a mock a muted `_emit` never called. These two run in
+    file order: the first creates the leak, the second proves the lane cleared it.
+    """
+
+    def test_importing_a_cli_sets_the_mute_in_this_process(self):
+        spec = importlib.util.spec_from_file_location(
+            "sample_newsletter_scaffolds_leak_probe", OPERATOR_CLIS[0])
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+
+        assert os.environ.get("LEM_TELEMETRY_MUTED") == "1"
+
+    def test_the_next_test_starts_unmuted(self):
+        assert "LEM_TELEMETRY_MUTED" not in os.environ, (
+            "a CLI import leaked its mute into the rest of the lane (#1661)"
         )

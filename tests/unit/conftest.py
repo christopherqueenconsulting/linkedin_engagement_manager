@@ -229,6 +229,24 @@ def _posthog_scoped_keys_absent(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _telemetry_not_muted(monkeypatch):
+    """Start every test with `LEM_TELEMETRY_MUTED` unset (issue #1661).
+
+    The `scripts/` operator CLIs mute themselves with `os.environ.setdefault` at IMPORT time,
+    before `cqc_lem` is imported, because the OTLP log handler is built then. Four files under
+    tests/unit/scripts/ load one of those CLIs with `importlib` to test it, which runs that
+    setdefault inside the pytest process — and it stays set for the REST of the session, so every
+    later test that asserts on `posthog.capture` silently observed a muted `_emit` and read
+    `call_args` off a mock that was never called.
+
+    Deleting it per test rather than once per session: the leak is re-created by whichever test
+    imports a CLI next, so only a per-test reset holds. Tests that exercise the mute itself set the
+    variable inside the test body, which nests inside this and wins.
+    """
+    monkeypatch.delenv("LEM_TELEMETRY_MUTED", raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _feature_flags_env_only(monkeypatch):
     """Issue #651: the flag wrapper polls PostHog for flag DEFINITIONS the first time any flag is
     checked. `tests/conftest.py` calls load_dotenv(), so a dev box with a real
