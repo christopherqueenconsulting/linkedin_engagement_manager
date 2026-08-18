@@ -90,3 +90,74 @@ class TestTheMuteDoesNotLeakIntoOtherTests:
         assert "LEM_TELEMETRY_MUTED" not in os.environ, (
             "a CLI import leaked its mute into the rest of the lane (#1661)"
         )
+
+
+#: Scripts that reach the same production data but where publishing IS the point, each with the
+#: reason it is not muted. They run INSIDE a production container (piped in on stdin) or as a
+#: production cron, so their `$exception` is a real production signal, not an agent-worktree
+#: artefact — the distinction the whole guard turns on.
+TELEMETRY_IS_THE_POINT = {
+    "scripts/linkedin_live_validation.py":
+        "read-only probe piped into celery_worker_selenium; grades PRODUCTION Selenium",
+    "scripts/linkedin_post_stats_api_probe.py":
+        "token probe piped into celery_worker; answers a question about the live account",
+    "scripts/linkedin_version_check.py":
+        "weekly production cron — a retired LI_API_VERSION must reach error tracking",
+    "scripts/reseed_own_post_comments.py":
+        "one-off operator backfill that WRITES to LinkedIn from a machine with real credentials",
+}
+
+#: The repository seam a script has to cross to need one of those two lists. `platform.db.enums` is
+#: deliberately absent: it is pure types with zero I/O, so importing it cannot raise a credentials
+#: error (see `src/cqc_lem/domain/`, the same domain-free rule).
+_DB_SEAM = re.compile(r"cqc_lem\.(?:utilities\.db|platform\.db\.repositories)\b")
+
+
+def _scripts_reading_production_data() -> set:
+    """Every `scripts/*.py` that imports the DB facade, discovered rather than listed."""
+    return {str(path) for path in sorted(pathlib.Path("scripts").glob("*.py"))
+            if _DB_SEAM.search(path.read_text(encoding="utf-8"))}
+
+
+class TestEveryDbReadingScriptHasMadeTheChoice:
+    """The rule, not just today's four files (#1661).
+
+    `docs/error-tracking.md` says "add the same `setdefault` line to any new operator CLI that
+    reads production data" — prose no check enforces, which is how this class of bug recurs. A
+    script that crosses the DB seam must appear in EXACTLY one of the two lists above, so adding
+    one is a decision someone had to write down rather than a default nobody noticed.
+    """
+
+    def test_no_db_reading_script_is_unclassified(self):
+        classified = set(OPERATOR_CLIS) | set(TELEMETRY_IS_THE_POINT)
+        unclassified = _scripts_reading_production_data() - classified
+
+        assert not unclassified, (
+            f"{sorted(unclassified)} read production data through cqc_lem.utilities.db but are in "
+            f"neither OPERATOR_CLIS nor TELEMETRY_IS_THE_POINT. Add the "
+            f'`os.environ.setdefault("LEM_TELEMETRY_MUTED", "1")` line and list it in the first, '
+            f"or list it in the second with the reason its telemetry is wanted (#1661)."
+        )
+
+    def test_both_lists_name_files_that_exist_and_still_cross_the_seam(self):
+        """A rename or a dropped import must empty the guard loudly, never silently."""
+        reading = _scripts_reading_production_data()
+        for path in list(OPERATOR_CLIS) + list(TELEMETRY_IS_THE_POINT):
+            assert pathlib.Path(path).is_file(), f"{path} is listed but does not exist"
+            assert path in reading, (
+                f"{path} no longer imports the DB facade — drop it from the list rather than "
+                f"leaving a guard that pins nothing (#1661)."
+            )
+
+    def test_the_lists_are_disjoint(self):
+        assert not set(OPERATOR_CLIS) & set(TELEMETRY_IS_THE_POINT)
+
+    @pytest.mark.parametrize("path", sorted(TELEMETRY_IS_THE_POINT))
+    def test_an_allowlisted_script_really_is_unmuted(self, path):
+        """Otherwise the allowlist drifts into a list of files nobody re-read."""
+        source = pathlib.Path(path).read_text(encoding="utf-8")
+
+        assert not _MUTE.search(source), (
+            f"{path} now mutes its telemetry — move it to OPERATOR_CLIS so the two lists keep "
+            f"meaning what they say (#1661)."
+        )

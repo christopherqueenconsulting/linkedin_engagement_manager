@@ -82,9 +82,16 @@ setting the process-wide `posthog.disabled`, which would silence the tooling tha
 directly with its own key.
 
 Set `LEM_TELEMETRY_MUTED=0` to opt a run back in, and add the same `setdefault` line to any new
-operator CLI that reads production data. **The failure being muted here is the CLI's environment,
-never the app's:** the `log_error` inside `get_active_user_ids` stays an error, because in a Celery
-or API process a database that refuses the credentials means automation silently does nothing.
+operator CLI that reads production data — `test_operator_cli_telemetry_mute.py` fails the build on
+one that does not, because that sentence used to be prose nothing checked. It DISCOVERS every
+`scripts/*.py` crossing the DB facade and requires it in exactly one of two lists: muted, or
+allowlisted with the reason its telemetry is wanted. The four allowlisted today all run INSIDE a
+production container or as a production cron (`linkedin_live_validation.py`,
+`linkedin_post_stats_api_probe.py`, `linkedin_version_check.py`, `reseed_own_post_comments.py`), so
+their `$exception` IS a production signal — which is why the list stores the reason and not just the
+name. **The failure being muted here is the CLI's environment, never the app's:** the `log_error`
+inside `get_active_user_ids` stays an error, because in a Celery or API process a database that
+refuses the credentials means automation silently does nothing.
 
 ## Recurrence escalation: once is a warning, repeatedly is a defect
 
