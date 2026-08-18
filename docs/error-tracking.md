@@ -102,12 +102,14 @@ production bug against code that was working. #1673 was exactly that: `OSError: 
 31 occurrences, read as a Celery broker outage.
 
 Three tells, checkable from the group itself before any code is read. **All three must hold** — any
-one alone is a coincidence, and resolving a group on a partial match buries a real defect:
+one alone is a coincidence, and resolving a group on a partial match buries a real defect. A tell
+that is merely NEUTRAL (a library-default message, a `"system"` actor — both below) has not held;
+substitute the SOURCE frame for it rather than counting it:
 
 | Tell | What to look at |
 |---|---|
 | The message is a FIXTURE string | `grep -rn "<the exception message>" tests/` finds it as a `side_effect`, and `src/` never raises it. `broker unreachable`, `broker down`, `boom`, `db down`, `fail` are mocks, not products. **A library DEFAULT message is not a fixture string and not a production one either** — see #1665 below, and read the frame instead |
-| The actor is a TEST user | `distinct_id` on the sampled events is `42` — `SESSION_USER_ID` in `tests/unit/api/conftest.py`. Production is one real user, and it is not 42 |
+| The actor is a TEST user | `distinct_id` on the sampled events is `42` — `SESSION_USER_ID` in `tests/unit/api/conftest.py`. Production is one real user, and it is not 42. **`"system"` is NOT this tell** — it is the sentinel `capture_exception` uses for any user-less production capture (a scheduler beat, a task with no `user_id`), so it is neutral, like a library-default message |
 | It stopped when the guards landed | `last_seen` is **on or before 2026-08-14** (UTC). The three guards closed three different paths on that one day — #1451 (`capture_exception`) at 02:37Z, #1460 (the Logs handler) at 19:02Z, #1498 (autocapture) at 21:26Z — so a leaked group can carry a `last_seen` anywhere up to ~21:30Z that day. Nothing of this shape has been ingested since |
 
 All three held on #1673: the string exists only as `chain.return_value.apply_async.side_effect =
@@ -138,9 +140,17 @@ means nothing, and the tell reads as a real outage on a group that is 100% test.
 What settles it is the group's **`source` / top in-app frame**: `tests/unit/conftest.py`, the
 `_no_real_llm_calls` autouse guard, which has raised this exception on every un-mocked LLM call since
 #480 (2026-07-24). A production `APIConnectionError` cannot carry a frame under `tests/` — production
-runs a release image, which does not ship the test tree. The other two tells hold as usual here
-(`distinct_id: "system"`, `sessions: 0`, `$os_version: 24.04` — the dev box, not a container;
-`last_seen` 2026-08-14T02:44:51Z, seven minutes after #1451, nothing since).
+runs a release image, and `.dockerignore` drops `tests/`, so the test tree is not in it. Tell 3 holds
+as usual (`last_seen` 2026-08-14T02:44:51Z, seven minutes after #1451, nothing of this shape since),
+and `$os_version: 24.04` is corroboration — the containers are `python:3.13-slim`, i.e. Debian, so an
+Ubuntu 24.04 event came off the dev box.
+
+**Tell 2 does not discriminate on this group, and saying it did would be the same mistake as tell 1.**
+The events carry `distinct_id: "system"` and `sessions: 0`, and BOTH are values production emits:
+`capture_exception` falls back to the `"system"` sentinel for any user-less capture (every scheduler
+beat, every Celery task without a `user_id`), and no backend capture has a replay session. Only the
+literal test-user `42` is evidence. Neutral is neutral — count it as inconclusive and settle the
+group on the frame, exactly as with the message.
 
 Generalised: **the message tell is about the message's AUTHOR, not its text.** A library default, an
 `errno` string, or anything the SDK writes for you proves nothing in either direction — fall through
