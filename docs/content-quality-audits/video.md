@@ -436,7 +436,7 @@ run itself on a Phase 2 follow-up.
 pastes the output, then an agent rewrites this section with the measured scorecard and the frames.
 It is filed WITHOUT `agent:ready` on purpose — dispatching before the corpus exists only re-derives
 the 2026-08-14 result — and the owner applies that label once the sampler's `--json` summary reports
-`sufficient_corpus`.
+`"sufficient_corpus": true` (it reports the field either way; `false` is the refusal, not silence).
 
 **The floor that run has to clear (decision `2A`): `MIN_CORPUS = 6` posts shipped after the #1595
 deploy.** Not a provisional `n < 6` scorecard, and not a corpus topped up with pre-#148 renders —
