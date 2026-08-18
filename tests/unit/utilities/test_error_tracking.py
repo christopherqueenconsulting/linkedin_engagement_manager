@@ -221,3 +221,77 @@ class TestTestSuiteNeverPublishesToPostHog:
             capture_exception(ValueError("boom"), user_id=1)
 
         mock_ph.capture_exception.assert_not_called()
+
+
+class TestOperatorCliNeverReachesTheProject:
+    """Issue #1661: the `scripts/` sibling of the pytest guard above.
+
+    A corpus sampler run on the VPS host inherits `lem-agentd`'s real `POSTHOG_API_KEY` but no
+    MySQL credentials, so `get_active_user_ids()` caught `1045 Access denied for user 'lem_user'`,
+    `log_error(exc=...)` published it, and the daily cron filed a GitHub issue against production
+    code that was working. The mute is per-CALL, not `posthog.disabled`, so the `scripts/` tooling
+    that drives `posthog` with its own key keeps sending.
+    """
+
+    def test_capture_exception_is_a_no_op_in_a_muted_process(self, monkeypatch):
+        monkeypatch.setenv("LEM_TELEMETRY_MUTED", "1")
+        with patch(f"{_OBS}.posthog") as mock_ph, \
+             patch(f"{_OBS}._current_task_context", return_value=(None, None)):
+            mock_ph.disabled = False  # a live client: only the mute may stop this
+            from cqc_lem.utilities.observability import capture_exception
+            capture_exception(ValueError("1045 Access denied for user 'lem_user'"), user_id=1)
+
+        mock_ph.capture_exception.assert_not_called()
+
+    def test_capture_exception_still_sends_when_the_mute_is_off(self, monkeypatch):
+        monkeypatch.setenv("LEM_TELEMETRY_MUTED", "0")
+        with patch(f"{_OBS}.posthog") as mock_ph, \
+             patch(f"{_OBS}._current_task_context", return_value=(None, None)):
+            mock_ph.disabled = False
+            from cqc_lem.utilities.observability import capture_exception
+            capture_exception(ValueError("boom"), user_id=1)
+
+        mock_ph.capture_exception.assert_called_once()
+
+    def test_exception_autocapture_is_disarmed_in_a_muted_process(self, monkeypatch):
+        """An UNCAUGHT traceback in a muted CLI is the same leak through the SDK's excepthook."""
+        from cqc_lem.utilities.observability import _exception_autocapture_enabled
+
+        monkeypatch.delenv("POSTHOG_EXCEPTION_AUTOCAPTURE", raising=False)
+        monkeypatch.setenv("LEM_TELEMETRY_MUTED", "1")
+        with patch(f"{_OBS}.posthog") as mock_ph:
+            mock_ph.disabled = False
+            assert _exception_autocapture_enabled() is False
+
+    def test_emit_publishes_no_analytics_event_in_a_muted_process(self, monkeypatch):
+        """The mute is every hop, not just the exception one.
+
+        A sampler that DOES reach a database still makes the batched `lem-embedding` call, so
+        without this an `llm_call` row from a measurement run lands in the production project
+        under a real user's distinct_id. The priced ledger is the proxy's `$ai_generation`, which
+        this process cannot mute, so nothing authoritative is lost.
+        """
+        monkeypatch.setenv("LEM_TELEMETRY_MUTED", "1")
+        with patch(f"{_OBS}.posthog") as mock_ph:
+            mock_ph.disabled = False
+            from cqc_lem.utilities.observability import track_llm_call
+            track_llm_call(model="lem-embedding", prompt_tokens=10, completion_tokens=0,
+                           latency_ms=5, success=True, user_id=1)
+
+        mock_ph.capture.assert_not_called()
+
+    def test_emit_still_publishes_when_the_mute_is_off(self, monkeypatch):
+        monkeypatch.setenv("LEM_TELEMETRY_MUTED", "0")
+        with patch(f"{_OBS}.posthog") as mock_ph:
+            mock_ph.disabled = False
+            from cqc_lem.utilities.observability import track_llm_call
+            track_llm_call(model="lem-embedding", prompt_tokens=10, completion_tokens=0,
+                           latency_ms=5, success=True, user_id=1)
+
+        mock_ph.capture.assert_called_once()
+
+    def test_observability_reads_the_logger_definition_of_the_mute(self):
+        # ONE definition, imported — the pytest guard's rule, for the same reason.
+        from cqc_lem.utilities import logger as log_mod, observability as obs
+
+        assert obs.telemetry_muted is log_mod.telemetry_muted

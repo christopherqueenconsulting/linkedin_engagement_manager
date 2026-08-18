@@ -59,6 +59,11 @@ def _bootstrap_src_path(script_path: str) -> Optional[str]:
 
 _bootstrap_src_path(globals().get("__file__") or "")
 
+# Operator CLI, not the app: its documented "no database reachable here" failure must not file
+# a production error-tracking issue (#1661, see `logger.telemetry_muted`). Set BEFORE cqc_lem is
+# imported — the PostHog Logs handler is built at import time.
+os.environ.setdefault("LEM_TELEMETRY_MUTED", "1")
+
 from cqc_lem.utilities.ai.content_framework import (  # noqa: E402
     _FIRST_PERSON_RE,
     _PROOF_MONTHS,

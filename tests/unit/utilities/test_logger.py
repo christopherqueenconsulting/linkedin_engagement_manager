@@ -5,6 +5,8 @@ import logging
 import os
 from unittest.mock import patch
 
+import pytest
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -504,3 +506,42 @@ def test_posthog_handler_provider_carries_the_resource():
         mod._build_posthog_handler(logging.ERROR)
     assert "resource" in LP.call_args.kwargs
     assert LP.call_args.kwargs["resource"].attributes["service.name"] == "cqc-lem"
+
+
+class TestOperatorCliTelemetryMute:
+    """Issue #1661: a `scripts/` operator CLI is the OTHER non-production caller off the same key.
+
+    The corpus samplers document that they need a database an agent worktree does not have, and
+    `lem-agentd` hands every run it spawns a real `POSTHOG_API_KEY` — so one sampler run on the
+    host published a grouped `$exception` for its own documented "no database here" condition and
+    the daily cron filed it as a GitHub issue. `telemetry_muted()` is the guard; these pin it,
+    because on CI (no key) nothing else would fail if it were deleted.
+    """
+
+    @pytest.mark.parametrize("raw", ["1", "true", "TRUE", "yes", "on", " 1 "])
+    def test_truthy_values_mute(self, raw):
+        from cqc_lem.utilities.logger import telemetry_muted
+
+        with patch.dict(os.environ, {"LEM_TELEMETRY_MUTED": raw}, clear=False):
+            assert telemetry_muted() is True
+
+    @pytest.mark.parametrize("raw", ["0", "false", "no", "off", "", "   "])
+    def test_falsy_values_leave_telemetry_on(self, raw):
+        """`LEM_TELEMETRY_MUTED=0` is the operator's way back in when a run SHOULD be recorded."""
+        from cqc_lem.utilities.logger import telemetry_muted
+
+        with patch.dict(os.environ, {"LEM_TELEMETRY_MUTED": raw}, clear=False):
+            assert telemetry_muted() is False
+
+    def test_unset_leaves_telemetry_on(self):
+        from cqc_lem.utilities.logger import telemetry_muted
+
+        with patch.dict(os.environ, {}, clear=True):
+            assert telemetry_muted() is False
+
+    def test_no_logs_handler_is_built_in_a_muted_process(self):
+        from cqc_lem.utilities.logger import _build_posthog_handler
+
+        env = {"POSTHOG_API_KEY": "phc_realkey", "LEM_TELEMETRY_MUTED": "1"}
+        with _not_under_pytest(), patch.dict(os.environ, env, clear=False):
+            assert _build_posthog_handler(logging.ERROR) is None

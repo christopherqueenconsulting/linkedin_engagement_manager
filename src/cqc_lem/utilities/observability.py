@@ -15,7 +15,10 @@ answer different questions, and adding them double-counts every request.
 With no `POSTHOG_API_KEY` the SDK is disabled at import, so every function here is a no-op in local
 dev — a call site should never guard itself on the key. Under pytest it is disabled REGARDLESS of the
 key, because a test run can inherit the production key without anyone intending it; see
-`logger._running_under_pytest`, which the OTLP logs hop reads too.
+`logger._running_under_pytest`, which the OTLP logs hop reads too. A `scripts/` operator CLI mutes
+itself on the same grounds with `LEM_TELEMETRY_MUTED` (`logger.telemetry_muted`, #1661) — read per
+CALL in `_emit` and `capture_exception`, not folded into the import-time flag, so the `scripts/`
+tooling that drives `posthog` directly with its own key keeps working.
 """
 
 import contextvars
@@ -40,7 +43,12 @@ from cqc_lem.utilities.experiments import (
     COST_ROUTING_ARM,
     POST_MEDIA_VARIANT,
 )
-from cqc_lem.utilities.logger import _running_under_pytest, log_debug, log_warning
+from cqc_lem.utilities.logger import (
+    _running_under_pytest,
+    log_debug,
+    log_warning,
+    telemetry_muted,
+)
 from cqc_lem.utilities.posthog_keys import runtime_api_key
 
 posthog.api_key = os.getenv("POSTHOG_API_KEY", "")
@@ -87,7 +95,8 @@ def _exception_autocapture_enabled() -> bool:
     module to exercise the other one would rebind `posthog.disabled` for the rest of the suite,
     which is the very guard being tested.
     """
-    return not posthog.disabled and _env_flag("POSTHOG_EXCEPTION_AUTOCAPTURE")
+    return (not posthog.disabled and not telemetry_muted()
+            and _env_flag("POSTHOG_EXCEPTION_AUTOCAPTURE"))
 
 
 EXCEPTION_AUTOCAPTURE_ENABLED = _exception_autocapture_enabled()
@@ -248,7 +257,15 @@ def _emit(spec: EventSpec, source: Optional[dict] = None, extra: Optional[dict] 
     Because `extra` lands after the coercions, a property a dashboard or an ALERT FILTERS on must be
     a declared field fed from `source` — one arriving through `**extra` reaches PostHog untouched
     and the string contract cannot see it (that is why `track_task` names `state` explicitly).
+
+    A self-muted process publishes nothing HERE too, not only through `capture_exception` (#1661).
+    The pytest sibling gets this from `posthog.disabled`, which stops events and exceptions alike;
+    an operator CLI reading production data would otherwise still ingest `llm_call` and the rest
+    into the production project under a real user's distinct_id. No authoritative cost record is
+    lost by that: the priced ledger is the proxy's `$ai_generation`, which this process cannot mute.
     """
+    if telemetry_muted():
+        return
     data = source if isinstance(source, dict) else {}
     properties = {field.name: field.coerce(_read(data, field.key or field.name))
                   for field in spec.fields}
@@ -959,8 +976,12 @@ def capture_exception(exc: Optional[BaseException] = None, user_id: Optional[int
     The task name/user default to the running Celery task's, so a call site that knows nothing about
     its context still lands attributed. distinct_id follows the same convention as every other
     event here: the user id, or the `"system"` sentinel.
+
+    `telemetry_muted()` is read HERE, per call, not folded into the import-time `posthog.disabled`
+    above: an operator CLI sets it on itself, and a process-wide `disabled` would also silence the
+    `scripts/` tooling that drives `posthog` directly with its own key (#1661).
     """
-    if posthog.disabled:
+    if posthog.disabled or telemetry_muted():
         return
     try:
         task_name, task_user_id = _current_task_context()

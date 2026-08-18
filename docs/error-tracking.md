@@ -59,6 +59,40 @@ filed a GitHub issue against production code that was working, and the log hop p
 Once test data is ingested it is indistinguishable from production data, which is why this refuses
 rather than filters.
 
+### An operator CLI never reaches the project either (#1661)
+
+Same key, same argument, a different non-production caller. The `scripts/` corpus samplers
+(`sample_newsletter_scaffolds.py`, `sample_newsletter_similarity.py`, `sample_shipped_videos.py`,
+`measure_proof_gate_impact.py`) each document that they must be run where a database is reachable,
+which an agent worktree is not — and `lem-agentd` supplies the run a real `POSTHOG_API_KEY` but no
+MySQL credentials. So one sampler run on the host had `get_active_user_ids()` catch
+`ProgrammingError: 1045 … Access denied for user 'lem_user'`, publish it as a grouped `$exception`,
+and the cron below file it as a GitHub issue against production code that was working.
+
+The guard is `logger.telemetry_muted()`, read off `LEM_TELEMETRY_MUTED`, and each of those CLIs sets
+it on ITSELF (`os.environ.setdefault`) beside its `sys.path` bootstrap — before `cqc_lem` is
+imported, because the Logs handler is built at import. It covers every hop off the key, `_emit`
+included, so a muted run ingests no ANALYTICS event either — the pytest sibling gets that from
+`posthog.disabled`, and a sampler that DOES reach a database would otherwise still write `llm_call`
+rows into the production project under a real user. Nothing authoritative is lost: the priced cost
+ledger is the proxy's `$ai_generation`, which the process cannot mute. It is deliberately **not** inferred from
+"is this a script?": `posthog_annotate.py` and `benchmark_models.py` also live in `scripts/` and
+their telemetry is the point. For the same reason `capture_exception` reads it per CALL instead of
+setting the process-wide `posthog.disabled`, which would silence the tooling that drives `posthog`
+directly with its own key.
+
+Set `LEM_TELEMETRY_MUTED=0` to opt a run back in, and add the same `setdefault` line to any new
+operator CLI that reads production data — `test_operator_cli_telemetry_mute.py` fails the build on
+one that does not, because that sentence used to be prose nothing checked. It DISCOVERS every
+`scripts/*.py` crossing the DB facade and requires it in exactly one of two lists: muted, or
+allowlisted with the reason its telemetry is wanted. The four allowlisted today all run INSIDE a
+production container or as a production cron (`linkedin_live_validation.py`,
+`linkedin_post_stats_api_probe.py`, `linkedin_version_check.py`, `reseed_own_post_comments.py`), so
+their `$exception` IS a production signal — which is why the list stores the reason and not just the
+name. **The failure being muted here is the CLI's environment, never the app's:** the `log_error`
+inside `get_active_user_ids` stays an error, because in a Celery or API process a database that
+refuses the credentials means automation silently does nothing.
+
 ## Recurrence escalation: once is a warning, repeatedly is a defect
 
 `log_warning` never called `_capture()` — only `log_error`/`log_critical` did, and only with `exc=`.
