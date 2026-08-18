@@ -71,7 +71,11 @@ and the cron below file it as a GitHub issue against production code that was wo
 
 The guard is `logger.telemetry_muted()`, read off `LEM_TELEMETRY_MUTED`, and each of those CLIs sets
 it on ITSELF (`os.environ.setdefault`) beside its `sys.path` bootstrap — before `cqc_lem` is
-imported, because the Logs handler is built at import. It is deliberately **not** inferred from
+imported, because the Logs handler is built at import. It covers every hop off the key, `_emit`
+included, so a muted run ingests no ANALYTICS event either — the pytest sibling gets that from
+`posthog.disabled`, and a sampler that DOES reach a database would otherwise still write `llm_call`
+rows into the production project under a real user. Nothing authoritative is lost: the priced cost
+ledger is the proxy's `$ai_generation`, which the process cannot mute. It is deliberately **not** inferred from
 "is this a script?": `posthog_annotate.py` and `benchmark_models.py` also live in `scripts/` and
 their telemetry is the point. For the same reason `capture_exception` reads it per CALL instead of
 setting the process-wide `posthog.disabled`, which would silence the tooling that drives `posthog`

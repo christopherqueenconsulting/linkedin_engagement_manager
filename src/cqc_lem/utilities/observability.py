@@ -17,8 +17,8 @@ dev — a call site should never guard itself on the key. Under pytest it is dis
 key, because a test run can inherit the production key without anyone intending it; see
 `logger._running_under_pytest`, which the OTLP logs hop reads too. A `scripts/` operator CLI mutes
 itself on the same grounds with `LEM_TELEMETRY_MUTED` (`logger.telemetry_muted`, #1661) — read per
-CALL in `capture_exception`, not folded into the import-time flag, so the `scripts/` tooling that
-drives `posthog` directly with its own key keeps working.
+CALL in `_emit` and `capture_exception`, not folded into the import-time flag, so the `scripts/`
+tooling that drives `posthog` directly with its own key keeps working.
 """
 
 import contextvars
@@ -257,7 +257,15 @@ def _emit(spec: EventSpec, source: Optional[dict] = None, extra: Optional[dict] 
     Because `extra` lands after the coercions, a property a dashboard or an ALERT FILTERS on must be
     a declared field fed from `source` — one arriving through `**extra` reaches PostHog untouched
     and the string contract cannot see it (that is why `track_task` names `state` explicitly).
+
+    A self-muted process publishes nothing HERE too, not only through `capture_exception` (#1661).
+    The pytest sibling gets this from `posthog.disabled`, which stops events and exceptions alike;
+    an operator CLI reading production data would otherwise still ingest `llm_call` and the rest
+    into the production project under a real user's distinct_id. No authoritative cost record is
+    lost by that: the priced ledger is the proxy's `$ai_generation`, which this process cannot mute.
     """
+    if telemetry_muted():
+        return
     data = source if isinstance(source, dict) else {}
     properties = {field.name: field.coerce(_read(data, field.key or field.name))
                   for field in spec.fields}

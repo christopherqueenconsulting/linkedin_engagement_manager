@@ -164,6 +164,9 @@ def telemetry_muted() -> bool:
     `$exception` for its own documented "no database here" condition (`ProgrammingError: 1045
     Access denied for user 'lem_user'`), and the daily error→issue cron filed it as issue #1661.
 
+    Every hop off `POSTHOG_API_KEY` answers it: the OTLP Logs handler below, `observability._emit`
+    (so no ANALYTICS event lands either) and `observability.capture_exception`.
+
     An env var rather than an inferred "is this a script?": `scripts/` also holds tooling whose
     telemetry is the point (`posthog_annotate.py`, `benchmark_models.py`), and guessing would mute
     those too. `os.environ.setdefault` at the top of a CLI leaves `LEM_TELEMETRY_MUTED=0` as the

@@ -263,6 +263,33 @@ class TestOperatorCliNeverReachesTheProject:
             mock_ph.disabled = False
             assert _exception_autocapture_enabled() is False
 
+    def test_emit_publishes_no_analytics_event_in_a_muted_process(self, monkeypatch):
+        """The mute is every hop, not just the exception one.
+
+        A sampler that DOES reach a database still makes the batched `lem-embedding` call, so
+        without this an `llm_call` row from a measurement run lands in the production project
+        under a real user's distinct_id. The priced ledger is the proxy's `$ai_generation`, which
+        this process cannot mute, so nothing authoritative is lost.
+        """
+        monkeypatch.setenv("LEM_TELEMETRY_MUTED", "1")
+        with patch(f"{_OBS}.posthog") as mock_ph:
+            mock_ph.disabled = False
+            from cqc_lem.utilities.observability import track_llm_call
+            track_llm_call(model="lem-embedding", prompt_tokens=10, completion_tokens=0,
+                           latency_ms=5, success=True, user_id=1)
+
+        mock_ph.capture.assert_not_called()
+
+    def test_emit_still_publishes_when_the_mute_is_off(self, monkeypatch):
+        monkeypatch.setenv("LEM_TELEMETRY_MUTED", "0")
+        with patch(f"{_OBS}.posthog") as mock_ph:
+            mock_ph.disabled = False
+            from cqc_lem.utilities.observability import track_llm_call
+            track_llm_call(model="lem-embedding", prompt_tokens=10, completion_tokens=0,
+                           latency_ms=5, success=True, user_id=1)
+
+        mock_ph.capture.assert_called_once()
+
     def test_observability_reads_the_logger_definition_of_the_mute(self):
         # ONE definition, imported — the pytest guard's rule, for the same reason.
         from cqc_lem.utilities import logger as log_mod, observability as obs
