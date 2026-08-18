@@ -21,12 +21,13 @@ const ph = {
 }
 vi.mock('posthog-js', () => ({ posthog: ph }))
 
-// The key and the replay settings are read at module scope, so each case stubs them and re-imports.
-async function loadAnalytics(key?: string, replayEnv: Record<string, string> = {}) {
+// The key, the host and the replay settings are read at module scope, so each case stubs them and
+// re-imports.
+async function loadAnalytics(key?: string, env: Record<string, string> = {}) {
   vi.resetModules()
   onEventCaptured = null
   vi.stubEnv('VITE_POSTHOG_KEY', key || '')
-  for (const [name, value] of Object.entries(replayEnv)) vi.stubEnv(name, value)
+  for (const [name, value] of Object.entries(env)) vi.stubEnv(name, value)
   return import('./analytics')
 }
 
@@ -88,6 +89,26 @@ describe('with a key configured', () => {
     expect(config.capture_performance).toEqual({ web_vitals: true, network_timing: true })
     expect(config.session_recording.maskAllInputs).toBe(true)
     expect(config.session_recording.maskTextSelector).toBe('[data-ph-mask]')
+  })
+
+  it('addresses captures at the reverse proxy, with the app host kept separate', async () => {
+    // Issue #1677. A direct `us.i.posthog.com` is blocked BY NAME by tracking protection, and the
+    // resulting loss is indistinguishable from a quiet day — so the default must be our own domain.
+    // `ui_host` is not decoration: without it posthog-js builds toolbar and replay links off
+    // api_host, which is a proxy with no PostHog UI behind it.
+    const a = await loadAnalytics('phc_test', { VITE_POSTHOG_HOST: '' })
+    await a.initAnalytics()
+    const [, config] = ph.init.mock.calls[0]
+    expect(config.api_host).toBe('https://lemt.christopherqueenconsulting.com')
+    expect(config.ui_host).toBe('https://us.posthog.com')
+  })
+
+  it('lets VITE_POSTHOG_HOST move ingestion without moving the app host', async () => {
+    const a = await loadAnalytics('phc_test', { VITE_POSTHOG_HOST: 'https://ph.example.test' })
+    await a.initAnalytics()
+    const [, config] = ph.init.mock.calls[0]
+    expect(config.api_host).toBe('https://ph.example.test')
+    expect(config.ui_host).toBe('https://us.posthog.com')
   })
 
   it('autocaptures unhandled exceptions but never console.error', async () => {

@@ -273,7 +273,7 @@ Four checks, one PASS/FAIL line each:
 |---|---|---|
 | `shell` | the live `index.html` loads and references JS | the SPA is not being served at all |
 | `bundle` | a `phc_` token is **inlined** in the static entry graph, and matches the expected one | the empty-build-arg case — analytics silently disabled, or the bundle reporting to a different project |
-| `api-host` | an ingestion host is inlined | captures addressed nowhere |
+| `api-host` | the EXPECTED ingestion host is inlined | captures addressed nowhere, or at PostHog directly instead of the reverse proxy |
 | `ingest` | browser-sourced (`$lib = 'web'`) `$pageview` rows exist for that host in the window | the browser is not reaching PostHog |
 
 `ingest` is the one check where **zero rows is a FAIL** — the opposite of
@@ -294,6 +294,42 @@ browser `$pageview` continuously — 717 events / 8 people over 30 days across `
 `/account`, `/avatars`, `/admin/*` and the legal pages, alongside `$autocapture`, `$pageleave`,
 `$web_vitals` and `$rageclick`, from posthog-js 1.407.3 through 1.417.0. PostHog **Web analytics**
 resolved 431 views / 56 sessions / 10.7% bounce over the prior 14 days, so the install was complete
-and no code change was warranted. If the report recurs, run the command above before assuming a
-defect: a browser extension or tracking protection blocking `us.i.posthog.com` on the reporter's own
-machine produces the same view of "no events" while everyone else's are landing.
+and no code change was warranted.
+
+### Ingestion goes through a reverse proxy (issue #1677)
+
+That last paragraph names the residual: the install was complete for everyone whose browser was not
+blocking `us.i.posthog.com`, and the ones who WERE blocking it are precisely the ones PostHog could
+never tell us about. Tracking-protection lists and privacy extensions match the PostHog domains by
+name, so a direct `api_host` loses that share of visitors silently, and the loss reads as a quiet
+day — which is how #1676 came to be filed against a working install in the first place.
+
+`ui/src/utils/analytics.ts` therefore addresses captures at **a managed reverse proxy on our own
+domain**, `https://lemt.christopherqueenconsulting.com`, which fronts PostHog, and pins `ui_host:
+https://us.posthog.com` alongside it. The `ui_host` is not decoration: posthog-js builds its toolbar
+and session-replay links off it, and with `api_host` proxied it would otherwise build them off a
+domain that serves ingestion and static assets but has no PostHog UI behind it.
+
+`VITE_POSTHOG_HOST` still overrides the proxy, and the `UI_POSTHOG_HOST` repo variable feeds it as a
+build arg — so it must stay **empty** for the default to apply. Setting it back to
+`https://us.i.posthog.com` is a silent regression, which is why `api-host` now compares the inlined
+host against `--api-host` (default `$VITE_POSTHOG_HOST`, else the proxy) and FAILs on a mismatch
+rather than passing on the presence of any PostHog-looking URL.
+
+**Verified against the live proxy on 2026-08-18**, all read-only GETs: `/static/array.js`,
+`/static/recorder.js` and `/static/surveys.js` return 200 JavaScript, `/flags/?v=2` returns 200 JSON,
+`/i/v0/e/` answers (400 on an empty GET, which is the endpoint rejecting an empty payload, not the
+proxy failing), and the CORS preflight from `https://lem.christopherqueenconsulting.com` returns
+`access-control-allow-origin` for that exact origin with `GET,POST,OPTIONS`. So both halves the
+issue asked about — event capture and the lazily-loaded static assets — are forwarded.
+
+The `defaults: '2026-05-30'` snapshot in PostHog's suggested snippet is deliberately **not** adopted:
+this init pins every option it cares about explicitly (`capture_pageview: false`, because the router
+owns pageviews), and the snapshot's remaining effects — `split_storage`, `persistence_save_debounce_ms`,
+`internal_or_test_user_hostname`, `detect_google_search_app` — are behaviour changes unrelated to
+routing. `person_profiles: 'identified_only'` is already posthog-js's own default, so naming it would
+change nothing.
+
+If a "no events" report recurs, run the command above before assuming a defect: a browser extension
+blocking analytics generically produces the same view of "no events" while everyone else's are
+landing.

@@ -12,7 +12,21 @@ import type { PostHog, Survey } from 'posthog-js'
 import { getAttribution } from './attribution'
 
 const KEY = import.meta.env.VITE_POSTHOG_KEY as string | undefined
-const HOST = (import.meta.env.VITE_POSTHOG_HOST as string | undefined) || 'https://us.i.posthog.com'
+// Ingestion goes through OUR OWN domain, not `us.i.posthog.com` directly (issue #1677). Privacy
+// extensions and tracking-protection lists block the PostHog domains BY NAME, so a direct api_host
+// silently loses whatever share of visitors runs one — and that loss is indistinguishable from a
+// quiet day, which is how issue #1676 came to be filed against a working install. It is a managed
+// reverse proxy fronting PostHog, not a LEM service, and it forwards both the ingestion endpoints
+// and the `/static/*` assets posthog-js lazily loads (recorder, surveys).
+const HOST =
+  (import.meta.env.VITE_POSTHOG_HOST as string | undefined) ||
+  'https://lemt.christopherqueenconsulting.com'
+// Where the PostHog APP lives — which is NOT where events go once api_host is a proxy. posthog-js
+// builds its toolbar and session-replay links off this, and without it they are built off HOST and
+// resolve to a proxy path that has no UI behind it. Deliberately a constant, not a VITE_* read: an
+// env knob only reaches the bundle through a Dockerfile ARG plus a build-arg in build-and-push.yml,
+// and a half-wired one would read as configurable while always being this value anyway.
+const UI_HOST = 'https://us.posthog.com'
 
 // Session replay (issue #649). Recordings are quota'd, so the SDK — not a project setting — owns
 // WHO is recorded: a sampled slice of ordinary sessions, plus every session that produces an
@@ -114,6 +128,7 @@ export function initAnalytics(): Promise<PostHog | null> {
     .then(({ posthog }) => {
       posthog.init(KEY, {
         api_host: HOST,
+        ui_host: UI_HOST,
         // The router owns pageviews — posthog's own listener fires once per full page load and
         // would miss every in-app navigation.
         capture_pageview: false,
