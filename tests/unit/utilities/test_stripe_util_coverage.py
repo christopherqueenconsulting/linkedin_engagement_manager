@@ -42,7 +42,7 @@ _NONE_GUARDS = [
     ("session_lookup_empty_list", "get_checkout_session_by_payment_intent", None, "sk_test",
      {"list_return": {"data": []}}),
     ("session_lookup_api_error", "get_checkout_session_by_payment_intent", None, "sk_test",
-     {"list_exc": RuntimeError("api down")}),
+     {"list_exc": RuntimeError("unit-test fixture: stripe session list failed")}),
 ]
 
 

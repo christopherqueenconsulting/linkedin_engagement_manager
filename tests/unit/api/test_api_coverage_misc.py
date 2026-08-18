@@ -302,7 +302,7 @@ class TestLinkedInOAuth:
         auth_client = MagicMock()
         auth_client.exchange_auth_code_for_access_token.return_value = _token_response()
         restli = MagicMock()
-        restli.get.side_effect = RuntimeError("api down")
+        restli.get.side_effect = RuntimeError("unit-test fixture: userinfo call failed")
         with patch(f"{_M}.AuthClient", return_value=auth_client), \
              patch(f"{_M}.RestliClient", return_value=restli):
             resp = api_client.get("/auth/linkedin/callback?code=c", follow_redirects=False)

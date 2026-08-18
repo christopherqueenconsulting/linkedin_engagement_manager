@@ -33,7 +33,7 @@ _ARKOSE_REFUSALS = [
     ("no_public_key_anywhere", "key", "https://client-api.arkoselabs.com/fc/api",
      "<html>nothing here</html>", {"token": "tok"}, False),
     ("solver_exception", "key", "https://client-api.arkoselabs.com/fc/api?pk=PUBKEY123", None,
-     RuntimeError("api down"), True),
+     RuntimeError("unit-test fixture: capsolver raised"), True),
 ]
 
 

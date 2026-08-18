@@ -65,6 +65,11 @@ importlib.import_module("cqc_lem.utilities.db")
 # The SDK is only half of it: `logger._build_posthog_handler` opens a SECOND hop, an OTLP exporter
 # into PostHog Logs, off the same key (#1460). That one refuses under pytest inside the builder —
 # there is nothing to disable from here, because a handler that is never built exports nothing.
+#
+# Belt three, for whatever gets past the first two: a fixture EXCEPTION message becomes the
+# error group's title verbatim, so it should name the fixture, not an outage. `api down`,
+# `broker down` and friends each cost a hand-filed GitHub issue and an agent tick before anyone
+# could tell them from production breakage (#1672). Prefix new ones `unit-test fixture: `.
 _posthog = importlib.import_module("posthog")
 _posthog.disabled = True
 
