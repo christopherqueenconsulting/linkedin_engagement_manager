@@ -29,8 +29,8 @@ const CLAIMS: { icon: IconName; title: string; body: string }[] = [
   },
   {
     icon: 'lock',
-    title: 'Your session, your egress',
-    body: 'Automation runs from your own logged-in session through a per-user static residential proxy, rather than from a shared address every other customer is also using.',
+    title: 'Your session, egress matched to your location',
+    body: 'Automation runs from your own logged-in session through an egress proxy matched to your country, not a raw shared datacenter pool — a dedicated per-user proxy is available as a paid upgrade.',
   },
   {
     icon: 'chat',
