@@ -24,6 +24,7 @@ from cqc_lem.platform.db.enums import (
     FeedbackSource,
     FeedbackStatus,
 )
+from cqc_lem.platform.db.repositories.users import admin_email_allowlist
 from cqc_lem.platform.db.shared import _FEEDBACK_COLUMNS
 from cqc_lem.utilities.logger import log_error
 
@@ -556,3 +557,119 @@ def get_story_bank_entries(user_id: int, active_only: bool = False) -> list:
         return []
 def _prefixed_feedback_columns(alias: str = "f") -> str:
     return ", ".join(f"{alias}.{c.strip()}" for c in _FEEDBACK_COLUMNS.split(","))
+
+
+# What "a seeded bank" means — the onboarding nudge and the SPA both aim the user at this many.
+STORY_BANK_TARGET_ENTRIES = 5
+def _admin_reporter_join(alias: str = "f") -> tuple:
+    """LEFT JOIN + params that mark whether a feedback row was submitted by an admin (#793).
+
+    LEFT so it can express both halves: `au.id IS NOT NULL` is admin, `au.id IS NULL` is pending.
+    """
+    allow = sorted(admin_email_allowlist())
+    email_clause = f" OR LOWER(au.email) IN ({','.join(['%s'] * len(allow))})" if allow else ""
+    join = (f"LEFT JOIN users au ON au.id = {alias}.user_id "
+            f"AND (au.is_admin = 1{email_clause})")
+    return join, tuple(allow)
+def get_unprocessed_feedback(limit: int = 25, statuses: tuple = (FeedbackStatus.NEW,),
+                             admin_only: bool = False) -> list:
+    """Captured-but-unclustered feedback, oldest first so the queue drains FIFO (issue #498).
+
+    Defaults to `new` only — the auto-filer must not re-classify (and re-pay for) rows it already
+    parked in `triaged`. The nightly reclustering pass widens `statuses` to reconsider those.
+
+    `admin_only` (issue #793) restricts the result to reports from admin users. It filters in SQL,
+    NOT in the caller's loop: non-admin rows keep their `new`/NULL-cluster shape forever while they
+    wait on the panel, so a caller-side skip would let `limit` fill with the same parked rows every
+    pass and admin feedback would never be reached again.
+    """
+    wanted = [str(s) for s in (statuses or ()) if str(s) in tuple(FeedbackStatus)]
+    if not wanted:
+        return []
+    join, join_params = _admin_reporter_join() if admin_only else ("", ())
+    admin_filter = "AND au.id IS NOT NULL " if admin_only else ""
+    try:
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(
+                f"SELECT {_prefixed_feedback_columns()} FROM feedback f {join} "
+                f"WHERE f.status IN ({','.join(['%s'] * len(wanted))}) AND f.cluster_id IS NULL "
+                f"{admin_filter}"
+                "ORDER BY f.created_at ASC, f.id ASC LIMIT %s",
+                (*join_params, *wanted, int(limit)))
+            return cursor.fetchall() or []
+    except mysql.connector.Error as err:
+        log_error("Could not fetch unprocessed feedback", exc=err)
+        return []
+def count_pending_admin_review(statuses: tuple = (FeedbackStatus.NEW,)) -> int:
+    """How many un-clustered reports are waiting on an admin decision (issue #793).
+
+    The inverse of `get_unprocessed_feedback(admin_only=True)`: everything the auto-filer skipped.
+    Reported by `process_new_feedback` so a silent backlog is visible without opening the panel.
+    """
+    wanted = [str(s) for s in (statuses or ()) if str(s) in tuple(FeedbackStatus)]
+    if not wanted:
+        return 0
+    join, join_params = _admin_reporter_join()
+    try:
+        with db_cursor() as cursor:
+            cursor.execute(
+                f"SELECT COUNT(*) FROM feedback f {join} "
+                f"WHERE f.status IN ({','.join(['%s'] * len(wanted))}) AND f.cluster_id IS NULL "
+                "AND au.id IS NULL",
+                (*join_params, *wanted))
+            row = cursor.fetchone()
+            return int(row[0]) if row else 0
+    except mysql.connector.Error as err:
+        log_error("Could not count feedback pending admin review", exc=err)
+        return 0
+def get_feedback_list(status: Optional[Union["FeedbackStatus", str]] = None,
+                      source: Optional[Union["FeedbackSource", str]] = None,
+                      limit: int = 50, offset: int = 0) -> list:
+    """All feedback rows, newest first, with the submitter's email and admin flag (issue #793).
+
+    Optional status/source filters are validated against the enum vocabularies before they reach
+    the query, so a bad value returns an empty list instead of a MySQL 1265.
+
+    `embedding` is deliberately NOT selected — the panel never shows it, and a page of 50 rows would
+    drag 50 full vectors out of MySQL to be thrown away. `is_admin` answers the same question the
+    auto-filer's join does, so it honours ADMIN_USER_EMAILS too: an allowlisted reporter's feedback
+    IS auto-filed, and the panel must not label it as awaiting review.
+    """
+    filters: list = []
+    params: list = []
+    if status is not None:
+        try:
+            status = FeedbackStatus(str(status).strip().lower())
+        except ValueError:
+            return []
+        filters.append("f.status = %s")
+        params.append(str(status))
+    if source is not None:
+        try:
+            source = FeedbackSource(str(source).strip().lower())
+        except ValueError:
+            return []
+        filters.append("f.source = %s")
+        params.append(str(source))
+
+    where = f"WHERE {' AND '.join(filters)}" if filters else ""
+    sql = (
+        f"SELECT f.id, f.user_id, f.source, f.type_hint, f.body, f.context_json, "
+        f"f.cluster_id, f.github_issue_number, f.status, f.sentiment, "
+        f"f.reviewed_by, f.reviewed_at, f.created_at, u.email, u.is_admin "
+        f"FROM feedback f LEFT JOIN users u ON u.id = f.user_id "
+        f"{where} ORDER BY f.created_at DESC LIMIT %s OFFSET %s"
+    )
+    try:
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(sql, (*params, int(limit), int(offset)))
+            rows = cursor.fetchall() or []
+            allow = admin_email_allowlist()
+            for row in rows:
+                if allow and not row.get("is_admin") and \
+                        (row.get("email") or "").strip().lower() in allow:
+                    row["is_admin"] = 1
+            return rows
+    except mysql.connector.Error as err:
+        log_error("Could not list feedback for admin panel", exc=err)
+        return []

@@ -11,7 +11,6 @@ import pytest
 
 pytestmark = pytest.mark.unit
 
-_DB = "cqc_lem.utilities.db"
 _OUTREACH = "cqc_lem.platform.db.repositories.outreach"
 _GET_CONN = "cqc_lem.platform.db.connection.get_db_connection"
 
@@ -38,7 +37,8 @@ class TestGetLeadActivity:
     def test_one_broken_source_does_not_lose_the_others(self, fake_cursor):
         conn, cursor = fake_cursor(fetch_all=[{"person_name": "Jane"}])
         cursor.execute.side_effect = [mysql.connector.Error("no such table")] + [None] * 10
-        with patch(f"{_GET_CONN}", return_value=conn), patch(f"{_DB}.log_info"):
+        with patch(f"{_GET_CONN}", return_value=conn), \
+                patch("cqc_lem.platform.db.repositories.outreach.log_error"):
             from cqc_lem.utilities.db import _LEAD_ACTIVITY_SOURCES, get_lead_activity
             rows = get_lead_activity(1)
         assert len(rows) == len(_LEAD_ACTIVITY_SOURCES) - 1

@@ -58,6 +58,8 @@ MAX_CONTENT_BUFFER_DAYS = 30
 # which point `release_enrollment_scope` promotes it to `full`.
 
 SESSION_SCOPE_FULL = "full"
+SESSION_SCOPE_EXTENSION = "extension"
+SESSION_SCOPE_RECOVERY = "recovery"
 
 AUTH_FACTOR_PASSKEY = "passkey"
 
@@ -105,9 +107,9 @@ __all__ = [
     "MAX_CONTENT_BUFFER_DAYS",
     "ONBOARDING_STEPS",
     "OwnershipUnprovable",
+    "SESSION_SCOPE_EXTENSION",
     "SESSION_SCOPE_FULL",
+    "SESSION_SCOPE_RECOVERY",
     "VALID_VIDEO_QUALITIES",
     "_FEEDBACK_COLUMNS",
 ]
-
-

@@ -10,7 +10,6 @@ import pytest
 
 pytestmark = pytest.mark.unit
 
-_DB = "cqc_lem.utilities.db"
 
 _FINDING = {"gate": "authenticity", "label": "Authenticity", "score": 41, "threshold": 60,
             "demoted": True, "explanation": "scored 41", "remediation": "add specifics",
@@ -102,7 +101,7 @@ class TestEngagementThresholdPersistence:
     def _saved(self, fake_cursor, prefs):
         conn, cur = fake_cursor()
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn), \
-             patch(f"{_DB}.max_catchup_touches_allowed", return_value=5):
+             patch("cqc_lem.platform.db.repositories.users.max_catchup_touches_allowed", return_value=5):
             from cqc_lem.utilities.db import _ENGAGEMENT_COLS, update_engagement_preferences
             assert update_engagement_preferences(1, prefs) is True
         values = cur.execute.call_args[0][1]

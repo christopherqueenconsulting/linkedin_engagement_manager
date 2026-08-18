@@ -21,6 +21,7 @@ from mysql.connector.abstracts import MySQLCursorAbstract
 from cqc_lem.platform.db import connection as _connection
 from cqc_lem.platform.db.connection import db_cursor
 from cqc_lem.platform.db.enums import (
+    CatchupEventType,
     OnboardingStep,
     PostStatus,
 )
@@ -1898,3 +1899,687 @@ def set_user_admin(user_id: int, is_admin: bool) -> bool:
     except mysql.connector.Error as err:
         log_error(f"Could not set admin flag for user_id {user_id}", exc=err)
         return False
+
+
+def store_cookies(user_email: str, cookies: list[dict]) -> bool:
+    """Persist the browser's cookies for this user. Returns False when any row failed to store.
+
+    The return value is load-bearing since #745: the cookie-migration path DELETES the user's
+    stored LinkedIn password once the session is "saved", so a swallowed per-row write error must
+    not read as success — that would take away the only login they had left.
+    """
+    connection = _connection.get_db_connection()
+    cursor = connection.cursor()
+
+    user_id = get_user_id(user_email)
+
+    try:
+        failed = _store_cookie_rows(cursor, cookies, user_id)
+        connection.commit()
+    finally:
+        cursor.close()
+        connection.close()
+
+    if user_id is not None:
+        prune_superseded_cookies(user_id)
+
+    return not failed
+def store_linkedin_li_at(user_id: int, li_at: str, jsessionid: Optional[str] = None) -> bool:
+    """Persist a user-supplied LinkedIn session cookie (li_at, optionally JSESSIONID).
+
+    Lets login_to_linkedin resume an already-trusted session instead of doing a fresh
+    password login — which is what triggers LinkedIn's new-device challenge. Reuses the
+    standard cookie store so the existing cookie-first login path picks it up.
+    """
+    email = get_user_email(user_id)
+    if not email:
+        log_info(f"store_linkedin_li_at: no email for user_id {user_id}")
+        return False
+
+    import time
+    expiry = int(time.time()) + 365 * 24 * 60 * 60  # ~1 year; load_cookies re-stamps anyway
+    cookies = [{
+        "name": "li_at", "value": li_at, "domain": ".linkedin.com", "path": "/",
+        "expiry": expiry, "secure": True, "httpOnly": True,
+    }]
+    if jsessionid:
+        cookies.append({
+            "name": "JSESSIONID", "value": jsessionid, "domain": ".linkedin.com",
+            "path": "/", "expiry": expiry, "secure": True, "httpOnly": False,
+        })
+    try:
+        # Must reflect the actual write (issue #745): the caller drops the user's stored LinkedIn
+        # password on a True, and per-row insert errors are swallowed inside _store_cookie_rows.
+        if not store_cookies(email, cookies):
+            log_error("Could not store LinkedIn session cookie — no row was written",
+                      user_id=user_id)
+            return False
+        return True
+    except Exception as e:
+        # Same failure as the no-row branch above, which is already ERROR: the caller drops the
+        # user's stored password on a True, so a swallowed write here costs them the session.
+        log_error("Could not store LinkedIn session cookie", exc=e, user_id=user_id)
+        return False
+def set_default_video_quality(user_id: int, quality: str) -> bool:
+    """Set the user's default video quality preference (upserts the engagement_preferences row).
+    Invalid values are coerced to 'standard'.
+    """
+    if quality not in VALID_VIDEO_QUALITIES:
+        quality = "standard"
+    return update_engagement_preferences(user_id, {"default_video_quality": quality})
+def get_active_user_password_pairs():
+    """`[email, password]` for every active user that has BOTH.
+
+    A user missing either half is skipped silently — there is nothing a browser login could do with half
+    a credential.
+    """
+    user_password_pairs = []
+
+    active_users = get_active_user_ids()
+
+    for user_id in active_users:
+        email, password = get_user_password_pair_by_id(user_id)
+        if email and password:
+            user_password_pairs.append([email, password])
+
+    return user_password_pairs
+# Catch-up milestone types eligible for a congratulations touch out of the box (issue #482): the two
+# real trigger events. All six types are user-configurable; birthdays/anniversaries are opt-in because
+# congratulating those at volume reads as spam.
+DEFAULT_CATCHUP_EVENT_TYPES = ("job_change", "promotion")
+VALID_CATCHUP_TOUCH_MODES = ("pre_review", "auto_approve")
+# Where the congratulations text comes from. 'linkedin' = LinkedIn's own pre-drafted response for the
+# moment (no LLM); 'ai' = the DM-template + voice-refinement path, for users who want more customization.
+VALID_CATCHUP_MESSAGE_SOURCES = ("linkedin", "ai")
+# Per-day cap bounds. 5/day is the ceiling on every plan; raising it to 10/day is a premium feature
+# (owner review on PR #509: "3A, but use 3B as a premium subscribed user feature").
+CATCHUP_TOUCHES_MIN = 0
+CATCHUP_TOUCHES_MAX_STANDARD = 5
+CATCHUP_TOUCHES_MAX_PREMIUM = 10
+# Absolute ceiling accepted at the API boundary — the per-user allowance is applied on top of it.
+CATCHUP_TOUCHES_MAX = CATCHUP_TOUCHES_MAX_PREMIUM
+# Per-contact cooldown across ALL catch-up event types (issue #1078). A new congratulations to the
+# same person is held until at least this many days have passed since the last one.
+CATCHUP_MIN_CONTACT_INTERVAL_DAYS_DEFAULT = 7
+CATCHUP_MIN_CONTACT_INTERVAL_DAYS_MIN = 0
+CATCHUP_MIN_CONTACT_INTERVAL_DAYS_MAX = 365
+# Per-contact rolling cap (issue #1078). At most this many catch-up messages may reach the same
+# person within CATCHUP_CONTACT_CAP_WINDOW_DAYS. 0 means no cap.
+#
+# The cap window is deliberately NOT the cooldown window: the cooldown already blocks every send
+# inside its own window, so a cap measured over the same span could never be reached (the first
+# message would trip the cooldown long before the second reached the cap), and disabling the
+# cooldown would silently disable the cap too. A month-long window makes the cap the second,
+# independent bound the reporter asked for — "no more than N catch-ups to this person, ever, in a
+# rolling month" — regardless of how the cooldown is set.
+CATCHUP_MAX_PER_CONTACT_DAYS_DEFAULT = 2
+CATCHUP_MAX_PER_CONTACT_DAYS_MIN = 0
+CATCHUP_MAX_PER_CONTACT_DAYS_MAX = 365
+# The rolling window the per-contact cap is measured over. Fixed, not a preference: the cap and the
+# cooldown are two different questions, and one knob answering both is how the cap became unreachable.
+CATCHUP_CONTACT_CAP_WINDOW_DAYS = 30
+# Paid plans that unlock the premium catch-up allowance (see stripe_util.TIER_PRICE_MAP).
+PREMIUM_SUBSCRIPTION_TIERS = ("professional", "enterprise")
+ACTIVE_SUBSCRIPTION_STATUSES = ("active", "trial")
+def is_premium_subscriber(user_id: int) -> bool:
+    """True when the user is on a currently-active professional/enterprise plan. Anything else —
+    free trial, starter, lapsed, unknown, or a DB error — is treated as NOT premium, so a premium-only
+    allowance can never be granted by accident.
+    """
+    try:
+        info = get_user_subscription_info(user_id)
+    except Exception:
+        return False
+    if not info:
+        return False
+    return (str(info.get("subscription_tier") or "") in PREMIUM_SUBSCRIPTION_TIERS
+            and str(info.get("subscription_status") or "") in ACTIVE_SUBSCRIPTION_STATUSES)
+def max_catchup_touches_allowed(user_id: int) -> int:
+    """The highest catch-up cap this user may set — 10/day on premium plans, 5/day otherwise."""
+    return CATCHUP_TOUCHES_MAX_PREMIUM if is_premium_subscriber(user_id) else CATCHUP_TOUCHES_MAX_STANDARD
+# Publishing cadence (issue #621 / G6). 2-4 high-effort posts a week beat daily volume in the 2026
+# regime — van der Blom's 1.3M-post sample puts daily posting at roughly -26% average reach per
+# post — so the default drops from one-a-day to 3/week. 7 (daily) stays reachable for users who
+# insist on it, which is why the ceiling is a full week rather than 5; the SPA warns above 4.
+POSTS_PER_WEEK_MIN, POSTS_PER_WEEK_MAX = 2, 7
+DEFAULT_POSTS_PER_WEEK = 3
+# WHICH weekdays those slots may land on (issue #581). Mon=0 … Sun=6, default Mon-Fri: weekends are
+# opt-in rather than the automatic consequence of raising the cadence to 6-7/week. All seven days
+# stay selectable — this is an allow-list, never a hardcoded work week. `posts_per_week` still
+# decides how many of the allowed days are actually filled.
+DEFAULT_POSTING_DAYS = [0, 1, 2, 3, 4]
+POSTING_DAY_MIN, POSTING_DAY_MAX = 0, 6
+def normalize_posting_days(value) -> list:
+    """A de-duped, sorted list of valid weekday ints — or the Mon-Fri default when the input holds
+    nothing usable. Never returns an empty set: an empty cadence would schedule no content at all,
+    and a bad value must not be persisted into the one-row prefs upsert (the V52 lesson).
+    """
+    days = []
+    for raw in _coerce_json_list(value):
+        try:
+            day = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if POSTING_DAY_MIN <= day <= POSTING_DAY_MAX and day not in days:
+            days.append(day)
+    return sorted(days) if days else list(DEFAULT_POSTING_DAYS)
+# Company-page invites per day (issue #732). LinkedIn Pages spend a MONTHLY credit pool that renews
+# on the 1st and is refunded when an invite is accepted; LinkedIn is currently cutting the free-Page
+# allowance from 250 to 50/month, so a drip has to survive both sizes. 5/day is the conservative
+# ceiling: at 50 credits the credits/days-left spread binds first (~2/day), at 250 this binds, and
+# the #626 budget draw (40-100% of cap) keeps the realised average lower still. 0 turns the lane off.
+COMPANY_PAGE_INVITES_PER_DAY_DEFAULT = 5
+COMPANY_PAGE_INVITES_PER_DAY_MIN, COMPANY_PAGE_INVITES_PER_DAY_MAX = 0, 50
+# Roster auto-follows per day (issue #962). Far smaller than any other lane on purpose: a follow is
+# the cheapest action to automate and the easiest to over-run, and LinkedIn's own follow limits are
+# what a bulk-follower trips first. 3/day is a catch-up rate — a 50-account roster reaches full
+# coverage in a few weeks — and the #626 budget draw (40-100% of cap, plus rest days) keeps the
+# realised average below it. 0 turns the lane off without touching the toggle.
+ROSTER_FOLLOWS_PER_DAY_DEFAULT = 3
+ROSTER_FOLLOWS_PER_DAY_MIN, ROSTER_FOLLOWS_PER_DAY_MAX = 0, 20
+_ENGAGEMENT_DEFAULTS: dict = {
+    # Default to MEDIUM (issue #394): 2026 LinkedIn weights substantive ≥15-word comments ~2.5× short
+    # one-liners, so the out-of-the-box length produces a real, specific reply rather than a throwaway.
+    "tone": None, "comment_length": "medium", "comment_style": None,
+    # use_hashtags stays OFF by default (issue #393): hashtags no longer expand reach in 2026 and
+    # hashtag-free posts out-perform tagged ones. See content_framework.hashtag_directive.
+    "use_emojis": True, "use_hashtags": False,
+    "include_topics": [], "exclude_topics": [], "include_keywords": [], "exclude_keywords": [],
+    "include_authors": [], "exclude_authors": [], "post_types": [],
+    "focus_topics": [], "business_goals": None, "personal_goals": None,
+    # Quality-gate thresholds (issue #421). None = follow the deploy default
+    # (AUTHENTICITY_SCORE_MIN / POST_SIMILARITY_MAX), so the gates behave exactly as before until
+    # the user tunes them.
+    "authenticity_score_min": None, "post_similarity_max_pct": None,
+    "min_reactions": None, "max_post_age_hours": 24, "reply_to_own_comments": True,
+    "max_comments_per_day": 20, "max_dms_per_day": 20, "max_invites_per_day": 10,
+    # Company-page invites (issue #732) run on their OWN small cap, and the effective ceiling is
+    # min(this, max_invites_per_day) — see COMPANY_PAGE_INVITES_PER_DAY_DEFAULT for why 5.
+    "max_company_page_invites_per_day": COMPANY_PAGE_INVITES_PER_DAY_DEFAULT,
+    "connection_request_mode": "auto_approve",
+    # Smart connection targeting (issue #486). 'suggest' sources candidates but always files them as
+    # drafts, so enabling targeting can never send outbound on its own.
+    "connection_targeting_mode": "suggest", "connection_target_authors": [],
+    "min_connection_icp_score": 55,
+    "default_buyer_stage": None,
+    "default_video_quality": "standard",
+    "reply_check_mode": "event", "reply_sweeps_per_day": 2, "reply_max_post_age_days": 2,
+    # feed_fallback_when_empty's FLEET default is runtime-controlled by the
+    # `feed-fallback-when-empty-default` flag (issue #651) via _code_engagement_defaults(); the
+    # value here is what that flag falls back to. A saved row always wins over both.
+    "feed_fallback_when_empty": True, "link_in_first_comment": True,
+    # Catch-up congratulations (issue #482): small cap, human approval, and only the BD-relevant
+    # milestone types out of the box — a generic "Congrats!" at volume is worse than nothing.
+    # The message itself defaults to LinkedIn's own pre-drafted response (no LLM).
+    "max_catchup_touches_per_day": CATCHUP_TOUCHES_MAX_STANDARD, "catchup_touch_mode": "pre_review",
+    "catchup_event_types": list(DEFAULT_CATCHUP_EVENT_TYPES),
+    "catchup_message_source": "linkedin",
+    # Per-contact catch-up frequency guard (issue #1078). A new congratulations to the same person is
+    # held until `min_catchup_contact_interval_days` have passed since the last one, and at most
+    # `max_catchup_touches_per_contact_days` may land per rolling CATCHUP_CONTACT_CAP_WINDOW_DAYS.
+    # Both default to small, safe values that rarely block normal usage but stop a burst across
+    # multiple milestone types.
+    "min_catchup_contact_interval_days": CATCHUP_MIN_CONTACT_INTERVAL_DAYS_DEFAULT,
+    "max_catchup_touches_per_contact_days": CATCHUP_MAX_PER_CONTACT_DAYS_DEFAULT,
+    "posts_per_week": DEFAULT_POSTS_PER_WEEK,
+    "posting_days": list(DEFAULT_POSTING_DAYS),
+    # AI image on generated TEXT posts (image-generation overhaul). ON by default — a bare text
+    # post is the lowest-reach format; the review queue is still the human gate on every image.
+    "text_post_images": True,
+    # Opt-in auto-follow of roster targets (issue #962). OFF by default and small when on: bulk
+    # following is a classic bot signature, so this only ever runs because the user asked for it.
+    "roster_auto_follow": False,
+    "max_follows_per_day": ROSTER_FOLLOWS_PER_DAY_DEFAULT,
+    # Opt-in auto-connect for roster targets following did not unlock (issue #979). OFF by default
+    # and independent of the follow toggle: an invite is heavier and less reversible than a follow,
+    # and it spends the account's ONE combined invite budget.
+    "roster_auto_connect": False,
+    # Hold a post the review gate had to REPAIR (issue #1134). ON by default: a draft that failed a
+    # deterministic check and passed only after the editor pass is precisely the post nobody has
+    # read. Off restores the pre-#1134 behaviour — auto_schedule_posts alone decides.
+    "hold_repaired_posts_for_review": True,
+    # Direct dispatch for cold profile-viewer outreach (issue #1137). OFF by default: with it off
+    # both branches of engage_with_profile_viewer file an approval-gated row instead of sending,
+    # which is the only lane where a stranger hears from us with nobody having looked first.
+    "profile_viewer_dm_auto_send": False,
+}
+_ENGAGEMENT_JSON_FIELDS = ("include_topics", "exclude_topics", "include_keywords",
+                           "exclude_keywords", "include_authors", "exclude_authors", "post_types",
+                           "focus_topics", "connection_target_authors", "catchup_event_types",
+                           "posting_days")
+_ENGAGEMENT_BOOL_FIELDS = ("use_emojis", "use_hashtags", "reply_to_own_comments",
+                           "feed_fallback_when_empty", "link_in_first_comment",
+                           "text_post_images", "roster_auto_follow", "roster_auto_connect",
+                           "hold_repaired_posts_for_review",
+                           "profile_viewer_dm_auto_send")
+_ENGAGEMENT_COLS = ("tone", "comment_length", "comment_style", "use_emojis", "use_hashtags",
+                    "include_topics", "exclude_topics", "include_keywords", "exclude_keywords",
+                    "include_authors", "exclude_authors", "post_types", "focus_topics",
+                    "business_goals", "personal_goals",
+                    "authenticity_score_min", "post_similarity_max_pct", "min_reactions",
+                    "max_post_age_hours", "reply_to_own_comments", "max_comments_per_day",
+                    "max_dms_per_day", "max_invites_per_day",
+                    "max_company_page_invites_per_day", "connection_request_mode",
+                    "connection_targeting_mode", "connection_target_authors",
+                    "min_connection_icp_score",
+                    "default_buyer_stage", "default_video_quality",
+                    "reply_check_mode", "reply_sweeps_per_day", "reply_max_post_age_days",
+                    "feed_fallback_when_empty", "link_in_first_comment",
+                    "max_catchup_touches_per_day", "catchup_touch_mode", "catchup_event_types",
+                    "catchup_message_source", "min_catchup_contact_interval_days",
+                    "max_catchup_touches_per_contact_days", "posts_per_week", "posting_days",
+                    "text_post_images", "roster_auto_follow", "max_follows_per_day",
+                    "roster_auto_connect", "hold_repaired_posts_for_review",
+                    "profile_viewer_dm_auto_send")
+VALID_REPLY_MODES = ("event", "scheduled", "off")
+# Approval posture for the proactive connect flow (issue #398 owner review).
+VALID_CONNECTION_REQUEST_MODES = ("auto_approve", "pre_review")
+# Sourcing posture for smart connection targeting (issue #486): 'off' = no sourcing, 'suggest' =
+# source but always file as drafts, 'auto_queue' = defer to connection_request_mode.
+VALID_CONNECTION_TARGETING_MODES = ("off", "suggest", "auto_queue")
+ICP_SCORE_MIN, ICP_SCORE_MAX = 0, 100
+# Scheduled reply-sweep cadence bounds: floor 2×/day (as requested), cap 12×/day (every ~2h).
+REPLY_SWEEPS_MIN, REPLY_SWEEPS_MAX = 2, 12
+REPLY_MAX_AGE_DAYS_MIN, REPLY_MAX_AGE_DAYS_MAX = 1, 14
+def _coerce_json_list(value) -> list:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return value
+    try:
+        parsed = json.loads(value)
+        return parsed if isinstance(parsed, list) else []
+    except (ValueError, TypeError):
+        return []
+def _select_engagement_row(user_id: int) -> Optional[dict]:
+    """The user's SAVED engagement row, decoded — or None when they have never saved one.
+
+    Deliberately lets `mysql.connector.Error` escape: a read failure is not the same as a missing
+    row, and `update_engagement_preferences` must be able to tell them apart before it rewrites
+    every column (issue #639).
+    """
+    connection = _connection.get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+    try:
+        cursor.execute(
+            f"SELECT {', '.join(_ENGAGEMENT_COLS)} FROM engagement_preferences WHERE user_id = %s",
+            (user_id,))
+        row = cursor.fetchone()
+        if row is None:
+            return None
+        # A NULL catchup_event_types (every row predating the V20260724211808 migration) means
+        # "never configured" -> the default BD subset. An explicit empty list means the user turned
+        # catch-up touches off, so only coerce the NULL case.
+        if row.get("catchup_event_types") is None:
+            row["catchup_event_types"] = list(DEFAULT_CATCHUP_EVENT_TYPES)
+        if row.get("catchup_message_source") not in VALID_CATCHUP_MESSAGE_SOURCES:
+            row["catchup_message_source"] = _ENGAGEMENT_DEFAULTS["catchup_message_source"]
+        # A NULL cadence (a row written before the posts_per_week migration) means "never chosen",
+        # so the planner gets the 3/week default rather than a falsy value it would read as zero.
+        if row.get("posts_per_week") is None:
+            row["posts_per_week"] = DEFAULT_POSTS_PER_WEEK
+        # A NULL company-page invite cap (any row predating the V20260727175938 migration) means
+        # "never chosen" -> the conservative default. Reading NULL as 0 would silently switch the
+        # lane off for every existing user; an explicit 0 IS "off" and is preserved.
+        if row.get("max_company_page_invites_per_day") is None:
+            row["max_company_page_invites_per_day"] = COMPANY_PAGE_INVITES_PER_DAY_DEFAULT
+        # Same reading for the follow cap (issue #962): NULL is "never chosen" -> the conservative
+        # code default. An explicit 0 is the user switching the lane off and is preserved. The
+        # TOGGLE is not read this way — it is NOT NULL DEFAULT 0, because "off" and "never chosen"
+        # must behave identically for a feature that did not exist yesterday.
+        if row.get("max_follows_per_day") is None:
+            row["max_follows_per_day"] = ROSTER_FOLLOWS_PER_DAY_DEFAULT
+        for f in _ENGAGEMENT_JSON_FIELDS:
+            row[f] = _coerce_json_list(row.get(f))
+        # A NULL/empty posting_days (any row predating the V20260727045811 migration) means "never
+        # chosen" -> Mon-Fri. Unlike catchup_event_types, an empty set here is NOT a meaningful
+        # choice: it would leave the planner with no day to publish on at all.
+        row["posting_days"] = normalize_posting_days(row.get("posting_days"))
+        for f in _ENGAGEMENT_BOOL_FIELDS:
+            row[f] = bool(row.get(f))
+        return row
+    finally:
+        cursor.close()
+        connection.close()
+def _code_engagement_defaults(user_id: int) -> dict:
+    """`_ENGAGEMENT_DEFAULTS` with the one field whose FLEET default is runtime-controlled resolved
+    for this user (issue #651). Only reached when the user has no saved row: once they save one, the
+    column holds their own explicit 0/1 and the flag can never override it.
+    """
+    from cqc_lem.utilities.flags import FEED_FALLBACK_DEFAULT, flag_enabled
+    defaults = dict(_ENGAGEMENT_DEFAULTS)
+    defaults["feed_fallback_when_empty"] = flag_enabled(FEED_FALLBACK_DEFAULT, user_id=user_id)
+    return defaults
+def get_engagement_preferences(user_id: int) -> dict:
+    """Return the user's engagement preferences (voice/targeting/caps) with code-level
+    defaults when no row exists — so behaviour is unchanged until the user customizes.
+    """
+    try:
+        row = _select_engagement_row(user_id)
+    except mysql.connector.Error as err:
+        log_error("Could not get engagement prefs", exc=err, user_id=user_id)
+        return _code_engagement_defaults(user_id)
+    return _code_engagement_defaults(user_id) if row is None else row
+def update_engagement_preferences(user_id: int, prefs: dict) -> bool:
+    """Upsert the user's engagement preferences (INSERT ... ON DUPLICATE KEY UPDATE)."""
+    # The upsert writes EVERY column, so a partial `prefs` dict must merge over the user's own
+    # SAVED row — merging over `_ENGAGEMENT_DEFAULTS` reset tone/targeting/caps/goals for anyone
+    # calling with a single key (issue #639, e.g. set_default_video_quality). Code defaults are
+    # the base only for a genuinely new row. An UNREADABLE row aborts the write: overwriting all
+    # 39 columns with defaults because a SELECT failed is exactly the data loss being fixed.
+    try:
+        existing = _select_engagement_row(user_id)
+    except mysql.connector.Error as err:
+        # ERROR, not myprint: this silently ABORTS the user's save, so it has to reach PostHog
+        # rather than sit at INFO under the default POSTHOG_LOG_LEVEL.
+        log_error("Could not read engagement prefs before update — aborting write",
+                  exc=err, user_id=user_id)
+        return False
+    base = {**_code_engagement_defaults(user_id),
+            **{k: v for k, v in (existing or {}).items() if k in _ENGAGEMENT_DEFAULTS}}
+    merged = {**base, **{k: v for k, v in prefs.items() if k in _ENGAGEMENT_DEFAULTS}}
+
+    # Clamp/validate reply-check config so a bad value can't overflow a column and roll back the
+    # WHOLE single-row upsert (the V52 tone incident). Bad mode → the safe default; out-of-range
+    # numbers → clamped to bounds.
+    if merged.get("reply_check_mode") not in VALID_REPLY_MODES:
+        merged["reply_check_mode"] = "event"
+    if merged.get("connection_request_mode") not in VALID_CONNECTION_REQUEST_MODES:
+        merged["connection_request_mode"] = "auto_approve"
+    if merged.get("connection_targeting_mode") not in VALID_CONNECTION_TARGETING_MODES:
+        merged["connection_targeting_mode"] = "suggest"
+    _icp = merged.get("min_connection_icp_score")
+    try:
+        merged["min_connection_icp_score"] = (min(ICP_SCORE_MAX, max(ICP_SCORE_MIN, int(_icp)))
+                                              if _icp is not None else 55)
+    except (TypeError, ValueError):
+        merged["min_connection_icp_score"] = 55
+    # Clamp numerics WITHOUT `or` fallbacks — 0 is falsy but is a real (out-of-range) value that must
+    # clamp to the floor, not silently become the default (matches the API-layer validators).
+    _sw = merged.get("reply_sweeps_per_day")
+    try:
+        merged["reply_sweeps_per_day"] = (min(REPLY_SWEEPS_MAX, max(REPLY_SWEEPS_MIN, int(_sw)))
+                                          if _sw is not None else REPLY_SWEEPS_MIN)
+    except (TypeError, ValueError):
+        merged["reply_sweeps_per_day"] = REPLY_SWEEPS_MIN
+    _age = merged.get("reply_max_post_age_days")
+    try:
+        merged["reply_max_post_age_days"] = (min(REPLY_MAX_AGE_DAYS_MAX, max(REPLY_MAX_AGE_DAYS_MIN, int(_age)))
+                                             if _age is not None else 2)
+    except (TypeError, ValueError):
+        merged["reply_max_post_age_days"] = 2
+    _ppw = merged.get("posts_per_week")
+    try:
+        merged["posts_per_week"] = (min(POSTS_PER_WEEK_MAX, max(POSTS_PER_WEEK_MIN, int(_ppw)))
+                                    if _ppw is not None else DEFAULT_POSTS_PER_WEEK)
+    except (TypeError, ValueError):
+        merged["posts_per_week"] = DEFAULT_POSTS_PER_WEEK
+    _cpi = merged.get("max_company_page_invites_per_day")
+    try:
+        merged["max_company_page_invites_per_day"] = (
+            min(COMPANY_PAGE_INVITES_PER_DAY_MAX, max(COMPANY_PAGE_INVITES_PER_DAY_MIN, int(_cpi)))
+            if _cpi is not None else COMPANY_PAGE_INVITES_PER_DAY_DEFAULT)
+    except (TypeError, ValueError):
+        merged["max_company_page_invites_per_day"] = COMPANY_PAGE_INVITES_PER_DAY_DEFAULT
+    _fol = merged.get("max_follows_per_day")
+    try:
+        merged["max_follows_per_day"] = (
+            min(ROSTER_FOLLOWS_PER_DAY_MAX, max(ROSTER_FOLLOWS_PER_DAY_MIN, int(_fol)))
+            if _fol is not None else ROSTER_FOLLOWS_PER_DAY_DEFAULT)
+    except (TypeError, ValueError):
+        merged["max_follows_per_day"] = ROSTER_FOLLOWS_PER_DAY_DEFAULT
+    # The publishing day allow-list (issue #581): de-duped, sorted, Mon..Sun only. Anything
+    # unusable — an empty set, strings, out-of-range ints — falls back to Mon-Fri rather than
+    # persisting a cadence that would schedule nothing or a value the column would reject.
+    merged["posting_days"] = normalize_posting_days(merged.get("posting_days"))
+    # Quality-gate thresholds (issue #421): None means "use the deploy default", anything else is
+    # clamped to its valid band so an out-of-range slider can never make a gate un-passable.
+    from cqc_lem.utilities.quality_gates import (
+        AUTHENTICITY_SCORE_MIN_BOUNDS,
+        SIMILARITY_MAX_PCT_BOUNDS,
+        clamp_threshold,
+    )
+    merged["authenticity_score_min"] = clamp_threshold(
+        merged.get("authenticity_score_min"), *AUTHENTICITY_SCORE_MIN_BOUNDS)
+    merged["post_similarity_max_pct"] = clamp_threshold(
+        merged.get("post_similarity_max_pct"), *SIMILARITY_MAX_PCT_BOUNDS)
+    if merged.get("catchup_touch_mode") not in VALID_CATCHUP_TOUCH_MODES:
+        merged["catchup_touch_mode"] = "pre_review"
+    if merged.get("catchup_message_source") not in VALID_CATCHUP_MESSAGE_SOURCES:
+        merged["catchup_message_source"] = "linkedin"
+    # The cap ceiling is per-plan: 10/day only on an active premium plan, 5/day otherwise. Clamped
+    # here (not just at the API boundary) so a downgrade silently pulls the saved cap back down.
+    _cap_max = max_catchup_touches_allowed(user_id)
+    _ct = merged.get("max_catchup_touches_per_day")
+    try:
+        merged["max_catchup_touches_per_day"] = (
+            min(_cap_max, max(CATCHUP_TOUCHES_MIN, int(_ct))) if _ct is not None
+            else min(_cap_max, _ENGAGEMENT_DEFAULTS["max_catchup_touches_per_day"]))
+    except (TypeError, ValueError):
+        merged["max_catchup_touches_per_day"] = min(
+            _cap_max, _ENGAGEMENT_DEFAULTS["max_catchup_touches_per_day"])
+    # Drop unknown milestone types before they hit the ENUM-validated ledger.
+    merged["catchup_event_types"] = [t for t in (merged.get("catchup_event_types") or [])
+                                     if t in tuple(CatchupEventType)]
+    # Per-contact catch-up frequency guard (issue #1078). 0 disables the guard; otherwise clamp to
+    # a sensible band so a malformed value can't lock the lane for a year or make it negative.
+    _interval = merged.get("min_catchup_contact_interval_days")
+    try:
+        merged["min_catchup_contact_interval_days"] = (
+            min(CATCHUP_MIN_CONTACT_INTERVAL_DAYS_MAX,
+                max(CATCHUP_MIN_CONTACT_INTERVAL_DAYS_MIN, int(_interval)))
+            if _interval is not None else CATCHUP_MIN_CONTACT_INTERVAL_DAYS_DEFAULT)
+    except (TypeError, ValueError):
+        merged["min_catchup_contact_interval_days"] = CATCHUP_MIN_CONTACT_INTERVAL_DAYS_DEFAULT
+    _per_contact = merged.get("max_catchup_touches_per_contact_days")
+    try:
+        merged["max_catchup_touches_per_contact_days"] = (
+            min(CATCHUP_MAX_PER_CONTACT_DAYS_MAX,
+                max(CATCHUP_MAX_PER_CONTACT_DAYS_MIN, int(_per_contact)))
+            if _per_contact is not None else CATCHUP_MAX_PER_CONTACT_DAYS_DEFAULT)
+    except (TypeError, ValueError):
+        merged["max_catchup_touches_per_contact_days"] = CATCHUP_MAX_PER_CONTACT_DAYS_DEFAULT
+
+    def _val(col):
+        v = merged[col]
+        if col in _ENGAGEMENT_JSON_FIELDS:
+            return json.dumps(v or [])
+        if col in _ENGAGEMENT_BOOL_FIELDS:
+            return 1 if v else 0
+        return v
+
+    values = [user_id] + [_val(c) for c in _ENGAGEMENT_COLS]
+    placeholders = ", ".join(["%s"] * (len(_ENGAGEMENT_COLS) + 1))
+    updates = ", ".join(f"{c}=VALUES({c})" for c in _ENGAGEMENT_COLS)
+    try:
+        with db_cursor(commit=True) as cursor:
+            cursor.execute(
+                f"INSERT INTO engagement_preferences (user_id, {', '.join(_ENGAGEMENT_COLS)}) "
+                f"VALUES ({placeholders}) ON DUPLICATE KEY UPDATE {updates}", values)
+            return cursor.rowcount >= 0
+    except mysql.connector.Error as err:
+        log_error("Could not update engagement prefs", exc=err, user_id=user_id)
+        return False
+def admin_email_allowlist() -> set:
+    """Emails from ADMIN_USER_EMAILS, lowercased (issue #793). Empty adds nobody."""
+    from cqc_lem.utilities.env_constants import ADMIN_USER_EMAILS
+    return {e.strip().lower() for e in (ADMIN_USER_EMAILS or "").split(",") if e.strip()}
+def is_user_admin(user_id: int) -> bool:
+    """Whether this user is designated as an admin (issue #793).
+
+    Admin is the users.is_admin column OR a match in the ADMIN_USER_EMAILS allowlist — the latter
+    exists so a deploy with no flagged user yet can still reach the triage panel and release the
+    feedback the auto-filer is now parking.
+
+    Fails CLOSED — a missing user or DB error is never interpreted as admin rights.
+    """
+    if user_id is None:
+        return False
+    try:
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute("SELECT is_admin, email FROM users WHERE id = %s", (int(user_id),))
+            row = cursor.fetchone()
+            if not row:
+                return False
+            if row.get("is_admin"):
+                return True
+            return (row.get("email") or "").strip().lower() in admin_email_allowlist()
+    except mysql.connector.Error as err:
+        log_error(f"Could not check admin status for user_id {user_id}", exc=err)
+        return False
+# Explicit field lists, never `SELECT *`. Every credential-bearing column is excluded BY NOT BEING
+# NAMED: password/access_token/refresh_token (encrypted at rest), proxy_url (embeds user:pass),
+# reply_inbound_token (a bearer secret in an email address), the Stripe ids, and latitude/longitude
+# (someone's home, at 7 decimal places — city/country answers every question this screen has).
+_ADMIN_USER_LIST_FIELDS = (
+    "u.id, u.email, u.linkedin_email, u.is_admin, u.subscription_status, u.subscription_tier, "
+    "u.trial_ends_at, u.linkedin_connection_status, u.last_login, "
+    "o.started_at AS signed_up_at, o.activated_at"
+)
+_ADMIN_USER_DETAIL_FIELDS = (
+    _ADMIN_USER_LIST_FIELDS + ", "
+    "u.public_uid, u.linkedin_display_name, u.email_verified_at, u.trial_started_at, "
+    "u.subscription_current_period_end, u.timezone, u.city, u.country, u.locale, "
+    "u.content_language, u.location_source, u.blog_url, u.sitemap_url, u.company_linked_in_url, "
+    "u.auto_schedule_posts, u.content_buffer_days, u.content_buffer_max_posts, "
+    "u.last_login_inactivate_delay, u.avatar_disabled, u.avatar_use_post_image, "
+    "u.avatar_use_carousel, u.avatar_use_video, u.avatar_use_newsletter, "
+    "u.avatar_caption_overlay, u.updated_at, "
+    "o.linkedin_connected_at, o.voice_set_at, o.first_post_approved_at, o.caps_enabled_at, "
+    "p.max_comments_per_day, p.max_dms_per_day, p.posts_per_week, p.comment_length"
+)
+# One LEFT JOIN, never a lookup per row. `onboarding_state.started_at` is the closest thing to a
+# signup date — `users` has no `created_at`, only an `updated_at` every write moves.
+_ADMIN_USER_LIST_FROM = "FROM users u LEFT JOIN onboarding_state o ON o.user_id = u.id"
+_ADMIN_USER_DETAIL_FROM = (_ADMIN_USER_LIST_FROM +
+                           " LEFT JOIN engagement_preferences p ON p.user_id = u.id")
+def _effective_admin_sql(prefix: str = "u") -> tuple:
+    """The SQL half of `is_user_admin`: the column OR the allowlist, as a WHERE fragment + params.
+
+    Returns the column test alone when the allowlist is empty — an `IN ()` is a MySQL syntax error,
+    and an allowlist nobody configured adds nobody (see `admin_email_allowlist`).
+    """
+    allowed = sorted(admin_email_allowlist())
+    if not allowed:
+        return f"{prefix}.is_admin = 1", []
+    placeholders = ", ".join(["%s"] * len(allowed))
+    return f"({prefix}.is_admin = 1 OR LOWER({prefix}.email) IN ({placeholders}))", allowed
+def _like_term(search: str) -> str:
+    """A substring LIKE term with the caller's own wildcards neutralised.
+
+    `%` and `_` in a support ticket's email fragment are literal characters, not operators — an
+    unescaped `_` silently matches any character and widens the result set the operator is reading.
+    """
+    escaped = search.strip().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%{escaped}%"
+def _admin_user_filters(search: Optional[str] = None,
+                        subscription_status: Optional[str] = None,
+                        linkedin_connection_status: Optional[str] = None,
+                        is_admin: Optional[bool] = None) -> tuple:
+    """The shared WHERE for the list and its COUNT, so the two can never disagree about the page.
+
+    Status values are validated against their vocabularies at the route (FastAPI enums, 422 on
+    anything else); they are parameters here regardless.
+    """
+    clauses: list = []
+    params: list = []
+    if search and search.strip():
+        # Substring, not prefix: a support request often carries a domain, not a full address.
+        clauses.append("(u.email LIKE %s ESCAPE '\\\\' OR u.linkedin_email LIKE %s ESCAPE '\\\\')")
+        term = _like_term(search)
+        params.extend([term, term])
+    if subscription_status:
+        clauses.append("u.subscription_status = %s")
+        params.append(str(subscription_status))
+    if linkedin_connection_status:
+        clauses.append("u.linkedin_connection_status = %s")
+        params.append(str(linkedin_connection_status))
+    if is_admin is not None:
+        # Filters on the EFFECTIVE answer, so the filter and the row's badge always agree.
+        fragment, fragment_params = _effective_admin_sql()
+        clauses.append(fragment if is_admin else f"NOT {fragment}")
+        params.extend(fragment_params)
+    where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+    return where, params
+def list_users_for_admin(search: Optional[str] = None,
+                         subscription_status: Optional[str] = None,
+                         linkedin_connection_status: Optional[str] = None,
+                         is_admin: Optional[bool] = None,
+                         limit: int = 25, offset: int = 0) -> Optional[list]:
+    """One page of the admin user list, newest signup first (issue #1450).
+
+    Ordered by `u.id DESC`: the id is a monotonic AUTO_INCREMENT, so it IS the signup order —
+    without the NULLs of a LEFT-JOINed timestamp and without depending on the join at all.
+
+    `None`, never `[]`, when the page could not be read. This is the heaviest query on the surface
+    (a LEFT JOIN plus an unindexable `LIKE '%…%'`), so it is the one that can time out while the
+    session behind it still resolves — and an empty list is how the screen says "this deployment
+    has no users matching that filter". The route answers 503 rather than render that lie.
+    """
+    where, params = _admin_user_filters(search, subscription_status,
+                                        linkedin_connection_status, is_admin)
+    try:
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(
+                f"SELECT {_ADMIN_USER_LIST_FIELDS} {_ADMIN_USER_LIST_FROM}{where} "
+                "ORDER BY u.id DESC LIMIT %s OFFSET %s",
+                (*params, int(limit), int(offset)))
+            return cursor.fetchall() or []
+    except mysql.connector.Error as err:
+        log_error("Could not list users for the admin panel", exc=err)
+        return None
+def count_users_for_admin(search: Optional[str] = None,
+                          subscription_status: Optional[str] = None,
+                          linkedin_connection_status: Optional[str] = None,
+                          is_admin: Optional[bool] = None) -> Optional[int]:
+    """How many users match the same filters — the denominator the pager renders.
+
+    `None`, never 0, on a fault, for the same reason as `list_users_for_admin`: a 0 total pages the
+    screen to "No users" while the rows it fetched are sitting right above it.
+    """
+    where, params = _admin_user_filters(search, subscription_status,
+                                        linkedin_connection_status, is_admin)
+    try:
+        with db_cursor() as cursor:
+            cursor.execute(f"SELECT COUNT(*) {_ADMIN_USER_LIST_FROM}{where}", tuple(params))
+            row = cursor.fetchone()
+            return int(row[0]) if row else 0
+    except mysql.connector.Error as err:
+        log_error("Could not count users for the admin panel", exc=err)
+        return None
+def get_user_for_admin(user_id: int) -> Optional[dict]:
+    """The detail drawer's row, or None when there is no such user."""
+    try:
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(
+                f"SELECT {_ADMIN_USER_DETAIL_FIELDS} {_ADMIN_USER_DETAIL_FROM} WHERE u.id = %s",
+                (int(user_id),))
+            return cursor.fetchone()
+    except mysql.connector.Error as err:
+        log_error(f"Could not read user {user_id} for the admin panel", exc=err)
+        return None
+def count_admin_users() -> Optional[int]:
+    """How many EFFECTIVE admins the deployment has — the input to the last-admin guard.
+
+    `None`, never 0, when the count could not be read. 0 means "nobody is an admin", which is the
+    one answer that must never be guessed: it would refuse every revoke on a DB hiccup, including
+    the ones an operator is running to fix a lockout. The route answers 503 on `None`.
+    """
+    fragment, params = _effective_admin_sql()
+    try:
+        with db_cursor() as cursor:
+            cursor.execute(f"SELECT COUNT(*) FROM users u WHERE {fragment}", tuple(params))
+            row = cursor.fetchone()
+            return int(row[0]) if row else 0
+    except mysql.connector.Error as err:
+        log_error("Could not count admin users", exc=err)
+        return None
+def has_engagement_preferences(user_id: int) -> bool:
+    """True when the user has actually SAVED engagement preferences. get_engagement_preferences()
+    returns code defaults for everyone, so only the row's existence proves they configured it.
+
+    The two-valued view of `engagement_preferences_are_configured` for callers that only steer UI
+    copy: an unreadable row reads as False, exactly as this has always behaved. A caller that would
+    WRITE on the answer must use the three-valued function instead (issue #952).
+    """
+    return engagement_preferences_are_configured(user_id) is True

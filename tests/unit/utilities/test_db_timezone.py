@@ -7,7 +7,7 @@ import pytest
 
 pytestmark = pytest.mark.unit
 
-_CONNECT = "cqc_lem.utilities.db.mysql.connector.connect"
+_CONNECT = "cqc_lem.platform.db.connection.mysql.connector.connect"
 _GET_CONN = "cqc_lem.platform.db.connection.get_db_connection"
 
 

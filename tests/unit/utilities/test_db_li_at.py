@@ -6,13 +6,12 @@ import pytest
 
 pytestmark = pytest.mark.unit
 
-_DB = "cqc_lem.utilities.db"
 
 
 class TestStoreLinkedInLiAt:
     def test_stores_li_at_cookie(self):
-        with patch(f"{_DB}.get_user_email", return_value="u@e.com"), \
-             patch(f"{_DB}.store_cookies") as store:
+        with patch("cqc_lem.platform.db.repositories.users.get_user_email", return_value="u@e.com"), \
+             patch("cqc_lem.platform.db.repositories.users.store_cookies") as store:
             from cqc_lem.utilities.db import store_linkedin_li_at
             assert store_linkedin_li_at(7, "TOKENvalue1234567890abc") is True
         email, cookies = store.call_args.args
@@ -23,8 +22,8 @@ class TestStoreLinkedInLiAt:
         assert len(cookies) == 1
 
     def test_includes_jsessionid_when_provided(self):
-        with patch(f"{_DB}.get_user_email", return_value="u@e.com"), \
-             patch(f"{_DB}.store_cookies") as store:
+        with patch("cqc_lem.platform.db.repositories.users.get_user_email", return_value="u@e.com"), \
+             patch("cqc_lem.platform.db.repositories.users.store_cookies") as store:
             from cqc_lem.utilities.db import store_linkedin_li_at
             store_linkedin_li_at(7, "TOKENvalue1234567890abc", jsessionid="ajax:9")
         cookies = store.call_args.args[1]
@@ -34,14 +33,14 @@ class TestStoreLinkedInLiAt:
         assert js["value"] == "ajax:9" and js["httpOnly"] is False
 
     def test_returns_false_when_no_email(self):
-        with patch(f"{_DB}.get_user_email", return_value=None), \
-             patch(f"{_DB}.store_cookies") as store:
+        with patch("cqc_lem.platform.db.repositories.users.get_user_email", return_value=None), \
+             patch("cqc_lem.platform.db.repositories.users.store_cookies") as store:
             from cqc_lem.utilities.db import store_linkedin_li_at
             assert store_linkedin_li_at(99, "TOKENvalue1234567890abc") is False
         store.assert_not_called()
 
     def test_returns_false_when_store_raises(self):
-        with patch(f"{_DB}.get_user_email", return_value="u@e.com"), \
-             patch(f"{_DB}.store_cookies", side_effect=Exception("db down")):
+        with patch("cqc_lem.platform.db.repositories.users.get_user_email", return_value="u@e.com"), \
+             patch("cqc_lem.platform.db.repositories.users.store_cookies", side_effect=Exception("db down")):
             from cqc_lem.utilities.db import store_linkedin_li_at
             assert store_linkedin_li_at(7, "TOKENvalue1234567890abc") is False

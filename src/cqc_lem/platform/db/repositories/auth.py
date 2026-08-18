@@ -875,3 +875,95 @@ def get_passkey_by_credential_id(credential_id: str) -> Optional[dict]:
     except mysql.connector.Error as err:
         log_error("Could not look up passkey", exc=err)
         return None
+
+
+def create_session(user_id: int, user_agent: Optional[str] = None,
+                   ip: Optional[str] = None, label: Optional[str] = None,
+                   scope: str = SESSION_SCOPE_FULL, verified: bool = False,
+                   ttl_hours: Optional[int] = None) -> Optional[str]:
+    """Mint a session and return the token to the CALLER ONLY — the row stores its SHA-256.
+
+    Since #745 (2b) `sessions.session_token` holds the hash, so a DB dump hands over no live
+    session. The device facts (user agent, pseudonymised IP, label) are what make per-device
+    revocation possible on the account page.
+
+    `verified=True` stamps the session as having proven a strong factor AT MINT TIME (2c) — a
+    passkey login or PIN+TOTP. It is deliberately not the default: an email-PIN login and a
+    recovery-code login both mint a session that cannot yet touch LinkedIn credentials.
+
+    `ttl_hours` overrides the idle window for sessions that are NOT idle-driven (issue #1026). A
+    headless agent runs on a schedule — a weekly one would find a 24h session dead every single
+    run — so its row gets an explicit, longer life. It is still an ordinary revocable row on the
+    Security card, so a long TTL is not a one-way door.
+    """
+    import secrets
+    token = secrets.token_hex(32)
+    now = datetime.now(timezone.utc)
+    expires_at = now + timedelta(hours=ttl_hours if ttl_hours is not None else SESSION_IDLE_HOURS)
+    try:
+        with db_cursor(commit=True) as cursor:
+            cursor.execute(
+                "INSERT INTO sessions (session_token, user_id, expires_at, user_agent, ip_hash, "
+                "last_seen_at, label, scope, last_verified_at) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                (hash_session_token(token), user_id, expires_at, (user_agent or None),
+                 hash_client_ip(ip), now, (label or _device_label(user_agent)), scope,
+                 now if verified else None),
+            )
+            cursor.execute(
+                "UPDATE users SET last_login = %s WHERE id = %s",
+                (now, user_id),
+            )
+            return token
+    except mysql.connector.Error as err:
+        log_error("Could not create session", exc=err, user_id=user_id)
+        return None
+def _device_label(user_agent: Optional[str]) -> str:
+    """A short, human-readable name for a session row ("Chrome on macOS"). Best effort: the account
+    page has to show the user something they can recognise before they revoke it.
+    """
+    if not user_agent:
+        return "Unknown device"
+    ua = user_agent.lower()
+    browser = next((name for token, name in (
+        ("edg/", "Edge"), ("opr/", "Opera"), ("chrome", "Chrome"), ("firefox", "Firefox"),
+        ("safari", "Safari")) if token in ua), "Browser")
+    platform = next((name for token, name in (
+        ("iphone", "iPhone"), ("ipad", "iPad"), ("android", "Android"), ("mac os", "macOS"),
+        ("macintosh", "macOS"), ("windows", "Windows"), ("linux", "Linux")) if token in ua),
+        "unknown OS")
+    return f"{browser} on {platform}"
+def get_session_user_id(token: str) -> Optional[int]:
+    """The user behind a live session token, or None. Thin wrapper over `resolve_session` so there
+    stays exactly ONE place that validates a token and slides its expiry.
+    """
+    resolved = resolve_session(token)
+    return resolved["user_id"] if resolved else None
+def list_user_sessions(user_id: int, current_token: Optional[str] = None) -> list[dict]:
+    """Live sessions for the account page. Never returns a token or a hash — the caller gets the
+    row id it revokes by, plus enough device detail to recognise it. `is_current` is resolved here
+    so the SPA never has to compare tokens.
+    """
+    current_hash = hash_session_token(current_token)
+    try:
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(
+                "SELECT id, session_token, label, user_agent, created_at, last_seen_at, expires_at "
+                "FROM sessions WHERE user_id = %s AND revoked_at IS NULL AND expires_at > %s "
+                "ORDER BY COALESCE(last_seen_at, created_at) DESC",
+                (user_id, datetime.now(timezone.utc)),
+            )
+            sessions = []
+            for row in cursor.fetchall():
+                sessions.append({
+                    "id": row["id"],
+                    "label": row.get("label") or _device_label(row.get("user_agent")),
+                    "created_at": row.get("created_at"),
+                    "last_seen_at": row.get("last_seen_at"),
+                    "expires_at": row.get("expires_at"),
+                    "is_current": bool(current_hash) and row.get("session_token") == current_hash,
+                })
+            return sessions
+    except mysql.connector.Error as err:
+        log_error("Could not list sessions", exc=err, user_id=user_id)
+        return []

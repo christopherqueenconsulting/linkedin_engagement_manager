@@ -6,11 +6,12 @@ re-exports every name below, so existing importers and patch targets keep resolv
 """
 
 from datetime import (
+    date,
     datetime,
     timedelta,
     timezone,
 )
-from typing import Optional
+from typing import Any, Optional
 
 import mysql.connector
 
@@ -26,13 +27,16 @@ from cqc_lem.platform.db.enums import (
     ConnectStatus,
     FollowStatus,
     LeadSignalChannel,
+    LeadSignalKind,
     LeadSignalSource,
     LeadSignalStatus,
     LeadStage,
     OutreachStage,
     OutreachStatus,
+    PostStatus,
     ScheduledDmStatus,
 )
+from cqc_lem.platform.db.repositories.posts import get_engager_candidates
 from cqc_lem.platform.db.shared import (
     ENGAGEMENT_TARGET_CONNECT_STATUSES,
     ENGAGEMENT_TARGET_FOLLOW_STATUSES,
@@ -1542,3 +1546,382 @@ def stop_followups_for_profile(user_id: int, profile_url: str) -> int:
     except mysql.connector.Error as err:
         log_error("Could not stop followups", exc=err, user_id=user_id)
         return 0
+
+
+# Why a proactive invite was abandoned before it was attempted (issue #623). Stored as the request's
+# failure_reason so the Connections review UI explains a FAILED row instead of just colouring it red.
+ALREADY_CONNECTED_MESSAGE = "Already connected (1st-degree) — no invite to send"
+# The profile offered no Connect affordance at all — neither the direct button nor one inside the
+# More-actions menu (issue #571). Usually an invite is already pending or LinkedIn only offers
+# Follow/Message on that profile; either way there is nothing to send, so the invite stops here
+# rather than falling through to the note/send steps that can only fail after it.
+NO_CONNECT_BUTTON_MESSAGE = "No Connect option on this profile (invite may already be pending)"
+# The Connect dialog opened but neither Send affordance could be clicked, so nothing went out
+# (issue #573). Unlike a missing note this does NOT degrade gracefully — the invite is lost — which
+# is why it stays an error and gets its own reason on the request row.
+INVITE_NOT_SENT_MESSAGE = "Connect dialog opened but the invitation could not be sent"
+# LinkedIn's hard cap on a connection-request note. Also the point past which a drafted note is
+# refined down rather than typed and silently truncated by the textarea's own maxlength.
+CONNECT_NOTE_MAX_CHARS = 300
+# TERMINAL for AUTOMATION: one shot per target. 'requested' and 'failed' both mean LinkedIn has our
+# one invite (or refused it), and re-inviting someone who declined is the pattern that gets accounts
+# restricted — the user decides manually from there. 'connected' is the ladder finishing.
+ENGAGEMENT_TARGET_CONNECT_TERMINAL = frozenset({ConnectStatus.REQUESTED, ConnectStatus.CONNECTED,
+                                                ConnectStatus.FAILED})
+# TERMINAL for CLICKING: the roster pass never spends another follow click on a target that reached
+# either. 'follow_failed' is still re-READ on later visits (a read-only correction costs nothing and
+# a follow that landed but could not be verified must not be retired forever) — see
+# `reconcile_roster_follow_state`.
+ENGAGEMENT_TARGET_FOLLOW_TERMINAL = frozenset({FollowStatus.FOLLOWING, FollowStatus.FOLLOW_FAILED})
+# Consecutive BLOCKED VISITS before the roster card badges the target. Two distinct visits, not two
+# cards on one visit: a single page that happened to render only reshares is not evidence that the
+# author restricts commenting.
+ENGAGEMENT_TARGET_BLOCKED_BADGE_STREAK = 2
+_ENGAGEMENT_TARGET_COLS = ("id", "profile_url", "name", "category", "max_comments_per_week",
+                           "active", "last_engaged_at", "comments_this_week", "week_start",
+                           "source", "comment_blocked_streak", "last_blocked_at", "follow_status",
+                           "followed_at", "follow_attempts", "connect_status", "connect_requested_at")
+def resolve_weekly_cap(value: Any) -> int:
+    """The per-author weekly cap, with an EXPLICIT 0 preserved. 0 is how the SPA pauses an account
+    without removing it, so `value or DEFAULT` would read that pause as "unset" and hand the account
+    the default two comments a week — the opposite of what the operator asked for.
+    """
+    if value is None:
+        return ENGAGEMENT_TARGET_WEEKLY_DEFAULT
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return ENGAGEMENT_TARGET_WEEKLY_DEFAULT
+def engagement_week_start(today: Optional[date] = None) -> date:
+    """Monday of the week `today` falls in — the reset boundary for the per-author weekly cap."""
+    today = today or datetime.now().date()
+    return today - timedelta(days=today.weekday())
+def _clean_target_row(row: dict) -> dict:
+    """Normalize a roster row: bools as bools, and a STALE weekly counter reported as 0 so a target
+    whose cap was spent last week is immediately eligible again without a reset job.
+    """
+    row["active"] = bool(row.get("active"))
+    if row.get("week_start") != engagement_week_start():
+        row["comments_this_week"] = 0
+    row["comments_this_week"] = int(row.get("comments_this_week") or 0)
+    row["max_comments_per_week"] = resolve_weekly_cap(row.get("max_comments_per_week"))
+    row["comment_blocked_streak"] = int(row.get("comment_blocked_streak") or 0)
+    row["follow_attempts"] = int(row.get("follow_attempts") or 0)
+    if row.get("follow_status") not in ENGAGEMENT_TARGET_FOLLOW_STATUSES:
+        row["follow_status"] = FollowStatus.UNKNOWN.value
+    if row.get("connect_status") not in ENGAGEMENT_TARGET_CONNECT_STATUSES:
+        row["connect_status"] = ConnectStatus.UNKNOWN.value
+    return row
+def get_engagement_targets(user_id: int, active_only: bool = False) -> list:
+    """The user's engagement roster, grouped by category and oldest-configured first within each
+    category. `comments_this_week` is already week-aware (0 once the stored week_start is not the
+    current week).
+    """
+    try:
+        with db_cursor(dictionary=True) as cursor:
+            sql = (f"SELECT {', '.join(_ENGAGEMENT_TARGET_COLS)} FROM engagement_targets "
+                   f"WHERE user_id=%s")
+            if active_only:
+                sql += " AND active=1"
+            sql += " ORDER BY category, id"
+            cursor.execute(sql, (user_id,))
+            return [_clean_target_row(r) for r in (cursor.fetchall() or [])]
+    except mysql.connector.Error as err:
+        log_error("Could not list engagement targets", exc=err, user_id=user_id)
+        return []
+def record_target_engagement(user_id: int, profile_url: str) -> bool:
+    """Count one comment against a roster author's weekly cap and stamp last_engaged_at. The
+    counter resets in the same statement when the stored week_start is not the current week, so a
+    new week always starts from 1 without a separate reset job.
+
+    A landed comment also clears `comment_blocked_streak` (issue #962): the streak means "we could
+    not comment here", and this IS the proof that we could. Folded into this one statement rather
+    than a second call site so the two can never disagree.
+
+    For the same reason a pending 'needs_connection' escalation (issue #979) is stood back down to
+    'unknown': it means "following did not unlock commenting", and commenting just worked. Only that
+    one state is cleared — an invite already sent ('requested'/'failed'/'connected') is a fact about
+    LinkedIn that a comment landing does not undo.
+    """
+    week = engagement_week_start()
+    try:
+        with db_cursor(commit=True) as cursor:
+            cursor.execute(
+                "UPDATE engagement_targets SET "
+                "comments_this_week = IF(week_start = %s, comments_this_week + 1, 1), "
+                "week_start = %s, last_engaged_at = NOW(), comment_blocked_streak = 0, "
+                f"connect_status = IF(connect_status = '{ConnectStatus.NEEDS_CONNECTION.value}', "
+                f"'{ConnectStatus.UNKNOWN.value}', connect_status) "
+                "WHERE user_id=%s AND profile_url=%s", (week, week, user_id, str(profile_url or "").strip()))
+            return cursor.rowcount > 0
+    except mysql.connector.Error as err:
+        log_error("Could not record target engagement", exc=err, user_id=user_id)
+        return False
+def suggest_engagement_targets(user_id: int, limit: int = 20) -> list:
+    """Seed candidates for an empty roster: people who recently engaged with the user's OWN posts
+    (post_engagers), minus anyone already on the roster. Costs no scraping. Suggested as 'icp' —
+    someone reacting to your content is far likelier to be a buyer than a peer — and the operator
+    re-categorizes in the editor.
+    """
+    if limit <= 0:
+        return []
+    existing = {str(t.get("profile_url") or "").rstrip("/").lower()
+                for t in get_engagement_targets(user_id)}
+    out = []
+    for cand in get_engager_candidates(user_id, days=60):
+        url = str(cand.get("person_profile_url") or "").strip()
+        if not url or url.rstrip("/").lower() in existing:
+            continue
+        existing.add(url.rstrip("/").lower())
+        out.append({"profile_url": url, "name": cand.get("person_name"), "category": "icp",
+                    "max_comments_per_week": ENGAGEMENT_TARGET_WEEKLY_DEFAULT,
+                    "active": True, "source": "suggested"})
+        if len(out) >= limit:
+            break
+    return out
+# scheduled_dms.source for an auto-drafted DM-nurture reply (issue #485). NULL/absent means an
+# operator wrote it by hand, which is what every pre-#485 row is.
+SCHEDULED_DM_SOURCE_NURTURE = 'nurture'
+# scheduled_dms.source for an approval-gated owned-asset delivery (issue #624) — the lead magnet a
+# commenter asked for by keyword. Kept distinct from 'nurture' so each mechanic gets its own daily
+# draft cap and its own delivery count; the one-open-draft rule is deliberately SHARED across the
+# two (both write to the same thread, so two queued messages would read as spam to one person).
+SCHEDULED_DM_SOURCE_ARTIFACT = 'artifact'
+# scheduled_dms.source for a profile-viewer DM held for approval (issue #1137) — the cold lane, so
+# its draft is the thing the operator sees before it can reach anyone. Its own source value is what
+# lets the send path re-start the 'profile_viewer' follow-up ladder at the moment the DM actually
+# LANDS, rather than when it was drafted for a decision that may never come.
+SCHEDULED_DM_SOURCE_PROFILE_VIEWER = 'profile_viewer'
+# connection_requests.source for the same lane's other branch. `connection_requests` already carries
+# `source` as targeting provenance (issue #486), so the person approving sees which walk found them.
+CONNECTION_REQUEST_SOURCE_PROFILE_VIEWER = 'profile_viewer'
+def get_scheduled_dm_user_id(dm_id: int) -> Optional[int]:
+    """Who owns a scheduled DM, for the API's target-authorisation check (issue #914).
+
+    None for a missing OR unreadable row: callers compare it against the session user, so either way the
+    request is denied rather than allowed.
+    """
+    row = get_scheduled_dm(dm_id)
+    return row["user_id"] if row else None
+def get_connection_request_user_id(request_id: int) -> Optional[int]:
+    """Who owns a connection request, for the API's target-authorisation check (issue #914).
+
+    None for a missing OR unreadable row, which denies rather than allows.
+    """
+    row = get_connection_request(request_id)
+    return row["user_id"] if row else None
+def get_outreach_target_user_id(target_id: int) -> Optional[int]:
+    """Who owns an outreach target, for the API's target-authorisation check (issue #914).
+
+    None for a missing OR unreadable row, which denies rather than allows.
+    """
+    row = get_outreach_target(target_id)
+    return row["user_id"] if row else None
+def get_catchup_touch_user_id(touch_id: int) -> Optional[int]:
+    """Who owns a catch-up touch, for the API's target-authorisation check (issue #914).
+
+    None for a missing OR unreadable row, which denies rather than allows.
+    """
+    row = get_catchup_touch(touch_id)
+    return row["user_id"] if row else None
+# --- lead scoring & CRM-lite pipeline (issue #484) ---------------------------------------------
+# Every source below is engagement we ALREADY record, read back as one normalized activity stream
+# (kind, person_name, person_profile_url, occurred_at, detail). No new scraping.
+_LEAD_ACTIVITY_SOURCES: tuple = (
+    (LeadSignalKind.ENGAGED,
+     "SELECT engager_name AS person_name, engager_profile_url AS person_profile_url, "
+     "last_engaged_at AS occurred_at, '' AS detail FROM post_engagers "
+     "WHERE user_id=%s AND last_engaged_at >= (NOW() - INTERVAL %s DAY)"),
+    (LeadSignalKind.INTENT,
+     "SELECT person_name, person_profile_url, created_at AS occurred_at, status AS detail "
+     "FROM lead_signals WHERE user_id=%s AND created_at >= (NOW() - INTERVAL %s DAY) "
+     "AND status <> 'dismissed'"),
+    (LeadSignalKind.DM,
+     "SELECT recipient_name AS person_name, recipient_profile_url AS person_profile_url, "
+     "updated_at AS occurred_at, status AS detail FROM scheduled_dms "
+     "WHERE user_id=%s AND status='sent' AND updated_at >= (NOW() - INTERVAL %s DAY)"),
+    (LeadSignalKind.DM,
+     "SELECT first_name AS person_name, profile_url AS person_profile_url, "
+     "created_at AS occurred_at, event_type AS detail FROM dm_followups "
+     "WHERE user_id=%s AND event_type <> 'profile_viewer' "
+     "AND created_at >= (NOW() - INTERVAL %s DAY)"),
+    (LeadSignalKind.PROFILE_VIEW,
+     "SELECT first_name AS person_name, profile_url AS person_profile_url, "
+     "created_at AS occurred_at, event_type AS detail FROM dm_followups "
+     "WHERE user_id=%s AND event_type='profile_viewer' "
+     "AND created_at >= (NOW() - INTERVAL %s DAY)"),
+    (LeadSignalKind.CONNECT,
+     "SELECT recipient_name AS person_name, recipient_profile_url AS person_profile_url, "
+     "updated_at AS occurred_at, status AS detail FROM connection_requests "
+     "WHERE user_id=%s AND status='sent' AND updated_at >= (NOW() - INTERVAL %s DAY)"),
+    (LeadSignalKind.FUNNEL,
+     "SELECT target_name AS person_name, target_profile_url AS person_profile_url, "
+     "updated_at AS occurred_at, stage AS detail FROM outreach_funnel_targets "
+     "WHERE user_id=%s AND status <> 'canceled' AND updated_at >= (NOW() - INTERVAL %s DAY)"),
+)
+def get_lead_activity(user_id: int, days: int = 90) -> list:
+    """Every engagement signal about every person who touched this user in the window, normalized
+    for the scorer. Each source is queried independently so one unavailable table degrades that
+    signal instead of losing the whole pipeline.
+    """
+    connection = _connection.get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+    rows: list = []
+    try:
+        for kind, sql in _LEAD_ACTIVITY_SOURCES:
+            try:
+                cursor.execute(sql, (user_id, days))
+                for row in cursor.fetchall():
+                    row["kind"] = str(kind)
+                    rows.append(row)
+            except mysql.connector.Error as err:
+                log_error(f"Could not read {kind} lead activity", exc=err, user_id=user_id)
+        return rows
+    finally:
+        cursor.close()
+        connection.close()
+def _like_literal(value: str, escape: str = "!") -> str:
+    """Escape LIKE metacharacters so a value is matched literally. A newsletter URL can carry
+    percent-encoding ('%20'), and an unescaped '%' inside the pattern matches ANY text — which would
+    silently over-count the attribution it feeds.
+    """
+    return (str(value).replace(escape, escape + escape)
+            .replace("%", escape + "%").replace("_", escape + "_"))
+def count_artifact_cta_deliveries(user_id: int, days: int = 90,
+                                  newsletter_url: Optional[str] = None) -> dict:
+    """Owned-asset CTA deliveries in the last `days` (issue #624) — the attribution half of the loop,
+    so subscriber growth can be read against the CTAs that were actually delivered.
+
+    The two mechanics are counted SEPARATELY because they deliver differently and one of them is not
+    a send at all: `lead_magnet_dms` counts the approval-gated DM drafts this automation queued, and
+    `newsletter_links` counts the published posts that carried the subscribe URL. `newsletter_links`
+    is None — not 0 — when the user has no newsletter URL configured: there was nothing to carry,
+    which is a different fact from "carried nothing".
+
+    The link side matches EITHER column, because which one holds the URL depends on the host and
+    only one of the two cases is the common one: `newsletter_url` is written by
+    `mark_newsletter_published` from a linkedin.com article URL, and #392's split deliberately leaves
+    in-platform links in the BODY (they carry no reach penalty), so `first_comment_link` alone would
+    report 0 forever for the mainline LinkedIn newsletter. An off-platform newsletter (Substack &c.)
+    is the reverse: the split moves it out of `content` and into `first_comment_link`.
+    """
+    window = max(1, int(days or 1))
+    out: dict = {"window_days": window, "lead_magnet_dms": 0, "newsletter_links": None}
+    try:
+        with db_cursor() as cursor:
+            cursor.execute(
+                "SELECT COUNT(*) FROM scheduled_dms WHERE user_id = %s AND source = %s "
+                "AND created_at >= (NOW() - INTERVAL %s DAY)",
+                (user_id, SCHEDULED_DM_SOURCE_ARTIFACT, window))
+            row = cursor.fetchone()
+            out["lead_magnet_dms"] = int(row[0]) if row and row[0] else 0
+            url = str(newsletter_url or "").strip()
+            if url:
+                pattern = f"%{_like_literal(url)}%"
+                cursor.execute(
+                    "SELECT COUNT(*) FROM posts WHERE user_id = %s AND status = %s "
+                    "AND (content LIKE %s ESCAPE '!' OR first_comment_link LIKE %s ESCAPE '!') "
+                    "AND updated_at >= (NOW() - INTERVAL %s DAY)",
+                    (user_id, PostStatus.POSTED.value, pattern, pattern, window))
+                row = cursor.fetchone()
+                out["newsletter_links"] = int(row[0]) if row and row[0] else 0
+            return out
+    except mysql.connector.Error as err:
+        log_error("Could not count artifact CTA deliveries", exc=err, user_id=user_id)
+        return out
+# The appreciation triggers that share `_dispatch_appreciation_dms` — and therefore the ledger below.
+APPRECIATION_EVENT_TYPES = ("connection_accepted", "recommendation_received", "collaboration")
+def count_existing_double_sent_catchups() -> int:
+    """Count contacts who were sent the SAME catch-up congratulations more than once.
+
+    Measured off `logs`, not `catchup_touches`: the ledger carries a UNIQUE key on
+    (user, profile_url, event_type, event_period), so grouping IT by that key can never return a
+    duplicate — the historical double-send this issue is about came from ONE touch row being sent
+    twice (a retry or an orphan re-queue after the status update was lost), which shows up only as
+    two `success` DM log rows carrying the same body to the same person.
+
+    This is the duplicate SURFACE, not a proven double-send count: the default congratulations are
+    deterministic per event type and name, so one contact's repeated annual milestone produces the
+    same body twice and is counted here. `list_existing_double_sent_catchups()` carries the send
+    gap that separates the two — read it before reporting this number as double-sends.
+
+    Read-only, run once at deploy time to report the historical duplicate surface on the issue
+    (#1078). Returns 0 when nothing is double-sent or the read fails.
+    """
+    try:
+        with db_cursor() as cursor:
+            cursor.execute(
+                "SELECT COUNT(*) FROM ("
+                "SELECT l.user_id, l.post_url, l.message FROM logs l "
+                "WHERE l.action_type = 'dm' AND l.result = 'success' "
+                # EXISTS rather than a JOIN: two milestones can share one body (the deterministic
+                # fallback congratulations), and a join would multiply ONE log row into a fake duplicate.
+                "AND EXISTS (SELECT 1 FROM catchup_touches c WHERE c.user_id = l.user_id "
+                "AND c.profile_url = l.post_url AND c.message = l.message) "
+                "GROUP BY l.user_id, l.post_url, l.message HAVING COUNT(*) > 1"
+                ") dupes")
+            r = cursor.fetchone()
+            return int(r[0]) if r else 0
+    except mysql.connector.Error as err:
+        log_error("Could not count existing double-sent catch-ups", exc=err)
+        return 0
+def list_existing_double_sent_catchups() -> list[dict]:
+    """List the (user, contact) pairs behind `count_existing_double_sent_catchups()`.
+
+    Same read, one grain up: the counter returns how many catch-up BODIES were sent more than once,
+    this rolls those rows up per contact so a non-zero count can be judged per person (does anyone
+    need an apology, or was it one contact hit twice?). `sends` is every `success` DM row across the
+    repeated bodies, so a body sent twice contributes 2; `duplicate_bodies` is how many distinct
+    bodies repeated, and summing it over the list reproduces the counter.
+
+    The message body itself is deliberately not returned — it is DM content, and the pair plus the
+    send counts is what the judgement needs.
+
+    The timestamps are not decoration: the repeated BODY alone cannot tell a double-send from a
+    legitimate repeat. `_CATCHUP_DEFAULT_CONGRATS` is deterministic per event type and first name,
+    so Jane's 2025 and 2026 work anniversaries — two correctly-deduped touches, different
+    `event_period` — both send the literal string "Happy work anniversary, Jane!" and land in this
+    read as one repeated body. What separates them is the GAP: a retry or the orphan re-queue fires
+    seconds to hours apart, an annual or monthly milestone weeks to a year. `repeat_gap_seconds` is
+    the tightest such gap on the pair, so the owner can tell "sent twice by mistake" from
+    "congratulated twice, correctly, a year apart" without ever seeing the message.
+
+    Returns:
+        One dict per affected pair (`user_id`, `profile_url`, `sends`, `duplicate_bodies`,
+        `first_sent_at`, `last_sent_at`, `repeat_gap_seconds`), worst first. Empty when nothing is
+        double-sent or the read fails.
+    """
+    try:
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(
+                "SELECT d.user_id, d.post_url AS profile_url, "
+                "SUM(d.sends) AS sends, COUNT(*) AS duplicate_bodies, "
+                "MIN(d.first_sent) AS first_sent_at, MAX(d.last_sent) AS last_sent_at, "
+                "MIN(TIMESTAMPDIFF(SECOND, d.first_sent, d.last_sent)) AS repeat_gap_seconds FROM ("
+                "SELECT l.user_id, l.post_url, l.message, COUNT(*) AS sends, "
+                "MIN(l.created_at) AS first_sent, MAX(l.created_at) AS last_sent FROM logs l "
+                "WHERE l.action_type = 'dm' AND l.result = 'success' "
+                # EXISTS rather than a JOIN, for the same reason as the counter above: two
+                # milestones can share one body, and a join would fake a duplicate out of one row.
+                "AND EXISTS (SELECT 1 FROM catchup_touches c WHERE c.user_id = l.user_id "
+                "AND c.profile_url = l.post_url AND c.message = l.message) "
+                "GROUP BY l.user_id, l.post_url, l.message HAVING COUNT(*) > 1"
+                ") d GROUP BY d.user_id, d.post_url ORDER BY sends DESC, d.user_id")
+            return [
+                {
+                    "user_id": int(row["user_id"]),
+                    "profile_url": row["profile_url"],
+                    "sends": int(row["sends"]),
+                    "duplicate_bodies": int(row["duplicate_bodies"]),
+                    "first_sent_at": row["first_sent_at"],
+                    "last_sent_at": row["last_sent_at"],
+                    # `logs.created_at` carries no NOT NULL, so an unstamped row reads as an
+                    # UNKNOWN gap — never as 0, which is the strongest possible retry signal.
+                    "repeat_gap_seconds": (None if row["repeat_gap_seconds"] is None
+                                           else int(row["repeat_gap_seconds"])),
+                }
+                for row in (cursor.fetchall() or [])
+            ]
+    except mysql.connector.Error as err:
+        log_error("Could not list existing double-sent catch-ups", exc=err)
+        return []

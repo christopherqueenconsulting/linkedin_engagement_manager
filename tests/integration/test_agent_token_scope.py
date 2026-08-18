@@ -18,6 +18,7 @@ import mysql.connector
 import pytest
 
 from cqc_lem.utilities import db
+from cqc_lem.utilities.crypto import hash_session_token
 
 pytestmark = pytest.mark.integration
 
@@ -208,13 +209,13 @@ class TestTheGrantedTtlSurvivesBeingUsed:
         which is the exact failure `ttl_hours` was added to prevent.
         """
         before = _exec("SELECT expires_at FROM sessions WHERE session_token=%s",
-                       (db.hash_session_token(agent_token),), fetch=True)[0]["expires_at"]
+                       (hash_session_token(agent_token),), fetch=True)[0]["expires_at"]
 
         r = api_client.get(f"/api/user/engagement-preferences?session_token={agent_token}")
         assert r.status_code == 200, r.text
 
         after = _exec("SELECT expires_at, last_seen_at FROM sessions WHERE session_token=%s",
-                      (db.hash_session_token(agent_token),), fetch=True)[0]
+                      (hash_session_token(agent_token),), fetch=True)[0]
         assert after["expires_at"] == before, "the granted TTL was rewritten by using the token"
         assert after["last_seen_at"] is not None, "the session should still record its use"
         # And it is genuinely long — not the idle window wearing a 90-day label.
@@ -225,9 +226,9 @@ class TestTheGrantedTtlSurvivesBeingUsed:
         """The fix must not turn every other session into a fixed-expiry one."""
         _exec("UPDATE sessions SET expires_at=%s WHERE session_token=%s",
               (datetime.now(timezone.utc) + timedelta(hours=1),
-               db.hash_session_token(human_token)))
+               hash_session_token(human_token)))
         api_client.get(f"/api/user/engagement-preferences?session_token={human_token}")
         after = _exec("SELECT expires_at FROM sessions WHERE session_token=%s",
-                      (db.hash_session_token(human_token),), fetch=True)[0]["expires_at"]
+                      (hash_session_token(human_token),), fetch=True)[0]["expires_at"]
         remaining = after.replace(tzinfo=timezone.utc) - datetime.now(timezone.utc)
         assert remaining > timedelta(hours=2), "an active browser session must keep sliding forward"

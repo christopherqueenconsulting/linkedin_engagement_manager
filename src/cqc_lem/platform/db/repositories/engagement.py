@@ -624,3 +624,15 @@ def has_automated_engagement(user_id: int) -> bool:
     except mysql.connector.Error as err:
         log_error(f"Could not check automated engagement for user_id {user_id}", exc=err)
         return False
+
+
+def has_user_commented_on_post_url(user_id: int, post_url: str):
+    """Have we already left a top-level comment on this post URL?
+
+    Replies do not count (see `count_user_comments_on_post_url`). A failed read counts zero, so an
+    unreadable log reads as "not yet" and the post can be commented on again.
+    """
+    return count_user_comments_on_post_url(user_id, post_url) > 0
+def count_dms_sent_today(user_id: int) -> int:
+    """DMs logged as SUCCESS since the database's own midnight — the counterpart cap to `count_comments_today`."""
+    return _count_actions_today(user_id, LogActionType.DM)

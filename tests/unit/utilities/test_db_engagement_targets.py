@@ -7,7 +7,6 @@ import pytest
 
 pytestmark = pytest.mark.unit
 
-_DB = "cqc_lem.utilities.db"
 
 
 class TestWeekStart:
@@ -139,9 +138,9 @@ class TestRecordTargetEngagement:
 
 class TestSuggestEngagementTargets:
     def test_excludes_accounts_already_on_the_roster(self):
-        with patch(f"{_DB}.get_engagement_targets",
+        with patch("cqc_lem.platform.db.repositories.outreach.get_engagement_targets",
                    return_value=[{"profile_url": "https://x/in/jane/"}]), \
-             patch(f"{_DB}.get_engager_candidates", return_value=[
+             patch("cqc_lem.platform.db.repositories.outreach.get_engager_candidates", return_value=[
                  {"person_name": "Jane", "person_profile_url": "https://x/in/jane"},
                  {"person_name": "Bob", "person_profile_url": "https://x/in/bob"}]):
             from cqc_lem.utilities.db import suggest_engagement_targets
@@ -150,8 +149,8 @@ class TestSuggestEngagementTargets:
         assert out[0]["source"] == "suggested" and out[0]["category"] == "icp"
 
     def test_honours_the_limit_and_dedups(self):
-        with patch(f"{_DB}.get_engagement_targets", return_value=[]), \
-             patch(f"{_DB}.get_engager_candidates", return_value=[
+        with patch("cqc_lem.platform.db.repositories.outreach.get_engagement_targets", return_value=[]), \
+             patch("cqc_lem.platform.db.repositories.outreach.get_engager_candidates", return_value=[
                  {"person_name": "A", "person_profile_url": "https://x/in/a"},
                  {"person_name": "A again", "person_profile_url": "https://x/in/a"},
                  {"person_name": "B", "person_profile_url": "https://x/in/b"},
@@ -161,8 +160,8 @@ class TestSuggestEngagementTargets:
         assert [s["profile_url"] for s in out] == ["https://x/in/a", "https://x/in/b"]
 
     def test_non_positive_limit_returns_nothing_without_querying(self):
-        with patch(f"{_DB}.get_engagement_targets") as roster, \
-             patch(f"{_DB}.get_engager_candidates") as candidates:
+        with patch("cqc_lem.platform.db.repositories.outreach.get_engagement_targets") as roster, \
+             patch("cqc_lem.platform.db.repositories.outreach.get_engager_candidates") as candidates:
             from cqc_lem.utilities.db import suggest_engagement_targets
             assert suggest_engagement_targets(1, limit=0) == []
             assert suggest_engagement_targets(1, limit=-3) == []

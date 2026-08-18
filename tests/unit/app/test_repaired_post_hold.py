@@ -485,7 +485,7 @@ class TestThePreference:
         from cqc_lem.utilities.db import _ENGAGEMENT_COLS, update_engagement_preferences
         conn, cursor = fake_cursor(fetch_one=None, rowcount=1)
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn), \
-             patch("cqc_lem.utilities.db.max_catchup_touches_allowed", return_value=10):
+             patch("cqc_lem.platform.db.repositories.users.max_catchup_touches_allowed", return_value=10):
             update_engagement_preferences(1, {"hold_repaired_posts_for_review": False})
         saved = dict(zip(_ENGAGEMENT_COLS, cursor.execute.call_args[0][1][1:]))
         assert saved["hold_repaired_posts_for_review"] == 0

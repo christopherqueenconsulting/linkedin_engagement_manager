@@ -8,7 +8,6 @@ import pytest
 
 pytestmark = pytest.mark.unit
 
-_DB = "cqc_lem.utilities.db"
 _GET_CONN = "cqc_lem.platform.db.connection.get_db_connection"
 _FEEDBACK = "cqc_lem.platform.db.repositories.feedback"
 
@@ -361,7 +360,7 @@ class TestIsUserAdmin:
         import mysql.connector
         conn, cur = fake_cursor(fetch_all=None)
         cur.execute.side_effect = mysql.connector.Error("boom")
-        with patch(f"{_GET_CONN}", return_value=conn), patch(f"{_DB}.log_error"):
+        with patch(f"{_GET_CONN}", return_value=conn), patch("cqc_lem.platform.db.repositories.feedback.log_error"):
             from cqc_lem.utilities.db import is_user_admin
             assert is_user_admin(5) is False
 
@@ -394,7 +393,7 @@ class TestCountPendingAdminReview:
         import mysql.connector
         conn, cur = fake_cursor(fetch_all=None)
         cur.execute.side_effect = mysql.connector.Error("boom")
-        with patch(f"{_GET_CONN}", return_value=conn), patch(f"{_DB}.log_error"):
+        with patch(f"{_GET_CONN}", return_value=conn), patch("cqc_lem.platform.db.repositories.feedback.log_error"):
             from cqc_lem.utilities.db import count_pending_admin_review
             assert count_pending_admin_review() == 0
 

@@ -2028,3 +2028,204 @@ def insert_post(email: str, content: str, scheduled_time: datetime, post_type: P
         log_error("Could not insert post", exc=e)
 
     return success
+
+
+# Columns the Review & Edit list may be ordered by. Whitelisted to keep the
+# ORDER BY clause injection-safe (the value is interpolated, not parameterized).
+_POST_SORT_COLUMNS = {
+    'scheduled_time': 'scheduled_time',
+    'status': 'status',
+    'post_type': 'post_type',
+    'id': 'id',
+}
+_SEARCH_MAX_TERMS = 20
+def _escape_like(term: str) -> str:
+    """Escape LIKE wildcards so a search term matches literally (default '\\' escape)."""
+    return term.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
+def build_content_search_clause(search: Optional[str], column: str = 'content') -> tuple[Optional[str], list]:
+    """Parse a boolean keyword query into a parameterized SQL condition over *column*.
+
+    Supports AND / OR / NOT (case-insensitive), implicit AND between adjacent terms,
+    parentheses for grouping, and "quoted phrases". Each bare term matches the column
+    case-insensitively via LIKE %term% (wildcards in the term are escaped). Returns
+    ``(sql_fragment, params)`` — the fragment is already fully parenthesized and safe
+    to drop into a WHERE — or ``(None, [])`` when the query is empty. Unparseable input
+    falls back to a single LIKE over the raw string so search never hard-errors.
+    """
+    if not search or not search.strip():
+        return None, []
+
+    # ── Tokenize: parens, "quoted phrases", and bare words (AND/OR/NOT are keywords).
+    tokens: list[tuple[str, str]] = []
+    i, n = 0, len(search)
+    while i < n:
+        ch = search[i]
+        if ch.isspace():
+            i += 1
+        elif ch == '(':
+            tokens.append(('LPAREN', ch)); i += 1
+        elif ch == ')':
+            tokens.append(('RPAREN', ch)); i += 1
+        elif ch == '"':
+            j = i + 1
+            while j < n and search[j] != '"':
+                j += 1
+            phrase = search[i + 1:j]
+            if phrase.strip():
+                tokens.append(('TERM', phrase.strip()))
+            i = j + 1
+        else:
+            j = i
+            while j < n and not search[j].isspace() and search[j] not in '()"':
+                j += 1
+            word = search[i:j]
+            upper = word.upper()
+            if upper in ('AND', 'OR', 'NOT'):
+                tokens.append((upper, word))
+            else:
+                tokens.append(('TERM', word))
+            i = j
+
+    if not tokens:
+        return None, []
+
+    params: list = []
+    term_count = 0
+
+    class _ParseError(Exception):
+        pass
+
+    pos = 0
+
+    def _peek() -> Optional[str]:
+        return tokens[pos][0] if pos < len(tokens) else None
+
+    def _term_sql(value: str) -> str:
+        nonlocal term_count
+        term_count += 1
+        if term_count > _SEARCH_MAX_TERMS:
+            raise _ParseError('too many terms')
+        params.append(f"%{_escape_like(value)}%")
+        return f"{column} LIKE %s"
+
+    def _parse_or() -> str:
+        node = _parse_and()
+        while _peek() == 'OR':
+            nonlocal_advance()
+            node = f"({node} OR {_parse_and()})"
+        return node
+
+    def _parse_and() -> str:
+        node = _parse_not()
+        while _peek() in ('AND', 'NOT', 'TERM', 'LPAREN'):
+            if _peek() == 'AND':
+                nonlocal_advance()
+            node = f"({node} AND {_parse_not()})"
+        return node
+
+    def _parse_not() -> str:
+        if _peek() == 'NOT':
+            nonlocal_advance()
+            return f"(NOT {_parse_not()})"
+        return _parse_atom()
+
+    def _parse_atom() -> str:
+        tok = _peek()
+        if tok == 'LPAREN':
+            nonlocal_advance()
+            inner = _parse_or()
+            if _peek() != 'RPAREN':
+                raise _ParseError('unbalanced parens')
+            nonlocal_advance()
+            return f"({inner})"
+        if tok == 'TERM':
+            value = tokens[pos][1]
+            nonlocal_advance()
+            return _term_sql(value)
+        raise _ParseError(f'unexpected token {tok}')
+
+    def nonlocal_advance() -> None:
+        nonlocal pos
+        pos += 1
+
+    try:
+        sql = _parse_or()
+        if pos != len(tokens):
+            raise _ParseError('trailing tokens')
+        return sql, params
+    except _ParseError:
+        # Fallback: treat the whole raw query as one literal term.
+        return f"{column} LIKE %s", [f"%{_escape_like(search.strip())}%"]
+def get_posts(user_id: int, limit: int = 10, offset: int = 0,
+              sort_order: str = 'asc', status_filter: Optional[str] = None,
+              post_type_filter: Optional[str] = None, search: Optional[str] = None,
+              sort_by: str = 'scheduled_time',
+              start_date: Optional[datetime] = None,
+              end_date: Optional[datetime] = None) -> tuple[list, int]:
+    """One page of a user's posts plus the TOTAL number matching, for the Review & Edit list.
+
+    The count runs over the same WHERE clause as the page, so pagination stays honest under filtering.
+    `sort_by` is whitelisted through `_POST_SORT_COLUMNS` (anything unknown falls back to
+    `scheduled_time`) because the column name is interpolated rather than parameterized; `search` becomes
+    a quoted-term / AND-OR clause via `build_content_search_clause`. Date bounds are coerced to naive UTC.
+
+    A read error returns `([], 0)` — an empty page, never a partial one.
+    """
+    connection = _connection.get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+
+    order = 'ASC' if sort_order.lower() != 'desc' else 'DESC'
+    sort_col = _POST_SORT_COLUMNS.get((sort_by or '').lower(), 'scheduled_time')
+
+    try:
+        where = "WHERE user_id = %s"
+        params: list = [user_id]
+        if status_filter:
+            where += " AND status = %s"
+            params.append(status_filter.lower())
+        if post_type_filter:
+            where += " AND post_type = %s"
+            params.append(post_type_filter.lower())
+        if start_date is not None:
+            where += " AND scheduled_time >= %s"
+            params.append(to_naive_utc(start_date))
+        if end_date is not None:
+            where += " AND scheduled_time <= %s"
+            params.append(to_naive_utc(end_date))
+        search_sql, search_params = build_content_search_clause(search)
+        if search_sql:
+            where += f" AND ({search_sql})"
+            params.extend(search_params)
+
+        cursor.execute(
+            f"SELECT COUNT(*) AS total FROM posts {where}",
+            params
+        )
+        total = cursor.fetchone()['total']
+
+        cursor.execute(
+            f"SELECT id, content, video_url, image_url, scheduled_time, post_type, status, "
+            f"carousel_slides, authenticity_score, gate_reason, rejection_reason, archetype, "
+            f"manual_publish "
+            f"FROM posts {where} ORDER BY {sort_col} {order}, id {order} LIMIT %s OFFSET %s",
+            params + [limit, offset]
+        )
+        posts = cursor.fetchall()
+    except mysql.connector.Error as err:
+        log_error(f"Could not get posts for user id: {user_id}", exc=err)
+        posts = []
+        total = 0
+    finally:
+        cursor.close()
+        connection.close()
+
+    return posts, total
+def soft_delete_posts(post_ids: list[int], rejection_reason: Optional[str] = None,
+                      user_id: Optional[int] = None) -> bool:
+    """Reject posts rather than delete them, so the row and its reason survive for the plan to learn from.
+
+    `user_id` scopes the write to one account's rows — see `bulk_update_posts` for what that argument
+    guarantees (issue #914).
+    """
+    return bulk_update_posts(post_ids, status=PostStatus.REJECTED, rejection_reason=rejection_reason,
+                             user_id=user_id)

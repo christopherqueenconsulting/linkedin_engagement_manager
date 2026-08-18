@@ -56,8 +56,8 @@ class TestCookieWrites:
         cur = mock_database_connection["cursor"]
         cookie = {"name": "li_at", "value": LI_AT, "domain": ".linkedin.com", "path": "/",
                   "expiry": 123, "secure": True, "httpOnly": True}
-        with patch("cqc_lem.utilities.db.get_user_id", return_value=42), \
-             patch("cqc_lem.utilities.db.prune_superseded_cookies"):
+        with patch("cqc_lem.platform.db.repositories.users.get_user_id", return_value=42), \
+             patch("cqc_lem.platform.db.repositories.users.prune_superseded_cookies"):
             store_cookies("a@b.com", [cookie])
 
         stored = next(p[1] for s, p in _executed(cur) if "INSERT INTO cookies" in s)
@@ -74,7 +74,7 @@ class TestCookieWrites:
         cur = mock_database_connection["cursor"]
         cookie = {"name": "li_at", "value": LI_AT, "domain": ".linkedin.com", "path": "/",
                   "expiry": 123, "secure": True, "httpOnly": True}
-        with patch("cqc_lem.utilities.db.get_user_id", return_value=None):
+        with patch("cqc_lem.platform.db.repositories.users.get_user_id", return_value=None):
             ok = store_cookies("nobody@example.com", [cookie])
         assert ok is False
         assert not any("INSERT INTO cookies" in s for s, _ in _executed(cur))
@@ -90,9 +90,9 @@ class TestCookieWrites:
 
         cur = mock_database_connection["cursor"]
         cur.execute.side_effect = mysql.connector.Error("cookie write failed")
-        with patch("cqc_lem.utilities.db.get_user_id", return_value=42), \
-             patch("cqc_lem.utilities.db.get_user_email", return_value="a@b.com"), \
-             patch("cqc_lem.utilities.db.prune_superseded_cookies"):
+        with patch("cqc_lem.platform.db.repositories.users.get_user_id", return_value=42), \
+             patch("cqc_lem.platform.db.repositories.users.get_user_email", return_value="a@b.com"), \
+             patch("cqc_lem.platform.db.repositories.users.prune_superseded_cookies"):
             assert store_linkedin_li_at(42, LI_AT) is False
 
 
