@@ -149,16 +149,41 @@ def _running_under_pytest() -> bool:
     return "pytest" in sys.modules
 
 
+#: Env var an operator CLI sets on ITSELF to keep its run out of the production PostHog project.
+TELEMETRY_MUTED_ENV = "LEM_TELEMETRY_MUTED"
+
+
+def telemetry_muted() -> bool:
+    """True when this process has declared itself not-production and must publish no telemetry.
+
+    The sibling of `_running_under_pytest` for the other caller that reaches the real project
+    through the process ENVIRONMENT rather than through intent: a `scripts/` operator CLI. The
+    corpus samplers document that they need a database the agent worktree does not have, and
+    `lem-agentd` hands every run it spawns a real `POSTHOG_API_KEY` (see `_running_under_pytest`)
+    but no MySQL credentials — so one sampler run on the host published a genuine grouped
+    `$exception` for its own documented "no database here" condition (`ProgrammingError: 1045
+    Access denied for user 'lem_user'`), and the daily error→issue cron filed it as issue #1661.
+
+    An env var rather than an inferred "is this a script?": `scripts/` also holds tooling whose
+    telemetry is the point (`posthog_annotate.py`, `benchmark_models.py`), and guessing would mute
+    those too. `os.environ.setdefault` at the top of a CLI leaves `LEM_TELEMETRY_MUTED=0` as the
+    operator's way back in when a run genuinely should be recorded.
+    """
+    raw = (os.getenv(TELEMETRY_MUTED_ENV) or "").strip().lower()
+    return bool(raw) and raw not in ("0", "false", "no", "off")
+
+
 def _build_posthog_handler(level: int) -> Optional[logging.Handler]:
     """Build an OTLP-backed LoggingHandler that ships logs to PostHog Logs.
 
-    Returns None — no handler, nothing exported — when there is no key, or under pytest whatever
-    the key says (see `_running_under_pytest`). The refusal lives in the builder rather than at the
-    single call site below so a future second caller inherits it instead of re-opening the leak.
+    Returns None — no handler, nothing exported — when there is no key, under pytest whatever the
+    key says (see `_running_under_pytest`), or in a self-muted process (`telemetry_muted`). The
+    refusal lives in the builder rather than at the single call site below so a future second
+    caller inherits it instead of re-opening the leak.
     """
     api_key = os.getenv("POSTHOG_API_KEY", "")
     host = os.getenv("POSTHOG_HOST", "https://us.i.posthog.com").rstrip("/")
-    if not api_key or _running_under_pytest():
+    if not api_key or _running_under_pytest() or telemetry_muted():
         return None
 
     from opentelemetry._logs import set_logger_provider

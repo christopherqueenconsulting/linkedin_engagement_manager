@@ -39,6 +39,11 @@ from typing import Any, Iterable, Mapping, Optional, Sequence
 # Runnable from anywhere (the checkout's src/ is not on sys.path for a standalone script).
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src"))
 
+# Operator CLI, not the app: its documented "no database reachable here" failure must not file
+# a production error-tracking issue (#1661, see `logger.telemetry_muted`). Set BEFORE cqc_lem is
+# imported — the PostHog Logs handler is built at import time.
+os.environ.setdefault("LEM_TELEMETRY_MUTED", "1")
+
 from cqc_lem.platform.db.enums import PostType  # noqa: E402
 from cqc_lem.utilities.content_quality import (  # noqa: E402
     SURFACE_POST,
