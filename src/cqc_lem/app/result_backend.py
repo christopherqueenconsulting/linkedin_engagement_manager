@@ -6,13 +6,13 @@ the result channel so that a later `AsyncResult.get()` is event-driven instead o
 subscribe buys LEM nothing: nothing in the tree waits on a result, and the one reader that exists
 (`GET /api/admin/task-status/{task_id}`) reads `AsyncResult.state`, a plain GET on the result key.
 
-It cost something, though. When Redis blinked on 2026-08-14 the subscribe raised, its retry budget
-was spent reconnecting, and celery turned that into `RuntimeError("Retry limit exceeded while
-trying to reconnect to the Celery result store backend")` — so `send_task_message` never ran, the
-task was never queued, and the caller got a 500 for work its own database write had already
-committed (issue #1674). The dispatcher is a client here, not a worker: in a prefork child
-`task_join_will_block()` makes `on_task_call` a no-op, so this only ever fires in the API and beat
-processes — exactly the two that queue work for everything else.
+It costs something, though. If Redis is unreachable for even one connection attempt at exactly that
+moment, the subscribe raises, its retry budget is spent reconnecting, and celery turns that into
+`RuntimeError("Retry limit exceeded while trying to reconnect to the Celery result store backend")`
+— so `send_task_message` never runs, the task is never queued, and the caller gets a 500 for work
+its own database write already committed (issue #1674). The dispatcher is a client here, not a
+worker: in a prefork child `task_join_will_block()` makes `on_task_call` a no-op, so this only ever
+fires in the API and beat processes — exactly the two that queue work for everything else.
 
 A genuine Redis outage still fails the dispatch, loudly and in the right place: the broker is the
 SAME Redis instance, so `send_task_message` immediately after fails on its own and the caller sees

@@ -193,20 +193,23 @@ The worker likely crashed mid-task. Because `task_acks_late = True`, the message
 docker compose restart celery_worker
 ```
 
-### A Redis blip made a dispatch disappear (and 500'd the caller)
+### Dispatch must not depend on a decorative result-pubsub subscribe
 
-Fixed in #1674, and the shape is worth knowing because it is invisible from the outside.
 `Celery.send_task` subscribes the CALLER's result pubsub — `backend.on_task_call()` — **before** it
-publishes the message. When Redis was briefly unreachable that subscribe spent its retry budget and
-raised `RuntimeError: Retry limit exceeded while trying to reconnect to the Celery result store
-backend`, so `send_task_message` never ran: the task was never queued, and the API returned a 500
-for a request whose database write had already committed.
+publishes the message. If Redis is briefly unreachable at exactly that moment, that subscribe spends
+its retry budget and raises `RuntimeError: Retry limit exceeded while trying to reconnect to the
+Celery result store backend`, so `send_task_message` never runs: the task is never queued, and the
+caller gets a 500 for a request whose database write already committed.
 
 Nothing in LEM waits on a result (`/api/admin/task-status/{task_id}` reads `AsyncResult.state`, a
 plain GET on the result key), so that subscribe is decoration. `ResilientRedisBackend`
-(`app/result_backend.py`) makes it a DEBUG-logged no-op on an unreachable backend and lets the
-publish proceed. A real outage still fails the dispatch on the very next line, because the broker is
-the same Redis instance.
+(`app/result_backend.py`) makes it a DEBUG-logged no-op on the unreachable-backend shapes and lets
+the publish proceed. A real outage still fails the dispatch on the very next line, because the
+broker is the same Redis instance — true for the default compose topology, where broker and result
+backend are the same instance. It is NOT true for the SQS-broker + ElastiCache-backend split still
+documented in `celeryconfig.py` (`RESILIENT_REDIS_BACKEND` comment): there, a blip in the result
+backend alone would no longer surface at all. A `sentinel://` or a custom backend class URL is
+likewise a different backend and passes through this wrapper untouched.
 
 **The operator trap:** `app.conf.result_backend` is NOT `celeryconfig.result_backend`. Celery's
 `Settings.result_backend` reads `os.environ['CELERY_RESULT_BACKEND']` first and only then falls back
