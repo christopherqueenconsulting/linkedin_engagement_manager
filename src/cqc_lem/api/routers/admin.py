@@ -29,7 +29,7 @@ from typing import Any, List, Optional
 from celery import states as celery_states
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from fastapi.security import APIKeyHeader, HTTPAuthorizationCredentials, HTTPBearer
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, Field, model_validator
 
 from cqc_lem.api.models import ResponseModel
 from cqc_lem.app.engagement.feed import automate_commenting, consolidate_duplicate_comments_for_user
@@ -41,6 +41,7 @@ from cqc_lem.utilities.db import (
     PostType,
     admin_email_allowlist,
     count_admin_users,
+    count_auth_audit_log_for_admin,
     count_users_for_admin,
     get_feedback_by_id,
     get_feedback_list,
@@ -49,12 +50,15 @@ from cqc_lem.utilities.db import (
     get_post_user_id,
     get_user_for_admin,
     get_user_geo,
+    grant_subscription_extension,
     is_user_admin,
+    list_auth_audit_log_for_admin,
     list_users_for_admin,
     record_auth_event,
     record_feedback_review,
     replace_video_url_base,
     set_user_admin,
+    set_user_disabled,
     update_user_location,
 )
 from cqc_lem.utilities.env_constants import (
@@ -721,7 +725,8 @@ def admin_set_youtube_token(request: YouTubeTokenRequest,
 
 
 # ---------------------------------------------------------------------------
-# User management (issue #1450) — the admin's view of other accounts, and the ONE write on it.
+# User management (issue #1450, Phase 2 in #1603) — the admin's view of other accounts, and its
+# writes: role, per-user disable, a one-time subscription comp, and an audit-log viewer.
 #
 # Session gated (`_require_user_admin`), never `X-Admin-Secret`: a human clicks these. Absent from
 # every entry in `_SCOPE_SURFACES` by design — surfaces match on PATH not method, so listing users
@@ -763,6 +768,29 @@ class AdminUserRoleRequest(BaseModel):
     is_admin: bool
 
 
+class AdminUserDisabledRequest(BaseModel):
+    """Body of `POST /admin/users/{user_id}/disable` (issue #1603, Phase 2 of #1450).
+
+    Same shape as `AdminUserRoleRequest`: `user_id` in the path is the TARGET, never a parameter.
+    """
+
+    session_token: str
+    disabled: bool
+
+
+class AdminSubscriptionGrantRequest(BaseModel):
+    """Body of `POST /admin/users/{user_id}/subscription-grant` (issue #1603).
+
+    A ONE-TIME, time-boxed comp — `days` bumps `subscription_current_period_end` once, at grant
+    time. It is NOT a standing override: the next Stripe webhook write is expected and correct, and
+    there is no precedence rule here because nothing here is meant to outlast that write. Capped at
+    a year so a typo cannot mint a decade of free service.
+    """
+
+    session_token: str
+    days: int = Field(..., ge=1, le=365)
+
+
 def _admin_flags(row: dict) -> tuple:
     """`(effective, via_column, via_allowlist)` for one row.
 
@@ -795,6 +823,8 @@ def _admin_user_summary(row: dict) -> dict[str, Any]:
         "last_login": _main._utc_iso(row.get("last_login")),
         "signed_up_at": _main._utc_iso(row.get("signed_up_at")),
         "activated_at": _main._utc_iso(row.get("activated_at")),
+        "disabled": row.get("disabled_at") is not None,
+        "disabled_at": _main._utc_iso(row.get("disabled_at")),
     }
 
 
@@ -984,6 +1014,138 @@ def admin_set_user_role(user_id: int, request: AdminUserRoleRequest,
              target_user_id=user_id, admin_action=str(event))
     return ResponseModel(status_code=200, detail={
         "user_id": user_id, "is_admin": request.is_admin, "changed": True})
+
+
+@router.post("/users/{user_id}/disable", responses={
+    200: {"description": "Disabled state applied (or already in that state)"},
+    401: {"description": "Invalid or expired session"},
+    403: {"description": "Admin access required, or step-up required"},
+    404: {"description": "No such user"},
+    409: {"description": "Refused: cannot disable your own account"},
+})
+def admin_set_user_disabled(user_id: int, request: AdminUserDisabledRequest,
+                            http_request: Request = None) -> ResponseModel[dict[str, Any]]:
+    """Disable or re-enable another account (issue #1603, Phase 2 of #1450).
+
+    Honoured by `get_active_user_ids()` — the ONE per-user gate every automation lane reads — so a
+    disabled account stops there, not behind a badge nobody checks. Self-disable is refused
+    outright (409), the same shape as the self-revoke guard on the admin-role write: there is no
+    legitimate version of locking out the account you are using right now.
+    """
+    actor_id = _require_user_admin(request.session_token)
+    from cqc_lem.api.routers.user import _require_step_up
+    _require_step_up(actor_id, request.session_token, "admin_user_disable",
+                     http_request=http_request)
+
+    if int(user_id) == int(actor_id):
+        raise HTTPException(status_code=409,
+                            detail="You cannot disable your own account. Ask another admin.")
+
+    target = get_user_for_admin(user_id)
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    already_disabled = target.get("disabled_at") is not None
+    if request.disabled == already_disabled:
+        return ResponseModel(status_code=200, detail={
+            "user_id": user_id, "disabled": already_disabled, "changed": False})
+
+    if not set_user_disabled(user_id, request.disabled):
+        raise HTTPException(status_code=500, detail="Could not update the disabled state")
+
+    event = AuthAuditEvent.ADMIN_USER_DISABLED if request.disabled else AuthAuditEvent.ADMIN_USER_ENABLED
+    record_auth_event(event, user_id=user_id, success=True,
+                      ip=_main._client_ip(http_request), user_agent=_main._user_agent(http_request),
+                      details={"actor_user_id": actor_id})
+    log_info("Admin user disabled state changed", user_id=actor_id,
+             task_name="admin_set_user_disabled", target_user_id=user_id,
+             admin_action=str(event))
+    return ResponseModel(status_code=200, detail={
+        "user_id": user_id, "disabled": request.disabled, "changed": True})
+
+
+@router.post("/users/{user_id}/subscription-grant", responses={
+    200: {"description": "Subscription extended"},
+    401: {"description": "Invalid or expired session"},
+    403: {"description": "Admin access required, or step-up required"},
+    404: {"description": "No such user"},
+    500: {"description": "Could not apply the grant"},
+})
+def admin_grant_subscription(user_id: int, request: AdminSubscriptionGrantRequest,
+                             http_request: Request = None) -> ResponseModel[dict[str, Any]]:
+    """Grant a one-time, time-boxed subscription extension (issue #1603).
+
+    A direct bump to `subscription_current_period_end`, applied once at grant time — NOT a
+    standing override. `subscription_status`/`subscription_tier`/`subscription_current_period_end`
+    stay Stripe-webhook-owned; the next real webhook write is expected and correct after this, and
+    there is nothing standing here for it to silently revert.
+    """
+    actor_id = _require_user_admin(request.session_token)
+    from cqc_lem.api.routers.user import _require_step_up
+    _require_step_up(actor_id, request.session_token, "admin_subscription_grant",
+                     http_request=http_request)
+
+    target = get_user_for_admin(user_id)
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    if not grant_subscription_extension(user_id, request.days):
+        raise HTTPException(status_code=500, detail="Could not apply the subscription grant")
+
+    record_auth_event(AuthAuditEvent.ADMIN_SUBSCRIPTION_GRANTED, user_id=user_id, success=True,
+                      ip=_main._client_ip(http_request), user_agent=_main._user_agent(http_request),
+                      details={"actor_user_id": actor_id, "days_granted": request.days})
+    log_info("Admin granted a subscription extension", user_id=actor_id,
+             task_name="admin_grant_subscription", target_user_id=user_id, days=request.days)
+    refreshed = get_user_for_admin(user_id) or {}
+    return ResponseModel(status_code=200, detail={
+        "user_id": user_id, "days_granted": request.days,
+        "subscription_current_period_end": _main._utc_iso(
+            refreshed.get("subscription_current_period_end"))})
+
+
+@router.get("/audit-log", responses={
+    200: {"description": "Audit log page returned"},
+    401: {"description": "Invalid or expired session"},
+    403: {"description": "Admin access required"},
+    503: {"description": "The audit log could not be read"},
+})
+def admin_audit_log(
+    session_token: str,
+    user_id: Optional[int] = None,
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+) -> ResponseModel[dict[str, Any]]:
+    """The admin-facing view over `auth_audit_log` (issue #1603): who changed whose role/state.
+
+    Who, when, from where. Never returns `ip_hash`: it is stored for forensics, not for a screen.
+    Either query failing is 503, never an empty page, for the same reason as the user list: a fault
+    must not be able to say "nothing happened" when it means "could not tell".
+    """
+    _require_user_admin(session_token)
+    rows = list_auth_audit_log_for_admin(user_id=user_id, limit=limit, offset=offset)
+    total = count_auth_audit_log_for_admin(user_id=user_id)
+    if rows is None or total is None:
+        raise HTTPException(status_code=503, detail="Could not read the audit log. Try again.")
+    return ResponseModel(status_code=200, detail={
+        "items": [
+            {
+                "id": r.get("id"),
+                "user_id": r.get("user_id"),
+                "email": r.get("email"),
+                "event": r.get("event"),
+                "success": bool(r.get("success")),
+                "user_agent": r.get("user_agent"),
+                "session_id": r.get("session_id"),
+                "details": r.get("details"),
+                "created_at": _main._utc_iso(r.get("created_at")),
+            }
+            for r in rows
+        ],
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+    })
 
 
 from cqc_lem.api import main as _main  # noqa: E402  — last; see the module docstring

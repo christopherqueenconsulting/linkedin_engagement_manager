@@ -1,7 +1,13 @@
 import { Fragment, useEffect, useState } from 'react'
 import TableScroll from '../components/TableScroll'
 import { useAuth } from '../contexts/useAuth'
-import { useAdminUserDetail, useAdminUsers, useSetUserAdmin } from '../hooks/useAdminUsers'
+import {
+  useAdminUserDetail,
+  useAdminUsers,
+  useGrantSubscription,
+  useSetUserAdmin,
+  useSetUserDisabled,
+} from '../hooks/useAdminUsers'
 import type { AdminUserSummary } from '../hooks/useAdminUsers'
 
 const PAGE_SIZE = 25
@@ -51,41 +57,86 @@ function DetailRow({ label, value }: { label: string; value: React.ReactNode }) 
   )
 }
 
+function SubscriptionGrantForm({ userId, sessionToken }: { userId: number; sessionToken: string }) {
+  const [days, setDays] = useState('30')
+  const grant = useGrantSubscription()
+  const days_n = Number(days)
+  const valid = Number.isInteger(days_n) && days_n >= 1 && days_n <= 365
+
+  return (
+    <div className="flex flex-col gap-1 pt-2 border-t border-gray-100">
+      <div className="flex items-center gap-2">
+        <label htmlFor={`grant-days-${userId}`} className="text-gray-500">
+          Grant subscription days (one-time — not a standing override)
+        </label>
+        <input
+          id={`grant-days-${userId}`}
+          type="number"
+          min={1}
+          max={365}
+          value={days}
+          onChange={(e) => setDays(e.target.value)}
+          className="w-20 text-sm border border-gray-300 rounded px-2 py-1"
+        />
+        <button
+          onClick={() => valid && grant.mutate({ userId, days: days_n, sessionToken })}
+          disabled={!valid || grant.isPending}
+          className="text-xs bg-blue-600 text-white px-2.5 py-1 rounded hover:bg-blue-700 disabled:opacity-50"
+        >
+          {grant.isPending ? 'Working…' : 'Grant'}
+        </button>
+      </div>
+      {grant.isSuccess && (
+        <p className="text-xs text-gray-500">
+          Extended {grant.data.days_granted} day(s) — new period end: {when(grant.data.subscription_current_period_end)}
+        </p>
+      )}
+      {grant.isError && (
+        <p className="text-xs text-amber-700">Could not grant: {errorText(grant.error)}</p>
+      )}
+    </div>
+  )
+}
+
 function UserDetail({ userId, sessionToken }: { userId: number; sessionToken: string }) {
   const { data, isLoading, error } = useAdminUserDetail(userId, sessionToken)
   if (isLoading) return <p className="text-sm text-gray-500">Loading account…</p>
   if (error) return <p className="text-sm text-red-600">Could not load: {errorText(error)}</p>
   if (!data) return null
   return (
-    <dl className="text-sm grid gap-x-8 md:grid-cols-2">
-      <DetailRow label="Public ID" value={data.public_uid ?? '—'} />
-      <DetailRow label="Email verified" value={whenExact(data.email_verified_at)} />
-      <DetailRow label="LinkedIn name" value={data.linkedin_display_name ?? '—'} />
-      <DetailRow label="LinkedIn email" value={data.linkedin_email ?? '—'} />
-      <DetailRow label="Trial started" value={when(data.trial_started_at)} />
-      <DetailRow label="Billing period ends" value={when(data.subscription_current_period_end)} />
-      <DetailRow label="Timezone" value={data.timezone ?? '—'} />
-      <DetailRow
-        label="Location"
-        value={[data.city, data.country].filter(Boolean).join(', ') || '—'}
-      />
-      <DetailRow label="Content language" value={data.content_language ?? data.locale ?? '—'} />
-      <DetailRow label="Blog" value={data.blog_url ?? '—'} />
-      <DetailRow label="Company page" value={data.company_linked_in_url ?? '—'} />
-      <DetailRow label="Auto-schedule posts" value={data.auto_schedule_posts ? 'On' : 'Off'} />
-      <DetailRow label="LinkedIn connected" value={when(data.linkedin_connected_at)} />
-      <DetailRow label="Voice set" value={when(data.voice_set_at)} />
-      <DetailRow label="First post approved" value={when(data.first_post_approved_at)} />
-      <DetailRow label="Activated" value={when(data.activated_at)} />
-      {/* Read-only on purpose: an admin editing another person's caps or voice changes what
-          LinkedIn sees as that person's writing, with no consent trail. */}
-      <DetailRow label="Comments/day" value={data.max_comments_per_day ?? '—'} />
-      <DetailRow label="DMs/day" value={data.max_dms_per_day ?? '—'} />
-      <DetailRow label="Posts/week" value={data.posts_per_week ?? '—'} />
-      <DetailRow label="Comment length" value={data.comment_length ?? '—'} />
-      <DetailRow label="Avatar images" value={data.avatar_disabled ? 'Disabled' : 'Enabled'} />
-      <DetailRow label="Last updated" value={whenExact(data.updated_at)} />
-    </dl>
+    <div className="space-y-3">
+      <dl className="text-sm grid gap-x-8 md:grid-cols-2">
+        <DetailRow label="Public ID" value={data.public_uid ?? '—'} />
+        <DetailRow label="Email verified" value={whenExact(data.email_verified_at)} />
+        <DetailRow label="LinkedIn name" value={data.linkedin_display_name ?? '—'} />
+        <DetailRow label="LinkedIn email" value={data.linkedin_email ?? '—'} />
+        <DetailRow label="Trial started" value={when(data.trial_started_at)} />
+        <DetailRow label="Billing period ends" value={when(data.subscription_current_period_end)} />
+        <DetailRow label="Timezone" value={data.timezone ?? '—'} />
+        <DetailRow
+          label="Location"
+          value={[data.city, data.country].filter(Boolean).join(', ') || '—'}
+        />
+        <DetailRow label="Content language" value={data.content_language ?? data.locale ?? '—'} />
+        <DetailRow label="Blog" value={data.blog_url ?? '—'} />
+        <DetailRow label="Company page" value={data.company_linked_in_url ?? '—'} />
+        <DetailRow label="Auto-schedule posts" value={data.auto_schedule_posts ? 'On' : 'Off'} />
+        <DetailRow label="LinkedIn connected" value={when(data.linkedin_connected_at)} />
+        <DetailRow label="Voice set" value={when(data.voice_set_at)} />
+        <DetailRow label="First post approved" value={when(data.first_post_approved_at)} />
+        <DetailRow label="Activated" value={when(data.activated_at)} />
+        {/* Read-only on purpose: an admin editing another person's caps or voice changes what
+            LinkedIn sees as that person's writing, with no consent trail. */}
+        <DetailRow label="Comments/day" value={data.max_comments_per_day ?? '—'} />
+        <DetailRow label="DMs/day" value={data.max_dms_per_day ?? '—'} />
+        <DetailRow label="Posts/week" value={data.posts_per_week ?? '—'} />
+        <DetailRow label="Comment length" value={data.comment_length ?? '—'} />
+        <DetailRow label="Avatar images" value={data.avatar_disabled ? 'Disabled' : 'Enabled'} />
+        <DetailRow label="Account status" value={data.disabled ? `Disabled ${whenExact(data.disabled_at)}` : 'Enabled'} />
+        <DetailRow label="Last updated" value={whenExact(data.updated_at)} />
+      </dl>
+      <SubscriptionGrantForm userId={userId} sessionToken={sessionToken} />
+    </div>
   )
 }
 
@@ -118,17 +169,27 @@ export default function AdminUsersPage() {
   })
 
   const role = useSetUserAdmin()
+  const disabling = useSetUserDisabled()
   // Which row the last click belonged to, so a refusal is shown AT the button — the guards
-  // (self-revoke, last admin, allowlist admin) all leave the table looking exactly the same.
+  // (self-revoke, last admin, allowlist admin, self-disable) all leave the table looking the same.
   const [actedId, setActedId] = useState<number | null>(null)
+  const [lastAction, setLastAction] = useState<'role' | 'disabled' | null>(null)
 
   const items = data?.items ?? []
   const total = data?.total ?? 0
   const roleError = errorText(role.error)
+  const disabledError = errorText(disabling.error)
 
   function handleRole(target: AdminUserSummary) {
     setActedId(target.id)
+    setLastAction('role')
     role.mutate({ userId: target.id, isAdmin: !target.is_admin, sessionToken: token })
+  }
+
+  function handleDisable(target: AdminUserSummary) {
+    setActedId(target.id)
+    setLastAction('disabled')
+    disabling.mutate({ userId: target.id, disabled: !target.disabled, sessionToken: token })
   }
 
   return (
@@ -136,8 +197,9 @@ export default function AdminUsersPage() {
       <div>
         <h1 className="text-2xl font-bold text-gray-800">User management</h1>
         <p className="text-sm text-gray-500">
-          Every account, and who can administer LEM. Admin access is the only field editable here —
-          subscription state comes from billing, and preferences belong to their owner.
+          Every account, who can administer LEM, and whether their automation runs. Subscription
+          state comes from billing (a grant is a one-time comp, not an override), and preferences
+          belong to their owner.
         </p>
       </div>
 
@@ -228,6 +290,14 @@ export default function AdminUsersPage() {
                       {item.id === user?.userId && (
                         <span className="ml-2 text-xs text-gray-400">(you)</span>
                       )}
+                      {item.disabled && (
+                        <span
+                          data-testid={`disabled-badge-${item.id}`}
+                          className="ml-2 inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-800"
+                        >
+                          Disabled
+                        </span>
+                      )}
                     </td>
                     <td className="px-4 py-3">
                       {item.is_admin ? (
@@ -282,11 +352,33 @@ export default function AdminUsersPage() {
                             ? 'Working…'
                             : item.is_admin ? 'Remove admin' : 'Make admin'}
                         </button>
-                        {actedId === item.id && !role.isPending && roleError && (
+                        {actedId === item.id && lastAction === 'role' && !role.isPending && roleError && (
                           <p className="text-xs max-w-xs text-right text-amber-700">{roleError}</p>
                         )}
-                        {actedId === item.id && !role.isPending && !roleError
+                        {actedId === item.id && lastAction === 'role' && !role.isPending && !roleError
                           && role.data?.changed === false && (
+                          <p className="text-xs text-gray-500">Already in that state</p>
+                        )}
+                        <button
+                          onClick={() => handleDisable(item)}
+                          disabled={disabling.isPending || item.id === user?.userId}
+                          title={item.id === user?.userId ? 'You cannot disable your own account' : undefined}
+                          className={classNames(
+                            'text-xs px-2.5 py-1 rounded disabled:opacity-50',
+                            item.disabled
+                              ? 'bg-green-50 text-green-700 hover:bg-green-100'
+                              : 'bg-red-50 text-red-700 hover:bg-red-100'
+                          )}
+                        >
+                          {disabling.isPending && actedId === item.id
+                            ? 'Working…'
+                            : item.disabled ? 'Enable' : 'Disable'}
+                        </button>
+                        {actedId === item.id && lastAction === 'disabled' && !disabling.isPending && disabledError && (
+                          <p className="text-xs max-w-xs text-right text-amber-700">{disabledError}</p>
+                        )}
+                        {actedId === item.id && lastAction === 'disabled' && !disabling.isPending
+                          && !disabledError && disabling.data?.changed === false && (
                           <p className="text-xs text-gray-500">Already in that state</p>
                         )}
                       </div>

@@ -37,6 +37,8 @@ function row(overrides: Record<string, unknown> = {}) {
     last_login: '2026-08-10T12:00:00Z',
     signed_up_at: '2026-07-01T12:00:00Z',
     activated_at: null,
+    disabled: false,
+    disabled_at: null,
     ...overrides,
   }
 }
@@ -178,5 +180,75 @@ describe('AdminUsersPage (issue #1450)', () => {
     harness(<AdminUsersPage />)
     await waitFor(() =>
       expect(table().getByText('No users match the current filters.')).toBeTruthy())
+  })
+})
+
+// Issue #1603 — per-user disable + the one-time subscription grant.
+describe('AdminUsersPage disable/enable (issue #1603)', () => {
+  it('badges a disabled account', async () => {
+    get.mockResolvedValue(listPayload([row({ disabled: true, disabled_at: '2026-08-01T00:00:00Z' })]))
+    harness(<AdminUsersPage />)
+    await waitFor(() => expect(screen.getByTestId('disabled-badge-5')).toBeTruthy())
+  })
+
+  it('sends a disable request with the target in the path', async () => {
+    get.mockResolvedValue(listPayload([row()]))
+    post.mockResolvedValue({ data: { detail: { user_id: 5, disabled: true, changed: true } } })
+    harness(<AdminUsersPage />)
+    await waitFor(() => expect(table().getByText('Disable')).toBeTruthy())
+    fireEvent.click(table().getByText('Disable'))
+    await waitFor(() => expect(post).toHaveBeenCalledWith('/admin/users/5/disable', {
+      session_token: 'tok', disabled: true,
+    }))
+  })
+
+  it('offers Enable, not Disable, once an account is disabled', async () => {
+    get.mockResolvedValue(listPayload([row({ disabled: true })]))
+    harness(<AdminUsersPage />)
+    await waitFor(() => expect(table().getByText('Enable')).toBeTruthy())
+    expect(table().queryByText('Disable')).toBeNull()
+  })
+
+  it('cannot disable your own account from the table', async () => {
+    get.mockResolvedValue(listPayload([row({ id: 1, email: 'admin@x.com' })]))
+    harness(<AdminUsersPage />)
+    await waitFor(() => expect(table().getByText('Disable')).toBeTruthy())
+    const button = table().getByText('Disable').closest('button') as HTMLButtonElement
+    expect(button.disabled).toBe(true)
+  })
+
+  it('shows the server refusal at the disable button', async () => {
+    get.mockResolvedValue(listPayload([row()]))
+    post.mockRejectedValue({ response: { data: { detail: 'You cannot disable your own account. Ask another admin.' } } })
+    harness(<AdminUsersPage />)
+    await waitFor(() => expect(table().getByText('Disable')).toBeTruthy())
+    fireEvent.click(table().getByText('Disable'))
+    await waitFor(() =>
+      expect(table().getByText(/cannot disable your own account/)).toBeTruthy())
+  })
+})
+
+describe('AdminUsersPage subscription grant (issue #1603)', () => {
+  it('grants a one-time extension from the detail drawer', async () => {
+    get.mockImplementation((url: string) => {
+      if (url === '/admin/users') return Promise.resolve(listPayload([row()]))
+      return Promise.resolve({ data: { detail: { ...row(), subscription_current_period_end: null } } })
+    })
+    post.mockResolvedValue({
+      data: {
+        detail: {
+          user_id: 5, days_granted: 30,
+          subscription_current_period_end: '2026-09-18T00:00:00Z',
+        },
+      },
+    })
+    harness(<AdminUsersPage />)
+    await waitFor(() => expect(table().getByText('member@x.com')).toBeTruthy())
+    fireEvent.click(table().getByText('member@x.com'))
+    await waitFor(() => expect(table().getByText('Grant')).toBeTruthy())
+    fireEvent.click(table().getByText('Grant'))
+    await waitFor(() => expect(post).toHaveBeenCalledWith('/admin/users/5/subscription-grant', {
+      session_token: 'tok', days: 30,
+    }))
   })
 })

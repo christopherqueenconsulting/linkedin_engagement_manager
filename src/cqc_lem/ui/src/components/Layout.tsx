@@ -24,6 +24,7 @@ const navLinks = [
 const adminNavLinks = [
   { to: '/admin/users', label: 'Users' },
   { to: '/admin/feedback', label: 'Feedback Triage' },
+  { to: '/admin/audit-log', label: 'Audit Log' },
 ]
 
 export default function Layout() {

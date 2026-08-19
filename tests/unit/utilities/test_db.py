@@ -1232,6 +1232,20 @@ class TestGetActiveUserIds:
 
             sql = mock_database_connection["cursor"].execute.call_args[0][0]
             assert "linkedin_connection_status" in sql
+
+    def test_query_excludes_admin_disabled_users(self, mock_database_connection):
+        # Issue #1603 — a disabled account must be absent from the ONE per-user gate every
+        # automation lane reads through this function, not just from a badge nobody checks.
+        from cqc_lem.utilities.db import get_active_user_ids
+
+        with patch("cqc_lem.platform.db.connection.get_db_connection") as mock_conn:
+            mock_conn.return_value = mock_database_connection["connection"]
+            mock_database_connection["cursor"].fetchall.return_value = []
+
+            get_active_user_ids()
+
+            sql = mock_database_connection["cursor"].execute.call_args[0][0]
+            assert "disabled_at IS NULL" in sql
             assert "subscription_status" in sql
             assert "last_login_inactivate_delay" in sql
 

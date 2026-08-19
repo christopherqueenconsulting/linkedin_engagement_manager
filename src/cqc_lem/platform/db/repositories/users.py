@@ -722,6 +722,8 @@ def get_active_user_ids():
       2. Has an active subscription OR an unexpired trial
       3. Has logged in within their configured inactivate delay
          (NULL delay = never auto-inactivate)
+      4. Is not admin-disabled (issue #1603) — the ONE per-user gate every lane reads through
+         this function, so `disabled_at` needs no per-lane wiring of its own.
     """
     try:
         with db_cursor() as cursor:
@@ -751,6 +753,9 @@ def get_active_user_ids():
                         OR last_login IS NULL
                         OR last_login >= NOW() - INTERVAL last_login_inactivate_delay DAY
                     )
+
+                    -- Must not be admin-disabled.
+                    AND disabled_at IS NULL
             """)
             active_user_ids = [row[0] for row in cursor.fetchall()]
     except mysql.connector.Error as err:
@@ -1901,6 +1906,47 @@ def set_user_admin(user_id: int, is_admin: bool) -> bool:
         return False
 
 
+def set_user_disabled(user_id: int, disabled: bool) -> bool:
+    """Flip `users.disabled_at` for one account (issue #1603).
+
+    NULL is "enabled"; a non-NULL timestamp is "disabled", read directly by
+    `get_active_user_ids()`. Same shape as `set_user_admin`: the GUARDS (self-disable) are the
+    route's job, this is only the write. False when no row changed, so a disable/enable of a
+    nonexistent user cannot read as a successful write.
+    """
+    try:
+        with db_cursor(commit=True) as cursor:
+            cursor.execute("UPDATE users SET disabled_at = %s WHERE id = %s",
+                           (datetime.now(timezone.utc) if disabled else None, int(user_id)))
+            return cursor.rowcount > 0
+    except mysql.connector.Error as err:
+        log_error(f"Could not set disabled flag for user_id {user_id}", exc=err)
+        return False
+
+
+def grant_subscription_extension(user_id: int, days: int) -> bool:
+    """One-time, time-boxed comp: bump `subscription_current_period_end` by `days` (issue #1603).
+
+    A DIRECT bump applied at grant time, never a standing override — `subscription_status` /
+    `subscription_tier` / `subscription_current_period_end` are Stripe-webhook-owned, and the next
+    real webhook write is expected and correct after this. Extends from the LATER of "now" and the
+    current period end, so granting on top of remaining paid time adds to it rather than
+    discarding it; extends from "now" for a lapsed/absent period end rather than a NULL arithmetic
+    no-op. No precedence logic and no new column — there is nothing standing here to revert.
+    """
+    try:
+        with db_cursor(commit=True) as cursor:
+            cursor.execute(
+                "UPDATE users SET subscription_current_period_end = "
+                "GREATEST(COALESCE(subscription_current_period_end, NOW()), NOW()) "
+                "+ INTERVAL %s DAY WHERE id = %s",
+                (int(days), int(user_id)))
+            return cursor.rowcount > 0
+    except mysql.connector.Error as err:
+        log_error(f"Could not grant subscription days for user_id {user_id}", exc=err)
+        return False
+
+
 def store_cookies(user_email: str, cookies: list[dict]) -> bool:
     """Persist the browser's cookies for this user. Returns False when any row failed to store.
 
@@ -2433,7 +2479,7 @@ def is_user_admin(user_id: int) -> bool:
 # (someone's home, at 7 decimal places — city/country answers every question this screen has).
 _ADMIN_USER_LIST_FIELDS = (
     "u.id, u.email, u.linkedin_email, u.is_admin, u.subscription_status, u.subscription_tier, "
-    "u.trial_ends_at, u.linkedin_connection_status, u.last_login, "
+    "u.trial_ends_at, u.linkedin_connection_status, u.last_login, u.disabled_at, "
     "o.started_at AS signed_up_at, o.activated_at"
 )
 _ADMIN_USER_DETAIL_FIELDS = (

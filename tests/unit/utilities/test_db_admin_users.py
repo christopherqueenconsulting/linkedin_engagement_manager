@@ -203,3 +203,105 @@ class TestSetUserAdmin:
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import set_user_admin
             assert set_user_admin(4, True) is False
+
+
+class TestSetUserDisabled:
+    """Issue #1603 — the write behind per-user disable."""
+
+    def test_disable_writes_a_timestamp(self, fake_cursor):
+        conn, cur = fake_cursor(rowcount=1)
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import set_user_disabled
+            assert set_user_disabled(4, True) is True
+        value = cur.execute.call_args[0][1][0]
+        assert value is not None
+        conn.commit.assert_called_once()
+
+    def test_enable_writes_null(self, fake_cursor):
+        conn, cur = fake_cursor(rowcount=1)
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import set_user_disabled
+            assert set_user_disabled(4, False) is True
+        assert cur.execute.call_args[0][1] == (None, 4)
+
+    def test_no_row_changed_is_not_a_successful_write(self, fake_cursor):
+        conn, _ = fake_cursor(rowcount=0)
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import set_user_disabled
+            assert set_user_disabled(999, True) is False
+
+    def test_a_db_error_reports_failure(self, fake_cursor):
+        conn, _ = fake_cursor(execute_error=mysql.connector.Error("db down"))
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import set_user_disabled
+            assert set_user_disabled(4, True) is False
+
+
+class TestGrantSubscriptionExtension:
+    """Issue #1603 — the one-time comp write. A direct bump, never a standing override (§3.4.2)."""
+
+    def test_writes_a_bump_and_commits(self, fake_cursor):
+        conn, cur = fake_cursor(rowcount=1)
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import grant_subscription_extension
+            assert grant_subscription_extension(4, 14) is True
+        sql, params = cur.execute.call_args[0]
+        assert "GREATEST(COALESCE(subscription_current_period_end, NOW()), NOW())" in sql
+        assert "INTERVAL %s DAY" in sql
+        assert params == (14, 4)
+        conn.commit.assert_called_once()
+
+    def test_no_row_changed_is_not_a_successful_write(self, fake_cursor):
+        conn, _ = fake_cursor(rowcount=0)
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import grant_subscription_extension
+            assert grant_subscription_extension(999, 14) is False
+
+    def test_a_db_error_reports_failure(self, fake_cursor):
+        conn, _ = fake_cursor(execute_error=mysql.connector.Error("db down"))
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import grant_subscription_extension
+            assert grant_subscription_extension(4, 14) is False
+
+
+class TestAuditLogForAdmin:
+    """Issue #1603 — the admin audit-log viewer's queries. Never `ip_hash`."""
+
+    def test_lists_the_page_never_selecting_ip_hash(self, fake_cursor):
+        conn, cur = fake_cursor(fetch_all=[{"id": 1, "event": "admin_granted"}])
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import list_auth_audit_log_for_admin
+            rows = list_auth_audit_log_for_admin(limit=10, offset=0)
+        assert rows == [{"id": 1, "event": "admin_granted"}]
+        sql = cur.execute.call_args[0][0]
+        assert "ip_hash" not in sql
+
+    def test_filters_by_user_id_when_given(self, fake_cursor):
+        conn, cur = fake_cursor(fetch_all=[])
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import list_auth_audit_log_for_admin
+            list_auth_audit_log_for_admin(user_id=5, limit=10, offset=0)
+        sql, params = cur.execute.call_args[0]
+        assert "WHERE user_id = %s" in sql
+        assert params == (5, 10, 0)
+
+    def test_a_db_error_is_none_never_an_empty_page(self, fake_cursor):
+        conn, _ = fake_cursor(execute_error=mysql.connector.Error("db down"))
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import list_auth_audit_log_for_admin
+            assert list_auth_audit_log_for_admin() is None
+
+    def test_count_matches_the_same_filter(self, fake_cursor):
+        conn, cur = fake_cursor(fetch_one=(3,))
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import count_auth_audit_log_for_admin
+            assert count_auth_audit_log_for_admin(user_id=5) == 3
+        sql, params = cur.execute.call_args[0]
+        assert "WHERE user_id = %s" in sql
+        assert params == (5,)
+
+    def test_a_db_error_is_none_never_zero(self, fake_cursor):
+        conn, _ = fake_cursor(execute_error=mysql.connector.Error("db down"))
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import count_auth_audit_log_for_admin
+            assert count_auth_audit_log_for_admin() is None
