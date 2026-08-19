@@ -231,6 +231,25 @@ anchor, not the bank's size: with none, those archetypes are taken off entirely
 (`select_blueprint(exclude_formats=fact_anchored_formats("post"))`), because a carousel bakes its
 text into rendered slide IMAGES and a `[[…]]` placeholder there can never be edited away.
 
+### Deck shape gate (issue #1666)
+
+The gate BEFORE the reference one, because a deck the model cannot be built from has nothing to
+grade. `missing_carousel_fields(model_cls, deck)` in `carousel_creator.py` is the ONE reader of
+what a deck owes — it reads the model's own required fields, so a new required field is covered the
+moment it is added, and an empty value (`{}`, `[]`, `""`, null) counts as missing exactly like an
+absent key. `generate_carousel_content` runs it on the first draft and spends ONE bounded repair
+call naming the missing top-level keys (`_carousel_shape_directive`), keeping the draft in hand if
+that call errors or comes back no better. A deck it could not repair logs ONE ERROR naming the
+fields — not a pydantic message — and both construction sites (`create_carousel_content`, and the
+`POST /api/generate-carousel` preview route, which answers **502** with the field names) read the
+same function rather than letting the constructor raise. Because the gate runs FIRST, the reference
+gate's own retry is shape-checked before it is accepted — that retry is a whole fresh reply, it can
+drop `cover` exactly like a first draft can, and grading says nothing about shape: a deck with body
+slides but no cover grades fine and would replace a buildable one. The production failure it closes:
+a reply
+that omitted the `carousel` key reached `EducationalContentCarousel(**{})` and filed 332 grouped
+`ValidationError: cover field required` exceptions naming pydantic, not the generator.
+
 ### Deck reference gate (issue #728)
 
 The save-worthiness half. `deck_reference_report` grades a generated deck deterministically —

@@ -8927,6 +8927,9 @@
           },
           "500": {
             "description": "Generation failed"
+          },
+          "502": {
+            "description": "The generator returned a deck missing required slides"
           }
         },
         "summary": "Generate Carousel Preview"

@@ -242,6 +242,35 @@ class ProductDemoCarousel(BaseModel):
                                              description="Final Slide: Call-to-action to learn more or sign up for a demo.")
 
 
+def missing_carousel_fields(model_cls: type[BaseModel], carousel: Optional[dict]) -> list[str]:
+    """Required top-level fields of `model_cls` that `carousel` does not supply, in schema order.
+
+    A deck arrives as an LLM-parsed dict, so a reply that omits `cover` only surfaced as a pydantic
+    ValidationError at the constructor — naming pydantic's own message rather than the field the
+    model dropped (issue #1666). Read off `model_fields`, so a new required field is covered here
+    the moment it is added to the model rather than needing a second list kept in step.
+
+    Args:
+        model_cls: The carousel model the dict is meant to satisfy.
+        carousel: The LLM-parsed deck. A non-dict (including None) is missing everything.
+
+    Returns:
+        The missing required field names, empty when the dict carries them all.
+    """
+    if not isinstance(carousel, dict):
+        return [name for name, field in model_cls.model_fields.items() if field.is_required()]
+    missing = []
+    for name, field in model_cls.model_fields.items():
+        if not field.is_required():
+            continue
+        value = carousel.get(name)
+        # An empty dict/list/string is as unusable as an absent key: `contents: []` fails the
+        # min_length conlist just as hard, and a cover of {} renders a blank slide.
+        if value is None or (isinstance(value, (dict, list, str)) and not value):
+            missing.append(name)
+    return missing
+
+
 class PowerPointThemeColors(BaseModel):
     """The theme colour slots `convert_ppt_theme_colors` writes into a saved .pptx.
 

@@ -1,6 +1,10 @@
 """Unit tests for the carousel generator's reference-value loop (issue #728): a deck whose slides
 carry nothing reusable is REGENERATED with a directive naming exactly what was missing, the retry is
 bounded, and a passing deck never costs a second call.
+
+Both fixture decks carry `cover` / `contents` / `call_to_action` — the `EducationalContentCarousel`
+shape the "awareness" stage builds — so the shape gate (issue #1666) passes them straight through
+and every call count below is the reference gate's alone.
 """
 
 import json
@@ -14,7 +18,7 @@ _AI = "cqc_lem.utilities.ai.ai_helper"
 
 _NARRATIVE = {
     "cover": {"title": "The build receipt", "content": "What it took."},
-    "insights": [
+    "contents": [
         {"title": "Release count is not the goal",
          "content": "Shipping often is a side effect of small reversible changes."},
         {"title": "Automation compounds",
@@ -24,7 +28,7 @@ _NARRATIVE = {
 }
 _REFERENCE = {
     "cover": {"title": "The 3 checks I run", "content": "The exact stack."},
-    "insights": [
+    "contents": [
         {"title": "1. Pin the tag", "content": "Set IMAGE_TAG to the release tag, never latest."},
         {"title": "2. Migrate first", "content": "Run `flyway migrate` before the app flips."},
     ],
@@ -134,6 +138,19 @@ class TestTheRetryNeverCostsUsTheDraftWeHave:
         assert call.call_count == 2
         assert deck == _NARRATIVE
         assert "exact stack" in text
+
+    def test_a_retry_that_drops_a_required_slide_keeps_the_first_deck(self):
+        """The retry is a fresh reply, so it can drop `cover` exactly like a first draft can.
+
+        The shape gate (issue #1666) runs BEFORE this loop, so without a shape check here a
+        better-GRADING deck would replace a buildable one and die at `model_cls(**carousel_dict)` —
+        the very ValidationError the gate exists to stop, and by then only DEBUG records it.
+        """
+        no_cover = {k: v for k, v in _REFERENCE.items() if k != "cover"}
+        _, deck, call = _generate([_response(_NARRATIVE), _response(no_cover)],
+                                  blueprint={"format": "build_receipt"})
+        assert call.call_count == 2
+        assert deck == _NARRATIVE
 
 
 class TestStoryDirectiveReachesTheWriter:

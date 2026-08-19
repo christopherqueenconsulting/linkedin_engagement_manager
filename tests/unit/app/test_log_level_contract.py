@@ -328,6 +328,16 @@ class TestAWrapperNeverRestatesAFailureAtItsOwnLevel:
             lv.only("debug")
 
 
+# A deck the awareness model actually accepts. The shape guard (issue #1666) refuses to construct
+# a model from an unusable dict, so a deck that never had a `cover` would stop short of the render
+# this test is about.
+_RENDERABLE_DECK = {
+    "cover": {"title": "T", "content": "C"},
+    "contents": [{"title": "T", "content": "C"}],
+    "call_to_action": {"title": "T", "content": "C"},
+}
+
+
 class TestFailuresAHumanHasToFixAreErrors:
     def test_a_carousel_that_cannot_render_slides_errors(self):
         """No degraded fallback exists: the post is flagged 'error' and waits for a human."""
@@ -338,7 +348,7 @@ class TestFailuresAHumanHasToFixAreErrors:
                 patch(f"{_RCP}._select_story_for_post", return_value=None), \
                 patch(f"{_RCP}._select_carousel_blueprint", return_value=None), \
                 patch("cqc_lem.utilities.ai.ai_helper.generate_carousel_content",
-                      return_value=("caption", {"title": "T", "slides": []})), \
+                      return_value=("caption", _RENDERABLE_DECK)), \
                 patch("cqc_lem.utilities.carousel_creator.create_carousel_slide_images",
                       side_effect=_boom), \
                 patch(f"{_RCP}.update_db_post_status") as status:
