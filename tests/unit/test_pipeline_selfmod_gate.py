@@ -88,24 +88,24 @@ def test_an_approval_from_anyone_else_is_not_enough():
     assert not got.allowed
 
 
-def test_the_owner_cannot_self_approve_a_pipeline_change():
-    """An approval from the account that wrote the change is a formality, not review.
+def test_the_owner_is_exempt_from_their_own_gate():
+    """The threat is the bot's identity acting unattended, not the owner acting under their own.
 
-    GitHub already forbids self-approval, but it cannot know that two logins are the same actor —
-    and before the App identity landed (#1251) every pipeline PR was authored by the owner, which
-    is exactly why this rule was unenforceable until now.
+    Single-human-maintainer repo (#1692): the owner already holds every credential and control
+    surface a merge could reach, and there is no second person to demand a review from. Revisit
+    the day a second human maintainer joins.
     """
     got = decide(changed=["scripts/agent-pipeline/v2/lemd/daemon.py"],
-                 author=OWNER, approvers=[OWNER], owner=OWNER)
-    assert not got.allowed
-    assert "another human" in got.reason
+                 author=OWNER, approvers=[], owner=OWNER)
+    assert got.allowed
+    assert "sole human maintainer" in got.reason
 
 
-def test_a_workflow_change_is_gated_even_from_the_owner():
-    """Workflows hold the credentials, so a rewrite reaches every secret the repo has."""
+def test_a_workflow_change_by_the_owner_is_exempt_too():
+    """Workflows hold the credentials, but the owner already holds those credentials directly."""
     got = decide(changed=[".github/workflows/build-and-push.yml"],
                  author=OWNER, approvers=[], owner=OWNER)
-    assert not got.allowed
+    assert got.allowed
 
 
 def test_a_mixed_pr_is_gated_on_its_protected_half():

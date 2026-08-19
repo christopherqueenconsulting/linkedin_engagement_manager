@@ -16,6 +16,13 @@ authenticates as its own GitHub App (`cqc-lem-agent-pipeline[bot]`), distinct fr
 that, "the author must not be the approver" was unenforceable because every PR was authored by the
 owner.
 
+The threat this gate defends against is the pipeline's OWN identity — `author != owner` — merging a
+self-modifying change unattended. It is not the owner acting under their own name: the owner already
+holds every credential and control surface this repo has, and in a single-human-maintainer repo there
+is no second reviewer to demand one from. So an owner-authored change to a protected path is exempt
+outright (#1692's decision comment); only the bot's own PRs are gated on an owner approval. Revisit
+this exemption the day a second human maintainer joins — see `docs/contribution-security.md`.
+
 The verdict lives here rather than inline in YAML so it can be tested. Stdlib only — CI runs it
 directly.
 """
@@ -76,14 +83,15 @@ def decide(*, changed: list[str], author: str, approvers: list[str], owner: str)
     if not hits:
         return Verdict(True, "touches no protected path")
 
-    # The author check is the half that matters once the pipeline has its own identity: an approval
-    # from the same account that wrote the change is not review, it is a formality. GitHub already
-    # forbids self-approval, but it cannot know that two logins are the same actor — so state it.
+    # Owner-authored changes are exempt outright: the owner already holds every credential and
+    # control surface a merge could reach, and a single-human-maintainer repo has no second person
+    # to demand a review from. What this gate actually defends against is the PIPELINE'S OWN
+    # identity (author != owner, i.e. the bot) merging a self-modifying change unattended — that
+    # path is still fully gated below.
     if author == owner:
         return Verdict(
-            False,
-            f"{author} authored a change to {len(hits)} protected path(s) and is also the only "
-            "login whose approval counts — another human must review this",
+            True,
+            f"{author} is the repo owner — sole human maintainer, no second reviewer to require",
         )
 
     if owner in approvers:
