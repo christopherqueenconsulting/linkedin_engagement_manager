@@ -68,6 +68,9 @@ jobs:
             exit 1
           fi
           echo "✓ src/ reads no LEM-issued shared secret (positive control present)"
+      - name: Lint (eslint)
+        working-directory: src/cqc_lem/ui
+        run: npm run lint
       - name: Unit tests (vitest)
         working-directory: src/cqc_lem/ui
         run: npm test
