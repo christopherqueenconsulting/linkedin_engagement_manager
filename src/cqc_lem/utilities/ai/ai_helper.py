@@ -64,7 +64,11 @@ from cqc_lem.utilities.ai.video_models import (
     supports_audio,
 )
 from cqc_lem.utilities.avatar.guardrails import AVATAR_SURFACE_POST_IMAGE
-from cqc_lem.utilities.carousel_creator import CAROUSEL_SLIDE_BODY_MAX_CHARS
+from cqc_lem.utilities.carousel_creator import (
+    CAROUSEL_SLIDE_BODY_MAX_CHARS,
+    carousel_model_for_stage,
+    carousel_schema_hint,
+)
 from cqc_lem.utilities.env_constants import DEFAULT_IMAGE_MODEL, DEFAULT_IMAGE_RATIO, DEFAULT_VIDEO_MODEL
 from cqc_lem.utilities.flags import NEWSLETTER_EDITOR, VIDEO_MOTION_LINT_HOLD, flag_enabled
 from cqc_lem.utilities.geocoding import DEFAULT_CONTENT_LANGUAGE, language_name
@@ -3509,47 +3513,18 @@ def generate_carousel_content(user_id: int, stage: str, prefs: dict = None,
     full bank stays with the CHECKERS in `run_content_plan`.
 
     The carousel_dict matches the schema of one of the carousel models in carousel_creator.py.
-    The carousel type is chosen by buyer journey stage:
-      awareness       → EducationalContentCarousel
-      consideration   → CaseStudyCarousel
-      decision        → ProductDemoCarousel
-      (anything else) → IndustryInsightsCarousel
+    The carousel type comes from `carousel_model_for_stage` — the ONE stage map, shared with the
+    30-day plan and the preview route (issue #1681). The prompt names THAT model's fields, so the
+    shape asked for is the shape every construction site validates.
     """
     from cqc_lem.utilities.db import get_user_password_pair_by_id
     from cqc_lem.utilities.linkedin.helper import get_my_profile
     from cqc_lem.utilities.linkedin.profile import LinkedInProfile as _Profile
     from cqc_lem.utilities.selenium_util import get_driver_wait_pair, quit_gracefully
 
-    stage_lower = (stage or "").lower()
-    if "awareness" in stage_lower:
-        schema_hint = (
-            "EducationalContentCarousel with fields: "
-            "cover (title, content), "
-            "contents (list of 2-4 slides each with title and content), "
-            "call_to_action (title, content)"
-        )
-    elif "consideration" in stage_lower:
-        schema_hint = (
-            "CaseStudyCarousel with fields: "
-            "cover (title, content), challenge (title, content), "
-            "solution (title, content), results (title, content), "
-            "testimonial (title, content) [optional], "
-            "call_to_action (title, content)"
-        )
-    elif "decision" in stage_lower:
-        schema_hint = (
-            "ProductDemoCarousel with fields: "
-            "cover (title, content), main_feature (title, content), "
-            "additional_features (list of 1-2 slides each with title and content), "
-            "call_to_action (title, content)"
-        )
-    else:
-        schema_hint = (
-            "IndustryInsightsCarousel with fields: "
-            "cover (title, content), "
-            "insights (list of 2-4 slides each with title and content), "
-            "call_to_action (title, content)"
-        )
+    # The shared resolver, never a local stage map: the schema named in the prompt is read off the
+    # SAME model the caller builds the reply into (issue #1681).
+    schema_hint = carousel_schema_hint(carousel_model_for_stage(stage))
 
     # Attempt to load user profile for personalisation; fall back gracefully
     try:

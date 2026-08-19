@@ -539,6 +539,9 @@ class TestGenerateCarouselContent:
         ("awareness", "EducationalContentCarousel"),
         ("consideration", "CaseStudyCarousel"),
         ("decision", "ProductDemoCarousel"),
+        # The SPA's fourth stage (issue #1681) — it used to fall to the `else` and ask for the
+        # fallback deck, a shape the preview route then rejected on every single attempt.
+        ("personal", "PersonalStoryCarousel"),
         ("other", "IndustryInsightsCarousel"),
     ])
     def test_stage_selects_schema_hint(self, mock_openai_client, stage, expected_hint_fragment):

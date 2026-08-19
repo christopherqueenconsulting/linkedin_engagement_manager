@@ -3309,11 +3309,7 @@ def generate_carousel_preview(request: GenerateCarouselPreviewRequest) -> Respon
     from cqc_lem.utilities.carousel_creator import (
         CAROUSEL_TEMPLATES,
         DEFAULT_TEMPLATE,
-        CaseStudyCarousel,
-        EducationalContentCarousel,
-        IndustryInsightsCarousel,
-        PersonalStoryCarousel,
-        ProductDemoCarousel,
+        carousel_model_for_stage,
         create_carousel_slide_images,
     )
     from cqc_lem.utilities.env_constants import API_URL_FINAL
@@ -3348,17 +3344,9 @@ def generate_carousel_preview(request: GenerateCarouselPreviewRequest) -> Respon
     try:
         post_text, carousel_dict = generate_carousel_content(user_id, stage)
 
-        _model_map = {
-            "awareness": EducationalContentCarousel,
-            "consideration": CaseStudyCarousel,
-            "decision": ProductDemoCarousel,
-            "personal": PersonalStoryCarousel,
-            "story": PersonalStoryCarousel,
-        }
-        model_cls = next(
-            (v for k, v in _model_map.items() if k in stage_lower),
-            IndustryInsightsCarousel,
-        )
+        # The shared stage map (issue #1681): this route used to keep its own, which is how a
+        # "personal" preview asked the generator for one deck shape and validated another.
+        model_cls = carousel_model_for_stage(stage)
 
         carousel_obj = model_cls(**carousel_dict)
         image_paths = create_carousel_slide_images(

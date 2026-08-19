@@ -74,10 +74,10 @@ class EducationalContentSlide(CarouselSlide):
 class EducationalContentCarousel(BaseModel):
     """The AWARENESS-stage deck: a cover, 1-4 tip/step slides, then a call to action.
 
-    Both `run_content_plan.create_carousel_content` and the `POST /api/generate-carousel` preview
-    route pick the carousel class from the buyer stage, and `ai_helper.generate_carousel_content`
-    names these fields verbatim in its prompt — so renaming one changes BOTH what the model is asked
-    to return and which builder `create_ppt` dispatches to.
+    Every site picks this class through `carousel_model_for_stage`, and `CAROUSEL_SCHEMA_HINTS`
+    names these fields verbatim in the generator's prompt — so renaming one field means editing that
+    hint in the same breath, or the LLM is asked for the old shape and `create_ppt` dispatches on
+    the new one.
     """
 
     cover: EducationalContentSlide = Field(..., description="Cover Slide: A bold title that clearly states the topic.")
@@ -127,9 +127,12 @@ class PersonalStorySlide(CarouselSlide):
 class PersonalStoryCarousel(BaseModel):
     """A personal-story deck: cover, 1-3 moments of the journey, a takeaway, then a CTA.
 
-    Only the `POST /api/generate-carousel` preview route selects it (stages `personal`/`story`); the
-    30-day plan's stage map never does. It is also the one deck whose slides may carry the user's
-    avatar likeness — `CAROUSEL_AVATAR_RELEVANT_TYPES` holds exactly its content type.
+    `CAROUSEL_MODEL_BY_STAGE` selects it for stages `personal`/`story`, which in practice only the
+    `POST /api/generate-carousel` preview route sends — `content_framework.POST_DAY_TYPES` gives the
+    30-day plan awareness/consideration/decision and nothing else. It is also the one deck whose
+    slides may carry the user's avatar likeness (`CAROUSEL_AVATAR_RELEVANT_TYPES` holds exactly its
+    content type), and that path stays unreached from the preview route, which renders without a
+    `user_id` — `_should_generate_with_replicate` needs one.
     """
 
     cover: PersonalStorySlide = Field(..., description="Cover Slide: Compelling title introducing the personal story.")
@@ -153,8 +156,8 @@ class IndustryInsightSlide(CarouselSlide):
 class IndustryInsightsCarousel(BaseModel):
     """The FALLBACK deck: cover, 1-4 trends/insights, then a CTA.
 
-    Every stage that is not awareness, consideration or decision lands here, in both stage maps — so
-    an unrecognised stage still produces a valid deck rather than failing.
+    `DEFAULT_CAROUSEL_MODEL` — a stage that matches no entry of `CAROUSEL_MODEL_BY_STAGE` lands
+    here, so an unrecognised stage still produces a valid deck rather than failing.
     """
 
     cover: IndustryInsightSlide = Field(...,
@@ -259,6 +262,100 @@ class PowerPointThemeColors(BaseModel):
     hlink: Optional[Color] = Field(None, description="RGB color code for the hyperlink color in the theme")
     folHlink: Optional[Color] = Field(None,
                                       description="RGB color code for the followed hyperlink color in the theme")
+
+
+# ── The ONE buyer-stage → deck-model map ──────────────────────────────────────
+# Three sites used to keep their own copy of this map and they disagreed (issue #1681): the SPA's
+# "Personal Story" stage had `generate_carousel_content` ask the LLM for an
+# `IndustryInsightsCarousel` while the preview route validated the reply as a
+# `PersonalStoryCarousel`, so every personal-story preview failed — 100% of the time, and no retry
+# could change it. Anything that turns a stage into a deck model reads THIS; a site that keeps its
+# own map is how the shapes drift apart again.
+#
+# Matched by SUBSTRING, in order, because a stage arrives as free text ("awareness", "personal
+# story") — the first entry that appears in it wins. An unrecognised stage falls to
+# `DEFAULT_CAROUSEL_MODEL`, so a stage nobody mapped still renders a valid deck.
+CAROUSEL_MODEL_BY_STAGE: tuple[tuple[str, type[BaseModel]], ...] = (
+    ("awareness", EducationalContentCarousel),
+    ("consideration", CaseStudyCarousel),
+    ("decision", ProductDemoCarousel),
+    ("personal", PersonalStoryCarousel),
+    ("story", PersonalStoryCarousel),
+)
+
+DEFAULT_CAROUSEL_MODEL: type[BaseModel] = IndustryInsightsCarousel
+
+# What the PROMPT tells the model to return, keyed by the model class itself — so the shape the LLM
+# is ASKED for cannot drift from the shape it is CONSTRUCTED into, which is the other half of #1681.
+# Each string names the model's required top-level fields verbatim.
+CAROUSEL_SCHEMA_HINTS: dict[type[BaseModel], str] = {
+    EducationalContentCarousel: (
+        "EducationalContentCarousel with fields: "
+        "cover (title, content), "
+        "contents (list of 2-4 slides each with title and content), "
+        "call_to_action (title, content)"
+    ),
+    CaseStudyCarousel: (
+        "CaseStudyCarousel with fields: "
+        "cover (title, content), challenge (title, content), "
+        "solution (title, content), results (title, content), "
+        "testimonial (title, content) [optional], "
+        "call_to_action (title, content)"
+    ),
+    ProductDemoCarousel: (
+        "ProductDemoCarousel with fields: "
+        "cover (title, content), main_feature (title, content), "
+        "additional_features (list of 1-2 slides each with title and content), "
+        "call_to_action (title, content)"
+    ),
+    PersonalStoryCarousel: (
+        "PersonalStoryCarousel with fields: "
+        "cover (title, content), "
+        "story_slides (list of 1-3 slides each with title and content), "
+        "takeaway (title, content), "
+        "call_to_action (title, content)"
+    ),
+    IndustryInsightsCarousel: (
+        "IndustryInsightsCarousel with fields: "
+        "cover (title, content), "
+        "insights (list of 2-4 slides each with title and content), "
+        "call_to_action (title, content)"
+    ),
+}
+
+
+def carousel_model_for_stage(stage: Optional[str]) -> type[BaseModel]:
+    """Return the carousel model a buyer-journey stage builds into.
+
+    The single resolver behind the generator's prompt, the 30-day plan and the preview route
+    (issue #1681) — call it rather than re-deriving a stage map, because two maps that disagree
+    make the deck the LLM returns structurally impossible for the caller to construct.
+
+    Args:
+        stage: The buyer-journey stage, free text and case-insensitive. None reads as unmapped.
+
+    Returns:
+        The matching carousel model class, or `DEFAULT_CAROUSEL_MODEL` for an unmapped stage.
+    """
+    stage_lower = (stage or "").lower()
+    for key, model_cls in CAROUSEL_MODEL_BY_STAGE:
+        if key in stage_lower:
+            return model_cls
+    return DEFAULT_CAROUSEL_MODEL
+
+
+def carousel_schema_hint(model_cls: type[BaseModel]) -> str:
+    """Return the prompt description of *model_cls*'s required fields.
+
+    Args:
+        model_cls: The carousel model the reply has to satisfy — usually straight out of
+            `carousel_model_for_stage`.
+
+    Returns:
+        The schema description to name in the prompt; the default deck's when a model carries none,
+        since a prompt with no shape at all is worse than one naming the fallback.
+    """
+    return CAROUSEL_SCHEMA_HINTS.get(model_cls, CAROUSEL_SCHEMA_HINTS[DEFAULT_CAROUSEL_MODEL])
 
 
 def create_ppt(ppt_name, carousel_data: Union[
