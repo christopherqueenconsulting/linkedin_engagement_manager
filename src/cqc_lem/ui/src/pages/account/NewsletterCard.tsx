@@ -63,7 +63,9 @@ export default function NewsletterCard() {
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-base font-semibold text-gray-700">LinkedIn Newsletter</h2>
-          <p className="text-xs text-gray-500">Auto-publish a recurring newsletter (bypasses the feed — subscribers get a notification + email). Repurposes your blog when set.</p>
+          {/* Issue #1135: this used to open with "Auto-publish a recurring newsletter", which a new
+              account no longer does — drafts wait for an approval unless the toggle below is on. */}
+          <p className="text-xs text-gray-500">Run a recurring newsletter (bypasses the feed — subscribers get a notification + email). We draft each edition for your review; publishing it is your call below. Repurposes your blog when set.</p>
         </div>
         <Toggle on={newsletter.enabled} onClick={() => setNl({ enabled: !newsletter.enabled })} />
       </div>
@@ -132,6 +134,21 @@ export default function NewsletterCard() {
                 className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm" />
               <p className="text-xs text-gray-400 mt-1">How early each new draft appears for review.</p>
             </div>
+          </div>
+
+          {/* Autonomous publishing (issue #1135): a generated edition rests at 'draft', so without
+              this on, its slot arrives and it waits for you rather than shipping on silence. */}
+          <div className="border-t border-gray-100 pt-4 flex items-center justify-between">
+            <div>
+              <p className="text-sm font-medium text-gray-700">Publish drafts without my approval</p>
+              <p className="text-xs text-gray-500">
+                When this is on, a queued draft publishes at its scheduled slot on its own. When it's
+                off, an edition only publishes after you approve it on the Newsletters review tab —
+                its slot passes and the draft keeps waiting.
+              </p>
+            </div>
+            <Toggle on={newsletter.auto_publish_newsletters} ariaLabel="Publish drafts without my approval"
+              onClick={() => setNl({ auto_publish_newsletters: !newsletter.auto_publish_newsletters })} />
           </div>
 
           {/* Cover images (issue #893): upload your own per edition, or let us generate one.

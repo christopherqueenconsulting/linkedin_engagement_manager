@@ -30,7 +30,39 @@ redis_socket_timeout = 30
 # AWS deployment decision: use SQS as the broker and ElastiCache Redis as the result backend.
 # Set CELERY_BROKER_URL=sqs:// and CELERY_RESULT_BACKEND=redis://<elasticache-host>:6379/1 in AWS secrets.
 # celery-once still requires CELERY_BROKER_URL to point at Redis for lock tracking (see my_celery.py).
-result_backend = os.getenv('CELERY_RESULT_BACKEND', f'redis://redis:{REDIS_PORT}/1')
+
+# The class Celery loads for the result backend. `celery.app.backends.by_url` reads everything
+# before the FIRST `+` in a backend URL as the class to import and hands the rest to it verbatim,
+# so prefixing this leaves the operator's `CELERY_RESULT_BACKEND` untouched — same host, same db,
+# same query string. What it changes is that a Redis blip during `send_task`'s result-pubsub
+# subscribe can no longer stop the message being published (issue #1674); the module docstring on
+# `result_backend.py` is the whole argument.
+RESILIENT_REDIS_BACKEND = 'cqc_lem.app.result_backend:ResilientRedisBackend'
+
+# ONLY a plain Redis URL is wrapped. A `sentinel://`, a `redis+socket://` or a class path an
+# operator pinned themselves is a DIFFERENT backend class, and prefixing ours onto it would
+# silently replace their choice with a TCP Redis client.
+_WRAPPABLE_RESULT_BACKEND_SCHEMES = ('redis', 'rediss')
+
+
+def resilient_result_backend(url: str) -> str:
+    """Point a plain Redis result-backend URL at `ResilientRedisBackend`, else pass it through.
+
+    Args:
+        url: The configured result backend — a URL, or a `class+url` an operator already pinned.
+
+    Returns:
+        `url` unchanged unless its scheme is exactly `redis`/`rediss`, in which case the class
+        path is prefixed onto it.
+    """
+    scheme, separator, _ = (url or '').partition('://')
+    if not separator or scheme.lower() not in _WRAPPABLE_RESULT_BACKEND_SCHEMES:
+        return url
+    return f'{RESILIENT_REDIS_BACKEND}+{url}'
+
+
+result_backend = resilient_result_backend(
+    os.getenv('CELERY_RESULT_BACKEND', f'redis://redis:{REDIS_PORT}/1'))
 
 # The Redis backend visibility timout
 result_backend_transport_options = {'visibility_timeout': (

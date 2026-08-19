@@ -1124,7 +1124,10 @@ def _topup_newsletter_drafts_for_user(user_id: int, now: datetime,
             prior_subjects.append(edition_subject)  # subsequent iterations avoid it too
         if edition.get("opening_line"):
             recent_openers.insert(0, edition["opening_line"])  # later slots avoid this opener too
-        notify_newsletter_draft_ready(user_id, edition["title"], slot)
+        # The slot means different things per account since #1135, and this email is the only
+        # place an opted-out author learns their draft is waiting on THEM.
+        notify_newsletter_draft_ready(user_id, edition["title"], slot,
+                                      auto_publish=bool(settings.get("auto_publish_newsletters")))
         generated += 1
     return generated
 
@@ -1256,19 +1259,28 @@ def auto_notify_pending_covers():
     A generated cover lands `pending_review` and `_approved_cover_path` drops it at publish time,
     so an edition whose cover is never approved ships cover-less — silently, and in production
     that was EVERY edition. The draft-ready email cannot carry the warning: the cover renders
-    asynchronously and lands after that email is sent. This beat is the pre-slot half — the
-    edition still publishes on time either way, the reminder only makes the drop legible while
-    the author can still act on it.
+    asynchronously and lands after that email is sent. This beat is the pre-slot half — for
+    auto-publishing accounts the edition still publishes on time (cover-less if unapproved); for
+    opted-out accounts the edition only publishes after manual approval, so the slot may pass
+    entirely. The reminder makes the pending cover legible while the author can still act on it.
     """
-    from cqc_lem.utilities.db import get_editions_with_pending_cover
+    from cqc_lem.utilities.db import get_editions_with_pending_cover, get_newsletter_settings
     from cqc_lem.utilities.notifications import notify_newsletter_cover_pending
     now = datetime.now(timezone.utc).replace(tzinfo=None)
     until = now + timedelta(hours=NEWSLETTER_COVER_REMINDER_LEAD_HOURS)
     editions = get_editions_with_pending_cover(now, until)
     notified = 0
+    auto_publish: dict[int, bool] = {}  # one settings read per user, not per edition
     for edition in editions:
-        if notify_newsletter_cover_pending(edition["user_id"], edition["id"],
-                                           edition.get("title"), edition.get("scheduled_for")):
+        uid = edition["user_id"]
+        if uid not in auto_publish:
+            auto_publish[uid] = bool(get_newsletter_settings(uid).get("auto_publish_newsletters"))
+        # An APPROVED edition publishes at its slot either way; a draft only for an opted-in
+        # account (issue #1135), and telling the other authors otherwise is a false reassurance.
+        publishes = edition.get("status") == "approved" or auto_publish[uid]
+        if notify_newsletter_cover_pending(uid, edition["id"], edition.get("title"),
+                                           edition.get("scheduled_for"),
+                                           edition_publishes=publishes):
             notified += 1
     # An empty sweep is the normal state (no covers pending, or every one already reminded), so it
     # stays DEBUG — INFO only when something was actually sent.
@@ -1396,14 +1408,27 @@ def _publish_next_due_edition_for_user(user_id: int, now: datetime, dispatch) ->
     editions forward onto future cadence slots (order preserved) so a subscriber never receives
     several editions at once. `dispatch(edition_id)` queues the actual Selenium publish. Returns 1 if
     an edition was dispatched, else 0.
+
+    A due edition still sitting at 'draft' publishes only when the user opted into
+    `auto_publish_newsletters` (issue #1135) — the same condition `get_editions_due_to_publish`
+    applies in SQL, re-read here so the decision does not live only in the query that selected the
+    user. An overdue draft for an opted-out user is an expected, recurring no-op, so it is DEBUG.
     """
-    from cqc_lem.utilities.db import get_pending_newsletter_editions
+    from cqc_lem.utilities.db import get_newsletter_settings, get_pending_newsletter_editions
     pending = get_pending_newsletter_editions(user_id)  # ordered by scheduled_for ASC
     due = [e for e in pending
            if e.get("scheduled_for") is not None and e["scheduled_for"] <= now]
     if not due:
         return 0
-    oldest = due[0]
+    auto_publish = bool(get_newsletter_settings(user_id).get("auto_publish_newsletters"))
+    publishable = [e for e in due if e.get("status") == "approved" or auto_publish]
+    if len(publishable) < len(due):
+        log_debug(f"Holding {len(due) - len(publishable)} due newsletter draft(s) for approval "
+                  f"(auto_publish_newsletters off)",
+                  user_id=user_id, task_name="auto_publish_scheduled_editions")
+    if not publishable:
+        return 0
+    oldest = publishable[0]
     dispatch(oldest["id"])
     if len(due) > 1:
         remaining = [e for e in pending if e["id"] != oldest["id"]]

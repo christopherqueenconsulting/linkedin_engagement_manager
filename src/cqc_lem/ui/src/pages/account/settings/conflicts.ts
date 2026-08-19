@@ -247,11 +247,16 @@ export function evaluateConflicts(ctx: ConflictContext): Finding[] {
       message: `If you do not sign in for ${inactivity} days, ALL automation pauses — every other setting on this page stops applying until you log back in.`,
     })
   }
-  // C18 — a newsletter draft that appears the day it publishes leaves no review window.
+  // C18 — a newsletter draft that appears the day of its slot leaves no review window. What that
+  // costs depends on the account's own publish gate (issue #1135): with auto-publish on the edition
+  // goes out unreviewed, with it off the edition cannot be approved in time and the slot passes.
+  // Same warning either way — but it must not assert publishing for an account that opted out.
   if (newsletter?.enabled && newsletter.generate_lead_days === 0) {
     out.push({
       id: 'C18', severity: 'warn', section: 'newsletter', anchor: 'generate_lead_days',
-      message: 'Drafts are generated the same day they publish, so you get no window to review or edit one.',
+      message: newsletter.auto_publish_newsletters
+        ? 'Drafts are generated the same day they publish, so you get no window to review or edit one.'
+        : 'Drafts are generated the same day of their slot, so an edition cannot be approved before that slot passes — it waits in the queue instead.',
     })
   }
   // C19 — publish hour is resolved in the account timezone, not the browser's.

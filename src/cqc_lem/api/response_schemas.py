@@ -302,6 +302,7 @@ class NewsletterSettingsDetail(BaseModel):
     invite_connections_enabled: bool
     max_invites_per_run: int
     cover_image_auto: bool
+    auto_publish_newsletters: bool
 
 
 class NewsletterSubscriberStat(BaseModel):
@@ -362,12 +363,17 @@ class NewsletterDraftDetail(BaseModel):
 
     `next_publish` is the slot AFTER the last edition already queued — when a NEW draft would go
     out, not when the next send is.
+
+    `auto_publish_newsletters` rides along from the user's settings so the queue can say what
+    actually happens at a draft's slot (publish, or wait for approval) instead of asserting one
+    universal truth — it is read here, never written.
     """
 
     editions: List[NewsletterEdition]
     next_publish: Optional[str]
     max_queued_drafts: int
     generate_lead_days: int
+    auto_publish_newsletters: bool
 
 
 class UserGroup(BaseModel):

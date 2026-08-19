@@ -482,6 +482,31 @@ class TestEditions:
         assert due[0]["id"] == 3
         assert "scheduled_for <= %s" in cur.execute.call_args[0][0]
 
+    def test_editions_due_gates_drafts_on_the_opt_in(self, fake_cursor):
+        """Issue #1135 — 'approved' always publishes; 'draft' only for an opted-in user."""
+        conn, cur = fake_cursor(fetch_all=[])
+        import datetime
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import get_editions_due_to_publish
+            get_editions_due_to_publish(datetime.datetime(2026, 7, 7, 13))
+        sql = " ".join(cur.execute.call_args[0][0].split())
+        assert "e.status = 'approved'" in sql
+        assert "e.status = 'draft' AND COALESCE(s.auto_publish_newsletters, 0) = 1" in sql
+        # LEFT, so a user with no settings row is read as opted OUT rather than losing their
+        # APPROVED editions to an inner join.
+        assert "LEFT JOIN newsletter_settings s ON s.user_id = e.user_id" in sql
+
+    def test_pending_cover_sweep_selects_the_edition_status(self, fake_cursor):
+        """Issue #1135 — the reminder's wording turns on whether the BODY reaches that slot."""
+        conn, cur = fake_cursor(fetch_all=[])
+        import datetime
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import get_editions_with_pending_cover
+            get_editions_with_pending_cover(datetime.datetime(2026, 7, 7),
+                                            datetime.datetime(2026, 7, 9))
+        sql = " ".join(cur.execute.call_args[0][0].split())
+        assert "SELECT id, user_id, title, status, scheduled_for" in sql
+
     def test_get_edition(self, fake_cursor):
         row = {"id": 3, "user_id": 1, "title": "T", "subtitle": "S", "body": "B",
                "status": "draft", "scheduled_for": None, "published_url": None}
@@ -530,6 +555,40 @@ class TestNewsletterCoverSettings:
         sql, values = cur.execute.call_args[0]
         assert "cover_image_auto" in sql
         assert values[1 + _NEWSLETTER_COLS.index("cover_image_auto")] == 1
+
+
+class TestAutoPublishSetting:
+    """Issue #1135: the autonomous-publish opt-in rides the same settings row."""
+
+    def test_a_user_with_no_settings_row_requires_approval(self, fake_cursor):
+        conn, _ = fake_cursor(fetch_one=None)
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import get_newsletter_settings
+            assert get_newsletter_settings(1)["auto_publish_newsletters"] is False
+
+    def test_coerces_the_stored_flag_to_a_bool(self, fake_cursor):
+        conn, _ = fake_cursor(fetch_one={"enabled": 1, "align_with_blog": 1,
+                                         "invite_connections_enabled": 0, "cover_image_auto": 0,
+                                         "auto_publish_newsletters": 1})
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import get_newsletter_settings
+            assert get_newsletter_settings(1)["auto_publish_newsletters"] is True
+
+    def test_the_read_selects_the_column(self, fake_cursor):
+        conn, cur = fake_cursor(fetch_one=None)
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import get_newsletter_settings
+            get_newsletter_settings(1)
+        assert "auto_publish_newsletters" in cur.execute.call_args[0][0]
+
+    def test_upsert_writes_the_flag_as_an_int(self, fake_cursor):
+        conn, cur = fake_cursor()
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import _NEWSLETTER_COLS, update_newsletter_settings
+            update_newsletter_settings(1, {"auto_publish_newsletters": True})
+        sql, values = cur.execute.call_args[0]
+        assert "auto_publish_newsletters" in sql
+        assert values[1 + _NEWSLETTER_COLS.index("auto_publish_newsletters")] == 1
 
 
 class TestEditionCoverImage:

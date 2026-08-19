@@ -1149,7 +1149,8 @@ class TestNewsletterPublishGatedOnBreaker:
              patch("cqc_lem.utilities.db.get_editions_due_to_publish",
                    return_value=[{"id": 7, "user_id": 1}]), \
              patch("cqc_lem.utilities.db.get_pending_newsletter_editions",
-                   return_value=[{"id": 7, "scheduled_for": datetime(2026, 1, 1)}]):
+                   return_value=[{"id": 7, "status": "approved", "scheduled_for": datetime(2026, 1, 1)}]), \
+             patch("cqc_lem.utilities.db.get_newsletter_settings", return_value={}):
             result = auto_publish_scheduled_editions()
         pub.apply_async.assert_called_once()
         assert "Dispatched 1" in result

@@ -92,6 +92,48 @@ class TestAutoPublishEdition:
         assert "not publishable" in result
         gp.assert_not_called()
 
+    def test_unapproved_draft_is_held_when_auto_publish_is_off(self):
+        """Issue #1135 — the guard that mirrors the due-filter at the worker boundary."""
+        from cqc_lem.app.engagement.newsletter import auto_publish_edition
+        edition = {"id": 9, "user_id": 1, "status": "draft", "title": "T", "body": "B"}
+        with patch(f"{_NL}.get_newsletter_edition", return_value=edition), \
+             patch(f"{_NL}.get_newsletter_settings",
+                   return_value={"auto_publish_newsletters": False}) as settings, \
+             patch(f"{_NL}.log_debug") as dbg, \
+             patch(f"{_NL}.get_current_profile") as gp:
+            result = auto_publish_edition.run(edition_id=9)
+        assert "awaiting approval" in result
+        gp.assert_not_called()                       # no Chrome slot spent on a held edition
+        settings.assert_called_once_with(1)
+        dbg.assert_called_once()                     # expected no-op -> DEBUG, never a warning
+
+    def test_unapproved_draft_publishes_when_auto_publish_is_on(self):
+        from cqc_lem.app.engagement.newsletter import auto_publish_edition
+        edition = {"id": 9, "user_id": 1, "status": "draft", "title": "T", "subtitle": None, "body": "B"}
+        with patch(f"{_NL}.get_newsletter_edition", return_value=edition), \
+             patch(f"{_NL}.get_newsletter_settings", return_value={"auto_publish_newsletters": True}), \
+             patch(f"{_NL}.get_current_profile", return_value=(MagicMock(), MagicMock(), "e", MagicMock())), \
+             patch(f"{_NL}._fill_and_publish_article", return_value=("https://x/pulse/t", None)), \
+             patch(f"{_NL}.mark_edition_published") as mark, \
+             patch(f"{_NL}.quit_gracefully"):
+            auto_publish_edition.run(edition_id=9)
+        mark.assert_called_once_with(9, "https://x/pulse/t")
+
+    def test_approved_edition_never_consults_the_toggle(self):
+        """The toggle only decides whether an UNTOUCHED draft ships — an approval always stands."""
+        from cqc_lem.app.engagement.newsletter import auto_publish_edition
+        edition = {"id": 9, "user_id": 1, "status": "approved", "title": "T", "subtitle": None, "body": "B"}
+        with patch(f"{_NL}.get_newsletter_edition", return_value=edition), \
+             patch(f"{_NL}.get_newsletter_settings",
+                   return_value={"auto_publish_newsletters": False}) as settings, \
+             patch(f"{_NL}.get_current_profile", return_value=(MagicMock(), MagicMock(), "e", MagicMock())), \
+             patch(f"{_NL}._fill_and_publish_article", return_value=("https://x/pulse/t", None)), \
+             patch(f"{_NL}.mark_edition_published") as mark, \
+             patch(f"{_NL}.quit_gracefully"):
+            auto_publish_edition.run(edition_id=9)
+        mark.assert_called_once_with(9, "https://x/pulse/t")
+        settings.assert_not_called()
+
     def test_publishes_and_marks(self):
         from cqc_lem.app.engagement.newsletter import auto_publish_edition
         edition = {"id": 9, "user_id": 1, "status": "approved", "title": "5 Levers",
@@ -112,6 +154,7 @@ class TestAutoPublishEdition:
         from cqc_lem.app.engagement.newsletter import auto_publish_edition
         edition = {"id": 9, "user_id": 1, "status": "draft", "title": "T", "subtitle": None, "body": "B"}
         with patch(f"{_NL}.get_newsletter_edition", return_value=edition), \
+             patch(f"{_NL}.get_newsletter_settings", return_value={"auto_publish_newsletters": True}), \
              patch(f"{_NL}.get_current_profile", return_value=(MagicMock(), MagicMock(), "e", MagicMock())), \
              patch(f"{_NL}._fill_and_publish_article", return_value=(None, "article_publish")), \
              patch(f"{_NL}.mark_edition_published") as mark, \
@@ -203,6 +246,18 @@ class TestGenerateNewsletterDrafts:
         create.assert_called_once()
         notify.assert_called_once()
         assert "Generated 1 newsletter draft" in result
+
+    def test_the_draft_ready_email_carries_the_accounts_publish_gate(self):
+        """Issue #1135 — "if you do nothing it auto-publishes" is only true for an opted-in user.
+
+        This email is the ONE thing that tells an opted-out author the draft needs them, so the
+        setting has to reach it; the old copy told exactly those people not to bother.
+        """
+        _, _, notify = _run_generate(settings=_settings(auto_publish_newsletters=False), pending=0)
+        assert notify.call_args[1]["auto_publish"] is False
+
+        _, _, notify = _run_generate(settings=_settings(auto_publish_newsletters=True), pending=0)
+        assert notify.call_args[1]["auto_publish"] is True
 
     def test_fills_queue_to_cap(self):
         # cap 5, empty queue → generate all 5 upcoming slots in one run.
@@ -584,8 +639,9 @@ class TestPublishScheduledEditions:
         with patch("cqc_lem.utilities.db.get_editions_due_to_publish",
                    return_value=[{"id": 3, "user_id": 1}, {"id": 8, "user_id": 2}]), \
              patch("cqc_lem.utilities.db.get_pending_newsletter_editions",
-                   side_effect=lambda uid: [{"id": 3 if uid == 1 else 8,
+                   side_effect=lambda uid: [{"id": 3 if uid == 1 else 8, "status": "approved",
                                              "scheduled_for": datetime(2026, 1, 1)}]), \
+             patch("cqc_lem.utilities.db.get_newsletter_settings", return_value={}), \
              patch("cqc_lem.app.engagement.newsletter.auto_publish_edition") as task:
             result = auto_publish_scheduled_editions()
         assert task.apply_async.call_count == 2
@@ -779,39 +835,65 @@ class TestAutoNotifyPendingCovers:
 
     _SCHED = "cqc_lem.app.run_scheduler"
 
-    def _run(self, editions, notified=True):
+    def _run(self, editions, notified=True, auto_publish=True):
         from cqc_lem.app.run_scheduler import auto_notify_pending_covers
         with patch("cqc_lem.utilities.db.get_editions_with_pending_cover",
                    return_value=editions) as query, \
+             patch("cqc_lem.utilities.db.get_newsletter_settings",
+                   return_value={"auto_publish_newsletters": auto_publish}) as settings, \
              patch("cqc_lem.utilities.notifications.notify_newsletter_cover_pending",
                    return_value=notified) as notify:
             result = auto_notify_pending_covers.run()
-        return result, query, notify
+        return result, query, notify, settings
 
     def test_reminds_each_edition_in_the_window(self):
-        editions = [{"id": 5, "user_id": 1, "title": "A", "scheduled_for": "2026-08-20"},
-                    {"id": 6, "user_id": 2, "title": "B", "scheduled_for": "2026-08-21"}]
-        result, _, notify = self._run(editions)
+        editions = [{"id": 5, "user_id": 1, "title": "A", "status": "draft",
+                     "scheduled_for": "2026-08-20"},
+                    {"id": 6, "user_id": 2, "title": "B", "status": "draft",
+                     "scheduled_for": "2026-08-21"}]
+        result, _, notify, _ = self._run(editions)
         assert notify.call_count == 2
         assert notify.call_args_list[0][0] == (1, 5, "A", "2026-08-20")
         assert "2 author" in result
 
     def test_window_runs_from_now_to_the_configured_lead(self):
         from cqc_lem.utilities.env_constants import NEWSLETTER_COVER_REMINDER_LEAD_HOURS
-        _, query, _ = self._run([])
+        _, query, _, _ = self._run([])
         now, until = query.call_args[0]
         # The slot has not arrived yet — an edition already due is the publish beat's problem.
         assert (until - now).total_seconds() == NEWSLETTER_COVER_REMINDER_LEAD_HOURS * 3600
         assert until.tzinfo is None  # naive UTC, like every other datetime compared to the DB
 
     def test_an_empty_sweep_is_the_normal_state(self):
-        result, _, notify = self._run([])
+        result, _, notify, _ = self._run([])
         notify.assert_not_called()
         assert "0 author" in result
 
+    def test_a_held_draft_is_not_told_its_edition_publishes_on_time(self):
+        """Issue #1135 — the reminder's reassurance is only true if the BODY reaches the slot."""
+        editions = [{"id": 5, "user_id": 1, "title": "A", "status": "draft",
+                     "scheduled_for": "2026-08-20"}]
+        _, _, notify, _ = self._run(editions, auto_publish=False)
+        assert notify.call_args[1]["edition_publishes"] is False
+
+    def test_an_approved_edition_publishes_regardless_of_the_toggle(self):
+        editions = [{"id": 5, "user_id": 1, "title": "A", "status": "approved",
+                     "scheduled_for": "2026-08-20"}]
+        _, _, notify, _ = self._run(editions, auto_publish=False)
+        assert notify.call_args[1]["edition_publishes"] is True
+
+    def test_the_settings_row_is_read_once_per_user_not_once_per_edition(self):
+        editions = [{"id": 5, "user_id": 1, "title": "A", "status": "draft",
+                     "scheduled_for": "2026-08-20"},
+                    {"id": 6, "user_id": 1, "title": "B", "status": "draft",
+                     "scheduled_for": "2026-08-21"}]
+        _, _, _, settings = self._run(editions, auto_publish=False)
+        settings.assert_called_once_with(1)
+
     def test_an_already_reminded_edition_is_not_counted(self):
-        editions = [{"id": 5, "user_id": 1, "title": "A", "scheduled_for": "2026-08-20"}]
-        result, _, notify = self._run(editions, notified=False)
+        editions = [{"id": 5, "user_id": 1, "title": "A", "status": "draft",
+                     "scheduled_for": "2026-08-20"}]
+        result, _, notify, _ = self._run(editions, notified=False)
         notify.assert_called_once()
         assert "0 author" in result
 
