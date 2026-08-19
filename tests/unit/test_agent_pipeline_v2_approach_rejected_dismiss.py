@@ -28,11 +28,12 @@ GUARDS_SRC = (_PIPELINE / "lib" / "guards.sh").read_text()
 UNPARK_SRC = (_V2 / "actions" / "unpark.sh").read_text()
 
 PR_FOR_ISSUE = re.search(r"\npr_for_issue\(\) \{.*?\n\}\n", GUARDS_SRC, re.S).group(0)
-# The block between "resolve TPR" and the trust gate that follows it — extracted so this exercises
-# the real newest-ref lookup and dismiss write without also having to satisfy `author_trusted` /
-# `v2_owner_answered`'s own `gh` calls.
+# The block between "resolve TPR" and the final relabel — extracted so this exercises the real
+# newest-ref lookup, the real trust gate, AND the real dismiss write (the dismiss write runs AFTER
+# the trust gate on purpose, #1605 review: a trust-refused answer must leave no durable trace).
+# `author_trusted`/`v2_owner_answered` are stubbed by the caller rather than exercised for real.
 DISMISS_BLOCK = UNPARK_SRC[
-    UNPARK_SRC.index("# ---- no PR:"):UNPARK_SRC.index("# `agent:ready` GRANTS work")
+    UNPARK_SRC.index("# ---- no PR:"):UNPARK_SRC.index('log "UN-PARKING issue #$TISS')
 ]
 
 
@@ -90,8 +91,9 @@ pr_for_issue 1091
 
 
 def _dismiss_run(*, refs: tuple[int, ...], states: dict[int, str], park_reason: str,
-                 tmp_path: Path, tiss: int = 42) -> subprocess.CompletedProcess:
+                 tmp_path: Path, tiss: int = 42, trusted: bool = True) -> subprocess.CompletedProcess:
     state_cases = "\n".join(f'    {n}) printf {s} ;;' for n, s in states.items())
+    trust_rc = "0" if trusted else "1"
     script = f"""
 set -uo pipefail
 BASE="{tmp_path}"
@@ -99,7 +101,10 @@ mkdir -p "$BASE/state"
 SLUG="o/r"
 TISS="{tiss}"
 PARK_REASON="{park_reason}"
+EX_TRUST=13
 log() {{ :; }}
+author_trusted() {{ return {trust_rc}; }}
+v2_owner_answered() {{ return {trust_rc}; }}
 gh() {{
   if [ "$1" = issue ] && [ "$2" = view ]; then printf '%s' '{_refs_json(*refs)}'
   elif [ "$1" = pr ] && [ "$2" = view ]; then
@@ -174,6 +179,19 @@ def test_a_race_where_the_newest_ref_is_no_longer_closed_is_not_dismissed(tmp_pa
     """Only dismiss what GitHub still calls CLOSED right now — an OPEN ref must never be ignored."""
     _dismiss_run(refs=(1600,), states={1600: "OPEN"}, park_reason="approach_rejected",
                 tmp_path=tmp_path)
+    assert not (tmp_path / "state" / "dismissed-issue-42.txt").exists()
+
+
+def test_a_trust_refused_answer_never_writes_the_dismiss_file(tmp_path):
+    """The dismiss write is a durable mutation, so it must run AFTER the trust gate, not before.
+
+    Otherwise a trust-refused answer (a race, or a classification miss upstream) would still
+    permanently defeat the `approach_rejected` park's protection for that PR number even though the
+    un-park itself never happened — exactly the ordering bug the #1605 review fixed.
+    """
+    got = _dismiss_run(refs=(1600,), states={1600: "CLOSED"}, park_reason="approach_rejected",
+                       tmp_path=tmp_path, trusted=False)
+    assert got.returncode == 13
     assert not (tmp_path / "state" / "dismissed-issue-42.txt").exists()
 
 
