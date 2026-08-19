@@ -21,6 +21,10 @@
 #     That second half is what the six PRs parked `*_exhausted` on 2026-08-10 were waiting for.
 #   * AN ISSUE WHOSE PR ALREADY MERGED STAYS PARKED. Re-queueing it redoes shipped work; that state
 #     means the issue needs closing, which is a human call.
+#   * AN `approach_rejected` ANSWER DISMISSES THE ONE REJECTED PR BY NUMBER (#1605). Un-parking alone
+#     is not the fix here: `github.linked_pr_state()` re-reads the same closed ref on the very next
+#     observation and parks it again on the spot. Recording the number durably is what lets the
+#     re-queued issue actually get a fresh attempt instead of looping — see below.
 set -uo pipefail
 V2_ACTION="unpark"
 # shellcheck disable=SC1091
@@ -106,10 +110,14 @@ if [ -n "$TPR" ]; then
 fi
 
 # ---- no PR: the issue itself goes back on the queue, unless its work already shipped ----------
+# NEWEST ref (#1605) — the same fix as `pr_for_issue`, and for the same reason: reading the first
+# ref let an issue whose first ref was an older CLOSED PR under a NEWER merged one slip past this
+# guard, so the merged case wasn't caught and the issue re-parked forever.
 DONEPR="$(gh issue view "$TISS" --repo "$SLUG" --json closedByPullRequestsReferences 2>/dev/null \
-          | jq -r '[(.closedByPullRequestsReferences // [])[] | .number] | (first // empty)')"
-if [ -n "$DONEPR" ] \
-   && [ "$(gh pr view "$DONEPR" --repo "$SLUG" --json state --jq .state 2>/dev/null)" = "MERGED" ]; then
+          | jq -r '[(.closedByPullRequestsReferences // [])[] | .number] | (max // empty)')"
+DONESTATE=""
+[ -n "$DONEPR" ] && DONESTATE="$(gh pr view "$DONEPR" --repo "$SLUG" --json state --jq .state 2>/dev/null)"
+if [ "$DONESTATE" = "MERGED" ]; then
   log "Issue #$TISS answered, but PR #$DONEPR is already MERGED — leaving parked (needs closing, not redoing)."
   exit 0
 fi
@@ -126,8 +134,28 @@ fi
 #
 # Both halves are required. `author_trusted` keeps a stranger's issue from becoming agent work, and
 # `v2_owner_answered` keeps anyone but the owner from being the one who released it.
+#
+# This gate MUST run before the dismiss write below (#1605 review): the dismiss file is a durable
+# mutation, and a trust-refused answer must leave no trace, or a refused un-park still permanently
+# defeats the `approach_rejected` park's protection for that PR number on the next observation.
 if ! author_trusted "$TISS" || ! v2_owner_answered issue "$TISS"; then
   log "TRUST refused un-park of issue #$TISS — leaving it parked."; exit "$EX_TRUST"
+fi
+
+# The `approach_rejected` escape: the owner's retry answer DISMISSES this one rejected PR number so
+# `github.linked_pr_state()` (via its `ignore` set, read from this same file) stops reading it as
+# the newest ref on the next observation. Durable across the un-park on purpose — `parked_reason` is
+# cleared by `force_state` and `park_history` only remembers COUNTS, neither can carry a PR number —
+# and scoped to THIS number only: a fresh rejection on a DIFFERENT PR is not in the file, so it still
+# parks normally (#1605 criterion 3). Only correct when GitHub still calls it CLOSED — a race where
+# the newest ref has since gone OPEN or MERGED must never be swept into "ignore forever". Runs AFTER
+# the trust gate above, so a refused un-park never leaves this mutation behind.
+if [ "$PARK_REASON" = "approach_rejected" ] && [ -n "$DONEPR" ] && [ "$DONESTATE" = "CLOSED" ]; then
+  DISMISS_FILE="$BASE/state/dismissed-issue-$TISS.txt"
+  if ! grep -qxF "$DONEPR" "$DISMISS_FILE" 2>/dev/null; then
+    printf '%s\n' "$DONEPR" >> "$DISMISS_FILE"
+    log "Issue #$TISS: dismissing rejected PR #$DONEPR — next observation gets a fresh attempt instead of re-parking on it."
+  fi
 fi
 
 log "UN-PARKING issue #$TISS — no PR yet, returning it to the ready queue."

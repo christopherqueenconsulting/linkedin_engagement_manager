@@ -340,18 +340,28 @@ def test_every_decide_raised_park_reason_carries_a_detail():
     assert raised <= set(observe.PARK_DETAILS)
 
 
-def test_every_detail_says_the_retry_options_cannot_move_it():
-    """`park.sh` offers `1A`/`1B` unconditionally, and for these two they are unachievable.
+def test_the_merged_detail_says_the_retry_options_cannot_move_it():
+    """`park.sh` offers `1A`/`1B` unconditionally, and for a MERGED PR they are unachievable.
 
-    A budget park is released by the un-park itself — the ledger reset IS the fix. These are raised
-    from a GitHub fact the un-park does not touch, so an owner who answers `1A` gets the issue back
-    on the queue, re-observed, and parked again on the spot: `LEMD_MAX_PARK_LAPS` round trips and
-    then `agent:abandoned`. The options are fixed text in the action, so the honest sentence has to
-    ride in the detail — asserted here so it cannot quietly drift back out.
+    A budget park is released by the un-park itself — the ledger reset IS the fix. A merged link is
+    raised from a GitHub fact the un-park does not touch, so an owner who answers `1A` gets the issue
+    back on the queue, re-observed, and parked again on the spot: `LEMD_MAX_PARK_LAPS` round trips
+    and then `agent:abandoned`. The options are fixed text in the action, so the honest sentence has
+    to ride in the detail — asserted here so it cannot quietly drift back out.
     """
-    for reason, detail in observe.PARK_DETAILS.items():
-        assert "`1A`/`1B` will not restart it" in detail, reason
-        assert "fresh issue" in detail, reason
+    assert "`1A`/`1B` will not restart it" in observe.PARK_DETAILS["work_shipped_needs_close"]
+
+
+def test_the_rejected_detail_says_the_retry_options_now_do_restart_it():
+    """`approach_rejected` is the ONE park where `1A`/`1B` genuinely restart the work (#1605).
+
+    Unlike a merged PR, a closed-unmerged link is exactly what `unpark.sh` now dismisses on an
+    actionable answer — so the detail must say the honest, OPPOSITE thing from the merged case, and
+    the two must not silently collapse back onto the same sentence.
+    """
+    detail = observe.PARK_DETAILS["approach_rejected"]
+    assert "DO restart it" in detail
+    assert "`1A`/`1B` will not restart it" not in detail
 
 
 def test_the_park_script_recommends_closing_rather_than_retrying():

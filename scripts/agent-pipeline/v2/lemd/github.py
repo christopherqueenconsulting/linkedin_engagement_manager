@@ -278,7 +278,8 @@ def open_pr_for_branch(slug: str, branch: str, *, timeout: int = 30) -> bool | N
     return bool(rows)
 
 
-def linked_pr_state(slug: str, number: int, *, timeout: int = 30) -> str | None:
+def linked_pr_state(slug: str, number: int, *, ignore: frozenset[int] = frozenset(),
+                     timeout: int = 30) -> str | None:
     """The state of the NEWEST pull request GitHub says will close this issue.
 
     `closedByPullRequestsReferences` carries id/number/repository/url and no `state`, so telling an
@@ -290,13 +291,24 @@ def linked_pr_state(slug: str, number: int, *, timeout: int = 30) -> str | None:
     #1597 — and only the most recent one describes where the work stands now. An older merged ref
     under a live PR must not read as "shipped".
 
+    Args:
+        slug: `owner/repo`.
+        number: The issue number.
+        ignore: PR numbers to drop before picking "newest" — the owner's `approach_rejected`
+            dismissal (#1605). Filtering here, not in `decide()`, keeps `decide()` pure: this
+            function is the READ, so it is where the answer to "does this ref still count" belongs.
+            A dismissed ref reads exactly like one that was never linked, which is deliberate — the
+            caller must not be able to tell "nothing linked" from "the only thing linked was
+            dismissed", because both fall through to the same ordinary work-state ladder.
+        timeout: Seconds before `gh` is treated as unresponsive.
+
     Returns:
-        `OPEN` / `MERGED` / `CLOSED`; `""` when the linkage was READ and there is nothing linked;
-        None when either read failed or the newest ref carries no usable number. `""` and None are
-        the same DECISION — neither licenses a park, both wait — and are separate answers anyway
-        because they are different READS: `""` tells the caller the refs question is already
-        answered, which is what lets one linkage read serve all three of the questions
-        `snapshot_issue` asks instead of three.
+        `OPEN` / `MERGED` / `CLOSED`; `""` when the linkage was READ and there is nothing usable
+        linked (including "everything usable was dismissed"); None when either read failed or the
+        newest ref carries no usable number. `""` and None are the same DECISION — neither licenses
+        a park, both wait — and are separate answers anyway because they are different READS: `""`
+        tells the caller the refs question is already answered, which is what lets one linkage read
+        serve all three of the questions `snapshot_issue` asks instead of three.
     """
     try:
         linked = gh_json(
@@ -317,6 +329,12 @@ def linked_pr_state(slug: str, number: int, *, timeout: int = 30) -> str | None:
         # linkage, and the caller would then license a re-dispatch off the branch convention alone.
         LOG.warning("issue #%s has %d linked PR ref(s) with no usable number", number, len(raw))
         return None
+    if ignore:
+        refs = [r for r in refs if int(r["number"]) not in ignore]
+        if not refs:
+            # Every usable ref was dismissed — reads as "nothing linked", not as "malformed": the
+            # refs were real and were addressed, just not counted.
+            return ""
     newest = max(refs, key=lambda r: int(r["number"]))
     # The ref names its own repository, so a cross-repo link is read where it actually lives rather
     # than looked up under this repo's slug, where the number would resolve to a different PR.
