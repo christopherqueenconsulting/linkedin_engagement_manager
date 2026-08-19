@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.162.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.161.0...v0.162.0) (2026-08-19)
+
+
+### Features
+
+* **admin:** per-user disable, one-time subscription grant, audit-log viewer ([#1603](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1603)) ([246152b](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/246152b712a85dac229444a57aba87e982f57016))
+* **admin:** per-user disable, one-time subscription grant, audit-log viewer (closes [#1603](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1603)) ([#1696](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1696)) ([246152b](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/246152b712a85dac229444a57aba87e982f57016))
+
+
+### Bug Fixes
+
+* **agent-pipeline:** export the pipeline's own Claude OAuth token to lane children ([#1690](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1690)) ([cd824ae](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/cd824aee158a660cb3a3ab57d5b4f182220ce768))
+
 ## [0.161.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.160.0...v0.161.0) (2026-08-19)
 
 
