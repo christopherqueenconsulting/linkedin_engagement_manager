@@ -193,6 +193,32 @@ The worker likely crashed mid-task. Because `task_acks_late = True`, the message
 docker compose restart celery_worker
 ```
 
+### A Redis blip made a dispatch disappear (and 500'd the caller)
+
+Fixed in #1674, and the shape is worth knowing because it is invisible from the outside.
+`Celery.send_task` subscribes the CALLER's result pubsub — `backend.on_task_call()` — **before** it
+publishes the message. When Redis was briefly unreachable that subscribe spent its retry budget and
+raised `RuntimeError: Retry limit exceeded while trying to reconnect to the Celery result store
+backend`, so `send_task_message` never ran: the task was never queued, and the API returned a 500
+for a request whose database write had already committed.
+
+Nothing in LEM waits on a result (`/api/admin/task-status/{task_id}` reads `AsyncResult.state`, a
+plain GET on the result key), so that subscribe is decoration. `ResilientRedisBackend`
+(`app/result_backend.py`) makes it a DEBUG-logged no-op on an unreachable backend and lets the
+publish proceed. A real outage still fails the dispatch on the very next line, because the broker is
+the same Redis instance.
+
+**The operator trap:** `app.conf.result_backend` is NOT `celeryconfig.result_backend`. Celery's
+`Settings.result_backend` reads `os.environ['CELERY_RESULT_BACKEND']` first and only then falls back
+to the configured value, and compose sets that variable — so a config-only change here ships inert.
+`my_celery.py` pins `app.backend_cls` instead, which `_get_backend()` consults ahead of the config.
+If you ever need to confirm which class is live:
+
+```bash
+docker compose exec celery_worker python -c \
+  "from cqc_lem.app.my_celery import app; print(type(app.backend), app.backend.url)"
+```
+
 ### PostHog shows no celery_task events
 
 1. Confirm `POSTHOG_API_KEY` is set in `.env` (missing key silently disables PostHog)
