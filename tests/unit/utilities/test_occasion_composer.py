@@ -131,6 +131,8 @@ class _Chain:
             return "Composer overflow"
         if labels == tuple(sc.POST_BUTTON_LABELS):
             return "Occasion Post button"
+        if labels == tuple(sc.TEMPLATE_CHOOSER_NEXT_LABELS):
+            return "Template chooser Next"
         return "Occasion type"
 
     def _resolve(self, step):
@@ -190,6 +192,18 @@ class TestPublishOccasionNatively:
         assert result.state == sc.PUBLISHED
         assert chain.typed == [_BODY]
         assert "Occasion Post button" in chain.clicked
+        assert "Template chooser Next" in chain.clicked
+
+    def test_a_variant_with_no_template_chooser_still_reaches_the_editor(self):
+        """The chooser click is optional (#1621 grounding).
+
+        A variant that skips straight to the editor must not be treated as a miss.
+        """
+        chain = _Chain(missing={"Template chooser Next"})
+        result = self._run(chain)
+
+        assert result.state == sc.PUBLISHED
+        assert chain.typed == [_BODY]
 
     def test_an_unmapped_archetype_never_opens_the_composer(self):
         chain = _Chain()

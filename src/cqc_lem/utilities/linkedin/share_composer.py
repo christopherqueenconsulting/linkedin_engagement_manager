@@ -4,7 +4,7 @@
 so #1074 shipped the occasion archetypes as `manual_publish` drafts the author pastes into
 LinkedIn's own composer by hand. This module is Phase 2's mechanics: the only route to that
 composer is a browser, and driving it is exactly the sequence a person performs — Start a post →
-More → Celebrate an occasion → pick the occasion → type → Post.
+More → Celebrate an occasion → pick the occasion → past the template chooser → type → Post.
 
 Mechanics only. No Celery, no policy, no DB: `app.engagement.posting.auto_publish_occasion_post`
 owns the flag, the row's status and the cadence bounds, the same way `feed.auto_post_to_group` owns
@@ -108,6 +108,17 @@ OCCASION_TYPE_LABELS: dict = {
     "project_launch": ("project launch",),
     "educational_milestone": ("educational milestone",),
 }
+
+# Picking an occasion type does not open the editor directly — live grounding from #1621
+# (2026-08-17) found a TEMPLATE CHOOSER screen between them ("Add a photo / Or select from below",
+# "Template 1"…"Template 22", "Back", "Next"), carrying no `role='textbox'` of its own. An occasion
+# draft here is always text-only (no `image_url` reaches `publish_occasion_natively`), so the chain
+# only ever takes the text path: click "Next" past whichever template is pre-selected. The lookup is
+# optional — a variant that skips straight to the editor must not be treated as a miss; the editor
+# lookup right below is what actually decides NO_EDITOR. Matched through `find_composer_control`
+# like every other in-composer step, so it walks the shadow root the same way (#1621).
+TEMPLATE_CHOOSER_NEXT_LABELS = ("next",)
+
 
 # The page-native anchors the zero-walk cross-checks read. Each is INDEPENDENT of the chain it
 # grades — asking a rotated chain about itself answers zero to both questions (#1013). They are
@@ -389,6 +400,17 @@ def publish_occasion_natively(driver, wait, archetype: str, text: str, user_id: 
         sleep(random.uniform(2, 3))
 
         form = find_composer_container(driver, user_id=user_id, post_id=post_id) or container
+
+        # Template chooser: optional on purpose — a miss here is not graded, because the editor
+        # lookup right below is what decides whether the run actually got stuck. The chooser can
+        # mount in its own re-rendered container the same way the type menu does, so the container
+        # is re-read after the click rather than assumed to be the one the type menu opened.
+        next_button = find_composer_control(form, TEMPLATE_CHOOSER_NEXT_LABELS, exact=True)
+        if next_button is not None:
+            next_button.click()
+            sleep(random.uniform(1, 2))
+            form = find_composer_container(driver, user_id=user_id, post_id=post_id) or form
+
         box = next(iter(find_deep_elements(driver, COMPOSER_EDITOR_CSS, visible_only=True, limit=4,
                                            root=form)), None)
         if box is None:
