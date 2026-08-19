@@ -61,7 +61,23 @@ runs:
         # install, which a runner-image bump can leave dangling. A failed probe falls through to a
         # real install rather than failing the job. A restore-keys (partial) hit is NOT an exact
         # hit and always reinstalls -- that is the path Dependabot's lockfile bumps take.
+        #
+        # The python-import probe alone is NOT enough: a cache entry can restore with a working
+        # interpreter but a missing group console-script (observed 2026-08-18 -- every job with
+        # `--with test` hit "Command not found: pytest" despite an exact cache-hit, main included).
+        # So also probe for the one script each group exists to provide.
+        #
+        # A file-existence/`-x` check is NOT enough either (observed 2026-08-19, refs #1674): the
+        # corrupted entry restores `.venv/bin/pytest` present and executable, but broken -- running
+        # it still fails. Only an actual invocation proves the script works, so probe with
+        # `--version` (cheap, no test collection) instead of trusting the file mode bits.
+        group_bin_ok=true
+        case "${{ inputs.install-args }}" in
+          *test*) poetry run pytest --version >/dev/null 2>&1 || group_bin_ok=false ;;
+          *lint*) poetry run ruff --version >/dev/null 2>&1 || group_bin_ok=false ;;
+        esac
         if [ "${{ steps.cache-venv.outputs.cache-hit }}" = "true" ] \
+           && [ "$group_bin_ok" = "true" ] \
            && poetry run python -c "import sys" >/dev/null 2>&1; then
           echo "Restored venv matches poetry.lock and ${{ inputs.install-args }} — skipping install"
         else
