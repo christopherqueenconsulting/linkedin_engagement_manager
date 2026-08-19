@@ -3685,17 +3685,7 @@ Return ONLY valid JSON. No explanation, no markdown fences."""
                         exc=exc, user_id=user_id, task_name="create_carousel_content")
         else:
             if not missing_carousel_fields(model_cls, retry_deck):
-                post_text, carousel_dict, parsed_ok, missing = (retry_text, retry_deck,
-                                                                retry_parsed_ok, [])
-    if missing:
-        # ERROR, not WARNING: there is no degraded carousel. This deck fails
-        # `model_cls(**carousel_dict)` in run_content_plan, which flags the post 'error' for a
-        # human — so this is a task-level failure, logged where it is DETECTED. ONE record for the
-        # condition: the message names whether the reply parsed at all and which fields never came.
-        reason = ("LLM returned no parseable JSON object" if not parsed_ok
-                  else "deck is missing required slide field(s): " + ", ".join(missing))
-        log_error(f"generate_carousel_content: {reason}",
-                  user_id=user_id, task_name="create_carousel_content")
+                post_text, carousel_dict, parsed_ok = retry_text, retry_deck, retry_parsed_ok
 
     # Reference-value gate (issue #728): a save-targeted deck — or any deck whose caption promises a
     # checklist / the exact stack / the numbers — must carry something reusable on every body slide.
@@ -3743,6 +3733,20 @@ Return ONLY valid JSON. No explanation, no markdown fences."""
         log_warning(f"Carousel deck still carries nothing worth saving after {attempt} attempt(s): "
                     + "; ".join(report["reasons"]),
                     user_id=user_id, task_name="create_carousel_content")
+
+    # Deck-shape residual check (issue #1666), read against the deck actually being RETURNED —
+    # never right after the shape gate's own repair. The reference-value loop above can hand back
+    # a fresh reply that happens to carry the field the shape gate could not get (a retry there is
+    # an independent LLM sample, not a rewrite of the same draft); logging the ERROR before that
+    # loop ran would file a defect for a request that went on to succeed. There is no degraded
+    # carousel: this deck fails `model_cls(**carousel_dict)` in run_content_plan, which flags the
+    # post 'error' for a human — so this is a task-level failure, ONE record for the condition.
+    final_missing = missing_carousel_fields(model_cls, carousel_dict)
+    if final_missing:
+        reason = ("LLM returned no parseable JSON object" if not parsed_ok
+                  else "deck is missing required slide field(s): " + ", ".join(final_missing))
+        log_error(f"generate_carousel_content: {reason}",
+                  user_id=user_id, task_name="create_carousel_content")
     return post_text, carousel_dict
 
 

@@ -63,11 +63,11 @@ class _Harness:
         return False
 
 
-def _generate(responses, stage: str = "awareness"):
+def _generate(responses, stage: str = "awareness", blueprint: dict = None):
     from cqc_lem.utilities.ai.ai_helper import generate_carousel_content
     with _Harness(), patch(f"{_AI}._call_llm", side_effect=responses) as call, \
             patch(f"{_AI}.log_error") as log_error:
-        text, deck = generate_carousel_content(1, stage)
+        text, deck = generate_carousel_content(1, stage, blueprint=blueprint)
     return text, deck, call, log_error
 
 
@@ -235,6 +235,28 @@ class TestTheRepairIsBoundedAndFailsLoudly:
         _, deck, call, _ = _generate([_deck_response(partial), _deck_response(None)])
         assert call.call_count == 2
         assert deck == partial
+
+    def test_a_deck_the_shape_gate_could_not_repair_but_the_reference_gate_later_does_logs_nothing(
+            self):
+        """The ERROR is read off what actually SHIPS, not off the shape gate's own repair attempt.
+
+        The shape-gate repair (call 2) still drops `cover`, so it would have logged the ERROR right
+        there under the old ordering. But `contents` here carries no reusable artifact, so the
+        save-targeted reference gate (issue #728) fires its OWN retry (call 3) — an independent
+        fresh reply — and that one happens to come back complete. The deck that ships is buildable,
+        so nothing should have been logged for a request that went on to succeed.
+        """
+        partial_no_artifact = {
+            "contents": [{"title": "Ship small", "content": "We ship small changes often."}],
+            "call_to_action": {"title": "Follow along", "content": "Follow for more."},
+        }
+        _, deck, call, log_error = _generate(
+            [_deck_response(partial_no_artifact), _deck_response(partial_no_artifact),
+             _deck_response(_GOOD_DECK)],
+            blueprint={"format": "build_receipt"})
+        assert call.call_count == 3
+        assert deck == _GOOD_DECK
+        assert log_error.call_count == 0
 
 
 class TestTheDirectiveBuilder:
