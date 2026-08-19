@@ -50,6 +50,15 @@ app = Celery(
 # Set the Celery configuration
 app.config_from_object(celeryconfig)
 
+# `celeryconfig.result_backend` is NOT what `app.conf.result_backend` answers: celery's `Settings`
+# reads `os.environ['CELERY_RESULT_BACKEND']` FIRST and only falls back to the configured value
+# (celery/app/utils.py), and the compose stack sets that variable — so anything celeryconfig does
+# to the backend is invisible in production. `backend_cls` is the one input `_get_backend()`
+# consults ahead of the config, and it takes the same `class+url` string `by_url` parses, which is
+# how `ResilientRedisBackend` actually gets loaded (issue #1674). Set AFTER config_from_object and
+# BEFORE the first `app.backend` access, which is what caches the instance.
+app.backend_cls = celeryconfig.result_backend
+
 # When we use the following in Django, it loads all the <appname>.tasks
 # files and registers any tasks it finds in them. We can import the
 # tasks files some other way if we prefer.
