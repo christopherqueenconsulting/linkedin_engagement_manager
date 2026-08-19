@@ -314,6 +314,26 @@ to the other two. Its `""` (read, nothing linked) is what makes that possible: i
 DECISION as an unreadable `None` — both fall through to rows 14/18 and wait — and a different READ,
 so `""` skips the repeat and `None` does not.
 
+**Un-parking rows 12-13 (#1605).** `park.sh` offers the owner `1A`/`1B`/`1C` unconditionally, but an
+un-park by itself does not change the GitHub fact rows 12-13 read: the next observation re-reads the
+same linked PR and parks again on the spot. For a **merged** link that is correct — the work shipped,
+the retry options genuinely cannot move it, and the detail says so (`PARK_DETAILS`). For a
+**closed-unmerged** one it used to be the same false promise, and #1605 makes it true instead:
+
+* `unpark.sh`'s own linked-PR lookups (`pr_for_issue` in `lib/guards.sh`, and its own `DONEPR` merged
+  guard) used to read the **first** ref while `github.linked_pr_state()` reads the **newest**. An
+  issue whose first ref was an older closed PR and whose newest was merged slipped past the merged
+  guard, so the un-park proceeded as if nothing had shipped. Both now sort on `max` by PR number, the
+  same rule `linked_pr_state()` already used, so the two can no longer disagree.
+* An actionable answer to an `approach_rejected` park now **dismisses** that one PR number: `unpark.sh`
+  appends it to `state/dismissed-issue-<N>.txt` (only when GitHub still calls the newest ref `CLOSED`
+  at that instant — a race where it has since gone `OPEN`/`MERGED` is never swept in), and
+  `snapshot_issue` reads that file into `github.linked_pr_state(..., ignore=...)` before picking the
+  newest ref. A dismissed ref reads exactly as "never linked", so the issue falls through to the
+  ordinary rows 14-15 / 18-19 ladder and gets one genuinely fresh attempt. Scoped to that one PR
+  number, not the whole issue — a later approach that is also closed without merging parks again, on
+  its own (undismissed) PR number, so this cannot become a silent loop from the other direction.
+
 ### PR lanes, cheapest-to-unblock first
 
 | # | Condition | Action | Reason | Wake |
@@ -429,7 +449,7 @@ one. The state is a second read, taken only when linkage already exists.
 |---|---|---|
 | `OPEN` | ✅ | in flight — rows 14/18 wait, exactly as before |
 | `MERGED` | ✅ | row 12 → **park**, `work_shipped_needs_close`. The work shipped and only the issue is still open |
-| `CLOSED` unmerged | ✅ | row 13 → **park**, `approach_rejected`. A human turned the approach down; restarting would redo it |
+| `CLOSED` unmerged | ✅ | row 13 → **park**, `approach_rejected`. A human turned the approach down; restarting would redo it — unless the owner's answer **dismisses** that PR number (#1605), which makes it read as nothing linked from then on |
 | nothing linked | ✅ | `""` — read, and empty. Falls to rows 14/18, and the branch-convention lookups skip their own repeat of the read |
 | unreadable (either read) | ✅ | `None`. Same decision as `""` — rows 14/18 wait — but the refs question is NOT answered, so the callers ask it themselves |
 | linked, but no usable ref number | ✅ | `None`, not `""`: the issue IS linked to something, and "nothing linked" would license a re-dispatch off the branch name alone |

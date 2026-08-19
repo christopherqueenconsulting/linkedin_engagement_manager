@@ -151,9 +151,14 @@ pr_for_issue() {
   # NOT a "#N" scan of PR bodies, which false-matches any PR that merely cites the issue as context
   # (e.g. #616's body cites "#403/#404", so a body scan wrongly claimed #616's PR owns #404).
   # Falls back to the agent branch naming convention for a PR that forgot the closing keyword.
+  #
+  # NEWEST ref, not the first (#1605) — matching `github.linked_pr_state()`'s own semantics. An
+  # issue can accumulate refs (#1091 carries both #1592 and #1597), and reading the first let an
+  # issue whose first ref was an older CLOSED PR slip past a merged NEWER one: the merged guard in
+  # `unpark.sh` never saw the merge and re-parked the issue forever.
   local N="$1" P
   P="$(gh issue view "$N" --repo "$SLUG" --json closedByPullRequestsReferences 2>/dev/null \
-       | jq -r '[(.closedByPullRequestsReferences // [])[] | .number] | (first // empty)')"
+       | jq -r '[(.closedByPullRequestsReferences // [])[] | .number] | (max // empty)')"
   if [ -n "$P" ]; then
     # Only route work that's still open.
     [ "$(gh pr view "$P" --repo "$SLUG" --json state --jq .state 2>/dev/null)" = "OPEN" ] && { echo "$P"; return 0; }

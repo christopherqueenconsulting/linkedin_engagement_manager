@@ -25,6 +25,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from . import answers, codeowners, db, github
+from .config import BASE
 
 LOG = logging.getLogger("lemd.observe")
 
@@ -75,10 +76,12 @@ PARK_DETAILS: dict[str, str] = {
     "approach_rejected": (
         "The newest pull request linked to this issue was **closed without merging**, so the "
         "approach was rejected. Restarting would redo work that has already been turned down, so "
-        "the pipeline stopped instead. Note that `1A`/`1B` will not restart it either — the closed "
-        "link is what stopped it, so re-queueing parks it again immediately. To have it "
-        "re-attempted, remove the `Closes #<this issue>` line from that pull request's body (which "
-        "drops the link the pipeline reads) or file a fresh issue."
+        "the pipeline stopped instead. Unlike a budget park, `1A`/`1B` DO restart it (#1605): "
+        "answering either DISMISSES this specific closed pull request — durably, so it survives "
+        "the un-park — and returns the issue to the queue for a genuinely fresh attempt, once per "
+        "answer. If that attempt is also closed without merging it parks again on ITS OWN pull "
+        "request number, so this never turns into a silent loop on the same rejected approach. `C` "
+        "still closes it for you to handle manually."
     ),
 }
 
@@ -658,6 +661,27 @@ def snapshot_pr(slug: str, number: int, *, owner: str | None = None,
     )
 
 
+def _dismissed_prs(number: int) -> frozenset[int]:
+    """PR numbers the owner has dismissed for issue `number` — the `approach_rejected` escape.
+
+    Written by `unpark.sh`'s `approach_rejected` branch, one PR number per line, at
+    `state/dismissed-issue-<N>.txt`. Read here rather than in `decide()` because filtering linkage
+    is a READ concern, not a decision one: `decide()` stays a pure function of a `Snapshot` and never
+    learns this file exists, exactly as it never learns any other GitHub read exists.
+
+    A missing or unreadable file means "nothing dismissed", not "unreadable" — this is a LOCAL,
+    disposable optimisation over what `linked_pr_state` already returns, never the sole evidence for
+    a decision, so failing open here costs at most one extra park-and-ask lap, never a wrong action.
+    """
+    path = BASE / "state" / f"dismissed-issue-{number}.txt"
+    try:
+        lines = path.read_text().splitlines()
+    except OSError:
+        return frozenset()
+    stripped = (line.strip() for line in lines)
+    return frozenset(int(s) for s in stripped if s.isdigit())
+
+
 def snapshot_issue(slug: str, number: int, *, owner: str | None = None,
                    answer_routed: str | None = None) -> Snapshot:
     """Build a `Snapshot` for an issue.
@@ -689,7 +713,12 @@ def snapshot_issue(slug: str, number: int, *, owner: str | None = None,
         # refs themselves. Handing its answer to the other two is what keeps #1405's cost at the one
         # extra `pr view` the STATE needs: an issue with linkage now makes the same two calls it
         # always did, and an issue with nothing linked never reaches the `pr view` at all.
-        linked_state = github.linked_pr_state(slug, number)
+        #
+        # `ignore` is the `approach_rejected` dismissal (#1605): a PR number `unpark.sh` recorded on
+        # the owner's retry answer. Filtered at the READ so `decide()` stays pure and so a dismissed
+        # ref reads exactly like one that was never linked — falling through to the ordinary
+        # work-state ladder below instead of parking again on the same closed PR.
+        linked_state = github.linked_pr_state(slug, number, ignore=_dismissed_prs(number))
         work = _work_exists_for_issue(slug, number, linked_state=linked_state)
         if work:
             # Only asked when work exists, because it is only then that the answer changes anything.
