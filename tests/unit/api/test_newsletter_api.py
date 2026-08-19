@@ -29,6 +29,24 @@ class TestNewsletterSettings:
         args = upd.call_args[0][1]
         assert "session_token" not in args and args["title"] == "Weekly Wins"
 
+    def test_put_round_trips_the_auto_publish_toggle(self, api_client):
+        """Issue #1135 — the card's spread-of-state PUT is the only writer of this column."""
+        with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
+             patch("cqc_lem.api.routers.user.update_newsletter_settings", return_value=True) as upd:
+            resp = api_client.put("/api/user/newsletter-settings", json={
+                "session_token": _SESSION, "enabled": True, "auto_publish_newsletters": True})
+        assert resp.status_code == 200
+        assert upd.call_args[0][1]["auto_publish_newsletters"] is True
+
+    def test_put_omitting_the_toggle_falls_to_requiring_approval(self, api_client):
+        """An omitted field takes the model default, and the safe direction is MORE approval."""
+        with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
+             patch("cqc_lem.api.routers.user.update_newsletter_settings", return_value=True) as upd:
+            resp = api_client.put("/api/user/newsletter-settings", json={
+                "session_token": _SESSION, "enabled": True})
+        assert resp.status_code == 200
+        assert upd.call_args[0][1]["auto_publish_newsletters"] is False
+
     def test_put_passes_publish_day_hour(self, api_client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
              patch("cqc_lem.api.routers.user.update_newsletter_settings", return_value=True) as upd:
@@ -176,6 +194,21 @@ class TestNewsletterDraft:
         with patch("cqc_lem.api.main.get_session_user_id", return_value=None):
             resp = api_client.get("/api/user/newsletter-draft?session_token=bad")
         assert resp.status_code == 401
+
+    @pytest.mark.parametrize("stored,expected", [(1, True), (0, False), (None, False)])
+    def test_get_carries_the_auto_publish_setting(self, api_client, stored, expected):
+        """Issue #1135 — the queue's slot copy has to report the account's own setting."""
+        settings = {"publish_day": 1, "publish_hour": 9, "cadence": "weekly", "last_published_at": None,
+                    "max_queued_drafts": 1, "generate_lead_days": 3,
+                    "auto_publish_newsletters": stored}
+        with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
+             patch("cqc_lem.api.routers.user.get_pending_newsletter_editions", return_value=[]), \
+             patch("cqc_lem.api.routers.user.get_latest_edition_scheduled_for", return_value=None), \
+             patch("cqc_lem.api.routers.user.get_newsletter_settings", return_value=settings), \
+             patch("cqc_lem.api.routers.user.get_user_timezone", return_value="UTC"):
+            resp = api_client.get(f"/api/user/newsletter-draft?session_token={_SESSION}")
+        assert resp.status_code == 200
+        assert resp.json()["detail"]["auto_publish_newsletters"] is expected
 
     def test_put_approve(self, api_client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \

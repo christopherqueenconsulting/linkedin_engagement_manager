@@ -3422,8 +3422,12 @@
         "type": "object"
       },
       "NewsletterDraftDetail": {
-        "description": "`detail` of `GET /user/newsletter-draft`.\n\n`next_publish` is the slot AFTER the last edition already queued \u2014 when a NEW draft would go\nout, not when the next send is.",
+        "description": "`detail` of `GET /user/newsletter-draft`.\n\n`next_publish` is the slot AFTER the last edition already queued \u2014 when a NEW draft would go\nout, not when the next send is.\n\n`auto_publish_newsletters` rides along from the user's settings so the queue can say what\nactually happens at a draft's slot (publish, or wait for approval) instead of asserting one\nuniversal truth \u2014 it is read here, never written.",
         "properties": {
+          "auto_publish_newsletters": {
+            "title": "Auto Publish Newsletters",
+            "type": "boolean"
+          },
           "editions": {
             "items": {
               "$ref": "#/components/schemas/NewsletterEdition"
@@ -3455,7 +3459,8 @@
           "editions",
           "next_publish",
           "max_queued_drafts",
-          "generate_lead_days"
+          "generate_lead_days",
+          "auto_publish_newsletters"
         ],
         "title": "NewsletterDraftDetail",
         "type": "object"
@@ -3713,6 +3718,10 @@
             "title": "Align With Blog",
             "type": "boolean"
           },
+          "auto_publish_newsletters": {
+            "title": "Auto Publish Newsletters",
+            "type": "boolean"
+          },
           "cadence": {
             "title": "Cadence",
             "type": "string"
@@ -3809,7 +3818,8 @@
           "max_queued_drafts",
           "invite_connections_enabled",
           "max_invites_per_run",
-          "cover_image_auto"
+          "cover_image_auto",
+          "auto_publish_newsletters"
         ],
         "title": "NewsletterSettingsDetail",
         "type": "object"
@@ -3820,6 +3830,11 @@
           "align_with_blog": {
             "default": true,
             "title": "Align With Blog",
+            "type": "boolean"
+          },
+          "auto_publish_newsletters": {
+            "default": false,
+            "title": "Auto Publish Newsletters",
             "type": "boolean"
           },
           "cadence": {

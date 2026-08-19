@@ -263,7 +263,7 @@ export default function NewsletterQueue(
         <p className="text-gray-600 text-sm mb-2 max-w-sm">No newsletter drafts queued yet.</p>
         <p className="text-gray-400 text-xs max-w-sm">
           Enable your newsletter and set how many drafts to keep ready on the Account page — drafts will
-          appear here for review before they auto-publish.
+          appear here for you to review, edit and approve.
         </p>
       </div>
     )
@@ -298,10 +298,15 @@ export default function NewsletterQueue(
             {e.subtitle && <p className="text-xs text-gray-500 line-clamp-1">{e.subtitle}</p>}
             {/* A pending cover is only approvable inside the editor below, so the LIST has to say
                 it exists (issue #1432) — every edition in production shipped cover-less because
-                nothing outside the open editor ever mentioned the cover was waiting. */}
+                nothing outside the open editor ever mentioned the cover was waiting. The
+                "publishes without it" half is conditional (issue #1135): a draft on an opted-out
+                account does not reach its slot at all, so that clause would be a false
+                reassurance on the very row it is asking the author to open. */}
             {e.cover_image_status === 'pending_review' && (
               <p className="mt-1.5 text-xs font-medium text-yellow-700">
-                🖼️ Cover needs your approval — publishes without it otherwise
+                {e.status === 'approved' || data?.auto_publish_newsletters
+                  ? '🖼️ Cover needs your approval — publishes without it otherwise'
+                  : '🖼️ Cover needs your approval — approve it along with the edition'}
               </p>
             )}
             {(e.format || e.hook_style) && (
@@ -328,9 +333,14 @@ export default function NewsletterQueue(
           <div className="bg-white rounded-lg border border-gray-200 shadow-sm p-5 space-y-3">
             <div>
               <h3 className="text-sm font-semibold text-gray-700">Review draft</h3>
+              {/* What happens at the slot depends on the account's own setting (issue #1135), so
+                  this reports it rather than asserting one universal truth. An APPROVED edition
+                  publishes either way — the toggle only decides whether an untouched draft does. */}
               {draftEdit.scheduled_for && (
                 <p className="text-xs text-gray-500">
-                  Auto-publishes {formatInTimezone(draftEdit.scheduled_for, userTimezone)} unless you skip it.
+                  {draftEdit.status === 'approved' || data?.auto_publish_newsletters
+                    ? `Auto-publishes ${formatInTimezone(draftEdit.scheduled_for, userTimezone)} unless you skip it.`
+                    : `Scheduled for ${formatInTimezone(draftEdit.scheduled_for, userTimezone)} — it publishes only once you approve it.`}
                 </p>
               )}
             </div>
@@ -390,11 +400,17 @@ export default function NewsletterQueue(
                 <>
                   <img src={draftEdit.cover_image_url} alt="Newsletter cover"
                     className="w-full rounded-lg border border-gray-200 object-cover" />
+                  {/* The consequence clause depends on the account's own publish gate (#1135):
+                      for an opted-out draft the edition does NOT reach its slot at all, so
+                      promising it "publishes on time" is the reassurance that stops the author
+                      acting on the thing this box exists to make them act on. */}
                   {draftEdit.cover_image_status !== 'approved' && (
                     <p className="text-xs text-yellow-700 bg-yellow-50 border border-yellow-200 rounded-lg px-3 py-2">
                       A generated cover is a public brand asset, so it only goes out once you
-                      approve it here. If this edition reaches its slot unapproved, it publishes
-                      on time <strong>without a cover</strong>.
+                      approve it here.{' '}
+                      {draftEdit.status === 'approved' || data?.auto_publish_newsletters
+                        ? <>If this edition reaches its slot unapproved, it publishes on time <strong>without a cover</strong>.</>
+                        : <>This edition also waits on your approval, so approve both in one visit — otherwise it goes out <strong>without a cover</strong> whenever you do.</>}
                     </p>
                   )}
                 </>

@@ -22,6 +22,7 @@ _NEWSLETTER_DEFAULTS: dict = {
     "align_with_blog": True, "newsletter_url": None, "last_published_at": None,
     "publish_day": 1, "publish_hour": 9, "generate_lead_days": 3, "max_queued_drafts": 1,
     "invite_connections_enabled": False, "max_invites_per_run": 50, "cover_image_auto": False,
+    "auto_publish_newsletters": False,
 }
 # What the settings PUT writes — a STRICT subset of the defaults above, which are the READ shape.
 # `newsletter_url` and `last_published_at` are the publish run's (`mark_newsletter_published`), and
@@ -31,9 +32,10 @@ _NEWSLETTER_DEFAULTS: dict = {
 # loop (#624), the subscriber-count scrape (#400) and the post alignment (#967) all read.
 _NEWSLETTER_COLS = ("enabled", "title", "topic", "cadence", "align_with_blog",
                     "publish_day", "publish_hour", "generate_lead_days", "max_queued_drafts",
-                    "invite_connections_enabled", "max_invites_per_run", "cover_image_auto")
+                    "invite_connections_enabled", "max_invites_per_run", "cover_image_auto",
+                    "auto_publish_newsletters")
 _NEWSLETTER_BOOL_COLS = ("enabled", "align_with_blog", "invite_connections_enabled",
-                         "cover_image_auto")
+                         "cover_image_auto", "auto_publish_newsletters")
 def get_newsletter_settings(user_id: int) -> dict:
     """Return the user's newsletter config with defaults (disabled) when no row exists."""
     try:
@@ -41,7 +43,8 @@ def get_newsletter_settings(user_id: int) -> dict:
             cursor.execute(
                 "SELECT enabled, title, topic, cadence, align_with_blog, newsletter_url, last_published_at, "
                 "publish_day, publish_hour, generate_lead_days, max_queued_drafts, "
-                "invite_connections_enabled, max_invites_per_run, cover_image_auto "
+                "invite_connections_enabled, max_invites_per_run, cover_image_auto, "
+                "auto_publish_newsletters "
                 "FROM newsletter_settings WHERE user_id = %s", (user_id,))
             row = cursor.fetchone()
             if row is None:
@@ -62,8 +65,9 @@ def get_newsletter_settings(user_id: int) -> dict:
         return dict(_NEWSLETTER_DEFAULTS)
 def update_newsletter_settings(user_id: int, settings: dict) -> bool:
     """Upsert the user's newsletter config (title/topic/cadence/enabled/align_with_blog,
-    plus the opt-in invite flow: invite_connections_enabled/max_invites_per_run, and the opt-in
-    AI cover generation: cover_image_auto).
+    plus the opt-in invite flow: invite_connections_enabled/max_invites_per_run, the opt-in
+    AI cover generation: cover_image_auto, and the opt-in autonomous publish of an UNAPPROVED
+    edition: auto_publish_newsletters).
     """
     merged = {**_NEWSLETTER_DEFAULTS, **{k: v for k, v in settings.items() if k in _NEWSLETTER_COLS}}
     values = [user_id] + [
@@ -389,12 +393,22 @@ def get_recent_newsletter_blueprint_history(user_id: int, limit: int = 12) -> li
         log_error("Could not get newsletter blueprint history", exc=err, user_id=user_id)
         return []
 def get_editions_due_to_publish(now) -> list:
-    """Editions whose scheduled slot has arrived and are still awaiting publish (draft/approved)."""
+    """Editions whose scheduled slot has arrived and may actually publish (issue #1135).
+
+    'approved' is always publishable — the author said so. 'draft' is the resting status a generated
+    edition sits in, so it ships only for a user who opted into `auto_publish_newsletters`; for
+    everyone else an overdue draft simply waits in the review queue. The join is LEFT so a user with
+    no settings row is read as opted OUT rather than dropping their approved editions, and the
+    status literals stay literals here for the same reason as `get_editions_with_pending_cover`.
+    """
     try:
         with db_cursor(dictionary=True) as cursor:
             cursor.execute(
-                "SELECT id, user_id, title, subtitle, body FROM newsletter_editions "
-                "WHERE scheduled_for <= %s AND status IN ('draft', 'approved')", (now,))
+                "SELECT e.id, e.user_id, e.title, e.subtitle, e.body FROM newsletter_editions e "
+                "LEFT JOIN newsletter_settings s ON s.user_id = e.user_id "
+                "WHERE e.scheduled_for <= %s AND ("
+                "e.status = 'approved' OR "
+                "(e.status = 'draft' AND COALESCE(s.auto_publish_newsletters, 0) = 1))", (now,))
             return cursor.fetchall()
     except mysql.connector.Error as err:
         log_error("Could not get editions due to publish", exc=err)
@@ -406,11 +420,14 @@ def get_editions_with_pending_cover(now, until) -> list:
     edition ships cover-less, so this is the last window in which the author can still act. The
     status literal mirrors `newsletter_cover.COVER_STATUS_PENDING` — kept as a literal here so this
     layer stays free of the utilities tree, like the 'draft'/'approved' statuses above.
+
+    The edition's own `status` rides along because the reminder's wording depends on whether the
+    BODY reaches that slot at all (issue #1135) — a draft does so only for an opted-in account.
     """
     try:
         with db_cursor(dictionary=True) as cursor:
             cursor.execute(
-                "SELECT id, user_id, title, scheduled_for FROM newsletter_editions "
+                "SELECT id, user_id, title, status, scheduled_for FROM newsletter_editions "
                 "WHERE status IN ('draft', 'approved') AND cover_image_path IS NOT NULL "
                 "AND cover_image_status = 'pending_review' "
                 "AND scheduled_for > %s AND scheduled_for <= %s "

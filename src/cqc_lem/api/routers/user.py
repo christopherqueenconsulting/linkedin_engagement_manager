@@ -461,6 +461,11 @@ class NewsletterSettingsRequest(BaseModel):
     # Opt-in AI cover generation for each new draft (issue #893) — off by default because
     # generation costs money per edition.
     cover_image_auto: bool = False
+    # Opt-in autonomous publish of an UNAPPROVED edition (issue #1135) — off by default, so a new
+    # newsletter requires an approval before an edition ships. Existing rows were backfilled to
+    # true by the migration, and the SPA round-trips the value it read, so a save from the card
+    # cannot silently flip it; an omitted field falls to the safe direction (more approval).
+    auto_publish_newsletters: bool = False
 
     @field_validator("max_queued_drafts")
     @classmethod
@@ -2040,6 +2045,7 @@ def get_newsletter_draft_endpoint(session_token: str) -> ResponseModel[dict[str,
         "next_publish": _main._utc_iso(next_pub),
         "max_queued_drafts": settings.get("max_queued_drafts", 1),
         "generate_lead_days": settings.get("generate_lead_days", 3),
+        "auto_publish_newsletters": bool(settings.get("auto_publish_newsletters")),
     })
 
 

@@ -46,7 +46,8 @@ const newsletter = (over: Partial<NewsletterSettings> = {}): NewsletterSettings 
   enabled: true, title: 'Brief', topic: null, cadence: 'weekly', align_with_blog: true,
   newsletter_url: null, last_published_at: null,
   publish_day: 1, publish_hour: 9, generate_lead_days: 3, max_queued_drafts: 1,
-  invite_connections_enabled: false, max_invites_per_run: 50, cover_image_auto: false, ...over,
+  invite_connections_enabled: false, max_invites_per_run: 50, cover_image_auto: false,
+  auto_publish_newsletters: false, ...over,
 })
 
 const ctx = (over: Partial<ConflictContext> = {}): ConflictContext => ({
@@ -179,7 +180,18 @@ describe('conflict matrix', () => {
   })
 
   it('C18 warns about a newsletter with no review window', () => {
-    expect(find(ctx({ newsletter: newsletter({ generate_lead_days: 0 }) }), 'C18')?.severity).toBe('warn')
+    const f = find(ctx({ newsletter: newsletter({ generate_lead_days: 0, auto_publish_newsletters: true }) }), 'C18')
+    expect(f?.severity).toBe('warn')
+    expect(f?.message).toContain('the same day they publish')
+  })
+
+  // Issue #1135: the warning is still real for an opted-out account — the slot passes unapproved —
+  // but the account does not auto-publish, so C18 must not tell them it does.
+  it('C18 does not assert auto-publishing for an account that opted out of it', () => {
+    const f = find(ctx({ newsletter: newsletter({ generate_lead_days: 0, auto_publish_newsletters: false }) }), 'C18')
+    expect(f?.severity).toBe('warn')
+    expect(f?.message).not.toContain('the same day they publish')
+    expect(f?.message).toContain('cannot be approved before that slot passes')
   })
 
   it('C19 informs when the account timezone is not the browser one', () => {
