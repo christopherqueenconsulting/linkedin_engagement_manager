@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.161.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.160.0...v0.161.0) (2026-08-19)
+
+
+### Features
+
+* **newsletter:** auto_publish_newsletters toggle + hard-gate draft status (closes [#1135](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1135)) ([#1618](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1618)) ([7b6967d](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/7b6967d75c3569eb04d22b01c6406c7d53fa8bbe))
+
+
+### Bug Fixes
+
+* **celery:** dispatch no longer depends on a decorative result-pubsub subscribe ([#1684](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1684)) ([32a05e1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/32a05e1fc537cdf22f44077f0d141db185a8ca1a))
+* **pipeline:** exempt owner-authored changes from the self-modification gate ([#1694](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1694)) ([2c63122](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/2c63122661c4544b7e11b30c86592e677ea5fb95))
+
 ## [0.160.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.159.2...v0.160.0) (2026-08-18)
 
 
