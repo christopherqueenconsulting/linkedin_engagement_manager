@@ -173,11 +173,12 @@ is the ONE place it is driven (mechanics only — the share-box trigger chain mo
 the group composer opens the same control and a second copy is drift waiting to happen);
 `app.engagement.posting.auto_publish_occasion_post` owns the policy. Four things are load-bearing:
 
-- **OFF by default, `occasion-native-publish-enabled`.** Read at BOTH ends — `auto_check_scheduled_posts`
-  never queues the message with it off, and the task refuses if it is flipped off mid-flight. With it
-  off, everything above is unchanged: the author still copies the draft across by hand. The flag must
-  not be flipped on until `scripts/linkedin_live_validation.py --occasion-composer` has been run live
-  and its JSON recorded on #1088 — with the flag off, nothing else drives those anchors.
+- **`occasion-native-publish-enabled`, ON by default since #1088.** Read at BOTH ends —
+  `auto_check_scheduled_posts` never queues the message with it off, and the task refuses if it is
+  flipped off mid-flight. It shipped OFF until `scripts/linkedin_live_validation.py
+  --occasion-composer` had been run live; #1621 (shadow-root trigger) and #1693 (template-chooser
+  click-through) grounded the route and the owner authorised the flip on #1088. Flipped off,
+  everything above is unchanged: the author still copies the draft across by hand.
 - **A separate queue, never a loosened filter.** `get_ready_occasion_posts` asks for
   `manual_publish = 1`, the exact mirror of the `= 0` that keeps `post_to_linkedin` off these rows.
   Two queries, so one row can never reach both the API path and the browser path.
