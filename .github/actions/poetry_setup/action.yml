@@ -65,23 +65,30 @@ runs:
         # The python-import probe alone is NOT enough: a cache entry can restore with a working
         # interpreter but a missing group console-script (observed 2026-08-18 -- every job with
         # `--with test` hit "Command not found: pytest" despite an exact cache-hit, main included).
-        # So also probe for the one script each group exists to provide.
-        #
-        # A file-existence/`-x` check is NOT enough either (observed 2026-08-19, refs #1674): the
-        # corrupted entry restores `.venv/bin/pytest` present and executable, but broken -- running
-        # it still fails. Only an actual invocation proves the script works, so probe with
-        # `--version` (cheap, no test collection) instead of trusting the file mode bits.
+        # So also probe for the one script each group exists to provide, with an actual invocation
+        # (`--version`, cheap, no test collection) rather than a file-existence/`-x` check: a
+        # corrupted entry (observed 2026-08-19, refs #1674) can restore `.venv/bin/pytest` present
+        # and executable but broken, so only running it proves the script works.
         group_bin_ok=true
         case "${{ inputs.install-args }}" in
           *test*) poetry run pytest --version >/dev/null 2>&1 || group_bin_ok=false ;;
           *lint*) poetry run ruff --version >/dev/null 2>&1 || group_bin_ok=false ;;
         esac
+        # Neither probe above catches a short/partial extraction of the rest of .venv/bin --
+        # a cache entry can restore successfully (no tar error, cache-hit=true) with .venv/bin
+        # partially extracted, and the job then fails minutes later on a DIFFERENT missing script
+        # than the one just probed. .venv-bin-count is written next to the real install below and
+        # travels inside the cached .venv, so this catches a short extraction of the SAME entry
+        # instead of trusting it on the python/script probes alone.
         if [ "${{ steps.cache-venv.outputs.cache-hit }}" = "true" ] \
            && [ "$group_bin_ok" = "true" ] \
-           && poetry run python -c "import sys" >/dev/null 2>&1; then
+           && poetry run python -c "import sys" >/dev/null 2>&1 \
+           && [ -f .venv/.venv-bin-count ] \
+           && [ "$(find .venv/bin -type f | wc -l)" = "$(cat .venv/.venv-bin-count)" ]; then
           echo "Restored venv matches poetry.lock and ${{ inputs.install-args }} — skipping install"
         else
           poetry install ${{ inputs.install-args }} --no-interaction
+          find .venv/bin -type f | wc -l > .venv/.venv-bin-count
         fi
 
     # Save from main and NOTHING else. An Actions cache is scoped to the ref that wrote it, with the
