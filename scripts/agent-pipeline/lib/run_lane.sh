@@ -30,6 +30,17 @@ export OLLAMA_CLOUD_URL="${OLLAMA_CLOUD_URL:-}" OLLAMA_CLOUD_API_KEY="${OLLAMA_C
 export BENCHMARK_ENABLED="${BENCHMARK_ENABLED:-}" \
        BENCHMARK_USAGE_LEVELS="${BENCHMARK_USAGE_LEVELS:-}"
 
+# The pipeline's OWN Claude credential — a long-lived `claude setup-token` value in secrets.env — so
+# an interactive `/login` on any machine can no longer rotate the credential this runner
+# authenticates with. v2 inherits it from systemd (`EnvironmentFile` on lem-agentd.service); the v1
+# failsafe runs from cron, which has no systemd env, so this line is the only thing that reaches a
+# `claude -p` child on that path. Exported ONLY when non-empty: an empty value is not "unset" to the
+# CLI, it is a credential that fails, and it would shadow ~/.claude/.credentials.json on a box that
+# has not installed a token yet.
+if [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
+  export CLAUDE_CODE_OAUTH_TOKEN
+fi
+
 MCP_CONFIG="$BASE/mcp/mcp-config.json"
 OLLAMA_LITELLM_URL="${OLLAMA_LITELLM_URL:-http://127.0.0.1:4000}"
 
