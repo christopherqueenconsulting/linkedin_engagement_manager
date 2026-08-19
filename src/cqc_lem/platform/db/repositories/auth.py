@@ -310,6 +310,41 @@ def get_auth_audit_events(user_id: int, limit: int = 20) -> list[dict]:
     except mysql.connector.Error as err:
         log_error("Could not read auth audit", exc=err, user_id=user_id)
         return []
+_ADMIN_AUDIT_LOG_FIELDS = "id, user_id, email, event, success, user_agent, session_id, details, created_at"
+
+
+def list_auth_audit_log_for_admin(user_id: Optional[int] = None,
+                                  limit: int = 50, offset: int = 0) -> Optional[list]:
+    """The admin-facing audit viewer's page (issue #1603, Phase 2 of #1450).
+
+    Never selects `ip_hash` — it is stored for forensics, not for an admin screen. `None`, never
+    `[]`, on a fault, for the same reason as the user-list queries: an empty page reads as "nothing
+    happened", which a DB error must not be able to say.
+    """
+    where, params = ("WHERE user_id = %s", [int(user_id)]) if user_id is not None else ("", [])
+    try:
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(
+                f"SELECT {_ADMIN_AUDIT_LOG_FIELDS} FROM auth_audit_log {where} "
+                "ORDER BY id DESC LIMIT %s OFFSET %s",
+                (*params, int(limit), int(offset)))
+            return cursor.fetchall() or []
+    except mysql.connector.Error as err:
+        log_error("Could not list auth audit log for admin", exc=err)
+        return None
+
+
+def count_auth_audit_log_for_admin(user_id: Optional[int] = None) -> Optional[int]:
+    """The denominator for `list_auth_audit_log_for_admin`'s page. `None`, never 0, on a fault."""
+    where, params = ("WHERE user_id = %s", (int(user_id),)) if user_id is not None else ("", ())
+    try:
+        with db_cursor() as cursor:
+            cursor.execute(f"SELECT COUNT(*) FROM auth_audit_log {where}", params)
+            row = cursor.fetchone()
+            return int(row[0]) if row else 0
+    except mysql.connector.Error as err:
+        log_error("Could not count auth audit log for admin", exc=err)
+        return None
 AUTH_FACTOR_TOTP = "totp"
 # `secret` is the TOTP seed at rest. The field name is the encryption AAD (see crypto.py) —
 # renaming it orphans every enrolled authenticator, exactly like the 2a columns.

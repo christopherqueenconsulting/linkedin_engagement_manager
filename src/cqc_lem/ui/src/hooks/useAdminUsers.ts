@@ -18,6 +18,8 @@ export interface AdminUserSummary {
   last_login: string | null
   signed_up_at: string | null
   activated_at: string | null
+  disabled: boolean
+  disabled_at: string | null
 }
 
 export interface AdminUserDetail extends AdminUserSummary {
@@ -125,6 +127,62 @@ export function useSetUserAdmin() {
         .then((r) => r.data.detail),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['admin-users'] })
+      void queryClient.invalidateQueries({ queryKey: ['admin-user'] })
+    },
+  })
+}
+
+// Issue #1603 — per-user disable and the one-time subscription comp. Same shape as
+// `useSetUserAdmin`: the server owns every refusal (self-disable), this hook never pre-judges one.
+
+export interface DisabledChangeResult {
+  user_id: number
+  disabled: boolean
+  changed: boolean
+}
+
+interface DisabledChangePayload {
+  userId: number
+  disabled: boolean
+  sessionToken: string
+}
+
+export function useSetUserDisabled() {
+  const queryClient = useQueryClient()
+  return useMutation<DisabledChangeResult, unknown, DisabledChangePayload>({
+    mutationFn: ({ userId, disabled, sessionToken }: DisabledChangePayload) =>
+      api
+        .post(`/admin/users/${userId}/disable`, { session_token: sessionToken, disabled })
+        .then((r) => r.data.detail),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['admin-users'] })
+      void queryClient.invalidateQueries({ queryKey: ['admin-user'] })
+    },
+  })
+}
+
+export interface SubscriptionGrantResult {
+  user_id: number
+  days_granted: number
+  subscription_current_period_end: string | null
+}
+
+interface SubscriptionGrantPayload {
+  userId: number
+  days: number
+  sessionToken: string
+}
+
+// A ONE-TIME extension, not a toggle: there is no "override active" state to invalidate here
+// beyond the detail drawer's own `subscription_current_period_end` reading.
+export function useGrantSubscription() {
+  const queryClient = useQueryClient()
+  return useMutation<SubscriptionGrantResult, unknown, SubscriptionGrantPayload>({
+    mutationFn: ({ userId, days, sessionToken }: SubscriptionGrantPayload) =>
+      api
+        .post(`/admin/users/${userId}/subscription-grant`, { session_token: sessionToken, days })
+        .then((r) => r.data.detail),
+    onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['admin-user'] })
     },
   })

@@ -1,4 +1,4 @@
-# Admin user management (issue #1450)
+# Admin user management (issue #1450, Phase 2 in #1603)
 
 The design behind the `/admin/users` surface: what an operator can see, what they can change, and —
 for every action considered — whether it should exist at all. Written before the code, reviewed
@@ -132,12 +132,41 @@ question anyone opens this screen to ask. Everything else is in the drawer.
 
 | Action | Verdict | Reasoning |
 |---|---|---|
-| **Grant / revoke admin** | **Ships.** Step-up gated, audited, last-admin-guarded | This is the feature. It is the one thing that today requires a MySQL shell and cannot be reached any other way |
-| **Enable / disable an account** | **Deferred to a follow-up issue** | LEM has no per-user disable. `is_automation_paused` is GLOBAL (Redis), and the per-user gate is `get_active_user_ids()`, which reads subscription + token + last-login. A "Disabled" badge that the scheduler does not read is worse than no button: it reports a state that does not exist. Doing it properly is a column plus a read in every lane's gate — a change to automation, not to a screen, and it belongs in its own issue with its own tests |
-| **Subscription / trial override** | **Deferred to the same follow-up** | `subscription_status`, `subscription_tier` and `subscription_current_period_end` are written by the Stripe webhook path. An admin override is silently reverted by the next webhook, so the button appears to work and then doesn't — the worst failure shape available. Doing it properly means deciding precedence between an operator override and the billing system, which is a product decision, not a UI one |
+| **Grant / revoke admin** | **Ships (#1450).** Step-up gated, audited, last-admin-guarded | This is the feature. It is the one thing that today requires a MySQL shell and cannot be reached any other way |
+| **Enable / disable an account** | **Ships (#1603).** Step-up gated, audited, self-disable refused | `disabled_at` is an additive column read directly by `get_active_user_ids()` — the ONE per-user gate every automation lane already reads through — so a disabled account stops there, not behind a badge nobody checks. See §3.4.1 |
+| **Subscription / trial override** | **Ships, narrowly (#1603).** A one-time, time-boxed grant, decided in the issue's Decision Comment | Not a standing override — see §3.4.2 for why, and what was deliberately NOT built |
 | **Account deletion** | **Rejected for this surface** | It is irreversible, it cascades (`ON DELETE CASCADE` reaches onboarding, posts, preferences), and GDPR-style erasure has requirements — proof of request, a record that it happened — that a button in a table does not meet. The right home is a deliberate, logged, operator-run path, not a row action one click from a role toggle |
 | **Impersonate / "log in as"** | **Rejected outright** | It is a credential path into someone's LinkedIn automation. There is no operational need at this size and the blast radius is the whole product |
 | **Resend verification / password reset** | **Not needed** | LEM's login is an email PIN; there is no password to reset and verification is stamped by the login itself |
+
+#### 3.4.1 Per-user disable
+
+`users.disabled_at` (additive Flyway migration, NULL = enabled). `get_active_user_ids()` gates on
+`disabled_at IS NULL` alongside its existing LinkedIn-token and subscription checks, so disabling a
+user removes them from every lane that calls it — commenting, replies, DMs, posting — without a
+per-lane change. `POST /admin/users/{user_id}/disable` writes the column, step-up gated the same as
+the role write, and refuses to disable the caller's OWN account (409) — the same shape as the
+self-revoke guard, because there is no legitimate reason to lock out the account you are using right
+now. Audited as `admin_user_disabled` / `admin_user_enabled`, keyed on the TARGET like every other
+row in `auth_audit_log`.
+
+#### 3.4.2 Subscription / trial override — the decision
+
+The design draft above (§3.4, original text) flagged the real hazard: `subscription_status`,
+`subscription_tier` and `subscription_current_period_end` are Stripe-webhook-owned, so a *standing*
+admin override is silently reverted by the next webhook — the button looks like it works, then
+doesn't. That is why this issue carried `risk:product-decision` and shipped nothing here until the
+owner answered.
+
+**Decision (issue #1603 Decision Comment): a one-time, time-boxed comp, not a persistent
+override.** `POST /admin/users/{user_id}/subscription-grant` takes `days` (1–365, operator's choice
+per use — e.g. 7/14/30) and applies a **direct bump** to `subscription_current_period_end` at grant
+time: `GREATEST(current_period_end, NOW()) + INTERVAL days DAY`. Nothing is standing after the grant
+for a webhook to silently revert — the next real Stripe write is expected and correct, exactly as it
+would be without this feature. Same step-up gate and audit shape as the other two writes
+(`admin_subscription_granted`). Deliberately **not built**, per the decision: no new column, no
+precedence logic against the webhook path, no "override active" UI state — the whole failure shape
+the original design warned about does not exist for a one-shot bump.
 
 ### 3.5 Audit trail
 
@@ -155,9 +184,10 @@ convention (row keyed on the actor) would hide a role change from the person it 
 `details` carries ids only. No email, no IP, no session token: the actor's identity is an id the
 operator can resolve, and the audit log is not where other people's addresses accumulate.
 
-**Not shipped:** an admin-facing audit VIEWER. The rows exist and are queryable from the moment
-this lands, which is the part that cannot be backfilled; a screen over them can be built any time
-and answers no question that is being asked at one user. Named in the follow-up issue.
+**Ships (#1603):** `GET /api/admin/audit-log`, an admin-facing viewer over `auth_audit_log` —
+session-gated via `_require_user_admin`, paginated, optionally filtered by `user_id`, and never
+returning `ip_hash` (stored for forensics, not for a screen). The rows were queryable from the
+moment #1450 landed; this is the screen over them.
 
 ### 3.6 Pagination and scale
 
@@ -305,8 +335,9 @@ column to roughly half the table and shifted every other column sideways for as 
 open. **Changed:** its own `<tr>` with `colSpan={7}`, pinned by a test asserting the email cell does
 not contain the drawer.
 
-## 5. What ships in this PR
+## 5. What shipped
 
+**#1450 (phase 1):**
 - `GET /api/admin/users` — filtered, paginated list (+ `total`).
 - `GET /api/admin/users/{user_id}` — detail.
 - `POST /api/admin/users/{user_id}/admin` — grant/revoke, step-up gated, audited, guarded.
@@ -314,5 +345,16 @@ not contain the drawer.
 - `admin_granted` / `admin_revoked` in `AuthAuditEvent` + their labels in the user's own Security card.
 - No migration. No schema change.
 
-Deferred, with the reasoning above: per-user disable, subscription/trial override, an admin-facing
-audit viewer, date-range filters. Filed as a follow-up issue and linked from the PR.
+**#1603 (phase 2, this PR):**
+- Additive migration: `users.disabled_at TIMESTAMP NULL`.
+- `POST /api/admin/users/{user_id}/disable` — step-up gated, audited, self-disable refused (409).
+  Honoured by `get_active_user_ids()`.
+- `POST /api/admin/users/{user_id}/subscription-grant` — one-time `days` bump to
+  `subscription_current_period_end`, per the Decision Comment (§3.4.2). No new column, no
+  precedence logic.
+- `GET /api/admin/audit-log` — paginated viewer over `auth_audit_log`, never returns `ip_hash`.
+- `admin_user_disabled` / `admin_user_enabled` / `admin_subscription_granted` in `AuthAuditEvent`.
+- `AdminUsersPage.tsx` gains the disable/enable and subscription-grant controls; a new
+  `AdminAuditLogPage.tsx` behind `AdminRoute`, nav link behind `isAdmin`.
+
+Deliberately still out of scope: date-range filters, account deletion, impersonation (§3.4).

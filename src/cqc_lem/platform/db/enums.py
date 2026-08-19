@@ -315,6 +315,11 @@ class AuthAuditEvent(StrEnum):
     # migration: `auth_audit_log.event` is VARCHAR(50), not an ENUM.
     ADMIN_GRANTED = "admin_granted"
     ADMIN_REVOKED = "admin_revoked"
+    # Per-user disable and the one-time subscription comp (#1603, Phase 2 of #1450). Same keying:
+    # the TARGET account in `user_id`, the acting admin in `details.actor_user_id`.
+    ADMIN_USER_DISABLED = "admin_user_disabled"
+    ADMIN_USER_ENABLED = "admin_user_enabled"
+    ADMIN_SUBSCRIPTION_GRANTED = "admin_subscription_granted"
 
 
 class FollowStatus(StrEnum):
