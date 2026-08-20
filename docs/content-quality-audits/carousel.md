@@ -430,7 +430,7 @@ Filed and linked:
 | **#1511** | F4 — hardcoded "Leave a comment below" bait on the CTA slide | 2A |
 | **#1512** (shipped) | F5 — slide text passes no text-quality gate; carousels are never authenticity-judged | Asked whether a slide lint may HOLD a post — a product call, per the issue's own rule; answered on PR #1554 (advisory lint, caption judged at generation) — see F5 |
 | **#1513** (shipped) | F6 — no deck surface in `content_quality`, no rendered-asset probe, no post type on `post_outcome` | 2A; fixed since — see F6 above and `docs/content-quality-telemetry.md` |
-| **#1515** (`needs-human`) | The corpus §1 could not read — 8–12 real decks scored from the production read path | Needs production credentials and an owner authorisation, exactly like #1292 |
+| **#1515** (`needs-human`) | The corpus §1 could not read — 8–12 real decks scored from the production read path | Needs production credentials and an owner authorisation, exactly like #1292 — run 2026-08-20, **stops at n=2** (12 of 14 posted decks have no surviving asset at all), see §7 |
 
 Still not answered, and honestly so: **no real carousel corpus was read and no live LinkedIn
 exemplar was fetched** (§1). Every number in §1–§3 describes the CODE's behaviour, measured exactly;
@@ -438,3 +438,63 @@ none of them describes how LEM's decks perform in a feed. That is **#1515** — 
 shape #1292 took for images: sample 8–12 shipped decks from the production read path, score them
 against §2, and report characters-dropped as a RATE rather than as the anecdotes this pass could
 reach.
+
+---
+
+## 7. Phase 2 — the production sample (#1515), and why it stops at n=2
+
+Ran 2026-08-20 against production (`linkedin_manager`, prod MySQL via the published port; the
+`lem_assets` volume read via a prod-image sidecar). **The 8–12 deck ask cannot be met against
+current production, and it is structural, not an access problem:**
+
+`purge_post_assets` (#148) deletes a carousel's slide PNGs (`images/carousel/<post_id>/`)
+immediately once the post publishes — there is no keyframe-retention carve-out for carousels the
+way #1595 added one for video. Of the 14 posted decks in production (ids 3–87, single user), **12
+have neither an image nor a receipt to read** — the directory is gone. Only ids **86** and **87**
+carry anything at all: a `deck_render.json` receipt (issue #1513, shipped 2026-08-14 23:01 UTC —
+everything posted before that date left no receipt either), naming each slide's `chars_dropped`
+but no image. **Zero of the 14 posted decks have a surviving PNG.**
+
+### What the receipt says (n=2 decks, 11 slides)
+
+| Post | Template | Slides | `chars_dropped` |
+|---|---|---|---|
+| 86 | `bold_listicle` | 6 (cover, 4×body, cta) | **0 / 0 / 0 / 0 / 0 / 0** |
+| 87 | `bold_listicle` | 6 (cover, 4×body, cta) | **0 / 0 / 0 / 0 / 0 / 0** |
+
+**F1 (#1375) reads FIXED on this sample: 0/11 slides dropped a character.** Treat that as n=2,
+not as closure — the corpus this pass could reach is a fifth of the ask.
+
+### The one wrinkle worth flagging, not resolving here
+
+`docs/content-quality-audits/image.md` §7.1 (#1292, captured 2026-08-10 — **before** #1375's fix
+merged 2026-08-14) committed 6 slides from these SAME two post ids, and they show the OLD bug:
+post 87 slide 3 truncates mid-word ("…became a non-event due to automated"), slide 4 similarly,
+slide 5's closing CTA cuts off ("Save this for your next sprint retrospective to spark the"); post
+86 slide 3 truncates ("…Coverage floor >=80% - ensures"). Those images predate the fix by four
+days and predate these posts' actual publish (86: 2026-08-19, 87: 2026-08-20) by over a week —
+consistent with a carousel being rendered at content-plan time, held in `approved`/`scheduled`
+status, and only reaching `posted` on its scheduled date, well after #1375 shipped. Read together,
+the two artifacts are a plausible before/after of the same fix rather than a contradiction: OLD
+images (pre-fix render) vs. CURRENT receipt (post-fix, at whatever point the deck was last
+rendered) agreeing that #1375 landed. This pass did not re-render either deck to confirm that
+causal story directly — it is stated as the likeliest explanation, not a checked one.
+
+**R8 (photo relevance) has no fresher evidence than #1292's:** the receipt records text metrics
+only, never the image query or the photo itself, so the two off-topic bands #1292 already found
+(a PLC/industrial photo under a software-release claim on post 87, a CD-wallet photo under an
+agent-pipeline claim on post 86) stand as the only R8 evidence that exists, now 10 days stale.
+
+### What would actually close this
+
+Not a re-run — the same command reads the same 12 purged decks. Two paths, either owner-decidable:
+
+1. **Wait and re-run receipt-only.** `chars_dropped` accumulates for every deck posted after
+   2026-08-14 23:01; re-running this query in a few weeks gets a real rate, but never an image —
+   R2 fit and R8 relevance stay ungradable by construction, forever, for shipped carousels.
+2. **Retain carousel keyframes like #1595 did for video** — one or two slide PNGs (e.g. cover +
+   one body slide) surviving the purge the same way `.frame-*.jpg` does now. That is a code change
+   and a new issue, not this one; filed as **#1704**.
+
+Until one of those lands, #1515's 8–12-deck visual ask stays open. This section is everything the
+production read path can currently answer.
