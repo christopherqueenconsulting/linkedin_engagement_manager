@@ -326,3 +326,54 @@ here can see anything wrong with it.
   writer side and the checking side read one list.
 
 Existing gates are untouched: no threshold moved, no severity changed, no new hold condition.
+
+---
+
+## 7. Phase 2 — real bodies, real dates, no live fetch (#1267)
+
+Ran 2026-08-20 against production (prod MySQL via the published port, read-only). This is the whole
+posted-text-post population, not a sample of it: **all 11** `posts` rows with `post_type='text'`,
+`status='posted'` exist, against the 10–15 the issue asked for. Single user. `buyer_stage`: 5
+awareness, 6 decision, 0 consideration (none shipped). `content_mix`: 1 `value`, 1 `authority`, 1
+`promo`, 8 `NULL` — the column predates most of this corpus, so most of it was never classified.
+
+**Calibration note that matters more than any individual verdict below: 10 of the 11 posts predate
+#1138's fix (merged 2026-08-10 01:15 UTC).** Only post 84 (2026-08-13) shipped after it. Read every
+PASS below on the pre-fix majority as "the old prompts were not as broken as feared on this sample",
+not as evidence the fix works — n=1 cannot show that.
+
+### R1–R8, re-graded on real text
+
+| # | Row | Verdict on the real corpus |
+|---|---|---|
+| R1 | Hook lands before the fold | **PASS, 11/11.** Hook line (first `\n\n`-delimited paragraph) ranges 65–126 chars, every one under both `MOBILE_HOOK_MAX_CHARS` (140) and `LINKEDIN_FOLD_CHARS` (210) |
+| R2 | Native formatting, no wall of text | **PASS.** Every post reflows into short paragraphs or a bulleted list; none reads as a single dense block |
+| R3 | Voice matches the author | **PASS by construction, unchanged.** A consistent first-person practitioner voice across all 11 (metrics-led, "I built…", "I ran…") is consistent with, but does not independently verify, `_voice_reference` being the source |
+| R4 | Buyer-stage fit | **PASS on the post-fix sample, explained on the rest.** The one clear violation — post 78 (awareness, 2026-07-07) closing on "That's the audit I run. Fixed price, guaranteed findings, one week." — is a bottom-funnel pitch in the awareness slot, the exact F1 shape. It **predates** #1138's fix by five weeks. Post 84, the only post84-fix-era awareness post (2026-08-13), stays top-of-funnel with no pitch |
+| R5 | CTA clarity, never a meeting ask | **PASS, 11/11.** No post asks to book or schedule a call. Post 78's service pitch is a soft sell, not a literal meeting ask, so it clears R5 while still failing R4 |
+| R6 | Engagement mechanics | **PASS, reads better than feared.** Every closer is a real, specific question except post 13's "Let's discuss" (generic, but WARN-only territory, not bait). Post 84's "Comment AUDIT and I'll send the resource straight to your DMs" is **not** bait — it is the sanctioned owned-asset CTA loop (keyword-gated lead-magnet delivery), and `lint_report` correctly returns no violation for it |
+| R7 | No link in the body | **PASS, 11/11 on the current mechanism.** Post 1 (2026-06-26) has an inline blog URL and a NULL `first_comment_link` — looks like a violation until the dates are checked: `split_link_for_first_comment` (#392) merged 2026-07-24, **four weeks after post 1 shipped**. No other post in the corpus contains a link at all, before or after that date |
+| R8 | No canned sameness | **FAIL, and the strongest finding here.** `cost-per-successful-call` (or a close variant) appears in **6 of 11 posts** (55%) — 13, 19, 21, 22, 37, 78 — spanning both buyer stages and three different archetypes. "Save this checklist for your next [rollout / vendor review]" repeats near-verbatim in 2 of 11 (79, 82). Where telemetry already scored these (4 of 11), self-similarity runs 0.64–0.83, mean 0.72 — high enough to be consistent with the phrase reuse. This is topic/phrase recycling across GENERATION EVENTS, not the templated-scaffold shape `POST_BANNED_SCAFFOLDS` catches — it is what #1265/#1266's similarity ceiling is supposed to calibrate against, and this is real calibration data for it |
+
+Ran `slop_lint.lint_report` (deterministic, no LLM) against all 11 real bodies directly — not
+estimated: `rhetorical_hook` fires on 3, `burstiness` on 3, `emoji_bullets` on 3, `contrastive_frame`
+on 1. All WARN-severity on the post surface; nothing HARD. Consistent with the telemetry rows that
+already existed for 4 of the 11 (`slop_hard=0` on all four).
+
+### What this phase still did not do, and why
+
+- **No live LinkedIn exemplar was fetched.** #1292 (the same phase-2 pass for images) declined this
+  deliberately: a fetched third-party post is an asset this PUBLIC repo would then hold, and that
+  call stands here for the same reason — it is not re-litigated per issue. The in-repo
+  `comment_contract_directive` exemplar (#617) that #1138's gauntlet-loop comparison already used
+  stays the reference.
+- **No `LinkedInPostPreview.tsx` screenshot.** The numeric proxy phase 1 used
+  (`LINKEDIN_FOLD_CHARS` / `MOBILE_HOOK_MAX_CHARS`, R1 above) is now measured against real hook text
+  instead of nothing, which is the upgrade this phase could actually deliver; an authenticated
+  screenshot pass through the SPA is a separate, larger piece of work than a read-only DB/lint check
+  and was not attempted here.
+- **R3's calibration** (whether "consistent voice" is actually THIS user's voice, not just internally
+  consistent) needs the same live comparison #1265/#1266 are already the tracked follow-ups for —
+  nothing new to add beyond feeding R8's similarity numbers to them.
+
+No threshold moved, no gate changed, no post touched. Read-only throughout.
