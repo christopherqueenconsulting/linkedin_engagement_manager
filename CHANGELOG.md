@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.163.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.162.0...v0.163.0) (2026-08-20)
+
+
+### Features
+
+* **content:** flip occasion-native-publish-enabled on by default (closes [#1088](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1088)) ([#1698](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1698)) ([b51c0cb](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/b51c0cb4b93ec37acba6f174e949e6a79a2f4949))
+
 ## [0.162.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.161.0...v0.162.0) (2026-08-19)
 
 
