@@ -497,6 +497,7 @@ export default function Dashboard() {
                   format={compactNumber}
                   valueLabel="Followers"
                   emptyMessage="No follower count captured yet."
+                  rangePadding={250}
                 />
                 <LineChart
                   title="Engagement activity"
