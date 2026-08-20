@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.164.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.163.0...v0.164.0) (2026-08-20)
+
+
+### Features
+
+* **analytics:** tighten Followers chart y-axis to ±250 of data range (closes [#1700](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1700)) ([#1701](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1701)) ([af70837](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/af70837ca5c988581d6ce20be969bfe34e791dcf))
+
 ## [0.163.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.162.0...v0.163.0) (2026-08-20)
 
 
