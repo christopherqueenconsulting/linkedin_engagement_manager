@@ -4,8 +4,8 @@ Phase 1's whole point is that these rows never reach the REST publish path. Phas
 browser instead — which makes this the only lane in LEM that WRITES a post through Selenium, so the
 policy around it carries the weight:
 
-* It is OFF by default and reads the flag at BOTH ends (the dispatcher and the task), so an OFF
-  deployment never even queues the message.
+* It reads the flag at BOTH ends (the dispatcher and the task), so a deployment with it off never
+  even queues the message. ON by default since the composer route was live-grounded (#1621, #1693).
 * The row is CLAIMED before Chrome opens. An occasion announcement published twice is public and
   un-deletable, and the read that would tell us it already went out is the read that can fail.
 * Only a step that provably left nothing on LinkedIn puts the row back on the queue. A Post click

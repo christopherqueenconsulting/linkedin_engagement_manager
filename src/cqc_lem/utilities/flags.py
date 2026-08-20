@@ -172,14 +172,16 @@ FLAGS: Dict[str, FlagSpec] = {
         FlagSpec(
             key=OCCASION_NATIVE_PUBLISH,
             env_var="OCCASION_NATIVE_PUBLISH_ENABLED",
-            default=False,
+            default=True,
             owner="content",
             description=("Automated Selenium publishing of approved occasion/milestone drafts "
                          "through LinkedIn's native 'Celebrate an occasion' composer (issue "
-                         "#1088). OFF by default: it is the one lane that WRITES a post through a "
-                         "browser, and its composer chain has to be live-grounded before the flag "
-                         "is flipped. With it off, #1074's copy-and-paste handoff is exactly what "
-                         "it was."),
+                         "#1088). Shipped OFF because it is the one lane that WRITES a post "
+                         "through a browser and its composer chain was ungrounded; #1621 and "
+                         "#1693 grounded the route live (share box, occasion type, template "
+                         "chooser) and the owner authorised the flip on #1088, so it now "
+                         "defaults ON. Set the env var false to silence it again; an unconfirmed "
+                         "Post click is still held at `error`, never retried."),
         ),
     )
 }
