@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.165.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.164.0...v0.165.0) (2026-08-20)
+
+
+### Features
+
+* **content-quality:** retain carousel slide keyframes past purge (closes [#1704](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1704)) ([#1708](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1708)) ([238de54](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/238de54daf18bc9c73529c5b36951f24b17091ad))
+
+
+### Documentation
+
+* **content-quality:** text-post audit Phase 2 — full population, real bodies (closes [#1267](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1267)) ([#1706](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1706)) ([4809b5e](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/4809b5eeacde1b31ac81a51c5e10143f40a111f2))
+
 ## [0.164.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.163.0...v0.164.0) (2026-08-20)
 
 
