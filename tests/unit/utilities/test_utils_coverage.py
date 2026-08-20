@@ -310,6 +310,19 @@ class TestPurgePostAssets:
         assert receipt.exists() and str(carousel_dir) in removed
         assert deck["deck_probe"] == DECK_PROBE_OK and deck["deck_chars_dropped"] == 3
 
+    def test_keeps_the_retained_keyframes_a_grader_reads_after_purge(self, tmp_path):
+        """Issue #1704: R2/R8 need pixels, and the render receipt alone cannot supply them."""
+        from cqc_lem.utilities.carousel_frames import keyframe_path
+        from cqc_lem.utilities.utils import purge_post_assets
+        _video, carousel_dir = self._setup_assets(tmp_path)
+        keyframe = carousel_dir / "slide1.keyframe.jpg"
+        keyframe.write_bytes(b"jpeg-bytes")
+        with patch("cqc_lem.assets_dir", str(tmp_path)):
+            removed = purge_post_assets(9)
+        assert not (carousel_dir / "slide1.png").exists()
+        assert keyframe.exists() and str(carousel_dir) in removed
+        assert keyframe_path(str(carousel_dir / "slide1.png")) == str(keyframe)
+
     def test_a_nested_directory_of_slides_is_still_purged_around_the_receipt(self, tmp_path):
         from cqc_lem.utilities.deck_render import DECK_RENDER_FILENAME
         from cqc_lem.utilities.utils import purge_post_assets

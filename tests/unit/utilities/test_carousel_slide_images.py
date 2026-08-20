@@ -164,3 +164,16 @@ class TestDeckRenderReceipt:
         # Only content slides get a photo band; cover and CTA never do.
         assert roles["body"]["band"] is True
         assert roles["cover"]["band"] is False and roles["cta"]["band"] is False
+
+    def test_retains_a_cover_and_body_keyframe_beside_the_receipt(self, tmp_path):
+        """Issue #1704.
+
+        purge_post_assets clears the directory at publish, so a grader run after that only has
+        whatever survives — the receipt has no pixels, these do.
+        """
+        from cqc_lem.utilities.carousel_frames import retained_carousel_keyframes
+        self._render(self._carousel("A short body."), tmp_path)
+        found = retained_carousel_keyframes(str(tmp_path))
+        assert [role for role, _ in found] == ["cover", "body"]
+        # The CTA slide is never retained (three slides rendered, at most two keyframes kept).
+        assert len(found) == 2

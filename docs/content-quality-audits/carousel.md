@@ -494,7 +494,13 @@ Not a re-run — the same command reads the same 12 purged decks. Two paths, eit
    R2 fit and R8 relevance stay ungradable by construction, forever, for shipped carousels.
 2. **Retain carousel keyframes like #1595 did for video** — one or two slide PNGs (e.g. cover +
    one body slide) surviving the purge the same way `.frame-*.jpg` does now. That is a code change
-   and a new issue, not this one; filed as **#1704**.
+   and a new issue, not this one; filed as **#1704**, **shipped**: `utilities/carousel_frames.py`
+   copies the cover and the first body slide to `<slide>.keyframe.jpg` right after the render
+   receipt is written, and `purge_post_assets`'s keep-set now recognises the suffix. Every deck
+   RENDERED after that PR merges carries two retained JPEGs beside its `deck_render.json` — the
+   12-purged-decks gap above is a population this ships into, not one it retroactively fixes.
 
-Until one of those lands, #1515's 8–12-deck visual ask stays open. This section is everything the
-production read path can currently answer.
+Until enough post-#1704 decks have shipped, #1515's 8–12-deck visual ask stays open — re-run its
+sample once they have, reading `carousel_frames.retained_carousel_keyframes()` instead of the
+`lem_assets` volume directly. This section is everything the production read path could answer as
+of the #1704 fix landing.

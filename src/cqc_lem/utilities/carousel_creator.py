@@ -37,6 +37,7 @@ from pydantic import BaseModel, Field, HttpUrl, StrictStr, conlist
 from pydantic_extra_types.color import Color
 
 from cqc_lem.utilities.ai.content_framework import SAVE_ASK_PILL
+from cqc_lem.utilities.carousel_frames import retain_carousel_keyframes
 from cqc_lem.utilities.deck_render import (
     SLIDE_ROLE_BODY,
     SLIDE_ROLE_COVER,
@@ -2923,6 +2924,10 @@ def create_carousel_slide_images(
         })
 
     write_deck_render_receipt(output_dir, post_id, template_key, slide_receipts)
+    # Cover + first body slide, copied from what just shipped (#1704) — the render receipt has the
+    # text-fit numbers; R2/R8 need pixels, and this is the only moment the slides and a grader are
+    # both in the room before purge_post_assets clears the directory.
+    retain_carousel_keyframes(image_paths, slide_receipts)
 
     return image_paths
 
