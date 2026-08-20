@@ -17,6 +17,13 @@ interface LineChartProps {
   /** Tooltip/table header for the value column. */
   valueLabel: string
   emptyMessage?: string
+  /**
+   * When set, the y-axis domain hugs the data (`[dataMin - rangePadding, dataMax + rangePadding]`,
+   * clamped so it never goes below 0) instead of always starting at 0. A day-to-day series with a
+   * large baseline (e.g. a follower count in the thousands) reads as a flat line on a 0-based axis —
+   * this makes the actual variance visible (#1700).
+   */
+  rangePadding?: number
 }
 
 // viewBox geometry (unitless; the SVG scales to its container width).
@@ -26,18 +33,19 @@ const M = { top: 16, right: 60, bottom: 34, left: 52 }
 const PLOT_W = W - M.left - M.right
 const PLOT_H = H - M.top - M.bottom
 
-function niceTicks(max: number, count = 4): number[] {
-  if (max <= 0) return [0]
-  const raw = max / count
+function niceTicks(min: number, max: number, count = 4): number[] {
+  if (max <= min) return [min]
+  const raw = (max - min) / count
   const mag = Math.pow(10, Math.floor(Math.log10(raw)))
   const norm = raw / mag
   const step = (norm >= 5 ? 10 : norm >= 2 ? 5 : norm >= 1 ? 2 : 1) * mag
+  const niceMin = Math.floor(min / step) * step
   const ticks: number[] = []
-  for (let t = 0; t <= max + step / 2; t += step) ticks.push(t)
+  for (let t = niceMin; t <= max + step / 2; t += step) ticks.push(t)
   return ticks
 }
 
-export default function LineChart({ title, subtitle, points, format, valueLabel, emptyMessage }: LineChartProps) {
+export default function LineChart({ title, subtitle, points, format, valueLabel, emptyMessage, rangePadding }: LineChartProps) {
   const fmt = format ?? ((v: number) => v.toLocaleString())
   const svgRef = useRef<SVGSVGElement>(null)
   const [hover, setHover] = useState<number | null>(null)
@@ -45,16 +53,29 @@ export default function LineChart({ title, subtitle, points, format, valueLabel,
   const values = points.map((p) => p.y).filter((v): v is number => v != null)
   const hasData = values.length > 0
 
-  const { positions, ticks, yMax } = useMemo(() => {
-    const rawMax = hasData ? Math.max(...values) : 1
-    const tk = niceTicks(rawMax || 1)
-    const ymax = tk[tk.length - 1] || 1
+  const { positions, ticks, yMin, yMax } = useMemo(() => {
+    let tk: number[]
+    let ymin: number
+    let ymax: number
+    if (hasData && rangePadding != null) {
+      const dataMin = Math.min(...values)
+      const dataMax = Math.max(...values)
+      ymin = Math.max(0, dataMin - rangePadding)
+      ymax = dataMax + rangePadding
+      if (ymax <= ymin) ymax = ymin + 1
+      tk = niceTicks(ymin, ymax)
+    } else {
+      const rawMax = hasData ? Math.max(...values) : 1
+      tk = niceTicks(0, rawMax || 1)
+      ymin = 0
+      ymax = tk[tk.length - 1] || 1
+    }
     const n = points.length
     const xAt = (i: number) => (n <= 1 ? M.left + PLOT_W / 2 : M.left + (PLOT_W * i) / (n - 1))
-    const yAt = (v: number) => M.top + PLOT_H - (v / ymax) * PLOT_H
+    const yAt = (v: number) => M.top + PLOT_H - ((v - ymin) / (ymax - ymin)) * PLOT_H
     const pos = points.map((p, i) => ({ i, x: xAt(i), y: p.y == null ? null : yAt(p.y), value: p.y, label: p.x }))
-    return { positions: pos, ticks: tk, yMax: ymax }
-  }, [points, hasData, values])
+    return { positions: pos, ticks: tk, yMin: ymin, yMax: ymax }
+  }, [points, hasData, values, rangePadding])
 
   // Build the line path, breaking into a fresh sub-path across null gaps.
   const path = useMemo(() => {
@@ -133,7 +154,7 @@ export default function LineChart({ title, subtitle, points, format, valueLabel,
           >
             {/* Horizontal gridlines + y ticks */}
             {ticks.map((t) => {
-              const y = M.top + PLOT_H - (t / yMax) * PLOT_H
+              const y = M.top + PLOT_H - ((t - yMin) / (yMax - yMin)) * PLOT_H
               return (
                 <g key={t}>
                   <line className="viz-grid" x1={M.left} y1={y} x2={M.left + PLOT_W} y2={y} />
