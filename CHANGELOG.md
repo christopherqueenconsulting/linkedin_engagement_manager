@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.165.1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.165.0...v0.165.1) (2026-08-23)
+
+
+### Bug Fixes
+
+* **dm:** downgrade unrenderable-composer to DEBUG, not WARNING (closes [#1710](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1710)) ([#1711](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1711)) ([f0a5500](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/f0a5500323aa8281aad8ec64f22cfe3d1c7fe228))
+
 ## [0.165.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.164.0...v0.165.0) (2026-08-20)
 
 
