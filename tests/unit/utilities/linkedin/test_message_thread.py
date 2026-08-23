@@ -511,6 +511,19 @@ class TestOpenAddressedComposer:
         assert not result.addressed
         assert result.reason == "composer_missing"
 
+    def test_a_composer_that_never_renders_logs_debug_not_warning(self):
+        # issue #1710: a composer that never renders is the expected outcome for anyone we can't
+        # message this way (not connected, InMail-only) — not selector rot. A WARNING here recurred
+        # 3x/24h and filed a code defect (RecurringWarning) for working refusal-to-send behavior, so
+        # this must stay DEBUG and never reach `log_escalation`.
+        d = self._driver()
+        d.get = lambda url: d.urls.append(url)  # nothing ever opens
+        with patch.object(mt, "log_warning") as warn, patch.object(mt, "log_debug") as debug:
+            result = mt.open_addressed_composer(d, MagicMock(), PROFILE, user_id=1, timeout=0)
+        assert result.reason == "composer_missing"
+        warn.assert_not_called()
+        assert any("never rendered" in call.args[0] for call in debug.call_args_list)
+
     def test_an_unreachable_profile_stops_before_composing(self):
         d = self._driver()
         d.get = MagicMock(side_effect=WebDriverException("no route"))

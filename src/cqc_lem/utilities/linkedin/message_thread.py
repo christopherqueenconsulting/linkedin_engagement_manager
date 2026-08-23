@@ -381,8 +381,14 @@ def open_addressed_composer(driver: WebDriver, wait: WebDriverWait, profile_url:
     result.opened = bool(reading["events"] or reading["composer"])
     result.surface = reading.get("surface")
     if not result.opened:
-        log_warning(f"The message composer never rendered for {profile_url}", user_id=user_id,
-                    action_type="dm")
+        # DEBUG, not a warning: navigating straight to a person's compose URL is a best-effort
+        # probe, and a composer that never renders is the expected outcome for anyone we can't
+        # message this way (not a 1st-degree connection, InMail-only, messaging restricted) — not
+        # evidence the selectors in `_THREAD_STATE_JS` rotted. `send_dm_now` already treats
+        # `composer_missing` as a graceful non-send (issue #1710: this recurred 3x/24h and filed a
+        # code defect for working refusal-to-send behavior, the #917/#1071 pattern).
+        log_debug(f"The message composer never rendered for {profile_url}", user_id=user_id,
+                  action_type="dm")
         result.reason = "composer_missing"
         return result
 
