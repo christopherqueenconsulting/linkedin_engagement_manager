@@ -4,6 +4,7 @@ Both surfaces are STANDING lists, so the two things that must hold are: nothing 
 lookback window is thanked, and nobody is thanked twice however often the beat re-runs.
 """
 
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -11,6 +12,11 @@ import pytest
 pytestmark = pytest.mark.unit
 
 _OUT = "cqc_lem.app.engagement.outreach"
+
+# `get_recent_recommendations` parses the card date against the real clock (no `now` injection
+# point), so a fixed calendar date drifts out of the 30-day lookback window as time passes — this
+# stays inside it regardless of when the suite runs.
+_RECENT_DATE_TEXT = (datetime.now(timezone.utc) - timedelta(days=10)).strftime("%B %d, %Y")
 
 
 @pytest.fixture(autouse=True)
@@ -133,7 +139,7 @@ class TestRecommendations:
 
     def test_reads_the_received_tab_of_the_users_own_profile(self):
         got, driver, _ = self._run([_rec_row("Jane Doe\n· 1st\n"
-                                             "July 24, 2026, Jane was Chris's client\nGreat work.")])
+                                             f"{_RECENT_DATE_TEXT}, Jane was Chris's client\nGreat work.")])
         assert got == {"https://www.linkedin.com/in/jane": "Jane Doe"}
         assert driver.get.call_args[0][0] == ("https://www.linkedin.com/in/me"
                                               "/details/recommendations/")
@@ -206,7 +212,7 @@ class TestRecommendations:
         warn.assert_not_called()
 
     def test_own_profile_link_is_never_a_recommender(self):
-        row = _rec_row("July 24, 2026", href="https://www.linkedin.com/in/me/?trk=y", name="Me")
+        row = _rec_row(_RECENT_DATE_TEXT, href="https://www.linkedin.com/in/me/?trk=y", name="Me")
         got, _, _ = self._run([row])
         assert got == {}
 
@@ -217,7 +223,7 @@ class TestRecommendations:
         from cqc_lem.app.engagement.outreach import _RECOMMENDATION_RENDER_ATTEMPTS, get_recent_recommendations
         driver = MagicMock()
         empty = {"rows": [], "anchors": 4, "page_dated": False}
-        painted = {"rows": [_rec_row("July 24, 2026, Jane was my client")], "anchors": 4,
+        painted = {"rows": [_rec_row(f"{_RECENT_DATE_TEXT}, Jane was my client")], "anchors": 4,
                    "page_dated": True}
         driver.execute_script.side_effect = [empty, empty, painted]
         with patch(f"{_OUT}.click_first"), patch(f"{_OUT}.wait_for_ajax"), \
