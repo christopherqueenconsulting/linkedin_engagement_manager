@@ -428,6 +428,34 @@ group lane's editor and Post button still resolved with the old chain. Read that
 difference, not a rule: one lookup that works either way is why both lanes now go through the
 container resolver.
 
+## The occasion composer's template chooser is a permanent read-only-guard boundary (#1621, #1713)
+
+Live-grounded 2026-08-24 (`/feed/`, user 1, debug node, both `project_launch` and
+`educational_milestone`). Picking an occasion TYPE ("Project Launch", "Educational Milestone") does
+not open the text editor directly — it opens a template-picker screen with no `role='textbox'` of
+its own: `Dismiss / Template 1 … Template 22 / Back / Next` (dialog text: `"Project launch\nAdd a
+photo\nOr select from below\nLaunched a…"`). Clicking a `Template N` card only swaps in a preview
+image (`Activate link to view larger image.` / `Remove image` appear) and leaves the same
+`Back`/`Next` pair — it does NOT reveal an editor either. #1621 already shipped the fix for this
+shape: `publish_occasion_natively` clicks `TEMPLATE_CHOOSER_NEXT_LABELS` ("next") past the chooser
+before looking for the editor, on the assumption that a template comes pre-selected and Next just
+advances the wizard.
+
+**That assumption is unverifiable by the live-validation probe, forever, on purpose.**
+`install_read_only_guard()` refuses ANY click on a control labelled "next" — `_SUBMIT_LABEL_PATTERNS`
+files it under "commit a form step" alongside `save`/`done`/`delete`/`remove`, and per the
+**linkedin-live-validation** skill there is no override flag. So the probe can confirm the chooser
+resolved (matching the exact `TEMPLATE_CHOOSER_NEXT_LABELS` anchor the shipped code clicks) and can
+never confirm what is past it. Before #1713, `occasion_composer_state` required `editor_present` +
+`post_button_present` unconditionally, so this KNOWN, ALREADY-HANDLED gap graded `drift` and the
+weekly cron auto-filed it (issue #1713 itself) — and would keep re-filing the same unchanged finding
+every week, since nothing about the guard boundary can ever change from a re-run. The grading now
+treats "template chooser resolved with the shipped Next anchor present" as `ok`, same as a directly
+resolved editor + Post — `template_chooser_next_present` in the report names which of the two
+happened. If this ever needs deeper verification (e.g. confirming the editor really appears after
+Next), that has to happen the way #1621's original chain was grounded: interactively, by a human
+driving `selenium-lem` or the noVNC debug node — not through this guarded probe.
+
 ## The comment composer has no `<form>`
 
 "Submit" means clicking the Comment/Post button next to the composer (`_composer_submitted`).

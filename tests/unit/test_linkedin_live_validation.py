@@ -1765,6 +1765,31 @@ class TestOccasionComposerProbe:
                    "archetype": "project_launch"}
         assert llv.occasion_composer_state(reading) == llv.STATE_OK
 
+    def test_a_template_chooser_with_no_editor_is_still_missing_without_1713(self):
+        """Pre-#1713 behaviour: an unresolved editor is drift when nothing explains why."""
+        reading = {"page_text": "x", "share_box_present": True, "dialog_present": True,
+                   "occasion_entry_present": True, "occasion_type_present": True,
+                   "editor_present": False, "post_button_present": False,
+                   "archetype": "project_launch"}
+        assert llv.occasion_composer_state(reading) == llv.STATE_DRIFT
+        assert "re-ground from `form_controls`" in llv.occasion_composer_verdict(reading)
+
+    def test_a_resolved_template_chooser_is_ok_not_drift(self):
+        """#1713: the template chooser's own "Next" is a permanent read-only-guard boundary.
+
+        `publish_occasion_natively` clicks past it unguarded (`TEMPLATE_CHOOSER_NEXT_LABELS`), and
+        the probe's own guard refuses ANY "next"-labelled click on principle — grading this DRIFT
+        would auto-file the same never-changing, already-handled gap every week forever.
+        """
+        reading = {"page_text": "x", "share_box_present": True, "dialog_present": True,
+                   "occasion_entry_present": True, "occasion_type_present": True,
+                   "editor_present": False, "post_button_present": False,
+                   "template_chooser_next_present": True, "archetype": "project_launch"}
+        assert llv.occasion_composer_state(reading) == llv.STATE_OK
+        verdict = llv.occasion_composer_verdict(reading)
+        assert "template chooser" in verdict
+        assert "read-only guard refuses to click" in verdict
+
     def test_the_type_reading_matches_the_way_the_walk_picks(self):
         """`type_hits` and the pick are ONE question (#1621).
 
