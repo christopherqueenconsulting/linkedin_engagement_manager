@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.165.2](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.165.1...v0.165.2) (2026-08-24)
+
+
+### Bug Fixes
+
+* **sdui:** occasion composer template chooser is a guard boundary, not drift (closes [#1713](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1713)) ([#1714](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1714)) ([e018d41](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/e018d413122e2eea9efe55cab9c2aa3614b6b550))
+
 ## [0.165.1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.165.0...v0.165.1) (2026-08-23)
 
 
