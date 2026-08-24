@@ -3302,6 +3302,7 @@ _CARRIED_OCCASION_MORE_LABELS = ("more",)
 _CARRIED_POST_BUTTON_LABELS = ("post",)
 _CARRIED_OCCASION_TYPE_LABELS = {"project_launch": ("project launch",),
                                  "educational_milestone": ("educational milestone",)}
+_CARRIED_TEMPLATE_CHOOSER_NEXT_LABELS = ("next",)
 
 
 # Containers a LinkedIn overlay is PLAUSIBLY mounted in, none of them `role='dialog'`. The point is
@@ -3678,17 +3679,20 @@ def _occasion_composer_chains() -> tuple:
     source, so a pre-merge grounding is never mistaken for a deployed one.
 
     Returns:
-        `(entry_labels, more_labels, post_labels, type_labels, affordance_css, editor_css, source)`.
+        `(entry_labels, more_labels, post_labels, type_labels, affordance_css, editor_css,
+        template_next_labels, source)`.
     """
     try:
         from cqc_lem.utilities.linkedin import share_composer as sc
         return (tuple(sc.OCCASION_ENTRY_LABELS), tuple(sc.OCCASION_MORE_LABELS),
                 tuple(sc.POST_BUTTON_LABELS), dict(sc.OCCASION_TYPE_LABELS),
-                sc.COMPOSER_AFFORDANCE_CSS, sc.COMPOSER_EDITOR_CSS, "image")
+                sc.COMPOSER_AFFORDANCE_CSS, sc.COMPOSER_EDITOR_CSS,
+                tuple(sc.TEMPLATE_CHOOSER_NEXT_LABELS), "image")
     except Exception:
         return (_CARRIED_OCCASION_ENTRY_LABELS, _CARRIED_OCCASION_MORE_LABELS,
                 _CARRIED_POST_BUTTON_LABELS, dict(_CARRIED_OCCASION_TYPE_LABELS),
-                _CARRIED_COMPOSER_AFFORDANCE_CSS, _CARRIED_COMPOSER_EDITOR_CSS, "script")
+                _CARRIED_COMPOSER_AFFORDANCE_CSS, _CARRIED_COMPOSER_EDITOR_CSS,
+                _CARRIED_TEMPLATE_CHOOSER_NEXT_LABELS, "script")
 
 
 def _composer_container(driver) -> tuple:
@@ -3786,6 +3790,17 @@ def occasion_composer_state(reading: Optional[dict]) -> str:
     none": every LinkedIn member's composer carries the occasion route, so a feed that rendered and
     a share box that opened make every later miss DRIFT. Only a page that never rendered — or a
     share box that never resolved on it — grounds nothing.
+
+    #1713: some archetypes interpose a TEMPLATE CHOOSER between the occasion type and the editor
+    ("Template 1"…"Template N", "Back", "Next" — no editor of its own). `publish_occasion_natively`
+    already clicks past it (`TEMPLATE_CHOOSER_NEXT_LABELS`), but the read-only guard refuses ANY
+    control labelled "next" on principle (`_SUBMIT_LABEL_PATTERNS`, "commit a form step" — there is
+    no override flag), so this probe can verify the chooser resolved and can never verify what is
+    past it. That is a permanent GUARD BOUNDARY, not drift: grading it DRIFT filed this exact issue
+    once already and would keep re-filing the same unchanged, already-handled gap every week. So a
+    resolved template chooser carrying the SAME "Next" anchor the shipped code clicks is graded OK
+    same as a direct editor + Post — the chain resolves as far as a read-only read is ever able to
+    confirm.
     """
     reading = dict(reading or {})
     if not str(reading.get("page_text") or "").strip():
@@ -3796,16 +3811,25 @@ def occasion_composer_state(reading: Optional[dict]) -> str:
         return STATE_DRIFT
     if not (reading.get("occasion_entry_present") and reading.get("occasion_type_present")):
         return STATE_DRIFT
-    return STATE_OK if (reading.get("editor_present") and reading.get("post_button_present")) \
-        else STATE_DRIFT
+    if reading.get("editor_present") and reading.get("post_button_present"):
+        return STATE_OK
+    if reading.get("template_chooser_next_present"):
+        return STATE_OK
+    return STATE_DRIFT
 
 
 def occasion_composer_verdict(reading: Optional[dict]) -> str:
     """Prose for one occasion-composer read — what it proves, or what to re-ground and from where."""
     reading = dict(reading or {})
     if occasion_composer_state(reading) == STATE_OK:
-        return ("the whole occasion route resolved (share box → occasion → "
-                f"{reading.get('archetype')} → editor + Post) — the publish chain is grounded")
+        if reading.get("editor_present") and reading.get("post_button_present"):
+            return ("the whole occasion route resolved (share box → occasion → "
+                    f"{reading.get('archetype')} → editor + Post) — the publish chain is grounded")
+        return ("the route resolved through the template chooser (share box → occasion → "
+                f"{reading.get('archetype')} → template chooser's own \"Next\") — the editor and "
+                "Post button sit past a control the read-only guard refuses to click, so this is as "
+                "far as a live read can confirm; `publish_occasion_natively` takes that same click "
+                "unguarded")
     if not str(reading.get("page_text") or "").strip():
         return "the feed did not render at all — this reading grounds nothing; re-run it"
     if not reading.get("share_box_present"):
@@ -3849,7 +3873,7 @@ def probe_occasion_composer(driver, archetype: str = "project_launch", sleep=tim
     from cqc_lem.utilities.selenium_util import click_first
 
     (entry_labels, more_labels, post_labels, type_labels, affordance_css, editor_css,
-     chain_source) = _occasion_composer_chains()
+     template_next_labels, chain_source) = _occasion_composer_chains()
     share_box_locators, share_source = _share_box_chains()
     wait = WebDriverWait(driver, 10)
     driver.get(FEED_URL)
@@ -3949,6 +3973,16 @@ def probe_occasion_composer(driver, archetype: str = "project_launch", sleep=tim
     reading["form_source"] = form_source
     editor = _composer_editor(form, editor_css)
     post_button = _composer_control(form, post_labels, exact=True, css=affordance_css)
+    # The template chooser (#1621): picking the occasion type does not open the editor directly on
+    # every archetype — LinkedIn interposes a template-picker screen ("Template 1"…"Template N",
+    # "Back", "Next") with no editor of its own. `publish_occasion_natively` already clicks past it
+    # (`TEMPLATE_CHOOSER_NEXT_LABELS`), but the read-only guard refuses ANY control labelled "next"
+    # (`_SUBMIT_LABEL_PATTERNS`, "commit a form step") on principle — there is no override flag — so
+    # this probe can verify the chooser resolved and never verify what is beyond it. That is a guard
+    # boundary, not drift: grading it DRIFT would auto-file the same "known, already-handled" gap
+    # every week forever. `chooser_next_present` names the anchor the shipped code itself clicks.
+    reading["template_chooser_next_present"] = _composer_control(
+        form, template_next_labels, exact=True, css=affordance_css) is not None
     reading.update({"editor_present": editor is not None,
                     "editor": element_evidence(editor) if editor is not None else None,
                     "post_button_present": post_button is not None,
@@ -4022,7 +4056,7 @@ def probe_group_composer(driver, group_id: str, sleep=time.sleep) -> dict:
     from cqc_lem.utilities.selenium_util import click_first
 
     (_entry_labels, _more_labels, post_labels, _type_labels, affordance_css, editor_css,
-     chain_source) = _occasion_composer_chains()
+     _template_next_labels, chain_source) = _occasion_composer_chains()
     share_box_locators, share_source = _share_box_chains()
     wait = WebDriverWait(driver, 10)
     url = f"https://www.linkedin.com/groups/{group_id}/"
