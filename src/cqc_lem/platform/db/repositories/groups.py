@@ -58,17 +58,51 @@ def get_user_groups(user_id: int) -> list:
         log_error("Could not list groups", exc=err, user_id=user_id)
         return []
 def get_enabled_group_ids(user_id: int) -> list:
-    """Group ids the user has enabled for engagement.
+    """Group ids the user has enabled for engagement, LEAST-recently-walked first (issue #1719).
+
+    Ordering on `last_comment_run_at` (NULL — never walked — sorts first) is what `get_next_group_
+    for_post` already does for the posting lane (#858): without it, `auto_comment_in_groups` walked
+    the same fixed order every run, so a user with more enabled groups than one run's time budget
+    covers had the SAME tail groups skipped by "ran out of time" forever, never their turn. A group
+    the deadline causes THIS run to skip is untouched, so it sorts to the front next time instead of
+    being starved again.
 
     Swallows the error without logging and returns [], so a database blip reads as "no groups" and skips
     the group pass instead of failing the run.
     """
     try:
         with db_cursor() as cursor:
-            cursor.execute("SELECT group_id FROM user_groups WHERE user_id=%s AND enabled=1", (user_id,))
+            cursor.execute(
+                "SELECT group_id FROM user_groups WHERE user_id=%s AND enabled=1 "
+                "ORDER BY last_comment_run_at IS NULL DESC, last_comment_run_at ASC, group_id ASC",
+                (user_id,))
             return [r[0] for r in cursor.fetchall()]
     except mysql.connector.Error:
         return []
+
+
+def record_group_comment_run(user_id: int, group_id: str) -> bool:
+    """Stamp a group as just-WALKED (issue #1719) so the rotation moves on.
+
+    Mirrors `record_group_post_run` (#858) for the posting lane. Called once for every group the
+    walk REACHES, whether or not a comment landed there — an empty feed must move to the back of
+    the rotation exactly like a genuine comment does, or it would starve the same way an unpostable
+    group did before #858. A group the deadline causes the walk to SKIP is left untouched, so it
+    sorts first next run.
+    """
+    try:
+        with db_cursor(commit=True) as cursor:
+            cursor.execute("UPDATE user_groups SET last_comment_run_at=NOW() WHERE user_id=%s AND group_id=%s",
+                           (user_id, str(group_id)))
+            return True
+    except mysql.connector.Error as err:
+        # A lost stamp is exactly the starvation this function exists to prevent — the group stays
+        # least-recently-walked and is walked again first next run regardless, so a failed UPDATE
+        # here does not re-introduce starvation on its own; still surfaced so a persistent failure
+        # (not a one-off) is visible.
+        log_error("Could not record group comment run", exc=err, user_id=user_id,
+                  task_name="auto_comment_in_groups")
+        return False
 def get_next_group_for_post(user_id: int) -> Optional[dict]:
     """The ONE place "which group does the next group post go to" is decided (issue #769): the
     least-recently-TRIED group the user has opted into for POSTING. `post_enabled` is independent

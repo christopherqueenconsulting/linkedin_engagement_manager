@@ -545,8 +545,26 @@ sync already wrote are still sitting `enabled=1`, and only a write can clear the
   alone, logs the user and the ids it switched off, and leaves the row for `get_user_groups` so the
   Account UI can turn it back on. Whatever `GROUP_RECONCILE_MAX_CONFIRMATIONS` leaves over is logged,
   not silently dropped — and the ids inside the cap are SAMPLED from the whole backlog, never sliced
-  off its front: `get_enabled_group_ids` answers in a stable order, so a fixed head re-asks the same
-  ids every week and a tail sitting behind more than ten real memberships is never reached at all.
+  off its front: `get_enabled_group_ids` answers in a DETERMINISTIC order (see rotation below), so a
+  fixed head re-asks the same ids every week and a tail sitting behind more than ten real
+  memberships is never reached at all.
+
+## Group commenting rotates, the same way the weekly post already did (issue #1719)
+
+`auto_comment_in_groups` (`_group_walk_deadline`, issue #1198) stops the walk between groups once
+its own time budget is spent, deliberately keeping whatever it already commented rather than being
+cut down mid-comment. That is right for ANY one run — the defect was what it did across runs:
+`get_enabled_group_ids` carried no ORDER BY, so the walk started from the same fixed row order every
+day, and any user with more enabled groups than one run covers had the SAME tail groups skipped by
+"ran out of time" forever — never a one-off, which is exactly what turned this into a
+`RecurringWarning` (3+ in 24h escalates to a grouped `$exception`, `utilities/log_escalation.py`).
+
+Fixed the way #858 already fixed the identical starvation for the POSTING lane:
+`last_comment_run_at` (least-recently-walked first, NULL sorts first) orders `get_enabled_group_ids`,
+and `record_group_comment_run` stamps it for every group the walk REACHES this run — whether or not
+a comment landed there, so an empty feed still moves to the back of the line. A group the deadline
+causes the walk to SKIP is left untouched, so it sorts to the front next run instead of being
+skipped again.
 
 ## Weekly group post — draft, preview, publish (issue #932)
 
