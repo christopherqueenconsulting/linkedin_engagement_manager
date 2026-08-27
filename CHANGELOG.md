@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.165.4](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.165.3...v0.165.4) (2026-08-27)
+
+
+### Bug Fixes
+
+* **content-generation:** exclude planning skeleton rows from the default post list ([28fabe4](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/28fabe4a4e9ebcbb77ea10456caff78e368089fc)), closes [#1722](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1722)
+* **content-generation:** exclude planning skeleton rows from the default post list (closes [#1722](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1722)) ([#1723](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1723)) ([28fabe4](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/28fabe4a4e9ebcbb77ea10456caff78e368089fc))
+
 ## [0.165.3](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.165.2...v0.165.3) (2026-08-27)
 
 
