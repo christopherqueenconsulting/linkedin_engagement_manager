@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.165.3](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.165.2...v0.165.3) (2026-08-27)
+
+
+### Bug Fixes
+
+* **engagement:** rotate group commenting so the tail never starves (closes [#1719](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1719)) ([#1720](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1720)) ([a095321](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/a0953214f0f1717b6204b22bc59256896283c0fd))
+
 ## [0.165.2](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.165.1...v0.165.2) (2026-08-24)
 
 
