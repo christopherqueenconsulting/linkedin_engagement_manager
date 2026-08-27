@@ -2169,6 +2169,12 @@ def get_posts(user_id: int, limit: int = 10, offset: int = 0,
     `scheduled_time`) because the column name is interpolated rather than parameterized; `search` becomes
     a quoted-term / AND-OR clause via `build_content_search_clause`. Date bounds are coerced to naive UTC.
 
+    No `status_filter` never means "every status" — it means every status a user can actually act
+    on. `planning` rows are unfilled SKELETONS (`insert_planned_post`'s literal 'TBD' body) the
+    buffer has not generated content for yet; showing them here reads as posts having gone missing
+    or as duplicated placeholder templates (issue #1722), not as content still queued. They are
+    excluded from the unfiltered view; an explicit `status_filter='planning'` still returns them.
+
     A read error returns `([], 0)` — an empty page, never a partial one.
     """
     connection = _connection.get_db_connection()
@@ -2183,6 +2189,14 @@ def get_posts(user_id: int, limit: int = 10, offset: int = 0,
         if status_filter:
             where += " AND status = %s"
             params.append(status_filter.lower())
+        else:
+            # 'planning' rows are unfilled SKELETONS (literal body 'TBD', issue #1722) — the
+            # generation buffer fills them over days, not all at once, so the DEFAULT (unfiltered)
+            # view of the Review & Edit list must never show them: they read as missing/duplicate
+            # posts rather than as content still queued to generate. An explicit status_filter
+            # (including 'planning' itself) is a deliberate ask and is never overridden here.
+            where += " AND status != %s"
+            params.append(PostStatus.PLANNING.value)
         if post_type_filter:
             where += " AND post_type = %s"
             params.append(post_type_filter.lower())

@@ -568,6 +568,47 @@ class TestGetPosts:
             count_call_params = calls[0][0][1]
             assert 'approved' in count_call_params
 
+    def test_default_view_excludes_planning_skeleton_rows(self, mock_database_connection):
+        """A `planning` skeleton row never appears in the default Review & Edit list (issue #1722).
+
+        An unfilled row (body 'TBD') showing up unfiltered reads as a missing/duplicate post, not
+        as a draft still queued to generate.
+        """
+        from cqc_lem.utilities.db import get_posts
+
+        with patch("cqc_lem.platform.db.connection.get_db_connection") as mock_conn:
+            mock_conn.return_value = mock_database_connection["connection"]
+            mock_database_connection["cursor"].fetchone.return_value = {"total": 0}
+            mock_database_connection["cursor"].fetchall.return_value = []
+
+            get_posts(42)
+
+            calls = mock_database_connection["cursor"].execute.call_args_list
+            count_sql, count_params = calls[0][0]
+            assert "status != %s" in count_sql
+            assert 'planning' in count_params
+
+    def test_explicit_planning_filter_is_respected(self, mock_database_connection):
+        """An explicit `status_filter='planning'` is never overridden by the default exclusion.
+
+        Only the unfiltered view hides `planning` rows — an explicit ask for them (e.g. internal
+        tooling) still gets them.
+        """
+        from cqc_lem.utilities.db import get_posts
+
+        with patch("cqc_lem.platform.db.connection.get_db_connection") as mock_conn:
+            mock_conn.return_value = mock_database_connection["connection"]
+            mock_database_connection["cursor"].fetchone.return_value = {"total": 0}
+            mock_database_connection["cursor"].fetchall.return_value = []
+
+            get_posts(42, status_filter='planning')
+
+            calls = mock_database_connection["cursor"].execute.call_args_list
+            count_sql, count_params = calls[0][0]
+            assert "status = %s" in count_sql
+            assert "status != %s" not in count_sql
+            assert 'planning' in count_params
+
     def test_post_type_filter_applied(self, mock_database_connection):
         from cqc_lem.utilities.db import get_posts
 
