@@ -1,6 +1,6 @@
 """Unit tests for Groups engagement (enumeration, commenting, posting, dispatchers)."""
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 from celery.exceptions import SoftTimeLimitExceeded
@@ -165,6 +165,45 @@ class TestUserGroupsDB:
              patch("cqc_lem.platform.db.repositories.groups.log_error") as logged:
             from cqc_lem.utilities.db import record_group_post_run
             assert record_group_post_run(1, "123") is False
+        logged.assert_called_once()
+        assert logged.call_args.kwargs["user_id"] == 1
+
+    def test_enabled_group_ids_order_least_recently_walked_first(self, fake_cursor):
+        """Issue #1719: no ORDER BY meant the comment walk always started from the same row order.
+
+        A user with more enabled groups than one run covers had the SAME tail groups skipped
+        forever. NULL (never walked) sorts first, oldest walked next.
+        """
+        conn, cur = fake_cursor(fetch_all=[("123",), ("456",)])
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import get_enabled_group_ids
+            assert get_enabled_group_ids(1) == ["123", "456"]
+        sql = cur.execute.call_args[0][0]
+        assert "last_comment_run_at IS NULL DESC" in sql
+        assert "last_comment_run_at ASC" in sql
+
+    def test_record_group_comment_run_stamps_the_row(self, fake_cursor):
+        """Issue #1719: mirrors `record_group_post_run` (#858) for the commenting lane.
+
+        Stamped whether or not a comment landed, so an empty feed still moves to the back of the
+        rotation.
+        """
+        conn, cur = fake_cursor()
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import record_group_comment_run
+            assert record_group_comment_run(1, "123") is True
+        sql = cur.execute.call_args[0][0]
+        assert "last_comment_run_at=NOW()" in sql
+        assert cur.execute.call_args[0][1] == (1, "123")
+
+    def test_record_group_comment_run_failure_is_visible(self, fake_cursor):
+        import mysql.connector
+        conn, cur = fake_cursor()
+        cur.execute.side_effect = mysql.connector.Error("connection gone")
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn), \
+             patch("cqc_lem.platform.db.repositories.groups.log_error") as logged:
+            from cqc_lem.utilities.db import record_group_comment_run
+            assert record_group_comment_run(1, "123") is False
         logged.assert_called_once()
         assert logged.call_args.kwargs["user_id"] == 1
 
@@ -665,9 +704,14 @@ class TestCommentInGroups:
              patch(f"{_FEED}.get_current_profile", return_value=(MagicMock(), MagicMock(), "e", MagicMock())), \
              patch(f"{_FEED}.get_engagement_preferences", return_value={}), \
              patch(f"{_FEED}.get_recent_engagers", return_value=set()), \
-             patch(f"{_FEED}.comment_on_feed_inline", return_value=1) as cfi, patch(f"{_FEED}.quit_gracefully"):
+             patch(f"{_FEED}.comment_on_feed_inline", return_value=1) as cfi, \
+             patch(f"{_FEED}.record_group_comment_run") as recorded, \
+             patch(f"{_FEED}.quit_gracefully"):
             result = auto_comment_in_groups.run(user_id=1)
         assert cfi.call_count == 2 and "across 2 group" in result
+        # Issue #1719: every reached group is stamped, whether or not it produced a comment, so
+        # the next run's rotation moves past it instead of walking it first again.
+        assert recorded.call_args_list == [call(1, "1"), call(1, "2")]
 
     def test_no_enabled_groups(self):
         from cqc_lem.app.engagement.feed import auto_comment_in_groups
@@ -692,6 +736,7 @@ class TestCommentInGroups:
              patch(f"{_FEED}.get_engagement_preferences", return_value={}), \
              patch(f"{_FEED}.get_recent_engagers", return_value=set()), \
              patch(f"{_FEED}.comment_on_feed_inline", return_value=2) as cfi, \
+             patch(f"{_FEED}.record_group_comment_run") as recorded, \
              patch(f"{_FEED}.log_info") as info, \
              patch(f"{_FEED}.log_error") as err, \
              patch(f"{_FEED}.quit_gracefully") as quit_driver:
@@ -700,6 +745,9 @@ class TestCommentInGroups:
         assert cfi.call_count == 1  # the second group is unreachable on a dead session
         assert info.called and not err.called
         quit_driver.assert_called_once_with(driver)
+        # Group "2" was never reached (dead session at `driver.get`), so it is NOT stamped — it
+        # stays least-recently-walked and is next in line rather than skipped again.
+        recorded.assert_called_once_with(1, "1")
 
     def test_the_walk_hands_its_deadline_to_the_feed_engine(self):
         """Issue #1198: one slow group must not be able to spend the whole task budget.
@@ -714,6 +762,7 @@ class TestCommentInGroups:
              patch(f"{_FEED}._group_walk_deadline", return_value=4000.0), \
              patch(f"{_FEED}.time.time", return_value=1000.0), \
              patch(f"{_FEED}.comment_on_feed_inline", return_value=1) as cfi, \
+             patch(f"{_FEED}.record_group_comment_run"), \
              patch(f"{_FEED}.quit_gracefully"):
             auto_comment_in_groups.run(user_id=1)
         assert cfi.call_args.kwargs["deadline_ts"] == 4000.0
@@ -733,6 +782,7 @@ class TestCommentInGroups:
              patch(f"{_FEED}._group_walk_deadline", return_value=4000.0), \
              patch(f"{_FEED}.time.time", side_effect=_clock(1000.0, 1000.0, 9999.0)), \
              patch(f"{_FEED}.comment_on_feed_inline", return_value=2) as cfi, \
+             patch(f"{_FEED}.record_group_comment_run") as recorded, \
              patch(f"{_FEED}.log_warning") as warned, \
              patch(f"{_FEED}.quit_gracefully") as quit_driver:
             result = auto_comment_in_groups.run(user_id=1)
@@ -740,6 +790,9 @@ class TestCommentInGroups:
         assert cfi.call_count == 1  # groups 2 and 3 were never opened
         assert warned.called
         quit_driver.assert_called_once_with(driver)
+        # Group "1" was walked, so it is stamped; "2" and "3" were skipped by the deadline and stay
+        # untouched — issue #1719's rotation puts them first next run instead of skipping them again.
+        recorded.assert_called_once_with(1, "1")
 
     def test_the_soft_time_limit_itself_is_absorbed_not_crashed(self):
         """Issue #1198: the backstop for a run whose reserve was not enough.

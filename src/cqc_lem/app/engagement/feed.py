@@ -121,6 +121,7 @@ from cqc_lem.utilities.db import (
     insert_new_log,
     mark_post_commented,
     mark_post_reacted,
+    record_group_comment_run,
     record_group_post,
     record_group_post_run,
     record_story_bank_use,
@@ -3222,10 +3223,10 @@ def _heading_attribution_dropped_rows(reading: GroupsDirectoryReading, native: i
 def _confirmation_slice(absent: list) -> Tuple[list, list]:
     """Which stored-but-unseen groups this run pays a page load for, and which it leaves.
 
-    SAMPLED, not sliced off the front: `get_enabled_group_ids` answers in a stable order, so a fixed
-    head would re-ask the same ids every week and a tail behind more than `GROUP_RECONCILE_MAX_
-    CONFIRMATIONS` real memberships would never be reached at all — which is not what "the next
-    weekly run reaches it" means.
+    SAMPLED, not sliced off the front: `get_enabled_group_ids` answers in a deterministic order
+    (least-recently-commented-in first, issue #1719), so a fixed head would re-ask the same ids
+    every week and a tail behind more than `GROUP_RECONCILE_MAX_CONFIRMATIONS` real memberships
+    would never be reached at all — which is not what "the next weekly run reaches it" means.
     """
     if len(absent) <= GROUP_RECONCILE_MAX_CONFIRMATIONS:
         return list(absent), []
@@ -3362,7 +3363,10 @@ def auto_comment_in_groups(self, user_id: int, max_per_group: int = 2):
 
     Reuses the feed commenting engine pointed at each group's feed. Shares the per-day comment cap.
     Bounded by `_group_walk_deadline`: a run that is out of time stops between groups and keeps what
-    it already posted, rather than being cut down mid-comment by the soft time limit.
+    it already posted, rather than being cut down mid-comment by the soft time limit. `get_enabled_
+    group_ids` orders least-recently-walked first (issue #1719), so an out-of-time run does not
+    starve the SAME tail groups forever — each reached group is stamped via `record_group_comment_
+    run`, moving it to the back of the line for next time.
     """
     started_ts = time.time()
     enabled = get_enabled_group_ids(user_id)
@@ -3396,6 +3400,11 @@ def auto_comment_in_groups(self, user_id: int, max_per_group: int = 2):
                                                 max_posts=max_per_group, deadline_ts=deadline_ts,
                                                 prefs=prefs, engagers=engagers, is_group_feed=True)
                 walked += 1
+                # Stamped whether or not this group produced a comment (issue #1719) — an empty
+                # feed still moves to the back of the rotation, or it would starve the walk the same
+                # way an unpostable group did before #858. A group the deadline check above skips is
+                # left untouched, so it is next in line rather than skipped again next run.
+                record_group_comment_run(user_id, gid)
             except Exception as e:
                 if not is_session_lost(e):
                     raise
