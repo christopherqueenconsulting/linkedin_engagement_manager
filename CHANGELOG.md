@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.166.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.165.5...v0.166.0) (2026-08-28)
+
+
+### Features
+
+* **infra:** block image loads on proxied Selenium sessions to cut metered-proxy usage ([2d7e883](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/2d7e8838d34af4164d47889a1d5ec58b5ed290b1)), closes [#1728](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1728)
+* **infra:** cut proxy bandwidth usage by blocking image loads (closes [#1728](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1728)) ([#1729](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1729)) ([2d7e883](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/2d7e8838d34af4164d47889a1d5ec58b5ed290b1))
+
 ## [0.165.5](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.165.4...v0.165.5) (2026-08-28)
 
 
