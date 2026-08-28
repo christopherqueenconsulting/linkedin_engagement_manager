@@ -125,6 +125,54 @@ class TestEverySessionPassesUserId:
             f"host IP with no proxy/geo: {offenders}")
 
 
+class TestBandwidthSaver:
+    """Image-blocking on proxied sessions (issue #1728).
+
+    A metered proxy (IPRoyal et al.) bills per GB; LEM's selectors never read pixels, so a
+    proxied session blocks image loads by default. Direct/unproxied egress — the common case
+    in dev and the tutorial-capture session — must never be touched by this.
+    """
+
+    _GEO = {"latitude": 28.5, "longitude": -81.4, "timezone": "America/New_York",
+            "locale": "en-US", "country": "US"}
+    _BLINK_ARG = "--blink-settings=imagesEnabled=false"
+
+    def test_base_options_block_images_when_requested(self):
+        from cqc_lem.utilities.selenium_util import getBaseOptions
+        assert self._BLINK_ARG in getBaseOptions(block_images=True).arguments
+
+    def test_base_options_do_not_block_images_by_default(self):
+        from cqc_lem.utilities.selenium_util import getBaseOptions
+        assert self._BLINK_ARG not in getBaseOptions().arguments
+
+    def test_proxied_session_blocks_images(self):
+        args = _capture_options(
+            user_id=1, geo=self._GEO, proxy=_proxy_url("u", "p", "host.example", 9000)).arguments
+        assert self._BLINK_ARG in args
+
+    def test_unproxied_session_does_not_block_images(self):
+        args = _capture_options(user_id=None).arguments
+        assert self._BLINK_ARG not in args
+
+    def test_env_var_disables_bandwidth_saver_even_when_proxied(self, monkeypatch):
+        monkeypatch.setenv("PROXY_BANDWIDTH_SAVER_ENABLED", "false")
+        args = _capture_options(
+            user_id=1, geo=self._GEO, proxy=_proxy_url("u", "p", "host.example", 9000)).arguments
+        assert self._BLINK_ARG not in args
+
+    def test_egress_log_reports_images_state(self):
+        with patch(f"{_MOD}.log_info") as info:
+            _capture_options(user_id=1, geo=self._GEO,
+                              proxy=_proxy_url("u", "p", "host.example", 9000))
+        messages = " ".join(str(c.args[0]) for c in info.call_args_list)
+        assert "images=blocked" in messages
+
+        with patch(f"{_MOD}.log_info") as info:
+            _capture_options(user_id=None)
+        messages = " ".join(str(c.args[0]) for c in info.call_args_list)
+        assert "images=on" in messages
+
+
 def _capture_options(user_id=None, geo=None, proxy=None):
     """Build a driver with all I/O mocked and return the ChromeOptions actually used."""
     captured = {}

@@ -105,6 +105,19 @@ closed, and it is the only sanctioned way credentials reach a browser session:
 **Never URL-embed proxy credentials.** A `http://user:pass@host:port` proxy URL is not carried by
 Chrome, and putting one in a log line or an env dump is how the credential escapes.
 
+## Bandwidth on metered proxies (issue #1728)
+
+Several of the recommended residential providers (IPRoyal, Decodo…) bill **per GB**, not just per
+IP — "unlimited traffic" only applies to some tiers. LinkedIn's feed/profile pages are image-heavy,
+and none of LEM's selectors read pixels, only text/DOM, so every image byte a proxied session
+fetched was pure waste against that cap.
+
+`get_docker_driver` now blocks image loads (`--blink-settings=imagesEnabled=false`, applied in
+`getBaseOptions`) whenever the session is **actually proxied** — `bandwidth_saver = bool(effective_proxy)
+and PROXY_BANDWIDTH_SAVER_ENABLED` (default on). Direct/unproxied egress (dev, the tutorial-video
+capture session) is never touched — that traffic isn't metered. Disable with
+`PROXY_BANDWIDTH_SAVER_ENABLED=false` only to debug a session visually through the proxy.
+
 ## Status / follow-ups
 
 - App side (DB field, resolver, Selenium wiring, MV3 auth extension, tests) — **done,

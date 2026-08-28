@@ -15,6 +15,7 @@ SDUI markup requires.
 import base64
 import io
 import json
+import os
 import re
 import time
 import zipfile
@@ -53,6 +54,7 @@ from cqc_lem.utilities.env_constants import (  # noqa: F401
     SELENIUM_HUB_HOST,
     SELENIUM_HUB_PORT,
     SELENIUM_READY_TIMEOUT,
+    isTrue,
 )
 
 from cqc_lem.utilities.logger import log_debug, log_info, log_warning
@@ -256,13 +258,21 @@ def get_docker_driver(headless: bool = True, session_name: str = "ChromeTests", 
     from cqc_lem.utilities.proxy import resolve_proxy
     effective_proxy = resolve_proxy(user_proxy, user_country)
 
+    # A metered proxy (IPRoyal et al., docs/PER_USER_PROXY.md) bills per GB. LinkedIn's feed/
+    # profile pages are image-heavy and every LEM selector reads text/DOM, never pixels, so
+    # blocking images on a PROXIED session is a large bandwidth cut with nothing lost — direct/
+    # host egress (unmetered) is never touched by this.
+    bandwidth_saver = bool(effective_proxy) and isTrue(
+        os.getenv("PROXY_BANDWIDTH_SAVER_ENABLED", "True"))
+
     # One line per session answering "was this actually proxied, and as whom?" — previously this
     # could only be determined by shelling into the container. Host:port only; never the
     # credentials embedded in the proxy URL.
     log_info(f"Selenium session '{session_name}' egress={_proxy_label(effective_proxy)} "
-             f"tz={user_timezone} locale={user_locale}", user_id=user_id, action_type="login")
+             f"tz={user_timezone} locale={user_locale} images={'blocked' if bandwidth_saver else 'on'}",
+             user_id=user_id, action_type="login")
 
-    options = getBaseOptions()
+    options = getBaseOptions(block_images=bandwidth_saver)
     options.add_argument("--ignore-ssl-errors=yes")
     options.add_argument("--ignore-certificate-errors")
     options.add_argument(f"--lang={user_locale}")
@@ -561,12 +571,17 @@ def add_headless_options(options: Options) -> Options:
     return options
 
 
-def getBaseOptions(base_download_directory: str = None):
+def getBaseOptions(base_download_directory: str = None, block_images: bool = False):
     """The Chrome options every LEM session starts from: download prefs, container-safe flags, stealth.
 
     Downloads land in `<base_download_directory>/downloads` (default: the process CWD) and PDFs are
     saved rather than opened in the viewer, which is what makes a downloaded file appear on disk at
     all. No user-agent is pinned — the long comment below records why an invented UA is a liability.
+
+    `block_images=True` (set by `get_docker_driver` for a PROXIED session — see its
+    `bandwidth_saver`) stops Chrome fetching images at all. LEM's selectors read text/DOM, never
+    pixels, so nothing is lost; the point is cutting bytes through a metered proxy provider
+    (IPRoyal et al., docs/PER_USER_PROXY.md).
     """
     options = Options()
     # options.add_argument("--incognito") # May cause issues with tabs
@@ -577,6 +592,9 @@ def getBaseOptions(base_download_directory: str = None):
              "download.directory_upgrade": True,
              "plugins.always_open_pdf_externally": True}
     options.add_experimental_option("prefs", prefs)
+
+    if block_images:
+        options.add_argument("--blink-settings=imagesEnabled=false")
 
     options.add_argument('--disable-gpu')
     options.add_argument('--no-sandbox')
