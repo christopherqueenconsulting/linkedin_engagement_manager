@@ -367,6 +367,16 @@ def plan_content_for_user(self, user_id: int):
     end_of_month = _plan_window_end(start_date)
     slots = _cadence_slots(user_id, start_date, end_of_month)
     if not slots:
+        # The tail of a month can land on no cadence weekday at all (e.g. a Tue/Wed/Thu calendar
+        # starting the last Friday) — stopping here stalled the plan at the boundary until a LATER
+        # day's run happened to compute a start date already inside next month, silently starving
+        # the buffer for days around every month-end (issue #1725). Roll the window one month
+        # further once instead of skipping, so the plan always advances.
+        next_window_end = _plan_window_end(end_of_month + timedelta(days=1))
+        slots = _cadence_slots(user_id, start_date, next_window_end)
+        if slots:
+            end_of_month = next_window_end
+    if not slots:
         log_info(f"Content Plan | No cadence slots left this month after {start_date} | Skipped")
         return
 
