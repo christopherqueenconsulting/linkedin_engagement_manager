@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.165.5](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.165.4...v0.165.5) (2026-08-28)
+
+
+### Bug Fixes
+
+* **content-generation:** Generate Weekly Content button shows no slots due when posts are scheduled (closes [#1725](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1725)) ([#1726](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1726)) ([a4ced2b](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/a4ced2baab7d21262d839b377a856029bc74dc24))
+* **content-generation:** roll content plan into next month at a dead month-end tail (closes [#1725](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1725)) ([a4ced2b](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/a4ced2baab7d21262d839b377a856029bc74dc24))
+
 ## [0.165.4](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.165.3...v0.165.4) (2026-08-27)
 
 
