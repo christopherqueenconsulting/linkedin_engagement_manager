@@ -167,6 +167,42 @@ class TestPlanWindow:
             plan_content_for_user.run(user_id=1)
         save.assert_not_called()
 
+    def test_a_month_end_with_no_cadence_day_rolls_into_next_month(self):
+        """A month can end on a run of days no cadence weekday ever lands on (issue #1725).
+
+        A Tue/Wed/Thu calendar starting the last Friday before month-end must advance into next
+        month instead of skipping and stalling the plan at the boundary.
+        """
+        from cqc_lem.app.run_content_plan import plan_content_for_user
+        last_planned = dt.datetime.now() + dt.timedelta(days=1)
+        rolled_over_slots = [dt.date(2099, 1, 1)]
+        with patch(f"{_RCP}.get_post_type_counts", return_value={"text": 1}), \
+             patch(f"{_RCP}.get_last_planned_post_date_for_user", return_value=last_planned), \
+             patch(f"{_RCP}._plan_window_end", return_value=last_planned), \
+             patch(f"{_RCP}.get_engagement_preferences", return_value={"posts_per_week": 2}), \
+             patch(f"{_RCP}._cadence_slots", side_effect=[[], rolled_over_slots]), \
+             patch(f"{_RCP}.save_content_plan") as save:
+            plan_content_for_user.run(user_id=1)
+        save.assert_called_once()
+        saved_plan = save.call_args.args[1]
+        assert len(saved_plan) == len(rolled_over_slots)
+
+    def test_still_skips_when_next_month_also_has_no_cadence_day(self):
+        """Rolling forward is a one-month retry, not a search.
+
+        A second empty window still skips rather than looping forever.
+        """
+        from cqc_lem.app.run_content_plan import plan_content_for_user
+        last_planned = dt.datetime.now() + dt.timedelta(days=1)
+        with patch(f"{_RCP}.get_post_type_counts", return_value={"text": 1}), \
+             patch(f"{_RCP}.get_last_planned_post_date_for_user", return_value=last_planned), \
+             patch(f"{_RCP}._plan_window_end", return_value=last_planned), \
+             patch(f"{_RCP}.get_engagement_preferences", return_value={"posts_per_week": 2}), \
+             patch(f"{_RCP}._cadence_slots", side_effect=[[], []]), \
+             patch(f"{_RCP}.save_content_plan") as save:
+            plan_content_for_user.run(user_id=1)
+        save.assert_not_called()
+
 
 class TestDayTypeRotation:
     def test_stage_comes_from_the_slot_day_type(self):
