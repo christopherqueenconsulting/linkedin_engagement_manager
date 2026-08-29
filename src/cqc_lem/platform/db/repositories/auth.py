@@ -983,7 +983,7 @@ def list_user_sessions(user_id: int, current_token: Optional[str] = None) -> lis
     try:
         with db_cursor(dictionary=True) as cursor:
             cursor.execute(
-                "SELECT id, session_token, label, user_agent, created_at, last_seen_at, expires_at "
+                "SELECT id, session_token, label, user_agent, created_at, last_seen_at, expires_at, scope "
                 "FROM sessions WHERE user_id = %s AND revoked_at IS NULL AND expires_at > %s "
                 "ORDER BY COALESCE(last_seen_at, created_at) DESC",
                 (user_id, datetime.now(timezone.utc)),
@@ -997,6 +997,7 @@ def list_user_sessions(user_id: int, current_token: Optional[str] = None) -> lis
                     "last_seen_at": row.get("last_seen_at"),
                     "expires_at": row.get("expires_at"),
                     "is_current": bool(current_hash) and row.get("session_token") == current_hash,
+                    "scope": row.get("scope") or SESSION_SCOPE_FULL,
                 })
             return sessions
     except mysql.connector.Error as err:

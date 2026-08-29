@@ -135,6 +135,31 @@ class TestListAndRevoke:
             rows = list_user_sessions(7)
         assert rows[0]["is_current"] is False
 
+    def test_list_defaults_a_null_scope_to_full(self, fake_cursor):
+        """A row minted before #745 2c carries no `scope` — it must never render as an agent."""
+        from cqc_lem.utilities.db import list_user_sessions
+
+        conn, cursor = fake_cursor()
+        cursor.fetchall.return_value = [
+            {"id": 1, "session_token": None, "label": "Chrome on macOS", "user_agent": None,
+             "created_at": None, "last_seen_at": None, "expires_at": None, "scope": None},
+        ]
+        with _patch_conn(conn):
+            rows = list_user_sessions(7)
+        assert rows[0]["scope"] == "full"
+
+    def test_list_passes_an_agent_scope_through(self, fake_cursor):
+        from cqc_lem.utilities.db import list_user_sessions
+
+        conn, cursor = fake_cursor()
+        cursor.fetchall.return_value = [
+            {"id": 1, "session_token": None, "label": "Headless agent", "user_agent": None,
+             "created_at": None, "last_seen_at": None, "expires_at": None, "scope": "agent"},
+        ]
+        with _patch_conn(conn):
+            rows = list_user_sessions(7)
+        assert rows[0]["scope"] == "agent"
+
     def test_revoke_is_scoped_to_the_owner(self, fake_cursor):
         from cqc_lem.utilities.db import revoke_session
 
