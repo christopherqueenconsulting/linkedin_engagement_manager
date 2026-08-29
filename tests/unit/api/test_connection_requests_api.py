@@ -121,6 +121,53 @@ class TestUpdateAndCancel:
         assert "Nothing to update" in resp.json()["detail"]
         upd.assert_not_called()
 
+    def test_retry_sets_approved(self, api_client):
+        # Issue #1735 — a 'failed' request is only ever re-sent by an explicit user-directed retry.
+        with patch("cqc_lem.api.main.get_session_user_id", return_value=_U), \
+             patch("cqc_lem.api.main.get_connection_request_user_id", return_value=_U), \
+             patch("cqc_lem.api.main.get_connection_request",
+                   return_value={"id": 3, "user_id": _U, "status": "failed"}), \
+             patch("cqc_lem.api.main.update_connection_request", return_value=True) as upd:
+            resp = api_client.put("/api/connection_request",
+                              json={"session_token": _S, "request_id": 3, "action": "retry"})
+        assert resp.status_code == 200
+        from cqc_lem.utilities.db import ConnectionRequestStatus
+        assert upd.call_args.kwargs["status"] == ConnectionRequestStatus.APPROVED
+
+    def test_retry_rejected_when_not_failed(self, api_client):
+        with patch("cqc_lem.api.main.get_session_user_id", return_value=_U), \
+             patch("cqc_lem.api.main.get_connection_request_user_id", return_value=_U), \
+             patch("cqc_lem.api.main.get_connection_request",
+                   return_value={"id": 3, "user_id": _U, "status": "pending"}), \
+             patch("cqc_lem.api.main.update_connection_request") as upd:
+            resp = api_client.put("/api/connection_request",
+                              json={"session_token": _S, "request_id": 3, "action": "retry"})
+        assert resp.status_code == 422
+        assert "Only a 'failed'" in resp.json()["detail"]
+        upd.assert_not_called()
+
+    def test_retry_unreadable_row_422(self, api_client):
+        with patch("cqc_lem.api.main.get_session_user_id", return_value=_U), \
+             patch("cqc_lem.api.main.get_connection_request_user_id", return_value=_U), \
+             patch("cqc_lem.api.main.get_connection_request", return_value=None), \
+             patch("cqc_lem.api.main.update_connection_request") as upd:
+            resp = api_client.put("/api/connection_request",
+                              json={"session_token": _S, "request_id": 3, "action": "retry"})
+        assert resp.status_code == 422
+        upd.assert_not_called()
+
+    def test_retry_refused_for_agent_session(self, api_client):
+        with patch("cqc_lem.api.main.get_session_user_id", return_value=_U), \
+             patch("cqc_lem.api.main.get_connection_request_user_id", return_value=_U), \
+             patch("cqc_lem.api.main.get_connection_request",
+                   return_value={"id": 3, "user_id": _U, "status": "failed"}), \
+             patch("cqc_lem.api.main._agent_scoped", return_value=True), \
+             patch("cqc_lem.api.main.update_connection_request") as upd:
+            resp = api_client.put("/api/connection_request",
+                              json={"session_token": _S, "request_id": 3, "action": "retry"})
+        assert resp.status_code == 403
+        upd.assert_not_called()
+
     def test_cancel_sets_canceled(self, api_client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_U), \
              patch("cqc_lem.api.main.get_connection_request_user_id", return_value=_U), \

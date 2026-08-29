@@ -544,7 +544,9 @@ def update_connection_request(request_id: int, recipient_profile_url: str = None
     """Patch only the fields that were supplied; False when none were.
 
     Reports `rowcount > 0`, unlike the scheduled-DM updater — so False here also means "no such row", or
-    that every supplied value was already what the row held.
+    that every supplied value was already what the row held. A status change also clears `failure_reason`
+    (issue #1735), matching `update_connection_request_status` — a retried or re-approved row must not
+    keep showing yesterday's failure next to today's status.
     """
     fields, params = [], []
     for col, val in (("recipient_profile_url", recipient_profile_url),
@@ -555,6 +557,7 @@ def update_connection_request(request_id: int, recipient_profile_url: str = None
     if status is not None:
         fields.append("status = %s")
         params.append(str(status))
+        fields.append("failure_reason = NULL")
     if not fields:
         return False
     params.append(request_id)

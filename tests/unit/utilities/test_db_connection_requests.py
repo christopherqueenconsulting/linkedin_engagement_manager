@@ -71,6 +71,15 @@ class TestConnectionRequestDb:
         sql = cur.execute.call_args[0][0]
         assert "message = %s" in sql and "recipient_profile_url" not in sql
 
+    def test_update_status_change_clears_failure_reason(self, fake_cursor):
+        # Issue #1735 — a retried/re-approved row must not keep showing yesterday's failure reason.
+        conn, cur = fake_cursor(lastrowid=7)
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import ConnectionRequestStatus, update_connection_request
+            assert update_connection_request(7, status=ConnectionRequestStatus.APPROVED) is True
+        sql = cur.execute.call_args[0][0]
+        assert "status = %s" in sql and "failure_reason = NULL" in sql
+
     def test_update_noop_when_nothing_provided(self):
         from cqc_lem.utilities.db import update_connection_request
         assert update_connection_request(7) is False
