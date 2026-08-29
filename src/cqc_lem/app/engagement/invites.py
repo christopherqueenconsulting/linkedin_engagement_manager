@@ -25,6 +25,7 @@ and `strip_non_bmp`, which moved to `utilities.linkedin_formatter` alongside the
 import re
 import time
 
+from selenium.common import StaleElementReferenceException
 from selenium.webdriver.common.by import By
 
 from cqc_lem.app.my_celery import app as shared_task
@@ -409,17 +410,31 @@ _SEND_INVITE_XPATHS = ('//button[contains(@aria-label,"Send invitation")]',
 def _submit_connect_invite(driver, wait, user_id: int, with_note: bool) -> bool:
     """Click Send on the open Connect dialog. False only when NEITHER Send affordance is clickable,
     which loses the invite outright — that one stays an error (issue #573).
+
+    A `StaleElementReferenceException` is a DIFFERENT failure than a missing button: the dialog's
+    own animation (or the note step just before this) can swap the Send button's DOM node out from
+    under `click_element_wait_retry` between it locating the element and clicking it —
+    `click_element_wait_retry` itself never retries that case (issue #1745). One re-locate-and-click
+    attempt per label rides that race out before it is treated as "no Send button at all".
     """
     xpaths = _SEND_INVITE_XPATHS if with_note else tuple(reversed(_SEND_INVITE_XPATHS))
     last_error: Exception = None
     for xpath in xpaths:
-        try:
-            click_element_wait_retry(driver, wait, xpath, "Finding Send Connection Button",
-                                     max_retry=1, use_action_chain=True)
-            log_info("Found Send Connection Button and clicked it")
-            return True
-        except Exception as e:
-            last_error = e  # wrong label for this dialog state — try the other one
+        for attempt in range(2):
+            try:
+                click_element_wait_retry(driver, wait, xpath, "Finding Send Connection Button",
+                                         max_retry=1, use_action_chain=True)
+                log_info("Found Send Connection Button and clicked it")
+                return True
+            except StaleElementReferenceException as e:
+                last_error = e
+                if attempt == 0:
+                    log_debug("Send button went stale mid-click — retrying", user_id=user_id,
+                             action_type="invite_connect")
+                    continue
+            except Exception as e:
+                last_error = e  # wrong label for this dialog state — try the other one
+                break
 
     # exc= is what turns this into a fingerprinted PostHog issue (the loop that filed #573); an
     # exc-less log_error only reaches Logs, so the one failure we deliberately keep as an error
