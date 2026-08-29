@@ -16,13 +16,34 @@ different worktrees on this same repo at the same time. Never `cd` outside yours
 This is not hypothetical. Three agents once shared one checkout on this repo and one of them
 switched the branch under the others inside a minute. The isolation exists because that happened.
 
-## Two environment traps specific to this box
+## Three environment traps specific to this box
 
 - **All worktrees share ONE poetry venv, and its editable-install `.pth` is mutable** — the last
   `poetry install` anywhere wins, so `poetry run python -c "import cqc_lem..."` may silently read a
   DIFFERENT worktree. Run standalone scripts with `PYTHONPATH=src` and prove it first:
   `PYTHONPATH=src poetry run python -c "import cqc_lem.api.main as m; print(m.__file__)"` must be
   inside YOUR worktree. `pytest` is unaffected (`pythonpath` is rootdir-relative).
+- **A worktree's venv usually has NO test plugins, and the failure does not look like that.**
+  Every pytest plugin lives in the `test` dependency group, and that group is `optional = true`, so
+  a plain `poetry install` skips it and reports "No dependencies to install or update" while
+  `pytest` cannot run at all. `pyproject.toml` puts `--snapshot-warn-unused` in `addopts` and sets
+  `asyncio_mode`, so what you actually get is:
+
+  ```
+  pytest: error: unrecognized arguments: --snapshot-warn-unused
+  ERROR: Unknown config option: asyncio_mode
+  ```
+
+  That reads like a corrupt `pyproject.toml`. It is not — it is syrupy and pytest-asyncio missing.
+  **Do not "fix" it by editing `addopts`, deleting `asyncio_mode`, or passing `-o addopts=""`**;
+  those silence the symptom and change what CI enforces. Install the group CI installs:
+
+  ```
+  poetry install --with test
+  ```
+
+  `--with dev` is the wrong group — that is jupyter tooling and contains no pytest plugin. `ruff`
+  resolves from `~/.local/bin` on this box, so lint needs no group. See `tests/README.md`.
 - **Drop an empty `.env` into your worktree** and move any built `src/cqc_lem/ui/dist` aside. A dev
   `.env` masks real failures — an unset `DB_PORT` makes `int(None)` raise `TypeError`, which
   `except mysql.connector.Error` does NOT catch, so CI hits a path a local run does not. Together

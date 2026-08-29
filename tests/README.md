@@ -677,6 +677,21 @@ CI workflow includes:
 poetry install --with test
 ```
 
+The `test` group is `optional = true`, so a plain `poetry install` installs none of it **and reports
+"No dependencies to install or update"** — the one message that reads like there is nothing to do.
+Because `addopts` carries `--snapshot-warn-unused` and `asyncio_mode` is set, a venv missing the
+group fails like a broken config file rather than like a missing package:
+
+```
+pytest: error: unrecognized arguments: --snapshot-warn-unused   # syrupy not installed
+ERROR: Unknown config option: asyncio_mode                      # pytest-asyncio not installed
+```
+
+Do not resolve either by editing `addopts`, removing `asyncio_mode`, or running with
+`-o addopts=""` — CI runs under those settings, so silencing them locally hides what CI enforces.
+`--with test` is what every test workflow passes to `poetry_setup`; `--with dev` is jupyter tooling
+and contains no pytest plugin.
+
 **Environment Variables**
 - Check `.env` file exists
 - Verify required variables in `conftest.py`
