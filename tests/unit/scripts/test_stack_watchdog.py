@@ -152,3 +152,124 @@ class TestBackupFreshness:
         assert "only 87 bytes" in result.stdout
         assert "cookies now live encrypted in the database" in result.stdout
         assert "down=0" not in result.stdout  # not a down event
+
+
+class TestTunnelOrigins:
+    """The tunnel-origin check (`check_tunnel_origins`).
+
+    The fault it exists for: cloudflared running and green while every request it forwards is
+    dropped at the origin. A ufw rule pinned to a container IP stopped matching after cloudflared
+    was handed a new one, and GitHub webhook deliveries timed out for fifteen days with nothing red.
+    """
+
+    @staticmethod
+    def _fake_docker(tmp_path: Path, *, status: str, logs: str, logs_rc: int = 0) -> Path:
+        """A `docker` stub on PATH — the cloudflared image has no shell, so the real check reads logs."""
+        bindir = tmp_path / "bin"
+        bindir.mkdir(exist_ok=True)
+        stub = bindir / "docker"
+        stub.write_text(
+            "#!/usr/bin/env bash\n"
+            'if [[ "$1" == "inspect" ]]; then\n'
+            f'  printf "%s\\n" {status!r}\n'
+            "  exit 0\n"
+            "fi\n"
+            'if [[ "$1" == "logs" ]]; then\n'
+            f"  cat <<'LOGEOF'\n{logs}\nLOGEOF\n"
+            f"  exit {logs_rc}\n"
+            "fi\n"
+            "exit 0\n",
+            encoding="utf-8",
+        )
+        stub.chmod(0o755)
+        return bindir
+
+    def _run_check(self, tmp_path: Path, bindir: Path, extra: str = "") -> subprocess.CompletedProcess[str]:
+        env = os.environ.copy()
+        env["LEM_DIR"] = str(tmp_path)
+        env["LEM_ENV_FILE"] = str(tmp_path / ".env")
+        env["WATCHDOG_STATE_DIR"] = str(tmp_path / "state")
+        env["WATCHDOG_SH"] = str(WATCHDOG_SH)
+        env["PATH"] = f"{bindir}:{env['PATH']}"
+        (tmp_path / ".env").write_text("POSTHOG_API_KEY=\n", encoding="utf-8")
+        return subprocess.run(
+            [
+                "bash",
+                "-c",
+                f'source "$WATCHDOG_SH"; {extra} check_tunnel_origins; '
+                'echo "down=${#down[@]}"; echo "recovered=${#recovered[@]}"; '
+                'printf "%s\\n" "${down[@]}"',
+            ],
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+
+    ERRORS = "\n".join(
+        'ERR error="Unable to reach the origin service. The service may be down or it may not be '
+        'responding to traffic from cloudflared: dial tcp 172.18.0.1:8420: i/o timeout" '
+        "connIndex=0 ingressRule=5 originService=http://172.18.0.1:8420"
+        for _ in range(6)
+    )
+
+    def test_healthy_tunnel_is_not_down(self, tmp_path: Path) -> None:
+        bindir = self._fake_docker(tmp_path, status="running", logs="INF Registered tunnel connection")
+        result = self._run_check(tmp_path, bindir)
+        assert result.returncode == 0, result.stderr + result.stdout
+        assert "down=0" in result.stdout
+
+    def test_errors_under_threshold_are_not_down(self, tmp_path: Path) -> None:
+        one = self.ERRORS.split("\n")[0]
+        bindir = self._fake_docker(tmp_path, status="running", logs=one)
+        result = self._run_check(tmp_path, bindir)
+        assert "down=0" in result.stdout
+
+    def test_first_sighting_starts_a_grace_window_and_does_not_alert(self, tmp_path: Path) -> None:
+        """A deploy recreates an origin container; the first burst of errors must not page."""
+        bindir = self._fake_docker(tmp_path, status="running", logs=self.ERRORS)
+        result = self._run_check(tmp_path, bindir)
+        assert "down=0" in result.stdout
+        assert "starting grace window" in result.stdout
+        assert (tmp_path / "state" / "tunnel-origin.down").exists()
+
+    def test_still_failing_past_grace_is_reported_down_and_names_the_origin(self, tmp_path: Path) -> None:
+        bindir = self._fake_docker(tmp_path, status="running", logs=self.ERRORS)
+        state = tmp_path / "state"
+        state.mkdir(exist_ok=True)
+        # First seen well outside the grace window.
+        (state / "tunnel-origin.down").write_text(f"{int(time.time()) - 9999} http://172.18.0.1:8420\n")
+
+        result = self._run_check(tmp_path, bindir)
+        assert "down=1" in result.stdout
+        # The alert must name the origin, so it points at the rule to fix, not at "the tunnel".
+        assert "tunnel-origin:http://172.18.0.1:8420" in result.stdout
+
+    def test_recovery_clears_the_marker(self, tmp_path: Path) -> None:
+        bindir = self._fake_docker(tmp_path, status="running", logs="INF Registered tunnel connection")
+        state = tmp_path / "state"
+        state.mkdir(exist_ok=True)
+        marker = state / "tunnel-origin.down"
+        marker.write_text(f"{int(time.time()) - 9999} http://172.18.0.1:8420\n")
+
+        result = self._run_check(tmp_path, bindir)
+        assert "down=0" in result.stdout
+        assert "recovered=1" in result.stdout
+        assert not marker.exists()
+
+    def test_missing_container_is_unreadable_not_a_fault(self, tmp_path: Path) -> None:
+        """Absence of Docker is not evidence of an outage — it must never alert."""
+        bindir = tmp_path / "bin"
+        bindir.mkdir(exist_ok=True)
+        stub = bindir / "docker"
+        stub.write_text("#!/usr/bin/env bash\nexit 1\n", encoding="utf-8")
+        stub.chmod(0o755)
+
+        result = self._run_check(tmp_path, bindir)
+        assert "down=0" in result.stdout
+        assert "skipping tunnel origin check" in result.stdout
+
+    def test_stopped_container_is_left_to_check_services(self, tmp_path: Path) -> None:
+        """One incident, one row: check_services already reports a container that is not running."""
+        bindir = self._fake_docker(tmp_path, status="exited", logs=self.ERRORS)
+        result = self._run_check(tmp_path, bindir)
+        assert "down=0" in result.stdout
