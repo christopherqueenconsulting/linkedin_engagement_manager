@@ -225,3 +225,39 @@ class TestSluglessProfileUrl:
         assert not any("custom-invite" in str(c.args[0]) for c in driver.get.call_args_list)
         assert "Profile More menu" in routes.click_labels
         log_warning.assert_called_once()
+
+
+class TestDirectConnectButtonLocatorAgainstRealMarkup:
+    """`_PROFILE_CONNECT_BUTTON_LOCATORS` evaluated against actual HTML, not the `_Routes` stub.
+
+    The stub only asserts locator STRINGS never contain '"Invite ' literally, which would not
+    catch a locator that matches a rail button by visible text alone. The 2026-08-03 grounding
+    only proved the rail's ARIA-LABEL names the suggested person; it never grounded that the
+    rail's visible text does too, so a bare `normalize-space()="Connect"` match is not provably
+    safe against a button like `<button aria-label="Invite Jane Doe to connect">Connect</button>`
+    — a short visible label with a longer accessible name is a common pattern. This test proves
+    the shipped locator excludes that shape regardless of visible text.
+    """
+
+    _TOP_CARD_BUTTON = '<button aria-label="Connect">Connect</button>'
+    _TOP_CARD_BUTTON_NO_ARIA = '<button>Connect</button>'
+    _RAIL_BUTTON_NAMED_ARIA = '<button aria-label="Invite Jane Doe to connect">Connect</button>'
+
+    def _matches(self, button_html: str) -> bool:
+        import lxml.html
+
+        from cqc_lem.app.engagement import invites as ra
+        tree = lxml.html.fromstring(f"<html><body><main>{button_html}</main></body></html>")
+        xpath = ra._PROFILE_CONNECT_BUTTON_LOCATORS[0][1]
+        return len(tree.xpath(xpath)) > 0
+
+    def test_matches_the_targets_own_bare_connect_button(self):
+        assert self._matches(self._TOP_CARD_BUTTON) is True
+
+    def test_matches_even_when_the_targets_button_carries_no_aria_label(self):
+        assert self._matches(self._TOP_CARD_BUTTON_NO_ARIA) is True
+
+    def test_never_matches_a_button_whose_aria_label_names_someone_else(self):
+        # Same visible text ("Connect") as the target's own button — only the accessible name
+        # differs, which is exactly the rail-button shape the 2026-08-03 grounding never ruled out.
+        assert self._matches(self._RAIL_BUTTON_NAMED_ARIA) is False

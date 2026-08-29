@@ -262,12 +262,19 @@ _CONNECT_MENU_ITEM_LOCATORS = [
 # every one) show LinkedIn placing Connect two different ways depending on the target — a bare
 # button directly on the top card for some profiles, buried in the More menu for others. The URL
 # and More-menu routes below miss the direct-button case entirely, so a target whose page renders
-# it that way had no route to the dialog at all. The direct button's own text/aria-label is always
-# the BARE word "Connect" — never "Invite <name> to connect" — which is what keeps this closed
-# against the #1012 wrong-person hazard: the "More profiles for you" rail only ever names a person,
-# so a bare "Connect" match can never be one of its buttons.
+# it that way had no route to the dialog at all. The direct button's own aria-label, when it has
+# one, is the BARE word "Connect" — never "Invite <name> to connect".
+#
+# Matching on visible text alone ("Connect") is NOT enough to close the #1012 wrong-person hazard
+# here: the 2026-08-03 grounding only proved the "More profiles for you" rail's aria-label names
+# the suggested person (`Invite <name> to connect`) — it never grounded that rail button's VISIBLE
+# text also carries the name, and a short "Connect" label with a longer accessible name is a common
+# pattern. So the aria-label exclusion below is load-bearing, not decoration: a button whose own
+# aria-label names someone ("Invite ...") is excluded even when its bare visible text reads
+# "Connect".
 _PROFILE_CONNECT_BUTTON_LOCATORS = [
-    (By.XPATH, '//main//button[normalize-space()="Connect" or @aria-label="Connect"]'),
+    (By.XPATH, '//main//button[(normalize-space()="Connect" or @aria-label="Connect") '
+               'and not(starts-with(@aria-label,"Invite"))]'),
 ]
 
 
