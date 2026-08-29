@@ -106,6 +106,28 @@ def is_session_lost(exc: BaseException) -> bool:
     return False
 
 
+# What Chrome says when the renderer process behind a tab dies (usually an OOM kill on a browser
+# that has held many tabs across a long walk). Distinct from `_SESSION_GONE_MARKERS`: the session
+# itself is still valid, but the tab it was driving is gone, so the NEXT navigation on the same
+# session would fail the same way (issue #1746). Kept as its own check rather than folded into
+# `is_session_lost` because the caller reports it differently — this is a real anomaly worth a
+# warning, not the routine "a deploy recycled this container" info line.
+_TAB_CRASHED_MARKERS = ("tab crashed",)
+
+
+def is_tab_crashed(exc: BaseException) -> bool:
+    """True when a WebDriver call failed because the browser tab's renderer process crashed.
+
+    The session itself is not gone (unlike `is_session_lost`), but the tab it was driving is dead,
+    so no further navigation will succeed on it either — a caller mid-walk should stop and report
+    what already shipped rather than crash into a grouped `$exception`.
+    """
+    if isinstance(exc, WebDriverException):
+        message = (getattr(exc, "msg", None) or str(exc) or "").lower()
+        return any(marker in message for marker in _TAB_CRASHED_MARKERS)
+    return False
+
+
 def get_available_session_driver_id(wait_for_available=True, wait_time=60, retry=3):
     """The id of the Grid's first slot, or of the session already occupying it.
 

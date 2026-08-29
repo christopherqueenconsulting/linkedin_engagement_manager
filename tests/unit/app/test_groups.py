@@ -749,6 +749,38 @@ class TestCommentInGroups:
         # stays least-recently-walked and is next in line rather than skipped again.
         recorded.assert_called_once_with(1, "1")
 
+    def test_a_crashed_tab_ends_the_run_on_what_shipped_without_raising(self):
+        """Issue #1746: Chrome can kill the renderer behind a tab (usually an OOM after many group
+        navigations in one session) without invalidating the session itself. No further navigation
+        on that tab will succeed either, so the walk ends the same way a lost session does — keep
+        what already shipped, warn (this IS an anomaly, unlike a routine deploy), never raise into
+        an unhandled `$exception`.
+        """
+        from selenium.common import WebDriverException
+
+        from cqc_lem.app.engagement.feed import auto_comment_in_groups
+        driver = MagicMock()
+        driver.get.side_effect = [
+            None,
+            WebDriverException("Message: tab crashed\n  (Session info: chrome=151.0.7922.108)"),
+        ]
+        with patch(f"{_FEED}.get_enabled_group_ids", return_value=["1", "2", "3"]), \
+             patch(f"{_FEED}.get_current_profile", return_value=(driver, MagicMock(), "e", MagicMock())), \
+             patch(f"{_FEED}.get_engagement_preferences", return_value={}), \
+             patch(f"{_FEED}.get_recent_engagers", return_value=set()), \
+             patch(f"{_FEED}.comment_on_feed_inline", return_value=2) as cfi, \
+             patch(f"{_FEED}.record_group_comment_run") as recorded, \
+             patch(f"{_FEED}.log_warning") as warned, \
+             patch(f"{_FEED}.log_error") as err, \
+             patch(f"{_FEED}.quit_gracefully") as quit_driver:
+            result = auto_comment_in_groups.run(user_id=1)
+        assert result == "Commented 2 time(s) before the browser tab crashed"
+        assert cfi.call_count == 1  # the second group is unreachable on the crashed tab
+        assert warned.called and not err.called
+        quit_driver.assert_called_once_with(driver)
+        # Group "2" was never reached, so it is NOT stamped — it stays least-recently-walked.
+        recorded.assert_called_once_with(1, "1")
+
     def test_the_walk_hands_its_deadline_to_the_feed_engine(self):
         """Issue #1198: one slow group must not be able to spend the whole task budget.
 
@@ -818,7 +850,7 @@ class TestCommentInGroups:
         quit_driver.assert_called_once_with(driver)
 
     def test_a_real_failure_mid_run_still_raises(self):
-        """Only a LOST SESSION is absorbed — anything else stays a crash, and a defect."""
+        """Only a lost session or a crashed tab is absorbed — anything else stays a crash, and a defect."""
         from cqc_lem.app.engagement.feed import auto_comment_in_groups
         driver = MagicMock()
         with patch(f"{_FEED}.get_enabled_group_ids", return_value=["1"]), \
