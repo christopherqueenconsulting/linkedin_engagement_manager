@@ -45,6 +45,31 @@ compares against `docker compose config --services`, and flags anything not `run
   encrypted in the database now, `backup.sh` already exits non-zero when it cannot write the
   archive, and a decommissioned chrome-profile volume would otherwise leave the last archive
   permanently stale: an email every 5 minutes that no operator action could clear.
+- **Tunnel origin reachability** — "cloudflared is up" and "cloudflared can reach anything" are
+  different facts, and only the first was ever checked. cloudflared is a compose service, so the
+  service check above already catches the container being gone; this catches the strictly worse
+  case: it is running, everything is green, and every request Cloudflare forwards is dropped before
+  it arrives. Threshold then grace (`WATCHDOG_TUNNEL_ERROR_THRESHOLD`, default 3, within
+  `WATCHDOG_TUNNEL_WINDOW_SECONDS`, default 600, then the same `WATCHDOG_GRACE_SECONDS`) — a deploy
+  recreates an origin container and cloudflared logs real errors while it converges, so the first
+  burst must not page. The alert **names the failing `originService`**, so it points at the rule to
+  fix rather than at "the tunnel".
+
+  **A host-side `curl` is not evidence — do not add one.** The fault this exists for ran fifteen days
+  (2026-08-14 → 2026-08-29): the ufw rule fronting the agent-pipeline webhook receiver pinned its
+  *source* to a container IP (`ALLOW 172.18.0.1 8420/tcp FROM 172.18.0.4`), cloudflared restarted onto
+  `172.18.0.13`, and the rule stopped matching. Every GitHub delivery to `lemhook.*` timed out at the
+  origin. The receiver stayed listening, `systemctl is-active` stayed `active`, this watchdog stayed
+  silent, and `curl http://172.18.0.1:8420/` **from the host answered 200 the whole time** — the
+  dropped packets were the ones arriving from the bridge, the one path the host cannot test. The agent
+  pipeline degraded from event-driven to 6-hourly polling with nothing red anywhere.
+
+  It reads cloudflared's **log**, not a probe, because the cloudflared image has no shell
+  (`docker exec cloudflared sh` → `executable file not found in $PATH`) — the dial cannot be run from
+  the only position that would prove anything. The log is the authoritative record of what it could
+  reach, it names the origin, and it covers every ingress rule instead of a hardcoded port list that
+  would drift the first time someone adds a hostname. An unreadable Docker or a missing container is
+  **WARN and skip** — absence of evidence never becomes an alert.
 - **Silent when healthy.** A watchdog that chats every 5 minutes gets filtered, and then it is not
   a watchdog.
 
@@ -76,7 +101,7 @@ It falls back to `COST_ALERT_EMAIL` when unset. `SENDGRID_API_KEY`, `SENDGRID_FR
 
 Overridable: `LEM_DIR`, `LEM_ENV_FILE`, `WATCHDOG_STATE_DIR`, `WATCHDOG_GRACE_SECONDS`,
 `WATCHDOG_HEAL`, `WATCHDOG_BACKUP_AGE_HOURS`, `WATCHDOG_BACKUP_MIN_BYTES`,
-`WATCHDOG_ALERT_EMAIL`.
+`WATCHDOG_TUNNEL_WINDOW_SECONDS`, `WATCHDOG_TUNNEL_ERROR_THRESHOLD`, `WATCHDOG_ALERT_EMAIL`.
 
 ### Exit codes
 

@@ -184,6 +184,91 @@ check_backup_freshness() {
   fi
 }
 
+# The tunnel's ORIGIN reachability — "cloudflared is up" and "cloudflared can reach anything" are
+# different facts, and only the first one has ever been checked. cloudflared is a compose service, so
+# check_services already catches the container being gone. This catches the strictly worse case: the
+# container is running, every service is green, and every request Cloudflare forwards is dropped
+# before it arrives.
+#
+# THE MEASURED FAULT (2026-08-14 -> 2026-08-29, fifteen days):
+#   The ufw rule fronting the agent-pipeline webhook receiver pinned its SOURCE to a container IP
+#   (`ALLOW 172.18.0.1 8420/tcp FROM 172.18.0.4`). cloudflared restarted, Docker handed it
+#   172.18.0.13, and the rule stopped matching. Every GitHub delivery to lemhook.* timed out at the
+#   origin for fifteen days. The receiver stayed listening, `systemctl is-active` stayed `active`,
+#   this watchdog stayed silent, and the agent pipeline silently degraded from event-driven to
+#   6-hourly polling with nothing red anywhere.
+#
+# A HOST-SIDE CURL IS NOT EVIDENCE — do not "improve" this check by adding one. `curl
+# http://172.18.0.1:8420/` from the host answered 200 for the entire fifteen days. The packets being
+# dropped were the ones arriving FROM THE BRIDGE, and the host is the one position that cannot test
+# that path.
+#
+# WHY THE LOG AND NOT A PROBE:
+#   The cloudflared image has no shell (`docker exec cloudflared sh` -> "executable file not found in
+#   $PATH"), so the dial cannot be run from the only network position that would prove anything.
+#   cloudflared's own log is the authoritative record of what it could and could not reach, it NAMES
+#   the failing originService, and it covers every ingress rule instead of a port list hardcoded here
+#   that would drift the first time someone adds a hostname.
+#
+# Failure is by THRESHOLD then GRACE, mirroring check_services. A deploy legitimately recreates an
+# origin container and cloudflared logs real errors while it converges; alerting on the first one
+# would page on every release.
+check_tunnel_origins() {
+  local window="${WATCHDOG_TUNNEL_WINDOW_SECONDS:-600}"
+  local threshold="${WATCHDOG_TUNNEL_ERROR_THRESHOLD:-3}"
+  local marker="$STATE_DIR/tunnel-origin.down"
+  local state logs count origins first_seen elapsed
+
+  state="$(docker inspect cloudflared --format '{{.State.Status}}' 2>/dev/null)"
+  if [[ -z "$state" ]]; then
+    # Unreadable is never a fault here. No container means either a non-tunnel host or a Docker we
+    # cannot talk to, and inventing an outage from that would alert every 5 minutes forever.
+    log "WARN: cloudflared container not found — skipping tunnel origin check"
+    return 0
+  fi
+  if [[ "$state" != "running" ]]; then
+    # check_services owns a container that is not running. Reporting it here too would put one
+    # incident in two rows and read as two faults.
+    return 0
+  fi
+
+  logs="$(docker logs cloudflared --since "${window}s" 2>&1)"
+  if (( $? != 0 )); then
+    log "WARN: could not read cloudflared logs — skipping tunnel origin check"
+    return 0
+  fi
+
+  count="$(grep -c 'Unable to reach the origin service' <<< "$logs")"
+  [[ "$count" =~ ^[0-9]+$ ]] || count=0
+
+  if (( count < threshold )); then
+    if [[ -f "$marker" ]]; then
+      recovered+=("tunnel-origin")
+      rm -f "$marker"
+    fi
+    return 0
+  fi
+
+  # Name the origin so the alert points at the rule to fix rather than at "the tunnel".
+  origins="$(grep -o 'originService=[^ ]*' <<< "$logs" | sed 's/originService=//' | sort -u | paste -sd, -)"
+  origins="${origins:-unknown}"
+
+  if [[ ! -f "$marker" ]]; then
+    echo "$(now) $origins" > "$marker"
+    log "NOTICE: cloudflared cannot reach ${origins} (${count} failures in ${window}s) — starting grace window (${GRACE}s)"
+    return 0
+  fi
+
+  first_seen="$(awk '{print $1}' "$marker" 2>/dev/null)"
+  [[ "$first_seen" =~ ^[0-9]+$ ]] || first_seen="$(now)"
+  elapsed=$(( $(now) - first_seen ))
+  (( elapsed < GRACE )) && return 0
+
+  log "ERROR: cloudflared cannot reach ${origins} — ${count} failures in ${window}s, down ${elapsed}s"
+  down+=("tunnel-origin:${origins}:${count}in${window}s")
+}
+
+
 # Only run the full service check when executed directly; sourcing the script loads the functions
 # so individual checks can be exercised in isolation.
 report() {
@@ -258,5 +343,6 @@ healthcheck never executes and its restart policy never fires. Check the last de
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
   check_services
   check_backup_freshness
+  check_tunnel_origins
   report
 fi
