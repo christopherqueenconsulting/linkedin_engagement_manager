@@ -258,6 +258,18 @@ _CONNECT_MENU_ITEM_LOCATORS = [
     (By.XPATH, '//*[@role="menuitem"][normalize-space()="Connect"]'),
 ]
 
+# Issue #1734: user reports (and the 2026-08-03 grounding above was ONE profile's rotation, not
+# every one) show LinkedIn placing Connect two different ways depending on the target — a bare
+# button directly on the top card for some profiles, buried in the More menu for others. The URL
+# and More-menu routes below miss the direct-button case entirely, so a target whose page renders
+# it that way had no route to the dialog at all. The direct button's own text/aria-label is always
+# the BARE word "Connect" — never "Invite <name> to connect" — which is what keeps this closed
+# against the #1012 wrong-person hazard: the "More profiles for you" rail only ever names a person,
+# so a bare "Connect" match can never be one of its buttons.
+_PROFILE_CONNECT_BUTTON_LOCATORS = [
+    (By.XPATH, '//main//button[normalize-space()="Connect" or @aria-label="Connect"]'),
+]
+
 
 def _connect_dialog_present(driver, wait, user_id: int) -> bool:
     return find_first(driver, wait, _CONNECT_DIALOG_LOCATORS, "Connect invite dialog",
@@ -267,10 +279,11 @@ def _connect_dialog_present(driver, wait, user_id: int) -> bool:
 
 def _open_connect_invite_dialog(driver, wait, user_id: int, profile_url: str) -> bool:
     """Open the Connect invite dialog for the profile at `profile_url` — the custom-invite URL
-    first, else the profile page's top-card More menu. True only when the dialog's own controls
-    are provably present. False is an ordinary outcome (invite already pending, Connect not
-    offered, or the SDUI rotated again) and is why the total miss is a WARNING, not an error
-    (issue #571).
+    first, then the profile page's own top-card Connect button when it is directly visible, else
+    the top-card More menu (issue #1734: LinkedIn renders one or the other depending on the
+    target). True only when the dialog's own controls are provably present. False is an ordinary
+    outcome (invite already pending, Connect not offered, or the SDUI rotated again) and is why
+    the total miss is a WARNING, not an error (issue #571).
     """
     slug = profile_slug(profile_url)
     if slug:
@@ -281,10 +294,18 @@ def _open_connect_invite_dialog(driver, wait, user_id: int, profile_url: str) ->
         # An already-pending invite renders no dialog here — an expected outcome for this
         # route, so the miss stays quiet and the profile-page route gets its turn.
         log_debug("custom-invite page did not render the Connect dialog — trying the "
-                  "profile-page More menu", user_id=user_id, action_type="invite_connect")
+                  "profile page directly", user_id=user_id, action_type="invite_connect")
 
     if profile_url != driver.current_url:
         driver.get(profile_url)
+
+    if click_first(driver, wait, _PROFILE_CONNECT_BUTTON_LOCATORS, "Profile Connect button",
+                   required=False, warn_on_miss=False, max_try=1, use_action_chain=True,
+                   user_id=user_id) is not None:
+        if _connect_dialog_present(driver, wait, user_id):
+            log_info("Connect dialog opened via the profile page's direct Connect button")
+            return True
+
     if click_first(driver, wait, _PROFILE_MORE_MENU_LOCATORS, "Profile More menu",
                    required=False, warn_on_miss=False, max_try=1, use_action_chain=True,
                    user_id=user_id) is not None:

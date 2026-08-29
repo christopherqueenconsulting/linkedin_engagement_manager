@@ -30,13 +30,17 @@ class _Routes:
     """
 
     def __init__(self, dialog_on_url=False, dialog_after_menu=False,
-                 more_menu=False, menu_item=False, send_xpaths=frozenset()):
+                 more_menu=False, menu_item=False, send_xpaths=frozenset(),
+                 connect_button=False, dialog_after_connect_button=False):
         self.dialog_on_url = dialog_on_url
         self.dialog_after_menu = dialog_after_menu
         self.more_menu = more_menu
         self.menu_item = menu_item
         self.send_xpaths = set(send_xpaths)
+        self.connect_button = connect_button
+        self.dialog_after_connect_button = dialog_after_connect_button
         self.menu_item_clicked = False
+        self.connect_button_clicked = False
         self.find_labels: list[str] = []
         self.click_labels: list[str] = []
         self.all_locators: list[str] = []
@@ -46,15 +50,21 @@ class _Routes:
         self.find_labels.append(label)
         self.all_locators += [v for _, v in locators]
         if label == "Connect invite dialog":
-            if self.dialog_on_url and not self.menu_item_clicked:
+            if self.dialog_on_url and not self.menu_item_clicked \
+                    and not self.connect_button_clicked:
                 return MagicMock()
             if self.dialog_after_menu and self.menu_item_clicked:
+                return MagicMock()
+            if self.dialog_after_connect_button and self.connect_button_clicked:
                 return MagicMock()
         return None
 
     def click_first(self, driver, wait, locators, label, **kwargs):
         self.click_labels.append(label)
         self.all_locators += [v for _, v in locators]
+        if label == "Profile Connect button" and self.connect_button:
+            self.connect_button_clicked = True
+            return MagicMock()
         if label == "Profile More menu" and self.more_menu:
             return MagicMock()
         if label == "Connect menu item" and self.menu_item:
@@ -112,6 +122,48 @@ class TestCustomInviteUrlRoute:
         assert not any('"Invite ' in loc for loc in routes.all_locators)
 
 
+class TestDirectConnectButtonRoute:
+    """Issue #1734: the direct top-card Connect button route.
+
+    Some profiles render a bare "Connect" button directly on the top card instead of burying it
+    behind the More menu — a route the URL/More-menu chain alone was missing.
+    """
+
+    def test_direct_button_opens_the_dialog_when_the_url_route_renders_none(self):
+        from cqc_lem.utilities.db import CONNECTION_REQUEST_SENT_MESSAGE
+        routes = _Routes(dialog_after_connect_button=True, connect_button=True,
+                         send_xpaths={_SEND_BARE_XPATH})
+        sent, reason, driver, _log, log_error, log_warning = _invite(routes)
+
+        assert sent is True and reason == CONNECTION_REQUEST_SENT_MESSAGE
+        assert routes.click_labels == ["Profile Connect button"]
+        assert "Profile More menu" not in routes.click_labels
+        assert any(_PROFILE_URL == c.args[0] for c in driver.get.call_args_list)
+        log_error.assert_not_called()
+        log_warning.assert_not_called()
+
+    def test_falls_through_to_the_more_menu_when_the_direct_button_click_lands_no_dialog(self):
+        from cqc_lem.utilities.db import CONNECTION_REQUEST_SENT_MESSAGE
+        routes = _Routes(connect_button=True,  # clicks, but no dialog behind it
+                         dialog_after_menu=True, more_menu=True, menu_item=True,
+                         send_xpaths={_SEND_BARE_XPATH})
+        sent, reason, _driver, _log, log_error, log_warning = _invite(routes)
+
+        assert sent is True and reason == CONNECTION_REQUEST_SENT_MESSAGE
+        assert routes.click_labels == ["Profile Connect button", "Profile More menu",
+                                       "Connect menu item"]
+        log_error.assert_not_called()
+        log_warning.assert_not_called()
+
+    def test_no_locator_on_the_direct_button_route_can_hit_the_suggestion_rail(self):
+        # Same #1012 hazard guard as the URL route: nothing here may click a control naming
+        # someone other than the target.
+        routes = _Routes(dialog_after_connect_button=True, connect_button=True,
+                         send_xpaths={_SEND_BARE_XPATH})
+        _invite(routes)
+        assert not any('"Invite ' in loc for loc in routes.all_locators)
+
+
 class TestMoreMenuFallback:
     def test_menu_route_opens_the_dialog_when_the_url_route_renders_none(self):
         from cqc_lem.utilities.db import CONNECTION_REQUEST_SENT_MESSAGE
@@ -120,7 +172,8 @@ class TestMoreMenuFallback:
         sent, reason, driver, _log, log_error, log_warning = _invite(routes)
 
         assert sent is True and reason == CONNECTION_REQUEST_SENT_MESSAGE
-        assert routes.click_labels == ["Profile More menu", "Connect menu item"]
+        assert routes.click_labels == ["Profile Connect button", "Profile More menu",
+                                       "Connect menu item"]
         assert any(_PROFILE_URL == c.args[0] for c in driver.get.call_args_list)
         log_error.assert_not_called()
         log_warning.assert_not_called()
