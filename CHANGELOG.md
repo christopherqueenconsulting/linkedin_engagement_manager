@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.168.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.167.0...v0.168.0) (2026-08-29)
+
+
+### Features
+
+* **watchdog:** alert when cloudflared cannot reach an origin ([#1740](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1740)) ([4458b23](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/4458b23790993d947dbbed21cd2e5070363f1bef))
+
+
+### Bug Fixes
+
+* **engagement:** retry Connect Send button once on a stale element before erroring (closes [#1745](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1745)) ([#1748](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1748)) ([5597dd0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/5597dd0171cc8dcbc7ead9ea8024d0fac622d510))
+* **engagement:** retry the Connect Send button once on a stale element before erroring (closes [#1745](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1745)) ([5597dd0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/5597dd0171cc8dcbc7ead9ea8024d0fac622d510))
+* **engagement:** stop a crashed browser tab from failing group commenting (closes [#1746](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1746)) ([#1747](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1747)) ([e62c60c](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/e62c60c1ebda44ef3538926e6f724d4c4d518405))
+
+
+### Documentation
+
+* **agents:** name the missing test-group trap, which does not look like one ([#1741](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1741)) ([d5ee87d](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/d5ee87d196afee93e585f2af568f2cdc5f6ba012))
+
 ## [0.167.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.166.0...v0.167.0) (2026-08-29)
 
 
