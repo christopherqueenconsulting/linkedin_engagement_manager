@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.167.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.166.0...v0.167.0) (2026-08-29)
+
+
+### Features
+
+* **ui:** mint agent tokens from the Security card (closes [#1731](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1731)) ([#1737](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1737)) ([1d068a5](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/1d068a52ec3bad678cdc14e06c662e9ed2519352))
+
+
+### Bug Fixes
+
+* **engagement:** try the profile page's direct Connect button before the More menu (closes [#1734](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1734)) ([#1738](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1738)) ([8928cb5](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/8928cb5d0ebe5fdf7dfdb864aa7af90d7541cfb0))
+
 ## [0.166.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.165.5...v0.166.0) (2026-08-28)
 
 
