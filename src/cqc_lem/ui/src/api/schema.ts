@@ -737,10 +737,13 @@ export interface paths {
         get?: never;
         /**
          * Update Connection Request Endpoint
-         * @description Edit a queued connection request, or approve/cancel it.
+         * @description Edit a queued connection request, or approve/cancel/retry it.
          *
          *     `approve` releases it to the invite drip and is refused for an `agent` session; an unknown action is a 422,
-         *     never a silent save.
+         *     never a silent save. `retry` (issue #1735) is the ONLY way a `failed` request is ever sent again — LEM
+         *     never auto-retries a failed invite (repeat-inviting a decliner risks the account), so a stuck `failed`
+         *     row needs an explicit human decision every time. It is refused on anything but a `failed` row, and is
+         *     gated the same as `approve` since it reaches the identical send-queue state.
          */
         put: operations["update_connection_request_endpoint_api_connection_request_put"];
         /**
@@ -3718,7 +3721,8 @@ export interface components {
          * @description Body of `PUT /connection_request`.
          *
          *     `approve` is the release-to-send action and is refused for an `agent`-scoped session; an unrecognised action is
-         *     a 422 rather than a silent field-only save.
+         *     a 422 rather than a silent field-only save. `retry` (issue #1735) re-queues a `failed` request the same way
+         *     `approve` does, and is refused on any other status.
          */
         ConnectionRequestUpdate: {
             /** Action */

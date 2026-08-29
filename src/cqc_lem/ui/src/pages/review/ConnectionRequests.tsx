@@ -91,9 +91,10 @@ export default function ConnectionRequests({ userTimezone }: { userTimezone: str
   })
 
   const actionMutation = useMutation({
-    mutationFn: (v: { id: number; action: 'approve' | 'cancel' }) =>
+    mutationFn: (v: { id: number; action: 'approve' | 'cancel' | 'retry' }) =>
       api.put('/connection_request', { session_token: sessionToken, request_id: v.id, action: v.action }),
     onSuccess: () => invalidate(),
+    onError: () => flash(false, 'Could not update — please try again.'),
   })
 
   const canSubmit = !!url.trim()
@@ -180,11 +181,14 @@ export default function ConnectionRequests({ userTimezone }: { userTimezone: str
                 {req.reasons && <span className="text-xs text-gray-500 truncate">· {req.reasons}</span>}
               </div>
             )}
-            {req.status === 'failed' && req.failure_reason && (
-              <p className="text-xs text-red-600 mb-1">Why it failed: {req.failure_reason}</p>
+            {req.status === 'failed' && (
+              <p className="text-xs text-red-600 mb-1">
+                {req.failure_reason ? `Why it failed: ${req.failure_reason}. ` : ''}
+                LEM never automatically retries a failed invite — click Retry below to send it again.
+              </p>
             )}
             {req.message && <p className="text-sm text-gray-700 whitespace-pre-wrap line-clamp-3">{req.message}</p>}
-            {['pending', 'approved', 'sending'].includes(req.status) && (
+            {['pending', 'approved', 'sending', 'failed'].includes(req.status) && (
               <div className="flex gap-2 mt-2">
                 {req.status === 'pending' && (
                   <button onClick={() => actionMutation.mutate({ id: req.id, action: 'approve' })}
@@ -193,11 +197,20 @@ export default function ConnectionRequests({ userTimezone }: { userTimezone: str
                     Approve
                   </button>
                 )}
-                <button onClick={() => actionMutation.mutate({ id: req.id, action: 'cancel' })}
-                  disabled={actionMutation.isPending}
-                  className="px-3 py-1 border border-gray-300 text-gray-600 rounded text-xs font-semibold hover:bg-gray-50 disabled:opacity-50">
-                  Cancel
-                </button>
+                {req.status === 'failed' && (
+                  <button onClick={() => actionMutation.mutate({ id: req.id, action: 'retry' })}
+                    disabled={actionMutation.isPending}
+                    className="px-3 py-1 bg-green-600 text-white rounded text-xs font-semibold hover:bg-green-700 disabled:opacity-50">
+                    Retry
+                  </button>
+                )}
+                {req.status !== 'failed' && (
+                  <button onClick={() => actionMutation.mutate({ id: req.id, action: 'cancel' })}
+                    disabled={actionMutation.isPending}
+                    className="px-3 py-1 border border-gray-300 text-gray-600 rounded text-xs font-semibold hover:bg-gray-50 disabled:opacity-50">
+                    Cancel
+                  </button>
+                )}
               </div>
             )}
           </div>

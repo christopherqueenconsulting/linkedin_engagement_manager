@@ -797,7 +797,7 @@
         "type": "object"
       },
       "ConnectionRequestUpdate": {
-        "description": "Body of `PUT /connection_request`.\n\n`approve` is the release-to-send action and is refused for an `agent`-scoped session; an unrecognised action is\na 422 rather than a silent field-only save.",
+        "description": "Body of `PUT /connection_request`.\n\n`approve` is the release-to-send action and is refused for an `agent`-scoped session; an unrecognised action is\na 422 rather than a silent field-only save. `retry` (issue #1735) re-queues a `failed` request the same way\n`approve` does, and is refused on any other status.",
         "properties": {
           "action": {
             "anyOf": [
@@ -8215,7 +8215,7 @@
         "summary": "Create Connection Request Endpoint"
       },
       "put": {
-        "description": "Edit a queued connection request, or approve/cancel it.\n\n`approve` releases it to the invite drip and is refused for an `agent` session; an unknown action is a 422,\nnever a silent save.",
+        "description": "Edit a queued connection request, or approve/cancel/retry it.\n\n`approve` releases it to the invite drip and is refused for an `agent` session; an unknown action is a 422,\nnever a silent save. `retry` (issue #1735) is the ONLY way a `failed` request is ever sent again \u2014 LEM\nnever auto-retries a failed invite (repeat-inviting a decliner risks the account), so a stuck `failed`\nrow needs an explicit human decision every time. It is refused on anything but a `failed` row, and is\ngated the same as `approve` since it reaches the identical send-queue state.",
         "operationId": "update_connection_request_endpoint_api_connection_request_put",
         "requestBody": {
           "content": {

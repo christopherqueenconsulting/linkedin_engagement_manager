@@ -100,6 +100,7 @@ from cqc_lem.utilities.db import (
     get_catchup_touch,
     get_catchup_touch_user_id,
     get_catchup_touches,
+    get_connection_request,
     get_connection_request_user_id,
     get_connection_requests,
     get_dashboard_counts,
@@ -1173,7 +1174,8 @@ class ConnectionRequestUpdate(BaseModel):
     """Body of `PUT /connection_request`.
 
     `approve` is the release-to-send action and is refused for an `agent`-scoped session; an unrecognised action is
-    a 422 rather than a silent field-only save.
+    a 422 rather than a silent field-only save. `retry` (issue #1735) re-queues a `failed` request the same way
+    `approve` does, and is refused on any other status.
     """
 
     session_token: str
@@ -1181,7 +1183,7 @@ class ConnectionRequestUpdate(BaseModel):
     recipient_profile_url: Optional[str] = Field(default=None, max_length=_LEN_DM_RECIPIENT_URL)
     recipient_name: Optional[str] = Field(default=None, max_length=_LEN_DM_RECIPIENT_NAME)
     message: Optional[str] = Field(default=None, max_length=_LEN_CONNECT_NOTE)
-    action: Optional[str] = None  # 'approve' | 'cancel' | None (save fields only)
+    action: Optional[str] = None  # 'approve' | 'cancel' | 'retry' | None (save fields only)
 
 
 class ConnectionRequestDelete(BaseModel):
@@ -2557,9 +2559,11 @@ def _refuse_agent_approval(action: Optional[str]) -> None:
     survives none of those.
 
     This is only HALF the guarantee. `action` is how the five PUT handlers name approval; the create
-    handlers reach the identical state through `status` — see `_refuse_agent_approved_status`.
+    handlers reach the identical state through `status` — see `_refuse_agent_approved_status`. A
+    connection request's `retry` action (issue #1735) reaches the same APPROVED state a `failed` row
+    never had a human sign off on the second time, so it is refused identically to `approve`.
     """
-    if action != "approve":
+    if action not in ("approve", "retry"):
         return
     if not _agent_scoped():
         return
@@ -2876,20 +2880,28 @@ def list_connection_requests_endpoint(session_token: str, status_filter: Optiona
 
 @router.put("/connection_request")
 def update_connection_request_endpoint(request: ConnectionRequestUpdate) -> ResponseModel[str]:
-    """Edit a queued connection request, or approve/cancel it.
+    """Edit a queued connection request, or approve/cancel/retry it.
 
     `approve` releases it to the invite drip and is refused for an `agent` session; an unknown action is a 422,
-    never a silent save.
+    never a silent save. `retry` (issue #1735) is the ONLY way a `failed` request is ever sent again — LEM
+    never auto-retries a failed invite (repeat-inviting a decliner risks the account), so a stuck `failed`
+    row needs an explicit human decision every time. It is refused on anything but a `failed` row, and is
+    gated the same as `approve` since it reaches the identical send-queue state.
     """
     user_id = get_session_user_id(request.session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
     if get_connection_request_user_id(request.request_id) != user_id:
         raise HTTPException(status_code=404, detail="Connection request not found")
-    action_map = {"approve": ConnectionRequestStatus.APPROVED, "cancel": ConnectionRequestStatus.CANCELED}
+    action_map = {"approve": ConnectionRequestStatus.APPROVED, "cancel": ConnectionRequestStatus.CANCELED,
+                 "retry": ConnectionRequestStatus.APPROVED}
     if request.action is not None and request.action not in action_map:
         raise HTTPException(status_code=422,
-                            detail=f"Unknown action '{request.action}' — expected 'approve' or 'cancel'")
+                            detail=f"Unknown action '{request.action}' — expected 'approve', 'cancel' or 'retry'")
+    if request.action == "retry":
+        current = get_connection_request(request.request_id)
+        if not current or current["status"] != str(ConnectionRequestStatus.FAILED):
+            raise HTTPException(status_code=422, detail="Only a 'failed' connection request can be retried")
     _refuse_agent_approval(request.action)
     status = action_map.get(request.action)
     if status is None and all(v is None for v in (request.recipient_profile_url,
