@@ -1,11 +1,11 @@
-"""Unit tests for the lost-browser-session predicate (issue #988)."""
+"""Unit tests for the lost-browser-session predicate (issue #988) and the crashed-tab one (#1746)."""
 
 import pytest
 from selenium.common import InvalidSessionIdException, NoSuchElementException, TimeoutException, WebDriverException
 
 pytestmark = pytest.mark.unit
 
-from cqc_lem.utilities.selenium_util import is_session_lost
+from cqc_lem.utilities.selenium_util import is_session_lost, is_tab_crashed
 
 _GRID_MESSAGE = (
     "Message: Unable to find session with ID: e5d140e95d14b7cef20ad67aec43a5d1. Session was "
@@ -38,3 +38,23 @@ class TestIsSessionLost:
                                      RuntimeError("boom")])
     def test_other_failures_are_not_lost_sessions(self, exc):
         assert is_session_lost(exc) is False
+
+
+class TestIsTabCrashed:
+    def test_a_crashed_tab_message_matches(self):
+        exc = WebDriverException("Message: tab crashed\n  (Session info: chrome=151.0.7922.108)")
+        assert is_tab_crashed(exc) is True
+
+    def test_matches_case_insensitively(self):
+        assert is_tab_crashed(WebDriverException("TAB CRASHED")) is True
+
+    def test_a_lost_session_is_not_a_crashed_tab(self):
+        """The two predicates cover distinct faults — a caller that needs both checks both."""
+        assert is_tab_crashed(WebDriverException("Unable to find session with ID: abc")) is False
+
+    @pytest.mark.parametrize("exc", [NoSuchElementException("no such element"),
+                                     TimeoutException("timed out"),
+                                     ValueError("tab crashed"),
+                                     RuntimeError("boom")])
+    def test_other_failures_are_not_crashed_tabs(self, exc):
+        assert is_tab_crashed(exc) is False

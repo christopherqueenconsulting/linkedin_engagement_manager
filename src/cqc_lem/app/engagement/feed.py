@@ -232,6 +232,7 @@ from cqc_lem.utilities.selenium_util import (
     get_driver_wait,
     get_driver_wait_pair,
     is_session_lost,
+    is_tab_crashed,
     quit_gracefully,
     wait_for_ajax,
 )
@@ -3406,17 +3407,29 @@ def auto_comment_in_groups(self, user_id: int, max_per_group: int = 2):
                 # left untouched, so it is next in line rather than skipped again next run.
                 record_group_comment_run(user_id, gid)
             except Exception as e:
-                if not is_session_lost(e):
-                    raise
-                # A walk across several group feeds is one of the longest browser sessions LEM
-                # holds, so it is the one a release lands on: the deploy drains for 8 minutes and
-                # then recreates the containers anyway, quitting this session out from under us
-                # (issue #988). The run is genuinely over — no later group can be reached on a dead
-                # session — but a routine release is not a defect, so end on what already shipped
-                # at INFO instead of crashing the task into a grouped $exception.
-                log_info("Browser session ended mid-run (worker or Grid restart) — stopping group "
-                         "commenting", user_id=user_id, task_name="auto_comment_in_groups")
-                return f"Commented {total} time(s) before the browser session ended"
+                if is_session_lost(e):
+                    # A walk across several group feeds is one of the longest browser sessions LEM
+                    # holds, so it is the one a release lands on: the deploy drains for 8 minutes and
+                    # then recreates the containers anyway, quitting this session out from under us
+                    # (issue #988). The run is genuinely over — no later group can be reached on a
+                    # dead session — but a routine release is not a defect, so end on what already
+                    # shipped at INFO instead of crashing the task into a grouped $exception.
+                    log_info("Browser session ended mid-run (worker or Grid restart) — stopping "
+                             "group commenting", user_id=user_id, task_name="auto_comment_in_groups")
+                    return f"Commented {total} time(s) before the browser session ended"
+                if is_tab_crashed(e):
+                    # The renderer behind the tab died (usually an OOM kill after many group
+                    # navigations in one session) — the session is still valid, but no further
+                    # navigation on it will succeed either, so the walk is over the same way a lost
+                    # session ends it (issue #1746). Unlike a deploy this IS an anomaly worth
+                    # surfacing, so it stays a warning (escalates if it starts recurring) rather than
+                    # crashing the task into an unhandled $exception for a fault the walk cannot
+                    # recover from mid-run.
+                    log_warning(f"Browser tab crashed after {walked} of {len(enabled)} group(s) — "
+                                f"stopping group commenting", exc=e, user_id=user_id,
+                                action_type="comment", task_name="auto_comment_in_groups")
+                    return f"Commented {total} time(s) before the browser tab crashed"
+                raise
         return f"Commented {total} time(s) across {len(enabled)} group(s)"
     except SoftTimeLimitExceeded:
         # The deadline above is the intended stop; this is the backstop for a run whose reserve was
