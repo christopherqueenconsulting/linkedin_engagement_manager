@@ -12,6 +12,7 @@ type SessionRow = {
   last_seen_at: string | null
   expires_at: string | null
   is_current: boolean
+  scope: string
 }
 
 type AuthEvent = {
@@ -76,6 +77,11 @@ export default function SecurityCard() {
   const [pin, setPin] = useState('')
   const [pinSent, setPinSent] = useState(false)
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null)
+  const [agentLabel, setAgentLabel] = useState('Headless agent')
+  const [agentTtlDays, setAgentTtlDays] = useState(90)
+  const [mintedToken, setMintedToken] = useState<{ token: string; expiresInDays: number } | null>(null)
+  const [mintedTokenCopied, setMintedTokenCopied] = useState(false)
+  const [mintError, setMintError] = useState<string | null>(null)
 
   const flash = (ok: boolean, text: string) => {
     setMsg({ ok, text })
@@ -138,6 +144,36 @@ export default function SecurityCard() {
       flash(false, e?.response?.data?.detail || 'That code did not work.'),
   })
 
+  // Same `guard()` shape as the extension token (`LinkedInSessionCard`): mint, and if the server
+  // answers step-up-required, the modal opens and this same call is re-run once verified.
+  const mintAgentToken = useMutation({
+    mutationFn: () =>
+      guard(() =>
+        api.post('/user/agent-token', {
+          session_token: sessionToken,
+          label: agentLabel.trim() || 'Headless agent',
+          ttl_days: agentTtlDays,
+        }),
+      ),
+    onSuccess: (result) => {
+      if (result === null) return
+      setMintError(null)
+      setMintedToken({
+        token: result.data.detail.session_token as string,
+        expiresInDays: result.data.detail.expires_in_days as number,
+      })
+      queryClient.invalidateQueries({ queryKey: ['user-security'] })
+    },
+    onError: () => setMintError('Could not create an agent token — please try again.'),
+  })
+
+  const copyMintedToken = async () => {
+    if (!mintedToken) return
+    await navigator.clipboard.writeText(mintedToken.token)
+    setMintedTokenCopied(true)
+    setTimeout(() => setMintedTokenCopied(false), 2500)
+  }
+
   const sessions = data?.sessions ?? []
   const otherSessions = sessions.filter((s) => !s.is_current).length
 
@@ -161,6 +197,11 @@ export default function SecurityCard() {
                     {s.is_current && (
                       <span className="ml-2 text-[11px] font-semibold text-green-700 bg-green-50 px-2 py-0.5 rounded">
                         This device
+                      </span>
+                    )}
+                    {s.scope === 'agent' && (
+                      <span className="ml-2 text-[11px] font-semibold text-purple-700 bg-purple-50 px-2 py-0.5 rounded">
+                        Agent
                       </span>
                     )}
                   </p>
@@ -187,6 +228,59 @@ export default function SecurityCard() {
           >
             Sign out all other devices ({otherSessions})
           </button>
+        )}
+      </div>
+
+      <div>
+        <h4 className="text-sm font-semibold text-gray-800 mb-2">Agent tokens</h4>
+        <p className="text-xs text-gray-500 mb-2">
+          A queue-only credential for a headless automation — it can read the review queues and
+          create pending items, and can never approve anything or touch credentials.
+        </p>
+        <div className="flex flex-col sm:flex-row gap-2">
+          <input
+            type="text"
+            aria-label="Agent token label"
+            value={agentLabel}
+            onChange={(e) => setAgentLabel(e.target.value)}
+            maxLength={120}
+            placeholder="Headless agent"
+            className="flex-1 border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+          />
+          <input
+            type="number"
+            aria-label="Agent token TTL in days"
+            value={agentTtlDays}
+            onChange={(e) => setAgentTtlDays(Number(e.target.value))}
+            min={1}
+            max={365}
+            className="w-full sm:w-28 border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+          />
+          <button
+            type="button"
+            onClick={() => mintAgentToken.mutate()}
+            disabled={mintAgentToken.isPending}
+            className="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-semibold hover:bg-blue-700 disabled:opacity-50 whitespace-nowrap"
+          >
+            {mintAgentToken.isPending ? 'Creating…' : 'Create agent token'}
+          </button>
+        </div>
+        {mintError && <p className="text-xs text-red-600 mt-2">{mintError}</p>}
+        {mintedToken && (
+          <div className="mt-3 rounded-lg border border-amber-300 bg-amber-50 p-3 space-y-2">
+            <p className="text-xs font-semibold text-amber-900">
+              Shown once — copy it now. It will not be shown again.
+            </p>
+            <code className="block text-xs break-all text-amber-900">{mintedToken.token}</code>
+            <p className="text-xs text-amber-900/80">Expires in {mintedToken.expiresInDays} days.</p>
+            <button
+              type="button"
+              onClick={copyMintedToken}
+              className="bg-white border border-amber-400 text-amber-800 px-3 py-1.5 rounded-lg text-xs font-semibold hover:bg-amber-100"
+            >
+              {mintedTokenCopied ? '✓ Copied' : 'Copy token'}
+            </button>
+          </div>
         )}
       </div>
 

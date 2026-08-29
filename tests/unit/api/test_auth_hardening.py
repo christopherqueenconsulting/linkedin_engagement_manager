@@ -291,6 +291,29 @@ class TestSessionManagement:
         # No token material of any kind leaves the API.
         assert "session_token" not in str(detail)
 
+    def test_security_endpoint_defaults_a_missing_scope_to_full(self, api_client, signed_in):
+        """A row from before #745 2c carries no `scope` at all — it must never read as an agent."""
+        rows = [{"id": 1, "label": "Chrome on macOS", "created_at": None, "last_seen_at": None,
+                 "expires_at": None, "is_current": True}]
+        with patch(f"{_M}.get_session_user_id", return_value=_UID), \
+             patch(f"{_USER}.list_user_sessions", return_value=rows), \
+             patch(f"{_USER}.get_auth_audit_events", return_value=[]), \
+             patch(f"{_USER}.get_user_public_uid", return_value="pub-1"), \
+             patch(f"{_USER}.get_user_email", return_value="me@example.com"):
+            resp = api_client.get("/api/user/security", params={"session_token": "tok"})
+        assert resp.json()["detail"]["sessions"][0]["scope"] == "full"
+
+    def test_security_endpoint_passes_an_agent_scope_through(self, api_client, signed_in):
+        rows = [{"id": 2, "label": "Headless agent", "created_at": None, "last_seen_at": None,
+                 "expires_at": None, "is_current": False, "scope": "agent"}]
+        with patch(f"{_M}.get_session_user_id", return_value=_UID), \
+             patch(f"{_USER}.list_user_sessions", return_value=rows), \
+             patch(f"{_USER}.get_auth_audit_events", return_value=[]), \
+             patch(f"{_USER}.get_user_public_uid", return_value="pub-1"), \
+             patch(f"{_USER}.get_user_email", return_value="me@example.com"):
+            resp = api_client.get("/api/user/security", params={"session_token": "tok"})
+        assert resp.json()["detail"]["sessions"][0]["scope"] == "agent"
+
     def test_revoke_one_device_is_scoped_to_the_caller(self, api_client, signed_in):
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
              patch(f"{_USER}.revoke_session", return_value=True) as rs:

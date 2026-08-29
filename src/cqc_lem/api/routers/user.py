@@ -112,6 +112,7 @@ from cqc_lem.utilities.db import (
     ROSTER_FOLLOWS_PER_DAY_MIN,
     SESSION_SCOPE_AGENT,
     SESSION_SCOPE_EXTENSION,
+    SESSION_SCOPE_FULL,
     STORY_BANK_KINDS,
     STORY_BANK_TARGET_ENTRIES,
     VALID_CATCHUP_MESSAGE_SOURCES,
@@ -1171,6 +1172,7 @@ def get_user_security(session_token: Optional[str] = None) -> ResponseModel[dict
         "last_seen_at": _main._utc_iso(s.get("last_seen_at")),
         "expires_at": _main._utc_iso(s.get("expires_at")),
         "is_current": s["is_current"],
+        "scope": s.get("scope") or SESSION_SCOPE_FULL,
     } for s in list_user_sessions(user_id, current_token=token)]
     events = [{
         "event": e.get("event"),

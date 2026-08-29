@@ -22,9 +22,9 @@ function payload(overrides: Record<string, unknown> = {}) {
         email: 'me@example.com',
         sessions: [
           { id: 1, label: 'Chrome on macOS', created_at: '2026-08-01T00:00:00Z',
-            last_seen_at: '2026-08-01T01:00:00Z', expires_at: null, is_current: true },
+            last_seen_at: '2026-08-01T01:00:00Z', expires_at: null, is_current: true, scope: 'full' },
           { id: 2, label: 'Safari on iPhone', created_at: '2026-07-30T00:00:00Z',
-            last_seen_at: '2026-07-31T00:00:00Z', expires_at: null, is_current: false },
+            last_seen_at: '2026-07-31T00:00:00Z', expires_at: null, is_current: false, scope: 'full' },
         ],
         recent_events: [
           { event: 'login_success', success: true, user_agent: null, created_at: '2026-08-01T00:00:00Z' },
@@ -33,6 +33,13 @@ function payload(overrides: Record<string, unknown> = {}) {
         ...overrides,
       },
     },
+  }
+}
+
+/** A 403 shaped exactly like the server's step-up refusal. */
+function stepUpRefusal(methods: string[]) {
+  return {
+    response: { status: 403, data: { detail: { code: 'step_up_required', methods } } },
   }
 }
 
@@ -133,5 +140,94 @@ describe('SecurityCard (issue #745, phase 2b)', () => {
     get.mockResolvedValue(payload())
     harness(<SecurityCard />)
     await waitFor(() => expect(screen.getByText('Failed sign-in')).toBeTruthy())
+  })
+
+  it('badges an agent-scoped row so it is not mistaken for a stale browser login', async () => {
+    get.mockResolvedValue(payload({
+      sessions: [
+        { id: 1, label: 'Chrome on macOS', created_at: null, last_seen_at: null,
+          expires_at: null, is_current: true, scope: 'full' },
+        { id: 3, label: 'Headless agent', created_at: null, last_seen_at: null,
+          expires_at: null, is_current: false, scope: 'agent' },
+      ],
+    }))
+    harness(<SecurityCard />)
+    await waitFor(() => expect(screen.getByText('Headless agent')).toBeTruthy())
+    expect(screen.getByText('Agent')).toBeTruthy()
+    // The full-scope row never gets the badge.
+    expect(screen.queryAllByText('Agent').length).toBe(1)
+  })
+
+  describe('minting an agent token (issue #1731)', () => {
+    it('submits the default label and TTL, and shows the token exactly once with its expiry', async () => {
+      get.mockResolvedValue(payload())
+      post.mockResolvedValue({ data: { detail: { session_token: 'agent-tok-123', expires_in_days: 90 } } })
+      harness(<SecurityCard />)
+      await waitFor(() => expect(screen.getByRole('button', { name: /Create agent token/i })).toBeTruthy())
+
+      fireEvent.click(screen.getByRole('button', { name: /Create agent token/i }))
+      await waitFor(() =>
+        expect(post).toHaveBeenCalledWith('/user/agent-token', {
+          session_token: 'cookie',
+          label: 'Headless agent',
+          ttl_days: 90,
+        })
+      )
+
+      await waitFor(() => expect(screen.getByText('agent-tok-123')).toBeTruthy())
+      expect(screen.getByText(/shown only once|shown again/i)).toBeTruthy()
+      expect(screen.getByText(/Expires in 90 days/i)).toBeTruthy()
+      expect(screen.getByRole('button', { name: /Copy token/i })).toBeTruthy()
+    })
+
+    it('sends a custom label and TTL', async () => {
+      get.mockResolvedValue(payload())
+      post.mockResolvedValue({ data: { detail: { session_token: 'tok', expires_in_days: 30 } } })
+      harness(<SecurityCard />)
+      await waitFor(() => expect(screen.getByLabelText(/Agent token label/i)).toBeTruthy())
+
+      fireEvent.change(screen.getByLabelText(/Agent token label/i), { target: { value: 'Backfill bot' } })
+      fireEvent.change(screen.getByLabelText(/Agent token TTL in days/i), { target: { value: '30' } })
+      fireEvent.click(screen.getByRole('button', { name: /Create agent token/i }))
+      await waitFor(() =>
+        expect(post).toHaveBeenCalledWith('/user/agent-token', {
+          session_token: 'cookie',
+          label: 'Backfill bot',
+          ttl_days: 30,
+        })
+      )
+    })
+
+    it('opens the step-up modal on a 403 and re-mints once verified', async () => {
+      get.mockResolvedValue(payload())
+      post
+        .mockRejectedValueOnce(stepUpRefusal(['totp']))
+        .mockResolvedValueOnce({ data: { detail: { verified: true } } })
+        .mockResolvedValueOnce({ data: { detail: { session_token: 'tok-after-stepup', expires_in_days: 90 } } })
+      harness(<SecurityCard />)
+      await waitFor(() => expect(screen.getByRole('button', { name: /Create agent token/i })).toBeTruthy())
+
+      fireEvent.click(screen.getByRole('button', { name: /Create agent token/i }))
+      await waitFor(() => expect(screen.getByText("Confirm it's you")).toBeTruthy())
+
+      fireEvent.change(screen.getByLabelText('Authenticator code'), { target: { value: '123456' } })
+      fireEvent.click(screen.getByText('Confirm'))
+
+      await waitFor(() =>
+        expect(post.mock.calls.filter((c) => c[0] === '/user/agent-token').length).toBe(2))
+      await waitFor(() => expect(screen.getByText('tok-after-stepup')).toBeTruthy())
+    })
+
+    it('shows an error and no token when the mint fails for a reason other than step-up', async () => {
+      get.mockResolvedValue(payload())
+      post.mockRejectedValue({ response: { status: 500, data: { detail: 'boom' } } })
+      harness(<SecurityCard />)
+      await waitFor(() => expect(screen.getByRole('button', { name: /Create agent token/i })).toBeTruthy())
+
+      fireEvent.click(screen.getByRole('button', { name: /Create agent token/i }))
+      await waitFor(() =>
+        expect(screen.getByText(/Could not create an agent token/i)).toBeTruthy())
+      expect(screen.queryByRole('button', { name: /Copy token/i })).toBeNull()
+    })
   })
 })
