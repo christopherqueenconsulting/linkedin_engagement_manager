@@ -97,6 +97,7 @@ index and the `CLAUDE.md` row that points at it, or the pointer becomes a dead e
 - [Benchmark run — `bm-20260802-5fff18`](model-benchmarks/2026-08-02-bm-20260802-5fff18.md) — archived scorecard
 - [Benchmark run — `bm-20260802-b84f19`](model-benchmarks/2026-08-02-bm-20260802-b84f19.md) — archived scorecard
 - [Benchmark run — `bm-20260830-3048e1`](model-benchmarks/2026-08-30-bm-20260830-3048e1.md) — archived scorecard
+- [Benchmark run — `bm-20260830-1e6b4e`](model-benchmarks/2026-08-30-bm-20260830-1e6b4e.md) — archived scorecard
 - ★ [Stack watchdog & deep health](stack-watchdog.md) — the host watchdog and the `/health/deep` monitor contract
 
 ## Infrastructure, deploy & scaling
