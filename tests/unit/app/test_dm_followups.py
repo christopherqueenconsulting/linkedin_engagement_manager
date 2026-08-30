@@ -113,6 +113,35 @@ class TestProcessUserFollowups:
         mark.assert_called_once_with(1, "stopped")
         dm.apply_async.assert_not_called()
 
+    def test_tab_crashed_getting_profile_logs_warning_not_error(self):
+        # Issue #1749: a crashed browser tab while acquiring the session is a known-transient
+        # Selenium fault (no follow-up was even attempted, due rows stay untouched for the next
+        # tick) — it must not file a grouped PostHog defect the way a real failure does.
+        from selenium.common.exceptions import WebDriverException
+
+        from cqc_lem.app.engagement.outreach import process_user_followups
+        crash = WebDriverException("Message: tab crashed\n  (Session info: chrome=151.0.7922.108)")
+        with patch(f"{_OUT}.get_due_followups", return_value=[_due()]), \
+             patch(f"{_OUT}.get_current_profile", side_effect=crash), \
+             patch(f"{_OUT}.log_warning") as warn, \
+             patch(f"{_OUT}.log_error") as err:
+            result = process_user_followups.run(user_id=1)
+        assert "Failed to start follow-ups" in result
+        warn.assert_called_once()
+        assert warn.call_args.kwargs.get("exc") is crash
+        err.assert_not_called()
+
+    def test_other_profile_failures_still_log_error(self):
+        from cqc_lem.app.engagement.outreach import process_user_followups
+        with patch(f"{_OUT}.get_due_followups", return_value=[_due()]), \
+             patch(f"{_OUT}.get_current_profile", side_effect=RuntimeError("boom")), \
+             patch(f"{_OUT}.log_warning") as warn, \
+             patch(f"{_OUT}.log_error") as err:
+            result = process_user_followups.run(user_id=1)
+        assert "Failed to start follow-ups" in result
+        err.assert_called_once()
+        warn.assert_not_called()
+
     def test_no_due_returns_early(self):
         from cqc_lem.app.engagement.outreach import process_user_followups
         with patch(f"{_OUT}.get_due_followups", return_value=[]), \

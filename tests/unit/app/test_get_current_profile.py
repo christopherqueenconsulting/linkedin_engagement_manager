@@ -8,6 +8,7 @@ patch target that used to rebind names nothing looks at now raises instead.
 from unittest.mock import MagicMock, patch
 
 import pytest
+from selenium.common.exceptions import WebDriverException
 
 pytestmark = pytest.mark.unit
 
@@ -56,6 +57,36 @@ class TestGetCurrentProfile:
             from cqc_lem.utilities.linkedin.session import get_current_profile
             with pytest.raises(RuntimeError, match="Profile unavailable"):
                 get_current_profile(user_id=1)
+
+    def test_tab_crashed_on_login_logs_warning_not_error(self):
+        # Issue #1749: a WebDriverException "tab crashed" during the very first login navigation
+        # is a dead browser tab (usually a Grid slot reused from a previous OOM-killed session),
+        # never a login/rate-limit fault — it must still propagate (the run is over either way) but
+        # must not file a grouped PostHog defect for a known-transient Selenium fault.
+        p = _patches()
+        crash = WebDriverException("Message: tab crashed\n  (Session info: chrome=151.0.7922.108)")
+        with p["get_user_password_pair_by_id"], p["get_driver_wait_pair"], p["quit_gracefully"], \
+             patch(f"{_SESSION}.login_to_linkedin", side_effect=crash), \
+             patch(f"{_SESSION}.log_warning") as warn, \
+             patch(f"{_SESSION}.log_error") as err:
+            from cqc_lem.utilities.linkedin.session import get_current_profile
+            with pytest.raises(WebDriverException):
+                get_current_profile(user_id=1)
+        warn.assert_called_once()
+        assert warn.call_args.kwargs.get("exc") is crash
+        err.assert_not_called()
+
+    def test_other_login_failures_still_log_error(self):
+        p = _patches()
+        with p["get_user_password_pair_by_id"], p["get_driver_wait_pair"], p["quit_gracefully"], \
+             patch(f"{_SESSION}.login_to_linkedin", side_effect=RuntimeError("HTTP 429 rate-limited")), \
+             patch(f"{_SESSION}.log_warning") as warn, \
+             patch(f"{_SESSION}.log_error") as err:
+            from cqc_lem.utilities.linkedin.session import get_current_profile
+            with pytest.raises(RuntimeError):
+                get_current_profile(user_id=1)
+        err.assert_called_once()
+        warn.assert_not_called()
 
     def test_returns_live_profile_on_success(self):
         live = MagicMock(name="LiveProfile")

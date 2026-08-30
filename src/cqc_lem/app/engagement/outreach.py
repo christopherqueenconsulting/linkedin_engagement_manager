@@ -237,6 +237,7 @@ from cqc_lem.utilities.selenium_util import (
     get_driver_wait_pair,
     get_element_wait_retry,
     getText,
+    is_tab_crashed,
     quit_gracefully,
     wait_for_ajax,
 )
@@ -1219,7 +1220,18 @@ def process_user_followups(self, user_id: int, max_per_run: int = 20):
     try:
         driver, wait, user_email, my_profile = get_current_profile(user_id=user_id, session_name="Follow-ups")
     except Exception as e:
-        log_error("Error getting profile for follow-ups", exc=e, user_id=user_id, task_name="process_user_followups")
+        if is_tab_crashed(e):
+            # The renderer behind the acquired tab was already dead (usually an OOM kill left over
+            # from a previous heavy session on a reused Grid slot) before this run ever navigated
+            # anywhere of its own — no follow-up here was even attempted, and the due rows are
+            # untouched, so the next tick retries them cleanly. This degrades exactly as gracefully
+            # as any other "Failed to start" path already does; the only thing wrong was filing a
+            # known-transient Selenium fault as a grouped defect (issue #1749) instead of a warning
+            # that escalates if it starts recurring.
+            log_warning("Browser tab crashed while starting follow-ups", exc=e, user_id=user_id,
+                        task_name="process_user_followups")
+        else:
+            log_error("Error getting profile for follow-ups", exc=e, user_id=user_id, task_name="process_user_followups")
         return f"Failed to start follow-ups: {e}"
     sent = 0
     nurtured = 0
