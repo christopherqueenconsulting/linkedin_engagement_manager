@@ -1230,7 +1230,8 @@ def process_user_followups(self, user_id: int, max_per_run: int = 20):
             log_debug("Browser tab crashed while starting follow-ups", exc=e, user_id=user_id,
                       task_name="process_user_followups")
         else:
-            log_error("Error getting profile for follow-ups", exc=e, user_id=user_id, task_name="process_user_followups")
+            log_error("Error getting profile for follow-ups", exc=e, user_id=user_id,
+                      task_name="process_user_followups")
         return f"Failed to start follow-ups: {e}"
     sent = 0
     nurtured = 0
