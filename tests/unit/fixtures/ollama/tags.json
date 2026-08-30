@@ -78,6 +78,17 @@
       "digest": "f553240f6dc4"
     },
     {
+      "name": "glm-5.3",
+      "model": "glm-5.3",
+      "modified_at": "2026-08-28T08:00:00-07:00",
+      "size": 755433728000,
+      "details": {
+        "family": "",
+        "parameter_size": ""
+      },
+      "digest": "632dfda18c6d"
+    },
+    {
       "name": "gpt-oss:120b",
       "model": "gpt-oss:120b",
       "modified_at": "2025-08-05T00:00:00Z",

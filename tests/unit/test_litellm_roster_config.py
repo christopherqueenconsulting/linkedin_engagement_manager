@@ -71,7 +71,7 @@ class TestRoster:
         """Guard the #1583 decline — the `-pro` family is EXTRA HIGH usage.
 
         That is +2 usage levels against every SERVING-tier Ollama deployment, all of which are Low or
-        Medium (+1 against the lem-agent-* lane, where glm-5.2 and minimax-m3 are High — covered here
+        Medium (+1 against the lem-agent-* lane, where glm-5.3 and minimax-m3 are High — covered here
         too, because that lane pins one model per tier with no benchmark gate to catch a swap).
         The #842 standing spend policy allows a usage-level increase on lem-complex alone and only
         on a strict judge-rate win over the champion, whose last measured judge rate there is 100%.

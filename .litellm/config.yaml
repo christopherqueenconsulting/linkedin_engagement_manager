@@ -104,7 +104,7 @@ model_list:
   # NOTE: openai/deepseek-v4-pro (`:0813` and `:preview`) was EVALUATED and DECLINED 2026-08-16
   # (issue #1583), unbenchmarked and deliberately so. It is an EXTRA HIGH usage-level model — +2
   # levels against every SERVING-tier Ollama deployment here, all of which are Low or Medium (the
-  # lem-agent-* lane's glm-5.2 / minimax-m3 are HIGH, so +1 there) — and the
+  # lem-agent-* lane's glm-5.3 / minimax-m3 are HIGH, so +1 there) — and the
   # #842 standing spend policy buys a usage-level increase on this tier only, and only on a STRICT
   # judge-rate win over the champion. qwen3.5:397b's last measured judge rate here is 100%, so no
   # run can produce that win; it could only tie, at Extra-high metering per call. Unlike kimi-k3
@@ -225,7 +225,7 @@ model_list:
   # ANTHROPIC_AUTH_TOKEN=$LITELLM_MASTER_KEY) with --model = one of these aliases. LiteLLM serves
   # the Anthropic /v1/messages endpoint and translates to the underlying Ollama Cloud model.
   # CLOUD-ONLY by policy (Ollama Max subscription) — no local models on this path.
-  #   tier1   glm-5.2         hardest long-horizon / architecture / multi-step plans
+  #   tier1   glm-5.3         hardest long-horizon / architecture / multi-step plans
   #   tier2   kimi-k2.7-code  default coding / patches / tests / multi-file edits
   #   tier2a  minimax-m3      premium parallel / vision-capable alternate
   #   tier3   nemotron-3-super fallback / reviewer / reasoning lane
@@ -235,9 +235,15 @@ model_list:
   # entries keep the roster uniform and price them from day one if one is promoted into a serving
   # tier; this lane's own cost is LiteLLM's `$ai_generation`, not the app's `llm_call`.
   # See docs/agent-pipeline-routing.md for the capacity-aware lane-selection rule.
+  # glm-5.2 -> glm-5.3 (issue #1756, 2026-08-30): ADOPTED. Same High(3) usage level as glm-5.2 (no
+  # quota-burn increase), and the ollama.com model page reports the swap is post-training on the
+  # SAME base model, aimed squarely at this tier's job — "Terminal-Bench 3.0 improves from 4.6 to
+  # 28.3" and "SWE-Marathon more than doubles (19.4 -> 42.5)", explicitly called out for coding
+  # agent applications including Claude Code. Not the #842 spend-policy case (that gates a USAGE-
+  # LEVEL INCREASE, which this isn't) — a flat-quota quality win on the tier's own workload.
   - model_name: lem-agent-tier1
     litellm_params:
-      model: openai/glm-5.2
+      model: openai/glm-5.3
       api_base: os.environ/OLLAMA_CLOUD_URL
       api_key: os.environ/OLLAMA_CLOUD_API_KEY
       max_parallel_requests: 2

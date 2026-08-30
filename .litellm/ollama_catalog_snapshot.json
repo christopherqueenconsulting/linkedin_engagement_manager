@@ -51,6 +51,13 @@
       "family": "",
       "digest": "f553240f6dc4"
     },
+    "glm-5.3": {
+      "modified_at": "2026-08-28T08:00:00-07:00",
+      "size": 755433728000,
+      "parameter_size": "",
+      "family": "",
+      "digest": "632dfda18c6d"
+    },
     "gpt-oss:120b": {
       "modified_at": "2025-08-05T00:00:00Z",
       "size": 65290180781,

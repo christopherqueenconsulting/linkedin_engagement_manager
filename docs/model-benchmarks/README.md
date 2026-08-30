@@ -408,7 +408,7 @@ Three things worth reading beyond the two verdicts:
   Ollama deployment in the **serving** tiers is Low (`gemma4:31b`) or Medium (`gpt-oss:20b`,
   `gpt-oss:120b`, `deepseek-v4-flash:preview`, `qwen3.5:397b`), so Extra high is **+2** levels on
   every one of them. (The `lem-agent-*` lane is the exception to the "+2" arithmetic, not to the
-  verdict: `glm-5.2` and `minimax-m3` are **High (3)**, so adopting there would be +1 — and that
+  verdict: `glm-5.3` and `minimax-m3` are **High (3)**, so adopting there would be +1 — and that
   lane pins one model per tier with no benchmark gate at all, which is a reason for MORE caution,
   not less.) The standing spend policy above allows an increase on `lem-complex` alone, on a
   strict judge-rate win — and the champion `qwen3.5:397b`'s last measured judge rate on that tier is
@@ -492,6 +492,20 @@ Two things worth reading beyond the verdict:
   does not close that. Declining is the correct outcome for `mistral-large-3:675b` specifically, not
   a statement that the tier doesn't need a win; the next monthly catalog scan is where a fresh
   candidate gets evaluated.
+
+### What the 2026-08-30 family-version scan settled (#1756) — one tag, adopted, unbenchmarked on purpose
+
+| Family | What it is | Decision |
+|---|---|---|
+| `glm-5.2` -> `glm-5.3` (`lem-agent-tier1`) | Same **High (3)** usage level as `glm-5.2` — flat quota burn. ollama.com/library/glm-5.3 states the swap is post-training on the SAME base model, with the gains aimed at exactly this tier's job: "Terminal-Bench 3.0 improves from 4.6 to 28.3", "SWE-Marathon more than doubles (19.4 -> 42.5)", and the page names coding-agent use explicitly, including Claude Code | **Adopt.** No harness measures the `lem-agent-*` lane's own workload (`scripts/benchmark_models.py` targets `lem-simple`/`lem-medium`/`lem-complex` only), so this reads the vendor's own published benchmark deltas rather than running one. Not the #842 spend-policy case — that gates a usage-LEVEL INCREASE, and this one is flat. |
+
+This is a different question from `glm-5.3`'s candidacy for `lem-complex` (#1757/#1765, **declined**
+unbenchmarked): that decline turns on `glm-5.3` being **+1 usage level** against every serving-tier
+incumbent there (all Low/Medium) with the #842 spend policy requiring a strict judge-rate win to
+justify it. `lem-agent-tier1` starts from `glm-5.2`, already **High (3)** — so `glm-5.3` there is
+flat quota, and the swap is a same-cost quality question, not a spend one. `.litellm/config.yaml`
+and `.litellm/model_prices_snapshot.json` / `.litellm/ollama_catalog_snapshot.json` carry the usual
+roster bookkeeping for the new tag.
 
 ## Running it
 
