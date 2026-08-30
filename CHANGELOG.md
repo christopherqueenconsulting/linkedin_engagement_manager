@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.168.1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.168.0...v0.168.1) (2026-08-30)
+
+
+### Bug Fixes
+
+* **engagement:** stop a crashed browser tab from failing post-stats scrape (closes [#1751](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1751)) ([#1754](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1754)) ([affef3f](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/affef3f0df9c8f48cbf297441d89d766baafd8bd))
+* **engagement:** stop the message-thread ladder's exhausted-route warning from escalating (closes [#1752](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1752)) ([#1753](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1753)) ([da14153](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/da1415396687b3305a3ffef6621e8a5533871ec7))
+* **errors:** downgrade a crashed browser tab to a warning during follow-up login (closes [#1749](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1749)) ([#1761](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1761)) ([666becb](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/666becbf7cb0f437516fcab9ba03131d8b106b5e))
+* **outreach:** stop double-warning on an unreadable follow-up thread (closes [#1750](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1750)) ([#1759](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1759)) ([0e51a92](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/0e51a92560c76dc06ee5465b6c2b13dca4e4af10))
+
+
+### Documentation
+
+* **model-benchmarks:** decline glm-5.3, glm-5.3-flash for lem-simple/medium/complex (closes [#1757](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1757)) ([#1765](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1765)) ([fda85e7](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/fda85e7aa34a5343159325f4236ffb44215cfeec))
+
 ## [0.168.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.167.0...v0.168.0) (2026-08-29)
 
 
