@@ -469,6 +469,10 @@ def open_probe_session(get_current_profile: Callable, user_id: int, require_debu
 # meant "the script you piped has no capture". A report that names its own captures tells those two
 # apart from the JSON alone, which is the same distinction the capture itself exists to make.
 _PROBE_CAPABILITY_SYMBOLS = {
+    "connect_dialog.page_copy": "page_copy_sections",
+    "connect_dialog.top_card_controls": "top_card_controls",
+    "connect_dialog.menu_items": "probe_more_menu_items",
+    "connect_dialog.restriction": "invite_limit_signal",
     "feed_sort.selector_evidence": "_feed_sort_evidence_scan",
     "occasion_composer.share_box_dom": "share_box_dom_evidence",
     "occasion_composer.share_box_activation": "share_box_activation_ladder",
@@ -1745,6 +1749,37 @@ def page_text_sample(driver, limit: int = 600) -> str:
     return ""
 
 
+def page_copy_sections(driver, limit: int = 4000) -> dict:
+    """The screen's words per SECTION, rather than the first section that had any.
+
+    `page_text_sample` returns the first non-empty of `main`/`body` at 600 chars, which is the top
+    card of a profile and nothing else. Copy that decides a verdict routinely renders somewhere that
+    read cannot reach: an interstitial or a modal lives OUTSIDE `main`, and a dialog's own words are
+    the only place LinkedIn names an account-level limit. So each section is read separately and
+    returned under its own key — a reading that says which surface the words came from can be
+    argued with, one that merges them cannot.
+
+    Best-effort per section, matching `page_text_sample`: an unreadable section contributes `""` and
+    never costs the run the sections that did read.
+    """
+    sections = {"main": "", "body": "", "dialog": ""}
+    for key, selector in (("main", "main"), ("body", "body"),
+                          ("dialog", "[role='dialog'], [role='alertdialog'], dialog")):
+        chunks = []
+        try:
+            for element in driver.find_elements(By.CSS_SELECTOR, selector):
+                try:
+                    text = " ".join((element.text or "").split())
+                except Exception:
+                    continue
+                if text and text not in chunks:
+                    chunks.append(text)
+        except Exception:
+            continue
+        sections[key] = " | ".join(chunks)[:limit]
+    return sections
+
+
 # Candidate routes to a feed post's card root / text node. LinkedIn commonly keeps SEVERAL of
 # these alive at once and rotates which is canonical, so the probe counts them all and the fix
 # builds an ordered chain from whatever currently resolves. Ordered most-stable-first by kind:
@@ -2909,6 +2944,111 @@ _INVITE_LABEL_RE = re.compile(r"invite\s+(.+?)\s+to\s+connect", re.IGNORECASE)
 _CONNECT_PENDING_RE = re.compile(r"\bpending\b|\binvitation sent\b|\bwithdraw invitation\b",
                                  re.IGNORECASE)
 
+# What the page says when the ACCOUNT, not the profile, is why no dialog rendered. Kept deliberately
+# separate from `_CONNECT_PENDING_RE`: "pending" is a per-profile fact and the operator's next move
+# is to probe a different profile, while a limit is an account fact and probing another profile will
+# say exactly the same thing forever. Folding the two together would make one restricted account read
+# as twenty profiles with outstanding invites.
+_INVITE_LIMIT_RE = re.compile(
+    r"weekly invitation limit"
+    r"|reached the (?:weekly )?limit"
+    r"|maximum number of invitations"
+    r"|you(?:'|’)?ve (?:used all|reached) your invitation"
+    r"|no invitations? (?:left|remaining)"
+    r"|try again (?:in|next week)",
+    re.IGNORECASE)
+_ACCOUNT_RESTRICTED_RE = re.compile(
+    r"we(?:'|’)?ve restricted your account"
+    r"|your account has been (?:temporarily )?restricted"
+    r"|temporarily restricted",
+    re.IGNORECASE)
+
+
+def invite_limit_signal(text: Optional[str]) -> str:
+    """`""` | `"weekly_limit"` | `"restricted"` — which account-level wall the page names, if any.
+
+    Order matters: a restriction notice frequently also mentions invitations, and "restricted" is the
+    heavier operator action, so it is asked first.
+    """
+    body = str(text or "")
+    if _ACCOUNT_RESTRICTED_RE.search(body):
+        return "restricted"
+    if _INVITE_LIMIT_RE.search(body):
+        return "weekly_limit"
+    return ""
+
+
+# Every interactive control in the profile's TOP CARD, and every one in `main` outside it. Two
+# reasons this cannot be `visible_button_labels`: that helper enumerates `By.TAG_NAME, "button"`
+# only — a `div[role="button"]` Connect is invisible to it, the same blind spot already recorded for
+# the feed sort control — and it flattens the page, so it cannot say whether a control belongs to the
+# target or to the "More profiles for you" rail. The in/out split IS the #1012 attribution evidence.
+#
+# Read-only: no `.click(`, no `.value=`, so `script_is_interactive` lets it through unchanged.
+_TOP_CARD_CONTROLS_JS = r"""
+const norm = (s) => (s || '').replace(/\s+/g, ' ').trim();
+const shown = (el) => !!(el.offsetParent || el.getClientRects().length);
+const root = document.querySelector('main') || document.body;
+const h1 = root.querySelector('h1');
+// The top card is the nearest ancestor of the name that also carries an action control — the same
+// climb `_card_for_textbox` makes, capped so a miss can never walk out to <body>.
+let card = null;
+if (h1) {
+  let node = h1;
+  for (let i = 0; i < 8 && node && node !== root; i++) {
+    node = node.parentElement;
+    if (!node) { break; }
+    if (node.querySelector("button, a[href], [role='button'], [role='link']")) { card = node; break; }
+  }
+}
+const describe = (el, inCard) => ({
+  tag: el.tagName.toLowerCase(),
+  role: el.getAttribute('role') || '',
+  aria: norm(el.getAttribute('aria-label')).slice(0, 120),
+  text: norm(el.textContent).slice(0, 80),
+  href: (el.getAttribute('href') || '').slice(0, 160),
+  testid: el.getAttribute('data-testid') || '',
+  in_top_card: inCard,
+});
+const SEL = "button, a, [role='button'], [role='link']";
+const out = [];
+const inCard = new Set();
+if (card) {
+  for (const el of card.querySelectorAll(SEL)) {
+    if (!shown(el)) { continue; }
+    inCard.add(el);
+    out.push(describe(el, true));
+    if (out.length >= 40) { break; }
+  }
+}
+let outside = 0;
+for (const el of root.querySelectorAll(SEL)) {
+  if (inCard.has(el) || !shown(el)) { continue; }
+  const d = describe(el, false);
+  if (!d.aria && !d.text) { continue; }
+  out.push(d);
+  if (++outside >= 30) { break; }
+}
+return {found_top_card: !!card, owner_name: h1 ? norm(h1.textContent).slice(0, 120) : '',
+        controls: out};
+"""
+
+
+def top_card_controls(driver) -> dict:
+    """The profile's controls, attributed to the top card or to the rest of `main`.
+
+    `{found_top_card, owner_name, controls[]}`. Best-effort: an empty reading claims nothing.
+    """
+    try:
+        reading = driver.execute_script(_TOP_CARD_CONTROLS_JS) or {}
+    except Exception as e:
+        return {"found_top_card": False, "owner_name": "", "controls": [],
+                "error": f"{type(e).__name__}: {e}"}
+    reading.setdefault("found_top_card", False)
+    reading.setdefault("owner_name", "")
+    reading.setdefault("controls", [])
+    return reading
+
 
 def _norm_person(name: Optional[str]) -> str:
     return " ".join(re.sub(r"[^a-z ]+", " ", str(name or "").lower()).split())
@@ -2939,11 +3079,132 @@ def rail_invite_hazards(labels, target_name: str = "") -> list:
     return hazards
 
 
+def classify_connect_controls(controls, owner_name: str = "") -> dict:
+    """Split the top-card capture into `{owner, hazard, unattributed}`.
+
+    The richer superset of `rail_invite_hazards`, which stays exactly as it is — that function is the
+    existing tested contract and production's third route is built against THIS one. Rules, and the
+    reason each is what it is:
+
+    * a control whose label is exactly `Connect` names nobody, so inside the top card it can only be
+      the page owner's — `owner`;
+    * `Invite <X> to connect` where `<X>` matches the owner — `owner`;
+    * a label naming anyone else — `hazard`. That is the #1012 control, and it is on the page today;
+    * a label naming somebody while the owner name is UNREADABLE, or a bare `Connect` outside the top
+      card — `unattributed`. Neither can be attributed, and a control we cannot attribute is
+      precisely the one production must never click.
+
+    `controls` are the dicts `top_card_controls` returns; plain label strings are accepted too and
+    read as having no card scope.
+    """
+    owner = _norm_person(owner_name)
+    out = {"owner": [], "hazard": [], "unattributed": []}
+    for control in controls or []:
+        if isinstance(control, dict):
+            label = str(control.get("aria") or control.get("text") or "").strip()
+            in_card = bool(control.get("in_top_card"))
+        else:
+            label, in_card = str(control or "").strip(), False
+        if not label:
+            continue
+        match = _INVITE_LABEL_RE.search(label)
+        if match:
+            named = _norm_person(match.group(1))
+            if not owner:
+                out["unattributed"].append(label)
+            elif named and (named in owner or owner in named):
+                out["owner"].append(label)
+            else:
+                out["hazard"].append(label)
+            continue
+        if normalise_label(label) == "connect":
+            out["owner" if in_card else "unattributed"].append(label)
+    return out
+
+
+# The More menu, dumped rather than driven. Opening it is PERMITTED by the read-only guard — `more`
+# matches none of `_SUBMIT_LABEL_PATTERNS` — but clicking what is inside is not: `^connect$` and
+# `\binvite\b.*\bto connect\b` both match, `_refuse` raises `ReadOnlyViolation`, and that is never
+# caught internally, so a single click on the menu item would kill the run and report nothing. The
+# items are therefore ENUMERATED, never pressed.
+_MENU_ITEMS_JS = r"""
+const norm = (s) => (s || '').replace(/\s+/g, ' ').trim();
+const shown = (el) => !!(el.offsetParent || el.getClientRects().length);
+const seen = new Set();
+const out = [];
+const SEL = "[role='menuitem'], [role='menu'] a, [role='menu'] button, [role='menu'] [role='button']";
+for (const el of document.querySelectorAll(SEL)) {
+  if (seen.has(el) || !shown(el)) { continue; }
+  seen.add(el);
+  out.push({tag: el.tagName.toLowerCase(), role: el.getAttribute('role') || '',
+            aria: norm(el.getAttribute('aria-label')).slice(0, 120),
+            text: norm(el.textContent).slice(0, 80),
+            href: (el.getAttribute('href') || '').slice(0, 200)});
+  if (out.length >= 25) { break; }
+}
+return out;
+"""
+
+
+def _custom_invite_anchors(driver) -> list:
+    """Every `custom-invite` href already in the DOM, without opening anything.
+
+    The free half of the menu reading: a non-zero answer says the menu route's target still exists,
+    which the shipped `_CONNECT_MENU_ITEM_LOCATORS` may nonetheless be missing. Menus render lazily,
+    so zero here is not evidence of absence — that is what opening the menu is for.
+    """
+    try:
+        return [str(href)[:200] for href in driver.execute_script(
+            "return Array.from(document.querySelectorAll('a[href*=\"custom-invite\"]'))"
+            ".map((a) => a.getAttribute('href'));") or []]
+    except Exception:
+        return []
+
+
+def probe_more_menu_items(driver, wait, sleep=time.sleep) -> dict:
+    """Open the profile top card's More menu and describe every item in it.
+
+    Nothing is clicked except the menu TRIGGER, and the menu is closed with Escape.
+    """
+    from cqc_lem.app.engagement.invites import _PROFILE_MORE_MENU_LOCATORS
+    from cqc_lem.utilities.selenium_util import click_first
+
+    reading = {"opened_more_menu": False, "menu_items": [], "trigger": None}
+    trigger = click_first(driver, wait, _PROFILE_MORE_MENU_LOCATORS, "Profile More menu",
+                          required=False, warn_on_miss=False, max_try=1, use_action_chain=True)
+    if trigger is None:
+        # The SHIPPED locators missed the trigger — that IS the finding, so it is recorded rather
+        # than worked around with a locator this probe invented.
+        return reading
+    reading["trigger"] = element_evidence(trigger)
+    reading["opened_more_menu"] = True
+    sleep(2)
+    try:
+        reading["menu_items"] = driver.execute_script(_MENU_ITEMS_JS) or []
+    except Exception as e:
+        reading["menu_items_error"] = f"{type(e).__name__}: {e}"
+    reading["menu_open_controls"] = visible_button_labels(driver)
+    reading["menu_open_copy"] = page_copy_sections(driver)
+    reading["custom_invite_anchors_menu_open"] = _custom_invite_anchors(driver)
+    try:
+        from selenium.webdriver.common.keys import Keys
+
+        # Escape is the one keystroke the guard allows: `typed_characters` reads private-use code
+        # points as no typed text at all.
+        trigger.send_keys(Keys.ESCAPE)
+    except Exception:
+        pass
+    return reading
+
+
 def connect_dialog_state(reading: Optional[dict]) -> str:
     """Three-state grade for one connect-dialog read. The page's own words are the cross-check: a
-    profile that rendered and offers no dialog is drift UNLESS it says an invite is already pending
-    — that profile simply cannot ground this route, and grading it drift would file an issue for
-    working behaviour.
+    profile that rendered and offers no dialog is drift UNLESS it says an invite is already pending,
+    or names an account-level limit — neither profile can ground this route, and grading either one
+    drift would file an issue for working behaviour.
+
+    Deliberately still THREE states. `scripts/sdui_drift_issues.py` files only on `drift`, so the
+    grade is a contract with the weekly sweep, not a description.
     """
     reading = dict(reading or {})
     if reading.get("dialog_present"):
@@ -2951,6 +3212,11 @@ def connect_dialog_state(reading: Optional[dict]) -> str:
     if not str(reading.get("page_text") or "").strip():
         return STATE_UNKNOWN
     if reading.get("invite_pending"):
+        return STATE_UNKNOWN
+    if reading.get("restriction"):
+        # An account LinkedIn has walled grounds nothing about selectors: every profile reads the
+        # same, and grading it `drift` files a code defect against working locators. `unknown` is the
+        # honest answer and `sdui_drift_issues.py` correctly files nothing on it.
         return STATE_UNKNOWN
     return STATE_DRIFT
 
@@ -2974,13 +3240,19 @@ def connect_dialog_verdict(reading: Optional[dict]) -> str:
     if reading.get("invite_pending"):
         return (f"an invite is already pending for this profile, so no dialog renders — this "
                 f"reading grounds nothing; probe a profile with no outstanding invite.{tail}")
+    if reading.get("restriction"):
+        return (f"the page names an ACCOUNT-level wall ({reading['restriction']}): "
+                f"{str(reading.get('restriction_copy') or '')[:200]!r}. This is not selector rot and "
+                f"no locator should be changed on this reading — the invite lane should HOLD until "
+                f"it clears.{tail}")
     if not str(reading.get("page_text") or "").strip():
         return f"the page did not render at all — re-run.{tail}"
     return (f"the page rendered but no Connect dialog control resolved — re-ground "
             f"_CONNECT_DIALOG_LOCATORS from `visible_controls`.{tail}")
 
 
-def probe_connect_dialog(driver, profile_url: str, sleep=time.sleep) -> dict:
+def probe_connect_dialog(driver, profile_url: str, sleep=time.sleep,
+                         open_more_menu: bool = False) -> dict:
     """#1012/#1013: navigate the custom-invite URL for `profile_url` and report whether the Connect
     dialog's own controls render, plus every 'Invite … to connect' control the PROFILE page carries
     and which of them name somebody else.
@@ -2999,6 +3271,7 @@ def probe_connect_dialog(driver, profile_url: str, sleep=time.sleep) -> dict:
         _CONNECT_DIALOG_LOCATORS,
         _CONNECT_INVITE_URL,
         _CONNECT_NOTE_BUTTON_LOCATORS,
+        _PROFILE_CONNECT_BUTTON_LOCATORS,
         _PROFILE_MORE_MENU_LOCATORS,
     )
     from cqc_lem.utilities.lead_scoring import profile_slug as _profile_slug
@@ -3029,12 +3302,14 @@ def probe_connect_dialog(driver, profile_url: str, sleep=time.sleep) -> dict:
         bare_send_present = find_first(driver, wait, _CONNECT_BARE_SEND_LOCATORS,
                                        "Send without a note", required=False, warn_on_miss=False,
                                        max_try=1, visible_only=True) is not None
+    invite_page_copy = page_copy_sections(driver)
     reading.update({"url": getattr(driver, "current_url", ""),
                     "dialog_present": dialog is not None,
                     "dialog_control": element_evidence(dialog) if dialog is not None else None,
                     "note_affordance_present": note_present,
                     "bare_send_present": bare_send_present,
                     "page_text": page_text_sample(driver),
+                    "invite_page_copy": invite_page_copy,
                     "visible_controls": visible_button_labels(driver)})
 
     # Then the profile page itself — the rail hazard only exists there, and the More-menu route is
@@ -3042,15 +3317,49 @@ def probe_connect_dialog(driver, profile_url: str, sleep=time.sleep) -> dict:
     driver.get(profile_url)
     sleep(5)
     profile_controls = visible_button_labels(driver)
+    # The direct top-card Connect route (#1734) is the one production actually added after the
+    # 2026-08-03 grounding, so it is the one a drift reading most needs to report on. RESOLVED, never
+    # clicked: the guard would refuse the click anyway, and the whole point of this probe is that it
+    # cannot send what the last drift on this surface sent by accident.
+    direct_connect = find_first(driver, wait, _PROFILE_CONNECT_BUTTON_LOCATORS,
+                                "Profile Connect button", required=False, warn_on_miss=False,
+                                max_try=1, visible_only=True)
     more_menu = find_first(driver, wait, _PROFILE_MORE_MENU_LOCATORS, "Profile More menu",
                            required=False, warn_on_miss=False, max_try=1, visible_only=True)
     profile_text = page_text_sample(driver)
+    profile_copy = page_copy_sections(driver)
+    top_card = top_card_controls(driver)
+    owner_name = top_card.get("owner_name") or _page_owner_name(driver)
     reading.update({"profile_controls": profile_controls,
+                    "profile_copy": profile_copy,
+                    "owner_name": owner_name,
+                    "top_card_found": bool(top_card.get("found_top_card")),
+                    "top_card_controls": top_card.get("controls") or [],
+                    "top_card_error": top_card.get("error"),
+                    "connect_controls": classify_connect_controls(top_card.get("controls") or [],
+                                                                  owner_name),
+                    "direct_connect_present": direct_connect is not None,
+                    "direct_connect_control": (element_evidence(direct_connect)
+                                               if direct_connect is not None else None),
+                    "custom_invite_anchors": _custom_invite_anchors(driver),
                     "more_menu_present": more_menu is not None,
                     "invite_controls": invite_control_names(profile_controls),
-                    "rail_hazards": rail_invite_hazards(profile_controls, _page_owner_name(driver)),
+                    "rail_hazards": rail_invite_hazards(profile_controls, owner_name),
                     "invite_pending": bool(_CONNECT_PENDING_RE.search(profile_text or ""))})
     reading["page_text"] = reading["page_text"] or profile_text
+    if open_more_menu:
+        reading.update(probe_more_menu_items(driver, wait, sleep=sleep))
+    # Every surface's words, in one pass: the interstitial that explains a total miss renders on the
+    # custom-invite page as often as on the profile, and outside `main` as often as in it.
+    merged_copy = " ".join(str(value) for section in (invite_page_copy, profile_copy,
+                                                      reading.get("menu_open_copy") or {})
+                           for value in (section or {}).values())
+    reading["restriction"] = invite_limit_signal(merged_copy)
+    if reading["restriction"]:
+        hit = (_ACCOUNT_RESTRICTED_RE.search(merged_copy)
+               or _INVITE_LIMIT_RE.search(merged_copy))
+        start = max(0, hit.start() - 80)
+        reading["restriction_copy"] = merged_copy[start:hit.end() + 120]
     return graded(reading, connect_dialog_state(reading), connect_dialog_verdict(reading))
 
 
@@ -5494,6 +5803,11 @@ def build_parser() -> "argparse.ArgumentParser":
     parser.add_argument("--reaction-open-menu", action="store_true",
                         help="also hover and open the reaction fly-out to capture its option "
                              "labels. Changes no persisted state; the options are never clicked.")
+    parser.add_argument("--connect-open-more-menu", action="store_true",
+                        help="with --connect-dialog, also OPEN the profile's More menu and dump "
+                             "every item in it. Opening 'More' commits nothing and the items are "
+                             "enumerated, never clicked — a click on 'Connect' would be refused by "
+                             "the read-only guard and abort the run with no report.")
     parser.add_argument("--connect-dialog", metavar="PROFILE_URL",
                         help="navigate the custom-invite URL for this profile and report whether "
                              "the Connect dialog renders, plus every 'Invite … to connect' control "
@@ -5657,7 +5971,8 @@ def main(argv: Optional[list] = None) -> int:
         if args.sent_invites:
             report["sent_invites"] = probe_sent_invites(driver, args.sent_invite_days)
         if args.connect_dialog:
-            report["connect_dialog"] = probe_connect_dialog(driver, args.connect_dialog)
+            report["connect_dialog"] = probe_connect_dialog(
+                driver, args.connect_dialog, open_more_menu=args.connect_open_more_menu)
         if args.profile_scrape:
             report["profile_scrape"] = probe_profile_scrape(driver, args.profile_scrape)
         if args.profile_experiences:

@@ -117,6 +117,7 @@ from cqc_lem.utilities.human_pacing import (
 from cqc_lem.utilities.linkedin.rate_limit import (
     automation_pause_remaining,
     is_automation_paused,
+    is_invites_held,
     is_measurement_paused,
     rate_limit_cooldown_remaining,
 )
@@ -381,6 +382,8 @@ def auto_check_connection_requests(self):
     'approved' via the API), and the whole scan short-circuits while the automation kill-switch / 429
     breaker is open, so a throttled account is never probed. The send task re-checks the cap and the
     throttle, deferring back to 'approved' if either trips between scan and send.
+
+    A user whose invites are HELD is skipped entirely, rows left 'approved' (#1733).
     """
     if _skip_if_throttled("auto_check_connection_requests"):
         return "Automation throttled"
@@ -394,6 +397,11 @@ def auto_check_connection_requests(self):
         if user_id not in active_user_ids:
             log_warning("Skipping connection request — user not active/connected",
                         user_id=user_id, task_name="auto_check_connection_requests")
+            continue
+        if is_invites_held(user_id):
+            # A named LinkedIn wall, or a run of invites that could not open a dialog (#1733/#1732).
+            # Leaving the rows 'approved' is what stops the scanner rediscovering the same wall once
+            # per queued row — every one of those is a full automated profile visit.
             continue
         if user_id not in budgets:
             prefs = get_engagement_preferences(user_id)
