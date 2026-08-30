@@ -1549,6 +1549,24 @@ def stop_followups_for_profile(user_id: int, profile_url: str) -> int:
     except mysql.connector.Error as err:
         log_error("Could not stop followups", exc=err, user_id=user_id)
         return 0
+def get_most_recent_dm_thread_target(user_id: int) -> "dict | None":
+    """The profile we most recently DM'd, for a message-thread probe target (issue #1770).
+
+    Any `dm_followups` row is evidence a thread was opened — including a `stopped` one (they
+    replied, or the thread went cold), so the status is deliberately not filtered: a thread that
+    ended does not stop existing. `None` when the account has never sent a follow-up-tracked DM.
+    """
+    try:
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(
+                "SELECT profile_url, first_name FROM dm_followups WHERE user_id=%s "
+                "ORDER BY id DESC LIMIT 1", (user_id,))
+            row = cursor.fetchone()
+            return {"profile_url": row["profile_url"], "first_name": row.get("first_name") or ""} \
+                if row and row.get("profile_url") else None
+    except mysql.connector.Error as err:
+        log_error("Could not get most recent DM thread target", exc=err, user_id=user_id)
+        return None
 
 
 # Why a proactive invite was abandoned before it was attempted (issue #623). Stored as the request's

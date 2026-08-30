@@ -556,12 +556,14 @@ SURFACES = (
      "arg": "<profile-url>", "sweep": True},
     {"key": "connect_dialog", "surface": "Connect invite dialog (custom-invite URL route)",
      "code": "engagement.invites._open_connect_invite_dialog", "flag": "--connect-dialog",
-     "arg": "<profile-url>", "sweep": False},
+     "arg": "<profile-url>", "sweep": True,
+     "resolver": "_resolve_connect_dialog_target (engagement_targets, connected/pending only)"},
     {"key": "catchup_cards", "surface": "Catch-up moment cards",
      "code": "engagement.outreach._CATCHUP_CARD_LOCATORS", "flag": "--catchup-cards", "sweep": True},
     {"key": "group_composer", "surface": "Group share box / post editor",
      "code": "engagement.feed.auto_post_to_group", "flag": "--group-composer",
-     "arg": "<group-id>", "sweep": False},
+     "arg": "<group-id>", "sweep": True,
+     "resolver": "_resolve_group_target (user_groups, enabled)"},
     {"key": "occasion_composer",
      "surface": "Share box → More → Celebrate an occasion → occasion type",
      "code": "linkedin.share_composer.publish_occasion_natively / "
@@ -580,10 +582,12 @@ SURFACES = (
      "code": "stale_invites.read_pending_invites", "flag": "--sent-invites", "sweep": True},
     {"key": "roster_follow", "surface": "Roster target's activity page Follow control",
      "code": "engagement.feed._resolve_follow_control", "flag": "--roster-follow",
-     "arg": "<profile-url>", "sweep": False},
+     "arg": "<profile-url>", "sweep": True,
+     "resolver": "_resolve_roster_target (engagement_targets, active)"},
     {"key": "roster_connect", "surface": "Roster target's activity page connection state",
      "code": "engagement.feed._resolve_connect_state", "flag": "--roster-connect",
-     "arg": "<profile-url>", "sweep": False},
+     "arg": "<profile-url>", "sweep": True,
+     "resolver": "_resolve_roster_target (engagement_targets, active)"},
     {"key": "appreciation_sources", "surface": "Recommendations received + mentions feed",
      "code": "engagement.outreach._RECOMMENDATION_CARD_LOCATORS / _MENTION_CARD_LOCATORS",
      "flag": "--appreciation-sources", "sweep": True},
@@ -592,30 +596,35 @@ SURFACES = (
      "arg": "<editor-url>", "sweep": True},
     {"key": "newsletter_page", "surface": "Newsletter page (subscriber label + edition list)",
      "code": "engagement.newsletter._read_newsletter_subscriber_count", "flag": "--newsletter-url",
-     "arg": "<newsletter-url>", "sweep": False},
+     "arg": "<newsletter-url>", "sweep": True,
+     "resolver": "_resolve_newsletter_page_target (newsletter_settings.newsletter_url)"},
     {"key": "newsletter_edition", "surface": "Published newsletter edition (article body)",
      "code": "n/a — editorial exemplar evidence for docs/content-quality-audits/newsletter.md",
-     "flag": "--newsletter-edition", "arg": "<edition-url>", "sweep": False},
+     "flag": "--newsletter-edition", "arg": "<edition-url>", "sweep": True,
+     "resolver": "_resolve_newsletter_edition_target (newsletter_editions, freshest published)"},
     {"key": "post_stats", "surface": "Own post detail + analytics counts",
      "code": "engagement.posting.auto_scrape_post_stats / cards._post_social_counts",
      "flag": "--post-url", "arg": "<post-url>",
-     "sweep": False},
+     "sweep": True, "resolver": "_resolve_own_post_target (posts, freshest published)"},
     {"key": "document_render", "surface": "Published post media render (document vs image)",
      "code": "engagement.posting (media anchors)", "flag": "--post-url", "arg": "<post-url>",
-     "sweep": False},
+     "sweep": True, "resolver": "_resolve_own_post_target (posts, freshest published)"},
     {"key": "commenter_read", "surface": "Comment card author identity (name / URL / degree)",
      "code": "composer.comment_author_identity → posting._reply_to_comments_on_open_post "
              "(upsert_engager) / outreach._harvest_post_commenters",
      "flag": "--commenter-read", "arg": "<post-url>", "sweep": True},
     {"key": "comment_outcome", "surface": "Comment thread + sort (demotion read)",
      "code": "engagement.posting._switch_comment_sort / composer._comment_items",
-     "flag": "--comment-outcome-url", "arg": "<post-url>", "sweep": False},
+     "flag": "--comment-outcome-url", "arg": "<post-url>", "sweep": True,
+     "resolver": "_resolve_own_post_target (posts, freshest published)"},
     {"key": "message_thread", "surface": "Message-thread resolution ladder",
      "code": "message_thread.open_message_thread", "flag": "--dm-thread-url",
-     "arg": "<profile-url>", "sweep": False},
+     "arg": "<profile-url>", "sweep": True,
+     "resolver": "_resolve_message_thread_target (dm_followups, most recent)"},
     {"key": "permalink_comment", "surface": "Post permalink card → Comment → composer",
      "code": "engagement.feed._permalink_post_card / _post_composer_for_card",
-     "flag": "--permalink-comment", "arg": "<post-url>", "sweep": False},
+     "flag": "--permalink-comment", "arg": "<post-url>", "sweep": True,
+     "resolver": "_resolve_own_post_target (posts, freshest published)"},
 )
 
 # The sweep runs these in ONE Chrome session, cheapest/safest first so a session that dies part-way
@@ -5324,6 +5333,153 @@ def sweep_session_state(driver, sleep=time.sleep) -> str:
         else "signed_in"
 
 
+# ─────────────── automatic target resolution for the weekly sweep (issue #1770) ───────────────
+# 11 of the 25 surfaces were skipped by the sweep for want of a target — a post URL, a group, a
+# newsletter, a roster profile, a message thread — and the connect dialog was one of them: every
+# automated connection request failed for 17 days (#1733) while two clean Monday sweeps went by,
+# because the one surface that broke is the one nobody pointed the probe at. Every target below is
+# resolvable from data the account already holds, so each resolver returns `(target, note)` — a
+# real target plus where it came from, or `(None, reason)` when nothing was found. A resolver that
+# finds nothing is graded `unknown`, never `drift`: no target is not evidence of rot, the same rule
+# the sweep already applies to a page that never rendered.
+def _resolve_own_post_target(user_id: int) -> tuple:
+    """The account's own freshest published post — grounds `post_stats`, `document_render`,
+    `comment_outcome` and `permalink_comment`, the same target the reply sweep already picks.
+    """
+    urls = _recent_own_post_urls(user_id, count=1)
+    return (urls[0], "posts (own freshest published post)") if urls \
+        else (None, "no published post found in the POST log")
+
+
+def _resolve_newsletter_page_target(user_id: int) -> tuple:
+    """The account's own newsletter page, from the publish run that last recorded one."""
+    try:
+        from cqc_lem.utilities.db import get_newsletter_settings
+        url = str((get_newsletter_settings(user_id) or {}).get("newsletter_url") or "").strip()
+    except Exception:
+        url = ""
+    return (url, "newsletter_settings.newsletter_url") if url \
+        else (None, "no newsletter URL on file (never published, or the settings row has none)")
+
+
+def _resolve_newsletter_edition_target(user_id: int) -> tuple:
+    """The account's own freshest PUBLISHED edition — editorial evidence only (never `drift`)."""
+    try:
+        from cqc_lem.utilities.db import get_latest_published_newsletter_edition_url
+        url = str(get_latest_published_newsletter_edition_url(user_id) or "").strip()
+    except Exception:
+        url = ""
+    return (url, "newsletter_editions (freshest published)") if url \
+        else (None, "no published newsletter edition found")
+
+
+def _resolve_group_target(user_id: int) -> tuple:
+    """One of the account's own enabled groups."""
+    try:
+        from cqc_lem.utilities.db import get_enabled_group_ids
+        ids = [g for g in (get_enabled_group_ids(user_id) or []) if g]
+    except Exception:
+        ids = []
+    return (str(ids[0]), "user_groups (enabled)") if ids else (None, "no enabled group found")
+
+
+def _resolve_roster_target(user_id: int) -> tuple:
+    """An active roster target with a profile URL — for the follow/connect-state readings, which
+    never click anything (#962/#979), so any active target is safe here.
+    """
+    try:
+        from cqc_lem.utilities.db import get_engagement_targets
+        targets = [t for t in (get_engagement_targets(user_id, active_only=True) or [])
+                   if t.get("profile_url")]
+    except Exception:
+        targets = []
+    return (targets[0]["profile_url"], "engagement_targets (active roster)") if targets \
+        else (None, "no active roster target with a profile URL")
+
+
+def _resolve_connect_dialog_target(user_id: int) -> tuple:
+    """Prefer a roster target the account is ALREADY connected to or has a pending invite with, so
+    the connect dialog can be opened and read without a real invitation ever being on offer (#1770).
+    A target with no connect state on file is never used here — only a probe run by a human with an
+    explicit `--connect-dialog <url>` takes that risk knowingly.
+    """
+    try:
+        from cqc_lem.utilities.db import get_engagement_targets
+        targets = get_engagement_targets(user_id, active_only=True) or []
+    except Exception:
+        targets = []
+    safe = [t for t in targets if t.get("profile_url")
+            and t.get("connect_status") in ("connected", "requested")]
+    if safe:
+        return safe[0]["profile_url"], f"engagement_targets (connect_status={safe[0]['connect_status']})"
+    return None, "no roster target already connected or pending — declining to risk a real invite"
+
+
+def _resolve_message_thread_target(user_id: int) -> tuple:
+    """The profile of the most recent DM thread on file (any follow-up status — a thread that went
+    cold or got a reply still exists), for the message-thread ladder probe.
+    """
+    try:
+        from cqc_lem.utilities.db import get_most_recent_dm_thread_target
+        target = get_most_recent_dm_thread_target(user_id)
+    except Exception:
+        target = None
+    return (target, "dm_followups (most recent)") if target else (None, "no DM thread on file")
+
+
+# key -> resolver. Every key here is a SURFACES row with `sweep: True` and a resolver named in
+# docs/sdui-probe-coverage.md's "In the weekly sweep" column.
+_SWEEP_TARGET_RESOLVERS = {
+    "post_stats": _resolve_own_post_target,
+    "document_render": _resolve_own_post_target,
+    "comment_outcome": _resolve_own_post_target,
+    "permalink_comment": _resolve_own_post_target,
+    "newsletter_page": _resolve_newsletter_page_target,
+    "newsletter_edition": _resolve_newsletter_edition_target,
+    "group_composer": _resolve_group_target,
+    "roster_follow": _resolve_roster_target,
+    "roster_connect": _resolve_roster_target,
+    "connect_dialog": _resolve_connect_dialog_target,
+    "message_thread": _resolve_message_thread_target,
+}
+
+
+def resolve_sweep_targets(user_id: int) -> dict:
+    """Resolve every target-needing sweep surface from the account's own data (issue #1770).
+
+    Returns ``{key: {"target": ..., "source": ..., "resolved": bool, "reason": ...}}`` — this rides
+    into the sweep JSON verbatim (``report["target_resolution"]``) so a human, or the staleness
+    accounting in ``sdui_drift_issues.py``, can see which target was used and where it came from,
+    per surface, without re-deriving it from the DB. A resolver that raises is treated exactly like
+    one that found nothing: this function must never let one broken query cost the other ten.
+    """
+    resolution = {}
+    for key, resolver in _SWEEP_TARGET_RESOLVERS.items():
+        try:
+            target, note = resolver(user_id)
+        except Exception as e:
+            target, note = None, f"resolver raised: {type(e).__name__}: {e}"[:200]
+        resolution[key] = {"target": target, "source": note if target else None,
+                           "resolved": target is not None,
+                           "reason": None if target else note}
+    return resolution
+
+
+def _sweep_target_runner(key: str, resolution: dict, probe_fn: Callable) -> dict:
+    """Wrap a target-needing probe so a resolver that found nothing grades `unknown` WITHOUT ever
+    calling the probe on an empty target — and so the reading carries which target was used and
+    where it came from, whichever way it went (issue #1770).
+    """
+    entry = resolution.get(key) or {"resolved": False, "reason": "no resolver registered"}
+    if not entry.get("resolved"):
+        return {"state": STATE_UNKNOWN, "target_resolution": entry,
+                "verdict": f"no resolvable target this run ({entry.get('reason') or 'none found'})"
+                           " — nothing graded or filed"}
+    reading = probe_fn(entry["target"]) or {}
+    reading["target_resolution"] = entry
+    return reading
+
+
 def run_sweep(driver, user_id: int, runners: Optional[dict] = None,
               keys: Optional[list] = None, profile_url: str = "",
               session_state: Optional[str] = None) -> dict:
@@ -5337,6 +5493,9 @@ def run_sweep(driver, user_id: int, runners: Optional[dict] = None,
     auth wall, and the filer would open an issue per surface for one expired cookie. `unknown` is
     the honest grade for a page that never rendered, and `unknown` files nothing.
     """
+    # Resolved once per sweep, only when the default runners are used — a caller that supplies its
+    # own `runners` (every existing unit test does) neither needs nor pays for eleven DB round trips.
+    targets = resolve_sweep_targets(user_id) if runners is None else {}
     runners = runners if runners is not None else {
         "feed_sort": lambda: probe_feed_sort(driver),
         "feed_reactions": lambda: probe_feed_reactions(driver),
@@ -5357,6 +5516,35 @@ def run_sweep(driver, user_id: int, runners: Optional[dict] = None,
         "commenter_read": lambda: probe_commenter_read(
             driver, _recent_own_post_urls(user_id),
             our_slug=_own_slug(profile_url or _sweep_own_profile(driver, user_id))),
+        # Target-resolved surfaces (issue #1770) — each was skipped for want of a caller-supplied
+        # target; `_sweep_target_runner` grades `unknown` rather than probing when nothing resolved.
+        "post_stats": lambda: _sweep_target_runner(
+            "post_stats", targets, lambda t: probe_post_stats(driver, t)),
+        "document_render": lambda: _sweep_target_runner(
+            "document_render", targets, lambda t: probe_document_render(driver, t)),
+        "comment_outcome": lambda: _sweep_target_runner(
+            "comment_outcome", targets,
+            lambda t: probe_comment_outcome(
+                driver, t, _own_slug(profile_url or _sweep_own_profile(driver, user_id)))),
+        "permalink_comment": lambda: _sweep_target_runner(
+            "permalink_comment", targets, lambda t: probe_permalink_comment(driver, t)),
+        "newsletter_page": lambda: _sweep_target_runner(
+            "newsletter_page", targets, lambda t: probe_newsletter_page(driver, t)),
+        "newsletter_edition": lambda: _sweep_target_runner(
+            "newsletter_edition", targets, lambda t: probe_newsletter_edition(driver, t)),
+        "group_composer": lambda: _sweep_target_runner(
+            "group_composer", targets, lambda t: probe_group_composer(driver, t)),
+        "roster_follow": lambda: _sweep_target_runner(
+            "roster_follow", targets, lambda t: probe_roster_follow(driver, t)),
+        "roster_connect": lambda: _sweep_target_runner(
+            "roster_connect", targets, lambda t: probe_roster_connect(driver, t)),
+        "connect_dialog": lambda: _sweep_target_runner(
+            "connect_dialog", targets, lambda t: probe_connect_dialog(driver, t)),
+        "message_thread": lambda: _sweep_target_runner(
+            "message_thread", targets,
+            lambda t: probe_message_thread(
+                driver, t["profile_url"], t.get("first_name", ""),
+                self_name=_sweep_self_name(user_id))),
     }
     wanted = [k for k in (keys or SWEEP_ORDER) if k in runners]
     session = session_state or sweep_session_state(driver)
@@ -5380,16 +5568,27 @@ def run_sweep(driver, user_id: int, runners: Optional[dict] = None,
     # The matrix rides along so the issue filer needs nothing from this module (it runs on the cron
     # host, which has neither selenium nor the app env).
     surfaces = {s["key"]: dict({k: s[k] for k in ("surface", "code", "flag")},
-                               arg=s.get("arg", ""))
+                               arg=s.get("arg", ""), resolver=s.get("resolver", ""))
                 for s in SURFACES if s["key"] in probes}
     return {"user_id": user_id, "session": session, "probes": probes, "skipped": skipped,
-            "surfaces": surfaces, "summary": sweep_summary(probes)}
+            "surfaces": surfaces, "summary": sweep_summary(probes), "target_resolution": targets}
 
 
 def _own_slug(raw: str) -> str:
     """The user's `/in/<slug>`, from a full profile URL or a bare slug typed on the command line."""
     from cqc_lem.utilities.lead_scoring import profile_slug
     return profile_slug(raw or "") or str(raw or "").strip().strip("/").lower()
+
+
+def _sweep_self_name(user_id: int) -> str:
+    """The saved LinkedIn display name for the message-thread sweep probe — '' when unreadable,
+    which `probe_message_thread` already treats as ungrounded rather than a mismatch.
+    """
+    try:
+        from cqc_lem.utilities.linkedin.message_thread import resolve_self_name
+        return resolve_self_name(user_id) or ""
+    except Exception:
+        return ""
 
 
 def _sweep_own_profile(driver, user_id: int) -> str:
