@@ -432,6 +432,15 @@ Three things worth reading beyond the two verdicts:
   this config is a build LEM does not control. The snapshot refresh for this scan is the cron's own
   PR (#1582, +2 new / -1 gone), not this record.
 
+### What the 2026-08-30 tag scan settled (#1757) — one declined unbenchmarked, one measured and declined
+
+| Tag | What it is | Decision |
+|---|---|---|
+| `glm-5.3` | **High (3)** usage level, 1M context, tool calling, no vision (ollama.com/library/glm-5.3) — the same family/level as `glm-5.2` | **Decline, unbenchmarked**, on the same #842 standing spend policy as `deepseek-v4-pro` above: it is +1 usage level against every **serving**-tier incumbent (all Low/Medium), the policy only buys an increase on `lem-complex`, and only on a strict judge-rate win — the champion `qwen3.5:397b` is already measured at 100% judge there, so no run can produce one. The `lem-agent-*` lane's own `glm-5.2` → `glm-5.3` question is tracked separately on #1756 (flat usage level there, not this issue's scope). |
+| `glm-5.3-flash` | **Medium (2)** usage level, 1M context, vision-capable, tool use (ollama.com/library/glm-5.3-flash) — flat quota against `lem-medium`'s incumbents, so the spend policy above does not apply and the only way to answer was to run it | **Decline, measured** (`bm-20260830-3048e1`, report beside this file). Beat champion `gpt-oss:120b` on contract (100% vs 90%) and tied on first draft (60% vs 60%), but missed the judge floor (33% vs 80%) and lost to the champion on judge (33% vs 67%) — comment-contract failures reading as generic validation rather than engaging a specific claim. No `recommend`; `.litellm/config.yaml` unchanged. |
+
+Both are within #1757's scope (`lem-simple`/`lem-medium`/`lem-complex` only) — neither tag touches `lem-agent-*`.
+
 ## Running it
 
 ```bash
@@ -487,6 +496,8 @@ is the rate their report published.
 <!-- LEADERBOARD:BEGIN -->
 | Date | Run | Tier | Model | Role | Contract | First draft | Judge | p50 | Verdict |
 |---|---|---|---|---|---|---|---|---|---|
+| 2026-08-30 | `bm-20260830-3048e1` | lem-medium | `gpt-oss:120b` | champion | 90% | 60% | 67% | 1423 ms | baseline |
+| 2026-08-30 | `bm-20260830-3048e1` | lem-medium | `glm-5.3-flash` | candidate | 100% | 60% | 33% | 2351 ms | reject |
 | 2026-08-02 | `bm-20260802-b84f19` | lem-complex | `qwen3.5:397b` | champion | 70% | 50% | n/a | 30346 ms | baseline |
 | 2026-08-02 | `bm-20260802-b84f19` | lem-complex | `deepseek-v4-flash:0731` | candidate | 80% | 80% | n/a | 5634 ms | reject |
 | 2026-08-02 | `bm-20260802-b84f19` | lem-complex | `deepseek-v4-flash` | candidate | 90% | 60% | n/a | 3016 ms | reject |
