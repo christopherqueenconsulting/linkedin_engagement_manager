@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.170.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.169.0...v0.170.0) (2026-08-30)
+
+
+### Features
+
+* **litellm:** adopt glm-5.3 for lem-agent-tier1 — flat quota, coding-agent gains (closes [#1756](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1756)) ([#1766](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1766)) ([b99697f](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/b99697f71f5beac580a8ef407a42309262e60086))
+
+
+### Bug Fixes
+
+* **litellm:** drop the vanished deepseek-v4-flash:preview from lem-medium/lem-complex (closes [#1758](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1758)) ([#1763](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1763)) ([201baeb](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/201baeb822d48baa191a9cfd1e2b5f02a6721968))
+
 ## [0.169.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.168.1...v0.169.0) (2026-08-30)
 
 
