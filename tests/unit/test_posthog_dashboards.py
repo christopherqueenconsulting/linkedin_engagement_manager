@@ -229,6 +229,28 @@ class TestMain:
         monkeypatch.setenv("POSTHOG_PERSONAL_API_KEY", "")
         assert phd.main([]) == 1
 
+    def test_operator_key_alone_reaches_the_client(self, monkeypatch, capsys):
+        # issue #1453 follow-up: the hand-run scripts read POSTHOG_OPERATOR_API_KEY, not the shared
+        # POSTHOG_PERSONAL_API_KEY directly — this proves it is what reaches the client.
+        monkeypatch.delenv("POSTHOG_PERSONAL_API_KEY", raising=False)
+        monkeypatch.setenv("POSTHOG_OPERATOR_API_KEY", "phx_operator")
+        captured = {}
+
+        class _Stub:
+            def __init__(self, api_key, project_id, app_host):
+                captured["api_key"] = api_key
+
+            def list_dashboards(self):
+                raise RuntimeError("stop after the key gate")
+
+            def list_insights(self):
+                return {}
+
+        monkeypatch.setattr(phd, "PostHogClient", _Stub)
+        assert phd.main([]) == 1
+        assert captured["api_key"] == "phx_operator"
+        assert "Failed to read PostHog state" in capsys.readouterr().err
+
     def test_apply_and_dry_run_are_mutually_exclusive(self):
         # Otherwise `--apply --dry-run` would still write, the opposite of what the user asked for.
         with pytest.raises(SystemExit):

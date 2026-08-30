@@ -186,11 +186,16 @@ lives: each purpose reads its own env var and falls back to `POSTHOG_PERSONAL_AP
 | `runtime` | `POSTHOG_RUNTIME_API_KEY` | `flags.py`, `posthog_endpoints.py`, `observability.posthog_hogql_query` (app containers) | `feature_flag:read`, `query:read` |
 | `query` | `POSTHOG_QUERY_API_KEY` | `scripts/posthog_error_issues.py` via `error_to_issues.sh` (host cron) | `query:read` |
 | `benchmark` | `POSTHOG_BENCHMARK_API_KEY` | `scripts/benchmark_models.py` via `weekly_model_check.sh` (host cron, Sun) | LLM-evaluation read+write, `query:read` |
+| `operator` | `POSTHOG_OPERATOR_API_KEY` | `posthog_provision`, `posthog_dashboards`, `posthog_flags`, `posthog_surveys`, `posthog_experiments`, `posthog_ops_destination`, `slop_retry_clear_rate` (all hand-run) | insight/dashboard/survey/experiment/flag/hog_function read+write, `query:read` |
 
 The provisioning scripts (`posthog_provision`, `posthog_dashboards`, `posthog_flags`,
-`posthog_surveys`, `posthog_experiments`, `posthog_ops_destination`) are run by hand and
-deliberately keep reading `POSTHOG_PERSONAL_API_KEY` — an operator key exported into a shell for the
-run and stored nowhere is the right shape for them.
+`posthog_surveys`, `posthog_experiments`, `posthog_ops_destination`, `slop_retry_clear_rate`) are
+run by hand, never stored in an environment the app or a cron owns. They share ONE `operator`
+purpose rather than five separate keys nobody would provision — an operator already holds account
+access to every scope those six write scopes name, so splitting them buys no extra containment.
+`POSTHOG_OPERATOR_API_KEY` is exported into a shell for the run and stored nowhere; revoking the
+shared key leaves these scripts a NAMED var to export instead of a silent break (issue #1453,
+2026-08-22 follow-up).
 
 **Why the benchmark is a purpose and not an operator key.** `scripts/benchmark_models.py` is not
 hand-run: `scripts/weekly_model_check.sh` (host cron, Sun) sources its key out of `/opt/lem/.env`,
@@ -230,6 +235,21 @@ unknown `--purpose`. It writes nothing to PostHog — every request is a GET, or
 or an endpoint `/run/`, and `tests/unit/scripts/test_posthog_key_check.py` fails the build if a
 surface is ever added that could write. Run it after each consumer is populated and again
 immediately before revoking the shared key.
+
+**`benchmark` "LLM-evaluation API" is a documented ceiling, not an open failure.** Live checks
+(2026-08-22, both against the shared key and again against a fully-scoped
+`POSTHOG_BENCHMARK_API_KEY` carrying `llm_playground:read` / `llm_prompt:read` / `llm_skill:read`)
+return `HTTP 404` on `GET /api/projects/{project_id}/llm_analytics/evaluations/` — not a scope
+problem. PostHog's current LLM Analytics API does not expose that collection endpoint at all: the
+public surface is `evaluation_reports` (create/list/generate/runs), `evaluation_config` and
+`evaluation_summary` — none of which is a drop-in replacement for the create-then-trigger-per-event
+flow `benchmark_models.PostHogEvals` is built around (`create_evaluation` / `run_evaluation` per
+`$ai_generation`). Swapping to `evaluation_reports` would be a redesign of the trigger mechanism, not
+a path fix, so it stays unfixed here. Consequence: the "LLM-evaluation API" surface FAILs
+permanently — the run falls open to the in-runner judge exactly as designed
+(`docs/model-benchmarks/README.md`), so nothing is broken, but an all-PASS `posthog_key_check.py`
+run should not be expected without that redesign; one permanent FAIL on that one surface is the
+ceiling, not evidence of a misconfigured key.
 
 The manual equivalents, if you want to check a surface by hand: `flags.local_evaluation_available()`,
 `GET /user/posthog-stats` returning populated panels, `scripts/posthog_error_issues.py --dry-run`

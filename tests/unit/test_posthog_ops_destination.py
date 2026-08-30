@@ -130,6 +130,17 @@ class TestMain:
         assert pod.main([]) == 1
         assert "POSTHOG_PERSONAL_API_KEY" in capsys.readouterr().err
 
+    def test_operator_key_alone_reaches_the_client(self, monkeypatch, capsys):
+        # issue #1453 follow-up: this hand-run script reads POSTHOG_OPERATOR_API_KEY, not the
+        # shared POSTHOG_PERSONAL_API_KEY directly.
+        monkeypatch.delenv("POSTHOG_PERSONAL_API_KEY", raising=False)
+        monkeypatch.setenv("POSTHOG_OPERATOR_API_KEY", "phx_operator")
+        monkeypatch.setenv("POSTHOG_OPS_WEBHOOK_URL", "https://hooks.example.com/x")
+        client = MagicMock()
+        client.find_destination.return_value = None
+        monkeypatch.setattr(pod, "PostHogFunctionsClient", lambda *a, **k: client)
+        assert pod.main(["--dry-run"]) == 2
+
     def test_no_webhook_url_exits_zero_with_instructions(self, monkeypatch, capsys):
         monkeypatch.setenv("POSTHOG_PERSONAL_API_KEY", "phx_test")
         monkeypatch.delenv("POSTHOG_OPS_WEBHOOK_URL", raising=False)

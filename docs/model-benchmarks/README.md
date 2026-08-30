@@ -517,6 +517,15 @@ reach both halves PostHog scoring needs — the evaluation API and HogQL?" witho
 benchmark. It does not look at `POSTHOG_API_KEY`; the run itself says so on stderr when that one is
 the missing half.
 
+**The evaluation-API half of that check is a documented ceiling, not a fixable failure** (confirmed
+2026-08-22, `docs/kpi-dashboards.md` § Purpose-scoped personal keys): PostHog's current LLM Analytics
+API does not expose the `/llm_analytics/evaluations/` collection endpoint `PostHogEvals` is built on
+— `create_evaluation` / `run_evaluation` per `$ai_generation` has no equivalent in PostHog's public
+surface (`evaluation_reports`, `evaluation_config`, `evaluation_summary`). It is not a key-scope
+problem — a fully-scoped key 404s the same as the shared one — so it will read as PostHog-evals
+unavailable indefinitely, and the run falls open to the in-runner judge exactly as designed. Do not
+spend more scope trying to make this one pass.
+
 The report is the deliverable — `--results-out` for the JSON a later `--render` replays, and
 `--recommendations-out` for the swap list a follow-up config PR reads. Anything the standing spend
 policy marks `hold` is named in the report and belongs to the owner, not to the config PR.

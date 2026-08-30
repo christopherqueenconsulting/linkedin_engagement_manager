@@ -36,8 +36,10 @@ CLI (--dry-run and --apply are mutually exclusive):
   --print-spec  Print both survey specs as JSON and exit (no network).
   --launch      With --apply, also set start_date on a survey that has never been launched.
 Env:
-  POSTHOG_PERSONAL_API_KEY  Personal API key (required for network). Scopes: survey read+write,
-                            plus feature_flag write (a targeting flag is created with the survey).
+  POSTHOG_OPERATOR_API_KEY  Personal API key (required for network), falling back to
+                            POSTHOG_PERSONAL_API_KEY (posthog_keys.py owns the precedence). Scopes:
+                            survey read+write, plus feature_flag write (a targeting flag is created
+                            with the survey).
   POSTHOG_PROJECT_ID        PostHog project id (default 475262 — "CQC LEM").
   POSTHOG_APP_HOST          App host for the API (default https://us.posthog.com).
 Exit: 0 in sync / applied, 2 changes pending (--dry-run), 1 error.
@@ -50,6 +52,11 @@ import os
 import sys
 from datetime import datetime, timezone
 from typing import Optional
+
+# Reached by path, not by installation: this is run by hand from a checkout, the same way
+# posthog_key_check.py reaches the resolver. posthog_keys.py is stdlib-only, so this costs nothing.
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src"))
+from cqc_lem.utilities.posthog_keys import missing_key_message, operator_api_key  # noqa: E402
 
 DEFAULT_PROJECT_ID = "475262"  # "CQC LEM" — not a secret; the key that reaches it is.
 DEFAULT_APP_HOST = "https://us.posthog.com"
@@ -372,9 +379,9 @@ def main(argv: Optional[list] = None) -> int:
         print(json.dumps(build_specs(), indent=2, ensure_ascii=False))
         return 0
 
-    api_key = os.getenv("POSTHOG_PERSONAL_API_KEY", "")
+    api_key = operator_api_key()
     if not api_key:
-        print("POSTHOG_PERSONAL_API_KEY is not set — cannot reach PostHog.", file=sys.stderr)
+        print(f"{missing_key_message('operator')} — cannot reach PostHog.", file=sys.stderr)
         return 1
     project_id = os.getenv("POSTHOG_PROJECT_ID", DEFAULT_PROJECT_ID)
     app_host = os.getenv("POSTHOG_APP_HOST", DEFAULT_APP_HOST)
