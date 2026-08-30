@@ -1221,15 +1221,14 @@ def process_user_followups(self, user_id: int, max_per_run: int = 20):
         driver, wait, user_email, my_profile = get_current_profile(user_id=user_id, session_name="Follow-ups")
     except Exception as e:
         if is_tab_crashed(e):
-            # The renderer behind the acquired tab was already dead (usually an OOM kill left over
-            # from a previous heavy session on a reused Grid slot) before this run ever navigated
-            # anywhere of its own — no follow-up here was even attempted, and the due rows are
-            # untouched, so the next tick retries them cleanly. This degrades exactly as gracefully
-            # as any other "Failed to start" path already does; the only thing wrong was filing a
-            # known-transient Selenium fault as a grouped defect (issue #1749) instead of a warning
-            # that escalates if it starts recurring.
-            log_warning("Browser tab crashed while starting follow-ups", exc=e, user_id=user_id,
-                        task_name="process_user_followups")
+            # get_current_profile already logs this at WARNING where it's detected (the first
+            # login navigation) before re-raising — warning again here would double-file the SAME
+            # tab-crash occurrence under a second message/call-site, defeating the point of
+            # downgrading it (issue #1749). This catch is a wrapper re-reporting a reason already
+            # logged where it happened, same as the invite_to_connect precedent in
+            # utilities/CLAUDE.md — DEBUG, not another WARNING.
+            log_debug("Browser tab crashed while starting follow-ups", exc=e, user_id=user_id,
+                      task_name="process_user_followups")
         else:
             log_error("Error getting profile for follow-ups", exc=e, user_id=user_id, task_name="process_user_followups")
         return f"Failed to start follow-ups: {e}"
