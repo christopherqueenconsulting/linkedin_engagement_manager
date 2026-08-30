@@ -3713,3 +3713,140 @@ class TestCommenterReadTargetResolution:
         report = json.loads(out.split(llv.REPORT_JSON_BEGIN)[1].split(llv.REPORT_JSON_END)[0])
         assert report["commenter_read"]["posts"] == ["https://li/8"]
         assert report["commenter_read"]["our_slug"] == "me"
+
+
+class TestInviteLimitSignal:
+    """#1733: an account-level wall must never be graded as selector drift.
+
+    Every profile reads the same under a limit, so `drift` would file a code defect against locators
+    that are fine — and `scripts/sdui_drift_issues.py` files on exactly that grade.
+    """
+
+    def test_the_weekly_limit_copy_is_named(self):
+        assert llv.invite_limit_signal(
+            "You've reached the weekly invitation limit. Try again next week.") == "weekly_limit"
+
+    def test_a_restriction_notice_outranks_a_limit_notice(self):
+        assert llv.invite_limit_signal(
+            "We've restricted your account. You've reached the weekly invitation limit."
+        ) == "restricted"
+
+    def test_ordinary_profile_copy_names_no_wall(self):
+        assert llv.invite_limit_signal("Jane Doe 2nd Follow Message More Pending") == ""
+
+    def test_nothing_is_not_a_wall(self):
+        assert llv.invite_limit_signal(None) == ""
+        assert llv.invite_limit_signal("") == ""
+
+    def test_a_restricted_reading_is_unknown_never_drift(self):
+        reading = {"dialog_present": False, "page_text": "some copy", "invite_pending": False,
+                   "restriction": "weekly_limit"}
+        assert llv.connect_dialog_state(reading) == llv.STATE_UNKNOWN
+
+    def test_the_same_reading_without_the_wall_is_drift(self):
+        reading = {"dialog_present": False, "page_text": "some copy", "invite_pending": False,
+                   "restriction": ""}
+        assert llv.connect_dialog_state(reading) == llv.STATE_DRIFT
+
+    def test_the_verdict_says_it_grounds_no_selector(self):
+        verdict = llv.connect_dialog_verdict(
+            {"dialog_present": False, "page_text": "x", "restriction": "weekly_limit",
+             "restriction_copy": "weekly invitation limit"})
+        assert "not selector rot" in verdict
+        assert "weekly_limit" in verdict
+
+
+class TestClassifyConnectControls:
+    _OWNER = "Jane Doe"
+
+    def test_a_bare_connect_inside_the_top_card_belongs_to_the_owner(self):
+        controls = [{"aria": "", "text": "Connect", "in_top_card": True}]
+        assert llv.classify_connect_controls(controls, self._OWNER)["owner"] == ["Connect"]
+
+    def test_the_same_control_outside_the_top_card_is_unattributed(self):
+        # It names nobody and nothing scopes it to the target — precisely the control production
+        # must never click.
+        controls = [{"aria": "", "text": "Connect", "in_top_card": False}]
+        result = llv.classify_connect_controls(controls, self._OWNER)
+        assert result["unattributed"] == ["Connect"] and result["owner"] == []
+
+    def test_an_invite_control_naming_the_owner_is_the_owners(self):
+        controls = [{"aria": "Invite Jane Doe to connect", "text": "Connect", "in_top_card": True}]
+        assert llv.classify_connect_controls(controls, self._OWNER)["hazard"] == []
+
+    def test_an_invite_control_naming_anyone_else_is_a_hazard(self):
+        controls = [{"aria": "Invite Bob Smith to connect", "text": "Connect", "in_top_card": False}]
+        result = llv.classify_connect_controls(controls, self._OWNER)
+        assert result["hazard"] == ["Invite Bob Smith to connect"]
+
+    def test_with_no_owner_name_a_named_control_can_only_be_unattributed(self):
+        controls = [{"aria": "Invite Bob Smith to connect", "text": "Connect", "in_top_card": True}]
+        result = llv.classify_connect_controls(controls, "")
+        assert result["unattributed"] == ["Invite Bob Smith to connect"]
+        assert result["owner"] == []
+
+
+class TestPageCopySections:
+    def test_each_surface_is_reported_under_its_own_key(self):
+        driver = MagicMock()
+        driver.find_elements.side_effect = lambda by, sel: {
+            "main": [_texty("top card copy")],
+            "body": [_texty("whole page copy")],
+        }.get(sel, [_texty("modal copy")])
+        copy = llv.page_copy_sections(driver)
+        assert copy["main"] == "top card copy"
+        assert copy["body"] == "whole page copy"
+        assert copy["dialog"] == "modal copy"
+
+    def test_the_cap_is_respected(self):
+        driver = MagicMock()
+        driver.find_elements.side_effect = lambda by, sel: [_texty("x" * 500)]
+        assert len(llv.page_copy_sections(driver, limit=100)["main"]) == 100
+
+    def test_a_raising_driver_costs_the_section_not_the_run(self):
+        driver = MagicMock()
+        driver.find_elements.side_effect = RuntimeError("gone")
+        assert llv.page_copy_sections(driver) == {"main": "", "body": "", "dialog": ""}
+
+
+class TestProbeMoreMenuItems:
+    def test_the_trigger_is_clicked_and_the_items_are_only_read(self):
+        driver = MagicMock()
+        driver.execute_script.return_value = [
+            {"tag": "a", "role": "menuitem", "aria": "", "text": "Connect",
+             "href": "/preload/custom-invite/?vanityName=jane"}]
+        trigger = MagicMock()
+        with patch("cqc_lem.utilities.selenium_util.click_first", return_value=trigger), \
+             patch.object(llv, "visible_button_labels", return_value=[]), \
+             patch.object(llv, "page_copy_sections", return_value={}), \
+             patch.object(llv, "_custom_invite_anchors", return_value=[]):
+            reading = llv.probe_more_menu_items(driver, MagicMock(), sleep=lambda _s: None)
+
+        assert reading["opened_more_menu"] is True
+        assert reading["menu_items"][0]["text"] == "Connect"
+        trigger.click.assert_not_called()   # click_first did the pressing; nothing else is pressed
+        trigger.send_keys.assert_called_once()   # Escape closes it
+
+    def test_a_missed_trigger_claims_nothing(self):
+        with patch("cqc_lem.utilities.selenium_util.click_first", return_value=None):
+            reading = llv.probe_more_menu_items(MagicMock(), MagicMock(), sleep=lambda _s: None)
+        assert reading["opened_more_menu"] is False and reading["menu_items"] == []
+
+
+class TestNewCapturesAreDeclared:
+    def test_the_capability_list_names_them(self):
+        capabilities = set(llv.probe_script_reading()["capabilities"])
+        assert {"connect_dialog.page_copy", "connect_dialog.top_card_controls",
+                "connect_dialog.menu_items", "connect_dialog.restriction"} <= capabilities
+
+    def test_the_more_menu_flag_parses(self):
+        args = llv.build_parser().parse_args(
+            ["--user-id", "1", "--connect-dialog", "https://www.linkedin.com/in/jane",
+             "--connect-open-more-menu"])
+        assert args.connect_open_more_menu is True
+
+
+def _texty(text):
+    element = MagicMock()
+    element.text = text
+    return element

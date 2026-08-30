@@ -348,6 +348,126 @@ def is_commenting_held(user_id: int) -> bool:
     return commenting_hold_remaining(user_id) > 0
 
 
+# The same shape again, for connection invites (#1733/#1732). Two things trip it, and neither is a
+# reason to stop the rest of the account:
+#
+#   * LinkedIn naming an account-level invitation limit or restriction — a WEEKLY ceiling, hence the
+#     default TTL. `pause_automation` would be wrong: it is the global Selenium pause, and it would
+#     stop commenting, DMs, the feed walk and the newsletter for a week over an invite quota. A 429
+#     trip would be wrong too: the breaker is about HTTP throttling and escalates a SHARED cooldown.
+#   * a run of invites that could not open a Connect dialog at all. Those failures cost nothing
+#     against `max_invites_per_day` (which counts successful sends off immutable `logs` rows), so a
+#     dead selector turned a queue backlog into ~20 automated profile visits in twelve hours —
+#     precisely the surface LinkedIn's automation detection watches. This is a SAFETY control, so it
+#     is deliberately not a feature flag.
+#
+# Fails OPEN, like everything else here: with Redis down the worst case is one wasted Chrome session
+# that re-detects the wall and re-sets the hold, which self-heals. Failing closed would freeze a
+# healthy account's outbound on an infrastructure blip.
+_INVITE_HOLD_KEY = "linkedin:invite_hold:{user_id}"
+_INVITE_FAILURE_KEY = "linkedin:invite_dialog_misses:{user_id}"
+
+INVITE_HOLD_DEFAULT_SECONDS = 7 * 24 * 3600  # the ceiling LinkedIn enforces is weekly
+INVITE_MISS_HOLD_SECONDS = 6 * 3600          # a dead route: stop for the day, not the week
+INVITE_MISS_STREAK_LIMIT = 3
+
+
+def hold_invites(user_id: int, seconds: int = INVITE_HOLD_DEFAULT_SECONDS,
+                 reason: str = "invite limit") -> bool:
+    """Hold this user's outbound connection invites for `seconds`. True if the hold was stored."""
+    client = _redis_client()
+    if client is None:
+        return False
+    try:
+        client.set(_INVITE_HOLD_KEY.format(user_id=int(user_id)), reason or "invite limit",
+                   ex=max(1, int(seconds)))
+        log_warning(f"Connection invites HELD for user {user_id} for {int(seconds)}s "
+                    f"(reason: {reason})", action_type="invite_connect", user_id=int(user_id))
+        return True
+    except Exception as e:
+        log_warning("Failed to set invite hold", exc=e, action_type="invite_connect")
+        return False
+
+
+def release_invite_hold(user_id: int) -> bool:
+    """Lift an invite hold immediately (owner action once the wall has cleared)."""
+    client = _redis_client()
+    if client is None:
+        return False
+    try:
+        client.delete(_INVITE_HOLD_KEY.format(user_id=int(user_id)))
+        client.delete(_INVITE_FAILURE_KEY.format(user_id=int(user_id)))
+        return True
+    except Exception:
+        return False
+
+
+def invite_hold_remaining(user_id: int) -> int:
+    """Seconds left on this user's invite hold, or 0 when not held / Redis unavailable."""
+    client = _redis_client()
+    if client is None:
+        return 0
+    try:
+        ttl = client.ttl(_INVITE_HOLD_KEY.format(user_id=int(user_id)))
+    except Exception:
+        return 0
+    return ttl if ttl and ttl > 0 else 0
+
+
+def invite_hold_reason(user_id: int) -> "str | None":
+    """The reason stored with this user's invite hold, or None when nothing is held."""
+    client = _redis_client()
+    if client is None:
+        return None
+    try:
+        value = client.get(_INVITE_HOLD_KEY.format(user_id=int(user_id)))
+    except Exception:
+        return None
+    if value is None:
+        return None
+    return value.decode("utf-8", "ignore") if isinstance(value, bytes) else str(value)
+
+
+def is_invites_held(user_id: int) -> bool:
+    """Whether THIS user's connection invites are held. Fails open (no Redis -> not held)."""
+    return invite_hold_remaining(user_id) > 0
+
+
+def record_invite_dialog_miss(user_id: int) -> int:
+    """Count one invite that could not open a Connect dialog, and hold the lane at the limit.
+
+    The streak key expires on its own, so a single miss between working invites can never accumulate
+    into a hold across days — only a genuine RUN of them does. Returns the streak length; 0 when
+    Redis is unavailable, which is the fail-open answer (nothing counted, nothing held).
+    """
+    client = _redis_client()
+    if client is None:
+        return 0
+    key = _INVITE_FAILURE_KEY.format(user_id=int(user_id))
+    try:
+        streak = int(client.incr(key))
+        if streak == 1:
+            client.expire(key, INVITE_MISS_HOLD_SECONDS)
+    except Exception as e:
+        log_warning("Failed to count an invite dialog miss", exc=e, action_type="invite_connect")
+        return 0
+    if streak >= INVITE_MISS_STREAK_LIMIT and not is_invites_held(user_id):
+        hold_invites(user_id, INVITE_MISS_HOLD_SECONDS,
+                     reason=f"{streak} consecutive invites could not open a Connect dialog")
+    return streak
+
+
+def clear_invite_dialog_misses(user_id: int) -> None:
+    """Reset the miss streak — an invite that went out proves the route works."""
+    client = _redis_client()
+    if client is None:
+        return
+    try:
+        client.delete(_INVITE_FAILURE_KEY.format(user_id=int(user_id)))
+    except Exception:
+        return
+
+
 # --- suppression tripwire state -------------------------------------------------
 # The record of WHY engagement was auto-paused for silent-suppression (issue #629). The pause itself
 # is the global `pause_automation` breaker above — this is the per-user evidence beside it, so the

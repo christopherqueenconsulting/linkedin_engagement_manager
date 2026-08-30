@@ -1563,6 +1563,14 @@ NO_CONNECT_BUTTON_MESSAGE = "No Connect option on this profile (invite may alrea
 # (issue #573). Unlike a missing note this does NOT degrade gracefully — the invite is lost — which
 # is why it stays an error and gets its own reason on the request row.
 INVITE_NOT_SENT_MESSAGE = "Connect dialog opened but the invitation could not be sent"
+# The wall was the ACCOUNT, not the profile (#1733). Distinct from NO_CONNECT_BUTTON_MESSAGE on
+# purpose: a limit reads the same on every profile, so grading it as "no Connect option" sends an
+# operator hunting a selector that is fine and lets the scanner re-dispatch the whole queue into it.
+# A request that hit one of these is DEFERRED (left `approved`), never `failed` — nothing was
+# attempted, so nothing failed.
+INVITE_LIMIT_REACHED_MESSAGE = (
+    "LinkedIn's invitation limit is reached for this account — invites are held, not failed")
+ACCOUNT_RESTRICTED_MESSAGE = "LinkedIn has restricted this account's invitations"
 # LinkedIn's hard cap on a connection-request note. Also the point past which a drafted note is
 # refined down rather than typed and silently truncated by the textarea's own maxlength.
 CONNECT_NOTE_MAX_CHARS = 300

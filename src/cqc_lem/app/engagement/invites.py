@@ -24,17 +24,22 @@ and `strip_non_bmp`, which moved to `utilities.linkedin_formatter` alongside the
 
 import re
 import time
+from urllib.parse import unquote
 
 from selenium.common import StaleElementReferenceException
+from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.common.by import By
+from selenium.webdriver.support import expected_conditions as EC
 
 from cqc_lem.app.my_celery import app as shared_task
 from cqc_lem.app.queue_once import QueueOnce
 from cqc_lem.utilities.ai.ai_helper import get_ai_message_refinement
 from cqc_lem.utilities.db import (
+    ACCOUNT_RESTRICTED_MESSAGE,
     ALREADY_CONNECTED_MESSAGE,
     CONNECT_NOTE_MAX_CHARS,
     CONNECTION_REQUEST_SENT_MESSAGE,
+    INVITE_LIMIT_REACHED_MESSAGE,
     INVITE_NOT_SENT_MESSAGE,
     NO_CONNECT_BUTTON_MESSAGE,
     ConnectStatus,
@@ -56,7 +61,16 @@ from cqc_lem.utilities.linkedin.company_page_inviter import (
     plan_daily_invites,
 )
 from cqc_lem.utilities.linkedin.helper import is_first_degree, login_to_linkedin
-from cqc_lem.utilities.linkedin.rate_limit import LinkedInRateLimited, is_automation_paused
+from cqc_lem.utilities.linkedin.rate_limit import (
+    INVITE_HOLD_DEFAULT_SECONDS,
+    LinkedInRateLimited,
+    clear_invite_dialog_misses,
+    hold_invites,
+    invite_hold_reason,
+    is_automation_paused,
+    is_invites_held,
+    record_invite_dialog_miss,
+)
 from cqc_lem.utilities.linkedin.stale_invites import (
     WITHDRAW_STATUS_DISABLED,
     WITHDRAW_STATUS_FAILED,
@@ -72,6 +86,8 @@ from cqc_lem.utilities.observability import track_company_page_invite_run, track
 from cqc_lem.utilities.selenium_util import (
     click_element_wait_retry,
     click_first,
+    element_label,
+    find_deep_elements,
     find_first,
     get_driver_wait_pair,
     quit_gracefully,
@@ -191,24 +207,59 @@ def _degree_lines_on_page(driver) -> "int | None":
     return sum(1 for line in text.splitlines() if _DEGREE_LINE_RE.match(line.strip()))
 
 
+# A hydrating SDUI profile swaps nodes out from under a walk, so one detached element must not
+# blind a page that read perfectly well everywhere else. Two attempts: the second exists for the
+# case where `find_elements` ITSELF goes stale mid-enumeration, which no per-element guard can save.
+_DEGREE_READ_ATTEMPTS = 2
+
+
+def _element_text(element) -> str:
+    """One guarded read of an element's text; `""` when the node has detached.
+
+    Read ONCE, deliberately: the old code read `.text` twice per element — once to test it, once to
+    append it — so the guard and the value could disagree, and the second read was where the page
+    had had time to re-render.
+    """
+    try:
+        return element.text or ""
+    except StaleElementReferenceException:
+        return ""
+
+
 def _degree_badge_texts(driver) -> "list[str] | None":
     """Every degree-badge text the locator chain can READ, in chain-then-document order, or None
     when the read itself failed. None and [] are different answers: an unreadable page grounds
     nothing, an empty chain on a readable page is the zero worth cross-checking. A matched node with
     no text counts as neither — a locator that resolves to an empty element is as blind as one that
     resolves to nothing.
+
+    Two ways to get None, and only one of them is a defect. A page that went STALE under the walk is
+    a hydrating profile behaving normally: it is retried once and, if it loses both attempts, logged
+    at DEBUG — warning on it filed a fingerprinted issue twice per profile per attempt for working
+    behaviour (#1038/#1039). Any OTHER exception means the read could not happen at all — a dead
+    driver, a lost session — and that still warns with `exc=`.
     """
-    texts: "list[str]" = []
-    try:
-        for by, selector in _PROFILE_DEGREE_LOCATORS:
-            for element in driver.find_elements(by, selector):
-                if (element.text or "").strip():
-                    texts.append(element.text)
-    except Exception as e:
-        log_warning("Could not read the connection-degree badge; attempting the invite anyway",
-                    exc=e, action_type="invite_connect")
-        return None
-    return texts
+    for attempt in range(_DEGREE_READ_ATTEMPTS):
+        texts: "list[str]" = []
+        try:
+            for by, selector in _PROFILE_DEGREE_LOCATORS:
+                for element in driver.find_elements(by, selector):
+                    text = _element_text(element)
+                    if text.strip():
+                        texts.append(text)
+        except StaleElementReferenceException as e:
+            if attempt + 1 < _DEGREE_READ_ATTEMPTS:
+                time.sleep(1)  # let the re-render settle, then walk the chain again
+                continue
+            log_debug(f"Degree-badge chain went stale on every attempt: {e}",
+                      action_type="invite_connect")
+            return None
+        except Exception as e:
+            log_warning("Could not read the connection-degree badge; attempting the invite anyway",
+                        exc=e, action_type="invite_connect")
+            return None
+        return texts
+    return None
 
 
 def _profile_is_first_degree(driver) -> bool:
@@ -278,55 +329,271 @@ _PROFILE_CONNECT_BUTTON_LOCATORS = [
                'and not(starts-with(@aria-label,"Invite"))]'),
 ]
 
+# Re-grounded live 2026-08-29 (#1733, three profiles, docs/sdui-selenium-notes.md). Two layouts, one
+# shared truth, and one dead route:
+#
+#   * layout A (2 of 3 profiles): NO Connect control on the top card at all. Connect lives in the
+#     More menu as `<a role="menuitem" href="/preload/custom-invite/?vanityName=<slug>">Connect</a>`.
+#   * layout B (1 of 3): a top-card `<a aria-label="Invite <Owner> to connect"
+#     href="/preload/custom-invite/?vanityName=<slug>">Connect</a>` and NO Connect item in the More
+#     menu — so neither layout is "the" layout and both routes have to stay.
+#   * DEAD: `driver.get(<that URL>)`. The preload route is an in-app route, not a page. Navigating
+#     to it directly now renders a COMPLETELY blank document — empty `<main>`, empty `<body>`, not
+#     one control. That is why all three shipped routes missed on every profile: the URL route
+#     navigated there, and the More-menu route CLICKED a link to the same place. The link must be
+#     clicked in-app, never navigated to.
+#
+# `_PROFILE_CONNECT_BUTTON_LOCATORS` above cannot see layout B either: the control is an `<a>`, and
+# that chain matches `//main//button` only.
+#
+# The href is a HARDER #1012 guard than any label. A suggestion-rail control for a stranger carries
+# THAT STRANGER's `vanityName`, so requiring the anchor's own slug to equal the target's is
+# machine-checkable identity rather than name-matching — and it is checked in Python, so no locator
+# literal here names a person and the rail-hazard regression test needs no edit to accommodate it.
+_CUSTOM_INVITE_ANCHOR_XPATH = '//a[contains(@href,"custom-invite")]'
+_VANITY_NAME_RE = re.compile(r"[?&]vanityName=([^&#]+)", re.IGNORECASE)
+
+
+def _anchor_invite_slug(element) -> str:
+    """The slug an anchor's own custom-invite href names, lowercased.
+
+    `""` when unreadable, and the caller refuses that: a control we cannot attribute is precisely
+    the one never to click.
+    """
+    try:
+        href = element.get_attribute("href") or ""
+    except Exception:
+        return ""
+    match = _VANITY_NAME_RE.search(href)
+    if not match:
+        return ""
+    return unquote(match.group(1)).strip().strip("/").lower()
+
+
+def _click_own_custom_invite_anchor(driver, wait, user_id: int, slug: str) -> bool:
+    """Click the TARGET's own custom-invite link and report whether the dialog opened.
+
+    Serves both layouts: the top-card anchor and the More-menu item are the same element shape, so
+    one reader covers them and a third rotation between the two costs nothing.
+
+    Refuses every anchor whose `vanityName` is not exactly `slug` — the rail's anchors are that
+    check's whole purpose. Exact equality, never a prefix: `chris` must not match `chris-queen`.
+    """
+    if not slug:
+        return False
+    try:
+        anchors = driver.find_elements(By.XPATH, _CUSTOM_INVITE_ANCHOR_XPATH)
+    except Exception as e:
+        log_debug(f"Could not enumerate custom-invite anchors: {e}", user_id=user_id,
+                  action_type="invite_connect")
+        return False
+
+    wanted = slug.strip().strip("/").lower()
+    for anchor in anchors:
+        if _anchor_invite_slug(anchor) != wanted:
+            continue
+        try:
+            if not anchor.is_displayed():
+                continue
+            # THIS element, never a re-lookup: re-finding by the XPath would click whichever
+            # custom-invite anchor the page happens to yield first, which on a profile carrying the
+            # suggestion rail is a stranger's. That re-lookup IS #1012.
+            wait.until(EC.element_to_be_clickable(anchor))
+            ActionChains(driver).move_to_element(anchor).click().perform()
+        except Exception as e:
+            log_debug(f"Custom-invite anchor was not clickable: {e}", user_id=user_id,
+                      action_type="invite_connect")
+            return False
+        # The outcome is the gate, never the click (docs/sdui-selenium-notes.md).
+        return _connect_dialog_present(driver, wait, user_id)
+    return False
+
+
+# The vocabulary LinkedIn uses when the ACCOUNT, not the profile, is why no dialog rendered. Mirrors
+# `invite_limit_signal` in scripts/linkedin_live_validation.py — the probe imports production, never
+# the other way round, so the two lists are pinned against each other by a unit test instead.
+_INVITE_LIMIT_RE = re.compile(
+    r"weekly invitation limit"
+    r"|reached the (?:weekly )?limit"
+    r"|maximum number of invitations"
+    r"|you(?:'|’)?ve (?:used all|reached) your invitation"
+    r"|no invitations? (?:left|remaining)"
+    r"|try again (?:in|next week)",
+    re.IGNORECASE)
+_ACCOUNT_RESTRICTED_RE = re.compile(
+    r"we(?:'|’)?ve restricted your account"
+    r"|your account has been (?:temporarily )?restricted"
+    r"|temporarily restricted",
+    re.IGNORECASE)
+
+
+def _invite_restriction_reason(driver) -> "str | None":
+    """Which account-level wall the page NAMES, or None.
+
+    Reads `main`, `body` and every open dialog, because the notice renders outside `main` as often
+    as in it. Returns None on an unreadable page and that is deliberate: a restriction is a claim,
+    a claim needs evidence, and an unreadable page must fall through to the ordinary miss rather
+    than manufacture an account-wide hold out of a failed read.
+    """
+    chunks = []
+    for selector in ("main", "body", "[role='dialog'], [role='alertdialog'], dialog"):
+        try:
+            for element in driver.find_elements(By.CSS_SELECTOR, selector):
+                text = _element_text(element)
+                if text:
+                    chunks.append(text)
+        except Exception:
+            continue
+    body = " ".join(chunks)
+    if not body.strip():
+        return None
+    if _ACCOUNT_RESTRICTED_RE.search(body):
+        return ACCOUNT_RESTRICTED_MESSAGE
+    if _INVITE_LIMIT_RE.search(body):
+        return INVITE_LIMIT_REACHED_MESSAGE
+    return None
+
+
+# Grounded live 2026-08-29 (#1733): the Connect dialog MOVED INTO AN OPEN SHADOW ROOT (the overlay
+# layer hosted on `div.theme--light`), which is the same rotation #1621 found under the share-box
+# composer. Its controls are unchanged — `Add a note` / `Send without a note` / `Send invitation`,
+# `textarea#custom-message` — but neither XPath nor `driver.find_elements` crosses a shadow
+# boundary, so an OPEN dialog read EXACTLY like one that never opened. That is why every route
+# reported a miss while the click behind it was working the whole time.
+#
+# So every lookup from here to the Send click goes through `find_deep_elements`, which means CSS
+# only (XPath cannot address a shadow tree at all) and label matching in Python. The XPath locators
+# above are kept as the light-DOM first pass — cheap, and still correct for an account that has not
+# been moved to the shadow-mounted overlay yet.
+_CONNECT_DIALOG_CONTROL_CSS = "button, a, [role='button']"
+_SEND_WITHOUT_NOTE_LABEL = "send without a note"
+_ADD_NOTE_LABEL = "add a note"
+_SEND_INVITATION_LABEL = "send invitation"
+
+
+def _deep_dialog_control(driver, labels: "tuple[str, ...]"):
+    """The first visible dialog control matching one of `labels`, shadow roots included.
+
+    Ordered by `labels`, not document order: the caller's first label is its most exact intent, and
+    settling for a later one when an earlier matches is how a walk presses the control next to the
+    one it wanted (#1012).
+    """
+    controls = find_deep_elements(driver, _CONNECT_DIALOG_CONTROL_CSS, visible_only=True, limit=60)
+    for wanted in labels:
+        for control in controls:
+            if element_label(control).startswith(wanted):
+                return control
+    return None
+
 
 def _connect_dialog_present(driver, wait, user_id: int) -> bool:
-    return find_first(driver, wait, _CONNECT_DIALOG_LOCATORS, "Connect invite dialog",
-                      required=False, warn_on_miss=False, max_try=1, visible_only=True,
-                      user_id=user_id) is not None
+    """Whether the Connect dialog's OWN controls are on screen — light DOM or shadow root."""
+    if find_first(driver, wait, _CONNECT_DIALOG_LOCATORS, "Connect invite dialog",
+                  required=False, warn_on_miss=False, max_try=1, visible_only=True,
+                  user_id=user_id) is not None:
+        return True
+    return _deep_dialog_control(driver, (_SEND_WITHOUT_NOTE_LABEL, _ADD_NOTE_LABEL)) is not None
 
 
-def _open_connect_invite_dialog(driver, wait, user_id: int, profile_url: str) -> bool:
-    """Open the Connect invite dialog for the profile at `profile_url` — the custom-invite URL
-    first, then the profile page's own top-card Connect button when it is directly visible, else
-    the top-card More menu (issue #1734: LinkedIn renders one or the other depending on the
-    target). True only when the dialog's own controls are provably present. False is an ordinary
-    outcome (invite already pending, Connect not offered, or the SDUI rotated again) and is why
-    the total miss is a WARNING, not an error (issue #571).
+def _miss_evidence(driver) -> str:
+    """A one-line description of what the page DID offer, for the total-miss log.
+
+    Twenty identical `NO_CONNECT_BUTTON_MESSAGE` failures over 17 days produced zero diagnosable
+    artifacts and needed a live session to explain (#1733). The next rotation should be readable
+    from the log line it writes. Best-effort — evidence must never cost the run.
+    """
+    try:
+        anchors = [(a.get_attribute("href") or "")[:120]
+                   for a in driver.find_elements(By.XPATH, _CUSTOM_INVITE_ANCHOR_XPATH)[:5]]
+    except Exception:
+        anchors = []
+    try:
+        labels = []
+        for control in driver.find_elements(
+                By.CSS_SELECTOR, "main button, main a, main [role='button']")[:60]:
+            label = (control.get_attribute("aria-label") or control.text or "").strip()
+            if label and label not in labels:
+                labels.append(label[:60])
+            if len(labels) >= 25:
+                break
+    except Exception:
+        labels = []
+    return f"custom-invite anchors={anchors} main controls={labels}"
+
+
+def _open_connect_invite_dialog(driver, wait, user_id: int,
+                                profile_url: str) -> "tuple[bool, str | None]":
+    """Open the Connect invite dialog for the profile at `profile_url`.
+
+    Four routes, cheapest and safest first (re-grounded 2026-08-29, #1733):
+
+    1. the target's OWN custom-invite anchor already on the profile page — layout B's top-card
+       `<a>`, which `_PROFILE_CONNECT_BUTTON_LOCATORS` cannot see because it is not a `<button>`;
+    2. the direct top-card Connect BUTTON (#1734), for the accounts that render one;
+    3. the More menu, then the target's own custom-invite anchor inside it — layout A, where the
+       top card carries no Connect control at all;
+    4. navigating the custom-invite URL, last and expected to fail: that route is an in-app route,
+       and a direct `driver.get` of it now renders a blank document. It is kept only so an account
+       for which it still works is not regressed, and it is why routes 1 and 3 CLICK the link.
+
+    Returns `(opened, restriction_reason)`. `opened` is True only when the dialog's own controls are
+    provably present — a landed click is never success. False is an ordinary outcome (invite already
+    pending, Connect not offered, or the SDUI rotated again) and is why the total miss is a WARNING,
+    not an error (issue #571). `restriction_reason` is set only when the page NAMES an account-level
+    wall, which is a different operator action entirely (#1733).
     """
     slug = profile_slug(profile_url)
-    if slug:
-        driver.get(_CONNECT_INVITE_URL.format(slug=slug))
-        if _connect_dialog_present(driver, wait, user_id):
-            log_info("Connect dialog opened via the custom-invite URL")
-            return True
-        # An already-pending invite renders no dialog here — an expected outcome for this
-        # route, so the miss stays quiet and the profile-page route gets its turn.
-        log_debug("custom-invite page did not render the Connect dialog — trying the "
-                  "profile page directly", user_id=user_id, action_type="invite_connect")
 
     if profile_url != driver.current_url:
         driver.get(profile_url)
+
+    if _click_own_custom_invite_anchor(driver, wait, user_id, slug):
+        log_info("Connect dialog opened via the profile's own custom-invite link")
+        return True, None
 
     if click_first(driver, wait, _PROFILE_CONNECT_BUTTON_LOCATORS, "Profile Connect button",
                    required=False, warn_on_miss=False, max_try=1, use_action_chain=True,
                    user_id=user_id) is not None:
         if _connect_dialog_present(driver, wait, user_id):
             log_info("Connect dialog opened via the profile page's direct Connect button")
-            return True
+            return True, None
 
     if click_first(driver, wait, _PROFILE_MORE_MENU_LOCATORS, "Profile More menu",
                    required=False, warn_on_miss=False, max_try=1, use_action_chain=True,
                    user_id=user_id) is not None:
+        # The menu's Connect item is the same slug-bearing anchor as layout B's, so it goes through
+        # the same attribution rather than a locator that would click whichever menu item matched.
+        if _click_own_custom_invite_anchor(driver, wait, user_id, slug):
+            log_info("Connect dialog opened via the profile More menu")
+            return True, None
         item = click_first(driver, wait, _CONNECT_MENU_ITEM_LOCATORS, "Connect menu item",
                            required=False, warn_on_miss=False, max_try=1, use_action_chain=True,
                            user_id=user_id)
         if item is not None and _connect_dialog_present(driver, wait, user_id):
             log_info("Connect dialog opened via the profile More menu")
-            return True
+            return True, None
+
+    # Taken HERE, while the PROFILE is still loaded: route 4 navigates away to a page that renders
+    # nothing, and evidence gathered there would describe the blank page rather than the miss.
+    evidence = _miss_evidence(driver)
+    restriction = _invite_restriction_reason(driver)
+
+    if slug and restriction is None:
+        driver.get(_CONNECT_INVITE_URL.format(slug=slug))
+        if _connect_dialog_present(driver, wait, user_id):
+            log_info("Connect dialog opened via the custom-invite URL")
+            return True, None
+
+    if restriction:
+        # INFO, not a warning: this is the detector working. The hold the caller sets is the record
+        # that matters, and warning here would file a grouped defect for an account fact.
+        log_info(f"No Connect dialog because the account is walled: {restriction}")
+        return False, restriction
 
     log_warning("No route opened the Connect invite dialog for this profile",
                 user_id=user_id, action_type="invite_connect")
-    return False
+    log_info(f"Connect-dialog miss evidence for {profile_url}: {evidence}")
+    return False, None
 
 
 # The bare-send control is the dialog's own word for "no note is on offer here": a quota-spent
@@ -355,12 +622,15 @@ def _add_connect_note(driver, wait, message: str, user_id: int) -> bool:
     dialog still shows is what says which no-op it was. A step that fails AFTER the affordance
     answered is a genuine degraded path and still warns with `exc=`.
     """
-    if find_first(driver, wait, _CONNECT_NOTE_BUTTON_LOCATORS, "Add a note button",
-                  required=False, warn_on_miss=False, max_try=1, visible_only=True,
-                  user_id=user_id) is None:
-        if find_first(driver, wait, _CONNECT_BARE_SEND_LOCATORS, "Send without a note",
-                      required=False, warn_on_miss=False, max_try=1, visible_only=True,
-                      user_id=user_id) is not None:
+    note_button = (find_first(driver, wait, _CONNECT_NOTE_BUTTON_LOCATORS, "Add a note button",
+                              required=False, warn_on_miss=False, max_try=1, visible_only=True,
+                              user_id=user_id)
+                   or _deep_dialog_control(driver, (_ADD_NOTE_LABEL,)))
+    if note_button is None:
+        if (find_first(driver, wait, _CONNECT_BARE_SEND_LOCATORS, "Send without a note",
+                       required=False, warn_on_miss=False, max_try=1, visible_only=True,
+                       user_id=user_id) is not None
+                or _deep_dialog_control(driver, (_SEND_WITHOUT_NOTE_LABEL,)) is not None):
             log_debug("Connect dialog offers no Add-a-note affordance (personalized-invite quota "
                       "spent) — sending the invite bare", user_id=user_id,
                       action_type="invite_connect")
@@ -374,13 +644,20 @@ def _add_connect_note(driver, wait, message: str, user_id: int) -> bool:
         return False
 
     try:
-        # required=True: the affordance answered a moment ago, so failing to click it now is a real
-        # degraded path — it raises into the warning below rather than reading as "not on offer".
-        click_first(driver, wait, _CONNECT_NOTE_BUTTON_LOCATORS, "Add a note button",
-                    max_try=1, use_action_chain=True, user_id=user_id)
+        # The affordance answered a moment ago, so failing here is a real degraded path — it raises
+        # into the warning below rather than reading as "not on offer". THE ELEMENT THAT ANSWERED is
+        # what gets clicked: a shadow-mounted control cannot be re-found by the XPath that never saw
+        # it (#1733).
+        note_button.click()
 
-        message_box = click_element_wait_retry(driver, wait, '//textarea[@id="custom-message"]',
-                                               "Finding Message Box", max_retry=1, use_action_chain=True)
+        message_box = next(iter(find_deep_elements(driver, "textarea#custom-message",
+                                                   visible_only=True, limit=2)), None)
+        if message_box is None:
+            message_box = click_element_wait_retry(
+                driver, wait, '//textarea[@id="custom-message"]', "Finding Message Box",
+                max_retry=1, use_action_chain=True)
+        else:
+            message_box.click()
         message_box.clear()
 
         for _ in range(3):
@@ -436,6 +713,29 @@ def _submit_connect_invite(driver, wait, user_id: int, with_note: bool) -> bool:
                 last_error = e  # wrong label for this dialog state — try the other one
                 break
 
+    # The same two labels, across the shadow boundary the XPaths above cannot cross (#1733). The
+    # preference order still follows `with_note`, so the two passes can never disagree about which
+    # Send this dialog state wants.
+    labels = ((_SEND_INVITATION_LABEL, _SEND_WITHOUT_NOTE_LABEL) if with_note
+              else (_SEND_WITHOUT_NOTE_LABEL, _SEND_INVITATION_LABEL))
+    for attempt in range(2):
+        send = _deep_dialog_control(driver, labels)
+        if send is None:
+            break
+        try:
+            send.click()
+            log_info("Found Send Connection Button in the dialog's shadow root and clicked it")
+            return True
+        except StaleElementReferenceException as e:
+            last_error = e
+            if attempt == 0:
+                log_debug("Shadow-mounted Send button went stale mid-click — retrying",
+                          user_id=user_id, action_type="invite_connect")
+                continue
+        except Exception as e:
+            last_error = e
+            break
+
     # exc= is what turns this into a fingerprinted PostHog issue (the loop that filed #573); an
     # exc-less log_error only reaches Logs, so the one failure we deliberately keep as an error
     # would never page anyone.
@@ -480,11 +780,20 @@ def invite_to_connect_now(user_id: int, profile_url: str, message: str = None) -
 
         # Open the Connect dialog. With none open the note/send steps below can only fail, and
         # their errors would bury the real reason — so stop here with a named one instead.
-        if not _open_connect_invite_dialog(driver, wait, user_id, profile_url):
+        opened, restriction = _open_connect_invite_dialog(driver, wait, user_id, profile_url)
+        if not opened:
+            # A wall LinkedIn NAMED holds the whole lane; a route that merely missed counts toward
+            # the miss streak, so a dead selector cannot turn a queue backlog into a burst of
+            # automated profile visits the invite cap never sees (#1732).
+            reason = restriction or NO_CONNECT_BUTTON_MESSAGE
+            if restriction:
+                hold_invites(user_id, INVITE_HOLD_DEFAULT_SECONDS, reason=restriction)
+            else:
+                record_invite_dialog_miss(user_id)
             insert_new_log(user_id=user_id, action_type=LogActionType.ENGAGED,
                            result=LogResultType.FAILURE, post_url=profile_url,
-                           message=NO_CONNECT_BUTTON_MESSAGE)
-            return False, NO_CONNECT_BUTTON_MESSAGE
+                           message=reason)
+            return False, reason
 
         # The note is an optional extra on an invite we already decided to send — a missing note
         # affordance must not abandon an open Connect dialog, so the invite goes out bare (#573).
@@ -508,6 +817,7 @@ def invite_to_connect_now(user_id: int, profile_url: str, message: str = None) -
                        post_url=profile_url, message=result)
         if invite_sent:
             record_action(user_id, ACTION_INVITE)  # account-level governor (issue #626)
+            clear_invite_dialog_misses(user_id)  # the route works; the streak starts over
     finally:
         quit_gracefully(driver)  # Close the driver
 
@@ -572,6 +882,13 @@ def send_roster_connect_invite(self, user_id: int, profile_url: str, message: st
         # a connected account as a failed invite.
         set_target_connect_status(user_id, profile_url, ConnectStatus.CONNECTED)
         return ALREADY_CONNECTED_MESSAGE
+    if reason in (INVITE_LIMIT_REACHED_MESSAGE, ACCOUNT_RESTRICTED_MESSAGE):
+        # The wall is the account, so the target's one shot was never spent — hand it back to the
+        # ladder exactly as a throttle does, rather than badging a reachable person 'failed'.
+        set_target_connect_status(user_id, profile_url, ConnectStatus.NEEDS_CONNECTION)
+        log_debug(f"Roster connection request deferred: {reason}", user_id=user_id,
+                  action_type="invite_connect", task_name="send_roster_connect_invite")
+        return f"Roster connection request deferred: {reason}"
     set_target_connect_status(user_id, profile_url, ConnectStatus.FAILED)
     # The 'failed' badge is the record that matters here; the reason itself was already logged by
     # the step that owns it, so re-warning would double-count it into a second issue (#1038).
@@ -600,6 +917,18 @@ def send_connection_request(self, request_id: int):
         return f"Connection request {request_id} not sendable (status={req['status'] if req else 'missing'})"
 
     user_id = req["user_id"]
+    if is_invites_held(user_id):
+        # Re-checked here as well as in the scanner, the same way the daily cap is: the row may have
+        # been dispatched before the wall was detected. Deferred to APPROVED, never FAILED — nothing
+        # was attempted, so nothing failed.
+        reason = invite_hold_reason(user_id) or "connection invites are held"
+        log_debug(f"send_connection_request: invites held, deferring {request_id}: {reason}",
+                  user_id=user_id, action_type="invite_connect",
+                  task_name="send_connection_request")
+        update_connection_request_status(request_id, ConnectionRequestStatus.APPROVED,
+                                         failure_reason=reason)
+        return f"Connection request {request_id} deferred ({reason})"
+
     prefs = get_engagement_preferences(user_id)
     if count_invites_sent_today(user_id) >= int(prefs.get("max_invites_per_day") or 0):
         log_info(f"send_connection_request: daily invite cap reached for user {user_id}; deferring {request_id}")
