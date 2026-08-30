@@ -347,6 +347,22 @@ class TestLadderContract:
         assert not result.opened and result.route is None
         assert result.tried == list(mt.ROUTES)
 
+    def test_no_route_opening_logs_debug_not_warning(self):
+        # issue #1752: exhausting every route is the expected outcome for anyone this account
+        # cannot message this way (not connected, InMail-only, messaging restricted) — not selector
+        # rot. `check_dm_replied` already turns this into ThreadState.UNKNOWN and skips the
+        # follow-up, so a WARNING here recurred and filed a RecurringWarning for working
+        # skip-rather-than-guess behavior. This must stay DEBUG and never reach `log_escalation`.
+        d = FakeDriver()
+        dud = FakeElement({"href": "/messaging/compose/?x"})
+        d.dom[(By.CSS_SELECTOR, "main a[href*='/messaging/compose/']")] = [dud]
+        with patch.object(mt, "log_warning") as warn, patch.object(mt, "log_debug") as debug:
+            result = mt.open_message_thread(d, MagicMock(), PROFILE, timeout=0)
+        assert not result.opened
+        warn.assert_not_called()
+        assert any("No route opened a message thread" in call.args[0]
+                   for call in debug.call_args_list)
+
     def test_a_raising_route_does_not_end_the_ladder(self):
         d = FakeDriver()
         btn = FakeElement({"aria-label": "Message"}, on_click=_opens(d))
