@@ -12,17 +12,6 @@
       "digest": "4de9bf66c0eb"
     },
     {
-      "name": "deepseek-v4-flash:preview",
-      "model": "deepseek-v4-flash:preview",
-      "modified_at": "2026-04-24T00:00:00Z",
-      "size": 140000000000,
-      "details": {
-        "family": "",
-        "parameter_size": ""
-      },
-      "digest": "ac252c581d64"
-    },
-    {
       "name": "deepseek-v4-pro:0813",
       "model": "deepseek-v4-pro:0813",
       "modified_at": "2026-08-13T08:00:00-07:00",
@@ -32,17 +21,6 @@
         "parameter_size": ""
       },
       "digest": "db976f1eacdd"
-    },
-    {
-      "name": "deepseek-v4-pro:preview",
-      "model": "deepseek-v4-pro:preview",
-      "modified_at": "2026-04-24T00:00:00Z",
-      "size": 1600000000000,
-      "details": {
-        "family": "",
-        "parameter_size": ""
-      },
-      "digest": "079ba36ea28c"
     },
     {
       "name": "gemma4:31b",
@@ -76,6 +54,28 @@
         "parameter_size": ""
       },
       "digest": "f553240f6dc4"
+    },
+    {
+      "name": "glm-5.3",
+      "model": "glm-5.3",
+      "modified_at": "2026-08-28T08:00:00-07:00",
+      "size": 755433728000,
+      "details": {
+        "family": "",
+        "parameter_size": ""
+      },
+      "digest": "632dfda18c6d"
+    },
+    {
+      "name": "glm-5.3-flash",
+      "model": "glm-5.3-flash",
+      "modified_at": "2026-08-26T07:00:00-07:00",
+      "size": 328250014584,
+      "details": {
+        "family": "",
+        "parameter_size": ""
+      },
+      "digest": "0c238824336d"
     },
     {
       "name": "gpt-oss:120b",

@@ -1,6 +1,6 @@
 {
   "_comment": "Committed snapshot of ollama.com/api/tags, refreshed by scripts/model_health_check.py --catalog-apply. New tags here vs the live catalog become ONE agent:ready evaluation issue; do not hand-edit.",
-  "updated": "2026-08-16",
+  "updated": "2026-08-30",
   "models": {
     "deepseek-v4-flash:0731": {
       "modified_at": "2026-07-31T08:00:00-07:00",
@@ -9,26 +9,12 @@
       "family": "",
       "digest": "4de9bf66c0eb"
     },
-    "deepseek-v4-flash:preview": {
-      "modified_at": "2026-04-24T00:00:00Z",
-      "size": 140000000000,
-      "parameter_size": "",
-      "family": "",
-      "digest": "ac252c581d64"
-    },
     "deepseek-v4-pro:0813": {
       "modified_at": "2026-08-13T08:00:00-07:00",
       "size": 892744322880,
       "parameter_size": "",
       "family": "",
       "digest": "db976f1eacdd"
-    },
-    "deepseek-v4-pro:preview": {
-      "modified_at": "2026-04-24T00:00:00Z",
-      "size": 1600000000000,
-      "parameter_size": "",
-      "family": "",
-      "digest": "079ba36ea28c"
     },
     "gemma4:31b": {
       "modified_at": "2026-04-02T09:00:00-08:00",
@@ -50,6 +36,20 @@
       "parameter_size": "",
       "family": "",
       "digest": "f553240f6dc4"
+    },
+    "glm-5.3": {
+      "modified_at": "2026-08-28T08:00:00-07:00",
+      "size": 755433728000,
+      "parameter_size": "",
+      "family": "",
+      "digest": "632dfda18c6d"
+    },
+    "glm-5.3-flash": {
+      "modified_at": "2026-08-26T07:00:00-07:00",
+      "size": 328250014584,
+      "parameter_size": "",
+      "family": "",
+      "digest": "0c238824336d"
     },
     "gpt-oss:120b": {
       "modified_at": "2025-08-05T00:00:00Z",
