@@ -140,6 +140,22 @@ class TestProcessUserFollowups:
         stop.assert_not_called()
         assert "skipped 1" in result
 
+    def test_unknown_thread_does_not_double_warn(self):
+        # Issue #1750: check_dm_replied (and the open_message_thread ladder underneath it) already
+        # logs a warning at the point the read actually failed. A second warning here for the same
+        # miss filed a duplicate grouped $exception (RecurringWarning) for one failure.
+        from cqc_lem.app.engagement.outreach import process_user_followups
+        with patch(f"{_OUT}.get_due_followups", return_value=[_due()]), \
+             patch(f"{_OUT}.get_current_profile", return_value=(MagicMock(), MagicMock(), "e", MagicMock())), \
+             patch(f"{_OUT}.quit_gracefully"), patch(f"{_OUT}.time.sleep"), patch(f"{_OUT}.insert_new_log"), \
+             patch(f"{_OUT}.resolve_self_name", return_value="Christopher Queen"), \
+             patch(f"{_OUT}.check_dm_replied", return_value=ThreadState.UNKNOWN), \
+             patch(f"{_OUT}.log_warning") as warn, \
+             patch(f"{_OUT}.log_debug") as debug:
+            process_user_followups.run(user_id=1)
+        warn.assert_not_called()
+        assert any("could not read the thread" in c.args[0] for c in debug.call_args_list)
+
 
     def test_the_saved_display_name_is_what_the_reply_check_compares(self):
         # Issue #731 follow-up: the settings value (Setup & Connection, required) beats the scraped

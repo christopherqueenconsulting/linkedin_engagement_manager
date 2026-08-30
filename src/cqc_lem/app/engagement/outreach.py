@@ -1242,10 +1242,15 @@ def process_user_followups(self, user_id: int, max_per_run: int = 20):
                 # anyway is the one irreversible mistake here (issue #731) — leave the row due so
                 # the next run re-reads it, and let the miss be greppable.
                 skipped += 1
-                log_warning(f"Follow-up skipped: could not read the thread with "
-                            f"{f.get('first_name') or f['profile_url']} — deferring to the next run",
-                            user_id=user_id, action_type="followup",
-                            task_name="process_user_followups")
+                # DEBUG, not a warning: check_dm_replied (and the open_message_thread ladder it
+                # calls) already warns at the point the read actually failed — the missing route,
+                # the unreadable sender, the missing self-name. Restating it here as a second
+                # warning double-counts one failure into two grouped issues (#1750, the same
+                # `invite_to_connect`/`_add_connect_note` pattern in utilities/CLAUDE.md).
+                log_debug(f"Follow-up skipped: could not read the thread with "
+                          f"{f.get('first_name') or f['profile_url']} — deferring to the next run",
+                          user_id=user_id, action_type="followup",
+                          task_name="process_user_followups")
                 continue
             if state is ThreadState.REPLIED:
                 # Their reply is on screen already — read it once and use it twice: buying-intent
