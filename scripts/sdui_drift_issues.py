@@ -238,7 +238,7 @@ def build_stale_body(row: dict, user_id=None) -> str:
         "`target_resolution` in the sweep JSON), a page that never renders, or the probe itself "
         "raising every week.",
         "- Fix the resolver, the probe, or the underlying data gap so the surface is measured "
-        "again — this issue is about COVERAGE, not about re-grounding a specific locator.",
+        + "again — this issue is about COVERAGE, not about re-grounding a specific locator.",
         "",
         "## Acceptance",
         "",
