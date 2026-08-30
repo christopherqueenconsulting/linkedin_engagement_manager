@@ -485,8 +485,8 @@ This is a different question from `glm-5.3`'s candidacy for `lem-complex` (#1757
 unbenchmarked): that decline turns on `glm-5.3` being **+1 usage level** against every serving-tier
 incumbent there (all Low/Medium) with the #842 spend policy requiring a strict judge-rate win to
 justify it. `lem-agent-tier1` starts from `glm-5.2`, already **High (3)** — so `glm-5.3` there is
-flat quota, and the swap is a same-cost quality question, not a spend one. `docs/README.md` and
-`.litellm/model_prices_snapshot.json` / `.litellm/ollama_catalog_snapshot.json` carry the usual
+flat quota, and the swap is a same-cost quality question, not a spend one. `.litellm/config.yaml`
+and `.litellm/model_prices_snapshot.json` / `.litellm/ollama_catalog_snapshot.json` carry the usual
 roster bookkeeping for the new tag.
 
 ## Running it
