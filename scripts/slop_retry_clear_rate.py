@@ -17,10 +17,11 @@ different fixes. `traded` dominating means no attempt budget helps — the retry
 the offending sentences instead of re-authoring the whole draft.
 
 Read-only: it issues one HogQL query and writes nothing. It needs a PostHog personal API key with
-`query:read`, which an agent worktree does not have — run it where one is available, or paste the
-SQL from `--print-sql` into the PostHog UI:
+`query:read` — `POSTHOG_OPERATOR_API_KEY`, falling back to `POSTHOG_PERSONAL_API_KEY`
+(`posthog_keys.py` owns the precedence) — which an agent worktree does not have; run it where one is
+available, or paste the SQL from `--print-sql` into the PostHog UI:
 
-    POSTHOG_PERSONAL_API_KEY=phx_… poetry run python scripts/slop_retry_clear_rate.py --days 30
+    POSTHOG_OPERATOR_API_KEY=phx_… poetry run python scripts/slop_retry_clear_rate.py --days 30
     poetry run python scripts/slop_retry_clear_rate.py --print-sql
 
 Output goes to stdout because the report IS the product of this script. Exit 1 when the window holds
@@ -37,6 +38,11 @@ import os
 import re
 import sys
 from typing import Optional
+
+# Reached by path, not by installation: this is run by hand from a checkout, the same way
+# posthog_key_check.py reaches the resolver. posthog_keys.py is stdlib-only, so this costs nothing.
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src"))
+from cqc_lem.utilities.posthog_keys import missing_key_message, operator_api_key  # noqa: E402
 
 DEFAULT_APP_HOST = "https://us.posthog.com"
 DEFAULT_PROJECT_ID = "475262"  # "CQC LEM"
@@ -338,9 +344,9 @@ def main(argv: Optional[list] = None) -> int:
         print(hogql)
         return 0
 
-    api_key = os.getenv("POSTHOG_PERSONAL_API_KEY")
+    api_key = operator_api_key()
     if not api_key:
-        print("POSTHOG_PERSONAL_API_KEY is not set — nothing was measured. Run this where the key "
+        print(f"{missing_key_message('operator')} — nothing was measured. Run this where the key "
               "is available, or use --print-sql and run the query in the PostHog UI.")
         return 1
     client = PostHogQueryClient(api_key, os.getenv("POSTHOG_PROJECT_ID", DEFAULT_PROJECT_ID),

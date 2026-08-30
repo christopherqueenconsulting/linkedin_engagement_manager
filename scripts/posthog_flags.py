@@ -32,6 +32,11 @@ import os
 import sys
 from typing import Optional
 
+# Reached by path, not by installation: this is run by hand from a checkout, the same way
+# posthog_key_check.py reaches the resolver. posthog_keys.py is stdlib-only, so this costs nothing.
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src"))
+from cqc_lem.utilities.posthog_keys import missing_key_message, operator_api_key  # noqa: E402
+
 DEFAULT_PROJECT_ID = "475262"  # "CQC LEM" — not a secret; the key that reaches it is.
 DEFAULT_APP_HOST = "https://us.posthog.com"
 
@@ -205,9 +210,9 @@ def main(argv: Optional[list] = None) -> int:
             print(f"{spec['key']:<36} {spec['rollout']:>3}%  ({state} today via {spec['env_var']})")
         return 0
 
-    api_key = os.getenv("POSTHOG_PERSONAL_API_KEY", "")
+    api_key = operator_api_key()
     if not api_key:
-        print("error: POSTHOG_PERSONAL_API_KEY is required (scope: feature_flag:read+write).",
+        print(f"error: {missing_key_message('operator')} (scope: feature_flag:read+write).",
               file=sys.stderr)
         return 1
     project_id = os.getenv("POSTHOG_PROJECT_ID", DEFAULT_PROJECT_ID)

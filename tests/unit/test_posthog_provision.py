@@ -789,6 +789,17 @@ class TestMain:
         assert php.main([]) == 1
         assert "POSTHOG_PERSONAL_API_KEY" in capsys.readouterr().err
 
+    def test_operator_key_alone_reaches_the_client(self, monkeypatch, capsys):
+        # issue #1453 follow-up: this hand-run script reads POSTHOG_OPERATOR_API_KEY, not the
+        # shared POSTHOG_PERSONAL_API_KEY directly.
+        monkeypatch.delenv("POSTHOG_PERSONAL_API_KEY", raising=False)
+        monkeypatch.setenv("POSTHOG_OPERATOR_API_KEY", "phx_operator")
+        monkeypatch.setenv("POSTHOG_REPORT_EMAIL", "owner@example.com")
+        client = self._client()
+        monkeypatch.setattr(php, "PostHogClient", lambda *a, **k: client)
+        assert php.main(["--dry-run"]) == 2
+        assert "[dry-run] create dashboard" in capsys.readouterr().out
+
     def test_dry_run_on_an_empty_project_reports_pending(self, monkeypatch, capsys):
         monkeypatch.setenv("POSTHOG_PERSONAL_API_KEY", "phx_test")
         monkeypatch.setenv("POSTHOG_REPORT_EMAIL", "owner@example.com")
