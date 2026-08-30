@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.169.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.168.1...v0.169.0) (2026-08-30)
+
+
+### Features
+
+* **sdui:** resolve weekly sweep targets automatically so all 25 surfaces are checked (closes [#1770](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1770)) ([#1772](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1772)) ([6a0fbb8](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/6a0fbb81a46c04513b5a861ed2539d5380189ab2))
+
+
+### Bug Fixes
+
+* **engagement:** reground the Connect dialog on the live profile SDUI (closes [#1733](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1733)) ([#1769](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1769)) ([4bc7a76](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/4bc7a762f95e7d7e1862ddaaffd3734bbeeaa364))
+
+
+### Documentation
+
+* **model-benchmarks:** decline mistral-large-3:675b for lem-complex's second Ollama deployment (closes [#1762](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1762)) ([#1767](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1767)) ([b556a2a](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/b556a2ad38addb894fe7d9046d5bd5317fe00d5b))
+
 ## [0.168.1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.168.0...v0.168.1) (2026-08-30)
 
 
