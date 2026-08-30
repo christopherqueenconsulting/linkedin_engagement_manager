@@ -598,6 +598,13 @@ def open_message_thread(driver: WebDriver, wait: WebDriverWait, profile_url: str
     top-card More menu → the direct compose URL built from the profile URN → messaging search.
     Returns a `ThreadOpen`; `opened` is False only when every route failed, and the winning route is
     logged so the next rotation shows up in telemetry rather than in user complaints.
+
+    Every route exhausted is the EXPECTED outcome for anyone this account cannot message this way
+    (not a 1st-degree connection, InMail-only, messaging restricted) — not evidence the selectors
+    rotted (same reasoning as `open_addressed_composer`'s `composer_missing`, issue #1710). The
+    caller (`check_dm_replied`) already turns this into `ThreadState.UNKNOWN` and skips the
+    follow-up, so it is logged at DEBUG, not a WARNING that would recur into a `RecurringWarning`
+    for working refusal-to-follow-up-blind behavior (issue #1752).
     """
     result = ThreadOpen()
     try:
@@ -638,6 +645,6 @@ def open_message_thread(driver: WebDriver, wait: WebDriverWait, profile_url: str
                      f"{result.events} message event(s))", user_id=user_id, action_type="followup")
             return result
 
-    log_warning(f"No route opened a message thread for {profile_url}", user_id=user_id,
-                action_type="followup", selectors=list(result.tried))
+    log_debug(f"No route opened a message thread for {profile_url}", user_id=user_id,
+              action_type="followup", selectors=list(result.tried))
     return result
