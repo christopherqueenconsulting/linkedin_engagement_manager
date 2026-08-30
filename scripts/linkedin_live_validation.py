@@ -3193,6 +3193,8 @@ def probe_more_menu_items(driver, wait, sleep=time.sleep) -> dict:
         # points as no typed text at all.
         trigger.send_keys(Keys.ESCAPE)
     except Exception:
+        # Closing the menu is courtesy only — the driver is quit right after in main(), and a
+        # failed Escape must not mask the menu items this probe exists to report.
         pass
     return reading
 
