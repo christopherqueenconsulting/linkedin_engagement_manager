@@ -1537,15 +1537,203 @@ class TestSweep:
         assert report["summary"]["drift"] == ["sent_invites"]
         assert report["summary"]["ok"] == ["feed_sort"]
 
-    def test_the_sweep_names_what_it_could_not_cover(self):
+    def test_nothing_is_skipped_now_every_target_resolves(self):
+        """#1770: nothing is skipped now that every target-needing surface resolves one.
+
+        The 11 surfaces that used to need a caller-supplied target now resolve one from the
+        account's own data, so `skipped` (surfaces with no resolver at all) is empty — the
+        mechanism stays in place for whatever surface arrives next with no resolver yet.
+        """
         report = llv.run_sweep(MagicMock(), 1, runners={"feed_sort": lambda: {"state": "ok"}},
                                keys=["feed_sort"], session_state="signed_in")
-        assert "connect_dialog" in report["skipped"]
+        assert report["skipped"] == []
         assert report["surfaces"]["feed_sort"]["flag"] == "--feed-sort"
 
     def test_summary_state_is_worst_wins(self):
         probes = {"a": {"state": llv.STATE_OK}, "b": {"state": llv.STATE_DRIFT}}
         assert llv.sweep_summary(probes)["state"] == llv.STATE_DRIFT
+
+
+@pytest.mark.unit
+class TestSweepTargetResolution:
+    """#1770: 11 surfaces used to sit out the weekly sweep for want of a caller-supplied target.
+
+    Each now resolves one from the account's own data. A resolver that finds nothing must grade
+    `unknown`, never `drift` — no target is not evidence of rot.
+    """
+
+    def test_own_post_target_resolves_the_freshest_published_post(self, monkeypatch):
+        monkeypatch.setattr(llv, "_recent_own_post_urls",
+                            lambda user_id, count=1: ["https://www.linkedin.com/feed/update/1/"])
+        target, source = llv._resolve_own_post_target(1)
+        assert target == "https://www.linkedin.com/feed/update/1/"
+        assert "posts" in source
+
+    def test_own_post_target_is_none_with_no_published_post(self, monkeypatch):
+        monkeypatch.setattr(llv, "_recent_own_post_urls", lambda user_id, count=1: [])
+        target, reason = llv._resolve_own_post_target(1)
+        assert target is None
+        assert "no published post" in reason
+
+    def test_newsletter_page_target_reads_the_settings_row(self, monkeypatch):
+        monkeypatch.setattr("cqc_lem.utilities.db.get_newsletter_settings",
+                           lambda uid: {"newsletter_url": "https://www.linkedin.com/newsletters/1/"})
+        target, source = llv._resolve_newsletter_page_target(1)
+        assert target == "https://www.linkedin.com/newsletters/1/"
+        assert "newsletter_settings" in source
+
+    def test_newsletter_page_target_is_none_with_no_url_on_file(self, monkeypatch):
+        monkeypatch.setattr("cqc_lem.utilities.db.get_newsletter_settings", lambda uid: {})
+        target, reason = llv._resolve_newsletter_page_target(1)
+        assert target is None
+        assert "no newsletter URL" in reason
+
+    def test_newsletter_edition_target_reads_the_freshest_published_edition(self, monkeypatch):
+        monkeypatch.setattr("cqc_lem.utilities.db.get_latest_published_newsletter_edition_url",
+                           lambda uid: "https://www.linkedin.com/pulse/an-edition/")
+        target, source = llv._resolve_newsletter_edition_target(1)
+        assert target == "https://www.linkedin.com/pulse/an-edition/"
+        assert "newsletter_editions" in source
+
+    def test_group_target_reads_an_enabled_group(self, monkeypatch):
+        monkeypatch.setattr("cqc_lem.utilities.db.get_enabled_group_ids", lambda uid: [12345])
+        target, source = llv._resolve_group_target(1)
+        assert target == "12345"
+        assert "user_groups" in source
+
+    def test_group_target_is_none_with_no_enabled_group(self, monkeypatch):
+        monkeypatch.setattr("cqc_lem.utilities.db.get_enabled_group_ids", lambda uid: [])
+        target, reason = llv._resolve_group_target(1)
+        assert target is None
+        assert "no enabled group" in reason
+
+    def test_roster_target_picks_the_first_active_target_with_a_profile_url(self, monkeypatch):
+        monkeypatch.setattr(
+            "cqc_lem.utilities.db.get_engagement_targets",
+            lambda uid, active_only=False: [{"profile_url": "https://www.linkedin.com/in/jane/"}])
+        target, source = llv._resolve_roster_target(1)
+        assert target == "https://www.linkedin.com/in/jane/"
+        assert "engagement_targets" in source
+
+    def test_roster_target_skips_a_row_with_no_profile_url(self, monkeypatch):
+        monkeypatch.setattr(
+            "cqc_lem.utilities.db.get_engagement_targets",
+            lambda uid, active_only=False: [{"profile_url": ""}])
+        target, reason = llv._resolve_roster_target(1)
+        assert target is None
+        assert "no active roster target" in reason
+
+    def test_connect_dialog_prefers_an_already_connected_or_pending_target(self, monkeypatch):
+        """#1770 acceptance: a real invitation must never be on offer.
+
+        The sweep only opens the dialog on someone we are already connected to or already invited.
+        """
+        monkeypatch.setattr(
+            "cqc_lem.utilities.db.get_engagement_targets",
+            lambda uid, active_only=False: [
+                {"profile_url": "https://www.linkedin.com/in/stranger/", "connect_status": "unknown"},
+                {"profile_url": "https://www.linkedin.com/in/pending/", "connect_status": "requested"}])
+        target, source = llv._resolve_connect_dialog_target(1)
+        assert target == "https://www.linkedin.com/in/pending/"
+        assert "requested" in source
+
+    def test_connect_dialog_target_is_none_with_no_connected_or_pending_target(self, monkeypatch):
+        """A roster full of strangers must never be used to ground this probe.
+
+        Declining is the correct read here, not falling back to whoever is first on the list.
+        """
+        monkeypatch.setattr(
+            "cqc_lem.utilities.db.get_engagement_targets",
+            lambda uid, active_only=False: [
+                {"profile_url": "https://www.linkedin.com/in/stranger/", "connect_status": "unknown"}])
+        target, reason = llv._resolve_connect_dialog_target(1)
+        assert target is None
+        assert "declining to risk a real invite" in reason
+
+    def test_message_thread_target_reads_the_most_recent_followup(self, monkeypatch):
+        monkeypatch.setattr(
+            "cqc_lem.utilities.db.get_most_recent_dm_thread_target",
+            lambda uid: {"profile_url": "https://www.linkedin.com/in/jane/", "first_name": "Jane"})
+        target, source = llv._resolve_message_thread_target(1)
+        assert target == {"profile_url": "https://www.linkedin.com/in/jane/", "first_name": "Jane"}
+        assert "dm_followups" in source
+
+    def test_message_thread_target_is_none_with_no_dm_history(self, monkeypatch):
+        monkeypatch.setattr("cqc_lem.utilities.db.get_most_recent_dm_thread_target", lambda uid: None)
+        target, reason = llv._resolve_message_thread_target(1)
+        assert target is None
+        assert "no DM thread" in reason
+
+    def test_a_resolver_that_raises_costs_only_its_own_target(self, monkeypatch):
+        """One broken query must not cost the resolution of the other ten.
+
+        Same rule as the probes themselves, `test_a_probe_that_raises_costs_only_its_own_reading`.
+        """
+        def _boom(user_id):
+            raise RuntimeError("boom")
+
+        monkeypatch.setitem(llv._SWEEP_TARGET_RESOLVERS, "group_composer", _boom)
+        monkeypatch.setattr(llv, "_resolve_own_post_target", lambda uid: (None, "no post"))
+        resolution = llv.resolve_sweep_targets(1)
+        assert resolution["group_composer"]["resolved"] is False
+        assert "RuntimeError" in resolution["group_composer"]["reason"]
+        assert resolution["post_stats"]["resolved"] is False
+
+    def test_every_surface_naming_a_resolver_has_one_registered(self):
+        named = {s["key"] for s in llv.SURFACES if s.get("resolver")}
+        assert named == set(llv._SWEEP_TARGET_RESOLVERS)
+
+    def test_an_unresolved_target_grades_unknown_without_calling_the_probe(self):
+        called = []
+        reading = llv._sweep_target_runner(
+            "group_composer", {"group_composer": {"resolved": False, "reason": "no enabled group"}},
+            lambda t: called.append(t) or {"state": llv.STATE_DRIFT})
+        assert reading["state"] == llv.STATE_UNKNOWN
+        assert "no enabled group" in reading["verdict"]
+        assert called == []
+
+    def test_a_resolved_target_reaches_the_probe_and_carries_its_provenance(self):
+        entry = {"target": "12345", "source": "user_groups (enabled)", "resolved": True,
+                 "reason": None}
+        reading = llv._sweep_target_runner(
+            "group_composer", {"group_composer": entry}, lambda t: {"state": llv.STATE_OK, "group_id": t})
+        assert reading["group_id"] == "12345"
+        assert reading["target_resolution"] == entry
+
+    def test_run_sweep_wires_a_resolved_post_url_into_post_stats(self, monkeypatch):
+        """Integration across the seam: `run_sweep`'s default runners actually use the resolver.
+
+        The probe is called with the resolved target, rather than the resolution living in a dict
+        nobody reads.
+        """
+        monkeypatch.setattr(llv, "resolve_sweep_targets", lambda user_id: {
+            "post_stats": {"target": "https://www.linkedin.com/feed/update/1/",
+                          "source": "posts", "resolved": True, "reason": None}})
+        seen = {}
+
+        def fake_probe(driver, post_url):
+            seen["post_url"] = post_url
+            return {"state": llv.STATE_OK}
+
+        monkeypatch.setattr(llv, "probe_post_stats", fake_probe)
+        report = llv.run_sweep(MagicMock(), 1, keys=["post_stats"], session_state="signed_in")
+        assert seen["post_url"] == "https://www.linkedin.com/feed/update/1/"
+        assert report["probes"]["post_stats"]["state"] == llv.STATE_OK
+
+    def test_run_sweep_grades_unknown_when_nothing_resolves(self, monkeypatch):
+        monkeypatch.setattr(llv, "resolve_sweep_targets", lambda user_id: {
+            "connect_dialog": {"target": None, "source": None, "resolved": False,
+                              "reason": "no roster target already connected or pending"}})
+        report = llv.run_sweep(MagicMock(), 1, keys=["connect_dialog"], session_state="signed_in")
+        assert report["probes"]["connect_dialog"]["state"] == llv.STATE_UNKNOWN
+        assert report["summary"]["drift"] == []
+
+    def test_target_resolution_rides_along_in_the_report(self, monkeypatch):
+        fixed = {"post_stats": {"target": "u", "source": "s", "resolved": True, "reason": None}}
+        monkeypatch.setattr(llv, "resolve_sweep_targets", lambda user_id: fixed)
+        monkeypatch.setattr(llv, "probe_post_stats", lambda driver, post_url: {"state": llv.STATE_OK})
+        report = llv.run_sweep(MagicMock(), 1, keys=["post_stats"], session_state="signed_in")
+        assert report["target_resolution"] == fixed
 
 
 @pytest.mark.unit
@@ -3223,6 +3411,17 @@ class TestReadOnlyGuard:
         _element().click()
         assert llv.guard_ledger()["unlabelled_clicks"] == 1
 
+    def test_connect_dialog_send_control_cannot_be_clicked(self, selenium_restored):
+        """#1770 acceptance: `--connect-dialog` is now in the weekly sweep.
+
+        So this is the one control on this surface that must never be pressable — both the
+        bare-send and the note-then-send routes carry a control whose own label starts with 'Send'.
+        """
+        with pytest.raises(llv.ReadOnlyViolation):
+            _element(aria="Send without a note").click()
+        with pytest.raises(llv.ReadOnlyViolation):
+            _element(aria="Send").click()
+
     def test_installing_twice_does_not_stack_wrappers(self, selenium_restored):
         llv.install_read_only_guard()
         with pytest.raises(llv.ReadOnlyViolation):
@@ -3470,13 +3669,14 @@ class TestNewsletterEditionProbe:
         assert llv.newsletter_edition_state({"body_sample": "  "}) == llv.STATE_UNKNOWN
         assert llv.newsletter_edition_state(None) == llv.STATE_UNKNOWN
 
-    def test_it_is_never_part_of_the_weekly_sweep(self):
-        # The sweep files issues from `drift`; a surface that cannot claim drift would only add
-        # noise to it, and it needs a URL that no sweep has.
+    def test_it_runs_in_the_sweep_but_can_never_claim_drift(self):
+        # #1770: the target (the account's own freshest published edition) is resolvable, so it
+        # joined the sweep — but `newsletter_edition_state` above never returns STATE_DRIFT, so
+        # running it adds no noise to the issue filer even though it is now measured weekly.
         surfaces = {s["key"]: s for s in llv.SURFACES}
-        assert surfaces["newsletter_edition"]["sweep"] is False
-        assert surfaces["newsletter_page"]["sweep"] is False
-        assert "newsletter_edition" not in llv.SWEEP_ORDER
+        assert surfaces["newsletter_edition"]["sweep"] is True
+        assert surfaces["newsletter_page"]["sweep"] is True
+        assert "newsletter_edition" in llv.SWEEP_ORDER
 
 
 @pytest.mark.unit

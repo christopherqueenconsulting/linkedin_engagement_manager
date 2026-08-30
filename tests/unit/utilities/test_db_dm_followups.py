@@ -44,3 +44,28 @@ class TestFollowupQueue:
             from cqc_lem.utilities.db import stop_followups_for_profile
             assert stop_followups_for_profile(1, "p") == 3
         assert "status='stopped'" in cursor.execute.call_args[0][0]
+
+    def test_most_recent_dm_thread_target(self, fake_cursor):
+        """Issue #1770: the sweep's `message_thread` target resolver reads this.
+
+        ANY status row counts — a stopped thread still existed.
+        """
+        row = {"profile_url": "https://x/in/jane", "first_name": "Jane"}
+        conn, cursor = fake_cursor(fetch_one=row)
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import get_most_recent_dm_thread_target
+            assert get_most_recent_dm_thread_target(1) == row
+        sql = " ".join(cursor.execute.call_args[0][0].split())
+        assert "ORDER BY id DESC" in sql and "status=" not in sql
+
+    def test_most_recent_dm_thread_target_is_none_with_no_history(self, fake_cursor):
+        conn, _ = fake_cursor(fetch_one=None)
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import get_most_recent_dm_thread_target
+            assert get_most_recent_dm_thread_target(1) is None
+
+    def test_most_recent_dm_thread_target_is_none_with_a_blank_profile_url(self, fake_cursor):
+        conn, _ = fake_cursor(fetch_one={"profile_url": "", "first_name": "Jane"})
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import get_most_recent_dm_thread_target
+            assert get_most_recent_dm_thread_target(1) is None

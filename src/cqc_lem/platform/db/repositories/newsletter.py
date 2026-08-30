@@ -472,6 +472,23 @@ def mark_edition_failed(edition_id: int) -> bool:
     except mysql.connector.Error as err:
         log_error(f"Could not mark edition {edition_id} failed", exc=err)
         return False
+def get_latest_published_newsletter_edition_url(user_id: int) -> "str | None":
+    """The user's own freshest PUBLISHED edition's URL, for a probe target (issue #1770).
+
+    `None` when nothing has published yet — a resolver returning nothing is not evidence of
+    rot, it just means the surface has no target to grade this run.
+    """
+    try:
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(
+                "SELECT published_url FROM newsletter_editions WHERE user_id=%s "
+                "AND status='published' AND published_url IS NOT NULL "
+                "ORDER BY published_at DESC LIMIT 1", (user_id,))
+            row = cursor.fetchone()
+            return (row or {}).get("published_url") or None
+    except mysql.connector.Error as err:
+        log_error("Could not get latest published newsletter edition", exc=err, user_id=user_id)
+        return None
 def get_shipped_notice_by_issue(github_issue_number: int) -> Optional[dict]:
     """The changelog notice already recorded for this issue, or None."""
     try:

@@ -36,26 +36,26 @@ code is missing from this table.
 | Profile-views viewer list | `_PROFILE_VIEWER_ROWS_JS` | `--profile-views` | yes | zero rows vs the page's headline stat (#1009) |
 | Profile header scrape + degree badge | `parse_profile_header` / `_profile_is_first_degree` | `--profile-scrape` | yes | no name vs the page's `/in/` links; no badge vs the page's own degree LINE (#1021) |
 | Profile experience rows (`/details/experience/`) | `parse_profile_experiences` | `--profile-experiences` | yes | dated rows the parser cannot read is drift; an entity with no date range yields nothing rather than a guessed company (#970); every role parsed and NONE attributed is drift too, some blank is not (`experiences_without_company`, #1096); `dated_line_containers` names the ancestor chain each dated line actually sits in, so a render with no markup vocabulary is readable from the first report (#1465) |
-| Connect invite dialog | `_open_connect_invite_dialog` | `--connect-dialog` | no (needs a target) | dialog controls must be present before Send (#1012); a missing note affordance is graded against the bare-send control, never warned (#1039) |
+| Connect invite dialog | `_open_connect_invite_dialog` | `--connect-dialog` | yes — `_resolve_connect_dialog_target` (`engagement_targets`, `connect_status` connected/pending only, #1770) | dialog controls must be present before Send (#1012); a missing note affordance is graded against the bare-send control, never warned (#1039) |
 | Catch-up moment cards | `_CATCHUP_CARD_LOCATORS` | `--catchup-cards` | yes | zero cards vs `main div[role='listitem']` (#1013) |
-| Group share box / editor | `auto_post_to_group` | `--group-composer` | no (needs a group) | `_unpostable` rotates past the group (#858). The editor and Post button are resolved inside the container `share_composer.find_composer_container` returns, which walks shadow roots — on `/feed/` the same modal mounts inside `div#interop-outlet`'s shadow root, where no light-DOM lookup and no XPath can reach it (#1621) |
+| Group share box / editor | `auto_post_to_group` | `--group-composer` | yes — `_resolve_group_target` (`user_groups`, enabled, #1770) | `_unpostable` rotates past the group (#858). The editor and Post button are resolved inside the container `share_composer.find_composer_container` returns, which walks shadow roots — on `/feed/` the same modal mounts inside `div#interop-outlet`'s shadow root, where no light-DOM lookup and no XPath can reach it (#1621) |
 | Share box → More → Celebrate an occasion → occasion type | `share_composer.publish_occasion_natively` / `auto_publish_occasion_post` | `--occasion-composer` | yes | every step grades its own zero-walk (`zero_walk` on the blocked warning), and a blocked run puts the draft back on the queue rather than skipping it (#1088). Unlike the group composer, a missing affordance here is never legitimate — every member's composer carries the occasion route — so a rendered feed makes any later miss `drift`. `type_hits` is a hit PER archetype, asked exactly the way the walk picks (exact label, then the word-bounded fallback), because `OCCASION_TYPE_LABELS` must never be widened to a neighbouring occasion (#1012) — a count that cannot resolve what the same run clicks re-grounds the map from nothing (#1621): "Certification" sits next to "Educational milestone" and clicking it publishes a claim nobody made. **Grounding this probe was the precondition for flipping `OCCASION_NATIVE_PUBLISH_ENABLED` on** — the flag now defaults ON (#1088) since #1621/#1693 grounded the route; re-run this probe whenever the page moves. Since #1621 the reading also carries `share_box_dom` (the trigger's own DOM nest, read BEFORE the click), `deep_overlay` (dialogs/editors/modals anywhere, shadow roots and iframes included) and `share_box_activation` (which press opens the composer, asked only when the shipped one did not) — the three readings that separate a rotated trigger from a composer mounted where the lookup cannot see it |
 | Groups directory + a group's membership controls | `_enumerate_joined_groups` / `auto_comment_in_groups` | `--group-membership` | yes | directory anchors the sync matched none of, or that no section heading could be attributed to (the reading that says whether the sync counts recommendation cards as joins — unanswered is drift, never `ok`); an enumerated id sitting under a recommendation heading (#1316); a blind zero-walk tripwire — `_GROUPS_DIRECTORY_CROSSCHECK_SEL` matching nothing on a directory that rendered group anchors, which would make an empty sync grade as a quiet day; a group header carrying no join/leave control (#1052) |
 | Group feed post card → Comment → inline composer | `_post_composer_for_card` / `_single_post_scope` | `--group-feed-composer` | yes | per-card miss is a DEBUG no-op by design, so the walk itself is the tripwire: posts the page renders that the card walk reached none of, or a composer mounted on the page that the card-scoped resolver claimed for no card, is drift; the home feed is the control (#916/#928) |
 | Company-page invite modal | `automate_invitations` | `--company-invite` | yes | zero ticked boxes vs the picker's own rows → `drift` ≠ `no_candidates` (#1021) |
 | Invitation manager → Sent | `read_pending_invites` | `--sent-invites` | yes | zero rows vs the page's own empty-state copy (#969) |
-| Roster activity Follow control | `_resolve_follow_control` | `--roster-follow` | no (needs a target) | `unknown` clicks nothing; blocked visits recorded (#962) |
-| Roster activity connection state | `_resolve_connect_state` | `--roster-connect` | no (needs a target) | `unknown` never escalates; read-only advancement only moves forward (#979) |
+| Roster activity Follow control | `_resolve_follow_control` | `--roster-follow` | yes — `_resolve_roster_target` (`engagement_targets`, active, #1770) | `unknown` clicks nothing; blocked visits recorded (#962) |
+| Roster activity connection state | `_resolve_connect_state` | `--roster-connect` | yes — `_resolve_roster_target` (`engagement_targets`, active, #1770) | `unknown` never escalates; read-only advancement only moves forward (#979) |
 | Recommendations + mentions | `_RECOMMENDATION_CARD_LOCATORS` / `_MENTION_CARD_LOCATORS` | `--appreciation-sources` | yes | undated card is SKIPPED, never thanked (#968); zero recommendation cards vs the page's own "Month D, YYYY" (`page_dated`, #1007) and zero mention cards vs the page's own "mentioned/tagged you" lines (`page_mentions`, #1374) — either way a zero the page contradicts is `drift`, not `unknown` |
 | Newsletter/article editor | `find_article_editor_elements` | `--article-editor-url` | yes | `editor_ready` gates the publish walk (#771/#804) |
-| Newsletter page (subscriber label + edition list) | `_read_newsletter_subscriber_count` | `--newsletter-url` | no (needs a newsletter URL) | the page's own "N subscribers" text vs a `None` from the reader → every `track_newsletter_subscribers` snapshot writes NULL and the growth series flatlines (#1284). Repeatable: it also reads a THIRD-PARTY newsletter, which is how an editorial audit names a real exemplar |
-| Published newsletter edition (article body) | n/a — editorial evidence only | `--newsletter-edition` | no (needs an edition URL) | never `drift`: it grounds no production chain, it samples a real exemplar's hook/structure/CTA for `docs/content-quality-audits/newsletter.md` (#1284) |
-| Own post detail + analytics counts | `_post_social_counts` | `--post-url` | no (needs a post) | all-zero vs a non-zero count beside the page's own label; drift leaves the post uncaptured (#1021) |
-| Post media render (document vs image) | media anchors | `--post-url` | no (needs a post) | n/a — a diagnostic, not a lane |
-| Comment thread + sort | `_comment_items` / `_switch_comment_sort` | `--comment-outcome-url` | no (needs a post) | `visible_most_relevant` is three-valued; NULL excluded (#628). A thread that rendered but yielded no sort control also ships a bounded DOM sample as `sdui_selector_evidence` (`surface='comment_sort_control'`, with the `post_url` to re-run the probe against) — an EVENT, because prod's `LOG_LEVEL=INFO` / `POSTHOG_LOG_LEVEL=WARNING` drops the DEBUG line that carried it before (#1117). That scan is ALSO the level gate AND the visibility gate: grounded 2026-08-14, a short thread has no sort control at all, so only a scan row that still NAMES a sort (`reason='keyword'`) warns and only such a row keeps the reading NULL — everything else is DEBUG, and a comment found there records `visible_most_relevant=1` unless the scan came back BLIND (`[]` is equally a failed read, so it stays NULL) (`docs/sdui-selenium-notes.md`). The probe reads the label silently for the same reason |
+| Newsletter page (subscriber label + edition list) | `_read_newsletter_subscriber_count` | `--newsletter-url` | yes — `_resolve_newsletter_page_target` (`newsletter_settings.newsletter_url`, #1770) | the page's own "N subscribers" text vs a `None` from the reader → every `track_newsletter_subscribers` snapshot writes NULL and the growth series flatlines (#1284). Repeatable: it also reads a THIRD-PARTY newsletter, which is how an editorial audit names a real exemplar |
+| Published newsletter edition (article body) | n/a — editorial evidence only | `--newsletter-edition` | yes — `_resolve_newsletter_edition_target` (`newsletter_editions`, freshest published, #1770) | never `drift`: it grounds no production chain, it samples a real exemplar's hook/structure/CTA for `docs/content-quality-audits/newsletter.md` (#1284) |
+| Own post detail + analytics counts | `_post_social_counts` | `--post-url` | yes — `_resolve_own_post_target` (`posts`, freshest published, #1770) | all-zero vs a non-zero count beside the page's own label; drift leaves the post uncaptured (#1021) |
+| Post media render (document vs image) | media anchors | `--post-url` | yes — `_resolve_own_post_target` (`posts`, freshest published, #1770) | n/a — a diagnostic, not a lane |
+| Comment thread + sort | `_comment_items` / `_switch_comment_sort` | `--comment-outcome-url` | yes — `_resolve_own_post_target` (`posts`, freshest published, #1770) | `visible_most_relevant` is three-valued; NULL excluded (#628). A thread that rendered but yielded no sort control also ships a bounded DOM sample as `sdui_selector_evidence` (`surface='comment_sort_control'`, with the `post_url` to re-run the probe against) — an EVENT, because prod's `LOG_LEVEL=INFO` / `POSTHOG_LOG_LEVEL=WARNING` drops the DEBUG line that carried it before (#1117). That scan is ALSO the level gate AND the visibility gate: grounded 2026-08-14, a short thread has no sort control at all, so only a scan row that still NAMES a sort (`reason='keyword'`) warns and only such a row keeps the reading NULL — everything else is DEBUG, and a comment found there records `visible_most_relevant=1` unless the scan came back BLIND (`[]` is equally a failed read, so it stays NULL) (`docs/sdui-selenium-notes.md`). The probe reads the label silently for the same reason |
 | Comment card author identity | `comment_author_identity` | `--commenter-read` | yes (own freshest post; a URL is optional) | it reads each card BOTH ways — the naive first `a[href*='/in/']` and the header anchor — and grades the SHIPPED read: `drift` when the header read names nobody, and the gap against the naive read is drift only on an image that still ships it (`reader_source='script'`), because after #1091 that gap is the fix working and would otherwise file weekly. That gap is #1091: the avatar anchor (no text) and an @mention in the body are both `/in/` links, so the naive read named nobody, `upsert_engager` was skipped in silence and `post_engagers` recorded nothing for a month while replies on the same cards kept landing |
-| Message-thread ladder | `open_message_thread` | `--dm-thread-url` | no (needs a target) | `ThreadState.UNKNOWN` skips (#731) |
-| Post permalink card → Comment → composer | `_permalink_post_card` / `_post_composer_for_card` | `--permalink-comment` | no (needs a post) | a comment that does not land is a FAILURE row, never SUCCESS (#966) |
+| Message-thread ladder | `open_message_thread` | `--dm-thread-url` | yes — `_resolve_message_thread_target` (`dm_followups`, most recent, #1770) | `ThreadState.UNKNOWN` skips (#731) |
+| Post permalink card → Comment → composer | `_permalink_post_card` / `_post_composer_for_card` | `--permalink-comment` | yes — `_resolve_own_post_target` (`posts`, freshest published, #1770) | a comment that does not land is a FAILURE row, never SUCCESS (#966) |
 
 **Not a Selenium surface**, so deliberately not in the matrix: post publishing and document upload
 (`/rest/posts`, `/rest/documents` — grounded by `scripts/linkedin_version_check.py`), token refresh,
@@ -89,9 +89,13 @@ degree badge and a green verdict there would claim coverage the run does not hav
 40 6 * * 1 /home/lem/<repo-clone>/scripts/weekly_sdui_drift_check.sh
 ```
 
-1. Runs `linkedin_live_validation.py --sweep` inside `celery_worker_selenium` — every target-free
-   probe, ONE Chrome session, off-peak. A probe that raises is recorded `unknown` and the sweep
-   continues; one rotated surface must not cost the reading of the nine that did not rotate.
+1. Runs `linkedin_live_validation.py --sweep` inside `celery_worker_selenium` — every surface in the
+   matrix, ONE Chrome session, off-peak. Since #1770 the 11 surfaces that used to need a
+   caller-supplied target resolve one from the account's own data first
+   (`resolve_sweep_targets` — the freshest post, the newsletter, an enabled group, an active roster
+   member, a DM thread); a resolver that finds nothing grades that surface `unknown`, same as a page
+   that never rendered. A probe that raises is recorded `unknown` and the sweep
+   continues; one rotated surface must not cost the reading of the others that did not rotate.
    The sweep checks the session FIRST (`sweep_session_state`): a signed-out one renders an auth wall
    at every surface, which reads as `drift` on nearly all of them at once, so it grades every probe
    `unknown` and probes nothing. That check fails OPEN — only LinkedIn's own challenge URL or guest
@@ -103,6 +107,14 @@ degree badge and a green verdict there would claim coverage the run does not hav
 3. Dedup is the probe key (`sdui-drift-<key>` in the body) against **OPEN** issues only. Unlike the
    PostHog error filer, a CLOSED issue does not suppress a re-file: a surface that rotted, got
    re-grounded, and rotted again six months later is a new defect.
+4. **Phase 2 (issue #1770): silence must not read as green.** The filer also reads the season of
+   sweeps kept in `$SDUI_DRIFT_DIR` (`--history-dir`, up to 90 days) and grades each surface's
+   trailing 3-sweep window: one that graded neither `ok` nor `drift` anywhere in that window —
+   never rendered, never resolved a target, or the probe itself kept raising — is a coverage BLIND
+   SPOT, a different defect from a rotted locator, so it files with its own dedup marker
+   (`sdui-stale-<key>`, `scripts/sdui_drift_issues.py:stale_marker`) and no `risk:live-linkedin`
+   label (there is no locator to re-ground, only a coverage gap to close). A surface graded `ok` or
+   `drift` even once in the window is measured and never gets one.
 
 Env overrides: `SDUI_PROBE_CONTAINER`, `SDUI_PROBE_USER_ID`, `SDUI_PROBE_PROFILE_URL` (a
 2nd/3rd-degree profile, so the degree badge is actually grounded), `SDUI_DRIFT_DIR`,
@@ -140,18 +152,21 @@ deliberately left, and why:
   the same way once a free account's personalized invites are spent. Warning on it filed a
   fingerprinted defect per lost note, so the reading moved to the probe — `--connect-dialog` reports
   `note_affordance_present` / `bare_send_present` and says so in its verdict. It is deliberately
-  NOT graded `drift`: the probe account's own quota state is not knowable from the page. This is the
-  one reading that exists only when somebody runs the probe, since `--connect-dialog` needs a target
-  and so is not in the weekly sweep.
+  NOT graded `drift`: the probe account's own quota state is not knowable from the page. Since #1770
+  the weekly sweep resolves a target for this probe too (a roster member already connected or
+  pending, never a stranger), so this reading is no longer human-run-only — but a human pointing
+  `--connect-dialog` at a specific profile can still ask about a target the sweep would decline.
 - **Feed share-box composer** — a per-card composer miss stays a DEBUG no-op (#876). The card walk
   above it is what has the tripwire; warning per card would file a defect for a post that legitimately
   renders no composer.
 - **Post media render** — a diagnostic, not a lane. Nothing in production reads it, so there is no
   zero to misread.
-- **Target-needing surfaces** (`--connect-dialog`, `--group-composer`, `--roster-follow`,
-  `--comment-outcome-url`, `--dm-thread-url`) are not in the weekly sweep, because each needs a URL a
-  human picks. Their production paths fail CLOSED instead (`unknown` skips, a blocked visit is
-  recorded), which is the tripwire in a shape a sweep cannot provide.
+- **Target resolution can still come back empty** (issue #1770) — a brand-new account with no
+  published post, no enabled group, no roster, no newsletter or no DM history resolves nothing for
+  the surfaces that need one, and grades `unknown` rather than skipping in silence
+  (`scripts/linkedin_live_validation.py:resolve_sweep_targets`). Their production paths fail CLOSED
+  the same way (`unknown` skips, a blocked visit is recorded) — the tripwire in a shape a sweep
+  provides once a target exists.
 
 The tripwires and the sweep answer different questions and both are kept: the sweep grades a surface
 once a week from a read-only session; the tripwire grades the read production actually made, per run.

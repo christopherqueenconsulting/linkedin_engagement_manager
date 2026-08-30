@@ -42,11 +42,23 @@ DEFAULT_REPO = "christopherqueenconsulting/linkedin_engagement_manager"
 # do not change the prefix without migrating the issues already carrying it.
 MARKER_PREFIX = "sdui-drift-"
 
+# Phase 2 (issue #1770): a surface that has gone unmeasured for `STALE_THRESHOLD` consecutive
+# sweeps is its OWN kind of finding — "we cannot see this" is a different defect from "this
+# rotted", so it gets a separate marker prefix rather than piggybacking on `MARKER_PREFIX`. A
+# surface graded `ok` (still working) or `drift` (broken, but SEEN — the drift filer above already
+# owns it) anywhere in the window is measured; only silence for the WHOLE window is a finding.
+STALE_MARKER_PREFIX = "sdui-stale-"
+STALE_THRESHOLD = 3
+
 # `risk:live-linkedin` is deliberate: re-grounding a rotated locator cannot be verified without a
 # live probe run, so the merge belongs to the owner (RUNBOOK escalation), not the runner.
 LABELS = ("agent:ready", "bug", "priority:high", "risk:live-linkedin")
+# The blind-spot issue is a coverage gap, not a live-LinkedIn re-grounding — filing it needs no
+# live probe run to verify, so it carries no `risk:live-linkedin` and can merge like any other fix.
+STALE_LABELS = ("agent:ready", "bug", "priority:high")
 
 STATE_DRIFT = "drift"
+STATE_OK = "ok"
 # The fences `linkedin_live_validation.py` prints around its report. Duplicated as a literal rather
 # than imported, deliberately: this script must keep running on a host clone with no app env. The
 # probe shares stdout with `cqc_lem.utilities.logger`, so the report has to be cut out of the noise
@@ -150,15 +162,104 @@ def build_body(row: dict, user_id=None) -> str:
     ])
 
 
+def surface_state(sweep: Optional[dict], key: str) -> str:
+    """The state `key` graded in ONE sweep — `unmeasured` when it is missing entirely (an older
+    sweep from before this surface existed, one the sweep itself named `skipped`, or a key a
+    malformed history file dropped) rather than raising or silently reading as `ok`.
+    """
+    reading = (dict(sweep or {}).get("probes") or {}).get(key)
+    if not isinstance(reading, dict):
+        return "unmeasured"
+    return str(reading.get("state") or "unmeasured")
+
+
+def stale_rows(current: Optional[dict], history: Optional[list],
+               threshold: int = STALE_THRESHOLD) -> list:
+    """Surfaces that graded neither `ok` nor `drift` in the trailing `threshold` sweeps (issue
+    #1770 Phase 2) — a coverage BLIND SPOT, not a rotted locator, so it never piggybacks on
+    `drift_rows`.
+
+    `history` is the sweeps immediately before `current`, OLDEST FIRST. With fewer than
+    `threshold - 1` of them on hand this says nothing rather than guess staleness from a short
+    tail — a fresh install with no sweep history yet must not immediately file a blind-spot issue
+    for every surface.
+    """
+    window = list(history or [])[-(threshold - 1):] + [dict(current or {})]
+    if len(window) < threshold:
+        return []
+    keys = set()
+    for sweep in window:
+        keys.update((dict(sweep or {}).get("probes") or {}))
+        keys.update((dict(sweep or {}).get("skipped") or []))
+    surfaces = (dict(current or {}).get("surfaces") or {})
+    rows = []
+    for key in sorted(keys):
+        states = [surface_state(sweep, key) for sweep in window]
+        if any(s in (STATE_OK, STATE_DRIFT) for s in states):
+            continue
+        meta = surfaces.get(key) or {}
+        rows.append({"key": key, "states": states, "weeks": len(window),
+                     "surface": meta.get("surface") or key, "flag": meta.get("flag") or ""})
+    return rows
+
+
+def stale_marker(key: str) -> str:
+    return f"{STALE_MARKER_PREFIX}{str(key or '').strip()}"
+
+
+def build_stale_title(row: dict) -> str:
+    title = f"SDUI sweep blind spot: {(row or {}).get('surface') or (row or {}).get('key')}"
+    return title[:MAX_TITLE_CHARS]
+
+
+def build_stale_body(row: dict, user_id=None) -> str:
+    # `user_id` is accepted, not used: it keeps this call-compatible with `build_body` so
+    # `apply_actions` can take either body builder without a special case.
+    """A DIFFERENT body from `build_body`: the finding is "we cannot see this surface", not "the
+    page shows content the locator misses" — there is no page-native evidence to attach, only the
+    per-week state history.
+    """
+    row = dict(row or {})
+    weeks = row.get("weeks") or STALE_THRESHOLD
+    states = row.get("states") or []
+    return "\n".join([
+        "## Why now",
+        "",
+        f"**{row.get('surface')}** has graded neither `ok` nor `drift` for the last {weeks} "
+        "weekly SDUI drift sweeps — it went unmeasured, not merely unchanged. That is invisible "
+        "in the weekly summary line today: an unmeasured surface reads the same as a healthy one "
+        "until a human happens to notice, which is exactly how #1733 cost 17 days (issue #1770).",
+        "",
+        f"Trailing states, oldest first: `{', '.join(states) or '(none recorded)'}`",
+        "",
+        "## Scope",
+        "",
+        f"- Find out why `{row.get('key')}` keeps grading `unknown`: no resolvable target (see "
+        "`target_resolution` in the sweep JSON), a page that never renders, or the probe itself "
+        "raising every week.",
+        "- Fix the resolver, the probe, or the underlying data gap so the surface is measured "
+        + "again — this issue is about COVERAGE, not about re-grounding a specific locator.",
+        "",
+        "## Acceptance",
+        "",
+        f"- [ ] The `{row.get('key')}` probe grades `ok` or `drift` (not `unknown`) in a live "
+        "weekly sweep.",
+        "",
+        f"Auto-filed by `scripts/weekly_sdui_drift_check.sh` (issue #1770). Dedup marker (do not "
+        f"remove): `{stale_marker(row.get('key'))}`",
+    ])
+
+
 def plan_actions(rows: list, filed: Optional[set] = None,
-                 max_new: int = DEFAULT_MAX_NEW) -> list:
-    """What this run would do with each drift row. `filed` is the set of markers already on an OPEN
-    issue. The cap is per RUN, never a silent truncation — a capped row is planned as `skip` with
-    its reason so `summarize()` says how many are waiting."""
+                 max_new: int = DEFAULT_MAX_NEW, marker_fn=marker) -> list:
+    """What this run would do with each row (drift or, via `marker_fn=stale_marker`, staleness).
+    `filed` is the set of markers already on an OPEN issue. The cap is per RUN, never a silent
+    truncation — a capped row is planned as `skip` with its reason so `summarize()` says how many
+    are waiting."""
     already = {str(m) for m in (filed or set())}
     actions, created = [], 0
     for row in rows or []:
-        key = marker(row.get("key"))
+        key = marker_fn(row.get("key"))
         if key in already:
             actions.append({"action": "skip", "reason": "already filed", "row": row,
                             "marker": key})
@@ -231,26 +332,27 @@ class GitHubIssues:
         return (result.stdout or "").strip()
 
 
-def filed_markers(github: GitHubIssues, rows: list) -> set:
+def filed_markers(github: GitHubIssues, rows: list, marker_fn=marker) -> set:
     found = set()
     for row in rows or []:
-        key = marker(row.get("key"))
+        key = marker_fn(row.get("key"))
         if github.is_filed(key):
             found.add(key)
     return found
 
 
 def apply_actions(github: GitHubIssues, actions: list, user_id=None,
-                  dry_run: bool = True) -> list:
+                  dry_run: bool = True, title_fn=build_title, body_fn=build_body,
+                  labels=LABELS) -> list:
     """File the planned issues (or, in dry-run, just report them). Never raises on a GitHub
     failure: a row that fails to file is left unfiled and retried by the next sweep."""
     applied = []
     for action in pending(actions):
-        title = build_title(action["row"])
+        title = title_fn(action["row"])
         if dry_run:
             print(f"  would file: {title}")
             continue
-        url = github.create(title, build_body(action["row"], user_id))
+        url = github.create(title, body_fn(action["row"], user_id), labels=labels)
         if url:
             print(f"  filed: {url} — {title}")
             applied.append({**action, "url": url})
@@ -286,6 +388,32 @@ def load_sweep(path: Optional[str]) -> dict:
     return sweep
 
 
+def load_recent_sweeps(directory: Optional[str], limit: int, exclude: Optional[str] = None) -> list:
+    """The `limit` most recent `sweep-*.json` files in `directory`, OLDEST FIRST — the trailing
+    window `stale_rows` needs. The STAMP in each filename sorts lexicographically, same as the shell
+    sweep's own retention (`find ... -mtime +90 -delete`), so plain name order is chronological.
+
+    Never raises: a missing directory, an unreadable file or a directory that doesn't exist yet (the
+    very first run) all just mean "no history yet" — Phase 2 staying silent on a short tail is the
+    point, not a bug to surface here.
+    """
+    if not directory:
+        return []
+    try:
+        from pathlib import Path
+        candidates = sorted(p for p in Path(directory).glob("sweep-*.json")
+                            if p.name != (exclude or ""))
+    except Exception:
+        return []
+    sweeps = []
+    for path in candidates[-limit:]:
+        try:
+            sweeps.append(json.loads(fenced_report(path.read_text(encoding="utf-8"))))
+        except Exception:
+            continue
+    return sweeps
+
+
 def main(argv: Optional[list] = None) -> int:
     import os
 
@@ -297,6 +425,12 @@ def main(argv: Optional[list] = None) -> int:
     parser.add_argument("--sweep-file", default="-", help="Sweep JSON path ('-' = stdin).")
     parser.add_argument("--max-new", type=int, default=DEFAULT_MAX_NEW)
     parser.add_argument("--repo", default=os.getenv("SDUI_DRIFT_REPO", DEFAULT_REPO))
+    parser.add_argument("--history-dir", default=os.getenv("SDUI_DRIFT_DIR", ""),
+                        help="Directory of past sweep-*.json files, for the Phase-2 staleness "
+                             "check (issue #1770). Empty = staleness check skipped.")
+    parser.add_argument("--stale-max-new", type=int, default=1,
+                        help="Cap on blind-spot issues filed per run (default 1 — this is a "
+                             "coverage gap, not an incident queue).")
     args = parser.parse_args(argv)
 
     try:
@@ -311,23 +445,48 @@ def main(argv: Optional[list] = None) -> int:
           f"{len(summary.get('ok') or [])} ok, {len(rows)} drift, "
           f"{len(summary.get('unknown') or [])} unknown "
           f"(unknown is never filed: it grounds nothing)")
-    if not rows:
+
+    history = load_recent_sweeps(args.history_dir, STALE_THRESHOLD - 1,
+                                 exclude=os.path.basename(args.sweep_file or ""))
+    stale = stale_rows(sweep, history)
+    if stale:
+        print(f"Blind spot ({STALE_THRESHOLD}+ sweeps unmeasured): "
+              f"{', '.join(r['key'] for r in stale)}")
+
+    if not rows and not stale:
         return 0
 
     github = GitHubIssues(args.repo)
-    try:
-        already = filed_markers(github, rows)
-    except Exception as e:
-        print(f"GitHub dedup lookup failed: {e}", file=sys.stderr)
-        return 1
-
-    actions = plan_actions(rows, already, args.max_new)
-    print(f"Drift: {summarize(actions)}")
     dry_run = not args.apply
-    apply_actions(github, actions, sweep.get("user_id"), dry_run=dry_run)
-    if dry_run:
-        return 2 if pending(actions) else 0
-    return 0
+    exit_code = 0
+    if rows:
+        try:
+            already = filed_markers(github, rows)
+        except Exception as e:
+            print(f"GitHub dedup lookup failed: {e}", file=sys.stderr)
+            return 1
+        actions = plan_actions(rows, already, args.max_new)
+        print(f"Drift: {summarize(actions)}")
+        apply_actions(github, actions, sweep.get("user_id"), dry_run=dry_run)
+        if dry_run and pending(actions):
+            exit_code = 2
+
+    if stale:
+        try:
+            already_stale = filed_markers(github, stale, marker_fn=stale_marker)
+        except Exception as e:
+            print(f"GitHub dedup lookup failed (blind-spot check): {e}", file=sys.stderr)
+            return 1
+        stale_actions = plan_actions(stale, already_stale, args.stale_max_new,
+                                     marker_fn=stale_marker)
+        print(f"Blind spot: {summarize(stale_actions)}")
+        apply_actions(github, stale_actions, sweep.get("user_id"), dry_run=dry_run,
+                      title_fn=build_stale_title, body_fn=build_stale_body,
+                      labels=STALE_LABELS)
+        if dry_run and pending(stale_actions) and exit_code == 0:
+            exit_code = 2
+
+    return exit_code
 
 
 if __name__ == "__main__":

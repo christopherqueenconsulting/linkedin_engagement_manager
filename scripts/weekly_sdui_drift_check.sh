@@ -96,7 +96,11 @@ log "sweep written -> $SWEEP"
 # — the app logger writes there too — so `json.loads` on it belongs in exactly one place, behind the
 # report fences, unit-tested (sdui_drift_issues.fenced_report). A second ad-hoc parse here would
 # fail on the first log line and report "no drift" for a week that had some.
-FILER_ARGS=(--sweep-file "$SWEEP")
+# --history-dir points the filer at the season of past sweeps kept below (issue #1770 Phase 2): a
+# surface that has graded neither ok nor drift for 3 consecutive sweeps files its OWN blind-spot
+# issue, separate from a drift finding, because "we cannot see this" is silent in the summary line
+# otherwise.
+FILER_ARGS=(--sweep-file "$SWEEP" --history-dir "$DIR")
 [ "$DRY_RUN" = "1" ] && FILER_ARGS+=(--dry-run) || FILER_ARGS+=(--apply)
 "${PY[@]}" "$REPO/scripts/sdui_drift_issues.py" "${FILER_ARGS[@]}" >>"$LOG" 2>&1
 RC=$?
