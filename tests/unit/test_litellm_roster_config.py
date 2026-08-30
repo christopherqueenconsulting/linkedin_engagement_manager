@@ -53,13 +53,14 @@ def _ollama_deployments() -> list:
 
 class TestRoster:
     def test_the_deepseek_v4_flash_family_serves_no_tier(self):
-        """#1758: `:preview` — what `lem-medium`/`lem-complex` served since #1200 — left
-        `ollama.com/api/tags` entirely on 2026-08-30. Its only sibling, `:0731`, is a different
-        build (a different digest on `ollama.com/api/tags`, which is build identity there) and it
-        is not a fit either way: #921 already benchmarked it beside `:preview` and declined it
-        below the 90% contract floor on both tiers (80%). No spelling of this family serves
-        anything until a fresh candidate clears scripts/benchmark_models.py (tracked on #1758's
-        follow-up) — see docs/model-benchmarks/README.md for the full history.
+        """#1758: `:preview` — what `lem-medium`/`lem-complex` served since #1200 — left the catalog on 2026-08-30.
+
+        `ollama.com/api/tags` has nothing under this family's name now. Its only sibling, `:0731`,
+        is a different build (a different digest on `ollama.com/api/tags`, which is build identity
+        there) and it is not a fit either way: #921 already benchmarked it beside `:preview` and
+        declined it below the 90% contract floor on both tiers (80%). No spelling of this family
+        serves anything until a fresh candidate clears scripts/benchmark_models.py (tracked on
+        #1758's follow-up) — see docs/model-benchmarks/README.md for the full history.
         """
         for group in ("lem-simple", "lem-medium", "lem-complex", "lem-router"):
             assert "deepseek-v4-flash" not in _ollama_models(group)
