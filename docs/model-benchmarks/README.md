@@ -441,6 +441,40 @@ Three things worth reading beyond the two verdicts:
 
 Both are within #1757's scope (`lem-simple`/`lem-medium`/`lem-complex` only) — neither tag touches `lem-agent-*`.
 
+### What #1762 settled — `lem-complex`'s second Ollama deployment, declined, measured
+
+`deepseek-v4-flash:preview` left `ollama.com/api/tags` on 2026-08-30 (#1758) and its only sibling,
+`:0731`, was already declined on this tier (#921). Per the #842 standing spend policy, every
+High/Extra-high usage-level candidate already on the roster (`minimax-m3`, `glm-5.2`,
+`deepseek-v4-pro`, `glm-5.3`) is a decline-unbenchmarked here: a usage-level increase on
+`lem-complex` needs a strict judge-rate win over the champion, and no run can beat a champion
+already measured at 100% judge. That left one genuinely new, not-yet-evaluated candidate at a
+usage level the policy doesn't block outright: `mistral-large-3:675b` (**Medium**, 682GB, 1M
+context, on the catalog since 2025-12-02 — never benchmarked for any LEM tier before).
+
+| Tag | What it is | Decision |
+|---|---|---|
+| `mistral-large-3:675b` | **Medium (2)** usage level, flat quota against the tier's departed `deepseek-v4-flash:preview` deployment (ollama.com/library/mistral-large-3) | **Decline, measured** (`bm-20260830-1e6b4e`, report beside this file). Tied champion `qwen3.5:397b` on contract (90% vs 90%) but missed the judge floor (40% vs 80%) and lost to the champion on both first draft (50% vs 90%) and judge (40% vs 44%) — a markdown-fenced JSON case, an invented statistic, a short prompt-shaped answer instead of long-form copy, and repeated contrastive/"ta-da" slop-lint hits repairable only on the first-draft measure. No `recommend`; `.litellm/config.yaml` unchanged. |
+
+Two things worth reading beyond the verdict:
+
+- **The champion's own judge rate moved.** `qwen3.5:397b` measured 100% judge on `lem-complex` in
+  `bm-20260802-20ae40` (PostHog-evals mode) and the config's own decline notes for
+  `deepseek-v4-pro`/`glm-5.3` lean on that figure. This run (`in-runner-judge` mode, no PostHog
+  benchmark key configured) measured it at 44% instead — one case with no output at all
+  (`complex-mobile-hook`, empty after budget escalation and a re-measurement) plus five judge
+  misses. Per the *measurement variance* posture above, a single run's judge score is not a stable
+  read, especially across scoring modes, so this is **not** treated as reopening the High/Extra-high
+  declines above — but it means "no run can beat 100%" is no longer literally true of the last
+  measurement, and the next `lem-complex` evaluation should re-measure the champion under the same
+  mode as whatever it compares against rather than citing the 2026-08-02 figure.
+- **The roster gap itself is unresolved, on purpose.** `lem-complex` still runs
+  `deepseek-v4-flash:preview` today (#1758's removal is #1763, not yet merged) — once that lands the
+  tier is down to one Ollama deployment (`qwen3.5:397b`) plus the paid fallbacks, and this decline
+  does not close that. Declining is the correct outcome for `mistral-large-3:675b` specifically, not
+  a statement that the tier doesn't need a win; the next monthly catalog scan is where a fresh
+  candidate gets evaluated.
+
 ## Running it
 
 ```bash
@@ -496,6 +530,8 @@ is the rate their report published.
 <!-- LEADERBOARD:BEGIN -->
 | Date | Run | Tier | Model | Role | Contract | First draft | Judge | p50 | Verdict |
 |---|---|---|---|---|---|---|---|---|---|
+| 2026-08-30 | `bm-20260830-1e6b4e` | lem-complex | `qwen3.5:397b` | champion | 90% | 90% | 44% | 29310 ms | baseline |
+| 2026-08-30 | `bm-20260830-1e6b4e` | lem-complex | `mistral-large-3:675b` | candidate | 90% | 50% | 40% | 5461 ms | reject |
 | 2026-08-30 | `bm-20260830-3048e1` | lem-medium | `gpt-oss:120b` | champion | 90% | 60% | 67% | 1423 ms | baseline |
 | 2026-08-30 | `bm-20260830-3048e1` | lem-medium | `glm-5.3-flash` | candidate | 100% | 60% | 33% | 2351 ms | reject |
 | 2026-08-02 | `bm-20260802-b84f19` | lem-complex | `qwen3.5:397b` | champion | 70% | 50% | n/a | 30346 ms | baseline |
