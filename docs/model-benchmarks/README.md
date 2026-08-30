@@ -441,6 +441,24 @@ Three things worth reading beyond the two verdicts:
 
 Both are within #1757's scope (`lem-simple`/`lem-medium`/`lem-complex` only) — neither tag touches `lem-agent-*`.
 
+### What the 2026-08-30 tag scan settled (#1758) — `:preview` vanished, no fit left
+
+| Tag | What happened | Decision |
+|---|---|---|
+| `deepseek-v4-flash:preview` | Left `ollama.com/api/tags` entirely on 2026-08-30 — no republish this time, just gone. It was the 140GB build measured at 90% contract on `lem-medium` and `lem-complex` (`bm-20260802-b84f19`) and the id both tiers served since #1200 | **Removed from both tiers.** A vanished tag is next week's 410, found early — leaving it configured only means the same outage, later. |
+| `deepseek-v4-flash:0731` (the only sibling left in the family) | 167GB, published 2026-07-31, digest `4de9bf66c0eb` on `ollama.com/api/tags` — a DIFFERENT digest from `:preview`'s `ac252c581d64`, so this is not the same build under a new name | **Not a fit — already declined.** #921 benchmarked it directly beside `:preview` on all three tiers and rejected it: 80% vs 90% contract on `lem-complex` and `lem-medium`, 40% vs 50% on `lem-simple`. Restoring the bare `deepseek-v4-flash` id would just follow the vendor's moving tag onto this same build (#1201's finding, still true). |
+
+No candidate replaces the family on either tier in this change — `lem-medium` keeps `gpt-oss:120b`
++ `gemma4:31b`, `lem-complex` drops to its lone Ollama deployment (`qwen3.5:397b`) plus the paid
+fallbacks. A fresh `lem-complex` candidate, benchmarked rather than assumed, is the #1758 follow-up
+issue; nothing in `gemma4:31b` or the HIGH usage-level `minimax-m3` / `glm-5.2` closes that gap for
+free — all three are already declined on this tier (`bm-20260802-20ae40`, `#842`).
+
+This is the same finding shape as #1200/#1201, minus the republish: `plan_repoints` (#925) is blind
+to a tag missing from both sides, so a re-point that also drops the name from the catalog is only
+ever caught by `plan_vanished` (#1237) and the roster test asserting every configured id is in the
+committed catalog — which is exactly what fired here.
+
 ### What #1762 settled — `lem-complex`'s second Ollama deployment, declined, measured
 
 `deepseek-v4-flash:preview` left `ollama.com/api/tags` on 2026-08-30 (#1758) and its only sibling,

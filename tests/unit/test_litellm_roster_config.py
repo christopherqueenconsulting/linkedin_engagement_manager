@@ -52,29 +52,18 @@ def _ollama_deployments() -> list:
 
 
 class TestRoster:
-    def test_deepseek_v4_flash_serves_both_the_medium_and_complex_tiers(self):
-        # `:preview`, not the bare tag: on 2026-08-09 `deepseek-v4-flash` left the catalog and its
-        # 140GB build — the one measured at 90% (#921) — was published under `:preview`, while the
-        # bare name was re-pointed onto the rejected `:0731` build. Asserting the EXACT served id is
-        # the point — a bare-tag substring check would have gone on passing through both moves.
-        assert "deepseek-v4-flash:preview" in _ollama_models("lem-medium")
-        assert "deepseek-v4-flash:preview" in _ollama_models("lem-complex")
-
-    def test_no_serving_tier_carries_a_deepseek_build_the_benchmark_rejected(self):
-        """Guard the #921 decline — the only assertion that would notice `:0731` being adopted.
-
-        It was benchmarked against the build above on all three tiers and declined: 80% contract vs
-        90% on lem-complex and lem-medium, 40% vs 50% on lem-simple. It is still in the catalog, so
-        every other assertion in this file passes on it.
-
-        The bare `deepseek-v4-flash` is the same finding wearing a different hat: on 2026-08-09 that
-        name was re-pointed onto the `:0731` build (ollama.com's tags page gives it and
-        `:0731-cloud` the same digest) and dropped from the catalog. So "use the bare catalog id"
-        — note 0 in the config — now resolves to a rejected build here, which is why both spellings
-        are named. Adopting either is a benchmark decision; update this test with it.
+    def test_the_deepseek_v4_flash_family_serves_no_tier(self):
+        """#1758: `:preview` — what `lem-medium`/`lem-complex` served since #1200 — left
+        `ollama.com/api/tags` entirely on 2026-08-30. Its only sibling, `:0731`, is a different
+        build (a different digest on `ollama.com/api/tags`, which is build identity there) and it
+        is not a fit either way: #921 already benchmarked it beside `:preview` and declined it
+        below the 90% contract floor on both tiers (80%). No spelling of this family serves
+        anything until a fresh candidate clears scripts/benchmark_models.py (tracked on #1758's
+        follow-up) — see docs/model-benchmarks/README.md for the full history.
         """
         for group in ("lem-simple", "lem-medium", "lem-complex", "lem-router"):
             assert "deepseek-v4-flash" not in _ollama_models(group)
+            assert "deepseek-v4-flash:preview" not in _ollama_models(group)
             assert "deepseek-v4-flash:0731" not in _ollama_models(group)
 
     def test_no_tier_carries_the_extra_high_deepseek_pro_family(self):
@@ -143,9 +132,14 @@ class TestRoster:
     def test_every_serving_tier_keeps_more_than_one_ollama_deployment(self):
         """A single-deployment tier falls straight onto a paid OpenAI/Anthropic key — or onto
         nothing — the moment that one model has a bad day.
+
+        `lem-complex` is a documented exception since #1758: `deepseek-v4-flash:preview` left the
+        catalog and its only sibling was already declined (#921), so nothing free is left to pair
+        with qwen3.5:397b here until a fresh candidate is benchmarked (tracked on #1758's
+        follow-up). `lem-medium` still keeps its pair (gpt-oss:120b + gemma4:31b).
         """
-        for group in ("lem-medium", "lem-complex"):
-            assert len(_ollama_models(group)) >= 2
+        assert len(_ollama_models("lem-medium")) >= 2
+        assert len(_ollama_models("lem-complex")) >= 1
 
     def test_no_ollama_deployment_carries_a_tag_the_catalog_never_lists(self):
         """Companion to the catalog assertion above, for its ERROR MESSAGE. `glm-5.2:cloud` fails
