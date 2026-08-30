@@ -3,6 +3,7 @@
 from unittest.mock import MagicMock, patch
 
 import pytest
+from selenium.common.exceptions import WebDriverException
 
 pytestmark = pytest.mark.unit
 
@@ -199,6 +200,52 @@ class TestScrapeRecordsImpressions:
             auto_scrape_post_stats.run(user_id=1)
         assert rec.call_args.kwargs == {"reposts": 6, "impressions": 72, "saves": 9}
         assert rec.call_args.args[2:] == (5, 2)
+
+
+class TestScrapeStopsOnCrashedTab:
+    """Issue #1751: a WebDriverException('tab crashed') mid-sweep was propagating out of
+    `auto_scrape_post_stats` unhandled and filing a grouped PostHog `$exception`. The session is
+    still valid on a tab crash, but no further navigation on it will succeed either, so the sweep
+    is genuinely over the same way #1746 ends a group-comment walk on the same fault.
+    """
+
+    def test_stops_gracefully_and_keeps_what_already_scraped(self):
+        driver = MagicMock()
+        driver.get.side_effect = [None, WebDriverException("Message: tab crashed\n  (Session info: "
+                                                             "chrome=151.0.7922.108)")]
+        counts = {"reactions": 5, "comments": 2, "reposts": 0, "impressions": 100, "saves": 0}
+        with patch(f"{_POST}.time.sleep"), \
+             patch(f"{_POST}.get_recent_posted_post_ids", return_value=[9, 10]), \
+             patch(f"{_POST}.get_uncaptured_posted_post_ids", return_value=[]), \
+             patch(f"{_POST}.get_current_profile", return_value=(driver, MagicMock(), "e", MagicMock())), \
+             patch(f"{_POST}.get_post_url_from_log_for_user", return_value="https://x/urn"), \
+             patch(f"{_POST}._post_social_counts", return_value=counts), \
+             patch(f"{_POST}._post_analytics_counts", return_value={}), \
+             patch(f"{_POST}.get_shipped_variant_keys", return_value={}), \
+             patch(f"{_POST}.record_post_stats") as rec, \
+             patch(f"{_POST}.track_post_outcome"), \
+             patch(f"{_POST}.quit_gracefully") as quit_mock:
+            from cqc_lem.app.engagement.posting import auto_scrape_post_stats
+            result = auto_scrape_post_stats.run(user_id=1)
+        # Only the first post (before the crash) was recorded — the second was never reached.
+        assert rec.call_count == 1
+        assert "1 post(s)" in result and "tab crashed" in result
+        # The session is still torn down even though the sweep ended early.
+        quit_mock.assert_called_once_with(driver)
+
+    def test_a_non_crash_exception_still_propagates(self):
+        driver = MagicMock()
+        driver.get.side_effect = WebDriverException("unable to find session with ID: abc")
+        with patch(f"{_POST}.time.sleep"), \
+             patch(f"{_POST}.get_recent_posted_post_ids", return_value=[9]), \
+             patch(f"{_POST}.get_uncaptured_posted_post_ids", return_value=[]), \
+             patch(f"{_POST}.get_current_profile", return_value=(driver, MagicMock(), "e", MagicMock())), \
+             patch(f"{_POST}.get_post_url_from_log_for_user", return_value="https://x/urn"), \
+             patch(f"{_POST}.get_shipped_variant_keys", return_value={}), \
+             patch(f"{_POST}.quit_gracefully"):
+            from cqc_lem.app.engagement.posting import auto_scrape_post_stats
+            with pytest.raises(WebDriverException):
+                auto_scrape_post_stats.run(user_id=1)
 
 
 class TestScrapeBackfillsNeverCapturedPosts:
