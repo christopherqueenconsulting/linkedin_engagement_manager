@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.170.1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.170.0...v0.170.1) (2026-08-31)
+
+
+### Bug Fixes
+
+* **dms:** read LinkedIn's catch-up default response off its own Message anchor ([#1775](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1775)) ([12ef62f](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/12ef62f13c123c47fe5aeb0986253f2859aa0126))
+* **engagement:** widen composer resolution + cross-check group page render ([#1777](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1777)) ([#1779](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1779)) ([76bd89b](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/76bd89b1335d3f71f6eb7d9b69cd5cb8ed461b26))
+
 ## [0.170.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.169.0...v0.170.0) (2026-08-30)
 
 
