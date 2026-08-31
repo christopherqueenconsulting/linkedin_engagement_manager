@@ -180,7 +180,7 @@ export default function NewsletterQueue(
       // normal case, so "has a cover" would be true on the very first poll and we would call the
       // OLD image ready while the new one is still rendering.
       setCoverWaitFrom(draftEdit!.cover_image_url ?? null)
-      setMsg({ ok: true, text: 'Generating a cover… this can take a minute.' })
+      setMsg({ ok: true, text: 'Generating a cover… this can take a few minutes.' })
     },
     onError: (e) => coverError(e, 'Could not start cover generation — try again.'),
   })
@@ -207,7 +207,13 @@ export default function NewsletterQueue(
   // one whose URL differs from whatever it had when generation started. The poll is BOUNDED: a
   // generation that failed (or was rejected by the cover gate) never lands a cover, and an
   // unbounded poll would leave the whole panel disabled forever.
-  const COVER_POLL_LIMIT = 12
+  //
+  // The bound has to clear the backend's own worst case, not just the common one (issue #1806):
+  // a single Replicate render is bounded at REPLICATE_TIMEOUT_SECONDS (300s, docs/image-stack.md),
+  // and the vision quality gate can run that render twice (IMAGE_GATE_MAX_ATTEMPTS). At the old
+  // 120s budget (12 x 10s) the button silently reverted to idle — showing "working" then never
+  // updating — well before a legitimate render had a chance to land.
+  const COVER_POLL_LIMIT = 36
   useEffect(() => {
     if (coverWaitId == null) return
     let cancelled = false
@@ -232,7 +238,10 @@ export default function NewsletterQueue(
       }
       if (++tries >= COVER_POLL_LIMIT) {
         stop()
-        setMsg({ ok: false, text: 'No cover came back — try generating again or upload your own.' })
+        setMsg({
+          ok: false,
+          text: 'No cover came back yet — it may still land in a bit; reopen this edition to check, or try generating again.',
+        })
         setTimeout(() => setMsg(null), 8000)
         return
       }

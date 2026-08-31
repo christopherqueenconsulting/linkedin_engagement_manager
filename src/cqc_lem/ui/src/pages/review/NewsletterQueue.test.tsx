@@ -1,6 +1,6 @@
 import { describe, expect, it, vi, afterEach } from 'vitest'
 import type { ReactNode } from 'react'
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import NewsletterQueue from './NewsletterQueue'
 import type { NewsletterEdition } from '../account/types'
@@ -207,6 +207,69 @@ describe('NewsletterQueue pending-cover legibility', () => {
     harness(queue())
     await waitFor(() => expect(screen.getByRole('button', { name: 'Approve cover' })).toBeTruthy())
     expect(screen.getByText(/reaches its slot unapproved/)).toBeTruthy()
+  })
+})
+
+// Issue #1806: "Generate with AI" showed a spinner but the cover never updated. The backend
+// render is bounded well past a minute (a single Replicate attempt alone is 300s, and the
+// vision gate can run that twice), so the frontend's poll window has to clear that, not just
+// the common case — the old 12 x 10s = 120s budget gave up mid-render.
+describe('NewsletterQueue cover generation polling', () => {
+  afterEach(() => vi.useRealTimers())
+
+  it('keeps waiting well past the old two-minute budget and still catches a cover that lands later', async () => {
+    const state: { coverUrl: string | undefined } = { coverUrl: undefined }
+    get.mockImplementation(() =>
+      Promise.resolve({
+        data: {
+          detail: {
+            editions: [{ ...edition(1, 'First up'), cover_image_url: state.coverUrl }],
+            next_publish: null,
+            auto_publish_newsletters: true,
+          },
+        },
+      }))
+    post.mockResolvedValue({ data: { detail: 'Cover generation started' } })
+
+    harness(queue())
+    await waitFor(() => expect(titleBox().value).toBe('First up'))
+
+    vi.useFakeTimers()
+    fireEvent.click(screen.getByRole('button', { name: 'Generate with AI' }))
+    await act(async () => {})
+    expect(screen.getByRole('button', { name: 'Generating…' })).toBeTruthy()
+
+    // Cross well past the old 120s budget with no cover yet — the button must still be waiting.
+    for (let i = 0; i < 15; i++) {
+      await act(async () => { await vi.advanceTimersByTimeAsync(10000) })
+    }
+    expect(screen.getByRole('button', { name: 'Generating…' })).toBeTruthy()
+
+    // The backend finally lands the cover.
+    state.coverUrl = 'https://cdn.test/new.png'
+    await act(async () => { await vi.advanceTimersByTimeAsync(10000) })
+
+    expect(screen.getByAltText('Newsletter cover').getAttribute('src')).toBe('https://cdn.test/new.png')
+    expect(screen.getByRole('button', { name: 'Generate with AI' })).toBeTruthy()
+  })
+
+  it('eventually gives up and reverts the button if no cover ever lands', async () => {
+    serveQueue([edition(1, 'First up')])
+    post.mockResolvedValue({ data: { detail: 'Cover generation started' } })
+
+    harness(queue())
+    await waitFor(() => expect(titleBox().value).toBe('First up'))
+
+    vi.useFakeTimers()
+    fireEvent.click(screen.getByRole('button', { name: 'Generate with AI' }))
+    await act(async () => {})
+
+    for (let i = 0; i < 36; i++) {
+      await act(async () => { await vi.advanceTimersByTimeAsync(10000) })
+    }
+
+    expect(screen.getByRole('button', { name: 'Generate with AI' })).toBeTruthy()
+    expect(screen.getByText(/No cover came back yet/)).toBeTruthy()
   })
 })
 
