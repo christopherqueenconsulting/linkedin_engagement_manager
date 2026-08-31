@@ -18,6 +18,29 @@ LOG="$DIR/error-to-issues.log"
 mkdir -p "$DIR"
 log(){ echo "[$(date -u +%FT%TZ)] $*" | tee -a "$LOG" >&2; }
 
+# Best-effort email to the admin on a hard failure — mirrors weekly_sdui_drift_check.sh's `alert()`.
+# Reuses `_dispatch_email` inside the running `web_app` container rather than importing `cqc_lem`
+# here: this script is designed to run from a dedicated cron clone whose python may not have the
+# app's dependencies installed reliably (see the header above), so alerting itself must not become a
+# new way for the cron to fail harder. `docker exec` needs no local cqc_lem env at all, so it works
+# from that bare clone the same as it does from the dev checkout. If the container is unreachable
+# (host down, compose stopped) the alert is skipped with a logged reason — never fails the run.
+alert(){
+  log "ALERT: $1"
+  sudo -n docker exec -i web_app python - "$1" <<'PY' >>"$LOG" 2>&1 || log "alert email skipped (web_app unreachable) — see reason above"
+import os, sys
+msg = sys.argv[1]
+try:
+    from cqc_lem.utilities.email import _dispatch_email
+    to = os.environ.get("ADMIN_EMAIL") or os.environ.get("LINKEDIN_EMAIL") or "christopher.queen@gmail.com"
+    html = "<pre>" + msg.replace("&", "&amp;").replace("<", "&lt;") + "</pre>"
+    _dispatch_email(to, "LEM error->issues cron failed", html, text_content=msg, high_priority=True)
+    print("alert emailed to", to)
+except Exception as e:
+    print("alert email failed (logged only):", e)
+PY
+}
+
 # Python with `requests`. Prefer the stable dev-checkout venv; fall back to poetry inside REPO.
 # (ERROR_ISSUES_PY overrides both — tests only; the cron never sets it.)
 _DEV_VENV_PY="/home/lem/linkedin_engagement_manager/.venv/bin/python"
@@ -44,8 +67,12 @@ if [ -z "${POSTHOG_QUERY_API_KEY:-}" ] && [ -z "${POSTHOG_PERSONAL_API_KEY:-}" ]
 fi
 
 log "=== error->issues scan start ==="
-cd "$REPO" || { log "repo not found: $REPO"; exit 1; }
+cd "$REPO" || { alert "error->issues cron: repo not found: $REPO"; exit 1; }
 "${PY[@]}" scripts/posthog_error_issues.py --apply "$@" 2>&1 | tee -a "$LOG"
 rc=${PIPESTATUS[0]}
 log "=== error->issues scan done (exit $rc) ==="
+if [ "$rc" != "0" ]; then
+  alert "error->issues cron failed (exit $rc). Tail of $LOG:
+$(tail -n 40 "$LOG")"
+fi
 exit "$rc"

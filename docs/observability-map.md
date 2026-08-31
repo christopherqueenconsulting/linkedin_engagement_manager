@@ -115,6 +115,19 @@ only ever meant "nothing dangles in the rows it reached". `truncated` is a `labe
 reason `has_dangling` is. The event exists because the image audits have to read a production volume
 and production rows to answer any of this — PostHog is the side of that line they can reach.
 
+## SDUI selector evidence (issues #1117, #1270) — `docs/sdui-probe-coverage.md`
+`track_selector_evidence` ships ONE bounded DOM sample (`_SELECTOR_EVIDENCE_MAX_CANDIDATES=8`)
+whenever a locator chain that would normally warn resolves nothing on a page that DID render — the
+feed's Recent-sort control (`surface='feed_sort_control'`) and a comment thread's own sort control
+(`surface='comment_sort_control'`) today. It exists because prod runs `LOG_LEVEL=INFO` /
+`POSTHOG_LOG_LEVEL=WARNING`, so the DEBUG line that used to carry the DOM shape never left the
+worker, and raising it to WARNING would file a grouped `$exception` for a page LEM is only trying to
+READ, not one it broke. `surface` is a `label()` so a dashboard tile can filter/breakdown on it; an
+EMPTY `candidates` list is still emitted on purpose — a scan that came back blind is itself the
+reading, and suppressing it is how a rotted surface looks un-drifted. `docs/kpi-dashboards.md` has
+the provisioned Health tile; `docs/sdui-probe-coverage.md` has the (accepted, not-a-bug) overlap this
+creates with the weekly drift sweep's own `drift` filing.
+
 ## Motion-prompt lint (issue #1277) — `docs/content-core.md`
 One `motion_prompt_check` event per graded motion prompt, emitted BEFORE a Runway credit is spent:
 `verdict` (`pass` / `warn` / `regenerate` / `hold` / `unchecked`) next to `enforced`, plus the model,

@@ -91,6 +91,17 @@ COLUMNS = ("issue_id", "name", "description", "status", "first_seen", "last_seen
 # What posthog-js hands out as a session id. A value that isn't this shape is not linked (#649).
 SESSION_ID_RE = re.compile(r"[A-Za-z0-9._-]{8,64}")
 
+# A 2026-08-31 08:30 UTC transient 503 from the query endpoint burned the whole day's window: the
+# cron is daily with a 24h lookback and had no retry, so that run's errors were gone from every
+# future run's lookback the moment it exited. Same split PostHog's own outage taught the LLM client
+# (`AttributedOpenAI.post`, issue #986): a 5xx / connection failure is the query endpoint NOT
+# answering — retry it — where a 4xx is it answering (bad auth, a bad HogQL string) and retrying
+# cannot fix that. Reimplemented here rather than imported: this is a daily cron with no
+# latency pressure, so a short fixed schedule is enough, and the script must stay runnable from a
+# bare clone with only `requests`+`gh` — no `cqc_lem.*` import.
+_QUERY_RETRY_ATTEMPTS = 3
+_QUERY_RETRY_BACKOFF_SECONDS = (1.0, 3.0)  # delay before attempt 2, then before attempt 3
+
 # `log_escalation.RecurringWarning` — the ONLY exception type whose description is already the
 # normalized warning string (volatile tokens masked to `<n>`/`<list>`/…), which is what makes a
 # substring match against a human's issue text safe. Every other exception carries a raw interpolated
@@ -414,17 +425,38 @@ class PostHogQueryClient:
         self.app_host = app_host.rstrip("/")
 
     def query(self, hogql: str) -> list:
+        import time
+
         import requests
-        response = requests.post(
-            f"{self.app_host}/api/projects/{self.project_id}/query/",
-            headers={"Authorization": f"Bearer {self.api_key}",
-                     "Content-Type": "application/json"},
-            json={"query": {"kind": "HogQLQuery", "query": hogql}},
-            timeout=QUERY_TIMEOUT_SECONDS,
-        )
-        response.raise_for_status()
-        payload = response.json()
-        return payload.get("results") or []
+
+        last_exc: Optional[BaseException] = None
+        for attempt in range(_QUERY_RETRY_ATTEMPTS):
+            try:
+                response = requests.post(
+                    f"{self.app_host}/api/projects/{self.project_id}/query/",
+                    headers={"Authorization": f"Bearer {self.api_key}",
+                             "Content-Type": "application/json"},
+                    json={"query": {"kind": "HogQLQuery", "query": hogql}},
+                    timeout=QUERY_TIMEOUT_SECONDS,
+                )
+                response.raise_for_status()
+                payload = response.json()
+                return payload.get("results") or []
+            except Exception as exc:
+                last_exc = exc
+                transient = isinstance(exc, (requests.ConnectionError, requests.Timeout)) or (
+                    isinstance(exc, requests.HTTPError) and exc.response is not None
+                    and 500 <= exc.response.status_code < 600)
+                if attempt + 1 >= _QUERY_RETRY_ATTEMPTS or not transient:
+                    raise
+                delay = _QUERY_RETRY_BACKOFF_SECONDS[min(attempt, len(_QUERY_RETRY_BACKOFF_SECONDS) - 1)]
+                print(f"  PostHog query endpoint failed transiently ({exc}); retrying in "
+                      f"{delay:.0f}s (attempt {attempt + 2}/{_QUERY_RETRY_ATTEMPTS})",
+                      file=sys.stderr)
+                time.sleep(delay)
+        if last_exc:
+            raise last_exc
+        return []
 
 
 class GitHubIssues:

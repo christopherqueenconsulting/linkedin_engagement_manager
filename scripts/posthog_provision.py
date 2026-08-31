@@ -108,6 +108,7 @@ SOURCE_EVENTS = (
     "celery_task",
     "api_call",
     "rate_limit_trip",
+    "sdui_selector_evidence",
     "comment_outcome",
     "post_outcome",
     "audience_snapshot",
@@ -222,6 +223,7 @@ INSIGHT_CELERY_FAILURES = "Health — Celery task failures per day"
 INSIGHT_RATE_LIMIT_TRIPS = "Health — LinkedIn 429 breaker trips per day"
 INSIGHT_LLM_SPEND = "Health — LLM spend per day (USD, proxy-reported)"
 INSIGHT_COMMENTS_WEEKLY = "Health — Comments measured per week"
+INSIGHT_SDUI_SELECTOR_EVIDENCE = "Health — SDUI selector-evidence captures per day"
 
 
 def health_tiles() -> list:
@@ -252,6 +254,14 @@ def health_tiles() -> list:
             "Comments the T+24h outcome sweep could measure, per week. Weekly on purpose: human "
             "pacing takes account-wide rest days, so a daily floor would page on a healthy zero day.",
             _trends(_event_series("comment_outcome"), interval="week", date_from="-90d"),
+        ),
+        _tile(
+            INSIGHT_SDUI_SELECTOR_EVIDENCE,
+            "Bounded DOM samples (track_selector_evidence, docs/observability-map.md) shipped when a "
+            "Recent-sort or comment-sort locator resolves nothing on a page that rendered. Not "
+            "alerted: a legitimately-absent sort control is a normal nonzero day (docs/sdui-probe-"
+            "coverage.md) — the weekly drift sweep's own `drift` filing stays the actionable signal.",
+            _trends(_event_series("sdui_selector_evidence")),
         ),
         _tile(
             "Health — Celery task failure rate (daily %)",
