@@ -229,6 +229,137 @@ class TestFencedReport:
 
 
 @pytest.mark.unit
+class TestStaleRows:
+    """Phase 2 (issue #1770): silence is its own finding.
+
+    A surface that has gone unmeasured for 3 consecutive sweeps is a coverage blind spot, a
+    different defect from a rotted locator — its own marker, its own body.
+    """
+
+    def test_three_consecutive_unmeasured_sweeps_is_stale(self):
+        week1 = _sweep(connect_dialog={"state": "unknown"})
+        week2 = _sweep(connect_dialog={"state": "unknown"})
+        current = _sweep(connect_dialog={"state": "unknown"})
+        rows = filer.stale_rows(current, [week1, week2])
+        assert [r["key"] for r in rows] == ["connect_dialog"]
+
+    def test_an_ok_anywhere_in_the_window_clears_it(self):
+        week1 = _sweep(connect_dialog={"state": "ok"})
+        week2 = _sweep(connect_dialog={"state": "unknown"})
+        current = _sweep(connect_dialog={"state": "unknown"})
+        assert filer.stale_rows(current, [week1, week2]) == []
+
+    def test_a_drift_anywhere_in_the_window_also_clears_it(self):
+        """Drift means the surface WAS seen and is broken.
+
+        That is the drift filer's job, not a coverage blind spot, so it must not also file here.
+        """
+        week1 = _sweep(connect_dialog={"state": "drift"})
+        week2 = _sweep(connect_dialog={"state": "unknown"})
+        current = _sweep(connect_dialog={"state": "unknown"})
+        assert filer.stale_rows(current, [week1, week2]) == []
+
+    def test_missing_from_a_sweep_entirely_counts_as_unmeasured(self):
+        """A surface missing from an older sweep file counts as unmeasured too.
+
+        It is exactly as blind as one graded `unknown` — the surface simply was not covered that
+        week either.
+        """
+        week1 = _sweep()
+        week2 = _sweep()
+        current = _sweep(connect_dialog={"state": "unknown"})
+        rows = filer.stale_rows(current, [week1, week2])
+        assert [r["key"] for r in rows] == ["connect_dialog"]
+
+    def test_too_little_history_says_nothing(self):
+        """A fresh install with no sweep history yet must not immediately file a blind-spot issue.
+
+        Not for every surface on week one.
+        """
+        current = _sweep(connect_dialog={"state": "unknown"})
+        assert filer.stale_rows(current, []) == []
+        assert filer.stale_rows(current, [_sweep(connect_dialog={"state": "unknown"})]) == []
+
+    def test_the_marker_uses_its_own_prefix_not_drifts(self):
+        assert filer.stale_marker("connect_dialog") == "sdui-stale-connect_dialog"
+        assert filer.stale_marker("connect_dialog") != filer.marker("connect_dialog")
+
+    def test_the_stale_body_carries_its_own_marker_and_the_state_history(self):
+        row = filer.stale_rows(
+            _sweep(connect_dialog={"state": "unknown"}),
+            [_sweep(connect_dialog={"state": "unknown"}),
+             _sweep(connect_dialog={"state": "unknown"})])[0]
+        body = filer.build_stale_body(row)
+        assert filer.stale_marker("connect_dialog") in body
+        assert filer.marker("connect_dialog") not in body
+        assert "unmeasured, not merely unchanged" in body
+
+    def test_the_stale_title_names_the_surface(self):
+        row = {"key": "connect_dialog", "surface": "Connect invite dialog"}
+        assert filer.build_stale_title(row) == "SDUI sweep blind spot: Connect invite dialog"
+
+    def test_stale_issues_carry_no_live_linkedin_risk_label(self):
+        """A coverage gap needs no live re-grounding to verify, unlike a drift fix."""
+        assert "risk:live-linkedin" not in filer.STALE_LABELS
+        assert "agent:ready" in filer.STALE_LABELS
+
+
+@pytest.mark.unit
+class TestLoadRecentSweeps:
+    def test_reads_the_most_recent_files_oldest_first(self, tmp_path):
+        for i, state in enumerate(["ok", "drift", "unknown"]):
+            (tmp_path / f"sweep-{i:02d}.json").write_text(
+                json.dumps(_sweep(feed_sort={"state": state})))
+        history = filer.load_recent_sweeps(str(tmp_path), limit=2)
+        assert [h["probes"]["feed_sort"]["state"] for h in history] == ["drift", "unknown"]
+
+    def test_excludes_the_current_sweep_file_by_name(self, tmp_path):
+        (tmp_path / "sweep-00.json").write_text(json.dumps(_sweep(feed_sort={"state": "ok"})))
+        (tmp_path / "sweep-01.json").write_text(json.dumps(_sweep(feed_sort={"state": "drift"})))
+        history = filer.load_recent_sweeps(str(tmp_path), limit=5, exclude="sweep-01.json")
+        assert len(history) == 1
+        assert history[0]["probes"]["feed_sort"]["state"] == "ok"
+
+    def test_a_missing_directory_is_empty_history_not_an_error(self, tmp_path):
+        assert filer.load_recent_sweeps(str(tmp_path / "nope"), limit=2) == []
+
+    def test_no_directory_configured_is_empty_history(self):
+        assert filer.load_recent_sweeps("", limit=2) == []
+
+    def test_an_unreadable_file_is_skipped_not_fatal(self, tmp_path):
+        (tmp_path / "sweep-00.json").write_text("not json")
+        (tmp_path / "sweep-01.json").write_text(json.dumps(_sweep(feed_sort={"state": "ok"})))
+        history = filer.load_recent_sweeps(str(tmp_path), limit=5)
+        assert len(history) == 1
+
+
+@pytest.mark.unit
+class TestMainWithStaleness:
+    def test_a_blind_spot_files_with_its_own_marker(self, monkeypatch, tmp_path):
+        for i in range(2):
+            (tmp_path / f"sweep-{i:02d}.json").write_text(
+                json.dumps(_sweep(connect_dialog={"state": "unknown"})))
+        current = tmp_path / "sweep-current.json"
+        current.write_text(json.dumps(_sweep(connect_dialog={"state": "unknown"})))
+        github = MagicMock()
+        github.is_filed.return_value = False
+        github.create.return_value = "https://github.com/x/y/issues/2"
+        monkeypatch.setattr(filer, "GitHubIssues", lambda repo: github)
+        rc = filer.main(["--sweep-file", str(current), "--apply",
+                         "--history-dir", str(tmp_path)])
+        assert rc == 0
+        assert github.create.call_count == 1
+        _title, body = github.create.call_args[0][:2]
+        assert filer.stale_marker("connect_dialog") in body
+
+    def test_no_history_dir_skips_the_blind_spot_check_entirely(self, monkeypatch, tmp_path):
+        path = tmp_path / "sweep.json"
+        path.write_text(json.dumps(_sweep(feed_sort={"state": "ok"})))
+        monkeypatch.setattr(filer, "GitHubIssues", MagicMock(side_effect=AssertionError("no gh")))
+        assert filer.main(["--sweep-file", str(path)]) == 0
+
+
+@pytest.mark.unit
 class TestReproduceCommand:
     def test_a_flag_that_takes_a_value_gets_one(self):
         sweep = _sweep(profile_scrape={"state": "drift"})

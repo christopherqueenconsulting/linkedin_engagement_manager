@@ -530,6 +530,21 @@ class TestEditions:
             assert mark_edition_failed(3) is True
         assert "status='failed'" in cur.execute.call_args[0][0]
 
+    def test_latest_published_edition_url(self, fake_cursor):
+        """Issue #1770: the sweep's `newsletter_edition` target resolver reads this."""
+        conn, cur = fake_cursor(fetch_one={"published_url": "https://x/pulse/y"})
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import get_latest_published_newsletter_edition_url
+            assert get_latest_published_newsletter_edition_url(1) == "https://x/pulse/y"
+        sql = " ".join(cur.execute.call_args[0][0].split())
+        assert "status='published'" in sql and "ORDER BY published_at DESC" in sql
+
+    def test_latest_published_edition_url_is_none_with_nothing_published(self, fake_cursor):
+        conn, _ = fake_cursor(fetch_one=None)
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import get_latest_published_newsletter_edition_url
+            assert get_latest_published_newsletter_edition_url(1) is None
+
 
 class TestNewsletterCoverSettings:
     """Issue #893: the cover opt-in rides the same settings row."""

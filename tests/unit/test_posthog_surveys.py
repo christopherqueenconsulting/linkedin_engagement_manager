@@ -281,6 +281,15 @@ class TestCli:
         assert phs.main(["--dry-run"]) == 2
         assert "[dry-run] create survey" in capsys.readouterr().out
 
+    def test_operator_key_alone_reaches_the_client(self, monkeypatch, capsys):
+        # issue #1453 follow-up: this hand-run script reads POSTHOG_OPERATOR_API_KEY, not the
+        # shared POSTHOG_PERSONAL_API_KEY directly.
+        monkeypatch.delenv("POSTHOG_PERSONAL_API_KEY", raising=False)
+        monkeypatch.setenv("POSTHOG_OPERATOR_API_KEY", "phx_operator")
+        monkeypatch.setattr(phs.PostHogSurveyClient, "list_surveys", lambda self: {})
+        assert phs.main(["--dry-run"]) == 2
+        assert "[dry-run] create survey" in capsys.readouterr().out
+
     def test_dry_run_exits_0_when_in_sync(self, monkeypatch):
         monkeypatch.setenv("POSTHOG_PERSONAL_API_KEY", "phx_test")
         monkeypatch.setattr(phs.PostHogSurveyClient, "list_surveys",

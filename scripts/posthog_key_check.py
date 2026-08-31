@@ -29,7 +29,8 @@ CLI:
   --timeout S     Per-request timeout in seconds (default 30).
 Env:
   POSTHOG_ANNOTATION_API_KEY / POSTHOG_RUNTIME_API_KEY / POSTHOG_QUERY_API_KEY /
-  POSTHOG_BENCHMARK_API_KEY   The purpose-scoped keys, each falling back to
+  POSTHOG_BENCHMARK_API_KEY / POSTHOG_OPERATOR_API_KEY
+                              The purpose-scoped keys, each falling back to
                               POSTHOG_PERSONAL_API_KEY (posthog_keys.py owns that precedence).
   POSTHOG_PROJECT_ID          PostHog project id (default 475262 — "CQC LEM").
   POSTHOG_APP_HOST            App host for the API (default https://us.posthog.com).
@@ -114,7 +115,11 @@ SURFACES = (
         "purpose": "benchmark",
         "name": "LLM-evaluation API",
         "consumer": "scripts/benchmark_models.py via weekly_model_check.sh (weekly cron)",
-        "proves": "the evaluation scope — without it the run falls back to the in-runner judge",
+        "proves": "the evaluation scope — without it the run falls back to the in-runner judge. "
+                  "KNOWN 404, confirmed 2026-08-22 against a fully-scoped key: PostHog's current "
+                  "LLM Analytics API does not expose this collection endpoint at all (docs/"
+                  "kpi-dashboards.md § Purpose-scoped personal keys). This is a documented ceiling, "
+                  "not a fixable FAIL — do not chase scopes on it.",
         "method": "GET",
         "path": "/api/projects/{project_id}/llm_analytics/evaluations/?limit=1",
         "body": BODY_NONE,
@@ -128,6 +133,18 @@ SURFACES = (
         "method": "POST",
         "path": "/api/projects/{project_id}/query/",
         "body": BODY_EVAL_HOGQL,
+    },
+    {
+        "purpose": "operator",
+        "name": "dashboard listing",
+        "consumer": "posthog_provision.py, posthog_dashboards.py, posthog_flags.py, "
+                    "posthog_surveys.py, posthog_experiments.py, posthog_ops_destination.py, "
+                    "slop_retry_clear_rate.py (all hand-run)",
+        "proves": "dashboard:read as a proxy for the broad operator scope — a key missing this "
+                  "makes every hand-run provisioning script unusable",
+        "method": "GET",
+        "path": "/api/projects/{project_id}/dashboards/?limit=1",
+        "body": BODY_NONE,
     },
 )
 

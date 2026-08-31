@@ -27,7 +27,7 @@ from cqc_lem.utilities.db import get_user_password_pair_by_id
 from cqc_lem.utilities.linkedin.helper import get_my_profile, load_profile_for_user, login_to_linkedin
 from cqc_lem.utilities.linkedin.profile import LinkedInProfile
 from cqc_lem.utilities.logger import log_error, log_info, log_warning
-from cqc_lem.utilities.selenium_util import get_driver_wait_pair, quit_gracefully
+from cqc_lem.utilities.selenium_util import get_driver_wait_pair, is_tab_crashed, quit_gracefully
 
 
 def get_current_profile(user_id: int, session_name: str = "Get Current Profile",
@@ -62,7 +62,16 @@ def get_current_profile(user_id: int, session_name: str = "Get Current Profile",
         login_to_linkedin(driver, wait, user_email, user_password,
                           measurement_only=measurement_only)
     except Exception as e:
-        log_error("LinkedIn login failed (possibly rate-limited)", exc=e, user_id=user_id)
+        if is_tab_crashed(e):
+            # The renderer behind this freshly-acquired session's tab was already dead (a Grid slot
+            # reused from a previous heavy session that OOM-killed it, issue #1746) before the very
+            # first navigation — never a login/rate-limit fault, so "possibly rate-limited" would be
+            # actively wrong here. The caller aborts this run and quits the session the same as any
+            # other login failure; only the severity changes, to a warning that escalates if it
+            # starts recurring (issue #1749).
+            log_warning("Browser tab crashed on the first login navigation", exc=e, user_id=user_id)
+        else:
+            log_error("LinkedIn login failed (possibly rate-limited)", exc=e, user_id=user_id)
         quit_gracefully(driver)
         raise e
 

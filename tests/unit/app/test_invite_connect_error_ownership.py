@@ -94,7 +94,7 @@ class TestOneLostInviteFilesOneIssue:
              patch(f"{_INV}.get_driver_wait_pair", return_value=(MagicMock(), MagicMock())), \
              patch(f"{_INV}.login_to_linkedin"), \
              patch(f"{_INV}._profile_is_first_degree", return_value=False), \
-             patch(f"{_INV}._open_connect_invite_dialog", return_value=True), \
+             patch(f"{_INV}._open_connect_invite_dialog", return_value=(True, None)), \
              patch(f"{_INV}.click_element_wait_retry", side_effect=click), \
              patch(f"{_INV}.time.sleep"), \
              patch(f"{_INV}.insert_new_log"), \

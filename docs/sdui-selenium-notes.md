@@ -253,6 +253,52 @@ menu. The dialog's own controls are UNCHANGED: `Add a note` / `Send without a no
 a new `Write with AI` button). Success is the dialog's controls being present — never a click
 having landed.
 
+### Re-grounded 2026-08-29 (#1733): the preload URL is a ROUTE, not a page
+
+Between 2026-08-12 and 2026-08-29 every automated connection request failed with
+`No Connect option on this profile` — 20 of them, across 20 distinct profiles, on an image that
+already carried all three routes (#1734's direct button included). Three profiles were probed live
+(`--connect-dialog … --connect-open-more-menu`). What they said:
+
+* **`driver.get("https://www.linkedin.com/preload/custom-invite/?vanityName=<slug>")` renders a
+  completely blank document.** `page_copy_sections` came back `{"main": "", "body": "",
+  "dialog": ""}` and `visible_controls` `[]` on all three. It is an in-app route, not a page, so it
+  has to be CLICKED where the profile renders it. That killed route 1 outright — and route 3 too,
+  because the More menu's Connect item is a link to the same place.
+* **Two layouts, and neither is "the" layout.** Two of three profiles carried NO Connect control on
+  the top card and an `<a role="menuitem" href="/preload/custom-invite/?vanityName=…">Connect</a>`
+  inside the More menu. The third carried
+  `<a aria-label="Invite <Owner> to connect" href="/preload/custom-invite/?vanityName=…">Connect</a>`
+  on the top card and **no** Connect item in its More menu.
+* **`_PROFILE_CONNECT_BUTTON_LOCATORS` cannot see either.** It matches `//main//button`; both
+  controls are `<a>`. `visible_button_labels` shares that blind spot — it enumerates
+  `By.TAG_NAME, "button"` only, the same blind spot recorded above for the feed-sort control, which
+  is why `profile_controls` looked empty of Connect on a page that had one. `top_card_controls`
+  exists to close it.
+
+So the shipped route is: click the target's OWN custom-invite anchor, wherever the page put it
+(top card first, then inside the More menu), and keep the URL navigation only as a last-resort
+fallback for an account where it still works.
+
+**The href is a harder #1012 guard than any label.** A "More profiles for you" anchor carries THAT
+SUGGESTED PERSON's `vanityName`, so requiring the anchor's own slug to equal the target's is
+machine-checkable identity, not name-matching — and it is checked in Python (`_anchor_invite_slug`),
+so no locator literal names a person and the rail-hazard regression test needed no edit. Two rules
+that fall out of it and must not be softened: compare the slug for **exact equality, never a
+prefix** (`chris` must not match `chris-queen`), and click **the element that was validated**, never
+a re-lookup of the same XPath — a re-lookup returns whichever custom-invite anchor the page yields
+first, which on a profile carrying the rail is a stranger's. That re-lookup IS #1012.
+
+### An invite limit is not selector rot
+
+A weekly-invitation ceiling or an account restriction reads the same on every profile, so grading it
+as drift files a code defect against locators that are fine and lets the scanner re-dispatch the
+whole queue into the same wall — each attempt a full automated profile visit. `invite_limit_signal`
+(probe) and `_invite_restriction_reason` (production) read the page's own words for it; the probe
+grades a restricted reading **`unknown`, never `drift`**, and production HOLDS the invite lane
+(`hold_invites`) instead of failing rows. Both fail closed on an unreadable page — a restriction is
+a claim, and a claim needs evidence.
+
 ## Profile experience rows: the a11y twin, not a line index (#970)
 
 `/details/experience/` renders most text **twice** — a visible `span[aria-hidden="true"]` beside a

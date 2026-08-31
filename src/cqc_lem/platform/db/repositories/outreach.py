@@ -1549,6 +1549,24 @@ def stop_followups_for_profile(user_id: int, profile_url: str) -> int:
     except mysql.connector.Error as err:
         log_error("Could not stop followups", exc=err, user_id=user_id)
         return 0
+def get_most_recent_dm_thread_target(user_id: int) -> "dict | None":
+    """The profile we most recently DM'd, for a message-thread probe target (issue #1770).
+
+    Any `dm_followups` row is evidence a thread was opened — including a `stopped` one (they
+    replied, or the thread went cold), so the status is deliberately not filtered: a thread that
+    ended does not stop existing. `None` when the account has never sent a follow-up-tracked DM.
+    """
+    try:
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(
+                "SELECT profile_url, first_name FROM dm_followups WHERE user_id=%s "
+                "ORDER BY id DESC LIMIT 1", (user_id,))
+            row = cursor.fetchone()
+            return {"profile_url": row["profile_url"], "first_name": row.get("first_name") or ""} \
+                if row and row.get("profile_url") else None
+    except mysql.connector.Error as err:
+        log_error("Could not get most recent DM thread target", exc=err, user_id=user_id)
+        return None
 
 
 # Why a proactive invite was abandoned before it was attempted (issue #623). Stored as the request's
@@ -1563,6 +1581,14 @@ NO_CONNECT_BUTTON_MESSAGE = "No Connect option on this profile (invite may alrea
 # (issue #573). Unlike a missing note this does NOT degrade gracefully — the invite is lost — which
 # is why it stays an error and gets its own reason on the request row.
 INVITE_NOT_SENT_MESSAGE = "Connect dialog opened but the invitation could not be sent"
+# The wall was the ACCOUNT, not the profile (#1733). Distinct from NO_CONNECT_BUTTON_MESSAGE on
+# purpose: a limit reads the same on every profile, so grading it as "no Connect option" sends an
+# operator hunting a selector that is fine and lets the scanner re-dispatch the whole queue into it.
+# A request that hit one of these is DEFERRED (left `approved`), never `failed` — nothing was
+# attempted, so nothing failed.
+INVITE_LIMIT_REACHED_MESSAGE = (
+    "LinkedIn's invitation limit is reached for this account — invites are held, not failed")
+ACCOUNT_RESTRICTED_MESSAGE = "LinkedIn has restricted this account's invitations"
 # LinkedIn's hard cap on a connection-request note. Also the point past which a drafted note is
 # refined down rather than typed and silently truncated by the textarea's own maxlength.
 CONNECT_NOTE_MAX_CHARS = 300

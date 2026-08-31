@@ -57,53 +57,15 @@ model_list:
       request_timeout: 150
       rpm: 50
 
-  # deepseek-v4-flash (284B MoE / 13B active, 1M context, native structured output, fast
-  # no-thinking mode) is a MEDIUM usage-level model — the same quota class gpt-oss:120b and the
-  # departed minimax-m2.7 sit in — so adding it is flat on quota, not a step up.
-  #
-  # The catalog's `deepseek-v4-flash:0731` is a DIFFERENT build (167GB vs 140GB, published
-  # 2026-07-31), and it was benchmarked beside this one on 2026-08-02 for #921
-  # (`bm-20260802-b84f19`): rejected on all three tiers, no `recommend`. It did not beat the build
-  # below — 80% vs 90% contract here, 80% vs 90% on lem-complex, 40% vs 50% on lem-simple — at the
-  # same Medium usage level. Read that as "did not carry the burden", NOT "is the worse build":
-  # ten cases per tier means one case is ten points, and the same fixtures ninety minutes earlier
-  # scored `:0731` 100% on this tier. Declined; see docs/model-benchmarks/README.md. Newer tag ≠
-  # better model is the whole point of the harness.
-  #
-  # This id WAS unversioned, and the #925 exposure that choice documented has now fired — in the
-  # predicted direction, though it did not look like it at first. On 2026-08-09 the bare
-  # `deepseek-v4-flash` left `ollama.com/api/tags` and `:preview` appeared carrying the catalog
-  # entry the bare tag used to have (140GB, modified 2026-04-24; `:0731` differs at 167GB). #1200
-  # read that as a delete-and-republish and repointed here. The repoint is right; the reason was
-  # not. ollama.com's tags page publishes a per-tag digest, and `deepseek-v4-flash:cloud` shares
-  # ITS digest with `deepseek-v4-flash:0731-cloud` (031ce2a95446), not with
-  # `deepseek-v4-flash:preview-cloud` (dd3d9b94bae4) — so the bare name was RE-POINTED onto the
-  # `:0731` build, the one #921 declined on both these tiers, and the build LEM had been serving
-  # was published under `:preview`. Recorded in docs/model-benchmarks/README.md (#1201).
-  #
-  # So `:preview` is not a cosmetic rename. It PRESERVES the build benchmarked at 90%, and it is
-  # the only spelling that does: writing the bare id here — which is what note 0's "use the bare
-  # catalog id" rule reads like an instruction to do — points two tiers at a name this repo no
-  # longer controls. Unprobed which way that fails, and both ways are bad: either the endpoint
-  # resolves the untagged name as it resolves `:cloud` (#844) and both tiers quietly serve the
-  # rejected `:0731` build, or it 404s and wins the latency race under (1). Note 0's rule is
-  # match-the-catalog-VERBATIM, and `:preview` is verbatim.
-  #
-  # Worth naming which guard did what, because they cover different failures: a silent RE-POINT
-  # under an UNCHANGED tag is caught by plan_repoints (#925, closed — it diffs build size and
-  # modified_at), but it skips a tag missing from either side, so this one — a re-point that also
-  # dropped the name from the catalog — was invisible to it (#1237). What caught it was the catalog
-  # diff that opened #1200, then the roster test asserting every configured id is in the committed
-  # catalog. The refresh deliberately does NOT repoint the config for you — it removes the tag and
-  # lets CI fail loudly, rather than silently changing which model serves two tiers.
-  - model_name: lem-medium
-    litellm_params:
-      model: openai/deepseek-v4-flash:preview
-      api_base: os.environ/OLLAMA_CLOUD_URL
-      api_key: os.environ/OLLAMA_CLOUD_API_KEY
-      max_parallel_requests: 4
-      request_timeout: 150
-      rpm: 50
+  # deepseek-v4-flash is GONE from this tier (#1758). `:preview` — the 140GB build benchmarked at
+  # 90% contract here (#921) and the id this tier served since #1200 — left `ollama.com/api/tags`
+  # entirely on 2026-08-30. Its only remaining sibling, `:0731`, is not a rename of that build (a
+  # DIFFERENT digest on `ollama.com/api/tags`, which is build identity there) and it is not a fit
+  # either way: it was already benchmarked beside `:preview` for #921 and declined below the 90%
+  # contract floor on this tier (80%). Restoring the bare `deepseek-v4-flash` id would just follow
+  # the vendor's moving tag onto that same declined build (#1201). Full history:
+  # docs/model-benchmarks/README.md. A fresh candidate for this tier is tracked on #1758's
+  # follow-up, gated on scripts/benchmark_models.py the same as every other adoption here.
 
   # gemma4:31b is a Low/Medium usage-level model with a 256K context — cheaper quota than the rest
   # of this tier, which is why it is in the group rather than replacing anything outright.
@@ -120,8 +82,9 @@ model_list:
   # stale: the catalog moved to minimax-m3 and the weekly model-health check re-files that family
   # gap every run. m3 is a HIGH usage-level model where m2.7 was MEDIUM, so following the family
   # would raise this tier's quota burn — an evaluation, never an auto-swap. Rather than pay that
-  # for a tier that is not the quality anchor, lem-medium leaves the family: deepseek-v4-flash
-  # (MEDIUM) + gemma4:31b (Low/Medium) cover the same work at the same or lower usage level.
+  # for a tier that is not the quality anchor, lem-medium leaves the family: gpt-oss:120b
+  # (champion) + gemma4:31b (Low/Medium) now cover it alone — deepseek-v4-flash's own decline is
+  # the note right above.
   # The m3 / glm-5.2 quality question lives on for lem-complex, benchmark-gated.
 
   # OpenAI fallback
@@ -141,7 +104,7 @@ model_list:
   # NOTE: openai/deepseek-v4-pro (`:0813` and `:preview`) was EVALUATED and DECLINED 2026-08-16
   # (issue #1583), unbenchmarked and deliberately so. It is an EXTRA HIGH usage-level model — +2
   # levels against every SERVING-tier Ollama deployment here, all of which are Low or Medium (the
-  # lem-agent-* lane's glm-5.2 / minimax-m3 are HIGH, so +1 there) — and the
+  # lem-agent-* lane's glm-5.3 / minimax-m3 are HIGH, so +1 there) — and the
   # #842 standing spend policy buys a usage-level increase on this tier only, and only on a STRICT
   # judge-rate win over the champion. qwen3.5:397b's last measured judge rate here is 100%, so no
   # run can produce that win; it could only tie, at Extra-high metering per call. Unlike kimi-k3
@@ -159,27 +122,18 @@ model_list:
       request_timeout: 240
       rpm: 30
 
-  # deepseek-v4-flash joins this tier AHEAD of the paid OpenAI/Anthropic fallbacks: a MEDIUM
-  # usage-level model on a tier whose only other Ollama deployment is qwen3.5:397b, so long-form
-  # work that lands here costs less quota, and a qwen outage no longer drops straight onto a paid
-  # key. Be honest about what latency-based routing does with it: 13B active params answer faster
-  # than qwen3.5:397b, so it will win a large share of this tier's traffic from the first restart —
-  # it is not a standby. What it is NOT is the tier's CHAMPION (still qwen3.5:397b, first in the
-  # group — see the note at the top of this file); the long-form quality reading, and any adoption
-  # of the HIGH usage-level minimax-m3 / glm-5.2 as the quality option, is a
-  # scripts/benchmark_models.py decision on #842, not a config-time one.
-  # Repointed to `:preview` on the same terms as the lem-medium deployment above, and for the same
-  # reason — the bare tag left the catalog on 2026-08-09 and now serves the `:0731` build. That
-  # build did not beat this one here either (80% contract vs 90%, #921), so `:preview` remains the
-  # measured choice, and the version is what holds it.
-  - model_name: lem-complex
-    litellm_params:
-      model: openai/deepseek-v4-flash:preview
-      api_base: os.environ/OLLAMA_CLOUD_URL
-      api_key: os.environ/OLLAMA_CLOUD_API_KEY
-      max_parallel_requests: 3
-      request_timeout: 240
-      rpm: 30
+  # deepseek-v4-flash:preview served this tier (AHEAD of the paid OpenAI/Anthropic fallbacks)
+  # since #1200, but it is GONE as of #1758: the id left `ollama.com/api/tags` entirely and its
+  # only sibling, `:0731`, is a different build (different `ollama.com/api/tags` digest, which is
+  # build identity there) that was already benchmarked beside `:preview` for #921 and declined
+  # below the 90% contract floor on this tier (80%). Restoring the bare `deepseek-v4-flash` id
+  # would just follow the vendor's moving tag onto that same declined build (#1201).
+  #
+  # This tier now runs on ONE free Ollama deployment (qwen3.5:397b, still champion) plus the paid
+  # fallbacks below until #1758's follow-up benchmarks a real replacement — deliberately not
+  # `gemma4:31b` or the HIGH usage-level minimax-m3 / glm-5.2, all three already declined here on
+  # #921/#842 (see docs/model-benchmarks/README.md). No candidate gets promoted onto this tier off
+  # a spec sheet, only off scripts/benchmark_models.py.
 
   # OpenAI fallback
   - model_name: lem-complex
@@ -271,7 +225,7 @@ model_list:
   # ANTHROPIC_AUTH_TOKEN=$LITELLM_MASTER_KEY) with --model = one of these aliases. LiteLLM serves
   # the Anthropic /v1/messages endpoint and translates to the underlying Ollama Cloud model.
   # CLOUD-ONLY by policy (Ollama Max subscription) — no local models on this path.
-  #   tier1   glm-5.2         hardest long-horizon / architecture / multi-step plans
+  #   tier1   glm-5.3         hardest long-horizon / architecture / multi-step plans
   #   tier2   kimi-k2.7-code  default coding / patches / tests / multi-file edits
   #   tier2a  minimax-m3      premium parallel / vision-capable alternate
   #   tier3   nemotron-3-super fallback / reviewer / reasoning lane
@@ -281,9 +235,15 @@ model_list:
   # entries keep the roster uniform and price them from day one if one is promoted into a serving
   # tier; this lane's own cost is LiteLLM's `$ai_generation`, not the app's `llm_call`.
   # See docs/agent-pipeline-routing.md for the capacity-aware lane-selection rule.
+  # glm-5.2 -> glm-5.3 (issue #1756, 2026-08-30): ADOPTED. Same High(3) usage level as glm-5.2 (no
+  # quota-burn increase), and the ollama.com model page reports the swap is post-training on the
+  # SAME base model, aimed squarely at this tier's job — "Terminal-Bench 3.0 improves from 4.6 to
+  # 28.3" and "SWE-Marathon more than doubles (19.4 -> 42.5)", explicitly called out for coding
+  # agent applications including Claude Code. Not the #842 spend-policy case (that gates a USAGE-
+  # LEVEL INCREASE, which this isn't) — a flat-quota quality win on the tier's own workload.
   - model_name: lem-agent-tier1
     litellm_params:
-      model: openai/glm-5.2
+      model: openai/glm-5.3
       api_base: os.environ/OLLAMA_CLOUD_URL
       api_key: os.environ/OLLAMA_CLOUD_API_KEY
       max_parallel_requests: 2

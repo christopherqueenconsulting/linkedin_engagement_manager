@@ -1,5 +1,49 @@
 # Changelog
 
+## [0.170.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.169.0...v0.170.0) (2026-08-30)
+
+
+### Features
+
+* **litellm:** adopt glm-5.3 for lem-agent-tier1 — flat quota, coding-agent gains (closes [#1756](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1756)) ([#1766](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1766)) ([b99697f](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/b99697f71f5beac580a8ef407a42309262e60086))
+
+
+### Bug Fixes
+
+* **litellm:** drop the vanished deepseek-v4-flash:preview from lem-medium/lem-complex (closes [#1758](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1758)) ([#1763](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1763)) ([201baeb](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/201baeb822d48baa191a9cfd1e2b5f02a6721968))
+
+## [0.169.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.168.1...v0.169.0) (2026-08-30)
+
+
+### Features
+
+* **sdui:** resolve weekly sweep targets automatically so all 25 surfaces are checked (closes [#1770](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1770)) ([#1772](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1772)) ([6a0fbb8](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/6a0fbb81a46c04513b5a861ed2539d5380189ab2))
+
+
+### Bug Fixes
+
+* **engagement:** reground the Connect dialog on the live profile SDUI (closes [#1733](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1733)) ([#1769](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1769)) ([4bc7a76](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/4bc7a762f95e7d7e1862ddaaffd3734bbeeaa364))
+
+
+### Documentation
+
+* **model-benchmarks:** decline mistral-large-3:675b for lem-complex's second Ollama deployment (closes [#1762](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1762)) ([#1767](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1767)) ([b556a2a](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/b556a2ad38addb894fe7d9046d5bd5317fe00d5b))
+
+## [0.168.1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.168.0...v0.168.1) (2026-08-30)
+
+
+### Bug Fixes
+
+* **engagement:** stop a crashed browser tab from failing post-stats scrape (closes [#1751](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1751)) ([#1754](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1754)) ([affef3f](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/affef3f0df9c8f48cbf297441d89d766baafd8bd))
+* **engagement:** stop the message-thread ladder's exhausted-route warning from escalating (closes [#1752](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1752)) ([#1753](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1753)) ([da14153](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/da1415396687b3305a3ffef6621e8a5533871ec7))
+* **errors:** downgrade a crashed browser tab to a warning during follow-up login (closes [#1749](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1749)) ([#1761](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1761)) ([666becb](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/666becbf7cb0f437516fcab9ba03131d8b106b5e))
+* **outreach:** stop double-warning on an unreadable follow-up thread (closes [#1750](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1750)) ([#1759](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1759)) ([0e51a92](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/0e51a92560c76dc06ee5465b6c2b13dca4e4af10))
+
+
+### Documentation
+
+* **model-benchmarks:** decline glm-5.3, glm-5.3-flash for lem-simple/medium/complex (closes [#1757](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1757)) ([#1765](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1765)) ([fda85e7](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/fda85e7aa34a5343159325f4236ffb44215cfeec))
+
 ## [0.168.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.167.0...v0.168.0) (2026-08-29)
 
 

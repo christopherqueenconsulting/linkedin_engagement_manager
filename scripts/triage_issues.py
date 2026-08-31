@@ -106,7 +106,6 @@ EMAIL_FALLBACK = "christopher.queen@gmail.com"
 # reviewer call is still a real, separate LLM call either way) — it never breaks anything.
 LEM_MEDIUM_MEMBERS = (
     "openai/gpt-oss:120b",
-    "openai/deepseek-v4-flash:preview",
     "openai/gemma4:31b",
     "openai/gpt-4o-mini",
 )

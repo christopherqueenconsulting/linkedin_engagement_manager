@@ -408,7 +408,7 @@ Three things worth reading beyond the two verdicts:
   Ollama deployment in the **serving** tiers is Low (`gemma4:31b`) or Medium (`gpt-oss:20b`,
   `gpt-oss:120b`, `deepseek-v4-flash:preview`, `qwen3.5:397b`), so Extra high is **+2** levels on
   every one of them. (The `lem-agent-*` lane is the exception to the "+2" arithmetic, not to the
-  verdict: `glm-5.2` and `minimax-m3` are **High (3)**, so adopting there would be +1 — and that
+  verdict: `glm-5.3` and `minimax-m3` are **High (3)**, so adopting there would be +1 — and that
   lane pins one model per tier with no benchmark gate at all, which is a reason for MORE caution,
   not less.) The standing spend policy above allows an increase on `lem-complex` alone, on a
   strict judge-rate win — and the champion `qwen3.5:397b`'s last measured judge rate on that tier is
@@ -431,6 +431,81 @@ Three things worth reading beyond the two verdicts:
   reason. Read it as confirmation that the family does this routinely — a bare `deepseek-*` id in
   this config is a build LEM does not control. The snapshot refresh for this scan is the cron's own
   PR (#1582, +2 new / -1 gone), not this record.
+
+### What the 2026-08-30 tag scan settled (#1757) — one declined unbenchmarked, one measured and declined
+
+| Tag | What it is | Decision |
+|---|---|---|
+| `glm-5.3` | **High (3)** usage level, 1M context, tool calling, no vision (ollama.com/library/glm-5.3) — the same family/level as `glm-5.2` | **Decline, unbenchmarked**, on the same #842 standing spend policy as `deepseek-v4-pro` above: it is +1 usage level against every **serving**-tier incumbent (all Low/Medium), the policy only buys an increase on `lem-complex`, and only on a strict judge-rate win — the champion `qwen3.5:397b` is already measured at 100% judge there, so no run can produce one. The `lem-agent-*` lane's own `glm-5.2` → `glm-5.3` question is tracked separately on #1756 (flat usage level there, not this issue's scope). |
+| `glm-5.3-flash` | **Medium (2)** usage level, 1M context, vision-capable, tool use (ollama.com/library/glm-5.3-flash) — flat quota against `lem-medium`'s incumbents, so the spend policy above does not apply and the only way to answer was to run it | **Decline, measured** (`bm-20260830-3048e1`, report beside this file). Beat champion `gpt-oss:120b` on contract (100% vs 90%) and tied on first draft (60% vs 60%), but missed the judge floor (33% vs 80%) and lost to the champion on judge (33% vs 67%) — comment-contract failures reading as generic validation rather than engaging a specific claim. No `recommend`; `.litellm/config.yaml` unchanged. |
+
+Both are within #1757's scope (`lem-simple`/`lem-medium`/`lem-complex` only) — neither tag touches `lem-agent-*`.
+
+### What the 2026-08-30 tag scan settled (#1758) — `:preview` vanished, no fit left
+
+| Tag | What happened | Decision |
+|---|---|---|
+| `deepseek-v4-flash:preview` | Left `ollama.com/api/tags` entirely on 2026-08-30 — no republish this time, just gone. It was the 140GB build measured at 90% contract on `lem-medium` and `lem-complex` (`bm-20260802-b84f19`) and the id both tiers served since #1200 | **Removed from both tiers.** A vanished tag is next week's 410, found early — leaving it configured only means the same outage, later. |
+| `deepseek-v4-flash:0731` (the only sibling left in the family) | 167GB, published 2026-07-31, digest `4de9bf66c0eb` on `ollama.com/api/tags` — a DIFFERENT digest from `:preview`'s `ac252c581d64`, so this is not the same build under a new name | **Not a fit — already declined.** #921 benchmarked it directly beside `:preview` on all three tiers and rejected it: 80% vs 90% contract on `lem-complex` and `lem-medium`, 40% vs 50% on `lem-simple`. Restoring the bare `deepseek-v4-flash` id would just follow the vendor's moving tag onto this same build (#1201's finding, still true). |
+
+No candidate replaces the family on either tier in this change — `lem-medium` keeps `gpt-oss:120b`
++ `gemma4:31b`, `lem-complex` drops to its lone Ollama deployment (`qwen3.5:397b`) plus the paid
+fallbacks. A fresh `lem-complex` candidate, benchmarked rather than assumed, is the #1758 follow-up
+issue; nothing in `gemma4:31b` or the HIGH usage-level `minimax-m3` / `glm-5.2` closes that gap for
+free — all three are already declined on this tier (`bm-20260802-20ae40`, `#842`).
+
+This is the same finding shape as #1200/#1201, minus the republish: `plan_repoints` (#925) is blind
+to a tag missing from both sides, so a re-point that also drops the name from the catalog is only
+ever caught by `plan_vanished` (#1237) and the roster test asserting every configured id is in the
+committed catalog — which is exactly what fired here.
+
+### What #1762 settled — `lem-complex`'s second Ollama deployment, declined, measured
+
+`deepseek-v4-flash:preview` left `ollama.com/api/tags` on 2026-08-30 (#1758) and its only sibling,
+`:0731`, was already declined on this tier (#921). Per the #842 standing spend policy, every
+High/Extra-high usage-level candidate already on the roster (`minimax-m3`, `glm-5.2`,
+`deepseek-v4-pro`, `glm-5.3`) is a decline-unbenchmarked here: a usage-level increase on
+`lem-complex` needs a strict judge-rate win over the champion, and no run can beat a champion
+already measured at 100% judge. That left one genuinely new, not-yet-evaluated candidate at a
+usage level the policy doesn't block outright: `mistral-large-3:675b` (**Medium**, 682GB, 1M
+context, on the catalog since 2025-12-02 — never benchmarked for any LEM tier before).
+
+| Tag | What it is | Decision |
+|---|---|---|
+| `mistral-large-3:675b` | **Medium (2)** usage level, flat quota against the tier's departed `deepseek-v4-flash:preview` deployment (ollama.com/library/mistral-large-3) | **Decline, measured** (`bm-20260830-1e6b4e`, report beside this file). Tied champion `qwen3.5:397b` on contract (90% vs 90%) but missed the judge floor (40% vs 80%) and lost to the champion on both first draft (50% vs 90%) and judge (40% vs 44%) — a markdown-fenced JSON case, an invented statistic, a short prompt-shaped answer instead of long-form copy, and repeated contrastive/"ta-da" slop-lint hits repairable only on the first-draft measure. No `recommend`; `.litellm/config.yaml` unchanged. |
+
+Two things worth reading beyond the verdict:
+
+- **The champion's own judge rate moved.** `qwen3.5:397b` measured 100% judge on `lem-complex` in
+  `bm-20260802-20ae40` (PostHog-evals mode) and the config's own decline notes for
+  `deepseek-v4-pro`/`glm-5.3` lean on that figure. This run (`in-runner-judge` mode, no PostHog
+  benchmark key configured) measured it at 44% instead — one case with no output at all
+  (`complex-mobile-hook`, empty after budget escalation and a re-measurement) plus five judge
+  misses. Per the *measurement variance* posture above, a single run's judge score is not a stable
+  read, especially across scoring modes, so this is **not** treated as reopening the High/Extra-high
+  declines above — but it means "no run can beat 100%" is no longer literally true of the last
+  measurement, and the next `lem-complex` evaluation should re-measure the champion under the same
+  mode as whatever it compares against rather than citing the 2026-08-02 figure.
+- **The roster gap itself is unresolved, on purpose.** `lem-complex` still runs
+  `deepseek-v4-flash:preview` today (#1758's removal is #1763, not yet merged) — once that lands the
+  tier is down to one Ollama deployment (`qwen3.5:397b`) plus the paid fallbacks, and this decline
+  does not close that. Declining is the correct outcome for `mistral-large-3:675b` specifically, not
+  a statement that the tier doesn't need a win; the next monthly catalog scan is where a fresh
+  candidate gets evaluated.
+
+### What the 2026-08-30 family-version scan settled (#1756) — one tag, adopted, unbenchmarked on purpose
+
+| Family | What it is | Decision |
+|---|---|---|
+| `glm-5.2` -> `glm-5.3` (`lem-agent-tier1`) | Same **High (3)** usage level as `glm-5.2` — flat quota burn. ollama.com/library/glm-5.3 states the swap is post-training on the SAME base model, with the gains aimed at exactly this tier's job: "Terminal-Bench 3.0 improves from 4.6 to 28.3", "SWE-Marathon more than doubles (19.4 -> 42.5)", and the page names coding-agent use explicitly, including Claude Code | **Adopt.** No harness measures the `lem-agent-*` lane's own workload (`scripts/benchmark_models.py` targets `lem-simple`/`lem-medium`/`lem-complex` only), so this reads the vendor's own published benchmark deltas rather than running one. Not the #842 spend-policy case — that gates a usage-LEVEL INCREASE, and this one is flat. |
+
+This is a different question from `glm-5.3`'s candidacy for `lem-complex` (#1757/#1765, **declined**
+unbenchmarked): that decline turns on `glm-5.3` being **+1 usage level** against every serving-tier
+incumbent there (all Low/Medium) with the #842 spend policy requiring a strict judge-rate win to
+justify it. `lem-agent-tier1` starts from `glm-5.2`, already **High (3)** — so `glm-5.3` there is
+flat quota, and the swap is a same-cost quality question, not a spend one. `.litellm/config.yaml`
+and `.litellm/model_prices_snapshot.json` / `.litellm/ollama_catalog_snapshot.json` carry the usual
+roster bookkeeping for the new tag.
 
 ## Running it
 
@@ -474,6 +549,15 @@ reach both halves PostHog scoring needs — the evaluation API and HogQL?" witho
 benchmark. It does not look at `POSTHOG_API_KEY`; the run itself says so on stderr when that one is
 the missing half.
 
+**The evaluation-API half of that check is a documented ceiling, not a fixable failure** (confirmed
+2026-08-22, `docs/kpi-dashboards.md` § Purpose-scoped personal keys): PostHog's current LLM Analytics
+API does not expose the `/llm_analytics/evaluations/` collection endpoint `PostHogEvals` is built on
+— `create_evaluation` / `run_evaluation` per `$ai_generation` has no equivalent in PostHog's public
+surface (`evaluation_reports`, `evaluation_config`, `evaluation_summary`). It is not a key-scope
+problem — a fully-scoped key 404s the same as the shared one — so it will read as PostHog-evals
+unavailable indefinitely, and the run falls open to the in-runner judge exactly as designed. Do not
+spend more scope trying to make this one pass.
+
 The report is the deliverable — `--results-out` for the JSON a later `--render` replays, and
 `--recommendations-out` for the swap list a follow-up config PR reads. Anything the standing spend
 policy marks `hold` is named in the report and belongs to the owner, not to the config PR.
@@ -487,6 +571,10 @@ is the rate their report published.
 <!-- LEADERBOARD:BEGIN -->
 | Date | Run | Tier | Model | Role | Contract | First draft | Judge | p50 | Verdict |
 |---|---|---|---|---|---|---|---|---|---|
+| 2026-08-30 | `bm-20260830-1e6b4e` | lem-complex | `qwen3.5:397b` | champion | 90% | 90% | 44% | 29310 ms | baseline |
+| 2026-08-30 | `bm-20260830-1e6b4e` | lem-complex | `mistral-large-3:675b` | candidate | 90% | 50% | 40% | 5461 ms | reject |
+| 2026-08-30 | `bm-20260830-3048e1` | lem-medium | `gpt-oss:120b` | champion | 90% | 60% | 67% | 1423 ms | baseline |
+| 2026-08-30 | `bm-20260830-3048e1` | lem-medium | `glm-5.3-flash` | candidate | 100% | 60% | 33% | 2351 ms | reject |
 | 2026-08-02 | `bm-20260802-b84f19` | lem-complex | `qwen3.5:397b` | champion | 70% | 50% | n/a | 30346 ms | baseline |
 | 2026-08-02 | `bm-20260802-b84f19` | lem-complex | `deepseek-v4-flash:0731` | candidate | 80% | 80% | n/a | 5634 ms | reject |
 | 2026-08-02 | `bm-20260802-b84f19` | lem-complex | `deepseek-v4-flash` | candidate | 90% | 60% | n/a | 3016 ms | reject |

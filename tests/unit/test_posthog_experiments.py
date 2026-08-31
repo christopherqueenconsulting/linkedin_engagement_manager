@@ -209,3 +209,30 @@ def test_summarize_counts_every_action_kind(mod):
 def test_experiment_url_points_at_the_project(mod):
     assert mod.experiment_url("https://us.posthog.com/", "475262", 7) == \
         "https://us.posthog.com/project/475262/experiments/7"
+
+
+class TestMainKeyGate:
+    def test_missing_key_is_an_error(self, mod, monkeypatch, capsys):
+        monkeypatch.delenv("POSTHOG_PERSONAL_API_KEY", raising=False)
+        monkeypatch.delenv("POSTHOG_OPERATOR_API_KEY", raising=False)
+        assert mod.main([]) == 1
+        assert "POSTHOG_PERSONAL_API_KEY" in capsys.readouterr().err
+
+    def test_operator_key_alone_reaches_the_client(self, mod, monkeypatch, capsys):
+        # issue #1453 follow-up: this hand-run script reads POSTHOG_OPERATOR_API_KEY, not the
+        # shared POSTHOG_PERSONAL_API_KEY directly.
+        monkeypatch.delenv("POSTHOG_PERSONAL_API_KEY", raising=False)
+        monkeypatch.setenv("POSTHOG_OPERATOR_API_KEY", "phx_operator")
+        captured = {}
+
+        class _Stub:
+            def __init__(self, api_key, project_id, app_host):
+                captured["api_key"] = api_key
+
+            def list_flags(self):
+                raise RuntimeError("stop after the key gate")
+
+        monkeypatch.setattr(mod, "PostHogClient", _Stub)
+        assert mod.main([]) == 1
+        assert captured["api_key"] == "phx_operator"
+        assert "Failed to read PostHog state" in capsys.readouterr().err

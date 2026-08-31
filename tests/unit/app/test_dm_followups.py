@@ -113,6 +113,40 @@ class TestProcessUserFollowups:
         mark.assert_called_once_with(1, "stopped")
         dm.apply_async.assert_not_called()
 
+    def test_tab_crashed_getting_profile_logs_debug_not_error_or_warning(self):
+        # Issue #1749: a crashed browser tab while acquiring the session is a known-transient
+        # Selenium fault (no follow-up was even attempted, due rows stay untouched for the next
+        # tick) — it must not file a grouped PostHog defect the way a real failure does.
+        # get_current_profile (utilities/linkedin/session.py) already logs this at WARNING where
+        # it's detected before re-raising; this outer catch is a wrapper re-reporting the same
+        # occurrence, so it stays DEBUG rather than filing a second warning for one event.
+        from selenium.common.exceptions import WebDriverException
+
+        from cqc_lem.app.engagement.outreach import process_user_followups
+        crash = WebDriverException("Message: tab crashed\n  (Session info: chrome=151.0.7922.108)")
+        with patch(f"{_OUT}.get_due_followups", return_value=[_due()]), \
+             patch(f"{_OUT}.get_current_profile", side_effect=crash), \
+             patch(f"{_OUT}.log_debug") as dbg, \
+             patch(f"{_OUT}.log_warning") as warn, \
+             patch(f"{_OUT}.log_error") as err:
+            result = process_user_followups.run(user_id=1)
+        assert "Failed to start follow-ups" in result
+        dbg.assert_called_once()
+        assert dbg.call_args.kwargs.get("exc") is crash
+        warn.assert_not_called()
+        err.assert_not_called()
+
+    def test_other_profile_failures_still_log_error(self):
+        from cqc_lem.app.engagement.outreach import process_user_followups
+        with patch(f"{_OUT}.get_due_followups", return_value=[_due()]), \
+             patch(f"{_OUT}.get_current_profile", side_effect=RuntimeError("boom")), \
+             patch(f"{_OUT}.log_warning") as warn, \
+             patch(f"{_OUT}.log_error") as err:
+            result = process_user_followups.run(user_id=1)
+        assert "Failed to start follow-ups" in result
+        err.assert_called_once()
+        warn.assert_not_called()
+
     def test_no_due_returns_early(self):
         from cqc_lem.app.engagement.outreach import process_user_followups
         with patch(f"{_OUT}.get_due_followups", return_value=[]), \
@@ -139,6 +173,22 @@ class TestProcessUserFollowups:
         mark.assert_not_called()
         stop.assert_not_called()
         assert "skipped 1" in result
+
+    def test_unknown_thread_does_not_double_warn(self):
+        # Issue #1750: check_dm_replied (and the open_message_thread ladder underneath it) already
+        # logs a warning at the point the read actually failed. A second warning here for the same
+        # miss filed a duplicate grouped $exception (RecurringWarning) for one failure.
+        from cqc_lem.app.engagement.outreach import process_user_followups
+        with patch(f"{_OUT}.get_due_followups", return_value=[_due()]), \
+             patch(f"{_OUT}.get_current_profile", return_value=(MagicMock(), MagicMock(), "e", MagicMock())), \
+             patch(f"{_OUT}.quit_gracefully"), patch(f"{_OUT}.time.sleep"), patch(f"{_OUT}.insert_new_log"), \
+             patch(f"{_OUT}.resolve_self_name", return_value="Christopher Queen"), \
+             patch(f"{_OUT}.check_dm_replied", return_value=ThreadState.UNKNOWN), \
+             patch(f"{_OUT}.log_warning") as warn, \
+             patch(f"{_OUT}.log_debug") as debug:
+            process_user_followups.run(user_id=1)
+        warn.assert_not_called()
+        assert any("could not read the thread" in c.args[0] for c in debug.call_args_list)
 
 
     def test_the_saved_display_name_is_what_the_reply_check_compares(self):

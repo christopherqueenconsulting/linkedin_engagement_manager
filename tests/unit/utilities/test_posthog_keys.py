@@ -10,6 +10,7 @@ from cqc_lem.utilities.posthog_keys import (
     ANNOTATION_ENV_VAR,
     BENCHMARK_ENV_VAR,
     FALLBACK_ENV_VAR,
+    OPERATOR_ENV_VAR,
     PURPOSE_ENV_VARS,
     QUERY_ENV_VAR,
     RUNTIME_ENV_VAR,
@@ -17,6 +18,7 @@ from cqc_lem.utilities.posthog_keys import (
     benchmark_api_key,
     key_env_vars,
     missing_key_message,
+    operator_api_key,
     query_api_key,
     resolve_posthog_key,
     resolve_posthog_key_source,
@@ -25,7 +27,7 @@ from cqc_lem.utilities.posthog_keys import (
 
 pytestmark = pytest.mark.unit
 
-_PURPOSES = ("annotation", "runtime", "query", "benchmark")
+_PURPOSES = ("annotation", "runtime", "query", "benchmark", "operator")
 
 
 class TestResolvePosthogKey:
@@ -83,6 +85,7 @@ class TestKeyEnvVars:
         ("runtime", RUNTIME_ENV_VAR),
         ("query", QUERY_ENV_VAR),
         ("benchmark", BENCHMARK_ENV_VAR),
+        ("operator", OPERATOR_ENV_VAR),
     ])
     def test_precedence_order_is_scoped_then_shared(self, purpose, scoped):
         assert key_env_vars(purpose) == (scoped, FALLBACK_ENV_VAR)
@@ -128,10 +131,12 @@ class TestNamedAccessors:
         monkeypatch.setenv(RUNTIME_ENV_VAR, "phx_runtime")
         monkeypatch.setenv(QUERY_ENV_VAR, "phx_query")
         monkeypatch.setenv(BENCHMARK_ENV_VAR, "phx_benchmark")
+        monkeypatch.setenv(OPERATOR_ENV_VAR, "phx_operator")
         assert annotation_api_key() == "phx_annotation"
         assert runtime_api_key() == "phx_runtime"
         assert query_api_key() == "phx_query"
         assert benchmark_api_key() == "phx_benchmark"
+        assert operator_api_key() == "phx_operator"
 
 
 class TestStdlibOnly:

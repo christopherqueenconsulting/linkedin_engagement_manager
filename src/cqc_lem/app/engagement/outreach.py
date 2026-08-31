@@ -237,6 +237,7 @@ from cqc_lem.utilities.selenium_util import (
     get_driver_wait_pair,
     get_element_wait_retry,
     getText,
+    is_tab_crashed,
     quit_gracefully,
     wait_for_ajax,
 )
@@ -1219,7 +1220,18 @@ def process_user_followups(self, user_id: int, max_per_run: int = 20):
     try:
         driver, wait, user_email, my_profile = get_current_profile(user_id=user_id, session_name="Follow-ups")
     except Exception as e:
-        log_error("Error getting profile for follow-ups", exc=e, user_id=user_id, task_name="process_user_followups")
+        if is_tab_crashed(e):
+            # get_current_profile already logs this at WARNING where it's detected (the first
+            # login navigation) before re-raising — warning again here would double-file the SAME
+            # tab-crash occurrence under a second message/call-site, defeating the point of
+            # downgrading it (issue #1749). This catch is a wrapper re-reporting a reason already
+            # logged where it happened, same as the invite_to_connect precedent in
+            # utilities/CLAUDE.md — DEBUG, not another WARNING.
+            log_debug("Browser tab crashed while starting follow-ups", exc=e, user_id=user_id,
+                      task_name="process_user_followups")
+        else:
+            log_error("Error getting profile for follow-ups", exc=e, user_id=user_id,
+                      task_name="process_user_followups")
         return f"Failed to start follow-ups: {e}"
     sent = 0
     nurtured = 0
@@ -1242,10 +1254,15 @@ def process_user_followups(self, user_id: int, max_per_run: int = 20):
                 # anyway is the one irreversible mistake here (issue #731) — leave the row due so
                 # the next run re-reads it, and let the miss be greppable.
                 skipped += 1
-                log_warning(f"Follow-up skipped: could not read the thread with "
-                            f"{f.get('first_name') or f['profile_url']} — deferring to the next run",
-                            user_id=user_id, action_type="followup",
-                            task_name="process_user_followups")
+                # DEBUG, not a warning: check_dm_replied (and the open_message_thread ladder it
+                # calls) already warns at the point the read actually failed — the missing route,
+                # the unreadable sender, the missing self-name. Restating it here as a second
+                # warning double-counts one failure into two grouped issues (#1750, the same
+                # `invite_to_connect`/`_add_connect_note` pattern in utilities/CLAUDE.md).
+                log_debug(f"Follow-up skipped: could not read the thread with "
+                          f"{f.get('first_name') or f['profile_url']} — deferring to the next run",
+                          user_id=user_id, action_type="followup",
+                          task_name="process_user_followups")
                 continue
             if state is ThreadState.REPLIED:
                 # Their reply is on screen already — read it once and use it twice: buying-intent

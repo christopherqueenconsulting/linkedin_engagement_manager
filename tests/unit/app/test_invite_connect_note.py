@@ -42,11 +42,21 @@ def _clicker(found: set[str], box: MagicMock = None):
     return MagicMock(side_effect=click)
 
 
-def _finder(found: set[str]):
-    """find_first stand-in: the first locator whose xpath is on the page wins, else None."""
+def _finder(found: set[str], resolved: dict = None):
+    """find_first stand-in: the first locator whose xpath is on the page wins, else None.
+
+    `resolved` collects the element handed back per label, so a caller that clicks THE ELEMENT THAT
+    ANSWERED (rather than re-finding it) can be asserted on — which is the shadow-DOM contract:
+    a control mounted in a shadow root cannot be re-found by an XPath that never saw it (#1733).
+    """
 
     def find(driver, wait, locators, label, **kwargs):
-        return MagicMock() if any(value in found for _by, value in locators) else None
+        if not any(value in found for _by, value in locators):
+            return None
+        element = MagicMock()
+        if resolved is not None:
+            resolved[label] = element
+        return element
 
     return MagicMock(side_effect=find)
 
@@ -72,13 +82,15 @@ class _Result:
 def _invite(found: set[str], message: str = None, box: MagicMock = None, refined: str = "short note"):
     from cqc_lem.app.engagement import invites as ra
     click = _clicker(found, box)
-    with patch(f"{_INV}.get_user_password_pair_by_id", return_value=("e@x", "pw")), \
+    resolved: dict = {}
+    with patch(f"{_INV}.find_deep_elements", return_value=[]), \
+         patch(f"{_INV}.get_user_password_pair_by_id", return_value=("e@x", "pw")), \
          patch(f"{_INV}.get_driver_wait_pair", return_value=(MagicMock(), MagicMock())), \
          patch(f"{_INV}.login_to_linkedin"), \
          patch(f"{_INV}._profile_is_first_degree", return_value=False), \
-         patch(f"{_INV}._open_connect_invite_dialog", return_value=True), \
+         patch(f"{_INV}._open_connect_invite_dialog", return_value=(True, None)), \
          patch(f"{_INV}.click_element_wait_retry", click), \
-         patch(f"{_INV}.find_first", _finder(found)) as find_first, \
+         patch(f"{_INV}.find_first", _finder(found, resolved)) as find_first, \
          patch(f"{_INV}.click_first", _first_clicker(found)) as click_first, \
          patch(f"{_INV}.get_ai_message_refinement", return_value=refined) as refine, \
          patch(f"{_INV}.time.sleep"), \
@@ -90,6 +102,7 @@ def _invite(found: set[str], message: str = None, box: MagicMock = None, refined
          patch(f"{_INV}.quit_gracefully"):
         sent, reason = ra.invite_to_connect_now(1, "https://x/in/jane", message)
     return _Result(sent=sent, reason=reason, click=click, find_first=find_first,
+                   resolved=resolved,
                    click_first=click_first, insert_log=insert_log, log_error=log_error,
                    log_warning=log_warning, log_debug=log_debug, refine=refine,
                    record_action=record_action)
@@ -181,7 +194,10 @@ class TestNoteHappyPath:
         r = _invite(found=_NOTE_DIALOG, message="hi jane", box=box)
         assert r.sent is True and r.reason == CONNECTION_REQUEST_SENT_MESSAGE
         assert _clicked(r.click) == [_TEXTAREA_XPATH, _SEND_XPATH]
-        assert [call.args[3] for call in r.click_first.call_args_list] == ["Add a note button"]
+        # The Add-a-note control that ANSWERED is the one pressed — never a second lookup, which
+        # would miss it entirely once the dialog is shadow-mounted (#1733).
+        r.resolved["Add a note button"].click.assert_called_once()
+        assert [call.args[3] for call in r.click_first.call_args_list] == []
         box.clear.assert_called_once()
         box.send_keys.assert_called_once_with("hi jane")
         r.refine.assert_not_called()  # already under the limit

@@ -153,3 +153,22 @@ class TestCli:
     def test_missing_key_is_an_error(self, monkeypatch):
         monkeypatch.delenv("POSTHOG_PERSONAL_API_KEY", raising=False)
         assert phf.main([]) == 1
+
+    def test_operator_key_alone_reaches_the_client(self, monkeypatch, capsys):
+        # issue #1453 follow-up: this hand-run script reads POSTHOG_OPERATOR_API_KEY, not the
+        # shared POSTHOG_PERSONAL_API_KEY directly.
+        monkeypatch.delenv("POSTHOG_PERSONAL_API_KEY", raising=False)
+        monkeypatch.setenv("POSTHOG_OPERATOR_API_KEY", "phx_operator")
+        captured = {}
+
+        class _Stub:
+            def __init__(self, api_key, project_id, app_host):
+                captured["api_key"] = api_key
+
+            def list_flags(self):
+                raise RuntimeError("stop after the key gate")
+
+        monkeypatch.setattr(phf, "PostHogFlagClient", _Stub)
+        assert phf.main([]) == 1
+        assert captured["api_key"] == "phx_operator"
+        assert "could not list PostHog feature flags" in capsys.readouterr().err

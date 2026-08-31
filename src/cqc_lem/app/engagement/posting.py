@@ -195,6 +195,7 @@ from cqc_lem.utilities.profile_skills_window import record_profile_skills_change
 from cqc_lem.utilities.selenium_util import (
     click_first,
     find_first,
+    is_tab_crashed,
     quit_gracefully,
 )
 
@@ -359,7 +360,22 @@ def auto_scrape_post_stats(self, user_id: int):
             url = get_post_url_from_log_for_user(user_id, pid)
             if not url:
                 continue
-            driver.get(url)
+            try:
+                driver.get(url)
+            except Exception as e:
+                if is_tab_crashed(e):
+                    # The renderer behind the tab died (usually an OOM kill after many post
+                    # navigations in one session, same fault as #1746) — the session is still
+                    # valid, but no further navigation on it will succeed either, so the sweep is
+                    # over the same way a lost session ends one. This IS an anomaly worth
+                    # surfacing, so it stays a warning (escalates if it starts recurring) rather
+                    # than crashing the task into an unhandled $exception the sweep cannot recover
+                    # from mid-run.
+                    log_warning(f"Browser tab crashed after {scraped} of {len(post_ids)} post(s) — "
+                                f"stopping post-stats scrape", exc=e, user_id=user_id,
+                                task_name="auto_scrape_post_stats")
+                    return f"Scraped stats for {scraped} post(s) before the browser tab crashed"
+                raise
             time.sleep(random.uniform(4, 6))
             try:
                 container = driver.find_element(By.TAG_NAME, "main")

@@ -16,6 +16,7 @@ So each purpose reads its OWN env var first and falls back to `POSTHOG_PERSONAL_
 | `runtime` | `POSTHOG_RUNTIME_API_KEY` | `flags.py`, `posthog_endpoints.py` | `feature_flag:read`, `query:read` |
 | `query` | `POSTHOG_QUERY_API_KEY` | `scripts/posthog_error_issues.py` (host cron) | `query:read` |
 | `benchmark` | `POSTHOG_BENCHMARK_API_KEY` | `scripts/benchmark_models.py` (weekly cron) | LLM-eval + `query:read` |
+| `operator` | `POSTHOG_OPERATOR_API_KEY` | 7 hand-run scripts (below) | broad — every write scope + `query:read` |
 
 `observability.posthog_hogql_query` is a runtime read too, so it rides the `runtime` key — the
 `query` one is the CRON's, and the two live in different environments.
@@ -32,9 +33,13 @@ other three cover, so widening `runtime` to carry it would widen the one key tha
 containers (issue #1453, owner decision `1A`).
 
 The provisioning scripts (`posthog_provision`, `posthog_flags`, `posthog_surveys`,
-`posthog_experiments`, `posthog_dashboards`, `posthog_ops_destination`) are run by hand and
-deliberately do NOT appear here: they need a broad operator key that is exported into a shell for
-the run and stored nowhere.
+`posthog_experiments`, `posthog_dashboards`, `posthog_ops_destination`, `slop_retry_clear_rate`) are
+run by hand, never stored in an environment the app or a cron owns — `operator` is their purpose:
+`POSTHOG_OPERATOR_API_KEY`, exported into a shell for the run and stored nowhere. It is deliberately
+the broadest scope of the five, one key standing in for six write scopes an operator already holds
+account access to, rather than five separate keys nobody would provision. Revoking the shared key
+still leaves these seven scripts a NAMED var to export instead of a silent break (issue #1453,
+2026-08-22 follow-up).
 
 `scripts/posthog_key_check.py` is the read-only preflight over this table — one live read per
 surface, PASS/FAIL per purpose, naming the env var that actually supplied each key.
@@ -54,6 +59,7 @@ ANNOTATION_ENV_VAR = "POSTHOG_ANNOTATION_API_KEY"
 RUNTIME_ENV_VAR = "POSTHOG_RUNTIME_API_KEY"
 QUERY_ENV_VAR = "POSTHOG_QUERY_API_KEY"
 BENCHMARK_ENV_VAR = "POSTHOG_BENCHMARK_API_KEY"
+OPERATOR_ENV_VAR = "POSTHOG_OPERATOR_API_KEY"
 
 #: Purpose -> the scoped env var read BEFORE the shared fallback. Adding a purpose means adding a
 #: row here, never a second resolution rule at a call site.
@@ -62,6 +68,7 @@ PURPOSE_ENV_VARS = {
     "runtime": RUNTIME_ENV_VAR,
     "query": QUERY_ENV_VAR,
     "benchmark": BENCHMARK_ENV_VAR,
+    "operator": OPERATOR_ENV_VAR,
 }
 
 
@@ -149,3 +156,8 @@ def query_api_key() -> str:
 def benchmark_api_key() -> str:
     """The weekly model-benchmark key — PostHog's LLM-evaluation API."""
     return resolve_posthog_key("benchmark")
+
+
+def operator_api_key() -> str:
+    """The hand-run provisioning-script key — broad, exported into a shell, stored nowhere."""
+    return resolve_posthog_key("operator")

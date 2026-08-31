@@ -216,6 +216,16 @@ class TestMain:
         assert tool.main(["--print-sql", "--surface", "news letter"]) == 1
         assert "bare identifier" in capsys.readouterr().out
 
+    def test_operator_key_alone_reaches_the_client(self, tool, monkeypatch, capsys):
+        # issue #1453 follow-up: this hand-run script reads POSTHOG_OPERATOR_API_KEY, not the
+        # shared POSTHOG_PERSONAL_API_KEY directly.
+        monkeypatch.delenv("POSTHOG_PERSONAL_API_KEY", raising=False)
+        monkeypatch.setenv("POSTHOG_OPERATOR_API_KEY", "phx_operator")
+        monkeypatch.setattr(tool.PostHogQueryClient, "query",
+                            lambda self, hogql: [_row("cleared") for _ in range(12)])
+        assert tool.main([]) == 0
+        assert "clear-rate 100.0%" in capsys.readouterr().out
+
     def test_a_thin_window_exits_non_zero(self, tool, monkeypatch, capsys):
         monkeypatch.setenv("POSTHOG_PERSONAL_API_KEY", "phx_test")
         monkeypatch.setattr(tool.PostHogQueryClient, "query",
