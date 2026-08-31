@@ -314,10 +314,14 @@ class TestAlertEmailResolution:
             "WATCHDOG_ALERT_EMAIL=you@example.com\nCOST_ALERT_EMAIL=finance@realcompany.com\n",
         )
         assert result.returncode == 0, result.stderr
-        assert result.stdout.strip().splitlines()[-1] == "finance@realcompany.com"
-        # Discarding a configured-but-bad value is logged loudly, not silently ignored.
-        assert "ERROR" in result.stdout
-        assert "you@example.com" in result.stdout
+        # Every call site does `TO="$(resolve_alert_email)"` — stdout IS the resolved recipient, so
+        # it must be the address alone, never an ERROR line mixed in (that corrupts the "to" address
+        # SendGrid receives instead of just being visible).
+        assert result.stdout.strip() == "finance@realcompany.com"
+        # Discarding a configured-but-bad value is still logged loudly (to stderr, so it reaches the
+        # journal without landing in the captured recipient), not silently ignored.
+        assert "ERROR" in result.stderr
+        assert "you@example.com" in result.stderr
 
     def test_changeme_placeholder_is_also_rejected(self, tmp_path: Path) -> None:
         result = self._resolve(
@@ -335,9 +339,8 @@ class TestAlertEmailResolution:
             tmp_path,
             "WATCHDOG_ALERT_EMAIL=you@example.com\nCOST_ALERT_EMAIL=billing@example.org\n",
         )
-        lines = result.stdout.strip().splitlines()
-        assert lines[-1] == "christopher.queen@gmail.com"
-        assert result.stdout.count("ERROR") == 2  # both discards logged
+        assert result.stdout.strip() == "christopher.queen@gmail.com"
+        assert result.stderr.count("ERROR") == 2  # both discards logged, on stderr
 
     def test_nothing_configured_terminates_in_a_real_address(self, tmp_path: Path) -> None:
         result = self._resolve(tmp_path, "")

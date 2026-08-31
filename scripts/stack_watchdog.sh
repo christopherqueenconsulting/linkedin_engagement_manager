@@ -71,6 +71,11 @@ WATCHDOG_ALERT_EMAIL_DEFAULT="${WATCHDOG_ALERT_EMAIL_DEFAULT:-christopher.queen@
 
 # Recipient resolution chain. A discarded value is logged at ERROR — a silently ignored setting is
 # its own trap — and the chain always terminates in a real address, never empty.
+#
+# `log()` writes to stdout, and every call site captures this function's OUTPUT as the recipient
+# via `TO="$(resolve_alert_email)"` — so an ERROR line logged on stdout here would land IN the
+# address (a multi-line "to", silently rejected by SendGrid) instead of just being seen. Redirect
+# to stderr so the discard is still visible in the journal without corrupting the resolved value.
 resolve_alert_email() {
   local candidate
   candidate="${WATCHDOG_ALERT_EMAIL:-$(env_value WATCHDOG_ALERT_EMAIL)}"
@@ -79,7 +84,7 @@ resolve_alert_email() {
       echo "$candidate"
       return 0
     fi
-    log "ERROR: WATCHDOG_ALERT_EMAIL='${candidate}' looks like a placeholder — discarding it and falling through"
+    log "ERROR: WATCHDOG_ALERT_EMAIL='${candidate}' looks like a placeholder — discarding it and falling through" >&2
   fi
 
   candidate="$(env_value COST_ALERT_EMAIL)"
@@ -88,7 +93,7 @@ resolve_alert_email() {
       echo "$candidate"
       return 0
     fi
-    log "ERROR: COST_ALERT_EMAIL='${candidate}' looks like a placeholder — discarding it and falling through"
+    log "ERROR: COST_ALERT_EMAIL='${candidate}' looks like a placeholder — discarding it and falling through" >&2
   fi
 
   echo "$WATCHDOG_ALERT_EMAIL_DEFAULT"
