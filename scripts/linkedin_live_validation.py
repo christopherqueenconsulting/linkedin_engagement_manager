@@ -3285,7 +3285,7 @@ def probe_connect_dialog(driver, profile_url: str, sleep=time.sleep,
         _CONNECT_DIALOG_LOCATORS,
         _CONNECT_INVITE_URL,
         _CONNECT_NOTE_BUTTON_LOCATORS,
-        _PROFILE_CONNECT_BUTTON_LOCATORS,
+        _PROFILE_CONNECT_BUTTON_XPATH,
         _PROFILE_MORE_MENU_LOCATORS,
     )
     from cqc_lem.utilities.lead_scoring import profile_slug as _profile_slug
@@ -3335,7 +3335,7 @@ def probe_connect_dialog(driver, profile_url: str, sleep=time.sleep,
     # 2026-08-03 grounding, so it is the one a drift reading most needs to report on. RESOLVED, never
     # clicked: the guard would refuse the click anyway, and the whole point of this probe is that it
     # cannot send what the last drift on this surface sent by accident.
-    direct_connect = find_first(driver, wait, _PROFILE_CONNECT_BUTTON_LOCATORS,
+    direct_connect = find_first(driver, wait, [(By.XPATH, _PROFILE_CONNECT_BUTTON_XPATH)],
                                 "Profile Connect button", required=False, warn_on_miss=False,
                                 max_try=1, visible_only=True)
     more_menu = find_first(driver, wait, _PROFILE_MORE_MENU_LOCATORS, "Profile More menu",
