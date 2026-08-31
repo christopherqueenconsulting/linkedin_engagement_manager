@@ -433,6 +433,16 @@ _FEED_CARD_CROSSCHECK_SEL = "button[aria-label^='Hide post by']"
 # `_FEED_CARD_CROSSCHECK_SEL`, which IS independent of the sort control it grades.
 _FEED_WALK_CROSSCHECK_SEL = "button[aria-label^='Reaction button state'], button[aria-label^='React']"
 
+# The page's own SHELL landmark (#1777), independent of feed CONTENT: `_FEED_WALK_CROSSCHECK_SEL`
+# reads a per-post anchor, so a page that never rendered at all — a login wall, an interstitial, or
+# a block on this one surface — answers zero to that too, exactly like an ordinary empty feed. A
+# page LinkedIn actually rendered mounts a `<main>` whether the feed inside it is full or empty; a
+# live grounding run against a group id previously grounded working (#928) found it entirely
+# absent — 1.6MB of markup, zero `document.body.innerText` — while the home feed in the SAME
+# session rendered normally. That is not "nothing to comment on"; it is the walk never having had
+# a page to read.
+_PAGE_SHELL_CROSSCHECK_SEL = "main"
+
 
 _SINGLE_POST_SCOPE_JS = "const MARKERS = " + json.dumps(_POST_MARKER_SELECTORS) + r""";
 const counts = (root) => MARKERS.map((sel) => root.querySelectorAll(sel).length).join(",");
@@ -696,6 +706,16 @@ def _composer_in_post_scope(driver: WebDriver, card: WebElement, anchor: dict) -
         candidates = [] if scope is None else [
             (box, rect) for box, rect in _visible_composers(scope)
             if rect["y"] >= anchor["y"] - _COMPOSER_ABOVE_SLACK_PX]
+    if not candidates:
+        # `_single_post_scope` widens by ANCESTOR only, and a live grounding run (#1777) found a
+        # post whose composer mounts as a sibling of the marker-bounded scope, not a descendant of
+        # it — a reshare's embedded original post carries its own marker, so the boundary that
+        # "still maps to this post alone" sits BELOW where the composer actually renders, and no
+        # amount of climbing reaches a sibling subtree. Fall back to the reply resolver's own
+        # sibling-render answer (#883): every visible textbox on the page, never above this post
+        # (a composer left mounted on an earlier post in the walk sits above it), nearest one wins.
+        candidates = [(box, rect) for box, rect in _visible_composers(driver)
+                      if rect["y"] >= anchor["y"] - _COMPOSER_ABOVE_SLACK_PX]
     labelled = [c for c in candidates if _is_post_comment_box(c[0])]
     bottom = anchor["y"] + anchor["height"]
     best = min(labelled or candidates, key=lambda br: abs(br[1]["y"] - bottom), default=None)
@@ -3397,9 +3417,21 @@ def auto_comment_in_groups(self, user_id: int, max_per_group: int = 2):
             try:
                 driver.get(f"https://www.linkedin.com/groups/{gid}/")
                 time.sleep(random.uniform(4, 7))
-                total += comment_on_feed_inline(driver, wait, my_profile, user_id,
-                                                max_posts=max_per_group, deadline_ts=deadline_ts,
-                                                prefs=prefs, engagers=engagers, is_group_feed=True)
+                if driver.find_elements(By.CSS_SELECTOR, _PAGE_SHELL_CROSSCHECK_SEL):
+                    total += comment_on_feed_inline(driver, wait, my_profile, user_id,
+                                                    max_posts=max_per_group, deadline_ts=deadline_ts,
+                                                    prefs=prefs, engagers=engagers, is_group_feed=True)
+                else:
+                    # The page never rendered a `<main>` — a login wall, an interstitial, or a
+                    # block on this one group — so there is no feed to have found zero posts in.
+                    # `comment_on_feed_inline`'s own zero-walk cross-check cannot catch this: it
+                    # reads a FEED anchor, which also answers zero on a page that never rendered
+                    # (#1777). Skip WITHOUT calling it, so this never counts as "an empty feed" —
+                    # once is a stalled load, repeatedly is the drift the escalation contract exists
+                    # to surface.
+                    log_warning(f"Group {gid} page did not render — skipping without treating it "
+                                f"as an empty feed", user_id=user_id, action_type="comment",
+                                task_name="auto_comment_in_groups")
                 walked += 1
                 # Stamped whether or not this group produced a comment (issue #1719) — an empty
                 # feed still moves to the back of the rotation, or it would starve the walk the same

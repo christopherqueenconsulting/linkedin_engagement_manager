@@ -186,12 +186,15 @@ def _holder(*boxes, y: int = 100, height: int = 300):
     return el
 
 
-def _driver(scope=None):
+def _driver(scope=None, page_boxes=()):
     """A driver whose only scripted answer is the single-post scope widening; everything else
-    (scrollIntoView, the submit button, the submitted check) succeeds.
+    (scrollIntoView, the submit button, the submitted check) succeeds. `page_boxes` stands in for
+    every rendered role=textbox on the PAGE (issue #1777's page-wide fallback), independent of
+    whatever `scope` holds.
     """
     d = MagicMock()
     d.execute_script.side_effect = lambda script, *a: scope if "MARKERS" in script else True
+    d.find_elements.side_effect = _textbox_source(*page_boxes)
     return d
 
 
@@ -219,8 +222,9 @@ class TestComposerIsScopedToItsOwnPost:
         earlier.send_keys.assert_not_called()
 
     def test_card_without_a_composer_skips_instead_of_borrowing_one(self):
-        # No page-wide fallback on purpose — commenting on the wrong post is worse than not
-        # commenting, and the caller releases the claim so a later run retries this post.
+        # Nothing in the card, no wider single-post scope, and nothing on the PAGE either (issue
+        # #1777's fallback is position-bounded, not blind — an empty page still means skip, and the
+        # caller releases the claim so a later run retries this post).
         from cqc_lem.app.engagement import feed as ra
         earlier = _box(10)
         card = _holder(y=100)                       # nothing inside, and no wider single-post scope
@@ -289,6 +293,31 @@ class TestPostComposerResolution:
         card = _holder(y=100, height=300)
         assert ra._post_composer_for_card(_driver(scope=_holder(mine, reply, y=90)), card,
                                           user_id=1) is mine
+
+    def test_finds_the_composer_when_the_widened_scope_never_reaches_it(self):
+        """Issue #1777: a composer that mounts as a SIBLING of the widened scope, not inside it.
+
+        A live grounding run found this: a reshare's embedded original post carries its own
+        per-post marker, so `_single_post_scope`'s ancestor walk stops one level short of the
+        composer no matter how far it climbs. The page-wide, position-bounded fallback
+        `_reply_composer_for_comment` already uses for its own sibling-render case is the answer:
+        never above this post, nearest to its bottom edge wins.
+        """
+        from cqc_lem.app.engagement import feed as ra
+        card = _holder(y=100, height=300)                 # nothing inside
+        scope = _holder(y=100, height=300)                 # widened, but still holds nothing
+        mine = _box(430, aria="Text editor for creating comment")   # mounted elsewhere on the page
+        driver = _driver(scope=scope, page_boxes=(mine,))
+        assert ra._post_composer_for_card(driver, card, user_id=1) is mine
+
+    def test_the_page_wide_fallback_still_rejects_a_composer_above_the_post(self):
+        # Same #876 rule the widened-scope path already enforces: a box above this post is an
+        # earlier post's leftover composer (or the share box), never borrowed.
+        from cqc_lem.app.engagement import feed as ra
+        card = _holder(y=400, height=300)
+        stale = _box(20, aria="Text editor for creating comment")  # left mounted on an earlier post
+        driver = _driver(scope=_holder(y=400, height=300), page_boxes=(stale,))
+        assert ra._post_composer_for_card(driver, card, user_id=1) is None
 
     def test_a_miss_is_debug_not_a_warning(self):
         """The whole point of the issue: no composer means skip the post — an expected no-op the

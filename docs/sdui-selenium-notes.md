@@ -528,7 +528,16 @@ submit button whose text is literally `Comment`, so an action count would see tw
 comment section is a sibling and would never widen at all. A box starting
 ABOVE the card is rejected outright (the share box, or one left open on a post we already did), and
 a box labelled `creating comment` beats an unlabelled one (a reply box under someone's comment is a
-`role=textbox` too). No box of ours = skip the post; there is still no page-wide fallback.
+`role=textbox` too). **Issue #1777** added one more step when the widened scope STILL holds
+nothing: a live grounding run found a HOME-feed card (the #916 widening's own control surface)
+whose composer never resolved even after widening, because the composer mounted as a SIBLING of
+the marker-bounded boundary, not a descendant of it — a reshare embeds the original post's own
+per-post marker, so the boundary that "still covers this post alone" sits one level BELOW where the
+comment section actually renders, and no amount of ancestor-climbing reaches a sibling subtree.
+The fallback mirrors `_reply_composer_for_comment`'s own answer to the identical sibling-render
+problem (#883): every visible `role=textbox` on the PAGE, never above this post (the same
+above-filter), nearest to its bottom edge wins. No box of ours (in card, in scope, or on the page,
+all within that bound) = skip the post.
 
 A miss is an expected no-op and is logged DEBUG *inside* the resolver, like the reply one — the
 per-card `log_warning` it replaced escalated to ERROR and filed a defect for a post we skip by
@@ -559,8 +568,22 @@ chain), a composer mounted on the page that no card claimed (re-ground the resol
 nothing mounting anywhere (the surface has no inline composer at all, so the lane must stop
 generating an `lem-medium` comment per post it can never post — #1084).
 
-**Live counts: not yet taken.** The run is `risk:live-linkedin` and belongs to the owner (see the
-**linkedin-live-validation** skill); its per-locator numbers land here, replacing this line.
+**Live counts (2026-08-31, user 1, `--group-feed-composer`, several group ids including 3063585,
+3612099, 3746827):** every group id tried rendered **no `<main>` at all** — `page_text` empty,
+`js_body_innertext` length 0 (read straight off `document.body`, not Selenium's own visibility
+heuristic), zero visible controls, yet ~1.6MB of HTML still loaded and `document.title` stayed
+`"LinkedIn"` (not a login page). `--group-composer` and `--group-membership` against the SAME ids
+in the SAME session read identically blank, including group 3063585 — the one #928's own
+`--group-composer` run resolved a share box on as recently as 2026-08-17. The home feed rendered
+normally in every one of these sessions (full `page_text`, cards, controls), so this is not the
+account being signed out or the chain having drifted — it is the `/groups/` and `/groups/<id>/`
+surfaces specifically answering with something that isn't the app shell. Filed as a separate issue
+(the group-feed composer fix above is independent of it and was grounded entirely against the home
+feed control) rather than folded into #1777, because no locator change can fix a page that never
+mounts a `<main>` to look inside. `_PAGE_SHELL_CROSSCHECK_SEL` (`app/engagement/feed.py`) is the
+production-side answer: `auto_comment_in_groups` now checks for `<main>` before ever asking the
+feed engine to grade the page, so this state logs as "did not render" and rotates to the next
+group, instead of silently reading as an empty feed.
 
 ## The groups directory renders offers and memberships with identical hrefs (#1316)
 
