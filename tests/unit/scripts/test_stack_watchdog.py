@@ -273,3 +273,84 @@ class TestTunnelOrigins:
         bindir = self._fake_docker(tmp_path, status="exited", logs=self.ERRORS)
         result = self._run_check(tmp_path, bindir)
         assert "down=0" in result.stdout
+
+
+class TestAlertEmailResolution:
+    """Recipient resolution (`resolve_alert_email`, #1804).
+
+    `WATCHDOG_ALERT_EMAIL=you@example.com` — a copy-pasted placeholder from docs/install-script
+    sample text — silently disabled alerting for an unknown length of time: `${TO:-fallback}` only
+    ever catches empty, never garbage, so the placeholder beat the correct `COST_ALERT_EMAIL` sitting
+    three lines below it in the same `.env`.
+    """
+
+    def _resolve(
+        self, tmp_path: Path, env_contents: str, extra_env: dict[str, str] | None = None
+    ) -> subprocess.CompletedProcess[str]:
+        env = os.environ.copy()
+        env.pop("WATCHDOG_ALERT_EMAIL", None)
+        env["LEM_DIR"] = str(tmp_path)
+        env["LEM_ENV_FILE"] = str(tmp_path / ".env")
+        env["WATCHDOG_STATE_DIR"] = str(tmp_path / "state")
+        env["WATCHDOG_SH"] = str(WATCHDOG_SH)
+        env.update(extra_env or {})
+        (tmp_path / ".env").write_text(env_contents, encoding="utf-8")
+        return subprocess.run(
+            ["bash", "-c", 'source "$WATCHDOG_SH"; resolve_alert_email'],
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+
+    def test_valid_configured_value_wins(self, tmp_path: Path) -> None:
+        result = self._resolve(tmp_path, "WATCHDOG_ALERT_EMAIL=ops@realcompany.com\n")
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == "ops@realcompany.com"
+        assert "ERROR" not in result.stderr + result.stdout
+
+    def test_placeholder_is_rejected_and_falls_through_to_cost_alert_email(self, tmp_path: Path) -> None:
+        result = self._resolve(
+            tmp_path,
+            "WATCHDOG_ALERT_EMAIL=you@example.com\nCOST_ALERT_EMAIL=finance@realcompany.com\n",
+        )
+        assert result.returncode == 0, result.stderr
+        # Every call site does `TO="$(resolve_alert_email)"` — stdout IS the resolved recipient, so
+        # it must be the address alone, never an ERROR line mixed in (that corrupts the "to" address
+        # SendGrid receives instead of just being visible).
+        assert result.stdout.strip() == "finance@realcompany.com"
+        # Discarding a configured-but-bad value is still logged loudly (to stderr, so it reaches the
+        # journal without landing in the captured recipient), not silently ignored.
+        assert "ERROR" in result.stderr
+        assert "you@example.com" in result.stderr
+
+    def test_changeme_placeholder_is_also_rejected(self, tmp_path: Path) -> None:
+        result = self._resolve(
+            tmp_path,
+            "WATCHDOG_ALERT_EMAIL=changeme@realcompany.com\nCOST_ALERT_EMAIL=finance@realcompany.com\n",
+        )
+        assert result.stdout.strip().splitlines()[-1] == "finance@realcompany.com"
+
+    def test_empty_value_falls_through(self, tmp_path: Path) -> None:
+        result = self._resolve(tmp_path, "WATCHDOG_ALERT_EMAIL=\nCOST_ALERT_EMAIL=finance@realcompany.com\n")
+        assert result.stdout.strip().splitlines()[-1] == "finance@realcompany.com"
+
+    def test_placeholder_cost_alert_email_also_falls_through_to_terminal_default(self, tmp_path: Path) -> None:
+        result = self._resolve(
+            tmp_path,
+            "WATCHDOG_ALERT_EMAIL=you@example.com\nCOST_ALERT_EMAIL=billing@example.org\n",
+        )
+        assert result.stdout.strip() == "christopher.queen@gmail.com"
+        assert result.stderr.count("ERROR") == 2  # both discards logged, on stderr
+
+    def test_nothing_configured_terminates_in_a_real_address(self, tmp_path: Path) -> None:
+        result = self._resolve(tmp_path, "")
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip().splitlines()[-1] == "christopher.queen@gmail.com"
+
+    def test_process_env_var_overrides_env_file(self, tmp_path: Path) -> None:
+        result = self._resolve(
+            tmp_path,
+            "WATCHDOG_ALERT_EMAIL=fromfile@realcompany.com\n",
+            extra_env={"WATCHDOG_ALERT_EMAIL": "fromenv@realcompany.com"},
+        )
+        assert result.stdout.strip().splitlines()[-1] == "fromenv@realcompany.com"

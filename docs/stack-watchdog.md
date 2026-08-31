@@ -93,10 +93,12 @@ Requires `jq` and `curl` on the host.
 Add to `/opt/lem/.env` (or set in the unit):
 
 ```
-WATCHDOG_ALERT_EMAIL=you@example.com
+WATCHDOG_ALERT_EMAIL=<the address that should receive outage alerts>
 ```
 
-It falls back to `COST_ALERT_EMAIL` when unset. `SENDGRID_API_KEY`, `SENDGRID_FROM_EMAIL`,
+It falls back to `COST_ALERT_EMAIL`, then to a hardcoded real address, when unset **or when the
+value looks like a placeholder** (`*@example.{com,org,net}`, `changeme`) — a discarded value is
+logged at ERROR rather than silently ignored. `SENDGRID_API_KEY`, `SENDGRID_FROM_EMAIL`,
 `POSTHOG_API_KEY` and `POSTHOG_HOST` are already present for other features.
 
 Overridable: `LEM_DIR`, `LEM_ENV_FILE`, `WATCHDOG_STATE_DIR`, `WATCHDOG_GRACE_SECONDS`,
