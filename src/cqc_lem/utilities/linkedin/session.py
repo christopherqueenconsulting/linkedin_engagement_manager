@@ -50,10 +50,11 @@ def get_current_profile(user_id: int, session_name: str = "Get Current Profile",
     below is unaffected on purpose: a forced scrape that fails still beats acting on nothing, and
     the caller learns from the synthesis it gets back, not from a missing profile.
 
-    `needs_images` passes straight through to `get_driver_wait_pair` (#1774) — a caller whose
-    session will read a `/messaging/*` surface (e.g. the follow-up thread ladder) sets this `True`
-    to exempt itself from the bandwidth saver, which otherwise stops LinkedIn's messaging fastboot
-    app from ever mounting. Defaults `False`, unchanged for every other caller.
+    `needs_images` passes straight through to `get_driver_wait_pair` (#1774, widened by #1778) — a
+    caller whose session will read a `/messaging/*` OR `/groups/*` surface (the follow-up thread
+    ladder; group sync, commenting and posting) sets this `True` to exempt itself from the
+    bandwidth saver, which otherwise stops either LinkedIn fastboot SPA from ever mounting.
+    Defaults `False`, unchanged for every other caller.
     """
     log_info("Getting Updated Profile")
 

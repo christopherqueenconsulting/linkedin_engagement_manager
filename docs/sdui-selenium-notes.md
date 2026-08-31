@@ -619,6 +619,38 @@ production-side answer: `auto_comment_in_groups` now checks for `<main>` before 
 feed engine to grade the page, so this state logs as "did not render" and rotates to the next
 group, instead of silently reading as an empty feed.
 
+### Root cause: `/groups/*` is fastboot too, and images were blocked (#1778, resolved 2026-08-31)
+
+Not an account restriction, not a soft anti-automation block, not a LinkedIn product change — the
+owner opened a group page in their own browser session the same day and saw a normal feed, which
+ruled all three out. The actual cause was #1774's own bug, just not yet widened past
+`/messaging/*`: `get_docker_driver`'s bandwidth saver (`--blink-settings=imagesEnabled=false` on
+every proxied session, on by default) blocks image loads, and `/groups/*`'s fastboot mounts its app
+shell through the same `<img>` load-event mechanism `/messaging/*` does. Live A/B on the SAME
+account, SAME group id (3063585), same session shape otherwise:
+
+| Session | `document.querySelectorAll('main').length` | `document.body.innerText.length` |
+|---|---|---|
+| `images=blocked` (default proxied session) | 0 | 0 |
+| `images=on` (`needs_images=True`) | 1 | 5,718 |
+
+Fix: `get_current_profile(..., needs_images=True)` at the three call sites that open a `/groups/*`
+session — `auto_sync_user_groups`, `auto_comment_in_groups`, `auto_post_to_group`
+(`app/engagement/feed.py`) — the same scoped exemption #1774 added for the DM follow-up ladder,
+now documented in `get_docker_driver`'s own docstring as covering both surfaces. No cooldown or
+reduced-probing change is needed — the earlier probing volume (#928: 2,515 posts in 3 days) was
+never the cause, so nothing here re-triggers on a normal cadence. `scripts/linkedin_live_validation.py`
+now requests `needs_images` itself whenever `--group-composer` / `--group-membership` /
+`--group-feed-composer` / `--sweep` is passed, so a future probe run grounds the surface instead of
+reproducing this same misread.
+
+Unmasked by the fix, one card in the render behind it: the group feed's own Comment action sits
+under the sticky global nav at click time the same way a top-of-viewport COMPOSER does (#815 above)
+— `ElementClickInterceptedException ... at point (840, 19)`, `global-nav-search` stealing the
+click. `click_first` (`utilities/selenium_util.py`) now scrolls the target element into view
+(`block: 'center'`) and retries once on that exception, the same shape as every other un-clickable
+outcome it already handles.
+
 ## The groups directory renders offers and memberships with identical hrefs (#1316)
 
 Live-grounded 2026-08-14 (`/groups/`, user 1, `--group-membership`). One page, two lists, and every

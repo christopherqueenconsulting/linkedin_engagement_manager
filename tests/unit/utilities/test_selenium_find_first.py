@@ -3,7 +3,7 @@
 from unittest.mock import MagicMock, patch
 
 import pytest
-from selenium.common.exceptions import TimeoutException
+from selenium.common.exceptions import ElementClickInterceptedException, TimeoutException
 
 pytestmark = pytest.mark.unit
 
@@ -183,3 +183,35 @@ class TestClickFirst:
                                  required=False, max_try=1)
         assert out is None
         assert warn.call_args.args[0] == "Click miss: Open reactions menu"
+
+    def test_intercepted_click_scrolls_into_view_and_retries(self):
+        """Issue #1778: the sticky global nav steals a click from a card control (like #815 too).
+
+        A scroll-into-view retry, not a raise, is correct for a control that IS there, just
+        obstructed.
+        """
+        from cqc_lem.utilities import selenium_util as su
+        el = MagicMock()
+        el.is_displayed.return_value = True
+        el.click.side_effect = [ElementClickInterceptedException("intercepted"), None]
+        driver = _driver_with({"btn": [el]})
+        wait = _FakeWait(driver)
+        with patch.object(su.EC, "element_to_be_clickable", return_value=lambda d: el):
+            out = su.click_first(driver, wait, [("css", "btn")], "Comment")
+        assert out is el
+        assert el.click.call_count == 2
+        driver.execute_script.assert_called_once_with(
+            "arguments[0].scrollIntoView({block: 'center'});", el)
+
+    def test_intercepted_click_still_blocked_after_retry_is_the_same_miss_path(self):
+        from cqc_lem.utilities import selenium_util as su
+        el = MagicMock()
+        el.is_displayed.return_value = True
+        el.click.side_effect = ElementClickInterceptedException("intercepted")
+        driver = _driver_with({"btn": [el]})
+        wait = _FakeWait(driver)
+        with patch.object(su.EC, "element_to_be_clickable", return_value=lambda d: el), \
+             patch(f"{_MOD}.log_warning") as warn:
+            out = su.click_first(driver, wait, [("css", "btn")], "Comment", required=False)
+        assert out is None
+        assert warn.call_args.args[0] == "Click miss: Comment"

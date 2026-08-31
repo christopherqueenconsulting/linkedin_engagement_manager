@@ -3337,7 +3337,11 @@ def auto_sync_user_groups(self, user_id: int):
     off (never deleted).
     """
     try:
-        driver, wait, user_email, my_profile = get_current_profile(user_id=user_id, session_name="Sync Groups")
+        # needs_images=True (issue #1778): /groups/ is fastboot the same way /messaging/* is
+        # (#1774) — its `<img>` load events drive the client boot, so a bandwidth-saver session
+        # with images blocked never mounts <main> at all, live-confirmed on 2026-08-31.
+        driver, wait, user_email, my_profile = get_current_profile(user_id=user_id, session_name="Sync Groups",
+                                                                    needs_images=True)
     except Exception as e:
         log_error("Error getting profile for group sync", exc=e, user_id=user_id, task_name="auto_sync_user_groups")
         return f"Failed: {e}"
@@ -3406,7 +3410,11 @@ def auto_comment_in_groups(self, user_id: int, max_per_group: int = 2):
         return "No enabled groups"
     deadline_ts = _group_walk_deadline(self, started_ts)
     try:
-        driver, wait, user_email, my_profile = get_current_profile(user_id=user_id, session_name="Group Commenting")
+        # needs_images=True (issue #1778): same fastboot dependency as #1774's messaging fix —
+        # /groups/<id>/ never mounts <main> with images blocked.
+        driver, wait, user_email, my_profile = get_current_profile(user_id=user_id,
+                                                                    session_name="Group Commenting",
+                                                                    needs_images=True)
     except Exception as e:
         log_error("Error getting profile for group commenting", exc=e, user_id=user_id,
                   task_name="auto_comment_in_groups")
@@ -3833,7 +3841,10 @@ def auto_post_to_group(self, user_id: int, group_id: str, group_name: str = None
     if not text.strip():
         return "No group post draft to publish"
     try:
-        driver, wait, user_email, my_profile = get_current_profile(user_id=user_id, session_name="Group Post")
+        # needs_images=True (issue #1778): the group share box lives on the same fastboot page,
+        # dead with images blocked.
+        driver, wait, user_email, my_profile = get_current_profile(user_id=user_id, session_name="Group Post",
+                                                                    needs_images=True)
     except Exception as e:
         log_error("Error getting profile for group post", exc=e, user_id=user_id, task_name="auto_post_to_group")
         return f"Failed: {e}"
