@@ -313,6 +313,70 @@ class TestLinkedInDraftHarvest:
         card.find_elements.return_value = []
         assert _card_suggested_message(card) == ""
 
+    def _message_link(self, href="", aria_label=""):
+        link = MagicMock()
+        link.get_attribute.side_effect = lambda name: {"href": href, "aria-label": aria_label}.get(name)
+        return link
+
+    def test_reads_the_default_response_off_the_message_anchors_body_param(self):
+        """#1774: the live 2026-08-31 render carries the draft on the anchor's `body` query param.
+
+        No chip, no dialog, no click at all.
+        """
+        from cqc_lem.app.engagement.outreach import _card_message_link_suggested_text
+        link = self._message_link(
+            href="https://www.linkedin.com/messaging/compose/?profileUrn=urn%3Ali&recipient=urn%3Ali&"
+                 "body=Congrats+on+starting+your+new+role+at+Acme%21&workflowId=x")
+        card = MagicMock()
+        card.find_elements.side_effect = lambda by, sel: [link] if "messaging/compose" in sel else []
+        assert (_card_message_link_suggested_text(card)
+               == "Congrats on starting your new role at Acme!")
+        link.click.assert_not_called()
+
+    def test_falls_back_to_the_aria_label_when_the_href_has_no_body_param(self):
+        from cqc_lem.app.engagement.outreach import _card_message_link_suggested_text
+        link = self._message_link(
+            href="https://www.linkedin.com/messaging/compose/?profileUrn=urn%3Ali",
+            aria_label="Message Jane Doe: Congrats on the promotion!")
+        card = MagicMock()
+        card.find_elements.side_effect = lambda by, sel: [link] if "messaging/compose" in sel else []
+        assert _card_message_link_suggested_text(card) == "Congrats on the promotion!"
+
+    def test_a_malformed_href_reads_as_no_draft_found_not_a_crash(self):
+        from cqc_lem.app.engagement.outreach import _card_message_link_suggested_text
+        link = self._message_link(href="not a url", aria_label="")
+        card = MagicMock()
+        card.find_elements.side_effect = lambda by, sel: [link] if "messaging/compose" in sel else []
+        assert _card_message_link_suggested_text(card) == ""
+
+    def test_no_message_anchor_on_the_card_returns_empty(self):
+        from cqc_lem.app.engagement.outreach import _card_message_link_suggested_text
+        card = MagicMock()
+        card.find_elements.return_value = []
+        assert _card_message_link_suggested_text(card) == ""
+
+    def test_card_suggested_message_prefers_the_message_link_over_the_old_chip(self):
+        """The old chip/dialog locators stay as a fallback (#1774).
+
+        The anchor wins when both somehow match, because it is the one LinkedIn actually ships today.
+        """
+        from cqc_lem.app.engagement.outreach import _card_suggested_message
+        link = self._message_link(
+            href="https://www.linkedin.com/messaging/compose/?body=Congrats+from+the+link%21")
+        chip = MagicMock()
+        chip.text = "Congrats from the chip!"
+
+        def find_elements(by, sel):
+            if "messaging/compose" in sel:
+                return [link]
+            if "suggested-reply" in sel or "congrats" in sel.lower():
+                return [chip]
+            return []
+
+        card = MagicMock()
+        card.find_elements.side_effect = find_elements
+        assert _card_suggested_message(card) == "Congrats from the link!"
+
     def _trigger(self, label="Say congrats"):
         trigger = MagicMock()
         trigger.text = label

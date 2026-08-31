@@ -53,7 +53,7 @@ import re
 import time
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional
-from urllib.parse import unquote, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 from selenium.common import (
     ElementNotInteractableException,
@@ -2948,6 +2948,14 @@ _CATCHUP_SUGGESTED_TEXT_LOCATORS = [
     (By.CSS_SELECTOR, "[data-view-name*='catch-up-card-suggestion']"),
     (By.CSS_SELECTOR, "button[aria-label*='Congrats'], button[aria-label*='congrats']"),
 ]
+# The current SDUI render (#1774, live 2026-08-31 grounding: the read-only `--catchup-cards` probe
+# matched NEITHER locator above on 10/10 classified cards) carries the default response on the
+# card's own "Message" anchor instead of a chip or a dialog-opening button — its `body` query param
+# IS the full congratulations LinkedIn drafted, readable with zero clicks and zero dialogs. Kept
+# separate from `_CATCHUP_SUGGESTED_TEXT_LOCATORS` because it needs URL parsing, not element text.
+_CATCHUP_MESSAGE_LINK_LOCATORS = [
+    (By.CSS_SELECTOR, "a[href*='/messaging/compose/']"),
+]
 # The card affordance that opens LinkedIn's pre-filled compose overlay. We only ever OPEN it to read
 # the draft — never type, never submit (see _harvest_linkedin_draft).
 _CATCHUP_MESSAGE_TRIGGER_LOCATORS = [
@@ -3154,10 +3162,52 @@ def _clean_suggested_message(text: str) -> str:
     return cleaned[:CATCHUP_MESSAGE_MAX_CHARS]
 
 
-def _card_suggested_message(card: WebElement) -> str:
-    """LinkedIn's suggested congratulations as rendered ON the card (a quick-reply chip), if any.
-    Read-only — no clicking.
+# The "Message <name>: <text>" shape LinkedIn's own anchor label carries — the fallback source when
+# the `body` query param is unreadable (a relative href with no query at all, say).
+_CATCHUP_MESSAGE_ARIA_RE = re.compile(r"^message\s+.+?:\s*(.+)$", re.IGNORECASE)
+
+
+def _card_message_link_suggested_text(card: WebElement) -> str:
+    """LinkedIn's default response as carried on the card's own "Message" anchor (#1774).
+
+    The current SDUI render drops the chip/dialog affordance `_card_suggested_message` was written
+    against — grounded live 2026-08-31: `_CATCHUP_SUGGESTED_TEXT_LOCATORS` and
+    `_CATCHUP_MESSAGE_TRIGGER_LOCATORS` matched NEITHER on any classified card — and instead links
+    straight to `/messaging/compose/` with the full congratulations already in the `body` query
+    param. Reading it needs no click and opens nothing; the anchor's own aria-label
+    ("Message Jane: Congrats on...") is the fallback for a link LinkedIn ever renders without one.
     """
+    el = _first_in_card(card, _CATCHUP_MESSAGE_LINK_LOCATORS)
+    if el is None:
+        return ""
+    try:
+        href = el.get_attribute("href") or ""
+    except (StaleElementReferenceException, NoSuchElementException):
+        return ""
+    # The URL is untrusted page content, not a value this module controls — a malformed href must
+    # read as "no draft found" like every other miss here, never raise past the scraper.
+    try:
+        body = (parse_qs(urlparse(href).query).get("body") or [""])[0]
+        if body:
+            return _clean_suggested_message(body)
+    except Exception:
+        pass
+    try:
+        aria_match = _CATCHUP_MESSAGE_ARIA_RE.match((el.get_attribute("aria-label") or "").strip())
+        return _clean_suggested_message(aria_match.group(1)) if aria_match else ""
+    except (StaleElementReferenceException, NoSuchElementException, TypeError, AttributeError):
+        return ""
+
+
+def _card_suggested_message(card: WebElement) -> str:
+    """LinkedIn's suggested congratulations as rendered ON the card, if any. Read-only — no clicking.
+
+    Tries the "Message" anchor's own `body` param first (#1774) — it needs no click at all — then
+    falls back to the older quick-reply-chip shape in case LinkedIn rotates back to it.
+    """
+    link_text = _card_message_link_suggested_text(card)
+    if link_text:
+        return link_text
     el = _first_in_card(card, _CATCHUP_SUGGESTED_TEXT_LOCATORS)
     if el is None:
         return ""
