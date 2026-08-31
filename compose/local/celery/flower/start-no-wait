@@ -15,6 +15,19 @@ case "${FLOWER_BASIC_AUTH:-}" in
            unset FLOWER_BASIC_AUTH ;;
 esac
 
+# Flower's own persistence logging (`shelve.open` in flower/events.py) only logs at DEBUG, and
+# --logging=INFO below deliberately stays off full DEBUG (that also verbosifies celery/tornado
+# internals — see #1801). So log the resolved --db path ourselves, once, before Flower can silently
+# fall back to its own relative default ('flower' under the container CWD, never the mounted
+# /data volume — the exact defect #1795 fixed). This does not depend on Flower's logger config at
+# all, so it stays true even if that config changes later.
+mkdir -p /app/logs
+printf '%s - flower.persistence - INFO - resolved --db path: %s (FLOWER_PERSISTENT=%s)\n' \
+  "$(date -u +'%Y-%m-%d %H:%M:%S,%3N')" \
+  "${FLOWER_DB:-flower (relative to CWD — FLOWER_DB is unset)}" \
+  "${FLOWER_PERSISTENT:-False}" \
+  >> /app/logs/flower.log
+
 celery --app cqc_lem.app.my_celery \
   flower \
   --port="${CELERY_FLOWER_PORT}" \
