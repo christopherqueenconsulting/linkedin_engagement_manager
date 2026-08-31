@@ -333,6 +333,30 @@ grades a restricted reading **`unknown`, never `drift`**, and production HOLDS t
 (`hold_invites`) instead of failing rows. Both fail closed on an unreadable page — a restriction is
 a claim, and a claim needs evidence.
 
+### The blank custom-invite URL is not selector rot either (#1807)
+
+A post-#1790 live-verify re-ran `--connect-dialog` on the same two profiles and reported
+`dialog_present: false` / `state: drift` for both — read as `_CONNECT_DIALOG_LOCATORS` having gone
+stale again. It hadn't: the URL route (`driver.get` of the custom-invite URL) is the SAME known-dead
+route-4 fallback the 2026-08-29 section above already documents as rendering a completely blank
+document, and no probe run can ever open the dialog any other way — every route production actually
+uses to open it (routes 1-3) is a **click** on a control labelled `Connect` / `Invite … to connect`,
+which `install_read_only_guard` refuses outright (issue #1301). So `dialog_present: true` is not an
+obtainable reading from this probe, full stop, and `_CONNECT_DIALOG_LOCATORS` were never the
+problem — production's `_connect_dialog_present` (light DOM + shadow root) is unit-tested against
+both layouts already (`TestTheDialogIsFoundAcrossAShadowBoundary`, #1733).
+
+The actual defect was in the probe's own grading: `probe_connect_dialog` navigates the custom-invite
+URL first, then the profile, and **backfills** `reading["page_text"]` from the profile page when
+the URL route's own text comes back empty (`reading["page_text"] = reading["page_text"] or
+profile_text`). The profile page almost always renders, so that backfill made `page_text`
+non-empty on nearly every run — which meant `connect_dialog_state`'s "did the page render at all"
+check (gating the `unknown` grade) could never see the blank URL render, and the known-dead route
+always fell through to `drift`. Fixed by capturing the URL route's OWN text under a separate
+`invite_page_text` key that the backfill never touches, and grading against THAT — `state` now
+reads `unknown` (`"the custom-invite URL rendered nothing — the known-dead route-4 legacy
+fallback…"`), live-reconfirmed on both `nikunj-bajaj-10476824` and `johnwinner`.
+
 ## Profile experience rows: the a11y twin, not a line index (#970)
 
 `/details/experience/` renders most text **twice** — a visible `span[aria-hidden="true"]` beside a

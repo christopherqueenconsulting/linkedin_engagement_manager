@@ -3217,13 +3217,26 @@ def connect_dialog_state(reading: Optional[dict]) -> str:
     or names an account-level limit — neither profile can ground this route, and grading either one
     drift would file an issue for working behaviour.
 
+    The "did it render at all" check reads `invite_page_text` — the custom-invite URL's OWN text,
+    captured before `probe_connect_dialog` backfills the merged `page_text` from the profile page
+    it visits next. That backfill makes `page_text` non-empty on almost every run (the profile page
+    is the one page in this flow that reliably renders), so checking `page_text` here could never
+    see the URL route come back blank (issue #1807: a `driver.get` of the custom-invite URL is a
+    known-dead legacy fallback, `docs/sdui-selenium-notes.md` — it renders NOTHING, not a
+    rotated dialog selector, and every route production actually uses to open this dialog is a
+    CLICK the read-only guard refuses). Falls back to `page_text` for callers/fixtures that never
+    set `invite_page_text` (readings captured before this field existed).
+
     Deliberately still THREE states. `scripts/sdui_drift_issues.py` files only on `drift`, so the
     grade is a contract with the weekly sweep, not a description.
     """
     reading = dict(reading or {})
     if reading.get("dialog_present"):
         return STATE_OK
-    if not str(reading.get("page_text") or "").strip():
+    invite_text = reading.get("invite_page_text")
+    if invite_text is None:
+        invite_text = reading.get("page_text")
+    if not str(invite_text or "").strip():
         return STATE_UNKNOWN
     if reading.get("invite_pending"):
         return STATE_UNKNOWN
@@ -3259,8 +3272,15 @@ def connect_dialog_verdict(reading: Optional[dict]) -> str:
                 f"{str(reading.get('restriction_copy') or '')[:200]!r}. This is not selector rot and "
                 f"no locator should be changed on this reading — the invite lane should HOLD until "
                 f"it clears.{tail}")
-    if not str(reading.get("page_text") or "").strip():
-        return f"the page did not render at all — re-run.{tail}"
+    invite_text = reading.get("invite_page_text")
+    if invite_text is None:
+        invite_text = reading.get("page_text")
+    if not str(invite_text or "").strip():
+        return (f"the custom-invite URL rendered nothing — the known-dead route-4 legacy fallback "
+                f"(docs/sdui-selenium-notes.md), not selector rot; no route this probe can drive "
+                f"(every click route the invite lane uses is a commit-labeled control the read-only "
+                f"guard refuses) opened the dialog, so `dialog_present: true` is not obtainable here. "
+                f"Re-run only confirms the same thing.{tail}")
     return (f"the page rendered but no Connect dialog control resolved — re-ground "
             f"_CONNECT_DIALOG_LOCATORS from `visible_controls`.{tail}")
 
@@ -3317,12 +3337,17 @@ def probe_connect_dialog(driver, profile_url: str, sleep=time.sleep,
                                        "Send without a note", required=False, warn_on_miss=False,
                                        max_try=1, visible_only=True) is not None
     invite_page_copy = page_copy_sections(driver)
+    invite_page_text = page_text_sample(driver)
     reading.update({"url": getattr(driver, "current_url", ""),
                     "dialog_present": dialog is not None,
                     "dialog_control": element_evidence(dialog) if dialog is not None else None,
                     "note_affordance_present": note_present,
                     "bare_send_present": bare_send_present,
-                    "page_text": page_text_sample(driver),
+                    "page_text": invite_page_text,
+                    # The URL route's OWN render, kept separate from `page_text` below (which gets
+                    # backfilled from the profile page): `connect_dialog_state` grades against THIS
+                    # one, never the backfilled value (issue #1807).
+                    "invite_page_text": invite_page_text,
                     "invite_page_copy": invite_page_copy,
                     "visible_controls": visible_button_labels(driver)})
 
@@ -3360,6 +3385,12 @@ def probe_connect_dialog(driver, profile_url: str, sleep=time.sleep,
                     "invite_controls": invite_control_names(profile_controls),
                     "rail_hazards": rail_invite_hazards(profile_controls, owner_name),
                     "invite_pending": bool(_CONNECT_PENDING_RE.search(profile_text or ""))})
+    # `page_text` is backfilled from the profile page for the general "did SOMETHING render" checks
+    # (`invite_pending`, `restriction`) other callers read off it. `invite_page_text` above is left
+    # untouched by this backfill — it is the ONLY field that can tell "the custom-invite URL itself
+    # rendered nothing" (the known-dead legacy route 4, docs/sdui-selenium-notes.md) apart from
+    # genuine selector drift, and a page_text-based check that never sees an empty string can never
+    # grade that case anything but `drift` (issue #1807).
     reading["page_text"] = reading["page_text"] or profile_text
     if open_more_menu:
         reading.update(probe_more_menu_items(driver, wait, sleep=sleep))
