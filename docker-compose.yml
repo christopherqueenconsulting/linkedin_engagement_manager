@@ -311,6 +311,12 @@ services:
     environment:
       - FLOWER_UNAUTHENTICATED_API=True
       - FLOWER_PERSISTENT=False
+      # Flower reads any FLOWER_* env var as a CLI option (flower/command.py), including this
+      # one — but the running command (`start-flower-no-wait`) never passes `--db`, so without
+      # this Flower falls back to its own default: a relative `flower` path under the container
+      # CWD, never `/data` (the mounted flower_db volume below). That silent mismatch, not a
+      # missing mount or a permission denial, is why /data/flower.db was never written (#1795).
+      - FLOWER_DB=/data/flower.db
       - CELERY_TIMEZONE=${CELERY_TIMEZONE:-UTC}
     ports:
       - "${CELERY_FLOWER_PORT}:${CELERY_FLOWER_PORT}"
