@@ -50,6 +50,50 @@ env_value() {  # $1 = key, $2 = default
   echo "${val:-${2:-}}"
 }
 
+# A copy-pasted placeholder is the single most likely misconfiguration for an alert recipient, and
+# it looks nothing like "empty" — `${VAR:-fallback}` only ever catches empty, so a placeholder never
+# fell through. Reject the example-domain addresses docs/install scripts have shipped as sample
+# text, plus the literal word "changeme".
+is_placeholder_email() {  # $1 = candidate address
+  local v="${1,,}"
+  [[ -z "$v" ]] && return 0
+  case "$v" in
+    *@example.com|*@example.org|*@example.net|*changeme*) return 0 ;;
+  esac
+  return 1
+}
+
+# Terminal default matches the convention every other host cron already uses (weekly_sdui_drift_check.sh,
+# triage_issues.sh, weekly_linkedin_version_check.sh, weekly_model_check.sh: `ADMIN_EMAIL or
+# LINKEDIN_EMAIL or "christopher.queen@gmail.com"`) — terminate in a real address instead of silently
+# emailing nobody.
+WATCHDOG_ALERT_EMAIL_DEFAULT="${WATCHDOG_ALERT_EMAIL_DEFAULT:-christopher.queen@gmail.com}"
+
+# Recipient resolution chain. A discarded value is logged at ERROR — a silently ignored setting is
+# its own trap — and the chain always terminates in a real address, never empty.
+resolve_alert_email() {
+  local candidate
+  candidate="${WATCHDOG_ALERT_EMAIL:-$(env_value WATCHDOG_ALERT_EMAIL)}"
+  if [[ -n "$candidate" ]]; then
+    if ! is_placeholder_email "$candidate"; then
+      echo "$candidate"
+      return 0
+    fi
+    log "ERROR: WATCHDOG_ALERT_EMAIL='${candidate}' looks like a placeholder — discarding it and falling through"
+  fi
+
+  candidate="$(env_value COST_ALERT_EMAIL)"
+  if [[ -n "$candidate" ]]; then
+    if ! is_placeholder_email "$candidate"; then
+      echo "$candidate"
+      return 0
+    fi
+    log "ERROR: COST_ALERT_EMAIL='${candidate}' looks like a placeholder — discarding it and falling through"
+  fi
+
+  echo "$WATCHDOG_ALERT_EMAIL_DEFAULT"
+}
+
 COMPOSE="docker compose -f docker-compose.yml -f docker-compose.prod.yml"
 TOPOLOGY="$(env_value SELENIUM_TOPOLOGY)"; TOPOLOGY="${TOPOLOGY:-grid}"
 [[ "${TOPOLOGY,,}" == "grid" ]] && COMPOSE="$COMPOSE -f docker-compose.grid.yml"
@@ -307,8 +351,7 @@ JSON
   if [[ ${#down[@]} -gt 0 || ${#healed[@]} -gt 0 ]]; then
     SG_KEY="$(env_value SENDGRID_API_KEY)"
     FROM="$(env_value SENDGRID_FROM_EMAIL)"
-    TO="${WATCHDOG_ALERT_EMAIL:-$(env_value WATCHDOG_ALERT_EMAIL)}"
-    TO="${TO:-$(env_value COST_ALERT_EMAIL)}"
+    TO="$(resolve_alert_email)"
     if [[ -n "$SG_KEY" && -n "$FROM" && -n "$TO" ]]; then
       subject="[LEM] stack watchdog: ${#down[@]} down, ${#healed[@]} auto-started"
       body="${summary}
