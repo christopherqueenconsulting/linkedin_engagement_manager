@@ -94,6 +94,23 @@ class TestProcessUserFollowups:
         enq.assert_called_once()
         assert "Sent 1" in result
 
+    def test_session_open_requests_needs_images(self):
+        # Issue #1774: check_dm_replied walks open_message_thread's 6-route ladder over
+        # /messaging/*, which never mounts with the bandwidth saver's images blocked.
+        from cqc_lem.app.engagement.outreach import process_user_followups
+        with patch(f"{_OUT}.get_due_followups", return_value=[_due()]), \
+             patch(f"{_OUT}.get_current_profile",
+                  return_value=(MagicMock(), MagicMock(), "e", MagicMock())) as gp, \
+             patch(f"{_OUT}.quit_gracefully"), patch(f"{_OUT}.time.sleep"), patch(f"{_OUT}.insert_new_log"), \
+             patch(f"{_OUT}.resolve_self_name", return_value="Christopher Queen"), \
+             patch(f"{_OUT}.check_dm_replied", return_value=ThreadState.NOT_REPLIED), \
+             patch(f"{_OUT}.build_dm_from_template", return_value="follow up msg"), \
+             patch(f"{_OUT}.send_private_dm"), \
+             patch(f"{_OUT}.mark_followup"), \
+             patch(f"{_OUT}.enqueue_next_followup"):
+            process_user_followups.run(user_id=1)
+        assert gp.call_args.kwargs["needs_images"] is True
+
     def test_stops_sequence_when_replied(self):
         from cqc_lem.app.engagement.outreach import process_user_followups
         with patch(f"{_OUT}.get_due_followups", return_value=[_due()]), \

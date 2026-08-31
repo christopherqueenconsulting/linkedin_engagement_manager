@@ -27,7 +27,7 @@ def _send(composer=ADDRESSED, landed=True, **extra):
     """Run send_dm_now with every I/O boundary stubbed; returns (result, log_mock, composer_mock)."""
     from cqc_lem.app.engagement import outreach as ra
     with patch(f"{_OUT}.get_user_password_pair_by_id", return_value=("e", "p")), \
-         patch(f"{_OUT}.get_driver_wait_pair", return_value=(MagicMock(), MagicMock())), \
+         patch(f"{_OUT}.get_driver_wait_pair", return_value=(MagicMock(), MagicMock())) as driver_pair, \
          patch(f"{_OUT}.login_to_linkedin"), \
          patch(f"{_OUT}.open_addressed_composer", return_value=composer) as opened, \
          patch(f"{_OUT}.click_element_wait_retry") as clicked, \
@@ -40,7 +40,20 @@ def _send(composer=ADDRESSED, landed=True, **extra):
          patch(f"{_OUT}.quit_gracefully") as quit_driver:
         result = ra.send_dm_now(1, "https://www.linkedin.com/in/jane", "Congrats Jane!", **extra)
     return result, {"log": logged, "opened": opened, "typed": typed, "clicked": clicked,
-                    "quit": quit_driver}
+                    "quit": quit_driver, "driver": driver_pair}
+
+
+class TestNeedsImagesExemption:
+    """Issue #1774: needs_images=True must reach the session open.
+
+    This composer lives on `/messaging/*`, which never mounts when the bandwidth saver blocks
+    image loads. `send_dm_now` is the ONE send path shared by every DM lane, so this is the ONE
+    place that must ask for `needs_images=True` on its own session.
+    """
+
+    def test_session_open_requests_needs_images(self):
+        _, m = _send()
+        assert m["driver"].call_args.kwargs["needs_images"] is True
 
 
 class TestAddressedComposerGate:

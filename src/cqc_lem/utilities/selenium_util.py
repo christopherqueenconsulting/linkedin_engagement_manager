@@ -239,7 +239,8 @@ def _wait_for_selenium_ready(host: str, port: str, timeout: int = None) -> None:
 
 def get_docker_driver(headless: bool = True, session_name: str = "ChromeTests", coordinates: dict = None,
                       user_id: int = None, lat: float = None, lng: float = None,
-                      debug: bool = None, debug_required: bool = False) -> webdriver.Remote:
+                      debug: bool = None, debug_required: bool = False,
+                      needs_images: bool = False) -> webdriver.Remote:
     """Open a Chrome session on the standalone-chrome container — the ONE way a driver is created.
 
     Everything that makes a session look like the user rather than a datacenter bot is applied here:
@@ -258,6 +259,13 @@ def get_docker_driver(headless: bool = True, session_name: str = "ChromeTests", 
     `debug_required=True` turns that fallback into a `DebugNodeUnavailable` — the live-validation
     probe must never quietly spend a slot the engagement lanes are sized for (#1301). Not asking
     for the debug node EXCLUDES it, which is what keeps a Celery lane off the watchable node.
+
+    `needs_images=True` is a scoped exemption from the bandwidth saver (#1774): LinkedIn's
+    `/messaging/*` fastboot streams its preload payloads through `<img>` load events, so a
+    proxied session with images blocked never mounts the messaging SPA. Forces
+    `bandwidth_saver=False` regardless of `PROXY_BANDWIDTH_SAVER_ENABLED` or proxy state. Every
+    other caller keeps today's behavior — this must never widen past the messaging-surface lanes
+    that pass it explicitly.
     """
     if debug is None:
         debug = isTrue(os.getenv("SELENIUM_DEBUG_NODE", "False"))
@@ -310,6 +318,10 @@ def get_docker_driver(headless: bool = True, session_name: str = "ChromeTests", 
     # host egress (unmetered) is never touched by this.
     bandwidth_saver = bool(effective_proxy) and isTrue(
         os.getenv("PROXY_BANDWIDTH_SAVER_ENABLED", "True"))
+    if needs_images:
+        # Scoped exemption (#1774) — a messaging-surface session must keep images on so
+        # LinkedIn's fastboot app actually mounts, no matter what the env/proxy say.
+        bandwidth_saver = False
 
     # One line per session answering "was this actually proxied, and as whom?" — previously this
     # could only be determined by shelling into the container. Host:port only; never the
@@ -1202,7 +1214,8 @@ def get_driver_wait(driver, wait_time: int = None):
 
 
 def get_driver_wait_pair(headless=False, session_name: str = "ChromeTests", max_retry=3, coordinates: dict = None,
-                         user_id: int = None, debug: bool = None, debug_required: bool = False):
+                         user_id: int = None, debug: bool = None, debug_required: bool = False,
+                         needs_images: bool = False):
     """Create a driver and its matching wait, retrying session creation with exponential backoff.
 
     ONLY SessionNotCreatedException is retried: a full pool clears on its own, while any other
@@ -1213,13 +1226,18 @@ def get_driver_wait_pair(headless=False, session_name: str = "ChromeTests", max_
 
     `debug_required` is NOT retried on purpose: `DebugNodeUnavailable` is not a full pool, it is a
     caller that may not use the pool at all (#1301).
+
+    `needs_images` passes straight through to `get_docker_driver` (#1774) — a messaging-surface
+    caller sets it `True` to exempt itself from the bandwidth saver. Defaults `False` like every
+    other lane's unchanged behavior.
     """
     # Create the driver. Passing user_id applies that user's geo/timezone/locale spoofing.
     driver = None
     for attempt in range(max_retry):
         try:
             driver = get_docker_driver(headless=headless, session_name=session_name, coordinates=coordinates,
-                                       user_id=user_id, debug=debug, debug_required=debug_required)
+                                       user_id=user_id, debug=debug, debug_required=debug_required,
+                                       needs_images=needs_images)
             break  # Exit the loop if successful
         except SessionNotCreatedException as e:
             if attempt == max_retry - 1:

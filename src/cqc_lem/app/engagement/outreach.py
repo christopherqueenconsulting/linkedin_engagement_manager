@@ -1218,7 +1218,11 @@ def process_user_followups(self, user_id: int, max_per_run: int = 20):
                     task_name="process_user_followups", action_type="followup")
         return "No due follow-ups"
     try:
-        driver, wait, user_email, my_profile = get_current_profile(user_id=user_id, session_name="Follow-ups")
+        # needs_images=True (#1774): this session's own `check_dm_replied` walks
+        # `open_message_thread`'s 6-route ladder, which reads `/messaging/*` — blocked images stop
+        # that surface's fastboot app from ever mounting.
+        driver, wait, user_email, my_profile = get_current_profile(user_id=user_id, session_name="Follow-ups",
+                                                                    needs_images=True)
     except Exception as e:
         if is_tab_crashed(e):
             # get_current_profile already logs this at WARNING where it's detected (the first
@@ -2181,10 +2185,15 @@ def send_dm_now(user_id: int, profile_url: str, message: str, person_name: str =
     `button[aria-label*='Message']` matched nothing, so every DM this function was asked to send
     failed at the first step (issue #1030). Navigating to the person's own compose URL also gives the
     send path something a click never had — a recipient it can read back and verify before typing.
+
+    `needs_images=True` on the session (#1774): this composer lives on `/messaging/*`, and the
+    proxy bandwidth saver's blocked images stop that surface's fastboot app from ever mounting —
+    every DM send lane (private, scheduled, catch-up, nurture, appreciation) shares this function,
+    so this is the ONE place the exemption needs to be set.
     """
     user_email, user_password = get_user_password_pair_by_id(user_id)
 
-    driver, wait = get_driver_wait_pair(session_name='Private DM', user_id=user_id)
+    driver, wait = get_driver_wait_pair(session_name='Private DM', user_id=user_id, needs_images=True)
 
     login_to_linkedin(driver, wait, user_email, user_password)
 
