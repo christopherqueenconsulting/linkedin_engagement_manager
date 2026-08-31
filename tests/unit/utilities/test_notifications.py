@@ -126,9 +126,10 @@ def test_newsletter_draft_ready_email_links_to_the_screen_that_can_approve(monke
 
 
 def test_newsletter_draft_ready_title_with_markup_cannot_break_the_body():
-    """Titles are LLM-authored, so '&' and angle brackets reach this template unfiltered. Raw,
-    everything from '<' to the next '>' renders as a bogus tag and the sentence loses its subject;
-    the subject line is plain text and keeps the title as written.
+    """Titles are LLM-authored, so '&' and angle brackets reach this template unfiltered.
+
+    Raw, everything from '<' to the next '>' renders as a bogus tag and the sentence loses its
+    subject; the subject line is plain text and keeps the title as written.
     """
     from cqc_lem.utilities.email import send_newsletter_draft_ready_email
     title = 'Q3 <b>Recap</b> & "More"'

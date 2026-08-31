@@ -1,5 +1,7 @@
-"""Unit tests for the lost-browser-session predicate (issue #988), the crashed-tab one (#1746),
-and the Grid-relay-error one (#1784).
+"""Unit tests for the browser-session-fault predicates.
+
+Covers the lost-session predicate (issue #988), the crashed-tab one (#1746), and the
+Grid-relay-error one (#1784).
 """
 
 import pytest
