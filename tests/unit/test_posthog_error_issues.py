@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
+import requests
 
 pytestmark = pytest.mark.unit
 
@@ -380,6 +381,83 @@ class TestPlanActions:
 
     def test_summarize_on_an_empty_window(self, mod):
         assert "no error-tracking issues" in mod.summarize([])
+
+
+class TestPostHogQueryClientRetry:
+    """Covers the 2026-08-31 08:30 UTC outage fix.
+
+    A transient 503 from the query endpoint killed the whole run with no retry, and the cron's
+    daily 24h lookback meant that window was gone from every future run. Retry a 5xx/connection
+    failure, never a 4xx.
+    """
+
+    def _response(self, status_code=200, json_payload=None, ok=True):
+        response = MagicMock()
+        response.status_code = status_code
+        response.json.return_value = json_payload if json_payload is not None else {}
+        if ok:
+            response.raise_for_status.return_value = None
+        else:
+            error = requests.HTTPError(f"{status_code} error")
+            error.response = response
+            response.raise_for_status.side_effect = error
+        return response
+
+    def test_a_503_then_200_succeeds_and_returns_the_rows(self, mod):
+        client = mod.PostHogQueryClient("key", "475262")
+        bad = self._response(status_code=503, ok=False)
+        good = self._response(status_code=200, json_payload={"results": [["a"]]})
+        with patch("requests.post", side_effect=[bad, good]) as post, \
+                patch("time.sleep") as sleep:
+            rows = client.query("SELECT 1")
+        assert rows == [["a"]]
+        assert post.call_count == 2
+        sleep.assert_called_once()
+
+    def test_repeated_5xx_exhausts_retries_and_still_raises(self, mod):
+        client = mod.PostHogQueryClient("key", "475262")
+        bad = self._response(status_code=503, ok=False)
+        with patch("requests.post", return_value=bad) as post, patch("time.sleep"):
+            with pytest.raises(requests.HTTPError):
+                client.query("SELECT 1")
+        assert post.call_count == mod._QUERY_RETRY_ATTEMPTS
+
+    def test_a_4xx_is_never_retried(self, mod):
+        client = mod.PostHogQueryClient("key", "475262")
+        bad = self._response(status_code=400, ok=False)
+        with patch("requests.post", return_value=bad) as post, patch("time.sleep") as sleep:
+            with pytest.raises(requests.HTTPError):
+                client.query("SELECT 1")
+        assert post.call_count == 1
+        sleep.assert_not_called()
+
+    def test_a_connection_error_is_retried(self, mod):
+        client = mod.PostHogQueryClient("key", "475262")
+        good = self._response(status_code=200, json_payload={"results": []})
+        with patch("requests.post",
+                   side_effect=[requests.ConnectionError("refused"), good]) as post, \
+                patch("time.sleep"):
+            rows = client.query("SELECT 1")
+        assert rows == []
+        assert post.call_count == 2
+
+    def test_a_timeout_is_retried(self, mod):
+        client = mod.PostHogQueryClient("key", "475262")
+        good = self._response(status_code=200, json_payload={"results": []})
+        with patch("requests.post", side_effect=[requests.Timeout("slow"), good]) as post, \
+                patch("time.sleep"):
+            rows = client.query("SELECT 1")
+        assert rows == []
+        assert post.call_count == 2
+
+    def test_main_still_exits_nonzero_after_retries_are_exhausted(self, mod, monkeypatch):
+        # The retry wrapper must not swallow an unrecoverable failure into a fake "0 issues" run.
+        monkeypatch.setenv("POSTHOG_QUERY_API_KEY", "key")
+        bad = self._response(status_code=503, ok=False)
+        with patch("requests.post", return_value=bad), patch("time.sleep"), \
+                patch.object(mod, "GitHubIssues"):
+            rc = mod.main(["--apply"])
+        assert rc == 1
 
 
 class TestGitHubIssues:
