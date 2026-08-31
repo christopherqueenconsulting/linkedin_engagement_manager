@@ -1762,6 +1762,34 @@ class TestConnectDialogProbe:
         reading = {"dialog_present": False, "page_text": "About Experience", "invite_pending": False}
         assert llv.connect_dialog_state(reading) == llv.STATE_DRIFT
 
+    def test_a_blank_invite_url_render_grounds_nothing_rather_than_reading_as_drift(self):
+        """#1807: a blank custom-invite render must grade `unknown`, never `drift`.
+
+        `probe_connect_dialog` backfills `page_text` from the profile page it visits AFTER the
+        custom-invite URL, so `page_text` is almost never empty even when the URL route itself (the
+        known-dead legacy fallback) rendered nothing. The state check must read `invite_page_text`
+        — the URL route's OWN, un-backfilled render — or a blank custom-invite page always misreads
+        as selector drift.
+        """
+        reading = {"dialog_present": False, "invite_page_text": "",
+                   "page_text": "Nikunj Bajaj · 2nd Co-founder & CEO at TrueFoundry",
+                   "invite_pending": False}
+        assert llv.connect_dialog_state(reading) == llv.STATE_UNKNOWN
+        verdict = llv.connect_dialog_verdict(reading)
+        assert "known-dead" in verdict
+        assert "_CONNECT_DIALOG_LOCATORS" not in verdict
+
+    def test_a_rendered_invite_url_with_no_dialog_is_still_drift(self):
+        """The blank-URL carve-out must not swallow genuine drift.
+
+        When the custom-invite URL DOES render something (`invite_page_text` non-empty) but no
+        dialog control resolves, that is still selector rot.
+        """
+        reading = {"dialog_present": False, "invite_page_text": "Send an invitation to connect",
+                   "page_text": "Send an invitation to connect", "invite_pending": False}
+        assert llv.connect_dialog_state(reading) == llv.STATE_DRIFT
+        assert "_CONNECT_DIALOG_LOCATORS" in llv.connect_dialog_verdict(reading)
+
     def test_the_verdict_carries_the_hazard_even_when_the_dialog_opened(self):
         reading = {"dialog_present": True, "page_text": "x", "rail_hazards": ["Bob Smith"]}
         assert llv.connect_dialog_state(reading) == llv.STATE_OK
@@ -1822,6 +1850,33 @@ class TestConnectDialogProbe:
         assert reading["bare_send_present"] is None
         assert "Add a note button" not in looked_up
         assert "Add-a-note" not in reading["verdict"]
+
+    def test_a_blank_custom_invite_url_grades_unknown_even_though_the_profile_page_renders(
+            self, monkeypatch):
+        """#1807: a blank URL read followed by a rendered profile read must still grade `unknown`.
+
+        The probe navigates the custom-invite URL first, then the profile — this test makes the
+        FIRST read blank (the known-dead route-4 render) and the SECOND non-blank (the profile,
+        which almost always renders), the exact shape that used to misread as drift.
+        """
+        driver = MagicMock()
+        driver.current_url = "https://www.linkedin.com/preload/custom-invite/?vanityName=jane"
+        page_texts = iter(["", "Jane Doe · 2nd  About Experience"])
+
+        monkeypatch.setattr("cqc_lem.utilities.selenium_util.find_first", lambda *a, **k: None)
+        monkeypatch.setattr(llv, "page_text_sample", lambda d, **k: next(page_texts))
+        monkeypatch.setattr(llv, "page_copy_sections",
+                            lambda d, **k: {"main": "", "body": "", "dialog": ""})
+        monkeypatch.setattr(llv, "visible_button_labels", lambda d, **k: [])
+        monkeypatch.setattr(llv, "_page_owner_name", lambda d: "Jane Doe")
+
+        reading = llv.probe_connect_dialog(driver, "https://www.linkedin.com/in/jane/",
+                                           sleep=lambda *_: None)
+
+        assert reading["invite_page_text"] == ""
+        assert reading["page_text"] == "Jane Doe · 2nd  About Experience"
+        assert reading["state"] == llv.STATE_UNKNOWN
+        assert "known-dead" in reading["verdict"]
 
 
 @pytest.mark.unit
