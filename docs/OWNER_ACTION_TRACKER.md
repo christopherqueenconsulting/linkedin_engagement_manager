@@ -156,7 +156,7 @@ output.
 | `UI_API_TOKEN` | — | **Correctly deleted** today (#965) |
 | `API_ACCESS_TOKENS` | `/opt/lem/.env` | Present, **rotated today** (#965) |
 | `LEM_SECRET_KEY` | `/opt/lem/.env` | Present — but see 1.3 |
-| `POSTHOG_PERSONAL_API_KEY` | repo secret + `.env` | Present. **Scopes unverified** — see the trap below |
+| `POSTHOG_PERSONAL_API_KEY` | — | **REVOKED 2026-08-31** (#1453). Replaced by five purpose-scoped keys; see below |
 | `POSTHOG_CLI_TOKEN`, `UI_POSTHOG_KEY` | repo secrets | Present |
 | `CF_API_TOKEN` / `CF_ZONE_ID` | repo secrets | Present |
 | `CODECOV_TOKEN`, `GITGUARDIAN_API_KEY`, `LITELLM_MASTER_KEY`, `OPENROUTER_API_KEY`, `PEXELS_API_KEY`, `VPS_*` | repo secrets | Present |
@@ -168,37 +168,41 @@ output.
 **The PostHog scope trap.** One variable name carries **eight different scope requirements** across
 the docs (query, insight/dashboard/alert/action/subscription, annotation, feature-flag + experiment,
 survey, endpoint/insight_variable…). A key provisioned for one script silently blocks another —
-symptoms are `blocked_goal`, `blocked_endpoint`, or empty `subscribed_users`. **I could not read the
-live key's scopes.** If a PostHog script misbehaves, check scopes before debugging the script.
+symptoms are `blocked_goal`, `blocked_endpoint`, or empty `subscribed_users`. If a PostHog script
+misbehaves, read the HTTP status before debugging the script — and before reaching for scopes:
+**`401` is the key, `403` is the scope, `404` is the path.** Conflating the last two cost #1453
+eleven days (see the benchmark note in `docs/kpi-dashboards.md`).
 
-**Split in progress (#1453).** The code half is done: each purpose reads its own key
+**Split COMPLETE (#1453), 2026-08-31.** Each purpose reads its own key
 (`POSTHOG_ANNOTATION_API_KEY` / `POSTHOG_RUNTIME_API_KEY` / `POSTHOG_QUERY_API_KEY` /
-`POSTHOG_BENCHMARK_API_KEY` / `POSTHOG_OPERATOR_API_KEY`) and falls back to
-`POSTHOG_PERSONAL_API_KEY`, so nothing changes until a scoped key exists. `benchmark` is the fourth
-purpose your `1A` answer asked for — the weekly `weekly_model_check.sh` cron sources it from
-`/opt/lem/.env` for `benchmark_models.py`, so that lane is a stored-credential consumer, not a
-hand-run one. `operator` is the fifth: the six hand-run provisioning scripts plus
-`slop_retry_clear_rate.py` share ONE broad key, exported into a shell per-run and stored nowhere,
-rather than five narrower keys nobody would provision.
+`POSTHOG_BENCHMARK_API_KEY` / `POSTHOG_OPERATOR_API_KEY`) through
+`src/cqc_lem/utilities/posthog_keys.py`, and the shared account-scoped key has been **revoked**.
+Scopes per purpose: `docs/kpi-dashboards.md` § Purpose-scoped personal keys.
 
-**Owner status, per your 2026-08-22 comment on #1453:** the first four scoped keys are created,
-wired and re-verified live (5 of 6 surfaces PASS on that day's `posthog_key_check.py` — see the
-ceiling note below; a 7th surface, `operator`, is added by this follow-up and starts unchecked until
-you populate it). Remaining before the shared key can be revoked:
+| Key | Where it lives | Notes |
+|---|---|---|
+| `POSTHOG_ANNOTATION_API_KEY` | GitHub Actions secret | **Being a secret is not enough** — the `deploy` job has to export it into the step's env, and for 11 days it did not. Nothing noticed, because the step is `continue-on-error` and the script exits 0 on a missing key by design. `tests/unit/test_posthog_annotate.py` now fails the build if that wiring is dropped |
+| `POSTHOG_RUNTIME_API_KEY` | `/opt/lem/.env` | App containers must be recreated for a change to take effect |
+| `POSTHOG_QUERY_API_KEY` | `/opt/lem/.env` | Host crons source it fresh each run; no restart needed |
+| `POSTHOG_BENCHMARK_API_KEY` | `/opt/lem/.env` | Same. `evaluation:read` + `evaluation:write` + `query:read` |
+| `POSTHOG_OPERATOR_API_KEY` | **nowhere** | Exported into a shell for a hand-run provisioning script, by design |
 
-1. Create the fifth (`operator`) scoped key in the PostHog UI (project `475262`) — scopes in the
-   table at `docs/kpi-dashboards.md` § Purpose-scoped personal keys.
-2. Export `POSTHOG_OPERATOR_API_KEY` into the shell you run the seven hand-run scripts from
-   (`posthog_provision.py`, `posthog_flags.py`, `posthog_surveys.py`, `posthog_experiments.py`,
-   `posthog_dashboards.py`, `posthog_ops_destination.py`, `slop_retry_clear_rate.py`). It is never
-   stored in `/opt/lem/.env` — that is the whole point of a fifth purpose instead of widening one of
-   the stored ones.
-3. Re-run `python scripts/posthog_key_check.py` with no filter. 6 of 7 is the ceiling, not 7 of 7 —
-   `benchmark` "LLM-evaluation API" is a confirmed-dead PostHog endpoint
-   (`docs/kpi-dashboards.md` § Purpose-scoped personal keys), not a scope you can fix by
-   provisioning. Don't wait on that one to PASS.
-4. Revoke the shared `POSTHOG_PERSONAL_API_KEY`, then run the preflight once more — every consumer
-   fails silently, so this command is the evidence; a green deploy is not.
+**Still yours, and only this:** create the `operator` key with the scopes in
+`docs/kpi-dashboards.md`, keep it in a password manager, and export it per invocation:
+
+```bash
+POSTHOG_OPERATOR_API_KEY=phx_... poetry run python scripts/posthog_provision.py --dry-run
+```
+
+A dry run only READS, so it does not prove the write scopes. One real `posthog_provision.py` run
+confirms those; it is additive.
+
+**Verifying any of it:** `python scripts/posthog_key_check.py` (add `--purpose <name>` for one).
+Read-only, PASS/FAIL per surface, naming the env var that actually supplied each key. Every consumer
+fails silently, so this command is the evidence; a green deploy is not. On the box, expect
+`annotation` and `operator` to FAIL — those keys correctly live in CI and in your shell, not in
+`/opt/lem/.env`. A `via POSTHOG_PERSONAL_API_KEY` line now means an unpopulated consumer holding a
+revoked credential.
 
 ---
 

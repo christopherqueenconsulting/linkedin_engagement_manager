@@ -197,7 +197,7 @@ lives: each purpose reads its own env var and falls back to `POSTHOG_PERSONAL_AP
 | `annotation` | `POSTHOG_ANNOTATION_API_KEY` | `scripts/posthog_annotate.py` (GH Actions) | `annotation:write` |
 | `runtime` | `POSTHOG_RUNTIME_API_KEY` | `flags.py`, `posthog_endpoints.py`, `observability.posthog_hogql_query` (app containers) | `feature_flag:read`, `query:read` |
 | `query` | `POSTHOG_QUERY_API_KEY` | `scripts/posthog_error_issues.py` via `error_to_issues.sh` (host cron) | `query:read` |
-| `benchmark` | `POSTHOG_BENCHMARK_API_KEY` | `scripts/benchmark_models.py` via `weekly_model_check.sh` (host cron, Sun) | LLM-evaluation read+write, `query:read` |
+| `benchmark` | `POSTHOG_BENCHMARK_API_KEY` | `scripts/benchmark_models.py` via `weekly_model_check.sh` (host cron, Sun) | `evaluation:read`, `evaluation:write`, `query:read` |
 | `operator` | `POSTHOG_OPERATOR_API_KEY` | `posthog_provision`, `posthog_dashboards`, `posthog_flags`, `posthog_surveys`, `posthog_experiments`, `posthog_ops_destination`, `slop_retry_clear_rate` (all hand-run) | insight/dashboard/survey/experiment/flag/hog_function read+write, `query:read` |
 
 The provisioning scripts (`posthog_provision`, `posthog_dashboards`, `posthog_flags`,
@@ -221,10 +221,13 @@ the preflight checks that half separately. It gets `POSTHOG_BENCHMARK_API_KEY` i
 prints `Neither POSTHOG_BENCHMARK_API_KEY nor POSTHOG_PERSONAL_API_KEY is set — PostHog evaluations
 are unavailable; using the in-runner judge` to stderr, which lands in `/home/lem/model-check/model_check.log`.
 
-**The fallback is the rollout.** Nothing changes in an environment until a scoped key exists there,
-so: create the scoped keys alongside the current one, populate ONE consumer, verify it, repeat, and
-revoke the shared key LAST. If anything regresses, unset the scoped var and the shared key answers
-again.
+**The fallback was the rollout, and the rollout is DONE.** Nothing changed in an environment until
+a scoped key existed there, so the five keys were created alongside the shared one, populated one
+consumer at a time, verified, and the shared `POSTHOG_PERSONAL_API_KEY` was **revoked on
+2026-08-31**. The fallback branch stays in `posthog_keys.py` because it costs nothing, but it is
+dead everywhere LEM runs: a `via POSTHOG_PERSONAL_API_KEY` line in the preflight now means an
+unpopulated consumer holding a revoked credential, which answers 401. Nothing on the box or in CI
+should source that var any more.
 
 **Verify per surface, because they fail silently.** A wrong key in `flags.py` just makes every flag
 read its env default; in `posthog_endpoints.py` the SPA stats panel goes empty; in the error cron
@@ -248,20 +251,35 @@ or an endpoint `/run/`, and `tests/unit/scripts/test_posthog_key_check.py` fails
 surface is ever added that could write. Run it after each consumer is populated and again
 immediately before revoking the shared key.
 
-**`benchmark` "LLM-evaluation API" is a documented ceiling, not an open failure.** Live checks
-(2026-08-22, both against the shared key and again against a fully-scoped
-`POSTHOG_BENCHMARK_API_KEY` carrying `llm_playground:read` / `llm_prompt:read` / `llm_skill:read`)
-return `HTTP 404` on `GET /api/projects/{project_id}/llm_analytics/evaluations/` — not a scope
-problem. PostHog's current LLM Analytics API does not expose that collection endpoint at all: the
-public surface is `evaluation_reports` (create/list/generate/runs), `evaluation_config` and
-`evaluation_summary` — none of which is a drop-in replacement for the create-then-trigger-per-event
-flow `benchmark_models.PostHogEvals` is built around (`create_evaluation` / `run_evaluation` per
-`$ai_generation`). Swapping to `evaluation_reports` would be a redesign of the trigger mechanism, not
-a path fix, so it stays unfixed here. Consequence: the "LLM-evaluation API" surface FAILs
-permanently — the run falls open to the in-runner judge exactly as designed
-(`docs/model-benchmarks/README.md`), so nothing is broken, but an all-PASS `posthog_key_check.py`
-run should not be expected without that redesign; one permanent FAIL on that one surface is the
-ceiling, not evidence of a misconfigured key.
+**`benchmark` "LLM-evaluation API" was a stale path, not a missing scope.** For eleven days this
+surface returned `HTTP 404` and was recorded here as a permanent ceiling — first against the shared
+key (2026-08-20), then again against a `POSTHOG_BENCHMARK_API_KEY` carrying `llm_playground:read` /
+`llm_prompt:read` / `llm_skill:read` (2026-08-22). Two identical 404s across two different keys is
+what made "no scope will fix this" look proven; what it actually proved is that scope was never the
+variable. **A 404 is the path answering, not the key** — a scope gap answers `403`. Checking
+PostHog's published OpenAPI schema (2026-08-31) settled it in one read: the collection moved off the
+`llm_analytics/` prefix, and the per-evaluation `/run/` action became a collection of its own.
+
+| Call | Old path (404) | Current path |
+|---|---|---|
+| list / create evaluations | `/llm_analytics/evaluations/` | `/evaluations/` |
+| trigger one judge run | `POST /llm_analytics/evaluations/{id}/run/` | `POST /evaluation_runs/` |
+
+The create-then-trigger-per-event flow `benchmark_models.PostHogEvals` is built around is intact —
+only the addresses changed. The trigger body changed shape with the move: `{"event_id": ...}` became
+`{"evaluation_id", "target_event_id", "timestamp", "event", "distinct_id"}`, and **`timestamp` is
+required** because the run is enqueued as an async workflow that has to locate the target event in
+ClickHouse. It must be the emitted event's OWN timestamp, so `emit_generation` stamps the capture
+explicitly and carries that value forward rather than letting either side take its own clock
+reading. The scopes are `evaluation:read` (list) and `evaluation:write` (create + run) — real
+scopes of their own, which the `llm_playground` / `llm_prompt` / `llm_skill` trio does not cover.
+
+**The lesson worth keeping is the diagnosis, not the paths.** A read-only preflight that reports
+PASS/FAIL per surface still cannot distinguish "credential lacks scope" from "we are asking the
+wrong URL", and the write-up above chose the first reading twice and hardened it into documentation.
+When a surface FAILs, read the HTTP status before reaching for scopes: `401` is the key, `403` is
+the scope, `404` is the path.
+
 
 The manual equivalents, if you want to check a surface by hand: `flags.local_evaluation_available()`,
 `GET /user/posthog-stats` returning populated panels, `scripts/posthog_error_issues.py --dry-run`

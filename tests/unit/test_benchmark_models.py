@@ -1335,11 +1335,37 @@ class TestPostHogClient:
         assert kwargs["json"]["query"]["kind"] == "HogQLQuery"
         assert "/api/projects/475262/query/" in requests.request.call_args.args[1]
 
-    def test_run_evaluation_passes_the_event_id(self):
+    def test_run_evaluation_posts_to_evaluation_runs_with_the_events_own_timestamp(self):
         client, requests = self._client({"workflow_id": "w1"})
         with patch.dict(sys.modules, {"requests": requests}):
-            assert client.run_evaluation("e1", "evt-1") == "w1"
-        assert requests.request.call_args.kwargs["json"] == {"event_id": "evt-1"}
+            assert client.run_evaluation("e1", "evt-1", "2026-08-31T12:00:00+00:00",
+                                         distinct_id="model-benchmark") == "w1"
+        assert requests.request.call_args.kwargs["json"] == {
+            "evaluation_id": "e1", "target_event_id": "evt-1",
+            "timestamp": "2026-08-31T12:00:00+00:00", "event": "$ai_generation",
+            "distinct_id": "model-benchmark"}
+        assert "/api/projects/475262/evaluation_runs/" in requests.request.call_args.args[1]
+
+    def test_run_evaluation_omits_an_absent_distinct_id_rather_than_sending_null(self):
+        # PostHog types distinct_id as string-or-null, but it is only a lookup HINT — sending an
+        # explicit null buys nothing and a bare key is one less thing to get wrong.
+        client, requests = self._client({"id": "w2"})
+        with patch.dict(sys.modules, {"requests": requests}):
+            assert client.run_evaluation("e1", "evt-1", "2026-08-31T12:00:00+00:00") == "w2"
+        assert "distinct_id" not in requests.request.call_args.kwargs["json"]
+
+    def test_the_evaluation_collection_is_not_under_the_llm_analytics_prefix(self):
+        # The `llm_analytics/evaluations/` path 404'd for weeks and read as a missing SCOPE — it was
+        # a moved path. Pin both verbs so the same misreading cannot recur (issue #1453).
+        client, requests = self._client({"results": []})
+        with patch.dict(sys.modules, {"requests": requests}):
+            client.list_evaluations()
+            listed = requests.request.call_args.args[1]
+            client.create_evaluation({"name": "n"})
+            created = requests.request.call_args.args[1]
+        for url in (listed, created):
+            assert "llm_analytics" not in url
+            assert "/api/projects/475262/evaluations/" in url
 
 
 class TestEmission:

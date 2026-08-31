@@ -115,13 +115,14 @@ SURFACES = (
         "purpose": "benchmark",
         "name": "LLM-evaluation API",
         "consumer": "scripts/benchmark_models.py via weekly_model_check.sh (weekly cron)",
-        "proves": "the evaluation scope — without it the run falls back to the in-runner judge. "
-                  "KNOWN 404, confirmed 2026-08-22 against a fully-scoped key: PostHog's current "
-                  "LLM Analytics API does not expose this collection endpoint at all (docs/"
-                  "kpi-dashboards.md § Purpose-scoped personal keys). This is a documented ceiling, "
-                  "not a fixable FAIL — do not chase scopes on it.",
+        "proves": "evaluation:read — without it the run falls back to the in-runner judge. The "
+                  "404 seen 2026-08-20/22 was a STALE PATH, not a missing scope: PostHog moved the "
+                  "collection off the `llm_analytics/` prefix to `/evaluations/`, which its "
+                  "published OpenAPI schema confirms (checked 2026-08-31). A 403 here IS a scope "
+                  "gap — `evaluation:read` is a scope of its own, not covered by the "
+                  "`llm_playground` / `llm_prompt` / `llm_skill` trio.",
         "method": "GET",
-        "path": "/api/projects/{project_id}/llm_analytics/evaluations/?limit=1",
+        "path": "/api/projects/{project_id}/evaluations/?limit=1",
         "body": BODY_NONE,
     },
     {
@@ -259,10 +260,11 @@ def is_read_only(surface: dict) -> bool:
     query, running a provisioned `/endpoints/` query). Anything else would make this script able to
     change the project it is supposed to be inspecting.
 
-    `/run/` is NOT enough on its own: `/llm_analytics/evaluations/<id>/run/` is a `/run/` that
-    TRIGGERS a judge evaluation — real spend and a new `$ai_evaluation` event — so the endpoint
-    prefix is what makes the suffix safe, and `benchmark_models.PostHogEvals.run_evaluation` is the
-    live proof that path exists in this codebase.
+    `/run/` is NOT enough on its own: a `/run/` suffix elsewhere in PostHog's API executes work
+    rather than reading it, so the `/endpoints/` prefix is what makes this one safe. Triggering a
+    judge evaluation — real spend and a new `$ai_evaluation` event — is a POST to
+    `/evaluation_runs/` (`benchmark_models.PostHogEvals.run_evaluation`), which this predicate
+    rejects, and that is the point: nothing here may spend.
 
     Args:
         surface: An entry of `SURFACES`.

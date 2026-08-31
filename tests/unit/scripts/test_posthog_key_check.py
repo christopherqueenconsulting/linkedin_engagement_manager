@@ -280,5 +280,6 @@ class TestMain:
         monkeypatch.setattr(kc, "PostHogReader", lambda **k: reader)
         assert kc.main(["--purpose", "benchmark"]) == 0
         assert len(reader.calls) == 2
-        assert "llm_analytics" in reader.calls[0]["url"]
+        assert reader.calls[0]["url"].endswith("/evaluations/?limit=1")
+        assert "llm_analytics" not in reader.calls[0]["url"]
         assert reader.calls[1]["url"].endswith("/query/")

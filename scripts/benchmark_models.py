@@ -1734,16 +1734,36 @@ class PostHogEvals:
         return response.json() if response.content else {}
 
     def list_evaluations(self) -> dict:
-        payload = self._request("GET", "/llm_analytics/evaluations/?limit=100")
+        payload = self._request("GET", "/evaluations/?limit=100")
         return {item.get("name"): {"id": item.get("id"), "enabled": item.get("enabled")}
                 for item in payload.get("results") or [] if item.get("name")}
 
     def create_evaluation(self, spec: dict) -> Optional[str]:
-        return self._request("POST", "/llm_analytics/evaluations/", json=spec).get("id")
+        return self._request("POST", "/evaluations/", json=spec).get("id")
 
-    def run_evaluation(self, evaluation_id: str, event_id: str) -> Optional[str]:
-        payload = self._request("POST", f"/llm_analytics/evaluations/{evaluation_id}/run/",
-                                json={"event_id": event_id})
+    def run_evaluation(self, evaluation_id: str, event_id: str, timestamp: str,
+                       distinct_id: Optional[str] = None) -> Optional[str]:
+        """Trigger ONE judge evaluation against an already-emitted `$ai_generation`.
+
+        `timestamp` is REQUIRED by PostHog, not a nicety: the run is enqueued as an async workflow
+        that has to find the target event in ClickHouse, and the timestamp is what bounds that
+        lookup. It must be the emitted event's OWN timestamp — `emit_generation` stamps the capture
+        explicitly for exactly this reason, so the two cannot drift.
+
+        Args:
+            evaluation_id: UUID of the evaluation to run.
+            event_id: UUID of the `$ai_generation` event to judge.
+            timestamp: ISO 8601 timestamp of that event.
+            distinct_id: The event's distinct_id — optional to PostHog, and only a lookup hint.
+
+        Returns:
+            The enqueued run's id, or None if PostHog answered without one.
+        """
+        body = {"evaluation_id": evaluation_id, "target_event_id": event_id,
+                "timestamp": timestamp, "event": "$ai_generation"}
+        if distinct_id:
+            body["distinct_id"] = distinct_id
+        payload = self._request("POST", "/evaluation_runs/", json=body)
         return payload.get("workflow_id") or payload.get("id")
 
     def query(self, hogql: str) -> list:
@@ -1753,9 +1773,13 @@ class PostHogEvals:
 
 
 def emit_generation(run_id: str, tier: str, case: dict, model: str, role: str,
-                    completion: dict) -> Optional[str]:
+                    completion: dict, timestamp: Optional[datetime] = None) -> Optional[str]:
     """Emit ONE tagged `$ai_generation`. Independent of the prod LiteLLM→PostHog callback (#647) on
     purpose: this harness calls the provider directly, so nothing else would record these.
+
+    `timestamp` is stamped on the capture rather than left to the SDK because
+    `PostHogEvals.run_evaluation` has to send the SAME value back to find this event in ClickHouse.
+    Letting each side take its own clock reading is how that lookup silently misses.
 
     Returns the event uuid (what the manual eval run is keyed by), or None if PostHog is not
     configured — in which case the run falls back to the in-runner judge."""
@@ -1781,7 +1805,8 @@ def emit_generation(run_id: str, tier: str, case: dict, model: str, role: str,
         # uses the fallback judge) rather than handing back an id PostHog never stored.
         try:
             posthog.capture(distinct_id=BENCHMARK_DISTINCT_ID, event="$ai_generation",
-                            properties=properties, uuid=event_id)
+                            properties=properties, uuid=event_id,
+                            timestamp=timestamp or datetime.now(timezone.utc))
         except TypeError:
             posthog.capture(distinct_id=BENCHMARK_DISTINCT_ID, event="$ai_generation",
                             properties=properties)
@@ -1934,7 +1959,10 @@ def run_benchmark(suites: dict, models: list, champions: dict, *, run_id: str, t
     judge_budget = max(0, int(judge_cap))
     judge_spent = 0
     fallback_down = False  # the in-runner judge answered "unreachable" — stop asking it
-    pending: list = []  # (tier, model, role, case_id, event_id) awaiting PostHog verdicts
+    # (tier, model, role, case_id, event_id, emitted_at) awaiting PostHog verdicts. `emitted_at`
+    # rides along because triggering the judge needs the event's own timestamp, not the clock at
+    # trigger time — see PostHogEvals.run_evaluation.
+    pending: list = []
     awaiting: list = []  # (card, suite, outputs, judge_results) whose verdicts PostHog still owes
 
     for tier, model, role in targets:
@@ -1962,9 +1990,12 @@ def run_benchmark(suites: dict, models: list, champions: dict, *, run_id: str, t
                                 "repeats": completion.get("repeats") or 0,
                                 "budget_locked": bool(completion.get("budget_locked"))}
             if not dry_run and completion.get("text") and evals is not None:
-                event_id = emit_generation(run_id, tier, case, model, role, completion)
+                emitted_at = datetime.now(timezone.utc)
+                event_id = emit_generation(run_id, tier, case, model, role, completion,
+                                           timestamp=emitted_at)
                 if event_id:
-                    pending.append([tier, model, role, case_id, event_id])
+                    pending.append([tier, model, role, case_id, event_id,
+                                    emitted_at.isoformat()])
 
         case_results = score_suite(suite, outputs)
         for result in case_results:
@@ -2001,7 +2032,8 @@ def run_benchmark(suites: dict, models: list, champions: dict, *, run_id: str, t
                                   if p[0] == tier and p[1] == model and p[3] == case_id), None)
                     if event and evaluation_ids.get(tier):
                         try:
-                            evals.run_evaluation(evaluation_ids[tier], event[4])
+                            evals.run_evaluation(evaluation_ids[tier], event[4], event[5],
+                                                 distinct_id=BENCHMARK_DISTINCT_ID)
                         except Exception as exc:  # noqa: BLE001
                             print(f"  ! eval trigger failed for {case_id}: {str(exc)[:120]}",
                                   file=sys.stderr)

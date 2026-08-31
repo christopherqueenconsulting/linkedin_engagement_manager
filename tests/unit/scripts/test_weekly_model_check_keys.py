@@ -34,10 +34,11 @@ class TestBenchmarkKeySourcing:
         # Owner decision 1A: this lane's own purpose-scoped key.
         assert "POSTHOG_BENCHMARK_API_KEY" in _allowlist()
 
-    def test_the_shared_fallback_is_still_sourced(self):
-        # It is the fallback until the owner revokes it; dropping it here would break the lane
-        # before a scoped key exists — the rollout has to stay additive.
-        assert "POSTHOG_PERSONAL_API_KEY" in _allowlist()
+    def test_the_revoked_shared_key_is_no_longer_sourced(self):
+        # The shared key was revoked 2026-08-31 (issue #1453). Sourcing it now would only export a
+        # dead credential into the benchmark lane, where posthog_keys.py would prefer it over
+        # nothing and the run would 401 instead of falling cleanly to the in-runner judge.
+        assert "POSTHOG_PERSONAL_API_KEY" not in _allowlist()
 
     def test_the_project_key_that_emits_the_scored_events_is_still_sourced(self):
         # Personal key without POSTHOG_API_KEY scores nothing: both halves or the fallback judge.
