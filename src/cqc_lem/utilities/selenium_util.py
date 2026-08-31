@@ -128,6 +128,30 @@ def is_tab_crashed(exc: BaseException) -> bool:
     return False
 
 
+# What the Grid's node-side HTTP relay says when it fails to deliver ONE command (issue #1784) —
+# e.g. `POST .../execute/sync` answering with `java.io.UncheckedIOException: Failed to execute
+# request`. Distinct from `_SESSION_GONE_MARKERS` (the session id itself was rejected) and from
+# `_TAB_CRASHED_MARKERS` (the renderer died): here the relay between hub and node dropped ONE
+# request. The session is very likely unusable for the rest of the walk either way, so it is
+# treated the same as a crashed tab — stop and report what shipped — rather than retried, but kept
+# a WARNING (not INFO) because a live Grid relay fault, unlike a routine deploy, is worth surfacing
+# if it recurs.
+_GRID_RELAY_ERROR_MARKERS = ("failed to execute request",)
+
+
+def is_grid_relay_error(exc: BaseException) -> bool:
+    """True when a WebDriver command failed because the Grid hub's relay to the node dropped it.
+
+    A single dropped relay call (issue #1784) is a Grid-infrastructure blip, not an application
+    defect — a caller mid-walk should stop and report what already shipped, the same as a crashed
+    tab, rather than crash the whole task into an unhandled `$exception`.
+    """
+    if isinstance(exc, WebDriverException):
+        message = (getattr(exc, "msg", None) or str(exc) or "").lower()
+        return any(marker in message for marker in _GRID_RELAY_ERROR_MARKERS)
+    return False
+
+
 def get_available_session_driver_id(wait_for_available=True, wait_time=60, retry=3):
     """The id of the Grid's first slot, or of the session already occupying it.
 
