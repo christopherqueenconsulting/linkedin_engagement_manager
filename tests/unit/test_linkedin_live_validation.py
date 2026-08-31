@@ -1901,6 +1901,73 @@ class TestCatchupProbe:
 
 
 @pytest.mark.unit
+class TestCatchupDefaultResponseProbe:
+    """#1774: read-only grounding of LinkedIn's own "default response" affordances.
+
+    The on-card suggestion chip `_CATCHUP_SUGGESTED_TEXT_LOCATORS` and the "Say congrats"/"Send
+    message" trigger `_CATCHUP_MESSAGE_TRIGGER_LOCATORS` — that `_draft_catchup_message` and
+    `_harvest_linkedin_draft` read from in production. Only `find_elements` calls, scoped to each
+    card: nothing here clicks.
+    """
+
+    @staticmethod
+    def _card(text: str, hits: tuple = ()) -> MagicMock:
+        card = MagicMock()
+        card.text = text
+
+        def find_elements(by, sel, _hits=hits):
+            return [MagicMock()] if (by, sel) in _hits else []
+
+        card.find_elements.side_effect = find_elements
+        return card
+
+    def test_reports_default_response_coverage_for_classified_cards_only(self, monkeypatch):
+        from cqc_lem.app.engagement.outreach import (
+            _CATCHUP_MESSAGE_TRIGGER_LOCATORS,
+            _CATCHUP_SUGGESTED_TEXT_LOCATORS,
+        )
+
+        suggested_locator = _CATCHUP_SUGGESTED_TEXT_LOCATORS[0]
+        trigger_locator = _CATCHUP_MESSAGE_TRIGGER_LOCATORS[0]
+
+        card_with_both = self._card("Jane Doe was promoted to VP of Sales",
+                                    hits=(suggested_locator, trigger_locator))
+        card_with_neither = self._card("John Smith is celebrating a work anniversary at Acme")
+        card_not_a_moment = self._card("An ad that classifies as no milestone at all")
+
+        driver = MagicMock()
+        driver.find_elements.return_value = []  # candidate_counts / profile-anchor reads, unused here
+        monkeypatch.setattr(
+            "cqc_lem.utilities.selenium_util.find_all_first",
+            lambda *a, **k: [card_with_both, card_with_neither, card_not_a_moment])
+
+        reading = llv.probe_catchup_cards(driver, sleep=lambda s: None)
+
+        dr = reading["default_response"]
+        assert dr["classified_cards_checked"] == 2  # the ad never classifies, so it is excluded
+        assert dr["classified_with_suggested_reply_chip"] == 1
+        assert dr["classified_with_message_trigger"] == 1
+        assert dr["classified_with_neither"] == 1
+        suggested_key = f"{suggested_locator[0]}={suggested_locator[1]}"
+        trigger_key = f"{trigger_locator[0]}={trigger_locator[1]}"
+        assert dr["suggested_reply_locator_counts"][suggested_key] == 1
+        assert dr["message_trigger_locator_counts"][trigger_key] == 1
+
+    def test_no_classified_cards_reports_zero_coverage_not_an_error(self, monkeypatch):
+        driver = MagicMock()
+        driver.find_elements.return_value = []
+        monkeypatch.setattr("cqc_lem.utilities.selenium_util.find_all_first", lambda *a, **k: [])
+
+        reading = llv.probe_catchup_cards(driver, sleep=lambda s: None)
+
+        dr = reading["default_response"]
+        assert dr["classified_cards_checked"] == 0
+        assert dr["classified_with_suggested_reply_chip"] == 0
+        assert dr["classified_with_message_trigger"] == 0
+        assert dr["classified_with_neither"] == 0
+
+
+@pytest.mark.unit
 class TestOccasionComposerProbe:
     """#1088: grounding this route is the precondition for flipping the native-publish flag on."""
 

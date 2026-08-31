@@ -184,9 +184,17 @@ Live-grounded 2026-08-03 (`/mynetwork/catch-up/all/`, user 1): each card is a
 `_CATCHUP_CARD_LOCATORS` chain (data-view-name first, `main li` fallbacks) matched nothing on a
 feed visibly showing ten moments — the scan reported `no_moments` daily while working "correctly".
 Grounded chain now leads with `div[data-sdui-screen*='CatchUp'] div[role='listitem']`. Ads and
-prompts also render as listitems; the profile-link + classifier funnel filters them. The on-card
-"Say congrats" suggestion chips carry no stable anchors either — when the harvest misses, drafting
-falls back to `_CATCHUP_DEFAULT_CONGRATS`, which is working as designed.
+prompts also render as listitems; the profile-link + classifier funnel filters them.
+
+**The "Say congrats" chip/dialog is gone too (#1774, live-grounded 2026-08-31).** The
+`--catchup-cards` probe's `default_response` reading matched `_CATCHUP_SUGGESTED_TEXT_LOCATORS` and
+`_CATCHUP_MESSAGE_TRIGGER_LOCATORS` on **0 of 10** classified cards that day — every touch was
+silently falling back to `_CATCHUP_DEFAULT_CONGRATS`'s generic one-liner instead of LinkedIn's own
+suggestion. The current render carries the full draft on the card's own `a[href*='/messaging/compose/']`
+anchor: the `body` query param IS the congratulations LinkedIn wrote (`aria-label` — "Message Jane:
+<text>" — is the fallback when the URL is unreadable), needing no click and no dialog at all.
+`_card_message_link_suggested_text` reads it first; the old chip/trigger locators stay as a
+fallback in case LinkedIn rotates back.
 
 ## The profile-views analytics list is full SDUI — no `<ul>`, TEXT is the only anchor
 

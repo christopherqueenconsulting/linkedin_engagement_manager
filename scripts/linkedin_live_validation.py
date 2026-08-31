@@ -75,6 +75,7 @@ import re
 import sys
 import time
 from typing import Callable, Optional
+from urllib.parse import parse_qs, urlparse
 
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
@@ -563,7 +564,9 @@ SURFACES = (
      "arg": "<profile-url>", "sweep": True,
      "resolver": "_resolve_connect_dialog_target (engagement_targets, connected/pending only)"},
     {"key": "catchup_cards", "surface": "Catch-up moment cards",
-     "code": "engagement.outreach._CATCHUP_CARD_LOCATORS", "flag": "--catchup-cards", "sweep": True},
+     "code": "engagement.outreach._CATCHUP_CARD_LOCATORS + "
+             "_CATCHUP_SUGGESTED_TEXT_LOCATORS/_CATCHUP_MESSAGE_TRIGGER_LOCATORS (#1774)",
+     "flag": "--catchup-cards", "sweep": True},
     {"key": "group_composer", "surface": "Group share box / post editor",
      "code": "engagement.feed.auto_post_to_group", "flag": "--group-composer",
      "arg": "<group-id>", "sweep": True,
@@ -3549,10 +3552,26 @@ def probe_catchup_cards(driver, sleep=time.sleep) -> dict:
     report which locator wins, how many cards each candidate matches, how many classify into a
     milestone, and the page's own profile-anchor count. Read-only — no card is clicked, no
     composer opened, nothing is sent.
+
+    #1774: also reports, per classified card, whether LinkedIn's own "default response" affordance
+    is still findable — the on-card suggestion chip `_CATCHUP_SUGGESTED_TEXT_LOCATORS` grounds, and
+    the "Say congrats" / "Send message" trigger `_CATCHUP_MESSAGE_TRIGGER_LOCATORS` opens to read
+    one. Both stay strict `find_elements` counts scoped to the card — never a click — so a
+    classified card matching NEITHER is exactly the shape a "the default response failed" report
+    would leave behind: `_draft_catchup_message` falls back to the plain one-liner, or (if the
+    trigger it clicks in production stops resolving) `_harvest_linkedin_draft` returns ''.
     """
     # The production URL, not a copy of it — a probe that reads a different screen than the lane
     # does grounds nothing about the lane (the same reason the card walk is imported, not inlined).
-    from cqc_lem.app.engagement.outreach import _CATCHUP_CARD_LOCATORS, CATCHUP_URL, _classify_catchup_moment
+    from cqc_lem.app.engagement.outreach import (
+        _CATCHUP_CARD_LOCATORS,
+        _CATCHUP_MESSAGE_LINK_LOCATORS,
+        _CATCHUP_MESSAGE_TRIGGER_LOCATORS,
+        _CATCHUP_SUGGESTED_TEXT_LOCATORS,
+        CATCHUP_URL,
+        _classify_catchup_moment,
+        _first_in_card,
+    )
     from cqc_lem.utilities.selenium_util import find_all_first
 
     driver.get(CATCHUP_URL)
@@ -3576,15 +3595,69 @@ def probe_catchup_cards(driver, sleep=time.sleep) -> dict:
 
     cards = find_all_first(driver, _CATCHUP_CARD_LOCATORS)
     texts, classified = [], 0
+    suggested_locator_counts = {f"{by}={sel}": 0 for by, sel in _CATCHUP_SUGGESTED_TEXT_LOCATORS}
+    trigger_locator_counts = {f"{by}={sel}": 0 for by, sel in _CATCHUP_MESSAGE_TRIGGER_LOCATORS}
+    classified_with_suggested = classified_with_trigger = classified_with_neither = 0
+    # One raw DOM sample of a classified card matching NEITHER affordance — a locator can never be
+    # re-grounded from a `find_elements` count alone. Only the first is kept: enough to design a
+    # fix, cheap enough that a drifted feed doesn't spend the report repeating the same blob.
+    neither_html = ""
+    message_link_bodies: list = []
     for card in cards[:20]:
         try:
             text = " ".join((card.text or "").split())
         except Exception:
             continue
-        if _classify_catchup_moment(text):
+        is_moment = bool(_classify_catchup_moment(text))
+        if is_moment:
             classified += 1
         if len(texts) < 5:
             texts.append(text[:200])
+        if not is_moment:
+            continue
+        # Only classified cards matter here: those are the only ones production ever tries to
+        # harvest a default response for (`_scrape_catchup_moments`'s `enabled_event_types` gate).
+        has_suggested = has_trigger = False
+        for by, sel in _CATCHUP_SUGGESTED_TEXT_LOCATORS:
+            try:
+                if card.find_elements(by, sel):
+                    suggested_locator_counts[f"{by}={sel}"] += 1
+                    has_suggested = True
+            except Exception:
+                continue
+        for by, sel in _CATCHUP_MESSAGE_TRIGGER_LOCATORS:
+            try:
+                if card.find_elements(by, sel):
+                    trigger_locator_counts[f"{by}={sel}"] += 1
+                    has_trigger = True
+            except Exception:
+                continue
+        classified_with_suggested += int(has_suggested)
+        classified_with_trigger += int(has_trigger)
+        if not has_suggested and not has_trigger:
+            classified_with_neither += 1
+            if not neither_html:
+                try:
+                    neither_html = (card.get_attribute("outerHTML") or "")[:16000]
+                except Exception:
+                    neither_html = ""
+        # #1774 grounding: on the live 2026-08-31 render, LinkedIn's default response is carried on
+        # the card's OWN "Message" anchor (`a[href*='/messaging/compose/']`) — its `body` query
+        # param holds the full congratulations text, no click and no dialog required to read it.
+        # Neither `_CATCHUP_SUGGESTED_TEXT_LOCATORS` nor `_CATCHUP_MESSAGE_TRIGGER_LOCATORS` looked
+        # for this anchor shape at all, which is exactly why every classified card above reads as
+        # "neither" while still carrying a real suggestion.
+        try:
+            link = _first_in_card(card, _CATCHUP_MESSAGE_LINK_LOCATORS)
+        except Exception:
+            link = None
+        if link is not None:
+            try:
+                body = parse_qs(urlparse(link.get_attribute("href") or "").query).get("body", [""])[0]
+            except Exception:
+                body = ""
+            if len(message_link_bodies) < 10:
+                message_link_bodies.append(body[:200])
 
     try:
         anchors = len(driver.find_elements(By.CSS_SELECTOR, "main a[href*='/in/']"))
@@ -3594,7 +3667,16 @@ def probe_catchup_cards(driver, sleep=time.sleep) -> dict:
                "cards_matched": len(cards), "winning_locator": winner,
                "candidate_counts": counts, "classified": classified,
                "profile_anchors": anchors, "sample_cards": texts,
-               "page_text": page_text_sample(driver)}
+               "page_text": page_text_sample(driver),
+               "default_response": {
+                   "classified_cards_checked": min(classified, 20),
+                   "classified_with_suggested_reply_chip": classified_with_suggested,
+                   "classified_with_message_trigger": classified_with_trigger,
+                   "classified_with_neither": classified_with_neither,
+                   "suggested_reply_locator_counts": suggested_locator_counts,
+                   "message_trigger_locator_counts": trigger_locator_counts,
+                   "sample_card_html_no_default_response": neither_html,
+                   "message_compose_link_bodies": message_link_bodies}}
     return graded(reading, catchup_state(reading), catchup_verdict(reading))
 
 
