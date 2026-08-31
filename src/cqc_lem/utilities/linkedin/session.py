@@ -32,7 +32,8 @@ from cqc_lem.utilities.selenium_util import get_driver_wait_pair, is_tab_crashed
 
 def get_current_profile(user_id: int, session_name: str = "Get Current Profile",
                         measurement_only: bool = False, debug: bool = False,
-                        force_refresh: bool = False, debug_required: bool = False) -> Tuple[
+                        force_refresh: bool = False, debug_required: bool = False,
+                        needs_images: bool = False) -> Tuple[
     WebDriver, WebDriverWait, str, LinkedInProfile]:
     """Update the profile of the user.
 
@@ -48,13 +49,18 @@ def get_current_profile(user_id: int, session_name: str = "Get Current Profile",
     `force_refresh` makes the scrape bypass the profile cache (issue #1076). The cached FALLBACK
     below is unaffected on purpose: a forced scrape that fails still beats acting on nothing, and
     the caller learns from the synthesis it gets back, not from a missing profile.
+
+    `needs_images` passes straight through to `get_driver_wait_pair` (#1774) — a caller whose
+    session will read a `/messaging/*` surface (e.g. the follow-up thread ladder) sets this `True`
+    to exempt itself from the bandwidth saver, which otherwise stops LinkedIn's messaging fastboot
+    app from ever mounting. Defaults `False`, unchanged for every other caller.
     """
     log_info("Getting Updated Profile")
 
     user_email, user_password = get_user_password_pair_by_id(user_id)
 
     driver, wait = get_driver_wait_pair(session_name=session_name, user_id=user_id, debug=debug,
-                                        debug_required=debug_required)
+                                        debug_required=debug_required, needs_images=needs_images)
 
     # Login first — a failure here (e.g. HTTP 429 rate-limit, expired cookie) is fatal
     # for this run; abort cleanly so the caller backs off instead of hammering LinkedIn.

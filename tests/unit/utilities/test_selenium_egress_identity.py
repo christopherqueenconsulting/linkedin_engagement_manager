@@ -125,6 +125,49 @@ class TestEverySessionPassesUserId:
             f"host IP with no proxy/geo: {offenders}")
 
 
+class TestNeedsImagesExemptionIsScoped:
+    """AST guard for issue #1774: the exemption must stay at exactly two call sites.
+
+    `needs_images=True` must appear at exactly the two DM-send session-open call sites the
+    scoped exemption was granted to. Any other call site widening the exemption is the
+    regression this issue explicitly warned against ("a scoped exemption, not a global flip").
+    """
+
+    _ALLOWED = {
+        ("app/engagement/outreach.py", "send_dm_now"),
+        ("app/engagement/outreach.py", "process_user_followups"),
+    }
+
+    def test_only_the_two_dm_send_call_sites_request_images(self):
+        offenders = []
+        for path in _SRC.rglob("*.py"):
+            text = path.read_text()
+            tree = ast.parse(text, filename=str(path))
+            functions = [n for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call):
+                    continue
+                fn = node.func
+                name = fn.attr if isinstance(fn, ast.Attribute) else getattr(fn, "id", None)
+                if name not in ("get_driver_wait_pair", "get_current_profile", "get_docker_driver"):
+                    continue
+                needs_images_kw = next((kw for kw in node.keywords if kw.arg == "needs_images"), None)
+                if needs_images_kw is None:
+                    continue
+                if not (isinstance(needs_images_kw.value, ast.Constant) and needs_images_kw.value.value is True):
+                    continue
+                enclosing = [f for f in functions
+                            if f.lineno <= node.lineno <= getattr(f, "end_lineno", f.lineno)]
+                # Innermost enclosing function (the one with the latest start line among matches).
+                func_name = max(enclosing, key=lambda f: f.lineno).name if enclosing else "<module>"
+                offenders.append((str(path.relative_to(_SRC)), func_name, node.lineno))
+
+        found = {(rel, func) for rel, func, _lineno in offenders}
+        assert found == self._ALLOWED, (
+            f"needs_images=True call sites drifted from the scoped exemption. "
+            f"Found: {sorted(offenders)}; expected exactly: {sorted(self._ALLOWED)}")
+
+
 class TestBandwidthSaver:
     """Image-blocking on proxied sessions (issue #1728).
 
@@ -173,7 +216,51 @@ class TestBandwidthSaver:
         assert "images=on" in messages
 
 
-def _capture_options(user_id=None, geo=None, proxy=None):
+class TestNeedsImagesExemption:
+    """Issue #1774: a session reading a messaging surface must be exempt from the bandwidth saver.
+
+    `--blink-settings=imagesEnabled=false` stops LinkedIn's `/messaging/*` fastboot app from ever
+    mounting, so a session that has to read a messaging surface must be exempt from the bandwidth
+    saver — a SCOPED exemption, never a default flip.
+    """
+
+    _GEO = {"latitude": 28.5, "longitude": -81.4, "timezone": "America/New_York",
+            "locale": "en-US", "country": "US"}
+    _BLINK_ARG = "--blink-settings=imagesEnabled=false"
+
+    def test_needs_images_forces_images_on_even_when_proxied(self):
+        args = _capture_options(
+            user_id=1, geo=self._GEO, proxy=_proxy_url("u", "p", "host.example", 9000),
+            needs_images=True).arguments
+        assert self._BLINK_ARG not in args
+
+    def test_needs_images_overrides_env_var_default(self, monkeypatch):
+        # PROXY_BANDWIDTH_SAVER_ENABLED keeps its True default; needs_images must win regardless
+        # of what the env var says.
+        monkeypatch.setenv("PROXY_BANDWIDTH_SAVER_ENABLED", "True")
+        args = _capture_options(
+            user_id=1, geo=self._GEO, proxy=_proxy_url("u", "p", "host.example", 9000),
+            needs_images=True).arguments
+        assert self._BLINK_ARG not in args
+
+    def test_needs_images_default_false_leaves_bandwidth_saver_unchanged(self):
+        """Regression guard: every OTHER lane must keep today's behavior.
+
+        Feed, posting and every other lane needs_images defaulting False must not silently
+        widen the exemption.
+        """
+        args = _capture_options(
+            user_id=1, geo=self._GEO, proxy=_proxy_url("u", "p", "host.example", 9000)).arguments
+        assert self._BLINK_ARG in args
+
+    def test_needs_images_false_explicit_still_blocks(self):
+        args = _capture_options(
+            user_id=1, geo=self._GEO, proxy=_proxy_url("u", "p", "host.example", 9000),
+            needs_images=False).arguments
+        assert self._BLINK_ARG in args
+
+
+def _capture_options(user_id=None, geo=None, proxy=None, needs_images=False):
     """Build a driver with all I/O mocked and return the ChromeOptions actually used."""
     captured = {}
 
@@ -188,5 +275,5 @@ def _capture_options(user_id=None, geo=None, proxy=None):
          patch("cqc_lem.utilities.db.get_user_geo", return_value=geo), \
          patch("cqc_lem.utilities.db.get_user_proxy", return_value=proxy):
         from cqc_lem.utilities.selenium_util import get_docker_driver
-        get_docker_driver(headless=False, user_id=user_id)
+        get_docker_driver(headless=False, user_id=user_id, needs_images=needs_images)
     return captured["options"]
