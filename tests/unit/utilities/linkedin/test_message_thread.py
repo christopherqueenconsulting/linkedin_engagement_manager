@@ -335,6 +335,22 @@ class TestRoutes:
             result = self._ladder(d, person_name="Jane Doe")
         assert result.route == mt.ROUTE_MESSAGING_SEARCH
 
+    def test_missing_search_box_is_not_a_warning(self):
+        """Messaging search is the LAST route in the ladder — reached only once every earlier route
+        has already failed. A missing search box there is the expected shape of "this account
+        cannot message this person at all" (or the messaging SPA didn't boot, issue #1774), not
+        selector rot, so it must not WARN — a WARNING here recurred into
+        `RecurringWarning: Selector miss: Messaging search box` for working refusal-to-follow-up-blind
+        behavior (issue #1783), the same reasoning `open_message_thread` already applies to the
+        ladder as a whole (issue #1752).
+        """
+        d = FakeDriver()
+        with patch.object(mt, "find_first", return_value=None) as find_first:
+            result = mt._try_messaging_search(d, MagicMock(), "Jane Doe", PROFILE, timeout=0)
+        assert result is None
+        find_first.assert_called_once()
+        assert find_first.call_args.kwargs.get("warn_on_miss") is False
+
 
 class TestLadderContract:
     def test_a_control_that_clicks_but_opens_nothing_is_not_a_success(self):

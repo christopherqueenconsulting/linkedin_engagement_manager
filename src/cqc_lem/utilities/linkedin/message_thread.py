@@ -553,8 +553,14 @@ def _try_messaging_search(driver: WebDriver, wait: WebDriverWait, person_name: O
     if not name:
         return None
     driver.get(MESSAGING_URL)
+    # warn_on_miss=False: this is the LAST route in the ladder, reached only once every earlier
+    # route has already failed. A missing search box here is the expected shape of "the account
+    # cannot message this person at all" (or the messaging SPA didn't boot, issue #1774) — the same
+    # reasoning `open_message_thread` already applies to the ladder as a whole (issue #1752). Without
+    # this flag the miss recurred into `RecurringWarning: Selector miss: Messaging search box`
+    # (issue #1783) for that same working refusal-to-follow-up-blind behavior.
     box = find_first(driver, wait, _SEARCH_LOCATORS, "Messaging search box",
-                     required=False, max_try=1, visible_only=True)
+                     required=False, max_try=1, visible_only=True, warn_on_miss=False)
     if box is None:
         return None
     try:
