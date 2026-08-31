@@ -55,11 +55,13 @@ def _run(tmp_path: Path, **env_overrides) -> subprocess.CompletedProcess:
 
 
 class TestKeyResolution:
-    def test_no_key_at_all_skips_and_names_both_vars(self, tmp_path):
+    def test_no_key_at_all_skips_and_names_the_var_to_add(self, tmp_path):
+        # The skip line names the ONE var worth adding. It used to name the shared key too, which
+        # after the 2026-08-31 revoke would be advice to install a revoked credential (issue #1453).
         result = _run(tmp_path)
         assert result.returncode == 0
         assert "POSTHOG_QUERY_API_KEY" in result.stderr
-        assert "POSTHOG_PERSONAL_API_KEY" in result.stderr
+        assert "POSTHOG_PERSONAL_API_KEY" not in result.stderr
         assert "skipping" in result.stderr
 
     def test_the_scoped_key_alone_is_enough_to_run(self, tmp_path):

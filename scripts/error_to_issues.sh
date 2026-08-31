@@ -47,22 +47,20 @@ _DEV_VENV_PY="/home/lem/linkedin_engagement_manager/.venv/bin/python"
 if [ -n "${ERROR_ISSUES_PY:-}" ]; then PY=("$ERROR_ISSUES_PY")
 elif [ -x "$_DEV_VENV_PY" ]; then PY=("$_DEV_VENV_PY"); else PY=(poetry run python); fi
 
-# Personal API key (query:read). The purpose-scoped POSTHOG_QUERY_API_KEY wins, with the shared
-# POSTHOG_PERSONAL_API_KEY as the fallback (issue #1453) — the same precedence the Python side
-# applies, so exporting either one here is enough. Env wins; otherwise read it off the box's prod
-# env file. Both are exported: posthog_error_issues.py does the actual choosing.
+# Personal API key (query:read). POSTHOG_QUERY_API_KEY is this cron's purpose-scoped key (issue
+# #1453). The shared POSTHOG_PERSONAL_API_KEY is no longer sourced here: it was REVOKED on
+# 2026-08-31, so reading it would only put a dead credential in the environment and turn a missing
+# key into a 401 instead of the clean skip below. posthog_error_issues.py still accepts it as a
+# fallback if some other environment exports one. Env wins; otherwise read it off the box's prod
+# env file.
 LEM_ENV_FILE="${LEM_ENV_FILE:-/opt/lem/.env}"   # overridable for tests, same as stack_watchdog.sh
 _env_value(){ sudo -n grep -E "^$1=" "$LEM_ENV_FILE" 2>/dev/null | cut -d= -f2- | tr -d '"' | tr -d "'"; }
 if [ -z "${POSTHOG_QUERY_API_KEY:-}" ]; then
   POSTHOG_QUERY_API_KEY=$(_env_value POSTHOG_QUERY_API_KEY)
   export POSTHOG_QUERY_API_KEY
 fi
-if [ -z "${POSTHOG_PERSONAL_API_KEY:-}" ]; then
-  POSTHOG_PERSONAL_API_KEY=$(_env_value POSTHOG_PERSONAL_API_KEY)
-  export POSTHOG_PERSONAL_API_KEY
-fi
 if [ -z "${POSTHOG_QUERY_API_KEY:-}" ] && [ -z "${POSTHOG_PERSONAL_API_KEY:-}" ]; then
-  log "No POSTHOG_QUERY_API_KEY or POSTHOG_PERSONAL_API_KEY set — skipping. Add one to $LEM_ENV_FILE to enable."
+  log "No POSTHOG_QUERY_API_KEY set — skipping. Add one to $LEM_ENV_FILE to enable."
   exit 0
 fi
 

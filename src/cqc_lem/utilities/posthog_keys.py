@@ -15,15 +15,20 @@ So each purpose reads its OWN env var first and falls back to `POSTHOG_PERSONAL_
 | `annotation` | `POSTHOG_ANNOTATION_API_KEY` | `scripts/posthog_annotate.py` (CI deploy job) | `annotation:write` |
 | `runtime` | `POSTHOG_RUNTIME_API_KEY` | `flags.py`, `posthog_endpoints.py` | `feature_flag:read`, `query:read` |
 | `query` | `POSTHOG_QUERY_API_KEY` | `scripts/posthog_error_issues.py` (host cron) | `query:read` |
-| `benchmark` | `POSTHOG_BENCHMARK_API_KEY` | `scripts/benchmark_models.py` (weekly cron) | LLM-eval + `query:read` |
+| `benchmark` | `POSTHOG_BENCHMARK_API_KEY` | `benchmark_models.py` (cron) | `evaluation:read+write`, `query:read` |
 | `operator` | `POSTHOG_OPERATOR_API_KEY` | 7 hand-run scripts (below) | broad — every write scope + `query:read` |
 
 `observability.posthog_hogql_query` is a runtime read too, so it rides the `runtime` key — the
 `query` one is the CRON's, and the two live in different environments.
 
-The fallback is what makes the rollout ADDITIVE: until a scoped key exists in an environment,
-nothing changes there, so the keys can be created and populated one consumer at a time and the old
-key revoked last (`docs/kpi-dashboards.md`). An unset scoped var is the normal state, never an error.
+The fallback is what made the rollout ADDITIVE: until a scoped key existed in an environment,
+nothing changed there, so the keys were created and populated one consumer at a time and the old key
+revoked last (`docs/kpi-dashboards.md`). An unset scoped var is the normal state, never an error.
+
+**The shared key was revoked on 2026-08-31, so the fallback is now a dead branch everywhere LEM
+runs** — kept because it costs nothing and a future environment may legitimately export one. Do not
+read a `via POSTHOG_PERSONAL_API_KEY` line out of `scripts/posthog_key_check.py` as working: after
+the revoke it means an unpopulated consumer holding a revoked credential, which answers 401.
 
 `benchmark` is a purpose rather than an operator key for one reason: `scripts/benchmark_models.py`
 is NOT hand-run — `scripts/weekly_model_check.sh` (host cron) sources its key out of `/opt/lem/.env`

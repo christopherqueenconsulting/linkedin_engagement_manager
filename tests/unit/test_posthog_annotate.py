@@ -156,3 +156,39 @@ class TestPostHogAnnotationsClient:
         assert post.call_args.args[0] == "https://us.posthog.com/api/projects/475262/annotations/"
         assert post.call_args.kwargs["headers"]["Authorization"] == "Bearer phx_test"
         assert post.call_args.kwargs["json"] == {"content": "x"}
+
+
+class TestTheDeployJobActuallyPassesTheKey:
+    """The gap that let this lane die silently for 11 days (issue #1453).
+
+    `POSTHOG_ANNOTATION_API_KEY` existed as a repository secret and `posthog_annotate.py` resolved
+    it correctly — but the workflow never put it in the job's environment, so the script saw only
+    the shared fallback, which was then revoked. Every release kept going green, because the step
+    is `continue-on-error` and the script exits 0 on a missing key by design. A unit test of the
+    script alone can never catch that: the defect lives in the WIRING between them.
+    """
+
+    WORKFLOW = pathlib.Path(__file__).resolve().parents[2] / ".github/workflows/build-and-push.yml"
+
+    def _annotating_job(self) -> dict:
+        yaml = pytest.importorskip("yaml")
+        workflow = yaml.safe_load(self.WORKFLOW.read_text())
+        jobs = [job for job in workflow["jobs"].values()
+                if any("posthog_annotate.py" in str(step.get("run", ""))
+                       for step in job.get("steps") or [])]
+        assert len(jobs) == 1, "posthog_annotate.py moved jobs — update this test with it"
+        return jobs[0]
+
+    def test_the_job_running_the_script_exports_the_scoped_annotation_key(self):
+        env = self._annotating_job().get("env") or {}
+        assert "POSTHOG_ANNOTATION_API_KEY" in env
+        assert "secrets.POSTHOG_ANNOTATION_API_KEY" in env["POSTHOG_ANNOTATION_API_KEY"]
+
+    def test_the_job_does_not_export_the_revoked_shared_key(self):
+        # Not tidiness: `posthog_keys.py` prefers any non-empty value it finds, so re-exporting the
+        # revoked key would make the annotation 401 rather than fall back to nothing.
+        assert "POSTHOG_PERSONAL_API_KEY" not in (self._annotating_job().get("env") or {})
+
+    def test_the_job_exports_the_project_and_host_the_script_reads(self):
+        env = self._annotating_job().get("env") or {}
+        assert {"POSTHOG_PROJECT_ID", "POSTHOG_APP_HOST"} <= set(env)
