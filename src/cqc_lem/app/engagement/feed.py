@@ -231,6 +231,7 @@ from cqc_lem.utilities.selenium_util import (
     find_first,
     get_driver_wait,
     get_driver_wait_pair,
+    is_grid_relay_error,
     is_session_lost,
     is_tab_crashed,
     quit_gracefully,
@@ -3471,6 +3472,17 @@ def auto_comment_in_groups(self, user_id: int, max_per_group: int = 2):
                                 f"stopping group commenting", exc=e, user_id=user_id,
                                 action_type="comment", task_name="auto_comment_in_groups")
                     return f"Commented {total} time(s) before the browser tab crashed"
+                if is_grid_relay_error(e):
+                    # The Grid hub's relay to the node dropped ONE command (issue #1784) — a
+                    # connectivity blip, not an application defect. The session is very likely
+                    # unusable for the rest of the walk either way, so this is handled the same as
+                    # a crashed tab: stop and keep what already shipped, WARNING (not INFO) because
+                    # a live Grid relay fault, unlike a routine deploy, is worth surfacing if it
+                    # recurs.
+                    log_warning(f"Grid relay error after {walked} of {len(enabled)} group(s) — "
+                                f"stopping group commenting", exc=e, user_id=user_id,
+                                action_type="comment", task_name="auto_comment_in_groups")
+                    return f"Commented {total} time(s) before the Grid relay failed"
                 raise
         return f"Commented {total} time(s) across {len(enabled)} group(s)"
     except SoftTimeLimitExceeded:

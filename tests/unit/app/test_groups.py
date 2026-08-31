@@ -877,6 +877,42 @@ class TestCommentInGroups:
         assert warned.called and not err.called
         quit_driver.assert_called_once_with(driver)
 
+    def test_a_grid_relay_error_ends_the_run_on_what_shipped_without_raising(self):
+        """Issue #1784: the Grid hub's relay to the node can drop a single command mid-walk.
+
+        (`java.io.UncheckedIOException: Failed to execute request (POST .../execute/sync)`). That
+        is Grid infrastructure, not an application defect — treated like a crashed tab: stop, keep
+        what already shipped, warn instead of crashing into an unhandled `$exception`.
+        """
+        from selenium.common import WebDriverException
+
+        from cqc_lem.app.engagement.feed import auto_comment_in_groups
+        driver = MagicMock()
+        driver.get.side_effect = [
+            None,
+            WebDriverException(
+                "Message: Failed to execute request (POST http://localhost:2867/session/abc/"
+                "execute/sync)\nStacktrace:\njava.io.UncheckedIOException: Failed to execute "
+                "request (POST http://localhost:2867/session/abc/execute/sync)"
+            ),
+        ]
+        with patch(f"{_FEED}.get_enabled_group_ids", return_value=["1", "2", "3"]), \
+             patch(f"{_FEED}.get_current_profile", return_value=(driver, MagicMock(), "e", MagicMock())), \
+             patch(f"{_FEED}.get_engagement_preferences", return_value={}), \
+             patch(f"{_FEED}.get_recent_engagers", return_value=set()), \
+             patch(f"{_FEED}.comment_on_feed_inline", return_value=2) as cfi, \
+             patch(f"{_FEED}.record_group_comment_run") as recorded, \
+             patch(f"{_FEED}.log_warning") as warned, \
+             patch(f"{_FEED}.log_error") as err, \
+             patch(f"{_FEED}.quit_gracefully") as quit_driver:
+            result = auto_comment_in_groups.run(user_id=1)
+        assert result == "Commented 2 time(s) before the Grid relay failed"
+        assert cfi.call_count == 1  # the second group is unreachable once the relay dropped
+        assert warned.called and not err.called
+        quit_driver.assert_called_once_with(driver)
+        # Group "2" was never reached, so it is NOT stamped — it stays least-recently-walked.
+        recorded.assert_called_once_with(1, "1")
+
     def test_a_real_failure_mid_run_still_raises(self):
         """Only a lost session or a crashed tab is absorbed — anything else stays a crash, and a defect."""
         from cqc_lem.app.engagement.feed import auto_comment_in_groups
