@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.171.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.170.2...v0.171.0) (2026-08-31)
+
+
+### Features
+
+* **observability:** wire SDUI selector-evidence into a dashboard, document drift-detection overlap ([#1787](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1787)) ([8636e5e](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/8636e5ea2c6ee230c15c7a1617ed0eaebc7c621f))
+* **observability:** wire sdui_selector_evidence into a dashboard + document drift-detection overlap ([8636e5e](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/8636e5ea2c6ee230c15c7a1617ed0eaebc7c621f))
+
+
+### Bug Fixes
+
+* **ci:** return the ruff ratchet to green — main had drifted 1 over baseline ([#1794](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1794)) ([f87b4dd](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/f87b4ddac0fbbe5d4cc31749ee88932ebdc57d44))
+* **dms:** exempt messaging-surface sessions from the image-block bandwidth saver (closes [#1774](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1774)) ([#1791](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1791)) ([25256f3](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/25256f32a9bae52cb58be4647609213d04048abd))
+* **observability:** add retry and failure alerting to the PostHog error-&gt;issues cron ([#1785](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1785)) ([e649c10](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/e649c1077dbea59775d5a76c88a956ff2bf0786c))
+
+
+### Performance Improvements
+
+* **tests:** stop re-parsing every test file 200x in the facade-patch seam guard ([1a1d36b](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/1a1d36bdb5a174924e48b308a468c3268395c1d9)), closes [#1799](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1799)
+* **tests:** stop re-parsing every test file 200x in the facade-patch seam guard (closes [#1799](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1799)) ([#1800](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1800)) ([1a1d36b](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/1a1d36bdb5a174924e48b308a468c3268395c1d9))
+
 ## [0.170.2](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.170.1...v0.170.2) (2026-08-31)
 
 
