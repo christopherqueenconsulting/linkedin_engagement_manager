@@ -27,6 +27,7 @@ import requests
 import selenium
 from selenium import webdriver
 from selenium.common import (
+    ElementClickInterceptedException,
     ElementNotInteractableException,
     InvalidSessionIdException,
     NoSuchElementException,
@@ -260,12 +261,13 @@ def get_docker_driver(headless: bool = True, session_name: str = "ChromeTests", 
     probe must never quietly spend a slot the engagement lanes are sized for (#1301). Not asking
     for the debug node EXCLUDES it, which is what keeps a Celery lane off the watchable node.
 
-    `needs_images=True` is a scoped exemption from the bandwidth saver (#1774): LinkedIn's
-    `/messaging/*` fastboot streams its preload payloads through `<img>` load events, so a
-    proxied session with images blocked never mounts the messaging SPA. Forces
+    `needs_images=True` is a scoped exemption from the bandwidth saver (#1774, widened by #1778):
+    LinkedIn's `/messaging/*` AND `/groups/*` fastboot both stream their preload payloads through
+    `<img>` load events, so a proxied session with images blocked never mounts either SPA — `/groups/`
+    renders zero `<main>` nodes the same way `/messaging/*` renders zero `msg-*` nodes. Forces
     `bandwidth_saver=False` regardless of `PROXY_BANDWIDTH_SAVER_ENABLED` or proxy state. Every
-    other caller keeps today's behavior — this must never widen past the messaging-surface lanes
-    that pass it explicitly.
+    other caller keeps today's behavior — this must never widen past the messaging- and
+    groups-surface lanes that pass it explicitly.
     """
     if debug is None:
         debug = isTrue(os.getenv("SELENIUM_DEBUG_NODE", "False"))
@@ -908,6 +910,11 @@ def click_first(driver: WebDriver, wait: WebDriverWait, locators: list[tuple[str
     fallback + structured-miss-logging behavior — including `warn_on_miss`, so a control the caller
     already has a working fallback for logs BOTH of its miss paths (not found, and found but not
     clickable) at DEBUG. Returns the clicked element or None.
+
+    A sticky header (e.g. the global nav on `/groups/<id>/`, issue #1778) can sit over a card
+    control `element_to_be_clickable` still calls clickable — the intercept is scrolling, not
+    timing, so it gets ONE scroll-into-view-then-retry before falling into the same miss path as
+    every other un-clickable outcome here.
     """
     element = find_first(driver, wait, locators, label, required=required,
                          parent_element=parent_element, max_try=max_try, visible_only=True,
@@ -920,8 +927,15 @@ def click_first(driver: WebDriver, wait: WebDriverWait, locators: list[tuple[str
             ActionChains(driver).move_to_element(element).click().perform()
             wait_for_ajax(driver)
         else:
-            element.click()
-    except (ElementNotInteractableException, StaleElementReferenceException, TimeoutException) as se:
+            try:
+                element.click()
+            except ElementClickInterceptedException:
+                driver.execute_script(
+                    "arguments[0].scrollIntoView({block: 'center'});", element)
+                time.sleep(0.5)
+                element.click()
+    except (ElementNotInteractableException, StaleElementReferenceException, TimeoutException,
+            ElementClickInterceptedException) as se:
         if required:
             raise se
         # A hover-revealed control can go un-clickable between the find and the click, which returns

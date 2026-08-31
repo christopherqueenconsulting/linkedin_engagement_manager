@@ -419,7 +419,8 @@ class ProbeRefused(RuntimeError):
         self.refusal = refusal
 
 
-def open_probe_session(get_current_profile: Callable, user_id: int, require_debug_node: bool):
+def open_probe_session(get_current_profile: Callable, user_id: int, require_debug_node: bool,
+                       needs_images: bool = False):
     """Open the probe's session, pinned to the watchable Grid node.
 
     The pin is the default now (#1301): an ad-hoc probe has no business taking one of the eight
@@ -431,10 +432,20 @@ def open_probe_session(get_current_profile: Callable, user_id: int, require_debu
     pin against one is a REFUSAL, not a silent downgrade — the probe is piped into whatever image
     is live, so this is the ordinary case for a few hours after a merge, and "wait for the release"
     is the honest answer.
+
+    `needs_images` (#1778) mirrors production's own `get_current_profile(needs_images=...)` — set
+    it whenever this run touches `/groups/*` (or `/messaging/*`), or the probe reproduces exactly
+    the empty-`<main>` misread #1778 root-caused rather than grounding the surface it was asked to
+    check.
     """
     import inspect
 
     kwargs = {"user_id": user_id, "session_name": "Live Validation", "debug": True}
+    sig_params = inspect.signature(get_current_profile).parameters
+    accepts_needs_images = "needs_images" in sig_params or any(
+        p.kind == inspect.Parameter.VAR_KEYWORD for p in sig_params.values())
+    if needs_images and accepts_needs_images:
+        kwargs["needs_images"] = True
     supported = "debug_required" in inspect.signature(get_current_profile).parameters
     if require_debug_node:
         if not supported:
@@ -6195,9 +6206,15 @@ def main(argv: Optional[list] = None) -> int:
     from cqc_lem.utilities.linkedin.session import get_current_profile
     from cqc_lem.utilities.selenium_util import quit_gracefully
 
+    # #1778: any group surface (or a sweep, which walks them too) needs images on, the same way a
+    # messaging-surface run does — otherwise the session reproduces the empty-<main> misread rather
+    # than grounding the surface.
+    needs_images = bool(args.group_composer or args.group_membership is not None
+                        or args.group_feed_composer is not None or args.sweep)
     try:
         driver, profile, session_reading = open_probe_session(
-            get_current_profile, args.user_id, require_debug_node=args.require_debug_node)
+            get_current_profile, args.user_id, require_debug_node=args.require_debug_node,
+            needs_images=needs_images)
     except ProbeRefused as refused:
         return emit_refusal(args.user_id, refused.refusal, breaker, guard_ledger())
 

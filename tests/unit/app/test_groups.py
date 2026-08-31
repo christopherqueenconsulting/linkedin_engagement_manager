@@ -508,6 +508,22 @@ class TestSyncUserGroups:
         assert rec.call_args[0] == (driver, wait, 7, reading)
         assert result == "Synced 1 group(s), disabled 1"
 
+    def test_session_open_requests_needs_images(self):
+        """Issue #1778: /groups/ is fastboot too, same as /messaging/* (#1774).
+
+        Its `<img>` load events drive the client boot, so a bandwidth-saver session with images
+        blocked never mounts `<main>` at all.
+        """
+        from cqc_lem.app.engagement.feed import GroupsDirectoryReading, auto_sync_user_groups
+        with patch(f"{_FEED}.get_current_profile",
+                  return_value=(MagicMock(), MagicMock(), "e", MagicMock())) as gcp, \
+             patch(f"{_FEED}._read_groups_directory",
+                   return_value=GroupsDirectoryReading(joined=[], recommended=[])), \
+             patch(f"{_FEED}._reconcile_stored_groups", return_value=[]), \
+             patch(f"{_FEED}.upsert_user_group"), patch(f"{_FEED}.quit_gracefully"):
+            auto_sync_user_groups.run(user_id=1)
+        assert gcp.call_args.kwargs["needs_images"] is True
+
 
 class TestReconcileStoredGroups:
     """#1487: the rows the pre-#1316 sync already invented are still sitting `enabled=1`."""
@@ -712,6 +728,24 @@ class TestCommentInGroups:
         # Issue #1719: every reached group is stamped, whether or not it produced a comment, so
         # the next run's rotation moves past it instead of walking it first again.
         assert recorded.call_args_list == [call(1, "1"), call(1, "2")]
+
+    def test_session_open_requests_needs_images(self):
+        """Issue #1778: without images the group feed page never mounts `<main>` at all.
+
+        That reads as indistinguishable from the account being restricted or the surface having
+        changed.
+        """
+        from cqc_lem.app.engagement.feed import auto_comment_in_groups
+        with patch(f"{_FEED}.get_enabled_group_ids", return_value=["1"]), \
+             patch(f"{_FEED}.get_current_profile",
+                  return_value=(MagicMock(), MagicMock(), "e", MagicMock())) as gcp, \
+             patch(f"{_FEED}.get_engagement_preferences", return_value={}), \
+             patch(f"{_FEED}.get_recent_engagers", return_value=set()), \
+             patch(f"{_FEED}.comment_on_feed_inline", return_value=0), \
+             patch(f"{_FEED}.record_group_comment_run"), \
+             patch(f"{_FEED}.quit_gracefully"):
+            auto_comment_in_groups.run(user_id=1)
+        assert gcp.call_args.kwargs["needs_images"] is True
 
     def test_a_group_page_that_never_rendered_is_skipped_not_counted_as_an_empty_feed(self):
         """Issue #1777: a group page can render NO `<main>` at all — a login wall, an interstitial.
@@ -1037,6 +1071,25 @@ class TestPostToGroup:
         assert str(upd.call_args.kwargs["status"]) == "published"
         # record_group_post stamps both columns itself — the success path never double-stamps.
         run.assert_not_called()
+
+    def test_session_open_requests_needs_images(self):
+        """Issue #1778: the group share box lives on the same fastboot page as the read lanes.
+
+        Same fix shape as the two above — dead with images blocked.
+        """
+        from cqc_lem.app.engagement.feed import auto_post_to_group
+        with self._driver_patches() as gcp, \
+             patch(f"{_FEED}.get_group_post_draft", return_value=dict(_READY_DRAFT)), \
+             patch(f"{_FEED}.click_first", return_value=MagicMock()), \
+             patch(f"{_FEED}.find_composer_container", return_value=MagicMock()), \
+             patch(f"{_FEED}.find_deep_elements", side_effect=self._deep(editor=MagicMock())), \
+             patch(f"{_FEED}.find_composer_control",
+                   side_effect=self._control(post_button=MagicMock())), \
+             patch(f"{_FEED}.record_group_post"), \
+             patch(f"{_FEED}.update_group_post_draft"), \
+             patch(f"{_FEED}.record_group_post_run"), patch(f"{_FEED}.quit_gracefully"):
+            auto_post_to_group.run(user_id=1, group_id="123", group_name="AI Leaders", draft_id=11)
+        assert gcp.call_args.kwargs["needs_images"] is True
 
     def test_media_goes_in_before_the_text(self):
         """Media goes in first because the uploader takes over the composer while it transcodes.

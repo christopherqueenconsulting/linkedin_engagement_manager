@@ -2834,6 +2834,40 @@ class TestGroupFeedComposerProbe:
         assert llv.main(["--group-feed-composer"]) == 0
         assert llv.main(["--group-feed-composer", "42", "--group-feed-cards", "5"]) == 0
 
+    def test_a_group_flag_requests_needs_images(self, monkeypatch):
+        """Issue #1778: without images /groups/* never mounts `<main>` at all.
+
+        That reproduces the exact empty-render misread this probe exists to distinguish from an
+        account restriction.
+        """
+        captured = {}
+
+        def _open(fn, uid, require_debug_node=False, needs_images=False):
+            captured["needs_images"] = needs_images
+            return MagicMock(), MagicMock(), {"state": "signed_in"}
+
+        monkeypatch.setattr(llv, "open_probe_session", _open)
+        monkeypatch.setattr(llv, "install_read_only_guard", lambda: None)
+        monkeypatch.setattr(llv, "probe_group_feed_composer",
+                            lambda d, uid, group_id=None, max_cards=3: {"verdict": "ok"})
+        clear_the_breaker(monkeypatch)
+        assert llv.main(["--group-feed-composer"]) == 0
+        assert captured["needs_images"] is True
+
+    def test_a_non_group_flag_does_not_request_needs_images(self, monkeypatch):
+        captured = {}
+
+        def _open(fn, uid, require_debug_node=False, needs_images=False):
+            captured["needs_images"] = needs_images
+            return MagicMock(), MagicMock(), {"state": "signed_in"}
+
+        monkeypatch.setattr(llv, "open_probe_session", _open)
+        monkeypatch.setattr(llv, "install_read_only_guard", lambda: None)
+        monkeypatch.setattr(llv, "probe_feed_sort", lambda d: {"verdict": "ok"})
+        clear_the_breaker(monkeypatch)
+        assert llv.main(["--feed-sort"]) == 0
+        assert captured["needs_images"] is False
+
 
 @pytest.mark.unit
 class TestCompanyInviteProbe:
@@ -3639,6 +3673,42 @@ class TestProbeSessionPin:
         assert captured["debug"] is True
         assert "debug_required" not in captured
 
+    def test_needs_images_is_off_by_default(self):
+        """Issue #1778: only a run touching /groups/* or /messaging/* pays the bandwidth cost.
+
+        Every other probe keeps today's behavior.
+        """
+        captured = {}
+
+        def _profile(**kwargs):
+            captured.update(kwargs)
+            return MagicMock(), MagicMock(), "a@b.c", MagicMock()
+
+        llv.open_probe_session(_profile, 1, require_debug_node=False)
+        assert "needs_images" not in captured
+
+    def test_needs_images_passes_through_when_requested(self):
+        captured = {}
+
+        def _profile(**kwargs):
+            captured.update(kwargs)
+            return MagicMock(), MagicMock(), "a@b.c", MagicMock()
+
+        llv.open_probe_session(_profile, 1, require_debug_node=False, needs_images=True)
+        assert captured["needs_images"] is True
+
+    def test_needs_images_is_skipped_against_an_image_that_predates_the_kwarg(self):
+        """The probe is piped into whatever image is live (#1301).
+
+        An older `get_current_profile` must not blow up on a kwarg it doesn't accept.
+        """
+        def _old_profile(user_id=None, session_name="", debug=False):
+            return MagicMock(), MagicMock(), "a@b.c", MagicMock()
+
+        driver, profile, _reading = llv.open_probe_session(
+            _old_profile, 1, require_debug_node=False, needs_images=True)
+        assert profile is not None
+
     def test_requiring_the_pin_passes_it_through(self):
         captured = {}
 
@@ -3968,8 +4038,8 @@ class TestCommenterReadTargetResolution:
         profile = MagicMock()
         profile.profile_url = "https://www.linkedin.com/in/me/"
         monkeypatch.setattr(llv, "open_probe_session",
-                            lambda fn, uid, require_debug_node=False: (MagicMock(), profile,
-                                                                       {"state": "signed_in"}))
+                            lambda fn, uid, require_debug_node=False, needs_images=False:
+                            (MagicMock(), profile, {"state": "signed_in"}))
         monkeypatch.setattr(llv, "install_read_only_guard", lambda: None)
         monkeypatch.setattr(llv, "_recent_own_post_urls", lambda uid: ["https://li/8"])
         monkeypatch.setattr(llv, "probe_commenter_read",
