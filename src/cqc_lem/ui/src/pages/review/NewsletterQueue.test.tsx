@@ -211,13 +211,15 @@ describe('NewsletterQueue pending-cover legibility', () => {
 })
 
 // Issue #1806: "Generate with AI" showed a spinner but the cover never updated. The backend
-// render is bounded well past a minute (a single Replicate attempt alone is 300s, and the
-// vision gate can run that twice), so the frontend's poll window has to clear that, not just
-// the common case — the old 12 x 10s = 120s budget gave up mid-render.
+// render can take far longer than a minute — Replicate/FLUX retries once at up to 300s each
+// (600s total for one render), and the vision gate can run a full render, including that retry,
+// up to twice (IMAGE_GATE_MAX_ATTEMPTS) — a ~1200s worst case. The frontend's poll window has to
+// clear THAT, not just the common single-attempt case, or a render that needed a gate repair
+// round hits the exact same silent-revert bug the old 12 x 10s = 120s budget did.
 describe('NewsletterQueue cover generation polling', () => {
   afterEach(() => vi.useRealTimers())
 
-  it('keeps waiting well past the old two-minute budget and still catches a cover that lands later', async () => {
+  it('keeps waiting well past the old two-minute AND the naive six-minute budget, and still catches a cover that lands later', async () => {
     const state: { coverUrl: string | undefined } = { coverUrl: undefined }
     get.mockImplementation(() =>
       Promise.resolve({
@@ -239,8 +241,10 @@ describe('NewsletterQueue cover generation polling', () => {
     await act(async () => {})
     expect(screen.getByRole('button', { name: 'Generating…' })).toBeTruthy()
 
-    // Cross well past the old 120s budget with no cover yet — the button must still be waiting.
-    for (let i = 0; i < 15; i++) {
+    // Cross well past the old 120s budget, AND past a single gate-repair-round's 600s, with no
+    // cover yet — the button must still be waiting (proves the fix covers the documented worst
+    // case, not just one doubled Replicate attempt).
+    for (let i = 0; i < 90; i++) {
       await act(async () => { await vi.advanceTimersByTimeAsync(10000) })
     }
     expect(screen.getByRole('button', { name: 'Generating…' })).toBeTruthy()
@@ -264,7 +268,7 @@ describe('NewsletterQueue cover generation polling', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Generate with AI' }))
     await act(async () => {})
 
-    for (let i = 0; i < 36; i++) {
+    for (let i = 0; i < 120; i++) {
       await act(async () => { await vi.advanceTimersByTimeAsync(10000) })
     }
 

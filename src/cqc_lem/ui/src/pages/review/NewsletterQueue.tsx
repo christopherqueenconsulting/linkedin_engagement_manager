@@ -208,12 +208,15 @@ export default function NewsletterQueue(
   // generation that failed (or was rejected by the cover gate) never lands a cover, and an
   // unbounded poll would leave the whole panel disabled forever.
   //
-  // The bound has to clear the backend's own worst case, not just the common one (issue #1806):
-  // a single Replicate render is bounded at REPLICATE_TIMEOUT_SECONDS (300s, docs/image-stack.md),
-  // and the vision quality gate can run that render twice (IMAGE_GATE_MAX_ATTEMPTS). At the old
-  // 120s budget (12 x 10s) the button silently reverted to idle — showing "working" then never
-  // updating — well before a legitimate render had a chance to land.
-  const COVER_POLL_LIMIT = 36
+  // The bound has to clear the backend's own worst case, not just the common one (issue #1806).
+  // Replicate/FLUX renders are bounded at REPLICATE_TIMEOUT_SECONDS (300s) but retried up to 2
+  // attempts (docs/image-stack.md), so ONE render can itself take up to 600s — and the vision
+  // quality gate can run a full render (including that retry) up to IMAGE_GATE_MAX_ATTEMPTS (2)
+  // times. Worst case is therefore ~2 x 600s = 1200s, not the 600s a single doubled attempt would
+  // suggest. At the old 120s budget (12 x 10s), and still at a 360s budget, the button silently
+  // reverted to idle — showing "working" then never updating — well before a legitimate render
+  // (especially one that needed a gate repair round) had a chance to land.
+  const COVER_POLL_LIMIT = 120
   useEffect(() => {
     if (coverWaitId == null) return
     let cancelled = false
