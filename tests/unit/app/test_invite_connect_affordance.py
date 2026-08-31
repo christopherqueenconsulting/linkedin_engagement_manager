@@ -11,6 +11,13 @@ document now — it is an in-app route, not a page — so the link is CLICKED wh
 renders it (top card in one layout, More menu in the other) and the URL navigation is demoted to
 a last-resort fallback. The anchor is attributed by the `vanityName` in its own href, which is a
 harder #1012 guard than any label: a rail anchor for a stranger carries that stranger's slug.
+
+Re-grounded again 2026-08-31 (#1790). LinkedIn now phrases the profile's OWN top-card Connect
+button the SAME way as a rail card's stranger button — both `Invite <Name> to connect` — so the
+`not(starts-with(@aria-label,"Invite"))` exclusion that dodged the original hazard now excludes
+the legitimate target's own button too. The button route is attributed the same way the anchor
+route already is, just without a href to read a slug from: the candidate's own label is checked
+against the page's `<title>`, which carries the loaded profile's exact display name.
 """
 
 from unittest.mock import MagicMock, patch
@@ -36,21 +43,28 @@ class _Routes:
 
     def __init__(self, dialog_on_url=False, dialog_after_menu=False,
                  more_menu=False, menu_item=False, send_xpaths=frozenset(),
-                 connect_button=False, dialog_after_connect_button=False,
-                 anchor_hrefs=(), anchor_hrefs_after_menu=(), dialog_after_anchor=False):
+                 connect_button_labels=(), dialog_after_connect_button=False,
+                 anchor_hrefs=(), anchor_hrefs_after_menu=(), dialog_after_anchor=False,
+                 title="Jane Doe | LinkedIn"):
         self.dialog_on_url = dialog_on_url
         self.dialog_after_menu = dialog_after_menu
         self.more_menu = more_menu
         self.menu_item = menu_item
         self.send_xpaths = set(send_xpaths)
-        self.connect_button = connect_button
+        # The Connect-button candidates the page renders — bare "Connect" and/or "Invite <Name> to
+        # connect" labels, in document order, exactly as `_click_own_connect_button` walks them.
+        self.connect_button_labels = list(connect_button_labels)
         self.dialog_after_connect_button = dialog_after_connect_button
         # The custom-invite anchors the PAGE renders — before the More menu opens, and after.
         self.anchor_hrefs = list(anchor_hrefs)
         self.anchor_hrefs_after_menu = list(anchor_hrefs_after_menu)
         self.dialog_after_anchor = dialog_after_anchor
+        # The page's own <title>, read by `_target_name_from_title` to attribute an
+        # "Invite <Name> to connect" button candidate to the loaded profile (#1790).
+        self.title = title
         self.more_menu_opened = False
         self.clicked_anchor_hrefs: list[str] = []
+        self.clicked_button_labels: list[str] = []
         self.anchor_clicked = False
         self.menu_item_clicked = False
         self.connect_button_clicked = False
@@ -77,9 +91,6 @@ class _Routes:
     def click_first(self, driver, wait, locators, label, **kwargs):
         self.click_labels.append(label)
         self.all_locators += [v for _, v in locators]
-        if label == "Profile Connect button" and self.connect_button:
-            self.connect_button_clicked = True
-            return MagicMock()
         if label == "Profile More menu" and self.more_menu:
             self.more_menu_opened = True
             return MagicMock()
@@ -91,15 +102,17 @@ class _Routes:
     def find_elements(self, by, value):
         """Stand-in for `driver.find_elements`.
 
-        Only the custom-invite anchor lookup returns anything: the miss-evidence dump and the
-        restriction read use their own selectors and must see an empty page here, or they would
-        read the anchors as page copy.
+        Only the custom-invite anchor and Connect-button lookups return anything: the miss-evidence
+        dump and the restriction read use their own selectors and must see an empty page here, or
+        they would read the candidates as page copy.
         """
         from cqc_lem.app.engagement import invites as ra
-        if value != ra._CUSTOM_INVITE_ANCHOR_XPATH:
-            return []
-        hrefs = (self.anchor_hrefs_after_menu if self.more_menu_opened else self.anchor_hrefs)
-        return [self._anchor(href) for href in hrefs]
+        if value == ra._CUSTOM_INVITE_ANCHOR_XPATH:
+            hrefs = (self.anchor_hrefs_after_menu if self.more_menu_opened else self.anchor_hrefs)
+            return [self._anchor(href) for href in hrefs]
+        if value == ra._PROFILE_CONNECT_BUTTON_XPATH:
+            return [self._button(label) for label in self.connect_button_labels]
+        return []
 
     def _anchor(self, href):
         anchor = MagicMock()
@@ -111,6 +124,18 @@ class _Routes:
     def _record(self, href):
         self.clicked_anchor_hrefs.append(href)
         self.anchor_clicked = True
+
+    def _button(self, label):
+        button = MagicMock()
+        button.get_attribute.side_effect = lambda name: label if name == "aria-label" else None
+        button.text = ""
+        button.is_displayed.return_value = True
+        button.click.side_effect = lambda: self._record_button(label)
+        return button
+
+    def _record_button(self, label):
+        self.clicked_button_labels.append(label)
+        self.connect_button_clicked = True
 
     def click_element_wait_retry(self, driver, wait, xpath, label, **kwargs):
         self.all_locators.append(xpath)
@@ -146,6 +171,7 @@ def _invite(routes: _Routes, message: str = None):
     from cqc_lem.app.engagement import invites as ra
     driver = MagicMock()
     driver.current_url = "about:blank"
+    driver.title = routes.title
     driver.find_elements.side_effect = routes.find_elements
     with patch(f"{_INV}.ActionChains", _chains), \
          patch(f"{_INV}.record_invite_dialog_miss") as miss, \
@@ -279,7 +305,9 @@ class TestCustomInviteUrlRoute:
         url_index = next(i for i, c in enumerate(driver.get.call_args_list)
                          if c.args[0] == _CUSTOM_INVITE_URL)
         assert profile_index < url_index
-        assert routes.click_labels == ["Profile Connect button", "Profile More menu"]
+        # No candidate Connect button on the page at all (default `connect_button_labels=()`), so
+        # the button route is a silent miss and only the More-menu click route is attempted.
+        assert routes.click_labels == ["Profile More menu"]
         log_error.assert_not_called()
         log_warning.assert_not_called()
 
@@ -297,41 +325,84 @@ class TestDirectConnectButtonRoute:
 
     Some profiles render a bare "Connect" button directly on the top card instead of burying it
     behind the More menu — a route the URL/More-menu chain alone was missing.
+
+    Re-grounded live 2026-08-31 (#1790): LinkedIn now phrases the target's OWN button the SAME way
+    as a "People also viewed" rail card's stranger button — both `Invite <Name> to connect`. The
+    button-route regression guard therefore no longer asserts the locator STRING never carries
+    `"Invite "` (it now legitimately does, for both shapes) — it asserts a rail stranger's button is
+    never the one actually CLICKED, even when it renders on the very same page as the target's own.
     """
 
-    def test_direct_button_opens_the_dialog_when_the_url_route_renders_none(self):
+    def test_direct_bare_button_opens_the_dialog_when_the_url_route_renders_none(self):
         from cqc_lem.utilities.db import CONNECTION_REQUEST_SENT_MESSAGE
-        routes = _Routes(dialog_after_connect_button=True, connect_button=True,
+        routes = _Routes(connect_button_labels=("Connect",), dialog_after_connect_button=True,
                          send_xpaths={_SEND_BARE_XPATH})
         sent, reason, driver, _log, log_error, log_warning = _invite(routes)
 
         assert sent is True and reason == CONNECTION_REQUEST_SENT_MESSAGE
-        assert routes.click_labels == ["Profile Connect button"]
+        assert routes.clicked_button_labels == ["Connect"]
         assert "Profile More menu" not in routes.click_labels
         assert any(_PROFILE_URL == c.args[0] for c in driver.get.call_args_list)
         log_error.assert_not_called()
         log_warning.assert_not_called()
 
+    def test_an_invite_labelled_button_naming_the_target_also_opens_the_dialog(self):
+        # #1790: the target's own button now carries the SAME "Invite <Name> to connect" shape as
+        # a rail stranger's — it is trusted because its OWN label names the loaded profile (checked
+        # against the page's <title>), never because of where it sits on the page.
+        from cqc_lem.utilities.db import CONNECTION_REQUEST_SENT_MESSAGE
+        routes = _Routes(connect_button_labels=("Invite Jane Doe to connect",),
+                         dialog_after_connect_button=True, send_xpaths={_SEND_BARE_XPATH},
+                         title="Jane Doe | LinkedIn")
+        sent, reason, _driver, _log, log_error, log_warning = _invite(routes)
+
+        assert sent is True and reason == CONNECTION_REQUEST_SENT_MESSAGE
+        assert routes.clicked_button_labels == ["Invite Jane Doe to connect"]
+        log_error.assert_not_called()
+        log_warning.assert_not_called()
+
     def test_falls_through_to_the_more_menu_when_the_direct_button_click_lands_no_dialog(self):
         from cqc_lem.utilities.db import CONNECTION_REQUEST_SENT_MESSAGE
-        routes = _Routes(connect_button=True,  # clicks, but no dialog behind it
+        routes = _Routes(connect_button_labels=("Connect",),  # clicks, but no dialog behind it
                          dialog_after_menu=True, more_menu=True, menu_item=True,
                          send_xpaths={_SEND_BARE_XPATH})
         sent, reason, _driver, _log, log_error, log_warning = _invite(routes)
 
         assert sent is True and reason == CONNECTION_REQUEST_SENT_MESSAGE
-        assert routes.click_labels == ["Profile Connect button", "Profile More menu",
-                                       "Connect menu item"]
+        assert routes.clicked_button_labels == ["Connect"]
+        assert routes.click_labels == ["Profile More menu", "Connect menu item"]
         log_error.assert_not_called()
         log_warning.assert_not_called()
 
-    def test_no_locator_on_the_direct_button_route_can_hit_the_suggestion_rail(self):
-        # Same #1012 hazard guard as the URL route: nothing here may click a control naming
-        # someone other than the target.
-        routes = _Routes(dialog_after_connect_button=True, connect_button=True,
-                         send_xpaths={_SEND_BARE_XPATH})
-        _invite(routes)
-        assert not any('"Invite ' in loc for loc in routes.all_locators)
+    def test_a_rail_strangers_button_alongside_the_targets_own_is_never_the_one_clicked(self):
+        # The #1012 hazard in its 2026-08-31 shape (#1790): a "People also viewed" rail card's
+        # `Invite <stranger> to connect` button sits on the SAME page as the target's own
+        # identically-phrased button. Only the target's is ever clicked, and it is found (and
+        # clicked) regardless of which one the page lists first.
+        from cqc_lem.utilities.db import CONNECTION_REQUEST_SENT_MESSAGE
+        routes = _Routes(
+            connect_button_labels=("Invite Bob Smith to connect", "Invite Jane Doe to connect"),
+            dialog_after_connect_button=True, send_xpaths={_SEND_BARE_XPATH},
+            title="Jane Doe | LinkedIn")
+        sent, reason, _driver, _log, log_error, log_warning = _invite(routes)
+
+        assert sent is True and reason == CONNECTION_REQUEST_SENT_MESSAGE
+        assert routes.clicked_button_labels == ["Invite Jane Doe to connect"]
+        log_error.assert_not_called()
+        log_warning.assert_not_called()
+
+    def test_a_rail_strangers_button_alone_is_never_clicked(self):
+        # No button on the page names the target at all — the rail's stranger button must still
+        # never be the one clicked. The run reports an ordinary miss, never a stray invite.
+        from cqc_lem.utilities.db import NO_CONNECT_BUTTON_MESSAGE
+        routes = _Routes(connect_button_labels=("Invite Bob Smith to connect",),
+                         dialog_after_connect_button=True, title="Jane Doe | LinkedIn")
+        sent, reason, _driver, _log, log_error, log_warning = _invite(routes)
+
+        assert routes.clicked_button_labels == []
+        assert sent is False and reason == NO_CONNECT_BUTTON_MESSAGE
+        log_error.assert_not_called()
+        log_warning.assert_called_once()
 
 
 class TestMoreMenuFallback:
@@ -342,8 +413,9 @@ class TestMoreMenuFallback:
         sent, reason, driver, _log, log_error, log_warning = _invite(routes)
 
         assert sent is True and reason == CONNECTION_REQUEST_SENT_MESSAGE
-        assert routes.click_labels == ["Profile Connect button", "Profile More menu",
-                                       "Connect menu item"]
+        # No candidate Connect button on the page (default `connect_button_labels=()`), so the
+        # button route is a silent miss before the More-menu route is tried.
+        assert routes.click_labels == ["Profile More menu", "Connect menu item"]
         assert any(_PROFILE_URL == c.args[0] for c in driver.get.call_args_list)
         log_error.assert_not_called()
         log_warning.assert_not_called()
@@ -382,6 +454,7 @@ class TestSluglessProfileUrl:
         routes = _Routes()
         driver = MagicMock()
         driver.current_url = "about:blank"
+        driver.title = routes.title
         driver.find_elements.side_effect = routes.find_elements
         with patch(f"{_INV}.find_first", routes.find_first), \
              patch(f"{_INV}.click_first", routes.click_first), \
@@ -398,28 +471,28 @@ class TestSluglessProfileUrl:
 
 
 class TestDirectConnectButtonLocatorAgainstRealMarkup:
-    """`_PROFILE_CONNECT_BUTTON_LOCATORS` evaluated against actual HTML, not the `_Routes` stub.
+    """`_PROFILE_CONNECT_BUTTON_XPATH` evaluated against actual HTML, not the `_Routes` stub.
 
-    The stub only asserts locator STRINGS never contain '"Invite ' literally, which would not
-    catch a locator that matches a rail button by visible text alone. The 2026-08-03 grounding
-    only proved the rail's ARIA-LABEL names the suggested person; it never grounded that the
-    rail's visible text does too, so a bare `normalize-space()="Connect"` match is not provably
-    safe against a button like `<button aria-label="Invite Jane Doe to connect">Connect</button>`
-    — a short visible label with a longer accessible name is a common pattern. This test proves
-    the shipped locator excludes that shape regardless of visible text.
+    Re-grounded live 2026-08-31 (#1790): the `not(starts-with(@aria-label,"Invite"))` exclusion this
+    locator used to carry is GONE — LinkedIn now phrases the target's OWN top-card button the
+    identical way as a "People also viewed" rail card's stranger button
+    (`aria-label="Invite <Name> to connect"`), so an XPath-only exclusion can no longer tell them
+    apart at all; excluding the shape excluded the legitimate target too. The XPath below therefore
+    matches BOTH shapes, and `_connect_button_names_target` (tested in
+    `TestConnectButtonNamesTarget`) is what actually decides, in Python, which candidate is provably
+    the target — never the XPath alone.
     """
 
     _TOP_CARD_BUTTON = '<button aria-label="Connect">Connect</button>'
     _TOP_CARD_BUTTON_NO_ARIA = '<button>Connect</button>'
-    _RAIL_BUTTON_NAMED_ARIA = '<button aria-label="Invite Jane Doe to connect">Connect</button>'
+    _INVITE_NAMED_BUTTON = '<button aria-label="Invite Jane Doe to connect">Connect</button>'
 
     def _matches(self, button_html: str) -> bool:
         import lxml.html
 
         from cqc_lem.app.engagement import invites as ra
         tree = lxml.html.fromstring(f"<html><body><main>{button_html}</main></body></html>")
-        xpath = ra._PROFILE_CONNECT_BUTTON_LOCATORS[0][1]
-        return len(tree.xpath(xpath)) > 0
+        return len(tree.xpath(ra._PROFILE_CONNECT_BUTTON_XPATH)) > 0
 
     def test_matches_the_targets_own_bare_connect_button(self):
         assert self._matches(self._TOP_CARD_BUTTON) is True
@@ -427,10 +500,86 @@ class TestDirectConnectButtonLocatorAgainstRealMarkup:
     def test_matches_even_when_the_targets_button_carries_no_aria_label(self):
         assert self._matches(self._TOP_CARD_BUTTON_NO_ARIA) is True
 
-    def test_never_matches_a_button_whose_aria_label_names_someone_else(self):
-        # Same visible text ("Connect") as the target's own button — only the accessible name
-        # differs, which is exactly the rail-button shape the 2026-08-03 grounding never ruled out.
-        assert self._matches(self._RAIL_BUTTON_NAMED_ARIA) is False
+    def test_also_matches_an_invite_named_button_now_python_owns_the_attribution(self):
+        # #1790: the locator alone can no longer exclude a rail stranger's button by shape — it
+        # matches both an "Invite …" label and a bare one, and `_connect_button_names_target` is
+        # the actual guard against clicking the wrong person's.
+        assert self._matches(self._INVITE_NAMED_BUTTON) is True
+
+
+class TestConnectButtonNamesTarget:
+    """`_connect_button_names_target` — the Python-level attribution the XPath no longer provides.
+
+    Needed once LinkedIn phrases the target's own button like a rail stranger's (#1790).
+    """
+
+    def test_a_bare_connect_label_is_always_trusted(self):
+        from cqc_lem.app.engagement import invites as ra
+        assert ra._connect_button_names_target("Connect", "") is True
+        assert ra._connect_button_names_target("Connect", "Jane Doe") is True
+
+    def test_an_invite_label_naming_the_target_is_trusted(self):
+        from cqc_lem.app.engagement import invites as ra
+        assert ra._connect_button_names_target("Invite Jane Doe to connect", "Jane Doe") is True
+        # Case/whitespace-insensitive, since the two readings (aria-label vs <title>) need not
+        # agree on casing.
+        assert ra._connect_button_names_target("invite  jane   doe  to connect",
+                                                "Jane Doe") is True
+
+    def test_an_invite_label_naming_someone_else_is_refused(self):
+        from cqc_lem.app.engagement import invites as ra
+        assert ra._connect_button_names_target("Invite Bob Smith to connect", "Jane Doe") is False
+
+    def test_a_prefix_or_substring_match_is_not_a_match(self):
+        # Exact equality, never a prefix/substring: 'Jane' must not match 'Janet Doe' — the same
+        # discipline `_anchor_invite_slug` already applies to hrefs, read for a name instead of a
+        # slug.
+        from cqc_lem.app.engagement import invites as ra
+        assert ra._connect_button_names_target("Invite Jane to connect", "Janet Doe") is False
+
+    def test_an_invite_label_is_refused_when_the_target_name_is_unreadable(self):
+        # A control we cannot attribute is precisely the one never to click.
+        from cqc_lem.app.engagement import invites as ra
+        assert ra._connect_button_names_target("Invite Jane Doe to connect", "") is False
+
+    def test_a_label_that_is_neither_shape_is_refused(self):
+        from cqc_lem.app.engagement import invites as ra
+        assert ra._connect_button_names_target("Follow", "Jane Doe") is False
+
+
+class TestTargetNameFromTitle:
+    """`_target_name_from_title` — feeds `_connect_button_names_target` a name to check against.
+
+    Checked against an "Invite <Name> to connect" label.
+    """
+
+    def test_reads_the_name_off_the_page_title(self):
+        from cqc_lem.app.engagement import invites as ra
+        driver = MagicMock()
+        driver.title = "Jane Doe | LinkedIn"
+        assert ra._target_name_from_title(driver) == "Jane Doe"
+
+    def test_strips_the_unread_notification_count_prefix(self):
+        from cqc_lem.app.engagement import invites as ra
+        driver = MagicMock()
+        driver.title = "(3) Jane Doe | LinkedIn"
+        assert ra._target_name_from_title(driver) == "Jane Doe"
+
+    def test_a_generic_shell_title_reads_as_unreadable(self):
+        from cqc_lem.app.engagement import invites as ra
+        driver = MagicMock()
+        driver.title = "LinkedIn"
+        assert ra._target_name_from_title(driver) == ""
+
+    def test_an_unreadable_title_is_empty_not_a_crash(self):
+        from cqc_lem.app.engagement import invites as ra
+
+        class _BrokenTitleDriver:
+            @property
+            def title(self):
+                raise Exception("session lost")
+
+        assert ra._target_name_from_title(_BrokenTitleDriver()) == ""
 
 
 class TestTheDialogIsFoundAcrossAShadowBoundary:

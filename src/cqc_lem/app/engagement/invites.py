@@ -314,20 +314,101 @@ _CONNECT_MENU_ITEM_LOCATORS = [
 # every one) show LinkedIn placing Connect two different ways depending on the target — a bare
 # button directly on the top card for some profiles, buried in the More menu for others. The URL
 # and More-menu routes below miss the direct-button case entirely, so a target whose page renders
-# it that way had no route to the dialog at all. The direct button's own aria-label, when it has
-# one, is the BARE word "Connect" — never "Invite <name> to connect".
+# it that way had no route to the dialog at all.
 #
-# Matching on visible text alone ("Connect") is NOT enough to close the #1012 wrong-person hazard
-# here: the 2026-08-03 grounding only proved the "More profiles for you" rail's aria-label names
-# the suggested person (`Invite <name> to connect`) — it never grounded that rail button's VISIBLE
-# text also carries the name, and a short "Connect" label with a longer accessible name is a common
-# pattern. So the aria-label exclusion below is load-bearing, not decoration: a button whose own
-# aria-label names someone ("Invite ...") is excluded even when its bare visible text reads
-# "Connect".
-_PROFILE_CONNECT_BUTTON_LOCATORS = [
-    (By.XPATH, '//main//button[(normalize-space()="Connect" or @aria-label="Connect") '
-               'and not(starts-with(@aria-label,"Invite"))]'),
-]
+# Re-grounded live 2026-08-31 (#1790): LinkedIn now phrases the profile's OWN top-card button the
+# IDENTICAL way as a "People also viewed" rail card's stranger button — both
+# `aria-label="Invite <Name> to connect"` (confirmed on `nikunj-bajaj-10476824` and `johnwinner`).
+# The blanket `not(starts-with(@aria-label,"Invite"))` exclusion this locator used to carry, built
+# to dodge #1012, now excludes the legitimate target's own button too — route 2 fell through on
+# both profiles. So the exclusion is gone from the XPath: it matches a bare "Connect" (label or
+# text) OR ANY "Invite … to connect" aria-label, and `_click_own_connect_button` decides, in
+# Python, which of those candidates is provably the target — never the XPath alone, the same split
+# `_click_own_custom_invite_anchor` already uses for the href route below.
+_PROFILE_CONNECT_BUTTON_XPATH = (
+    '//main//button[normalize-space()="Connect" or @aria-label="Connect" '
+    'or starts-with(@aria-label,"Invite ")]'
+)
+
+# A button carries no href to attribute by slug, unlike the custom-invite anchor below — so
+# identity is checked against the page's OWN <title> instead. LinkedIn writes the loaded profile's
+# exact display name there ("<Name> | LinkedIn"), the same name it puts in the button's aria-label,
+# so an EXACT, whole-string match (never a prefix or substring) is the discipline
+# `_anchor_invite_slug` already applies to hrefs: "Jane" must not match "Janet Doe" — #1012's rule
+# read for a name instead of a slug. A bare "Connect" label carries no name at all and is trusted
+# outright: the rail's own controls are never bare (#1012's original 2026-08-03 grounding).
+_INVITE_LABEL_RE = re.compile(r"^invite\s+(.+?)\s+to connect$", re.IGNORECASE)
+_TITLE_PREFIX_RE = re.compile(r"^\(\d+\+?\)\s*")
+_TITLE_SUFFIX_RE = re.compile(r"\s*[|\-–—]\s*linkedin\s*$", re.IGNORECASE)
+_GENERIC_PROFILE_TITLES = {"linkedin", "feed", "search", "messaging", "notifications"}
+
+
+def _target_name_from_title(driver) -> str:
+    """The loaded profile's own display name, off the page's `<title>` ('<Name> | LinkedIn').
+
+    Best-effort and read-only: `""` when the title is unreadable or reads like a non-profile shell
+    page, never a guess. Mirrors `_name_from_title` in `scrapper.py`, applied to `driver.title`
+    directly rather than a BeautifulSoup-parsed source.
+    """
+    try:
+        title = driver.title or ""
+    except Exception:
+        return ""
+    name = _TITLE_SUFFIX_RE.sub("", _TITLE_PREFIX_RE.sub("", title)).strip()
+    if not name or name.lower() in _GENERIC_PROFILE_TITLES:
+        return ""
+    return name
+
+
+def _connect_button_names_target(label: str, target_name: str) -> bool:
+    """Whether a candidate Connect control's OWN label may be trusted for THIS loaded profile."""
+    label = " ".join((label or "").split()).strip()
+    if label.lower() == "connect":
+        return True
+    match = _INVITE_LABEL_RE.match(label)
+    if not match or not target_name:
+        return False
+    candidate = " ".join(match.group(1).split()).strip().lower()
+    target = " ".join(target_name.split()).strip().lower()
+    return bool(candidate) and candidate == target
+
+
+def _click_own_connect_button(driver, wait, user_id: int) -> bool:
+    """Click the target's own top-card Connect button and report whether the dialog opened.
+
+    The button-route counterpart to `_click_own_custom_invite_anchor` below: every candidate is
+    walked in document order and refused unless `_connect_button_names_target` can attribute it to
+    the loaded profile, so a "People also viewed" rail card's identically-phrased stranger button
+    can never be the one clicked (#1790). THIS element is clicked, never a re-lookup — a re-lookup
+    would hand a re-render whichever button the XPath happens to yield first.
+    """
+    try:
+        candidates = driver.find_elements(By.XPATH, _PROFILE_CONNECT_BUTTON_XPATH)
+    except Exception as e:
+        log_debug(f"Could not enumerate profile Connect buttons: {e}", user_id=user_id,
+                  action_type="invite_connect")
+        return False
+    if not candidates:
+        return False
+
+    # Read only when there is something to check identity against — most misses never render a
+    # Connect-shaped button at all, and reading the title is wasted work on every one of them.
+    target_name = _target_name_from_title(driver)
+    for button in candidates:
+        if not _connect_button_names_target(element_label(button), target_name):
+            continue
+        try:
+            if not button.is_displayed():
+                continue
+            wait.until(EC.element_to_be_clickable(button))
+            ActionChains(driver).move_to_element(button).click().perform()
+        except Exception as e:
+            log_debug(f"Profile Connect button was not clickable: {e}", user_id=user_id,
+                      action_type="invite_connect")
+            return False
+        # The outcome is the gate, never the click (docs/sdui-selenium-notes.md).
+        return _connect_dialog_present(driver, wait, user_id)
+    return False
 
 # Re-grounded live 2026-08-29 (#1733, three profiles, docs/sdui-selenium-notes.md). Two layouts, one
 # shared truth, and one dead route:
@@ -343,7 +424,7 @@ _PROFILE_CONNECT_BUTTON_LOCATORS = [
 #     navigated there, and the More-menu route CLICKED a link to the same place. The link must be
 #     clicked in-app, never navigated to.
 #
-# `_PROFILE_CONNECT_BUTTON_LOCATORS` above cannot see layout B either: the control is an `<a>`, and
+# `_PROFILE_CONNECT_BUTTON_XPATH` above cannot see layout B either: the control is an `<a>`, and
 # that chain matches `//main//button` only.
 #
 # The href is a HARDER #1012 guard than any label. A suggestion-rail control for a stranger carries
@@ -528,8 +609,10 @@ def _open_connect_invite_dialog(driver, wait, user_id: int,
     Four routes, cheapest and safest first (re-grounded 2026-08-29, #1733):
 
     1. the target's OWN custom-invite anchor already on the profile page — layout B's top-card
-       `<a>`, which `_PROFILE_CONNECT_BUTTON_LOCATORS` cannot see because it is not a `<button>`;
-    2. the direct top-card Connect BUTTON (#1734), for the accounts that render one;
+       `<a>`, which the button route below cannot see because it is not a `<button>`;
+    2. the direct top-card Connect BUTTON (#1734), for the accounts that render one — attributed to
+       the target by its own label (`_connect_button_names_target`) rather than excluded outright,
+       since LinkedIn now phrases the target's OWN button the same way as a rail stranger's (#1790);
     3. the More menu, then the target's own custom-invite anchor inside it — layout A, where the
        top card carries no Connect control at all;
     4. navigating the custom-invite URL, last and expected to fail: that route is an in-app route,
@@ -551,12 +634,9 @@ def _open_connect_invite_dialog(driver, wait, user_id: int,
         log_info("Connect dialog opened via the profile's own custom-invite link")
         return True, None
 
-    if click_first(driver, wait, _PROFILE_CONNECT_BUTTON_LOCATORS, "Profile Connect button",
-                   required=False, warn_on_miss=False, max_try=1, use_action_chain=True,
-                   user_id=user_id) is not None:
-        if _connect_dialog_present(driver, wait, user_id):
-            log_info("Connect dialog opened via the profile page's direct Connect button")
-            return True, None
+    if _click_own_connect_button(driver, wait, user_id):
+        log_info("Connect dialog opened via the profile page's direct Connect button")
+        return True, None
 
     if click_first(driver, wait, _PROFILE_MORE_MENU_LOCATORS, "Profile More menu",
                    required=False, warn_on_miss=False, max_try=1, use_action_chain=True,

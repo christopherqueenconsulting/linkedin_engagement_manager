@@ -297,6 +297,32 @@ prefix** (`chris` must not match `chris-queen`), and click **the element that wa
 a re-lookup of the same XPath — a re-lookup returns whichever custom-invite anchor the page yields
 first, which on a profile carrying the rail is a stranger's. That re-lookup IS #1012.
 
+### Re-grounded again 2026-08-31 (#1790): the direct-button route's OWN button can be phrased like a rail stranger's too
+
+Live evidence (`--connect-dialog`, two real profiles, `nikunj-bajaj-10476824` and `johnwinner`):
+`_PROFILE_CONNECT_BUTTON_LOCATORS`' `not(starts-with(@aria-label,"Invite"))` exclusion — built to
+dodge the original #1012 hazard — started excluding the TARGET's own button too, because LinkedIn
+began phrasing it identically to a rail stranger's: `aria-label="Invite <Name> to connect"`. The
+ladder fell through routes 1-4 and reported a total miss on both profiles.
+
+The fix mirrors `_click_own_custom_invite_anchor`'s discipline for the button shape:
+`_PROFILE_CONNECT_BUTTON_XPATH` now matches BOTH a bare `Connect` and any `Invite … to connect`
+button, and `_connect_button_names_target` decides in Python which candidate is provably the
+target — an EXACT (never prefix/substring) match between the label's name and the page's own
+`<title>` ('<Name> | LinkedIn', the same name LinkedIn writes into the aria-label). A bare `Connect`
+carries no name and is trusted outright, same as before.
+
+**Re-probed live post-fix (same two profiles):** both pages currently carry 6-7
+`<button aria-label="Invite <stranger> to connect">` rail controls in `//main` (`rail_hazards`
+confirmed non-empty on both) — the exact hazard shape this fix defends against, and unit-tested with
+these real names. On THIS rotation, though, each profile's own control renders as an `<a
+href=".../custom-invite/?vanityName=<slug>">`, not a `<button>` — so route 1
+(`_click_own_custom_invite_anchor`, unmodified by #1790) is what actually opens the dialog for these
+two profiles today, and the button route's new attribution logic could not be exercised
+end-to-end live in this pass. Anchor vs. button is the same per-profile rotation #1734/#1733 already
+documented; the button route exists for when it recurs, which is what the original #1790 evidence
+captured.
+
 ### An invite limit is not selector rot
 
 A weekly-invitation ceiling or an account restriction reads the same on every profile, so grading it
