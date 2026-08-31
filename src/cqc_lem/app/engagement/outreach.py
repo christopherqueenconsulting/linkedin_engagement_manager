@@ -3191,6 +3191,7 @@ def _card_message_link_suggested_text(card: WebElement) -> str:
         if body:
             return _clean_suggested_message(body)
     except Exception:
+        # An empty/malformed `body` falls through to the aria-label read below — never raise.
         pass
     try:
         aria_match = _CATCHUP_MESSAGE_ARIA_RE.match((el.get_attribute("aria-label") or "").strip())
