@@ -230,6 +230,21 @@ class TestOneCanonicalTarget:
         """
         lines = text.splitlines()
         aliases = re.findall(r'^(\w+)\s*=\s*["\']cqc_lem\.utilities\.db["\']', text, re.M)
+        return TestOneCanonicalTarget._facade_patch_blocks_from_parts(
+            lines, aliases, _facade_module_aliases(text), sym)
+
+    @staticmethod
+    def _facade_patch_blocks_from_parts(
+            lines: list[str], aliases: list[str], mod_aliases: set[str], sym: str) -> list[str]:
+        """Same match as `_facade_patch_blocks`, split out so a per-FILE caller (below) parses once.
+
+        `_facade_patch_blocks` reparses `text` — `splitlines()` plus an `ast.parse()` inside
+        `_facade_module_aliases` — on every call. The hazard scan below calls it once per (file,
+        symbol) pair, ~200 symbols deep, so re-deriving file-level facts that never depend on `sym`
+        turned an O(files) walk into O(files * symbols) of AST parsing: 546s of a 627s shard, almost
+        all of it re-parsing the same ~600 files 200 times each. Splitting the per-file parse out
+        keeps every regex identical, just computed once instead of two hundred times.
+        """
         patterns = [rf'["\']cqc_lem\.utilities\.db\.{re.escape(sym)}["\']']
         patterns += [rf'\{{{re.escape(a)}\}}\.{re.escape(sym)}\b' for a in aliases]
         # `patch.object(db, "sym")` is the same hazard with no path string in it, so neither pattern
@@ -237,7 +252,7 @@ class TestOneCanonicalTarget:
         # `_select_engagement_row` on the facade while calling `get_engagement_preferences`, which
         # had moved into users.py and reads it from there. Match it through whatever local name
         # this file binds the facade MODULE to.
-        for mod_alias in _facade_module_aliases(text):
+        for mod_alias in mod_aliases:
             patterns.append(
                 rf'(?:patch\.object|monkeypatch\.setattr)\(\s*{re.escape(mod_alias)}\s*,\s*'
                 rf'["\']{re.escape(sym)}["\']')
@@ -327,8 +342,11 @@ class TestOneCanonicalTarget:
             if p.name == "test_connection_seam.py":
                 continue
             t = p.read_text(errors="ignore")
+            lines = t.splitlines()
+            aliases = re.findall(r'^(\w+)\s*=\s*["\']cqc_lem\.utilities\.db["\']', t, re.M)
+            mod_aliases = _facade_module_aliases(t)
             for sym, mods in hazards.items():
-                blocks = self._facade_patch_blocks(t, sym)
+                blocks = self._facade_patch_blocks_from_parts(lines, aliases, mod_aliases, sym)
                 if not blocks:
                     continue
                 for mod, readers in sorted(mods.items()):
