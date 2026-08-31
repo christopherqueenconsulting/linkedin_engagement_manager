@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.171.1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.171.0...v0.171.1) (2026-08-31)
+
+
+### Bug Fixes
+
+* **engagement:** exempt /groups/* sessions from the image-block bandwidth saver (closes [#1778](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1778)) ([#1808](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1808)) ([4ab6f66](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/4ab6f6606fb7777f3747b8d78dd5cd6ed8cd4174))
+* **flower:** log resolved persistence --db path at INFO (closes [#1801](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1801)) ([#1802](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1802)) ([d023e8f](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/d023e8f7f479e4436ebfa260d9860c909bf4e5b9))
+* **live-validation:** stop grading a blank custom-invite URL as Connect-dialog drift (closes [#1807](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1807)) ([#1811](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1811)) ([a035e10](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/a035e10cff083e695e0b69cf46f1d8b57988a964))
+* **newsletter:** cover-regen poll window too short vs backend render time (closes [#1806](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1806)) ([#1809](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1809)) ([27306d8](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/27306d8fb9b00f018eef39bc4effef68682edf1f))
+* **ops:** flower.db never written, Broker tab under-reports queues (closes [#1795](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1795)) ([#1797](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1797)) ([5ce2c46](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/5ce2c4660f84bf42dfd7c5f4dd75830be076c277))
+* **ops:** reject a placeholder WATCHDOG_ALERT_EMAIL instead of silently disabling alerting (closes [#1804](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1804)) ([#1805](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1805)) ([142e253](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/142e253d8edc49ef1e080eb3a2d8eec64ba93196))
+* **ops:** set FLOWER_DB=/data/flower.db so Flower persistence writes to the mounted volume (closes [#1795](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1795)) ([5ce2c46](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/5ce2c4660f84bf42dfd7c5f4dd75830be076c277))
+
 ## [0.171.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.170.2...v0.171.0) (2026-08-31)
 
 
