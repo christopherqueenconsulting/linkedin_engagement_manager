@@ -319,6 +319,21 @@ class TestPostComposerResolution:
         driver = _driver(scope=_holder(y=400, height=300), page_boxes=(stale,))
         assert ra._post_composer_for_card(driver, card, user_id=1) is None
 
+    def test_the_page_wide_fallback_never_borrows_an_unlabelled_reply_box(self):
+        """Selfreview finding on #1777: the page-wide fallback has no per-post ownership check
+        (unlike `_reply_composer_for_comment`'s `_comment_container` check for the identical gap),
+        so an unlabelled candidate found ONLY page-wide could be a stranger's reply box on a
+        DIFFERENT post already loaded on the page — worse than skipping. The scope-bounded widening
+        stays labelled-or-any (that scope is proven to hold at most this one post); the page-wide
+        fallback must require the "creating comment" label or skip.
+        """
+        from cqc_lem.app.engagement import feed as ra
+        card = _holder(y=400, height=300)                  # nothing inside
+        scope = _holder(y=400, height=300)                 # widened, but still holds nothing
+        reply_box = _box(430)                               # unlabelled: a stranger's reply box
+        driver = _driver(scope=scope, page_boxes=(reply_box,))
+        assert ra._post_composer_for_card(driver, card, user_id=1) is None
+
     def test_a_miss_is_debug_not_a_warning(self):
         """The whole point of the issue: no composer means skip the post — an expected no-op the
         caller already handles by releasing the claim. Warning it per card filed a defect.

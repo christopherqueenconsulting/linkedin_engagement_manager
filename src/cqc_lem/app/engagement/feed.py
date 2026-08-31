@@ -698,6 +698,7 @@ def _single_post_scope(driver: WebDriver, card: WebElement) -> WebElement | None
 def _composer_in_post_scope(driver: WebDriver, card: WebElement, anchor: dict) -> WebElement | None:
     """One resolution pass: this post's comment composer, or None."""
     candidates = _visible_composers(card)
+    page_wide = False
     if not candidates:
         # Not inside the card — widen to the scope that still maps to this post alone, and keep the
         # reply resolver's hard above-filter: a box starting above the card is the share box or a
@@ -716,7 +717,16 @@ def _composer_in_post_scope(driver: WebDriver, card: WebElement, anchor: dict) -
         # (a composer left mounted on an earlier post in the walk sits above it), nearest one wins.
         candidates = [(box, rect) for box, rect in _visible_composers(driver)
                       if rect["y"] >= anchor["y"] - _COMPOSER_ABOVE_SLACK_PX]
+        page_wide = True
     labelled = [c for c in candidates if _is_post_comment_box(c[0])]
+    if page_wide and not labelled:
+        # Unlike the scope-bounded widening above (proven to contain at most one post), the
+        # page-wide search has NO ownership bound at all — an unlabelled candidate here can be a
+        # reply box under a stranger's comment on any post already loaded on the page, not just
+        # this one. `_reply_composer_for_comment` (#883) covers that same gap with an ownership
+        # check (`_comment_container`); a post has no equivalent container to check against, so the
+        # only safe answer page-wide is: require the "creating comment" label, or skip.
+        return None
     bottom = anchor["y"] + anchor["height"]
     best = min(labelled or candidates, key=lambda br: abs(br[1]["y"] - bottom), default=None)
     return None if best is None else best[0]
