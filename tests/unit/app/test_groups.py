@@ -713,6 +713,34 @@ class TestCommentInGroups:
         # the next run's rotation moves past it instead of walking it first again.
         assert recorded.call_args_list == [call(1, "1"), call(1, "2")]
 
+    def test_a_group_page_that_never_rendered_is_skipped_not_counted_as_an_empty_feed(self):
+        """Issue #1777: a group page can render NO `<main>` at all — a login wall, an interstitial.
+
+        A live grounding run found this on a group id previously grounded working, while the home
+        feed in the SAME session rendered normally. The feed engine's own zero-walk cross-check
+        reads a FEED anchor, which answers zero on a page that never rendered too, so it must never
+        be asked in the first place.
+        """
+        from cqc_lem.app.engagement.feed import auto_comment_in_groups
+        driver = MagicMock()
+        driver.find_elements.return_value = []  # no <main> — the page did not render
+        with patch(f"{_FEED}.get_enabled_group_ids", return_value=["1", "2"]), \
+             patch(f"{_FEED}.get_current_profile", return_value=(driver, MagicMock(), "e", MagicMock())), \
+             patch(f"{_FEED}.get_engagement_preferences", return_value={}), \
+             patch(f"{_FEED}.get_recent_engagers", return_value=set()), \
+             patch(f"{_FEED}.comment_on_feed_inline") as cfi, \
+             patch(f"{_FEED}.record_group_comment_run") as recorded, \
+             patch(f"{_FEED}.log_warning") as warned, \
+             patch(f"{_FEED}.quit_gracefully"):
+            result = auto_comment_in_groups.run(user_id=1)
+        cfi.assert_not_called()  # never asked the feed engine to grade a page that isn't there
+        assert warned.call_count == 2  # once per group — recurrence is what escalates real drift
+        assert "did not render" in warned.call_args.args[0]
+        # Still stamped — an unrendered group rotates to the back exactly like an empty one, or a
+        # stuck group would starve the walk (issue #1719).
+        assert recorded.call_args_list == [call(1, "1"), call(1, "2")]
+        assert "across 2 group" in result
+
     def test_no_enabled_groups(self):
         from cqc_lem.app.engagement.feed import auto_comment_in_groups
         with patch(f"{_FEED}.get_enabled_group_ids", return_value=[]), \
