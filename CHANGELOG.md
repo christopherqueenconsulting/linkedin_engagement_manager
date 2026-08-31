@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.170.2](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.170.1...v0.170.2) (2026-08-31)
+
+
+### Bug Fixes
+
+* **connections:** scope the profile Connect button to the target, not a blanket Invite-label exclusion ([#1790](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1790)) ([#1792](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1792)) ([5b70328](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/5b70328fcf1d2bb97fa9440c22c961b93e0ce445))
+* **dms:** stop warning on expected messaging-search-box miss ([#1783](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1783)) ([8404c46](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/8404c468b35607e7cd2006c65d21be03c8af68a9))
+* **dms:** stop warning on expected messaging-search-box miss (closes [#1783](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1783)) ([#1788](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1788)) ([8404c46](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/8404c468b35607e7cd2006c65d21be03c8af68a9))
+* **engagement:** downgrade Grid relay drop in group commenting to a warning ([#1784](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1784)) ([7db7673](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/7db7673d4c7b4f01fa8f53d9dac7a317c935bdb2))
+* **engagement:** downgrade Grid relay drop in group commenting to a warning (closes [#1784](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1784)) ([#1786](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1786)) ([7db7673](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/7db7673d4c7b4f01fa8f53d9dac7a317c935bdb2))
+
 ## [0.170.1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.170.0...v0.170.1) (2026-08-31)
 
 
