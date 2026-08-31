@@ -113,6 +113,18 @@ alerts. `mark_rate_limited()` now also emits `rate_limit_trip` (`cooldown_second
 LinkedIn rate-limits by egress IP, so a trip is an account-wide condition, never one user's. It
 never raises — the breaker must open even when analytics is down.
 
+### SDUI selector-evidence visibility (issues #1117, #1270)
+
+`track_selector_evidence` (`docs/observability-map.md`) had zero downstream visibility until now —
+the event flowed into PostHog but nothing rendered it. `--apply` provisions **Health — SDUI
+selector-evidence captures per day** (`INSIGHT_SDUI_SELECTOR_EVIDENCE`), a plain single-series
+trend counting `sdui_selector_evidence` events, so a locator quietly going blind between Monday
+sweeps shows up as a moving line before the next drift issue would even file. It is deliberately
+**not** wired to a threshold alert: a nonzero day is an expected reading, not a breach — a short
+comment thread legitimately has no sort control at all (`docs/sdui-probe-coverage.md`) — so a
+threshold here would page on noise. The weekly sweep's own `drift` filing (`sdui_drift_issues.py`)
+stays the one signal that actually pages.
+
 ## The weekly report
 
 One PostHog dashboard subscription emails **LEM Growth** every Monday 09:00 UTC. That is what

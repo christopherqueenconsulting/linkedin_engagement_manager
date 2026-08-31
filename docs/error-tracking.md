@@ -364,6 +364,20 @@ unset (issue #1453, `docs/kpi-dashboards.md`) — the wrapper reads either from 
 and an authenticated `gh` CLI. A key this lane can't use fails SILENTLY: no issues are filed, and
 absence looks exactly like a quiet day, so verify it against a window known to contain exceptions.
 
+### Overlap with the weekly SDUI drift sweep (issue #1013, accepted, not a bug)
+
+A total selector-miss that escalates here (a `log_warning` recurring 3× in 24h → `RecurringWarning`
+`$exception` → this cron) and the read-only weekly sweep
+(`scripts/sdui_drift_issues.py`, `docs/sdui-probe-coverage.md`) are two INDEPENDENT paths onto the
+SAME rotted LinkedIn surface, filing under two different dedup markers: `posthog-issue-<id>` here,
+`sdui-drift-<key>` there. A production hit escalates same-day; the weekly sweep re-confirms it (or
+finds it first, if production never happened to touch that surface that day) the following Monday.
+Seeing two open GitHub issues for what turns out to be one broken selector is **expected**, not a
+defect in either filer — the two paths answer different questions (a live production miss vs. a
+read-only weekly ground-truth check) — so do not unify the marker schemes to suppress the second
+one; check the other scheme for an existing open issue before treating a second filing as a
+duplicate-detection bug.
+
 ## Alerts (PostHog UI)
 
 Alerting is configuration, not code — it lives in

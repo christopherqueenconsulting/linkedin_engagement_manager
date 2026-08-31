@@ -116,6 +116,14 @@ degree badge and a green verdict there would claim coverage the run does not hav
    label (there is no locator to re-ground, only a coverage gap to close). A surface graded `ok` or
    `drift` even once in the window is measured and never gets one.
 
+5. **A wide LinkedIn-side redesign can exceed `--max-new` in one run.** The default cap is 5 new
+   issues per run (`DEFAULT_MAX_NEW` in `sdui_drift_issues.py`) — a `drift` surface past the cap is
+   `skip`ped, not lost: no `sdui-drift-<key>` marker was ever written for it, so it has nothing to
+   dedup against and simply re-grades `drift` on next Monday's run, when it competes for that run's 5
+   slots. Today's answer to "many surfaces rotated at once" is genuinely **wait for next week's
+   run(s)** — acceptable at weekly cadence, and not something to fix by raising the cap or filing
+   retroactively for a run that already capped out.
+
 Env overrides: `SDUI_PROBE_CONTAINER`, `SDUI_PROBE_USER_ID`, `SDUI_PROBE_PROFILE_URL` (a
 2nd/3rd-degree profile, so the degree badge is actually grounded), `SDUI_DRIFT_DIR`,
 `SDUI_DRIFT_REPO`, `DRY_RUN=1`.
@@ -176,3 +184,19 @@ once a week from a read-only session; the tripwire grades the read production ac
 A tripwire says a locator went blind; it cannot say what the replacement is. That still takes a live
 `--profile-scrape` / `--company-invite` run and the `degree_anchors` / `page_text` it hands back —
 which is why every re-grounding PR carries `risk:live-linkedin` and merges by the owner.
+
+## Overlap with the daily log-escalation cron (accepted, not a bug)
+
+The weekly sweep is not the only path onto a rotted surface. A total selector-miss hit by
+PRODUCTION (never this read-only probe) logs a `log_warning`; three of the SAME warning in 24h
+escalates to a grouped PostHog `$exception` (`utilities/log_escalation.py`), and the daily
+`scripts/posthog_error_issues.py` cron (`docs/error-tracking.md`) files its own `agent:ready` issue
+same-day, deduped on `posthog-issue-<id>` — a completely different marker scheme from this sweep's
+`sdui-drift-<key>`. So the SAME rotted surface can legitimately produce TWO open GitHub issues under
+two different titles: one same-day from a live production hit, one from next Monday's sweep
+re-confirming the same locator (or finding it first, if production never happened to touch that
+surface that day). **This is a known, accepted overlap — not an inconsistency to fix by unifying the
+marker schemes.** The two paths answer different questions (a live production miss vs. a read-only
+weekly ground-truth check), and merging their dedup would make one silently suppress the other's
+finding. Before treating a second filing as a duplicate-issue bug in either filer, check whether an
+open issue for the same surface already exists under the OTHER marker scheme.
