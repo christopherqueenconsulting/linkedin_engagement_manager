@@ -144,8 +144,8 @@ class TestListConnectionRequests:
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_U), \
              patch("cqc_lem.api.main.get_connection_requests",
                    return_value={"requests": [
-                       {"id": 1, "recipient_email": "jane@example.com"},
-                       {"id": 2, "recipient_email": None}],
+                       {"id": 1, "has_recipient_email": True},
+                       {"id": 2, "has_recipient_email": False}],
                                 "total": 2, "page": 1, "page_size": 25}):
             resp = api_client.get(f"/api/connection_requests?session_token={_S}")
         assert resp.status_code == 200

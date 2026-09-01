@@ -29,6 +29,8 @@ from urllib.parse import unquote
 from selenium.common import StaleElementReferenceException
 from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.common.by import By
+from selenium.webdriver.remote.webdriver import WebDriver
+from selenium.webdriver.remote.webelement import WebElement
 from selenium.webdriver.support import expected_conditions as EC
 
 from cqc_lem.app.my_celery import app as shared_task
@@ -760,6 +762,7 @@ def _connect_dialog_present(driver, wait, user_id: int) -> bool:
 # fallback for a rotation that renders the notice differently but keeps the same input.
 _CONNECT_DIALOG_EMAIL_INPUT_CSS = "input[type='email']"
 _CONNECT_DIALOG_WANTS_EMAIL_RE = re.compile(r"enter their email", re.IGNORECASE)
+_EMAIL_REDACTION_RE = re.compile(r"\b[^\s@]+@[^\s@]+\b")
 
 
 def _connect_dialog_wants_email_from_text(text: "str | None") -> "bool | None":
@@ -778,7 +781,7 @@ def _connect_dialog_wants_email_from_text(text: "str | None") -> "bool | None":
     return bool(_CONNECT_DIALOG_WANTS_EMAIL_RE.search(normalized))
 
 
-def _connect_dialog_wants_email(driver) -> "bool | None":
+def _connect_dialog_wants_email(driver: WebDriver) -> "bool | None":
     """Whether the OPEN Connect dialog is the email-verification variant (issue #1836).
 
     Scoped to the dialog CONTAINER the same way `_overlay_evidence` is, so a rail card's unrelated
@@ -795,7 +798,7 @@ def _connect_dialog_wants_email(driver) -> "bool | None":
     return _connect_dialog_wants_email_from_text(text)
 
 
-def _find_connect_dialog_email_input(driver):
+def _find_connect_dialog_email_input(driver: WebDriver) -> "WebElement | None":
     """The OPEN dialog's email input, shadow root included, or None."""
     for container in find_deep_elements(driver, _CONNECT_DIALOG_CONTAINER_CSS, visible_only=True,
                                         limit=3):
@@ -806,23 +809,19 @@ def _find_connect_dialog_email_input(driver):
     return None
 
 
-def _fill_connect_dialog_email(driver, email: str, user_id: int) -> bool:
+def _fill_connect_dialog_email(field: "WebElement", email: str, user_id: int) -> bool:
     """Type a known email into the OPEN Connect dialog's verification input (issue #1836).
 
-    THE ELEMENT THAT ANSWERED is what gets typed into — a shadow-mounted control cannot be re-found
-    by a fresh query that never saw it (#1733). A failure here is a genuine degraded path (the input
-    was proven present moments ago), so it warns; the email itself never appears in the message.
+    The caller passes the element that answered, so a shadow-mounted control is never re-found by a
+    fresh query that cannot see it (#1733).
     """
-    field = _find_connect_dialog_email_input(driver)
-    if field is None:
-        return False
     try:
         field.click()
         field.clear()
         field.send_keys(email)
         return True
-    except Exception as e:
-        log_warning("Could not type the recipient's email into the Connect dialog", exc=e,
+    except Exception:
+        log_warning("Could not type the recipient's email into the Connect dialog",
                     user_id=user_id, action_type="invite_connect")
         return False
 
@@ -857,10 +856,10 @@ def _overlay_evidence(driver) -> "tuple[list[str], str]":
                                       visible_only=True, limit=60):
         label = element_label(control)
         if label and label not in controls:
-            controls.append(label[:60])
+            controls.append(_EMAIL_REDACTION_RE.sub("[redacted email]", label[:60]))
         if len(controls) >= 25:
             break
-    return controls, _overlay_notice_text(driver)
+    return controls, _EMAIL_REDACTION_RE.sub("[redacted email]", _overlay_notice_text(driver))
 
 
 def _miss_evidence(driver) -> str:
@@ -1221,7 +1220,7 @@ def _submit_connect_invite(driver, wait, user_id: int, with_note: bool) -> bool:
 
 
 def invite_to_connect_now(user_id: int, profile_url: str, message: str = None,
-                          recipient_email: str = None) -> "tuple[bool, str]":
+                          recipient_email: "str | None" = None) -> "tuple[bool, str]":
     """Core connect-invite send: open the profile, click Connect (+ optional note), log the result.
     Returns (sent, result_message) — the message is the failure reason when `sent` is False, which
     the proactive flow stores on the request row (issue #623). Shared by invite_to_connect (reactive
@@ -1284,22 +1283,32 @@ def invite_to_connect_now(user_id: int, profile_url: str, message: str = None,
         # deliberately gating THIS person, not a selector that missed — so it never reaches
         # record_invite_dialog_miss / hold_invites above, both of which are for a dialog that never
         # opened at all.
-        wants_email = _connect_dialog_wants_email(driver)
+        email_field = _find_connect_dialog_email_input(driver)
+        wants_email = email_field is not None or _connect_dialog_wants_email(driver)
         if wants_email and not recipient_email:
             log_debug("Connect dialog demands an email we do not have; cannot send", user_id=user_id,
                      action_type="invite_connect")
             result = EMAIL_VERIFICATION_REQUIRED_MESSAGE
         else:
-            if wants_email:
-                _fill_connect_dialog_email(driver, recipient_email, user_id)
-
-            # The note is an optional extra on an invite we already decided to send — a missing note
-            # affordance must not abandon an open Connect dialog, so the invite goes out bare (#573).
-            noted = bool(message) and _add_connect_note(driver, wait, message, user_id)
-
-            result = (CONNECTION_REQUEST_SENT_MESSAGE
-                      if _submit_connect_invite(driver, wait, user_id, with_note=noted)
-                      else INVITE_NOT_SENT_MESSAGE)
+            if wants_email and (email_field is None
+                               or not _fill_connect_dialog_email(email_field, recipient_email, user_id)):
+                result = EMAIL_VERIFICATION_REQUIRED_MESSAGE
+            else:
+                # The note is an optional extra on an invite we already decided to send — a missing note
+                # affordance must not abandon an open Connect dialog, so the invite goes out bare (#573).
+                noted = bool(message) and _add_connect_note(driver, wait, message, user_id)
+                # Add-a-note can replace the dialog node. Re-find only after that transition, then
+                # re-fill so a valid address is never silently dropped before Send.
+                if wants_email and noted:
+                    email_field = _find_connect_dialog_email_input(driver)
+                if wants_email and noted and (email_field is None
+                                              or not _fill_connect_dialog_email(
+                                                  email_field, recipient_email, user_id)):
+                    result = EMAIL_VERIFICATION_REQUIRED_MESSAGE
+                else:
+                    result = (CONNECTION_REQUEST_SENT_MESSAGE
+                             if _submit_connect_invite(driver, wait, user_id, with_note=noted)
+                             else INVITE_NOT_SENT_MESSAGE)
     except LinkedInRateLimited:
         # Kill-switch / 429 breaker is open — let the caller defer instead of logging a false failure.
         raise
@@ -1444,7 +1453,6 @@ def send_connection_request(self, request_id: int):
     honors the rate-limit / kill-switch.
     """
     from cqc_lem.utilities.db import (
-        EMAIL_VERIFICATION_REQUIRED_MESSAGE,
         ConnectionRequestStatus,
         count_invites_sent_today,
         get_connection_request,

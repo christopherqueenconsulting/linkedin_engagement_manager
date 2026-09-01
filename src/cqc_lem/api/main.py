@@ -2908,8 +2908,6 @@ def list_connection_requests_endpoint(session_token: str, status_filter: Optiona
         raise HTTPException(status_code=401, detail="Invalid or expired session")
     result = get_connection_requests(user_id, status_filter=status_filter, page=page,
                                      page_size=page_size, sort_order=sort_order)
-    for row in result.get("requests", []):
-        row["has_recipient_email"] = bool(row.pop("recipient_email", None))
     return ResponseModel(status_code=200, detail=result)
 
 

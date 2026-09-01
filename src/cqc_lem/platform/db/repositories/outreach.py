@@ -434,16 +434,21 @@ def update_scheduled_dm(dm_id: int, recipient_profile_url: str = None, recipient
 # --- Proactive connection requests (issue #398) — approval-gated, daily-capped; reuses invite_to_connect ---
 # source/icp_score/reasons carry issue #486's targeting provenance (which engagement surfaced this
 # person, how well they fit) so the operator approving a request can see why it exists.
-_CONN_REQ_COLS = ("id", "user_id", "recipient_profile_url", "recipient_name", "recipient_email",
-                  "message", "source", "icp_score", "reasons", "failure_reason", "status", "attempts",
-                  "created_at", "updated_at")
+_CONN_REQ_COLS = ("id", "user_id", "recipient_profile_url", "recipient_name", "message", "source",
+                  "icp_score", "reasons", "failure_reason", "status", "attempts", "created_at",
+                  "updated_at", "recipient_email IS NOT NULL AS has_recipient_email")
+_CONN_REQ_DISPATCH_COLS = (*_CONN_REQ_COLS[:-1], "recipient_email")
 # A row lands here (issue #1836) when the Connect dialog opened but demanded the recipient's email
 # and the app cleared it once nothing more can be done with it — see EMAIL_VERIFICATION_REQUIRED_MESSAGE
-# below and the migration comment. Matched against `str(status)` so a raw enum or its string value
-# both hit.
+# below and the migration comment. Normalized to lower case so enum and raw-string callers both hit.
 _CONNECTION_REQUEST_TERMINAL_STATUSES = frozenset({
-    str(ConnectionRequestStatus.SENT), str(ConnectionRequestStatus.FAILED),
-    str(ConnectionRequestStatus.CANCELED)})
+    ConnectionRequestStatus.SENT.value, ConnectionRequestStatus.FAILED.value,
+    ConnectionRequestStatus.CANCELED.value})
+
+
+def _is_terminal_connection_request_status(status: "ConnectionRequestStatus | str") -> bool:
+    """Whether a status permanently stops a request, so its recipient email must be cleared."""
+    return str(status).lower() in _CONNECTION_REQUEST_TERMINAL_STATUSES
 # Real dispatch attempts (issue #1814) before an unreachable target goes terminal instead of cycling
 # 'approved' forever. Only a dispatch that actually called invite_to_connect_now counts — the
 # invite hold, the daily cap and LinkedInRateLimited all defer without calling it, so an
@@ -456,7 +461,7 @@ def insert_connection_request(user_id: int, recipient_profile_url: str, message:
                               recipient_name: str = None,
                               status: "ConnectionRequestStatus" = ConnectionRequestStatus.PENDING,
                               source: str = None, icp_score: int = None, reasons: str = None,
-                              recipient_email: str = None) -> Optional[int]:
+                              recipient_email: Optional[str] = None) -> Optional[int]:
     """Queue an approval-gated connection request and return its id; None when the insert failed.
 
     Nothing is sent from here — the default status is PENDING. `source` / `icp_score` / `reasons` carry
@@ -481,7 +486,8 @@ def get_connection_request(request_id: int) -> Optional[dict]:
     try:
         with db_cursor(dictionary=True) as cursor:
             cursor.execute(
-                f"SELECT {', '.join(_CONN_REQ_COLS)} FROM connection_requests WHERE id = %s", (request_id,))
+                f"SELECT {', '.join(_CONN_REQ_DISPATCH_COLS)} FROM connection_requests WHERE id = %s",
+                (request_id,))
             return cursor.fetchone()
     except mysql.connector.Error as err:
         log_error(f"Could not get connection request {request_id}", exc=err)
@@ -552,7 +558,7 @@ def update_connection_request_status(request_id: int, status: "ConnectionRequest
     half of the storage decision in the migration comment: nothing more will ever be done with the
     address once the row can no longer be dispatched.
     """
-    clear_email = ", recipient_email = NULL" if str(status) in _CONNECTION_REQUEST_TERMINAL_STATUSES else ""
+    clear_email = ", recipient_email = NULL" if _is_terminal_connection_request_status(status) else ""
     try:
         with db_cursor(commit=True) as cursor:
             cursor.execute(
@@ -609,7 +615,7 @@ def record_connection_request_attempt(request_id: int, failure_reason: str,
 def update_connection_request(request_id: int, recipient_profile_url: str = None,
                               recipient_name: str = None, message: str = None,
                               status: "ConnectionRequestStatus" = None,
-                              recipient_email: str = None) -> bool:
+                              recipient_email: Optional[str] = None) -> bool:
     """Patch only the fields that were supplied; False when none were.
 
     Reports `rowcount > 0`, unlike the scheduled-DM updater — so False here also means "no such row", or
@@ -632,7 +638,7 @@ def update_connection_request(request_id: int, recipient_profile_url: str = None
         fields.append("status = %s")
         params.append(str(status))
         fields.append("failure_reason = NULL")
-        if recipient_email is None and str(status) in _CONNECTION_REQUEST_TERMINAL_STATUSES:
+        if recipient_email is None and _is_terminal_connection_request_status(status):
             fields.append("recipient_email = NULL")
     if not fields:
         return False

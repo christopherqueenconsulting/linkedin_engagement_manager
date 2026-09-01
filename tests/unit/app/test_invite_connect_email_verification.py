@@ -82,6 +82,19 @@ class TestConnectDialogWantsEmailFromDriver:
         with patch(f"{_INV}.find_deep_elements", return_value=[]):
             assert ra._connect_dialog_wants_email(MagicMock()) is None
 
+    def test_an_email_input_outside_the_dialog_does_not_answer(self):
+        from cqc_lem.app.engagement import invites as ra
+        container = MagicMock()
+
+        def deep(driver, css, **kwargs):
+            if css == ra._CONNECT_DIALOG_CONTAINER_CSS:
+                return [container]
+            return []
+
+        with patch(f"{_INV}.find_deep_elements", side_effect=deep), \
+             patch(f"{_INV}._element_text", return_value=_ORDINARY_TEXT):
+            assert ra._connect_dialog_wants_email(MagicMock()) is False
+
 
 class TestFindConnectDialogEmailInput:
     def test_returns_the_input_found_inside_the_dialog_container(self):
@@ -121,46 +134,57 @@ class TestFillConnectDialogEmail:
         # re-found by a fresh query that never saw it (#1733).
         from cqc_lem.app.engagement import invites as ra
         field = MagicMock()
-        with patch(f"{_INV}._find_connect_dialog_email_input", return_value=field):
-            assert ra._fill_connect_dialog_email(MagicMock(), "jane@example.com", 1) is True
+        assert ra._fill_connect_dialog_email(field, "jane@example.com", 1) is True
         field.click.assert_called_once()
         field.clear.assert_called_once()
         field.send_keys.assert_called_once_with("jane@example.com")
 
     def test_no_input_found_returns_false(self):
         from cqc_lem.app.engagement import invites as ra
-        with patch(f"{_INV}._find_connect_dialog_email_input", return_value=None):
-            assert ra._fill_connect_dialog_email(MagicMock(), "jane@example.com", 1) is False
+        assert ra._fill_connect_dialog_email(None, "jane@example.com", 1) is False
 
     def test_a_typing_failure_warns_without_ever_naming_the_email(self):
         from cqc_lem.app.engagement import invites as ra
         field = MagicMock()
         field.send_keys.side_effect = Exception("stale")
-        with patch(f"{_INV}._find_connect_dialog_email_input", return_value=field), \
-             patch(f"{_INV}.log_warning") as warn:
-            assert ra._fill_connect_dialog_email(MagicMock(), "jane@example.com", 1) is False
+        with patch(f"{_INV}.log_warning") as warn:
+            assert ra._fill_connect_dialog_email(field, "jane@example.com", 1) is False
         warn.assert_called_once()
         assert "jane@example.com" not in warn.call_args.args[0]
 
 
+class TestOverlayEvidenceRedaction:
+    def test_an_email_in_the_dialog_text_is_redacted_before_evidence_is_logged(self):
+        from cqc_lem.app.engagement import invites as ra
+        with patch(f"{_INV}.find_deep_elements", return_value=[]), \
+             patch(f"{_INV}._overlay_notice_text",
+                   return_value="Enter jane@example.com to verify this connection."):
+            _, text = ra._overlay_evidence(MagicMock())
+        assert "jane@example.com" not in text
+        assert "[redacted email]" in text
+
+
 class TestInviteToConnectNowThreadsTheEmail:
-    def _invite(self, wants_email, recipient_email=None, fill_result=True, submit_result=True):
+    def _invite(self, wants_email, recipient_email=None, fill_result=True, submit_result=True,
+                message=None, note_result=False):
         from cqc_lem.app.engagement import invites as ra
         with patch(f"{_INV}.get_user_password_pair_by_id", return_value=("e@x", "pw")), \
              patch(f"{_INV}.get_driver_wait_pair", return_value=(MagicMock(), MagicMock())), \
              patch(f"{_INV}.login_to_linkedin"), \
              patch(f"{_INV}._profile_is_first_degree", return_value=False), \
              patch(f"{_INV}._open_connect_invite_dialog", return_value=(True, None)), \
+             patch(f"{_INV}._find_connect_dialog_email_input",
+                   return_value=MagicMock() if wants_email else None), \
              patch(f"{_INV}._connect_dialog_wants_email", return_value=wants_email), \
              patch(f"{_INV}._fill_connect_dialog_email", return_value=fill_result) as fill, \
-             patch(f"{_INV}._add_connect_note", return_value=False) as note, \
+             patch(f"{_INV}._add_connect_note", return_value=note_result) as note, \
              patch(f"{_INV}._submit_connect_invite", return_value=submit_result) as submit, \
              patch(f"{_INV}.record_invite_dialog_miss") as miss, \
              patch(f"{_INV}.hold_invites") as hold, \
              patch(f"{_INV}.insert_new_log") as insert_log, \
              patch(f"{_INV}.record_action"), \
              patch(f"{_INV}.quit_gracefully"):
-            sent, reason = ra.invite_to_connect_now(1, "https://x/in/jane", None,
+            sent, reason = ra.invite_to_connect_now(1, "https://x/in/jane", message,
                                                      recipient_email=recipient_email)
         return sent, reason, fill, note, submit, miss, hold, insert_log
 
@@ -186,6 +210,23 @@ class TestInviteToConnectNowThreadsTheEmail:
         submit.assert_called_once()
         miss.assert_not_called()
         hold.assert_not_called()
+
+    def test_a_fill_failure_stops_without_submitting(self):
+        from cqc_lem.utilities.db import EMAIL_VERIFICATION_REQUIRED_MESSAGE
+        sent, reason, fill, note, submit, miss, hold, insert_log = self._invite(
+            wants_email=True, recipient_email="jane@example.com", fill_result=False)
+        assert sent is False and reason == EMAIL_VERIFICATION_REQUIRED_MESSAGE
+        fill.assert_called_once()
+        submit.assert_not_called()
+        miss.assert_not_called()
+        hold.assert_not_called()
+
+    def test_a_note_transition_refills_the_email_before_submitting(self):
+        sent, reason, fill, note, submit, miss, hold, insert_log = self._invite(
+            wants_email=True, recipient_email="jane@example.com", message="Hi Jane", note_result=True)
+        assert sent is True
+        assert fill.call_count == 2
+        submit.assert_called_once()
 
     def test_the_ordinary_variant_is_unaffected(self):
         from cqc_lem.utilities.db import CONNECTION_REQUEST_SENT_MESSAGE

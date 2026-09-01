@@ -63,6 +63,16 @@ class TestConnectionRequestDb:
             from cqc_lem.utilities.db import get_connection_requests
             out = get_connection_requests(1, status_filter="pending", page=1, page_size=25)
         assert out["total"] == 3 and out["page"] == 1 and len(out["requests"]) == 1
+        assert "recipient_email IS NOT NULL AS has_recipient_email" in cur.execute.call_args_list[1][0][0]
+
+    def test_dispatch_read_selects_recipient_email_without_exposing_it_to_list_reads(self, fake_cursor):
+        conn, cur = fake_cursor(fetch_one={"id": 1, "recipient_email": "jane@example.com"})
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import get_connection_request
+            assert get_connection_request(1)["recipient_email"] == "jane@example.com"
+        sql = cur.execute.call_args[0][0]
+        assert "recipient_email IS NOT NULL" not in sql
+        assert sql.endswith("recipient_email FROM connection_requests WHERE id = %s")
 
     def test_update_status(self, fake_cursor):
         conn, cur = fake_cursor(lastrowid=7)
@@ -86,6 +96,14 @@ class TestConnectionRequestDb:
             from cqc_lem.utilities.db import ConnectionRequestStatus, update_connection_request_status
             assert update_connection_request_status(7, ConnectionRequestStatus.APPROVED) is True
         assert "recipient_email" not in cur.execute.call_args[0][0]
+
+    @pytest.mark.parametrize("status", ["sent", "FAILED", "canceled"])
+    def test_terminal_status_strings_clear_recipient_email(self, fake_cursor, status):
+        conn, cur = fake_cursor(lastrowid=7)
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import update_connection_request_status
+            assert update_connection_request_status(7, status) is True
+        assert "recipient_email = NULL" in cur.execute.call_args[0][0]
 
     def test_partial_update_builds_only_provided_fields(self, fake_cursor):
         conn, cur = fake_cursor(lastrowid=7)
