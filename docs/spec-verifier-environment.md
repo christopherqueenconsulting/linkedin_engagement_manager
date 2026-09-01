@@ -77,7 +77,7 @@ LEM already has a verifier layer that most issues can point at directly rather t
 | A real browser | No CI lane drives one (#1215). The read-only live probe `scripts/linkedin_live_validation.py` is the verifier — **linkedin-live-validation** skill, `docs/sdui-probe-coverage.md` |
 | Schema change | **db-migration** skill: Flyway timestamp versioning, additive-only DDL, `Migration Versions` CI check |
 | Feature toggle | **add-feature-flag** skill: fail-open-to-env-var contract, call-site read, `docs/feature-flags.md` registry row |
-| Merge-worthy PR | The six required CI contexts (`Unit Tests`, `Integration Tests`, `UI Build`, `Migration Versions`, `GitGuardian Scan`, `CodeQL PR Quality Gate`) — CLAUDE.md's CI Gates table |
+| Merge-worthy PR | The seven required CI contexts (`Unit Tests`, `Integration Tests`, `UI Build`, `Migration Versions`, `GitGuardian Scan`, `CodeQL PR Quality Gate`, `Docstring & Lint Gate`) — CLAUDE.md's CI Gates table |
 | LLM output whose correctness isn't a plain assertion (comment quality, tone, prompt wording) | The deterministic gates that already stand in for a human "looks right": the #617 comment quality contract + similarity gate, `slop_lint.py`'s five hard checks, the model-benchmark suite's `contract` floor (`docs/model-benchmarks/README.md`) |
 | Selector / DOM behavior on LinkedIn's SDUI | The read-only live probe (**linkedin-live-validation** skill) — never "I read the DOM and it looks right" |
 | Risky merge (`risk:*`) | A human, via the Decision Comment — the verifier for a policy/security/live-LinkedIn/schema call is explicitly a person, not a test |
