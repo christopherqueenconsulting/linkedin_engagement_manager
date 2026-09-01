@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.172.4](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.172.3...v0.172.4) (2026-09-01)
+
+
+### Bug Fixes
+
+* **invites:** confirm the invitation exists before recording a send (closes [#1867](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1867)) ([#1877](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1877)) ([4d27d0a](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/4d27d0a928a8a48a309d26fa5f99fc8648f98092))
+
 ## [0.172.3](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.172.2...v0.172.3) (2026-09-01)
 
 
