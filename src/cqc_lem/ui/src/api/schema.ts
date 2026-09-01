@@ -744,6 +744,20 @@ export interface paths {
          *     never auto-retries a failed invite (repeat-inviting a decliner risks the account), so a stuck `failed`
          *     row needs an explicit human decision every time. It is refused on anything but a `failed` row, and is
          *     gated the same as `approve` since it reaches the identical send-queue state.
+         *
+         *     Revive-on-attach (issue #1881): a field-only save (no `action`) that supplies `recipient_email` on a
+         *     `failed` row whose `failure_reason` is `EMAIL_VERIFICATION_REQUIRED_MESSAGE` (#1836's Class C — the
+         *     ONLY string `send_connection_request` ever writes for this challenge) moves that row straight to
+         *     `approved` **in this same write**. `failed -> approved` must never pass through a terminal status on
+         *     the way — `update_connection_request` clears `recipient_email` on a move INTO a terminal status, so
+         *     routing the revival through one would erase the address just attached and walk the row straight back
+         *     into the same challenge (see #1881's write-up on PR #1840).
+         *
+         *     Gated on the CALLER, not the field: `_refuse_agent_approval` refuses an `agent`-scoped session the
+         *     `retry` action because reaching `approved` on a `failed` row is a human-only call (#1026). Firing the
+         *     same transition as a side effect of the (permitted) field-only PUT would reach `approved` through a
+         *     route that guard never inspects — laundering the refusal rather than removing it. So this only fires
+         *     for a human-surface session; an agent-scoped attach still saves the address and leaves the row `failed`.
          */
         put: operations["update_connection_request_endpoint_api_connection_request_put"];
         /**

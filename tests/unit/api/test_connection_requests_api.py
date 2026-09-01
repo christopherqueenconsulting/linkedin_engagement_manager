@@ -121,13 +121,19 @@ class TestRecipientEmail:
         ins.assert_not_called()
 
     def test_update_can_supply_an_email_ahead_of_a_retry(self, api_client):
+        # Row is failed for a reason OTHER than the email challenge, so revive-on-attach (#1881)
+        # does not apply — the human still has to click Retry separately.
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_U), \
              patch("cqc_lem.api.main.get_connection_request_user_id", return_value=_U), \
+             patch("cqc_lem.api.main.get_connection_request",
+                   return_value={"id": 3, "user_id": _U, "status": "failed",
+                                "failure_reason": "account_restricted"}), \
              patch("cqc_lem.api.main.update_connection_request", return_value=True) as upd:
             resp = api_client.put("/api/connection_request", json={
                 "session_token": _S, "request_id": 3, "recipient_email": "jane@example.com"})
         assert resp.status_code == 200
         assert upd.call_args.kwargs["recipient_email"] == "jane@example.com"
+        assert upd.call_args.kwargs["status"] is None
 
     def test_an_empty_email_is_absent_not_malformed(self, api_client):
         # A caller with no address for this row says so with "" and must not be punished with a 422
@@ -175,6 +181,86 @@ class TestRecipientEmail:
                 "action": "retry"})
         assert resp.status_code == 403
         upd.assert_not_called()
+
+
+class TestReviveOnAttach:
+    """Issue #1881 — attaching an email to an `email_challenge` row revives it, human callers only.
+
+    Never routes through a terminal status on the way (that would re-clear the address just
+    attached), and an agent-scoped token still saves the address but never reaches `approved` — the
+    same guarantee `_refuse_agent_approval` gives `retry`, reached here through a permitted
+    field-only PUT instead, so it has to be enforced on the caller, not the field.
+    """
+
+    _EMAIL_CHALLENGE_ROW = {
+        "id": 3, "user_id": _U, "status": "failed",
+        "failure_reason": "Connect dialog requires the recipient's email to verify the connection, "
+                          "which we do not have",
+    }
+
+    def test_a_human_attaching_an_email_revives_the_row_to_approved(self, api_client):
+        with patch("cqc_lem.api.main.get_session_user_id", return_value=_U), \
+             patch("cqc_lem.api.main.get_connection_request_user_id", return_value=_U), \
+             patch("cqc_lem.api.main.get_connection_request", return_value=self._EMAIL_CHALLENGE_ROW), \
+             patch("cqc_lem.api.main.update_connection_request", return_value=True) as upd:
+            resp = api_client.put("/api/connection_request", json={
+                "session_token": _S, "request_id": 3, "recipient_email": "jane@example.com"})
+        assert resp.status_code == 200
+        from cqc_lem.utilities.db import ConnectionRequestStatus
+        assert upd.call_args.kwargs["status"] == ConnectionRequestStatus.APPROVED
+        # The address that triggered the revival must land in the SAME write, not a follow-up one.
+        assert upd.call_args.kwargs["recipient_email"] == "jane@example.com"
+
+    def test_an_agent_scoped_attach_leaves_the_row_failed(self, api_client):
+        # The security-constraint comment on #1881: gate on the caller's surface, not the field —
+        # an agent may still save the address, it just never reaches approved through this route.
+        with patch("cqc_lem.api.main.get_session_user_id", return_value=_U), \
+             patch("cqc_lem.api.main._agent_scoped", return_value=True), \
+             patch("cqc_lem.api.main.get_connection_request_user_id", return_value=_U), \
+             patch("cqc_lem.api.main.get_connection_request", return_value=self._EMAIL_CHALLENGE_ROW), \
+             patch("cqc_lem.api.main.update_connection_request", return_value=True) as upd:
+            resp = api_client.put("/api/connection_request", json={
+                "session_token": _S, "request_id": 3, "recipient_email": "jane@example.com"})
+        assert resp.status_code == 200
+        assert upd.call_args.kwargs["status"] is None
+        assert upd.call_args.kwargs["recipient_email"] == "jane@example.com"
+
+    def test_an_email_challenge_row_with_no_address_yet_does_not_revive(self, api_client):
+        # A field-only PUT that carries no recipient_email (editing the note, say) must never revive.
+        with patch("cqc_lem.api.main.get_session_user_id", return_value=_U), \
+             patch("cqc_lem.api.main.get_connection_request_user_id", return_value=_U), \
+             patch("cqc_lem.api.main.get_connection_request", return_value=self._EMAIL_CHALLENGE_ROW), \
+             patch("cqc_lem.api.main.update_connection_request", return_value=True) as upd:
+            resp = api_client.put("/api/connection_request", json={
+                "session_token": _S, "request_id": 3, "message": "still interested"})
+        assert resp.status_code == 200
+        assert upd.call_args.kwargs["status"] is None
+
+    def test_a_non_failed_row_does_not_revive_on_attach(self, api_client):
+        with patch("cqc_lem.api.main.get_session_user_id", return_value=_U), \
+             patch("cqc_lem.api.main.get_connection_request_user_id", return_value=_U), \
+             patch("cqc_lem.api.main.get_connection_request",
+                   return_value={"id": 3, "user_id": _U, "status": "pending", "failure_reason": None}), \
+             patch("cqc_lem.api.main.update_connection_request", return_value=True) as upd:
+            resp = api_client.put("/api/connection_request", json={
+                "session_token": _S, "request_id": 3, "recipient_email": "jane@example.com"})
+        assert resp.status_code == 200
+        assert upd.call_args.kwargs["status"] is None
+
+    def test_an_explicit_action_is_never_reinterpreted_as_a_revive(self, api_client):
+        # `action='cancel'` already resolves its own status — the revive branch must not run at all,
+        # so it must not even read the row a second time.
+        with patch("cqc_lem.api.main.get_session_user_id", return_value=_U), \
+             patch("cqc_lem.api.main.get_connection_request_user_id", return_value=_U), \
+             patch("cqc_lem.api.main.get_connection_request") as get_row, \
+             patch("cqc_lem.api.main.update_connection_request", return_value=True) as upd:
+            resp = api_client.put("/api/connection_request", json={
+                "session_token": _S, "request_id": 3, "action": "cancel",
+                "recipient_email": "jane@example.com"})
+        assert resp.status_code == 200
+        from cqc_lem.utilities.db import ConnectionRequestStatus
+        assert upd.call_args.kwargs["status"] == ConnectionRequestStatus.CANCELED
+        get_row.assert_not_called()
 
 
 class TestListConnectionRequests:

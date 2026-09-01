@@ -78,6 +78,7 @@ from cqc_lem.utilities.auth_factors import (
 )
 from cqc_lem.utilities.content_generation_status import clear_generation_status, get_generation_status, mark_queued
 from cqc_lem.utilities.db import (
+    EMAIL_VERIFICATION_REQUIRED_MESSAGE,
     SESSION_SCOPE_AGENT,
     SESSION_SCOPE_ENROLL,
     SESSION_SCOPE_EXTENSION,
@@ -2931,6 +2932,20 @@ def update_connection_request_endpoint(request: ConnectionRequestUpdate) -> Resp
     never auto-retries a failed invite (repeat-inviting a decliner risks the account), so a stuck `failed`
     row needs an explicit human decision every time. It is refused on anything but a `failed` row, and is
     gated the same as `approve` since it reaches the identical send-queue state.
+
+    Revive-on-attach (issue #1881): a field-only save (no `action`) that supplies `recipient_email` on a
+    `failed` row whose `failure_reason` is `EMAIL_VERIFICATION_REQUIRED_MESSAGE` (#1836's Class C — the
+    ONLY string `send_connection_request` ever writes for this challenge) moves that row straight to
+    `approved` **in this same write**. `failed -> approved` must never pass through a terminal status on
+    the way — `update_connection_request` clears `recipient_email` on a move INTO a terminal status, so
+    routing the revival through one would erase the address just attached and walk the row straight back
+    into the same challenge (see #1881's write-up on PR #1840).
+
+    Gated on the CALLER, not the field: `_refuse_agent_approval` refuses an `agent`-scoped session the
+    `retry` action because reaching `approved` on a `failed` row is a human-only call (#1026). Firing the
+    same transition as a side effect of the (permitted) field-only PUT would reach `approved` through a
+    route that guard never inspects — laundering the refusal rather than removing it. So this only fires
+    for a human-surface session; an agent-scoped attach still saves the address and leaves the row `failed`.
     """
     user_id = get_session_user_id(request.session_token)
     if not user_id:
@@ -2942,12 +2957,18 @@ def update_connection_request_endpoint(request: ConnectionRequestUpdate) -> Resp
     if request.action is not None and request.action not in action_map:
         raise HTTPException(status_code=422,
                             detail=f"Unknown action '{request.action}' — expected 'approve', 'cancel' or 'retry'")
+    current = None
     if request.action == "retry":
         current = get_connection_request(request.request_id)
         if not current or current["status"] != str(ConnectionRequestStatus.FAILED):
             raise HTTPException(status_code=422, detail="Only a 'failed' connection request can be retried")
     _refuse_agent_approval(request.action)
     status = action_map.get(request.action)
+    if request.action is None and request.recipient_email is not None and not _agent_scoped():
+        current = current or get_connection_request(request.request_id)
+        if (current and current["status"] == str(ConnectionRequestStatus.FAILED)
+                and current.get("failure_reason") == EMAIL_VERIFICATION_REQUIRED_MESSAGE):
+            status = ConnectionRequestStatus.APPROVED
     if status is None and all(v is None for v in (request.recipient_profile_url,
                                                   request.recipient_name, request.message,
                                                   request.recipient_email)):
