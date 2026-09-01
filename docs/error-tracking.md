@@ -245,7 +245,18 @@ Selenium kill-switch, and maintenance mode sets one on every release — 4x dail
 escalated to ERROR and filed `RecurringWarning: Automation PAUSED for 1800s (reason: deploy)`
 (issue #917). It logs INFO now; the callers for which a pause IS the defect already say so where they
 detect it (the suppression tripwire escalates CRITICAL, the 429 breaker warns in `mark_rate_limited`),
-and only failing to store the pause — a kill-switch that didn't take — still warns.
+and only failing to store the pause — a kill-switch that didn't take — still warns. `hold_invites`
+follows the same precedent: the Connect dialog that would not open already warns and files its own
+grouped issue where `_open_connect_invite_dialog` detects it, so warning again when the miss-streak
+hold stored filed a SECOND issue for one breakage, re-firing while the route stayed broken.
+`hold_commenting` is the third instance of the same rule (issue #1835), and the one that shows the
+duplicate at its most literal: its only caller, `auto_weekly_comment_quality`, follows the hold with
+a deliberate `log_critical` — the documented needs-human flag for issue #628 — so the warning was a
+second report of an event already being escalated on purpose. It was latent rather than live only
+because the beat is weekly: `normalize_message` masks the user id and the TTL to `<n>`, so every
+held user collapses into one fingerprint and three users held in a single run would have escalated
+to ERROR beside the CRITICAL. The #628 invariant is untouched — a demotion still HOLDS commenting
+and still escalates; it just escalates once, where the verdict is read.
 
 **An ALERTER is the state-setter rule read one step further: reporting a bad measurement is not
 failing.** `cost_alerts.send_cost_alerts` logs one line per threshold breach, and a breach is exactly

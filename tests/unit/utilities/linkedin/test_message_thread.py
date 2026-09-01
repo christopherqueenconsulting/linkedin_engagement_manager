@@ -263,6 +263,39 @@ class TestRoutes:
         assert result.route == mt.ROUTE_DIRECT_URL
         assert "profileUrn=urn%3Ali%3Afsd_profile%3AACoAAABCDEF" in d.urls[-1]
 
+    def test_direct_url_route_rejects_a_zero_event_composer(self):
+        # Issue #1851: this URL is a COMPOSE surface, not a thread view. With no prior history it
+        # renders a blank composer addressed to nobody-yet — indistinguishable from a genuinely
+        # empty real thread — so it must not count as opened here.
+        d = FakeDriver(page_source=PAGE_MODEL)
+        d.thread = {"events": 0, "composer": True, "overlay": False}
+        assert mt._try_direct_url(d, 0, None, PROFILE) is None
+
+    def test_direct_url_route_accepts_a_reading_with_events(self):
+        d = FakeDriver(page_source=PAGE_MODEL)
+        d.thread = {"events": 1, "composer": True, "overlay": False}
+        reading = mt._try_direct_url(d, 0, None, PROFILE)
+        assert reading is not None and reading["events"] == 1
+
+    def test_a_zero_event_direct_url_composer_falls_through_to_messaging_search(self):
+        # The whole point of the fix: route five's false "opened" used to stop the ladder before
+        # route six — the one most likely to find real history — ever ran.
+        d = FakeDriver(page_source=PAGE_MODEL)
+        convo = FakeElement(text="Jane Doe\nthanks!", on_click=_opens(d))
+        d.dom[(By.CSS_SELECTOR, "li.msg-conversation-listitem")] = [convo]
+
+        def _get(url):
+            d.urls.append(url)
+            if "compose" in url:
+                d.thread = {"events": 0, "composer": True, "overlay": False}
+
+        d.get = _get
+        with patch.object(mt, "find_first", return_value=FakeElement()):
+            result = self._ladder(d, person_name="Jane Doe")
+        assert result.route == mt.ROUTE_MESSAGING_SEARCH
+        assert result.tried == [mt.ROUTE_ANCHOR, mt.ROUTE_BUTTON, mt.ROUTE_TEXT_NODE,
+                                mt.ROUTE_OVERFLOW, mt.ROUTE_DIRECT_URL, mt.ROUTE_MESSAGING_SEARCH]
+
     def test_direct_url_route_prefers_the_compose_anchors_own_urn(self):
         d = FakeDriver(page_source="<code>urn:li:fsd_profile:WRONGONE</code>")
         d.dom[(By.CSS_SELECTOR, "a[href*='profileUrn=']")] = [
@@ -407,6 +440,90 @@ class TestLadderContract:
         assert mt.ThreadOpen(opened=True, route=mt.ROUTE_ANCHOR)
 
 
+class TestEmptyComposePageIsNotAThread:
+    """The #1851 verdict belongs to the READING, not to one route id.
+
+    #1853 fixed `_try_direct_url`, the route production caught. But the profile's own Message
+    control is an ``<a href='/messaging/compose/…'>`` (`_ANCHOR_LOCATORS[0]`), so route ONE lands on
+    the identical compose screen and could claim the ladder the same way, four routes earlier. The
+    rule is therefore applied wherever a reading is judged.
+    """
+
+    def _ladder(self, driver, person_name=None):
+        return mt.open_message_thread(driver, MagicMock(), PROFILE, person_name=person_name,
+                                      timeout=0)
+
+    def test_a_compose_page_with_no_messages_is_not_an_open_thread(self):
+        assert not mt.is_open_thread({"events": 0, "composer": True, "surface": mt.SURFACE_PAGE})
+
+    def test_message_events_prove_a_thread_on_either_surface(self):
+        assert mt.is_open_thread({"events": 1, "composer": True, "surface": mt.SURFACE_PAGE})
+        assert mt.is_open_thread({"events": 1, "composer": False, "surface": mt.SURFACE_OVERLAY})
+
+    def test_an_empty_overlay_bubble_still_counts(self):
+        # The bubble is anchored to the person whose control we clicked, so an empty one is a real
+        # thread with no history yet. The full-page compose screen affords no such guarantee, which
+        # is the whole reason the two surfaces are judged differently.
+        assert mt.is_open_thread({"events": 0, "composer": True, "surface": mt.SURFACE_OVERLAY})
+
+    def test_nothing_rendered_is_never_a_thread(self):
+        assert not mt.is_open_thread({"events": 0, "composer": False, "surface": None})
+        assert not mt.is_open_thread(None)
+
+    def test_an_anchor_that_lands_on_an_empty_compose_page_keeps_walking(self):
+        # Route ONE reproducing the #1851 shape: the anchor navigates to /messaging/compose/, which
+        # renders a composer and no events. It must not claim the ladder either.
+        d = FakeDriver()
+        anchor = FakeElement({"href": "/messaging/compose/?profileUrn=x"},
+                             on_click=_opens(d, events=0))
+        d.dom[(By.CSS_SELECTOR, "main a[href*='/messaging/compose/']")] = [anchor]
+        result = mt.open_message_thread(d, MagicMock(), PROFILE, timeout=0)
+        assert anchor.clicked == 1  # it WAS clicked — it just never produced a thread
+        assert result.route != mt.ROUTE_ANCHOR
+        assert mt.ROUTE_MESSAGING_SEARCH in result.tried
+
+    def test_an_empty_overlay_route_is_unchanged(self):
+        # NO-REGRESSION: the overlay half must keep counting, or a real thread we have not spoken
+        # in yet would stop being reachable at all.
+        d = FakeDriver()
+        el = FakeElement(text="Message", on_click=_opens(d, events=0, overlay=True))
+        d.dom[(By.XPATH, mt._TEXT_NODE_LOCATORS[0][1])] = [el]
+        result = mt.open_message_thread(d, MagicMock(), PROFILE, timeout=0)
+        assert result.opened and result.route == mt.ROUTE_TEXT_NODE
+        assert result.surface == mt.SURFACE_OVERLAY and result.events == 0
+
+    def test_a_route_with_message_events_is_unchanged(self):
+        # NO-REGRESSION: events > 0 still wins on the first route that has them.
+        d = FakeDriver()
+        anchor = FakeElement({"href": "/messaging/compose/?profileUrn=x"}, on_click=_opens(d))
+        d.dom[(By.CSS_SELECTOR, "main a[href*='/messaging/compose/']")] = [anchor]
+        result = self._ladder(d)
+        assert result.route == mt.ROUTE_ANCHOR and result.events == 4
+        assert result.tried == [mt.ROUTE_ANCHOR]
+
+    def test_walking_past_a_compose_page_is_debug_not_a_warning(self):
+        # A compose screen instead of a thread is an ordinary ladder step, not selector rot — a
+        # warning here would recur into a RecurringWarning for working behaviour (#1752).
+        d = FakeDriver()
+        anchor = FakeElement({"href": "/messaging/compose/?profileUrn=x"},
+                             on_click=_opens(d, events=0))
+        d.dom[(By.CSS_SELECTOR, "main a[href*='/messaging/compose/']")] = [anchor]
+        with patch.object(mt, "find_first", return_value=None), \
+                patch.object(mt, "log_warning") as warn, patch.object(mt, "log_debug") as debug:
+            mt.open_message_thread(d, MagicMock(), PROFILE, person_name="Jane Doe", timeout=0)
+        warn.assert_not_called()
+        assert any("not an open thread" in call.args[0] for call in debug.call_args_list)
+
+    def test_the_send_path_still_accepts_the_full_page_composer(self):
+        # NO-REGRESSION: `open_addressed_composer` WANTS the compose page the read ladder rejects;
+        # its proof is the recipient pill, not message history (issue #1030).
+        d = FakeDriver(page_source=PAGE_MODEL)
+        d.thread = {"events": 0, "composer": True, "overlay": False}
+        d.recipient = "Jane Doe"
+        result = mt.open_addressed_composer(d, MagicMock(), PROFILE, timeout=0)
+        assert result.addressed and result.recipient == "Jane Doe"
+
+
 class TestReaders:
     def test_last_sender_and_body_are_trimmed(self):
         d = FakeDriver()
@@ -420,6 +537,23 @@ class TestReaders:
         d.execute_script.side_effect = WebDriverException("gone")
         assert mt.read_last_sender(d) == ""
         assert mt.read_last_message(d) == ""
+
+    def test_sender_retries_through_a_transient_empty_read(self):
+        # issue #1864: the name attach lands async, so the first read(s) after the thread opens
+        # can be empty even though the thread is genuinely readable — a bare retry recovers it
+        # without ever reaching the "no sender could be read" warning.
+        d = MagicMock()
+        d.execute_script.side_effect = ["", "", "Jane Doe"]
+        assert mt.read_last_sender(d) == "Jane Doe"
+        assert d.execute_script.call_count == 3
+
+    def test_sender_still_empty_after_every_retry_is_unreadable(self):
+        # A genuinely rotated selector (or a sender that never arrives) must still end up '' once
+        # the retry budget is spent — the caller's warning is the correct outcome here.
+        d = MagicMock()
+        d.execute_script.return_value = ""
+        assert mt.read_last_sender(d) == ""
+        assert d.execute_script.call_count == mt._SENDER_READ_RETRIES
 
 
 class TestResolveSelfName:

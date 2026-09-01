@@ -158,6 +158,43 @@ class TestTheLiveBadgeShapeStaysGrounded:
         assert ra._profile_is_first_degree(driver) is True
 
 
+# The 2026-08-31 drift (#1021 tripwire fired): LinkedIn wrapped the badge text beside an icon child,
+# so the badge element is no longer childless. The old `not(*)` leaf predicate matched nothing here
+# while `<main>` still rendered the degree line — the exact split that fired the zero-walk tripwire
+# and fired invites at people we already connect to.
+NESTED_BADGE_HTML = """
+<html><head><title>Jane Doe | LinkedIn</title></head><body>
+<main>
+  <div class="_648bd2fe"><h1 class="_46e0469d">Jane Doe</h1>
+    <p class="d3e5c957 _797b549d">{degree}<svg aria-hidden="true"><use></use></svg></p></div>
+</main></body></html>
+"""
+
+
+class TestABadgeWrappedBesideAnIconStillReads:
+    """The 2026-08-31 regression: the badge text no longer sits in a childless node."""
+
+    def test_the_leaf_locator_no_longer_requires_a_childless_node(self):
+        from cqc_lem.app.engagement import invites as ra
+        assert "not(*)" not in ra._PROFILE_DEGREE_LOCATORS[0][1]
+
+    @pytest.mark.parametrize("degree", ["1st", "· 1st", "1st degree connection"])
+    def test_a_first_degree_nested_badge_blocks_the_invite(self, degree):
+        from cqc_lem.app.engagement import invites as ra
+        driver = _DomDriver(NESTED_BADGE_HTML.format(degree=degree))
+        with patch(f"{_ZW}.log_warning") as warn:
+            assert ra._profile_is_first_degree(driver) is True
+        warn.assert_not_called()  # the chain SAW the badge — nothing to cross-check
+
+    @pytest.mark.parametrize("degree", ["· 2nd", "3rd+", "3rd degree connection"])
+    def test_a_non_first_degree_nested_badge_does_not_block_the_invite(self, degree):
+        from cqc_lem.app.engagement import invites as ra
+        driver = _DomDriver(NESTED_BADGE_HTML.format(degree=degree))
+        with patch(f"{_ZW}.log_warning") as warn:
+            assert ra._profile_is_first_degree(driver) is False
+        warn.assert_not_called()
+
+
 # A 2nd-degree profile as `<main>` actually renders it: the top card's badge first, then the
 # mutual-connection highlight — which carries SOMEBODY ELSE's `1st`. Reading "any badge under
 # main" makes this profile look already-connected and cancels the invite (#1012's mistake in a
@@ -315,6 +352,19 @@ class TestProfileHeaderDegree:
         parsed = self._parse('<html><head><title>Jane Doe | LinkedIn</title></head>'
                              '<body><main><h1>Jane Doe</h1></main></body></html>')
         assert "connection" not in parsed
+
+    def test_a_badge_wrapped_beside_an_icon_still_reads(self):
+        """The 2026-08-31 drift, on the parser half: the badge is no longer a childless node."""
+        from cqc_lem.utilities.linkedin.profile import LinkedInProfile
+        parsed = self._parse(NESTED_BADGE_HTML.format(degree="1st"))
+        assert parsed["connection"] == "1st"
+        assert LinkedInProfile(**parsed).is_1st_connection is True
+
+    def test_a_non_first_nested_badge_is_not_a_connection(self):
+        from cqc_lem.utilities.linkedin.profile import LinkedInProfile
+        parsed = self._parse(NESTED_BADGE_HTML.format(degree="· 2nd"))
+        assert parsed["connection"] == "· 2nd"
+        assert LinkedInProfile(**parsed).is_1st_connection is False
 
 
 class TestProfileNameZeroWalk:

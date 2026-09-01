@@ -16,7 +16,6 @@
   "cqc_lem.app.run_automation.process_user_followups",
   "cqc_lem.app.run_automation.reconcile_recent_comment_urns",
   "cqc_lem.app.run_automation.scan_connection_candidates",
-  "cqc_lem.app.run_automation.send_connection_request",
   "cqc_lem.app.run_automation.send_lead_response",
   "cqc_lem.app.run_automation.send_private_dm",
   "cqc_lem.app.run_automation.send_roster_connect_invite",

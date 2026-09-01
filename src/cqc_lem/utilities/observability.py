@@ -426,6 +426,13 @@ EVENTS = {spec.event: spec for spec in (
         count("skipped_no_composer"),
     )),
     EventSpec("pre_post_engagement", (prop("post_id"), prop("user_id"), label("status"))),
+    # ONE proactive connection-request dispatch, whatever it did (issue #1813). `result` says
+    # sent / failed / deferred and `reason` says which door it went out of, both `label()` so a
+    # tile can filter and break down on them. `attempts` is the denominator that makes a run of
+    # failures readable as a RATE rather than a count.
+    EventSpec("invite_outcome", (
+        prop("user_id"), label("result"), label("reason"), count("attempts"),
+    )),
     EventSpec("company_page_invite_run", (
         prop("user_id"), label("status"), count("invites_sent"), count("budget"), count("cap"),
         count("sent_today"), prop("credits_remaining"), prop("credit_spread"),
@@ -1525,6 +1532,28 @@ def track_stale_invite_run(user_id: Optional[int], report: Optional[dict] = None
     manager's markup moved, not that the account is clean.
     """
     _emit(EVENTS["stale_invite_run"], {**dict(report or {}), "user_id": user_id}, extra)
+
+
+def track_invite_outcome(user_id: Optional[int], result: str, reason: str,
+                         attempts: int = 0, **extra) -> None:
+    """Emit ONE proactive connection-request dispatch (issue #1813) — EVERY outcome, sends included.
+
+    Written for the failure mode `track_stale_invite_run`'s docstring names, after that lane hit it
+    for real: `connection_requests` held 59 rows and ZERO ever reached 'sent', while every Celery
+    run reported SUCCESS and every early exit logged at DEBUG. From outside, a lane that had never
+    delivered an invite in its life was indistinguishable from a quiet week.
+
+    So a series carrying only sends would reproduce the bug it exists to catch. `result` is
+    sent / failed / deferred and `reason` is the short, stable word for WHY — a breakdown of
+    `reason` on the failures is what says whether the lane is selector-broken, walled by LinkedIn,
+    or simply full of out-of-network targets, three states that used to write the same log line.
+
+    `attempts` counts real dispatches that reached LinkedIn, this one included, so it is 0 exactly
+    when nothing was attempted (held, capped, throttled) — which is the reading that separates a
+    lane failing from a lane never running.
+    """
+    _emit(EVENTS["invite_outcome"],
+          {"user_id": user_id, "result": result, "reason": reason, "attempts": attempts}, extra)
 
 
 def track_outreach_funnel_scan(user_id: Optional[int], report: Optional[dict] = None,

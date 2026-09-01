@@ -2,9 +2,10 @@
 
 #1434 shipped the instrument because the number cannot be recovered from finished drafts: a stored
 edition keeps only the checks that were STILL firing when the budget ran out, and LiteLLM redacts
-the intermediate draft (`turn_off_message_logging: true`), so a retry that cleared
-`contrastive_frame` and came back with `banned_lexicon` is indistinguishable from one that never
-moved. This script is the reading half — the Verifier #1530 names.
+the intermediate draft (`turn_off_message_logging: true`, and `newsletter` is not in
+`LLM_PROMPT_LOGGING_FEATURES`), so a retry that cleared `contrastive_frame` and came back with
+`banned_lexicon` is indistinguishable from one that never moved. This script is the reading half —
+the Verifier #1530 names.
 
 The one formula guard, from #1434's adversarial review: the newsletter loop shares its single
 regeneration with the structural floor (#1435), so a slop-clean edition that is too short spends a

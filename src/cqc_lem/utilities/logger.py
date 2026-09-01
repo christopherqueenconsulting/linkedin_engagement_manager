@@ -23,6 +23,7 @@ import datetime as DT
 import logging
 import os
 import sys
+import time
 from logging.handlers import RotatingFileHandler
 from typing import Callable, Optional
 
@@ -205,12 +206,38 @@ def _build_posthog_handler(level: int) -> Optional[logging.Handler]:
     return LoggingHandler(level=level, logger_provider=provider)
 
 
+#: `%(asctime)s` pattern for every level. The trailing `Z` is a literal — `strftime` passes an
+#: unrecognised character through — and it is not decoration: it is the only thing on the line that
+#: says which clock read it, and the containers run `America/New_York`.
+_UTC_DATEFMT = "%Y-%m-%d %H:%M:%SZ"
+
+
 class _LevelFormatter(logging.Formatter):
+    """Per-level line shape, timestamped in UTC.
+
+    Issue #1839: only `_fmt_debug` carried `%(asctime)s`, and production runs at INFO, so every line
+    in `/opt/lem/logs/cqc_lem_*.log` was untimestamped by construction. The only ordering an incident
+    could recover was line number, which is not a clock: it cannot be compared against a deploy, a
+    `docker` event or a PostHog `$exception`, and it does not even mean occurrence order, because six
+    worker containers append to the one file and interleave by arrival.
+
+    The stamp is UTC — `converter` is overridden because the stdlib default is `time.localtime` — so
+    the records agree with the `_utc_today()` filename that contains them. A naive local stamp would
+    be worse than none: 20:00-24:00 EDT records land in tomorrow's file wearing yesterday's hours.
+
+    The level prefixes are unchanged. `WARNING [file:line]:` is grepped by hand and named by the
+    escalation contract in `utilities/CLAUDE.md`; this adds a field, it does not restructure the
+    line. DEBUG keeps its bracketed stamp rather than gaining a second one.
+    """
+
+    converter = time.gmtime
+
     _fmt_debug = "[%(asctime)s %(filename)s->%(funcName)s():%(lineno)s] DEBUG: %(message)s"
-    _fmt_info = "%(message)s"
-    _fmt_warning = "WARNING [%(filename)s:%(lineno)s]: %(message)s"
-    _fmt_error = "ERROR [%(filename)s->%(funcName)s():%(lineno)s]: %(message)s"
-    _fmt_critical = "CRITICAL [%(filename)s->%(funcName)s():%(lineno)s]: %(message)s"
+    _fmt_info = "%(asctime)s %(message)s"
+    _fmt_warning = "%(asctime)s WARNING [%(filename)s:%(lineno)s]: %(message)s"
+    _fmt_error = "%(asctime)s ERROR [%(filename)s->%(funcName)s():%(lineno)s]: %(message)s"
+    _fmt_critical = "%(asctime)s CRITICAL [%(filename)s->%(funcName)s():%(lineno)s]: %(message)s"
+    _fmt_fallback = "%(asctime)s %(levelname)s: %(message)s"
 
     _map = {
         logging.DEBUG: _fmt_debug,
@@ -220,8 +247,27 @@ class _LevelFormatter(logging.Formatter):
         logging.CRITICAL: _fmt_critical,
     }
 
+    def __init__(self, datefmt: Optional[str] = None) -> None:
+        """Build the formatter with the UTC date format baked in.
+
+        Args:
+            datefmt: `strftime` pattern for `%(asctime)s`. Defaults to `_UTC_DATEFMT`, so a caller
+                that constructs this with no arguments — as the handlers below do — still gets a
+                zone-marked UTC stamp instead of the stdlib's local `asctime`.
+        """
+        super().__init__(datefmt=datefmt or _UTC_DATEFMT)
+
     def format(self, record: logging.LogRecord) -> str:
-        self._style._fmt = self._map.get(record.levelno, "%(levelname)s: %(message)s")
+        """Render `record` in its level's shape.
+
+        Args:
+            record: The record to format.
+
+        Returns:
+            The formatted line, leading with a UTC timestamp at every level except DEBUG, whose
+            stamp sits inside its existing bracket.
+        """
+        self._style._fmt = self._map.get(record.levelno, self._fmt_fallback)
         return super().format(record)
 
 

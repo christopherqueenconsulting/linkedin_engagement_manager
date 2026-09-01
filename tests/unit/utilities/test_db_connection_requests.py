@@ -162,7 +162,25 @@ class TestRecordConnectionRequestAttempt:
         sql, params = cursor.execute.call_args_list[0][0]
         # status is assigned BEFORE the increment, so this test reads the pre-increment count.
         assert sql.index("status = IF") < sql.index("attempts = attempts + 1")
-        assert params[0] == CONNECTION_REQUEST_MAX_ATTEMPTS
+        # (caller-forced terminal, ceiling) — the caller did not force one here (issue #1813).
+        assert params[:2] == (0, CONNECTION_REQUEST_MAX_ATTEMPTS)
+
+    def test_a_caller_forced_terminal_retires_the_row_on_this_attempt(self, fake_cursor):
+        """Issue #1813 — a PROVEN-unreachable target has nothing to learn from two more sessions.
+
+        The ceiling exists to stop guessing about a target failing for reasons we cannot read. An
+        out-of-network profile offering nothing but Follow is not a guess, and the retirement must
+        land in the SAME statement as the attempt so the two can never separate.
+        """
+        conn, cursor = fake_cursor(fetch_one=(1,))
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import record_connection_request_attempt
+            terminal, attempts = record_connection_request_attempt(7, "Follow only", terminal=True)
+        assert (terminal, attempts) == (True, 1)
+        assert cursor.execute.call_args_list[0][0][1][0] == 1
+        # ONE write, not an attempt followed by a separate retirement.
+        assert sum(1 for call in cursor.execute.call_args_list
+                   if "UPDATE connection_requests" in call[0][0]) == 1
 
     def test_goes_terminal_at_the_attempt_cap(self, fake_cursor):
         from cqc_lem.utilities.db import CONNECTION_REQUEST_MAX_ATTEMPTS

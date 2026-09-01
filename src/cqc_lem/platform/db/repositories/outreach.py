@@ -26,6 +26,7 @@ from cqc_lem.platform.db.enums import (
     ConnectionRequestStatus,
     ConnectStatus,
     FollowStatus,
+    FollowupStatus,
     LeadSignalChannel,
     LeadSignalKind,
     LeadSignalSource,
@@ -562,7 +563,8 @@ def update_connection_request_status(request_id: int, status: "ConnectionRequest
     except mysql.connector.Error as err:
         log_error(f"Could not update connection request {request_id} status", exc=err)
         return False
-def record_connection_request_attempt(request_id: int, failure_reason: str) -> "tuple[bool, int]":
+def record_connection_request_attempt(request_id: int, failure_reason: str,
+                                      terminal: bool = False) -> "tuple[bool, int]":
     """Record ONE real dispatch attempt that reached LinkedIn and did not send (issue #1814).
 
     At `CONNECTION_REQUEST_MAX_ATTEMPTS` the row goes terminal ('failed') in the same statement
@@ -570,6 +572,12 @@ def record_connection_request_attempt(request_id: int, failure_reason: str) -> "
     never been reachable — every browser session it costs is a slot the shared `se_outreach` lane
     needed. Below the ceiling it goes back to 'approved' for the next scan, same as an untouched
     retry. Returns (terminal, attempts); (False, 0) means the row was gone or the write failed.
+
+    `terminal=True` retires the row on THIS attempt regardless of the count (issue #1813). The
+    ceiling exists to stop guessing about a target that keeps failing for reasons we cannot read;
+    a caller that has PROVEN the target is unreachable — an out-of-network profile offering nothing
+    but Follow — has nothing left to learn from two more Chrome sessions. It stays one statement so
+    the attempt and the retirement can never land separately.
     """
     try:
         with db_cursor(commit=True) as cursor:
@@ -577,23 +585,24 @@ def record_connection_request_attempt(request_id: int, failure_reason: str) -> "
                 "UPDATE connection_requests SET "
                 # status is assigned FIRST on purpose: MySQL evaluates SET clauses left to right, so
                 # a later 'attempts = attempts + 1' would make this test read the post-increment count.
-                "status = IF(attempts + 1 >= %s, %s, %s), "
+                "status = IF(%s OR attempts + 1 >= %s, %s, %s), "
                 # Terminal here too (issue #1836) — same bounded-exposure rule as
                 # update_connection_request_status: an email held for a target that just went FAILED
                 # will never be used again.
-                "recipient_email = IF(attempts + 1 >= %s, NULL, recipient_email), "
+                "recipient_email = IF(%s OR attempts + 1 >= %s, NULL, recipient_email), "
                 "attempts = attempts + 1, "
                 "failure_reason = %s "
                 "WHERE id = %s",
-                (CONNECTION_REQUEST_MAX_ATTEMPTS, ConnectionRequestStatus.FAILED.value,
-                 ConnectionRequestStatus.APPROVED.value, CONNECTION_REQUEST_MAX_ATTEMPTS,
+                (1 if terminal else 0, CONNECTION_REQUEST_MAX_ATTEMPTS,
+                 ConnectionRequestStatus.FAILED.value, ConnectionRequestStatus.APPROVED.value,
+                 1 if terminal else 0, CONNECTION_REQUEST_MAX_ATTEMPTS,
                  str(failure_reason or "")[:512], request_id))
             if cursor.rowcount <= 0:
                 return False, 0
             cursor.execute("SELECT attempts FROM connection_requests WHERE id = %s", (request_id,))
             row = cursor.fetchone()
             attempts = int(row[0]) if row else 0
-            return attempts >= CONNECTION_REQUEST_MAX_ATTEMPTS, attempts
+            return bool(terminal) or attempts >= CONNECTION_REQUEST_MAX_ATTEMPTS, attempts
     except mysql.connector.Error as err:
         log_error(f"Could not record connection request attempt {request_id}", exc=err)
         return False, 0
@@ -1570,25 +1579,38 @@ def has_appreciation_touch(user_id: int, profile_url: str, event_type: str) -> b
         log_error("Could not check appreciation touch", exc=err, user_id=user_id)
         return False
 def enqueue_followup(user_id: int, profile_url: str, first_name: str, event_type: str,
-                     next_step: int, due_at) -> bool:
-    """Schedule a follow-up DM touch. `due_at` is a datetime."""
+                     next_step: int, due_at: Optional[datetime]) -> bool:
+    """Schedule a follow-up DM touch.
+
+    `due_at` goes through `to_naive_utc`, the one storage-side conversion
+    (docs/timezone-contract.md): `dm_followups.due_at` holds NAIVE UTC, and `get_due_followups`
+    normalizes its `now` the same way, so reader and writer cannot drift onto different clocks.
+    """
     try:
         with db_cursor(commit=True) as cursor:
             cursor.execute(
                 "INSERT INTO dm_followups (user_id, profile_url, first_name, event_type, next_step, due_at, status) "
-                "VALUES (%s,%s,%s,%s,%s,%s,'pending')",
-                (user_id, profile_url, first_name, str(event_type), next_step, due_at))
+                "VALUES (%s,%s,%s,%s,%s,%s,%s)",
+                (user_id, profile_url, first_name, str(event_type), next_step, to_naive_utc(due_at),
+                 str(FollowupStatus.PENDING)))
             return True
     except mysql.connector.Error as err:
         log_error("Could not enqueue followup", exc=err, user_id=user_id)
         return False
-def get_due_followups(now) -> list:
-    """Pending follow-ups whose due_at has passed. `now` is a datetime."""
+def get_due_followups(now: Optional[datetime]) -> list:
+    """Pending follow-ups whose due_at has passed.
+
+    `now` is normalized through `to_naive_utc` — the same conversion every writer of
+    `dm_followups.due_at` applies — so an aware caller and a naive-UTC one compare identically.
+    Without it an aware local `now` would be serialized as its local wall clock and rows would come
+    due hours early or late (docs/timezone-contract.md).
+    """
     try:
         with db_cursor(dictionary=True) as cursor:
             cursor.execute(
-                "SELECT id, user_id, profile_url, first_name, event_type, next_step "
-                "FROM dm_followups WHERE status='pending' AND due_at <= %s ORDER BY due_at", (now,))
+                "SELECT id, user_id, profile_url, first_name, event_type, next_step, unreadable_reads "
+                "FROM dm_followups WHERE status=%s AND due_at <= %s ORDER BY due_at",
+                (str(FollowupStatus.PENDING), to_naive_utc(now)))
             return cursor.fetchall() or []
     except mysql.connector.Error as err:
         log_error("Could not get due followups", exc=err)
@@ -1604,6 +1626,59 @@ def mark_followup(followup_id: int, status: str) -> bool:
             return cursor.rowcount >= 0
     except mysql.connector.Error as err:
         log_error(f"Could not mark followup {followup_id}", exc=err)
+        return False
+def record_unreadable_read(followup_id: int, due_at: Optional[datetime] = None) -> bool:
+    """Count one UNKNOWN reply-detection read against this row (#1815).
+
+    When `due_at` is given, also pushes the row's next read out to it (normalized through
+    `to_naive_utc`, the same conversion `enqueue_followup` and `get_due_followups` use). The row
+    stays `FollowupStatus.PENDING` either way — #731's fail-closed UNKNOWN skip is a READ failure,
+    not a send failure, so it must never drop off the retry ladder the way
+    `mark_followup(..., 'failed')` would.
+
+    Returns True only when a pending row was ACTUALLY counted. Unlike `mark_followup`, "the UPDATE
+    ran" is not good enough here: the caller decides whether to back off from the count it read a
+    moment ago, so a zero-match (the row moved to a terminal status between the read and this write)
+    has to be distinguishable — otherwise the caller warns about a backoff that never happened.
+    Matching is safe to read off `rowcount` because the counter always changes when the row matches.
+
+    The read-then-increment is deliberately not atomic. `process_user_followups` is a `QueueOnce`
+    task keyed on `user_id`, so exactly one worker ever holds a given user's rows; the SQL-side
+    `+ 1` is what keeps the stored count right even if that ever stopped being true, and the worst
+    a lost race could do is delay one backoff step by one beat.
+    """
+    try:
+        with db_cursor(commit=True) as cursor:
+            if due_at is not None:
+                cursor.execute(
+                    "UPDATE dm_followups SET unreadable_reads = unreadable_reads + 1, due_at = %s "
+                    "WHERE id = %s AND status = %s",
+                    (to_naive_utc(due_at), followup_id, str(FollowupStatus.PENDING)))
+            else:
+                cursor.execute(
+                    "UPDATE dm_followups SET unreadable_reads = unreadable_reads + 1 "
+                    "WHERE id = %s AND status = %s", (followup_id, str(FollowupStatus.PENDING)))
+            return cursor.rowcount > 0
+    except mysql.connector.Error as err:
+        log_error(f"Could not record unreadable read for followup {followup_id}", exc=err)
+        return False
+def reset_unreadable_reads(followup_id: int) -> bool:
+    """Clear this row's consecutive-UNKNOWN streak (#1815).
+
+    Called explicitly on any outcome `check_dm_replied` ACTUALLY read, so the counter only ever
+    describes an unbroken run of unreadable reads. Deliberately not folded into `mark_followup`:
+    that is a generic status setter, and hiding a counter reset inside it would mean any future
+    caller — an error path, a reschedule — silently wiped a legitimate streak.
+
+    True whenever the UPDATE ran, matched or not: a row that has already moved on has nothing to
+    reset, which is not a failure.
+    """
+    try:
+        with db_cursor(commit=True) as cursor:
+            cursor.execute("UPDATE dm_followups SET unreadable_reads = 0 WHERE id = %s", (followup_id,))
+            return cursor.rowcount >= 0
+    except mysql.connector.Error as err:
+        log_error(f"Could not reset unreadable reads for followup {followup_id}", exc=err)
         return False
 def stop_followups_for_profile(user_id: int, profile_url: str) -> int:
     """Stop all pending follow-ups to a profile (e.g. once they've replied). Returns count."""
@@ -1644,6 +1719,14 @@ ALREADY_CONNECTED_MESSAGE = "Already connected (1st-degree) — no invite to sen
 # Follow/Message on that profile; either way there is nothing to send, so the invite stops here
 # rather than falling through to the note/send steps that can only fail after it.
 NO_CONNECT_BUTTON_MESSAGE = "No Connect option on this profile (invite may already be pending)"
+# The profile offered Follow and NOTHING connect-shaped at all — no custom-invite anchor naming the
+# target, no Connect button naming them, no pending badge (issue #1813). That is out of network: a
+# fact about the TARGET, not a miss, so it is terminal on the first read and it feeds neither the
+# invite-dialog miss streak nor the 6-hour hold those misses arm. Measured in production on
+# `burkegriffin`, `scott-stephenson-` and `aditabraham`, each costing a ~90 s Chrome session per
+# cycle and braking the lane for the reachable targets behind them. The #979 ladder already has a
+# follow rung for exactly these people, which is why this invents no new state.
+FOLLOW_ONLY_MESSAGE = "This profile offers Follow only — out of network, so there is no invite to send"
 # The Connect dialog opened but neither Send affordance could be clicked, so nothing went out
 # (issue #573). Unlike a missing note this does NOT degrade gracefully — the invite is lost — which
 # is why it stays an error and gets its own reason on the request row.

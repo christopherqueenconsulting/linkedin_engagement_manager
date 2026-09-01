@@ -11,7 +11,7 @@ per call, so nothing can be forgotten at a new call site.
 |---|---|
 | `.litellm/config.yaml` | `litellm_settings.success_callback` / `failure_callback` include `posthog`; `turn_off_message_logging: true` |
 | `docker-compose.yml` (`litellm`) | `POSTHOG_API_KEY`, `POSTHOG_API_URL` (from the app's `POSTHOG_HOST`) |
-| `utilities/ai/client.py` | stamps `metadata: {user_id, feature}` on every `lem-*` request |
+| `utilities/ai/client.py` | stamps `metadata: {user_id, feature}` on every `lem-*` request, and sets the per-request redaction opt-out for the features in `LLM_PROMPT_LOGGING_FEATURES` |
 
 Requires LiteLLM **≥ 1.77.3** for the logger, and the `posthog serilization fix` (BerriAI/litellm
 [#20668](https://github.com/BerriAI/litellm/pull/20668), 2026-02-07) for the batch-send crash
@@ -56,11 +56,71 @@ sentinel exactly like a missing id, so system traffic still lands in the experim
 
 ### Privacy
 
-`turn_off_message_logging: true` redacts `$ai_input` / `$ai_output_choices` before any callback sees
-them. LEM's prompts are the user's own LinkedIn material — profile synthesis, story-bank anecdotes,
-draft DMs — and the SPA already masks exactly that content (`maskProps`). Metrics are unaffected.
-Turning it off gives PostHog's generation view the full conversation text; that is a deliberate
-product decision, not a default.
+**The default is redacted, and the exception is per feature.** `turn_off_message_logging: true` in
+`.litellm/config.yaml` is the global floor: `$ai_input` / `$ai_output_choices` arrive as the literal
+string `redacted-by-litellm` on every call. LEM's prompts are the user's own LinkedIn material —
+profile synthesis, story-bank anecdotes, draft DMs — and the SPA masks exactly that content
+(`maskProps`). Metrics are unaffected either way.
+
+That floor is also what makes output quality **ungradable**: an online evaluation judging a published
+comment scores a constant. The failure modes a hand audit of `comment_generation` traces found —
+inventing first-person metrics (#1834), commenting on a post whose body never arrived (#1833) —
+are invisible in tokens, cost, latency and model, and both publish under the user's name.
+
+So the un-redaction is scoped to one feature at a time rather than switched on globally. LiteLLM
+resolves redaction **per request** (`should_redact_message_logging`): a request carrying
+`LiteLLM-Disable-Message-Redaction: true` logs its messages in full, and everything else stays
+redacted. `utilities/ai/client.py` sets that header for the `feature` values named in
+**`LLM_PROMPT_LOGGING_FEATURES`** and no others.
+
+| | |
+|---|---|
+| Default | **empty — nothing opts out.** A deploy changes what leaves the stack only when an operator sets the var |
+| Granularity | the `feature` bucket (`comment` / `content` / `dm` / `newsletter` / `marketing` / `system`) |
+| Chat only | keyed on the request carrying `messages`, so an image `prompt` or an embedding `input` is never disclosed even when its feature IS allowlisted — `$ai_output_choices` is a chat shape and nothing grades the others |
+| Audit trail | one `log_info` per released call, naming the feature. A redacted call logs nothing, so the line means content left |
+| Authoritative | a call site cannot opt itself out — the header is STRIPPED (and warned) off a request the env allowlist does not cover |
+| Typos | a name that is not a real feature is dropped and warned about once per process, because `comment_generation` (the trace name) and `comments` are the obvious things to type |
+| Fails | CLOSED — unset, empty, unparseable, unattributed, a raw provider model, a non-chat endpoint, or a throwing hook all stay redacted |
+| Not a flag | `utilities/flags.py` fails OPEN to its default; a data-egress control must not. Env var only |
+| Sign-off | issue **#1832** — processor, retention, and whether `PrivacyPolicy.tsx` §7 has to name it |
+
+**What allowlisting a feature actually discloses.** Scoping by `feature` is not the same as scoping
+by content class, and the difference is the whole of the owner decision. Allowlisting `comment`
+sends, per call:
+
+* the user's **profile synthesis**, which `generate_ai_response` embeds as the voice reference;
+* the **target post's full body** — a third party's text, written by someone who is not a LEM user;
+* the post's image URL, the style/intention directives, and any research `findings` block that ran;
+* the drafted comment itself, which is about to be published publicly anyway.
+
+So "grading the comment drafter" is not a narrow content class. It is narrow *relative to the whole
+proxy* — `dm`, `newsletter` and post drafting stay redacted — which is the claim this control makes
+and the only one it makes. #1832 is where that is weighed.
+
+**Re-verify the header on a LiteLLM upgrade.** The stack runs a floating
+`ghcr.io/berriai/litellm:main-latest`, so this contract can change on an image pull with no commit
+here. It was read off `litellm/litellm_core_utils/redact_messages.py` on `main`: priority 2 of
+`should_redact_message_logging`, matched as
+`bool(request_headers.get("litellm-disable-message-redaction", False))` against
+`litellm_params.metadata.headers`. Nothing in this repo can prove the proxy still honours it — the
+unit tests prove only that LEM *sends* it. If the name moves, grading reverts to constant scores:
+safe, but silent. Check that file when the image moves, or when an evaluation's pass rate goes flat.
+
+Three limits worth knowing:
+
+* **`maskProps` stops protecting an allowlisted feature.** The SPA still masks that content on the
+  browser leg, but the proxy sends the same text from the server leg, so the client-side mask is no
+  longer the control. Do not read the two as redundant.
+* **Redaction never covered the model's own `reasoning`.** It rides in `provider_specific_fields`,
+  not in `standard_logging_object`, and reaches PostHog regardless of this setting — which is where
+  the audit read those fabricated numbers from, while the config said `true`. Same class of escape
+  as `previous_models` (see `.litellm/posthog_payload_guard.py`). Open as **#1831**; until it lands,
+  "redacted" means *messages* redacted, not *no content*.
+* **PostHog Cloud US is a shared project.** `POSTHOG_HOST=https://us.i.posthog.com`, the same project
+  as product analytics, `$exception` groups and session replay, on that project's retention. #1832
+  decides whether `$ai_generation` should be split out or given a shorter one before any feature is
+  allowlisted.
 
 ## De-dupe: which stream answers which question
 

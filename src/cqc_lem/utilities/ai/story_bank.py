@@ -18,6 +18,7 @@ from datetime import date, datetime
 from typing import Optional
 
 from cqc_lem.utilities.ai.content_framework import content_tokens, first_person_proof_sentences
+from cqc_lem.utilities.ai.slop_lint import SEVERITY_HARD, SEVERITY_OFF, SEVERITY_WARN
 
 # How many content tokens an entry must share with the post's subject/focus topics to count as
 # "relevant". One shared topic word is a deliberately low bar: the alternative to using the user's
@@ -217,6 +218,57 @@ def unsourced_specifics(content: Optional[str], sources: Optional[list]) -> list
 def has_unsourced_specifics(content: Optional[str], sources: Optional[list]) -> bool:
     """True when the draft states a first-person specific we never gave it — i.e. it fabricated."""
     return bool(unsourced_specifics(content, sources))
+
+
+# Severity of the unsourced-specific check, PER SURFACE — the `slop_lint.SURFACE_SEVERITIES`
+# pattern, and the same vocabulary, because the question is the same one: how often is this check
+# WRONG about a good draft, and what does a wrong verdict cost on THIS surface?
+#
+# COMMENTS are HARD (issue #1834). A comment publishes under the user's name the moment it is
+# drafted — no review queue, no approval step, no edit before it lands — so the only two outcomes
+# are "ship it" and "skip this post". A trace audit found invented first-person metrics ("we logged
+# 1,200 errors per week, then 300, a 75% drop") in roughly 8 of 12 drafts read, and those read as
+# the user's own operating history to everyone in the thread. A wrong block costs one comment on
+# one post; a wrong pass costs a public, unretractable claim about the user's business.
+#
+# The known false positive is a spelled quantity counting nothing the sources mention — "in my
+# experience three things matter". It costs one bounded regeneration (`comment_gate_max_attempts`
+# caps the spend) and the retry directive names the token, so the rewrite drops it rather than
+# paraphrasing around it. That is the trade HARD is buying.
+#
+# Everything else stays WARN. A POST is graded by the review gate and repaired by the #1134 editor
+# loop, which already runs this same check against the story bank and then HOLDS the post at
+# PENDING for a human — a second HARD verdict here would block the draft that path exists to fix.
+FACT_GROUNDING_SEVERITIES: dict = {
+    "comment": SEVERITY_HARD,
+}
+FACT_GROUNDING_SEVERITY_DEFAULT = SEVERITY_WARN
+
+
+def fact_grounding_severity(content_type: Optional[str] = None) -> str:
+    """Resolve this surface's verdict when a draft states an unsourced first-person specific.
+
+    'hard' regenerates and then blocks, 'warn' records it and ships anyway, 'off' skips the check.
+    Resolved most-specific-first so ops can overrule a built-in without a deploy:
+    `FACT_GROUNDING_SEVERITY_<SURFACE>` beats the global `FACT_GROUNDING_SEVERITY`, which beats
+    `FACT_GROUNDING_SEVERITIES` and then the WARN default. Read at call time, like every other
+    severity knob in the content core.
+
+    Args:
+        content_type: The surface being graded ('comment', 'post', ...). An unknown or missing
+            surface takes the default.
+
+    Returns:
+        One of `SEVERITY_HARD`, `SEVERITY_WARN` or `SEVERITY_OFF`.
+    """
+    surface = str(content_type or "").strip().lower()
+    names = [f"FACT_GROUNDING_SEVERITY_{surface.upper()}"] if surface else []
+    names.append("FACT_GROUNDING_SEVERITY")
+    for name in names:
+        raw = (os.environ.get(name) or "").strip().lower()
+        if raw in (SEVERITY_HARD, SEVERITY_WARN, SEVERITY_OFF):
+            return raw
+    return FACT_GROUNDING_SEVERITIES.get(surface, FACT_GROUNDING_SEVERITY_DEFAULT)
 
 
 def fabrication_repair_directive(tokens: Optional[list]) -> str:

@@ -357,6 +357,44 @@ always fell through to `drift`. Fixed by capturing the URL route's OWN text unde
 reads `unknown` (`"the custom-invite URL rendered nothing — the known-dead route-4 legacy
 fallback…"`), live-reconfirmed on both `nikunj-bajaj-10476824` and `johnwinner`.
 
+### The Connect dialog has an email-verification variant, and only its PROSE differs (#1836)
+
+For a subset of targets LinkedIn will not accept the invite without the recipient's email address.
+Captured live 2026-09-01 (`/opt/lem/logs/cqc_lem_2026_09_01.log`, `https://www.linkedin.com/in/wfalcon`)
+through the shadow-piercing overlay dump `_overlay_evidence` added for #1813:
+
+```
+Dialog content start. Add a note to your invitation? To verify this member knows you, please
+enter their email to connect. You can also include a personal note. Learn why
+Add a note Send without a note Dialog content end.
+```
+
+against the ordinary variant on the same account in the same run:
+
+```
+Dialog content start. Add a note to your invitation? Personalize your invitation to
+<Name> by adding a note. LinkedIn members are more likely to accept invitations that
+include a note. Add a note Send without a note Dialog content end.
+```
+
+Same heading, same two controls (`Add a note`, `Send without a note`), so **`_connect_dialog_present`
+is satisfied by both and cannot tell them apart** — the notice text and the extra `Learn why`
+control are the only distinguishing markup. A detector has to read the dialog's own words (or find
+the email input inside the dialog container), and it must be three-valued: unreadable text is
+`unknown` and behaves exactly as today, never "wants email".
+
+**This is not selector rot**, for the same reason an invite limit is not: it reads identically on
+every affected profile and grading it as drift files a defect against locators that are fine. It is
+worse than that here, because a Class-C target that falls through to the generic miss feeds
+`record_invite_dialog_miss` — on 2026-09-01 `wfalcon` was the third consecutive miss and the run
+ended `Connection invites HELD for user 1 for 21600s`. A target LinkedIn is deliberately gating must
+never brake the lane for reachable ones.
+
+Where the email comes from is a **cross-repo contract**: `christopherqueenconsulting/backfill`
+already resolves connection emails via apollo.io and supplies them to LEM through the
+`/api/connection_request` surface. See the handoff note under "Cross-project suppliers" in
+[`identity-and-sessions.md`](identity-and-sessions.md).
+
 ## Profile experience rows: the a11y twin, not a line index (#970)
 
 `/details/experience/` renders most text **twice** — a visible `span[aria-hidden="true"]` beside a
@@ -444,11 +482,11 @@ one-role page cannot swallow itself. `experience_entity_nodes` reports it as
 ancestor chain of each dated line, keyed on `role` / `data-*` / `aria-*` / `href` only — so the next
 render's shape is in the first probe report instead of a hand-written second pass.
 
-## The degree badge is a leaf node's TEXT, never a class
+## The degree badge is an element's TEXT, never a class
 
 `span.dist-value` / `span.distance-badge` were confirmed dead on the same 2026-08-03 grab. Both are
 class anchors, and every class anchor on the profile is now hashed. What the top card still writes
-is the degree itself, as its own leaf node whose entire text is `1st` / `2nd` / `3rd+` (sometimes
+is the degree itself, as an element whose whole rendered text is `1st` / `2nd` / `3rd+` (sometimes
 `· 2nd`, sometimes spelled out as `2nd degree connection`) — so `_PROFILE_DEGREE_LOCATORS` and
 `scrapper._degree_from_source` both key off that text, with the class anchors kept only as a legacy
 tail. This read is load-bearing twice over: `_profile_is_first_degree` aborts a pointless invite
@@ -461,29 +499,37 @@ against a 2nd/3rd-degree profile and read `degree_anchors` in the report.
 
 **Confirmed live 2026-08-14** (#1031, `--profile-scrape` against a 3rd-degree profile, deployed
 build `v0.149.0`, which carries #1025 — it shipped in `v0.134.0`): `state: ok`,
-`degree_grounded: true`, and a non-empty `degree_locator_matches` — the union leaf XPath, and only
+`degree_grounded: true`, and a non-empty `degree_locator_matches` — the leaf XPath, and only
 it; both class anchors matched nothing. **Neither list in that report is a count**: the probe
 truncates each locator's `texts` to the first five and caps `degree_anchors` at eight, so the run's
 `· 3rd`, `· 3rd`, `· 3rd+`, `· 3rd`, `· 3rd` (matches) and the two `· 2nd` further down `<main>`
 (anchors) are floors, not totals — a later run showing a different length is a truncation artefact,
 not drift.
 
-Two details the earlier grab did not pin: the badge renders as a **`<p>`** leaf, not a `<span>`, and
+Two details the earlier grab did not pin: the badge renders as a **`<p>`** node, not a `<span>`, and
 every one of its classes is hashed (`d3e5c957 _797b549d …`) — the class is unusable as an anchor.
-The tag is not: the leading union's first branch is
-`[self::span or self::div or self::li or self::p]`, so it is tag-**tolerant**, not tag-agnostic, and
-it reads this page only because `<p>` is in that list. A badge that ever renders in some other tag
-falls through to the second branch, which matches the spelled-out `degree connection` text and
-nothing else — so widening the tag list is the fix if the bare `· 2nd` shape ever moves again.
+The tag is not: the leaf XPath is scoped to `[self::span or self::div or self::li or self::p]`, so
+it is tag-**tolerant**, not tag-agnostic, and it reads this page only because `<p>` is in that list.
+Widening the tag list is the fix if the badge ever renders in some other tag.
 `tests/unit/app/test_sdui_zero_walk_tripwires.py` (`TestTheLiveBadgeShapeStaysGrounded`) pins this
 exact DOM: all three of its tests fail if `self::p` leaves the chain.
+
+**Confirmed live 2026-08-31** (#1021 tripwire fired, then re-grounded): LinkedIn wrapped the badge
+text beside a child element (an icon), so the badge node is **no longer childless**. The old leaf
+XPath required a childless node (`not(*)`), so it matched nothing while `<main>` still rendered the
+degree line — the exact drift the zero-walk cross-check exists to catch. The read failed open to
+`False`, so the invite lane fired connection requests at people already in the first degree. The fix
+drops `not(*)` and matches the badge by its EXACT `normalize-space()` text instead: an icon child
+adds no text, so the node still reads as a bare token, and an ancestor carrying the badge plus other
+text no longer matches. `TestABadgeWrappedBesideAnIconStillReads` pins this shape.
 
 **The FIRST badge is the profile's; every later one names somebody else.** A text anchor is far
 broader than the class anchor it replaced, and a profile page is full of other people's badges —
 the "People also viewed" rail outside `<main>`, mutual-connection highlights inside it. So both
 reads take the first match in DOCUMENT order and nothing else: `_PROFILE_DEGREE_LOCATORS` leads
-with a single **union** XPath (a union returns nodes in document order, two locators would not) and
-`_profile_is_first_degree` judges `texts[0]`, while `_degree_from_source` is scoped to `<main>` and
+with a single XPath (one location path returns nodes in document order; separate locators would
+not) and `_profile_is_first_degree` judges `texts[0]`, while `_degree_from_source` is scoped to
+`<main>` and
 returns on the first hit. Reading "any badge on the page" is the #1012 rail hazard in a read
 instead of a click: it cancels the invite to a 2nd-degree target because one of their mutuals is a
 1st.

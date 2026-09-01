@@ -188,6 +188,8 @@ that exists**, and the reason is structural rather than an access problem:
 * The traces cannot fill the gap either. LiteLLM runs with `turn_off_message_logging: true`
   (`.litellm/config.yaml`), so `$ai_input` / `$ai_output_choices` are redacted before any callback
   sees them — no `$ai_generation` row carries the intermediate draft. There is no replay corpus.
+  (PR #1828 added a per-feature opt-out, `LLM_PROMPT_LOGGING_FEATURES`, but it ships empty and the
+  evidenced case for setting it is `comment`, not `newsletter` — see `docs/llm-analytics.md`.)
 * The corpus cannot even say which editions entered the loop. The lint reached this surface in
   `dc466773` (2026-07-26) and the sampled editions run from a 2026-07-07 slot, so an unknown number
   of the ten were written when no regeneration existed to grade.

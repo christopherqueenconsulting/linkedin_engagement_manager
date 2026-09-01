@@ -291,13 +291,23 @@ def hold_commenting(user_id: int, seconds: int, reason: str = "comment quality")
     if client is None:
         return False
     try:
-        client.set(_COMMENT_HOLD_KEY.format(user_id=int(user_id)), reason or "comment quality",
-                   ex=max(1, int(seconds)))
-        log_warning(f"Feed commenting HELD for user {user_id} for {int(seconds)}s "
-                    f"(reason: {reason})", action_type="comment", user_id=int(user_id))
+        # Resolved once, so the log line below describes what was actually STORED. It used to
+        # interpolate the raw arguments, so a defaulted reason logged "(reason: )" and a clamped
+        # TTL logged "for 0s" while Redis held "comment quality" for 1s.
+        ttl = max(1, int(seconds))
+        stored_reason = reason or "comment quality"
+        client.set(_COMMENT_HOLD_KEY.format(user_id=int(user_id)), stored_reason, ex=ttl)
+        # INFO, not WARNING: storing a hold is a state transition, not a degraded path detected
+        # here. The only caller (auto_weekly_comment_quality) follows this with the deliberate
+        # log_critical that IS the needs-human flag for issue #628, so warning here filed a second
+        # grouped $exception for one verdict. See #917/#1826 and the state-setter section of
+        # docs/error-tracking.md.
+        log_info(f"Feed commenting HELD for user {user_id} for {ttl}s "
+                 f"(reason: {stored_reason})", action_type="comment", user_id=int(user_id))
         return True
     except Exception as e:
-        log_warning("Failed to set commenting hold", exc=e, action_type="comment")
+        log_warning("Failed to set commenting hold", exc=e, action_type="comment",
+                    user_id=user_id)
         return False
 
 
@@ -379,13 +389,21 @@ def hold_invites(user_id: int, seconds: int = INVITE_HOLD_DEFAULT_SECONDS,
     if client is None:
         return False
     try:
-        client.set(_INVITE_HOLD_KEY.format(user_id=int(user_id)), reason or "invite limit",
-                   ex=max(1, int(seconds)))
-        log_warning(f"Connection invites HELD for user {user_id} for {int(seconds)}s "
-                    f"(reason: {reason})", action_type="invite_connect", user_id=int(user_id))
+        # Resolved once, so the log line below describes what was actually STORED. It used to
+        # interpolate the raw arguments, so a defaulted reason logged "(reason: None)" and a
+        # clamped TTL logged "for 0s" while Redis held "invite limit" for 1s.
+        ttl = max(1, int(seconds))
+        stored_reason = reason or "invite limit"
+        client.set(_INVITE_HOLD_KEY.format(user_id=int(user_id)), stored_reason, ex=ttl)
+        # INFO, not WARNING: a stored hold is a state transition, not a degraded path detected here
+        # — both callers already log at the level their own trigger deserves. See #917 and the
+        # state-setter section of docs/error-tracking.md.
+        log_info(f"Connection invites HELD for user {user_id} for {ttl}s "
+                 f"(reason: {stored_reason})", action_type="invite_connect", user_id=int(user_id))
         return True
     except Exception as e:
-        log_warning("Failed to set invite hold", exc=e, action_type="invite_connect")
+        log_warning("Failed to set invite hold", exc=e, action_type="invite_connect",
+                    user_id=user_id)
         return False
 
 

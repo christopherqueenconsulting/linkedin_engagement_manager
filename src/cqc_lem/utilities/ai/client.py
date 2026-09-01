@@ -19,7 +19,7 @@ from typing import Any, Optional, Tuple
 import httpx
 from openai import APIConnectionError, OpenAI
 
-from cqc_lem.utilities.logger import log_debug
+from cqc_lem.utilities.logger import log_debug, log_info, log_warning
 from cqc_lem.utilities.routing_policy import SYSTEM_USER_ID
 
 # Only tier aliases are routable AND priced by the proxy, so nothing is attached to a call that
@@ -39,6 +39,48 @@ _PARENT_KEY = "parent_run_id"
 # Mirrors observability.FEATURE_SYSTEM. Kept as a literal so this module never imports observability
 # eagerly — that would drag the DB and PostHog into every `from ...ai.client import client`.
 _SYSTEM_FEATURE = "system"
+
+# The proxy redacts $ai_input/$ai_output_choices on every call (`turn_off_message_logging: true` in
+# .litellm/config.yaml), which is what makes output quality ungradable: an online evaluation judging
+# a published comment scores the literal string `redacted-by-litellm`. LiteLLM resolves redaction PER
+# REQUEST (`should_redact_message_logging`), and this header is its documented opt-out — so the
+# un-redaction is scoped to the features that have an evaluation waiting, instead of turning the
+# whole proxy's generation view into full conversation text.
+#
+# The contract was read off litellm/litellm_core_utils/redact_messages.py on `main` (the stack runs
+# ghcr.io/berriai/litellm:main-latest): priority 2 of `should_redact_message_logging`, matched as
+# `bool(request_headers.get("litellm-disable-message-redaction", False))` against
+# `litellm_params.metadata.headers`. Nothing here can PROVE the proxy still honours it — if the name
+# moves, grading silently reverts to constant scores, which is the safe direction but an invisible
+# one. Re-verify against that file on a LiteLLM upgrade.
+_REDACTION_OFF_HEADER = "litellm-disable-message-redaction"
+
+# Comma-separated feature names (the same values `attribution_metadata` stamps) whose prompt and
+# completion CONTENT may reach PostHog. UNSET OR EMPTY MEANS NONE — this is a data-egress control,
+# so it fails CLOSED, and it is an env var rather than a utilities/flags.py flag because a flag
+# fails OPEN to its default and safety controls are never flags. Setting it is an owner decision:
+# issue #1832 carries the processor, retention and privacy-language questions it turns on.
+_PROMPT_LOGGING_FEATURES_ENV = "LLM_PROMPT_LOGGING_FEATURES"
+
+# Mirrors observability.FEATURE_* for the same reason _SYSTEM_FEATURE does — importing observability
+# here would drag the DB and PostHog into every `from ...ai.client import client`. The mirror cannot
+# drift silently: test_client_prompt_logging.py reads the real constants and fails on any difference.
+# Anything not in here is dropped from the allowlist, so an added-but-unmirrored feature fails CLOSED
+# (redacted) and CI says so, rather than being quietly disclosed.
+_KNOWN_FEATURES = frozenset({"content", "comment", "dm", "newsletter", "marketing", "system"})
+
+#: Names already reported as unrecognised, so the warning is once per process, not once per call.
+_UNKNOWN_FEATURES_WARNED: set[str] = set()
+
+#: Allowlists already announced, so "is prompt logging on?" is answerable from the log without
+#: waiting for the first allowlisted call — and without a line per call.
+_ALLOWLISTS_ANNOUNCED: set[str] = set()
+
+#: Request hooks already reported as failing, so a broken hook says so once instead of per call.
+_HOOK_FAILURES_WARNED: set[str] = set()
+
+#: Latch for the "a call site tried to opt itself out" warning, same reason as the two above.
+_HEADER_STRIPPED_WARNED: set[str] = set()
 
 # The LiteLLM proxy is a container LEM restarts on its own schedule (deploys, image pulls, the host's
 # nightly unattended-upgrade reboot). While it is coming back up every call gets
@@ -177,25 +219,158 @@ def _attach_trace(options) -> None:
         metadata.setdefault(_PARENT_KEY, span_id)
 
 
+def prompt_logging_features() -> frozenset[str]:
+    """Features whose prompt/completion CONTENT may leave the stack, read at CALL time.
+
+    Read here rather than at import so an operator can widen or (more importantly) close it with an
+    `.env` edit and a worker restart, and normalized to lower case because the value is typed by
+    hand. Anything unset, empty or whitespace yields the empty set, which redacts everything.
+
+    An unrecognised name is DROPPED, not honoured — the failure of a misconfigured egress control has
+    to be "nothing left the stack". It is also warned about exactly once per name per process,
+    because the silent version of this is an operator setting `comments` or `comment_generation` (the
+    trace name, not the feature) and concluding the mechanism is broken.
+    """
+    raw = os.getenv(_PROMPT_LOGGING_FEATURES_ENV) or ""
+    named = frozenset(part.strip().lower() for part in raw.split(",") if part.strip())
+    unwarned = (named - _KNOWN_FEATURES) - _UNKNOWN_FEATURES_WARNED
+    if unwarned:
+        # Once per distinct name, not once per call: this sits in the path of every LLM request, and
+        # the escalation contract turns a repeated warning into an ERROR and a grouped $exception.
+        _UNKNOWN_FEATURES_WARNED.update(unwarned)
+        log_warning(f"{_PROMPT_LOGGING_FEATURES_ENV} names features that do not exist: "
+                    f"{', '.join(sorted(unwarned))} — they allowlist nothing. Valid: "
+                    f"{', '.join(sorted(_KNOWN_FEATURES))}", api_provider="litellm")
+    allowed = named & _KNOWN_FEATURES
+    if allowed:
+        # Once per distinct allowlist, so a worker says out loud that prompt content is releasable
+        # rather than that one just left. It fires on the FIRST chat call a tier alias makes, not at
+        # startup — this function is only reached past the shape gates in `_allowlisted_feature`.
+        announced = ",".join(sorted(allowed))
+        if announced not in _ALLOWLISTS_ANNOUNCED:
+            _ALLOWLISTS_ANNOUNCED.add(announced)
+            log_info(f"Prompt logging is ENABLED for: {announced}. Their prompts and completions "
+                     "reach PostHog un-redacted (docs/llm-analytics.md)", api_provider="litellm")
+    return allowed
+
+
+def _allowlisted_feature(options: Any, body: dict[str, Any]) -> Optional[str]:
+    """This request's feature if its content may be logged, else None.
+
+    Total: it never raises for a shape it does not recognise, because every unrecognised shape is
+    itself a reason to stay redacted.
+    """
+    if getattr(options, "files", None):
+        return None
+    if not str(body.get("model") or "").startswith(_TIER_PREFIX):
+        return None
+    # CHAT ONLY. `$ai_input`/`$ai_output_choices` is what an evaluation grades, and it is what a chat
+    # completion produces — an image `prompt`, an embedding `input` or a TTS `input` would be
+    # disclosed for a reading nothing takes. Keyed on the body shape rather than an alias blocklist,
+    # so a new non-chat alias is excluded the day it is added instead of the day someone remembers.
+    if not isinstance(body.get("messages"), list):
+        return None
+    allowed = prompt_logging_features()
+    if not allowed:
+        return None
+    metadata = _request_metadata(options)
+    feature = str((metadata or {}).get("feature") or "").strip().lower()
+    return feature if feature and feature in allowed else None
+
+
+def _attach_prompt_logging(options: Any) -> None:
+    """Decide, for THIS request, whether its messages may reach PostHog un-redacted.
+
+    Fails closed at every step: an un-allowlisted feature, a request that carries no attribution at
+    all, a raw provider model, a non-chat endpoint, or an empty allowlist all leave the proxy's
+    global redaction in place — as does any exception, since `_build_request` swallows one and the
+    header is simply never added.
+
+    The env allowlist is AUTHORITATIVE: this is the ONLY writer of the header. A request the
+    allowlist does not cover has it stripped, and one it does cover has it OVERWRITTEN rather than
+    left alone — an allowlist a call site can override per request is not an allowlist, and LiteLLM
+    matches the header with `bool(...)`, so a caller writing "false" to ask FOR redaction would get
+    the opposite. Overwriting also means there is no release path that skips the log line below.
+    Nothing in LEM sets the header today; this keeps that true.
+    """
+    body = getattr(options, "json_data", None)
+    if not isinstance(body, dict):
+        return
+    sent = getattr(options, "headers", None)
+    # A headers object that holds something this cannot READ must not be WRITTEN either: replacing
+    # it with a fresh dict would drop whatever it held. Do nothing and stay redacted. `None` and the
+    # SDK's falsy `NOT_GIVEN` sentinel hold nothing, so those start a fresh dict as `_attach_trace`
+    # does — refusing THOSE would disable the feature outright, since NOT_GIVEN is the default.
+    if sent and not isinstance(sent, Mapping):
+        return
+    headers = dict(sent) if isinstance(sent, Mapping) else {}
+    present = [key for key in headers if str(key).lower() == _REDACTION_OFF_HEADER]
+    feature = _allowlisted_feature(options, body)
+
+    if feature is None:
+        if not present:
+            return
+        options.headers = {key: value for key, value in headers.items() if key not in present}
+        # Latched like every other warning in this module: it sits in the path of every LLM call, and
+        # the escalation contract turns a repeated warning into an ERROR and a grouped $exception.
+        if _REDACTION_OFF_HEADER not in _HEADER_STRIPPED_WARNED:
+            _HEADER_STRIPPED_WARNED.add(_REDACTION_OFF_HEADER)
+            log_warning("A call site set the prompt-redaction opt-out header on a request that is "
+                        f"not allowlisted ({_PROMPT_LOGGING_FEATURES_ENV}); stripped it",
+                        api_provider="litellm")
+        return
+
+    for key in present:
+        del headers[key]
+    headers[_REDACTION_OFF_HEADER] = "true"
+    options.headers = headers
+    # The audit trail for the egress itself: without it, the only way to learn that content is
+    # leaving the stack is to go and read PostHog. INFO rather than WARNING because an allowlisted
+    # feature doing exactly what it was allowlisted for is not a defect, and rather than DEBUG
+    # because releasing user content to a third party should be legible in the logs by default.
+    # `user_id` names WHOSE material left, which is the difference between an audit trail and a
+    # counter: a subject-access or deletion request has to be answerable from these lines alone.
+    log_info("Prompt logging: sending this call's messages to PostHog un-redacted",
+             feature=feature, model=str(body.get("model") or ""),
+             user_id=(_request_metadata(options) or {}).get("user_id"), api_provider="litellm")
+
+
 class AttributedOpenAI(OpenAI):
     """The OpenAI client with LEM's who/what — and which pipeline — stamped onto every proxied request.
 
     Attribution lives here rather than at the ~10 call sites because a call that skips it is
     invisible in cost routing and lands on an anonymous PostHog person — a silent failure nobody
     would notice. Trace ids are here for the same reason: a step that forgot them would drop out of
-    its post's trace and nothing would say so. `_build_request` is the one place the SDK funnels
-    every endpoint through; tests/unit/utilities/ai/test_client_attribution.py and
-    test_client_tracing.py drive a real request build so an SDK upgrade that moves the hook fails CI
-    instead of quietly dropping either.
+    its post's trace and nothing would say so. The prompt-logging opt-out is here because it is
+    decided FROM the attribution, so it can only be read once that is stamped. `_build_request` is
+    the one place the SDK funnels every endpoint through; tests/unit/utilities/ai/
+    test_client_attribution.py, test_client_tracing.py and test_client_prompt_logging.py drive a real
+    request build so an SDK upgrade that moves the hook fails CI instead of quietly dropping any of
+    them.
     """
 
-    def _build_request(self, options, **kwargs):
+    def _build_request(self, options: Any, **kwargs: Any) -> httpx.Request:
         # Independently guarded: attribution failing must not also cost the trace, or vice versa.
-        for hook in (_attach_attribution, _attach_trace):
+        # Order matters once — prompt logging reads the metadata attribution just wrote.
+        for hook in (_attach_attribution, _attach_trace, _attach_prompt_logging):
             try:
                 hook(options)
-            except Exception:
-                pass  # observability is never a reason to lose the generation
+            except Exception as exc:
+                # Observability is never a reason to lose the generation — but a hook that has
+                # started throwing (a renamed SDK attribute, a changed `options.headers` type) is
+                # invisible otherwise, and its consequences are silent by construction: an anonymous
+                # PostHog person, a generation missing from its trace, or evaluation scores that stay
+                # constant forever. ONCE per hook per process, because this is the path of every LLM
+                # call and the escalation contract turns a repeated warning into an ERROR storm.
+                # getattr, not `hook.__name__`: a test that patches a hook substitutes a Mock, which
+                # has no `__name__`, and an AttributeError raised HERE would escape this except and
+                # cost the generation — the one thing this block exists to prevent.
+                name = getattr(hook, "__name__", repr(hook))
+                if name not in _HOOK_FAILURES_WARNED:
+                    _HOOK_FAILURES_WARNED.add(name)
+                    log_warning(f"LLM request hook {name} failed; the call still goes out, "
+                                "but what it stamps is missing until this is fixed",
+                                exc=exc, api_provider="litellm")
         return super()._build_request(options, **kwargs)
 
     def post(self, *args: Any, **kwargs: Any) -> Any:
