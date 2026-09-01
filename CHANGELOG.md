@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.172.6](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.172.5...v0.172.6) (2026-09-01)
+
+
+### Bug Fixes
+
+* **connections:** accept a known email on a connection request and use it to clear LinkedIn's Connect verification challenge (closes [#1836](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1836)) ([#1840](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1840)) ([96e7d2b](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/96e7d2bad0225fc0438b7445ef7b3fcaf4a5adcc))
+
 ## [0.172.5](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.172.4...v0.172.5) (2026-09-01)
 
 
