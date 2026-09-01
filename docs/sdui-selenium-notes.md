@@ -357,6 +357,44 @@ always fell through to `drift`. Fixed by capturing the URL route's OWN text unde
 reads `unknown` (`"the custom-invite URL rendered nothing — the known-dead route-4 legacy
 fallback…"`), live-reconfirmed on both `nikunj-bajaj-10476824` and `johnwinner`.
 
+### The Connect dialog has an email-verification variant, and only its PROSE differs (#1836)
+
+For a subset of targets LinkedIn will not accept the invite without the recipient's email address.
+Captured live 2026-09-01 (`/opt/lem/logs/cqc_lem_2026_09_01.log`, `https://www.linkedin.com/in/wfalcon`)
+through the shadow-piercing overlay dump `_overlay_evidence` added for #1813:
+
+```
+Dialog content start. Add a note to your invitation? To verify this member knows you, please
+enter their email to connect. You can also include a personal note. Learn why
+Add a note Send without a note Dialog content end.
+```
+
+against the ordinary variant on the same account in the same run:
+
+```
+Dialog content start. Add a note to your invitation? Personalize your invitation to
+<Name> by adding a note. LinkedIn members are more likely to accept invitations that
+include a note. Add a note Send without a note Dialog content end.
+```
+
+Same heading, same two controls (`Add a note`, `Send without a note`), so **`_connect_dialog_present`
+is satisfied by both and cannot tell them apart** — the notice text and the extra `Learn why`
+control are the only distinguishing markup. A detector has to read the dialog's own words (or find
+the email input inside the dialog container), and it must be three-valued: unreadable text is
+`unknown` and behaves exactly as today, never "wants email".
+
+**This is not selector rot**, for the same reason an invite limit is not: it reads identically on
+every affected profile and grading it as drift files a defect against locators that are fine. It is
+worse than that here, because a Class-C target that falls through to the generic miss feeds
+`record_invite_dialog_miss` — on 2026-09-01 `wfalcon` was the third consecutive miss and the run
+ended `Connection invites HELD for user 1 for 21600s`. A target LinkedIn is deliberately gating must
+never brake the lane for reachable ones.
+
+Where the email comes from is a **cross-repo contract**: `christopherqueenconsulting/backfill`
+already resolves connection emails via apollo.io and supplies them to LEM through the
+`/api/connection_request` surface. See the handoff note under "Cross-project suppliers" in
+[`identity-and-sessions.md`](identity-and-sessions.md).
+
 ## Profile experience rows: the a11y twin, not a line index (#970)
 
 `/details/experience/` renders most text **twice** — a visible `span[aria-hidden="true"]` beside a
