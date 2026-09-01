@@ -491,13 +491,32 @@ def _verified_reading(reading: Optional[dict]) -> Optional[dict]:
     return None
 
 
+# How many times `read_last_sender` re-polls an empty read before giving up. `check_dm_replied`
+# calls it the instant `open_message_thread` reports events, but LinkedIn paints the message
+# bubbles before the separate call that attaches each group's sender name lands — so the very
+# first read can land in that gap even though the thread is genuinely open and readable.
+_SENDER_READ_RETRIES = 4
+
+
 def read_last_sender(driver: WebDriver) -> str:
-    """Name on the most recent message group of the ALREADY-OPEN thread ('' when unreadable)."""
-    try:
-        return (driver.execute_script(_LAST_SENDER_JS) or "").strip()
-    except Exception as e:
-        log_warning("Could not read the last DM sender", exc=e, action_type="followup")
-        return ""
+    """Name on the most recent message group of the ALREADY-OPEN thread ('' when unreadable).
+
+    Retried briefly (issue #1864): a read taken right as the thread opens can catch the name
+    field before its async attach finishes, which reads identically to a rotated selector
+    (events present, sender empty) — the caller warns either way, so a transient race on every
+    reply check was filing a `RecurringWarning` for working behaviour. A read that is STILL empty
+    after the budget is spent is unchanged: '' , and the caller's warning stands.
+    """
+    for attempt in range(_SENDER_READ_RETRIES):
+        try:
+            sender = (driver.execute_script(_LAST_SENDER_JS) or "").strip()
+        except Exception as e:
+            log_warning("Could not read the last DM sender", exc=e, action_type="followup")
+            return ""
+        if sender or attempt == _SENDER_READ_RETRIES - 1:
+            return sender
+        time.sleep(_POLL_SECONDS)
+    return ""
 
 
 def read_last_message(driver: WebDriver) -> str:

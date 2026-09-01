@@ -538,6 +538,23 @@ class TestReaders:
         assert mt.read_last_sender(d) == ""
         assert mt.read_last_message(d) == ""
 
+    def test_sender_retries_through_a_transient_empty_read(self):
+        # issue #1864: the name attach lands async, so the first read(s) after the thread opens
+        # can be empty even though the thread is genuinely readable — a bare retry recovers it
+        # without ever reaching the "no sender could be read" warning.
+        d = MagicMock()
+        d.execute_script.side_effect = ["", "", "Jane Doe"]
+        assert mt.read_last_sender(d) == "Jane Doe"
+        assert d.execute_script.call_count == 3
+
+    def test_sender_still_empty_after_every_retry_is_unreadable(self):
+        # A genuinely rotated selector (or a sender that never arrives) must still end up '' once
+        # the retry budget is spent — the caller's warning is the correct outcome here.
+        d = MagicMock()
+        d.execute_script.return_value = ""
+        assert mt.read_last_sender(d) == ""
+        assert d.execute_script.call_count == mt._SENDER_READ_RETRIES
+
 
 class TestResolveSelfName:
     """The name reply detection compares the last sender against (issue #731). The SAVED settings
