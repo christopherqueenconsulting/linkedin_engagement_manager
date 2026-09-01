@@ -173,22 +173,36 @@ def clean_stale_invites(self, user_id: int):
 # The connection-degree badge on a profile page. `span.dist-value` / `span.distance-badge` are
 # CLASS anchors, and class anchors are gone from the SDUI profile — both were confirmed dead on
 # 2026-08-03, which left this read (and, through `profile.is_1st_connection`, the whole
-# profile-viewer 1st-vs-other branch) blind. The chain now leads with what the page still WRITES:
-# the badge is its own leaf node whose entire text is the degree. Class anchors stay last, as a
-# legacy tail that costs nothing if a pre-SDUI layout is ever served (issues #623, #1021).
+# profile-viewer 1st-vs-other branch) blind. The chain leads with what the page still WRITES: an
+# element whose whole rendered text IS the degree badge. Class anchors stay last, as a legacy tail
+# that costs nothing if a pre-SDUI layout is ever served (issues #623, #1021).
 #
-# The two text shapes are ONE union expression, not two locators, because a union comes back in
-# DOCUMENT order — and document order is the only thing that attributes a badge to THIS profile.
+# The badge is matched by its EXACT text, never by leaf-ness. The chain once required a childless
+# node (`not(*)`), but on 2026-08-31 LinkedIn wrapped the badge text beside a child element (an
+# icon), so no childless node carried it and the chain matched nothing while the page still rendered
+# the degree line — the split the zero-walk tripwire caught (#1021). An exact `normalize-space()`
+# match isolates the badge without depending on it being a leaf: an icon child adds no text, and an
+# ancestor carrying the badge plus anything else no longer reads as a bare token.
+#
+# The text shapes are ONE expression, not separate locators, because a single location path comes
+# back in DOCUMENT order — and document order is the only thing that attributes a badge to THIS
+# profile.
 # `<main>` carries other people's badges too (mutual-connection highlights, "More profiles for
 # you"), so the top card's badge is the FIRST one and every later one names a different entity —
-# the #1012 rule read backwards. Two separate locators would let a highlight's bare "1st" outrank
-# the top card's "2nd degree connection" purely because its locator came first in the list.
+# the #1012 rule read backwards. Separate locators would let a highlight's bare "1st" outrank the
+# top card's "2nd degree connection" purely because its locator came first in the list.
 _DEGREE_TOKENS = ("1st", "2nd", "3rd", "3rd+")
+# Every exact form the badge renders in: the bare token and the spelled-out "… degree connection",
+# each with or without LinkedIn's leading "· " separator.
+_DEGREE_BADGE_STRINGS = tuple(
+    f"{prefix}{token}{suffix}"
+    for token in _DEGREE_TOKENS
+    for prefix in ("", "· ")
+    for suffix in ("", " degree connection"))
 _DEGREE_LEAF_XPATH = (
-    "//main//*[self::span or self::div or self::li or self::p][not(*)]["
-    + " or ".join(f"normalize-space()='{t}' or normalize-space()='· {t}'" for t in _DEGREE_TOKENS)
-    + "]"
-    " | //main//*[not(*)][contains(normalize-space(),'degree connection')]")
+    "//main//*[self::span or self::div or self::li or self::p]["
+    + " or ".join(f"normalize-space()='{text}'" for text in _DEGREE_BADGE_STRINGS)
+    + "]")
 _PROFILE_DEGREE_LOCATORS = [
     (By.XPATH, _DEGREE_LEAF_XPATH),
     (By.CSS_SELECTOR, "main span.dist-value"),

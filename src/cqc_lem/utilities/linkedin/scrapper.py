@@ -147,10 +147,14 @@ def _name_from_title(source) -> str:
     return name
 
 
-# The degree badge as the SDUI page actually writes it: its own leaf node whose entire text is the
+# The degree badge as the SDUI page actually writes it: an element whose whole rendered text is the
 # degree. `span.dist-value` is a CLASS anchor and was confirmed dead on 2026-08-03, which made
 # `LinkedInProfile.is_1st_connection` False for everybody — so every profile viewer read as a
 # non-connection and the 1st-degree branch of engage_with_profile_viewer never ran (issue #1021).
+# The match is anchored (`^…$`), so it alone isolates the badge: an ancestor sweeping up the whole
+# top card carries extra text and cannot match, and on 2026-08-31 LinkedIn wrapped the badge text
+# beside an icon child, so requiring a childless node (`element.find(True) is None`) skipped the
+# badge and re-blinded this read — an icon adds no text, so the node still reads as a bare token.
 _DEGREE_LEAF_RE = re.compile(r"^(?:·\s*)?(1st|2nd|3rd)\+?(?:\s+degree(?:\s+connection)?)?$",
                              re.IGNORECASE)
 _PROFILE_SHELL_SELECTOR = "main a[href*='/in/'], a[href*='/recent-activity/']"
@@ -159,8 +163,9 @@ _PROFILE_SHELL_SELECTOR = "main a[href*='/in/'], a[href*='/recent-activity/']"
 def _degree_from_source(source) -> str:
     """The degree badge from the page's own words.
 
-    Leaf nodes only — an ancestor's text would sweep up the whole top card and match on any headline
-    containing '1st'.
+    The badge is matched by its EXACT text (`_DEGREE_LEAF_RE` is anchored), never by leaf-ness: an
+    ancestor sweeping up the whole top card carries extra text and cannot match, so an icon-wrapped
+    badge — no longer a childless node since 2026-08-31 — still reads (issue #1021).
 
     Scoped to <main> and first-match-only, because a profile page renders OTHER people's badges as
     well: the "People also viewed" rail sits outside <main>, and mutual-connection highlights sit
@@ -177,8 +182,6 @@ def _degree_from_source(source) -> str:
     if root is None:
         return ""
     for element in root.find_all(['span', 'div', 'li', 'p']):
-        if element.find(True) is not None:
-            continue
         text = element.get_text(" ", strip=True)
         if _DEGREE_LEAF_RE.match(text):
             return text
