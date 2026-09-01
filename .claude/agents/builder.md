@@ -16,7 +16,7 @@ different worktrees on this same repo at the same time. Never `cd` outside yours
 This is not hypothetical. Three agents once shared one checkout on this repo and one of them
 switched the branch under the others inside a minute. The isolation exists because that happened.
 
-## Three environment traps specific to this box
+## Four environment traps specific to this box
 
 - **All worktrees share ONE poetry venv, and its editable-install `.pth` is mutable** — the last
   `poetry install` anywhere wins, so `poetry run python -c "import cqc_lem..."` may silently read a
@@ -48,12 +48,36 @@ switched the branch under the others inside a minute. The isolation exists becau
   `.env` masks real failures — an unset `DB_PORT` makes `int(None)` raise `TypeError`, which
   `except mysql.connector.Error` does NOT catch, so CI hits a path a local run does not. Together
   these two reproduce CI exactly.
+- **Piping a command to `tail`/`head` discards its exit code — `$?` reports the PIPE's last stage.**
+  Measured on this box, `main`, npm 11.17.0, in a worktree with no `node_modules`:
+
+  ```
+  npm run build                 -> exit 127   ("sh: 1: tsc: not found")
+  npm run build 2>&1 | tail -3  -> exit 0
+  ```
+
+  npm reports the failure correctly. Bash then throws it away, because without `set -o pipefail`
+  `$?` is `tail`'s status. This bites agents specifically: piping build and test output to `tail`
+  to keep it short is standard practice, and it converts every failure into a silent pass. It is
+  not npm-specific — `pytest | tail`, `ruff | tail` and `docker compose ... | tail` all lie the
+  same way, and `| head` is worse because it can also SIGPIPE the producer early.
+
+  Redirect to a file and read the file, or `set -o pipefail` first, or check `${PIPESTATUS[0]}`:
+
+  ```
+  npm run build > /tmp/build.log 2>&1; rc=$?; tail -20 /tmp/build.log; exit $rc
+  ```
+
+  A worktree's `node_modules` is empty for the same reason its venv has no test plugins — neither is
+  shared between worktrees — so run `npm ci` before `npm run build`. CI is not exposed to any of
+  this: `.github/workflows/ui-build.yml` runs `npm ci` as its own step and does not pipe.
 
 ## Verify before you push
 
 Read CLAUDE.md for the invariants that apply to what you touched. At minimum:
-`poetry run pytest tests/unit -q` green, and `poetry run ruff check src/ tests/ --output-format=concise | wc -l`
-no higher than `.ruff-baseline`.
+`poetry run pytest tests/unit -q` green, and `scripts/ruff_count.sh` no higher than `.ruff-baseline`.
+Use that script and nothing else: `ruff ... | wc -l` counts ruff's two trailing summary lines and
+reads 2 high, which is enough slack to let a real regression through.
 
 If you touched any `CLAUDE.md`, also run `python3 scripts/check_claude_md_size.py`. **CLAUDE.md is a fixed-shape index, not a changelog — a feature does not earn a row.** Adding a `##` section, a `###` subsection or a table row to any `CLAUDE.md` is a schema change and fails CI. EDIT the row that already owns the behaviour, and put the posture in the `docs/*.md` that row points at (index it in `docs/README.md`). Net chars added to CLAUDE.md by a feature PR should be **≤ 0**. Check with `python3 scripts/check_claude_md_size.py`.
 
