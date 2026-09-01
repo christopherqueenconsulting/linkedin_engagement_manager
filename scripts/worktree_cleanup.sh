@@ -9,11 +9,20 @@
 # branch cron) or already an ancestor of origin/main. Removing one deletes the working directory and
 # the registration, NEVER the local branch ref — committed work stays reachable through refs/heads.
 #
+# "Gone from origin" covers the DOMINANT case and it is deliberately not conditioned on ancestry:
+# this repo SQUASH-merges, so a merged PR's commits are never ancestors of main, and
+# delete_branch_on_merge removes the head branch seconds later. Such a tree is removed while its
+# commits are still reachable through the local `refs/heads/<branch>` the removal leaves behind —
+# that ref is the entire safety argument, which is why nothing here ever deletes one.
+#
 # Five protections, all fail-closed. A worktree is HELD, never removed, when it:
 #   1. is the primary checkout, is locked, or is the tree this script was invoked from;
 #   2. has uncommitted changes — tracked modifications OR untracked files (git worktree remove is
 #      called WITHOUT --force, so a dirty tree refuses at the git layer too, belt and braces);
-#   3. has a live process whose cwd is inside it — a running agent lane;
+#   3. has a live process whose cwd is inside it — a running agent lane. BEST-EFFORT by nature:
+#      /proc/<pid>/cwd is unreadable for processes owned by another user, so the detector sees this
+#      user's lanes (which is what agents run as) and reports how many it could not read. The real
+#      data guard is protection 2 plus the unforced `git worktree remove`, not this;
 #   4. has a branch tip younger than GRACE_HOURS (default 48, matching the branch cron's grace);
 #   5. is a detached HEAD that is not an ancestor of origin/main — it has no branch ref to
 #      outlive the removal, so only reachability from main proves the commits survive.
@@ -34,6 +43,12 @@
 #   scripts/worktree_cleanup.sh --no-fetch   # skip `git fetch --prune`; forces report-only
 #
 # Env: GRACE_HOURS (default 48), APPLY (1 == --apply).
+#
+# Exit codes — a systemd unit's success state is an operator signal, so all three are pinned:
+#   0  swept cleanly. Held trees, a NEEDS-A-HUMAN list and a hold-all run are all exit 0: they are
+#      true reports, not errors, and a permanently-failing unit is background noise within a month.
+#   1  a `git worktree remove` this run decided on actually failed.
+#   2  usage error (unknown argument, not a git repository) — nothing was examined.
 
 # Deliberately NOT `set -e`. This is a sweep: one unreadable or stubborn worktree must not abort the
 # run and leave the rest unswept — with -e it would abort SILENTLY, mid-loop. Every per-worktree
@@ -52,7 +67,9 @@ while [ $# -gt 0 ]; do
     --apply) APPLY=1 ;;
     --dry-run) APPLY=0 ;;
     --no-fetch) FETCH=0 ;;
-    -h|--help) sed -n '2,36p' "$0"; exit 0 ;;
+    # Prints the header block above, stopping at the first non-comment line, so it cannot drift
+    # out of sync with a hard-coded line range the way `sed -n '2,36p'` did.
+    -h|--help) awk 'NR>1{if ($0 !~ /^#/) exit; sub(/^# ?/, ""); print}' "$0"; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
   shift
@@ -81,8 +98,19 @@ else
   APPLY=0
 fi
 
-# Snapshot every live process cwd once; a worktree containing one is an active agent lane.
-ACTIVE_CWDS="$(for p in /proc/[0-9]*; do readlink "$p/cwd" 2>/dev/null; done | sort -u)"
+# Snapshot every live process cwd once; a worktree containing one is an active agent lane. The
+# unreadable count is reported rather than swallowed: /proc/<pid>/cwd is EACCES for another user's
+# processes (and a pid can exit mid-walk), so an operator can see how deaf the detector was.
+PROC_CWDS=""
+PROC_UNREADABLE=0
+for p in /proc/[0-9]*; do
+  if cwd="$(readlink "$p/cwd" 2>/dev/null)"; then
+    PROC_CWDS+="$cwd"$'\n'
+  else
+    PROC_UNREADABLE=$((PROC_UNREADABLE + 1))
+  fi
+done
+ACTIVE_CWDS="$(printf '%s' "$PROC_CWDS" | sort -u)"
 # Fail-closed self-test for protection 3. This very process HAS a cwd, so the snapshot must contain
 # it. If it does not — no procfs, hidepid=2, a container without host pids — the detector is blind
 # and every "no process found" answer is really "cannot look", which would silently turn the ONE
@@ -97,13 +125,17 @@ MODE="dry-run (report only — pass --apply to remove)"
 [ "$APPLY" = "1" ] && MODE="apply"
 echo "[$(stamp)] mode: $MODE"
 
-git -C "$MAIN" worktree prune
+# A dry run touches NOTHING, the registration file included — pruning it would be a mutation in the
+# mode whose whole contract is that it makes none. Dropped registrations are reported as WOULD PRUNE
+# by the loop below instead.
+[ "$APPLY" = "1" ] && git -C "$MAIN" worktree prune
 
 NOW="$(date +%s)"
 GRACE_SECONDS=$((GRACE_HOURS * 3600))
 
 removed=0; failed=0; skipped=0
-held_dirty=0; held_active=0; held_fresh=0; held_live=0; held_locked=0; held_unreadable=0
+held_dirty=0; held_active=0; held_fresh=0; held_live=0; held_detached=0; held_locked=0
+held_unreadable=0; prunable=0
 DIRTY_PATHS=()
 
 # `-` stands in for an empty branch field. TWO parsing hazards live in this loop, both real:
@@ -127,9 +159,9 @@ while IFS=$'\t' read -r path ref detached locked; do
     echo "HELD  locked           $path ($branch)"; held_locked=$((held_locked+1)); continue
   fi
   if [ ! -d "$path" ]; then
-    # Directory gone: the prune above already dropped the registration, so there is nothing left
-    # to decide. Still logged — a silent skip reads as "swept everything".
-    echo "SKIP  pruned           $path"; skipped=$((skipped+1)); continue
+    # Directory gone: `git worktree prune` owns this case and there is no working copy left to
+    # lose. Under --apply the prune above already dropped it, so reaching here means a dry run.
+    echo "WOULD PRUNE            $path (directory no longer exists)"; prunable=$((prunable+1)); continue
   fi
 
   # Substring, not prefix-exact, on purpose: a cwd DEEP inside the tree must match too. It can
@@ -175,8 +207,8 @@ while IFS=$'\t' read -r path ref detached locked; do
   fi
 
   if [ "$detached" = "1" ] && [ "$merged" = "0" ]; then
-    echo "HELD  detached unmerged $path (HEAD not an ancestor of origin/main)"
-    held_live=$((held_live+1)); continue
+    echo "HELD  detached-unmerged $path (HEAD not an ancestor of origin/main)"
+    held_detached=$((held_detached+1)); continue
   fi
 
   if [ "$APPLY" != "1" ]; then
@@ -203,14 +235,15 @@ done < <(git -C "$MAIN" worktree list --porcelain | awk '
   END{if(p!="")printf "%s\t%s\t%d\t%d\n", p, (b==""?"-":b), det, lock}
 ')
 
-git -C "$MAIN" worktree prune
+[ "$APPLY" = "1" ] && git -C "$MAIN" worktree prune
 
 verb="removed"; [ "$APPLY" = "1" ] || verb="would-remove"
 echo
 echo "[$(stamp)] worktree sweep: mode=$([ "$APPLY" = 1 ] && echo apply || echo dry-run)" \
-     "$verb=$removed failed=$failed skipped=$skipped" \
+     "$verb=$removed failed=$failed skipped=$skipped prunable=$prunable" \
      "held(uncommitted=$held_dirty active=$held_active grace=$held_fresh live-branch=$held_live" \
-     "locked=$held_locked unreadable=$held_unreadable)"
+     "detached-unmerged=$held_detached locked=$held_locked unreadable=$held_unreadable)" \
+     "cwd-unreadable=$PROC_UNREADABLE"
 echo "[$(stamp)] remaining registrations: $(git -C "$MAIN" worktree list --porcelain | grep -c '^worktree ')"
 
 if [ "$held_dirty" -gt 0 ]; then

@@ -96,7 +96,11 @@ had **292** registered worktrees, 261 of them merged or branch-gone. `scripts/wo
 is the sweep for that half.
 
 A registration is removable when its branch is **gone from origin** (merged, or swept by the weekly
-branch cron) or its HEAD is already an **ancestor of origin/main**. Removing one deletes the working
+branch cron) or its HEAD is already an **ancestor of origin/main**. The first disjunct is not
+conditioned on the second on purpose: this repo **squash-merges**, so a merged PR's commits are
+never ancestors of `main` and `delete_branch_on_merge` drops the head branch seconds later — that
+combination is most of what the 261 were, and requiring ancestry would make the sweep decline to
+clean up after the merges it exists for. Removing one deletes the working
 directory and the registration — never the local branch ref, so committed work stays reachable
 through `refs/heads`. The only thing a removal can destroy is *uncommitted* content, which is why
 the script never passes `--force`.
@@ -105,7 +109,10 @@ Five fail-closed protections. A worktree is HELD, never removed, when it:
 
 1. is the primary checkout, is locked, or is the tree the script was invoked from;
 2. has uncommitted changes — tracked modifications **or untracked files**;
-3. has a live process whose cwd is inside it — a running agent lane;
+3. has a live process whose cwd is inside it — a running agent lane. **Best-effort by nature:**
+   `/proc/<pid>/cwd` is unreadable for another user's processes, so the walk sees this user's lanes
+   (what agents run as) and reports how many links it could not read as `cwd-unreadable=N`. The real
+   data guard is protection 2 plus the unforced `git worktree remove`, not this one;
 4. has a branch tip younger than `GRACE_HOURS` (default 48, the same grace the branch layers use);
 5. is a **detached HEAD not merged into origin/main** — it has no branch ref to outlive the removal,
    so "branch gone from origin" proves nothing about it; only reachability from main does.
@@ -127,6 +134,15 @@ Three conditions disable removals for the **whole run** — it reports and delet
 scripts/worktree_cleanup.sh              # report only — the default
 scripts/worktree_cleanup.sh --apply      # actually remove
 ```
+
+A dry run touches **nothing**, the registration file included: a registration whose directory was
+deleted by hand is reported as `WOULD PRUNE` rather than pruned on the spot, because a mode whose
+contract is "report only" cannot also mutate. Under `--apply`, `git worktree prune` runs on both
+ends of the sweep and owns that case — there is no working copy left to lose.
+
+Exit codes, because a systemd unit's success state is an operator signal: **0** swept cleanly (held
+trees, a `NEEDS A HUMAN` list and a hold-all run are all true reports, not errors), **1** a removal
+this run decided on actually failed, **2** usage error — nothing was examined.
 
 **Where "weekly" comes from.** Not GitHub Actions: a hosted runner cannot see worktrees registered
 on the agent host, so unlike the branch half this cannot live in `stale-branches.yml`. The schedule
@@ -153,8 +169,9 @@ bucket:
 
 ```bash
 journalctl -u lem-worktree-sweep.service | grep 'worktree sweep:'
-# [2026-09-01T06:00:26Z] worktree sweep: mode=dry-run would-remove=0 failed=0 skipped=2 \
-#   held(uncommitted=23 active=2 grace=5 live-branch=3 locked=3 unreadable=0)
+# [2026-09-01T06:15:36Z] worktree sweep: mode=dry-run would-remove=0 failed=0 skipped=2 \
+#   prunable=0 held(uncommitted=23 active=2 grace=6 live-branch=2 detached-unmerged=1 locked=2 \
+#   unreadable=0) cwd-unreadable=417
 ```
 
 A skip is always logged, including the primary checkout and the tree the script was invoked from —

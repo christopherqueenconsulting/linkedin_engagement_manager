@@ -5,17 +5,28 @@ CLASSIFICATION, not the plumbing: which registrations it would remove and, far m
 which it holds. Every test builds a throwaway repo with real worktrees in each state and reads the
 script's own report lines, because those lines are the only thing an operator ever sees.
 
-Two states are regression tests for hazards found while writing it:
+Three states are regression tests for hazards found while writing it:
 
 * a **detached** worktree has no branch ref to outlive the removal, so "its branch is gone from
   origin" says nothing about it — only ancestry from origin/main does;
-* bash `read` collapses a run of tabs, so an empty branch field would shift every later column and
+* **gone from origin but carrying unmerged commits** is the dominant real case, not an edge one:
+  this repo squash-merges, so a merged PR's commits are never ancestors of main and
+  ``delete_branch_on_merge`` drops the head branch seconds later. Such a tree IS removed, and the
+  local ``refs/heads`` ref the removal leaves behind is the whole safety argument — asserted below;
+* bash ``read`` collapses a run of tabs, so an empty branch field would shift every later column and
   a detached tree would read as branch ``1``. The awk emitter uses a ``-`` sentinel; a regression
   shows up here as a detached tree landing in the wrong bucket.
+
+These live in the unit lane, matching the other ``tests/unit/scripts/`` shell tests: they touch no
+network, no database and no service — a ``git init`` under ``tmp_path`` and one ``sleep`` process —
+and the whole module runs in about ten seconds.
 """
 
 import os
+import re
+import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -27,24 +38,19 @@ _SYSTEMD = Path(__file__).resolve().parents[3] / "scripts" / "systemd"
 
 _OLD = "2020-01-01T00:00:00 +0000"
 
+#: Report lines the operator reads; the timestamped header and the indented NEEDS-A-HUMAN block
+#: are deliberately not among them.
+_REPORT = re.compile(r"^(SKIP|HELD|WOULD REMOVE|WOULD PRUNE|REMOVED|FAILED)\b")
 
-def _proc_cwd_is_readable() -> bool:
-    """Whether protection 3's detector can see anything on THIS host.
-
-    The sweep self-tests the same way and holds everything when the answer is no, so on such a
-    host there is no removal left to assert — the tests that need one are skipped rather than
-    asserting a decision the script deliberately refuses to make.
-    """
-    try:
-        return bool(os.readlink("/proc/self/cwd"))
-    except OSError:
-        return False
-
-
+#: Protection 3 walks /proc/*/cwd, and the script self-tests against its own cwd and holds
+#: EVERYTHING when that fails — so on a host without procfs there is no removal left to assert.
+#: Gated on the platform rather than on a probe: on Linux a process can always read its own cwd
+#: link, so a skip here would mean the removal path went untested in the lane that gates the PR.
 _needs_proc = pytest.mark.skipif(
-    not _proc_cwd_is_readable(),
-    reason="/proc/*/cwd unreadable — the sweep holds everything here, so there is no removal to test",
+    sys.platform != "linux", reason="protection 3 reads /proc/*/cwd; the sweep is inert without it"
 )
+
+Swept = tuple[dict[str, Path], str]
 
 
 def _git_env(**overrides: str) -> dict[str, str]:
@@ -106,6 +112,14 @@ def _build_repo(root: Path) -> dict[str, Path]:
     paths["merged_gone"] = trees / "merged-gone"
     _git(work, "worktree", "add", "-b", "merged-gone", str(paths["merged_gone"]), "main")
 
+    # Pushed, committed ahead, then deleted on origin — what a squash-merge + delete_branch_on_merge
+    # leaves behind, and what most of the 261 really were. Removable; refs/heads keeps the commits.
+    paths["gone_unmerged"] = trees / "gone-unmerged"
+    _git(work, "worktree", "add", "-b", "gone-unmerged", str(paths["gone_unmerged"]), "main")
+    _commit(paths["gone_unmerged"], "squashed-work", _OLD)
+    _git(paths["gone_unmerged"], "push", "-u", "origin", "gone-unmerged")
+    _git(work, "push", "origin", "--delete", "gone-unmerged")
+
     # Branch still on origin with an unmerged commit -> HELD, the agent may still be working.
     paths["live"] = trees / "live"
     _git(work, "worktree", "add", "-b", "live-branch", str(paths["live"]), "main")
@@ -135,6 +149,11 @@ def _build_repo(root: Path) -> dict[str, Path]:
     _git(work, "worktree", "add", "-b", "locked-branch", str(paths["locked"]), "main")
     _git(work, "worktree", "lock", str(paths["locked"]))
 
+    # Registered but the directory was deleted by hand -> `git worktree prune` territory.
+    paths["pruned"] = trees / "pruned"
+    _git(work, "worktree", "add", "-b", "pruned-branch", str(paths["pruned"]), "main")
+    shutil.rmtree(paths["pruned"])
+
     return paths
 
 
@@ -149,14 +168,31 @@ def _sweep(work: Path, *args: str, **env_overrides: str) -> subprocess.Completed
 
 
 def _line_for(output: str, path: Path) -> str:
-    """The one report line naming this worktree — the operator's whole view of the decision."""
-    matches = [ln for ln in output.splitlines() if str(path) in ln and not ln.startswith(" ")]
-    assert matches, f"no report line for {path} in:\n{output}"
+    """The ONE report line naming this worktree — the operator's whole view of the decision.
+
+    Exactly one, deliberately: two lines for one tree is a double-report bug, and taking the first
+    hit would hide it.
+    """
+    matches = [ln for ln in output.splitlines() if _REPORT.match(ln) and str(path) in ln]
+    assert len(matches) == 1, f"{len(matches)} report lines for {path} in:\n{output}"
     return matches[0]
 
 
+def _summary(output: str) -> str:
+    lines = [ln for ln in output.splitlines() if "worktree sweep:" in ln]
+    assert len(lines) == 1, output
+    return lines[0]
+
+
+def _held_as(line: str) -> str:
+    """The hold reason, read as tokens so a cosmetic realignment of the report cannot break it."""
+    match = re.match(r"^HELD\s+(\S+(?:\s\S+)?)\s+/", line)
+    assert match, line
+    return match.group(1)
+
+
 @pytest.fixture(scope="module")
-def swept(tmp_path_factory: pytest.TempPathFactory) -> tuple[dict[str, Path], str]:
+def swept(tmp_path_factory: pytest.TempPathFactory) -> Swept:
     """One repo built once, swept in the default (report-only) mode, shared by the read-only tests."""
     root = tmp_path_factory.mktemp("worktree-sweep").resolve()
     paths = _build_repo(root)
@@ -166,102 +202,156 @@ def swept(tmp_path_factory: pytest.TempPathFactory) -> tuple[dict[str, Path], st
 
 
 class TestClassification:
-    def test_merged_and_branch_gone_is_the_removable_case(self, swept) -> None:
+    def test_merged_and_branch_gone_is_the_removable_case(self, swept: Swept) -> None:
         paths, out = swept
         assert _line_for(out, paths["merged_gone"]).startswith("WOULD REMOVE")
 
-    def test_detached_but_reachable_from_main_is_removable(self, swept) -> None:
+    def test_branch_gone_from_origin_with_unmerged_work_is_removable(self, swept: Swept) -> None:
+        # The squash-merge case. Not conditioned on ancestry, because a squash-merged branch is
+        # never an ancestor of main — if it were, this sweep would decline to clean up after the
+        # merges it exists for. What makes it safe is the surviving branch ref, asserted in
+        # TestApply::test_a_gone_branch_with_unmerged_work_stays_recoverable.
+        paths, out = swept
+        assert _line_for(out, paths["gone_unmerged"]).startswith("WOULD REMOVE")
+
+    def test_detached_but_reachable_from_main_is_removable(self, swept: Swept) -> None:
         # Nothing to lose: the commits are already on main, so no ref needs to outlive the removal.
         paths, out = swept
         assert _line_for(out, paths["detached_merged"]).startswith("WOULD REMOVE")
 
-    def test_uncommitted_work_is_held(self, swept) -> None:
+    def test_uncommitted_work_is_held(self, swept: Swept) -> None:
         paths, out = swept
-        assert "HELD  uncommitted" in _line_for(out, paths["dirty"])
+        assert _held_as(_line_for(out, paths["dirty"])) == "uncommitted"
 
-    def test_untracked_only_still_counts_as_uncommitted(self, swept) -> None:
+    def test_untracked_only_still_counts_as_uncommitted(self, swept: Swept) -> None:
         # The dirty tree has NO tracked modifications — only an untracked file. `git status
         # --porcelain` reports it; a `git diff --quiet` check would not, and the file would go.
         paths, _ = swept
         assert (paths["dirty"] / "scratch.txt").exists()
 
-    def test_branch_still_on_origin_and_unmerged_is_held(self, swept) -> None:
+    def test_branch_still_on_origin_and_unmerged_is_held(self, swept: Swept) -> None:
         paths, out = swept
-        assert "HELD  live branch" in _line_for(out, paths["live"])
+        assert _held_as(_line_for(out, paths["live"])) == "live branch"
 
-    def test_tip_inside_the_grace_window_is_held(self, swept) -> None:
+    def test_tip_inside_the_grace_window_is_held(self, swept: Swept) -> None:
         paths, out = swept
-        assert "HELD  within grace" in _line_for(out, paths["fresh"])
+        assert _held_as(_line_for(out, paths["fresh"])) == "within grace"
 
-    def test_detached_head_not_on_main_is_held(self, swept) -> None:
+    def test_detached_head_not_on_main_is_held(self, swept: Swept) -> None:
         # The hazard this exists for: with no branch ref, "gone from origin" proves nothing.
         paths, out = swept
-        assert "HELD  detached unmerged" in _line_for(out, paths["detached_unmerged"])
+        assert _held_as(_line_for(out, paths["detached_unmerged"])) == "detached-unmerged"
 
-    def test_locked_worktree_is_held(self, swept) -> None:
+    def test_locked_worktree_is_held(self, swept: Swept) -> None:
         paths, out = swept
-        assert "HELD  locked" in _line_for(out, paths["locked"])
+        assert _held_as(_line_for(out, paths["locked"])) == "locked"
 
-    def test_the_invoking_tree_is_skipped_out_loud(self, swept) -> None:
+    def test_a_registration_whose_directory_is_gone_is_prunable(self, swept: Swept) -> None:
+        paths, out = swept
+        assert _line_for(out, paths["pruned"]).startswith("WOULD PRUNE")
+
+    def test_the_invoking_tree_is_skipped_out_loud(self, swept: Swept) -> None:
         # Silent truncation reads as "swept everything", so even a skip gets a line.
         paths, out = swept
-        skips = [ln for ln in out.splitlines() if ln.startswith("SKIP") and str(paths["work"]) in ln]
-        assert skips, out
+        assert _line_for(out, paths["work"]).startswith("SKIP")
 
-    def test_summary_names_every_held_bucket(self, swept) -> None:
+    def test_summary_names_every_bucket(self, swept: Swept) -> None:
         _, out = swept
-        summary = [ln for ln in out.splitlines() if "worktree sweep: mode=" in ln]
-        assert summary, out
-        assert "would-remove=2" in summary[0]
-        assert "uncommitted=1" in summary[0]
-        assert "grace=1" in summary[0]
-        assert "live-branch=2" in summary[0]  # live branch + detached unmerged
-        assert "locked=1" in summary[0]
+        summary = _summary(out)
+        for token in (
+            "would-remove=3", "prunable=1", "uncommitted=1", "grace=1",
+            "live-branch=1", "detached-unmerged=1", "locked=1", "unreadable=0",
+        ):
+            assert token in summary, summary
+
+    def test_the_grace_window_is_arithmetic_not_a_constant(self, swept: Swept) -> None:
+        # Same tree, same run, GRACE_HOURS=0: the ONLY thing holding it was the window.
+        paths, _ = swept
+        result = _sweep(paths["work"], GRACE_HOURS="0")
+        assert _line_for(result.stdout, paths["fresh"]).startswith("WOULD REMOVE")
 
 
 class TestDryRunIsTheDefault:
-    def test_a_bare_invocation_removes_nothing(self, swept) -> None:
+    def test_a_bare_invocation_removes_nothing(self, swept: Swept) -> None:
         # A destructive script whose no-argument behaviour is destructive is one fat-fingered
         # timer edit away from an incident. Removal needs --apply; the systemd unit carries it.
         paths, out = swept
         assert "WOULD REMOVE" in out
-        assert "REMOVED " not in out
+        assert not re.search(r"^REMOVED\b", out, re.MULTILINE)
         assert paths["merged_gone"].exists()
 
-    def test_dry_run_flag_agrees_with_the_default(self, swept) -> None:
+    def test_a_dry_run_does_not_even_prune_the_registry(self, swept: Swept) -> None:
+        # "Report only" has to mean it, registration file included — otherwise a dry run is a
+        # mutation nobody asked for and the mode's whole contract is a half-truth.
+        paths, _ = swept
+        listed = _git(paths["work"], "worktree", "list", "--porcelain")
+        assert str(paths["pruned"]) in listed
+
+    def test_dry_run_flag_agrees_with_the_default(self, swept: Swept) -> None:
         paths, _ = swept
         result = _sweep(paths["work"], "--dry-run")
         assert result.returncode == 0, result.stderr
         assert "WOULD REMOVE" in result.stdout
         assert paths["merged_gone"].exists()
 
+    def test_help_names_the_flag_that_deletes(self) -> None:
+        result = subprocess.run(
+            ["bash", str(_SCRIPT), "--help"], capture_output=True, text=True, env=_git_env()
+        )
+        assert result.returncode == 0
+        assert "--apply" in result.stdout
+
+
+@pytest.fixture(scope="module")
+def applied(tmp_path_factory: pytest.TempPathFactory) -> Swept:
+    """A second repo, swept once with --apply — the destructive path, run exactly once."""
+    root = tmp_path_factory.mktemp("worktree-apply").resolve()
+    paths = _build_repo(root)
+    result = _sweep(paths["work"], "--apply")
+    assert result.returncode == 0, result.stderr
+    return paths, result.stdout + result.stderr
+
 
 @_needs_proc
 class TestApply:
-    def test_apply_removes_only_the_removable_and_keeps_the_branch_ref(self, tmp_path: Path) -> None:
-        paths = _build_repo(tmp_path.resolve())
-        result = _sweep(paths["work"], "--apply")
-
-        assert result.returncode == 0, result.stderr
+    def test_only_the_removable_are_removed(self, applied: Swept) -> None:
+        paths, _ = applied
         assert not paths["merged_gone"].exists()
         assert not paths["detached_merged"].exists()
-        # Everything held keeps its directory, uncommitted work included.
+        assert not paths["gone_unmerged"].exists()
         for held in ("dirty", "live", "fresh", "detached_unmerged", "locked"):
             assert paths[held].exists(), f"{held} was removed"
         assert (paths["dirty"] / "scratch.txt").read_text(encoding="utf-8") == "unsaved work"
 
-        # The claim that committed work survives a removal rests entirely on refs/heads being
-        # untouched. `git worktree remove` leaves it alone — assert that, don't assume it.
-        branches = _git(paths["work"], "branch", "--format=%(refname:short)")
-        assert "merged-gone" in branches.split()
+    def test_a_gone_branch_with_unmerged_work_stays_recoverable(self, applied: Swept) -> None:
+        # The entire safety argument for removing a squash-merged tree: the working directory goes,
+        # `refs/heads/gone-unmerged` and the commit it points at do not.
+        paths, _ = applied
+        sha = _git(paths["work"], "rev-parse", "gone-unmerged")
+        assert _git(paths["work"], "cat-file", "-t", sha) == "commit"
+        assert _git(paths["work"], "log", "-1", "--format=%s", sha) == "squashed-work"
 
-    def test_the_dirty_tree_is_reported_for_a_human(self, tmp_path: Path) -> None:
-        paths = _build_repo(tmp_path.resolve())
-        result = _sweep(paths["work"], "--apply")
-        out = result.stdout + result.stderr
+    def test_the_dropped_registration_is_pruned(self, applied: Swept) -> None:
+        paths, _ = applied
+        assert str(paths["pruned"]) not in _git(paths["work"], "worktree", "list", "--porcelain")
+
+    def test_the_dirty_tree_is_reported_for_a_human(self, applied: Swept) -> None:
+        paths, out = applied
         assert "NEEDS A HUMAN" in out
         assert str(paths["dirty"]) in out
         assert "scratch.txt" in out
+
+    def test_a_run_that_held_something_still_exits_zero(self, applied: Swept) -> None:
+        # Held trees and a NEEDS-A-HUMAN list are true reports, not unit failures. A weekly timer
+        # that goes permanently red is a timer nobody reads inside a month.
+        paths, _ = applied
+        assert _sweep(paths["work"], "--apply").returncode == 0
+
+    def test_a_second_apply_is_a_no_op(self, applied: Swept) -> None:
+        paths, _ = applied
+        summary = _summary(_sweep(paths["work"], "--apply").stdout)
+        assert "removed=0" in summary
+        assert "failed=0" in summary
 
 
 class TestFailClosed:
@@ -274,6 +364,7 @@ class TestFailClosed:
         assert "HOLD-ALL" in out
         assert "WOULD REMOVE" in out
         assert paths["merged_gone"].exists()
+        assert result.returncode == 0  # a hold-all run is a report, not an error
 
     def test_a_failed_fetch_disables_removals(self, tmp_path: Path) -> None:
         paths = _build_repo(tmp_path.resolve())
@@ -291,11 +382,23 @@ class TestFailClosed:
         try:
             result = _sweep(paths["work"], "--apply")
             out = result.stdout + result.stderr
-            assert "HELD  active process" in _line_for(out, paths["merged_gone"])
+            assert _held_as(_line_for(out, paths["merged_gone"])) == "active process"
             assert paths["merged_gone"].exists()
         finally:
             proc.kill()
             proc.wait()
+
+    def test_git_itself_refuses_to_remove_a_dirty_tree(self, tmp_path: Path) -> None:
+        # The second gate behind protection 2, and the reason nothing here passes --force: even if
+        # a tree turned dirty between the status check and the removal, git declines. Pinned
+        # because the safety argument leans on it, not because we control it.
+        paths = _build_repo(tmp_path.resolve())
+        result = subprocess.run(
+            ["git", "worktree", "remove", str(paths["dirty"])],
+            cwd=paths["work"], env=_git_env(), capture_output=True, text=True,
+        )
+        assert result.returncode != 0
+        assert (paths["dirty"] / "scratch.txt").exists()
 
     def test_unknown_argument_refuses_rather_than_sweeping(self, tmp_path: Path) -> None:
         paths = _build_repo(tmp_path.resolve())
@@ -305,22 +408,40 @@ class TestFailClosed:
 
 
 class TestSourceGuards:
-    """Cheap ratchets on the two things that would silently break the survivability claim."""
+    """Cheap ratchets on the things that would silently break the survivability claim.
 
-    def test_the_script_never_deletes_a_branch_ref(self) -> None:
-        # Comments are allowed to NAME the hazard; no executed line may be it.
-        for line in _SCRIPT.read_text(encoding="utf-8").splitlines():
-            if line.lstrip().startswith("#"):
-                continue
-            assert " branch -d" not in line, line
-            assert " branch -D" not in line, line
+    Secondary to the behavioural guard in ``TestApply``, which is what actually proves committed
+    work outlives a removal.
+    """
 
-    def test_worktree_remove_is_never_forced_by_the_script(self) -> None:
-        # `--force` appears once, inside an echo that suggests a command to a human. Any executed
-        # occurrence would defeat protection 2 — a dirty tree must refuse at the git layer too.
-        for line in _SCRIPT.read_text(encoding="utf-8").splitlines():
-            if "worktree remove --force" in line:
-                assert line.lstrip().startswith("echo"), line
+    #: Every spelling of "destroy a ref" or "force past the dirty check" that would void it.
+    _FORBIDDEN = re.compile(
+        r"branch\s+(-[a-zA-Z]*[dD]\b|--delete)"
+        r"|update-ref\s+-d"
+        r"|push\s+.*--delete"
+        r"|worktree\s+remove\s+(-[a-zA-Z]*f\b|--force)"
+    )
+
+    def test_no_executed_line_destroys_a_ref_or_forces_a_removal(self) -> None:
+        for raw in _SCRIPT.read_text(encoding="utf-8").splitlines():
+            stripped = raw.lstrip()
+            if stripped.startswith("#"):
+                continue  # a comment may NAME the hazard; only executed lines are the ratchet
+            if stripped.startswith("echo"):
+                continue  # the one --force in the file is text printed for a human to decide on
+            assert not self._FORBIDDEN.search(raw.split("#", 1)[0]), raw
+
+    def test_the_ratchet_would_actually_catch_a_regression(self) -> None:
+        # A guard that matches nothing passes forever. Prove the pattern bites on each spelling.
+        for hazard in (
+            'git branch -D "$branch"',
+            "git branch --delete $branch",
+            'git update-ref -d "refs/heads/$branch"',
+            "git push origin --delete $branch",
+            'git worktree remove --force "$path"',
+            'git worktree remove -f "$path"',
+        ):
+            assert self._FORBIDDEN.search(hazard), hazard
 
 
 class TestWeeklyWiring:
