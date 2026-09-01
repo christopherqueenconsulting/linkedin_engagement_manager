@@ -547,9 +547,38 @@ def _invite_restriction_reason(driver) -> "str | None":
 # above are kept as the light-DOM first pass — cheap, and still correct for an account that has not
 # been moved to the shadow-mounted overlay yet.
 _CONNECT_DIALOG_CONTROL_CSS = "button, a, [role='button']"
+# The dialog itself. Searched first so the control scan's budget is spent INSIDE the overlay rather
+# than on the page chrome that precedes it in document order (#1813).
+_CONNECT_DIALOG_CONTAINER_CSS = "[role='dialog'], [role='alertdialog'], dialog"
 _SEND_WITHOUT_NOTE_LABEL = "send without a note"
 _ADD_NOTE_LABEL = "add a note"
 _SEND_INVITATION_LABEL = "send invitation"
+
+
+def _dialog_control_candidates(driver) -> list:
+    """The controls to search for a dialog button, nearest surface first.
+
+    Scoped to the OPEN DIALOG before the document, because `find_deep_elements` stops after `limit`
+    matches **in document order** and the overlay is mounted last. On a profile page the first sixty
+    visible controls are the global nav, the top card and the "People also viewed" rail, so a
+    document-wide scan spent its whole budget before reaching the dialog and reported an open dialog
+    as absent — #1813, measured in production 2026-09-01, where the SAME run read
+    `Add a note / Send without a note` out of the dialog container while the control scan returned
+    the nav bar.
+
+    Scoping is also a harder #1012 guard than any label: a control found inside the invite dialog
+    cannot be a rail card's button for a stranger, because the rail is not in the dialog.
+
+    The document-wide pass is kept as the fallback for a rotation that mounts these controls without
+    a dialog role — losing that would trade one blind spot for another.
+    """
+    for container in find_deep_elements(driver, _CONNECT_DIALOG_CONTAINER_CSS,
+                                        visible_only=True, limit=3):
+        scoped = find_deep_elements(driver, _CONNECT_DIALOG_CONTROL_CSS,
+                                    visible_only=True, limit=60, root=container)
+        if scoped:
+            return scoped
+    return find_deep_elements(driver, _CONNECT_DIALOG_CONTROL_CSS, visible_only=True, limit=60)
 
 
 def _deep_dialog_control(driver, labels: "tuple[str, ...]"):
@@ -559,7 +588,7 @@ def _deep_dialog_control(driver, labels: "tuple[str, ...]"):
     settling for a later one when an earlier matches is how a walk presses the control next to the
     one it wanted (#1012).
     """
-    controls = find_deep_elements(driver, _CONNECT_DIALOG_CONTROL_CSS, visible_only=True, limit=60)
+    controls = _dialog_control_candidates(driver)
     for wanted in labels:
         for control in controls:
             if element_label(control).startswith(wanted):
@@ -578,7 +607,7 @@ def _connect_dialog_present(driver, wait, user_id: int) -> bool:
 
 # What the overlay evidence below reads. Same control shape `_deep_dialog_control` matches, so the
 # dump describes the surface the dialog check actually looked at rather than a neighbouring one.
-_OVERLAY_DIALOG_CSS = "[role='dialog'], [role='alertdialog'], dialog"
+_OVERLAY_DIALOG_CSS = _CONNECT_DIALOG_CONTAINER_CSS
 _OVERLAY_TEXT_LIMIT = 400
 
 
