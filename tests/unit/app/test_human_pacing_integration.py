@@ -247,10 +247,16 @@ class TestGovernorAccounting:
         recorded.assert_not_called()
 
     def test_a_sent_invite_is_reported_and_a_failed_one_is_not(self):
+        """`sent` means the invitation was CONFIRMED on the page, not that Send took a click.
+
+        The governor counts real invites against the account's envelope (#1867), and counting a
+        click would pace the account against sends LinkedIn never made.
+        """
         from cqc_lem.app.engagement import invites as ra
+        from cqc_lem.utilities.db import CONNECTION_REQUEST_SENT_MESSAGE, INVITE_UNCONFIRMED_MESSAGE
         from cqc_lem.utilities.human_pacing import ACTION_INVITE
         for sent in (True, False):
-            connect = MagicMock() if sent else MagicMock(side_effect=Exception("no button"))
+            verdict = CONNECTION_REQUEST_SENT_MESSAGE if sent else INVITE_UNCONFIRMED_MESSAGE
             with patch(f"{_INV}.get_user_password_pair_by_id", return_value=("e", "p")), \
                  patch(f"{_INV}.get_driver_wait_pair", return_value=(MagicMock(), MagicMock())), \
                  patch(f"{_INV}.login_to_linkedin"), \
@@ -258,7 +264,8 @@ class TestGovernorAccounting:
                  patch(f"{_INV}._open_connect_invite_dialog", return_value=(True, None)), \
                  patch(f"{_INV}.record_invite_dialog_miss"), \
                  patch(f"{_INV}.clear_invite_dialog_misses"), \
-                 patch(f"{_INV}.click_element_wait_retry", connect), \
+                 patch(f"{_INV}.click_element_wait_retry", MagicMock()), \
+                 patch(f"{_INV}._confirm_invite_outcome", return_value=verdict), \
                  patch(f"{_INV}.log_error"), \
                  patch(f"{_INV}.insert_new_log"), \
                  patch(f"{_INV}.quit_gracefully"), \

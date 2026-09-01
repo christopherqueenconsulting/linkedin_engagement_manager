@@ -988,3 +988,43 @@ reworded message cannot silently empty a tile; `attempts` counts real dispatches
 LinkedIn, this one included, and is 0 exactly when nothing was attempted. A series carrying only
 sends would reproduce the bug it exists to catch, which is the same reason `track_stale_invite_run`
 emits on empty runs. `docs/observability-map.md`.
+
+## A connection request is 'sent' when the invitation EXISTS (issue #1867)
+
+Ten `connection_requests` rows for user 1 were written `sent` on 2026-09-01 between 06:52 and 07:18,
+and **none of those invitations reached LinkedIn** — checked by the account owner against the live
+"Sent invitations" list. `_submit_connect_invite` returned True the instant `WebElement.click()` did
+not raise, and nothing between that and `update_connection_request_status(..., SENT)` re-read the
+page. That is the #1013 rule inverted: success is the OUTCOME being present, never a click having
+landed.
+
+The dialog says why the click could not have sent. `_overlay_notice_text` on `/in/wfalcon` read
+*"Add a note to your invitation? To verify this member knows you, please enter their email to
+connect."* — LinkedIn's **email-verification challenge**, which still renders `Send without a note`,
+still accepts the click, and sends nothing. The ordinary dialog exposes the identical control. A
+click-landed verdict cannot tell them apart, which is the whole defect.
+
+- **Two steps, and only the second may say sent.** `_submit_connect_invite` answers whether a Send
+  affordance was CLICKABLE (the #573 error it owns, unchanged). `_confirm_invite_outcome` answers
+  whether an invitation now EXISTS, by re-reading the page.
+- **A send needs BOTH halves.** The Connect dialog is gone **and** the target's own top card shows
+  the invite pending (`Pending` / `Invitation sent` / a withdraw control). Either alone is satisfied
+  by a dialog that closed on a refusal.
+- **The read is scoped and attributed.** `find_deep_elements` is the only lookup that crosses the
+  shadow boundary — CSS-only, since XPath cannot address a shadow tree — and it truncates in
+  DOCUMENT ORDER, so the control scan is rooted at `main`. An unscoped one spends its budget on the
+  global nav before reaching the target (the #1813 A3 trap). A named affordance must match the
+  page's own title, because a "People also viewed" card may genuinely carry somebody else's pending
+  invite (#1012 in a read instead of a click).
+- **Three verdicts, failing CLOSED.** `sent`; `email_challenge` when the overlay asks for the
+  member's email (the state #1836 clears — the row returns to `approved` with that reason, never
+  `sent`); `unconfirmed` when the click landed and nothing could be read. An unreadable page is not
+  a send: a false negative costs one retry, a false positive costs a row the account owner cannot
+  reconcile against LinkedIn's own list.
+- **Escalation follows the contract.** `email_challenge` is an expected, named target fact and logs
+  at DEBUG — a repeated `log_warning` re-emits at ERROR and files one grouped `$exception`, which
+  would page us once per unverifiable person in the queue. `unconfirmed` is the genuine anomaly and
+  gets the one `log_warning`.
+- **Observability:** both are `invite_outcome` reasons (`email_challenge`, `unconfirmed`), values on
+  the existing event rather than a new capture. A breakdown on `reason` is now also the measure of
+  how much of the backlog is waiting on #1836.

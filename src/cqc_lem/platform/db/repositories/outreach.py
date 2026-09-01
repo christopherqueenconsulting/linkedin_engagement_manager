@@ -1702,6 +1702,20 @@ FOLLOW_ONLY_MESSAGE = "This profile offers Follow only — out of network, so th
 # (issue #573). Unlike a missing note this does NOT degrade gracefully — the invite is lost — which
 # is why it stays an error and gets its own reason on the request row.
 INVITE_NOT_SENT_MESSAGE = "Connect dialog opened but the invitation could not be sent"
+# Send WAS clicked and the invitation still did not go out (issue #1867). Both of these are the same
+# correction — a click that did not raise is not an outcome — split by whether LinkedIn told us why.
+#
+# The email challenge is the named one, measured in production 2026-09-01 on ten rows falsely marked
+# 'sent': the dialog reads "To verify this member knows you, please enter their email to connect",
+# offers `Send without a note` anyway, and clicking it sends nothing. #1836 is what will clear it;
+# until then the row belongs back in the queue with this reason on it, never in 'sent'.
+INVITE_EMAIL_CHALLENGE_MESSAGE = (
+    "LinkedIn wants this member's email address before the invitation can be sent")
+# Nothing could be READ after the click — no pending affordance, no named challenge. That is not a
+# send, and recording it as one is the whole defect: `count_invites_sent_today` and the account
+# owner's own sent-invitations list then disagree, with no way to tell which is lying.
+INVITE_UNCONFIRMED_MESSAGE = (
+    "Send was clicked but the invitation could not be confirmed — not recorded as sent")
 # The wall was the ACCOUNT, not the profile (#1733). Distinct from NO_CONNECT_BUTTON_MESSAGE on
 # purpose: a limit reads the same on every profile, so grading it as "no Connect option" sends an
 # operator hunting a selector that is fine and lets the scanner re-dispatch the whole queue into it.
