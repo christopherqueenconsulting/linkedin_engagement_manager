@@ -245,7 +245,10 @@ Selenium kill-switch, and maintenance mode sets one on every release — 4x dail
 escalated to ERROR and filed `RecurringWarning: Automation PAUSED for 1800s (reason: deploy)`
 (issue #917). It logs INFO now; the callers for which a pause IS the defect already say so where they
 detect it (the suppression tripwire escalates CRITICAL, the 429 breaker warns in `mark_rate_limited`),
-and only failing to store the pause — a kill-switch that didn't take — still warns.
+and only failing to store the pause — a kill-switch that didn't take — still warns. `hold_invites`
+follows the same precedent: the Connect dialog that would not open already warns and files its own
+grouped issue where `_open_connect_invite_dialog` detects it, so warning again when the miss-streak
+hold stored filed a SECOND issue for one breakage, re-firing while the route stayed broken.
 
 **An ALERTER is the state-setter rule read one step further: reporting a bad measurement is not
 failing.** `cost_alerts.send_cost_alerts` logs one line per threshold breach, and a breach is exactly

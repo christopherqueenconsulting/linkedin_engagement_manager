@@ -417,6 +417,62 @@ class TestCommentingHold:
         assert commenting_hold_reason(7) is None
 
 
+class TestInviteHoldLogLevel:
+    """A stored invite hold is a state transition, not a degraded path (issue #917 precedent).
+
+    The Connect-dialog breakage that trips the miss-streak hold already warns and files its own
+    grouped $exception, so warning here too filed a SECOND issue that re-fired while the route
+    stayed broken.
+    """
+
+    def test_hold_logs_info_not_warning(self, fake_redis):
+        from cqc_lem.utilities.linkedin.rate_limit import hold_invites
+        with patch(f"{_MOD}.log_info") as info, patch(f"{_MOD}.log_warning") as warn:
+            assert hold_invites(7, 3600, reason="weekly limit") is True
+        # The hold must actually be STORED, not merely announced: without this a regression that
+        # returns True while writing nothing would pass on the log-level assertions alone. The key
+        # is spelled out rather than built from _INVITE_HOLD_KEY on purpose — it is a WIRE format
+        # shared with release_invite_hold/invite_hold_remaining and with holds already live in
+        # Redis, so renaming it orphans them. Don't DRY this back into the constant.
+        fake_redis.set.assert_called_once_with("linkedin:invite_hold:7", "weekly limit", ex=3600)
+        # log_warning is the ONLY door into log_escalation (logger.py), so "no warning" is the
+        # assertion that no second grouped $exception can be filed for a working state transition.
+        warn.assert_not_called()
+        info.assert_called_once()
+        assert "Connection invites HELD for user 7" in info.call_args.args[0]
+        assert "weekly limit" in info.call_args.args[0]
+        # A demotion is a plausible moment to drop the context that makes the event groupable.
+        # Subset, not exact equality: dropping either field still fails, but adding a new context
+        # kwarg later is a legitimate change this test has no business blocking.
+        assert info.call_args.kwargs["action_type"] == "invite_connect"
+        assert info.call_args.kwargs["user_id"] == 7
+
+    def test_hold_redis_error_still_warns(self, fake_redis):
+        """A hold that failed to store IS a degraded path — that one keeps its warning."""
+        fake_redis.set.side_effect = RuntimeError("redis down")
+        from cqc_lem.utilities.linkedin.rate_limit import hold_invites
+        with patch(f"{_MOD}.log_warning") as warn, patch(f"{_MOD}.log_info") as info:
+            assert hold_invites(7, 3600) is False
+        info.assert_not_called()
+        warn.assert_called_once()
+        # Pins the except branch as the source: only there is an exception attached. Without this
+        # the test would still pass if the function returned False before ever reaching the write.
+        assert isinstance(warn.call_args.kwargs.get("exc"), RuntimeError)
+        assert warn.call_args.kwargs.get("user_id") == 7
+
+    def test_defaults_are_clamped_and_named_in_the_stored_hold(self, fake_redis):
+        """The TTL floor and the reason default are what a caller passing neither relies on."""
+        from cqc_lem.utilities.linkedin.rate_limit import hold_invites
+        with patch(f"{_MOD}.log_info") as info, patch(f"{_MOD}.log_warning"):
+            assert hold_invites(7, 0, reason=None) is True
+        # max(1, int(seconds)): ex=0 is rejected by Redis, so an unclamped 0 would raise and turn
+        # a hold the caller was told succeeded into a silently unheld lane.
+        fake_redis.set.assert_called_once_with("linkedin:invite_hold:7", "invite limit", ex=1)
+        # The INFO line is now the only log-level record that a hold was taken, so it has to name
+        # what was STORED. Interpolating the raw arguments said "for 0s (reason: None)".
+        assert "Connection invites HELD for user 7 for 1s (reason: invite limit)" == info.call_args.args[0]
+
+
 class TestTheRedisHandleIsCachedPerProcess:
     """`Redis.from_url` builds its own ConnectionPool every call, and the pool disconnects when the
     object is collected — so re-deriving the handle per operation cost a TCP handshake per command,
