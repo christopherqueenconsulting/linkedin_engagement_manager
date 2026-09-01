@@ -230,6 +230,7 @@ from cqc_lem.utilities.observability import (
     attribute_llm_cost,
     llm_attribution,
     track_catchup_run,
+    track_outreach_funnel_scan,
 )
 from cqc_lem.utilities.selenium_util import (
     click_element_wait_retry,
@@ -2727,18 +2728,26 @@ _FUNNEL_ENGAGER_LOOKBACK_DAYS = 14
 
 
 def _funnel_prospects_from_roster(driver, user_id: int, roster: list, my_name: str,
-                                  now: datetime) -> list:
+                                  now: datetime) -> tuple:
     """The engagement roster (G1, issue #616) and the people commenting on its posts, each paired
     with the post that put them on our radar — the comment stage needs something to comment ON.
     Each roster author is best-effort: one unreachable profile must not lose the others.
+
+    Returns `(prospects, counts)` — `counts` is the per-stage breakdown (`roster_authors_walked`,
+    `authors_with_a_post`, `commenters_harvested`) the `outreach_funnel_scan` event needs (issue
+    #1816): a flat prospect list alone can't say which stage a zero-prospect run died at.
     """
     from cqc_lem.utilities.linkedin.scrapper import get_profile_recent_activity
 
     prospects: list = []
+    authors_walked = 0
+    authors_with_a_post = 0
+    commenters_harvested = 0
     for target in roster[:_MAX_ROSTER_AUTHORS_PER_FUNNEL_SCAN]:
         author_url = str(target.get("profile_url") or "").strip()
         if not author_url:
             continue
+        authors_walked += 1
         try:
             activity = get_profile_recent_activity(driver, author_url) or []
         except Exception as e:
@@ -2754,6 +2763,7 @@ def _funnel_prospects_from_roster(driver, user_id: int, roster: list, my_name: s
             log_debug(f"Roster author {author_url} has no recent post to comment on — skipping",
                       user_id=user_id, action_type="outreach_funnel")
             continue
+        authors_with_a_post += 1
         author_name = clean_person_name(target.get("name") or "") or _author_display_name(author_url)
         post_text = str(post.get("text") or "")
         prospects.append({"profile_url": author_url, "name": author_name,
@@ -2765,28 +2775,36 @@ def _funnel_prospects_from_roster(driver, user_id: int, roster: list, my_name: s
             log_warning("Could not harvest commenters from a roster post", exc=e, user_id=user_id,
                         action_type="outreach_funnel")
             continue
+        commenters_harvested += len(commenters)
         for signal in commenters:
             prospects.append({"profile_url": signal.person_profile_url, "name": signal.person_name,
                               "context_url": post["link"], "context_text": post_text,
                               "stage": OutreachStage.COMMENT})
     me = (my_name or "").strip().lower()
-    return [p for p in prospects if (p["name"] or "").strip().lower() != me]
+    counts = {"roster_authors_walked": authors_walked, "authors_with_a_post": authors_with_a_post,
+              "commenters_harvested": commenters_harvested}
+    return [p for p in prospects if (p["name"] or "").strip().lower() != me], counts
 
 
-def _funnel_prospects_from_engagers(user_id: int) -> list:
+def _funnel_prospects_from_engagers(user_id: int) -> tuple:
     """People who engaged with the user's OWN posts. They start at the CONNECT stage: they already
     engaged with us, so there is no third-party post to comment on first — and anyone the badge says
     we're already connected to is dropped, since connecting is the only thing this funnel adds.
+
+    Returns `(prospects, engager_candidates)` — the candidate count is the PRE-filter pool
+    (issue #1816): an all-1st-degree pool is a true audience fact (#1091), not a sourcing failure,
+    so it has to be visible separately from how many became prospects.
     """
     prospects: list = []
-    for row in get_engager_candidates(user_id, days=_FUNNEL_ENGAGER_LOOKBACK_DAYS):
+    candidates = get_engager_candidates(user_id, days=_FUNNEL_ENGAGER_LOOKBACK_DAYS)
+    for row in candidates:
         if is_first_degree(row.get("connection_degree") or ""):
             continue
         prospects.append({"profile_url": row.get("person_profile_url"),
                           "name": clean_person_name(row.get("person_name") or ""),
                           "context_url": None, "context_text": "",
                           "stage": OutreachStage.CONNECT})
-    return prospects
+    return prospects, len(candidates)
 
 
 def _draft_funnel_comment(user_id: int, prospect: dict, my_profile: LinkedInProfile,
@@ -2817,16 +2835,24 @@ def scan_outreach_funnel_targets(self, user_id: int, max_new: int = None):
     user's own post engagers (issue #623). Files drafts only — the approval gate, the per-stage
     re-approval, and the daily comment/DM caps in process_outreach_funnel all still apply.
     """
+    # Per-stage counts for the outreach_funnel_scan event (issue #1816) — emitted on EVERY exit
+    # below, zeros included, so a healthy quiet week and a broken get_profile_recent_activity stop
+    # looking identical from outside.
+    counts = {"roster_authors_walked": 0, "authors_with_a_post": 0, "commenters_harvested": 0,
+             "engager_candidates": 0, "prospects": 0, "filed": 0, "budget": 0}
+
     prefs = get_engagement_preferences(user_id)
     if str(prefs.get("connection_targeting_mode") or "suggest") == "off":
         log_info("Outreach sourcing is off for this user (connection_targeting_mode=off)",
                  user_id=user_id, task_name="scan_outreach_funnel_targets",
                  action_type="outreach_funnel")
+        track_outreach_funnel_scan(user_id, {**counts, "status": "off"})
         return f"Outreach funnel sourcing off for user {user_id}"
 
     open_targets = count_open_outreach_targets(user_id)
     ceiling = _MAX_NEW_FUNNEL_TARGETS_PER_SCAN if max_new is None else int(max_new)
     budget = max(0, min(ceiling, _MAX_OPEN_FUNNEL_TARGETS - open_targets))
+    counts["budget"] = budget
     if budget <= 0:
         # Filing nothing is this scan's resting state, not a degraded path: the backlog gate doing
         # its job, an unconfigured roster, and a quiet audience are all working behaviour. Warning
@@ -2834,6 +2860,7 @@ def scan_outreach_funnel_targets(self, user_id: int, max_new: int = None):
         log_debug(f"Outreach funnel sourcing filed nothing: {open_targets} target(s) are already "
                   f"waiting for approval", user_id=user_id,
                   task_name="scan_outreach_funnel_targets", action_type="outreach_funnel")
+        track_outreach_funnel_scan(user_id, {**counts, "status": "backlog_full"})
         return f"Outreach funnel backlog full for user {user_id}"
 
     now = datetime.now(timezone.utc).replace(tzinfo=None)
@@ -2847,8 +2874,10 @@ def scan_outreach_funnel_targets(self, user_id: int, max_new: int = None):
             driver, _wait, _user_email, my_profile = get_current_profile(
                 user_id=user_id, session_name="Outreach Funnel Sourcing")
             synthesis = get_or_create_profile_synthesis(user_id, my_profile)
-            prospects.extend(_funnel_prospects_from_roster(driver, user_id, roster,
-                                                           my_profile.full_name, now))
+            roster_prospects, roster_counts = _funnel_prospects_from_roster(
+                driver, user_id, roster, my_profile.full_name, now)
+            prospects.extend(roster_prospects)
+            counts.update(roster_counts)
         except Exception as e:
             # Own-post engagers stand on their own — degrade, don't abort the whole scan.
             log_warning("Roster sourcing for the outreach funnel failed; using post engagers only",
@@ -2861,13 +2890,16 @@ def scan_outreach_funnel_targets(self, user_id: int, max_new: int = None):
         log_debug("No active engagement-roster targets — the funnel can only source from post "
                   "engagers until a roster is configured", user_id=user_id,
                   task_name="scan_outreach_funnel_targets", action_type="outreach_funnel")
-    prospects.extend(_funnel_prospects_from_engagers(user_id))
+    engager_prospects, counts["engager_candidates"] = _funnel_prospects_from_engagers(user_id)
+    prospects.extend(engager_prospects)
+    counts["prospects"] = len(prospects)
 
     if not prospects:
         log_debug("Outreach funnel sourcing filed nothing: the engagement roster produced no "
                   "posts and nobody has engaged with this user's content in the lookback window",
                   user_id=user_id, task_name="scan_outreach_funnel_targets",
                   action_type="outreach_funnel")
+        track_outreach_funnel_scan(user_id, {**counts, "status": "no_prospects"})
         return f"No outreach funnel prospects for user {user_id}"
 
     # A target already in connection_requests is being worked by the #398/#486 path — two outbound
@@ -2901,6 +2933,8 @@ def scan_outreach_funnel_targets(self, user_id: int, max_new: int = None):
         filed += 1
         log_info(f"Outreach funnel target filed at the {stage} stage", user_id=user_id,
                  task_name="scan_outreach_funnel_targets", action_type="outreach_funnel")
+    counts["filed"] = filed
+    track_outreach_funnel_scan(user_id, {**counts, "status": "ok"})
     return f"Filed {filed} outreach funnel target(s) as '{status}' for user {user_id}"
 
 
