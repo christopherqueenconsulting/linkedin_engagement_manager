@@ -576,12 +576,56 @@ def _connect_dialog_present(driver, wait, user_id: int) -> bool:
     return _deep_dialog_control(driver, (_SEND_WITHOUT_NOTE_LABEL, _ADD_NOTE_LABEL)) is not None
 
 
+# What the overlay evidence below reads. Same control shape `_deep_dialog_control` matches, so the
+# dump describes the surface the dialog check actually looked at rather than a neighbouring one.
+_OVERLAY_DIALOG_CSS = "[role='dialog'], [role='alertdialog'], dialog"
+_OVERLAY_TEXT_LIMIT = 400
+
+
+def _overlay_evidence(driver) -> "tuple[list[str], str]":
+    """What a SHADOW-PIERCING scan can see that the light DOM cannot: controls, then notice text.
+
+    #1733 established that the Connect dialog mounts inside an open shadow root and taught
+    `_connect_dialog_present` to cross that boundary. The miss evidence beside it was left on
+    `driver.find_elements`, which cannot — so every dump describes the profile page and none
+    describes what happened after the click, which is the only interesting part of a miss.
+
+    Two readings, because a miss has two shapes and they need different evidence:
+
+    - **controls** answers "did an overlay render at all". Only labels the light-DOM `main` pass
+      cannot reach are worth printing; repeating the profile's own buttons would bury the signal.
+    - **text** answers "did it render a wall notice". `_invite_restriction_reason` reads the light
+      DOM only, so a limit or restriction message mounted in the overlay is invisible to it AND
+      returns None — indistinguishable from a selector that simply missed. This prints the words so
+      a human can tell the two apart without a live session.
+
+    Best-effort, like the rest of the evidence path: `find_deep_elements` returns `[]` rather than
+    raising when the query cannot run, and evidence must never cost the run.
+    """
+    controls: list = []
+    for control in find_deep_elements(driver, _CONNECT_DIALOG_CONTROL_CSS,
+                                      visible_only=True, limit=60):
+        label = element_label(control)
+        if label and label not in controls:
+            controls.append(label[:60])
+        if len(controls) >= 25:
+            break
+    text = " ".join(_element_text(container)
+                    for container in find_deep_elements(driver, _OVERLAY_DIALOG_CSS,
+                                                        visible_only=True, limit=3))
+    return controls, " ".join(text.split())[:_OVERLAY_TEXT_LIMIT]
+
+
 def _miss_evidence(driver) -> str:
     """A one-line description of what the page DID offer, for the total-miss log.
 
     Twenty identical `NO_CONNECT_BUTTON_MESSAGE` failures over 17 days produced zero diagnosable
     artifacts and needed a live session to explain (#1733). The next rotation should be readable
     from the log line it writes. Best-effort — evidence must never cost the run.
+
+    Reads BOTH document layers (#1813). The light-DOM half describes the profile; the overlay half
+    describes the dialog surface, and a miss where those two disagree — affordance present, overlay
+    empty — is a different defect from one where neither has anything.
     """
     try:
         anchors = [(a.get_attribute("href") or "")[:120]
@@ -599,7 +643,14 @@ def _miss_evidence(driver) -> str:
                 break
     except Exception:
         labels = []
-    return f"custom-invite anchors={anchors} main controls={labels}"
+    try:
+        overlay_controls, overlay_text = _overlay_evidence(driver)
+    except Exception:
+        overlay_controls, overlay_text = [], ""
+    seen = {label.lower() for label in labels}
+    overlay_only = [label for label in overlay_controls if label not in seen]
+    return (f"custom-invite anchors={anchors} main controls={labels} "
+            f"overlay controls={overlay_only} overlay text={overlay_text!r}")
 
 
 def _open_connect_invite_dialog(driver, wait, user_id: int,
@@ -663,6 +714,14 @@ def _open_connect_invite_dialog(driver, wait, user_id: int,
         if _connect_dialog_present(driver, wait, user_id):
             log_info("Connect dialog opened via the custom-invite URL")
             return True, None
+        # #1733 called this route's page blank, measured with light-DOM reads — which is exactly
+        # what a shadow-mounted overlay looks like. If the in-app route DID render something, this
+        # is the only place it can be seen, so the evidence is extended rather than discarded.
+        try:
+            url_controls, url_text = _overlay_evidence(driver)
+        except Exception:
+            url_controls, url_text = [], ""
+        evidence = f"{evidence} | after url route: controls={url_controls} text={url_text!r}"
 
     if restriction:
         # INFO, not a warning: this is the detector working. The hold the caller sets is the record
