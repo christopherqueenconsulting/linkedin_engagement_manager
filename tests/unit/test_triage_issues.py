@@ -1067,3 +1067,72 @@ class TestHourlyApplySharesTheDailyLock:
                           "--state-file", str(tmp_path / "state.json"),
                           "--lock-dir", str(lock_dir)])
         assert rc == 0
+
+
+class TestBlockedExternalIsARespectedPark:
+    """`blocked:external` is a human decision the cron must never overrule (#1887).
+
+    The label means "waiting on an external party — not actionable by agents or owner". It is the
+    owner recording that an issue is NOT waiting on him. Because it was missing from `FLOW_LABELS`,
+    `has_flow` read such an issue as having no flow state, the hourly pass admitted it, and handed
+    it `needs-human` again — on #695, three times over three weeks, twice within an hour of the
+    owner clearing it by hand. These assertions are the thing that stops that recurring.
+    """
+
+    def test_blocked_external_counts_as_a_flow_label(self, mod):
+        assert "blocked:external" in mod.FLOW_LABELS
+
+    def test_park_alone_is_not_a_missing_flow_state(self, mod):
+        issue = _issue(mod, labels=["blocked:external"])
+        assert mod.issue_gap(issue).missing_flow is False
+
+    def test_hourly_pass_does_not_pick_up_a_parked_issue(self, mod):
+        # The admission gate. If this is True the issue reaches `_hourly_change(..., "needs-human")`
+        # and the park is overwritten.
+        issue = _issue(mod, labels=["blocked:external"])
+        assert mod.needs_hourly_triage(issue) is False
+
+    def test_needs_human_is_not_re_added_to_a_parked_issue(self, mod):
+        # The assertion this PR exists for: the decision that was removed stays removed.
+        decision = SimpleNamespace(flow="needs-human", number=1)
+        assert mod.select_flow_label(decision, ["blocked:external"], "OWNER") is None
+
+    def test_agent_ready_is_not_added_to_a_parked_issue_either(self, mod):
+        # A park outranks promotion too — nothing external became actionable just because the LLM
+        # liked the issue body.
+        decision = SimpleNamespace(flow="agent:ready", number=1)
+        assert mod.select_flow_label(decision, ["blocked:external"], "OWNER") is None
+
+    def test_695_shape_is_left_alone(self, mod):
+        # #695's exact labels at the moment the owner parked it, minus the `needs-human` he removed.
+        issue = _issue(mod, labels=["analytics", "priority:low", "risk:product-decision",
+                                    "blocked:external"],
+                       milestone={"number": 19, "title": "Milestone 19"})
+        assert mod.needs_hourly_triage(issue) is False
+        assert mod.needs_triage(issue) is False
+        decision = SimpleNamespace(flow="needs-human", number=695)
+        assert mod.select_flow_label(decision, issue.labels, "OWNER") is None
+
+    def test_recognising_the_label_is_not_permission_to_write_it(self, mod):
+        # Recognition and mutability are separate lists on purpose. The cron must be able to SEE
+        # the park without ever being able to apply or clear it.
+        assert "blocked:external" not in mod.MUTABLE_LABELS
+
+    def test_llm_cannot_apply_the_park_through_the_topical_path(self, mod):
+        # `blocked:external` is in the repo's real label vocabulary, so `allowed` membership alone
+        # would have let a hallucinated/injected topical suggestion park an issue.
+        decision = SimpleNamespace(topical_labels=["blocked:external", "analytics"])
+        assert mod.select_topical_labels(
+            decision, [], {"blocked:external", "analytics"}) == ["analytics"]
+
+    def test_park_is_not_mistaken_for_a_topical_label(self, mod):
+        # It is a state, not a subject. An issue carrying only the park still lacks a topic.
+        issue = _issue(mod, labels=["blocked:external"])
+        assert mod.issue_gap(issue).missing_topical is True
+
+    def test_unparked_issue_still_gets_needs_human(self, mod):
+        # Guards the fix against over-reach: removing the park restores the old behaviour rather
+        # than silently exempting the issue forever.
+        decision = SimpleNamespace(flow="needs-human", number=1)
+        assert mod.select_flow_label(decision, ["analytics"], "OWNER") == "needs-human"
+        assert mod.needs_hourly_triage(_issue(mod, labels=["analytics"])) is True

@@ -81,7 +81,14 @@ DEFAULT_MAX_ISSUES = 50
 DAYS_STALE = 30
 
 PRIORITY_LABELS = ("priority:critical", "priority:high", "priority:medium", "priority:low")
-FLOW_LABELS = ("agent:ready", "agent:working", "needs-human", "agent:blocked")
+# Every label that means "this issue's flow state is already decided". `blocked:external` is a
+# member because it IS a decided state — "waiting on an external party, not actionable by agents or
+# owner" — even though it is the one entry a human applies rather than this cron (#1887). Leaving it
+# out made `has_flow` read a deliberately parked issue as unlabelled, so the hourly pass handed it
+# `needs-human` again; on #695 that overrode the owner's removal three times, twice within an hour
+# of him clearing it. Recognising a label here is NOT permission to write it — that is
+# `MUTABLE_LABELS` below, and `blocked:external` is deliberately absent from it.
+FLOW_LABELS = ("agent:ready", "agent:working", "needs-human", "agent:blocked", "blocked:external")
 # Labels the triage script is allowed to add/remove.
 MUTABLE_LABELS = (*PRIORITY_LABELS, "agent:ready", "needs-human")
 # Labels only the owner should change.
