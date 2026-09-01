@@ -111,10 +111,22 @@ COMPARE_FILES_CAP = 300
 
 @dataclass(frozen=True)
 class Verdict:
-    """The gate's answer: whether to skip the automatic deploy, and why."""
+    """The gate's answer: whether to skip the automatic deploy, and why.
+
+    `carried_migration_files`/`carried_introduced_tag` exist so the message can distinguish a
+    migration THIS release introduced from one it merely inherited from a still-undeployed earlier
+    release (#1893) — `migration_files` alone (the union of both) can't tell those apart, and
+    reporting only the union read as "this release added it" even when it didn't.
+    """
 
     flagged: bool
     migration_files: tuple[str, ...]
+    #: Subset of `migration_files` folded in by `merge_carried_hold` rather than found in this
+    #: release's own diff. Empty on the common, non-carried path.
+    carried_migration_files: tuple[str, ...] = ()
+    #: The release tag that actually introduced `carried_migration_files` — never `None` when that
+    #: tuple is non-empty.
+    carried_introduced_tag: str | None = None
 
 
 def resolve_previous_release(releases: list[dict], tag: str) -> str | None:
@@ -193,7 +205,11 @@ def decide(*, migration_files: list[str]) -> Verdict:
     return Verdict(flagged=bool(migration_files), migration_files=tuple(migration_files))
 
 
-def merge_carried_hold(verdict: Verdict, carried_migration_files: tuple[str, ...]) -> Verdict:
+def merge_carried_hold(
+    verdict: Verdict,
+    carried_migration_files: tuple[str, ...],
+    introduced_tag: str | None = None,
+) -> Verdict:
     """Fold a still-undeployed prior flag forward so honoring it — not just re-diffing — clears it.
 
     Reached only on the degraded, tag-to-tag fallback path (#1859): `/api/app-info` couldn't say
@@ -206,23 +222,46 @@ def merge_carried_hold(verdict: Verdict, carried_migration_files: tuple[str, ...
         verdict: This release's own diff verdict.
         carried_migration_files: Migration files from a still-open hold on the previous release;
             empty when there is none to carry (the common case).
+        introduced_tag: The release tag that actually introduced `carried_migration_files` — the
+            caller's `previous_tag`. Recorded on the merged `Verdict` so the message can say a
+            migration entered in an earlier release rather than implying this one did (#1893).
 
     Returns:
         `verdict` unchanged when there is nothing to carry. Otherwise a `Verdict` flagged
-        unconditionally, naming the union of both file sets — so the Decision Comment still points
-        at the pending migration even when this release's own diff came back clean.
+        unconditionally, naming the union of both file sets plus the carried subset and its origin
+        tag — so the Decision Comment still points at the pending migration even when this
+        release's own diff came back clean, and says where it actually came from.
     """
     if not carried_migration_files:
         return verdict
     merged = tuple(sorted(set(verdict.migration_files) | set(carried_migration_files)))
-    return Verdict(flagged=True, migration_files=merged)
+    return Verdict(
+        flagged=True,
+        migration_files=merged,
+        carried_migration_files=tuple(sorted(carried_migration_files)),
+        carried_introduced_tag=introduced_tag,
+    )
 
 
 def summarize(verdict: Verdict) -> str:
-    """One-line reason string for logs and the `::warning::` annotation."""
+    """One-line reason string for logs, the `::warning::` annotation, and the Decision Comment.
+
+    When `carried_migration_files` is non-empty, the count is not all "new" — folding an inherited
+    hold into a single "N new migration file(s)" is exactly the wording that reads as THIS release
+    introducing something it didn't (#1893's misdiagnosis: the sentence sent an operator hunting
+    through the wrong release's PRs). Naming the origin tag here means every caller that builds off
+    `summarize()` gets the distinction for free.
+    """
     if not verdict.migration_files:
         return "nothing found"
-    return f"{len(verdict.migration_files)} new migration file(s)"
+    if not verdict.carried_migration_files:
+        return f"{len(verdict.migration_files)} new migration file(s)"
+    own = sorted(set(verdict.migration_files) - set(verdict.carried_migration_files))
+    origin = verdict.carried_introduced_tag or "an earlier release"
+    carried_note = f"{len(verdict.carried_migration_files)} inherited from {origin} (still undeployed)"
+    if own:
+        return f"{len(verdict.migration_files)} migration file(s) — {len(own)} new, {carried_note}"
+    return f"{len(verdict.migration_files)} migration file(s) — {carried_note}"
 
 
 def format_decision_comment(tag: str, base_tag: str, verdict: Verdict) -> str:
@@ -230,26 +269,41 @@ def format_decision_comment(tag: str, base_tag: str, verdict: Verdict) -> str:
 
     Args:
         tag: This run's tag.
-        base_tag: The tag it was diffed against — production's actual deployed tag when
-            `/api/app-info` was readable (#1859), otherwise the previous release tag.
+        base_tag: The tag actually diffed against — production's actual deployed tag when
+            `/api/app-info` was readable (#1859); the last release before a still-open carried hold
+            began (#1893) when a hold was folded forward; otherwise the previous release tag.
         verdict: Must be flagged — this is only ever called after that check.
 
     Returns:
-        Markdown naming the specific migration file(s), stating plainly that this comment is
-        audit-only (nothing watches replies here), and giving the exact manual unblock command.
+        Markdown naming the specific migration file(s) and the release each one entered in when
+        that differs from `tag` (#1893), stating plainly that this comment is audit-only (nothing
+        watches replies here), and giving the exact manual unblock command.
     """
     lines = [
         f"### :warning: `release-risk-check` flagged `{tag}`",
         "",
-        f"The automatic `deploy` job was **skipped**: this release adds a Flyway migration, which is "
-        f"one-way against production data (rolling the image back does not roll back applied DDL). "
-        f"Diffed against `{base_tag}` — what production is actually running, read from "
-        f"`GET /api/app-info`, when that was readable; otherwise the previous release tag "
-        f"(`gh release list`, sorted explicitly by `createdAt` — never `.last_good_tag`, which is "
-        f"VPS-local and unreachable from the Actions runner).",
-        "",
-        f"**Migration file(s) added ({len(verdict.migration_files)}):**",
     ]
+    if verdict.carried_migration_files:
+        origin = verdict.carried_introduced_tag or "an earlier release"
+        lines.append(
+            f"The automatic `deploy` job was **skipped**: production still has an un-applied Flyway "
+            f"migration, which is one-way against production data (rolling the image back does not "
+            f"roll back applied DDL). Diffed against `{base_tag}` — the last release before this "
+            f"still-open hold began (`/api/app-info` was unreadable this run, so the deployed tag "
+            f"itself is unconfirmed). The migration(s) below were introduced in "
+            f"`{origin}`, **not** `{tag}` — this hold is INHERITED, carried "
+            f"forward because it was never manually deployed, not newly added by this release."
+        )
+    else:
+        lines.append(
+            f"The automatic `deploy` job was **skipped**: this release adds a Flyway migration, which "
+            f"is one-way against production data (rolling the image back does not roll back applied "
+            f"DDL). Diffed against `{base_tag}` — what production is actually running, read from "
+            f"`GET /api/app-info`, when that was readable; otherwise the previous release tag "
+            f"(`gh release list`, sorted explicitly by `createdAt` — never `.last_good_tag`, which is "
+            f"VPS-local and unreachable from the Actions runner)."
+        )
+    lines.extend(["", f"**Migration file(s) still pending ({len(verdict.migration_files)}):**"])
     lines.extend(f"- `{path}`" for path in verdict.migration_files)
     audit_only_note = (
         "**This comment is audit / notification only.** Nothing in this repo watches replies on "
@@ -586,12 +640,28 @@ def main(argv: list[str]) -> int:
                 f"{deployed_tag}...{args.tag}; falling back to the previous release tag."
             )
 
+    # Only set when the fallback below finds a still-open hold: `previous_tag` is the release that
+    # actually introduced it, and `carried_base_tag` (its own previous release, per
+    # `resolve_previous_release`) is the last point BEFORE that hold began — the honest "diffed
+    # against" answer for those file(s) once `/api/app-info` can no longer say so directly (#1893).
+    carried_introduced_tag: str | None = None
     if compare is None:
         # `/api/app-info` was unreadable, or its answer couldn't be diffed — degrade to the old
         # tag-to-tag comparison, but don't let a still-open hold on `previous_tag` evaporate just
         # because THIS release's own range looks clean.
         carried_migration_files = resolve_carried_migration_files(args.repo, releases, previous_tag)
+        carried_base_tag = (
+            resolve_previous_release(releases, previous_tag) if carried_migration_files else None
+        )
         compare = fetch_compare(args.repo, previous_tag, args.tag)
+        # Only swap `base_tag` once THIS release's own diff (against `previous_tag`) actually came
+        # back — otherwise the "could not diff" fallback-failure message below would name
+        # `carried_base_tag` for a comparison that was never attempted against it (#1893 was exactly
+        # this class of bug: a message naming the wrong bound for what was actually diffed).
+        if compare is not None and carried_migration_files:
+            carried_introduced_tag = previous_tag
+            if carried_base_tag is not None:
+                base_tag = carried_base_tag
 
     if compare is None:
         print(
@@ -603,7 +673,9 @@ def main(argv: list[str]) -> int:
 
     migration_files = collect_migration_files(args.repo, compare)
 
-    verdict = merge_carried_hold(decide(migration_files=migration_files), carried_migration_files)
+    verdict = merge_carried_hold(
+        decide(migration_files=migration_files), carried_migration_files, carried_introduced_tag
+    )
     write_github_outputs(
         {"flagged": "true" if verdict.flagged else "false", "previous_tag": previous_tag}
     )
@@ -613,7 +685,10 @@ def main(argv: list[str]) -> int:
         return 0
 
     reason = summarize(verdict)
-    print(f"FLAGGED: {reason} between {base_tag} and {args.tag}.")
+    if verdict.carried_migration_files:
+        print(f"FLAGGED: {reason}. Diffed against {base_tag} (this release: {args.tag}).")
+    else:
+        print(f"FLAGGED: {reason} between {base_tag} and {args.tag}.")
     print(
         f"::warning title=Release risk flagged::{reason} — automatic deploy of {args.tag} skipped. "
         f"The owner must run 'gh workflow run deploy-vps.yml -f tag={args.tag}' to ship it manually."

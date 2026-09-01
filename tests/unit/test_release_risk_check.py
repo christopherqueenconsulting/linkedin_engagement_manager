@@ -235,6 +235,22 @@ def test_summarize_says_nothing_found_when_clean():
     assert rrc.summarize(rrc.decide(migration_files=[])) == "nothing found"
 
 
+def test_summarize_names_the_origin_release_of_a_purely_carried_hold():
+    """#1893: a hold with nothing new of its own must say where the migration entered, not 'new'."""
+    verdict = rrc.merge_carried_hold(rrc.decide(migration_files=[]), ("a.sql",), "v0.172.6")
+    reason = rrc.summarize(verdict)
+    assert "new migration file(s)" not in reason
+    assert "inherited from v0.172.6" in reason
+    assert "still undeployed" in reason
+
+
+def test_summarize_distinguishes_new_from_inherited_when_both_are_present():
+    verdict = rrc.merge_carried_hold(rrc.decide(migration_files=["b.sql"]), ("a.sql",), "v0.172.6")
+    reason = rrc.summarize(verdict)
+    assert "1 new" in reason
+    assert "inherited from v0.172.6" in reason
+
+
 # ---------------------------------------------------------------- format_decision_comment
 
 
@@ -263,6 +279,16 @@ def test_comment_gives_the_exact_manual_unblock_command():
     verdict = rrc.decide(migration_files=["x"])
     body = rrc.format_decision_comment("v1.0.2", "v1.0.1", verdict)
     assert "gh workflow run deploy-vps.yml -f tag=v1.0.2" in body
+
+
+def test_comment_says_which_release_a_carried_migration_entered_in():
+    """#1893 acceptance: an inherited migration must be distinguishable from one this release added."""
+    verdict = rrc.merge_carried_hold(rrc.decide(migration_files=[]), ("x.sql",), "v0.172.6")
+    body = rrc.format_decision_comment("v0.172.7", "v0.172.5", verdict)
+    assert "introduced in" in body
+    assert "`v0.172.6`" in body
+    assert "not** `v0.172.7`" in body or "not `v0.172.7`" in body
+    assert "`v0.172.5`" in body
 
 
 # ---------------------------------------------------------------- gh I/O layer (mocked)
@@ -629,6 +655,21 @@ def test_merge_carried_hold_flags_even_when_this_releases_own_diff_is_clean():
     assert merged.migration_files == ("a.sql",)
 
 
+def test_merge_carried_hold_records_the_carried_subset_and_its_origin_tag():
+    """#1893: the merged `Verdict` must remember what was carried and where it entered."""
+    verdict = rrc.decide(migration_files=[])
+    merged = rrc.merge_carried_hold(verdict, ("a.sql",), "v0.172.6")
+    assert merged.carried_migration_files == ("a.sql",)
+    assert merged.carried_introduced_tag == "v0.172.6"
+
+
+def test_merge_carried_hold_with_no_introduced_tag_defaults_to_none():
+    """Back-compat: existing 2-arg callers still work, with no origin tag recorded."""
+    verdict = rrc.decide(migration_files=["b.sql"])
+    merged = rrc.merge_carried_hold(verdict, ("a.sql",))
+    assert merged.carried_introduced_tag is None
+
+
 # ---------------------------------------------------------------- fetch_deployed_version
 
 
@@ -834,3 +875,65 @@ def test_ac4_unreadable_deployed_version_with_a_flagged_previous_release_carries
     )
     assert rc == 0
     assert "flagged=true" in out.read_text()
+
+
+def test_ac5_carried_hold_message_names_the_real_bound_and_origin_release(monkeypatch, tmp_path, capsys):
+    """#1893: the message must name what was actually diffed against and where the hold entered.
+
+    Same fixture as AC4 (`/api/app-info` unreadable, deployed version two releases behind the
+    release being gated) — the exact case that produced #1893's misdiagnosis on v0.172.7: the log
+    named the previous *tag* (`v0.172.1`) as if this release's own range found the migration, when
+    it was actually inherited from `v0.172.1` over `v0.172.0`.
+    """
+    monkeypatch.setenv("GH_TOKEN", "x")
+    out = tmp_path / "gh_output"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(out))
+    monkeypatch.setattr(rrc, "_run_gh", _v0172_router())
+    monkeypatch.setattr(rrc, "fetch_deployed_version", lambda app_url: None)
+
+    rc = rrc.main(
+        ["release_risk_check.py", "--tag", "v0.172.2", "--app-url", "https://app.example.com", "--no-comment"]
+    )
+    assert rc == 0
+    log = capsys.readouterr().out
+    # Named the release the migration actually entered in, not the release being gated.
+    assert "inherited from v0.172.1" in log
+    # Named the real lower bound (the last release before the still-open hold), not v0.172.1.
+    assert "v0.172.0" in log
+    assert "between v0.172.1 and v0.172.2" not in log
+
+
+def test_ac5_failed_own_diff_names_the_range_actually_attempted_not_the_carried_bound(
+    monkeypatch, tmp_path, capsys
+):
+    """A still-open hold must not make the fail-open message lie about what was diffed.
+
+    Same fixture as AC4/AC5, except this release's OWN diff (`v0.172.1...v0.172.2`) is itself
+    unreadable. `base_tag` gets provisionally reassigned to the carried bound (`v0.172.0`) once a
+    hold is found on `v0.172.1` — but that reassignment must not survive into the "could not diff"
+    message, because the comparison that actually failed was `v0.172.1...v0.172.2`, never
+    `v0.172.0...v0.172.2`. Naming the wrong bound there is exactly #1893's bug, reintroduced.
+    """
+    monkeypatch.setenv("GH_TOKEN", "x")
+    out = tmp_path / "gh_output"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(out))
+
+    def router(args, **kw):
+        joined = " ".join(args)
+        if "release list" in joined:
+            return _completed(0, _V0172_RELEASES)
+        if "compare/v0.172.0...v0.172.1" in joined:
+            return _completed(0, _V0172_COMPARES["v0.172.0...v0.172.1"])
+        if "compare/v0.172.1...v0.172.2" in joined:
+            return _completed(1, "", "rate limited")
+        raise AssertionError(f"unexpected gh call, no matching stub: {args}")
+
+    monkeypatch.setattr(rrc, "_run_gh", router)
+    monkeypatch.setattr(rrc, "fetch_deployed_version", lambda app_url: None)
+
+    rc = rrc.main(["release_risk_check.py", "--tag", "v0.172.2", "--app-url", "", "--no-comment"])
+    assert rc == 0
+    assert "flagged=false" in out.read_text()
+    log = capsys.readouterr().out
+    assert "could not diff v0.172.1...v0.172.2" in log
+    assert "v0.172.0...v0.172.2" not in log
