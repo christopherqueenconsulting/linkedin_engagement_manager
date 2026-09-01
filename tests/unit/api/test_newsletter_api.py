@@ -512,8 +512,9 @@ class TestNewsletterCoverGenerate:
             resp = api_client.post("/api/user/newsletter-draft/cover/generate", json={
                 "session_token": _SESSION, "edition_id": 4})
         assert resp.status_code == 200
-        # No explicit choice sent -> Auto (None) rides through to the task.
-        task.apply_async.assert_called_once_with(kwargs={"edition_id": 4, "use_avatar": None})
+        # No explicit choice sent -> Auto (None) rides through to the task, no guidance -> None.
+        task.apply_async.assert_called_once_with(
+            kwargs={"edition_id": 4, "use_avatar": None, "guidance": None})
 
     def test_per_edition_avatar_choice_rides_through(self, api_client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
@@ -522,7 +523,28 @@ class TestNewsletterCoverGenerate:
             resp = api_client.post("/api/user/newsletter-draft/cover/generate", json={
                 "session_token": _SESSION, "edition_id": 4, "use_avatar": True})
         assert resp.status_code == 200
-        task.apply_async.assert_called_once_with(kwargs={"edition_id": 4, "use_avatar": True})
+        task.apply_async.assert_called_once_with(
+            kwargs={"edition_id": 4, "use_avatar": True, "guidance": None})
+
+    def test_guidance_is_stripped_and_forwarded(self, api_client):
+        with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
+             patch("cqc_lem.api.routers.user.get_newsletter_edition", return_value=dict(_OWNED)), \
+             patch("cqc_lem.app.run_scheduler.generate_newsletter_cover") as task:
+            resp = api_client.post("/api/user/newsletter-draft/cover/generate", json={
+                "session_token": _SESSION, "edition_id": 4, "guidance": "  brighter colors, no text  "})
+        assert resp.status_code == 200
+        task.apply_async.assert_called_once_with(
+            kwargs={"edition_id": 4, "use_avatar": None, "guidance": "brighter colors, no text"})
+
+    def test_blank_guidance_becomes_none(self, api_client):
+        with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
+             patch("cqc_lem.api.routers.user.get_newsletter_edition", return_value=dict(_OWNED)), \
+             patch("cqc_lem.app.run_scheduler.generate_newsletter_cover") as task:
+            resp = api_client.post("/api/user/newsletter-draft/cover/generate", json={
+                "session_token": _SESSION, "edition_id": 4, "guidance": "   "})
+        assert resp.status_code == 200
+        task.apply_async.assert_called_once_with(
+            kwargs={"edition_id": 4, "use_avatar": None, "guidance": None})
 
     def test_404_when_not_owner_spends_nothing(self, api_client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \

@@ -3392,6 +3392,17 @@
             "title": "Edition Id",
             "type": "integer"
           },
+          "guidance": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Guidance"
+          },
           "session_token": {
             "title": "Session Token",
             "type": "string"
@@ -3421,6 +3432,17 @@
           "edition_id": {
             "title": "Edition Id",
             "type": "integer"
+          },
+          "guidance": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Guidance"
           },
           "session_token": {
             "title": "Session Token",
@@ -12212,7 +12234,7 @@
     },
     "/api/user/newsletter-draft/cover/generate": {
       "post": {
-        "description": "Generate a cover for ONE edition. Image generation is slow and costs money, so it runs as a\nCelery task and the result lands 'pending_review' for the author to approve.",
+        "description": "Generate a cover for ONE edition. Image generation is slow and costs money, so it runs as a\nCelery task and the result lands 'pending_review' for the author to approve. Optional free-text\n`guidance` steers the image only \u2014 the edition's own \"Added Guidance\" field is for the article\ntext and is never read here.",
         "operationId": "generate_newsletter_cover_endpoint_api_user_newsletter_draft_cover_generate_post",
         "requestBody": {
           "content": {

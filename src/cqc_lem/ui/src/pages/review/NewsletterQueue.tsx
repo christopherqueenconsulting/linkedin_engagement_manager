@@ -166,6 +166,9 @@ export default function NewsletterQueue(
   // Per-edition avatar choice for AI covers: Auto lets the guardrails + relevance classifier
   // decide; 'with'/'without' override just this generation (never the master avatar switch).
   const [coverAvatarChoice, setCoverAvatarChoice] = useState<'auto' | 'with' | 'without'>('auto')
+  // Free-text direction for the IMAGE only (issue #1890) — separate from "Added Guidance" below,
+  // which steers the article text and is never sent to cover generation.
+  const [coverGuidance, setCoverGuidance] = useState('')
 
   const generateCoverMutation = useMutation({
     mutationFn: () =>
@@ -173,6 +176,7 @@ export default function NewsletterQueue(
         session_token: sessionToken,
         edition_id: draftEdit!.id,
         use_avatar: coverAvatarChoice === 'auto' ? null : coverAvatarChoice === 'with',
+        guidance: coverGuidance.trim() || null,
       }),
     onSuccess: () => {
       setCoverWaitId(draftEdit!.id)
@@ -439,6 +443,16 @@ export default function NewsletterQueue(
                   if (file) uploadCoverMutation.mutate(file)
                   e.target.value = ''  // let the same file be re-picked after a rejection
                 }} />
+              <div>
+                <label htmlFor="cover-guidance" className="block text-xs text-gray-500 mb-1">
+                  Image guidance <span className="text-gray-400">(optional — for the cover image, not the article text)</span>
+                </label>
+                <textarea id="cover-guidance" value={coverGuidance}
+                  onChange={(e) => setCoverGuidance(e.target.value)} rows={2}
+                  placeholder="Describe what the cover should show or avoid (e.g. brighter colors, no text, a specific scene). Leave blank for the AI's own take."
+                  disabled={busy || coverBusy}
+                  className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 disabled:opacity-50" />
+              </div>
               <div className="grid grid-cols-2 gap-2">
                 <button type="button" onClick={() => coverFileRef.current?.click()} disabled={busy || coverBusy}
                   className="bg-gray-100 text-gray-700 py-2 rounded-lg text-sm font-semibold hover:bg-gray-200 disabled:opacity-50 transition-colors">
@@ -486,10 +500,10 @@ export default function NewsletterQueue(
                 lets the AI pick a fresh, distinct take. */}
             <div className="border-t border-gray-100 pt-3 space-y-2">
               <label className="block text-sm font-medium text-gray-700 mb-1">
-                Added Guidance <span className="font-normal text-gray-400">(optional)</span>
+                Added Guidance for article text <span className="font-normal text-gray-400">(optional)</span>
               </label>
               <textarea value={guidance} onChange={(e) => setGuidance(e.target.value)} rows={2}
-                placeholder="What should change and why? You can name a format (e.g. case study, listicle, contrarian). Leave blank for a fresh, distinct take."
+                placeholder="What should change and why? You can name a format (e.g. case study, listicle, contrarian). Leave blank for a fresh, distinct take. To guide the cover image instead, use Image guidance above."
                 disabled={busy}
                 className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 disabled:opacity-50" />
               <button type="button" onClick={() => regenerateMutation.mutate()} disabled={busy}

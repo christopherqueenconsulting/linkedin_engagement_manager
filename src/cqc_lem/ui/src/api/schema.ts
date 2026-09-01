@@ -2498,7 +2498,9 @@ export interface paths {
         /**
          * Generate Newsletter Cover Endpoint
          * @description Generate a cover for ONE edition. Image generation is slow and costs money, so it runs as a
-         *     Celery task and the result lands 'pending_review' for the author to approve.
+         *     Celery task and the result lands 'pending_review' for the author to approve. Optional free-text
+         *     `guidance` steers the image only — the edition's own "Added Guidance" field is for the article
+         *     text and is never read here.
          */
         post: operations["generate_newsletter_cover_endpoint_api_user_newsletter_draft_cover_generate_post"];
         delete?: never;
@@ -4864,6 +4866,8 @@ export interface components {
             action: string;
             /** Edition Id */
             edition_id: number;
+            /** Guidance */
+            guidance?: string | null;
             /** Session Token */
             session_token: string;
             /** Use Avatar */
@@ -4879,6 +4883,8 @@ export interface components {
         NewsletterCoverRequest: {
             /** Edition Id */
             edition_id: number;
+            /** Guidance */
+            guidance?: string | null;
             /** Session Token */
             session_token: string;
             /** Use Avatar */

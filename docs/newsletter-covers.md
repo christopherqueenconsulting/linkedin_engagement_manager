@@ -118,15 +118,22 @@ filesystem path.
 
 ## Generation
 
-`generate_cover_for_edition` reuses the SHARED image path rather than adding a parallel per-content
--type helper:
+`generate_cover_for_edition` reuses the SHARED image path (`utilities/ai/image_brief.py` +
+`utilities/ai/image_gen.py`) rather than adding a parallel per-content-type helper:
 
-- prompt: `get_flux_image_prompt_from_ai` (already encodes the engagement best practices a cover
-  needs — one focal subject, strong foreground separation, **no text/logos/charts**, which is
-  exactly what makes generated covers look machine-made when it is missing)
-- render: `generate_post_image(..., ratio="16:9", depicts_person=False)` — 16:9 is Flux's closest
-  supported ratio to LinkedIn's 1.91:1, and `depicts_person=False` keeps the avatar LoRA out: a
-  cover is the newsletter's brand asset, not a scene the author appears in
+- prompt: `build_image_brief(..., surface="newsletter", ratio=COVER_IMAGE_RATIO, avatar=...)`
+  (already encodes the engagement best practices a cover needs — one focal subject, strong
+  foreground separation, **no text/logos/charts**, which is exactly what makes generated covers
+  look machine-made when it is missing)
+- render: `render_avatar_image_gated` when an avatar is resolved, else `render_image_gated`, at
+  `COVER_IMAGE_RATIO` — the bounded `lem-vision` quality check, failing OPEN
+
+**Image guidance (issue #1890):** the cover editor's "Image guidance" field is free-text direction
+for THIS render only — separate from the edition's "Added Guidance" field, which steers the article
+text and never reaches here. It rides `NewsletterCoverRequest.guidance` →
+`generate_newsletter_cover` → `generate_cover_for_edition(..., guidance=...)` straight into
+`build_image_brief`'s existing `extra_direction` param — no new prompt helper, per the image-stack
+invariant above. It is one-shot, never persisted on the edition row.
 
 The render is COPIED into the user's cover dir, never moved, so nothing else that references the
 generated file breaks.

@@ -275,7 +275,8 @@ def _resolve_cover_avatar(user_id: int, use_avatar: Optional[bool], title: Optio
 def generate_cover_for_edition(user_id: int, edition_id: int, title: Optional[str],
                                subtitle: Optional[str], body: Optional[str],
                                profile=None,
-                               use_avatar: Optional[bool] = None
+                               use_avatar: Optional[bool] = None,
+                               guidance: Optional[str] = None
                                ) -> "tuple[Optional[str], Optional[str]]":
     """Generate a cover for one edition. Returns ``(relative_path, None)`` or ``(None, reason)``.
 
@@ -283,6 +284,10 @@ def generate_cover_for_edition(user_id: int, edition_id: int, title: Optional[st
     is COPIED into the user's cover dir so removal/ownership stay scoped to the edition, and it
     passes the same deterministic gate an upload does before it is ever stored on the row.
     Whatever renders here still lands ``pending_review`` — the author stays the publish gate.
+
+    ``guidance`` (issue #1890) is the author's free-text direction for THIS image — distinct from
+    the edition's article-text "Added Guidance" — and is threaded straight into the brief's
+    ``extra_direction`` rather than a new per-surface prompt helper (per CLAUDE.md's image stack).
     """
     from cqc_lem.utilities.ai.image_brief import build_image_brief
     from cqc_lem.utilities.ai.image_gen import render_avatar_image_gated, render_image_gated
@@ -293,7 +298,8 @@ def generate_cover_for_edition(user_id: int, edition_id: int, title: Optional[st
         # The avatar is resolved BEFORE the brief is authored: its declared subject clause is what
         # stops the prompt LLM inventing a different person for the LoRA to contradict (#744).
         brief = build_image_brief(_edition_text(title, subtitle, body), surface="newsletter",
-                                  ratio=COVER_IMAGE_RATIO, profile=profile, avatar=avatar)
+                                  ratio=COVER_IMAGE_RATIO, profile=profile, avatar=avatar,
+                                  extra_direction=guidance)
     except Exception as e:
         log_warning("Newsletter cover prompt failed", exc=e, user_id=user_id,
                     action_type="newsletter_cover")
