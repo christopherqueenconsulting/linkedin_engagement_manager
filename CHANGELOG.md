@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.173.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.172.8...v0.173.0) (2026-09-01)
+
+
+### Features
+
+* **newsletter:** add guidance input for AI image regeneration in newsletter editor (closes [#1890](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1890)) ([#1898](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1898)) ([9b0feda](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/9b0feda276130891e985d3afc1d02bf9c1c1cad7))
+
+
+### Bug Fixes
+
+* **dm:** skip the profile-side Message routes when the target is not 1st degree ([#1903](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1903)) ([1af8bc0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/1af8bc0d0d547ce51109f4a786e031c9de63ec9e))
+* **release:** read /api/app-info for real and walk the full carry-forward chain (closes [#1896](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1896)) ([#1901](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1901)) ([881333d](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/881333d365a3888ec68ac9f7820103fa0e40d26b))
+
 ## [0.172.8](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.172.7...v0.172.8) (2026-09-01)
 
 
