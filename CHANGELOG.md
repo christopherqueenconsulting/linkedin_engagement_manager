@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.172.3](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.172.2...v0.172.3) (2026-09-01)
+
+
+### Bug Fixes
+
+* **celery:** pin worker node names so Flower's list stops growing ([fcb741c](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/fcb741cc918713d4da872a6d67b97071eab741da)), closes [#1869](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1869)
+* **celery:** pin worker node names so Flower's list stops growing (closes [#1869](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1869)) ([#1873](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1873)) ([fcb741c](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/fcb741cc918713d4da872a6d67b97071eab741da))
+* **dm:** let the message-thread probe skip the search route it cannot walk ([#1866](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1866)) ([dba6547](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/dba65474ff5479ef6c5c73415b295053aa5d88d9))
+* **feedback:** stop the triage panel reporting a dead read as an empty list ([#1876](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1876)) ([24517cf](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/24517cf1029dcf4352f643c78626a00c638641c2))
+* **llm:** stringify metadata.user_id so Anthropic calls leave the proxy (closes [#1829](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1829)) ([#1870](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1870)) ([731f987](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/731f98719f1978091486835fcaf736dadcbad351))
+* **tests:** restore the ruff ratchet to its baseline ([#1875](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1875)) ([ad3769c](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/ad3769cd352f082fedc934e149b801f8a84403c6))
+
 ## [0.172.2](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.172.1...v0.172.2) (2026-09-01)
 
 
