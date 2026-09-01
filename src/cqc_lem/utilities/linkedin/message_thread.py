@@ -733,7 +733,7 @@ def open_message_thread(driver: WebDriver, wait: WebDriverWait, profile_url: str
         driver.get(profile_url)
     except WebDriverException as e:
         log_warning("Could not open the profile to reach its message thread", exc=e,
-                    user_id=user_id, action_type="followup")
+                    user_id=user_id, action_type="followup", profile_url=profile_url)
         return result
     time.sleep(random.uniform(2, 4))
     urn = profile_urn_from_page(driver)  # captured here: a clicked route may navigate away from it
@@ -771,7 +771,7 @@ def open_message_thread(driver: WebDriver, wait: WebDriverWait, profile_url: str
             # One broken route must never end the ladder — that is the failure this module exists
             # to stop. Record it and keep walking.
             log_warning(f"Message-thread route '{route}' raised", exc=e, user_id=user_id,
-                        action_type="followup")
+                        action_type="followup", profile_url=profile_url)
             continue
         if reading:
             result.opened = True
@@ -780,9 +780,10 @@ def open_message_thread(driver: WebDriver, wait: WebDriverWait, profile_url: str
             result.composer = bool(reading.get("composer"))
             result.surface = reading.get("surface")
             log_info(f"Message thread opened via '{route}' ({result.surface}, "
-                     f"{result.events} message event(s))", user_id=user_id, action_type="followup")
+                     f"{result.events} message event(s))", user_id=user_id, action_type="followup",
+                     profile_url=profile_url)
             return result
 
     log_debug(f"No route opened a message thread for {profile_url}", user_id=user_id,
-              action_type="followup", selectors=list(result.tried))
+              action_type="followup", selectors=list(result.tried), profile_url=profile_url)
     return result

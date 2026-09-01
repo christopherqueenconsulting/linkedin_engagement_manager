@@ -479,6 +479,17 @@ class TestLadderContract:
         assert not mt.ThreadOpen()
         assert mt.ThreadOpen(opened=True, route=mt.ROUTE_ANCHOR)
 
+    def test_the_winning_route_log_carries_profile_url(self):
+        # #1857's log-attribution step needs to join a winning-route log line back to a
+        # dm_followups row; the route name alone can't do that without the profile it ran against.
+        d = FakeDriver()
+        anchor = FakeElement({"href": "/messaging/compose/?x"}, on_click=_opens(d))
+        d.dom[(By.CSS_SELECTOR, "main a[href*='/messaging/compose/']")] = [anchor]
+        with patch.object(mt, "log_info") as info:
+            result = mt.open_message_thread(d, MagicMock(), PROFILE, timeout=0)
+        assert result.opened
+        assert info.call_args.kwargs.get("profile_url") == PROFILE
+
 
 class TestProfileSideSkip:
     """Issue #1857.
