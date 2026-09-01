@@ -31,13 +31,13 @@ class TestRoutingMetadata:
         with patch("cqc_lem.utilities.observability.current_llm_attribution",
                    return_value=(7, "content")):
             sent = _call("lem-complex")
-        assert sent["extra_body"]["metadata"] == {"feature": "content", "user_id": 7}
+        assert sent["extra_body"]["metadata"] == {"feature": "content", "user_id": "7"}
 
     def test_explicit_track_kwargs_win_over_the_ambient_scope(self):
         with patch("cqc_lem.utilities.observability.current_llm_attribution",
                    return_value=(1, "system")):
             sent = _call("lem-medium", _track_user_id=9, _track_feature="newsletter")
-        assert sent["extra_body"]["metadata"] == {"feature": "newsletter", "user_id": 9}
+        assert sent["extra_body"]["metadata"] == {"feature": "newsletter", "user_id": "9"}
         # The tracking kwargs are still popped — they must never reach the proxy as request fields.
         assert "_track_user_id" not in sent and "_track_feature" not in sent
 
