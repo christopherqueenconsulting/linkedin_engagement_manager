@@ -19,12 +19,23 @@ owner had already answered on that exact change. A migration is the one thing in
 that no human re-reads at merge time AND that an image rollback cannot undo — so it is the one thing
 gated here.
 
-Diff source, deliberately: **this run's own tag**, never `.last_good_tag` (VPS-local, unreachable
-from the Actions runner). `gh release list` is sorted EXPLICITLY by `createdAt` here — never trusted
-as already sorted, because a second release (a `release:now` fast-lane release, or the next
-scheduled window) can publish mid-build and reorder the API's default response. The "previous
-release" is the next-older entry from THIS tag's own position in that sorted list, not list index
-0/1.
+Diff base (#1859): **what production is actually running**, read from the public, unauthenticated
+`GET {PUBLIC_BASE_URL}/api/app-info` — never `.last_good_tag` (VPS-local, unreachable from the
+Actions runner). Diffing against the previous *tag* instead of the previous *deploy* was the bug:
+a flagged release that is correctly skipped leaves no new migration file in the NEXT release's own
+tag-to-tag range, so that next release auto-deploys and Flyway applies the held migration anyway —
+the gate silently defeating itself the first time it works. Reading `/api/app-info` fixes that by
+diffing across however many releases production is actually behind, however many that is.
+
+`PUBLIC_BASE_URL` unreadable (unset, network failure, bad response) degrades to the **old**
+tag-to-tag behaviour — diffing this run's own tag against the previous *release* tag, found via
+`gh release list`, sorted EXPLICITLY by `createdAt` here and never trusted as already sorted
+(a second release — a `release:now` fast-lane release, or the next scheduled window — can publish
+mid-build and reorder the API's default response). The "previous release" is the next-older entry
+from THIS tag's own position in that sorted list, not list index 0/1. In that degraded path, an
+undeployed hold on the previous release is carried forward rather than lost: if the previous release
+itself added a migration over ITS OWN previous release, this release is flagged regardless of what
+its own tag-to-tag diff shows.
 
 On a flag, the workflow skips the automatic `deploy` job (this script only writes the `flagged`
 GitHub Actions output the job's `if:` reads — it never exits non-zero for a flag, since that would
@@ -47,11 +58,14 @@ CLI:
   --tag TAG              This run's own release tag (required).
   --repo OWNER/REPO      Defaults to $GITHUB_REPOSITORY, else the hardcoded default.
   --release-limit N      `gh release list --limit` (default 20, per the acceptance criteria).
+  --app-url URL          Base URL to read `/api/app-info` from. Defaults to $PUBLIC_BASE_URL. Empty
+                          = skip straight to the tag-to-tag fallback.
   --no-comment           Skip posting the Decision Comment even when flagged (used by tests / a
                           dry run); the `flagged` output is still written.
 
 Env:
   GH_TOKEN / GITHUB_TOKEN  Read by the `gh` CLI itself. Missing = fail open with a loud warning.
+  PUBLIC_BASE_URL          Default source for --app-url; a repo `vars.*`, not a secret.
   GITHUB_OUTPUT            Where `flagged`/`previous_tag` are written for the workflow's `if:`.
 
 Exit: always 0. The verdict is carried entirely in the `flagged` GitHub Actions output, never in the
@@ -65,9 +79,16 @@ import json
 import os
 import subprocess
 import sys
+import urllib.error
+import urllib.request
 from dataclasses import dataclass
 
 DEFAULT_REPO = "christopherqueenconsulting/linkedin_engagement_manager"
+
+#: `GET /api/app-info` is a plain, unauthenticated, no-store JSON read (docs/DEPLOYMENT.md) — a slow
+#: or wedged origin must not stall the release-risk-check job, which runs concurrently with the
+#: ~10 min image build precisely so an unflagged release keeps today's latency.
+APP_INFO_TIMEOUT_SECONDS = 15
 
 MIGRATIONS_PREFIX = "compose/local/database/migrations/"
 
@@ -126,6 +147,20 @@ def resolve_previous_release(releases: list[dict], tag: str) -> str | None:
     return names[idx + 1]
 
 
+def version_to_tag(version: str) -> str:
+    """Normalize an `/api/app-info` version string into the `vX.Y.Z` tag form releases use.
+
+    Args:
+        version: `get_app_version()`'s output — bare (`"0.172.1"`), never `v`-prefixed today, but
+            accepted either way so this stays correct if that ever changes.
+
+    Returns:
+        The `v`-prefixed tag.
+    """
+    version = version.strip()
+    return version if version.startswith("v") else f"v{version}"
+
+
 def added_migration_files(files: list[dict]) -> list[str]:
     """Which entries of a GitHub compare-API `files` array are a newly ADDED migration.
 
@@ -158,6 +193,31 @@ def decide(*, migration_files: list[str]) -> Verdict:
     return Verdict(flagged=bool(migration_files), migration_files=tuple(migration_files))
 
 
+def merge_carried_hold(verdict: Verdict, carried_migration_files: tuple[str, ...]) -> Verdict:
+    """Fold a still-undeployed prior flag forward so honoring it — not just re-diffing — clears it.
+
+    Reached only on the degraded, tag-to-tag fallback path (#1859): `/api/app-info` couldn't say
+    what production is actually running, so this release's OWN tag-to-tag diff can no longer see a
+    migration that landed in an earlier, still-undeployed release. `carried_migration_files` is that
+    earlier hold, recomputed the same way this script always decides a flag — see
+    `resolve_carried_migration_files`.
+
+    Args:
+        verdict: This release's own diff verdict.
+        carried_migration_files: Migration files from a still-open hold on the previous release;
+            empty when there is none to carry (the common case).
+
+    Returns:
+        `verdict` unchanged when there is nothing to carry. Otherwise a `Verdict` flagged
+        unconditionally, naming the union of both file sets — so the Decision Comment still points
+        at the pending migration even when this release's own diff came back clean.
+    """
+    if not carried_migration_files:
+        return verdict
+    merged = tuple(sorted(set(verdict.migration_files) | set(carried_migration_files)))
+    return Verdict(flagged=True, migration_files=merged)
+
+
 def summarize(verdict: Verdict) -> str:
     """One-line reason string for logs and the `::warning::` annotation."""
     if not verdict.migration_files:
@@ -165,12 +225,13 @@ def summarize(verdict: Verdict) -> str:
     return f"{len(verdict.migration_files)} new migration file(s)"
 
 
-def format_decision_comment(tag: str, previous_tag: str, verdict: Verdict) -> str:
+def format_decision_comment(tag: str, base_tag: str, verdict: Verdict) -> str:
     """Build the markdown body posted to the release PR when `verdict.flagged`.
 
     Args:
         tag: This run's tag.
-        previous_tag: The tag it was diffed against.
+        base_tag: The tag it was diffed against — production's actual deployed tag when
+            `/api/app-info` was readable (#1859), otherwise the previous release tag.
         verdict: Must be flagged — this is only ever called after that check.
 
     Returns:
@@ -182,9 +243,10 @@ def format_decision_comment(tag: str, previous_tag: str, verdict: Verdict) -> st
         "",
         f"The automatic `deploy` job was **skipped**: this release adds a Flyway migration, which is "
         f"one-way against production data (rolling the image back does not roll back applied DDL). "
-        f"Diffed against the previous release `{previous_tag}` (`gh release list`, sorted explicitly "
-        f"by `createdAt`, the next-older entry from this run's own tag — never `.last_good_tag`, "
-        f"which is VPS-local and unreachable from the Actions runner).",
+        f"Diffed against `{base_tag}` — what production is actually running, read from "
+        f"`GET /api/app-info`, when that was readable; otherwise the previous release tag "
+        f"(`gh release list`, sorted explicitly by `createdAt` — never `.last_good_tag`, which is "
+        f"VPS-local and unreachable from the Actions runner).",
         "",
         f"**Migration file(s) added ({len(verdict.migration_files)}):**",
     ]
@@ -349,6 +411,74 @@ def collect_migration_files(repo: str, compare: dict) -> list[str]:
     return sorted(found)
 
 
+def fetch_deployed_version(app_url: str) -> str | None:
+    """`GET {app_url}/api/app-info` — the version production is ACTUALLY running (#1859).
+
+    Public, unauthenticated, `no-store` (docs/DEPLOYMENT.md, #1527) — no `gh` CLI involved, and safe
+    to poll fresh every run. Not routed through `_run_gh`/`_gh_json`: this is a plain HTTP GET
+    against the app itself, not the GitHub API.
+
+    Args:
+        app_url: The app's public base URL (`PUBLIC_BASE_URL`). Falsy is treated the same as any
+            other unreadable case.
+
+    Returns:
+        The bare version string (e.g. `"0.172.1"`), or `None` on any failure — empty `app_url`,
+        timeout, connection error, non-2xx, or an unreadable/`"unknown"` body. This is the one read
+        in the whole script that talks to something other than GitHub, so it fails open the same
+        way every `gh` read here does: unreadable degrades to the old tag-to-tag comparison, never
+        to blocking the release.
+    """
+    if not app_url:
+        return None
+    url = app_url.rstrip("/") + "/api/app-info"
+    try:
+        request = urllib.request.Request(url, headers={"User-Agent": "release-risk-check"})
+        with urllib.request.urlopen(request, timeout=APP_INFO_TIMEOUT_SECONDS) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError, ValueError) as exc:
+        print(f"::warning title=release-risk-check app-info unreadable::GET {url}: {exc}")
+        return None
+    detail = payload.get("detail") if isinstance(payload, dict) else None
+    version = detail.get("version") if isinstance(detail, dict) else None
+    if not isinstance(version, str) or not version or version == "unknown":
+        print(f"::warning title=release-risk-check app-info unreadable::GET {url} returned no usable version")
+        return None
+    return version
+
+
+def resolve_carried_migration_files(repo: str, releases: list[dict], previous_tag: str) -> tuple[str, ...]:
+    """Which migration files a still-open hold on `previous_tag` would carry forward (#1859).
+
+    Only reached on the degraded, tag-to-tag fallback path — a direct `/api/app-info` read already
+    covers holds spanning any number of releases by diffing straight from what's actually deployed;
+    this is the one-level-back approximation for when that read is unavailable. It recomputes
+    whether `previous_tag` was itself flagged the exact same way this script always decides that:
+    did it add a migration file over ITS OWN previous release. One level is enough for what this
+    fallback needs to catch — a flagged release followed by exactly one auto-deployed release that
+    added no migration of its own (the real v0.172.0/.1/.2 sequence this was found from); a hold
+    spanning more releases than that is precisely the case a working `/api/app-info` read already
+    handles without this function ever running.
+
+    Args:
+        repo: `owner/name`.
+        releases: The already-fetched `gh release list` rows (avoids a second network round trip).
+        previous_tag: The release this run would otherwise have diffed against.
+
+    Returns:
+        Sorted migration paths added between `previous_tag`'s own previous release and `previous_tag`
+        — empty when there is no earlier release, or either read is unreadable (fails open, same as
+        everywhere else in this script).
+    """
+    previous_previous_tag = resolve_previous_release(releases, previous_tag)
+    if previous_previous_tag is None:
+        return ()
+    compare = fetch_compare(repo, previous_previous_tag, previous_tag)
+    if compare is None:
+        return ()
+    return tuple(collect_migration_files(repo, compare))
+
+
 def fetch_release_pr_number(repo: str, tag: str) -> int | None:
     """Which release-please PR's merge commit this tag points at.
 
@@ -400,6 +530,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     ap.add_argument("--tag", required=True, help="This run's own release tag.")
     ap.add_argument("--repo", default=os.getenv("GITHUB_REPOSITORY", DEFAULT_REPO))
     ap.add_argument("--release-limit", type=int, default=20)
+    ap.add_argument(
+        "--app-url",
+        default=os.getenv("PUBLIC_BASE_URL", ""),
+        help="Base URL to read /api/app-info from. Empty skips straight to the tag-to-tag fallback.",
+    )
     ap.add_argument("--no-comment", action="store_true", help="Never post the Decision Comment.")
     return ap.parse_args(argv[1:])
 
@@ -433,10 +568,34 @@ def main(argv: list[str]) -> int:
         write_github_outputs({"flagged": "false"})
         return 0
 
-    compare = fetch_compare(args.repo, previous_tag, args.tag)
+    # Diff base (#1859): prefer what production is actually running over the previous *tag* — a
+    # flagged release that is correctly skipped otherwise leaves no trace in the NEXT release's own
+    # tag-to-tag range, and that next release auto-deploys the held migration anyway.
+    base_tag = previous_tag
+    carried_migration_files: tuple[str, ...] = ()
+    deployed_version = fetch_deployed_version(args.app_url)
+    compare = None
+    if deployed_version is not None:
+        deployed_tag = version_to_tag(deployed_version)
+        compare = fetch_compare(args.repo, deployed_tag, args.tag)
+        if compare is not None:
+            base_tag = deployed_tag
+        else:
+            print(
+                f"::warning title=release-risk-check degraded::could not diff deployed "
+                f"{deployed_tag}...{args.tag}; falling back to the previous release tag."
+            )
+
+    if compare is None:
+        # `/api/app-info` was unreadable, or its answer couldn't be diffed — degrade to the old
+        # tag-to-tag comparison, but don't let a still-open hold on `previous_tag` evaporate just
+        # because THIS release's own range looks clean.
+        carried_migration_files = resolve_carried_migration_files(args.repo, releases, previous_tag)
+        compare = fetch_compare(args.repo, previous_tag, args.tag)
+
     if compare is None:
         print(
-            f"::warning title=release-risk-check degraded::could not diff {previous_tag}...{args.tag}; "
+            f"::warning title=release-risk-check degraded::could not diff {base_tag}...{args.tag}; "
             "deploying unflagged (fail open)."
         )
         write_github_outputs({"flagged": "false"})
@@ -444,17 +603,17 @@ def main(argv: list[str]) -> int:
 
     migration_files = collect_migration_files(args.repo, compare)
 
-    verdict = decide(migration_files=migration_files)
+    verdict = merge_carried_hold(decide(migration_files=migration_files), carried_migration_files)
     write_github_outputs(
         {"flagged": "true" if verdict.flagged else "false", "previous_tag": previous_tag}
     )
 
     if not verdict.flagged:
-        print(f"PASS: no migration files added between {previous_tag} and {args.tag}.")
+        print(f"PASS: no migration files added between {base_tag} and {args.tag}.")
         return 0
 
     reason = summarize(verdict)
-    print(f"FLAGGED: {reason} between {previous_tag} and {args.tag}.")
+    print(f"FLAGGED: {reason} between {base_tag} and {args.tag}.")
     print(
         f"::warning title=Release risk flagged::{reason} — automatic deploy of {args.tag} skipped. "
         f"The owner must run 'gh workflow run deploy-vps.yml -f tag={args.tag}' to ship it manually."
@@ -464,7 +623,7 @@ def main(argv: list[str]) -> int:
         return 0
 
     pr_number = fetch_release_pr_number(args.repo, args.tag)
-    body = format_decision_comment(args.tag, previous_tag, verdict)
+    body = format_decision_comment(args.tag, base_tag, verdict)
     if pr_number is None:
         print(
             f"::warning title=Decision Comment not posted::could not resolve the release PR for "

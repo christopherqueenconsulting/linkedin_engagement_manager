@@ -593,3 +593,244 @@ def test_main_fails_open_when_the_compare_call_is_unreadable(monkeypatch, tmp_pa
     rc = rrc.main(["release_risk_check.py", "--tag", "v1.0.2"])
     assert rc == 0
     assert "flagged=false" in out.read_text()
+
+
+# ---------------------------------------------------------------- version_to_tag
+
+
+def test_version_to_tag_prefixes_a_bare_version():
+    assert rrc.version_to_tag("0.172.1") == "v0.172.1"
+
+
+def test_version_to_tag_leaves_an_already_prefixed_one_alone():
+    assert rrc.version_to_tag("v0.172.1") == "v0.172.1"
+
+
+# ---------------------------------------------------------------- merge_carried_hold
+
+
+def test_merge_carried_hold_passes_through_when_nothing_is_carried():
+    verdict = rrc.decide(migration_files=["b.sql"])
+    assert rrc.merge_carried_hold(verdict, ()) is verdict
+
+
+def test_merge_carried_hold_unions_the_file_sets():
+    verdict = rrc.decide(migration_files=["b.sql"])
+    merged = rrc.merge_carried_hold(verdict, ("a.sql",))
+    assert merged.flagged
+    assert merged.migration_files == ("a.sql", "b.sql")
+
+
+def test_merge_carried_hold_flags_even_when_this_releases_own_diff_is_clean():
+    """The whole point (#1859): a clean own-range diff must not clear a still-open hold."""
+    verdict = rrc.decide(migration_files=[])
+    merged = rrc.merge_carried_hold(verdict, ("a.sql",))
+    assert merged.flagged
+    assert merged.migration_files == ("a.sql",)
+
+
+# ---------------------------------------------------------------- fetch_deployed_version
+
+
+class _FakeHTTPResponse:
+    def __init__(self, body: bytes):
+        self._body = body
+
+    def read(self):
+        return self._body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+def test_fetch_deployed_version_is_none_for_an_empty_app_url():
+    assert rrc.fetch_deployed_version("") is None
+
+
+def test_fetch_deployed_version_reads_the_version_field(monkeypatch):
+    body = json.dumps({"detail": {"version": "0.172.1", "show_version": True}}).encode()
+    monkeypatch.setattr(rrc.urllib.request, "urlopen", lambda *a, **kw: _FakeHTTPResponse(body))
+    assert rrc.fetch_deployed_version("https://app.example.com") == "0.172.1"
+
+
+def test_fetch_deployed_version_fails_open_on_a_network_error(monkeypatch):
+    def boom(*a, **kw):
+        raise rrc.urllib.error.URLError("no route to host")
+
+    monkeypatch.setattr(rrc.urllib.request, "urlopen", boom)
+    assert rrc.fetch_deployed_version("https://app.example.com") is None
+
+
+def test_fetch_deployed_version_fails_open_on_unreadable_json(monkeypatch):
+    monkeypatch.setattr(rrc.urllib.request, "urlopen", lambda *a, **kw: _FakeHTTPResponse(b"not json"))
+    assert rrc.fetch_deployed_version("https://app.example.com") is None
+
+
+def test_fetch_deployed_version_fails_open_when_the_version_is_unknown(monkeypatch):
+    """`get_app_version()` returns the literal string `'unknown'` when it can't determine one."""
+    body = json.dumps({"detail": {"version": "unknown"}}).encode()
+    monkeypatch.setattr(rrc.urllib.request, "urlopen", lambda *a, **kw: _FakeHTTPResponse(body))
+    assert rrc.fetch_deployed_version("https://app.example.com") is None
+
+
+# ---------------------------------------------------------------- resolve_carried_migration_files
+
+
+def test_resolve_carried_migration_files_is_empty_with_no_earlier_release():
+    releases = [{"tagName": "v1.0.0", "createdAt": "2026-08-14T00:00:00Z"}]
+    assert rrc.resolve_carried_migration_files(REPO, releases, "v1.0.0") == ()
+
+
+def test_resolve_carried_migration_files_finds_what_the_previous_release_added(monkeypatch):
+    releases = [
+        {"tagName": "v1.0.1", "createdAt": "2026-08-15T00:00:00Z"},
+        {"tagName": "v1.0.0", "createdAt": "2026-08-14T00:00:00Z"},
+    ]
+    compare = json.dumps(
+        {"files": [{"filename": "compose/local/database/migrations/V1__x.sql", "status": "added"}], "commits": []}
+    )
+    monkeypatch.setattr(rrc, "_run_gh", lambda args, **kw: _completed(0, compare))
+    assert rrc.resolve_carried_migration_files(REPO, releases, "v1.0.1") == (
+        "compose/local/database/migrations/V1__x.sql",
+    )
+
+
+def test_resolve_carried_migration_files_is_empty_when_the_previous_release_added_nothing(monkeypatch):
+    releases = [
+        {"tagName": "v1.0.1", "createdAt": "2026-08-15T00:00:00Z"},
+        {"tagName": "v1.0.0", "createdAt": "2026-08-14T00:00:00Z"},
+    ]
+    compare = json.dumps({"files": [], "commits": []})
+    monkeypatch.setattr(rrc, "_run_gh", lambda args, **kw: _completed(0, compare))
+    assert rrc.resolve_carried_migration_files(REPO, releases, "v1.0.1") == ()
+
+
+def test_resolve_carried_migration_files_fails_open_when_the_compare_is_unreadable(monkeypatch):
+    releases = [
+        {"tagName": "v1.0.1", "createdAt": "2026-08-15T00:00:00Z"},
+        {"tagName": "v1.0.0", "createdAt": "2026-08-14T00:00:00Z"},
+    ]
+    monkeypatch.setattr(rrc, "_run_gh", lambda args, **kw: _completed(1, "", "boom"))
+    assert rrc.resolve_carried_migration_files(REPO, releases, "v1.0.1") == ()
+
+
+# ---------------------------------------------------------------- main(): #1859 acceptance criteria
+#
+# One shared fixture, the real sequence from the issue: v0.172.0 (clean) -> v0.172.1 (adds
+# compose/local/database/migrations/V20260901042458__add_dm_followups_unreadable_reads.sql, from
+# #1825, correctly skipped) -> v0.172.2 (clean on its own) -> v0.172.3 (clean on its own). Each test
+# below varies only which tag is "this run" and what `/api/app-info` answers.
+
+_V0172_MIGRATION = "compose/local/database/migrations/V20260901042458__add_dm_followups_unreadable_reads.sql"
+
+_V0172_RELEASES = json.dumps(
+    [
+        {"tagName": "v0.172.3", "createdAt": "2026-09-01T08:00:00Z"},
+        {"tagName": "v0.172.2", "createdAt": "2026-09-01T06:00:00Z"},
+        {"tagName": "v0.172.1", "createdAt": "2026-09-01T04:00:00Z"},
+        {"tagName": "v0.172.0", "createdAt": "2026-08-31T00:00:00Z"},
+    ]
+)
+
+_V0172_COMPARES = {
+    "v0.172.0...v0.172.1": json.dumps(
+        {"files": [{"filename": _V0172_MIGRATION, "status": "added"}], "commits": []}
+    ),
+    "v0.172.0...v0.172.2": json.dumps(
+        {"files": [{"filename": _V0172_MIGRATION, "status": "added"}], "commits": []}
+    ),
+    "v0.172.1...v0.172.2": json.dumps({"files": [], "commits": []}),
+    "v0.172.2...v0.172.3": json.dumps({"files": [], "commits": []}),
+}
+
+
+def _v0172_router(**extra_compares):
+    compares = {**_V0172_COMPARES, **extra_compares}
+
+    def _router(args, **kw):
+        joined = " ".join(args)
+        if "release list" in joined:
+            return _completed(0, _V0172_RELEASES)
+        for range_key, payload in compares.items():
+            if f"compare/{range_key}" in joined:
+                return _completed(0, payload)
+        raise AssertionError(f"unexpected gh call, no matching stub: {args}")
+
+    return _router
+
+
+def test_ac1_deployed_version_still_behind_the_flagged_release_flags_the_next_one(monkeypatch, tmp_path):
+    """#1859 AC1: production on v0.172.0, v0.172.1 was flagged and never deployed by hand.
+
+    v0.172.2's OWN tag-to-tag range (v0.172.1...v0.172.2) is clean — this is exactly the bug: the
+    old tag-diff would have deployed it. Reading `/api/app-info` diffs v0.172.0...v0.172.2 instead
+    and still sees the migration v0.172.1 added.
+    """
+    monkeypatch.setenv("GH_TOKEN", "x")
+    out = tmp_path / "gh_output"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(out))
+    monkeypatch.setattr(rrc, "_run_gh", _v0172_router())
+    monkeypatch.setattr(rrc, "fetch_deployed_version", lambda app_url: "0.172.0")
+
+    rc = rrc.main(
+        ["release_risk_check.py", "--tag", "v0.172.2", "--app-url", "https://app.example.com", "--no-comment"]
+    )
+    assert rc == 0
+    assert "flagged=true" in out.read_text()
+
+
+def test_ac2_deployed_version_caught_up_by_hand_clears_the_hold(monkeypatch, tmp_path):
+    """#1859 AC2: the owner ran the manual deploy of v0.172.1; the hold clears for v0.172.2."""
+    monkeypatch.setenv("GH_TOKEN", "x")
+    out = tmp_path / "gh_output"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(out))
+    monkeypatch.setattr(rrc, "_run_gh", _v0172_router())
+    monkeypatch.setattr(rrc, "fetch_deployed_version", lambda app_url: "0.172.1")
+
+    rc = rrc.main(
+        ["release_risk_check.py", "--tag", "v0.172.2", "--app-url", "https://app.example.com", "--no-comment"]
+    )
+    assert rc == 0
+    assert "flagged=false" in out.read_text()
+
+
+def test_ac3_unreadable_deployed_version_with_an_unflagged_previous_release_is_unchanged(monkeypatch, tmp_path):
+    """#1859 AC3: `/api/app-info` unreadable, and the previous release (v0.172.2) was itself clean.
+
+    Behaviour is exactly today's tag-to-tag comparison, deploying v0.172.3.
+    """
+    monkeypatch.setenv("GH_TOKEN", "x")
+    out = tmp_path / "gh_output"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(out))
+    monkeypatch.setattr(rrc, "_run_gh", _v0172_router())
+    monkeypatch.setattr(rrc, "fetch_deployed_version", lambda app_url: None)
+
+    rc = rrc.main(
+        ["release_risk_check.py", "--tag", "v0.172.3", "--app-url", "https://app.example.com", "--no-comment"]
+    )
+    assert rc == 0
+    assert "flagged=false" in out.read_text()
+
+
+def test_ac4_unreadable_deployed_version_with_a_flagged_previous_release_carries_the_hold_forward(
+    monkeypatch, tmp_path
+):
+    """#1859 AC4: `/api/app-info` unreadable, and the previous release (v0.172.1) WAS flagged.
+
+    v0.172.2's own diff against v0.172.1 is clean, exactly like the bug — but this time the
+    fallback path itself recognizes the still-open hold and flags anyway.
+    """
+    monkeypatch.setenv("GH_TOKEN", "x")
+    out = tmp_path / "gh_output"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(out))
+    monkeypatch.setattr(rrc, "_run_gh", _v0172_router())
+    monkeypatch.setattr(rrc, "fetch_deployed_version", lambda app_url: None)
+
+    rc = rrc.main(
+        ["release_risk_check.py", "--tag", "v0.172.2", "--app-url", "https://app.example.com", "--no-comment"]
+    )
+    assert rc == 0
+    assert "flagged=true" in out.read_text()
