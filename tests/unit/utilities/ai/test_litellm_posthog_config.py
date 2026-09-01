@@ -3,12 +3,15 @@
 None of this is app code, so nothing fails at runtime when it drifts — the proxy just silently
 stops emitting `$ai_generation`, or (worse) starts shipping the user's prompts. Only these
 assertions notice. Read as text rather than parsed as YAML, matching test_selenium_capacity.py:
-these files configure containers this suite can't run, so the assertion is on what ships.
+these files configure containers this suite can't run, so the assertion is on what ships. The one
+exception is `turn_off_message_logging`, which is additionally asserted through a real YAML load —
+the whole prompt-logging design rests on that key's value and nesting.
 """
 import re
 from pathlib import Path
 
 import pytest
+import yaml
 
 pytestmark = pytest.mark.unit
 
@@ -50,8 +53,15 @@ class TestPostHogCallback:
         global `false` ships profile synthesis, draft DMs and image prompts to PostHog to grade one
         drafter. Pinned as a literal rather than `os.environ/` for the same reason: the safe value
         should not be something a typo in `.env` can move.
+
+        Asserted through a real YAML load as well as the text match this file usually uses, because
+        this is the one key the whole design rests on and a previous revision of PR #1828 flipped it:
+        the parse proves it is the actual `litellm_settings` key at the right nesting and a genuine
+        boolean, not a substring that also matches the string "true" or a stray top-level copy.
         """
         assert re.search(r"turn_off_message_logging:\s*true", CONFIG_SETTINGS)
+        settings = yaml.safe_load(CONFIG)["litellm_settings"]
+        assert settings["turn_off_message_logging"] is True
 
     def test_the_proxy_container_gets_the_posthog_credentials(self):
         """The logger reads these two names specifically; POSTHOG_HOST is the app's own var, so both

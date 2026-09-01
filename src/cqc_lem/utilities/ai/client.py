@@ -72,6 +72,13 @@ _KNOWN_FEATURES = frozenset({"content", "comment", "dm", "newsletter", "marketin
 #: Names already reported as unrecognised, so the warning is once per process, not once per call.
 _UNKNOWN_FEATURES_WARNED: set[str] = set()
 
+#: Allowlists already announced, so "is prompt logging on?" is answerable from the log without
+#: waiting for the first allowlisted call — and without a line per call.
+_ALLOWLISTS_ANNOUNCED: set[str] = set()
+
+#: Request hooks already reported as failing, so a broken hook says so once instead of per call.
+_HOOK_FAILURES_WARNED: set[str] = set()
+
 # The LiteLLM proxy is a container LEM restarts on its own schedule (deploys, image pulls, the host's
 # nightly unattended-upgrade reboot). While it is coming back up every call gets
 # `[Errno 111] Connection refused`, and the OpenAI SDK spends its own two retries inside ~1.5s — far
@@ -230,8 +237,17 @@ def prompt_logging_features() -> frozenset[str]:
         _UNKNOWN_FEATURES_WARNED.update(unwarned)
         log_warning(f"{_PROMPT_LOGGING_FEATURES_ENV} names features that do not exist: "
                     f"{', '.join(sorted(unwarned))} — they allowlist nothing. Valid: "
-                    f"{', '.join(sorted(_KNOWN_FEATURES))}")
-    return named & _KNOWN_FEATURES
+                    f"{', '.join(sorted(_KNOWN_FEATURES))}", api_provider="litellm")
+    allowed = named & _KNOWN_FEATURES
+    if allowed:
+        # Once per distinct allowlist, so a worker says out loud that prompt content is releasable
+        # before any traffic proves it — "is this on?" should not require waiting for a comment run.
+        announced = ",".join(sorted(allowed))
+        if announced not in _ALLOWLISTS_ANNOUNCED:
+            _ALLOWLISTS_ANNOUNCED.add(announced)
+            log_info(f"Prompt logging is ENABLED for: {announced}. Their prompts and completions "
+                     "reach PostHog un-redacted (docs/llm-analytics.md)", api_provider="litellm")
+    return allowed
 
 
 def _allowlisted_feature(options: Any, body: dict[str, Any]) -> Optional[str]:
@@ -276,8 +292,14 @@ def _attach_prompt_logging(options: Any) -> None:
     body = getattr(options, "json_data", None)
     if not isinstance(body, dict):
         return
-    headers = dict(getattr(options, "headers", None) or {}) \
-        if isinstance(getattr(options, "headers", None), Mapping) else {}
+    sent = getattr(options, "headers", None)
+    # A headers object that holds something this cannot READ must not be WRITTEN either: replacing
+    # it with a fresh dict would drop whatever it held. Do nothing and stay redacted. `None` and the
+    # SDK's falsy `NOT_GIVEN` sentinel hold nothing, so those start a fresh dict as `_attach_trace`
+    # does — refusing THOSE would disable the feature outright, since NOT_GIVEN is the default.
+    if sent and not isinstance(sent, Mapping):
+        return
+    headers = dict(sent) if isinstance(sent, Mapping) else {}
     present = [key for key in headers if str(key).lower() == _REDACTION_OFF_HEADER]
     feature = _allowlisted_feature(options, body)
 
@@ -316,14 +338,28 @@ class AttributedOpenAI(OpenAI):
     them.
     """
 
-    def _build_request(self, options, **kwargs):
+    def _build_request(self, options: Any, **kwargs: Any) -> httpx.Request:
         # Independently guarded: attribution failing must not also cost the trace, or vice versa.
         # Order matters once — prompt logging reads the metadata attribution just wrote.
         for hook in (_attach_attribution, _attach_trace, _attach_prompt_logging):
             try:
                 hook(options)
-            except Exception:
-                pass  # observability is never a reason to lose the generation
+            except Exception as exc:
+                # Observability is never a reason to lose the generation — but a hook that has
+                # started throwing (a renamed SDK attribute, a changed `options.headers` type) is
+                # invisible otherwise, and its consequences are silent by construction: an anonymous
+                # PostHog person, a generation missing from its trace, or evaluation scores that stay
+                # constant forever. ONCE per hook per process, because this is the path of every LLM
+                # call and the escalation contract turns a repeated warning into an ERROR storm.
+                # getattr, not `hook.__name__`: a test that patches a hook substitutes a Mock, which
+                # has no `__name__`, and an AttributeError raised HERE would escape this except and
+                # cost the generation — the one thing this block exists to prevent.
+                name = getattr(hook, "__name__", repr(hook))
+                if name not in _HOOK_FAILURES_WARNED:
+                    _HOOK_FAILURES_WARNED.add(name)
+                    log_warning(f"LLM request hook {name} failed; the call still goes out, "
+                                "but what it stamps is missing until this is fixed",
+                                exc=exc, api_provider="litellm")
         return super()._build_request(options, **kwargs)
 
     def post(self, *args: Any, **kwargs: Any) -> Any:

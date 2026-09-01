@@ -17,6 +17,7 @@ send that failed early would leave every assertion inspecting the PREVIOUS reque
 five-feature loop below would report five clean passes off one stale record.
 """
 import json
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
 
@@ -25,13 +26,25 @@ import pytest
 
 pytestmark = pytest.mark.unit
 
-_CHAT_RESPONSE = {
-    "id": "x", "object": "chat.completion", "created": 0, "model": "m",
-    "choices": [{"index": 0, "message": {"role": "assistant", "content": "hi"}, "finish_reason": "stop"}],
-}
-
 _HEADER = "litellm-disable-message-redaction"
 _ENV = "LLM_PROMPT_LOGGING_FEATURES"
+
+# One stub per endpoint, keyed on path, so NOTHING here relies on a raised parse error to get past
+# the response. A test that swallows exceptions cannot tell an expected stub mismatch from a real
+# client-side regression, and this file is a data-egress control's only coverage.
+_RESPONSES: dict[str, Any] = {
+    "/chat/completions": {
+        "id": "x", "object": "chat.completion", "created": 0, "model": "m",
+        "choices": [{"index": 0, "message": {"role": "assistant", "content": "hi"},
+                     "finish_reason": "stop"}],
+    },
+    "/embeddings": {
+        "object": "list", "model": "m",
+        "data": [{"object": "embedding", "index": 0, "embedding": [0.1]}],
+        "usage": {"prompt_tokens": 1, "total_tokens": 1},
+    },
+    "/images/generations": {"created": 0, "data": [{"url": "http://example.invalid/a.png"}]},
+}
 
 
 class _Recorder(httpx.BaseTransport):
@@ -39,8 +52,24 @@ class _Recorder(httpx.BaseTransport):
         self.requests: list[tuple[httpx.Headers, Any]] = []
 
     def handle_request(self, request: httpx.Request) -> httpx.Response:
-        self.requests.append((request.headers, json.loads(request.content)))
-        return httpx.Response(200, json=_CHAT_RESPONSE)
+        body = json.loads(request.content) if request.content else None
+        self.requests.append((request.headers, body))
+        for path, response in _RESPONSES.items():
+            if request.url.path.endswith(path):
+                return httpx.Response(200, json=response)
+        raise AssertionError(f"no stub response for {request.url.path}")
+
+
+@pytest.fixture(autouse=True)
+def _fresh_process_state(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Reset the warn-once / announce-once latches between tests.
+
+    They are module globals, so without this the tests couple to each other's ordering — one that
+    writes a bad name into the set silences a later assertion, and nobody would remember why.
+    """
+    from cqc_lem.utilities.ai import client as mod
+    for name in ("_UNKNOWN_FEATURES_WARNED", "_ALLOWLISTS_ANNOUNCED", "_HOOK_FAILURES_WARNED"):
+        monkeypatch.setattr(mod, name, set())
 
 
 def _client() -> tuple[Any, _Recorder]:
@@ -60,11 +89,8 @@ def _record(recorder: _Recorder, before: int) -> tuple[httpx.Headers, Any]:
 def _send(client: Any, recorder: _Recorder, model: str = "lem-medium",
           **kwargs: Any) -> tuple[httpx.Headers, Any]:
     before = len(recorder.requests)
-    try:
-        client.chat.completions.create(model=model, messages=[{"role": "user", "content": "hi"}],
-                                       **kwargs)
-    except Exception:
-        pass  # a stub response body only has to be good enough to build and send the request
+    client.chat.completions.create(model=model, messages=[{"role": "user", "content": "hi"}],
+                                   **kwargs)
     return _record(recorder, before)
 
 
@@ -76,6 +102,15 @@ def _comment_call(client: Any, recorder: _Recorder,
 def _opted_out(sent: tuple[httpx.Headers, Any]) -> bool:
     headers, _ = sent
     return _HEADER in headers
+
+
+def _release_lines(logged: Any) -> list[Any]:
+    """The per-call egress lines only.
+
+    `prompt_logging_features` also announces a non-empty allowlist once per process, and counting
+    both together would let either line satisfy an assertion meant for the other.
+    """
+    return [call for call in logged.call_args_list if "feature" in call.kwargs]
 
 
 class TestTheAllowlistDecidesPerRequest:
@@ -176,8 +211,6 @@ class TestTheAllowlistIsAuthoritative:
         `comment_generation` is the TRACE name and `comments` is the plural; both are easy to type
         and neither matches anything.
         """
-        from cqc_lem.utilities.ai import client as mod
-        monkeypatch.setattr(mod, "_UNKNOWN_FEATURES_WARNED", set())
         monkeypatch.setenv(_ENV, "comment_generation, comments")
         client, recorder = _client()
         with patch("cqc_lem.utilities.ai.client.log_warning") as warned:
@@ -206,7 +239,7 @@ class TestTheAllowlistIsAuthoritative:
             headers, _ = _send(client, recorder, extra_headers={_HEADER: "false"},
                                extra_body={"metadata": {"feature": "comment", "user_id": 7}})
         assert headers[_HEADER] == "true"
-        assert logged.call_count == 1
+        assert len(_release_lines(logged)) == 1
 
     def test_a_call_site_cannot_opt_itself_out(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """The env allowlist is the control, so a header set at a call site is STRIPPED, not honoured.
@@ -257,11 +290,8 @@ class TestItFailsClosed:
         monkeypatch.setenv(_ENV, "content")
         client, recorder = _client()
         before = len(recorder.requests)
-        try:
-            client.images.generate(model="lem-image", prompt="a chart",
-                                   extra_body={"metadata": {"feature": "content", "user_id": 7}})
-        except Exception:
-            pass  # the stub answers with a chat body; the request was already built and sent
+        client.images.generate(model="lem-image", prompt="a chart",
+                               extra_body={"metadata": {"feature": "content", "user_id": 7}})
         assert not _opted_out(_record(recorder, before))
 
     def test_an_embedding_is_never_opted_out(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -269,25 +299,60 @@ class TestItFailsClosed:
         monkeypatch.setenv(_ENV, "comment")
         client, recorder = _client()
         before = len(recorder.requests)
-        try:
-            client.embeddings.create(model="lem-embedding", input=["a"],
-                                     extra_body={"metadata": {"feature": "comment", "user_id": 7}})
-        except Exception:
-            pass  # stub response; the request was already built and sent
+        client.embeddings.create(model="lem-embedding", input=["a"],
+                                 extra_body={"metadata": {"feature": "comment", "user_id": 7}})
         assert not _opted_out(_record(recorder, before))
 
-    def test_a_hook_failure_leaves_redaction_in_place(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """A throwing hook must fail TOWARD redacted, and the call must still go out.
+    def test_a_multipart_upload_is_never_opted_out(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A `files` request has no JSON `messages` to grade, and its payload is an uploaded FILE.
 
-        Observability is never a reason to lose a generation, and never a reason to leak one either.
+        Transcription is the live example. It carries the same `feature` as whatever pipeline is
+        running, so without this guard an allowlist aimed at text would ride along with the upload.
+        """
+        from cqc_lem.utilities.ai.client import _allowlisted_feature
+        monkeypatch.setenv(_ENV, "comment")
+        options = SimpleNamespace(json_data={"model": "lem-medium",
+                                             "messages": [{"role": "user", "content": "hi"}],
+                                             "metadata": {"feature": "comment", "user_id": 7}},
+                                  files=[("file", b"audio")], headers={})
+        assert _allowlisted_feature(options, options.json_data) is None
+
+    def test_an_unreadable_headers_object_is_left_completely_alone(
+            self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """If it cannot be READ it must not be WRITTEN: replacing it would drop Authorization.
+
+        The SDK does not produce this today, and that is exactly why it needs pinning — the failure
+        would be an unauthenticated call, not a redaction bug, and nothing else would say why.
+        """
+        from cqc_lem.utilities.ai.client import _attach_prompt_logging
+        monkeypatch.setenv(_ENV, "comment")
+        sentinel = object()
+        options = SimpleNamespace(json_data={"model": "lem-medium",
+                                             "messages": [{"role": "user", "content": "hi"}],
+                                             "metadata": {"feature": "comment", "user_id": 7}},
+                                  files=None, headers=sentinel)
+        _attach_prompt_logging(options)
+        assert options.headers is sentinel
+
+    def test_a_hook_failure_leaves_redaction_in_place_and_says_so(
+            self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A throwing hook must fail TOWARD redacted, the call must still go out, and it must WARN.
+
+        Observability is never a reason to lose a generation, and never a reason to leak one either
+        — but a hook that has quietly started throwing produces evaluation scores that stay constant
+        forever, which is the failure this whole control exists to end.
         """
         monkeypatch.setenv(_ENV, "comment")
         client, recorder = _client()
         with patch("cqc_lem.utilities.ai.client.prompt_logging_features",
                    side_effect=RuntimeError("boom")):
-            headers, body = _comment_call(client, recorder)
+            with patch("cqc_lem.utilities.ai.client.log_warning") as warned:
+                headers, body = _comment_call(client, recorder)
+                _comment_call(client, recorder)
         assert _HEADER not in headers
         assert body["metadata"]["feature"] == "comment"
+        assert warned.call_count == 1, "once per hook per process, not once per LLM call"
+        assert "_attach_prompt_logging" in warned.call_args.args[0]
 
     def test_the_trace_header_still_rides_alongside(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Both hooks write `options.headers`; the second must copy the first, not replace it."""
@@ -308,8 +373,9 @@ class TestTheEgressIsLogged:
         client, recorder = _client()
         with patch("cqc_lem.utilities.ai.client.log_info") as logged:
             _comment_call(client, recorder)
-        assert logged.call_count == 1
-        assert logged.call_args.kwargs["feature"] == "comment"
+        released = _release_lines(logged)
+        assert len(released) == 1
+        assert released[0].kwargs["feature"] == "comment"
 
     def test_a_redacted_call_logs_nothing(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """One line per RELEASE. A redacted call is the norm and would drown the signal."""
@@ -317,4 +383,4 @@ class TestTheEgressIsLogged:
         client, recorder = _client()
         with patch("cqc_lem.utilities.ai.client.log_info") as logged:
             _comment_call(client, recorder, feature="dm")
-        logged.assert_not_called()
+        assert _release_lines(logged) == []
