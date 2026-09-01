@@ -261,10 +261,10 @@ The paragraph behind each row is `docs/observability-map.md`.
 
 ## CI Gates
 
-The SEVEN contexts branch protection requires on `main`: `Unit Tests (Python 3.12)`, `Integration
+SEVEN contexts branch protection requires on `main`: `Unit Tests (Python 3.12)`, `Integration
 Tests`, `UI Build`, `Migration Versions`, `GitGuardian Scan`, `CodeQL PR Quality Gate`, `Docstring
-& Lint Gate`. The pipeline keeps two more copies and merges from ITS own — all three move in ONE
-change (`docs/agent-pipeline-v2.md`).
+& Lint Gate`. The pipeline keeps two more copies and merges from ITS own — all three move together
+(`docs/agent-pipeline-v2.md`).
 
 **One workflow per test lane** (`tests/README.md`), each owning the Codecov flag `codecov.yml`
 declares, all `-m "not slow"`; never a whole-suite workflow. `slow` tests are live probes —

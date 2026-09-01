@@ -1201,7 +1201,7 @@ def generate_newsletter_drafts_for_user(user_id: int):
 
 
 @shared_task.task
-def generate_newsletter_cover(edition_id: int, use_avatar: bool = None):
+def generate_newsletter_cover(edition_id: int, use_avatar: bool = None, guidance: str = None):
     """Generate ONE edition's cover image (issue #893). Costs money per edition, so it only ever
     runs from an explicit opt-in: the author's per-edition "Generate cover" action, or their
     newsletter-level `cover_image_auto` setting.
@@ -1209,6 +1209,9 @@ def generate_newsletter_cover(edition_id: int, use_avatar: bool = None):
     ``use_avatar`` is the per-edition choice from the review queue (None = Auto: the
     avatar_use_newsletter opt-in AND the relevance classifier must both agree). The auto
     (cover_image_auto) path always passes None.
+
+    ``guidance`` (issue #1890) is the author's free-text direction for the IMAGE only — distinct
+    from the edition's "Added Guidance" field, which steers the article text and never reaches here.
 
     The result lands `pending_review` — never `approved`. A cover is a public brand asset, so the
     author is the gate between a generated image and a published edition; `_approved_cover_path`
@@ -1238,7 +1241,8 @@ def generate_newsletter_cover(edition_id: int, use_avatar: bool = None):
 
     path, reason = generate_cover_for_edition(user_id, edition_id, edition.get("title"),
                                               edition.get("subtitle"), edition.get("body"),
-                                              profile=profile, use_avatar=use_avatar)
+                                              profile=profile, use_avatar=use_avatar,
+                                              guidance=guidance)
     if not path:
         log_warning("Newsletter cover generation produced nothing", user_id=user_id,
                     task_name="generate_newsletter_cover", reason=reason)

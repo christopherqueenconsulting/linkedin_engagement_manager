@@ -521,6 +521,7 @@ class NewsletterCoverRequest(BaseModel):
     # required), True = With me (skips only the opt-in/classifier — never avatar_disabled or the
     # approval gate), False = Without me.
     use_avatar: Optional[bool] = None
+    guidance: Optional[str] = None  # free-text image direction; empty => AI decides a fresh take
 
 
 class NewsletterCoverDecisionRequest(NewsletterCoverRequest):
@@ -2215,12 +2216,16 @@ async def upload_newsletter_cover_endpoint(
 })
 def generate_newsletter_cover_endpoint(request: NewsletterCoverRequest) -> ResponseModel[str]:
     """Generate a cover for ONE edition. Image generation is slow and costs money, so it runs as a
-    Celery task and the result lands 'pending_review' for the author to approve.
+    Celery task and the result lands 'pending_review' for the author to approve. Optional free-text
+    `guidance` steers the image only — the edition's own "Added Guidance" field is for the article
+    text and is never read here.
     """
     user_id, _edition = _owned_edition(request.session_token, request.edition_id)
     from cqc_lem.app.run_scheduler import generate_newsletter_cover
+    guidance = (request.guidance or "").strip() or None
     generate_newsletter_cover.apply_async(kwargs={"edition_id": request.edition_id,
-                                                  "use_avatar": request.use_avatar})
+                                                  "use_avatar": request.use_avatar,
+                                                  "guidance": guidance})
     log_info(f"newsletter cover generation queued for edition {request.edition_id} (user {user_id})")
     return ResponseModel(status_code=200, detail="Cover generation started")
 

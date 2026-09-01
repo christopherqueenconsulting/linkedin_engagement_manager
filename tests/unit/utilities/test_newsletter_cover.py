@@ -255,6 +255,32 @@ class TestGenerateCoverForEdition:
         assert gen.call_args[1]["focal_concept"] == "a focal concept"
         assert os.path.isfile(generated), "the source render must not be moved out from under callers"
 
+    def test_guidance_rides_through_as_extra_direction(self, tmp_path):
+        # Issue #1890: the cover's own guidance is threaded into the existing extra_direction
+        # param on the shared image-brief builder — never a per-surface prompt helper.
+        generated = self._generated(tmp_path)
+        assets = tmp_path / "assets"
+        assets.mkdir()
+        with patch.object(nc, "assets_dir", str(assets)), \
+             patch.object(nc, "_resolve_cover_avatar", return_value=None), \
+             patch("cqc_lem.utilities.ai.image_brief.build_image_brief",
+                   return_value=_brief()) as brief, \
+             patch("cqc_lem.utilities.ai.image_gen.render_image_gated", return_value=generated):
+            nc.generate_cover_for_edition(3, 9, "T", "S", "B", guidance="brighter colors, no text")
+        assert brief.call_args[1]["extra_direction"] == "brighter colors, no text"
+
+    def test_no_guidance_passes_none_through(self, tmp_path):
+        generated = self._generated(tmp_path)
+        assets = tmp_path / "assets"
+        assets.mkdir()
+        with patch.object(nc, "assets_dir", str(assets)), \
+             patch.object(nc, "_resolve_cover_avatar", return_value=None), \
+             patch("cqc_lem.utilities.ai.image_brief.build_image_brief",
+                   return_value=_brief()) as brief, \
+             patch("cqc_lem.utilities.ai.image_gen.render_image_gated", return_value=generated):
+            nc.generate_cover_for_edition(3, 9, "T", "S", "B")
+        assert brief.call_args[1]["extra_direction"] is None
+
     def test_prompt_failure_returns_a_reason_not_an_exception(self, tmp_path):
         with patch.object(nc, "assets_dir", str(tmp_path)), \
              patch.object(nc, "_resolve_cover_avatar", return_value=None), \
