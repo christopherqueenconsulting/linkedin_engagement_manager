@@ -37,6 +37,34 @@ class TestFollowupQueue:
             from cqc_lem.utilities.db import mark_followup
             assert mark_followup(5, "sent") is True
         assert cursor.execute.call_args[0][1] == ("sent", 5)
+        # Issue #1815: a status move only ever follows a state check_dm_replied actually read, so
+        # the row's unreadable-read streak resets — otherwise a thread that goes UNKNOWN again later
+        # would inherit a count from a completely different unreadable spell.
+        assert "unreadable_reads=0" in cursor.execute.call_args[0][0]
+
+    def test_record_unreadable_read_increments_without_moving_due_at(self, fake_cursor):
+        conn, cursor = fake_cursor()
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import record_unreadable_read
+            assert record_unreadable_read(7) is True
+        sql = cursor.execute.call_args[0][0]
+        assert "unreadable_reads = unreadable_reads + 1" in sql
+        assert "due_at" not in sql
+        assert "status = 'pending'" in sql
+        assert cursor.execute.call_args[0][1] == (7,)
+
+    def test_record_unreadable_read_backs_off_due_at(self, fake_cursor):
+        import datetime
+
+        conn, cursor = fake_cursor()
+        pushed = datetime.datetime(2026, 9, 3, 4, 0)
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import record_unreadable_read
+            assert record_unreadable_read(7, due_at=pushed) is True
+        sql = cursor.execute.call_args[0][0]
+        assert "unreadable_reads = unreadable_reads + 1" in sql
+        assert "due_at = %s" in sql
+        assert cursor.execute.call_args[0][1] == (pushed, 7)
 
     def test_stop_followups_returns_count(self, fake_cursor):
         conn, cursor = fake_cursor(rowcount=3)

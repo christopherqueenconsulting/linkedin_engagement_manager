@@ -1520,7 +1520,7 @@ def get_due_followups(now) -> list:
     try:
         with db_cursor(dictionary=True) as cursor:
             cursor.execute(
-                "SELECT id, user_id, profile_url, first_name, event_type, next_step "
+                "SELECT id, user_id, profile_url, first_name, event_type, next_step, unreadable_reads "
                 "FROM dm_followups WHERE status='pending' AND due_at <= %s ORDER BY due_at", (now,))
             return cursor.fetchall() or []
     except mysql.connector.Error as err:
@@ -1529,14 +1529,39 @@ def get_due_followups(now) -> list:
 def mark_followup(followup_id: int, status: str) -> bool:
     """Move one follow-up row to `status`.
 
-    True whenever the UPDATE ran, matched or not.
+    Also resets its unreadable-read streak (#1815) — this only ever runs on a state
+    `check_dm_replied` actually read, so the row earned a clean slate. True whenever the UPDATE
+    ran, matched or not.
     """
     try:
         with db_cursor(commit=True) as cursor:
-            cursor.execute("UPDATE dm_followups SET status=%s WHERE id=%s", (str(status), followup_id))
+            cursor.execute("UPDATE dm_followups SET status=%s, unreadable_reads=0 WHERE id=%s",
+                           (str(status), followup_id))
             return cursor.rowcount >= 0
     except mysql.connector.Error as err:
         log_error(f"Could not mark followup {followup_id}", exc=err)
+        return False
+def record_unreadable_read(followup_id: int, due_at=None) -> bool:
+    """Count one UNKNOWN reply-detection read against this row (#1815).
+
+    When `due_at` is given, also pushes the row's next read out to it. The row stays
+    `status='pending'` either way — #731's fail-closed UNKNOWN skip is a READ failure, not a send
+    failure, so it must never drop off the retry ladder the way `mark_followup(..., 'failed')`
+    would. True whenever the UPDATE ran, matched or not.
+    """
+    try:
+        with db_cursor(commit=True) as cursor:
+            if due_at is not None:
+                cursor.execute(
+                    "UPDATE dm_followups SET unreadable_reads = unreadable_reads + 1, due_at = %s "
+                    "WHERE id = %s AND status = 'pending'", (due_at, followup_id))
+            else:
+                cursor.execute(
+                    "UPDATE dm_followups SET unreadable_reads = unreadable_reads + 1 "
+                    "WHERE id = %s AND status = 'pending'", (followup_id,))
+            return cursor.rowcount >= 0
+    except mysql.connector.Error as err:
+        log_error(f"Could not record unreadable read for followup {followup_id}", exc=err)
         return False
 def stop_followups_for_profile(user_id: int, profile_url: str) -> int:
     """Stop all pending follow-ups to a profile (e.g. once they've replied). Returns count."""

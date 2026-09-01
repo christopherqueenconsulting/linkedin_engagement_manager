@@ -159,6 +159,7 @@ from cqc_lem.utilities.db import (
     last_catchup_sent_at,
     mark_followup,
     max_catchup_touches_allowed,
+    record_unreadable_read,
     release_catchup_send_attempt,
     stop_followups_for_profile,
     update_catchup_touch_status,
@@ -1079,6 +1080,15 @@ def check_dm_replied(driver, wait, profile_url: str, my_name: str = None,
 # anything: the draft is 'pending' until a human approves it in the UI, and delivery then runs
 # through send_scheduled_dm with the existing per-day DM cap.
 NURTURE_EVENT_TYPE = "nurture"  # dm_templates / dm_followups event_type for this sequence
+# Issue #1815: a thread that never becomes readable used to stay due forever, so every */30min
+# `send-due-dm-followups` beat re-opened it — 48 Chrome sessions a day for a read that never
+# succeeds. A few UNKNOWN reads on the ordinary cadence are left alone (a rotated selector usually
+# clears on the very next run); only once that stops looking transient does the row back off, by
+# growing intervals, capped, and it stays 'pending' the whole time — #731's UNKNOWN-never-sends is
+# a read-frequency question here, not a send-safety one.
+UNREADABLE_READ_CEILING = 3            # reads at/under this: unchanged cadence, no due_at push
+UNREADABLE_READ_BACKOFF_HOURS = 2      # first backoff step once the ceiling is crossed
+UNREADABLE_READ_BACKOFF_CAP_HOURS = 48  # a single backoff step never exceeds this
 # Re-check touches per thread. Each one is a Selenium thread-open, so the walk is bounded: after
 # this many rounds a conversation that is going nowhere stops costing us sessions.
 _NURTURE_MAX_STEPS = 3
@@ -1273,8 +1283,8 @@ def process_user_followups(self, user_id: int, max_per_run: int = 20):
                                      person_name=f.get("first_name"), user_id=user_id)
             if state is ThreadState.UNKNOWN:
                 # We could not read the thread, so we do NOT know whether they answered. Sending
-                # anyway is the one irreversible mistake here (issue #731) — leave the row due so
-                # the next run re-reads it, and let the miss be greppable.
+                # anyway is the one irreversible mistake here (issue #731) — leave the row 'pending'
+                # so the next run re-reads it, and let the miss be greppable.
                 skipped += 1
                 # DEBUG, not a warning: check_dm_replied (and the open_message_thread ladder it
                 # calls) already warns at the point the read actually failed — the missing route,
@@ -1285,6 +1295,28 @@ def process_user_followups(self, user_id: int, max_per_run: int = 20):
                           f"{f.get('first_name') or f['profile_url']} — deferring to the next run",
                           user_id=user_id, action_type="followup",
                           task_name="process_user_followups")
+                unreadable_reads = int(f.get("unreadable_reads") or 0) + 1
+                backoff_due_at = None
+                if unreadable_reads > UNREADABLE_READ_CEILING:
+                    # Doubling from the first over-ceiling read (2h, 4h, 8h, ...), capped — this is
+                    # what actually stops the 48x/day re-read; the ceiling above is just the grace
+                    # period before it kicks in.
+                    backoff_hours = min(UNREADABLE_READ_BACKOFF_CAP_HOURS,
+                                        UNREADABLE_READ_BACKOFF_HOURS *
+                                        (2 ** (unreadable_reads - UNREADABLE_READ_CEILING - 1)))
+                    backoff_due_at = datetime.now(timezone.utc).replace(tzinfo=None) + \
+                        timedelta(hours=backoff_hours)
+                    # WARNING (not DEBUG): this is new information the miss above doesn't carry —
+                    # a thread that has now stayed unreadable across `unreadable_reads` separate
+                    # runs, not one read failing. Recurrence escalates this to ERROR and files ONE
+                    # grouped issue (utilities/CLAUDE.md) instead of 48 silent SUCCESS runs a day.
+                    log_warning(f"Follow-up thread with {f.get('first_name') or f['profile_url']} "
+                                f"has been unreadable for {unreadable_reads} reads in a row — "
+                                f"backing off to a read every {backoff_hours}h instead of every "
+                                f"run (row stays 'pending'; #731's UNKNOWN still never sends)",
+                                user_id=user_id, action_type="followup",
+                                task_name="process_user_followups")
+                record_unreadable_read(f["id"], due_at=backoff_due_at)
                 continue
             if state is ThreadState.REPLIED:
                 # Their reply is on screen already — read it once and use it twice: buying-intent

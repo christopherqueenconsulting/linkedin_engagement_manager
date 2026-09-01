@@ -191,6 +191,40 @@ class TestProcessUserFollowups:
         stop.assert_not_called()
         assert "skipped 1" in result
 
+    def test_unknown_below_ceiling_only_counts_no_backoff(self):
+        # Issue #1815: the first few UNKNOWN reads stay on the ordinary cadence — a rotated
+        # selector usually clears on the very next run, so nothing should push due_at yet.
+        from cqc_lem.app.engagement.outreach import process_user_followups
+        with patch(f"{_OUT}.get_due_followups", return_value=[_due(unreadable_reads=1)]), \
+             patch(f"{_OUT}.get_current_profile", return_value=(MagicMock(), MagicMock(), "e", MagicMock())), \
+             patch(f"{_OUT}.quit_gracefully"), patch(f"{_OUT}.time.sleep"), patch(f"{_OUT}.insert_new_log"), \
+             patch(f"{_OUT}.resolve_self_name", return_value="Christopher Queen"), \
+             patch(f"{_OUT}.check_dm_replied", return_value=ThreadState.UNKNOWN), \
+             patch(f"{_OUT}.log_warning") as warn, \
+             patch(f"{_OUT}.record_unreadable_read") as rec:
+            process_user_followups.run(user_id=1)
+        warn.assert_not_called()
+        rec.assert_called_once_with(1, due_at=None)
+
+    def test_unknown_past_ceiling_backs_off_due_at_and_warns_once(self):
+        # Crossing UNREADABLE_READ_CEILING is what actually stops the 48x/day re-read — the row
+        # stays 'pending' (#731's UNKNOWN never sends is unaffected), only due_at moves out.
+        from cqc_lem.app.engagement import outreach as ra
+        from cqc_lem.app.engagement.outreach import process_user_followups
+        with patch(f"{_OUT}.get_due_followups",
+                   return_value=[_due(unreadable_reads=ra.UNREADABLE_READ_CEILING)]), \
+             patch(f"{_OUT}.get_current_profile", return_value=(MagicMock(), MagicMock(), "e", MagicMock())), \
+             patch(f"{_OUT}.quit_gracefully"), patch(f"{_OUT}.time.sleep"), patch(f"{_OUT}.insert_new_log"), \
+             patch(f"{_OUT}.resolve_self_name", return_value="Christopher Queen"), \
+             patch(f"{_OUT}.check_dm_replied", return_value=ThreadState.UNKNOWN), \
+             patch(f"{_OUT}.log_warning") as warn, \
+             patch(f"{_OUT}.record_unreadable_read") as rec:
+            process_user_followups.run(user_id=1)
+        warn.assert_called_once()
+        rec.assert_called_once()
+        assert rec.call_args.args == (1,)
+        assert rec.call_args.kwargs["due_at"] is not None
+
     def test_unknown_thread_does_not_double_warn(self):
         # Issue #1750: check_dm_replied (and the open_message_thread ladder underneath it) already
         # logs a warning at the point the read actually failed. A second warning here for the same
