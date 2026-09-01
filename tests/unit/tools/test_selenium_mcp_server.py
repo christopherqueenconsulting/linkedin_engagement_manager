@@ -84,3 +84,121 @@ class TestStartBrowserRequiresTheDebugNode:
              patch.object(server.webdriver, "Remote", return_value=MagicMock()):
             server.start_browser()
         assert pin.call_args.kwargs["required"] is True
+
+
+class TestPosthogInitFailsOpen:
+    """`_init_posthog` must never take the server down.
+
+    A missing package, a missing or wrong-shaped key, or a client that won't construct are all
+    disable-and-log, not raise.
+    """
+
+    def _clear_posthog_env(self, monkeypatch):
+        for var in ("POSTHOG_API_KEY", "POSTHOG_PROJECT_TOKEN", "POSTHOG_HOST"):
+            monkeypatch.delenv(var, raising=False)
+
+    def test_missing_posthog_package_disables_analytics(self, server, monkeypatch):
+        self._clear_posthog_env(monkeypatch)
+        with patch.object(server, "Posthog", None), patch.object(server, "instrument", None), \
+             patch.object(server, "log_info") as log_info:
+            result = server._init_posthog(MagicMock())
+        assert result is None
+        log_info.assert_called_once()
+
+    def test_no_key_anywhere_disables_analytics(self, server, monkeypatch):
+        self._clear_posthog_env(monkeypatch)
+        with patch.object(server, "log_info") as log_info:
+            result = server._init_posthog(MagicMock())
+        assert result is None
+        log_info.assert_called_once()
+
+    def test_posthog_api_key_env_var_instruments(self, server, monkeypatch):
+        self._clear_posthog_env(monkeypatch)
+        monkeypatch.setenv("POSTHOG_API_KEY", "phc_from_env")
+        fake_client = MagicMock()
+        with patch.object(server, "Posthog", return_value=fake_client) as posthog_cls, \
+             patch.object(server, "instrument") as instrument:
+            result = server._init_posthog(MagicMock())
+        assert result is fake_client
+        posthog_cls.assert_called_once()
+        assert posthog_cls.call_args.args[0] == "phc_from_env"
+        instrument.assert_called_once()
+
+    def test_posthog_project_token_env_var_is_the_fallback_name(self, server, monkeypatch):
+        self._clear_posthog_env(monkeypatch)
+        monkeypatch.setenv("POSTHOG_PROJECT_TOKEN", "phc_from_dotenv")
+        fake_client = MagicMock()
+        with patch.object(server, "Posthog", return_value=fake_client), \
+             patch.object(server, "instrument"):
+            result = server._init_posthog(MagicMock())
+        assert result is fake_client
+
+    def test_a_key_shaped_like_a_personal_key_is_rejected(self, server, monkeypatch):
+        # POSTHOG_API_KEY is documented repo-wide as the project token (`phc_…`); a personal key
+        # (`phx_…`) would construct and instrument fine while silently dropping every event.
+        self._clear_posthog_env(monkeypatch)
+        monkeypatch.setenv("POSTHOG_API_KEY", "phx_looks_like_a_personal_key")
+        with patch.object(server, "Posthog") as posthog_cls, patch.object(server, "log_warning") as log_warning:
+            result = server._init_posthog(MagicMock())
+        assert result is None
+        posthog_cls.assert_not_called()
+        log_warning.assert_called_once()
+
+    def test_a_client_that_raises_disables_analytics_and_logs(self, server, monkeypatch):
+        self._clear_posthog_env(monkeypatch)
+        monkeypatch.setenv("POSTHOG_API_KEY", "phc_valid_shape")
+        with patch.object(server, "Posthog", side_effect=RuntimeError("boom")), \
+             patch.object(server, "log_warning") as log_warning:
+            result = server._init_posthog(MagicMock())
+        assert result is None
+        log_warning.assert_called_once()
+
+    def test_debug_is_explicitly_off_so_stdout_stays_clean_for_the_stdio_transport(self, server, monkeypatch):
+        self._clear_posthog_env(monkeypatch)
+        monkeypatch.setenv("POSTHOG_API_KEY", "phc_valid_shape")
+        with patch.object(server, "Posthog") as posthog_cls, patch.object(server, "instrument"):
+            server._init_posthog(MagicMock())
+        assert posthog_cls.call_args.kwargs["debug"] is False
+
+    def test_instrument_is_wired_with_the_argument_stripping_hook(self, server, monkeypatch):
+        self._clear_posthog_env(monkeypatch)
+        monkeypatch.setenv("POSTHOG_API_KEY", "phc_valid_shape")
+        with patch.object(server, "Posthog"), patch.object(server, "instrument") as instrument:
+            server._init_posthog(MagicMock())
+        assert instrument.call_args.kwargs["before_send"] is server._strip_tool_arguments
+
+
+class TestPosthogShutdownNeverMasksTheRealException:
+    def test_a_raising_shutdown_is_swallowed_and_logged(self, server, monkeypatch):
+        fake_client = MagicMock()
+        fake_client.shutdown.side_effect = RuntimeError("network flush failed")
+        monkeypatch.setattr(server, "_posthog", fake_client)
+        with patch.object(server, "log_warning") as log_warning:
+            server._shutdown_posthog()
+        fake_client.shutdown.assert_called_once()
+        log_warning.assert_called_once()
+
+    def test_no_client_is_a_no_op(self, server, monkeypatch):
+        monkeypatch.setattr(server, "_posthog", None)
+        server._shutdown_posthog()  # must not raise
+
+
+class TestStripToolArguments:
+    def test_it_drops_mcp_parameters_and_keeps_everything_else(self, server):
+        event = {
+            "event": "$mcp_tool_called",
+            "properties": {
+                "$mcp_tool_name": "type_into",
+                "$mcp_parameters": {"request": {"params": {"arguments": {"text": "hunter2"}}}},
+                "$mcp_duration": 12,
+            },
+        }
+        result = server._strip_tool_arguments(event)
+        assert "$mcp_parameters" not in result["properties"]
+        assert result["properties"]["$mcp_tool_name"] == "type_into"
+        assert result["properties"]["$mcp_duration"] == 12
+
+    def test_it_tolerates_an_event_with_no_properties(self, server):
+        assert server._strip_tool_arguments({"event": "$mcp_initialize"}) == {
+            "event": "$mcp_initialize"
+        }
