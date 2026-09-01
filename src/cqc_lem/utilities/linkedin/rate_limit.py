@@ -381,8 +381,14 @@ def hold_invites(user_id: int, seconds: int = INVITE_HOLD_DEFAULT_SECONDS,
     try:
         client.set(_INVITE_HOLD_KEY.format(user_id=int(user_id)), reason or "invite limit",
                    ex=max(1, int(seconds)))
-        log_warning(f"Connection invites HELD for user {user_id} for {int(seconds)}s "
-                    f"(reason: {reason})", action_type="invite_connect", user_id=int(user_id))
+        # INFO, not WARNING (issue #917 set the precedent for pause_automation): storing a hold is a
+        # deliberate state transition, never a degraded path detected HERE. The breakage that trips
+        # the miss-streak hold — a Connect dialog that would not open — already warns where
+        # _open_connect_invite_dialog detects it, and files its own grouped $exception. Warning here
+        # too filed a SECOND issue for the same fault, re-emitted at ERROR on repeat because the miss
+        # streak rebuilds while the route stays broken. Failing to store the hold still warns below.
+        log_info(f"Connection invites HELD for user {user_id} for {int(seconds)}s "
+                 f"(reason: {reason})", action_type="invite_connect", user_id=int(user_id))
         return True
     except Exception as e:
         log_warning("Failed to set invite hold", exc=e, action_type="invite_connect")

@@ -417,6 +417,30 @@ class TestCommentingHold:
         assert commenting_hold_reason(7) is None
 
 
+class TestInviteHoldLogLevel:
+    """A stored invite hold is a state transition, not a degraded path (issue #917 precedent). The
+    Connect-dialog breakage that trips the miss-streak hold already warns and files its own grouped
+    $exception, so warning here too filed a SECOND issue that re-fired while the route stayed broken.
+    """
+
+    def test_hold_logs_info_not_warning(self, fake_redis):
+        from cqc_lem.utilities.linkedin.rate_limit import hold_invites
+        with patch(f"{_MOD}.log_info") as info, patch(f"{_MOD}.log_warning") as warn:
+            assert hold_invites(7, 3600, reason="weekly limit") is True
+        warn.assert_not_called()
+        info.assert_called_once()
+        assert "Connection invites HELD for user 7" in info.call_args.args[0]
+
+    def test_hold_redis_error_still_warns(self, fake_redis):
+        """A hold that failed to store IS a degraded path — that one keeps its warning."""
+        fake_redis.set.side_effect = RuntimeError("redis down")
+        from cqc_lem.utilities.linkedin.rate_limit import hold_invites
+        with patch(f"{_MOD}.log_warning") as warn, patch(f"{_MOD}.log_info") as info:
+            assert hold_invites(7, 3600) is False
+        info.assert_not_called()
+        warn.assert_called_once()
+
+
 class TestTheRedisHandleIsCachedPerProcess:
     """`Redis.from_url` builds its own ConnectionPool every call, and the pool disconnects when the
     object is collected — so re-deriving the handle per operation cost a TCP handshake per command,
