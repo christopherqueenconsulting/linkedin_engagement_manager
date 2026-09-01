@@ -434,8 +434,16 @@ def update_scheduled_dm(dm_id: int, recipient_profile_url: str = None, recipient
 # source/icp_score/reasons carry issue #486's targeting provenance (which engagement surfaced this
 # person, how well they fit) so the operator approving a request can see why it exists.
 _CONN_REQ_COLS = ("id", "user_id", "recipient_profile_url", "recipient_name", "message",
-                  "source", "icp_score", "reasons", "failure_reason", "status",
+                  "source", "icp_score", "reasons", "failure_reason", "status", "attempts",
                   "created_at", "updated_at")
+# Real dispatch attempts (issue #1814) before an unreachable target goes terminal instead of cycling
+# 'approved' forever. Only a dispatch that actually called invite_to_connect_now counts — the
+# invite hold, the daily cap and LinkedInRateLimited all defer without calling it, so an
+# indefinitely-throttled target never burns this down. Three, matching
+# ENGAGEMENT_TARGET_FOLLOW_MAX_ATTEMPTS's reasoning one step looser: a full invite dispatch
+# (login + navigate + open the dialog) has more moving parts that can flake once before genuinely
+# failing than a single follow click does.
+CONNECTION_REQUEST_MAX_ATTEMPTS = 3
 def insert_connection_request(user_id: int, recipient_profile_url: str, message: str = None,
                               recipient_name: str = None,
                               status: "ConnectionRequestStatus" = ConnectionRequestStatus.PENDING,
@@ -538,6 +546,41 @@ def update_connection_request_status(request_id: int, status: "ConnectionRequest
     except mysql.connector.Error as err:
         log_error(f"Could not update connection request {request_id} status", exc=err)
         return False
+def record_connection_request_attempt(request_id: int, failure_reason: str) -> "tuple[bool, int]":
+    """Record ONE real dispatch attempt that reached LinkedIn and did not send (issue #1814).
+
+    At `CONNECTION_REQUEST_MAX_ATTEMPTS` the row goes terminal ('failed') in the same statement
+    instead of back to 'approved', so the scanner stops re-dispatching a target that has genuinely
+    never been reachable — every browser session it costs is a slot the shared `se_outreach` lane
+    needed. Below the ceiling it goes back to 'approved' for the next scan, same as an untouched
+    retry. Returns (terminal, attempts); (False, 0) means the row was gone or the write failed.
+    """
+    connection = _connection.get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "UPDATE connection_requests SET "
+            # status is assigned FIRST on purpose: MySQL evaluates SET clauses left to right, so a
+            # later 'attempts = attempts + 1' would make this test read the post-increment count.
+            "status = IF(attempts + 1 >= %s, %s, %s), "
+            "attempts = attempts + 1, "
+            "failure_reason = %s "
+            "WHERE id = %s",
+            (CONNECTION_REQUEST_MAX_ATTEMPTS, ConnectionRequestStatus.FAILED.value,
+             ConnectionRequestStatus.APPROVED.value, str(failure_reason or "")[:512], request_id))
+        connection.commit()
+        if cursor.rowcount <= 0:
+            return False, 0
+        cursor.execute("SELECT attempts FROM connection_requests WHERE id = %s", (request_id,))
+        row = cursor.fetchone()
+        attempts = int(row[0]) if row else 0
+        return attempts >= CONNECTION_REQUEST_MAX_ATTEMPTS, attempts
+    except mysql.connector.Error as err:
+        log_error(f"Could not record connection request attempt {request_id}", exc=err)
+        return False, 0
+    finally:
+        cursor.close()
+        connection.close()
 def update_connection_request(request_id: int, recipient_profile_url: str = None,
                               recipient_name: str = None, message: str = None,
                               status: "ConnectionRequestStatus" = None) -> bool:

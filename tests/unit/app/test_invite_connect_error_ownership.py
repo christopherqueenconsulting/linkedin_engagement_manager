@@ -62,22 +62,22 @@ class TestRosterWrapper:
 
 class TestProactiveWrapper:
     def test_a_failed_request_stores_the_reason_without_re_warning(self):
+        # Below the attempt ceiling (issue #1814) — the reason is still recorded where it is
+        # actionable (via record_connection_request_attempt, not a re-statement), and the wrapper's
+        # own log stays DEBUG since it is not the terminal attempt.
         from cqc_lem.app.engagement import invites as ra
-        from cqc_lem.utilities.db import ConnectionRequestStatus
         req = {"id": 3, "user_id": 1, "recipient_profile_url": "https://x/in/jane",
                "message": "hi jane", "status": "approved"}
         with patch("cqc_lem.utilities.db.get_connection_request", return_value=req), \
              patch("cqc_lem.utilities.db.count_invites_sent_today", return_value=0), \
              patch(f"{_INV}.get_engagement_preferences", return_value={"max_invites_per_day": 10}), \
              patch(f"{_INV}.invite_to_connect_now", return_value=(False, INVITE_NOT_SENT_MESSAGE)), \
-             patch("cqc_lem.utilities.db.update_connection_request_status") as upd, \
+             patch("cqc_lem.utilities.db.record_connection_request_attempt", return_value=(False, 1)) as rec, \
              patch(f"{_INV}.log_warning") as log_warning, \
              patch(f"{_INV}.log_debug") as log_debug:
             ra.send_connection_request(3)
 
-        # The failure is still recorded where it is actionable — on the request row.
-        upd.assert_called_once_with(3, ConnectionRequestStatus.FAILED,
-                                    failure_reason=INVITE_NOT_SENT_MESSAGE)
+        rec.assert_called_once_with(3, INVITE_NOT_SENT_MESSAGE)
         log_warning.assert_not_called()
         log_debug.assert_called_once()
 

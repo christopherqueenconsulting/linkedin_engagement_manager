@@ -25,24 +25,39 @@ class TestSendConnectionRequest:
              patch("cqc_lem.utilities.db.count_invites_sent_today", return_value=0), \
              patch(f"{_INV}.get_engagement_preferences", return_value={"max_invites_per_day": 10}), \
              patch(f"{_INV}.invite_to_connect_now", return_value=(True, "Connection Request Sent Successfully")) as send, \
-             patch("cqc_lem.utilities.db.update_connection_request_status") as upd:
+             patch("cqc_lem.utilities.db.update_connection_request_status") as upd, \
+             patch("cqc_lem.utilities.db.record_connection_request_attempt") as rec:
             out = ra.send_connection_request(3)
         send.assert_called_once_with(1, "https://x/in/jane", "hi jane")
         from cqc_lem.utilities.db import ConnectionRequestStatus
-        upd.assert_called_once_with(3, ConnectionRequestStatus.SENT, failure_reason=None)
+        upd.assert_called_once_with(3, ConnectionRequestStatus.SENT)
+        rec.assert_not_called()  # a sent invite is terminal already, no attempt bookkeeping needed
         assert "sent" in out
 
-    def test_failed_send_marks_failed(self):
+    def test_failed_send_records_attempt_and_defers_below_ceiling(self):
+        # A real attempt reached LinkedIn and did not send — counts toward the ceiling, but stays
+        # 'approved' for another try while attempts remain.
         from cqc_lem.app.engagement import invites as ra
         with patch("cqc_lem.utilities.db.get_connection_request", return_value=self._req()), \
              patch("cqc_lem.utilities.db.count_invites_sent_today", return_value=0), \
              patch(f"{_INV}.get_engagement_preferences", return_value={"max_invites_per_day": 10}), \
              patch(f"{_INV}.invite_to_connect_now", return_value=(False, NO_CONNECT_BUTTON_MESSAGE)), \
-             patch("cqc_lem.utilities.db.update_connection_request_status") as upd:
-            ra.send_connection_request(3)
-        from cqc_lem.utilities.db import ConnectionRequestStatus
-        upd.assert_called_once_with(3, ConnectionRequestStatus.FAILED,
-                                   failure_reason=NO_CONNECT_BUTTON_MESSAGE)
+             patch("cqc_lem.utilities.db.record_connection_request_attempt", return_value=(False, 1)) as rec:
+            out = ra.send_connection_request(3)
+        rec.assert_called_once_with(3, NO_CONNECT_BUTTON_MESSAGE)
+        assert "deferred" in out.lower()
+
+    def test_failed_send_goes_terminal_at_ceiling(self):
+        # The Nth real attempt still fails — the row must stop being dispatched.
+        from cqc_lem.app.engagement import invites as ra
+        with patch("cqc_lem.utilities.db.get_connection_request", return_value=self._req()), \
+             patch("cqc_lem.utilities.db.count_invites_sent_today", return_value=0), \
+             patch(f"{_INV}.get_engagement_preferences", return_value={"max_invites_per_day": 10}), \
+             patch(f"{_INV}.invite_to_connect_now", return_value=(False, NO_CONNECT_BUTTON_MESSAGE)), \
+             patch("cqc_lem.utilities.db.record_connection_request_attempt", return_value=(True, 3)) as rec:
+            out = ra.send_connection_request(3)
+        rec.assert_called_once_with(3, NO_CONNECT_BUTTON_MESSAGE)
+        assert "giving up" in out.lower()
 
     def test_defers_when_cap_reached(self):
         from cqc_lem.app.engagement import invites as ra
@@ -50,11 +65,13 @@ class TestSendConnectionRequest:
              patch("cqc_lem.utilities.db.count_invites_sent_today", return_value=10), \
              patch(f"{_INV}.get_engagement_preferences", return_value={"max_invites_per_day": 10}), \
              patch(f"{_INV}.invite_to_connect_now") as send, \
-             patch("cqc_lem.utilities.db.update_connection_request_status") as upd:
+             patch("cqc_lem.utilities.db.update_connection_request_status") as upd, \
+             patch("cqc_lem.utilities.db.record_connection_request_attempt") as rec:
             out = ra.send_connection_request(3)
         send.assert_not_called()  # over cap → never sends
         from cqc_lem.utilities.db import ConnectionRequestStatus
         upd.assert_called_once_with(3, ConnectionRequestStatus.APPROVED)  # deferred for next scan
+        rec.assert_not_called()  # nothing was attempted — attempts must not move
         assert "cap" in out.lower()
 
     def test_defers_when_throttled(self):
@@ -65,11 +82,31 @@ class TestSendConnectionRequest:
              patch("cqc_lem.utilities.db.count_invites_sent_today", return_value=0), \
              patch(f"{_INV}.get_engagement_preferences", return_value={"max_invites_per_day": 10}), \
              patch(f"{_INV}.invite_to_connect_now", side_effect=LinkedInRateLimited("throttled")), \
-             patch("cqc_lem.utilities.db.update_connection_request_status") as upd:
+             patch("cqc_lem.utilities.db.update_connection_request_status") as upd, \
+             patch("cqc_lem.utilities.db.record_connection_request_attempt") as rec:
             out = ra.send_connection_request(3)
         from cqc_lem.utilities.db import ConnectionRequestStatus
         upd.assert_called_once_with(3, ConnectionRequestStatus.APPROVED)  # deferred, not failed
+        rec.assert_not_called()  # throttled — nothing reached LinkedIn, attempts must not move
         assert "throttled" in out.lower()
+
+    def test_defers_when_held_without_touching_attempts(self):
+        # The account-level invite hold (#1000) defers exactly like the cap and the breaker do —
+        # nothing was attempted, so attempts must not move.
+        from cqc_lem.app.engagement import invites as ra
+        with patch("cqc_lem.utilities.db.get_connection_request", return_value=self._req()), \
+             patch(f"{_INV}.is_invites_held", return_value=True), \
+             patch(f"{_INV}.invite_hold_reason", return_value="LinkedIn walled the account"), \
+             patch(f"{_INV}.invite_to_connect_now") as send, \
+             patch("cqc_lem.utilities.db.update_connection_request_status") as upd, \
+             patch("cqc_lem.utilities.db.record_connection_request_attempt") as rec:
+            out = ra.send_connection_request(3)
+        send.assert_not_called()
+        from cqc_lem.utilities.db import ConnectionRequestStatus
+        upd.assert_called_once_with(3, ConnectionRequestStatus.APPROVED,
+                                   failure_reason="LinkedIn walled the account")
+        rec.assert_not_called()
+        assert "deferred" in out.lower()
 
     def test_skips_non_sendable_status(self):
         from cqc_lem.app.engagement import invites as ra
