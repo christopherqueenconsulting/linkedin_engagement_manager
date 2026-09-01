@@ -302,30 +302,31 @@ local dev → PR to main → CI gates pass → release-please tags vX.Y.Z → bu
   needs a migration, and new migrations use **TIMESTAMP** versions so two branches never collide.
   The **db-migration** skill, `compose/local/database/migrations/README.md`.
 - **LinkedIn SDUI** (`docs/sdui-selenium-notes.md`, `docs/sdui-probe-coverage.md`): the old `urn:`
-  and `feed-shared-*` anchors are gone — prefer `data-testid` / `aria-label`. Three fix invariants
-  (#1013): **success is the OUTCOME being present, never a click having landed**; **never click a
-  control whose label names a different entity than the target** (#1012); **zero items is not
-  "nothing to do" until the page agrees**. Every surface has a read-only probe flag.
+  and `feed-shared-*` anchors are gone — prefer `data-testid` / `aria-label`. Fix invariants (#1013):
+  **success is the OUTCOME being present, never a click having landed**; **never click a control
+  whose label names a different entity than the target** (#1012); **zero items is not "nothing to
+  do" until the page agrees**. Every surface has a read-only probe flag.
 - **Unified content core** (`docs/content-core.md`): newsletters, posts AND comments draw framework,
   research and alignment from `content_{framework,research,alignment}.py` — never add a
-  per-content-type prompt helper. Comments carry a quality contract + similarity gate (#617) that
-  SKIPS the post after `COMMENT_GATE_MAX_ATTEMPTS` failures; POSTS are graded by the same engine
-  (`post_similarity_report`, #1265), ONE retry then **kept but HELD at PENDING** (#1452). The review
-  gate is the ONLY place it is measured. That ONE retry is a
-  **repair** (#1134): the EDITOR gets the findings + `story_directive`, and a repaired post is HELD
-  for review. **Story bank** (#620) is the FACT half, the **deck reference
-  gate** (#728) the save-worthiness half, **slop lint** (#625) BLOCKS five HARD checks and WARNs the
-  rest, severity PER SURFACE (`SURFACE_SEVERITIES`) — `canned_scaffold` is WARN on a post but HARD
-  on a newsletter (#1285, `docs/content-quality-audits/newsletter.md`).
+  per-content-type prompt helper. Comments: quality contract + similarity gate (#617) SKIPS the post
+  after `COMMENT_GATE_MAX_ATTEMPTS` failures. Posts: same engine (`post_similarity_report`, #1265),
+  ONE **repair** retry (#1134, EDITOR + `story_directive`) then **HELD at PENDING** (#1452). **Story
+  bank** (#620) is FACT, **deck reference gate** (#728) is save-worthiness, **slop lint** (#625)
+  BLOCKS five HARD checks and WARNs the rest, PER SURFACE (`SURFACE_SEVERITIES`) —
+  `canned_scaffold` WARN on a post, HARD on a newsletter (#1285,
+  `docs/content-quality-audits/newsletter.md`).
 - **Content mix (70/20/10)** (same doc): every planned post carries a class in `posts.content_mix` —
   `value` 70% / `authority` 20% / `promo` 10%. **A promo CTA is always an ARTIFACT** (lead magnet /
   newsletter); a meeting ask is banned in prompts, repaired deterministically, and any that survives
   HOLDS the post at PENDING via the `meeting_cta` gate.
+- **Production logs are persistent** (`docs/production-logs.md`): 14+ days at
+  `/opt/lem/logs/cqc_lem_YYYY_MM_DD.log` — grep it, not `docker logs`, before assuming a line is
+  missing. `LOG_LEVEL` is unset in prod (INFO), so DEBUG silent-skip lines are NOT logged.
 - **Stale lazy chunks after a deploy** (#743, `docs/spa-deploy-freshness.md`): a tab open across a
-  release fetches a chunk hash the new image no longer has. **The same doc holds the API half**
-  (#1527): the Cloudflare tunnel CACHES any `/api` GET that arrives without a `Cache-Control`, so a
-  write reads as ignored. `api_cache_control_middleware` is the ONE place that is answered —
-  `no-store` on every `/api` response, `/api/assets` the single exemption.
+  release fetches a chunk hash the new image no longer has. Same doc, API half (#1527): the
+  Cloudflare tunnel CACHES any `/api` GET without a `Cache-Control`, so writes read as ignored.
+  `api_cache_control_middleware` answers it — `no-store` on every `/api` response, `/api/assets` the
+  single exemption.
 
 ## Agent pipeline (v2)
 
