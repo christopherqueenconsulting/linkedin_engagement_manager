@@ -737,6 +737,18 @@
             ],
             "title": "Message"
           },
+          "recipient_email": {
+            "anyOf": [
+              {
+                "maxLength": 255,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Recipient Email"
+          },
           "recipient_name": {
             "anyOf": [
               {
@@ -821,6 +833,18 @@
               }
             ],
             "title": "Message"
+          },
+          "recipient_email": {
+            "anyOf": [
+              {
+                "maxLength": 255,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Recipient Email"
           },
           "recipient_name": {
             "anyOf": [
@@ -8254,7 +8278,7 @@
     },
     "/api/connection_requests": {
       "get": {
-        "description": "The connection-request queue, paged and scoped to the caller.",
+        "description": "The connection-request queue, paged and scoped to the caller.\n\n`recipient_email` (issue #1836) is never echoed here \u2014 each row instead carries a\n`has_recipient_email` boolean, which is all a caller needs to decide whether to supply one.",
         "operationId": "list_connection_requests_endpoint_api_connection_requests_get",
         "parameters": [
           {

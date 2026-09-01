@@ -14,6 +14,7 @@ comment above `_API_ACCESS_TOKEN_SET`. Authorisation happens in the handler, whi
 import io
 import json
 import os
+import re
 import time
 import zipfile
 from contextvars import ContextVar
@@ -1103,12 +1104,24 @@ class TrialExtendRequest(BaseModel):
 _LEN_DM_RECIPIENT_URL = 512   # scheduled_dms.recipient_profile_url VARCHAR(512)
 _LEN_DM_RECIPIENT_NAME = 255  # scheduled_dms.recipient_name VARCHAR(255)
 _LEN_CONNECT_NOTE = 300       # LinkedIn caps a connection-request note at 300 chars
+_LEN_RECIPIENT_EMAIL = 255    # connection_requests.recipient_email VARCHAR(255)
 _LEN_FEEDBACK_BODY = 5000     # feedback.body (TEXT; app cap)
 _LEN_FEEDBACK_TYPE_HINT = 32  # feedback.type_hint VARCHAR(32)
 # Screenshots ride along inside feedback.context_json as a data URL. Capped so one report can't
 # blow past max_allowed_packet; the widget downsizes/rejects before it gets here.
 _LEN_FEEDBACK_SCREENSHOT = 2_000_000
 _LEN_FEEDBACK_CONTEXT = 8000  # serialized auto-attached context, screenshot excluded
+# Shape check only — RFC 5322 is not the job here, just catching a typo'd address before it is
+# typed into LinkedIn's own Connect dialog (issue #1836). No `email-validator` dependency: it is
+# only a `pydantic[email]` extra, not installed in this project.
+_RECIPIENT_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+def _validate_recipient_email_shape(v: Optional[str]) -> Optional[str]:
+    """Shared by `ConnectionRequestCreate`/`Update` — reject a malformed address as a 422."""
+    if v is not None and not _RECIPIENT_EMAIL_RE.match(v):
+        raise ValueError(f"'{v}' does not look like an email address")
+    return v
 
 
 class ScheduleDmRequest(BaseModel):
@@ -1168,6 +1181,14 @@ class ConnectionRequestCreate(BaseModel):
     # None → follow the user's connection_request_mode (auto_approve queues it, pre_review holds it as a
     # draft). An explicit 'pending' or 'approved' overrides that; any other value is rejected (422).
     status: Optional[str] = None
+    # Known ONLY when LinkedIn's Connect dialog turns out to be the email-verification variant
+    # (issue #1836) — most targets never carry one. Never echoed back by GET /connection_requests.
+    recipient_email: Optional[str] = Field(default=None, max_length=_LEN_RECIPIENT_EMAIL)
+
+    @field_validator("recipient_email")
+    @classmethod
+    def _recipient_email_shape(cls, v: Optional[str]) -> Optional[str]:
+        return _validate_recipient_email_shape(v)
 
 
 class ConnectionRequestUpdate(BaseModel):
@@ -1184,6 +1205,14 @@ class ConnectionRequestUpdate(BaseModel):
     recipient_name: Optional[str] = Field(default=None, max_length=_LEN_DM_RECIPIENT_NAME)
     message: Optional[str] = Field(default=None, max_length=_LEN_CONNECT_NOTE)
     action: Optional[str] = None  # 'approve' | 'cancel' | 'retry' | None (save fields only)
+    # Lets a human supply the email a 'failed' Class C row is missing, ahead of an action='retry'
+    # (issue #1836).
+    recipient_email: Optional[str] = Field(default=None, max_length=_LEN_RECIPIENT_EMAIL)
+
+    @field_validator("recipient_email")
+    @classmethod
+    def _recipient_email_shape(cls, v: Optional[str]) -> Optional[str]:
+        return _validate_recipient_email_shape(v)
 
 
 class ConnectionRequestDelete(BaseModel):
@@ -2858,7 +2887,8 @@ def create_connection_request_endpoint(request: ConnectionRequestCreate) -> Resp
                             detail=f"Invalid status '{request.status}' — expected 'pending' or 'approved'")
     request_id = insert_connection_request(user_id, request.recipient_profile_url,
                                            message=request.message,
-                                           recipient_name=request.recipient_name, status=status)
+                                           recipient_name=request.recipient_name, status=status,
+                                           recipient_email=request.recipient_email)
     if not request_id:
         raise HTTPException(status_code=500, detail="Could not create connection request")
     return ResponseModel(status_code=200, detail={"request_id": request_id})
@@ -2868,14 +2898,19 @@ def create_connection_request_endpoint(request: ConnectionRequestCreate) -> Resp
 def list_connection_requests_endpoint(session_token: str, status_filter: Optional[str] = None,
                                       page: int = 1, page_size: int = 25,
                                       sort_order: str = "desc") -> ResponseModel[dict[str, Any]]:
-    """The connection-request queue, paged and scoped to the caller."""
+    """The connection-request queue, paged and scoped to the caller.
+
+    `recipient_email` (issue #1836) is never echoed here — each row instead carries a
+    `has_recipient_email` boolean, which is all a caller needs to decide whether to supply one.
+    """
     user_id = get_session_user_id(session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
-    return ResponseModel(status_code=200,
-                         detail=get_connection_requests(user_id, status_filter=status_filter,
-                                                        page=page, page_size=page_size,
-                                                        sort_order=sort_order))
+    result = get_connection_requests(user_id, status_filter=status_filter, page=page,
+                                     page_size=page_size, sort_order=sort_order)
+    for row in result.get("requests", []):
+        row["has_recipient_email"] = bool(row.pop("recipient_email", None))
+    return ResponseModel(status_code=200, detail=result)
 
 
 @router.put("/connection_request")
@@ -2905,12 +2940,13 @@ def update_connection_request_endpoint(request: ConnectionRequestUpdate) -> Resp
     _refuse_agent_approval(request.action)
     status = action_map.get(request.action)
     if status is None and all(v is None for v in (request.recipient_profile_url,
-                                                  request.recipient_name, request.message)):
+                                                  request.recipient_name, request.message,
+                                                  request.recipient_email)):
         raise HTTPException(status_code=422, detail="Nothing to update — provide at least one field or an action")
     if not update_connection_request(request.request_id,
                                      recipient_profile_url=request.recipient_profile_url,
                                      recipient_name=request.recipient_name, message=request.message,
-                                     status=status):
+                                     status=status, recipient_email=request.recipient_email):
         raise HTTPException(status_code=500, detail="Could not update connection request")
     return ResponseModel(status_code=200, detail="Connection request updated")
 

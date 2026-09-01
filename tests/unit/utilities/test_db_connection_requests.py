@@ -16,6 +16,14 @@ class TestConnectionRequestDb:
         assert got == 42
         assert "INSERT INTO connection_requests" in cur.execute.call_args[0][0]
 
+    def test_insert_persists_recipient_email(self, fake_cursor):
+        conn, cur = fake_cursor(lastrowid=42)
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import insert_connection_request
+            insert_connection_request(1, "https://x/in/jane", recipient_email="jane@example.com")
+        sql, params = cur.execute.call_args[0]
+        assert "recipient_email" in sql and "jane@example.com" in params
+
     def test_get_approved_filters_status(self, fake_cursor):
         conn, cur = fake_cursor(fetch_all=[(1, 5)], lastrowid=7)
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
@@ -63,6 +71,22 @@ class TestConnectionRequestDb:
             assert update_connection_request_status(7, ConnectionRequestStatus.SENT) is True
         assert "UPDATE connection_requests SET status" in cur.execute.call_args[0][0]
 
+    def test_update_status_to_terminal_clears_recipient_email(self, fake_cursor):
+        # Issue #1836 — the bounded-exposure half of the storage decision: an email held for a
+        # request that just went SENT/FAILED/CANCELED will never be used again.
+        conn, cur = fake_cursor(lastrowid=7)
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import ConnectionRequestStatus, update_connection_request_status
+            assert update_connection_request_status(7, ConnectionRequestStatus.FAILED) is True
+        assert "recipient_email = NULL" in cur.execute.call_args[0][0]
+
+    def test_update_status_to_non_terminal_leaves_recipient_email_alone(self, fake_cursor):
+        conn, cur = fake_cursor(lastrowid=7)
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import ConnectionRequestStatus, update_connection_request_status
+            assert update_connection_request_status(7, ConnectionRequestStatus.APPROVED) is True
+        assert "recipient_email" not in cur.execute.call_args[0][0]
+
     def test_partial_update_builds_only_provided_fields(self, fake_cursor):
         conn, cur = fake_cursor(lastrowid=7)
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
@@ -83,6 +107,33 @@ class TestConnectionRequestDb:
     def test_update_noop_when_nothing_provided(self):
         from cqc_lem.utilities.db import update_connection_request
         assert update_connection_request(7) is False
+
+    def test_update_can_set_recipient_email(self, fake_cursor):
+        conn, cur = fake_cursor(lastrowid=7)
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import update_connection_request
+            assert update_connection_request(7, recipient_email="jane@example.com") is True
+        sql, params = cur.execute.call_args[0]
+        assert "recipient_email = %s" in sql and "jane@example.com" in params
+
+    def test_status_change_to_terminal_also_clears_recipient_email(self, fake_cursor):
+        conn, cur = fake_cursor(lastrowid=7)
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import ConnectionRequestStatus, update_connection_request
+            assert update_connection_request(7, status=ConnectionRequestStatus.FAILED) is True
+        sql = cur.execute.call_args[0][0]
+        assert "recipient_email = NULL" in sql
+
+    def test_a_freshly_supplied_email_wins_over_the_terminal_clear(self, fake_cursor):
+        # Two `recipient_email = ...` clauses in one UPDATE is invalid SQL — the explicit value wins.
+        conn, cur = fake_cursor(lastrowid=7)
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import ConnectionRequestStatus, update_connection_request
+            assert update_connection_request(7, status=ConnectionRequestStatus.FAILED,
+                                             recipient_email="jane@example.com") is True
+        sql = cur.execute.call_args[0][0]
+        assert sql.count("recipient_email") == 1
+        assert "recipient_email = %s" in sql
 
     def test_get_user_id_helper(self, fake_cursor):
         conn, cur = fake_cursor(fetch_one={"id": 7, "user_id": 1, "recipient_profile_url": "u",
@@ -127,3 +178,14 @@ class TestRecordConnectionRequestAttempt:
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import record_connection_request_attempt
             assert record_connection_request_attempt(999, "gone") == (False, 0)
+
+    def test_going_terminal_at_the_ceiling_also_clears_recipient_email(self, fake_cursor):
+        # Issue #1836 — the same bounded-exposure rule as update_connection_request_status: an
+        # email held for a target that just exhausted its attempts will never be used again.
+        from cqc_lem.utilities.db import CONNECTION_REQUEST_MAX_ATTEMPTS
+        conn, cursor = fake_cursor(fetch_one=(CONNECTION_REQUEST_MAX_ATTEMPTS,))
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import record_connection_request_attempt
+            record_connection_request_attempt(7, "no Connect button")
+        sql = cursor.execute.call_args_list[0][0][0]
+        assert "recipient_email = IF" in sql
