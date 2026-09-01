@@ -13,6 +13,13 @@ Type=oneshot
 User=lem
 Group=lem
 WorkingDirectory=/home/lem/linkedin_engagement_manager
+# systemd gives a service a narrower environment than cron and no login shell at all, so the PATH
+# is pinned rather than inherited: /usr/bin/git is 2.43.0 here, the version the sweep was verified
+# against. Without this a PATH change could silently swap the git that decides the removals.
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+# A fetch that stops to ask for credentials would hang until TimeoutStartSec. Failing immediately
+# is the fail-closed answer: a failed fetch disables removals for the run.
+Environment=GIT_TERMINAL_PROMPT=0
 # --apply is carried by the UNIT, not by the script's default. A bare `scripts/worktree_cleanup.sh`
 # reports and removes nothing, so a fat-fingered cron/manual run cannot delete anything.
 ExecStart=/home/lem/linkedin_engagement_manager/scripts/worktree_cleanup.sh --apply

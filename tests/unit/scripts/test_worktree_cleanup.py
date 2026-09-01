@@ -28,6 +28,25 @@ _SYSTEMD = Path(__file__).resolve().parents[3] / "scripts" / "systemd"
 _OLD = "2020-01-01T00:00:00 +0000"
 
 
+def _proc_cwd_is_readable() -> bool:
+    """Whether protection 3's detector can see anything on THIS host.
+
+    The sweep self-tests the same way and holds everything when the answer is no, so on such a
+    host there is no removal left to assert — the tests that need one are skipped rather than
+    asserting a decision the script deliberately refuses to make.
+    """
+    try:
+        return bool(os.readlink("/proc/self/cwd"))
+    except OSError:
+        return False
+
+
+_needs_proc = pytest.mark.skipif(
+    not _proc_cwd_is_readable(),
+    reason="/proc/*/cwd unreadable — the sweep holds everything here, so there is no removal to test",
+)
+
+
 def _git_env(**overrides: str) -> dict[str, str]:
     """A git env with no user/global config bleed-through from the host running the suite."""
     env = os.environ.copy()
@@ -217,6 +236,7 @@ class TestDryRunIsTheDefault:
         assert paths["merged_gone"].exists()
 
 
+@_needs_proc
 class TestApply:
     def test_apply_removes_only_the_removable_and_keeps_the_branch_ref(self, tmp_path: Path) -> None:
         paths = _build_repo(tmp_path.resolve())
@@ -264,6 +284,7 @@ class TestFailClosed:
         assert "fetch" in out
         assert paths["merged_gone"].exists()
 
+    @_needs_proc
     def test_a_live_process_inside_a_worktree_holds_it(self, tmp_path: Path) -> None:
         paths = _build_repo(tmp_path.resolve())
         proc = subprocess.Popen(["sleep", "30"], cwd=paths["merged_gone"])
@@ -320,3 +341,12 @@ class TestWeeklyWiring:
         assert "ExecStart=/home/lem/linkedin_engagement_manager/scripts/worktree_cleanup.sh --apply" in service
         assert "User=lem" in service
         assert "User=root" not in service
+
+    def test_the_service_pins_its_environment(self) -> None:
+        # A systemd service inherits an even narrower environment than cron and no login shell, so
+        # neither the git that decides removals nor the fetch's prompt behaviour is left to chance:
+        # an unpinned PATH could swap the git binary, and a prompting fetch would hang.
+        service = (_SYSTEMD / "lem-worktree-sweep.service").read_text(encoding="utf-8")
+        assert "WorkingDirectory=/home/lem/linkedin_engagement_manager" in service
+        assert "Environment=PATH=/usr/local/bin:/usr/bin:/bin" in service
+        assert "Environment=GIT_TERMINAL_PROMPT=0" in service
