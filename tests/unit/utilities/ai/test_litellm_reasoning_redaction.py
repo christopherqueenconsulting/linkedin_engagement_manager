@@ -267,7 +267,7 @@ class TestTheInstalledWrapper:
     def test_installing_twice_does_not_double_wrap(self, fake_litellm):
         """Installing twice does not double-wrap.
 
-        Both entries in `custom_callbacks` patch the same class, so a second import must be a no-op
+        Both guard entries in `callbacks` patch the same class, so a second import must be a no-op
         rather than a second layer of scrub around the first.
         """
         assert guard.install() is True
@@ -330,13 +330,18 @@ class TestTheInstalledWrapper:
 
 class TestTheGuardIsWiredIn:
     def test_the_config_loads_it_alongside_the_payload_guard(self):
-        """A guard nothing loads is not a guard.
+        """A guard nothing loads is not a guard — and until #1880 nothing loaded either of them.
 
-        This is the half of the wiring a unit test can see; the other half is the INFO line the
-        module logs when the patch actually takes.
+        Both sat under `custom_callbacks`, a key LiteLLM does not read, so this module was never
+        imported and #1831's leak stayed open the whole time. The live key is `callbacks`, and it
+        takes `module.attribute`, never a file path.
+
+        This is the half of the wiring a unit test can see; the other half is the `__pycache__`
+        check after a deploy, then the INFO line the module logs when the patch actually takes.
         """
         uncommented = "\n".join(
             line for line in CONFIG.splitlines() if not line.strip().startswith("#")
         )
-        assert "/app/.litellm/posthog_redaction_guard.py" in uncommented
-        assert "/app/.litellm/posthog_payload_guard.py" in uncommented
+        assert "posthog_redaction_guard.proxy_handler_instance" in uncommented
+        assert "posthog_payload_guard.proxy_handler_instance" in uncommented
+        assert "custom_callbacks:" not in uncommented

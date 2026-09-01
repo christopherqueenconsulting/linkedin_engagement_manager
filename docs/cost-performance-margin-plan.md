@@ -292,7 +292,7 @@ therefore never disagree about which bucket a call belongs to.
 
 | Piece | How it runs |
 |---|---|
-| Routing hook | `.litellm/complexity_router.py` — stage 1 complexity (unchanged), stage 2 cost-aware down-routing of the resulting tier **or** of an explicitly requested `lem-*` tier |
+| Routing hook | `.litellm/complexity_router.py` — stage 1 complexity (unchanged), stage 2 cost-aware down-routing of the resulting tier **or** of an explicitly requested `lem-*` tier. **Neither stage ran before #1880**: the hook was wired through `litellm_settings.custom_callbacks`, a key LiteLLM does not read, so it was never imported. Wired through `callbacks:` since; `docs/llm-analytics.md` holds the loading contract and the post-deploy check |
 | Decision core | `utilities/routing_policy.py` — `complexity_tier`, `assign_arm`, `resolve_tier`; down-route only, never up, never off-tier |
 | Optimizer | Celery beat `weekly-cost-routing` → `run_scheduler.auto_weekly_cost_routing` (Mon 14:00 UTC); also `python -m cqc_lem.utilities.cost_routing [--json] [--apply] [--days N]` (exit 2 = a bucket rolled back) |
 | Policy transport | one JSON document at Redis `lem:routing:policy`; the hook caches it for `COST_ROUTING_POLICY_TTL_SECONDS`, so a rollback lands within one TTL |

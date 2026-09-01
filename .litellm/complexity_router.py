@@ -11,6 +11,12 @@ docker-compose, and the same code the weekly optimizer uses to evaluate the expe
 document is published to Redis by `cqc_lem.utilities.cost_routing`; this hook only reads it, caches
 it briefly in-process, and FAILS OPEN: any missing module, unreachable Redis, or malformed document
 leaves routing exactly as it was before this feature existed.
+
+**How it is loaded (issue #1880).** `config.yaml` names `complexity_router.proxy_handler_instance`
+under `litellm_settings.callbacks` — the key LiteLLM actually reads. From #494 until #1880 it was
+listed under `custom_callbacks`, which LiteLLM never reads, so NOTHING in this file had ever
+executed in production: `lem-router` was served by its own `model_list` entry and no request was
+ever re-tiered.
 """
 import json
 import logging

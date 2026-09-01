@@ -37,11 +37,34 @@ The guard is a monkeypatch rather than a config setting because LiteLLM exposes 
 exclusion list is a local inside the method. It is wrapped in a try/except and installs at import;
 if the internals move, the patch declines and logs, and analytics degrade to exactly today's
 behaviour rather than taking the proxy down.
+
+**How it is loaded (issue #1880).** The work happens at IMPORT, so the only thing config.yaml has
+to do is import this file — but LiteLLM's `litellm_settings.callbacks` will only import a module
+as `module.attribute`, and refuses at startup anything that is not a `CustomLogger` instance or a
+plain callable. `proxy_handler_instance` at the bottom is that handle. It does no per-request work.
+Before #1880 this module was listed under `custom_callbacks`, a key LiteLLM never reads, so none of
+the above had ever run.
 """
 import json
 import logging
 
 log = logging.getLogger("lem.posthog_guard")
+
+try:  # The proxy container always has this; the unit lane imports this file with no litellm.
+    from litellm.integrations.custom_logger import CustomLogger as _CallbackBase
+except Exception:  # pragma: no cover - exercised by the no-litellm import in the unit lane
+
+    class _CallbackBase:  # type: ignore[no-redef]
+        """Stand-in base when litellm is absent.
+
+        Callable, so the instance below stays dispatchable either way: LiteLLM accepts a
+        `CustomLogger` instance OR a plain callable, and refusing an entry is a startup failure.
+        A guard that cannot install must not also be able to stop the proxy booting.
+        """
+
+        def __call__(self, *args, **kwargs):
+            """No-op: this object exists to be imported, never to be dispatched."""
+            return None
 
 #: Above this, a single property is replaced by a marker. 32 KB is far larger than any legitimate
 #: analytics value (the whole event averages 5 KB) and far below the point where a 100-event batch
@@ -117,3 +140,15 @@ def install() -> bool:
 
 
 install()
+
+
+class _PayloadGuardHandle(_CallbackBase):
+    """The object `litellm_settings.callbacks` names, so that this module gets imported.
+
+    Deliberately empty: the guard IS the monkeypatch `install()` ran above, and inheriting
+    `CustomLogger` without overriding a hook costs nothing per request — LiteLLM skips the pre-call
+    walk for callbacks that do not override it, and the base logging hooks are no-ops.
+    """
+
+
+proxy_handler_instance = _PayloadGuardHandle()

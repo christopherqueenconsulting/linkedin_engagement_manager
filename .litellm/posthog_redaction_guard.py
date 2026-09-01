@@ -50,9 +50,17 @@ owner decision in #1832 intends if that list is ever non-empty.
   is the `docs/llm-analytics.md` contract: a data-egress control does not fail open.
 
 Which means the guard has exactly one silent mode — declining to install — so it says so at INFO
-when it takes. After a deploy, confirm with:
+when it takes. After a deploy, confirm the module was imported at all, then that the patch took:
 
+    docker exec litellm ls /app/.litellm/__pycache__/
     docker compose logs litellm | grep "posthog redaction guard"
+
+**How it is loaded (issue #1880).** The work happens at IMPORT, so config.yaml only has to import
+this file — but LiteLLM's `litellm_settings.callbacks` will only import a module as
+`module.attribute`, and refuses at startup anything that is not a `CustomLogger` instance or a
+plain callable. `proxy_handler_instance` at the bottom is that handle; it does no per-request work.
+This module shipped listed under `custom_callbacks`, a key LiteLLM never reads, so between #1831
+and #1880 it was never imported and the leak it closes stayed open.
 
 **Stdlib only.** `.litellm/` is bind-mounted into the LiteLLM container, which has no `cqc_lem`
 package, so this file may not import one — the same constraint `utilities/routing_policy.py` carries
@@ -62,6 +70,22 @@ import logging
 from typing import Any
 
 log = logging.getLogger("lem.posthog_redaction_guard")
+
+try:  # The proxy container always has this; the unit lane imports this file with no litellm.
+    from litellm.integrations.custom_logger import CustomLogger as _CallbackBase
+except Exception:  # pragma: no cover - exercised by the no-litellm import in the unit lane
+
+    class _CallbackBase:  # type: ignore[no-redef]
+        """Stand-in base when litellm is absent.
+
+        Callable, so the instance below stays dispatchable either way: LiteLLM accepts a
+        `CustomLogger` instance OR a plain callable, and refusing an entry is a startup failure.
+        `install()` fails open, and the handle that loads it must not be the thing that fails shut.
+        """
+
+        def __call__(self, *args, **kwargs):
+            """No-op: this object exists to be imported, never to be dispatched."""
+            return None
 
 #: Every property key whose value is model-authored reasoning rather than analytics.
 #:
@@ -227,3 +251,15 @@ def install() -> bool:
 
 
 install()
+
+
+class _RedactionGuardHandle(_CallbackBase):
+    """The object `litellm_settings.callbacks` names, so that this module gets imported.
+
+    Deliberately empty: the guard IS the monkeypatch `install()` ran above, and inheriting
+    `CustomLogger` without overriding a hook costs nothing per request — LiteLLM skips the pre-call
+    walk for callbacks that do not override it, and the base logging hooks are no-ops.
+    """
+
+
+proxy_handler_instance = _RedactionGuardHandle()

@@ -9,7 +9,7 @@ per call, so nothing can be forgotten at a new call site.
 
 | Where | What |
 |---|---|
-| `.litellm/config.yaml` | `litellm_settings.success_callback` / `failure_callback` include `posthog`; `turn_off_message_logging: true` |
+| `.litellm/config.yaml` | `litellm_settings.success_callback` / `failure_callback` include `posthog`; `turn_off_message_logging: true`; `litellm_settings.callbacks` loads the three custom modules (#1880) |
 | `docker-compose.yml` (`litellm`) | `POSTHOG_API_KEY`, `POSTHOG_API_URL` (from the app's `POSTHOG_HOST`) |
 | `utilities/ai/client.py` | stamps `metadata: {user_id, feature}` on every `lem-*` request, and sets the per-request redaction opt-out for the features in `LLM_PROMPT_LOGGING_FEATURES` |
 | `.litellm/posthog_redaction_guard.py` | the ONE place model reasoning is kept out of `$ai_generation` (#1831) — see Privacy |
@@ -21,6 +21,45 @@ reported as [#18332](https://github.com/BerriAI/litellm/issues/18332) — the ba
 with `safe_dumps`, so a non-JSON-serializable value in the proxy's own metadata (`UserAPIKeyAuth`)
 degrades to a string instead of dropping every event. The stack runs
 `ghcr.io/berriai/litellm:main-latest`, which is well past both.
+
+## How the three custom modules are loaded (#1880)
+
+`complexity_router.py` (#494), `posthog_payload_guard.py` (#1310) and `posthog_redaction_guard.py`
+(#1831) all do their work **at import**. Getting them imported is the whole job, and for months it
+did not happen: they were listed under `litellm_settings.custom_callbacks`, **a key LiteLLM does not
+read**. It appears nowhere in the `litellm_settings` `elif` chain in `proxy/proxy_server.py`, so it
+fell through to a generic `setattr(litellm, key, value)` and set an attribute nothing consults.
+Everything looked wired. Nothing had ever run. Treat every `$ai_generation` cost and volume figure
+from before this fix shipped as a **floor**, not a measurement — the 413s #1310 describes were still
+dropping whole 100-event batches the entire time.
+
+The key that is read is **`callbacks:`**, and its entries are **`module.attribute`, never a file
+path**. Read off litellm **1.100.0**, the version the container serves:
+
+| Step | Source | Rule |
+|---|---|---|
+| Dispatch | `proxy/proxy_server.py` (`elif key == "callbacks"`) | hands the list to `initialize_callbacks_on_proxy` |
+| Resolution | `proxy/types_utils/utils.py::get_instance_fn` | splits on the LAST dot; the module half resolves to `<dirname(config.yaml)>/<module>.py`, i.e. `/app/.litellm/<module>.py`, and is `exec_module`d; the other half is `getattr`d |
+| Dispatchability | `proxy/common_utils/callback_utils.py::_classify_loaded_callback` | must be a `CustomLogger` **instance** or a non-type callable — a class raises |
+
+**A bad entry is not inert, it is fatal.** `_loaded_callback_or_raise` raises during config load, so
+the proxy does not come up and the whole LLM path goes with it. That is strictly worse than three
+modules that never ran, which is why the entries are proved twice:
+
+* **Before merge** — `tests/unit/utilities/ai/test_litellm_callback_wiring.py` replays both rules
+  above against the shipped `config.yaml`: every entry must resolve to a real file next to the
+  config and land on a dispatchable object. Typos, renames and class-instead-of-instance all fail
+  the PR.
+* **After deploy** — `docker exec litellm ls /app/.litellm/__pycache__/`. Python writes bytecode on
+  first import, so a `__pycache__` holding the three modules is proof the imports happened, and its
+  absence is proof they did not. It beats grepping the log because it does not depend on a logger
+  being configured — which is exactly why the log was ambiguous while this bug was open. **Do not
+  run any other `docker exec litellm python` that imports those modules first**: that writes the
+  directory yourself and destroys the signal (pass `-e PYTHONDONTWRITEBYTECODE=1` if you must).
+
+Each module exposes `proxy_handler_instance` as its handle. For the router that is the
+`LEMComplexityRouter` itself; for the two guards it is a deliberately empty `CustomLogger` subclass
+that does no per-request work — the guard is the monkeypatch that already ran at import.
 
 ## Failure mode
 
@@ -83,7 +122,7 @@ Its two failure directions are deliberately opposite, and the asymmetry is the w
 |---|---|
 | `install()` | fails **OPEN**. `main-latest` is a floating tag, so these internals can move on an image pull with no commit here. A declined patch leaves analytics at pre-#1831 behaviour; one that raised would stop the proxy booting, which is worse than the leak |
 | Every decision inside it | fails **CLOSED**. An unreadable redaction state scrubs; a scrub that throws drops `$ai_input` and `$ai_output_choices` outright. Same rule as the table below — an egress control does not fail open |
-| So the one silent mode is | **not installing.** It logs at INFO when it takes, so that is the check: `docker compose logs litellm \| grep "posthog redaction guard"`. Nothing in the test suite can see this — the unit tests pin the scrub as a pure function and the config wiring as text, and neither can run the proxy |
+| So the one silent mode is | **not installing.** Two checks, in order: `docker exec litellm ls /app/.litellm/__pycache__/` proves the module was imported at all, then `docker compose logs litellm \| grep "posthog redaction guard"` proves the patch took. The first is the one that mattered — from #1831 until #1880 the module was never imported, so the missing INFO line meant nothing and the leak stayed open. No test can see either: the unit lane pins the scrub as a pure function and the wiring as config, and neither runs the proxy |
 
 That floor is also what makes output quality **ungradable**: an online evaluation judging a published
 comment scores a constant. The failure modes a hand audit of `comment_generation` traces found —
@@ -139,7 +178,8 @@ Three limits worth knowing:
   `.litellm/posthog_redaction_guard.py` (#1831, above), not by `turn_off_message_logging`. Re-read
   that guard against `redact_messages.py` whenever the image moves: if upstream ever redacts
   `provider_specific_fields` itself the guard becomes a no-op, and if it moves the hook the guard
-  declines. Both are safe; only the second is silent, and the INFO line is how you tell.
+  declines. Both are safe; only the second is silent, and the INFO line is how you tell — after the
+  `__pycache__` check above has shown the module was imported in the first place.
 * **PostHog Cloud US is a shared project.** `POSTHOG_HOST=https://us.i.posthog.com`, the same project
   as product analytics, `$exception` groups and session replay, on that project's retention. #1832
   decides whether `$ai_generation` should be split out or given a shorter one before any feature is

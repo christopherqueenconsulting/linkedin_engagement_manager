@@ -302,14 +302,40 @@ litellm_settings:
     type: redis
     host: redis
     port: 6379
-  custom_callbacks:
-    - /app/.litellm/complexity_router.py
+  # ── Custom modules (issue #1880) ────────────────────────────────────────────
+  # `callbacks:` is the key LiteLLM actually reads. This block spent from #494 to #1880 under
+  # `custom_callbacks:`, which appears NOWHERE in the `litellm_settings` elif chain in
+  # `proxy/proxy_server.py` — it fell through to a generic `setattr(litellm, key, value)`, so all
+  # three modules below were mounted, readable and never once imported. Read against the version
+  # the container actually serves (litellm 1.100.0): `proxy_server.py` dispatches `callbacks` to
+  # `initialize_callbacks_on_proxy`, which resolves each entry with `get_instance_fn`.
+  #
+  # The entry format is `module.attribute`, NOT a file path:
+  #   * `module` is resolved as `<dirname of THIS file>/<module>.py`, i.e. `/app/.litellm/`. A bare
+  #     name, no directory and no `.py` — a path here resolves nothing and raises at startup.
+  #   * `attribute` must be a CustomLogger INSTANCE or a plain callable. Anything else (most often
+  #     a class) is refused by `_loaded_callback_or_raise`, which takes the whole proxy down rather
+  #     than loading a callback that would silently never run. Each module below exposes
+  #     `proxy_handler_instance` for exactly this.
+  # `tests/unit/utilities/ai/test_litellm_callback_wiring.py` replays both of those rules against
+  # this file in CI, so a bad entry fails a PR instead of a deploy.
+  #
+  # AFTER A DEPLOY, confirm the imports happened — one command, no logger required:
+  #   docker exec litellm ls /app/.litellm/__pycache__/
+  # Python writes bytecode on first import, so a `__pycache__` holding these three modules is proof
+  # they loaded; an empty or missing one is proof they did not. Do not run any other `docker exec
+  # litellm python` that imports them first — that would create the directory and destroy the
+  # signal (use `-e PYTHONDONTWRITEBYTECODE=1` if you must).
+  callbacks:
+    # Resolves the tier a request runs on: `lem-router` → a tier by prompt shape, plus the
+    # flag-gated cost-aware down-route (issue #494). Never ran before #1880.
+    - complexity_router.proxy_handler_instance
     # Keeps $ai_generation under PostHog's per-request ceiling (issue #1310). LiteLLM attaches the
     # full retry history as `previous_models` — measured at 725 KB of a 760 KB event — which
     # `turn_off_message_logging` below does NOT reach, because it rides in request metadata rather
     # than standard_logging_object. A 413 on /batch/ drops all 100 events silently, so the money
     # numbers were a floor. Installs at import; fails open to today's behaviour.
-    - /app/.litellm/posthog_payload_guard.py
+    - posthog_payload_guard.proxy_handler_instance
     # Makes `turn_off_message_logging` below mean what it says (issue #1831). LiteLLM's redaction
     # walk replaces `content`, `reasoning_content` and `thinking_blocks`, but never names
     # `provider_specific_fields` — where several providers return the model's verbatim reasoning —
@@ -317,7 +343,7 @@ litellm_settings:
     # LiteLLM's OWN `should_redact_message_logging`, so an allowlisted feature is still graded at
     # full fidelity. Installs at import; fails open to today's behaviour, and says so at INFO when
     # it takes.
-    - /app/.litellm/posthog_redaction_guard.py
+    - posthog_redaction_guard.proxy_handler_instance
   # ── LLM analytics → PostHog (issue #647, docs/llm-analytics.md) ──────────────
   # LiteLLM's native logger (>=1.77.3) emits ONE $ai_generation / $ai_embedding per call with the
   # provider model, tokens, response_cost and latency — the proxy's own accounting, so it needs no
@@ -336,7 +362,8 @@ litellm_settings:
   # This key alone does NOT cover the model's own reasoning — LiteLLM's redaction walk never names
   # `provider_specific_fields`. posthog_redaction_guard.py above closes that (#1831) and is what
   # makes the sentence "content does not leave the stack" true; it fails open, so the claim only
-  # holds while the container log shows it installed.
+  # holds while that module is proven loaded — the `__pycache__` check above, then the INFO line.
+  # Until #1880 it was not loaded at all, so the claim did not hold.
   # Un-redaction is PER REQUEST instead: LiteLLM's `should_redact_message_logging` honours a
   # `LiteLLM-Disable-Message-Redaction` header ahead of this key, and utilities/ai/client.py sets it
   # for the features named in LLM_PROMPT_LOGGING_FEATURES (empty by default) and no others. The
