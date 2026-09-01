@@ -455,11 +455,41 @@ def _comment_contract_variant(user_id: int = None) -> "str | None":
         return None
 
 
+# A card whose body never scraped reaches the drafter as empty, as whitespace, or — the shape seen
+# live (issue #1833) — as nothing but the post's own `https://lnkd.in/...` shortlink. Both forms are
+# matched: with a scheme, and the scheme-less `lnkd.in/xxxx` a stripped anchor leaves behind. A URL
+# needs a path here, so a domain mentioned inside a real sentence is not treated as one.
+_URL_ONLY_TOKEN_RE = re.compile(r"(?:https?://|www\.)\S+|\b(?:[a-z0-9-]+\.)+[a-z]{2,}/\S*",
+                                re.IGNORECASE)
+
+
+def _has_readable_post_body(post_content: Any) -> bool:
+    """Report whether a scraped target post carries a body a comment can be grounded in.
+
+    Args:
+        post_content: The target post's text exactly as the caller holds it — may be None or a
+            non-string, because it comes straight off a Selenium read.
+
+    Returns:
+        True when anything other than URLs, whitespace and punctuation survives; False for the
+        three shapes a failed scrape produces — empty, whitespace-only, and URL-only (a bare
+        shortlink, with or without trailing punctuation). A real body that merely CONTAINS a URL
+        still has words left over, so it reads as readable.
+    """
+    text = str(post_content or "").strip()
+    if not text:
+        return False
+    remainder = _URL_ONLY_TOKEN_RE.sub(" ", text)
+    return bool(re.sub(r"[\W_]+", "", remainder, flags=re.UNICODE))
+
+
 @llm_pipeline("comment_generation", feature=FEATURE_COMMENT)
-def generate_ai_response(post_content, profile: LinkedInProfile, post_img_url=None, post_comment: str = None,
+def generate_ai_response(post_content: Any, profile: LinkedInProfile,
+                         post_img_url: "str | None" = None, post_comment: str = None,
                          prefs: dict = None, profile_synthesis: str = None,
                          blueprint: dict = None, research: dict = None,
-                         recent_comments: list = None, user_id: int = None):
+                         recent_comments: list = None, user_id: int = None,
+                         post_id: "str | int | None" = None) -> "str | None":
     """Feed comment in the user's voice, GROUNDED IN THE TARGET POST (that contract never changes).
     `blueprint` assigns this comment's ANGLE from the shared comment menu (Expander, Storyteller,
     Questioner, ... — see content_framework) so a day's comments vary in approach; callers that track
@@ -474,6 +504,18 @@ def generate_ai_response(post_content, profile: LinkedInProfile, post_img_url=No
     to `comment_gate_max_attempts()` times — and if it still fails, this returns None so the caller
     SKIPS the post. A template comment costs reach; a skipped post costs one comment.
 
+    That grounding contract is ENFORCED, not just promised (issue #1833): a `post_content` with no
+    readable body in it — empty, whitespace, or nothing but the post's own shortlink — never reaches
+    the model, because a model handed no post invents one. This returns None on that path too, so
+    the caller skips the post through the same branch the quality gate already uses. `post_id` is
+    log context only — the post's URN, card key or permalink, whatever the caller holds — because it
+    names WHICH post scraped empty, and an empty body is a scraper defect rather than a quiet no-op.
+
+    An attached `post_img_url` does NOT exempt a post from that check, deliberately: the comment
+    contract asks the model to react to a SPECIFIC point in the post and quote it back, which is
+    exactly what an image cannot supply, and the observed failure was the model filling that gap with
+    an invented statistic. A caption-less image post is skipped, not commented on blind.
+
     Replying to a specific comment (`post_comment`) keeps its own acknowledge-and-answer contract and
     is not gated here.
 
@@ -482,6 +524,15 @@ def generate_ai_response(post_content, profile: LinkedInProfile, post_img_url=No
     sweep measures author-reply rate on — the seed and second-wave comments would add exposures the
     metric can never cover.
     """
+    # Refuse to draft against a post that never arrived (issue #1833). Checked BEFORE any research
+    # or generation call, so an unreadable card costs nothing. Reply drafting is a separate contract
+    # (the comment being answered is the grounding) and is deliberately not gated here.
+    if post_comment is None and not _has_readable_post_body(post_content):
+        log_warning("Target post has no readable body (empty or URL-only) — skipping rather than "
+                    "commenting ungrounded", user_id=user_id, post_id=post_id,
+                    action_type="comment")
+        return None
+
     image_attached = "(image attached)" if post_img_url else ""
     _no_hashtags = "" if (prefs and prefs.get("use_hashtags")) else " without using any hashtags"
     user_comment = f"\n\nRespond to this Comment Directly: <comment>{post_comment}</comment>\n\nYou are responding as the author of the LinkedIn Content. Keep your response short and sweet{_no_hashtags}.\n\n" if post_comment else ""

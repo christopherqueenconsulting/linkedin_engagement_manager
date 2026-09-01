@@ -1651,7 +1651,8 @@ def generate_and_post_comment(driver, wait, post_link, my_profile: LinkedInProfi
     with llm_attribution(user_id=user_id, feature=FEATURE_COMMENT):
         comment_text = generate_ai_response(content, my_profile, img_url, prefs=prefs,
                                             profile_synthesis=profile_synthesis,
-                                            recent_comments=recent_comments, user_id=user_id)
+                                            recent_comments=recent_comments, user_id=user_id,
+                                            post_id=post_link)
 
     if not comment_text:
         log_info("No comment cleared the quality contract for this post — skipping",
@@ -2904,7 +2905,8 @@ def _draft_funnel_comment(user_id: int, prospect: dict, my_profile: LinkedInProf
         return ""
     try:
         return (generate_ai_response(content, my_profile, None, prefs=prefs,
-                                     profile_synthesis=profile_synthesis, user_id=user_id) or "").strip()
+                                     profile_synthesis=profile_synthesis, user_id=user_id,
+                                     post_id=prospect.get("context_url")) or "").strip()
     except Exception as e:
         log_warning("Funnel comment draft failed; leaving it for the operator", exc=e,
                     user_id=user_id, action_type="outreach_funnel")
