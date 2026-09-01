@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.172.5](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.172.4...v0.172.5) (2026-09-01)
+
+
+### Bug Fixes
+
+* **invites:** settle the profile top card before the degree read (closes [#1843](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1843)) ([#1852](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1852)) ([9bdafa0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/9bdafa05bbcd75a484cf1e1ca7711e8f202e2442))
+* **release:** diff release-risk-check against what production runs (closes [#1859](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1859)) ([#1861](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1861)) ([60f1cdd](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/60f1cdd780e963dc4d3e56e2788fa42fb4c9eb47))
+* **release:** diff release-risk-check against what production runs, not the previous tag ([60f1cdd](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/60f1cdd780e963dc4d3e56e2788fa42fb4c9eb47)), closes [#1859](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1859)
+
 ## [0.172.4](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.172.3...v0.172.4) (2026-09-01)
 
 
