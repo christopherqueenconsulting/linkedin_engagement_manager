@@ -443,6 +443,49 @@ class TestCheckDmReplied:
                                     my_name="Me") is ThreadState.UNKNOWN
 
 
+class _EmptyComposeDriver:
+    """A driver that renders nothing but an empty full-page compose screen, on every route."""
+
+    def __init__(self):
+        self.page_source = ""
+        self.urls = []
+
+    def get(self, url):
+        self.urls.append(url)
+
+    def find_elements(self, _by, _value):
+        return []
+
+    def execute_script(self, script, *_args):
+        from cqc_lem.utilities.linkedin import message_thread as mt
+        if script is mt._THREAD_STATE_JS:
+            return {"events": 0, "composer": True, "overlay": False}
+        return None
+
+
+class TestExhaustedLadderStillSkips:
+    """NO-REGRESSION for issue #1851 acceptance criterion 3, through the REAL ladder.
+
+    `open_message_thread` is deliberately not stubbed here: now that an empty compose page stops
+    counting as an open thread, an account with no reachable thread at all must still land on
+    UNKNOWN and still skip. That is the property #731 settled and neither #1853 nor this follow-up
+    may disturb, so it passes before and after — by design.
+    """
+
+    def test_every_route_exhausted_is_unknown_and_sends_nothing(self, monkeypatch):
+        from cqc_lem.app.engagement import outreach
+        from cqc_lem.utilities.linkedin import message_thread as mt
+        monkeypatch.setattr(mt.time, "sleep", lambda *_a, **_k: None)
+        driver = _EmptyComposeDriver()
+        with patch.object(mt, "find_first", return_value=None), \
+             patch.object(outreach, "read_last_sender", return_value="") as sender:
+            state = outreach.check_dm_replied(driver, MagicMock(), "https://x/in/jane-doe",
+                                              my_name="Christopher Queen",
+                                              person_name="Jane Doe")
+        assert state is ThreadState.UNKNOWN
+        sender.assert_not_called()  # no thread was ever open to read a sender from
+
+
 class TestAutoSendDueFollowups:
     def test_dispatches_per_unique_user(self):
         # `auto_send_due_followups` does a lazy `from cqc_lem.app.engagement.outreach import

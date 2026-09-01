@@ -8,10 +8,13 @@ people who had already answered. Hardcoding the anchor instead would just move t
 next rotation, so this module is a RESOLUTION LADDER: six independent routes, tried in order, each one
 verified before it counts.
 
-A route only succeeds when the thread is PROVABLY open — message events readable or a compose form
-present (`thread_reading`). Anything less continues to the next route, and a ladder that exhausts every
-route is UNKNOWN, never "no reply": the caller must treat unknown as *skip*, because a missed follow-up
-is recoverable and a follow-up sent to someone who already replied is not.
+A route only succeeds when the thread is PROVABLY open: message events readable, or — on the chat
+overlay alone — a compose form (`thread_reading`, judged by `is_open_thread`). A full-page compose
+screen with zero message events is NOT a thread, and counting it as one let an earlier route suppress
+`messaging_search`, the one route that can still find real history (issue #1851). Anything less
+continues to the next route, and a ladder that exhausts every route is UNKNOWN, never "no reply": the
+caller must treat unknown as *skip*, because a missed follow-up is recoverable and a follow-up sent to
+someone who already replied is not.
 
 The winning route is logged (`action_type='followup'`) so telemetry shows the rotation over time and
 which fallbacks are actually carrying traffic — that is the early warning for the NEXT rotation.
@@ -124,8 +127,8 @@ _CONVERSATION_LOCATORS: list[tuple[str, str]] = [
 
 # Is a thread actually on screen? Message events carry the same msg-s-* classes on the full messaging
 # page and inside the bottom-right overlay, so they are counted document-wide; only the CONTAINER
-# tells the two surfaces apart. A compose form with zero events still counts as open (the thread
-# rendered) — reading it is a separate question, and one the caller answers as UNKNOWN.
+# tells the two surfaces apart. Whether a composer with zero events counts as an open THREAD is a
+# per-surface question — see `is_open_thread`.
 _THREAD_STATE_JS = (
     "const events=document.querySelectorAll("
     "'li.msg-s-message-list__event, .msg-s-event-listitem').length;"
@@ -378,6 +381,9 @@ def open_addressed_composer(driver: WebDriver, wait: WebDriverWait, profile_url:
         return result
 
     reading = _wait_thread_open(driver, timeout)
+    # Deliberately NOT `is_open_thread`: the SEND path wants exactly the full-page compose screen
+    # that the read ladder rejects (issue #1851). It is not trusted on being open — the recipient
+    # pill below is what proves it is addressed, which is a stronger check than message history.
     result.opened = bool(reading["events"] or reading["composer"])
     result.surface = reading.get("surface")
     if not result.opened:
@@ -444,6 +450,47 @@ def _wait_thread_open(driver: WebDriver, timeout: float = THREAD_RENDER_TIMEOUT_
         time.sleep(_POLL_SECONDS)
 
 
+def is_open_thread(reading: Optional[dict]) -> bool:
+    """Does this verification reading prove a THREAD is open, or only that a composer rendered?
+
+    Message EVENTS are proof on any surface — there is a conversation on screen. A composer with
+    ZERO events is proof only on the OVERLAY surface: the bottom-right bubble is anchored to the
+    person whose control we just clicked, so an empty one is a real thread we simply have no
+    history in.
+
+    On the full ``page`` surface the same reading is the standalone ``/messaging/compose/`` screen,
+    which renders identically whether it is a real empty thread or a blank new-message form
+    addressed to nobody — the surface affords no way to tell them apart. #1853 established that for
+    `_try_direct_url`; the rule belongs to the READING rather than to one route id, because the
+    profile's own Message anchor is an ``<a href='/messaging/compose/…'>`` that lands on the very
+    same screen (issue #1851 follow-up).
+
+    Nothing is lost when it genuinely was an empty thread: it carries no reply to detect either way,
+    so the caller's UNKNOWN-and-skip is the same outcome it already reached.
+    """
+    if not reading:
+        return False
+    if reading.get("events"):
+        return True
+    if not reading.get("composer"):
+        return False
+    return reading.get("surface") == SURFACE_OVERLAY
+
+
+def _verified_reading(reading: Optional[dict]) -> Optional[dict]:
+    """The reading a ladder route may report as success — None when only a composer rendered.
+
+    The rejection is DEBUG: reaching a compose screen instead of a thread is an ordinary step in the
+    ladder, not selector rot, and the ladder as a whole already reports exhaustion at DEBUG (#1752).
+    """
+    if is_open_thread(reading):
+        return reading
+    if reading and reading.get("composer"):
+        log_debug("A compose screen with no messages is not an open thread — continuing the ladder",
+                  action_type="followup")
+    return None
+
+
 def read_last_sender(driver: WebDriver) -> str:
     """Name on the most recent message group of the ALREADY-OPEN thread ('' when unreadable)."""
     try:
@@ -502,9 +549,9 @@ def _try_control(driver: WebDriver, locators: list[tuple[str, str]], root=None,
     for element in _visible_elements(root if root is not None else driver, locators):
         if not _click(driver, element):
             continue
-        reading = _wait_thread_open(driver, timeout)
-        if reading["events"] or reading["composer"]:
-            return reading
+        verified = _verified_reading(_wait_thread_open(driver, timeout))
+        if verified:
+            return verified
     return None
 
 
@@ -539,13 +586,14 @@ def _try_direct_url(driver: WebDriver, timeout: float, urn: Optional[str] = None
     (possibly empty) conversation or leaves the caller at UNKNOWN — both already-correct outcomes.
     Accepting composer-only here was the bug: it returned `opened=True` with no sender to read,
     reported UNKNOWN, AND stopped the ladder before the one route most likely to find real history.
+    That verdict now lives in `is_open_thread`, shared by every route, because the profile's own
+    Message anchor lands on this same compose screen and could reproduce it one route earlier.
     """
     urn = urn or profile_urn_from_page(driver, profile_url)
     if not urn:
         return None
     driver.get(compose_url_for(urn))
-    reading = _wait_thread_open(driver, timeout)
-    return reading if reading["events"] else None
+    return _verified_reading(_wait_thread_open(driver, timeout))
 
 
 def _try_messaging_search(driver: WebDriver, wait: WebDriverWait, person_name: Optional[str],
@@ -598,9 +646,9 @@ def _try_messaging_search(driver: WebDriver, wait: WebDriverWait, person_name: O
             continue
         if not _click(driver, item):
             continue
-        reading = _wait_thread_open(driver, timeout)
-        if reading["events"] or reading["composer"]:
-            return reading
+        verified = _verified_reading(_wait_thread_open(driver, timeout))
+        if verified:
+            return verified
     return None
 
 
