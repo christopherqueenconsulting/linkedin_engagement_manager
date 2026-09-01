@@ -33,6 +33,7 @@ from enum import Enum
 from typing import Collection, Optional
 from urllib.parse import quote, unquote
 
+from bs4 import BeautifulSoup
 from selenium.common import NoSuchElementException, StaleElementReferenceException, WebDriverException
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
@@ -40,6 +41,8 @@ from selenium.webdriver.remote.webdriver import WebDriver
 from selenium.webdriver.remote.webelement import WebElement
 from selenium.webdriver.support.wait import WebDriverWait
 
+from cqc_lem.utilities.linkedin.helper import can_open_dm_thread
+from cqc_lem.utilities.linkedin.scrapper import _degree_from_source
 from cqc_lem.utilities.logger import log_debug, log_info, log_warning
 from cqc_lem.utilities.selenium_util import find_first
 
@@ -672,6 +675,29 @@ def _try_messaging_search(driver: WebDriver, wait: WebDriverWait, person_name: O
     return None
 
 
+def _profile_side_routes_worth_trying(driver: WebDriver, profile_url: str = "") -> bool:
+    """Are routes 1-4 (the profile's OWN Message controls) worth attempting on this profile?
+
+    A live grounding pass (#1857) found the top card renders a Message control on a 1st-degree
+    profile and NONE at all on a 2nd/3rd-degree one — routes 1-4 cannot succeed there, so walking
+    them anyway is four guaranteed misses plus a full page render before route five even starts.
+    Reads the SAME page `driver.get(profile_url)` just rendered, via `_degree_from_source` — the
+    grounded top-card read `parse_profile_header` already uses, so this adds no extra navigation
+    and no second selector chain to drift out of sync with it.
+
+    Fails OPEN: `can_open_dm_thread` treats an unreadable badge as unknown, never as "not
+    connectable", so a selector drift here costs back the four wasted attempts it was meant to
+    save, and never a missed follow-up.
+    """
+    try:
+        degree = _degree_from_source(BeautifulSoup(driver.page_source, "html.parser"))
+    except Exception as e:
+        log_debug("Could not read the profile's connection degree; trying every route", exc=e,
+                  profile_url=profile_url, action_type="followup")
+        return True
+    return can_open_dm_thread(degree)
+
+
 def open_message_thread(driver: WebDriver, wait: WebDriverWait, profile_url: str,
                         person_name: Optional[str] = None, user_id: Optional[int] = None,
                         timeout: float = THREAD_RENDER_TIMEOUT_SECONDS,
@@ -688,6 +714,12 @@ def open_message_thread(driver: WebDriver, wait: WebDriverWait, profile_url: str
     name and commits on Enter — a write the probe must not make. Every name must be a real route id
     (`ROUTES`); an unknown name is a caller typo that would silently skip nothing, so it raises
     `ValueError` rather than letting the walk reach the route it meant to stop.
+
+    Routes 1-4 are ALSO auto-skipped, the same way, whenever `_profile_side_routes_worth_trying`
+    reads the just-rendered profile page as confidently not 1st degree (issue #1857): those routes
+    only ever reach a control the top card renders for a 1st-degree connection, so walking them on
+    anyone else is four guaranteed misses and a full page render for nothing. An unreadable badge
+    changes nothing here — every route is still tried, exactly as before this existed.
 
     Every route exhausted is the EXPECTED outcome for anyone this account cannot message this way
     (not a 1st-degree connection, InMail-only, messaging restricted) — not evidence the selectors
@@ -720,6 +752,12 @@ def open_message_thread(driver: WebDriver, wait: WebDriverWait, profile_url: str
     if unknown:
         raise ValueError(f"skip_routes names unknown route(s): {sorted(unknown)}; valid ids are "
                          f"{list(ROUTES)}")
+    if not _profile_side_routes_worth_trying(driver, profile_url):
+        profile_side = {ROUTE_ANCHOR, ROUTE_BUTTON, ROUTE_TEXT_NODE, ROUTE_OVERFLOW} - skip
+        if profile_side:
+            log_debug(f"{profile_url} is not 1st degree — skipping the profile-side Message "
+                      f"routes {sorted(profile_side)}", user_id=user_id, action_type="followup")
+        skip |= profile_side
     for route, attempt in attempts:
         if route in skip:
             result.skipped.append(route)

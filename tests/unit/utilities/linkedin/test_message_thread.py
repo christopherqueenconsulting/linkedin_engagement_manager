@@ -480,6 +480,70 @@ class TestLadderContract:
         assert mt.ThreadOpen(opened=True, route=mt.ROUTE_ANCHOR)
 
 
+class TestProfileSideSkip:
+    """Issue #1857.
+
+    Routes 1-4 only ever reach a control the top card renders for a 1st-degree connection, so a
+    profile the badge confidently reads as 2nd/3rd degree skips straight to `direct_url` /
+    `messaging_search` instead of walking four guaranteed misses first.
+    """
+
+    SECOND_DEGREE_SOURCE = "<main><span>2nd degree connection</span></main>"
+    FIRST_DEGREE_SOURCE = "<main><span>1st</span></main>"
+
+    def test_worth_trying_is_false_on_a_confidently_2nd_degree_page(self):
+        d = FakeDriver(page_source=self.SECOND_DEGREE_SOURCE)
+        assert mt._profile_side_routes_worth_trying(d, PROFILE) is False
+
+    def test_worth_trying_is_true_on_a_1st_degree_page(self):
+        d = FakeDriver(page_source=self.FIRST_DEGREE_SOURCE)
+        assert mt._profile_side_routes_worth_trying(d, PROFILE) is True
+
+    def test_worth_trying_fails_open_when_no_badge_renders(self):
+        # Unreadable is unknown, never "not connectable" — `can_open_dm_thread` fails open.
+        d = FakeDriver(page_source="<main><span>Some other text</span></main>")
+        assert mt._profile_side_routes_worth_trying(d, PROFILE) is True
+
+    def test_worth_trying_fails_open_when_the_read_itself_raises(self):
+        d = FakeDriver()
+
+        class _Boom:
+            def __get__(self, *_a):
+                raise WebDriverException("no session")
+
+        type(d).page_source = _Boom()
+        assert mt._profile_side_routes_worth_trying(d, PROFILE) is True
+
+    def test_a_2nd_degree_profile_skips_the_profile_side_routes(self):
+        d = FakeDriver(page_source=self.SECOND_DEGREE_SOURCE)
+        result = mt.open_message_thread(d, MagicMock(), PROFILE, timeout=0)
+        assert result.skipped == [mt.ROUTE_ANCHOR, mt.ROUTE_BUTTON, mt.ROUTE_TEXT_NODE,
+                                  mt.ROUTE_OVERFLOW]
+        assert result.tried == [mt.ROUTE_DIRECT_URL, mt.ROUTE_MESSAGING_SEARCH]
+        assert not result.opened
+
+    def test_a_1st_degree_profile_still_walks_every_route(self):
+        d = FakeDriver(page_source=self.FIRST_DEGREE_SOURCE)
+        anchor = FakeElement({"href": "/messaging/compose/?profileUrn=x"}, on_click=_opens(d))
+        d.dom[(By.CSS_SELECTOR, "main a[href*='/messaging/compose/']")] = [anchor]
+        result = mt.open_message_thread(d, MagicMock(), PROFILE, timeout=0)
+        assert result.opened and result.route == mt.ROUTE_ANCHOR
+        assert result.skipped == []
+
+    def test_an_unreadable_badge_still_walks_every_route(self):
+        d = FakeDriver(page_source="")
+        result = mt.open_message_thread(d, MagicMock(), PROFILE, timeout=0)
+        assert result.skipped == []
+        assert result.tried == list(mt.ROUTES)
+
+    def test_caller_skip_routes_and_the_degree_skip_do_not_double_record(self):
+        d = FakeDriver(page_source=self.SECOND_DEGREE_SOURCE)
+        result = mt.open_message_thread(d, MagicMock(), PROFILE, timeout=0,
+                                        skip_routes=(mt.ROUTE_ANCHOR,))
+        assert result.skipped == [mt.ROUTE_ANCHOR, mt.ROUTE_BUTTON, mt.ROUTE_TEXT_NODE,
+                                  mt.ROUTE_OVERFLOW]
+
+
 class TestEmptyComposePageIsNotAThread:
     """The #1851 verdict belongs to the READING, not to one route id.
 
