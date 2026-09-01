@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.172.8](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.172.7...v0.172.8) (2026-09-01)
+
+
+### Bug Fixes
+
+* **release:** name the actual diff bound and origin release in a flagged message (closes [#1893](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1893)) ([#1894](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1894)) ([7d11682](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/7d11682af38283614c9b62028fa17804b6d33a20))
+
 ## [0.172.7](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.172.6...v0.172.7) (2026-09-01)
 
 
