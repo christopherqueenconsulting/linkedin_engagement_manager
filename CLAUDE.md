@@ -261,17 +261,14 @@ The paragraph behind each row is `docs/observability-map.md`.
 
 ## CI Gates
 
-The SEVEN contexts branch protection requires on `main` (verified against the API): `Unit Tests
-(Python 3.12)`, `Integration Tests`, `UI Build`, `Migration Versions`, `GitGuardian Scan`,
-`CodeQL PR Quality Gate`, `Docstring & Lint Gate` (#1878 — the ratchet, required so one regression
-cannot red the gate for every later PR). That list is **three copies**: branch protection,
-`tick.sh`'s `REQUIRED_CHECKS_JQ` and `v2/lemd/github.py`'s `REQUIRED_CHECKS`. They decide merges
-independently, so they move in ONE change — `test_required_checks_agree.py` fails the build on
-drift between the two code copies.
+The SEVEN contexts branch protection requires on `main`: `Unit Tests (Python 3.12)`, `Integration
+Tests`, `UI Build`, `Migration Versions`, `GitGuardian Scan`, `CodeQL PR Quality Gate`, `Docstring
+& Lint Gate`. The pipeline keeps two more copies and merges from ITS own — all three move in ONE
+change (`docs/agent-pipeline-v2.md`).
 
-**One workflow per test lane** (`tests/README.md`), each owning the one Codecov flag `codecov.yml`
-declares, all selecting `-m "not slow"`; never add a whole-suite workflow. `slow` tests are live
-third-party probes — nightly via `slow-tests.yml`, never a PR gate.
+**One workflow per test lane** (`tests/README.md`), each owning the Codecov flag `codecov.yml`
+declares, all `-m "not slow"`; never a whole-suite workflow. `slow` tests are live probes —
+nightly (`slow-tests.yml`), never a PR gate.
 
 `CodeQL Security Analysis` runs but is NOT required. **`required_approving_review_count` is 0**, so
 `require_code_owner_reviews` enforces nothing (`docs/contribution-security.md`).

@@ -102,9 +102,10 @@ def _workflow_jobs() -> dict[str, list[dict]]:
 def _ci_gates_section() -> str:
     """Return the body of CLAUDE.md's `## CI Gates` section as ONE whitespace-normalised line.
 
-    CLAUDE.md is hard-wrapped, so a check name is regularly split across two lines mid-backticks
-    (`` `Unit Tests\\n(Python 3.12)` ``). Matching the raw text would report that name as missing
-    and push the file into a reflow it does not need — the file is a fixed-shape, size-capped index.
+    CLAUDE.md is hard-wrapped, so a check name is regularly split across two lines inside its
+    backticks — `Unit Tests` ends one line and `(Python 3.12)` opens the next. Matching the raw text
+    would report that name as missing and push the file into a reflow it does not need; it is a
+    fixed-shape, size-capped index.
 
     Raises:
         AssertionError: If the section heading is gone, so the assertions below cannot silently
