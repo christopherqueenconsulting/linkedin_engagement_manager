@@ -10,6 +10,12 @@ So this reproduces the mechanism instead of describing it. It seeds rows wide en
 record does not fit a deliberately tiny session sort buffer, then runs the pre-fix query text as a
 control. If that control does NOT fail, this server cannot express the bug and the test SKIPS rather
 than passing on nothing.
+
+It has already earned that. The first attempt at the fix kept an `ORDER BY k.created_at DESC` on the
+outer select, reasoning that ordering by the driving table's own columns lets MySQL sort that table
+and then join. This test failed it on a live server: MySQL 8 sorted the JOINED output instead and
+raised the identical 1038. The outer sort is gone and the page is ordered in Python — and if an
+outer ORDER BY ever comes back, this fails again the way production did.
 """
 
 import mysql.connector

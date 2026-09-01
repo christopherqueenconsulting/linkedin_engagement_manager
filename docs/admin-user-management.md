@@ -374,10 +374,13 @@ Two things had to change, and only together:
   `body` (TEXT) and `context_json` (JSON, carrying a screenshot data URL) are wide enough that a
   page of 50 overflowed it: `1038 (HY001): Out of sort memory`. That is a function of the table's
   total row width, so it only ever gets worse. The sort now runs on a **derived table of keys**
-  (`id, created_at`) and the wide columns are joined back to the ids that survived `LIMIT`. The
-  outer `ORDER BY` names the derived table, never `feedback` — ORDER BY over columns of the first
-  table alone is what lets MySQL sort that table and then join, and naming `f` puts the sort back on
-  the wide row. Raising `sort_buffer_size` was rejected: a server-wide knob spent on one query that
+  (`id, created_at`) and the wide columns are joined back to the ids that survived `LIMIT`. There is
+  **no outer `ORDER BY` at all**, and that is the fix rather than a shortcut around it: the first
+  attempt kept an `ORDER BY k.created_at DESC`, on the reasoning that ordering by the driving
+  table's own columns lets MySQL sort that table and then join. Measured on a live MySQL 8 it does
+  not — the optimizer sorted the JOINED output and raised the identical 1038. So the derived table
+  decides both the order and the page, SQL sorts nothing wide, and the ~50 rows come back into order
+  in Python. Raising `sort_buffer_size` was rejected: a server-wide knob spent on one query that
   grows without bound.
 * **The fault stopped being able to impersonate an answer.** `get_feedback_list` and
   `get_feedback_by_id` raise `FeedbackUnreadable` (`platform/db/repositories/feedback.py`, re-exported
@@ -394,4 +397,6 @@ at is gone.
 `tests/integration/test_feedback_list_db.py` proves it against a live server rather than describing
 it: it seeds rows wide enough that one packed record does not fit a deliberately tiny session sort
 buffer, runs the pre-fix query text as a control, and **skips** if that control does not fail — a
-green run on a server that was never at risk would assert nothing.
+green run on a server that was never at risk would assert nothing. That test is what failed the
+outer-`ORDER BY` attempt above; without it the panel would have shipped the same 1038 under a
+different query.

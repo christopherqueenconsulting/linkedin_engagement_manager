@@ -145,10 +145,9 @@ class TestAttributionMetadataShape:
         assert attribution_metadata(0, "content")["user_id"] != SYSTEM_USER_ID
 
     def test_a_real_user_id_is_a_string_not_the_db_integer(self):
-        """LiteLLM's Anthropic transform regex-matches `metadata.user_id`.
-
-        `re.match` raises TypeError on an int — wrapped as APIConnectionError, that failed every
-        Claude call before it left the proxy (issue #1829).
+        """LiteLLM's Anthropic transform regex-matches `metadata.user_id`, and `re.match` raises
+        TypeError on an int — wrapped as APIConnectionError, that failed every Claude call before it
+        left the proxy (issue #1829).
         """
         from cqc_lem.utilities.ai.client import attribution_metadata
         value = attribution_metadata(11, "newsletter")["user_id"]

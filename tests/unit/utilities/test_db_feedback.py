@@ -402,17 +402,17 @@ class TestCountPendingAdminReview:
 
 class TestGetFeedbackList:
     def test_returns_rows_joined_with_user_email(self, fake_cursor):
-        conn, cur = fake_cursor(fetch_all=[{"id": 1, "email": "a@x.com", "is_admin": 1,
-                                     "status": "new", "source": "widget"}])
+        # `created_at` is NOT NULL and always selected — the page is ordered on it (issue #1868).
+        row = {"id": 1, "email": "a@x.com", "is_admin": 1, "status": "new", "source": "widget",
+               "created_at": datetime(2026, 7, 29, 12, 0, 0)}
+        conn, cur = fake_cursor(fetch_all=[dict(row)])
         with patch(f"{_GET_CONN}", return_value=conn):
             from cqc_lem.utilities.db import get_feedback_list
             got = get_feedback_list(limit=5, offset=10)
-        assert got == [{"id": 1, "email": "a@x.com", "is_admin": 1,
-                        "status": "new", "source": "widget"}]
+        assert got == [row]
         sql, params = cur.execute.call_args[0]
         assert "JOIN feedback f ON f.id = k.id" in sql
         assert "LEFT JOIN users u" in sql
-        assert "ORDER BY k.created_at DESC" in sql
         assert "LIMIT %s OFFSET %s" in sql
         assert params == (5, 10)
 
@@ -433,6 +433,37 @@ class TestGetFeedbackList:
         assert "LIMIT %s OFFSET %s" in derived
         for wide in ("body", "context_json", "embedding"):
             assert wide not in derived
+
+    def test_nothing_outside_the_derived_table_is_sorted(self, fake_cursor):
+        """An outer ORDER BY sorts the JOINED row, which is the 1038 all over again.
+
+        Measured on MySQL 8 (issue #1868): `ORDER BY k.created_at` reads like it should sort the
+        narrow driving table and let the join preserve that, and it does not — the optimizer packs
+        `body` + `context_json` into the sort buffer exactly as before. The integration test proves
+        it against a live server; this keeps the shape from drifting back in a refactor.
+        """
+        conn, cur = fake_cursor(fetch_all=[])
+        with patch(f"{_GET_CONN}", return_value=conn):
+            from cqc_lem.utilities.db import get_feedback_list
+            get_feedback_list()
+        sql = cur.execute.call_args[0][0]
+        assert sql.count("ORDER BY") == 1
+        assert sql.split(") k", 1)[1].count("ORDER BY") == 0
+
+    def test_the_page_is_ordered_newest_first_whatever_order_the_join_returned(self, fake_cursor):
+        """SQL sorts nothing wide, so the returned page is put back in order here (issue #1868)."""
+        older = datetime(2026, 8, 30, 9, 0, 0)
+        newer = datetime(2026, 8, 31, 9, 0, 0)
+        conn, _ = fake_cursor(fetch_all=[
+            {"id": 4, "created_at": older, "email": None, "is_admin": 0},
+            {"id": 9, "created_at": newer, "email": None, "is_admin": 0},
+            # Same second as id 9: the tiebreak has to match the derived table's `id DESC`.
+            {"id": 11, "created_at": newer, "email": None, "is_admin": 0},
+        ])
+        with patch(f"{_GET_CONN}", return_value=conn):
+            from cqc_lem.utilities.db import get_feedback_list
+            got = get_feedback_list()
+        assert [r["id"] for r in got] == [11, 9, 4]
 
     def test_status_filter_is_validated_and_bound(self, fake_cursor):
         conn, cur = fake_cursor(fetch_all=[])
@@ -462,9 +493,11 @@ class TestGetFeedbackList:
         """
         monkeypatch.setattr("cqc_lem.utilities.env_constants.ADMIN_USER_EMAILS",
                             "owner@example.com")
-        conn, _ = fake_cursor(fetch_all=[{"id": 1, "email": " Owner@Example.com ", "is_admin": 0},
-                                   {"id": 2, "email": "someone@example.com", "is_admin": 0},
-                                   {"id": 3, "email": None, "is_admin": None}])
+        when = datetime(2026, 7, 29, 12, 0, 0)
+        conn, _ = fake_cursor(fetch_all=[
+            {"id": 3, "email": " Owner@Example.com ", "is_admin": 0, "created_at": when},
+            {"id": 2, "email": "someone@example.com", "is_admin": 0, "created_at": when},
+            {"id": 1, "email": None, "is_admin": None, "created_at": when}])
         with patch(f"{_GET_CONN}", return_value=conn):
             from cqc_lem.utilities.db import get_feedback_list
             got = get_feedback_list()

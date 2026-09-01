@@ -665,8 +665,10 @@ def get_feedback_list(status: Optional[Union["FeedbackStatus", str]] = None,
     `body` + `context_json` are wide enough that 91 rows overflowed it in production and the whole
     page died with a 1038. That is a function of the table's total row width, so it only ever gets
     worse. The sort therefore runs on a DERIVED TABLE of keys — two narrow columns per row — and the
-    wide columns are joined back to the ~50 ids that survived `LIMIT`. Raising `sort_buffer_size`
-    instead spends a server-wide knob on one unbounded query and is not a fix.
+    wide columns are joined back to the ~50 ids that survived `LIMIT`, with the returned page put
+    back in that order HERE rather than by an outer ORDER BY (see the comment below; an outer sort
+    lands on the wide join again). Raising `sort_buffer_size` instead spends a server-wide knob on
+    one unbounded query and is not a fix.
 
     Raises `FeedbackUnreadable` when the query did not run. `[]` here means the table (or the
     filter) is genuinely empty, and the panel is allowed to say so.
@@ -689,12 +691,17 @@ def get_feedback_list(status: Optional[Union["FeedbackStatus", str]] = None,
         params.append(str(source))
 
     where = f"WHERE {' AND '.join(filters)} " if filters else ""
-    # Two things here are load-bearing, and both look cosmetic:
-    #   * the outer ORDER BY names `k`, never `f`. ORDER BY over columns of the FIRST table alone
-    #     lets MySQL sort that table and then join; name `f` and the sort moves back onto the wide
-    #     joined row, which is the whole bug again.
-    #   * `id` breaks a created_at tie the same way in BOTH sorts (they tie constantly — created_at
-    #     is second-resolution), so a page boundary cannot show one row twice and drop another.
+    # There is NO outer ORDER BY, and that is the fix rather than a shortcut around it. An
+    # `ORDER BY k.…` reads like it should sort the narrow driving table and let the join preserve
+    # that order; measured on MySQL 8 it does not — the optimizer sorts the JOINED output, packs
+    # `body` + `context_json` into the sort buffer again, and raises the same 1038 the derived table
+    # was added to prevent. `tests/integration/test_feedback_list_db.py` is what caught that, and it
+    # fails again the moment an outer ORDER BY comes back.
+    #
+    # So the derived table decides BOTH the order and the page, SQL sorts nothing wide, and the
+    # ~50 rows it returns are put back in that order below. `id` breaks a created_at tie (they tie
+    # constantly — DATETIME, one-second resolution) identically in the SQL and in Python, so a page
+    # boundary cannot show one row twice and drop another.
     sql = (
         f"SELECT f.id, f.user_id, f.source, f.type_hint, f.body, f.context_json, "
         f"f.cluster_id, f.github_issue_number, f.status, f.sentiment, "
@@ -702,8 +709,7 @@ def get_feedback_list(status: Optional[Union["FeedbackStatus", str]] = None,
         f"FROM (SELECT id, created_at FROM feedback {where}"
         f"ORDER BY created_at DESC, id DESC LIMIT %s OFFSET %s) k "
         f"JOIN feedback f ON f.id = k.id "
-        f"LEFT JOIN users u ON u.id = f.user_id "
-        f"ORDER BY k.created_at DESC, k.id DESC"
+        f"LEFT JOIN users u ON u.id = f.user_id"
     )
     try:
         with db_cursor(dictionary=True) as cursor:
@@ -712,6 +718,8 @@ def get_feedback_list(status: Optional[Union["FeedbackStatus", str]] = None,
     except mysql.connector.Error as err:
         log_error("Could not list feedback for admin panel", exc=err)
         raise FeedbackUnreadable("Could not list feedback for admin panel") from err
+    # `created_at` is NOT NULL in the schema, so this is a total order over the page.
+    rows.sort(key=lambda row: (row["created_at"], row["id"]), reverse=True)
     allow = admin_email_allowlist()
     for row in rows:
         if allow and not row.get("is_admin") and \
