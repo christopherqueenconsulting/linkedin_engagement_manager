@@ -80,7 +80,7 @@ from cqc_lem.utilities.linkedin.stale_invites import (
     plan_withdrawals,
     withdraw_stale_invites,
 )
-from cqc_lem.utilities.linkedin.zero_walk import grade_zero_walk
+from cqc_lem.utilities.linkedin.zero_walk import DRIFT, grade_zero_walk
 from cqc_lem.utilities.linkedin_formatter import strip_non_bmp
 from cqc_lem.utilities.logger import log_debug, log_error, log_info, log_warning
 from cqc_lem.utilities.observability import (
@@ -203,13 +203,23 @@ _DEGREE_LINE_RE = re.compile(r"^(?:·\s*)?(1st|2nd|3rd)\+?(?:\s+degree(?:\s+conn
                              re.IGNORECASE)
 
 
-def _degree_lines_on_page(driver) -> "int | None":
-    """How many degree-badge LINES the page renders, or None when the read itself failed."""
+def _matching_degree_lines(driver) -> "list[str] | None":
+    """Every degree-badge LINE the page's own rendered text carries, or None if unreadable.
+
+    In document order — the fallback value below relies on that: the FIRST line is the top card's,
+    same rule as the locator chain (#1012).
+    """
     try:
         text = driver.find_element(By.TAG_NAME, "main").text or ""
     except Exception:
         return None
-    return sum(1 for line in text.splitlines() if _DEGREE_LINE_RE.match(line.strip()))
+    return [line for line in (raw.strip() for raw in text.splitlines()) if _DEGREE_LINE_RE.match(line)]
+
+
+def _degree_lines_on_page(driver) -> "int | None":
+    """How many degree-badge LINES the page renders, or None when the read itself failed."""
+    lines = _matching_degree_lines(driver)
+    return None if lines is None else len(lines)
 
 
 # A hydrating SDUI profile swaps nodes out from under a walk, so one detached element must not
@@ -278,15 +288,46 @@ def _profile_is_first_degree(driver) -> bool:
     card — belongs to somebody else. Reading those would abort the invite to a 2nd-degree target
     just because one of their mutuals is a 1st, which is #1012's mistake in a read instead of a
     click.
+
+    A chain graded DRIFT is used as a VALUE now, not just a cross-check (#1843): the page's own
+    words are independent of the chain and already proven unambiguous by the grade itself, so
+    falling open to False here would attempt an invite on a target the page plainly shows is
+    already 1st-degree — burning the ~90s session and the #1814 attempt ceiling on a target with no
+    Connect affordance to find. The warning still fires; this only stops the READ from being wrong
+    while the chain is being re-grounded.
     """
     texts = _degree_badge_texts(driver)
     if texts is None:
         return False
     if texts:
         return is_first_degree(texts[0])
-    grade_zero_walk(_degree_lines_on_page(driver), "Profile degree-badge chain",
-                     action_type="invite_connect")
+    lines = _matching_degree_lines(driver)
+    verdict = grade_zero_walk(None if lines is None else len(lines),
+                              "Profile degree-badge chain", action_type="invite_connect")
+    if verdict == DRIFT:
+        return is_first_degree(lines[0])
     return False
+
+
+def _wait_for_profile_top_card(driver, wait) -> None:
+    """Best-effort settle for the profile top card before the degree read runs (#1843).
+
+    `driver.get()` returns once the shell loads; the top card (name + degree badge) paints after,
+    client-side. Every other profile navigation in this app settles before reading (the
+    `wait_for_ajax` calls throughout `utilities/linkedin/scrapper.py`) — this call site never did,
+    so the degree read ran on the very first paint and drifted (`selector drift`) on 100% of invite
+    attempts on 2026-09-01, even though a settled read of the SAME profiles grounds cleanly
+    (`--profile-scrape`, docs/sdui-selenium-notes.md). Waits for whichever the page shows first —
+    the name or the badge itself — rather than `_degree_badge_texts`, which logs on a genuine
+    failure: polling that here would multiply one warning by the poll count instead of leaving it
+    to the single read that follows. Falls through silently on timeout; the read's own
+    None/[]/DRIFT handling covers a page that never settles, exactly as before this existed.
+    """
+    try:
+        wait.until(lambda d: d.find_elements(By.CSS_SELECTOR, "main h1") or
+                             d.find_elements(By.XPATH, _DEGREE_LEAF_XPATH))
+    except Exception:
+        pass
 
 
 # Grounded live 2026-08-03 (docs/sdui-selenium-notes.md): the profile top card carries NO
@@ -1068,6 +1109,7 @@ def invite_to_connect_now(user_id: int, profile_url: str, message: str = None) -
         if profile_url != driver.current_url:
             # Open the profile URL
             driver.get(profile_url)
+            _wait_for_profile_top_card(driver, wait)
 
         log_info(f"Inviting to connect: {profile_url}")
 
