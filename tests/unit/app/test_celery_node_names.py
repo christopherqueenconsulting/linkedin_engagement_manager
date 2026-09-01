@@ -219,10 +219,10 @@ class TestHealthchecksAgreeWithTheNodeName:
 
 
 class TestOverlaysInheritRatherThanRestateTheHostnames:
-    """A base-file `hostname:` reaches production only if no overlay resets it.
+    """The stack always composes base + prod (+ grid).
 
-    The stack always composes base + prod (+ grid), so that inheritance is asserted here rather
-    than assumed.
+    A `hostname:` only in the base file reaches production because neither overlay resets it —
+    assert that, rather than assuming it.
     """
 
     @pytest.mark.parametrize("overlay", ["prod", "grid"])
