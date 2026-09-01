@@ -77,7 +77,9 @@ redacted. `utilities/ai/client.py` sets that header for the `feature` values nam
 |---|---|
 | Default | **empty — nothing opts out.** A deploy changes what leaves the stack only when an operator sets the var |
 | Granularity | the `feature` bucket (`comment` / `content` / `dm` / `newsletter` / `marketing` / `system`) |
-| Fails | CLOSED — unset, empty, unparseable, unattributed, a raw provider model, or a throwing hook all stay redacted |
+| Chat only | keyed on the request carrying `messages`, so an image `prompt` or an embedding `input` is never disclosed even when its feature IS allowlisted — `$ai_output_choices` is a chat shape and nothing grades the others |
+| Audit trail | one `log_info` per released call, naming the feature. A redacted call logs nothing, so the line means content left |
+| Fails | CLOSED — unset, empty, unparseable, unattributed, a raw provider model, a non-chat endpoint, or a throwing hook all stay redacted |
 | Not a flag | `utilities/flags.py` fails OPEN to its default; a data-egress control must not. Env var only |
 | Sign-off | issue **#1832** — processor, retention, and whether `PrivacyPolicy.tsx` §7 has to name it |
 

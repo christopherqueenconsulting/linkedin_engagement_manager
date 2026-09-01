@@ -19,7 +19,7 @@ from typing import Any, Optional, Tuple
 import httpx
 from openai import APIConnectionError, OpenAI
 
-from cqc_lem.utilities.logger import log_debug
+from cqc_lem.utilities.logger import log_debug, log_info
 from cqc_lem.utilities.routing_policy import SYSTEM_USER_ID
 
 # Only tier aliases are routable AND priced by the proxy, so nothing is attached to a call that
@@ -46,6 +46,13 @@ _SYSTEM_FEATURE = "system"
 # REQUEST (`should_redact_message_logging`), and this header is its documented opt-out — so the
 # un-redaction is scoped to the features that have an evaluation waiting, instead of turning the
 # whole proxy's generation view into full conversation text.
+#
+# The contract was read off litellm/litellm_core_utils/redact_messages.py on `main` (the stack runs
+# ghcr.io/berriai/litellm:main-latest): priority 2 of `should_redact_message_logging`, matched as
+# `bool(request_headers.get("litellm-disable-message-redaction", False))` against
+# `litellm_params.metadata.headers`. Nothing here can PROVE the proxy still honours it — if the name
+# moves, grading silently reverts to constant scores, which is the safe direction but an invisible
+# one. Re-verify against that file on a LiteLLM upgrade.
 _REDACTION_OFF_HEADER = "litellm-disable-message-redaction"
 
 # Comma-separated feature names (the same values `attribution_metadata` stamps) whose prompt and
@@ -207,14 +214,20 @@ def _attach_prompt_logging(options) -> None:
     """Let THIS request's messages reach PostHog, if and only if its feature is allowlisted.
 
     Fails closed at every step: an un-allowlisted feature, a request that carries no attribution at
-    all, a raw provider model, or an empty allowlist all leave the proxy's global redaction in
-    place. The hook only ever ADDS the opt-out header, so the worst outcome of a bug here is that
-    content stays redacted — never that it leaks.
+    all, a raw provider model, a non-chat endpoint, or an empty allowlist all leave the proxy's
+    global redaction in place. The hook only ever ADDS the opt-out header, so the worst outcome of a
+    bug here is that content stays redacted — never that it leaks.
     """
     body = getattr(options, "json_data", None)
-    if not isinstance(body, dict) or options.files:
+    if not isinstance(body, dict) or getattr(options, "files", None):
         return
     if not str(body.get("model") or "").startswith(_TIER_PREFIX):
+        return
+    # CHAT ONLY. `$ai_input`/`$ai_output_choices` is what an evaluation grades, and it is what a chat
+    # completion produces — an image `prompt`, an embedding `input` or a TTS `input` would be
+    # disclosed for a reading nothing takes. Keyed on the body shape rather than an alias blocklist,
+    # so a new non-chat alias is excluded the day it is added instead of the day someone remembers.
+    if not isinstance(body.get("messages"), list):
         return
     allowed = prompt_logging_features()
     if not allowed:
@@ -230,6 +243,12 @@ def _attach_prompt_logging(options) -> None:
         return
     sent[_REDACTION_OFF_HEADER] = "true"
     options.headers = sent
+    # The audit trail for the egress itself: without it, the only way to learn that content is
+    # leaving the stack is to go and read PostHog. INFO rather than WARNING because an allowlisted
+    # feature doing exactly what it was allowlisted for is not a defect, and rather than DEBUG
+    # because releasing user content to a third party should be legible in the logs by default.
+    log_info("Prompt logging: sending this call's messages to PostHog un-redacted",
+             feature=feature, api_provider="litellm")
 
 
 class AttributedOpenAI(OpenAI):
