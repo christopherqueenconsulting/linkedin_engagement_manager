@@ -12,6 +12,8 @@ per call, so nothing can be forgotten at a new call site.
 | `.litellm/config.yaml` | `litellm_settings.success_callback` / `failure_callback` include `posthog`; `turn_off_message_logging: true` |
 | `docker-compose.yml` (`litellm`) | `POSTHOG_API_KEY`, `POSTHOG_API_URL` (from the app's `POSTHOG_HOST`) |
 | `utilities/ai/client.py` | stamps `metadata: {user_id, feature}` on every `lem-*` request, and sets the per-request redaction opt-out for the features in `LLM_PROMPT_LOGGING_FEATURES` |
+| `.litellm/posthog_redaction_guard.py` | the ONE place model reasoning is kept out of `$ai_generation` (#1831) — see Privacy |
+| `.litellm/posthog_payload_guard.py` | the ONE place an event is kept under PostHog's `/batch/` size ceiling (#1310) |
 
 Requires LiteLLM **≥ 1.77.3** for the logger, and the `posthog serilization fix` (BerriAI/litellm
 [#20668](https://github.com/BerriAI/litellm/pull/20668), 2026-02-07) for the batch-send crash
@@ -61,6 +63,27 @@ sentinel exactly like a missing id, so system traffic still lands in the experim
 string `redacted-by-litellm` on every call. LEM's prompts are the user's own LinkedIn material —
 profile synthesis, story-bank anecdotes, draft DMs — and the SPA masks exactly that content
 (`maskProps`). Metrics are unaffected either way.
+
+**That floor is two pieces, not one** (#1831). LiteLLM's own redaction walk
+(`_redact_model_response_dict_choices`) replaces `content`, `reasoning_content`, `thinking_blocks`,
+`audio` and tool-call arguments — and never names `provider_specific_fields`, which is a declared
+field on `Message` / `Delta` / `Choices` and where several providers hand back the model's verbatim
+reasoning. So `$ai_output_choices[*].message.provider_specific_fields` reached PostHog with the
+config saying `true`; a hand audit read first-person claims off exactly that property.
+**`.litellm/posthog_redaction_guard.py`** closes it, and is what makes "content does not leave the
+stack" a true sentence rather than "messages are redacted". It wraps
+`PostHogLogger.create_posthog_event_payload` — the one point both the sync and async paths build an
+event — and is gated on LiteLLM's own `should_redact_message_logging`, so an allowlisted feature is
+still graded at full fidelity. Same class of escape, and the same monkeypatch shape, as
+`previous_models` in `.litellm/posthog_payload_guard.py` (#1310).
+
+Its two failure directions are deliberately opposite, and the asymmetry is the whole design:
+
+| | |
+|---|---|
+| `install()` | fails **OPEN**. `main-latest` is a floating tag, so these internals can move on an image pull with no commit here. A declined patch leaves analytics at pre-#1831 behaviour; one that raised would stop the proxy booting, which is worse than the leak |
+| Every decision inside it | fails **CLOSED**. An unreadable redaction state scrubs; a scrub that throws drops `$ai_input` and `$ai_output_choices` outright. Same rule as the table below — an egress control does not fail open |
+| So the one silent mode is | **not installing.** It logs at INFO when it takes, so that is the check: `docker compose logs litellm \| grep "posthog redaction guard"`. Nothing in the test suite can see this — the unit tests pin the scrub as a pure function and the config wiring as text, and neither can run the proxy |
 
 That floor is also what makes output quality **ungradable**: an online evaluation judging a published
 comment scores a constant. The failure modes a hand audit of `comment_generation` traces found —
@@ -112,11 +135,11 @@ Three limits worth knowing:
 * **`maskProps` stops protecting an allowlisted feature.** The SPA still masks that content on the
   browser leg, but the proxy sends the same text from the server leg, so the client-side mask is no
   longer the control. Do not read the two as redundant.
-* **Redaction never covered the model's own `reasoning`.** It rides in `provider_specific_fields`,
-  not in `standard_logging_object`, and reaches PostHog regardless of this setting — which is where
-  the audit read those fabricated numbers from, while the config said `true`. Same class of escape
-  as `previous_models` (see `.litellm/posthog_payload_guard.py`). Open as **#1831**; until it lands,
-  "redacted" means *messages* redacted, not *no content*.
+* **LiteLLM's redaction alone still does not cover the model's own reasoning** — closed here by
+  `.litellm/posthog_redaction_guard.py` (#1831, above), not by `turn_off_message_logging`. Re-read
+  that guard against `redact_messages.py` whenever the image moves: if upstream ever redacts
+  `provider_specific_fields` itself the guard becomes a no-op, and if it moves the hook the guard
+  declines. Both are safe; only the second is silent, and the INFO line is how you tell.
 * **PostHog Cloud US is a shared project.** `POSTHOG_HOST=https://us.i.posthog.com`, the same project
   as product analytics, `$exception` groups and session replay, on that project's retention. #1832
   decides whether `$ai_generation` should be split out or given a shorter one before any feature is

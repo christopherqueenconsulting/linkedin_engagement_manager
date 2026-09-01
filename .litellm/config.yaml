@@ -310,6 +310,14 @@ litellm_settings:
     # than standard_logging_object. A 413 on /batch/ drops all 100 events silently, so the money
     # numbers were a floor. Installs at import; fails open to today's behaviour.
     - /app/.litellm/posthog_payload_guard.py
+    # Makes `turn_off_message_logging` below mean what it says (issue #1831). LiteLLM's redaction
+    # walk replaces `content`, `reasoning_content` and `thinking_blocks`, but never names
+    # `provider_specific_fields` — where several providers return the model's verbatim reasoning —
+    # so it rode out on `$ai_output_choices[*].message.provider_specific_fields`. Gated on
+    # LiteLLM's OWN `should_redact_message_logging`, so an allowlisted feature is still graded at
+    # full fidelity. Installs at import; fails open to today's behaviour, and says so at INFO when
+    # it takes.
+    - /app/.litellm/posthog_redaction_guard.py
   # ── LLM analytics → PostHog (issue #647, docs/llm-analytics.md) ──────────────
   # LiteLLM's native logger (>=1.77.3) emits ONE $ai_generation / $ai_embedding per call with the
   # provider model, tokens, response_cost and latency — the proxy's own accounting, so it needs no
@@ -321,15 +329,19 @@ litellm_settings:
   success_callback: ["posthog"]
   failure_callback: ["posthog"]
   # Prompts and completions are the USER'S LinkedIn material (profile synthesis, story-bank
-  # anecdotes, draft DMs), so this is the GLOBAL FLOOR and never the lever: every call's MESSAGES
-  # are redacted — NOT every call's content, because the model's own `reasoning` escapes this
-  # setting entirely and reaches PostHog today (#1831). Deliberately not `os.environ/`-interpolated:
-  # the safe value should not be something a typo in `.env` can move. A global `false` would ship
-  # all of the above to PostHog to grade one drafter.
+  # anecdotes, draft DMs), so this is the GLOBAL FLOOR and never the lever: every call's messages
+  # and completion content are redacted. Deliberately not `os.environ/`-interpolated: the safe value
+  # should not be something a typo in `.env` can move. A global `false` would ship all of the above
+  # to PostHog to grade one drafter.
+  # This key alone does NOT cover the model's own reasoning — LiteLLM's redaction walk never names
+  # `provider_specific_fields`. posthog_redaction_guard.py above closes that (#1831) and is what
+  # makes the sentence "content does not leave the stack" true; it fails open, so the claim only
+  # holds while the container log shows it installed.
   # Un-redaction is PER REQUEST instead: LiteLLM's `should_redact_message_logging` honours a
   # `LiteLLM-Disable-Message-Redaction` header ahead of this key, and utilities/ai/client.py sets it
-  # for the features named in LLM_PROMPT_LOGGING_FEATURES (empty by default) and no others.
-  # What that buys, what it costs, and the open `reasoning` escape (#1831): docs/llm-analytics.md.
+  # for the features named in LLM_PROMPT_LOGGING_FEATURES (empty by default) and no others. The
+  # guard is gated on that same call, so an allowlisted feature keeps its reasoning.
+  # What that buys and what it costs: docs/llm-analytics.md.
   turn_off_message_logging: true
   drop_params: true
   request_timeout: 180
