@@ -23,14 +23,34 @@ then open http://localhost:7900/?autoconnect=1&password=secret to watch.
 import json
 import os
 
+from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
+from posthog import Posthog
+from posthog.mcp import instrument
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 
 from cqc_lem.utilities.selenium_util import DebugNodeUnavailable, apply_debug_node
 
+load_dotenv()
+
 mcp = FastMCP("selenium-lem")
+
+# MCP analytics ($mcp_tool_called / $mcp_initialize). Fails OPEN: this server is a debugging tool
+# and `.mcp.json` passes it only SE_REMOTE_URL, so an unset or unreadable key must never take the
+# server down — an unstarted server reads as CONNECTION_CLOSED with no error the client can show.
+_posthog: Posthog | None = None
+_posthog_token = os.environ.get("POSTHOG_API_KEY") or os.environ.get("POSTHOG_PROJECT_TOKEN")
+if _posthog_token:
+    try:
+        _posthog = Posthog(
+            _posthog_token,
+            host=os.environ.get("POSTHOG_HOST", "https://us.i.posthog.com"),
+        )
+        instrument(mcp, _posthog)
+    except Exception:  # noqa: BLE001 - analytics is never worth failing the server for
+        _posthog = None
 
 _BY = {
     "css": By.CSS_SELECTOR,
@@ -206,4 +226,8 @@ def quit_browser() -> str:
 
 
 if __name__ == "__main__":
-    mcp.run()
+    try:
+        mcp.run()
+    finally:
+        if _posthog is not None:
+            _posthog.shutdown()
