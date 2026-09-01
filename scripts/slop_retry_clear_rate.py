@@ -1,8 +1,8 @@
 """Read the slop-lint retry clear-rate off the `slop_retry` event (issue #1530).
 
 #1434 shipped the instrument because the number cannot be recovered from finished drafts: a stored
-edition keeps only the checks that were STILL firing when the budget ran out, and LiteLLM redacts
-the intermediate draft (`turn_off_message_logging: true`), so a retry that cleared
+edition keeps only the checks that were STILL firing when the budget ran out, and LiteLLM redacted
+the intermediate draft (`turn_off_message_logging: true` until 2026-09-01), so a retry that cleared
 `contrastive_frame` and came back with `banned_lexicon` is indistinguishable from one that never
 moved. This script is the reading half — the Verifier #1530 names.
 

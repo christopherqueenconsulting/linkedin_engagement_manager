@@ -321,11 +321,23 @@ litellm_settings:
   success_callback: ["posthog"]
   failure_callback: ["posthog"]
   # Prompts and completions are the USER'S LinkedIn material (profile synthesis, story-bank
-  # anecdotes, draft DMs). LEM's analytics contract is that none of it leaves the stack, so the
-  # logging pipeline redacts $ai_input/$ai_output_choices before any callback sees them — the same
-  # rule the SPA follows with maskProps(). Metrics (tokens/cost/latency/model) are unaffected.
-  # Flip to false only deliberately: it turns PostHog's generation view into full conversation text.
-  turn_off_message_logging: true
+  # anecdotes, draft DMs), so this was `true` from #647 until 2026-09-01. It is now FALSE, and that
+  # is a deliberate decision, not a default: $ai_input/$ai_output_choices carry the full text into
+  # PostHog. What it buys is the only thing that can grade OUTPUT quality — online evaluations that
+  # read the comment we actually published. A trace audit found the drafter inventing first-person
+  # metrics ("we cut errors from 1,200/wk to 300") and commenting on posts whose body never
+  # arrived; neither is visible from tokens/cost/latency, and both ship publicly under the user's
+  # name. Redaction is what made them unmeasurable.
+  #
+  # Two things this does NOT change:
+  #  - the SPA still masks the same content client-side (maskProps()); this is the proxy leg only.
+  #  - redaction never covered the model's own `reasoning` field, which rides in
+  #    provider_specific_fields and reaches PostHog either way. The audit read the fabricated
+  #    numbers off exactly that field WHILE this said `true`, so the pre-change privacy posture was
+  #    weaker than the comment above claimed.
+  #
+  # Flip back to true to restore full redaction; nothing else in the pipeline reads this.
+  turn_off_message_logging: false
   drop_params: true
   request_timeout: 180
 

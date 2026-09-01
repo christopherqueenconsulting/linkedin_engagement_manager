@@ -9,7 +9,7 @@ per call, so nothing can be forgotten at a new call site.
 
 | Where | What |
 |---|---|
-| `.litellm/config.yaml` | `litellm_settings.success_callback` / `failure_callback` include `posthog`; `turn_off_message_logging: true` |
+| `.litellm/config.yaml` | `litellm_settings.success_callback` / `failure_callback` include `posthog`; `turn_off_message_logging: false` |
 | `docker-compose.yml` (`litellm`) | `POSTHOG_API_KEY`, `POSTHOG_API_URL` (from the app's `POSTHOG_HOST`) |
 | `utilities/ai/client.py` | stamps `metadata: {user_id, feature}` on every `lem-*` request |
 
@@ -56,11 +56,24 @@ sentinel exactly like a missing id, so system traffic still lands in the experim
 
 ### Privacy
 
-`turn_off_message_logging: true` redacts `$ai_input` / `$ai_output_choices` before any callback sees
-them. LEM's prompts are the user's own LinkedIn material — profile synthesis, story-bank anecdotes,
-draft DMs — and the SPA already masks exactly that content (`maskProps`). Metrics are unaffected.
-Turning it off gives PostHog's generation view the full conversation text; that is a deliberate
-product decision, not a default.
+`turn_off_message_logging` decides whether `$ai_input` / `$ai_output_choices` reach any callback.
+It was `true` from #647 until **2026-09-01**; it is now `false`, so PostHog's generation view carries
+the full conversation text. That is a deliberate product decision, not a default — flip it back and
+full redaction returns.
+
+What bought the change: redaction is what makes output quality ungradable. Every online evaluation
+that judges a published comment was scoring the literal string `redacted-by-litellm`, so the failure
+modes a trace audit found by hand — the drafter inventing first-person metrics, and commenting on a
+post whose body never arrived — could not be caught automatically. Tokens, cost, latency and model
+never showed either one.
+
+Two limits worth knowing:
+
+* The SPA still masks the same content client-side (`maskProps`). This setting is the proxy leg only.
+* Redaction never covered the model's own `reasoning` (it rides in `provider_specific_fields`, not in
+  `standard_logging_object`). Reasoning text reached PostHog throughout the redacted period — which
+  is where the audit read those fabricated numbers from. The pre-change posture was weaker than it
+  looked, the same way `previous_models` escaped it (see `posthog_payload_guard.py`).
 
 ## De-dupe: which stream answers which question
 

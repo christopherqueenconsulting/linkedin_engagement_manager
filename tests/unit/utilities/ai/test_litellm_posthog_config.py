@@ -42,11 +42,16 @@ class TestPostHogCallback:
         assert "custom_callbacks:" in CONFIG_SETTINGS
         assert "/app/.litellm/complexity_router.py" in CONFIG_SETTINGS
 
-    def test_prompts_and_completions_are_redacted(self):
-        """$ai_input/$ai_output_choices would otherwise carry the user's own LinkedIn material —
-        the SPA masks exactly this content, and the proxy must not leak it out the back.
+    def test_message_logging_is_on_so_output_quality_is_gradable(self):
+        """`turn_off_message_logging` is the ONE switch that decides whether an online evaluation
+        can read what we published. It was `true` until 2026-09-01, which made every content
+        failure mode — invented first-person metrics, comments on a post whose body never arrived —
+        unmeasurable: the judge scored the literal string `redacted-by-litellm`.
+
+        Pinned rather than left free because flipping it back silently blinds every content eval
+        while the evals keep reporting a pass rate.
         """
-        assert re.search(r"turn_off_message_logging:\s*true", CONFIG_SETTINGS)
+        assert re.search(r"turn_off_message_logging:\s*false", CONFIG_SETTINGS)
 
     def test_the_proxy_container_gets_the_posthog_credentials(self):
         """The logger reads these two names specifically; POSTHOG_HOST is the app's own var, so both
