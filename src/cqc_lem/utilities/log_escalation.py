@@ -122,6 +122,21 @@ def normalize_message(message: str) -> Tuple[str, str]:
     return display, display.casefold()
 
 
+def log_recipient(first_name: Optional[str], profile_url: str) -> str:
+    """A recipient label safe to interpolate into a warning message.
+
+    A known first name is quoted so `normalize_message` collapses it through the quoted-value mask
+    above. A real contact's name must never reach the grouped `$exception` value the daily
+    error->issue cron files as a public GitHub issue, and per-contact names must not fork one defect
+    into a separate issue each. The profile-URL fallback is already collapsed by the URL mask.
+
+    Inner single quotes are dropped first: the quoted-value mask stops at the first one, so a name
+    like O'Brien would otherwise leak its tail and fork the fingerprint.
+    """
+    name = (first_name or "").strip().replace("'", "")
+    return f"'{name}'" if name else profile_url
+
+
 def fingerprint(level: str, origin: str, key_text: str) -> str:
     """Stable 12-hex id for (level, call site, normalized message).
 

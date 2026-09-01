@@ -67,6 +67,31 @@ def test_volatile_tokens_collapse(first, second):
     assert a == b
 
 
+def test_log_recipient_masks_a_name_and_collapses_per_contact():
+    # A bare first name reaches the grouped $exception value and forks one defect into an issue per
+    # contact. Quoting it lets normalize_message collapse it through the quoted-value mask, so every
+    # contact shares one fingerprint and no name survives in the display.
+    msg = "DM nurture: a reply from {} was detected but its text could not be read"
+    _, key_a = esc.normalize_message(msg.format(esc.log_recipient("Asbjørn", "https://x/in/a")))
+    display_b, key_b = esc.normalize_message(msg.format(esc.log_recipient("Bianca", "https://x/in/b")))
+    assert key_a == key_b
+    assert "Asbjørn" not in display_b and "Bianca" not in display_b
+
+
+def test_log_recipient_masks_a_name_with_an_apostrophe():
+    # The quoted-value mask stops at the first inner single quote, so O'Brien would leak its tail
+    # and fork the fingerprint unless the apostrophe is dropped first.
+    display, _ = esc.normalize_message(
+        "reply from {} was detected".format(esc.log_recipient("O'Brien", "https://x/in/o")))
+    assert display == "reply from <str> was detected"
+
+
+def test_log_recipient_falls_back_to_the_masked_url():
+    display, _ = esc.normalize_message(
+        "reply from {} was detected".format(esc.log_recipient("", "https://x/in/c")))
+    assert display == "reply from <url> was detected"
+
+
 def test_call_site_is_part_of_the_key():
     _, key = esc.normalize_message("Could not fetch profile")
     assert esc.fingerprint("WARNING", "mod_a.f", key) != esc.fingerprint("WARNING", "mod_b.f", key)

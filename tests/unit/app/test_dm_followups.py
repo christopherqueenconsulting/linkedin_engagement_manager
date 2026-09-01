@@ -249,14 +249,14 @@ class TestCheckDmReplied:
     tests/unit/utilities/linkedin/test_message_thread.py — here it is stubbed.
     """
 
-    def _opened(self, opened=True, route="anchor"):
+    def _opened(self, opened=True, route="anchor", events=3):
         from cqc_lem.utilities.linkedin.message_thread import ThreadOpen
         return ThreadOpen(opened=opened, route=route if opened else None,
-                          events=3 if opened else 0, surface="page" if opened else None)
+                          events=events if opened else 0, surface="page" if opened else None)
 
-    def _check(self, last_sender, my_name="Christopher Queen", opened=True):
+    def _check(self, last_sender, my_name="Christopher Queen", opened=True, events=3):
         from cqc_lem.app.engagement.outreach import check_dm_replied
-        with patch(f"{_OUT}.open_message_thread", return_value=self._opened(opened)), \
+        with patch(f"{_OUT}.open_message_thread", return_value=self._opened(opened, events=events)), \
              patch(f"{_OUT}.read_last_sender", return_value=last_sender):
             return check_dm_replied(MagicMock(), MagicMock(), "https://x/in/b", my_name=my_name)
 
@@ -268,6 +268,30 @@ class TestCheckDmReplied:
 
     def test_unknown_when_no_messages_are_readable(self):
         assert self._check("") is ThreadState.UNKNOWN
+
+    def test_bare_composer_with_no_messages_is_debug_not_a_warning(self):
+        # A route that opens a bare compose overlay has zero message events by design, so there is
+        # no sender to read and UNKNOWN is the correct #731 outcome — an expected no-op, not a
+        # defect. Warning here filed a RecurringWarning $exception against working behaviour.
+        from cqc_lem.app.engagement.outreach import check_dm_replied
+        with patch(f"{_OUT}.open_message_thread", return_value=self._opened(events=0)), \
+             patch(f"{_OUT}.read_last_sender", return_value=""), \
+             patch(f"{_OUT}.log_warning") as warn, patch(f"{_OUT}.log_debug") as debug:
+            assert check_dm_replied(MagicMock(), MagicMock(), "https://x/in/b",
+                                    my_name="Me") is ThreadState.UNKNOWN
+        warn.assert_not_called()
+        debug.assert_called_once()
+
+    def test_messages_present_but_unreadable_sender_still_warns(self):
+        # A thread that carries message events but yields no sender is a real read failure (the
+        # sender selector rotated), so the warning — and its escalation — must stay.
+        from cqc_lem.app.engagement.outreach import check_dm_replied
+        with patch(f"{_OUT}.open_message_thread", return_value=self._opened(events=3)), \
+             patch(f"{_OUT}.read_last_sender", return_value=""), \
+             patch(f"{_OUT}.log_warning") as warn, patch(f"{_OUT}.log_debug"):
+            assert check_dm_replied(MagicMock(), MagicMock(), "https://x/in/b",
+                                    my_name="Me") is ThreadState.UNKNOWN
+        warn.assert_called_once()
 
     def test_unknown_when_no_route_opened_a_thread(self):
         assert self._check("Brandon Allen-Santos", opened=False) is ThreadState.UNKNOWN
