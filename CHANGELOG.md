@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.171.2](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.171.1...v0.171.2) (2026-09-01)
+
+
+### Bug Fixes
+
+* **dms:** stop reply-detection warning on a bare composer; mask contact names in escalations ([#1812](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1812)) ([af27686](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/af27686aedcf64948145274c2dde59e3bf05ce17))
+* **invites:** read the Connect-dialog miss through the shadow root ([#1819](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1819)) ([093a7df](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/093a7dfed89169946e3eb06cd84053005b91be6d))
+* **invites:** read the Connect-dialog miss through the shadow root (refs [#1813](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1813)) ([093a7df](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/093a7dfed89169946e3eb06cd84053005b91be6d))
+
 ## [0.171.1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.171.0...v0.171.1) (2026-08-31)
 
 
