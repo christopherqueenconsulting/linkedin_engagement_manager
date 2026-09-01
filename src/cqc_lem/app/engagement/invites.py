@@ -777,6 +777,69 @@ _CONNECT_NOTE_BUTTON_LOCATORS = [
 ]
 
 
+# The note field mounts INSIDE the Connect dialog, and that dialog mounts in an OPEN SHADOW ROOT —
+# where an XPath cannot reach it at all. So the note lookup is CSS through `find_deep_elements`, the
+# same way #1813 reaches the dialog's buttons; the XPath below is kept only as the light-DOM
+# fallback. Until #1841 the note was looked up by XPath alone and EVERY invite shipped noteless.
+_CONNECT_NOTE_INPUT_CSS = "textarea#custom-message"
+# Only ever applied INSIDE the dialog container. A bare `textarea` matched document-wide is how a
+# personalised note gets typed into some other composer on the page (#1012); inside the open dialog
+# it can only be the note field, which is what keeps this safe when LinkedIn rotates the id away.
+_CONNECT_NOTE_INPUT_FALLBACK_CSS = "textarea, [contenteditable='true']"
+_CONNECT_NOTE_TEXTAREA_XPATH = '//textarea[@id="custom-message"]'
+
+# The note field renders in RESPONSE to the Add-a-note click, so the first query can arrive a beat
+# early. `find_deep_elements` is one JS pass with no wait of its own — unlike the XPath call it
+# replaces, which carried the `wait`. This is that wait.
+_NOTE_INPUT_POLL_ATTEMPTS = 4
+_NOTE_INPUT_POLL_SECONDS = 0.5
+
+
+def _deep_dialog_input(driver, css: str = _CONNECT_NOTE_INPUT_CSS,
+                       fallback_css: str = _CONNECT_NOTE_INPUT_FALLBACK_CSS):
+    """The dialog's own text field matching `css`, shadow roots included.
+
+    The input half of `_deep_dialog_control`, and the same three rules:
+
+    - **Container-scoped first.** `find_deep_elements` stops after `limit` matches in DOCUMENT
+      order and the overlay is mounted last, so a document-wide scan can spend its budget on page
+      chrome before reaching the dialog (#1813). Scoping is also a harder #1012 guard than any
+      selector: a field found inside the invite dialog cannot be another composer on the page.
+    - **Document-wide only for the EXACT selector.** A rotation that drops the dialog role must not
+      lose the field, but the broad fallback is unambiguous only inside the dialog, so it never
+      leaves it.
+    - **Return the element the query answered with.** The caller must type into THAT handle: a
+      shadow-mounted field cannot be re-found by an XPath that never saw it (#1733), which is the
+      trap that produced #1841.
+
+    #1836 needs the email input of this same dialog; it reuses this with its own selectors rather
+    than growing a second helper.
+
+    Args:
+        driver: The Selenium driver.
+        css: The exact CSS for the wanted field. **CSS only** — XPath cannot address a shadow tree.
+        fallback_css: A broader selector, tried only within the dialog container.
+
+    Returns:
+        The matching element, or None when the dialog never rendered one.
+    """
+    for attempt in range(_NOTE_INPUT_POLL_ATTEMPTS):
+        containers = find_deep_elements(driver, _CONNECT_DIALOG_CONTAINER_CSS,
+                                        visible_only=True, limit=3)
+        for selector in (css, fallback_css):
+            for container in containers:
+                found = next(iter(find_deep_elements(driver, selector, visible_only=True,
+                                                     limit=2, root=container)), None)
+                if found is not None:
+                    return found
+        found = next(iter(find_deep_elements(driver, css, visible_only=True, limit=2)), None)
+        if found is not None:
+            return found
+        if attempt + 1 < _NOTE_INPUT_POLL_ATTEMPTS:
+            time.sleep(_NOTE_INPUT_POLL_SECONDS)
+    return None
+
+
 def _add_connect_note(driver, wait, message: str, user_id: int) -> bool:
     """Type a personalized note into an OPEN Connect dialog. Best-effort by design (issue #573):
     LinkedIn hides the note affordance once a free account's personalized-invite quota is spent, and
@@ -818,15 +881,23 @@ def _add_connect_note(driver, wait, message: str, user_id: int) -> bool:
         # it (#1733).
         note_button.click()
 
-        message_box = next(iter(find_deep_elements(driver, "textarea#custom-message",
-                                                   visible_only=True, limit=2)), None)
+        # Shadow-aware FIRST, light DOM second: the dialog this runs against mounts its textarea in
+        # a shadow root, where the XPath below cannot see it (#1841). The XPath stays for the
+        # rotations that still render the field in the light DOM.
+        message_box = _deep_dialog_input(driver)
         if message_box is None:
             message_box = click_element_wait_retry(
-                driver, wait, '//textarea[@id="custom-message"]', "Finding Message Box",
+                driver, wait, _CONNECT_NOTE_TEXTAREA_XPATH, "Finding Message Box",
                 max_retry=1, use_action_chain=True)
         else:
             message_box.click()
-        message_box.clear()
+        try:
+            message_box.clear()
+        except Exception:
+            # A `contenteditable` note field is not clearable and opens empty anyway, so this is a
+            # no-op — never a reason to drop the note the whole lane exists to send.
+            log_debug("Note field would not clear; typing into it as-is", user_id=user_id,
+                      action_type="invite_connect")
 
         for _ in range(3):
             if len(message) > CONNECT_NOTE_MAX_CHARS:
