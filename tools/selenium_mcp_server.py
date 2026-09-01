@@ -22,15 +22,92 @@ then open http://localhost:7900/?autoconnect=1&password=secret to watch.
 
 import json
 import os
+from typing import Any, Optional
 
+from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 
+from cqc_lem.utilities.logger import log_info, log_warning
 from cqc_lem.utilities.selenium_util import DebugNodeUnavailable, apply_debug_node
 
+try:
+    from posthog import Posthog
+    from posthog.mcp import instrument
+except ImportError:  # analytics is optional; the server must still start without it
+    Posthog = None  # type: ignore[assignment,misc]
+    instrument = None
+
+load_dotenv()
+
 mcp = FastMCP("selenium-lem")
+
+_DEFAULT_POSTHOG_HOST = "https://us.i.posthog.com"
+# The token constructs and instruments fine either way, but only a *project* token (`phc_…`)
+# actually delivers events — a personal API key (`phx_…`) silently drops every one. The rest of
+# the repo's POSTHOG_API_KEY is already a project token (see observability.py, logger.py), so this
+# is a sanity check against a mismatch, not a new convention.
+_POSTHOG_TOKEN_PREFIX = "phc_"
+
+
+def _strip_tool_arguments(event: dict) -> dict:
+    """Drop `$mcp_parameters` before an event leaves the process.
+
+    This server's tools (`type_into`, `execute_js`, `navigate`, ...) take free-text selectors,
+    URLs, and typed input against a live LinkedIn session. The SDK's own sanitizer only redacts
+    values under suspicious *key* names or that look like known secret formats — a typed password
+    or session URL passed as an ordinary `text`/`url` argument is not caught by either, so it would
+    otherwise ship to a third party. Tool name, timing, and outcome are still fully captured;
+    only the argument payload is dropped.
+    """
+    properties = event.get("properties")
+    if isinstance(properties, dict):
+        properties.pop("$mcp_parameters", None)
+    return event
+
+
+def _init_posthog(server: Any) -> Optional["Posthog"]:
+    """Wire MCP analytics ($mcp_tool_called / $mcp_initialize) onto `server`.
+
+    Fails OPEN at every step: this server is a debugging tool and `.mcp.json` passes it only
+    SE_REMOTE_URL, so a missing package, a missing/wrong key, or a client that won't construct
+    must never take the server down — an unstarted server reads as CONNECTION_CLOSED with no error
+    the client can show, which is the exact bug this guards against.
+    """
+    if Posthog is None or instrument is None:
+        log_info("posthog package not installed; MCP analytics disabled")
+        return None
+
+    token = os.environ.get("POSTHOG_API_KEY") or os.environ.get("POSTHOG_PROJECT_TOKEN")
+    if not token:
+        log_info("No PostHog key found; MCP analytics disabled")
+        return None
+    if not token.startswith(_POSTHOG_TOKEN_PREFIX):
+        log_warning(
+            "POSTHOG_API_KEY/POSTHOG_PROJECT_TOKEN does not look like a project token "
+            f"(expected a {_POSTHOG_TOKEN_PREFIX!r} prefix); MCP analytics disabled to avoid "
+            "silently dropping every event"
+        )
+        return None
+
+    try:
+        posthog_client = Posthog(
+            token,
+            host=os.environ.get("POSTHOG_HOST", _DEFAULT_POSTHOG_HOST),
+            # MCP over stdio requires stdout to carry only JSON-RPC frames; the SDK's own debug
+            # logging goes through stdlib `logging` (stderr) regardless, but keep this explicit.
+            debug=False,
+        )
+        instrument(server, posthog_client, before_send=_strip_tool_arguments)
+    except Exception as e:  # noqa: BLE001 - analytics is never worth failing the server for
+        log_warning(f"PostHog MCP instrumentation disabled: {e}")
+        return None
+    return posthog_client
+
+
+_posthog = _init_posthog(mcp)
 
 _BY = {
     "css": By.CSS_SELECTOR,
@@ -205,5 +282,22 @@ def quit_browser() -> str:
     return "No session to close"
 
 
+def _shutdown_posthog() -> None:
+    """Flush and close `_posthog` if it was set up, swallowing any error.
+
+    A flush failure (e.g. a hung network call on exit) must never mask the real exception
+    `mcp.run()` was raising in its own `finally`.
+    """
+    if _posthog is None:
+        return
+    try:
+        _posthog.shutdown()
+    except Exception as e:  # noqa: BLE001 - never mask mcp.run()'s real exception
+        log_warning(f"PostHog flush on shutdown failed: {e}")
+
+
 if __name__ == "__main__":
-    mcp.run()
+    try:
+        mcp.run()
+    finally:
+        _shutdown_posthog()
