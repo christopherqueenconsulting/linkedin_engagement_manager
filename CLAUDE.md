@@ -261,16 +261,16 @@ The paragraph behind each row is `docs/observability-map.md`.
 
 ## CI Gates
 
-The SIX contexts branch protection requires on `main` (verified against the API): `Unit Tests
-(Python 3.12)`, `Integration Tests`, `UI Build`, `Migration Versions`, `GitGuardian Scan`,
-`CodeQL PR Quality Gate`.
+The SEVEN contexts branch protection requires on `main`: `Unit Tests (Python 3.12)`, `Integration
+Tests`, `UI Build`, `Migration Versions`, `GitGuardian Scan`, `CodeQL PR Quality Gate`, `Docstring
+& Lint Gate`. The pipeline keeps two more copies and merges from ITS own — all three move in ONE
+change (`docs/agent-pipeline-v2.md`).
 
-**One workflow per test lane** (`tests/README.md`), each owning the one Codecov flag `codecov.yml`
-declares, all selecting `-m "not slow"`; never add a whole-suite workflow. `slow` tests are live
-third-party probes — nightly via `slow-tests.yml`, never a PR gate.
+**One workflow per test lane** (`tests/README.md`), each owning the Codecov flag `codecov.yml`
+declares, all `-m "not slow"`; never a whole-suite workflow. `slow` tests are live probes —
+nightly (`slow-tests.yml`), never a PR gate.
 
-`CodeQL Security Analysis` and `Docstring & Lint Gate` run but are NOT required (the latter is the
-ratchet under Code Conventions). **`required_approving_review_count` is 0**, so
+`CodeQL Security Analysis` runs but is NOT required. **`required_approving_review_count` is 0**, so
 `require_code_owner_reviews` enforces nothing (`docs/contribution-security.md`).
 
 ## Production Deployment & Environment

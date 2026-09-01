@@ -440,6 +440,35 @@ behaviour is incidental.
 | `HAS_HOOKS` | ✅ | proceeds, named |
 | anything outside the enum | ✅ | waits 300s (row 30) — the enum is closed, so a new member means the world changed |
 
+### The required-check list is three copies, and they move together
+
+`checks_for` filters the rollup to the contexts branch protection requires — that is what makes
+`UNSTABLE` mergeable above. It does **not** ask GitHub what those contexts are. The list is written
+out three times, and each copy decides something different:
+
+| Copy | Decides | Who can change it |
+|---|---|---|
+| Branch protection on `main` | whether GitHub lets the merge happen | the owner, via `gh api` |
+| `tick.sh` — `REQUIRED_CHECKS_JQ` | what the v1 runner waits for before requesting a merge | a PR |
+| `v2/lemd/github.py` — `REQUIRED_CHECKS` | what this daemon waits for | a PR |
+
+A name added to branch protection alone leaves the daemon requesting merges the queue keeps
+refusing; a name dropped from it alone leaves the daemon holding green work forever. Neither is a
+crash — both look like a slow queue. So the three move in ONE change, and
+`tests/unit/scripts/test_required_checks_agree.py` fails the build when the two copies in code
+disagree, name a context no workflow job reports, or name one whose workflow has no `merge_group:`
+trigger (a required check that cannot report inside the queue deadlocks it).
+
+Nothing in CI reads or writes the branch-protection copy, so that one is verified by hand:
+
+```sh
+gh api repos/:owner/:repo/branches/main/protection --jq '.required_status_checks.contexts'
+```
+
+#1878 added `Docstring & Lint Gate` — the ruff ratchet — as the seventh context. Until the owner
+runs the `gh api` half, the code half is strictly conservative: the pipeline waits for a check
+GitHub does not yet demand, which delays a merge but never permits a red one.
+
 **An issue's newest linked PR** (`github.linked_pr_state`, #1405). `closedByPullRequestsReferences`
 carries id/number/repository/url and **no `state`**, which is why `_open_pr_for_issue` answers True
 for any ref: `False` is what licenses a re-dispatch, so a ref of unknown state must never produce
