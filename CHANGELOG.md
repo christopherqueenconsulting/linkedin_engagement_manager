@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.172.1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.172.0...v0.172.1) (2026-09-01)
+
+
+### Bug Fixes
+
+* **connections:** reach the Connect note field in the dialog's shadow root (closes [#1841](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1841)) ([#1847](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1847)) ([73052ae](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/73052ae56c7783ff552cbbdcc0249d5b1c6e2208))
+* **errors:** a stored commenting hold is INFO, not a duplicate of its own CRITICAL ([#1844](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1844)) ([109b697](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/109b6974051e92ded367b6acc2a2696428c4b41d))
+* **errors:** a stored commenting hold is INFO, not a duplicate of its own CRITICAL (closes [#1835](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1835)) ([109b697](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/109b6974051e92ded367b6acc2a2696428c4b41d))
+* **errors:** a stored invite hold is INFO, not a warning that files a second defect ([#1826](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1826)) ([8b3f938](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/8b3f938e42bdef4791392b465bf7503ac19c90f4))
+* **invites:** read the shadow wall, split out follow-only, emit invite_outcome ([fa7d6d9](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/fa7d6d9995cae070114442bed2d70e421a929fab))
+* **invites:** read the shadow wall, split out follow-only, emit invite_outcome (closes [#1813](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1813)) ([#1842](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1842)) ([fa7d6d9](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/fa7d6d9995cae070114442bed2d70e421a929fab))
+* **llm-analytics:** scope prompt logging per feature so output quality is gradable ([#1828](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1828)) ([8ed15d8](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/8ed15d81db4f26b05021323b40c6241c9c58805c))
+* **logging:** stamp every log level with a UTC clock (closes [#1839](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1839)) ([#1845](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1845)) ([0471856](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/047185667f882ab9a4667880877bb8a9f916669d))
+* **outreach:** back off re-reading a permanently-unreadable DM thread (closes [#1815](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1815)) ([#1825](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1825)) ([a1b99c2](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/a1b99c27cd7dcc8a3d0f2962c397ec6b3fad7205))
+
+
+### Documentation
+
+* **connections:** record the Connect email-verification variant and the backfill supplier contract ([#1838](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1838)) ([6acfd31](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/6acfd31f9fc23a9b30287383a13d714f96b34520))
+
 ## [0.172.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.171.2...v0.172.0) (2026-09-01)
 
 
