@@ -11,6 +11,7 @@ agents that ran to completion but never wrote a manifest of what to drop. Two la
 |---|---|---|
 | **Auto-delete-on-merge** (repo setting) | Every PR merged AFTER 2026-07-28 — the head branch disappears ~30s after the merge button | `delete_branch_on_merge=true` (one-line repo setting) |
 | **Weekly orphan sweep** (`.github/workflows/stale-branches.yml`) | Orphan branches, closed-without-merge PR branches, anything the setting didn't catch because the PR merged before the setting was flipped | Mon 06:00 UTC cron + `actions/github-script` |
+| **Weekly worktree sweep** (`scripts/worktree_cleanup.sh`) | `git worktree` REGISTRATIONS left behind by finished agents — the branch layers never touch these | Mon 07:00 UTC host cron; see [The third layer](#the-third-layer--worktree-registrations) |
 
 The **one-time manual sweep** in `docs/branch-cleanup-audit-2026-07-28.md` cleaned out the ~491 stale
 branches that already existed before the layers above were turned on. That manifest is the recovery
@@ -86,6 +87,44 @@ The reflog (`git reflog`) works locally too, within the local retention window. 
 auto-delete-on-merge ever deletes a branch you wanted to keep, the merge commit on `main` is
 the source of truth — `git log --merges --first-parent main` will find the merge, and the PR's
 URL is in the merge commit message.
+
+## The third layer — worktree registrations
+
+The two layers above clean up *branches*. They do not touch the `git worktree` **registrations** that
+CLAUDE.md's one-worktree-per-agent rule creates, and nothing else did either: by 2026-09-01 the repo
+had **292** registered worktrees, 261 of them merged or branch-gone. `scripts/worktree_cleanup.sh`
+is the sweep for that half.
+
+A registration is removable when its branch is **gone from origin** (merged, or swept by the weekly
+branch cron) or its HEAD is already an **ancestor of origin/main**. Removing one deletes the working
+directory and the registration — never the local branch ref, so committed work stays reachable
+through `refs/heads`. The only thing a removal can destroy is *uncommitted* content, which is why
+the script never passes `--force`.
+
+Five fail-closed protections. A worktree is HELD, never removed, when it:
+
+1. is the primary checkout, is locked, or is the tree the script was invoked from;
+2. has uncommitted changes — tracked modifications **or untracked files**;
+3. has a live process whose cwd is inside it — a running agent lane;
+4. has a branch tip younger than `GRACE_HOURS` (default 48, the same grace the branch layers use);
+5. is a **detached HEAD not merged into origin/main** — it has no branch ref to outlive the removal,
+   so "branch gone from origin" proves nothing about it; only reachability from main does.
+
+Held-because-uncommitted trees are reported for a human decision. The script resolves none of them.
+
+```bash
+scripts/worktree_cleanup.sh --dry-run
+```
+
+Weekly host cron, as `lem` (mirrors the Mon 06:00 UTC branch sweep, offset an hour so the branch
+deletions have already landed and this run sees them):
+
+```
+0 7 * * 1 cd /home/lem/linkedin_engagement_manager && scripts/worktree_cleanup.sh >> /home/lem/logs/worktree_cleanup.log 2>&1
+```
+
+**A worktree whose directory was deleted by hand** is not this script's problem — `git worktree
+prune` handles it, and the script calls it on both ends of the sweep.
 
 ## Future sweeps
 
