@@ -92,6 +92,13 @@ export default function AdminFeedbackPage() {
   }
 
   const items = data?.items ?? []
+  // A failed read leaves `items` empty too, and the empty-state row below says "nothing matched
+  // the current filters" — the sentence that hid a dead panel behind 91 live rows for a day
+  // (#1868). The API answers 503 now; the table has to stop speaking for it.
+  const listError = error
+    ? ((error as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+       || (error instanceof Error ? error.message : 'unknown error'))
+    : null
   const reviewError = review.error
     ? ((review.error as { response?: { data?: { detail?: string } } })?.response?.data?.detail
        || (review.error instanceof Error ? review.error.message : 'unknown error'))
@@ -151,9 +158,9 @@ export default function AdminFeedbackPage() {
         </button>
       </div>
 
-      {error && (
-        <p className="text-sm text-red-600">
-          Could not load feedback: {error instanceof Error ? error.message : 'unknown error'}
+      {listError && (
+        <p role="alert" className="text-sm text-red-600">
+          Could not load feedback: {listError}
         </p>
       )}
 
@@ -262,8 +269,13 @@ export default function AdminFeedbackPage() {
               ))}
               {items.length === 0 && !isLoading && (
                 <tr>
-                  <td colSpan={8} className="px-4 py-8 text-center text-gray-500">
-                    No feedback submissions match the current filters.
+                  <td colSpan={8} className={classNames(
+                    'px-4 py-8 text-center',
+                    listError ? 'text-red-600' : 'text-gray-500',
+                  )}>
+                    {listError
+                      ? 'The feedback list could not be read — this is not an empty list. Try Refresh.'
+                      : 'No feedback submissions match the current filters.'}
                   </td>
                 </tr>
               )}

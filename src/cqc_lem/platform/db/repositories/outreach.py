@@ -1737,6 +1737,26 @@ FOLLOW_ONLY_MESSAGE = "This profile offers Follow only — out of network, so th
 # (issue #573). Unlike a missing note this does NOT degrade gracefully — the invite is lost — which
 # is why it stays an error and gets its own reason on the request row.
 INVITE_NOT_SENT_MESSAGE = "Connect dialog opened but the invitation could not be sent"
+# Send WAS clicked and the invitation still did not go out (issue #1867). Both of these are the same
+# correction — a click that did not raise is not an outcome — split by whether LinkedIn told us why.
+#
+# The email challenge is the named one, measured in production 2026-09-01 on ten rows falsely marked
+# 'sent': the dialog reads "To verify this member knows you, please enter their email to connect",
+# offers `Send without a note` anyway, and clicking it sends nothing. #1836 is what will clear it;
+# until then the row belongs back in the queue with this reason on it, never in 'sent'.
+INVITE_EMAIL_CHALLENGE_MESSAGE = (
+    "LinkedIn wants this member's email address before the invitation can be sent")
+# Nothing could be READ after the click — no pending affordance, no named challenge. That is not a
+# send, and recording it as one is the whole defect: `count_invites_sent_today` and the account
+# owner's own sent-invitations list then disagree, with no way to tell which is lying.
+INVITE_UNCONFIRMED_MESSAGE = (
+    "Send was clicked but the invitation could not be confirmed — not recorded as sent")
+# Our invitation to this profile is ALREADY out, read off the profile's own pending affordance
+# rather than guessed at (#1867). NO_CONNECT_BUTTON_MESSAGE's own text used to cover this case with
+# "invite may already be pending", which retried the row to its ceiling and then recorded a
+# selector-shaped reason for a working invite — the same undercount this issue is about, one step
+# downstream. A SUCCESS: the row's goal is met. Nothing was dispatched, so it costs no envelope.
+INVITE_ALREADY_PENDING_MESSAGE = "An invitation to this profile is already pending"
 # The dialog opened but is the EMAIL-VERIFICATION variant and no email is known for this target —
 # Class C (issue #1836). A target fact ("LinkedIn is deliberately gating this person"), never
 # selector drift, so this must NOT feed record_invite_dialog_miss or hold_invites the way an

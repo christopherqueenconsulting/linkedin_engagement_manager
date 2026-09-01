@@ -121,7 +121,7 @@ class TestTheCrossCheckStillRoutesOnNoneVersusEmpty:
     def test_a_readable_chain_with_no_badge_is_graded(self):
         from cqc_lem.app.engagement import invites as ra
         with patch(f"{_INV}._degree_badge_texts", return_value=[]), \
-             patch(f"{_INV}._degree_lines_on_page", return_value=0), \
+             patch(f"{_INV}._matching_degree_lines", return_value=[]), \
              patch(f"{_INV}.grade_zero_walk") as grade:
             assert ra._profile_is_first_degree(MagicMock()) is False
         grade.assert_called_once()

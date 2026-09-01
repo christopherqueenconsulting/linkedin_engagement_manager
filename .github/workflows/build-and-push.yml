@@ -110,6 +110,10 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_TAG: ${{ github.event.release.tag_name || github.event.inputs.tag || github.ref_name }}
+          # #1859: diff base is what production is actually running, read from the public
+          # /api/app-info this var points at — not just the previous release tag. Empty (unset var)
+          # degrades to the old tag-to-tag comparison inside the script.
+          PUBLIC_BASE_URL: ${{ vars.PUBLIC_BASE_URL }}
         run: |
           python3 scripts/release_risk_check.py --tag "$RELEASE_TAG"
 

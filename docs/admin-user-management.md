@@ -358,3 +358,45 @@ not contain the drawer.
   `AdminAuditLogPage.tsx` behind `AdminRoute`, nav link behind `isAdmin`.
 
 Deliberately still out of scope: date-range filters, account deletion, impersonation (§3.4).
+
+## 6. The same posture, applied to the feedback triage panel (#1868)
+
+Finding Q above was argued for the user list. `GET /api/admin/feedback` had the identical defect and
+kept it eight months longer: `get_feedback_list` answered `mysql.connector.Error` with `[]`, the
+route returned 200, and the panel rendered **"No feedback submissions match the current filters"**
+over 91 rows it could not read. Ten `Could not list feedback for admin panel` lines a day sat in
+`/opt/lem/logs` while the screen said the opposite.
+
+Two things had to change, and only together:
+
+* **The query stopped being able to fail.** `ORDER BY f.created_at` over the reporter join cannot
+  use an index, so MySQL 8 filesorts — and it packs every SELECTed column into `sort_buffer_size`.
+  `body` (TEXT) and `context_json` (JSON, carrying a screenshot data URL) are wide enough that a
+  page of 50 overflowed it: `1038 (HY001): Out of sort memory`. That is a function of the table's
+  total row width, so it only ever gets worse. The sort now runs on a **derived table of keys**
+  (`id, created_at`) and the wide columns are joined back to the ids that survived `LIMIT`. There is
+  **no outer `ORDER BY` at all**, and that is the fix rather than a shortcut around it: the first
+  attempt kept an `ORDER BY k.created_at DESC`, on the reasoning that ordering by the driving
+  table's own columns lets MySQL sort that table and then join. Measured on a live MySQL 8 it does
+  not — the optimizer sorted the JOINED output and raised the identical 1038. So the derived table
+  decides both the order and the page, SQL sorts nothing wide, and the ~50 rows come back into order
+  in Python. Raising `sort_buffer_size` was rejected: a server-wide knob spent on one query that
+  grows without bound.
+* **The fault stopped being able to impersonate an answer.** `get_feedback_list` and
+  `get_feedback_by_id` raise `FeedbackUnreadable` (`platform/db/repositories/feedback.py`, re-exported
+  by the `utilities/db` facade) and the routes answer **503**. `[]` still means the table is empty
+  and is still 200. The rest of that module stays fail-soft on purpose: its other readers are
+  background beats, where doing less work this pass and retrying next one IS the right answer. What
+  distinguishes these two is that an OPERATOR reads the result and acts on it.
+
+The exception rather than #1450's `Optional[...]` sentinel is because `get_feedback_by_id` needs
+three answers, not two: the row, `None` for a row that does not exist (**404**), and "the query did
+not run" (**503**). Reporting the third as the second tells an admin the submission they are looking
+at is gone.
+
+`tests/integration/test_feedback_list_db.py` proves it against a live server rather than describing
+it: it seeds rows wide enough that one packed record does not fit a deliberately tiny session sort
+buffer, runs the pre-fix query text as a control, and **skips** if that control does not fail — a
+green run on a server that was never at risk would assert nothing. That test is what failed the
+outer-`ORDER BY` attempt above; without it the panel would have shipped the same 1038 under a
+different query.

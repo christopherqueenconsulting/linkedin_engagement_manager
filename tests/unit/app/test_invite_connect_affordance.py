@@ -34,6 +34,9 @@ _PROFILE_URL = "https://www.linkedin.com/in/jane-doe-123/"
 _CUSTOM_INVITE_URL = "https://www.linkedin.com/preload/custom-invite/?vanityName=jane-doe-123"
 
 _SEND_BARE_XPATH = '//button[contains(@aria-label,"Send without a note")]'
+# The loaded profile's display name, as its `<title>` carries it. The confirmation read attributes
+# the top card by this, so it has to agree with `_Routes.title`.
+_TARGET_NAME = "Jane Doe"
 
 
 class _Routes:
@@ -62,6 +65,10 @@ class _Routes:
         # The page's own <title>, read by `_target_name_from_title` to attribute an
         # "Invite <Name> to connect" button candidate to the loaded profile (#1790).
         self.title = title
+        # Whether an invitation actually EXISTS. A Send click sets it; until then the top card
+        # shows no pending affordance, so a route that only clicked reads as unconfirmed (#1867).
+        self.invite_sent = False
+        self.card = MagicMock()
         self.more_menu_opened = False
         self.clicked_anchor_hrefs: list[str] = []
         self.clicked_button_labels: list[str] = []
@@ -77,6 +84,8 @@ class _Routes:
         self.find_labels.append(label)
         self.all_locators += [v for _, v in locators]
         if label == "Connect invite dialog":
+            if self.invite_sent:
+                return None  # the dialog dismisses once the invitation has gone out
             if self.dialog_after_anchor and self.anchor_clicked:
                 return MagicMock()
             if self.dialog_on_url and not self.menu_item_clicked \
@@ -141,8 +150,26 @@ class _Routes:
         self.all_locators.append(xpath)
         self.legacy_click_xpaths.append(xpath)
         if xpath in self.send_xpaths:
+            self.invite_sent = True
             return MagicMock()
         raise Exception(f"no element for {xpath}")
+
+    def find_deep_elements(self, driver, css, *, visible_only=True, limit=20, root=None):
+        """Stand-in for the shadow-piercing lookup, answering the confirmation read.
+
+        The top card and its name heading are ALWAYS present — a real profile has them, and a
+        double that omitted them would let the not-sent cases pass through the fail-closed branch
+        instead of through the affordance read. The only thing a landed Send changes is the
+        pending control on that card, which is the invitation's own evidence (#1867).
+        """
+        from cqc_lem.app.engagement import invites as ra
+        if css == ra._PROFILE_TOP_CARD_CSS:
+            return [self.card]
+        if root is self.card:
+            if css == ra._PROFILE_NAME_HEADING_CSS:
+                return [self._button(_TARGET_NAME)]
+            return [self._button("Pending" if self.invite_sent else "Connect")]
+        return []
 
 
 def _chains(_driver):
@@ -184,6 +211,7 @@ def _invite(routes: _Routes, message: str = None):
          patch(f"{_INV}.find_first", routes.find_first), \
          patch(f"{_INV}.click_first", routes.click_first), \
          patch(f"{_INV}.click_element_wait_retry", routes.click_element_wait_retry), \
+         patch(f"{_INV}.find_deep_elements", routes.find_deep_elements), \
          patch(f"{_INV}.time.sleep"), \
          patch(f"{_INV}.log_error") as log_error, \
          patch(f"{_INV}.log_warning") as log_warning, \
@@ -194,6 +222,42 @@ def _invite(routes: _Routes, message: str = None):
     routes.dialog_miss_recorded = miss.call_count
     routes.holds_set = hold.call_args_list
     return sent, reason, driver, insert_log, log_error, log_warning
+
+
+class TestProfileNavigationSettlesBeforeTheDegreeRead:
+    """`_wait_for_profile_top_card` must run between the navigation and the degree read (#1843).
+
+    That ordering is the whole fix for the race where the read ran on the profile's very first
+    paint and drifted on 100% of invite attempts.
+    """
+
+    def test_the_settle_wait_runs_after_navigating_and_before_the_degree_read(self):
+        from cqc_lem.app.engagement import invites as ra
+        routes = _Routes(dialog_on_url=True, send_xpaths={_SEND_BARE_XPATH})
+        order = []
+        driver = MagicMock()
+        driver.current_url = "about:blank"
+        driver.title = routes.title
+        driver.find_elements.side_effect = routes.find_elements
+        with patch(f"{_INV}.ActionChains", _chains), \
+             patch(f"{_INV}.record_invite_dialog_miss"), patch(f"{_INV}.hold_invites"), \
+             patch(f"{_INV}.clear_invite_dialog_misses"), \
+             patch(f"{_INV}.get_user_password_pair_by_id", return_value=("e@x", "pw")), \
+             patch(f"{_INV}.get_driver_wait_pair", return_value=(driver, MagicMock())), \
+             patch(f"{_INV}.login_to_linkedin"), \
+             patch.object(ra, "_wait_for_profile_top_card",
+                          side_effect=lambda *a: order.append("settle")), \
+             patch.object(ra, "_profile_is_first_degree",
+                          side_effect=lambda *a: order.append("degree_read") or False), \
+             patch(f"{_INV}.find_first", routes.find_first), \
+             patch(f"{_INV}.click_first", routes.click_first), \
+             patch(f"{_INV}.click_element_wait_retry", routes.click_element_wait_retry), \
+             patch(f"{_INV}.time.sleep"), patch(f"{_INV}.log_error"), \
+             patch(f"{_INV}.log_warning"), patch(f"{_INV}.insert_new_log"), \
+             patch(f"{_INV}.record_action"), patch(f"{_INV}.quit_gracefully"):
+            ra.invite_to_connect_now(1, _PROFILE_URL)
+
+        assert order == ["settle", "degree_read"]
 
 
 class TestOwnCustomInviteAnchorRoute:

@@ -289,6 +289,27 @@ class TestDegreeBadgeZeroWalk:
         warn.assert_called_once()
         assert "selector drift" in warn.call_args[0][0]
 
+    def test_a_drifted_1st_degree_badge_is_used_as_the_value_not_just_a_cross_check(self):
+        """A chain graded DRIFT still warns, but the page's own unambiguous word is the READ (#1843).
+
+        Falling open to False here would attempt an invite on a target the page plainly shows is
+        already 1st-degree, burning the session and an attempt-ceiling slot for nothing.
+        """
+        from cqc_lem.app.engagement import invites as ra
+        driver = self._blind("Jane Doe\n1st\nFractional CTO at Acme")
+        with patch(f"{_ZW}.log_warning") as warn:
+            assert ra._profile_is_first_degree(driver) is True
+        warn.assert_called_once()  # the warning still fires — this is not a silence-the-guard fix
+        assert "selector drift" in warn.call_args[0][0]
+
+    def test_a_drifted_non_1st_degree_badge_still_reads_false(self):
+        """The complementary case to the 1st-degree fallback above — a 2nd/3rd read stays False."""
+        from cqc_lem.app.engagement import invites as ra
+        driver = self._blind("Jane Doe\n3rd+\nFractional CTO at Acme")
+        with patch(f"{_ZW}.log_warning") as warn:
+            assert ra._profile_is_first_degree(driver) is False
+        warn.assert_called_once()
+
     def test_a_profile_with_no_badge_at_all_stays_a_debug_no_op(self):
         """Your own profile carries no degree badge, and every invite run opens a profile."""
         from cqc_lem.app.engagement import invites as ra
@@ -316,6 +337,64 @@ class TestDegreeBadgeZeroWalk:
             assert ra._profile_is_first_degree(driver) is False
         warn.assert_called_once()
         drift.assert_not_called()
+
+
+class TestProfileTopCardSettle:
+    """`driver.get()` returns before the top card hydrates, so a read right after drifts (#1843).
+
+    That drifted 100% of invite attempts on 2026-09-01 even though a settled read of the SAME
+    profiles grounds cleanly. `_wait_for_profile_top_card` closes that race; it must not itself
+    become a new hang or a new source of noisy warnings.
+    """
+
+    def test_it_stops_as_soon_as_the_name_or_the_badge_appears(self):
+        from cqc_lem.app.engagement import invites as ra
+
+        calls = []
+
+        def until(condition):
+            calls.append(1)
+            assert condition(driver) is True  # the settled state satisfies the wait's own predicate
+            return True
+
+        driver = MagicMock()
+        driver.find_elements.return_value = [MagicMock()]  # main h1 present
+        wait = MagicMock()
+        wait.until.side_effect = until
+
+        ra._wait_for_profile_top_card(driver, wait)
+        assert calls == [1]
+
+    def test_a_page_that_never_settles_falls_through_silently(self):
+        """No exception escapes — the degree read's own None/[]/DRIFT handling covers the rest."""
+        from selenium.common.exceptions import TimeoutException
+
+        from cqc_lem.app.engagement import invites as ra
+
+        driver = MagicMock()
+        wait = MagicMock()
+        wait.until.side_effect = TimeoutException("never settled")
+
+        ra._wait_for_profile_top_card(driver, wait)  # must not raise
+
+    def test_it_does_not_call_the_logging_degree_read_while_polling(self):
+        """Polling `_degree_badge_texts` here would multiply its one warning by the poll count (#1843).
+
+        The settle check must stay a silent DOM probe, leaving the logging to the single read that
+        follows it.
+        """
+        from cqc_lem.app.engagement import invites as ra
+
+        driver = MagicMock()
+        wait = MagicMock()
+        wait.until.side_effect = lambda condition: condition(driver)
+
+        with patch(f"{_INV}._degree_badge_texts") as texts, \
+             patch(f"{_INV}._matching_degree_lines") as lines:
+            ra._wait_for_profile_top_card(driver, wait)
+
+        texts.assert_not_called()
+        lines.assert_not_called()
 
 
 class TestProfileHeaderDegree:

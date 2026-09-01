@@ -166,9 +166,22 @@ class TestOverlayEvidenceRedaction:
 
 class TestInviteToConnectNowThreadsTheEmail:
     def _invite(self, wants_email, recipient_email=None, fill_result=True, submit_result=True,
-                message=None, note_result=False):
+                message=None, note_result=False, outcome=None):
+        """Run `invite_to_connect_now` with every seam either side of the email step held fixed.
+
+        `_confirm_invite_outcome` is one of those seams (#1867): since that landed, a Send click is
+        no longer the verdict — the page is re-read afterwards and the row is written off THAT.
+        This file is about whether the email reaches the dialog and whether the flow gets as far as
+        Send, so the verdict is supplied rather than re-litigated here; #1867's own tests and
+        `test_connect_note_shadow_root.py` own the confirmation read itself. Leaving it unstubbed
+        would run the real three-attempt read against a bare MagicMock, which answers UNCONFIRMED
+        after ~11 s of test time — measuring the double, not the code.
+        """
         from cqc_lem.app.engagement import invites as ra
+        from cqc_lem.platform.db.enums import InviteOutcome
         with patch(f"{_INV}.get_user_password_pair_by_id", return_value=("e@x", "pw")), \
+             patch(f"{_INV}._confirm_invite_outcome",
+                   return_value=outcome or InviteOutcome.SENT), \
              patch(f"{_INV}.get_driver_wait_pair", return_value=(MagicMock(), MagicMock())), \
              patch(f"{_INV}.login_to_linkedin"), \
              patch(f"{_INV}._profile_is_first_degree", return_value=False), \
@@ -210,6 +223,24 @@ class TestInviteToConnectNowThreadsTheEmail:
         submit.assert_called_once()
         miss.assert_not_called()
         hold.assert_not_called()
+
+    def test_a_threaded_email_whose_send_cannot_be_confirmed_is_still_not_a_send(self):
+        """The seam between #1836 and #1867: supplying an email does not make the click a verdict.
+
+        Filling the verification field is what lets the flow REACH Send — it is not evidence the
+        invitation exists. If the page cannot then be read, the row must fail closed exactly as it
+        does for the ordinary dialog, or #1836 would reopen the false-`sent` hole #1867 shut.
+        """
+        from cqc_lem.platform.db.enums import InviteOutcome
+        from cqc_lem.utilities.db import INVITE_UNCONFIRMED_MESSAGE
+        sent, reason, fill, note, submit, miss, hold, insert_log = self._invite(
+            wants_email=True, recipient_email="jane@example.com",
+            outcome=InviteOutcome.UNCONFIRMED)
+        assert sent is False and reason == INVITE_UNCONFIRMED_MESSAGE
+        fill.assert_called_once()
+        submit.assert_called_once()  # the email DID get us as far as the click
+        miss.assert_not_called()     # still not a selector miss
+        hold.assert_not_called()     # still not an account-level wall
 
     def test_a_fill_failure_stops_without_submitting(self):
         from cqc_lem.utilities.db import EMAIL_VERIFICATION_REQUIRED_MESSAGE

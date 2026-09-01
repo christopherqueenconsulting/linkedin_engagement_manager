@@ -331,4 +331,27 @@ describe('AdminFeedbackPage (issue #793)', () => {
       expect(screen.getAllByText(/Feedback already triaged/).length).toBe(2)
     )
   })
+
+  it('never reports a failed read as "nothing matched the filters" (issue #1868)', async () => {
+    // The API answers 503 now, but react-query still leaves `items` empty — and the empty-state
+    // row is the sentence that hid a dead panel behind 91 live rows for a day.
+    get.mockRejectedValue({
+      response: { data: { detail: 'Could not read the feedback list. Try again.' } },
+    })
+
+    harness(<AdminFeedbackPage />)
+    await waitFor(() =>
+      expect(screen.getByRole('alert').textContent).toContain('Could not read the feedback list'))
+    expect(screen.queryByText(/No feedback submissions match the current filters/)).toBeNull()
+    expect(screen.getByText(/could not be read — this is not an empty list/)).toBeTruthy()
+  })
+
+  it('still says "nothing matched" when the read succeeded and returned nothing', async () => {
+    get.mockResolvedValue(listPayload([]))
+
+    harness(<AdminFeedbackPage />)
+    await waitFor(() =>
+      expect(screen.getByText(/No feedback submissions match the current filters/)).toBeTruthy())
+    expect(screen.queryByRole('alert')).toBeNull()
+  })
 })

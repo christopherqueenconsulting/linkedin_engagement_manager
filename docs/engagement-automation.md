@@ -988,3 +988,83 @@ reworded message cannot silently empty a tile; `attempts` counts real dispatches
 LinkedIn, this one included, and is 0 exactly when nothing was attempted. A series carrying only
 sends would reproduce the bug it exists to catch, which is the same reason `track_stale_invite_run`
 emits on empty runs. `docs/observability-map.md`.
+
+## A connection request is 'sent' when the invitation EXISTS (issue #1867)
+
+Ten `connection_requests` rows for user 1 were written `sent` on 2026-09-01 between 06:52 and 07:18,
+and **none of those invitations reached LinkedIn** — checked by the account owner against the live
+"Sent invitations" list. `_submit_connect_invite` returned True the instant `WebElement.click()` did
+not raise, and nothing between that and `update_connection_request_status(..., SENT)` re-read the
+page. That is the #1013 rule inverted: success is the OUTCOME being present, never a click having
+landed.
+
+The dialog says why the click could not have sent. `_overlay_notice_text` on `/in/wfalcon` read
+*"Add a note to your invitation? To verify this member knows you, please enter their email to
+connect."* — LinkedIn's **email-verification challenge**, which still renders `Send without a note`,
+still accepts the click, and sends nothing. The ordinary dialog exposes the identical control. A
+click-landed verdict cannot tell them apart, which is the whole defect.
+
+- **Two steps, and only the second may say sent.** `_submit_connect_invite` answers whether a Send
+  affordance was CLICKABLE (the #573 error it owns, unchanged). `_confirm_invite_outcome` answers
+  whether an invitation now EXISTS, by re-reading the page.
+- **A send needs BOTH halves.** The Connect dialog is gone **and** the target's own top card shows
+  the invite pending (`Pending` / `Invitation sent` / a withdraw control). Either alone is satisfied
+  by a dialog that closed on a refusal.
+- **The card must PROVE it is the target's, and it must be the DEEPEST one.** Grounded live on
+  `/in/harshal-karanpuriya` (2026-09-01): a profile carries **no `h1` at all** — the name is the
+  first `h2` in `main` — and of the 7 sections under `main`, **two** contain the name node. The
+  outer wrapper carries **253** controls and spans most of `main`, rail included; the real top card
+  carries **15**. So `_target_top_card` takes the *innermost* name-bearing section (sections
+  containing one node nest, so document order runs outermost-to-innermost and the last match is the
+  card). Scoping to `main` plus a control budget, or to the first match, both put the rail inside
+  the read window — and a rail card's bare `Pending`, from an invite we sent somebody else last
+  week, is the exact irreversible row this section exists to prevent (#1012, in a read).
+- **The reads are shadow-aware and fail closed on a throw.** `find_deep_elements` is the one lookup
+  that crosses the shadow boundary — CSS-only, since XPath cannot address a shadow tree — and
+  `visible_only` is what discards the sticky-header duplicate the top card renders for every
+  control (`0x0`, `offsetParent === null`; "Message" and the Sales-Navigator control each appear
+  twice in the measured 15). Every read is guarded: the card is read WHILE it re-renders behind a
+  dismissing dialog, the likeliest `StaleElementReferenceException` site in the flow, and an escape
+  would skip the retry, the verdict and the one `log_warning` the path owes.
+- **The verdict is an `InviteOutcome`, not a sentence.** The enum decides whether an irreversible
+  row is written, so a copy-edit to an operator-facing message cannot change behaviour; its value
+  IS the `invite_outcome.reason` word, and `_OUTCOME_MESSAGES` is the display lookup. A post-click
+  wall gets its own verdict (`invite_limit` / `account_restricted`) and holds the lane, rather than
+  paging as `unconfirmed` for a state we understand.
+- **Three verdicts, failing CLOSED.** `sent`; `email_challenge` when the overlay asks for the
+  member's email; `unconfirmed` when the click landed and nothing could be read. An unreadable page
+  is not a send: a false negative costs one retry, a false positive costs a row the account owner
+  cannot reconcile against LinkedIn's own list.
+- **Bounded cost.** The confirmation reads take their OWN 3 s wait, not the 10 s session one —
+  `_connect_dialog_present` blocks on `wait.until`, so worst case is 3 x 3 s + 2 x 1 s = 11 s, and
+  only on the unconfirmed path. Every Selenium lane draws from the same fixed pool of Chrome slots.
+- **Escalation follows the contract.** `email_challenge` is an expected, named target fact and logs
+  at DEBUG — a repeated `log_warning` re-emits at ERROR and files one grouped `$exception`, which
+  would page us once per unverifiable person in the queue. `unconfirmed` is the genuine anomaly and
+  gets the one `log_warning`.
+
+### The row, the envelope and the return path
+
+Three separate books, and #1867 is what stopped them being one:
+
+- **`email_challenge` is TERMINAL on the first read**, like the out-of-network reading beside it.
+  Until #1836 supplies an address the challenge is a permanent property of that TARGET, so a retry
+  counter only reaches the same place N Chrome sessions later. The row lands **`failed`** — not
+  `approved` — carrying `INVITE_EMAIL_CHALLENGE_MESSAGE`, which is the query #1836 uses to find
+  them and re-approve. `failed` is terminal for AUTOMATION, never for the user.
+  There is **no attempt cap on `connection_requests` beyond `CONNECTION_REQUEST_MAX_ATTEMPTS`**;
+  adding one is separate work, and this non-requeuing status is what bounds the churn meanwhile.
+- **`unconfirmed` is NOT terminal** — a read that failed says nothing about the target.
+- **The pacing envelope is charged on the DISPATCH, not on the row.** The row is a claim about what
+  LinkedIn did and fails CLOSED; the envelope is a claim about how hard we pushed and fails OPEN. A
+  Send we clicked but could not read may well have been counted by LinkedIn, and pacing under the
+  true figure is the direction that gets an account restricted.
+- **`INVITE_ALREADY_PENDING_MESSAGE` closes the loop.** A real send that read `unconfirmed` goes
+  back to `approved`; the retry finds no Connect button *because the invitation is pending*. The
+  ordinary miss's own text already guessed at that ("invite may already be pending"), and the page
+  can now be asked instead: a pending affordance on the ORDINARY miss grades the row `sent` with
+  reason `already_pending`, and charges no envelope because nothing was dispatched that visit. An
+  account wall or a follow-only reading is never re-read this way.
+- **Observability:** `email_challenge`, `unconfirmed` and `already_pending` are `invite_outcome`
+  reasons — values on the existing event, never a new capture. A breakdown on `reason` is now also
+  the measure of how much of the backlog is waiting on #1836.

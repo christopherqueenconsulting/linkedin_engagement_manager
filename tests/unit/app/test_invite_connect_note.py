@@ -31,15 +31,54 @@ _SEND_BARE_XPATH = '//button[contains(@aria-label,"Send without a note")]'
 _NOTE_DIALOG = {_NOTE_XPATH, _TEXTAREA_XPATH, _SEND_XPATH}
 
 
-def _clicker(found: set[str], box: MagicMock = None):
+# The two Send controls. Clicking either is what makes an invitation EXIST on the fake page — and
+# only then does the confirmation step have an outcome to read (#1867).
+_SEND_XPATHS = frozenset({_SEND_XPATH, _SEND_BARE_XPATH})
+# The loaded profile's display name — the confirmation read attributes the top card by it.
+_TARGET_NAME = "Jane Doe"
+
+
+def _clicker(found: set[str], box: MagicMock = None, landed: dict = None):
     """A click_element_wait_retry stand-in that only 'finds' the xpaths in `found`."""
 
     def click(driver, wait, xpath, label, **kwargs):
         if xpath not in found:
             raise Exception(f"no element for {xpath}")
+        if landed is not None and xpath in _SEND_XPATHS:
+            landed["sent"] = True
         return box if (box is not None and xpath == _TEXTAREA_XPATH) else MagicMock()
 
     return MagicMock(side_effect=click)
+
+
+def _labelled(label: str):
+    element = MagicMock()
+    element.get_attribute.side_effect = lambda name: label if name == "aria-label" else None
+    element.text = label
+    return element
+
+
+def _pending_top_card(landed: dict):
+    """A `find_deep_elements` stand-in for the target's top card.
+
+    The card and its name heading are ALWAYS there, as they are on a real profile; only the pending
+    affordance turns up once a Send actually landed. Modelling "no card at all" for the not-sent
+    case would let those tests pass through the fail-closed branch rather than through the
+    affordance read they exist to exercise (#1867).
+    """
+    card = MagicMock()
+
+    def deep(driver, css, *, visible_only=True, limit=20, root=None):
+        from cqc_lem.app.engagement import invites as ra
+        if css == ra._PROFILE_TOP_CARD_CSS:
+            return [card]
+        if root is card:
+            if css == ra._PROFILE_NAME_HEADING_CSS:
+                return [_labelled(_TARGET_NAME)]
+            return [_labelled("Pending" if landed.get("sent") else "Connect")]
+        return []
+
+    return deep
 
 
 def _finder(found: set[str], resolved: dict = None):
@@ -74,6 +113,13 @@ def _first_clicker(found: set[str]):
     return MagicMock(side_effect=click)
 
 
+def _profile_driver():
+    """A driver on the target's own profile — its `<title>` is what attributes the top card."""
+    driver = MagicMock()
+    driver.title = f"{_TARGET_NAME} | LinkedIn"
+    return driver
+
+
 class _Result:
     def __init__(self, **kwargs):
         self.__dict__.update(kwargs)
@@ -81,11 +127,12 @@ class _Result:
 
 def _invite(found: set[str], message: str = None, box: MagicMock = None, refined: str = "short note"):
     from cqc_lem.app.engagement import invites as ra
-    click = _clicker(found, box)
+    landed: dict = {}
+    click = _clicker(found, box, landed)
     resolved: dict = {}
-    with patch(f"{_INV}.find_deep_elements", return_value=[]), \
+    with patch(f"{_INV}.find_deep_elements", side_effect=_pending_top_card(landed)), \
          patch(f"{_INV}.get_user_password_pair_by_id", return_value=("e@x", "pw")), \
-         patch(f"{_INV}.get_driver_wait_pair", return_value=(MagicMock(), MagicMock())), \
+         patch(f"{_INV}.get_driver_wait_pair", return_value=(_profile_driver(), MagicMock())), \
          patch(f"{_INV}.login_to_linkedin"), \
          patch(f"{_INV}._profile_is_first_degree", return_value=False), \
          patch(f"{_INV}._open_connect_invite_dialog", return_value=(True, None)), \
@@ -207,7 +254,10 @@ class TestNoteHappyPath:
     def test_an_invite_with_no_note_never_looks_for_the_note_composer(self):
         r = _invite(found={_SEND_BARE_XPATH})
         assert _clicked(r.click) == [_SEND_BARE_XPATH]
-        r.find_first.assert_not_called()
+        # Stated against the LABELS rather than the call count: the one `find_first` a noteless
+        # invite now makes is the post-send confirmation read (#1867), which is not a note lookup.
+        looked_up = [call.args[3] for call in r.find_first.call_args_list]
+        assert looked_up == ["Connect invite dialog"]
         r.click_first.assert_not_called()
 
 

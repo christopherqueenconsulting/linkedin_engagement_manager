@@ -55,6 +55,27 @@ class ConnectionRequestStatus(StrEnum):
     CANCELED = 'canceled'    # canceled before send
 
 
+class InviteOutcome(StrEnum):
+    """What the PAGE said happened after Send was clicked on the Connect dialog (issue #1867).
+
+    A separate vocabulary from `ConnectionRequestStatus`, which is the ROW's lifecycle: several
+    outcomes here map onto the same row status, and one of them (`ALREADY_PENDING`) is reached
+    without a Send click at all. Keeping them apart is what stops "LinkedIn refused us" and "we
+    never looked" sharing a state.
+
+    An enum rather than the operator-facing message strings this rail returns elsewhere, because
+    this is the value an irreversible row is decided on — a copy-edit to a sentence must not be
+    able to change whether `connection_requests.status` becomes 'sent'. Each value IS the stable
+    dashboard word for `invite_outcome.reason`; the display message is looked up from it.
+    """
+    SENT = 'sent'                            # dialog gone AND the target's card shows it pending
+    ALREADY_PENDING = 'already_pending'      # our invitation was out before this visit
+    EMAIL_CHALLENGE = 'email_challenge'      # LinkedIn wants the member's email address first
+    UNCONFIRMED = 'unconfirmed'              # the click landed and nothing could be read
+    INVITE_LIMIT = 'invite_limit'            # a wall LinkedIn named AFTER the click
+    ACCOUNT_RESTRICTED = 'account_restricted'
+
+
 class FollowupStatus(StrEnum):
     """The `dm_followups.status` ENUM (V36) — the lifecycle of one queued follow-up touch.
 
