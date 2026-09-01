@@ -630,15 +630,13 @@ def get_feedback_list(status: Optional[Union["FeedbackStatus", str]] = None,
     Optional status/source filters are validated against the enum vocabularies before they reach
     the query, so a bad value returns an empty list instead of a MySQL 1265.
 
-    Ordered by `f.id DESC`: the id is a monotonic AUTO_INCREMENT written with `created_at`, so it is
-    the same newest-first order, and MySQL serves it from a reverse PRIMARY-key scan instead of a
-    filesort. The old `ORDER BY f.created_at DESC` had no index to lean on, so an unfiltered page
-    filesorted the whole table carrying the wide `body`/`context_json` columns and overran the sort
-    buffer with `1038 Out of sort memory`. The assumption is that id order equals created_at order:
-    if rows are ever inserted with a historical `created_at` (a backfill or import), the two diverge
-    — add an index on `created_at` and sort on it then.
+    Ordered by `f.id DESC`, an AUTO_INCREMENT written with `created_at`: same newest-first order,
+    but served from a reverse PRIMARY-key scan. `ORDER BY f.created_at DESC` had no index, so an
+    unfiltered page filesorted the whole table carrying the wide `body`/`context_json` columns and
+    overran the sort buffer (`1038 Out of sort memory`). This assumes id order equals created_at
+    order; a historical backfill or import breaks that, and then the fix is an index on `created_at`.
 
-    Returns `None`, never `[]`, on a read fault. `[]` means "no rows match"; the route turns `None`
+    Returns `None`, never `[]`, on a read fault; `[]` means no rows match. The route turns `None`
     into a 503 so a DB fault cannot render as an empty panel.
 
     `embedding` is deliberately NOT selected — the panel never shows it, and a page of 50 rows would
