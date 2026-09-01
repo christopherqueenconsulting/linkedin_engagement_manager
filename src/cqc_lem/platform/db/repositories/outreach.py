@@ -26,6 +26,7 @@ from cqc_lem.platform.db.enums import (
     ConnectionRequestStatus,
     ConnectStatus,
     FollowStatus,
+    FollowupStatus,
     LeadSignalChannel,
     LeadSignalKind,
     LeadSignalSource,
@@ -1503,25 +1504,38 @@ def has_appreciation_touch(user_id: int, profile_url: str, event_type: str) -> b
         log_error("Could not check appreciation touch", exc=err, user_id=user_id)
         return False
 def enqueue_followup(user_id: int, profile_url: str, first_name: str, event_type: str,
-                     next_step: int, due_at) -> bool:
-    """Schedule a follow-up DM touch. `due_at` is a datetime."""
+                     next_step: int, due_at: Optional[datetime]) -> bool:
+    """Schedule a follow-up DM touch.
+
+    `due_at` goes through `to_naive_utc`, the one storage-side conversion
+    (docs/timezone-contract.md): `dm_followups.due_at` holds NAIVE UTC, and `get_due_followups`
+    normalizes its `now` the same way, so reader and writer cannot drift onto different clocks.
+    """
     try:
         with db_cursor(commit=True) as cursor:
             cursor.execute(
                 "INSERT INTO dm_followups (user_id, profile_url, first_name, event_type, next_step, due_at, status) "
-                "VALUES (%s,%s,%s,%s,%s,%s,'pending')",
-                (user_id, profile_url, first_name, str(event_type), next_step, due_at))
+                "VALUES (%s,%s,%s,%s,%s,%s,%s)",
+                (user_id, profile_url, first_name, str(event_type), next_step, to_naive_utc(due_at),
+                 str(FollowupStatus.PENDING)))
             return True
     except mysql.connector.Error as err:
         log_error("Could not enqueue followup", exc=err, user_id=user_id)
         return False
-def get_due_followups(now) -> list:
-    """Pending follow-ups whose due_at has passed. `now` is a datetime."""
+def get_due_followups(now: Optional[datetime]) -> list:
+    """Pending follow-ups whose due_at has passed.
+
+    `now` is normalized through `to_naive_utc` — the same conversion every writer of
+    `dm_followups.due_at` applies — so an aware caller and a naive-UTC one compare identically.
+    Without it an aware local `now` would be serialized as its local wall clock and rows would come
+    due hours early or late (docs/timezone-contract.md).
+    """
     try:
         with db_cursor(dictionary=True) as cursor:
             cursor.execute(
                 "SELECT id, user_id, profile_url, first_name, event_type, next_step, unreadable_reads "
-                "FROM dm_followups WHERE status='pending' AND due_at <= %s ORDER BY due_at", (now,))
+                "FROM dm_followups WHERE status=%s AND due_at <= %s ORDER BY due_at",
+                (str(FollowupStatus.PENDING), to_naive_utc(now)))
             return cursor.fetchall() or []
     except mysql.connector.Error as err:
         log_error("Could not get due followups", exc=err)
@@ -1529,39 +1543,67 @@ def get_due_followups(now) -> list:
 def mark_followup(followup_id: int, status: str) -> bool:
     """Move one follow-up row to `status`.
 
-    Also resets its unreadable-read streak (#1815) — this only ever runs on a state
-    `check_dm_replied` actually read, so the row earned a clean slate. True whenever the UPDATE
-    ran, matched or not.
+    True whenever the UPDATE ran, matched or not.
     """
     try:
         with db_cursor(commit=True) as cursor:
-            cursor.execute("UPDATE dm_followups SET status=%s, unreadable_reads=0 WHERE id=%s",
-                           (str(status), followup_id))
+            cursor.execute("UPDATE dm_followups SET status=%s WHERE id=%s", (str(status), followup_id))
             return cursor.rowcount >= 0
     except mysql.connector.Error as err:
         log_error(f"Could not mark followup {followup_id}", exc=err)
         return False
-def record_unreadable_read(followup_id: int, due_at=None) -> bool:
+def record_unreadable_read(followup_id: int, due_at: Optional[datetime] = None) -> bool:
     """Count one UNKNOWN reply-detection read against this row (#1815).
 
-    When `due_at` is given, also pushes the row's next read out to it. The row stays
-    `status='pending'` either way — #731's fail-closed UNKNOWN skip is a READ failure, not a send
-    failure, so it must never drop off the retry ladder the way `mark_followup(..., 'failed')`
-    would. True whenever the UPDATE ran, matched or not.
+    When `due_at` is given, also pushes the row's next read out to it (normalized through
+    `to_naive_utc`, the same conversion `enqueue_followup` and `get_due_followups` use). The row
+    stays `FollowupStatus.PENDING` either way — #731's fail-closed UNKNOWN skip is a READ failure,
+    not a send failure, so it must never drop off the retry ladder the way
+    `mark_followup(..., 'failed')` would.
+
+    Returns True only when a pending row was ACTUALLY counted. Unlike `mark_followup`, "the UPDATE
+    ran" is not good enough here: the caller decides whether to back off from the count it read a
+    moment ago, so a zero-match (the row moved to a terminal status between the read and this write)
+    has to be distinguishable — otherwise the caller warns about a backoff that never happened.
+    Matching is safe to read off `rowcount` because the counter always changes when the row matches.
+
+    The read-then-increment is deliberately not atomic. `process_user_followups` is a `QueueOnce`
+    task keyed on `user_id`, so exactly one worker ever holds a given user's rows; the SQL-side
+    `+ 1` is what keeps the stored count right even if that ever stopped being true, and the worst
+    a lost race could do is delay one backoff step by one beat.
     """
     try:
         with db_cursor(commit=True) as cursor:
             if due_at is not None:
                 cursor.execute(
                     "UPDATE dm_followups SET unreadable_reads = unreadable_reads + 1, due_at = %s "
-                    "WHERE id = %s AND status = 'pending'", (due_at, followup_id))
+                    "WHERE id = %s AND status = %s",
+                    (to_naive_utc(due_at), followup_id, str(FollowupStatus.PENDING)))
             else:
                 cursor.execute(
                     "UPDATE dm_followups SET unreadable_reads = unreadable_reads + 1 "
-                    "WHERE id = %s AND status = 'pending'", (followup_id,))
-            return cursor.rowcount >= 0
+                    "WHERE id = %s AND status = %s", (followup_id, str(FollowupStatus.PENDING)))
+            return cursor.rowcount > 0
     except mysql.connector.Error as err:
         log_error(f"Could not record unreadable read for followup {followup_id}", exc=err)
+        return False
+def reset_unreadable_reads(followup_id: int) -> bool:
+    """Clear this row's consecutive-UNKNOWN streak (#1815).
+
+    Called explicitly on any outcome `check_dm_replied` ACTUALLY read, so the counter only ever
+    describes an unbroken run of unreadable reads. Deliberately not folded into `mark_followup`:
+    that is a generic status setter, and hiding a counter reset inside it would mean any future
+    caller — an error path, a reschedule — silently wiped a legitimate streak.
+
+    True whenever the UPDATE ran, matched or not: a row that has already moved on has nothing to
+    reset, which is not a failure.
+    """
+    try:
+        with db_cursor(commit=True) as cursor:
+            cursor.execute("UPDATE dm_followups SET unreadable_reads = 0 WHERE id = %s", (followup_id,))
+            return cursor.rowcount >= 0
+    except mysql.connector.Error as err:
+        log_error(f"Could not reset unreadable reads for followup {followup_id}", exc=err)
         return False
 def stop_followups_for_profile(user_id: int, profile_url: str) -> int:
     """Stop all pending follow-ups to a profile (e.g. once they've replied). Returns count."""

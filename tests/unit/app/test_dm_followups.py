@@ -67,6 +67,43 @@ def _due(**kw):
     return base
 
 
+class TestUnreadableBackoffCurve:
+    """Issue #1815: the backoff arithmetic is the payload of the fix, so it is table-tested.
+
+    A regression to "due immediately" (0 hours past the ceiling) is exactly the bug, and it would
+    slip past any assertion that only checks a `due_at` is present.
+    """
+
+    @pytest.mark.parametrize(("reads", "hours"), [
+        (0, 0),   # never read unreadably
+        (1, 0),   # under the ceiling: ordinary cadence, a rotated selector usually clears next run
+        (2, 0),
+        (3, 0),   # AT the ceiling — still the grace period, still no push
+        (4, 2),   # first step over
+        (5, 4),
+        (6, 8),
+        (7, 16),
+        (8, 32),
+        (9, 48),  # capped
+        (40, 48),
+        (100_000, 48),  # the exponent is bounded too — no 30,000-digit intermediate
+    ])
+    def test_backoff_hours_curve(self, reads, hours):
+        from cqc_lem.app.engagement.outreach import _unreadable_backoff_hours
+        assert _unreadable_backoff_hours(reads) == hours
+
+    def test_curve_is_pinned_to_the_module_constants(self):
+        from cqc_lem.app.engagement import outreach as ra
+        assert _unreadable_hours(ra.UNREADABLE_READ_CEILING) == 0
+        assert _unreadable_hours(ra.UNREADABLE_READ_CEILING + 1) == ra.UNREADABLE_READ_BACKOFF_HOURS
+        assert _unreadable_hours(ra.UNREADABLE_READ_CEILING + 50) == ra.UNREADABLE_READ_BACKOFF_CAP_HOURS
+
+
+def _unreadable_hours(reads):
+    from cqc_lem.app.engagement.outreach import _unreadable_backoff_hours
+    return _unreadable_backoff_hours(reads)
+
+
 class TestProcessUserFollowups:
     def _common(self):
         return {
@@ -209,6 +246,33 @@ class TestProcessUserFollowups:
     def test_unknown_past_ceiling_backs_off_due_at_and_warns_once(self):
         # Crossing UNREADABLE_READ_CEILING is what actually stops the 48x/day re-read — the row
         # stays 'pending' (#731's UNKNOWN never sends is unaffected), only due_at moves out.
+        import datetime
+
+        from cqc_lem.app.engagement import outreach as ra
+        from cqc_lem.app.engagement.outreach import process_user_followups
+        before = datetime.datetime.now(datetime.timezone.utc)
+        with patch(f"{_OUT}.get_due_followups",
+                   return_value=[_due(unreadable_reads=ra.UNREADABLE_READ_CEILING)]), \
+             patch(f"{_OUT}.get_current_profile", return_value=(MagicMock(), MagicMock(), "e", MagicMock())), \
+             patch(f"{_OUT}.quit_gracefully"), patch(f"{_OUT}.time.sleep"), patch(f"{_OUT}.insert_new_log"), \
+             patch(f"{_OUT}.resolve_self_name", return_value="Christopher Queen"), \
+             patch(f"{_OUT}.check_dm_replied", return_value=ThreadState.UNKNOWN), \
+             patch(f"{_OUT}.log_warning") as warn, \
+             patch(f"{_OUT}.record_unreadable_read", return_value=True) as rec:
+            process_user_followups.run(user_id=1)
+        warn.assert_called_once()
+        rec.assert_called_once()
+        assert rec.call_args.args == (1,)
+        # The PAYLOAD, not just "not None": a due_at that lands in the past (a clock mismatch, an
+        # arithmetic slip) reintroduces the exact bug this PR fixes — due again on the next beat.
+        pushed = rec.call_args.kwargs["due_at"]
+        assert pushed >= before + datetime.timedelta(hours=ra.UNREADABLE_READ_BACKOFF_HOURS)
+        assert pushed.tzinfo is not None  # aware; the repository seam normalizes it to naive UTC
+
+    def test_unknown_does_not_warn_when_the_count_never_landed(self):
+        # Issue #1815 review: the backoff decision is made from the count read at the start of the
+        # run. If the write matched nothing, due_at did NOT move — warning anyway would announce a
+        # backoff that never happened, again on every beat.
         from cqc_lem.app.engagement import outreach as ra
         from cqc_lem.app.engagement.outreach import process_user_followups
         with patch(f"{_OUT}.get_due_followups",
@@ -218,12 +282,45 @@ class TestProcessUserFollowups:
              patch(f"{_OUT}.resolve_self_name", return_value="Christopher Queen"), \
              patch(f"{_OUT}.check_dm_replied", return_value=ThreadState.UNKNOWN), \
              patch(f"{_OUT}.log_warning") as warn, \
-             patch(f"{_OUT}.record_unreadable_read") as rec:
+             patch(f"{_OUT}.log_error") as err, \
+             patch(f"{_OUT}.record_unreadable_read", return_value=False):
             process_user_followups.run(user_id=1)
-        warn.assert_called_once()
-        rec.assert_called_once()
-        assert rec.call_args.args == (1,)
-        assert rec.call_args.kwargs["due_at"] is not None
+        warn.assert_not_called()
+        err.assert_called_once()
+
+    def test_readable_state_resets_the_unreadable_streak(self):
+        # Issue #1815 review: the streak must describe an UNBROKEN run. A thread that goes UNKNOWN
+        # a few times and then reads fine has to start from zero, or a later unreadable spell
+        # inherits the old count and backs a healthy thread off by 48h.
+        from cqc_lem.app.engagement.outreach import process_user_followups
+        with patch(f"{_OUT}.get_due_followups", return_value=[_due(unreadable_reads=3)]), \
+             patch(f"{_OUT}.get_current_profile", return_value=(MagicMock(), MagicMock(), "e", MagicMock())), \
+             patch(f"{_OUT}.quit_gracefully"), patch(f"{_OUT}.time.sleep"), patch(f"{_OUT}.insert_new_log"), \
+             patch(f"{_OUT}.resolve_self_name", return_value="Christopher Queen"), \
+             patch(f"{_OUT}.check_dm_replied", return_value=ThreadState.NOT_REPLIED), \
+             patch(f"{_OUT}.build_dm_from_template", return_value="follow up msg"), \
+             patch(f"{_OUT}.send_private_dm"), patch(f"{_OUT}.enqueue_next_followup"), \
+             patch(f"{_OUT}.mark_followup"), \
+             patch(f"{_OUT}.record_unreadable_read") as rec, \
+             patch(f"{_OUT}.reset_unreadable_reads") as reset:
+            process_user_followups.run(user_id=1)
+        reset.assert_called_once_with(1)
+        rec.assert_not_called()
+
+    def test_readable_state_with_a_clean_row_spends_no_write(self):
+        # The steady state is a readable thread with a zero streak — nothing to reset, so no UPDATE.
+        from cqc_lem.app.engagement.outreach import process_user_followups
+        with patch(f"{_OUT}.get_due_followups", return_value=[_due()]), \
+             patch(f"{_OUT}.get_current_profile", return_value=(MagicMock(), MagicMock(), "e", MagicMock())), \
+             patch(f"{_OUT}.quit_gracefully"), patch(f"{_OUT}.time.sleep"), patch(f"{_OUT}.insert_new_log"), \
+             patch(f"{_OUT}.resolve_self_name", return_value="Christopher Queen"), \
+             patch(f"{_OUT}.check_dm_replied", return_value=ThreadState.NOT_REPLIED), \
+             patch(f"{_OUT}.build_dm_from_template", return_value="follow up msg"), \
+             patch(f"{_OUT}.send_private_dm"), patch(f"{_OUT}.enqueue_next_followup"), \
+             patch(f"{_OUT}.mark_followup"), \
+             patch(f"{_OUT}.reset_unreadable_reads") as reset:
+            process_user_followups.run(user_id=1)
+        reset.assert_not_called()
 
     def test_unknown_thread_does_not_double_warn(self):
         # Issue #1750: check_dm_replied (and the open_message_thread ladder underneath it) already

@@ -55,6 +55,20 @@ class ConnectionRequestStatus(StrEnum):
     CANCELED = 'canceled'    # canceled before send
 
 
+class FollowupStatus(StrEnum):
+    """The `dm_followups.status` ENUM (V36) — the lifecycle of one queued follow-up touch.
+
+    `PENDING` is the ONLY status `get_due_followups` selects, which is why an unreadable thread is
+    counted and backed off in place rather than moved (issue #1815): every other member is terminal,
+    so leaving `PENDING` means the row can never be re-read, and a thread that becomes readable
+    later would silently never get its follow-up.
+    """
+    PENDING = 'pending'  # queued, waiting for due_at — the only status the sequencer reads
+    SENT = 'sent'        # the touch was dispatched
+    STOPPED = 'stopped'  # sequence ended (they replied, or there is no next template)
+    FAILED = 'failed'    # send failed
+
+
 class CatchupEventType(StrEnum):
     """A LinkedIn Catch-up "moment" we can congratulate on (issue #482). Ordered most→least
     BD-relevant: a new job or promotion is a real trigger event, a birthday is small talk.
