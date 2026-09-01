@@ -547,7 +547,8 @@ def update_connection_request_status(request_id: int, status: "ConnectionRequest
     except mysql.connector.Error as err:
         log_error(f"Could not update connection request {request_id} status", exc=err)
         return False
-def record_connection_request_attempt(request_id: int, failure_reason: str) -> "tuple[bool, int]":
+def record_connection_request_attempt(request_id: int, failure_reason: str,
+                                      terminal: bool = False) -> "tuple[bool, int]":
     """Record ONE real dispatch attempt that reached LinkedIn and did not send (issue #1814).
 
     At `CONNECTION_REQUEST_MAX_ATTEMPTS` the row goes terminal ('failed') in the same statement
@@ -555,6 +556,12 @@ def record_connection_request_attempt(request_id: int, failure_reason: str) -> "
     never been reachable — every browser session it costs is a slot the shared `se_outreach` lane
     needed. Below the ceiling it goes back to 'approved' for the next scan, same as an untouched
     retry. Returns (terminal, attempts); (False, 0) means the row was gone or the write failed.
+
+    `terminal=True` retires the row on THIS attempt regardless of the count (issue #1813). The
+    ceiling exists to stop guessing about a target that keeps failing for reasons we cannot read;
+    a caller that has PROVEN the target is unreachable — an out-of-network profile offering nothing
+    but Follow — has nothing left to learn from two more Chrome sessions. It stays one statement so
+    the attempt and the retirement can never land separately.
     """
     try:
         with db_cursor(commit=True) as cursor:
@@ -562,18 +569,19 @@ def record_connection_request_attempt(request_id: int, failure_reason: str) -> "
                 "UPDATE connection_requests SET "
                 # status is assigned FIRST on purpose: MySQL evaluates SET clauses left to right, so
                 # a later 'attempts = attempts + 1' would make this test read the post-increment count.
-                "status = IF(attempts + 1 >= %s, %s, %s), "
+                "status = IF(%s OR attempts + 1 >= %s, %s, %s), "
                 "attempts = attempts + 1, "
                 "failure_reason = %s "
                 "WHERE id = %s",
-                (CONNECTION_REQUEST_MAX_ATTEMPTS, ConnectionRequestStatus.FAILED.value,
+                (1 if terminal else 0, CONNECTION_REQUEST_MAX_ATTEMPTS,
+                 ConnectionRequestStatus.FAILED.value,
                  ConnectionRequestStatus.APPROVED.value, str(failure_reason or "")[:512], request_id))
             if cursor.rowcount <= 0:
                 return False, 0
             cursor.execute("SELECT attempts FROM connection_requests WHERE id = %s", (request_id,))
             row = cursor.fetchone()
             attempts = int(row[0]) if row else 0
-            return attempts >= CONNECTION_REQUEST_MAX_ATTEMPTS, attempts
+            return bool(terminal) or attempts >= CONNECTION_REQUEST_MAX_ATTEMPTS, attempts
     except mysql.connector.Error as err:
         log_error(f"Could not record connection request attempt {request_id}", exc=err)
         return False, 0
@@ -1682,6 +1690,14 @@ ALREADY_CONNECTED_MESSAGE = "Already connected (1st-degree) — no invite to sen
 # Follow/Message on that profile; either way there is nothing to send, so the invite stops here
 # rather than falling through to the note/send steps that can only fail after it.
 NO_CONNECT_BUTTON_MESSAGE = "No Connect option on this profile (invite may already be pending)"
+# The profile offered Follow and NOTHING connect-shaped at all — no custom-invite anchor naming the
+# target, no Connect button naming them, no pending badge (issue #1813). That is out of network: a
+# fact about the TARGET, not a miss, so it is terminal on the first read and it feeds neither the
+# invite-dialog miss streak nor the 6-hour hold those misses arm. Measured in production on
+# `burkegriffin`, `scott-stephenson-` and `aditabraham`, each costing a ~90 s Chrome session per
+# cycle and braking the lane for the reachable targets behind them. The #979 ladder already has a
+# follow rung for exactly these people, which is why this invents no new state.
+FOLLOW_ONLY_MESSAGE = "This profile offers Follow only — out of network, so there is no invite to send"
 # The Connect dialog opened but neither Send affordance could be clicked, so nothing went out
 # (issue #573). Unlike a missing note this does NOT degrade gracefully — the invite is lost — which
 # is why it stays an error and gets its own reason on the request row.

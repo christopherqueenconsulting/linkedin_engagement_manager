@@ -950,3 +950,41 @@ and has failed to change anything.
 - **Observability:** `roster_connect_requested` rides the feed funnel — invites the ladder sent this
   run. A `requested` state read off the card (the user invited them by hand) is deliberately NOT
   counted there; it is not a send the run made.
+
+## Why a Connect dialog did not open (`_open_connect_invite_dialog`, issue #1813)
+
+The proactive lane (#398) had never delivered a single invite: `connection_requests` held 59 rows
+with `COUNT(*) WHERE status='sent'` at **zero** since it shipped, every Celery run reported SUCCESS,
+and every failure wrote the same warning. Three different things wore that one line. Telling them
+apart is what this section is about — all three share the rail `invite_to_connect_now` owns, so all
+three used to arm the same brake.
+
+- **An account wall LinkedIn NAMES is about US, not the target** (`_invite_restriction_reason`).
+  It holds the whole lane for 6 h and the target keeps its turn. Since #1733 moved the Connect
+  dialog into an open shadow root, that reader crosses the boundary too: a limit notice mounted in
+  the overlay is invisible to `driver.find_elements`, and the reader returns **None on unreadable
+  by design**, so a walled account and a dead selector wrote the identical line. Where a claim is
+  MOUNTED is not evidence about whether it was made. The None posture itself is unchanged — the
+  shadow pass only ADDS text, and a restriction is still a claim that needs evidence.
+  **One reader** (`_overlay_notice_text`) is behind both the detector and the miss-evidence line, so
+  the words a log prints are the words the detector matched.
+- **A follow-only profile is about the TARGET** (`_profile_offers_follow_only` →
+  `FOLLOW_ONLY_MESSAGE`). No custom-invite anchor naming them, no Connect button naming them, no
+  pending badge, and a `Follow` control on the top card: they are out of network. Failing is
+  correct; **retrying is not, and braking the lane over them is worse.** The row goes terminal on
+  the FIRST read (`record_connection_request_attempt(..., terminal=True)` — the ceiling exists to
+  stop guessing, and this is not a guess), it feeds neither `record_invite_dialog_miss` nor the hold
+  it arms, and it skips the custom-invite URL route because there is nothing there to preload. No
+  new state: the #979 ladder's `failed` already means terminal-for-sending-but-still-re-read, and
+  its follow rung goes on owning these people. The reading is **fail-CLOSED** — an unreadable page,
+  an unattributable Follow (the "People also viewed" rail ships one per card) or a missing slug all
+  fall back to the ordinary miss, because retiring a row ends someone's chance of an invite.
+- **Everything else is the ordinary miss**, and only that counts toward the streak (#1732).
+
+**Observability:** `invite_outcome` fires on EVERY dispatch of `send_connection_request` — sends,
+failures and the three defers (`invites_held` / `daily_cap` / `throttled`) alike. `result` is
+sent / failed / deferred and `reason` is a short, stable word mapped from the failure message, so a
+reworded message cannot silently empty a tile; `attempts` counts real dispatches that reached
+LinkedIn, this one included, and is 0 exactly when nothing was attempted. A series carrying only
+sends would reproduce the bug it exists to catch, which is the same reason `track_stale_invite_run`
+emits on empty runs. `docs/observability-map.md`.

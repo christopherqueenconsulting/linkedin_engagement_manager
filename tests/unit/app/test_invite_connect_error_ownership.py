@@ -77,7 +77,7 @@ class TestProactiveWrapper:
              patch(f"{_INV}.log_debug") as log_debug:
             ra.send_connection_request(3)
 
-        rec.assert_called_once_with(3, INVITE_NOT_SENT_MESSAGE)
+        rec.assert_called_once_with(3, INVITE_NOT_SENT_MESSAGE, terminal=False)
         log_warning.assert_not_called()
         log_debug.assert_called_once()
 

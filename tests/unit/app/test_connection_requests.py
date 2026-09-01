@@ -44,7 +44,7 @@ class TestSendConnectionRequest:
              patch(f"{_INV}.invite_to_connect_now", return_value=(False, NO_CONNECT_BUTTON_MESSAGE)), \
              patch("cqc_lem.utilities.db.record_connection_request_attempt", return_value=(False, 1)) as rec:
             out = ra.send_connection_request(3)
-        rec.assert_called_once_with(3, NO_CONNECT_BUTTON_MESSAGE)
+        rec.assert_called_once_with(3, NO_CONNECT_BUTTON_MESSAGE, terminal=False)
         assert "deferred" in out.lower()
 
     def test_failed_send_goes_terminal_at_ceiling(self):
@@ -56,7 +56,7 @@ class TestSendConnectionRequest:
              patch(f"{_INV}.invite_to_connect_now", return_value=(False, NO_CONNECT_BUTTON_MESSAGE)), \
              patch("cqc_lem.utilities.db.record_connection_request_attempt", return_value=(True, 3)) as rec:
             out = ra.send_connection_request(3)
-        rec.assert_called_once_with(3, NO_CONNECT_BUTTON_MESSAGE)
+        rec.assert_called_once_with(3, NO_CONNECT_BUTTON_MESSAGE, terminal=False)
         assert "giving up" in out.lower()
 
     def test_defers_when_cap_reached(self):
