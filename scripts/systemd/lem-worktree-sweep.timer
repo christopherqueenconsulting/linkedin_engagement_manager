@@ -1,0 +1,17 @@
+[Unit]
+Description=Weekly git worktree registration sweep (the worktree half of branch cleanup)
+Documentation=https://github.com/christopherqueenconsulting/linkedin_engagement_manager/blob/main/docs/branch-cleanup.md
+
+[Timer]
+# Mon 07:00 UTC — one hour after .github/workflows/stale-branches.yml (Mon 06:00 UTC), so the branch
+# deletions have already landed and this run's `git fetch --prune` sees them as gone from origin.
+# Keep the two an hour apart: run them together and the sweep decides on pre-deletion refs.
+OnCalendar=Mon *-*-* 07:00:00 UTC
+# A box that was off on Monday still gets its sweep on the next boot.
+Persistent=true
+RandomizedDelaySec=300
+AccuracySec=1min
+Unit=lem-worktree-sweep.service
+
+[Install]
+WantedBy=timers.target
