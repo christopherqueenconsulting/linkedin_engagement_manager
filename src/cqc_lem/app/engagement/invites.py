@@ -26,10 +26,13 @@ import re
 import time
 from urllib.parse import unquote
 
-from selenium.common import StaleElementReferenceException
+from selenium.common import StaleElementReferenceException, WebDriverException
 from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.common.by import By
+from selenium.webdriver.remote.webdriver import WebDriver
+from selenium.webdriver.remote.webelement import WebElement
 from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.support.wait import WebDriverWait
 
 from cqc_lem.app.my_celery import app as shared_task
 from cqc_lem.app.queue_once import QueueOnce
@@ -40,6 +43,7 @@ from cqc_lem.utilities.db import (
     CONNECT_NOTE_MAX_CHARS,
     CONNECTION_REQUEST_SENT_MESSAGE,
     FOLLOW_ONLY_MESSAGE,
+    INVITE_ALREADY_PENDING_MESSAGE,
     INVITE_EMAIL_CHALLENGE_MESSAGE,
     INVITE_LIMIT_REACHED_MESSAGE,
     INVITE_NOT_SENT_MESSAGE,
@@ -1137,54 +1141,72 @@ def _submit_connect_invite(driver, wait, user_id: int, with_note: bool) -> bool:
     return False
 
 
-# LinkedIn's email-verification challenge, grounded in production 2026-09-01 (#1867) on
-# `https://www.linkedin.com/in/wfalcon`: "Add a note to your invitation? To verify this member knows
-# you, please enter their email to connect." The dialog still SHOWS `Send without a note`, the click
-# still lands, and nothing is sent — which is why the click could never have been the verdict.
-#
-# Matched against `_overlay_notice_text`, the same reading `_invite_restriction_reason` matches on,
-# so a log line and this detector can never tell different stories about what the overlay said.
+# LinkedIn's email-verification challenge (#1867): the dialog asks for the member's email address,
+# still renders `Send without a note`, still accepts the click, and sends nothing. Matched against
+# `_overlay_notice_text` — the same reading `_invite_restriction_reason` uses — so a log line and
+# this detector can never tell different stories about what the overlay said.
 _EMAIL_CHALLENGE_RE = re.compile(
     r"enter (?:their|his|her|the member(?:'|’)?s) email"
     r"|verify this member knows you"
     r"|enter (?:an |the )?email address to connect",
     re.IGNORECASE)
 
-# The profile's own top card, and the controls to read off it. Scoped to `main` and bounded, because
-# `find_deep_elements` truncates in DOCUMENT ORDER: an unscoped scan spends its whole budget on the
-# global nav before it reaches anything about the target (#1813, and visible in this issue's own
-# `overlay controls=[...]` dumps, which contain only nav chrome). The top card is the first thing
-# under `main`, so a small budget rooted there reads the affordance and nothing below it.
-_PROFILE_MAIN_CSS = "main"
-_PROFILE_TOP_CARD_CONTROL_LIMIT = 20
+# The profile's OWN top card — the one container the confirmation read may look in. `main` is not
+# it: the "People also viewed" / "More profiles for you" rails are inside `main` too, they are
+# visible, and their cards come LATER in document order, so any control budget spread over `main` is
+# a coin toss and a rail card's bare `Pending` would write a false send (#1012, in a read).
+#
+# The card is identified by the target's own name heading, not by position: if the first section is
+# not the top card, the heading refuses and the verdict falls to `unconfirmed`. `visible_only` is
+# what discards the top card's 0x0 sticky-header duplicate of every control.
+_PROFILE_TOP_CARD_CSS = "main > section, main > div > section, main section"
+_PROFILE_NAME_HEADING_CSS = "h1"
+_PROFILE_TOP_CARD_CONTROL_CSS = "button, a, [role='button']"
+_PROFILE_TOP_CARD_SCAN_LIMIT = 4
+_PROFILE_TOP_CARD_CONTROL_LIMIT = 30
 # The pending affordance's own vocabulary, plus punctuation — everything a label can say WITHOUT
-# naming anybody. Subtracting it leaves the residue, which is either empty (a bare control) or the
-# person the control belongs to. Reading it as a subtraction rather than parsing a trailing name is
-# what makes `Pending, click to withdraw` — a bare control whose label happens to contain the word
-# `to` — read as bare instead of as an invite pending for somebody called "withdraw".
+# naming anybody. Subtracting it leaves the residue: empty for a bare control, otherwise the person
+# it belongs to. Subtraction rather than parsing a trailing name is what makes `Pending, click to
+# withdraw` read as bare instead of as an invite pending for somebody called "withdraw".
+#
+# English-only, so a localized account reads every send as `unconfirmed` — fail-closed, and visible
+# as a `reason=unconfirmed` rate rather than as false sends. Watch that rate after deploy.
 _PENDING_LABEL_VOCABULARY_RE = re.compile(
     r"\b(?:pending|invitation|invite|sent|click|to|withdraw|the|your)\b|[^\w\s]", re.IGNORECASE)
-# How long to let the page settle before calling a send unconfirmed. The dialog dismisses with an
-# animation and the top card re-renders behind it, so the first read after the click is expected to
-# be inconclusive — bounded, because an unconfirmed verdict costs nothing but a retry and a browser
-# session held open costs a slot in the pool every Selenium lane shares.
+# The confirmation reads get their OWN short wait. `_connect_dialog_present` goes through
+# `find_first`, which blocks on `wait.until`, so reusing the session wait (10 s) would spend a full
+# timeout per negative check. Worst case here is bounded at **3 x 3 s + 2 x 1 s = 11 s** of held
+# browser session, and only on the unconfirmed path; a confirmed send returns on the first read.
+# That matters because this fires most often exactly when LinkedIn is challenging, and every
+# Selenium lane draws from the same fixed pool of Chrome slots.
 _INVITE_CONFIRM_ATTEMPTS = 3
+_INVITE_CONFIRM_READ_TIMEOUT_SECONDS = 3
 _INVITE_CONFIRM_SETTLE_SECONDS = 1
+
+# Two different questions, deliberately two different sets (#1867).
+#
+# `_INVITE_SENT_RESULTS` answers "is our invitation OUT" — it decides the `connection_requests` row
+# and fails CLOSED, so only positively-read evidence is in it.
+#
+# `_INVITE_DISPATCHED_RESULTS` answers "did we push a Send at LinkedIn" — it decides the pacing
+# envelope and fails OPEN, so an unreadable outcome counts. LinkedIn may have counted the invite
+# even though we could not see it, and pacing UNDER the true figure is the direction that gets an
+# account restricted. The two sets overlap without being the same, which is the whole point:
+# `unconfirmed` charges the envelope and writes no row, `already_pending` writes the row and
+# charges nothing.
+_INVITE_SENT_RESULTS = frozenset({CONNECTION_REQUEST_SENT_MESSAGE, INVITE_ALREADY_PENDING_MESSAGE})
+_INVITE_DISPATCHED_RESULTS = frozenset({CONNECTION_REQUEST_SENT_MESSAGE,
+                                        INVITE_EMAIL_CHALLENGE_MESSAGE,
+                                        INVITE_UNCONFIRMED_MESSAGE})
 
 
 def _pending_button_names_target(label: str, target_name: str) -> bool:
     """Whether a pending-invite affordance can be attributed to THIS loaded profile.
 
-    The mirror of `_follow_button_names_target`, and it needs the same discipline for the same
-    reason: the "People also viewed" rail ships a control per card, and one of those people may
-    genuinely have a pending invite from an earlier run. Reading THEIR badge as evidence that OUR
-    click sent OUR invite is #1012 committed in a read instead of a click — with a false `sent` row
-    at the end of it, which is the exact defect this function exists to close.
-
-    A BARE `Pending` / `Invitation sent` / `Withdraw` is trusted for the reason a bare `Connect` is:
-    the rail's own controls always carry a name (#1012's 2026-08-03 grounding). A NAMED one must
-    match the page's own title exactly, and an unreadable title refuses it — this is the positive
-    half of a fail-closed verdict, so a guess here writes the row we cannot take back.
+    A bare `Pending` / `Invitation sent` / `Withdraw` is trusted, because the caller has already
+    proven the container is the target's own card. A NAMED one must match the page's own title
+    exactly, and an unreadable title refuses it: this is the positive half of a fail-closed verdict,
+    so a guess here writes a row we cannot take back (#1867).
     """
     if not _INVITE_PENDING_LABEL_RE.match(" ".join((label or "").split()).strip()):
         return False
@@ -1203,62 +1225,82 @@ def _pending_label_residue(text: str) -> str:
     return " ".join(_PENDING_LABEL_VOCABULARY_RE.sub(" ", text or "").split()).lower()
 
 
-def _pending_invite_affordance(driver) -> bool:
-    """Whether the profile's OWN top card now shows the invite as pending.
+def _target_top_card(driver: WebDriver, target_name: str) -> "WebElement | None":
+    """The container that PROVES it is the loaded profile's own top card, or None.
+
+    A section qualifies only by carrying the target's name as its heading. Position is a hint for
+    which sections to check, never the evidence — a rail card can sit anywhere, and the whole point
+    of the scope is that a stranger's `Pending` badge can never be read as our outcome (#1012).
+    """
+    if not target_name:
+        return None
+    wanted = " ".join(target_name.split()).lower()
+    for container in find_deep_elements(driver, _PROFILE_TOP_CARD_CSS, visible_only=True,
+                                        limit=_PROFILE_TOP_CARD_SCAN_LIMIT):
+        for heading in find_deep_elements(driver, _PROFILE_NAME_HEADING_CSS, visible_only=True,
+                                          limit=2, root=container):
+            if element_label(heading) == wanted:
+                return container
+    return None
+
+
+def _pending_invite_affordance(driver: WebDriver) -> bool:
+    """Whether the target's OWN top card now shows the invite as pending.
 
     The outcome half of the #1013 rule this lane broke: success is the outcome being present, never
-    a click having landed. Reads through `find_deep_elements` because the affordance can be mounted
-    in the same open shadow root the Connect dialog moved into (#1733), and CSS-only because XPath
-    cannot address a shadow tree at all.
+    a click having landed. Reads through `find_deep_elements` because the card can be mounted in the
+    same open shadow root the Connect dialog moved into (#1733) — CSS-only, since XPath cannot
+    address a shadow tree at all.
 
-    Fails CLOSED at every step — no `main`, no controls, no attributable label all answer False.
-    An unreadable page is not a send.
+    Fails CLOSED at every step: no attributable card, no controls, no attributable label all answer
+    False. An unreadable page is not a send.
     """
-    controls: list = []
-    for container in find_deep_elements(driver, _PROFILE_MAIN_CSS, visible_only=True, limit=1):
-        controls = find_deep_elements(driver, _CONNECT_DIALOG_CONTROL_CSS, visible_only=True,
-                                      limit=_PROFILE_TOP_CARD_CONTROL_LIMIT, root=container)
-        break
-    if not controls:
-        return False
     target_name = _target_name_from_title(driver)
+    card = _target_top_card(driver, target_name)
+    if card is None:
+        return False
+    controls = find_deep_elements(driver, _PROFILE_TOP_CARD_CONTROL_CSS, visible_only=True,
+                                  limit=_PROFILE_TOP_CARD_CONTROL_LIMIT, root=card)
     return any(_pending_button_names_target(element_label(control), target_name)
                for control in controls)
 
 
-def _confirm_invite_outcome(driver, wait, user_id: int) -> str:
+def _confirm_invite_outcome(driver: WebDriver, user_id: int) -> str:
     """What the page says happened after Send was clicked — the verdict, in place of the click.
 
-    Ten rows were written 'sent' on 2026-09-01 because `_submit_connect_invite` answers True the
-    instant `WebElement.click()` does not raise, and nothing downstream re-read the page (#1867).
-    None of those ten invitations existed. This is the missing read, and it is three-valued because
-    the failure has two distinguishable shapes and lumping them loses the one we can act on:
+    A click that does not raise is not an invitation (#1867). Three-valued, and never `sent` on an
+    unreadable page: a false negative costs one retry, a false positive costs a row the account
+    owner cannot reconcile against LinkedIn's own sent list.
 
-    * `CONNECTION_REQUEST_SENT_MESSAGE` — the dialog is GONE **and** the top card shows the invite
-      pending. Both, because either alone is satisfied by a dialog that closed on a refusal.
-    * `INVITE_EMAIL_CHALLENGE_MESSAGE` — the overlay is asking for the member's email address. A
-      named, expected target fact and the state #1836 exists to clear, so it is DEBUG: a repeated
-      `log_warning` re-emits at ERROR and files one grouped `$exception`
-      (`src/cqc_lem/utilities/CLAUDE.md`), which would page us once per unverifiable person in the
-      queue for behaviour we already understand.
-    * `INVITE_UNCONFIRMED_MESSAGE` — the click landed and nothing could be read. That IS anomalous,
-      so it gets the one `log_warning` here.
-
-    Never `sent` on an unreadable page. The cost of a false negative is one retry; the cost of a
-    false positive is a row the account owner cannot reconcile against LinkedIn's own sent list.
+    * `CONNECTION_REQUEST_SENT_MESSAGE` — the dialog is GONE **and** the target's top card shows the
+      invite pending. Both, because either alone is satisfied by a dialog that closed on a refusal.
+    * `INVITE_EMAIL_CHALLENGE_MESSAGE` — the overlay wants the member's email address. Expected and
+      named, so DEBUG: a repeated `log_warning` re-emits at ERROR and files one grouped `$exception`
+      (`src/cqc_lem/utilities/CLAUDE.md`), i.e. one page per unverifiable person in the queue.
+    * `INVITE_UNCONFIRMED_MESSAGE` — the click landed and nothing could be read. Genuinely
+      anomalous, so it takes the one `log_warning`.
     """
+    wait = WebDriverWait(driver, _INVITE_CONFIRM_READ_TIMEOUT_SECONDS)
     for attempt in range(_INVITE_CONFIRM_ATTEMPTS):
         if attempt:
             time.sleep(_INVITE_CONFIRM_SETTLE_SECONDS)
-        # Positive evidence first: a landed invite is the one reading no other state can imitate.
-        if (not _connect_dialog_present(driver, wait, user_id)
-                and _pending_invite_affordance(driver)):
-            log_info("Connection request confirmed — the profile now shows the invite pending")
-            return CONNECTION_REQUEST_SENT_MESSAGE
         try:
-            overlay = _overlay_notice_text(driver)
-        except Exception:
-            overlay = ""
+            # Positive evidence first: a landed invite is the one reading no other state can
+            # imitate. The WHOLE attempt is guarded, because this reads the top card WHILE it
+            # re-renders behind a dismissing dialog — the likeliest StaleElementReference site in
+            # the flow, and an escape here would skip the retry, skip the verdict, and lose the one
+            # `log_warning` this path owes. A failed read is that attempt answering "no evidence".
+            confirmed = (not _connect_dialog_present(driver, wait, user_id)
+                         and _pending_invite_affordance(driver))
+            overlay = "" if confirmed else _overlay_notice_text(driver)
+        except WebDriverException as e:
+            log_debug(f"Could not read the page while confirming the invite: {e}",
+                      user_id=user_id, action_type="invite_connect")
+            continue
+        if confirmed:
+            log_info("Connection request confirmed — the profile now shows the invite pending",
+                     user_id=user_id, action_type="invite_connect")
+            return CONNECTION_REQUEST_SENT_MESSAGE
         if _EMAIL_CHALLENGE_RE.search(overlay):
             log_debug("Invitation needs this member's email address before LinkedIn will send it; "
                       "not recording it as sent", user_id=user_id, action_type="invite_connect")
@@ -1306,6 +1348,23 @@ def invite_to_connect_now(user_id: int, profile_url: str, message: str = None) -
         # Open the Connect dialog. With none open the note/send steps below can only fail, and
         # their errors would bury the real reason — so stop here with a named one instead.
         opened, dialog_reason = _open_connect_invite_dialog(driver, wait, user_id, profile_url)
+        if not opened and (dialog_reason or NO_CONNECT_BUTTON_MESSAGE) == NO_CONNECT_BUTTON_MESSAGE \
+                and _pending_invite_affordance(driver):
+            # The ordinary miss's own text already guessed at this — "invite may already be
+            # pending" — and now the page can be asked instead of guessed. Our invitation IS out,
+            # so the row's goal is met and re-dispatching it every cycle only spends Chrome slots.
+            #
+            # This is the return path for a real send that read as `unconfirmed` (#1867): it went
+            # back to 'approved', the retry finds no Connect button because the invite is pending,
+            # and without this it lands on `no_connect_affordance` forever — the same undercount
+            # this PR exists to fix, one step downstream. Nothing was DISPATCHED this run, so the
+            # pacing envelope is deliberately not charged for it below.
+            log_info("Invitation to this profile is already pending — recording it as sent",
+                     user_id=user_id, action_type="invite_connect")
+            insert_new_log(user_id=user_id, action_type=LogActionType.ENGAGED,
+                           result=LogResultType.SUCCESS, post_url=profile_url,
+                           message=INVITE_ALREADY_PENDING_MESSAGE)
+            return True, INVITE_ALREADY_PENDING_MESSAGE
         if not opened:
             # Three outcomes, three different owners (#1813). A wall LinkedIn NAMED is about the
             # ACCOUNT and holds the whole lane. A route that merely missed counts toward the miss
@@ -1331,7 +1390,7 @@ def invite_to_connect_now(user_id: int, profile_url: str, message: str = None) -
         # answers whether a Send affordance was CLICKABLE — the #573 failure it owns, and a real
         # one. Whether an invitation now EXISTS is a different question, which only re-reading the
         # page can answer, and answering it from the click is what wrote ten false 'sent' rows.
-        result = (_confirm_invite_outcome(driver, wait, user_id)
+        result = (_confirm_invite_outcome(driver, user_id)
                   if _submit_connect_invite(driver, wait, user_id, with_note=noted)
                   else INVITE_NOT_SENT_MESSAGE)
     except LinkedInRateLimited:
@@ -1343,13 +1402,18 @@ def invite_to_connect_now(user_id: int, profile_url: str, message: str = None) -
         insert_new_log(user_id=user_id, action_type=LogActionType.ENGAGED,
                        result=LogResultType.FAILURE, post_url=profile_url, message=str(e))
     else:
-        invite_sent = result == CONNECTION_REQUEST_SENT_MESSAGE
+        invite_sent = result in _INVITE_SENT_RESULTS
         insert_new_log(user_id=user_id, action_type=LogActionType.ENGAGED,
                        result=LogResultType.SUCCESS if invite_sent else LogResultType.FAILURE,
                        post_url=profile_url, message=result)
-        if invite_sent:
+        if result in _INVITE_DISPATCHED_RESULTS:
+            # Charged on the DISPATCH, not on the row (#1867). The row is a claim about what
+            # LinkedIn did and fails CLOSED; the envelope is a claim about how hard we pushed, and
+            # a Send we could not read is still a Send we clicked — LinkedIn may well have counted
+            # it. Pacing under the true figure is the direction that gets accounts restricted, so
+            # this one fails OPEN.
             record_action(user_id, ACTION_INVITE)  # account-level governor (issue #626)
-            clear_invite_dialog_misses(user_id)  # the route works; the streak starts over
+            clear_invite_dialog_misses(user_id)  # the dialog opened; the miss streak starts over
     finally:
         quit_gracefully(driver)  # Close the driver
 
@@ -1466,7 +1530,13 @@ _INVITE_OUTCOME_REASONS = {
     # itself failing and belongs to this lane.
     INVITE_EMAIL_CHALLENGE_MESSAGE: "email_challenge",
     INVITE_UNCONFIRMED_MESSAGE: "unconfirmed",
+    INVITE_ALREADY_PENDING_MESSAGE: "already_pending",
 }
+
+# Reasons that are facts about the TARGET and will not change on a retry, so the row is retired on
+# the FIRST read rather than spending a Chrome session per cycle to learn the same thing (#1813,
+# #1867). `unconfirmed` is deliberately NOT here: a read that failed says nothing about the target.
+_TERMINAL_TARGET_REASONS = frozenset({FOLLOW_ONLY_MESSAGE, INVITE_EMAIL_CHALLENGE_MESSAGE})
 
 
 def _invite_outcome_reason(reason: str) -> str:
@@ -1539,22 +1609,31 @@ def send_connection_request(self, request_id: int):
     # warning here would only fork a second grouped issue for the same invite (#1038).
     log_debug(f"Connection request {request_id} failed: {reason}", user_id=user_id,
               action_type="invite_connect", task_name="send_connection_request")
-    # Out of network (#1813): the profile offers Follow and nothing else, which is a fact about the
-    # TARGET and will read the same on every retry. Retiring it here is what stops one unreachable
-    # row costing a ~90 s Chrome session per cycle on the lane every reachable row shares.
+    # Two reasons are facts about the TARGET, not about a run, so they will read the same on every
+    # retry. Retiring them on the FIRST read is what stops one unreachable row costing a ~90 s
+    # Chrome session per cycle on the lane every reachable row shares.
+    #
+    #   * out of network (#1813) — the profile offers Follow and nothing connect-shaped;
+    #   * the email challenge (#1867) — LinkedIn wants an address we do not have, so the invite
+    #     cannot go out however many sessions we spend on it. A counter would only reach the same
+    #     terminal state N sessions later. The row lands 'failed' carrying
+    #     INVITE_EMAIL_CHALLENGE_MESSAGE, which is how #1836 finds them to re-approve once it can
+    #     supply the address — 'failed' is terminal for AUTOMATION, never for the user.
+    unsendable_target = reason in _TERMINAL_TARGET_REASONS
     out_of_network = reason == FOLLOW_ONLY_MESSAGE
     terminal, attempts = record_connection_request_attempt(request_id, reason,
-                                                           terminal=out_of_network)
+                                                           terminal=unsendable_target)
     # `attempts` is 0 only when the write itself failed, and an event reporting a zero denominator
     # for a dispatch that DID happen is the exact blind spot this event closes.
     track_invite_outcome(user_id, INVITE_RESULT_FAILED if terminal else INVITE_RESULT_DEFERRED,
                          _invite_outcome_reason(reason), attempts or attempts_before + 1)
-    if out_of_network:
-        # DEBUG, not the warning below: nothing is broken, and one grouped issue per out-of-network
+    if unsendable_target:
+        # DEBUG, not the warning below: nothing is broken, and one grouped issue per unsendable
         # person in the queue is how a working lane gets paged for someone else's privacy settings.
         log_debug(f"Connection request {request_id} retired — {reason}", user_id=user_id,
                   action_type="invite_connect", task_name="send_connection_request")
-        return f"Connection request {request_id} -> failed (out of network, Follow only)"
+        detail = "out of network, Follow only" if out_of_network else "email challenge, see #1836"
+        return f"Connection request {request_id} -> failed ({detail})"
     if terminal:
         # Escalating on purpose (issue #1814): a target that survives the ceiling has genuinely
         # never been reachable, and the recurrence rule promotes a repeat of this to ERROR — which

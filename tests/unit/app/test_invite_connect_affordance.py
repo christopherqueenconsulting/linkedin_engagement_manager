@@ -34,6 +34,9 @@ _PROFILE_URL = "https://www.linkedin.com/in/jane-doe-123/"
 _CUSTOM_INVITE_URL = "https://www.linkedin.com/preload/custom-invite/?vanityName=jane-doe-123"
 
 _SEND_BARE_XPATH = '//button[contains(@aria-label,"Send without a note")]'
+# The loaded profile's display name, as its `<title>` carries it. The confirmation read attributes
+# the top card by this, so it has to agree with `_Routes.title`.
+_TARGET_NAME = "Jane Doe"
 
 
 class _Routes:
@@ -65,7 +68,7 @@ class _Routes:
         # Whether an invitation actually EXISTS. A Send click sets it; until then the top card
         # shows no pending affordance, so a route that only clicked reads as unconfirmed (#1867).
         self.invite_sent = False
-        self.main = MagicMock()
+        self.card = MagicMock()
         self.more_menu_opened = False
         self.clicked_anchor_hrefs: list[str] = []
         self.clicked_button_labels: list[str] = []
@@ -152,19 +155,20 @@ class _Routes:
         raise Exception(f"no element for {xpath}")
 
     def find_deep_elements(self, driver, css, *, visible_only=True, limit=20, root=None):
-        """Stand-in for the shadow-piercing lookup, answering only the confirmation read.
+        """Stand-in for the shadow-piercing lookup, answering the confirmation read.
 
-        The invitation's own evidence: a pending affordance on the target's top card, and only
-        once a Send actually landed. A page that never sent answers `[]` here, which is what makes
-        these route tests prove the OUTCOME rather than the click (#1867).
+        The top card and its name heading are ALWAYS present — a real profile has them, and a
+        double that omitted them would let the not-sent cases pass through the fail-closed branch
+        instead of through the affordance read. The only thing a landed Send changes is the
+        pending control on that card, which is the invitation's own evidence (#1867).
         """
         from cqc_lem.app.engagement import invites as ra
-        if not self.invite_sent:
-            return []
-        if css == ra._PROFILE_MAIN_CSS:
-            return [self.main]
-        if root is self.main:
-            return [self._button("Pending")]
+        if css == ra._PROFILE_TOP_CARD_CSS:
+            return [self.card]
+        if root is self.card:
+            if css == ra._PROFILE_NAME_HEADING_CSS:
+                return [self._button(_TARGET_NAME)]
+            return [self._button("Pending" if self.invite_sent else "Connect")]
         return []
 
 

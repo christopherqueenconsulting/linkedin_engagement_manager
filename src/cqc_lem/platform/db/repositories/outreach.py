@@ -1716,6 +1716,12 @@ INVITE_EMAIL_CHALLENGE_MESSAGE = (
 # owner's own sent-invitations list then disagree, with no way to tell which is lying.
 INVITE_UNCONFIRMED_MESSAGE = (
     "Send was clicked but the invitation could not be confirmed — not recorded as sent")
+# Our invitation to this profile is ALREADY out, read off the profile's own pending affordance
+# rather than guessed at (#1867). NO_CONNECT_BUTTON_MESSAGE's own text used to cover this case with
+# "invite may already be pending", which retried the row to its ceiling and then recorded a
+# selector-shaped reason for a working invite — the same undercount this issue is about, one step
+# downstream. A SUCCESS: the row's goal is met. Nothing was dispatched, so it costs no envelope.
+INVITE_ALREADY_PENDING_MESSAGE = "An invitation to this profile is already pending"
 # The wall was the ACCOUNT, not the profile (#1733). Distinct from NO_CONNECT_BUTTON_MESSAGE on
 # purpose: a limit reads the same on every profile, so grading it as "no Connect option" sends an
 # operator hunting a selector that is fine and lets the scanner re-dispatch the whole queue into it.
