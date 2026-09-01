@@ -48,19 +48,29 @@ switched the branch under the others inside a minute. The isolation exists becau
   `.env` masks real failures — an unset `DB_PORT` makes `int(None)` raise `TypeError`, which
   `except mysql.connector.Error` does NOT catch, so CI hits a path a local run does not. Together
   these two reproduce CI exactly.
-- **A worktree's `node_modules` is empty too, and `npm run build` still exits 0.** `node_modules` is
-  not shared between worktrees any more than the venv's plugins are, and the UI build script chains
-  through a binary npm cannot find. What you get is:
+- **Piping a command to `tail`/`head` discards its exit code — `$?` reports the PIPE's last stage.**
+  Measured on this box, `main`, npm 11.17.0, in a worktree with no `node_modules`:
 
   ```
-  tsc: not found
+  npm run build                 -> exit 127   ("sh: 1: tsc: not found")
+  npm run build 2>&1 | tail -3  -> exit 0
   ```
 
-  followed by **exit code 0**. Verifying the UI on `$?` alone therefore records a passing build that
-  compiled nothing — the npm sibling of the missing-plugin trap above. Run `npm ci` first, and read
-  the build OUTPUT, not just the status. CI is not exposed to this: `.github/workflows/ui-build.yml`
-  runs `npm ci` as its own step, so a missing toolchain fails the job there. That asymmetry is what
-  makes it dangerous — the local run reports green and CI later disagrees.
+  npm reports the failure correctly. Bash then throws it away, because without `set -o pipefail`
+  `$?` is `tail`'s status. This bites agents specifically: piping build and test output to `tail`
+  to keep it short is standard practice, and it converts every failure into a silent pass. It is
+  not npm-specific — `pytest | tail`, `ruff | tail` and `docker compose ... | tail` all lie the
+  same way, and `| head` is worse because it can also SIGPIPE the producer early.
+
+  Redirect to a file and read the file, or `set -o pipefail` first, or check `${PIPESTATUS[0]}`:
+
+  ```
+  npm run build > /tmp/build.log 2>&1; rc=$?; tail -20 /tmp/build.log; exit $rc
+  ```
+
+  A worktree's `node_modules` is empty for the same reason its venv has no test plugins — neither is
+  shared between worktrees — so run `npm ci` before `npm run build`. CI is not exposed to any of
+  this: `.github/workflows/ui-build.yml` runs `npm ci` as its own step and does not pipe.
 
 ## Verify before you push
 
