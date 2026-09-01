@@ -430,7 +430,10 @@ class TestInviteHoldLogLevel:
         with patch(f"{_MOD}.log_info") as info, patch(f"{_MOD}.log_warning") as warn:
             assert hold_invites(7, 3600, reason="weekly limit") is True
         # The hold must actually be STORED, not merely announced: without this a regression that
-        # returns True while writing nothing would pass on the log-level assertions alone.
+        # returns True while writing nothing would pass on the log-level assertions alone. The key
+        # is spelled out rather than built from _INVITE_HOLD_KEY on purpose — it is a WIRE format
+        # shared with release_invite_hold/invite_hold_remaining and with holds already live in
+        # Redis, so renaming it orphans them. Don't DRY this back into the constant.
         fake_redis.set.assert_called_once_with("linkedin:invite_hold:7", "weekly limit", ex=3600)
         # log_warning is the ONLY door into log_escalation (logger.py), so "no warning" is the
         # assertion that no second grouped $exception can be filed for a working state transition.
@@ -453,6 +456,18 @@ class TestInviteHoldLogLevel:
         # the test would still pass if the function returned False before ever reaching the write.
         assert isinstance(warn.call_args.kwargs.get("exc"), RuntimeError)
         assert warn.call_args.kwargs.get("user_id") == 7
+
+    def test_defaults_are_clamped_and_named_in_the_stored_hold(self, fake_redis):
+        """The TTL floor and the reason default are what a caller passing neither relies on."""
+        from cqc_lem.utilities.linkedin.rate_limit import hold_invites
+        with patch(f"{_MOD}.log_info") as info, patch(f"{_MOD}.log_warning"):
+            assert hold_invites(7, 0, reason=None) is True
+        # max(1, int(seconds)): ex=0 is rejected by Redis, so an unclamped 0 would raise and turn
+        # a hold the caller was told succeeded into a silently unheld lane.
+        fake_redis.set.assert_called_once_with("linkedin:invite_hold:7", "invite limit", ex=1)
+        # The INFO line is now the only log-level record that a hold was taken, so it has to name
+        # what was STORED. Interpolating the raw arguments said "for 0s (reason: None)".
+        assert "Connection invites HELD for user 7 for 1s (reason: invite limit)" == info.call_args.args[0]
 
 
 class TestTheRedisHandleIsCachedPerProcess:

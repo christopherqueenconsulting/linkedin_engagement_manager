@@ -379,18 +379,19 @@ def hold_invites(user_id: int, seconds: int = INVITE_HOLD_DEFAULT_SECONDS,
     if client is None:
         return False
     try:
-        client.set(_INVITE_HOLD_KEY.format(user_id=int(user_id)), reason or "invite limit",
-                   ex=max(1, int(seconds)))
-        # INFO, not WARNING: storing a hold is a state transition, not a degraded path detected
-        # HERE — the dead Connect route already warns where _open_connect_invite_dialog finds it,
-        # so warning again filed a SECOND grouped issue for one breakage. Precedent:
-        # pause_automation (#917). Escalation mechanics: docs/error-tracking.md.
-        log_info(f"Connection invites HELD for user {user_id} for {int(seconds)}s "
-                 f"(reason: {reason})", action_type="invite_connect", user_id=int(user_id))
+        # Resolved once, so the log line below describes what was actually STORED. It used to
+        # interpolate the raw arguments, so a defaulted reason logged "(reason: None)" and a
+        # clamped TTL logged "for 0s" while Redis held "invite limit" for 1s.
+        ttl = max(1, int(seconds))
+        stored_reason = reason or "invite limit"
+        client.set(_INVITE_HOLD_KEY.format(user_id=int(user_id)), stored_reason, ex=ttl)
+        # INFO, not WARNING: a stored hold is a state transition, not a degraded path detected here
+        # — both callers already log at the level their own trigger deserves. See #917 and the
+        # state-setter section of docs/error-tracking.md.
+        log_info(f"Connection invites HELD for user {user_id} for {ttl}s "
+                 f"(reason: {stored_reason})", action_type="invite_connect", user_id=int(user_id))
         return True
     except Exception as e:
-        # user_id is passed RAW, not int(): this branch also catches an int() that raised, and
-        # re-coercing here would turn a fail-open control into a raise. _extra() coerces it.
         log_warning("Failed to set invite hold", exc=e, action_type="invite_connect",
                     user_id=user_id)
         return False
