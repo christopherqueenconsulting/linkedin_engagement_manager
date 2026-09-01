@@ -166,8 +166,10 @@ _TRAILING_ID_RE = re.compile(r"-[0-9a-f]{4,}$", re.IGNORECASE)
 
 
 class ThreadState(str, Enum):
-    """What one reply check could actually establish. UNKNOWN is NOT 'no reply' — it means the thread
-    could not be read, and the caller must skip rather than send blind.
+    """What one reply check could actually establish.
+
+    UNKNOWN is NOT 'no reply' — it means the thread could not be read, and the caller must skip
+    rather than send blind.
     """
     REPLIED = "replied"
     NOT_REPLIED = "not_replied"
@@ -186,6 +188,7 @@ class ThreadOpen:
     skipped: list[str] = field(default_factory=list)
 
     def __bool__(self) -> bool:
+        """True when the ladder verified an open thread."""
         return self.opened
 
 
@@ -220,8 +223,9 @@ def profile_slug(profile_url: str) -> str:
 
 
 def name_from_profile_url(profile_url: str) -> str:
-    """A best-effort human name from a profile slug ('jane-doe-8a4b21' -> 'jane doe'), used only to
-    seed the messaging SEARCH box when the caller has no stored name.
+    """A best-effort human name from a profile slug ('jane-doe-8a4b21' -> 'jane doe').
+
+    Used only to seed the messaging SEARCH box when the caller has no stored name.
     """
     slug = profile_slug(profile_url)
     if not slug:
@@ -341,16 +345,17 @@ class ComposerOpen:
         return self.opened and bool(self.recipient)
 
     def __bool__(self) -> bool:
+        """Delegates to `addressed` — falsy on an open-but-unaddressed composer."""
         return self.addressed
 
 
 def open_addressed_composer(driver: WebDriver, wait: WebDriverWait, profile_url: str,
                             person_name: Optional[str] = None, user_id: Optional[int] = None,
                             timeout: float = THREAD_RENDER_TIMEOUT_SECONDS) -> ComposerOpen:
-    """Open a composer that is PROVABLY addressed to this person — the one way LEM reaches a DM it is
-    about to send (issue #1030).
+    """Open a composer that is PROVABLY addressed to this person (issue #1030).
 
-    Deliberately NOT `open_message_thread`. That ladder answers "can I read this thread", and its
+    The one way LEM reaches a DM it is about to send. Deliberately NOT `open_message_thread`. That
+    ladder answers "can I read this thread", and its
     routes click whichever matching control the DOM offers first; for a READ a wrong thread yields a
     wrong verdict, but for a SEND it puts our message in a stranger's inbox — the #1012 hazard class.
     So this navigates instead of clicking: the person's URN is resolved from their OWN profile page
@@ -433,8 +438,10 @@ def thread_reading(driver: WebDriver) -> dict:
 
 
 def _wait_thread_open(driver: WebDriver, timeout: float = THREAD_RENDER_TIMEOUT_SECONDS) -> dict:
-    """Poll `thread_reading` until the thread renders (or the budget runs out). Bounded on purpose:
-    the ladder has five more routes to try and cannot spend a WebDriverWait on each one.
+    """Poll `thread_reading` until the thread renders (or the budget runs out).
+
+    Bounded on purpose: the ladder has five more routes to try and cannot spend a WebDriverWait on
+    each one.
 
     Message EVENTS end the wait; a bare composer does not. LinkedIn paints the compose form before
     the message list, so returning on the first composer would report a perfectly readable thread as
@@ -533,8 +540,10 @@ def read_last_message(driver: WebDriver) -> str:
 
 
 def _visible_elements(root, locators: list[tuple[str, str]]) -> list[WebElement]:
-    """Displayed matches from the FIRST locator that yields any — the ladder needs a fail-FAST scan,
-    so this never waits (routes get their patience in the post-click verification instead).
+    """Displayed matches from the FIRST locator that yields any.
+
+    The ladder needs a fail-FAST scan, so this never waits (routes get their patience in the
+    post-click verification instead).
     """
     for find_by, value in locators:
         try:
@@ -579,8 +588,10 @@ def _try_control(driver: WebDriver, locators: list[tuple[str, str]], root=None,
 
 
 def _try_overflow(driver: WebDriver, timeout: float) -> Optional[dict]:
-    """LinkedIn demotes Message into the top-card **More** menu for some profiles/states. Several
-    'More' controls can share a page, so each is opened in turn and routes 1-3 re-run inside it.
+    """LinkedIn demotes Message into the top-card **More** menu for some profiles/states.
+
+    Several 'More' controls can share a page, so each is opened in turn and routes 1-3 re-run
+    inside it.
     """
     for menu in _visible_elements(driver, _MORE_LOCATORS):
         if not _click(driver, menu):
@@ -595,8 +606,9 @@ def _try_overflow(driver: WebDriver, timeout: float) -> Optional[dict]:
 
 def _try_direct_url(driver: WebDriver, timeout: float, urn: Optional[str] = None,
                     profile_url: str = "") -> Optional[dict]:
-    """The strongest fallback: navigate straight to the compose URL built from the person's URN, so
-    nothing depends on a rendered control at all.
+    """The strongest fallback: navigate straight to the compose URL built from the person's URN.
+
+    Nothing depends on a rendered control at all.
 
     The URN is captured from the PROFILE page before any route clicks, because an earlier route may
     have navigated somewhere that no longer carries it; reading it again here is only the fallback.
@@ -621,8 +633,9 @@ def _try_direct_url(driver: WebDriver, timeout: float, urn: Optional[str] = None
 
 def _try_messaging_search(driver: WebDriver, wait: WebDriverWait, person_name: Optional[str],
                           profile_url: str, timeout: float) -> Optional[dict]:
-    """Slowest route, and the only one that works when the profile page offers nothing: open
-    /messaging/, search the person by name, and open the matching conversation.
+    """Slowest route, and the only one that works when the profile page offers nothing.
+
+    Opens /messaging/, searches the person by name, and opens the matching conversation.
 
     Identifying the RIGHT conversation is the whole risk here — an opened thread is trusted, so a
     stranger's thread would decide this person's follow-up. A row that links to a different
