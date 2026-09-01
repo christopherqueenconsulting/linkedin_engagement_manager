@@ -149,6 +149,11 @@ def _build_repo(root: Path) -> dict[str, Path]:
     _git(work, "worktree", "add", "-b", "locked-branch", str(paths["locked"]), "main")
     _git(work, "worktree", "lock", str(paths["locked"]))
 
+    # Removable, but its path contains a SPACE: an awk field split over the porcelain output
+    # would truncate it to ".../has", and the sweep would decide about a path that does not exist.
+    paths["spaced"] = trees / "has space"
+    _git(work, "worktree", "add", "-b", "spaced-branch", str(paths["spaced"]), "main")
+
     # Registered but the directory was deleted by hand -> `git worktree prune` territory.
     paths["pruned"] = trees / "pruned"
     _git(work, "worktree", "add", "-b", "pruned-branch", str(paths["pruned"]), "main")
@@ -246,6 +251,10 @@ class TestClassification:
         paths, out = swept
         assert _held_as(_line_for(out, paths["locked"])) == "locked"
 
+    def test_a_path_with_a_space_is_classified_whole(self, swept: Swept) -> None:
+        paths, out = swept
+        assert _line_for(out, paths["spaced"]).startswith("WOULD REMOVE")
+
     def test_a_registration_whose_directory_is_gone_is_prunable(self, swept: Swept) -> None:
         paths, out = swept
         assert _line_for(out, paths["pruned"]).startswith("WOULD PRUNE")
@@ -259,7 +268,7 @@ class TestClassification:
         _, out = swept
         summary = _summary(out)
         for token in (
-            "would-remove=3", "prunable=1", "uncommitted=1", "grace=1",
+            "would-remove=4", "prunable=1", "uncommitted=1", "grace=1",
             "live-branch=1", "detached-unmerged=1", "locked=1", "unreadable=0",
         ):
             assert token in summary, summary
@@ -295,11 +304,19 @@ class TestDryRunIsTheDefault:
         assert paths["merged_gone"].exists()
 
     def test_help_names_the_flag_that_deletes(self) -> None:
-        result = subprocess.run(
-            ["bash", str(_SCRIPT), "--help"], capture_output=True, text=True, env=_git_env()
-        )
+        # Invoked the way ExecStart does — the file itself, not `bash <file>` — so the exec path
+        # (mode bit + shebang) is exercised and not just the interpreter path every other test uses.
+        result = subprocess.run([str(_SCRIPT), "--help"], capture_output=True, text=True)
         assert result.returncode == 0
         assert "--apply" in result.stdout
+
+    def test_a_prefix_of_apply_does_not_satisfy_it(self, tmp_path: Path) -> None:
+        # `case` patterns are exact, but this is the argument that deletes: prove `--app` refuses
+        # rather than falling through to a mode that removes.
+        paths = _build_repo(tmp_path.resolve())
+        result = _sweep(paths["work"], "--app")
+        assert result.returncode == 2
+        assert "unknown argument" in result.stderr
 
 
 @pytest.fixture(scope="module")
@@ -319,6 +336,7 @@ class TestApply:
         assert not paths["merged_gone"].exists()
         assert not paths["detached_merged"].exists()
         assert not paths["gone_unmerged"].exists()
+        assert not paths["spaced"].exists()
         for held in ("dirty", "live", "fresh", "detached_unmerged", "locked"):
             assert paths[held].exists(), f"{held} was removed"
         assert (paths["dirty"] / "scratch.txt").read_text(encoding="utf-8") == "unsaved work"
@@ -343,13 +361,19 @@ class TestApply:
 
     def test_a_run_that_held_something_still_exits_zero(self, applied: Swept) -> None:
         # Held trees and a NEEDS-A-HUMAN list are true reports, not unit failures. A weekly timer
-        # that goes permanently red is a timer nobody reads inside a month.
-        paths, _ = applied
-        assert _sweep(paths["work"], "--apply").returncode == 0
+        # that goes permanently red is a timer nobody reads inside a month. The fixture asserts
+        # rc == 0 for this very run; what this pins is that the run DID hold something.
+        _, out = applied
+        assert "NEEDS A HUMAN" in out
 
-    def test_a_second_apply_is_a_no_op(self, applied: Swept) -> None:
-        paths, _ = applied
-        summary = _summary(_sweep(paths["work"], "--apply").stdout)
+    def test_a_second_apply_is_a_no_op(self, tmp_path: Path) -> None:
+        # Its own repo, not the shared fixture: a test that mutates shared state is order- and
+        # xdist-dependent, and would read as a sweep regression when it is really a scheduling one.
+        paths = _build_repo(tmp_path.resolve())
+        assert _sweep(paths["work"], "--apply").returncode == 0
+        second = _sweep(paths["work"], "--apply")
+        assert second.returncode == 0
+        summary = _summary(second.stdout)
         assert "removed=0" in summary
         assert "failed=0" in summary
 
@@ -387,6 +411,18 @@ class TestFailClosed:
         finally:
             proc.kill()
             proc.wait()
+
+    def test_a_blind_process_detector_disables_all_removals(self, tmp_path: Path) -> None:
+        # The third hold-all condition, and the one guarding a LIVE agent's working directory.
+        # PROC_ROOT exists so this is testable: pointed at nothing, the self-test fails, and a
+        # detector that cannot look must never read as "no process found".
+        paths = _build_repo(tmp_path.resolve())
+        result = _sweep(paths["work"], "--apply", PROC_ROOT=str(tmp_path / "no-procfs"))
+        out = result.stdout + result.stderr
+        assert "HOLD-ALL" in out
+        assert "blind" in out
+        assert paths["merged_gone"].exists()
+        assert result.returncode == 0
 
     def test_git_itself_refuses_to_remove_a_dirty_tree(self, tmp_path: Path) -> None:
         # The second gate behind protection 2, and the reason nothing here passes --force: even if
@@ -444,6 +480,21 @@ class TestSourceGuards:
             assert self._FORBIDDEN.search(hazard), hazard
 
 
+def _directives(unit: str) -> dict[str, list[str]]:
+    """A systemd unit as key -> values, so a reformat or a deployment prefix is not a failure.
+
+    Not configparser: ``Environment=`` legitimately repeats and configparser keeps only the last.
+    """
+    values: dict[str, list[str]] = {}
+    for raw in (_SYSTEMD / unit).read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith(("#", ";", "[")):
+            continue
+        key, _, value = line.partition("=")
+        values.setdefault(key.strip(), []).append(value.strip())
+    return values
+
+
 class TestWeeklyWiring:
     """The PR claims a weekly sweep, so the schedule has to be committed, not just described.
 
@@ -451,23 +502,34 @@ class TestWeeklyWiring:
     live next to stale-branches.yml — it is a systemd timer on the box.
     """
 
+    def test_the_script_is_executable_the_way_execstart_runs_it(self) -> None:
+        # ExecStart runs the file, not `bash <file>`. Land it 0644 or lose the shebang and the
+        # timer fails 203/EXEC every Monday — whose only symptom is the accumulation this stops.
+        assert os.access(_SCRIPT, os.X_OK), "ExecStart runs the file directly; needs mode 0755"
+        assert _SCRIPT.read_text(encoding="utf-8").startswith("#!")
+
     def test_the_timer_runs_weekly_after_the_branch_sweep(self) -> None:
-        timer = (_SYSTEMD / "lem-worktree-sweep.timer").read_text(encoding="utf-8")
-        assert "OnCalendar=Mon *-*-* 07:00:00 UTC" in timer
-        assert "Persistent=true" in timer
-        assert "Unit=lem-worktree-sweep.service" in timer
+        timer = _directives("lem-worktree-sweep.timer")
+        schedule = timer["OnCalendar"][0]
+        assert schedule.startswith("Mon"), schedule  # after the Mon 06:00 UTC branch sweep
+        assert "07:00:00" in schedule and "UTC" in schedule, schedule
+        assert timer["Persistent"] == ["true"]  # a box that was off still sweeps on next boot
+        assert timer["Unit"] == ["lem-worktree-sweep.service"]
 
     def test_the_service_carries_apply_and_runs_as_lem(self) -> None:
-        service = (_SYSTEMD / "lem-worktree-sweep.service").read_text(encoding="utf-8")
-        assert "ExecStart=/home/lem/linkedin_engagement_manager/scripts/worktree_cleanup.sh --apply" in service
-        assert "User=lem" in service
-        assert "User=root" not in service
+        service = _directives("lem-worktree-sweep.service")
+        exec_start = service["ExecStart"][0]
+        assert exec_start.startswith("/"), exec_start  # systemd needs an absolute program
+        assert exec_start.endswith(f"{_SCRIPT.name} --apply"), exec_start
+        # Never root: a root removal is the one way this could delete something it does not own.
+        assert service["User"] == ["lem"]
 
     def test_the_service_pins_its_environment(self) -> None:
         # A systemd service inherits an even narrower environment than cron and no login shell, so
         # neither the git that decides removals nor the fetch's prompt behaviour is left to chance:
-        # an unpinned PATH could swap the git binary, and a prompting fetch would hang.
-        service = (_SYSTEMD / "lem-worktree-sweep.service").read_text(encoding="utf-8")
-        assert "WorkingDirectory=/home/lem/linkedin_engagement_manager" in service
-        assert "Environment=PATH=/usr/local/bin:/usr/bin:/bin" in service
-        assert "Environment=GIT_TERMINAL_PROMPT=0" in service
+        # an unpinned PATH could swap the git binary, and a prompting fetch would hang to timeout.
+        service = _directives("lem-worktree-sweep.service")
+        environment = service["Environment"]
+        assert any(v.startswith("PATH=") and "/usr/bin" in v for v in environment), environment
+        assert "GIT_TERMINAL_PROMPT=0" in environment
+        assert service["WorkingDirectory"][0].startswith("/")

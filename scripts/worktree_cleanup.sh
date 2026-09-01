@@ -42,7 +42,8 @@
 #   scripts/worktree_cleanup.sh --apply      # actually remove (what the weekly timer runs)
 #   scripts/worktree_cleanup.sh --no-fetch   # skip `git fetch --prune`; forces report-only
 #
-# Env: GRACE_HOURS (default 48), APPLY (1 == --apply).
+# Env: GRACE_HOURS (default 48), APPLY (1 == --apply), PROC_ROOT (default /proc — a test seam, so
+# the blind-detector hold-all below can be exercised without an unreadable procfs).
 #
 # Exit codes — a systemd unit's success state is an operator signal, so all three are pinned:
 #   0  swept cleanly. Held trees, a NEEDS-A-HUMAN list and a hold-all run are all exit 0: they are
@@ -60,6 +61,7 @@ set -uo pipefail
 # changes, change it in all three — a worktree outliving its branch is the whole failure mode here.
 GRACE_HOURS="${GRACE_HOURS:-48}"
 APPLY="${APPLY:-0}"
+PROC_ROOT="${PROC_ROOT:-/proc}"
 FETCH=1
 
 while [ $# -gt 0 ]; do
@@ -103,7 +105,7 @@ fi
 # processes (and a pid can exit mid-walk), so an operator can see how deaf the detector was.
 PROC_CWDS=""
 PROC_UNREADABLE=0
-for p in /proc/[0-9]*; do
+for p in "$PROC_ROOT"/[0-9]*; do
   if cwd="$(readlink "$p/cwd" 2>/dev/null)"; then
     PROC_CWDS+="$cwd"$'\n'
   else
@@ -115,7 +117,7 @@ ACTIVE_CWDS="$(printf '%s' "$PROC_CWDS" | sort -u)"
 # it. If it does not — no procfs, hidepid=2, a container without host pids — the detector is blind
 # and every "no process found" answer is really "cannot look", which would silently turn the ONE
 # protection covering a running agent lane into fail-open. Hold everything instead of guessing.
-SELF_CWD="$(readlink "/proc/$$/cwd" 2>/dev/null || true)"
+SELF_CWD="$(readlink "$PROC_ROOT/$$/cwd" 2>/dev/null || true)"
 if [ -z "$SELF_CWD" ] || ! printf '%s\n' "$ACTIVE_CWDS" | grep -qxF -- "$SELF_CWD"; then
   echo "HOLD-ALL: live-process detector is blind (cannot read /proc) — removals disabled" >&2
   APPLY=0
@@ -227,8 +229,10 @@ while IFS=$'\t' read -r path ref detached locked; do
     failed=$((failed+1))
   fi
 done < <(git -C "$MAIN" worktree list --porcelain | awk '
-  /^worktree /{p=$2; b=""; det=0; lock=0}
-  /^branch /{b=$2}
+  # substr, never $2: a worktree path may contain spaces and $2 would silently truncate it —
+  # the porcelain prefixes ("worktree " / "branch ") are fixed width, so slicing is exact.
+  /^worktree /{p=substr($0, 10); b=""; det=0; lock=0}
+  /^branch /{b=substr($0, 8)}
   /^detached/{det=1}
   /^locked/{lock=1}
   /^$/{if(p!=""){printf "%s\t%s\t%d\t%d\n", p, (b==""?"-":b), det, lock; p=""}}
