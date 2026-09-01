@@ -585,6 +585,7 @@ def _require_user_admin(session_token: str) -> int:
     200: {"description": "Feedback list returned"},
     401: {"description": "Invalid or expired session"},
     403: {"description": "Admin access required"},
+    503: {"description": "The feedback list could not be read"},
 })
 def admin_feedback_list(
     session_token: str,
@@ -593,9 +594,15 @@ def admin_feedback_list(
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
 ) -> ResponseModel[dict[str, Any]]:
-    """List feedback submissions for the admin triage panel."""
+    """List feedback submissions for the admin triage panel.
+
+    A read fault is **503**, never an empty page: an empty list is how the panel says "no feedback",
+    and a DB error must not be able to say it while rows sit in the table.
+    """
     _require_user_admin(session_token)
     rows = get_feedback_list(status=status, source=source, limit=limit, offset=offset)
+    if rows is None:
+        raise HTTPException(status_code=503, detail="Could not read the feedback list. Try again.")
     return ResponseModel(status_code=200, detail={
         "items": [
             {

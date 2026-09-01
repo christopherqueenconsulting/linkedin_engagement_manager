@@ -409,7 +409,9 @@ class TestGetFeedbackList:
                         "status": "new", "source": "widget"}]
         sql, params = cur.execute.call_args[0]
         assert "FROM feedback f LEFT JOIN users u" in sql
-        assert "ORDER BY f.created_at DESC" in sql
+        # Sort on the PRIMARY key, not created_at: a reverse PK scan avoids the filesort that
+        # carried the wide body/context_json columns and overran the sort buffer (1038).
+        assert "ORDER BY f.id DESC" in sql
         assert "LIMIT %s OFFSET %s" in sql
         assert params == (5, 10)
 
@@ -453,13 +455,15 @@ class TestGetFeedbackList:
             assert get_feedback_list(status="not-a-status") == []
         get_conn.assert_not_called()
 
-    def test_db_error_returns_empty_list(self, fake_cursor):
+    def test_db_error_returns_none_so_the_route_can_answer_503(self, fake_cursor):
+        # None, never [], on a fault: an empty list is how the panel says "no feedback", and the
+        # route turns None into a 503 rather than render that lie while rows sit in the table.
         import mysql.connector
         conn, cur = fake_cursor(fetch_all=None)
         cur.execute.side_effect = mysql.connector.Error("boom")
         with patch(f"{_GET_CONN}", return_value=conn), patch(f"{_FEEDBACK}.log_error"):
             from cqc_lem.utilities.db import get_feedback_list
-            assert get_feedback_list() == []
+            assert get_feedback_list() is None
 
 
 class TestRecordFeedbackReview:

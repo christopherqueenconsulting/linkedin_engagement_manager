@@ -102,6 +102,14 @@ class TestListFeedback:
             r = api_client.get("/api/admin/feedback")
         assert r.status_code == 422
 
+    def test_read_fault_is_503_not_an_empty_panel(self, api_client):
+        # get_feedback_list returns None on a DB fault; the panel must show an error, not "no
+        # feedback" while rows sit in the table.
+        with _auth(_ADMIN_USER)["get_session"], _auth(_ADMIN_USER)["is_admin"], \
+             patch("cqc_lem.api.routers.admin.get_feedback_list", return_value=None):
+            r = api_client.get("/api/admin/feedback", params={"session_token": "tok"})
+        assert r.status_code == 503
+
 
 class TestReviewFeedback:
     def test_dismiss_action_for_admin(self, api_client):

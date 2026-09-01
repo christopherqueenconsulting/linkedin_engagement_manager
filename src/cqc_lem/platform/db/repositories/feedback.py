@@ -624,11 +624,20 @@ def count_pending_admin_review(statuses: tuple = (FeedbackStatus.NEW,)) -> int:
         return 0
 def get_feedback_list(status: Optional[Union["FeedbackStatus", str]] = None,
                       source: Optional[Union["FeedbackSource", str]] = None,
-                      limit: int = 50, offset: int = 0) -> list:
+                      limit: int = 50, offset: int = 0) -> Optional[list]:
     """All feedback rows, newest first, with the submitter's email and admin flag (issue #793).
 
     Optional status/source filters are validated against the enum vocabularies before they reach
     the query, so a bad value returns an empty list instead of a MySQL 1265.
+
+    Ordered by `f.id DESC`: the id is a monotonic AUTO_INCREMENT written with `created_at`, so it IS
+    the newest-first order — and it lets MySQL serve the sort from a reverse PRIMARY-key scan. The
+    old `ORDER BY f.created_at DESC` had no index to lean on, so an unfiltered page filesorted the
+    whole table carrying the wide `body`/`context_json` columns and overran the sort buffer with a
+    `1038 Out of sort memory`, which the panel then rendered as an empty list.
+
+    `None`, never `[]`, when the page could not be read: an empty list is how the panel says "no
+    feedback matches", and a DB fault must not be able to tell that lie — the route answers 503.
 
     `embedding` is deliberately NOT selected — the panel never shows it, and a page of 50 rows would
     drag 50 full vectors out of MySQL to be thrown away. `is_admin` answers the same question the
@@ -658,7 +667,7 @@ def get_feedback_list(status: Optional[Union["FeedbackStatus", str]] = None,
         f"f.cluster_id, f.github_issue_number, f.status, f.sentiment, "
         f"f.reviewed_by, f.reviewed_at, f.created_at, u.email, u.is_admin "
         f"FROM feedback f LEFT JOIN users u ON u.id = f.user_id "
-        f"{where} ORDER BY f.created_at DESC LIMIT %s OFFSET %s"
+        f"{where} ORDER BY f.id DESC LIMIT %s OFFSET %s"
     )
     try:
         with db_cursor(dictionary=True) as cursor:
@@ -672,4 +681,4 @@ def get_feedback_list(status: Optional[Union["FeedbackStatus", str]] = None,
             return rows
     except mysql.connector.Error as err:
         log_error("Could not list feedback for admin panel", exc=err)
-        return []
+        return None
