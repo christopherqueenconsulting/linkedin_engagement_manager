@@ -34,6 +34,23 @@ A draft must:
 - run ≥2 sentences
 - never open with validation filler
 
+### Fact grounding (issue #1834)
+
+A number the draft attaches to **we / our / I** is a claim about the author's own operating history,
+and it must trace to one of three places: the target post, the research `findings` block that was
+actually supplied, or the user's **story bank**. Anything else the model wrote down, it invented — a
+trace audit found "we logged 1,200 errors per week, then 300, a 75% drop" and similar in roughly 8
+of 12 drafts read, none of it in the bank.
+
+The detector is `story_bank.unsourced_specifics`, the same one the post review gate uses, scoped to
+first-person SENTENCES so a stat quoted from research is not a personal claim. Severity is per
+surface (`story_bank.fact_grounding_severity`, overridable with
+`FACT_GROUNDING_SEVERITY_<SURFACE>`): **HARD on comments**, because a comment publishes under the
+user's name with no review step, so the finding joins the #617 fix-list and the post is SKIPPED
+rather than commented on. Posts stay WARN — the #1134 repair loop already runs this check and holds
+the draft at PENDING for a human. The bank is read only once a draft has claimed something the post
+and the findings do not cover, so a comment with no numbers costs no query.
+
 ### Similarity gate
 
 Must not near-duplicate the user's last 50 posted comments. `COMMENT_SIMILARITY_MAX` is compared

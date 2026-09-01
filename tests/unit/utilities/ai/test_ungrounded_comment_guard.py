@@ -25,9 +25,12 @@ _FEED = "cqc_lem.app.engagement.feed"
 
 # A real post plus the link it cites, and a draft grounded in its specifics (no validation-filler
 # opener, one lived value-add with a number, closing question) so it clears the quality contract.
-_POST_WITH_URL = ("We cut our warehouse pick times by moving the fast movers to the front aisle. "
-                  "Nobody talks about how much layout beats software here. "
-                  "Full write-up: https://lnkd.in/gKabw7UJ")
+# The post states the draft's numbers because a first-person metric the post does not contain is
+# itself a skip now (issue #1834) — this file is about the BODY guard, so its draft must not also
+# be tripping the grounding one.
+_POST_WITH_URL = ("We cut our warehouse pick times 18% by moving the fast movers to the front "
+                  "aisle across two sites. Nobody talks about how much layout beats software "
+                  "here. Full write-up: https://lnkd.in/gKabw7UJ")
 _GOOD = ("The front-aisle move is the part most layout posts skip. We tried it across two "
          "warehouses last year and pick times fell 18% before we touched the software. "
          "How long did the fast movers stay stable for you?")

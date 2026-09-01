@@ -29,8 +29,13 @@ def _ctx(**kwargs):
 
 # A draft that satisfies every rule against _POST: grounded in its specifics, 3 sentences, a lived
 # first-hand value-add plus a real number, and no validation-filler opener.
-_POST = ("We cut our warehouse pick times by moving the fast movers to the front aisle. "
-         "Nobody talks about how much layout beats software here.")
+#
+# The post carries "18%" and "two" because _GOOD quotes them back (issue #1834). It did not before,
+# which made this file's own model of a good comment one that claimed a first-person metric out of
+# nowhere — the exact draft the grounding check now blocks. A number the target post states is a
+# number the comment may repeat, and that is what these tests exercise on every generate-side path.
+_POST = ("We cut our warehouse pick times 18% by moving the fast movers to the front aisle across "
+         "two sites. Nobody talks about how much layout beats software here.")
 _GOOD = ("The front-aisle move is the part most layout posts skip. We tried it across two "
          "warehouses last year and pick times fell 18% before we touched the software. "
          "How long did the fast movers stay stable for you?")
