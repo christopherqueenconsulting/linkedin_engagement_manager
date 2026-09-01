@@ -247,10 +247,26 @@ class TestGovernorAccounting:
         recorded.assert_not_called()
 
     def test_a_sent_invite_is_reported_and_a_failed_one_is_not(self):
+        """The governor is charged on the DISPATCH, and the row is written on the OUTCOME.
+
+        Two different questions (#1867). The row is a claim about what LinkedIn did, so it fails
+        CLOSED. The envelope is a claim about how hard we pushed, so it fails OPEN — a Send we
+        clicked but could not read may well have been counted by LinkedIn, and pacing under the
+        true figure is the direction that gets an account restricted.
+        """
         from cqc_lem.app.engagement import invites as ra
+        from cqc_lem.utilities.db import InviteOutcome
         from cqc_lem.utilities.human_pacing import ACTION_INVITE
-        for sent in (True, False):
-            connect = MagicMock() if sent else MagicMock(side_effect=Exception("no button"))
+
+        # (verdict, row says sent, envelope charged). The middle row is the one this fix added:
+        # not a send, still a push.
+        cases = [(InviteOutcome.SENT, True, True),
+                 (InviteOutcome.UNCONFIRMED, False, True),
+                 (None, False, False)]  # None: no Send affordance, so nothing was pushed at all
+        for verdict, row_sent, charged in cases:
+            clicker = (MagicMock() if verdict is not None
+                       else MagicMock(side_effect=Exception("no button")))
+            confirm = patch(f"{_INV}._confirm_invite_outcome", return_value=verdict)
             with patch(f"{_INV}.get_user_password_pair_by_id", return_value=("e", "p")), \
                  patch(f"{_INV}.get_driver_wait_pair", return_value=(MagicMock(), MagicMock())), \
                  patch(f"{_INV}.login_to_linkedin"), \
@@ -258,14 +274,15 @@ class TestGovernorAccounting:
                  patch(f"{_INV}._open_connect_invite_dialog", return_value=(True, None)), \
                  patch(f"{_INV}.record_invite_dialog_miss"), \
                  patch(f"{_INV}.clear_invite_dialog_misses"), \
-                 patch(f"{_INV}.click_element_wait_retry", connect), \
+                 patch(f"{_INV}.click_element_wait_retry", clicker), \
+                 confirm, \
                  patch(f"{_INV}.log_error"), \
                  patch(f"{_INV}.insert_new_log"), \
                  patch(f"{_INV}.quit_gracefully"), \
                  patch(f"{_INV}.record_action") as recorded:
                 invite_sent, _reason = ra.invite_to_connect_now(1, "https://x/in/jane")
-            assert invite_sent is sent
-            if sent:
+            assert invite_sent is row_sent
+            if charged:
                 recorded.assert_called_once_with(1, ACTION_INVITE)
             else:
                 recorded.assert_not_called()

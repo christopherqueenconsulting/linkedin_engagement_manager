@@ -1551,6 +1551,12 @@ def track_invite_outcome(user_id: Optional[int], result: str, reason: str,
     `attempts` counts real dispatches that reached LinkedIn, this one included, so it is 0 exactly
     when nothing was attempted (held, capped, throttled) — which is the reading that separates a
     lane failing from a lane never running.
+
+    Two reasons exist because a CLICK is not an outcome (issue #1867): `email_challenge` is
+    LinkedIn asking for the member's email before it will send, and `unconfirmed` is the click
+    landing with nothing readable after it. Both used to be counted as `sent`, so the `result=sent`
+    series was measuring clicks — a breakdown of `reason` on the failures is now also the measure
+    of how much of the backlog is waiting on #1836.
     """
     _emit(EVENTS["invite_outcome"],
           {"user_id": user_id, "result": result, "reason": reason, "attempts": attempts}, extra)

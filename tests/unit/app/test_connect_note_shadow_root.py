@@ -42,6 +42,11 @@ _CONTROL_CSS = "button, a, [role='button']"
 _NOTE_CSS = "textarea#custom-message"
 _BROAD_CSS = "textarea, [contenteditable='true']"
 _TEXTAREA_XPATH = '//textarea[@id="custom-message"]'
+_TOP_CARD_CSS = "main section"
+# An h2, not an h1: a live profile carries NO h1 at all, and the name is the first h2 in `main`
+# (grounded on `harshal-karanpuriya`, 2026-09-01).
+_HEADING_CSS = "h2"
+_TARGET_NAME = "Jane Doe"
 
 
 def _control(label: str):
@@ -66,19 +71,44 @@ class _FakeDeepQuery:
         has_container: Whether the dialog carries a role the container query can match.
         renders_after: How many field queries answer empty before the field appears — the dialog
             renders it in response to the Add-a-note CLICK, so the first query can be early.
+
+    The fake also models what a LANDED send looks like, because a click is no longer the verdict
+    (#1867). The top card and its name heading are ALWAYS present — a real profile has them, and a
+    double that omitted them would let the not-sent tests pass through the fail-closed branch
+    instead of through the affordance read they are meant to exercise. The only thing `send_lands`
+    changes is the pending control on that card.
     """
 
     def __init__(self, *, inside: dict = None, outside: dict = None, has_container: bool = True,
                  renders_after: int = 0):
         self.container = MagicMock() if has_container else None
+        if self.container is not None:
+            # `_overlay_notice_text` reads the container's own text; a real element answers a
+            # string, and a bare MagicMock would make the fake fail in a way production cannot.
+            self.container.text = ""
+        self.card = MagicMock()
         self.inside = inside or {}
         self.outside = outside or {}
         self.pending = renders_after
+        self.sent = False
         self.queries: list = []
+
+    def send_lands(self):
+        """The page after an invitation actually went out: dialog gone, top card pending."""
+        self.container = None
+        self.sent = True
 
     def __call__(self, driver, css, *, visible_only=True, limit=20, root=None):
         """Answer `css` from whichever table `root` selects."""
         self.queries.append((css, root))
+        if css == _TOP_CARD_CSS:
+            return [self.card]
+        if root is self.card:
+            if css == _HEADING_CSS:
+                return [_control(_TARGET_NAME)]
+            # The card itself is always there; only the invite's own affordance turns up on a send.
+            return [_control("Message"), _control("More")] + (
+                [_control("Pending")] if self.sent else [_control("Connect")])
         if css == _DIALOG_CSS:
             return [self.container] if self.container is not None else []
         scoped = self.container is not None and root is self.container
@@ -95,13 +125,36 @@ class _FakeDeepQuery:
 
 def _shadow_dialog(box=None, *, field_css: str = _NOTE_CSS, renders_after: int = 0,
                    controls=("Add a note", "Send invitation"), outside: dict = None,
-                   has_container: bool = True):
-    """A dialog whose controls — and optionally its note field — live in the shadow root."""
-    inside = {_CONTROL_CSS: [_control(label) for label in controls]}
+                   has_container: bool = True, sends: bool = True):
+    """A dialog whose controls — and optionally its note field — live in the shadow root.
+
+    Its Send control is wired to `send_lands`, so the invitation exists only once Send has been
+    pressed — the outcome, not the click, is what the confirmation step reads (#1867).
+    """
+    from cqc_lem.app.engagement import invites
+
+    query = _FakeDeepQuery(outside=outside or {}, has_container=has_container,
+                           renders_after=renders_after)
+    # Derived from the module's own Send labels, not restated here: a rotation that renames one
+    # would otherwise leave the fake silently wiring nothing and every send reading as unconfirmed.
+    send_labels = (invites._SEND_INVITATION_LABEL, invites._SEND_WITHOUT_NOTE_LABEL)
+    elements = []
+    for label in controls:
+        element = _control(label)
+        if sends and label.lower().startswith(send_labels):
+            element.click.side_effect = query.send_lands
+        elements.append(element)
+    query.inside = {_CONTROL_CSS: elements}
     if box is not None:
-        inside[field_css] = [box]
-    return _FakeDeepQuery(inside=inside, outside=outside or {}, has_container=has_container,
-                          renders_after=renders_after)
+        query.inside[field_css] = [box]
+    return query
+
+
+def _profile_driver():
+    """A driver on the target's own profile — the page title is what attributes the top card."""
+    driver = MagicMock()
+    driver.title = f"{_TARGET_NAME} | LinkedIn"
+    return driver
 
 
 class _Result:
@@ -321,7 +374,8 @@ class TestTheInviteGoesOutCarryingTheNote:
 
         with patch(f"{_INV}.find_deep_elements", side_effect=deep), \
              patch(f"{_INV}.get_user_password_pair_by_id", return_value=("e@x", "pw")), \
-             patch(f"{_INV}.get_driver_wait_pair", return_value=(MagicMock(), MagicMock())), \
+             patch(f"{_INV}.get_driver_wait_pair",
+                   return_value=(_profile_driver(), MagicMock())), \
              patch(f"{_INV}.login_to_linkedin"), \
              patch(f"{_INV}._profile_is_first_degree", return_value=False), \
              patch(f"{_INV}._open_connect_invite_dialog", return_value=(True, None)), \
@@ -342,6 +396,48 @@ class TestTheInviteGoesOutCarryingTheNote:
         log_warning.assert_not_called()
         log_error.assert_not_called()
 
+    def test_a_dialog_that_takes_the_click_and_shows_no_outcome_is_not_a_send(self):
+        """The #1867 shape, through the same fake dialog.
+
+        `sends=False` is a Send control that accepts the click and changes nothing — LinkedIn's
+        email-verification challenge, which offers `Send without a note` and then demands an
+        address. The click lands, the note is typed, and the row must still not be 'sent'.
+        """
+        from cqc_lem.app.engagement import invites
+        from cqc_lem.utilities.db import INVITE_UNCONFIRMED_MESSAGE
+
+        box = MagicMock()
+        deep = _shadow_dialog(box, sends=False)
+
+        def click(driver, wait, xpath, label, **kwargs):
+            raise TimeoutException(label)
+
+        with patch(f"{_INV}.find_deep_elements", side_effect=deep), \
+             patch(f"{_INV}.get_user_password_pair_by_id", return_value=("e@x", "pw")), \
+             patch(f"{_INV}.get_driver_wait_pair",
+                   return_value=(_profile_driver(), MagicMock())), \
+             patch(f"{_INV}.login_to_linkedin"), \
+             patch(f"{_INV}._profile_is_first_degree", return_value=False), \
+             patch(f"{_INV}._open_connect_invite_dialog", return_value=(True, None)), \
+             patch(f"{_INV}.click_element_wait_retry", MagicMock(side_effect=click)), \
+             patch(f"{_INV}.find_first", return_value=None), \
+             patch(f"{_INV}.click_first", return_value=None), \
+             patch(f"{_INV}.get_ai_message_refinement", return_value="short note"), \
+             patch(f"{_INV}.time.sleep"), \
+             patch(f"{_INV}.insert_new_log"), \
+             patch(f"{_INV}.record_action") as record_action, \
+             patch(f"{_INV}.quit_gracefully"), \
+             patch(f"{_INV}.log_warning") as log_warning:
+            sent, reason = invites.invite_to_connect_now(1, "https://x/in/jane", "hi jane")
+
+        assert (sent, reason) == (False, INVITE_UNCONFIRMED_MESSAGE)
+        box.send_keys.assert_called_once_with("hi jane")
+        # The envelope IS charged: we clicked Send and LinkedIn may have counted it, so pacing
+        # under the true figure is the direction that gets accounts restricted (#1867). The ROW
+        # fails closed; the ENVELOPE fails open. Different questions, different postures.
+        record_action.assert_called_once()
+        log_warning.assert_called_once()  # the ONE anomaly log, from the confirmation step
+
 
 class TestTheFakeDomTracksTheModule:
 
@@ -354,3 +450,6 @@ class TestTheFakeDomTracksTheModule:
         assert invites._CONNECT_NOTE_INPUT_CSS == _NOTE_CSS
         assert invites._CONNECT_NOTE_INPUT_FALLBACK_CSS == _BROAD_CSS
         assert invites._CONNECT_NOTE_TEXTAREA_XPATH == _TEXTAREA_XPATH
+        assert invites._PROFILE_TOP_CARD_CSS == _TOP_CARD_CSS
+        assert invites._PROFILE_NAME_HEADING_CSS == _HEADING_CSS
+        assert invites._PROFILE_TOP_CARD_CONTROL_CSS == _CONTROL_CSS
