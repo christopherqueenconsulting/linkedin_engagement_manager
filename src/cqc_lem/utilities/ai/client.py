@@ -40,6 +40,21 @@ _PARENT_KEY = "parent_run_id"
 # eagerly — that would drag the DB and PostHog into every `from ...ai.client import client`.
 _SYSTEM_FEATURE = "system"
 
+# The proxy redacts $ai_input/$ai_output_choices on every call (`turn_off_message_logging: true` in
+# .litellm/config.yaml), which is what makes output quality ungradable: an online evaluation judging
+# a published comment scores the literal string `redacted-by-litellm`. LiteLLM resolves redaction PER
+# REQUEST (`should_redact_message_logging`), and this header is its documented opt-out — so the
+# un-redaction is scoped to the features that have an evaluation waiting, instead of turning the
+# whole proxy's generation view into full conversation text.
+_REDACTION_OFF_HEADER = "litellm-disable-message-redaction"
+
+# Comma-separated feature names (the same values `attribution_metadata` stamps) whose prompt and
+# completion CONTENT may reach PostHog. UNSET OR EMPTY MEANS NONE — this is a data-egress control,
+# so it fails CLOSED, and it is an env var rather than a utilities/flags.py flag because a flag
+# fails OPEN to its default and safety controls are never flags. Setting it is an owner decision:
+# issue #1832 carries the processor, retention and privacy-language questions it turns on.
+_PROMPT_LOGGING_FEATURES_ENV = "LLM_PROMPT_LOGGING_FEATURES"
+
 # The LiteLLM proxy is a container LEM restarts on its own schedule (deploys, image pulls, the host's
 # nightly unattended-upgrade reboot). While it is coming back up every call gets
 # `[Errno 111] Connection refused`, and the OpenAI SDK spends its own two retries inside ~1.5s — far
@@ -177,21 +192,64 @@ def _attach_trace(options) -> None:
         metadata.setdefault(_PARENT_KEY, span_id)
 
 
+def prompt_logging_features() -> frozenset[str]:
+    """Features whose prompt/completion CONTENT may leave the stack, read at CALL time.
+
+    Read here rather than at import so an operator can widen or (more importantly) close it with an
+    `.env` edit and a worker restart, and normalized to lower case because the value is typed by
+    hand. Anything unset, empty or whitespace yields the empty set, which redacts everything.
+    """
+    raw = os.getenv(_PROMPT_LOGGING_FEATURES_ENV) or ""
+    return frozenset(part.strip().lower() for part in raw.split(",") if part.strip())
+
+
+def _attach_prompt_logging(options) -> None:
+    """Let THIS request's messages reach PostHog, if and only if its feature is allowlisted.
+
+    Fails closed at every step: an un-allowlisted feature, a request that carries no attribution at
+    all, a raw provider model, or an empty allowlist all leave the proxy's global redaction in
+    place. The hook only ever ADDS the opt-out header, so the worst outcome of a bug here is that
+    content stays redacted — never that it leaks.
+    """
+    body = getattr(options, "json_data", None)
+    if not isinstance(body, dict) or options.files:
+        return
+    if not str(body.get("model") or "").startswith(_TIER_PREFIX):
+        return
+    allowed = prompt_logging_features()
+    if not allowed:
+        return
+    metadata = _request_metadata(options)
+    feature = str((metadata or {}).get("feature") or "").strip().lower()
+    if not feature or feature not in allowed:
+        return
+    headers = getattr(options, "headers", None)
+    sent = dict(headers) if isinstance(headers, Mapping) else {}
+    # A caller that set the header itself owns the decision — headers are case-insensitive.
+    if any(str(key).lower() == _REDACTION_OFF_HEADER for key in sent):
+        return
+    sent[_REDACTION_OFF_HEADER] = "true"
+    options.headers = sent
+
+
 class AttributedOpenAI(OpenAI):
     """The OpenAI client with LEM's who/what — and which pipeline — stamped onto every proxied request.
 
     Attribution lives here rather than at the ~10 call sites because a call that skips it is
     invisible in cost routing and lands on an anonymous PostHog person — a silent failure nobody
     would notice. Trace ids are here for the same reason: a step that forgot them would drop out of
-    its post's trace and nothing would say so. `_build_request` is the one place the SDK funnels
-    every endpoint through; tests/unit/utilities/ai/test_client_attribution.py and
-    test_client_tracing.py drive a real request build so an SDK upgrade that moves the hook fails CI
-    instead of quietly dropping either.
+    its post's trace and nothing would say so. The prompt-logging opt-out is here because it is
+    decided FROM the attribution, so it can only be read once that is stamped. `_build_request` is
+    the one place the SDK funnels every endpoint through; tests/unit/utilities/ai/
+    test_client_attribution.py, test_client_tracing.py and test_client_prompt_logging.py drive a real
+    request build so an SDK upgrade that moves the hook fails CI instead of quietly dropping any of
+    them.
     """
 
     def _build_request(self, options, **kwargs):
         # Independently guarded: attribution failing must not also cost the trace, or vice versa.
-        for hook in (_attach_attribution, _attach_trace):
+        # Order matters once — prompt logging reads the metadata attribution just wrote.
+        for hook in (_attach_attribution, _attach_trace, _attach_prompt_logging):
             try:
                 hook(options)
             except Exception:

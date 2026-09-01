@@ -321,23 +321,31 @@ litellm_settings:
   success_callback: ["posthog"]
   failure_callback: ["posthog"]
   # Prompts and completions are the USER'S LinkedIn material (profile synthesis, story-bank
-  # anecdotes, draft DMs), so this was `true` from #647 until 2026-09-01. It is now FALSE, and that
-  # is a deliberate decision, not a default: $ai_input/$ai_output_choices carry the full text into
-  # PostHog. What it buys is the only thing that can grade OUTPUT quality — online evaluations that
-  # read the comment we actually published. A trace audit found the drafter inventing first-person
-  # metrics ("we cut errors from 1,200/wk to 300") and commenting on posts whose body never
-  # arrived; neither is visible from tokens/cost/latency, and both ship publicly under the user's
-  # name. Redaction is what made them unmeasurable.
+  # anecdotes, draft DMs), so redaction is the DEFAULT for every call and stays that way: this key
+  # is the global floor, and it is deliberately not `os.environ/`-interpolated — the safe value
+  # should not be something a typo in `.env` can move.
   #
-  # Two things this does NOT change:
-  #  - the SPA still masks the same content client-side (maskProps()); this is the proxy leg only.
-  #  - redaction never covered the model's own `reasoning` field, which rides in
-  #    provider_specific_fields and reaches PostHog either way. The audit read the fabricated
-  #    numbers off exactly that field WHILE this said `true`, so the pre-change privacy posture was
-  #    weaker than the comment above claimed.
+  # It is also the reason output quality was ungradable. $ai_input/$ai_output_choices arrive as the
+  # literal string `redacted-by-litellm`, so an online evaluation judging a published comment scores
+  # a constant. A hand audit of comment_generation traces found the drafter inventing first-person
+  # metrics ("we cut errors from 1,200/wk to 300") and commenting on posts whose body never arrived
+  # (issues #1833, #1834); neither is visible from tokens/cost/latency, and both ship publicly under
+  # the user's name.
   #
-  # Flip back to true to restore full redaction; nothing else in the pipeline reads this.
-  turn_off_message_logging: false
+  # The narrow answer is per-request, not global. LiteLLM resolves redaction per call
+  # (`should_redact_message_logging`): a request carrying `LiteLLM-Disable-Message-Redaction: true`
+  # logs its messages in full and every other request stays redacted. `utilities/ai/client.py` sets
+  # that header for the features named in LLM_PROMPT_LOGGING_FEATURES and no others. That env var is
+  # EMPTY by default, so nothing opts out until an owner sets it — issue #1832 is that decision.
+  #
+  # Two limits this key does not cover:
+  #  - the SPA masks the same content client-side (maskProps()), but that is a DIFFERENT leg. Once a
+  #    feature is allowlisted here, maskProps() no longer protects that content — the proxy sends it.
+  #  - redaction never covered the model's own `reasoning`, which rides in provider_specific_fields
+  #    and reaches PostHog regardless of this setting. The audit read those fabricated numbers off
+  #    exactly that field WHILE this said `true`. Open as issue #1831; the same class of escape as
+  #    `previous_models` above.
+  turn_off_message_logging: true
   drop_params: true
   request_timeout: 180
 

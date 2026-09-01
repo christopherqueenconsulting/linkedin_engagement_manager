@@ -42,16 +42,16 @@ class TestPostHogCallback:
         assert "custom_callbacks:" in CONFIG_SETTINGS
         assert "/app/.litellm/complexity_router.py" in CONFIG_SETTINGS
 
-    def test_message_logging_is_on_so_output_quality_is_gradable(self):
-        """`turn_off_message_logging` is the ONE switch that decides whether an online evaluation
-        can read what we published. It was `true` until 2026-09-01, which made every content
-        failure mode — invented first-person metrics, comments on a post whose body never arrived —
-        unmeasurable: the judge scored the literal string `redacted-by-litellm`.
+    def test_prompts_and_completions_are_redacted_by_default(self) -> None:
+        """The global floor stays `true`: every call is redacted unless it opts out per request.
 
-        Pinned rather than left free because flipping it back silently blinds every content eval
-        while the evals keep reporting a pass rate.
+        Un-redacting is scoped one feature at a time by `utilities/ai/client.py` (the
+        `LiteLLM-Disable-Message-Redaction` header), so this key must never become the lever — a
+        global `false` ships profile synthesis, draft DMs and image prompts to PostHog to grade one
+        drafter. Pinned as a literal rather than `os.environ/` for the same reason: the safe value
+        should not be something a typo in `.env` can move.
         """
-        assert re.search(r"turn_off_message_logging:\s*false", CONFIG_SETTINGS)
+        assert re.search(r"turn_off_message_logging:\s*true", CONFIG_SETTINGS)
 
     def test_the_proxy_container_gets_the_posthog_credentials(self):
         """The logger reads these two names specifically; POSTHOG_HOST is the app's own var, so both
