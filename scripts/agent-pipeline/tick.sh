@@ -45,7 +45,17 @@ DRY_RUN="${DRY_RUN:-0}"
 # real list: they omitted "CodeQL PR Quality Gate", so the pipeline would call a PR green and
 # request a merge while a required check was still pending or failing — and then sit in the queue.
 # Note this is the PR *Quality Gate*, not "CodeQL Security Analysis", which runs but is NOT required.
-REQUIRED_CHECKS_JQ='select(.n=="Unit Tests (Python 3.12)" or .n=="Integration Tests" or .n=="GitGuardian Scan" or .n=="UI Build" or .n=="Migration Versions" or .n=="CodeQL PR Quality Gate")'
+#
+# THREE copies of this list exist and they decide different things, so they must move together
+# (#1878): branch protection is what GitHub blocks on, this is what v1 waits for, and
+# `v2/lemd/github.py`'s REQUIRED_CHECKS is what the v2 daemon waits for. Flipping only branch
+# protection leaves the pipeline merging while the new gate is red — worse than not requiring it.
+# `tests/unit/scripts/test_required_checks_agree.py` fails the build when the two code copies drift.
+# `Docstring & Lint Gate` is listed here BEFORE the owner runs the branch-protection flip, and that
+# order is the safe one: an extra name here only makes the pipeline WAIT for a check GitHub does not
+# yet demand. The reverse — protection ahead of the code — leaves the daemon requesting merges the
+# queue keeps refusing.
+REQUIRED_CHECKS_JQ='select(.n=="Unit Tests (Python 3.12)" or .n=="Integration Tests" or .n=="GitGuardian Scan" or .n=="UI Build" or .n=="Migration Versions" or .n=="CodeQL PR Quality Gate" or .n=="Docstring & Lint Gate")'
 
 # Owner-tunable knobs (edit $BASE/config.env; missing file = these defaults).
 #   MAX_AGENTS         hard ceiling on concurrent Claude runs (slots), whatever the backlog
@@ -1538,7 +1548,8 @@ for PR_JSON in $(gh pr list --repo "$SLUG" --state open --label "agent:working" 
   fi
 
   # Only the branch-protection REQUIRED checks gate merge — ignore non-required noise
-  # (CodeQL Security Analysis, E2E, Docstring & Lint Gate). See REQUIRED_CHECKS_JQ at the top.
+  # (CodeQL Security Analysis, E2E). See REQUIRED_CHECKS_JQ at the top: `Docstring & Lint Gate`
+  # moved OUT of that noise list and into the required set in #1878.
   ROLLUP="$(gh pr view "$PR" --repo "$SLUG" --json statusCheckRollup \
     | jq -r "[.statusCheckRollup[]? | {n:(.name//.context//\"\"), s:(.conclusion//.state//\"PENDING\")}
              | $REQUIRED_CHECKS_JQ]")"

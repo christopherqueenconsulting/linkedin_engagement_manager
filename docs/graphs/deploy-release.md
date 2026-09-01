@@ -17,7 +17,7 @@ crash lose nothing (drain + `task_acks_late`).**
 ```mermaid
 flowchart TD
   A["Dev branch, PR opened to main"] --> B{"PR Lint: Validate PR title\n(Conventional Commits)"}
-  A --> C["6 required CI gates:\nUnit Tests (3.12) / Integration Tests /\nUI Build / Migration Versions /\nGitGuardian Scan / CodeQL PR Quality Gate"]
+  A --> C["7 required CI gates:\nUnit Tests (3.12) / Integration Tests /\nUI Build / Migration Versions /\nGitGuardian Scan / CodeQL PR Quality Gate /\nDocstring & Lint Gate"]
   C --> D{"merge_group: same 6 gates\nre-run in the merge queue"}
   D --> E["PR merges to main\n(required_approving_review_count = 0 —\nreview is not enforced)"]
 
@@ -69,15 +69,16 @@ flowchart TD
 Numbered walkthrough (job/file names are exact):
 
 1. **PR opened to `main`.** `PR Lint` (`.github/workflows/pr-lint.yml`, job `Validate PR title
-   (Conventional Commits)`) checks the title format; the six branch-protection-required contexts
+   (Conventional Commits)`) checks the title format; the seven branch-protection-required contexts
    listed in root `CLAUDE.md` § CI Gates run in parallel: `Unit Tests (Python 3.12)`
    (`unit-tests.yml`), `Integration Tests` (`integration-coverage.yml`), `UI Build`
    (`ui-build.yml`), `Migration Versions` (`migration-check.yml`), `GitGuardian Scan`
-   (`gitguardian-scan.yml`), `CodeQL PR Quality Gate` (`codeql-pr-gate.yml`). All six also declare
-   `merge_group:`, so they re-run identically once the PR enters the merge queue.
+   (`gitguardian-scan.yml`), `CodeQL PR Quality Gate` (`codeql-pr-gate.yml`), `Docstring & Lint
+   Gate` (`docstring-lint.yml`). All seven also declare `merge_group:`, so they re-run identically
+   once the PR enters the merge queue.
 2. **PR merges to `main`.** Per `docs/contribution-security.md` / root `CLAUDE.md`,
-   `required_approving_review_count` is 0 — human review is not enforced at this gate, only the six
-   automated checks are.
+   `required_approving_review_count` is 0 — human review is not enforced at this gate, only the
+   seven automated checks are.
 3. **`release-please.yml`** (`on: push: branches: [main]`) runs on every merge. It opens or updates
    ONE standing `chore: release X.Y.Z` PR (`release-please-config.json`, `release-type: python`),
    authored via `RELEASE_DISPATCH_TOKEN` so the PR's own CI runs without a manual "Approve and run"

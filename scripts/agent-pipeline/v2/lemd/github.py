@@ -29,6 +29,13 @@ LOG = logging.getLogger("lemd.github")
 
 #: Required contexts from branch protection. Mirrors tick.sh's REQUIRED_CHECKS_JQ deliberately —
 #: verify with: gh api repos/:owner/:repo/branches/main/protection --jq '.required_status_checks.contexts'
+#:
+#: The list lives in THREE places that decide different things — branch protection (what GitHub
+#: blocks on), tick.sh's REQUIRED_CHECKS_JQ (what v1 waits for) and this tuple (what v2 waits for) —
+#: so they only mean anything while they agree. #1878 added `Docstring & Lint Gate` to all three at
+#: once for that reason: requiring it in branch protection alone would leave this daemon merging a
+#: PR while the ratchet was red. `tests/unit/scripts/test_required_checks_agree.py` fails the build
+#: when the two code copies drift; nothing but the owner can read or write the GitHub copy.
 REQUIRED_CHECKS = (
     "Unit Tests (Python 3.12)",
     "Integration Tests",
@@ -36,6 +43,7 @@ REQUIRED_CHECKS = (
     "UI Build",
     "Migration Versions",
     "CodeQL PR Quality Gate",
+    "Docstring & Lint Gate",
 )
 
 FAILED_CONCLUSIONS = frozenset({"FAILURE", "ERROR", "TIMED_OUT", "CANCELLED", "STARTUP_FAILURE"})
@@ -176,11 +184,11 @@ def checks_for(slug: str, pr: int, *, timeout: int = 30) -> ChecksState:
     on them would park healthy work.
 
     A required context that is ABSENT from the rollup counts as pending, not as absent-and-therefore
-    fine. Every workflow behind the six required contexts triggers unconditionally on
-    `pull_request`, so a head listing only three of them is a head where the other three have not
-    been created yet — and `total > 0 and failed == 0 and pending == 0` would call that green and
-    arm auto-merge before CI had reported. The `total == 0` guard alone only catches the instant
-    before the FIRST check appears.
+    fine. Every workflow behind the required contexts triggers on any `pull_request` targeting
+    `main`, so a head listing only three of them is a head where the rest have not been created
+    yet — and `total > 0 and failed == 0 and pending == 0` would call that green and arm auto-merge
+    before CI had reported. The `total == 0` guard alone only catches the instant before the FIRST
+    check appears.
     """
     data = gh_json(
         ["pr", "view", str(pr), "--repo", slug, "--json", "statusCheckRollup"], timeout=timeout

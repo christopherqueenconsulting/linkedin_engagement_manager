@@ -327,15 +327,19 @@ def test_all_required_checks_green_is_green(monkeypatch):
 def test_a_required_check_that_has_not_reported_counts_as_pending(monkeypatch):
     """The hazard `total == 0` does not catch: a head where only SOME checks exist yet.
 
-    Every workflow behind the six required contexts triggers on every `pull_request`, so three
-    green entries means the other three have not been created — reading that as green armed
+    Every workflow behind the required contexts triggers on any `pull_request` targeting `main`, so
+    three green entries means the rest have not been created — reading that as green armed
     auto-merge before CI had reported.
+
+    The expected pending count is DERIVED from `REQUIRED_CHECKS`, not written out: it was `3` while
+    six contexts were required, and #1878 added a seventh. A literal here turns a required-check
+    addition into an unrelated-looking test failure, which invites "fix" by editing the number.
     """
     _rollup(monkeypatch, [{"name": n, "conclusion": "SUCCESS"}
                           for n in github.REQUIRED_CHECKS[:3]])
     state = github.checks_for("o/r", 1)
     assert state.green is False
-    assert state.pending == 3
+    assert state.pending == len(github.REQUIRED_CHECKS) - 3
     assert d(pr(checks=state)).next_state == db.STATE_WAIT_CI
 
 

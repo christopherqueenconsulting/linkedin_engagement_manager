@@ -35,7 +35,7 @@ flowchart TD
   DC -- "owner (@gitchrisqueen) replies\nok / 1A 2B / off-menu" --> REVISE["MODE=revise\napply the answer"]
   DC -- "hold-off / bare question" --> DC
   REVISE --> CI
-  RISK -- no --> CI["CI gates:\nUnit Tests (3.12), Integration Tests,\nUI Build, Migration Versions,\nGitGuardian Scan, CodeQL PR Quality Gate\n(+ non-required Docstring & Lint Gate, CodeQL Security)"]
+  RISK -- no --> CI["CI gates:\nUnit Tests (3.12), Integration Tests,\nUI Build, Migration Versions,\nGitGuardian Scan, CodeQL PR Quality Gate,\nDocstring & Lint Gate\n(+ non-required CodeQL Security)"]
 
   CI -- red --> FIX["MODE=fix\n<=4 attempts"]
   FIX --> CI
@@ -100,10 +100,10 @@ flowchart TD
    (`@gitchrisqueen`, replies from anyone else are silently ignored) answers on either the PR or the
    issue thread. `ok` / `1A 2B` / an off-menu answer routes to `MODE=revise`; "hold off" or a bare
    question leaves it parked.
-8. **CI gates** — the six required contexts named in CLAUDE.md (`Unit Tests (Python 3.12)`,
+8. **CI gates** — the seven required contexts named in CLAUDE.md (`Unit Tests (Python 3.12)`,
    `Integration Tests`, `UI Build`, `Migration Versions`, `GitGuardian Scan`,
-   `CodeQL PR Quality Gate`), plus the non-required `Docstring & Lint Gate` (ratchet against
-   `.ruff-baseline`, routes `MODE=docfix`) and non-required `CodeQL Security Analysis`. A red run
+   `CodeQL PR Quality Gate`, and `Docstring & Lint Gate` — the ratchet against `.ruff-baseline`,
+   which routes `MODE=docfix`), plus the non-required `CodeQL Security Analysis`. A red run
    routes to `MODE=fix`, capped at 4 attempts before escalation to `needs-human`.
 9. **Review.** Default reviewer is `MODE=selfreview` — a fresh Claude invocation explicitly told
    "you did NOT write this code," which posts a comment starting `🔎 Claude adversarial review`
