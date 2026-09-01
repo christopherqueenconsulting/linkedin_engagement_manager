@@ -102,6 +102,8 @@ _MASKS = (
     (re.compile(r"\burn:[\w:]+\b"), "<urn>"),
     (re.compile(r"\b[0-9a-fA-F]{8,}\b"), "<hex>"),
     (re.compile(r"\[[^\]]*\]"), "<list>"),
+    # `masked_recipient` depends on this quoted-value rule to collapse a contact name — keep it if
+    # you reorder or tighten the table, or names start leaking into public issues.
     (re.compile(r"'[^']*'"), "<str>"),
     (re.compile(r'"[^"]*"'), "<str>"),
     (re.compile(r"\b\d+(?:\.\d+)?\b"), "<n>"),
@@ -120,6 +122,24 @@ def normalize_message(message: str) -> Tuple[str, str]:
         text = pattern.sub(replacement, text)
     display = text.strip()
     return display, display.casefold()
+
+
+def masked_recipient(first_name: Optional[str], profile_url: Optional[str]) -> str:
+    """A recipient label safe to interpolate into a warning message.
+
+    Only WARNING and above escalate (see `note`/`escalate`), so this is for those levels: a real
+    contact's name must never reach the grouped `$exception` value the daily error->issue cron files
+    as a public GitHub issue, and per-contact names must not fork one defect into a separate issue
+    each. A known first name is quoted so `normalize_message` collapses it through the quoted-value
+    mask above; the profile-URL fallback is already collapsed by the URL mask.
+
+    Inner single quotes become a typographic apostrophe first: the ASCII quoted-value mask stops at
+    the first `'`, so a name like O'Brien would otherwise leak its tail and fork the fingerprint.
+    """
+    name = (first_name or "").strip().replace("'", "’")
+    if name:
+        return f"'{name}'"
+    return profile_url or "<unknown recipient>"
 
 
 def fingerprint(level: str, origin: str, key_text: str) -> str:

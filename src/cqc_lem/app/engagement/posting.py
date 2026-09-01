@@ -182,6 +182,7 @@ from cqc_lem.utilities.linkedin.sort_evidence import (
     build_sort_control_scan_js,
     scan_sort_control_candidates,
 )
+from cqc_lem.utilities.log_escalation import masked_recipient
 from cqc_lem.utilities.logger import log_debug, log_error, log_info, log_warning
 from cqc_lem.utilities.observability import (
     FEATURE_COMMENT,
@@ -666,8 +667,9 @@ def _queue_artifact_delivery(user_id: int, profile_url: str, first_name: str, co
                                     status=ScheduledDmStatus.PENDING,
                                     source=SCHEDULED_DM_SOURCE_ARTIFACT)
         if not dm_id:
-            log_warning(f"Artifact delivery: drafted the lead magnet for {first_name or profile_url} "
-                        f"but the scheduled_dms insert failed", user_id=user_id, action_type="dm")
+            log_warning(f"Artifact delivery: drafted the lead magnet for "
+                        f"{masked_recipient(first_name, profile_url)} but the scheduled_dms insert "
+                        f"failed", user_id=user_id, action_type="dm")
             return None
         # Recorded on QUEUE, not on send: the row's job is to stop us drafting the same resource for
         # the same person on every sweep, and the draft already exists once it is in the queue.
