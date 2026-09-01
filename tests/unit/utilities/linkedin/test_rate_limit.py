@@ -442,7 +442,10 @@ class TestInviteHoldLogLevel:
         assert "Connection invites HELD for user 7" in info.call_args.args[0]
         assert "weekly limit" in info.call_args.args[0]
         # A demotion is a plausible moment to drop the context that makes the event groupable.
-        assert info.call_args.kwargs == {"action_type": "invite_connect", "user_id": 7}
+        # Subset, not exact equality: dropping either field still fails, but adding a new context
+        # kwarg later is a legitimate change this test has no business blocking.
+        assert info.call_args.kwargs["action_type"] == "invite_connect"
+        assert info.call_args.kwargs["user_id"] == 7
 
     def test_hold_redis_error_still_warns(self, fake_redis):
         """A hold that failed to store IS a degraded path — that one keeps its warning."""
