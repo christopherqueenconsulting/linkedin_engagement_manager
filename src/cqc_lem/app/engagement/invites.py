@@ -596,6 +596,25 @@ def _deep_dialog_control(driver, labels: "tuple[str, ...]"):
     return None
 
 
+def _dialog_field_candidates(driver, css: str, *, limit: int = 5) -> list:
+    """Elements matching `css` inside the OPEN dialog, nearest surface first — shadow roots included.
+
+    The field counterpart of `_dialog_control_candidates` (#1841). #1813 scoped the *control* scan
+    to the dialog container so a button mounted in the shadow root would be found before
+    `find_deep_elements`'s `limit` was spent on page chrome; the note textarea was left on an
+    unscoped, document-wide query and kept missing for the same reason the Send button used to —
+    every invite shipped noteless. Kept separate from `_dialog_control_candidates` (not a `css`
+    parameter on it) because #1836's email field is this helper's second caller and neither field
+    is a `button, a, [role='button']` match.
+    """
+    for container in find_deep_elements(driver, _CONNECT_DIALOG_CONTAINER_CSS,
+                                        visible_only=True, limit=3):
+        scoped = find_deep_elements(driver, css, visible_only=True, limit=limit, root=container)
+        if scoped:
+            return scoped
+    return find_deep_elements(driver, css, visible_only=True, limit=limit)
+
+
 def _connect_dialog_present(driver, wait, user_id: int) -> bool:
     """Whether the Connect dialog's OWN controls are on screen — light DOM or shadow root."""
     if find_first(driver, wait, _CONNECT_DIALOG_LOCATORS, "Connect invite dialog",
@@ -818,13 +837,20 @@ def _add_connect_note(driver, wait, message: str, user_id: int) -> bool:
         # it (#1733).
         note_button.click()
 
-        message_box = next(iter(find_deep_elements(driver, "textarea#custom-message",
-                                                   visible_only=True, limit=2)), None)
+        # Scoped to the dialog container (#1841), not the document: the unscoped query this
+        # replaced spent `find_deep_elements`'s `limit` on page chrome before ever reaching the
+        # shadow-mounted textarea, the same failure #1813 fixed for the Send button. A second,
+        # broader selector covers a rotation that drops the `id`.
+        message_box = (next(iter(_dialog_field_candidates(driver, "textarea#custom-message")), None)
+                       or next(iter(_dialog_field_candidates(driver, "textarea, [contenteditable]")),
+                               None))
         if message_box is None:
             message_box = click_element_wait_retry(
                 driver, wait, '//textarea[@id="custom-message"]', "Finding Message Box",
                 max_retry=1, use_action_chain=True)
         else:
+            # THE ELEMENT THAT ANSWERED is what gets clicked and typed into — a shadow-mounted
+            # textarea cannot be re-found by the XPath that never saw it (#1733).
             message_box.click()
         message_box.clear()
 
