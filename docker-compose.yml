@@ -73,7 +73,14 @@ services:
   celery_worker:
     image: ${DOCKER_IMAGE_NAME}
     container_name: celery_worker
-    hostname: ${CELERY_WORKER_HOST}
+    # Pins the HOST half of this worker's Celery node name (issue #1869). Without it Docker sets
+    # the hostname to the random container ID, `--hostname=main-worker@%h` in the start script
+    # expands to that, and every deploy mints a NEW node name — so Flower's worker list grows
+    # without bound and no lane can be tracked across releases. A literal, not ${CELERY_WORKER_HOST}:
+    # an unset var interpolates to empty, which puts Docker straight back on the container ID.
+    # The prefix (`main-worker`) plus this host must be unique cluster-wide — see the sibling
+    # workers below and tests/unit/app/test_celery_node_names.py, which proves no pair collides.
+    hostname: celery-worker
     command: /start-celeryworker
     # Docker's default is 10s — far shorter than a video generation (~6 min) or a commenting
     # loop, so a deploy SIGKILLed running tasks. Give Celery's warm shutdown room to finish
@@ -110,6 +117,11 @@ services:
   celery_worker_selenium:
     image: ${DOCKER_IMAGE_NAME}
     container_name: celery_worker_selenium
+    # Stable host half of `selenium-se_engage-worker@…` (#1869) — see celery_worker above. One
+    # hostname PER LANE, not a shared one: it keeps node names unique even if two lanes were ever
+    # given the same SELENIUM_QUEUES, and keeps $HOSTNAME (logger.py's service.instance.id)
+    # distinguishing which container a log line came from.
+    hostname: celery-worker-selenium
     command: /start-celeryworker-selenium
     # Selenium lanes run the longest tasks in the stack — let warm shutdown finish them
     # instead of Docker's 10s default SIGKILL (issue #549).
@@ -154,6 +166,8 @@ services:
   celery_worker_selenium_prepost:
     image: ${DOCKER_IMAGE_NAME}
     container_name: celery_worker_selenium_prepost
+    # Stable host half of `selenium-se_prepost-worker@…` (#1869) — see celery_worker above.
+    hostname: celery-worker-selenium-prepost
     command: /start-celeryworker-selenium
     # Selenium lanes run the longest tasks in the stack — let warm shutdown finish them
     # instead of Docker's 10s default SIGKILL (issue #549).
@@ -194,6 +208,8 @@ services:
   celery_worker_selenium_outreach:
     image: ${DOCKER_IMAGE_NAME}
     container_name: celery_worker_selenium_outreach
+    # Stable host half of `selenium-se_outreach-worker@…` (#1869) — see celery_worker above.
+    hostname: celery-worker-selenium-outreach
     command: /start-celeryworker-selenium
     # Selenium lanes run the longest tasks in the stack — let warm shutdown finish them
     # instead of Docker's 10s default SIGKILL (issue #549).
@@ -234,6 +250,8 @@ services:
   celery_worker_selenium_content:
     image: ${DOCKER_IMAGE_NAME}
     container_name: celery_worker_selenium_content
+    # Stable host half of `selenium-se_content-worker@…` (#1869) — see celery_worker above.
+    hostname: celery-worker-selenium-content
     command: /start-celeryworker-selenium
     # Selenium lanes run the longest tasks in the stack — let warm shutdown finish them
     # instead of Docker's 10s default SIGKILL (issue #549).
@@ -274,6 +292,11 @@ services:
   celery_beat:
     image: ${DOCKER_IMAGE_NAME}
     container_name: celery_beat
+    # Beat registers NO Celery node name (it is a scheduler, not a worker — it never appears in
+    # Flower's worker list), so this is not part of the uniqueness argument. It is here so beat's
+    # $HOSTNAME — logger.py's OTel service.instance.id — stops changing every deploy too, and so
+    # that anyone who later adds `--hostname` to the beat command inherits a stable host (#1869).
+    hostname: celery-beat
     command: /start-celerybeat
     # Beat holds no task work — a short grace is enough to flush its schedule state.
     stop_grace_period: 30s
@@ -300,6 +323,10 @@ services:
   flower:
     image: ${DOCKER_IMAGE_NAME}
     container_name: celery_flower
+    # Flower is a read-only monitor, not a worker — it registers no Celery node name and never
+    # appears in its own worker list. Pinned for the same reason as celery_beat: a stable
+    # $HOSTNAME (logger.py's OTel service.instance.id) across deploys (#1869).
+    hostname: celery-flower
     command: /start-flower-no-wait
     volumes:
       - ./logs:/app/logs
