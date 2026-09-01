@@ -321,6 +321,10 @@ local dev → PR to main → CI gates pass → release-please tags vX.Y.Z → bu
   `value` 70% / `authority` 20% / `promo` 10%. **A promo CTA is always an ARTIFACT** (lead magnet /
   newsletter); a meeting ask is banned in prompts, repaired deterministically, and any that survives
   HOLDS the post at PENDING via the `meeting_cta` gate.
+- **Production logs are persistent, not ephemeral** (`docs/production-logs.md`): `/opt/lem/logs/cqc_lem_YYYY_MM_DD.log`,
+  one dated file per UTC day, 14+ days retained. Grep those before concluding a line is "missing" —
+  `docker logs` only reaches back to the last deploy recreate. `LOG_LEVEL` is unset in prod (INFO
+  default), so DEBUG lines — every silent-skip no-op — are NOT in these files.
 - **Stale lazy chunks after a deploy** (#743, `docs/spa-deploy-freshness.md`): a tab open across a
   release fetches a chunk hash the new image no longer has. **The same doc holds the API half**
   (#1527): the Cloudflare tunnel CACHES any `/api` GET that arrives without a `Cache-Control`, so a

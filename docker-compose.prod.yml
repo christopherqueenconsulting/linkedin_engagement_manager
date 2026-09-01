@@ -94,6 +94,11 @@ services:
   celery_worker:
     image: "${DOCKER_IMAGE_NAME}:${IMAGE_TAG:-latest}"
     restart: unless-stopped
+    # ./logs:/app/logs below is EXPLICIT and is what actually delivers /opt/lem/logs to this
+    # container (docs/production-logs.md). The base file also sets `volumes_from: [web_app]` on
+    # every worker, which this overlay never resets — but in prod `web_app` is the nginx edge
+    # (volumes: !override to nginx conf only, above), so that inheritance no longer carries logs or
+    # assets. It's harmless, not dead: don't strip it as unused without checking dev too.
     volumes: !override
       - ./logs:/app/logs
       - ~/.aws:/home/celeryworker/.aws:ro
