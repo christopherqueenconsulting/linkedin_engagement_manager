@@ -280,7 +280,7 @@ class TestCheckDmReplied:
             assert check_dm_replied(MagicMock(), MagicMock(), "https://x/in/b",
                                     my_name="Me") is ThreadState.UNKNOWN
         warn.assert_not_called()
-        debug.assert_called_once()
+        assert "bare composer" in debug.call_args.args[0]
 
     def test_messages_present_but_unreadable_sender_still_warns(self):
         # A thread that carries message events but yields no sender is a real read failure (the
@@ -291,7 +291,7 @@ class TestCheckDmReplied:
              patch(f"{_OUT}.log_warning") as warn, patch(f"{_OUT}.log_debug"):
             assert check_dm_replied(MagicMock(), MagicMock(), "https://x/in/b",
                                     my_name="Me") is ThreadState.UNKNOWN
-        warn.assert_called_once()
+        assert "message events" in warn.call_args.args[0]
 
     def test_unknown_when_no_route_opened_a_thread(self):
         assert self._check("Brandon Allen-Santos", opened=False) is ThreadState.UNKNOWN

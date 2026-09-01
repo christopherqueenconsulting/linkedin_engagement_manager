@@ -222,7 +222,7 @@ from cqc_lem.utilities.linkedin.rate_limit import (
 )
 from cqc_lem.utilities.linkedin.session import get_current_profile
 from cqc_lem.utilities.linkedin_formatter import normalize_public_text
-from cqc_lem.utilities.log_escalation import log_recipient
+from cqc_lem.utilities.log_escalation import masked_recipient
 from cqc_lem.utilities.logger import log_debug, log_error, log_info, log_warning
 from cqc_lem.utilities.observability import (
     FEATURE_COMMENT,
@@ -1040,16 +1040,20 @@ def check_dm_replied(driver, wait, profile_url: str, my_name: str = None,
         last_sender = read_last_sender(driver)
         if not last_sender:
             if opened.events:
-                # A thread with message events but no readable sender is a real read failure —
-                # the sender selector rotated. Warn (and escalate) so it gets looked at.
+                # Message events are on screen but their sender is unreadable — a real read failure
+                # (the sender selector rotated). Warn (and escalate) so it gets looked at.
                 log_warning(f"Reply-detection: thread opened via '{opened.route}' with message "
                             f"events but no sender could be read — treating as UNKNOWN, not as "
                             f"'no reply'", user_id=user_id, action_type="followup")
             else:
-                # A route that opened a bare compose overlay (`open_message_thread` counts a composer
-                # as open) has zero messages by design, so there is nothing to read a sender from.
-                # Returning UNKNOWN and skipping is the correct #731 behaviour — an expected no-op,
-                # so DEBUG, not a warning that would escalate working behaviour into a $exception.
+                # Zero events on an OPEN thread means a bare compose overlay: `open_message_thread`
+                # only reports opened when it sees events OR a composer, so no events implies the
+                # composer. There is nothing to read a sender from, and returning UNKNOWN to skip is
+                # the correct #731 behaviour — an expected no-op, so DEBUG, not a warning that would
+                # escalate working behaviour into a $exception. Trade-off: `events` and the sender
+                # read share the event-node selector, so a rotation of THAT selector also reads as
+                # zero events and lands here at DEBUG; no per-check signal separates the two, and a
+                # global rotation surfaces as the follow-up lane returning no REPLIED verdicts.
                 log_debug(f"Reply-detection: thread opened via '{opened.route}' as a bare composer "
                           f"with no messages — nothing to read, treating as UNKNOWN",
                           user_id=user_id, action_type="followup")
@@ -1124,7 +1128,7 @@ def _nurture_after_reply(user_id: int, followup: dict, their_message: str,
                         "message will be drafted", user_id=user_id, action_type="dm")
             return None
         if not str(their_message or "").strip():
-            log_warning(f"DM nurture: a reply from {log_recipient(first_name, profile_url)} was "
+            log_warning(f"DM nurture: a reply from {masked_recipient(first_name, profile_url)} was "
                         f"detected but its text could not be read — nothing to draft against",
                         user_id=user_id, action_type="dm")
             return None
@@ -1185,7 +1189,7 @@ def _nurture_after_reply(user_id: int, followup: dict, their_message: str,
                          f"their reply", user_id=user_id, action_type="dm")
         if not message:
             log_warning(f"DM nurture: no draft could be produced for "
-                        f"{log_recipient(first_name, profile_url)} (step {step}) — the LLM returned "
+                        f"{masked_recipient(first_name, profile_url)} (step {step}) — the LLM returned "
                         f"nothing and no 'nurture' template exists for that step",
                         user_id=user_id, action_type="dm")
             return None
@@ -1197,7 +1201,7 @@ def _nurture_after_reply(user_id: int, followup: dict, their_message: str,
                                     source=SCHEDULED_DM_SOURCE_NURTURE)
         if not dm_id:
             log_warning(f"DM nurture: drafted a next message for "
-                        f"{log_recipient(first_name, profile_url)} but the scheduled_dms insert "
+                        f"{masked_recipient(first_name, profile_url)} but the scheduled_dms insert "
                         f"failed", user_id=user_id, action_type="dm")
             return None
         log_info(f"DM nurture: drafted a '{intent}' next message for {first_name or profile_url} "

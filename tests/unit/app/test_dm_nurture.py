@@ -60,6 +60,21 @@ class TestNurtureAfterReply:
         assert kwargs["recipient_name"] == "Jane"
         assert mocks["insert_scheduled_dm"].call_args[0][2] == "Worth a quick call?"
 
+    def test_unreadable_reply_warning_keeps_the_contact_name_out_of_escalation(self):
+        # End-to-end proof the call site routes the recipient through masked_recipient: the warning
+        # wraps the name in quotes so log-escalation's normalize_message collapses it, keeping a real
+        # contact's name out of the grouped $exception the daily cron files as a public issue.
+        from cqc_lem.app.engagement.outreach import _nurture_after_reply
+        from cqc_lem.utilities import log_escalation as esc
+        with patch(f"{_OUT}._nurture_enabled", return_value=True), \
+             patch(f"{_OUT}.log_warning") as warn:
+            got = _nurture_after_reply(1, _followup(first_name="Asbjørn"), "   ",
+                                       MagicMock(), prefs={}, profile_synthesis="voice")
+        assert got is None
+        raw = warn.call_args.args[0]
+        assert "'Asbjørn'" in raw                                 # wrapped, not bare
+        assert "Asbjørn" not in esc.normalize_message(raw)[0]     # so escalation drops it
+
     def test_schedules_by_intent(self):
         from datetime import datetime, timedelta, timezone
 
