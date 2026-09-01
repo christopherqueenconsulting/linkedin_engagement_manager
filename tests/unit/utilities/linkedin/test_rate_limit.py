@@ -417,6 +417,66 @@ class TestCommentingHold:
         assert commenting_hold_reason(7) is None
 
 
+class TestCommentingHoldLogLevel:
+    """A stored commenting hold is a state transition, not a degraded path (issue #1835).
+
+    Its only caller, `auto_weekly_comment_quality`, follows this call with a deliberate
+    `log_critical` — the documented needs-human flag for issue #628. Warning here as well made one
+    demotion verdict report itself twice, and `normalize_message` masks the user id and the TTL to
+    `<n>`, so every held user shares one fingerprint: three holds in a single weekly run escalate to
+    ERROR and file a grouped $exception next to the CRITICAL that is already there.
+    """
+
+    def test_hold_logs_info_not_warning(self, fake_redis):
+        from cqc_lem.utilities.linkedin.rate_limit import hold_commenting
+        with patch(f"{_MOD}.log_info") as info, patch(f"{_MOD}.log_warning") as warn:
+            assert hold_commenting(7, 3600, reason="demotion rate 0.6") is True
+        # The hold must actually be STORED, not merely announced: without this a regression that
+        # returns True while writing nothing would pass on the log-level assertions alone. The key
+        # is spelled out rather than built from _COMMENT_HOLD_KEY on purpose — it is a WIRE format
+        # shared with release_commenting_hold/commenting_hold_remaining and with holds already live
+        # in Redis, so renaming it orphans them. Don't DRY this back into the constant.
+        fake_redis.set.assert_called_once_with("linkedin:comment_quality_hold:7",
+                                               "demotion rate 0.6", ex=3600)
+        # log_warning is the ONLY door into log_escalation (logger.py), so "no warning" is the
+        # assertion that no second grouped $exception can be filed alongside the caller's CRITICAL.
+        warn.assert_not_called()
+        info.assert_called_once()
+        assert "Feed commenting HELD for user 7" in info.call_args.args[0]
+        assert "demotion rate 0.6" in info.call_args.args[0]
+        # A demotion is a plausible moment to drop the context that makes the event groupable.
+        # Subset, not exact equality: dropping either field still fails, but adding a new context
+        # kwarg later is a legitimate change this test has no business blocking.
+        assert info.call_args.kwargs["action_type"] == "comment"
+        assert info.call_args.kwargs["user_id"] == 7
+
+    def test_hold_redis_error_still_warns(self, fake_redis):
+        """A hold that failed to store IS a degraded path — that one keeps its warning."""
+        fake_redis.set.side_effect = RuntimeError("redis down")
+        from cqc_lem.utilities.linkedin.rate_limit import hold_commenting
+        with patch(f"{_MOD}.log_warning") as warn, patch(f"{_MOD}.log_info") as info:
+            assert hold_commenting(7, 3600) is False
+        info.assert_not_called()
+        warn.assert_called_once()
+        # Pins the except branch as the source: only there is an exception attached. Without this
+        # the test would still pass if the function returned False before ever reaching the write.
+        assert isinstance(warn.call_args.kwargs.get("exc"), RuntimeError)
+        assert warn.call_args.kwargs.get("user_id") == 7
+
+    def test_defaults_are_clamped_and_named_in_the_stored_hold(self, fake_redis):
+        """The TTL floor and the reason default are what a caller passing neither relies on."""
+        from cqc_lem.utilities.linkedin.rate_limit import hold_commenting
+        with patch(f"{_MOD}.log_info") as info, patch(f"{_MOD}.log_warning"):
+            assert hold_commenting(7, 0, reason="") is True
+        # max(1, int(seconds)): ex=0 is rejected by Redis, so an unclamped 0 would raise and turn
+        # a hold the caller was told succeeded into a silently uncommented-on lane still commenting.
+        fake_redis.set.assert_called_once_with("linkedin:comment_quality_hold:7",
+                                               "comment quality", ex=1)
+        # The INFO line is now the only log-level record that a hold was taken, so it has to name
+        # what was STORED. Interpolating the raw arguments said "for 0s (reason: )".
+        assert "Feed commenting HELD for user 7 for 1s (reason: comment quality)" == info.call_args.args[0]
+
+
 class TestInviteHoldLogLevel:
     """A stored invite hold is a state transition, not a degraded path (issue #917 precedent).
 
