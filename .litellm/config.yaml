@@ -321,9 +321,11 @@ litellm_settings:
   success_callback: ["posthog"]
   failure_callback: ["posthog"]
   # Prompts and completions are the USER'S LinkedIn material (profile synthesis, story-bank
-  # anecdotes, draft DMs), so this is the GLOBAL FLOOR and never the lever: every call is redacted,
-  # and it is deliberately not `os.environ/`-interpolated — the safe value should not be something a
-  # typo in `.env` can move. A global `false` would ship all of that to PostHog to grade one drafter.
+  # anecdotes, draft DMs), so this is the GLOBAL FLOOR and never the lever: every call's MESSAGES
+  # are redacted — NOT every call's content, because the model's own `reasoning` escapes this
+  # setting entirely and reaches PostHog today (#1831). Deliberately not `os.environ/`-interpolated:
+  # the safe value should not be something a typo in `.env` can move. A global `false` would ship
+  # all of the above to PostHog to grade one drafter.
   # Un-redaction is PER REQUEST instead: LiteLLM's `should_redact_message_logging` honours a
   # `LiteLLM-Disable-Message-Redaction` header ahead of this key, and utilities/ai/client.py sets it
   # for the features named in LLM_PROMPT_LOGGING_FEATURES (empty by default) and no others.

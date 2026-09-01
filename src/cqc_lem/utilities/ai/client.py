@@ -234,7 +234,7 @@ def prompt_logging_features() -> frozenset[str]:
     return named & _KNOWN_FEATURES
 
 
-def _allowlisted_feature(options: Any, body: dict) -> Optional[str]:
+def _allowlisted_feature(options: Any, body: dict[str, Any]) -> Optional[str]:
     """This request's feature if its content may be logged, else None.
 
     Total: it never raises for a shape it does not recognise, because every unrecognised shape is
@@ -266,33 +266,34 @@ def _attach_prompt_logging(options: Any) -> None:
     global redaction in place — as does any exception, since `_build_request` swallows one and the
     header is simply never added.
 
-    The env allowlist is AUTHORITATIVE, which is why this also strips the header off a request that
-    is not allowlisted. An allowlist a call site can override per request is not an allowlist, and
-    LiteLLM matches the header with `bool(...)`, so a caller writing "false" to ask FOR redaction
-    would get the opposite. Nothing in LEM sets it today; this keeps that true.
+    The env allowlist is AUTHORITATIVE: this is the ONLY writer of the header. A request the
+    allowlist does not cover has it stripped, and one it does cover has it OVERWRITTEN rather than
+    left alone — an allowlist a call site can override per request is not an allowlist, and LiteLLM
+    matches the header with `bool(...)`, so a caller writing "false" to ask FOR redaction would get
+    the opposite. Overwriting also means there is no release path that skips the log line below.
+    Nothing in LEM sets the header today; this keeps that true.
     """
     body = getattr(options, "json_data", None)
     if not isinstance(body, dict):
         return
-    headers = getattr(options, "headers", None)
-    present = [key for key in headers if str(key).lower() == _REDACTION_OFF_HEADER] \
-        if isinstance(headers, Mapping) else []
+    headers = dict(getattr(options, "headers", None) or {}) \
+        if isinstance(getattr(options, "headers", None), Mapping) else {}
+    present = [key for key in headers if str(key).lower() == _REDACTION_OFF_HEADER]
     feature = _allowlisted_feature(options, body)
 
     if feature is None:
         if not present:
             return
-        options.headers = {key: value for key, value in dict(headers).items() if key not in present}
+        options.headers = {key: value for key, value in headers.items() if key not in present}
         log_warning("A call site set the prompt-redaction opt-out header on a request that is not "
                     f"allowlisted ({_PROMPT_LOGGING_FEATURES_ENV}); stripped it",
                     api_provider="litellm")
         return
 
-    if present:
-        return
-    sent = dict(headers) if isinstance(headers, Mapping) else {}
-    sent[_REDACTION_OFF_HEADER] = "true"
-    options.headers = sent
+    for key in present:
+        del headers[key]
+    headers[_REDACTION_OFF_HEADER] = "true"
+    options.headers = headers
     # The audit trail for the egress itself: without it, the only way to learn that content is
     # leaving the stack is to go and read PostHog. INFO rather than WARNING because an allowlisted
     # feature doing exactly what it was allowlisted for is not a defect, and rather than DEBUG

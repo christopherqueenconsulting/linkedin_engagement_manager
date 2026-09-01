@@ -87,8 +87,13 @@ class TestTheAllowlistDecidesPerRequest:
     def test_every_other_feature_stays_redacted(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """The whole point of scoping.
 
-        Grading the comment drafter must not also ship draft DMs and profile synthesis, which are
-        the user's private material and have no evaluation waiting on them.
+        Grading the comment drafter must not also ship draft DMs, newsletter editions and post
+        drafts, none of which has an evaluation waiting on it.
+
+        Note what allowlisting `comment` DOES disclose, because "scoped by feature" is not the same
+        as "scoped by content class": the comment prompt embeds the user's profile synthesis as its
+        voice reference AND the target post's full body, which is a third party's text. That is
+        written down in docs/llm-analytics.md and on #1832 so the owner decision is made on it.
         """
         monkeypatch.setenv(_ENV, "comment")
         client, recorder = _client()
@@ -96,9 +101,11 @@ class TestTheAllowlistDecidesPerRequest:
             assert not _opted_out(_comment_call(client, recorder, feature=feature)), feature
 
     def test_an_unset_allowlist_redacts_everything(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """It ships EMPTY, so merging the mechanism changes nothing about what leaves the stack.
+        """It ships EMPTY, so merging the mechanism releases no MESSAGES that were not already going.
 
-        Turning it on is an owner decision — issue #1832.
+        Not the same as "nothing leaves the stack": the model's own `reasoning` escapes the proxy's
+        redaction entirely and reaches PostHog today (#1831). This control does not widen that, and
+        does not close it either. Turning the allowlist on is an owner decision — issue #1832.
         """
         monkeypatch.delenv(_ENV, raising=False)
         client, recorder = _client()
@@ -122,6 +129,18 @@ class TestTheAllowlistDecidesPerRequest:
         monkeypatch.setenv(_ENV, " Comment , dm ")
         client, recorder = _client()
         assert _opted_out(_comment_call(client, recorder, feature="COMMENT"))
+
+    @pytest.mark.parametrize("feature", ["comment", "content", "dm", "newsletter", "marketing"])
+    def test_the_mechanism_is_feature_generic(self, feature: str,
+                                              monkeypatch: pytest.MonkeyPatch) -> None:
+        """Nothing about it is comment-specific — `comment` is just the only one with an evaluation.
+
+        Pinned so that whichever feature #1832 lands on works without a code change, and so that a
+        future edit cannot quietly special-case one.
+        """
+        monkeypatch.setenv(_ENV, feature)
+        client, recorder = _client()
+        assert _opted_out(_comment_call(client, recorder, feature=feature))
 
     def test_the_header_value_is_one_the_proxy_reads_as_true(self,
                                                              monkeypatch: pytest.MonkeyPatch) -> None:
@@ -172,6 +191,22 @@ class TestTheAllowlistIsAuthoritative:
         monkeypatch.setenv(_ENV, "comment,comments")
         client, recorder = _client()
         assert _opted_out(_comment_call(client, recorder))
+
+    def test_a_caller_supplied_value_is_overwritten_and_still_logged(
+            self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """There must be NO release path that skips the audit line.
+
+        Leaving a caller's header alone would forward an unnormalised value (LiteLLM reads "false"
+        as truthy) and emit nothing — content leaving the stack with no record, on the one branch
+        that exists to prevent exactly that.
+        """
+        monkeypatch.setenv(_ENV, "comment")
+        client, recorder = _client()
+        with patch("cqc_lem.utilities.ai.client.log_info") as logged:
+            headers, _ = _send(client, recorder, extra_headers={_HEADER: "false"},
+                               extra_body={"metadata": {"feature": "comment", "user_id": 7}})
+        assert headers[_HEADER] == "true"
+        assert logged.call_count == 1
 
     def test_a_call_site_cannot_opt_itself_out(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """The env allowlist is the control, so a header set at a call site is STRIPPED, not honoured.

@@ -85,6 +85,19 @@ redacted. `utilities/ai/client.py` sets that header for the `feature` values nam
 | Not a flag | `utilities/flags.py` fails OPEN to its default; a data-egress control must not. Env var only |
 | Sign-off | issue **#1832** — processor, retention, and whether `PrivacyPolicy.tsx` §7 has to name it |
 
+**What allowlisting a feature actually discloses.** Scoping by `feature` is not the same as scoping
+by content class, and the difference is the whole of the owner decision. Allowlisting `comment`
+sends, per call:
+
+* the user's **profile synthesis**, which `generate_ai_response` embeds as the voice reference;
+* the **target post's full body** — a third party's text, written by someone who is not a LEM user;
+* the post's image URL, the style/intention directives, and any research `findings` block that ran;
+* the drafted comment itself, which is about to be published publicly anyway.
+
+So "grading the comment drafter" is not a narrow content class. It is narrow *relative to the whole
+proxy* — `dm`, `newsletter` and post drafting stay redacted — which is the claim this control makes
+and the only one it makes. #1832 is where that is weighed.
+
 **Re-verify the header on a LiteLLM upgrade.** The stack runs a floating
 `ghcr.io/berriai/litellm:main-latest`, so this contract can change on an image pull with no commit
 here. It was read off `litellm/litellm_core_utils/redact_messages.py` on `main`: priority 2 of
