@@ -118,6 +118,7 @@ index and the `CLAUDE.md` row that points at it, or the pointer becomes a dead e
 - ★ [Agent pipeline v2](agent-pipeline-v2.md) — the `lem-agentd` daemon, its state machine, and the full `decide()` table
 - ★ [Contribution security](contribution-security.md) — a label is not an access control; provenance, not presence
 - ★ [Branch cleanup](branch-cleanup.md) — the two layers that keep merged branches from reaccumulating
+- ★ [Git safety & multi-agent concurrency](git-safety-multi-agent.md) — worktree isolation, the stash race, the safe stash form, one-venv-many-worktrees
 - [CodeQL PR gate](codeql-pr-gate.md) — how the diff-informed gate calibrates against the base ref
 - [The Optional-typing guard](typing-guard.md) — advisory mypy over 13 modules
 - [Branch cleanup audit — 2026-07-28](branch-cleanup-audit-2026-07-28.md) — the one-shot sweep that deleted 372 branches

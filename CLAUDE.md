@@ -338,33 +338,24 @@ new branch without a documented row fails the build. Labels are the human contra
 `docs/AGENT_WORKFLOW_PLAYBOOK.md`.
 
 ## Git Safety & Multi-Agent Concurrency Rules
-- **Every agent gets its OWN worktree — always.** `isolation: "worktree"` on the Agent call;
-  `.claude/agents/*.md` frontmatter carries it too. Agents sharing a checkout WILL clobber each other
-  — three once did, one switching the branch under the others inside a minute. `lib/run_lane.sh`
-  enforces it, because `cd ""` SUCCEEDS in bash: an empty worktree path silently runs the agent in
-  the shared tree instead of failing.
-- **Model pins + env traps live in `.claude/agents/builder.md`**: never put `model:` in a
-  definition — it inherits the parent's Ollama-lane URL and 400s invisibly at rc=0. Reproduce CI with
-  an empty `.env` and `src/cqc_lem/ui/dist` moved aside.
-- **Fresh state:** before generating ANY code edit, run `git status` and read the target file — never
-  edit from memory; another agent may have changed it under you.
+Full mechanics + exact commands: `docs/git-safety-multi-agent.md`.
+- **Every agent gets its OWN worktree — always** (`isolation: "worktree"` on the Agent call).
+  Agents sharing a checkout WILL clobber each other. `lib/run_lane.sh` enforces it, because `cd ""`
+  SUCCEEDS in bash: an empty worktree path silently runs in the shared tree instead of failing.
+- **Model pins live in `.claude/agents/builder.md`**: never put `model:` in a definition — it
+  inherits the parent's Ollama-lane URL and 400s invisibly at rc=0.
+- **Fresh state:** before generating ANY code edit, run `git status` and read the target file —
+  never edit from memory; another agent may have changed it under you.
 - **Micro-branching:** never edit a shared branch asynchronously; branch per task
-  (`git checkout -b feature/claude-<task-name>`), committing each sub-task atomically. `refs/stash` is
-  **repo-global**, shared across every worktree and every concurrent agent — a worktree isolates your
-  checkout, not the stash stack, so a bare `git stash` / `git stash pop` is a race: another agent's
-  push between your push and your pop lands at `stash@{0}` and your pop takes *their* work. If
-  working-tree changes clash with your targets, halt and make a **temporary WIP commit** instead
-  (`git commit -m "WIP: <tag>"`, then `git reset`/`amend` later) — it's addressable by SHA, private to
-  your branch, and nothing else can take it. Only if stashing is truly unavoidable, use the safe form:
-  `git stash push -u -m "<unique-tag>"`, immediately capture its SHA (`git stash list
-  --format='%H %gs'`), restore with `git stash apply <sha>` — **never `pop`, never by index** — then
-  drop the entry afterward by re-finding its current index by tag.
+  (`git checkout -b feature/claude-<task-name>`), committing each sub-task atomically. `refs/stash`
+  is **repo-global** across every worktree and agent — a bare `git stash`/`pop` is a race that can
+  take another agent's work. Prefer a **temporary WIP commit**; only if stashing is unavoidable, use
+  the safe form in the doc above (`stash push -u -m <tag>`, then `apply <sha>` — never `pop`).
 - **One venv, many worktrees:** the editable-install `.pth` is mutable — `poetry run python -c
   "import cqc_lem…"` may read a DIFFERENT worktree. Use `PYTHONPATH=src` and print `__file__` to
   confirm (`pytest` unaffected).
 - **Branch cleanup:** merged branches auto-delete; orphans swept weekly. `docs/branch-cleanup.md`.
 - **A label is not an access control** (`docs/contribution-security.md`): this repo is PUBLIC and the
   pipeline runs with the owner's credentials, so `agent:ready` / `release:now` are verified by
-  **provenance, not presence** — the AUTHOR has standing AND an allowlisted actor applied the label;
-  an unreadable answer REFUSES. The pipeline's credential has **no `workflows` permission** — the
-  hard control, since agent and owner share one identity.
+  **provenance, not presence**; an unreadable answer REFUSES. The pipeline's credential has **no
+  `workflows` permission** — the hard control, since agent and owner share one identity.
