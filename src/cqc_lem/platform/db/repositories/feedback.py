@@ -3,6 +3,11 @@
 Split out of `cqc_lem.utilities.db` (issue #1154). The fail-soft reader contract and the
 secret-sealing rules described there apply here unchanged; `cqc_lem.utilities.db`
 re-exports every name below, so existing importers and patch targets keep resolving.
+
+With ONE deliberate exception, added by issue #1868: the two readers behind the admin triage panel
+(`get_feedback_list`, `get_feedback_by_id`) raise `FeedbackUnreadable` instead of returning their
+fallback, because an OPERATOR reads their result and acts on it. See that class for the argument;
+`docs/admin-user-management.md` §6 for the incident. Everything else here stays fail-soft.
 """
 
 import json
@@ -107,6 +112,22 @@ def record_story_bank_use(user_id: int, entry_id: int) -> bool:
     except mysql.connector.Error as err:
         log_error("Could not record story bank use", exc=err, user_id=user_id)
         return False
+# --- Admin triage panel readers (issue #793; fail-loud since #1868) -----------------
+
+
+class FeedbackUnreadable(Exception):
+    """The feedback read did not RUN, so nothing is known either way (issue #1868).
+
+    The rest of this module is a fail-soft reader: a background beat that cannot reach MySQL does
+    less work this pass and tries again next one, and `[]` is the right answer for it. The ADMIN
+    PANEL is not that caller. "No feedback submissions match the current filters" is a statement an
+    operator acts on — it is how #1868 hid a dead panel behind 91 real rows for a day — so the two
+    readers the panel drives raise this instead, and `admin_feedback_list` answers 503.
+
+    Same posture as `/api/admin/users*` (#1450), which spells it as an `Optional[...]` sentinel.
+    An exception rather than a sentinel here because `get_feedback_by_id` needs THREE answers: the
+    row, `None` for a row that does not exist (404), and "the query did not run" (503).
+    """
 def insert_feedback(body: str, user_id: int = None,
                     source: "FeedbackSource" = FeedbackSource.WIDGET,
                     type_hint: str = None, context: dict = None,
@@ -130,14 +151,18 @@ def insert_feedback(body: str, user_id: int = None,
         log_error("Could not insert feedback", exc=err, user_id=user_id)
         return None
 def get_feedback_by_id(feedback_id: int) -> Optional[dict]:
-    """One feedback row, or None when it does not exist (issue #498)."""
+    """One feedback row, or None when it does not exist (issue #498).
+
+    Raises `FeedbackUnreadable` when the query did not run — its one caller is the admin review
+    route, where a swallowed fault reads as "that row is gone" and answers 404 (issue #1868).
+    """
     try:
         with db_cursor(dictionary=True) as cursor:
             cursor.execute(f"SELECT {_FEEDBACK_COLUMNS} FROM feedback WHERE id=%s", (feedback_id,))
             return cursor.fetchone()
     except mysql.connector.Error as err:
         log_error(f"Could not fetch feedback {feedback_id}", exc=err)
-        return None
+        raise FeedbackUnreadable(f"Could not fetch feedback {feedback_id}") from err
 def get_open_feedback_clusters(limit: int = 100) -> list:
     """The open clusters an incoming report can be deduped against (issue #498).
 
@@ -634,6 +659,17 @@ def get_feedback_list(status: Optional[Union["FeedbackStatus", str]] = None,
     drag 50 full vectors out of MySQL to be thrown away. `is_admin` answers the same question the
     auto-filer's join does, so it honours ADMIN_USER_EMAILS too: an allowlisted reporter's feedback
     IS auto-filed, and the panel must not label it as awaiting review.
+
+    Excluding `embedding` was not enough (issue #1868). `ORDER BY created_at` over the join cannot
+    use an index, so MySQL 8 filesorts — packing EVERY selected column into `sort_buffer_size`, and
+    `body` + `context_json` are wide enough that 91 rows overflowed it in production and the whole
+    page died with a 1038. That is a function of the table's total row width, so it only ever gets
+    worse. The sort therefore runs on a DERIVED TABLE of keys — two narrow columns per row — and the
+    wide columns are joined back to the ~50 ids that survived `LIMIT`. Raising `sort_buffer_size`
+    instead spends a server-wide knob on one unbounded query and is not a fix.
+
+    Raises `FeedbackUnreadable` when the query did not run. `[]` here means the table (or the
+    filter) is genuinely empty, and the panel is allowed to say so.
     """
     filters: list = []
     params: list = []
@@ -642,34 +678,43 @@ def get_feedback_list(status: Optional[Union["FeedbackStatus", str]] = None,
             status = FeedbackStatus(str(status).strip().lower())
         except ValueError:
             return []
-        filters.append("f.status = %s")
+        filters.append("status = %s")
         params.append(str(status))
     if source is not None:
         try:
             source = FeedbackSource(str(source).strip().lower())
         except ValueError:
             return []
-        filters.append("f.source = %s")
+        filters.append("source = %s")
         params.append(str(source))
 
-    where = f"WHERE {' AND '.join(filters)}" if filters else ""
+    where = f"WHERE {' AND '.join(filters)} " if filters else ""
+    # Two things here are load-bearing, and both look cosmetic:
+    #   * the outer ORDER BY names `k`, never `f`. ORDER BY over columns of the FIRST table alone
+    #     lets MySQL sort that table and then join; name `f` and the sort moves back onto the wide
+    #     joined row, which is the whole bug again.
+    #   * `id` breaks a created_at tie the same way in BOTH sorts (they tie constantly — created_at
+    #     is second-resolution), so a page boundary cannot show one row twice and drop another.
     sql = (
         f"SELECT f.id, f.user_id, f.source, f.type_hint, f.body, f.context_json, "
         f"f.cluster_id, f.github_issue_number, f.status, f.sentiment, "
         f"f.reviewed_by, f.reviewed_at, f.created_at, u.email, u.is_admin "
-        f"FROM feedback f LEFT JOIN users u ON u.id = f.user_id "
-        f"{where} ORDER BY f.created_at DESC LIMIT %s OFFSET %s"
+        f"FROM (SELECT id, created_at FROM feedback {where}"
+        f"ORDER BY created_at DESC, id DESC LIMIT %s OFFSET %s) k "
+        f"JOIN feedback f ON f.id = k.id "
+        f"LEFT JOIN users u ON u.id = f.user_id "
+        f"ORDER BY k.created_at DESC, k.id DESC"
     )
     try:
         with db_cursor(dictionary=True) as cursor:
             cursor.execute(sql, (*params, int(limit), int(offset)))
             rows = cursor.fetchall() or []
-            allow = admin_email_allowlist()
-            for row in rows:
-                if allow and not row.get("is_admin") and \
-                        (row.get("email") or "").strip().lower() in allow:
-                    row["is_admin"] = 1
-            return rows
     except mysql.connector.Error as err:
         log_error("Could not list feedback for admin panel", exc=err)
-        return []
+        raise FeedbackUnreadable("Could not list feedback for admin panel") from err
+    allow = admin_email_allowlist()
+    for row in rows:
+        if allow and not row.get("is_admin") and \
+                (row.get("email") or "").strip().lower() in allow:
+            row["is_admin"] = 1
+    return rows

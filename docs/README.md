@@ -76,7 +76,7 @@ index and the `CLAUDE.md` row that points at it, or the pointer becomes a dead e
 - ★ [Strong authentication](strong-authentication.md) — passkeys, TOTP, recovery codes, and the step-up contract
 - ★ [Secrets at rest](secrets-at-rest.md) — AES-256-GCM per user+column; the field-name constants are AAD
 - [Auth, identity & session-secret protection](AUTH_SECURITY_DESIGN.md) — the research and design doc the above three implement
-- [Admin user management](admin-user-management.md) — the admin surface for users and its authorisation rules
+- [Admin user management](admin-user-management.md) — the admin surfaces for users and feedback triage, their authorisation rules, and why a failed read is 503
 - [Email deliverability](EMAIL_DELIVERABILITY.md) — keeping the login PIN email out of spam
 
 ## Observability & analytics

@@ -97,13 +97,15 @@ class TestGetFeedbackById:
         assert "FROM feedback WHERE id=%s" in sql
         assert params == (5,)
 
-    def test_db_error_returns_none(self, fake_cursor):
+    def test_db_error_raises_rather_than_reading_as_a_missing_row(self, fake_cursor):
+        """Issue #1868: None is "no such row", which the admin route answers 404 to."""
         import mysql.connector
         conn, cur = fake_cursor(fetch_all=None)
         cur.execute.side_effect = mysql.connector.Error("boom")
         with patch(f"{_GET_CONN}", return_value=conn), patch(f"{_FEEDBACK}.log_error"):
-            from cqc_lem.utilities.db import get_feedback_by_id
-            assert get_feedback_by_id(5) is None
+            from cqc_lem.utilities.db import FeedbackUnreadable, get_feedback_by_id
+            with pytest.raises(FeedbackUnreadable):
+                get_feedback_by_id(5)
         conn.close.assert_called_once()
 
 
@@ -408,10 +410,29 @@ class TestGetFeedbackList:
         assert got == [{"id": 1, "email": "a@x.com", "is_admin": 1,
                         "status": "new", "source": "widget"}]
         sql, params = cur.execute.call_args[0]
-        assert "FROM feedback f LEFT JOIN users u" in sql
-        assert "ORDER BY f.created_at DESC" in sql
+        assert "JOIN feedback f ON f.id = k.id" in sql
+        assert "LEFT JOIN users u" in sql
+        assert "ORDER BY k.created_at DESC" in sql
         assert "LIMIT %s OFFSET %s" in sql
         assert params == (5, 10)
+
+    def test_the_sort_runs_on_keys_only_not_on_the_wide_columns(self, fake_cursor):
+        """The derived table that gets ORDER BY/LIMIT must select nothing but the keys.
+
+        Issue #1868: MySQL 8 packs every SELECTed column into the sort buffer, so filesorting this
+        join carried `body` + `context_json`, and 91 production rows overflowed it with a 1038.
+        """
+        conn, cur = fake_cursor(fetch_all=[])
+        with patch(f"{_GET_CONN}", return_value=conn):
+            from cqc_lem.utilities.db import get_feedback_list
+            get_feedback_list()
+        sql = cur.execute.call_args[0][0]
+        derived = sql.split("FROM (", 1)[1].split(") k", 1)[0]
+        assert derived.startswith("SELECT id, created_at FROM feedback")
+        assert "ORDER BY created_at DESC" in derived
+        assert "LIMIT %s OFFSET %s" in derived
+        for wide in ("body", "context_json", "embedding"):
+            assert wide not in derived
 
     def test_status_filter_is_validated_and_bound(self, fake_cursor):
         conn, cur = fake_cursor(fetch_all=[])
@@ -419,8 +440,10 @@ class TestGetFeedbackList:
             from cqc_lem.utilities.db import FeedbackSource, FeedbackStatus, get_feedback_list
             get_feedback_list(status=FeedbackStatus.NEW, source=FeedbackSource.WIDGET, limit=2)
         sql, params = cur.execute.call_args[0]
-        assert "f.status = %s" in sql
-        assert "f.source = %s" in sql
+        # Inside the derived table, so the filter narrows what is SORTED, not just what is returned.
+        derived = sql.split("FROM (", 1)[1].split(") k", 1)[0]
+        assert "status = %s" in derived
+        assert "source = %s" in derived
         assert params == ("new", "widget", 2, 0)
 
     def test_embedding_is_not_dragged_into_the_panel(self, fake_cursor):
@@ -453,11 +476,25 @@ class TestGetFeedbackList:
             assert get_feedback_list(status="not-a-status") == []
         get_conn.assert_not_called()
 
-    def test_db_error_returns_empty_list(self, fake_cursor):
+    def test_db_error_raises_rather_than_reading_as_an_empty_table(self, fake_cursor):
+        """A fault must not be able to say "nothing matched the filters" (issue #1868).
+
+        `[]` is what the panel renders as exactly that, and it is an answer an operator acts on.
+        """
         import mysql.connector
         conn, cur = fake_cursor(fetch_all=None)
         cur.execute.side_effect = mysql.connector.Error("boom")
-        with patch(f"{_GET_CONN}", return_value=conn), patch(f"{_FEEDBACK}.log_error"):
+        with patch(f"{_GET_CONN}", return_value=conn), patch(f"{_FEEDBACK}.log_error") as logged:
+            from cqc_lem.utilities.db import FeedbackUnreadable, get_feedback_list
+            with pytest.raises(FeedbackUnreadable):
+                get_feedback_list()
+        logged.assert_called_once()
+        conn.close.assert_called_once()
+
+    def test_an_empty_table_is_still_an_empty_list(self, fake_cursor):
+        """The other half: raising must not swallow the genuinely-empty answer."""
+        conn, _ = fake_cursor(fetch_all=[])
+        with patch(f"{_GET_CONN}", return_value=conn):
             from cqc_lem.utilities.db import get_feedback_list
             assert get_feedback_list() == []
 

@@ -2,7 +2,7 @@
 
 import json
 from datetime import datetime, timezone
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -53,6 +53,15 @@ def _auth(user):
     }
 
 
+def _raising_connection(err):
+    """A pooled connection whose cursor raises `err` on execute — the 1038 the panel hit (#1868)."""
+    conn = MagicMock()
+    cursor = MagicMock()
+    cursor.execute.side_effect = err
+    conn.cursor.return_value = cursor
+    return conn
+
+
 def _classification():
     """A confident bug classification that routes to AUTO_WORK."""
     return FeedbackClassification(
@@ -101,6 +110,41 @@ class TestListFeedback:
         with _auth(_ADMIN_USER)["get_session"], _auth(_ADMIN_USER)["is_admin"]:
             r = api_client.get("/api/admin/feedback")
         assert r.status_code == 422
+
+    def test_unreadable_list_is_503_not_an_empty_page(self, api_client):
+        """Issue #1868: the panel renders `items: []` as "nothing matched the current filters".
+
+        That is the sentence that hid a dead panel behind 91 live rows for a day, so a read that
+        did not run must never be able to produce it — 503, same as `/api/admin/users` (#1450).
+        """
+        from cqc_lem.utilities.db import FeedbackUnreadable
+        with _auth(_ADMIN_USER)["get_session"], _auth(_ADMIN_USER)["is_admin"], \
+             patch("cqc_lem.api.routers.admin.get_feedback_list",
+                   side_effect=FeedbackUnreadable("boom")):
+            r = api_client.get("/api/admin/feedback", params={"session_token": "tok"})
+        assert r.status_code == 503
+        assert "items" not in (r.json().get("detail") or {})
+
+    def test_a_genuinely_empty_table_is_still_200(self, api_client):
+        """The other half — an empty answer the query DID produce is not an outage."""
+        with _auth(_ADMIN_USER)["get_session"], _auth(_ADMIN_USER)["is_admin"], \
+             patch("cqc_lem.api.routers.admin.get_feedback_list", return_value=[]):
+            r = api_client.get("/api/admin/feedback", params={"session_token": "tok"})
+        assert r.status_code == 200
+        assert r.json()["detail"]["items"] == []
+
+    def test_a_mysql_error_from_the_cursor_never_reaches_the_route_as_a_200(self, api_client):
+        """End to end through the real repository function, not a patched one (issue #1868 §3).
+
+        Patching `get_feedback_list` would still pass if the `except` went back to returning `[]`.
+        """
+        import mysql.connector
+        conn = _raising_connection(mysql.connector.Error("1038 (HY001): Out of sort memory"))
+        with _auth(_ADMIN_USER)["get_session"], _auth(_ADMIN_USER)["is_admin"], \
+             patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn), \
+             patch("cqc_lem.platform.db.repositories.feedback.log_error"):
+            r = api_client.get("/api/admin/feedback", params={"session_token": "tok"})
+        assert r.status_code == 503
 
 
 class TestReviewFeedback:
@@ -208,6 +252,19 @@ class TestReviewFeedback:
             })
         assert r.status_code == 404
 
+    def test_503_when_the_row_could_not_be_read(self, api_client):
+        """Issue #1868: an unreadable row is not a missing one — 404 says the submission is gone."""
+        from cqc_lem.utilities.db import FeedbackUnreadable
+        with _auth(_ADMIN_USER)["get_session"], _auth(_ADMIN_USER)["is_admin"], \
+             patch("cqc_lem.api.routers.admin.get_feedback_by_id",
+                   side_effect=FeedbackUnreadable("boom")), \
+             patch("cqc_lem.api.routers.admin.record_feedback_review") as recorder:
+            r = api_client.post("/api/admin/feedback/99/review", json={
+                "session_token": "tok", "action": "dismiss",
+            })
+        assert r.status_code == 503
+        recorder.assert_not_called()
+
     def test_forbidden_for_non_admin(self, api_client):
         with _auth(_NON_ADMIN_USER)["get_session"], _auth(_NON_ADMIN_USER)["is_admin"]:
             r = api_client.post("/api/admin/feedback/1/review", json={
@@ -254,7 +311,7 @@ class TestReviewFeedback:
             def execute(self, sql, params):
                 if "FROM feedback WHERE id=%s" in sql:
                     self._rows = [store.get(params[0])]
-                elif "FROM feedback f LEFT JOIN users u" in sql:
+                elif "JOIN feedback f ON f.id = k.id" in sql:
                     self._rows = []
                     for row in store.values():
                         item = dict(row)
