@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.172.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.171.2...v0.172.0) (2026-09-01)
+
+
+### Features
+
+* **observability:** emit outreach_funnel_scan event + write-only-lane ratchet (closes [#1816](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1816)) ([#1821](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1821)) ([8844fc7](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/8844fc770a13f799cd81ea97c6bc41aeaae89b3e))
+
+
+### Bug Fixes
+
+* **invites:** cap connection-request attempts so an unreachable target stops retrying (closes [#1814](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1814)) ([#1823](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1823)) ([ab9a00c](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/ab9a00ccc0aab00c7331fc74784e50f35e3e2e16))
+* **invites:** scope the Connect-dialog scan to the dialog ([#1827](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1827)) ([09dc8db](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/09dc8db11c7e7620d1d478d2c573769e01f46b81))
+* **invites:** scope the Connect-dialog scan to the dialog (refs [#1813](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1813)) ([09dc8db](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/09dc8db11c7e7620d1d478d2c573769e01f46b81))
+
+
+### Documentation
+
+* **observability:** document persistent production log files (closes [#1817](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1817)) ([#1818](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1818)) ([8867dfa](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/8867dfafc78df83aa9dfc17a39097959768ae699))
+
 ## [0.171.2](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.171.1...v0.171.2) (2026-09-01)
 
 
