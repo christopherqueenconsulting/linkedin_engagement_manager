@@ -2119,7 +2119,8 @@ def _engage_card(ctx: FeedRunContext, card, key: str, content: str, author: str,
         comment_text = generate_ai_response(content, my_profile, None, prefs=prefs,
                                             profile_synthesis=ctx.profile_synthesis,
                                             blueprint=comment_blueprint,
-                                            recent_comments=ctx.recent_comments, user_id=user_id)
+                                            recent_comments=ctx.recent_comments, user_id=user_id,
+                                            post_id=key)
     if comment_text and comment_blueprint.get("format"):
         ctx.used_comment_shapes.insert(0, comment_blueprint["format"])
     if not comment_text:
