@@ -349,8 +349,16 @@ new branch without a documented row fails the build. Labels are the human contra
 - **Fresh state:** before generating ANY code edit, run `git status` and read the target file — never
   edit from memory; another agent may have changed it under you.
 - **Micro-branching:** never edit a shared branch asynchronously; branch per task
-  (`git checkout -b feature/claude-<task-name>`), committing each sub-task atomically. If working-tree changes clash with
-  your targets, halt, `git stash`, pull, resolve, re-apply.
+  (`git checkout -b feature/claude-<task-name>`), committing each sub-task atomically. `refs/stash` is
+  **repo-global**, shared across every worktree and every concurrent agent — a worktree isolates your
+  checkout, not the stash stack, so a bare `git stash` / `git stash pop` is a race: another agent's
+  push between your push and your pop lands at `stash@{0}` and your pop takes *their* work. If
+  working-tree changes clash with your targets, halt and make a **temporary WIP commit** instead
+  (`git commit -m "WIP: <tag>"`, then `git reset`/`amend` later) — it's addressable by SHA, private to
+  your branch, and nothing else can take it. Only if stashing is truly unavoidable, use the safe form:
+  `git stash push -u -m "<unique-tag>"`, immediately capture its SHA (`git stash list
+  --format='%H %gs'`), restore with `git stash apply <sha>` — **never `pop`, never by index** — then
+  drop the entry afterward by re-finding its current index by tag.
 - **One venv, many worktrees:** the editable-install `.pth` is mutable — `poetry run python -c
   "import cqc_lem…"` may read a DIFFERENT worktree. Use `PYTHONPATH=src` and print `__file__` to
   confirm (`pytest` unaffected).
