@@ -263,6 +263,39 @@ class TestRoutes:
         assert result.route == mt.ROUTE_DIRECT_URL
         assert "profileUrn=urn%3Ali%3Afsd_profile%3AACoAAABCDEF" in d.urls[-1]
 
+    def test_direct_url_route_rejects_a_zero_event_composer(self):
+        # Issue #1851: this URL is a COMPOSE surface, not a thread view. With no prior history it
+        # renders a blank composer addressed to nobody-yet — indistinguishable from a genuinely
+        # empty real thread — so it must not count as opened here.
+        d = FakeDriver(page_source=PAGE_MODEL)
+        d.thread = {"events": 0, "composer": True, "overlay": False}
+        assert mt._try_direct_url(d, 0, None, PROFILE) is None
+
+    def test_direct_url_route_accepts_a_reading_with_events(self):
+        d = FakeDriver(page_source=PAGE_MODEL)
+        d.thread = {"events": 1, "composer": True, "overlay": False}
+        reading = mt._try_direct_url(d, 0, None, PROFILE)
+        assert reading is not None and reading["events"] == 1
+
+    def test_a_zero_event_direct_url_composer_falls_through_to_messaging_search(self):
+        # The whole point of the fix: route five's false "opened" used to stop the ladder before
+        # route six — the one most likely to find real history — ever ran.
+        d = FakeDriver(page_source=PAGE_MODEL)
+        convo = FakeElement(text="Jane Doe\nthanks!", on_click=_opens(d))
+        d.dom[(By.CSS_SELECTOR, "li.msg-conversation-listitem")] = [convo]
+
+        def _get(url):
+            d.urls.append(url)
+            if "compose" in url:
+                d.thread = {"events": 0, "composer": True, "overlay": False}
+
+        d.get = _get
+        with patch.object(mt, "find_first", return_value=FakeElement()):
+            result = self._ladder(d, person_name="Jane Doe")
+        assert result.route == mt.ROUTE_MESSAGING_SEARCH
+        assert result.tried == [mt.ROUTE_ANCHOR, mt.ROUTE_BUTTON, mt.ROUTE_TEXT_NODE,
+                                mt.ROUTE_OVERFLOW, mt.ROUTE_DIRECT_URL, mt.ROUTE_MESSAGING_SEARCH]
+
     def test_direct_url_route_prefers_the_compose_anchors_own_urn(self):
         d = FakeDriver(page_source="<code>urn:li:fsd_profile:WRONGONE</code>")
         d.dom[(By.CSS_SELECTOR, "a[href*='profileUrn=']")] = [
