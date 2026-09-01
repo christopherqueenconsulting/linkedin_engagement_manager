@@ -155,8 +155,16 @@ def graded(reading: dict, state: str, verdict: str) -> dict:
 #
 # Escalation to a human remains the ONLY path to a write. There is no override flag.
 
-class ReadOnlyViolation(RuntimeError):
-    """A probe tried to do something that could change LinkedIn state. Never caught internally."""
+class ReadOnlyViolation(BaseException):
+    """A probe tried to do something that could change LinkedIn state.
+
+    A `BaseException`, not an `Exception`, on purpose: the probe drives the shipped `cqc_lem`
+    helpers, and those are full of broad ``except Exception`` blocks (the message-thread ladder's
+    per-route handler is one). An `Exception` refusal would be swallowed there and mis-reported as an
+    ordinary failure — the #1857 defect. As a `BaseException` no broad handler can catch it, so a
+    refusal always reaches an explicit ``except ReadOnlyViolation`` or aborts the run; escalation to a
+    human stays the only path to a write.
+    """
 
 
 # Selenium's Keys.* constants are private-use-area code points; anything outside that range is a
@@ -1685,9 +1693,8 @@ def message_thread_verdict(reading: Optional[dict]) -> str:
     reading = dict(reading or {})
     if not reading.get("opened"):
         if reading.get("routes_skipped"):
-            return ("no direct route opened a thread, and the messaging-search route is skipped "
-                    "under the read-only guard (it types a name and presses Enter) — this run "
-                    "grounds nothing; re-run with a person whose thread one of the direct routes opens")
+            return ("no direct route opened a thread — the profile-side routes are the finding; the "
+                    "last-resort messaging-search route was skipped (it types a name into a box)")
         return "no route opened a thread"
     route = reading.get("route")
     if not reading.get("events"):
@@ -1699,19 +1706,15 @@ def message_thread_verdict(reading: Optional[dict]) -> str:
 
 
 def message_thread_state(reading: Optional[dict]) -> str:
-    """Three-state grade for one ladder walk. A COMPLETE walk that opened NOTHING while the profile
-    page rendered is drift; a walk that skipped a route or never reached a rendered page is unknown.
-    A thread that opened but reads no message events is drift too — that is exactly the reply
-    detection going quiet.
+    """Three-state grade for one ladder walk. A walk that tried routes and opened NOTHING is drift —
+    the profile-side routes failed, which is exactly the #1857 signal, and skipping the last-resort
+    search does not erase it. A walk that never reached a route (navigation failed, signed out) is
+    unknown. A thread that opened but reads no message events is drift too — that is exactly the
+    reply detection going quiet.
     """
     reading = dict(reading or {})
     if not reading.get("opened"):
-        # A walk that skipped a route (the read-only probe stops before messaging-search) or never
-        # reached a rendered page grounds nothing — unknown. Only a COMPLETE walk that opened
-        # nothing is drift.
-        if reading.get("routes_skipped") or not reading.get("routes_tried"):
-            return STATE_UNKNOWN
-        return STATE_DRIFT
+        return STATE_DRIFT if reading.get("routes_tried") else STATE_UNKNOWN
     return STATE_OK if reading.get("events") else STATE_DRIFT
 
 
@@ -5663,7 +5666,7 @@ def probe_profile_experiences(driver, profile_url: str, max_entities: int = 6,
 
 
 def probe_message_thread(driver, profile_url: str, person_name: str = "", self_name: str = "",
-                         sleep=time.sleep) -> dict:
+                         sleep: Callable[[float], None] = time.sleep) -> dict:
     """#731: walk the message-thread resolution ladder against a REAL profile and report which route
     resolved, which surface rendered (overlay vs full page), and what the reply reader then sees.
 
@@ -5677,20 +5680,29 @@ def probe_message_thread(driver, profile_url: str, person_name: str = "", self_n
     messaging SEARCH types a name into a box and presses Enter, and the guard refuses every
     printable character precisely because a box that takes text and commits on Enter is
     indistinguishable, from here, from a composer. So the probe SKIPS that route (`skip_routes`)
-    rather than letting it type: the ladder's own broad `except Exception` would otherwise swallow
-    the guard's refusal and report an ordinary failed walk. A run that then opens nothing was not
-    fully walked, so it grades `unknown` — grounds nothing — rather than pretending the routes are
-    broken.
+    rather than letting it type. The direct routes still run, so a walk where they all fail while
+    the profile page rendered still grades `drift` — that IS the #1857 finding — with the skipped
+    last-resort search named as a caveat.
+
+    `except ReadOnlyViolation` is a belt-and-braces net: the guard's refusal is a `BaseException`, so
+    the ladder's broad `except Exception` can no longer swallow it (that was the #1857 defect). Should
+    any OTHER route ever provoke the guard, the refusal reaches here and grades `unknown` — grounds
+    nothing — instead of aborting the live-validation run mid-lane.
     """
     from selenium.webdriver.support.ui import WebDriverWait
 
-    from cqc_lem.utilities.linkedin.message_thread import (ROUTE_MESSAGING_SEARCH,
-                                                           open_message_thread, profile_urn_from_page,
-                                                           read_last_sender)
+    from cqc_lem.utilities.linkedin.message_thread import (
+        ROUTE_MESSAGING_SEARCH, open_message_thread, profile_urn_from_page, read_last_sender)
 
     wait = WebDriverWait(driver, 10)
-    opened = open_message_thread(driver, wait, profile_url, person_name=person_name or None,
-                                 skip_routes=(ROUTE_MESSAGING_SEARCH,))
+    try:
+        opened = open_message_thread(driver, wait, profile_url, person_name=person_name or None,
+                                     skip_routes=(ROUTE_MESSAGING_SEARCH,))
+    except ReadOnlyViolation as e:
+        return graded({"profile_url": profile_url, "opened": False, "route": None,
+                       "read_only_blocked": str(e)}, STATE_UNKNOWN,
+                      "a route provoked the read-only guard, so this run grounds nothing; re-run "
+                      "with a person whose thread one of the direct routes opens")
     reading = {"profile_url": profile_url,
                "opened": opened.opened,
                "route": opened.route,
@@ -5701,10 +5713,6 @@ def probe_message_thread(driver, profile_url: str, person_name: str = "", self_n
                "composer": opened.composer,
                "self_name": self_name or "",
                "profile_urn": profile_urn_from_page(driver, profile_url)}
-    if not opened.opened and opened.skipped:
-        reading["read_only_blocked"] = (
-            "the messaging-search route types a name and presses Enter, which the read-only guard "
-            "refuses, so it was skipped — this run grounds nothing about the routes it did try")
     sleep(1)
     reading["last_sender"] = read_last_sender(driver) if opened.opened else ""
     reading["reply_state"] = _reply_state(reading)
@@ -6005,7 +6013,10 @@ def run_sweep(driver, user_id: int, runners: Optional[dict] = None,
             continue
         try:
             probes[key] = runners[key]() or {}
-        except Exception as e:
+        # ReadOnlyViolation is a BaseException, so `except Exception` alone would let a guard refusal
+        # abort the whole sweep and lose every other lane's reading. Name it: a refused write is
+        # recorded loudly as this lane's probe_error, and the sweep keeps going.
+        except (ReadOnlyViolation, Exception) as e:
             probes[key] = {"state": STATE_UNKNOWN, "probe_error": f"{type(e).__name__}: {e}"[:300],
                            "verdict": f"the probe itself raised ({type(e).__name__}) — grounds "
                                       f"nothing; re-run it"}

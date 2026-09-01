@@ -455,6 +455,26 @@ class TestLadderContract:
         search.assert_called_once()
         assert result.tried == list(mt.ROUTES) and result.skipped == []
 
+    def test_an_unknown_skip_route_name_is_a_caller_typo_that_raises(self):
+        # A typo would silently skip nothing and let the ladder reach the route it meant to stop —
+        # exactly the #1857 hazard. It must fail loudly instead.
+        d = FakeDriver()
+        with pytest.raises(ValueError):
+            mt.open_message_thread(d, MagicMock(), PROFILE, timeout=0,
+                                   skip_routes=("messaging-search",))
+
+    def test_a_base_exception_from_a_route_is_never_swallowed(self):
+        # The read-only guard's refusal is a BaseException so the ladder's broad `except Exception`
+        # cannot turn a refused write into an ordinary failed walk (the #1857 root cause). Any
+        # BaseException from a route must propagate, not be logged and walked past.
+        class _Refusal(BaseException):
+            pass
+
+        d = FakeDriver()
+        with patch.object(mt, "_try_control", side_effect=_Refusal("refused")):
+            with pytest.raises(_Refusal):
+                mt.open_message_thread(d, MagicMock(), PROFILE, timeout=0)
+
     def test_thread_open_is_falsy_when_nothing_opened(self):
         assert not mt.ThreadOpen()
         assert mt.ThreadOpen(opened=True, route=mt.ROUTE_ANCHOR)

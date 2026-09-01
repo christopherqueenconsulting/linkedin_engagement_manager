@@ -352,13 +352,12 @@ class TestMessageThreadProbe:
         assert llv.message_thread_verdict({"opened": True, "route": "anchor", "events": 12,
                                            "self_name": "Christopher Queen"}) == "opened via anchor"
 
-    def test_the_search_route_is_skipped_and_grades_unknown_not_broken(self, monkeypatch):
-        """The production ladder's last resort types a name and presses Enter.
+    def test_the_search_route_is_skipped_but_failed_direct_routes_still_grade_drift(self, monkeypatch):
+        """The production ladder's last resort types a name and presses Enter, so the probe SKIPS it.
 
-        The #1301 guard refuses that, and the ladder's own broad ``except Exception`` would swallow
-        the refusal and report an ordinary failed walk (the #1857 defect). So the probe SKIPS that
-        route: a walk that then opens nothing must grade UNKNOWN naming the guard, not read as a
-        broken route.
+        Skipping the last-resort search must NOT erase the #1857 signal: if every direct route was
+        tried and failed, that IS the finding, so the walk still grades DRIFT — with the skipped
+        search named as a caveat in the verdict.
         """
         from cqc_lem.utilities.linkedin.message_thread import ROUTE_MESSAGING_SEARCH, ThreadOpen
 
@@ -379,9 +378,42 @@ class TestMessageThreadProbe:
                                            sleep=lambda s: None)
         # The fix: the probe asks the ladder to stop before the route that would type.
         assert ROUTE_MESSAGING_SEARCH in tuple(captured.get("skip_routes") or ())
-        assert reading["state"] == llv.STATE_UNKNOWN
+        assert reading["state"] == llv.STATE_DRIFT
         assert "messaging-search" in reading["verdict"]
+
+    def test_a_guard_refusal_that_reaches_the_probe_grades_unknown(self, monkeypatch):
+        """Belt-and-braces for the refusal the ladder can no longer swallow.
+
+        The guard's refusal is a BaseException, so a refusal from any future route reaches the probe
+        and grades UNKNOWN rather than aborting the live-validation run mid-lane.
+        """
+        def _refuse(*_a, **_k):
+            raise llv.ReadOnlyViolation("read-only probe refused to type text")
+
+        monkeypatch.setattr("cqc_lem.utilities.linkedin.message_thread.open_message_thread", _refuse)
+        monkeypatch.setattr("cqc_lem.utilities.linkedin.message_thread.profile_urn_from_page",
+                            lambda *_a: "")
+
+        reading = llv.probe_message_thread(MagicMock(), "https://www.linkedin.com/in/jane/",
+                                           sleep=lambda s: None)
+        assert reading["state"] == llv.STATE_UNKNOWN
         assert reading["read_only_blocked"]
+
+    def test_a_failed_walk_that_tried_routes_is_drift_and_the_verdict_names_the_skip(self):
+        # Direct state/verdict coverage (issue #1857): a complete direct-route walk that opened
+        # nothing is drift, and skipping the last-resort search only adds a caveat to the verdict.
+        drift = {"opened": False, "routes_tried": ["anchor", "button"], "routes_skipped": []}
+        assert llv.message_thread_state(drift) == llv.STATE_DRIFT
+        assert llv.message_thread_verdict(drift) == "no route opened a thread"
+        skipped = {"opened": False, "routes_tried": ["anchor", "button", "direct_url"],
+                   "routes_skipped": ["messaging_search"]}
+        assert llv.message_thread_state(skipped) == llv.STATE_DRIFT
+        assert "messaging-search" in llv.message_thread_verdict(skipped)
+        assert "profile-side routes" in llv.message_thread_verdict(skipped)
+
+    def test_a_walk_that_reached_no_route_is_unknown(self):
+        # Navigation failed or signed out — no route ran, so the walk grounds nothing.
+        assert llv.message_thread_state({"opened": False, "routes_tried": []}) == llv.STATE_UNKNOWN
 
     def test_a_readable_thread_with_no_saved_name_is_still_unknown(self):
         # The other half of a live reply check: the ladder can win and the verdict still be UNKNOWN

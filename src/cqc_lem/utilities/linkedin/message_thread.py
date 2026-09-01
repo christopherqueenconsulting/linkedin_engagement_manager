@@ -30,7 +30,7 @@ import re
 import time
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Iterable, Optional
+from typing import Collection, Optional
 from urllib.parse import quote, unquote
 
 from selenium.common import NoSuchElementException, StaleElementReferenceException, WebDriverException
@@ -179,8 +179,8 @@ class ThreadOpen:
     events: int = 0
     composer: bool = False
     surface: Optional[str] = None
-    tried: list = field(default_factory=list)
-    skipped: list = field(default_factory=list)
+    tried: list[str] = field(default_factory=list)
+    skipped: list[str] = field(default_factory=list)
 
     def __bool__(self) -> bool:
         return self.opened
@@ -656,7 +656,7 @@ def _try_messaging_search(driver: WebDriver, wait: WebDriverWait, person_name: O
 def open_message_thread(driver: WebDriver, wait: WebDriverWait, profile_url: str,
                         person_name: Optional[str] = None, user_id: Optional[int] = None,
                         timeout: float = THREAD_RENDER_TIMEOUT_SECONDS,
-                        skip_routes: Optional[Iterable[str]] = None) -> ThreadOpen:
+                        skip_routes: Optional[Collection[str]] = None) -> ThreadOpen:
     """Open this person's 1:1 message thread, walking every known route until one VERIFIABLY works.
 
     Routes, in order: profile anchor → legacy button → tag-agnostic 'Message' text node → the
@@ -666,9 +666,9 @@ def open_message_thread(driver: WebDriver, wait: WebDriverWait, profile_url: str
 
     Routes named in `skip_routes` are not walked and are recorded in `ThreadOpen.skipped`. The
     read-only live probe uses this to stop before `messaging_search`, whose search box takes a typed
-    name and commits on Enter — a write the probe must not make. A walk that skips a route grounds
-    nothing about it, so the caller reads `skipped` to grade the run rather than treating an
-    unfinished walk as broken routes.
+    name and commits on Enter — a write the probe must not make. Every name must be a real route id
+    (`ROUTES`); an unknown name is a caller typo that would silently skip nothing, so it raises
+    `ValueError` rather than letting the walk reach the route it meant to stop.
 
     Every route exhausted is the EXPECTED outcome for anyone this account cannot message this way
     (not a 1st-degree connection, InMail-only, messaging restricted) — not evidence the selectors
@@ -697,9 +697,15 @@ def open_message_thread(driver: WebDriver, wait: WebDriverWait, profile_url: str
                                                                profile_url, timeout)),
     )
     skip = set(skip_routes or ())
+    unknown = skip - set(ROUTES)
+    if unknown:
+        raise ValueError(f"skip_routes names unknown route(s): {sorted(unknown)}; valid ids are "
+                         f"{list(ROUTES)}")
     for route, attempt in attempts:
         if route in skip:
             result.skipped.append(route)
+            log_debug(f"Skipping message-thread route '{route}'", user_id=user_id,
+                      action_type="followup")
             continue
         result.tried.append(route)
         try:
