@@ -129,7 +129,8 @@ class TestFailureReasonIsRecorded:
              patch(f"{_INV}.invite_to_connect_now", return_value=(False, "Already connected")), \
              patch("cqc_lem.utilities.db.record_connection_request_attempt", return_value=(False, 1)) as rec:
             ra.send_connection_request(3)
-        rec.assert_called_once_with(3, "Already connected")
+        # `terminal=False`: only a PROVEN-unreachable target skips the ceiling (issue #1813).
+        rec.assert_called_once_with(3, "Already connected", terminal=False)
 
 
 class TestReplyCheckUnblocksNurture:

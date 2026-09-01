@@ -39,6 +39,7 @@ from cqc_lem.utilities.db import (
     ALREADY_CONNECTED_MESSAGE,
     CONNECT_NOTE_MAX_CHARS,
     CONNECTION_REQUEST_SENT_MESSAGE,
+    FOLLOW_ONLY_MESSAGE,
     INVITE_LIMIT_REACHED_MESSAGE,
     INVITE_NOT_SENT_MESSAGE,
     NO_CONNECT_BUTTON_MESSAGE,
@@ -82,7 +83,11 @@ from cqc_lem.utilities.linkedin.stale_invites import (
 from cqc_lem.utilities.linkedin.zero_walk import grade_zero_walk
 from cqc_lem.utilities.linkedin_formatter import strip_non_bmp
 from cqc_lem.utilities.logger import log_debug, log_error, log_info, log_warning
-from cqc_lem.utilities.observability import track_company_page_invite_run, track_stale_invite_run
+from cqc_lem.utilities.observability import (
+    track_company_page_invite_run,
+    track_invite_outcome,
+    track_stale_invite_run,
+)
 from cqc_lem.utilities.selenium_util import (
     click_element_wait_retry,
     click_first,
@@ -351,10 +356,12 @@ def _target_name_from_title(driver) -> str:
     directly rather than a BeautifulSoup-parsed source.
     """
     try:
-        title = driver.title or ""
+        # The PARSE is inside the guard as well as the read: a title that comes back as anything
+        # other than text is exactly as unreadable as one that raised, and the callers' fallback
+        # for "no name" is already the fallback for "could not look".
+        name = _TITLE_SUFFIX_RE.sub("", _TITLE_PREFIX_RE.sub("", driver.title or "")).strip()
     except Exception:
         return ""
-    name = _TITLE_SUFFIX_RE.sub("", _TITLE_PREFIX_RE.sub("", title)).strip()
     if not name or name.lower() in _GENERIC_PROFILE_TITLES:
         return ""
     return name
@@ -490,6 +497,106 @@ def _click_own_custom_invite_anchor(driver, wait, user_id: int, slug: str) -> bo
     return False
 
 
+# What an out-of-network profile offers INSTEAD of Connect (#1813). `Following` counts as much as
+# `Follow` — the #979 ladder's follow rung may already have fired on this target, and a followed
+# stranger is no more connectable than an unfollowed one.
+_FOLLOW_LABEL_RE = re.compile(r"^follow(?:ing)?(?:\s+(.+))?$", re.IGNORECASE)
+# The invite is ALREADY OUT. Nothing about that is a target fact — it is the ordinary
+# NO_CONNECT_BUTTON_MESSAGE case, whose own text says "invite may already be pending" — so seeing
+# either of these words forfeits the follow-only reading entirely.
+_INVITE_PENDING_LABEL_RE = re.compile(r"^(?:pending|withdraw)\b", re.IGNORECASE)
+
+
+def _follow_button_names_target(label: str, target_name: str) -> bool:
+    """Whether a Follow control can be attributed to THIS loaded profile.
+
+    The mirror of `_connect_button_names_target`, and it has to be: the "People also viewed" rail
+    ships a Follow button per card, so an unattributed match would read every rail-bearing profile
+    as out of network. A BARE `Follow` is trusted outright for the reason a bare `Connect` is — the
+    rail's own controls always carry a name (#1012's 2026-08-03 grounding) — and a named one must
+    match the page's own title EXACTLY, never as a prefix.
+    """
+    match = _FOLLOW_LABEL_RE.match(" ".join((label or "").split()).strip())
+    if not match:
+        return False
+    named = match.group(1)
+    if named is None:
+        return True
+    if not target_name:
+        return False
+    return " ".join(named.split()).lower() == " ".join(target_name.split()).lower()
+
+
+def _profile_offers_follow_only(driver, slug: str) -> bool:
+    """Whether this profile PROVES it is out of network: Follow on offer, nothing connect-shaped.
+
+    Class B of #1813, measured on `burkegriffin`, `scott-stephenson-` and `aditabraham`: no
+    custom-invite anchor, no Connect button, a `Follow` control on the top card. Failing is correct
+    for these; what is not correct is grading them as a selector miss, because that arms the miss
+    streak and its 6-hour hold — one out-of-network target then brakes the lane for every reachable
+    one behind it, and the queue drains slower than it fills.
+
+    Fail-CLOSED, the same posture `_invite_restriction_reason` keeps: every clause has to be
+    positively read, so an unreadable page, a page with no attributable Follow, or a slug we cannot
+    resolve all fall through to the ordinary miss. This claim ends a target's retries, and a claim
+    needs evidence.
+    """
+    wanted = (slug or "").strip().strip("/").lower()
+    if not wanted:
+        return False
+    try:
+        anchors = driver.find_elements(By.XPATH, _CUSTOM_INVITE_ANCHOR_XPATH)
+        controls = driver.find_elements(
+            By.CSS_SELECTOR, "main button, main a, main [role='button']")[:80]
+    except Exception:
+        return False
+    if any(_anchor_invite_slug(anchor) == wanted for anchor in anchors):
+        return False
+    if not controls:
+        # An empty read is not a reading. A page that rendered nothing says nothing about the
+        # target, and calling that "out of network" would retire a reachable person forever.
+        return False
+
+    target_name = _target_name_from_title(driver)
+    follows = False
+    for control in controls:
+        label = element_label(control)
+        if not label:
+            continue
+        if _INVITE_PENDING_LABEL_RE.match(label) or _connect_button_names_target(label, target_name):
+            return False
+        follows = follows or _follow_button_names_target(label, target_name)
+    return follows
+
+
+# The dialog itself. Declared HERE, above the first reader, because two of them need it: the
+# restriction reader below and the control scan further down, which searches it first so its budget
+# is spent INSIDE the overlay rather than on the page chrome that precedes it in document order
+# (#1813).
+_CONNECT_DIALOG_CONTAINER_CSS = "[role='dialog'], [role='alertdialog'], dialog"
+# How much of the overlay's prose is worth carrying. Long enough for a wall notice and its
+# follow-up sentence, short enough that a log line stays one line.
+_OVERLAY_TEXT_LIMIT = 400
+
+
+def _overlay_notice_text(driver) -> str:
+    """The words an open dialog is showing, shadow roots included — `""` when there are none.
+
+    The ONE reader of the overlay's prose, deliberately: `_miss_evidence` PRINTS this and
+    `_invite_restriction_reason` MATCHES on it, so what a log line shows is byte-for-byte what the
+    detector looked at. Two readers would let the log say "weekly invitation limit" while the
+    detector, scanning something slightly different, still returned None — which is the exact
+    confusion #1813 spent nineteen days in.
+
+    Best-effort: `find_deep_elements` answers `[]` rather than raising when the query cannot run,
+    and neither caller may cost the run.
+    """
+    text = " ".join(_element_text(container)
+                    for container in find_deep_elements(driver, _CONNECT_DIALOG_CONTAINER_CSS,
+                                                        visible_only=True, limit=3))
+    return " ".join(text.split())[:_OVERLAY_TEXT_LIMIT]
+
+
 # The vocabulary LinkedIn uses when the ACCOUNT, not the profile, is why no dialog rendered. Mirrors
 # `invite_limit_signal` in scripts/linkedin_live_validation.py — the probe imports production, never
 # the other way round, so the two lists are pinned against each other by a unit test instead.
@@ -512,12 +619,20 @@ def _invite_restriction_reason(driver) -> "str | None":
     """Which account-level wall the page NAMES, or None.
 
     Reads `main`, `body` and every open dialog, because the notice renders outside `main` as often
-    as in it. Returns None on an unreadable page and that is deliberate: a restriction is a claim,
-    a claim needs evidence, and an unreadable page must fall through to the ordinary miss rather
-    than manufacture an account-wide hold out of a failed read.
+    as in it — and then reads the dialog AGAIN across the shadow boundary (#1813). #1733 moved the
+    Connect dialog into an open shadow root and taught only `_connect_dialog_present` to cross it;
+    `driver.find_elements` cannot, so a wall notice mounted in that overlay was invisible here. It
+    still returned None, which is the ordinary-miss path — so a walled account and a dead selector
+    wrote the identical line, and the whole lane read as selector-broken while LinkedIn was simply
+    refusing. WHERE a claim is mounted is not evidence about whether it was made.
+
+    Returns None on an unreadable page and that stays deliberate: a restriction is a claim, a claim
+    needs evidence, and an unreadable page must fall through to the ordinary miss rather than
+    manufacture an account-wide hold out of a failed read. The shadow pass only ADDS text — it can
+    turn a None into a named wall, never a named wall into a None.
     """
     chunks = []
-    for selector in ("main", "body", "[role='dialog'], [role='alertdialog'], dialog"):
+    for selector in ("main", "body", _CONNECT_DIALOG_CONTAINER_CSS):
         try:
             for element in driver.find_elements(By.CSS_SELECTOR, selector):
                 text = _element_text(element)
@@ -525,6 +640,12 @@ def _invite_restriction_reason(driver) -> "str | None":
                     chunks.append(text)
         except Exception:
             continue
+    try:
+        overlay = _overlay_notice_text(driver)
+    except Exception:
+        overlay = ""
+    if overlay:
+        chunks.append(overlay)
     body = " ".join(chunks)
     if not body.strip():
         return None
@@ -533,6 +654,12 @@ def _invite_restriction_reason(driver) -> "str | None":
     if _INVITE_LIMIT_RE.search(body):
         return INVITE_LIMIT_REACHED_MESSAGE
     return None
+
+
+# Exactly what `_invite_restriction_reason` can return, named so the caller's branch is a membership
+# test rather than "whatever that function happened to answer". A reason about the ACCOUNT holds the
+# lane; a reason about the TARGET (`FOLLOW_ONLY_MESSAGE`) never may.
+_ACCOUNT_WALL_REASONS = frozenset({INVITE_LIMIT_REACHED_MESSAGE, ACCOUNT_RESTRICTED_MESSAGE})
 
 
 # Grounded live 2026-08-29 (#1733): the Connect dialog MOVED INTO AN OPEN SHADOW ROOT (the overlay
@@ -547,9 +674,8 @@ def _invite_restriction_reason(driver) -> "str | None":
 # above are kept as the light-DOM first pass — cheap, and still correct for an account that has not
 # been moved to the shadow-mounted overlay yet.
 _CONNECT_DIALOG_CONTROL_CSS = "button, a, [role='button']"
-# The dialog itself. Searched first so the control scan's budget is spent INSIDE the overlay rather
-# than on the page chrome that precedes it in document order (#1813).
-_CONNECT_DIALOG_CONTAINER_CSS = "[role='dialog'], [role='alertdialog'], dialog"
+# `_CONNECT_DIALOG_CONTAINER_CSS` — the dialog the control scan below is scoped to — is declared
+# above `_invite_restriction_reason`, which reads the same container for its wall notice.
 _SEND_WITHOUT_NOTE_LABEL = "send without a note"
 _ADD_NOTE_LABEL = "add a note"
 _SEND_INVITATION_LABEL = "send invitation"
@@ -605,12 +731,6 @@ def _connect_dialog_present(driver, wait, user_id: int) -> bool:
     return _deep_dialog_control(driver, (_SEND_WITHOUT_NOTE_LABEL, _ADD_NOTE_LABEL)) is not None
 
 
-# What the overlay evidence below reads. Same control shape `_deep_dialog_control` matches, so the
-# dump describes the surface the dialog check actually looked at rather than a neighbouring one.
-_OVERLAY_DIALOG_CSS = _CONNECT_DIALOG_CONTAINER_CSS
-_OVERLAY_TEXT_LIMIT = 400
-
-
 def _overlay_evidence(driver) -> "tuple[list[str], str]":
     """What a SHADOW-PIERCING scan can see that the light DOM cannot: controls, then notice text.
 
@@ -623,10 +743,9 @@ def _overlay_evidence(driver) -> "tuple[list[str], str]":
 
     - **controls** answers "did an overlay render at all". Only labels the light-DOM `main` pass
       cannot reach are worth printing; repeating the profile's own buttons would bury the signal.
-    - **text** answers "did it render a wall notice". `_invite_restriction_reason` reads the light
-      DOM only, so a limit or restriction message mounted in the overlay is invisible to it AND
-      returns None — indistinguishable from a selector that simply missed. This prints the words so
-      a human can tell the two apart without a live session.
+    - **text** answers "did it render a wall notice". It comes off `_overlay_notice_text`, which is
+      also what `_invite_restriction_reason` matches on since #1813 — so the words a miss line
+      prints ARE the words the detector read, and the two can never tell different stories.
 
     Best-effort, like the rest of the evidence path: `find_deep_elements` returns `[]` rather than
     raising when the query cannot run, and evidence must never cost the run.
@@ -639,10 +758,7 @@ def _overlay_evidence(driver) -> "tuple[list[str], str]":
             controls.append(label[:60])
         if len(controls) >= 25:
             break
-    text = " ".join(_element_text(container)
-                    for container in find_deep_elements(driver, _OVERLAY_DIALOG_CSS,
-                                                        visible_only=True, limit=3))
-    return controls, " ".join(text.split())[:_OVERLAY_TEXT_LIMIT]
+    return controls, _overlay_notice_text(driver)
 
 
 def _miss_evidence(driver) -> str:
@@ -699,11 +815,19 @@ def _open_connect_invite_dialog(driver, wait, user_id: int,
        and a direct `driver.get` of it now renders a blank document. It is kept only so an account
        for which it still works is not regressed, and it is why routes 1 and 3 CLICK the link.
 
-    Returns `(opened, restriction_reason)`. `opened` is True only when the dialog's own controls are
-    provably present — a landed click is never success. False is an ordinary outcome (invite already
-    pending, Connect not offered, or the SDUI rotated again) and is why the total miss is a WARNING,
-    not an error (issue #571). `restriction_reason` is set only when the page NAMES an account-level
-    wall, which is a different operator action entirely (#1733).
+    Returns `(opened, reason)`. `opened` is True only when the dialog's own controls are provably
+    present — a landed click is never success. False is an ordinary outcome (invite already pending,
+    Connect not offered, or the SDUI rotated again) and is why the total miss is a WARNING, not an
+    error (issue #571).
+
+    `reason` is None for that ordinary miss, and otherwise names one of the two failures that are
+    NOT a miss and must not be graded as one. Each has a different owner (#1813):
+
+    * an account-level wall the page NAMES (`INVITE_LIMIT_REACHED_MESSAGE` /
+      `ACCOUNT_RESTRICTED_MESSAGE`) — the ACCOUNT is stopped, so the caller holds the whole lane and
+      the target keeps its turn (#1733);
+    * `FOLLOW_ONLY_MESSAGE` — the TARGET is out of network, so the caller retires this one row and
+      touches neither the streak nor the hold.
     """
     slug = profile_slug(profile_url)
 
@@ -737,8 +861,13 @@ def _open_connect_invite_dialog(driver, wait, user_id: int,
     # nothing, and evidence gathered there would describe the blank page rather than the miss.
     evidence = _miss_evidence(driver)
     restriction = _invite_restriction_reason(driver)
+    # Read here for the same reason the evidence is, and it also SAVES route 4: a profile carrying
+    # no connect affordance at all has nothing for the custom-invite URL to preload, so navigating
+    # there would spend a page load to re-learn what the top card already said (#1813). A named
+    # account wall wins — that is about us, not them, and this target is still owed its turn.
+    follow_only = restriction is None and _profile_offers_follow_only(driver, slug)
 
-    if slug and restriction is None:
+    if slug and restriction is None and not follow_only:
         driver.get(_CONNECT_INVITE_URL.format(slug=slug))
         if _connect_dialog_present(driver, wait, user_id):
             log_info("Connect dialog opened via the custom-invite URL")
@@ -757,6 +886,12 @@ def _open_connect_invite_dialog(driver, wait, user_id: int,
         # that matters, and warning here would file a grouped defect for an account fact.
         log_info(f"No Connect dialog because the account is walled: {restriction}")
         return False, restriction
+
+    if follow_only:
+        # INFO, not a warning, for the reason above: nothing here is broken. Warning would file one
+        # grouped defect per out-of-network person in the queue, and the queue is full of them.
+        log_info(f"No Connect dialog — this profile offers Follow only (out of network). {evidence}")
+        return False, FOLLOW_ONLY_MESSAGE
 
     log_warning("No route opened the Connect invite dialog for this profile",
                 user_id=user_id, action_type="invite_connect")
@@ -948,15 +1083,18 @@ def invite_to_connect_now(user_id: int, profile_url: str, message: str = None) -
 
         # Open the Connect dialog. With none open the note/send steps below can only fail, and
         # their errors would bury the real reason — so stop here with a named one instead.
-        opened, restriction = _open_connect_invite_dialog(driver, wait, user_id, profile_url)
+        opened, dialog_reason = _open_connect_invite_dialog(driver, wait, user_id, profile_url)
         if not opened:
-            # A wall LinkedIn NAMED holds the whole lane; a route that merely missed counts toward
-            # the miss streak, so a dead selector cannot turn a queue backlog into a burst of
-            # automated profile visits the invite cap never sees (#1732).
-            reason = restriction or NO_CONNECT_BUTTON_MESSAGE
-            if restriction:
-                hold_invites(user_id, INVITE_HOLD_DEFAULT_SECONDS, reason=restriction)
-            else:
+            # Three outcomes, three different owners (#1813). A wall LinkedIn NAMED is about the
+            # ACCOUNT and holds the whole lane. A route that merely missed counts toward the miss
+            # streak, so a dead selector cannot turn a queue backlog into a burst of automated
+            # profile visits the invite cap never sees (#1732). Follow-only is about the TARGET and
+            # must do NEITHER: braking the lane over someone who was never reachable is how one
+            # out-of-network row costs every reachable row behind it a six-hour hold.
+            reason = dialog_reason or NO_CONNECT_BUTTON_MESSAGE
+            if dialog_reason in _ACCOUNT_WALL_REASONS:
+                hold_invites(user_id, INVITE_HOLD_DEFAULT_SECONDS, reason=dialog_reason)
+            elif dialog_reason != FOLLOW_ONLY_MESSAGE:
                 record_invite_dialog_miss(user_id)
             insert_new_log(user_id=user_id, action_type=LogActionType.ENGAGED,
                            result=LogResultType.FAILURE, post_url=profile_url,
@@ -1050,19 +1188,58 @@ def send_roster_connect_invite(self, user_id: int, profile_url: str, message: st
         # a connected account as a failed invite.
         set_target_connect_status(user_id, profile_url, ConnectStatus.CONNECTED)
         return ALREADY_CONNECTED_MESSAGE
-    if reason in (INVITE_LIMIT_REACHED_MESSAGE, ACCOUNT_RESTRICTED_MESSAGE):
+    if reason in _ACCOUNT_WALL_REASONS:
         # The wall is the account, so the target's one shot was never spent — hand it back to the
         # ladder exactly as a throttle does, rather than badging a reachable person 'failed'.
         set_target_connect_status(user_id, profile_url, ConnectStatus.NEEDS_CONNECTION)
         log_debug(f"Roster connection request deferred: {reason}", user_id=user_id,
                   action_type="invite_connect", task_name="send_roster_connect_invite")
         return f"Roster connection request deferred: {reason}"
+    if reason == FOLLOW_ONLY_MESSAGE:
+        # Out of network (#1813). 'failed' is exactly right and is the state the ladder ALREADY has
+        # for it — terminal for SENDING, still re-read every run by `advance_roster_connect`, so a
+        # user who connects by hand clears the badge. Nothing new is invented here, and the ladder's
+        # follow rung goes on owning this target: following is the only reach they offer.
+        set_target_connect_status(user_id, profile_url, ConnectStatus.FAILED)
+        log_debug(f"Roster connection request stopped — {reason}", user_id=user_id,
+                  action_type="invite_connect", task_name="send_roster_connect_invite")
+        return f"Roster connection request stopped: {reason}"
     set_target_connect_status(user_id, profile_url, ConnectStatus.FAILED)
     # The 'failed' badge is the record that matters here; the reason itself was already logged by
     # the step that owns it, so re-warning would double-count it into a second issue (#1038).
     log_debug(f"Roster connection request failed: {reason}", user_id=user_id,
               action_type="invite_connect", task_name="send_roster_connect_invite")
     return f"Roster connection request failed: {reason}"
+
+
+# What `invite_outcome`'s `result` can be (issue #1813). Three, not two: a DEFERRED row keeps its
+# turn and will be dispatched again, so counting it as a failure would make a healthy lane running
+# into its own daily cap look identical to one LinkedIn has walled.
+INVITE_RESULT_SENT = "sent"
+INVITE_RESULT_FAILED = "failed"
+INVITE_RESULT_DEFERRED = "deferred"
+
+# The short, stable words `reason` is filtered and broken down on. The MESSAGE constants are prose,
+# written for the human reading a failed row in the Connections table, and PostHog matches a
+# property filter on the exact ingested string — so a message reworded for clarity would silently
+# empty every tile built on it. This map is the seam that lets the prose move and the vocabulary
+# stay put. Anything unmapped is `error`: the only reasons that reach here without a constant are
+# the formatted exception strings `invite_to_connect_now` returns.
+INVITE_REASON_UNMAPPED = "error"
+_INVITE_OUTCOME_REASONS = {
+    CONNECTION_REQUEST_SENT_MESSAGE: "sent",
+    ALREADY_CONNECTED_MESSAGE: "already_connected",
+    NO_CONNECT_BUTTON_MESSAGE: "no_connect_affordance",
+    FOLLOW_ONLY_MESSAGE: "follow_only",
+    INVITE_NOT_SENT_MESSAGE: "send_failed",
+    INVITE_LIMIT_REACHED_MESSAGE: "invite_limit",
+    ACCOUNT_RESTRICTED_MESSAGE: "account_restricted",
+}
+
+
+def _invite_outcome_reason(reason: str) -> str:
+    """The dashboard word for a send result message."""
+    return _INVITE_OUTCOME_REASONS.get(reason or "", INVITE_REASON_UNMAPPED)
 
 
 @shared_task.task(name='cqc_lem.app.run_automation.send_connection_request',
@@ -1086,6 +1263,9 @@ def send_connection_request(self, request_id: int):
         return f"Connection request {request_id} not sendable (status={req['status'] if req else 'missing'})"
 
     user_id = req["user_id"]
+    # Real dispatches this row has already spent. The three defers below add nothing to it — they
+    # never reach LinkedIn — which is what makes `attempts == 0` mean "not attempted" on the event.
+    attempts_before = int(req.get("attempts") or 0)
     if is_invites_held(user_id):
         # Re-checked here as well as in the scanner, the same way the daily cap is: the row may have
         # been dispatched before the wall was detected. Deferred to APPROVED, never FAILED — nothing
@@ -1096,12 +1276,14 @@ def send_connection_request(self, request_id: int):
                   task_name="send_connection_request")
         update_connection_request_status(request_id, ConnectionRequestStatus.APPROVED,
                                          failure_reason=reason)
+        track_invite_outcome(user_id, INVITE_RESULT_DEFERRED, "invites_held", attempts_before)
         return f"Connection request {request_id} deferred ({reason})"
 
     prefs = get_engagement_preferences(user_id)
     if count_invites_sent_today(user_id) >= int(prefs.get("max_invites_per_day") or 0):
         log_info(f"send_connection_request: daily invite cap reached for user {user_id}; deferring {request_id}")
         update_connection_request_status(request_id, ConnectionRequestStatus.APPROVED)  # retry on next scan
+        track_invite_outcome(user_id, INVITE_RESULT_DEFERRED, "daily_cap", attempts_before)
         return f"Connection request {request_id} deferred (daily invite cap reached)"
 
     try:
@@ -1113,16 +1295,34 @@ def send_connection_request(self, request_id: int):
                   user_id=user_id, action_type="invite_connect",
                   task_name="send_connection_request")
         update_connection_request_status(request_id, ConnectionRequestStatus.APPROVED)  # retry on next scan
+        track_invite_outcome(user_id, INVITE_RESULT_DEFERRED, "throttled", attempts_before)
         return f"Connection request {request_id} deferred (LinkedIn throttled)"
     if sent:
         update_connection_request_status(request_id, ConnectionRequestStatus.SENT)
+        track_invite_outcome(user_id, INVITE_RESULT_SENT, _invite_outcome_reason(reason),
+                             attempts_before + 1)
         return f"Connection request {request_id} -> sent"
     # A real attempt reached LinkedIn and did not send (issue #1814) — this counts toward the
     # ceiling, unlike the three defers above. The reason was already logged at its owning step; a
     # warning here would only fork a second grouped issue for the same invite (#1038).
     log_debug(f"Connection request {request_id} failed: {reason}", user_id=user_id,
               action_type="invite_connect", task_name="send_connection_request")
-    terminal, attempts = record_connection_request_attempt(request_id, reason)
+    # Out of network (#1813): the profile offers Follow and nothing else, which is a fact about the
+    # TARGET and will read the same on every retry. Retiring it here is what stops one unreachable
+    # row costing a ~90 s Chrome session per cycle on the lane every reachable row shares.
+    out_of_network = reason == FOLLOW_ONLY_MESSAGE
+    terminal, attempts = record_connection_request_attempt(request_id, reason,
+                                                           terminal=out_of_network)
+    # `attempts` is 0 only when the write itself failed, and an event reporting a zero denominator
+    # for a dispatch that DID happen is the exact blind spot this event closes.
+    track_invite_outcome(user_id, INVITE_RESULT_FAILED if terminal else INVITE_RESULT_DEFERRED,
+                         _invite_outcome_reason(reason), attempts or attempts_before + 1)
+    if out_of_network:
+        # DEBUG, not the warning below: nothing is broken, and one grouped issue per out-of-network
+        # person in the queue is how a working lane gets paged for someone else's privacy settings.
+        log_debug(f"Connection request {request_id} retired — {reason}", user_id=user_id,
+                  action_type="invite_connect", task_name="send_connection_request")
+        return f"Connection request {request_id} -> failed (out of network, Follow only)"
     if terminal:
         # Escalating on purpose (issue #1814): a target that survives the ceiling has genuinely
         # never been reachable, and the recurrence rule promotes a repeat of this to ERROR — which
