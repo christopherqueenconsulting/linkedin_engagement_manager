@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.172.7](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.172.6...v0.172.7) (2026-09-01)
+
+
+### Bug Fixes
+
+* **llm:** load the LiteLLM custom modules through `callbacks`, the key it reads (closes [#1880](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1880)) ([#1891](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1891)) ([ddfc457](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/ddfc457ff02541a2105f974007f0c04d27fd2d5b))
+* **triage:** let a blocked:external park survive the hourly pass ([#1888](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1888)) ([c188c55](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/c188c5521756ca6d255b07ed676565bd0a11330d))
+* **triage:** let a blocked:external park survive the hourly pass (closes [#1887](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1887)) ([c188c55](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/c188c5521756ca6d255b07ed676565bd0a11330d))
+
+
+### Documentation
+
+* **agents:** name the npm vacuous-pass trap, and stop recommending `ruff | wc -l` ([#1886](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1886)) ([c279112](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/c2791128579e2ac3c7c9ca7142fa4c777e3c2b84))
+
 ## [0.172.6](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.172.5...v0.172.6) (2026-09-01)
 
 
