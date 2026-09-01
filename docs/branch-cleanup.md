@@ -11,7 +11,7 @@ agents that ran to completion but never wrote a manifest of what to drop. Two la
 |---|---|---|
 | **Auto-delete-on-merge** (repo setting) | Every PR merged AFTER 2026-07-28 — the head branch disappears ~30s after the merge button | `delete_branch_on_merge=true` (one-line repo setting) |
 | **Weekly orphan sweep** (`.github/workflows/stale-branches.yml`) | Orphan branches, closed-without-merge PR branches, anything the setting didn't catch because the PR merged before the setting was flipped | Mon 06:00 UTC cron + `actions/github-script` |
-| **Weekly worktree sweep** (`scripts/worktree_cleanup.sh`) | `git worktree` REGISTRATIONS left behind by finished agents — the branch layers never touch these | Mon 07:00 UTC host cron; see [The third layer](#the-third-layer--worktree-registrations) |
+| **Weekly worktree sweep** (`scripts/worktree_cleanup.sh`) | `git worktree` REGISTRATIONS left behind by finished agents — the branch layers never touch these | Mon 07:00 UTC systemd timer on the agent host (Actions cannot see them); see [The third layer](#the-third-layer--worktree-registrations) |
 
 The **one-time manual sweep** in `docs/branch-cleanup-audit-2026-07-28.md` cleaned out the ~491 stale
 branches that already existed before the layers above were turned on. That manifest is the recovery
@@ -19,7 +19,7 @@ record — see [Recovery](#recovery) below.
 
 ## The 48-hour grace window
 
-**Both layers** hold any branch whose tip committer date is younger than 48 hours, regardless of
+**All three layers** hold anything whose tip committer date is younger than 48 hours, regardless of
 PR state or author. This is the protection for active agents: a fresh `feature/claude-issue-NNN`
 branch is held even if it has no PR yet, even if its tip is ahead of main. The grace period resets
 on every new commit, so an in-flight agent has 48h of breathing room per push.
@@ -110,21 +110,61 @@ Five fail-closed protections. A worktree is HELD, never removed, when it:
 5. is a **detached HEAD not merged into origin/main** — it has no branch ref to outlive the removal,
    so "branch gone from origin" proves nothing about it; only reachability from main does.
 
-Held-because-uncommitted trees are reported for a human decision. The script resolves none of them.
+Held-because-uncommitted trees are reported for a human decision, in copy-pasteable form (path,
+first status lines, the inspect command). The script resolves none of them.
+
+Three conditions disable removals for the **whole run** — it reports and deletes nothing:
+
+- no `--apply` (the default: a bare invocation is a dry run);
+- `git fetch --prune origin` failed, or `--no-fetch` was passed. Both removal tests read *local*
+  remote refs, so without a fresh fetch "gone from origin" and "ancestor of origin/main" are a
+  stale answer to a live question;
+- the live-process detector is blind. It walks `/proc/*/cwd` and self-tests against its own cwd:
+  with no readable procfs, "no process found" really means "cannot look", which would turn
+  protection 3 from fail-closed into fail-open on the one check covering a running agent lane.
 
 ```bash
-scripts/worktree_cleanup.sh --dry-run
+scripts/worktree_cleanup.sh              # report only — the default
+scripts/worktree_cleanup.sh --apply      # actually remove
 ```
 
-Weekly host cron, as `lem` (mirrors the Mon 06:00 UTC branch sweep, offset an hour so the branch
-deletions have already landed and this run sees them):
+**Where "weekly" comes from.** Not GitHub Actions: a hosted runner cannot see worktrees registered
+on the agent host, so unlike the branch half this cannot live in `stale-branches.yml`. The schedule
+is a systemd timer on the box, committed alongside the script:
 
 ```
-0 7 * * 1 cd /home/lem/linkedin_engagement_manager && scripts/worktree_cleanup.sh >> /home/lem/logs/worktree_cleanup.log 2>&1
+scripts/systemd/lem-worktree-sweep.timer     # Mon 07:00 UTC, Persistent=true
+scripts/systemd/lem-worktree-sweep.service   # User=lem, ExecStart=... --apply
 ```
+
+Install it the same way as the watchdog units:
+
+```bash
+sudo cp scripts/systemd/lem-worktree-sweep.{service,timer} /etc/systemd/system/
+sudo systemctl daemon-reload && sudo systemctl enable --now lem-worktree-sweep.timer
+```
+
+`--apply` is carried by the **unit**, never by the script's default, so a fat-fingered manual run
+cannot delete anything. 07:00 UTC is one hour after the Mon 06:00 UTC branch sweep, so the branch
+deletions have already landed and this run's fetch sees them as gone from origin.
+
+The run log is the journal — every held tree with its reason, plus a one-line summary of counts per
+bucket:
+
+```bash
+journalctl -u lem-worktree-sweep.service | grep 'worktree sweep:'
+# [2026-09-01T06:00:26Z] worktree sweep: mode=dry-run would-remove=0 failed=0 skipped=2 \
+#   held(uncommitted=23 active=2 grace=5 live-branch=3 locked=3 unreadable=0)
+```
+
+A skip is always logged, including the primary checkout and the tree the script was invoked from —
+silent truncation reads as "swept everything".
 
 **A worktree whose directory was deleted by hand** is not this script's problem — `git worktree
 prune` handles it, and the script calls it on both ends of the sweep.
+
+Decision coverage lives in `tests/unit/scripts/test_worktree_cleanup.py`, which builds a throwaway
+repo with a real worktree in each state and asserts on the report lines.
 
 ## Future sweeps
 

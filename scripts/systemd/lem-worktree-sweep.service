@@ -1,0 +1,29 @@
+[Unit]
+Description=Sweep git worktree registrations left behind by finished agent runs
+Documentation=https://github.com/christopherqueenconsulting/linkedin_engagement_manager/blob/main/docs/branch-cleanup.md
+# Needs the network to fetch: a failed fetch does NOT fail the unit, it downgrades the run to
+# report-only inside the script, which is the fail-closed answer, not an error to retry.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# The agent worktrees are `lem`-owned, under the dev checkout. Never root: a root removal would be
+# the one way this sweep could delete something it does not own.
+User=lem
+Group=lem
+WorkingDirectory=/home/lem/linkedin_engagement_manager
+# --apply is carried by the UNIT, not by the script's default. A bare `scripts/worktree_cleanup.sh`
+# reports and removes nothing, so a fat-fingered cron/manual run cannot delete anything.
+ExecStart=/home/lem/linkedin_engagement_manager/scripts/worktree_cleanup.sh --apply
+# The script exits 1 when a removal failed. That IS a unit failure worth surfacing, so it is not
+# added to SuccessExitStatus — unlike lem-watchdog, whose exit 1 is a normal report.
+TimeoutStartSec=900
+NoNewPrivileges=yes
+# journalctl -u lem-worktree-sweep.service is the run log: every held tree and its reason, plus the
+# per-run summary counts. `grep 'worktree sweep:'` answers "did it re-accumulate?" a quarter later.
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
