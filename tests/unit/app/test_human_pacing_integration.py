@@ -255,13 +255,13 @@ class TestGovernorAccounting:
         true figure is the direction that gets an account restricted.
         """
         from cqc_lem.app.engagement import invites as ra
-        from cqc_lem.utilities.db import CONNECTION_REQUEST_SENT_MESSAGE, INVITE_UNCONFIRMED_MESSAGE
+        from cqc_lem.utilities.db import InviteOutcome
         from cqc_lem.utilities.human_pacing import ACTION_INVITE
 
         # (verdict, row says sent, envelope charged). The middle row is the one this fix added:
         # not a send, still a push.
-        cases = [(CONNECTION_REQUEST_SENT_MESSAGE, True, True),
-                 (INVITE_UNCONFIRMED_MESSAGE, False, True),
+        cases = [(InviteOutcome.SENT, True, True),
+                 (InviteOutcome.UNCONFIRMED, False, True),
                  (None, False, False)]  # None: no Send affordance, so nothing was pushed at all
         for verdict, row_sent, charged in cases:
             clicker = (MagicMock() if verdict is not None

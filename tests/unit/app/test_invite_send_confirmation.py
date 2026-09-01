@@ -24,11 +24,14 @@ import pytest
 from selenium.common import StaleElementReferenceException, WebDriverException
 
 from cqc_lem.utilities.db import (
+    ACCOUNT_RESTRICTED_MESSAGE,
     CONNECTION_REQUEST_SENT_MESSAGE,
     INVITE_ALREADY_PENDING_MESSAGE,
     INVITE_EMAIL_CHALLENGE_MESSAGE,
+    INVITE_LIMIT_REACHED_MESSAGE,
     INVITE_NOT_SENT_MESSAGE,
     INVITE_UNCONFIRMED_MESSAGE,
+    InviteOutcome,
 )
 
 pytestmark = pytest.mark.unit
@@ -144,6 +147,17 @@ class TestThePendingAffordanceIsAttributedToTheTarget:
         from cqc_lem.app.engagement.invites import _pending_button_names_target
         assert _pending_button_names_target(label, "Jane Doe") is False
 
+    @pytest.mark.parametrize("text, residue", [
+        ("Pending, click to withdraw", ""),
+        ("Invitation sent", ""),
+        ("Withdraw invitation sent to Jane-Doe", "jane doe"),
+        ("Pending, click to withdraw invitation sent to Jane Doe", "jane doe"),
+    ])
+    def test_the_residue_is_what_is_left_after_the_vocabulary(self, text, residue):
+        """Directly, because the residue IS the attribution — an empty one means "bare"."""
+        from cqc_lem.app.engagement.invites import _pending_label_residue
+        assert _pending_label_residue(text) == residue
+
     def test_the_invitation_sent_rotation_is_recognised(self):
         """The alternative added to `_INVITE_PENDING_LABEL_RE` for this issue."""
         from cqc_lem.app.engagement.invites import _pending_button_names_target
@@ -249,6 +263,52 @@ class TestTheReadIsScopedToTheTargetsOwnCard:
         with patch(f"{_INV}.find_deep_elements", side_effect=deep):
             assert ra._pending_invite_affordance(self._driver()) is False
 
+    def test_the_deepest_name_bearing_section_wins_not_the_outer_wrapper(self):
+        """Measured on `harshal-karanpuriya`, 2026-09-01.
+
+        `main` holds 7 sections; TWO of them contain the name node. The outer wrapper carries 253
+        controls and spans most of `main` — rail included — while the real top card carries 15.
+        Sections containing one node nest, so document order runs outermost-to-innermost and the
+        LAST match is the card. Taking the first would put the rail inside the read window.
+        """
+        from cqc_lem.app.engagement import invites as ra
+
+        wrapper = MagicMock(name="wrapper")
+        card = MagicMock(name="top-card")
+        # The wrapper's 253 controls, with a stranger's pending badge among them — the exact false
+        # `sent` this scope exists to make unreachable.
+        wrapper_controls = ([_control("Pending")]
+                            + [_control(f"control {n}") for n in range(252)])
+        card_controls = [_control(label) for label in
+                         ("Message", "More", "Contact info", "Connect")]
+
+        def deep(driver, css, *, visible_only=True, limit=20, root=None):
+            if css == ra._PROFILE_TOP_CARD_CSS:
+                return [wrapper, card]  # document order: ancestor, then descendant
+            if css == ra._PROFILE_NAME_HEADING_CSS:
+                return [_control("Harshal Karanpuriya")]  # both sections carry the name
+            return (wrapper_controls if root is wrapper else card_controls)[:limit]
+
+        with patch(f"{_INV}.find_deep_elements", side_effect=deep):
+            assert ra._pending_invite_affordance(
+                self._driver(title="Harshal Karanpuriya | LinkedIn")) is False
+
+    def test_a_heading_that_carries_a_suffix_still_names_the_target(self):
+        """REASONED, not measured: the one grounded profile matched its title exactly.
+
+        A card headed "Jane Doe, MBA" under a title of "Jane Doe" is the same card, and getting
+        this wrong now costs pacing envelope rather than only a missed read.
+        """
+        from cqc_lem.app.engagement.invites import _heading_names_target
+        assert _heading_names_target("Jane Doe, MBA", "Jane Doe") is True
+        assert _heading_names_target("Jane Doe (she/her)", "Jane Doe") is True
+
+    @pytest.mark.parametrize("heading", ["Jan", "Janet Doe", "Jane Doerr", "", "Somebody Else"])
+    def test_a_heading_that_is_not_the_target_refuses(self, heading):
+        """Bounded on a word boundary, and never the reverse containment."""
+        from cqc_lem.app.engagement.invites import _heading_names_target
+        assert _heading_names_target(heading, "Jane Doe") is False
+
     def test_the_card_is_found_by_its_heading_not_by_being_first(self):
         """Position is a hint for WHICH sections to check, never the evidence."""
         from cqc_lem.app.engagement import invites as ra
@@ -257,7 +317,7 @@ class TestTheReadIsScopedToTheTargetsOwnCard:
 
         def deep(driver, css, *, visible_only=True, limit=20, root=None):
             if css == ra._PROFILE_TOP_CARD_CSS:
-                return [decoy, card]  # the target's card is NOT first
+                return [decoy, card]  # a section that is not the target's comes first
             if css == ra._PROFILE_NAME_HEADING_CSS:
                 return [_control("Jane Doe")] if root is card else [_control("Promoted")]
             return [_control("Pending")] if root is card else [_control("Connect")]
@@ -284,12 +344,13 @@ class TestTheReadIsScopedToTheTargetsOwnCard:
         assert seen and all(seen)
 
 
-def _confirm(dialog_present, pending, overlay=""):
+def _confirm(dialog_present, pending, overlay="", restriction=None):
     """Run `_confirm_invite_outcome` against a given page reading, capturing its logs."""
     from cqc_lem.app.engagement import invites as ra
     overlays = overlay if callable(overlay) else (lambda _driver: overlay)
     with patch(f"{_INV}._connect_dialog_present", side_effect=dialog_present), \
          patch(f"{_INV}._pending_invite_affordance", side_effect=pending), \
+         patch(f"{_INV}._invite_restriction_reason", return_value=restriction), \
          patch(f"{_INV}._overlay_notice_text", side_effect=overlays), \
          patch(f"{_INV}.WebDriverWait") as wait, \
          patch(f"{_INV}.time.sleep") as sleep, \
@@ -309,13 +370,13 @@ class _Confirmed:
 class TestTheThreeVerdicts:
     def test_a_closed_dialog_plus_a_pending_top_card_is_the_only_send(self):
         r = _confirm(dialog_present=lambda *a, **k: False, pending=lambda *a: True)
-        assert r.verdict == CONNECTION_REQUEST_SENT_MESSAGE
+        assert r.verdict is InviteOutcome.SENT
         r.warn.assert_not_called()
 
     def test_the_email_challenge_is_named_and_never_sent(self):
         r = _confirm(dialog_present=lambda *a, **k: True, pending=lambda *a: False,
                      overlay=_CHALLENGE_OVERLAY)
-        assert r.verdict == INVITE_EMAIL_CHALLENGE_MESSAGE
+        assert r.verdict is InviteOutcome.EMAIL_CHALLENGE
         # DEBUG, not WARNING: an expected, named target fact. A repeated log_warning re-emits at
         # ERROR and files ONE grouped $exception (src/cqc_lem/utilities/CLAUDE.md), which would page
         # us once per unverifiable person in the queue for behaviour #1836 already owns.
@@ -325,7 +386,7 @@ class TestTheThreeVerdicts:
 
     def test_an_unreadable_page_is_not_a_send_and_warns_once(self):
         r = _confirm(dialog_present=lambda *a, **k: False, pending=lambda *a: False)
-        assert r.verdict == INVITE_UNCONFIRMED_MESSAGE
+        assert r.verdict is InviteOutcome.UNCONFIRMED
         r.warn.assert_called_once()  # genuinely anomalous — this one IS the escalating log
 
     def test_a_dialog_that_never_closed_is_not_a_send_even_with_a_pending_badge(self):
@@ -335,7 +396,7 @@ class TestTheThreeVerdicts:
         from an earlier invite must not paper over that.
         """
         r = _confirm(dialog_present=lambda *a, **k: True, pending=lambda *a: True)
-        assert r.verdict == INVITE_UNCONFIRMED_MESSAGE
+        assert r.verdict is InviteOutcome.UNCONFIRMED
 
     def test_a_closed_dialog_with_no_pending_badge_is_not_a_send(self):
         """The other half, and the one that matters most.
@@ -345,7 +406,19 @@ class TestTheThreeVerdicts:
         """
         r = _confirm(dialog_present=lambda *a, **k: False, pending=lambda *a: False,
                      overlay=_ORDINARY_OVERLAY)
-        assert r.verdict == INVITE_UNCONFIRMED_MESSAGE
+        assert r.verdict is InviteOutcome.UNCONFIRMED
+
+    def test_every_outcome_has_a_message_and_a_dashboard_word(self):
+        """The enum is what the code branches on; the map is what the operator reads.
+
+        Both halves have to be TOTAL, or a new verdict degrades into a `KeyError` on one side and
+        the unmapped `error` reason on the other — which is precisely the silent failure the enum
+        was introduced to remove.
+        """
+        from cqc_lem.app.engagement import invites as ra
+        assert set(ra._OUTCOME_MESSAGES) == set(InviteOutcome)
+        for outcome, message in ra._OUTCOME_MESSAGES.items():
+            assert ra._invite_outcome_reason(message) == outcome.value
 
     def test_every_verdict_has_a_dashboard_word(self):
         """Anti-vacuity on the reason map: an unmapped verdict degrades silently to `error`.
@@ -358,6 +431,69 @@ class TestTheThreeVerdicts:
         for verdict in (CONNECTION_REQUEST_SENT_MESSAGE, INVITE_EMAIL_CHALLENGE_MESSAGE,
                         INVITE_UNCONFIRMED_MESSAGE, INVITE_ALREADY_PENDING_MESSAGE):
             assert ra._invite_outcome_reason(verdict) != ra.INVITE_REASON_UNMAPPED
+
+
+class TestAWallReadAfterTheClickIsNamed:
+    """A refusal that surfaces AFTER Send is the same fact as one that surfaces before it.
+
+    Letting it fall through to `unconfirmed` would fire the "our read broke" warning routinely for
+    a state we understand — the same noise argument that keeps the challenge at DEBUG — and would
+    hide the wall behind a reason that sends an operator hunting a selector.
+    """
+
+    @pytest.mark.parametrize("wall, outcome", [
+        (INVITE_LIMIT_REACHED_MESSAGE, InviteOutcome.INVITE_LIMIT),
+        (ACCOUNT_RESTRICTED_MESSAGE, InviteOutcome.ACCOUNT_RESTRICTED),
+    ])
+    def test_a_named_wall_beats_the_unconfirmed_fallback(self, wall, outcome):
+        r = _confirm(dialog_present=lambda *a, **k: False, pending=lambda *a: False,
+                     restriction=wall)
+        assert r.verdict is outcome
+        r.warn.assert_not_called()
+
+    def test_every_wall_the_reader_can_name_has_a_verdict(self):
+        """Anti-vacuity: `_RESTRICTION_OUTCOMES` must be TOTAL over the reader's whole range.
+
+        A missing key would be a KeyError inside the confirmation — an escape from the one function
+        whose job is not guessing.
+        """
+        from cqc_lem.app.engagement import invites as ra
+        assert set(ra._RESTRICTION_OUTCOMES) == set(ra._ACCOUNT_WALL_REASONS)
+
+    def test_a_confirmed_send_is_never_re_read_as_a_wall(self):
+        r = _confirm(dialog_present=lambda *a, **k: False, pending=lambda *a: True,
+                     restriction=INVITE_LIMIT_REACHED_MESSAGE)
+        assert r.verdict is InviteOutcome.SENT
+
+    def test_the_email_challenge_still_wins_over_a_wall_reading(self):
+        """The challenge is about the TARGET and holds nothing; a wall holds the whole lane."""
+        r = _confirm(dialog_present=lambda *a, **k: True, pending=lambda *a: False,
+                     overlay=_CHALLENGE_OVERLAY, restriction=INVITE_LIMIT_REACHED_MESSAGE)
+        assert r.verdict is InviteOutcome.EMAIL_CHALLENGE
+
+    def test_an_unreadable_page_never_manufactures_a_hold(self):
+        """`_invite_restriction_reason` answers None on an unreadable page, and that stands."""
+        r = _confirm(dialog_present=lambda *a, **k: False, pending=lambda *a: False,
+                     restriction=None)
+        assert r.verdict is InviteOutcome.UNCONFIRMED
+
+    def test_the_lane_is_held_when_the_wall_is_read_after_the_click(self):
+        from cqc_lem.app.engagement import invites as ra
+        with patch(f"{_INV}.get_user_password_pair_by_id", return_value=("e@x", "pw")), \
+             patch(f"{_INV}.get_driver_wait_pair", return_value=(MagicMock(), MagicMock())), \
+             patch(f"{_INV}.login_to_linkedin"), \
+             patch(f"{_INV}._profile_is_first_degree", return_value=False), \
+             patch(f"{_INV}._open_connect_invite_dialog", return_value=(True, None)), \
+             patch(f"{_INV}.click_element_wait_retry", return_value=MagicMock()), \
+             patch(f"{_INV}._confirm_invite_outcome",
+                   return_value=InviteOutcome.INVITE_LIMIT), \
+             patch(f"{_INV}.hold_invites") as hold, \
+             patch(f"{_INV}.time.sleep"), patch(f"{_INV}.insert_new_log"), \
+             patch(f"{_INV}.record_action"), patch(f"{_INV}.clear_invite_dialog_misses"), \
+             patch(f"{_INV}.quit_gracefully"):
+            sent, reason = ra.invite_to_connect_now(1, "https://x/in/jane")
+        assert (sent, reason) == (False, INVITE_LIMIT_REACHED_MESSAGE)
+        hold.assert_called_once()  # a walled account must stop opening Chrome sessions
 
 
 class TestTheReadsFailClosedWhenTheyThrow:
@@ -378,7 +514,7 @@ class TestTheReadsFailClosedWhenTheyThrow:
             return answer
 
         r = _confirm(dialog_present=dialog_present, pending=lambda *a: True)
-        assert r.verdict == CONNECTION_REQUEST_SENT_MESSAGE
+        assert r.verdict is InviteOutcome.SENT
         r.warn.assert_not_called()
 
     def test_a_read_that_never_recovers_lands_on_unconfirmed(self):
@@ -386,7 +522,7 @@ class TestTheReadsFailClosedWhenTheyThrow:
             raise WebDriverException("session died")
 
         r = _confirm(dialog_present=boom, pending=lambda *a: True)
-        assert r.verdict == INVITE_UNCONFIRMED_MESSAGE
+        assert r.verdict is InviteOutcome.UNCONFIRMED
         r.warn.assert_called_once()  # the anomaly log still fires — it is not swallowed
         assert r.debug.call_count == 3  # one breadcrumb per lost attempt
 
@@ -396,7 +532,7 @@ class TestTheReadsFailClosedWhenTheyThrow:
             raise WebDriverException("overlay gone")
 
         r = _confirm(dialog_present=lambda *a, **k: False, pending=lambda *a: True, overlay=boom)
-        assert r.verdict == CONNECTION_REQUEST_SENT_MESSAGE
+        assert r.verdict is InviteOutcome.SENT
 
 
 class TestTheReadIsGivenTimeToSettle:
@@ -411,14 +547,14 @@ class TestTheReadIsGivenTimeToSettle:
         pendings = iter([True, True])
         r = _confirm(dialog_present=lambda *a, **k: next(readings),
                      pending=lambda *a: next(pendings))
-        assert r.verdict == CONNECTION_REQUEST_SENT_MESSAGE
+        assert r.verdict is InviteOutcome.SENT
         assert r.sleep.call_count == 1  # one settle, not a spin
         r.warn.assert_not_called()
 
     def test_the_retry_budget_is_bounded(self):
         from cqc_lem.app.engagement import invites as ra
         r = _confirm(dialog_present=lambda *a, **k: False, pending=lambda *a: False)
-        assert r.verdict == INVITE_UNCONFIRMED_MESSAGE
+        assert r.verdict is InviteOutcome.UNCONFIRMED
         assert r.sleep.call_args_list == [call(ra._INVITE_CONFIRM_SETTLE_SECONDS)] * (
             ra._INVITE_CONFIRM_ATTEMPTS - 1)
 
@@ -461,14 +597,13 @@ class TestTheCoreRailRecordsTheConfirmedOutcome:
 
     def test_a_landed_click_that_cannot_be_confirmed_is_not_a_send(self):
         from cqc_lem.utilities.db import LogResultType
-        sent, reason, confirm, insert_log, _action = self._run(INVITE_UNCONFIRMED_MESSAGE)
+        sent, reason, confirm, insert_log, _action = self._run(InviteOutcome.UNCONFIRMED)
         assert (sent, reason) == (False, INVITE_UNCONFIRMED_MESSAGE)
         confirm.assert_called_once()
         assert insert_log.call_args.kwargs["result"] == LogResultType.FAILURE
 
-    @pytest.mark.parametrize("verdict", [CONNECTION_REQUEST_SENT_MESSAGE,
-                                         INVITE_EMAIL_CHALLENGE_MESSAGE,
-                                         INVITE_UNCONFIRMED_MESSAGE])
+    @pytest.mark.parametrize("verdict", [InviteOutcome.SENT, InviteOutcome.EMAIL_CHALLENGE,
+                                         InviteOutcome.UNCONFIRMED])
     def test_every_dispatched_send_charges_the_pacing_envelope(self, verdict):
         """The row fails CLOSED; the envelope fails OPEN, and they are different questions.
 
@@ -502,12 +637,12 @@ class TestTheCoreRailRecordsTheConfirmedOutcome:
         record_action.assert_not_called()
 
     def test_the_email_challenge_reaches_the_caller_by_name(self):
-        sent, reason, _confirm, _log, _action = self._run(INVITE_EMAIL_CHALLENGE_MESSAGE)
+        sent, reason, _confirm, _log, _action = self._run(InviteOutcome.EMAIL_CHALLENGE)
         assert (sent, reason) == (False, INVITE_EMAIL_CHALLENGE_MESSAGE)
 
     def test_a_confirmed_invite_still_records_a_send(self):
         from cqc_lem.utilities.db import LogResultType
-        sent, reason, _c, insert_log, record_action = self._run(CONNECTION_REQUEST_SENT_MESSAGE)
+        sent, reason, _c, insert_log, record_action = self._run(InviteOutcome.SENT)
         assert (sent, reason) == (True, CONNECTION_REQUEST_SENT_MESSAGE)
         assert insert_log.call_args.kwargs["result"] == LogResultType.SUCCESS
         record_action.assert_called_once()
@@ -698,6 +833,32 @@ class TestAnInviteAlreadyPendingClosesTheRow:
         miss.assert_not_called()  # the route is not broken; the invite is simply already out
         # Nothing was pushed at LinkedIn on THIS visit, so the envelope is not charged again.
         record_action.assert_not_called()
+
+    def test_a_card_read_that_throws_is_the_ordinary_miss_not_an_escape(self):
+        """The guard outside the confirmation loop's own guard.
+
+        This read happens on the miss path, where the next step is a decision about a row; an
+        exception escaping here would skip that decision entirely and land in the generic handler.
+        """
+        from cqc_lem.app.engagement import invites as ra
+        from cqc_lem.utilities.db import NO_CONNECT_BUTTON_MESSAGE
+
+        with patch(f"{_INV}.get_user_password_pair_by_id", return_value=("e@x", "pw")), \
+             patch(f"{_INV}.get_driver_wait_pair", return_value=(MagicMock(), MagicMock())), \
+             patch(f"{_INV}.login_to_linkedin"), \
+             patch(f"{_INV}._profile_is_first_degree", return_value=False), \
+             patch(f"{_INV}._open_connect_invite_dialog",
+                   return_value=(False, NO_CONNECT_BUTTON_MESSAGE)), \
+             patch(f"{_INV}._pending_invite_affordance",
+                   side_effect=WebDriverException("card gone")), \
+             patch(f"{_INV}.record_invite_dialog_miss"), \
+             patch(f"{_INV}.insert_new_log"), \
+             patch(f"{_INV}.quit_gracefully"), \
+             patch(f"{_INV}.log_debug") as debug:
+            sent, reason = ra.invite_to_connect_now(1, "https://x/in/jane")
+
+        assert (sent, reason) == (False, NO_CONNECT_BUTTON_MESSAGE)
+        assert any("pending invite" in call.args[0] for call in debug.call_args_list)
 
     def test_no_pending_affordance_is_still_the_ordinary_miss(self):
         from cqc_lem.utilities.db import NO_CONNECT_BUTTON_MESSAGE

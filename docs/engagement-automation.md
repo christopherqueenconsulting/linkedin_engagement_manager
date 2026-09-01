@@ -1010,19 +1010,27 @@ click-landed verdict cannot tell them apart, which is the whole defect.
 - **A send needs BOTH halves.** The Connect dialog is gone **and** the target's own top card shows
   the invite pending (`Pending` / `Invitation sent` / a withdraw control). Either alone is satisfied
   by a dialog that closed on a refusal.
-- **The card must PROVE it is the target's.** `main` is not a scope: the "People also viewed" /
-  "More profiles for you" rails live inside it, their cards are visible, and they come LATER in
-  document order, so any control budget spread over `main` is a coin toss — and a rail card's bare
-  `Pending`, from an invite we sent someone else last week, would write the exact irreversible row
-  this section exists to prevent. `_target_top_card` accepts a section only when it carries the
-  target's own name heading; position is a hint for which sections to check, never the evidence.
-  A named affordance must additionally match the page's title (#1012, committed in a read).
+- **The card must PROVE it is the target's, and it must be the DEEPEST one.** Grounded live on
+  `/in/harshal-karanpuriya` (2026-09-01): a profile carries **no `h1` at all** — the name is the
+  first `h2` in `main` — and of the 7 sections under `main`, **two** contain the name node. The
+  outer wrapper carries **253** controls and spans most of `main`, rail included; the real top card
+  carries **15**. So `_target_top_card` takes the *innermost* name-bearing section (sections
+  containing one node nest, so document order runs outermost-to-innermost and the last match is the
+  card). Scoping to `main` plus a control budget, or to the first match, both put the rail inside
+  the read window — and a rail card's bare `Pending`, from an invite we sent somebody else last
+  week, is the exact irreversible row this section exists to prevent (#1012, in a read).
 - **The reads are shadow-aware and fail closed on a throw.** `find_deep_elements` is the one lookup
   that crosses the shadow boundary — CSS-only, since XPath cannot address a shadow tree — and
-  `visible_only` is what discards the top card's 0x0 sticky-header duplicate of every control. The
-  whole attempt is guarded: this reads the card WHILE it re-renders behind a dismissing dialog, the
-  likeliest `StaleElementReferenceException` site in the flow, and an escape would skip the retry,
-  the verdict and the one `log_warning` the path owes.
+  `visible_only` is what discards the sticky-header duplicate the top card renders for every
+  control (`0x0`, `offsetParent === null`; "Message" and the Sales-Navigator control each appear
+  twice in the measured 15). Every read is guarded: the card is read WHILE it re-renders behind a
+  dismissing dialog, the likeliest `StaleElementReferenceException` site in the flow, and an escape
+  would skip the retry, the verdict and the one `log_warning` the path owes.
+- **The verdict is an `InviteOutcome`, not a sentence.** The enum decides whether an irreversible
+  row is written, so a copy-edit to an operator-facing message cannot change behaviour; its value
+  IS the `invite_outcome.reason` word, and `_OUTCOME_MESSAGES` is the display lookup. A post-click
+  wall gets its own verdict (`invite_limit` / `account_restricted`) and holds the lane, rather than
+  paging as `unconfirmed` for a state we understand.
 - **Three verdicts, failing CLOSED.** `sent`; `email_challenge` when the overlay asks for the
   member's email; `unconfirmed` when the click landed and nothing could be read. An unreadable page
   is not a send: a false negative costs one retry, a false positive costs a row the account owner
@@ -1041,8 +1049,11 @@ Three separate books, and #1867 is what stopped them being one:
 
 - **`email_challenge` is TERMINAL on the first read**, like the out-of-network reading beside it.
   Until #1836 supplies an address the challenge is a permanent property of that TARGET, so a retry
-  counter only reaches the same place N Chrome sessions later. The row lands `failed` carrying
-  `INVITE_EMAIL_CHALLENGE_MESSAGE`, which is how #1836 finds them to re-approve.
+  counter only reaches the same place N Chrome sessions later. The row lands **`failed`** — not
+  `approved` — carrying `INVITE_EMAIL_CHALLENGE_MESSAGE`, which is the query #1836 uses to find
+  them and re-approve. `failed` is terminal for AUTOMATION, never for the user.
+  There is **no attempt cap on `connection_requests` beyond `CONNECTION_REQUEST_MAX_ATTEMPTS`**;
+  adding one is separate work, and this non-requeuing status is what bounds the churn meanwhile.
 - **`unconfirmed` is NOT terminal** — a read that failed says nothing about the target.
 - **The pacing envelope is charged on the DISPATCH, not on the row.** The row is a claim about what
   LinkedIn did and fails CLOSED; the envelope is a claim about how hard we pushed and fails OPEN. A

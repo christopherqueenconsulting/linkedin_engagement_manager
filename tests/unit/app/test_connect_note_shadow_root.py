@@ -42,8 +42,10 @@ _CONTROL_CSS = "button, a, [role='button']"
 _NOTE_CSS = "textarea#custom-message"
 _BROAD_CSS = "textarea, [contenteditable='true']"
 _TEXTAREA_XPATH = '//textarea[@id="custom-message"]'
-_TOP_CARD_CSS = "main > section, main > div > section, main section"
-_HEADING_CSS = "h1"
+_TOP_CARD_CSS = "main section"
+# An h2, not an h1: a live profile carries NO h1 at all, and the name is the first h2 in `main`
+# (grounded on `harshal-karanpuriya`, 2026-09-01).
+_HEADING_CSS = "h2"
 _TARGET_NAME = "Jane Doe"
 
 

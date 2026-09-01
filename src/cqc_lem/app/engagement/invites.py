@@ -50,6 +50,7 @@ from cqc_lem.utilities.db import (
     INVITE_UNCONFIRMED_MESSAGE,
     NO_CONNECT_BUTTON_MESSAGE,
     ConnectStatus,
+    InviteOutcome,
     LogActionType,
     LogResultType,
     get_engagement_preferences,
@@ -1156,13 +1157,24 @@ _EMAIL_CHALLENGE_RE = re.compile(
 # visible, and their cards come LATER in document order, so any control budget spread over `main` is
 # a coin toss and a rail card's bare `Pending` would write a false send (#1012, in a read).
 #
-# The card is identified by the target's own name heading, not by position: if the first section is
-# not the top card, the heading refuses and the verdict falls to `unconfirmed`. `visible_only` is
-# what discards the top card's 0x0 sticky-header duplicate of every control.
-_PROFILE_TOP_CARD_CSS = "main > section, main > div > section, main section"
-_PROFILE_NAME_HEADING_CSS = "h1"
+# Grounded live on `https://www.linkedin.com/in/harshal-karanpuriya/`, 2026-09-01:
+#
+#   h1 in document: 0        <- there is NO h1 anywhere on a profile
+#   first h2 in main: "Harshal Karanpuriya"
+#   sections in main: 7, of which 2 contain the name node
+#     outer wrapper: 253 controls   <- spans most of `main`, rail included
+#     real top card:  15 controls
+#
+# So the heading is an **h2**, and the card is the DEEPEST section containing it. Every section
+# containing one node is an ancestor of the next, so `find_deep_elements` document order runs
+# outermost-to-innermost and the LAST match is the innermost. Taking the first would scan the
+# 253-control wrapper — the rail-in-the-read-window hazard, arrived at by a different door.
+_PROFILE_TOP_CARD_CSS = "main section"
+_PROFILE_NAME_HEADING_CSS = "h2"
 _PROFILE_TOP_CARD_CONTROL_CSS = "button, a, [role='button']"
-_PROFILE_TOP_CARD_SCAN_LIMIT = 4
+_PROFILE_SECTION_SCAN_LIMIT = 12
+# Slack inside the right container, not a fence: the measured card carries 15 controls, half of
+# them the 0x0 sticky-header duplicates `visible_only` discards.
 _PROFILE_TOP_CARD_CONTROL_LIMIT = 30
 # The pending affordance's own vocabulary, plus punctuation — everything a label can say WITHOUT
 # naming anybody. Subtracting it leaves the residue: empty for a bare control, otherwise the person
@@ -1183,21 +1195,10 @@ _INVITE_CONFIRM_ATTEMPTS = 3
 _INVITE_CONFIRM_READ_TIMEOUT_SECONDS = 3
 _INVITE_CONFIRM_SETTLE_SECONDS = 1
 
-# Two different questions, deliberately two different sets (#1867).
-#
-# `_INVITE_SENT_RESULTS` answers "is our invitation OUT" — it decides the `connection_requests` row
-# and fails CLOSED, so only positively-read evidence is in it.
-#
-# `_INVITE_DISPATCHED_RESULTS` answers "did we push a Send at LinkedIn" — it decides the pacing
-# envelope and fails OPEN, so an unreadable outcome counts. LinkedIn may have counted the invite
-# even though we could not see it, and pacing UNDER the true figure is the direction that gets an
-# account restricted. The two sets overlap without being the same, which is the whole point:
-# `unconfirmed` charges the envelope and writes no row, `already_pending` writes the row and
-# charges nothing.
+# Every result that means OUR INVITATION IS OUT — the `connection_requests` row, which fails CLOSED,
+# so only positively-read evidence is in it (#1867). Whether the account's pacing envelope was spent
+# is a DIFFERENT question, answered by the Send click rather than by any verdict, so it is not a set.
 _INVITE_SENT_RESULTS = frozenset({CONNECTION_REQUEST_SENT_MESSAGE, INVITE_ALREADY_PENDING_MESSAGE})
-_INVITE_DISPATCHED_RESULTS = frozenset({CONNECTION_REQUEST_SENT_MESSAGE,
-                                        INVITE_EMAIL_CHALLENGE_MESSAGE,
-                                        INVITE_UNCONFIRMED_MESSAGE})
 
 
 def _pending_button_names_target(label: str, target_name: str) -> bool:
@@ -1225,23 +1226,59 @@ def _pending_label_residue(text: str) -> str:
     return " ".join(_PENDING_LABEL_VOCABULARY_RE.sub(" ", text or "").split()).lower()
 
 
-def _target_top_card(driver: WebDriver, target_name: str) -> "WebElement | None":
-    """The container that PROVES it is the loaded profile's own top card, or None.
+def _heading_names_target(heading_text: str, target_name: str) -> bool:
+    """Whether a section heading names the loaded profile.
 
-    A section qualifies only by carrying the target's name as its heading. Position is a hint for
-    which sections to check, never the evidence — a rail card can sit anywhere, and the whole point
-    of the scope is that a stranger's `Pending` badge can never be read as our outcome (#1012).
+    Whole-name prefix rather than pure equality: the heading and the page `<title>` are two
+    different renderings of one person, and a card headed "Jane Doe, MBA" under a title of
+    "Jane Doe" is the same card. REASONED, not measured — the one profile this was grounded on
+    matched exactly — and bounded on a word boundary so "Jan" can never match "Jane Doe".
+
+    Deliberately not the reverse: the title is already stripped to the bare name, so a heading
+    SHORTER than it is a different node and refuses.
+    """
+    heading = " ".join((heading_text or "").split()).lower()
+    wanted = " ".join((target_name or "").split()).lower()
+    if not heading or not wanted:
+        return False
+    return heading == wanted or heading.startswith(wanted + " ") or heading.startswith(wanted + ",")
+
+
+def _target_top_card(driver: WebDriver, target_name: str) -> "WebElement | None":
+    """The DEEPEST section that carries the loaded profile's own name heading, or None.
+
+    Deepest, not first: two sections contain the name node on a real profile and the outer one is a
+    253-control wrapper spanning most of `main`, rail included. Reading that wrapper is the
+    #1012-in-a-read hazard the scope exists to close, so the innermost is the only safe fence.
+
+    Fails closed — no title, no section, no matching heading all answer None, and the verdict falls
+    to `unconfirmed`, which is never a send.
     """
     if not target_name:
         return None
-    wanted = " ".join(target_name.split()).lower()
+    deepest = None
     for container in find_deep_elements(driver, _PROFILE_TOP_CARD_CSS, visible_only=True,
-                                        limit=_PROFILE_TOP_CARD_SCAN_LIMIT):
+                                        limit=_PROFILE_SECTION_SCAN_LIMIT):
         for heading in find_deep_elements(driver, _PROFILE_NAME_HEADING_CSS, visible_only=True,
                                           limit=2, root=container):
-            if element_label(heading) == wanted:
-                return container
-    return None
+            if _heading_names_target(element_label(heading), target_name):
+                deepest = container  # sections containing one node nest; the last is the innermost
+                break
+    return deepest
+
+
+def _invite_is_pending(driver: WebDriver, user_id: int) -> bool:
+    """`_pending_invite_affordance`, guarded, for callers outside the confirmation loop's own guard.
+
+    A read that throws is "no evidence", never an escape: the caller's next step is a decision about
+    a row, and an exception there would skip it entirely.
+    """
+    try:
+        return _pending_invite_affordance(driver)
+    except WebDriverException as e:
+        log_debug(f"Could not read the top card for a pending invite: {e}", user_id=user_id,
+                  action_type="invite_connect")
+        return False
 
 
 def _pending_invite_affordance(driver: WebDriver) -> bool:
@@ -1265,20 +1302,42 @@ def _pending_invite_affordance(driver: WebDriver) -> bool:
                for control in controls)
 
 
-def _confirm_invite_outcome(driver: WebDriver, user_id: int) -> str:
+# The ONE map from a confirmation verdict to the operator-facing sentence the rest of the rail
+# passes around. The ENUM is what the code branches on — a copy-edit to one of these sentences must
+# never be able to change whether an irreversible row is written — and the enum's own value is the
+# stable dashboard word. `test_every_outcome_has_a_message_and_a_dashboard_word` keeps it total.
+_OUTCOME_MESSAGES = {
+    InviteOutcome.SENT: CONNECTION_REQUEST_SENT_MESSAGE,
+    InviteOutcome.ALREADY_PENDING: INVITE_ALREADY_PENDING_MESSAGE,
+    InviteOutcome.EMAIL_CHALLENGE: INVITE_EMAIL_CHALLENGE_MESSAGE,
+    InviteOutcome.UNCONFIRMED: INVITE_UNCONFIRMED_MESSAGE,
+    InviteOutcome.INVITE_LIMIT: INVITE_LIMIT_REACHED_MESSAGE,
+    InviteOutcome.ACCOUNT_RESTRICTED: ACCOUNT_RESTRICTED_MESSAGE,
+}
+# The wall reader answers in messages; this is the only place they become verdicts. Total over
+# `_ACCOUNT_WALL_REASONS`, which is the complete range of `_invite_restriction_reason`.
+_RESTRICTION_OUTCOMES = {
+    INVITE_LIMIT_REACHED_MESSAGE: InviteOutcome.INVITE_LIMIT,
+    ACCOUNT_RESTRICTED_MESSAGE: InviteOutcome.ACCOUNT_RESTRICTED,
+}
+
+
+def _confirm_invite_outcome(driver: WebDriver, user_id: int) -> InviteOutcome:
     """What the page says happened after Send was clicked — the verdict, in place of the click.
 
     A click that does not raise is not an invitation (#1867). Three-valued, and never `sent` on an
     unreadable page: a false negative costs one retry, a false positive costs a row the account
     owner cannot reconcile against LinkedIn's own sent list.
 
-    * `CONNECTION_REQUEST_SENT_MESSAGE` — the dialog is GONE **and** the target's top card shows the
-      invite pending. Both, because either alone is satisfied by a dialog that closed on a refusal.
-    * `INVITE_EMAIL_CHALLENGE_MESSAGE` — the overlay wants the member's email address. Expected and
-      named, so DEBUG: a repeated `log_warning` re-emits at ERROR and files one grouped `$exception`
+    * `SENT` — the dialog is GONE **and** the target's own top card shows the invite pending. Both,
+      because either alone is satisfied by a dialog that closed on a refusal.
+    * `EMAIL_CHALLENGE` — the overlay wants the member's email address. Expected and named, so
+      DEBUG: a repeated `log_warning` re-emits at ERROR and files one grouped `$exception`
       (`src/cqc_lem/utilities/CLAUDE.md`), i.e. one page per unverifiable person in the queue.
-    * `INVITE_UNCONFIRMED_MESSAGE` — the click landed and nothing could be read. Genuinely
-      anomalous, so it takes the one `log_warning`.
+    * `INVITE_LIMIT` / `ACCOUNT_RESTRICTED` — a wall can surface AFTER the click as easily as
+      before it, and it is about the ACCOUNT, so it holds the lane rather than paging.
+    * `UNCONFIRMED` — the click landed and nothing could be read. Genuinely anomalous, so it takes
+      the one `log_warning`.
     """
     wait = WebDriverWait(driver, _INVITE_CONFIRM_READ_TIMEOUT_SECONDS)
     for attempt in range(_INVITE_CONFIRM_ATTEMPTS):
@@ -1300,15 +1359,24 @@ def _confirm_invite_outcome(driver: WebDriver, user_id: int) -> str:
         if confirmed:
             log_info("Connection request confirmed — the profile now shows the invite pending",
                      user_id=user_id, action_type="invite_connect")
-            return CONNECTION_REQUEST_SENT_MESSAGE
+            return InviteOutcome.SENT
         if _EMAIL_CHALLENGE_RE.search(overlay):
             log_debug("Invitation needs this member's email address before LinkedIn will send it; "
                       "not recording it as sent", user_id=user_id, action_type="invite_connect")
-            return INVITE_EMAIL_CHALLENGE_MESSAGE
+            return InviteOutcome.EMAIL_CHALLENGE
+        # A wall can surface AFTER the click as easily as before it, and `unconfirmed` would page
+        # for a state we understand — the same noise argument that keeps the challenge at DEBUG.
+        # The reader is the one the pre-click path already trusts with this decision, and it still
+        # answers None on an unreadable page, so nothing here manufactures a hold.
+        restriction = _invite_restriction_reason(driver)
+        if restriction:
+            log_debug(f"LinkedIn refused the invitation after Send: {restriction}",
+                      user_id=user_id, action_type="invite_connect")
+            return _RESTRICTION_OUTCOMES[restriction]
     log_warning("Send was clicked but the invitation could not be confirmed; leaving the request "
                 "unsent rather than recording a send we cannot see", user_id=user_id,
                 action_type="invite_connect")
-    return INVITE_UNCONFIRMED_MESSAGE
+    return InviteOutcome.UNCONFIRMED
 
 
 def invite_to_connect_now(user_id: int, profile_url: str, message: str = None) -> "tuple[bool, str]":
@@ -1324,6 +1392,7 @@ def invite_to_connect_now(user_id: int, profile_url: str, message: str = None) -
     driver, wait = get_driver_wait_pair(session_name='Invite to Connect', user_id=user_id)
 
     invite_sent = False
+    dispatched = False  # did we push a Send at LinkedIn — the pacing question, not the row question
 
     try:
 
@@ -1348,24 +1417,11 @@ def invite_to_connect_now(user_id: int, profile_url: str, message: str = None) -
         # Open the Connect dialog. With none open the note/send steps below can only fail, and
         # their errors would bury the real reason — so stop here with a named one instead.
         opened, dialog_reason = _open_connect_invite_dialog(driver, wait, user_id, profile_url)
-        if not opened and (dialog_reason or NO_CONNECT_BUTTON_MESSAGE) == NO_CONNECT_BUTTON_MESSAGE \
-                and _pending_invite_affordance(driver):
-            # The ordinary miss's own text already guessed at this — "invite may already be
-            # pending" — and now the page can be asked instead of guessed. Our invitation IS out,
-            # so the row's goal is met and re-dispatching it every cycle only spends Chrome slots.
-            #
-            # This is the return path for a real send that read as `unconfirmed` (#1867): it went
-            # back to 'approved', the retry finds no Connect button because the invite is pending,
-            # and without this it lands on `no_connect_affordance` forever — the same undercount
-            # this PR exists to fix, one step downstream. Nothing was DISPATCHED this run, so the
-            # pacing envelope is deliberately not charged for it below.
-            log_info("Invitation to this profile is already pending — recording it as sent",
-                     user_id=user_id, action_type="invite_connect")
-            insert_new_log(user_id=user_id, action_type=LogActionType.ENGAGED,
-                           result=LogResultType.SUCCESS, post_url=profile_url,
-                           message=INVITE_ALREADY_PENDING_MESSAGE)
-            return True, INVITE_ALREADY_PENDING_MESSAGE
-        if not opened:
+        already_pending = (
+            not opened
+            and (dialog_reason or NO_CONNECT_BUTTON_MESSAGE) == NO_CONNECT_BUTTON_MESSAGE
+            and _invite_is_pending(driver, user_id))
+        if not opened and not already_pending:
             # Three outcomes, three different owners (#1813). A wall LinkedIn NAMED is about the
             # ACCOUNT and holds the whole lane. A route that merely missed counts toward the miss
             # streak, so a dead selector cannot turn a queue backlog into a burst of automated
@@ -1382,17 +1438,32 @@ def invite_to_connect_now(user_id: int, profile_url: str, message: str = None) -
                            message=reason)
             return False, reason
 
-        # The note is an optional extra on an invite we already decided to send — a missing note
-        # affordance must not abandon an open Connect dialog, so the invite goes out bare (#573).
-        noted = bool(message) and _add_connect_note(driver, wait, message, user_id)
+        if already_pending:
+            # The ordinary miss's own text already guessed at this — "invite may already be
+            # pending" — and the page can now be asked instead. Our invitation IS out, so the row's
+            # goal is met and re-dispatching it every cycle only spends Chrome slots.
+            #
+            # This is the return path for a real send that read as `unconfirmed` (#1867): the row
+            # went back to 'approved', the retry finds no Connect button BECAUSE the invite is
+            # pending, and without this it lands on `no_connect_affordance` forever — the same
+            # undercount this issue is about, one step downstream. It falls through to the shared
+            # bookkeeping below, where `dispatched` stays False: nothing was pushed this visit, so
+            # the pacing envelope is not charged twice for one invitation.
+            log_info("Invitation to this profile is already pending — recording it as sent",
+                     user_id=user_id, action_type="invite_connect")
+            result = INVITE_ALREADY_PENDING_MESSAGE
+        else:
+            # The note is an optional extra on an invite we already decided to send — a missing
+            # note affordance must not abandon an open Connect dialog, so it goes out bare (#573).
+            noted = bool(message) and _add_connect_note(driver, wait, message, user_id)
 
-        # TWO steps, and only the second one may say 'sent' (#1867). `_submit_connect_invite`
-        # answers whether a Send affordance was CLICKABLE — the #573 failure it owns, and a real
-        # one. Whether an invitation now EXISTS is a different question, which only re-reading the
-        # page can answer, and answering it from the click is what wrote ten false 'sent' rows.
-        result = (_confirm_invite_outcome(driver, user_id)
-                  if _submit_connect_invite(driver, wait, user_id, with_note=noted)
-                  else INVITE_NOT_SENT_MESSAGE)
+            # TWO steps, and only the second one may say 'sent' (#1867). `_submit_connect_invite`
+            # answers whether a Send affordance was CLICKABLE — the #573 failure it owns, and a
+            # real one. Whether an invitation now EXISTS is a different question that only
+            # re-reading the page can answer, and answering it from the click wrote ten false rows.
+            dispatched = _submit_connect_invite(driver, wait, user_id, with_note=noted)
+            result = (_OUTCOME_MESSAGES[_confirm_invite_outcome(driver, user_id)] if dispatched
+                      else INVITE_NOT_SENT_MESSAGE)
     except LinkedInRateLimited:
         # Kill-switch / 429 breaker is open — let the caller defer instead of logging a false failure.
         raise
@@ -1406,12 +1477,18 @@ def invite_to_connect_now(user_id: int, profile_url: str, message: str = None) -
         insert_new_log(user_id=user_id, action_type=LogActionType.ENGAGED,
                        result=LogResultType.SUCCESS if invite_sent else LogResultType.FAILURE,
                        post_url=profile_url, message=result)
-        if result in _INVITE_DISPATCHED_RESULTS:
-            # Charged on the DISPATCH, not on the row (#1867). The row is a claim about what
-            # LinkedIn did and fails CLOSED; the envelope is a claim about how hard we pushed, and
-            # a Send we could not read is still a Send we clicked — LinkedIn may well have counted
-            # it. Pacing under the true figure is the direction that gets accounts restricted, so
-            # this one fails OPEN.
+        if result in _ACCOUNT_WALL_REASONS:
+            # A wall read AFTER the click is the same fact about the ACCOUNT as one read before it,
+            # and the pre-click path holds the lane for it. Not doing so here would let a walled
+            # account keep opening Chrome sessions to be refused one profile at a time.
+            hold_invites(user_id, INVITE_HOLD_DEFAULT_SECONDS, reason=result)
+        if dispatched:
+            # Charged on the DISPATCH, not on the row (#1867), and read off the CLICK rather than
+            # off the verdict so a new verdict cannot silently fall out of the accounting. The row
+            # is a claim about what LinkedIn did and fails CLOSED; the envelope is a claim about
+            # how hard we pushed, and a Send we could not read is still a Send we clicked —
+            # LinkedIn may well have counted it. Pacing under the true figure is the direction that
+            # gets accounts restricted, so this one fails OPEN.
             record_action(user_id, ACTION_INVITE)  # account-level governor (issue #626)
             clear_invite_dialog_misses(user_id)  # the dialog opened; the miss streak starts over
     finally:
