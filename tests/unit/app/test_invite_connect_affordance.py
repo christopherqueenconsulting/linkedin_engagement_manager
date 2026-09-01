@@ -224,6 +224,42 @@ def _invite(routes: _Routes, message: str = None):
     return sent, reason, driver, insert_log, log_error, log_warning
 
 
+class TestProfileNavigationSettlesBeforeTheDegreeRead:
+    """`_wait_for_profile_top_card` must run between the navigation and the degree read (#1843).
+
+    That ordering is the whole fix for the race where the read ran on the profile's very first
+    paint and drifted on 100% of invite attempts.
+    """
+
+    def test_the_settle_wait_runs_after_navigating_and_before_the_degree_read(self):
+        from cqc_lem.app.engagement import invites as ra
+        routes = _Routes(dialog_on_url=True, send_xpaths={_SEND_BARE_XPATH})
+        order = []
+        driver = MagicMock()
+        driver.current_url = "about:blank"
+        driver.title = routes.title
+        driver.find_elements.side_effect = routes.find_elements
+        with patch(f"{_INV}.ActionChains", _chains), \
+             patch(f"{_INV}.record_invite_dialog_miss"), patch(f"{_INV}.hold_invites"), \
+             patch(f"{_INV}.clear_invite_dialog_misses"), \
+             patch(f"{_INV}.get_user_password_pair_by_id", return_value=("e@x", "pw")), \
+             patch(f"{_INV}.get_driver_wait_pair", return_value=(driver, MagicMock())), \
+             patch(f"{_INV}.login_to_linkedin"), \
+             patch.object(ra, "_wait_for_profile_top_card",
+                          side_effect=lambda *a: order.append("settle")), \
+             patch.object(ra, "_profile_is_first_degree",
+                          side_effect=lambda *a: order.append("degree_read") or False), \
+             patch(f"{_INV}.find_first", routes.find_first), \
+             patch(f"{_INV}.click_first", routes.click_first), \
+             patch(f"{_INV}.click_element_wait_retry", routes.click_element_wait_retry), \
+             patch(f"{_INV}.time.sleep"), patch(f"{_INV}.log_error"), \
+             patch(f"{_INV}.log_warning"), patch(f"{_INV}.insert_new_log"), \
+             patch(f"{_INV}.record_action"), patch(f"{_INV}.quit_gracefully"):
+            ra.invite_to_connect_now(1, _PROFILE_URL)
+
+        assert order == ["settle", "degree_read"]
+
+
 class TestOwnCustomInviteAnchorRoute:
     """#1733: the target's own `/preload/custom-invite/?vanityName=<slug>` link, CLICKED.
 
