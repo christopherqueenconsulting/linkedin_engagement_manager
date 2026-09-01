@@ -91,3 +91,39 @@ class TestConnectionRequestDb:
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_connection_request_user_id
             assert get_connection_request_user_id(7) == 1
+
+
+class TestRecordConnectionRequestAttempt:
+    """Issue #1814 — attempt ceiling.
+
+    The scanner/send task must call this ONLY for a dispatch that actually reached LinkedIn; the
+    hold/cap/throttle defers never call it (covered in tests/unit/app/test_connection_requests.py,
+    where the non-calls are asserted).
+    """
+
+    def test_below_ceiling_defers_back_to_approved(self, fake_cursor):
+        from cqc_lem.utilities.db import CONNECTION_REQUEST_MAX_ATTEMPTS
+        conn, cursor = fake_cursor(fetch_one=(1,))
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import record_connection_request_attempt
+            terminal, attempts = record_connection_request_attempt(7, "no Connect button")
+        assert (terminal, attempts) == (False, 1)
+        sql, params = cursor.execute.call_args_list[0][0]
+        # status is assigned BEFORE the increment, so this test reads the pre-increment count.
+        assert sql.index("status = IF") < sql.index("attempts = attempts + 1")
+        assert params[0] == CONNECTION_REQUEST_MAX_ATTEMPTS
+
+    def test_goes_terminal_at_the_attempt_cap(self, fake_cursor):
+        from cqc_lem.utilities.db import CONNECTION_REQUEST_MAX_ATTEMPTS
+        conn, cursor = fake_cursor(fetch_one=(CONNECTION_REQUEST_MAX_ATTEMPTS,))
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import record_connection_request_attempt
+            terminal, attempts = record_connection_request_attempt(7, "no Connect button")
+        assert (terminal, attempts) == (True, CONNECTION_REQUEST_MAX_ATTEMPTS)
+
+    def test_an_unmatched_request_reports_no_attempts(self, fake_cursor):
+        conn, cursor = fake_cursor()
+        cursor.rowcount = 0
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import record_connection_request_attempt
+            assert record_connection_request_attempt(999, "gone") == (False, 0)

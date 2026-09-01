@@ -1049,6 +1049,7 @@ def send_connection_request(self, request_id: int):
         ConnectionRequestStatus,
         count_invites_sent_today,
         get_connection_request,
+        record_connection_request_attempt,
         update_connection_request_status,
     )
     req = get_connection_request(request_id)
@@ -1084,15 +1085,23 @@ def send_connection_request(self, request_id: int):
                   task_name="send_connection_request")
         update_connection_request_status(request_id, ConnectionRequestStatus.APPROVED)  # retry on next scan
         return f"Connection request {request_id} deferred (LinkedIn throttled)"
-    if not sent:
-        # The reason is stored on the request row below and was already logged at its owning step;
-        # a warning here would only fork a second grouped issue for the same invite (#1038).
-        log_debug(f"Connection request {request_id} failed: {reason}", user_id=user_id,
-                  action_type="invite_connect", task_name="send_connection_request")
-    update_connection_request_status(
-        request_id, ConnectionRequestStatus.SENT if sent else ConnectionRequestStatus.FAILED,
-        failure_reason=(None if sent else reason))
-    return f"Connection request {request_id} -> {'sent' if sent else 'failed'}"
+    if sent:
+        update_connection_request_status(request_id, ConnectionRequestStatus.SENT)
+        return f"Connection request {request_id} -> sent"
+    # A real attempt reached LinkedIn and did not send (issue #1814) — this counts toward the
+    # ceiling, unlike the three defers above. The reason was already logged at its owning step; a
+    # warning here would only fork a second grouped issue for the same invite (#1038).
+    log_debug(f"Connection request {request_id} failed: {reason}", user_id=user_id,
+              action_type="invite_connect", task_name="send_connection_request")
+    terminal, attempts = record_connection_request_attempt(request_id, reason)
+    if terminal:
+        # Escalating on purpose (issue #1814): a target that survives the ceiling has genuinely
+        # never been reachable, and the recurrence rule promotes a repeat of this to ERROR — which
+        # is the intent, not noise, since it stops costing a browser session every cycle.
+        log_warning(f"Connection request {request_id} exhausted its attempts; giving up: {reason}",
+                    user_id=user_id, action_type="invite_connect", task_name="send_connection_request")
+        return f"Connection request {request_id} -> failed (attempt {attempts}, giving up)"
+    return f"Connection request {request_id} deferred for retry (attempt {attempts}): {reason}"
 
 
 @shared_task.task(name='cqc_lem.app.run_automation.automate_invites_to_company_page_for_user',

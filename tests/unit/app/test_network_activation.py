@@ -117,18 +117,19 @@ class TestIcpFloorAtFileTime:
 
 class TestFailureReasonIsRecorded:
     def test_a_failed_send_stores_why(self):
+        # Issue #1814 — a real attempt's reason is recorded via record_connection_request_attempt,
+        # which decides terminal-vs-retry off the attempt ceiling (covered in
+        # tests/unit/app/test_connection_requests.py).
         from cqc_lem.app.engagement import invites as ra
-        from cqc_lem.utilities.db import ConnectionRequestStatus
         req = {"id": 3, "user_id": 1, "recipient_profile_url": "https://x/in/jane",
                "message": "hi", "status": "approved"}
         with patch("cqc_lem.utilities.db.get_connection_request", return_value=req), \
              patch("cqc_lem.utilities.db.count_invites_sent_today", return_value=0), \
              patch(f"{_INV}.get_engagement_preferences", return_value={"max_invites_per_day": 10}), \
              patch(f"{_INV}.invite_to_connect_now", return_value=(False, "Already connected")), \
-             patch("cqc_lem.utilities.db.update_connection_request_status") as upd:
+             patch("cqc_lem.utilities.db.record_connection_request_attempt", return_value=(False, 1)) as rec:
             ra.send_connection_request(3)
-        upd.assert_called_once_with(3, ConnectionRequestStatus.FAILED,
-                                    failure_reason="Already connected")
+        rec.assert_called_once_with(3, "Already connected")
 
 
 class TestReplyCheckUnblocksNurture:
