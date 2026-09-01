@@ -775,6 +775,9 @@ export interface paths {
         /**
          * List Connection Requests Endpoint
          * @description The connection-request queue, paged and scoped to the caller.
+         *
+         *     `recipient_email` (issue #1836) is never echoed here — each row instead carries a
+         *     `has_recipient_email` boolean, which is all a caller needs to decide whether to supply one.
          */
         get: operations["list_connection_requests_endpoint_api_connection_requests_get"];
         put?: never;
@@ -3695,6 +3698,8 @@ export interface components {
         ConnectionRequestCreate: {
             /** Message */
             message?: string | null;
+            /** Recipient Email */
+            recipient_email?: string | null;
             /** Recipient Name */
             recipient_name?: string | null;
             /** Recipient Profile Url */
@@ -3729,6 +3734,8 @@ export interface components {
             action?: string | null;
             /** Message */
             message?: string | null;
+            /** Recipient Email */
+            recipient_email?: string | null;
             /** Recipient Name */
             recipient_name?: string | null;
             /** Recipient Profile Url */

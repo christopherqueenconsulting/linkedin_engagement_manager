@@ -434,9 +434,21 @@ def update_scheduled_dm(dm_id: int, recipient_profile_url: str = None, recipient
 # --- Proactive connection requests (issue #398) — approval-gated, daily-capped; reuses invite_to_connect ---
 # source/icp_score/reasons carry issue #486's targeting provenance (which engagement surfaced this
 # person, how well they fit) so the operator approving a request can see why it exists.
-_CONN_REQ_COLS = ("id", "user_id", "recipient_profile_url", "recipient_name", "message",
-                  "source", "icp_score", "reasons", "failure_reason", "status", "attempts",
-                  "created_at", "updated_at")
+_CONN_REQ_COLS = ("id", "user_id", "recipient_profile_url", "recipient_name", "message", "source",
+                  "icp_score", "reasons", "failure_reason", "status", "attempts", "created_at",
+                  "updated_at", "recipient_email IS NOT NULL AS has_recipient_email")
+_CONN_REQ_DISPATCH_COLS = (*_CONN_REQ_COLS[:-1], "recipient_email")
+# A row lands here (issue #1836) when the Connect dialog opened but demanded the recipient's email
+# and the app cleared it once nothing more can be done with it — see EMAIL_VERIFICATION_REQUIRED_MESSAGE
+# below and the migration comment. Normalized to lower case so enum and raw-string callers both hit.
+_CONNECTION_REQUEST_TERMINAL_STATUSES = frozenset({
+    ConnectionRequestStatus.SENT.value, ConnectionRequestStatus.FAILED.value,
+    ConnectionRequestStatus.CANCELED.value})
+
+
+def _is_terminal_connection_request_status(status: "ConnectionRequestStatus | str") -> bool:
+    """Whether a status permanently stops a request, so its recipient email must be cleared."""
+    return str(status).lower() in _CONNECTION_REQUEST_TERMINAL_STATUSES
 # Real dispatch attempts (issue #1814) before an unreachable target goes terminal instead of cycling
 # 'approved' forever. Only a dispatch that actually called invite_to_connect_now counts — the
 # invite hold, the daily cap and LinkedInRateLimited all defer without calling it, so an
@@ -448,20 +460,23 @@ CONNECTION_REQUEST_MAX_ATTEMPTS = 3
 def insert_connection_request(user_id: int, recipient_profile_url: str, message: str = None,
                               recipient_name: str = None,
                               status: "ConnectionRequestStatus" = ConnectionRequestStatus.PENDING,
-                              source: str = None, icp_score: int = None, reasons: str = None
-                              ) -> Optional[int]:
+                              source: str = None, icp_score: int = None, reasons: str = None,
+                              recipient_email: Optional[str] = None) -> Optional[int]:
     """Queue an approval-gated connection request and return its id; None when the insert failed.
 
     Nothing is sent from here — the default status is PENDING. `source` / `icp_score` / `reasons` carry
     the targeting provenance (issue #486) so the person approving can see WHY the row exists.
+    `recipient_email` (issue #1836) is the recipient's email, used only when LinkedIn's Connect
+    dialog demands one to verify the connection — most rows never carry one.
     """
     try:
         with db_cursor(commit=True) as cursor:
             cursor.execute(
                 "INSERT INTO connection_requests (user_id, recipient_profile_url, recipient_name, "
-                "message, status, source, icp_score, reasons) VALUES (%s,%s,%s,%s,%s,%s,%s,%s)",
+                "message, status, source, icp_score, reasons, recipient_email) "
+                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)",
                 (user_id, recipient_profile_url, recipient_name, message, str(status),
-                 source, icp_score, (reasons or None)))
+                 source, icp_score, (reasons or None), recipient_email))
             return cursor.lastrowid
     except mysql.connector.Error as err:
         log_error("Could not insert connection request", exc=err, user_id=user_id)
@@ -471,7 +486,8 @@ def get_connection_request(request_id: int) -> Optional[dict]:
     try:
         with db_cursor(dictionary=True) as cursor:
             cursor.execute(
-                f"SELECT {', '.join(_CONN_REQ_COLS)} FROM connection_requests WHERE id = %s", (request_id,))
+                f"SELECT {', '.join(_CONN_REQ_DISPATCH_COLS)} FROM connection_requests WHERE id = %s",
+                (request_id,))
             return cursor.fetchone()
     except mysql.connector.Error as err:
         log_error(f"Could not get connection request {request_id}", exc=err)
@@ -537,12 +553,18 @@ def update_connection_request_status(request_id: int, status: "ConnectionRequest
     """Move a request to `status`. `failure_reason` records WHY a send failed (issue #623) — it is
     written on every call, so a request that later succeeds or is deferred clears the stale reason
     instead of showing yesterday's failure next to today's status.
+
+    A move into a TERMINAL status (issue #1836) also clears `recipient_email` — the bounded-exposure
+    half of the storage decision in the migration comment: nothing more will ever be done with the
+    address once the row can no longer be dispatched.
     """
+    clear_email = ", recipient_email = NULL" if _is_terminal_connection_request_status(status) else ""
     try:
         with db_cursor(commit=True) as cursor:
-            cursor.execute("UPDATE connection_requests SET status = %s, failure_reason = %s WHERE id = %s",
-                           (str(status), (str(failure_reason)[:512] if failure_reason else None),
-                            request_id))
+            cursor.execute(
+                f"UPDATE connection_requests SET status = %s, failure_reason = %s{clear_email} "
+                "WHERE id = %s",
+                (str(status), (str(failure_reason)[:512] if failure_reason else None), request_id))
             return cursor.rowcount > 0
     except mysql.connector.Error as err:
         log_error(f"Could not update connection request {request_id} status", exc=err)
@@ -570,12 +592,17 @@ def record_connection_request_attempt(request_id: int, failure_reason: str,
                 # status is assigned FIRST on purpose: MySQL evaluates SET clauses left to right, so
                 # a later 'attempts = attempts + 1' would make this test read the post-increment count.
                 "status = IF(%s OR attempts + 1 >= %s, %s, %s), "
+                # Terminal here too (issue #1836) — same bounded-exposure rule as
+                # update_connection_request_status: an email held for a target that just went FAILED
+                # will never be used again.
+                "recipient_email = IF(%s OR attempts + 1 >= %s, NULL, recipient_email), "
                 "attempts = attempts + 1, "
                 "failure_reason = %s "
                 "WHERE id = %s",
                 (1 if terminal else 0, CONNECTION_REQUEST_MAX_ATTEMPTS,
-                 ConnectionRequestStatus.FAILED.value,
-                 ConnectionRequestStatus.APPROVED.value, str(failure_reason or "")[:512], request_id))
+                 ConnectionRequestStatus.FAILED.value, ConnectionRequestStatus.APPROVED.value,
+                 1 if terminal else 0, CONNECTION_REQUEST_MAX_ATTEMPTS,
+                 str(failure_reason or "")[:512], request_id))
             if cursor.rowcount <= 0:
                 return False, 0
             cursor.execute("SELECT attempts FROM connection_requests WHERE id = %s", (request_id,))
@@ -587,17 +614,23 @@ def record_connection_request_attempt(request_id: int, failure_reason: str,
         return False, 0
 def update_connection_request(request_id: int, recipient_profile_url: str = None,
                               recipient_name: str = None, message: str = None,
-                              status: "ConnectionRequestStatus" = None) -> bool:
+                              status: "ConnectionRequestStatus" = None,
+                              recipient_email: Optional[str] = None) -> bool:
     """Patch only the fields that were supplied; False when none were.
 
     Reports `rowcount > 0`, unlike the scheduled-DM updater — so False here also means "no such row", or
     that every supplied value was already what the row held. A status change also clears `failure_reason`
     (issue #1735), matching `update_connection_request_status` — a retried or re-approved row must not
     keep showing yesterday's failure next to today's status.
+
+    A move into a TERMINAL status also clears `recipient_email` (issue #1836), same as
+    `update_connection_request_status` — UNLESS this same call is also supplying a fresh
+    `recipient_email`, which wins (two `recipient_email = ...` clauses in one UPDATE is invalid SQL).
     """
     fields, params = [], []
     for col, val in (("recipient_profile_url", recipient_profile_url),
-                     ("recipient_name", recipient_name), ("message", message)):
+                     ("recipient_name", recipient_name), ("message", message),
+                     ("recipient_email", recipient_email)):
         if val is not None:
             fields.append(f"{col} = %s")
             params.append(val)
@@ -605,6 +638,8 @@ def update_connection_request(request_id: int, recipient_profile_url: str = None
         fields.append("status = %s")
         params.append(str(status))
         fields.append("failure_reason = NULL")
+        if recipient_email is None and _is_terminal_connection_request_status(status):
+            fields.append("recipient_email = NULL")
     if not fields:
         return False
     params.append(request_id)
@@ -1722,6 +1757,14 @@ INVITE_UNCONFIRMED_MESSAGE = (
 # selector-shaped reason for a working invite — the same undercount this issue is about, one step
 # downstream. A SUCCESS: the row's goal is met. Nothing was dispatched, so it costs no envelope.
 INVITE_ALREADY_PENDING_MESSAGE = "An invitation to this profile is already pending"
+# The dialog opened but is the EMAIL-VERIFICATION variant and no email is known for this target —
+# Class C (issue #1836). A target fact ("LinkedIn is deliberately gating this person"), never
+# selector drift, so this must NOT feed record_invite_dialog_miss or hold_invites the way an
+# ordinary miss does, and it goes terminal ('failed') on the FIRST occurrence rather than burning
+# attempts — retrying without a new email would spend a ~90s Chrome session learning nothing new.
+# `retry` (PUT action=retry, refused for an agent session) is the way back in once one is supplied.
+EMAIL_VERIFICATION_REQUIRED_MESSAGE = (
+    "Connect dialog requires the recipient's email to verify the connection, which we do not have")
 # The wall was the ACCOUNT, not the profile (#1733). Distinct from NO_CONNECT_BUTTON_MESSAGE on
 # purpose: a limit reads the same on every profile, so grading it as "no Connect option" sends an
 # operator hunting a selector that is fine and lets the scanner re-dispatch the whole queue into it.

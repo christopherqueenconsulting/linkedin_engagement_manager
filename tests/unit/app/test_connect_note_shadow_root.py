@@ -48,6 +48,22 @@ _TOP_CARD_CSS = "main section"
 _HEADING_CSS = "h2"
 _TARGET_NAME = "Jane Doe"
 
+# The ORDINARY dialog's own copy, captured in production 2026-09-01 (issue #1836's evidence
+# comment). The container answers with this because a real WebElement's `.text` is a string, and
+# because #1836 taught the send path to read the dialog's prose: the fake has to be able to say
+# "this is the plain variant" or the end-to-end test below proves nothing about which branch ran.
+_ORDINARY_DIALOG_TEXT = (
+    "Dialog content start. Add a note to your invitation? Personalize your invitation to "
+    "Kaitlyn Albertoli by adding a note. LinkedIn members are more likely to accept invitations "
+    "that include a note. Add a note Send without a note Dialog content end.")
+# The EMAIL-VERIFICATION variant of the same dialog, same log, same morning (#1836). Verbatim, and
+# indistinguishable from the copy above by control scan alone — both end "Add a note Send without a
+# note", and only one of them sends.
+_VERIFICATION_DIALOG_TEXT = (
+    "Dialog content start. Add a note to your invitation? To verify this member knows you, please "
+    "enter their email to connect. You can also include a personal note. Learn why Add a note "
+    "Send without a note Dialog content end.")
+
 
 def _control(label: str):
     """A stand-in for a deep-scanned control answering to `label`."""
@@ -80,12 +96,13 @@ class _FakeDeepQuery:
     """
 
     def __init__(self, *, inside: dict = None, outside: dict = None, has_container: bool = True,
-                 renders_after: int = 0):
+                 renders_after: int = 0, container_text: str = _ORDINARY_DIALOG_TEXT):
         self.container = MagicMock() if has_container else None
         if self.container is not None:
             # `_overlay_notice_text` reads the container's own text; a real element answers a
             # string, and a bare MagicMock would make the fake fail in a way production cannot.
-            self.container.text = ""
+            # #1836 needs it to be the dialog's ACTUAL copy, so a test can say which variant this is.
+            self.container.text = container_text
         self.card = MagicMock()
         self.inside = inside or {}
         self.outside = outside or {}
@@ -125,16 +142,20 @@ class _FakeDeepQuery:
 
 def _shadow_dialog(box=None, *, field_css: str = _NOTE_CSS, renders_after: int = 0,
                    controls=("Add a note", "Send invitation"), outside: dict = None,
-                   has_container: bool = True, sends: bool = True):
+                   has_container: bool = True, sends: bool = True,
+                   container_text: str = _ORDINARY_DIALOG_TEXT):
     """A dialog whose controls — and optionally its note field — live in the shadow root.
 
     Its Send control is wired to `send_lands`, so the invitation exists only once Send has been
     pressed — the outcome, not the click, is what the confirmation step reads (#1867).
+
+    `container_text` is the dialog's own prose (#1836), defaulting to the ORDINARY variant, so a
+    test can choose which of the two indistinguishable-by-control-scan dialogs this one is.
     """
     from cqc_lem.app.engagement import invites
 
     query = _FakeDeepQuery(outside=outside or {}, has_container=has_container,
-                           renders_after=renders_after)
+                           renders_after=renders_after, container_text=container_text)
     # Derived from the module's own Send labels, not restated here: a rotation that renames one
     # would otherwise leave the fake silently wiring nothing and every send reading as unconfirmed.
     send_labels = (invites._SEND_INVITATION_LABEL, invites._SEND_WITHOUT_NOTE_LABEL)
@@ -396,12 +417,67 @@ class TestTheInviteGoesOutCarryingTheNote:
         log_warning.assert_not_called()
         log_error.assert_not_called()
 
+    def test_the_email_verification_variant_of_that_same_dialog_sends_nothing(self):
+        """The same shadow dialog, LinkedIn's other copy: no send, and no false `sent` row (#1836).
+
+        The counterpart to the test above, and the only one that runs the real detector against the
+        real production string through the real send path. Both variants expose `Send without a
+        note`, so the control scan cannot separate them — before #1836 this dialog was clicked, the
+        click landed, nothing raised, and the row was written SENT for an invite LinkedIn never
+        accepted. With no email known for this target, the invite is now abandoned instead.
+
+        Distinct from the #1867 test below, which is the same wall read AFTER the click: this one
+        never clicks at all, so it spends no invite envelope on a person LinkedIn was never going
+        to let us reach. `sends` is left wired, so a regression that DID press Send would land a
+        confirmed invitation on the fake and fail this test loudly rather than silently.
+        """
+        from cqc_lem.app.engagement import invites
+        from cqc_lem.utilities.db import EMAIL_VERIFICATION_REQUIRED_MESSAGE
+
+        box = MagicMock()
+        deep = _shadow_dialog(box, controls=("Add a note", "Send without a note"),
+                              container_text=_VERIFICATION_DIALOG_TEXT)
+
+        def click(driver, wait, xpath, label, **kwargs):
+            raise TimeoutException(label)
+
+        with patch(f"{_INV}.find_deep_elements", side_effect=deep), \
+             patch(f"{_INV}.get_user_password_pair_by_id", return_value=("e@x", "pw")), \
+             patch(f"{_INV}.get_driver_wait_pair",
+                   return_value=(_profile_driver(), MagicMock())), \
+             patch(f"{_INV}.login_to_linkedin"), \
+             patch(f"{_INV}._profile_is_first_degree", return_value=False), \
+             patch(f"{_INV}._open_connect_invite_dialog", return_value=(True, None)), \
+             patch(f"{_INV}.click_element_wait_retry", MagicMock(side_effect=click)), \
+             patch(f"{_INV}.find_first", return_value=None), \
+             patch(f"{_INV}.click_first", return_value=None) as click_first, \
+             patch(f"{_INV}.get_ai_message_refinement", return_value="short note"), \
+             patch(f"{_INV}.time.sleep"), \
+             patch(f"{_INV}.insert_new_log"), \
+             patch(f"{_INV}.record_action") as record_action, \
+             patch(f"{_INV}.record_invite_dialog_miss") as miss, \
+             patch(f"{_INV}.hold_invites") as hold, \
+             patch(f"{_INV}.quit_gracefully"), \
+             patch(f"{_INV}.log_error") as log_error:
+            sent, reason = invites.invite_to_connect_now(1, "https://x/in/jane", "hi jane")
+
+        assert sent is False and reason == EMAIL_VERIFICATION_REQUIRED_MESSAGE
+        box.send_keys.assert_not_called()   # the note is never typed into a dialog that cannot send
+        click_first.assert_not_called()     # and Send without a note is never clicked
+        # Nothing was pushed at LinkedIn, so the envelope is not charged — the other half of the
+        # #1867 posture, which charges it whenever a Send click DID land.
+        record_action.assert_not_called()
+        miss.assert_not_called()            # a target fact, not a selector that missed
+        hold.assert_not_called()            # and not an account-level wall
+        log_error.assert_not_called()
+
     def test_a_dialog_that_takes_the_click_and_shows_no_outcome_is_not_a_send(self):
         """The #1867 shape, through the same fake dialog.
 
-        `sends=False` is a Send control that accepts the click and changes nothing — LinkedIn's
-        email-verification challenge, which offers `Send without a note` and then demands an
-        address. The click lands, the note is typed, and the row must still not be 'sent'.
+        `sends=False` is a Send control that accepts the click and changes nothing. The dialog is
+        the ORDINARY variant, so #1836's pre-click read correctly declines to fire and the flow
+        reaches Send — which is the point: this pins the AFTER-the-click half, where the click
+        lands, the note is typed, and the row must still not be 'sent'.
         """
         from cqc_lem.app.engagement import invites
         from cqc_lem.utilities.db import INVITE_UNCONFIRMED_MESSAGE

@@ -42,6 +42,7 @@ from cqc_lem.utilities.db import (
     ALREADY_CONNECTED_MESSAGE,
     CONNECT_NOTE_MAX_CHARS,
     CONNECTION_REQUEST_SENT_MESSAGE,
+    EMAIL_VERIFICATION_REQUIRED_MESSAGE,
     FOLLOW_ONLY_MESSAGE,
     INVITE_ALREADY_PENDING_MESSAGE,
     INVITE_EMAIL_CHALLENGE_MESSAGE,
@@ -803,6 +804,90 @@ def _connect_dialog_present(driver, wait, user_id: int) -> bool:
     return _deep_dialog_control(driver, (_SEND_WITHOUT_NOTE_LABEL, _ADD_NOTE_LABEL)) is not None
 
 
+# Class C (#1836): a subset of targets render an EMAIL-VERIFICATION variant of the Connect dialog —
+# same `Add a note to your invitation?` heading, same `Add a note` / `Send without a note` controls
+# _connect_dialog_present already matches, but it refuses to send without the recipient's email. Two
+# variants captured production 2026-09-01 (both fixtures below, verbatim):
+#
+#   verification: "...To verify this member knows you, please enter their email to connect. You can
+#                  also include a personal note. Learn why Add a note Send without a note..."
+#   ordinary:     "...Personalize your invitation to Kaitlyn Albertoli by adding a note. LinkedIn
+#                  members are more likely to accept invitations that include a note...."
+#
+# The prose is the only thing that differs, so the input is the primary signal and the prose is the
+# fallback for a rotation that renders the notice differently but keeps the same input. Both
+# variants expose `Send without a note` and only one of them sends, so the control scan cannot tell
+# them apart and this read is the only thing that can.
+_CONNECT_DIALOG_EMAIL_INPUT_CSS = "input[type='email']"
+_CONNECT_DIALOG_WANTS_EMAIL_RE = re.compile(r"enter their email", re.IGNORECASE)
+_EMAIL_REDACTION_RE = re.compile(r"\b[^\s@]+@[^\s@]+\b")
+
+
+def _connect_dialog_wants_email_from_text(text: "str | None") -> "bool | None":
+    """Pure text → three-valued reading.
+
+    Split out from `_connect_dialog_wants_email` so the exact production strings above can be
+    asserted against it directly, with no driver to mock.
+
+    Three-valued, matching `ThreadState`'s posture: unreadable text is UNKNOWN, never "wants email"
+    — an undetected verification variant must fall through to the ordinary send/miss path rather
+    than manufacture a false skip.
+    """
+    normalized = " ".join((text or "").split())
+    if not normalized:
+        return None
+    return bool(_CONNECT_DIALOG_WANTS_EMAIL_RE.search(normalized))
+
+
+def _find_connect_dialog_email_input(driver: WebDriver) -> "WebElement | None":
+    """The OPEN dialog's email input, shadow root included, or None.
+
+    Scoped to the dialog CONTAINER the same way `_overlay_evidence` is, so a rail card's unrelated
+    input can never answer this.
+    """
+    for container in find_deep_elements(driver, _CONNECT_DIALOG_CONTAINER_CSS, visible_only=True,
+                                        limit=3):
+        found = find_deep_elements(driver, _CONNECT_DIALOG_EMAIL_INPUT_CSS, visible_only=True,
+                                   limit=1, root=container)
+        if found:
+            return found[0]
+    return None
+
+
+def _connect_dialog_wants_email(driver: WebDriver) -> "bool | None":
+    """Whether the OPEN Connect dialog is the email-verification variant (issue #1836).
+
+    The input is the primary signal; the prose is the fallback for a rotation that renders the
+    notice differently but keeps the same input.
+
+    The prose comes off `_overlay_notice_text` and nowhere else. That function is the ONE reader of
+    the overlay's words on purpose — a second reader scanning something slightly different is how a
+    log line and a detector come to tell different stories, which is the confusion #1813 spent
+    nineteen days in. This detector pays the same tax as `_invite_restriction_reason`: what it
+    matched on is byte-for-byte what a miss line would have printed.
+    """
+    if _find_connect_dialog_email_input(driver) is not None:
+        return True
+    return _connect_dialog_wants_email_from_text(_overlay_notice_text(driver))
+
+
+def _fill_connect_dialog_email(field: "WebElement", email: str, user_id: int) -> bool:
+    """Type a known email into the OPEN Connect dialog's verification input (issue #1836).
+
+    The caller passes the element that answered, so a shadow-mounted control is never re-found by a
+    fresh query that cannot see it (#1733).
+    """
+    try:
+        field.click()
+        field.clear()
+        field.send_keys(email)
+        return True
+    except Exception:
+        log_warning("Could not type the recipient's email into the Connect dialog",
+                    user_id=user_id, action_type="invite_connect")
+        return False
+
+
 def _overlay_evidence(driver) -> "tuple[list[str], str]":
     """What a SHADOW-PIERCING scan can see that the light DOM cannot: controls, then notice text.
 
@@ -827,10 +912,10 @@ def _overlay_evidence(driver) -> "tuple[list[str], str]":
                                       visible_only=True, limit=60):
         label = element_label(control)
         if label and label not in controls:
-            controls.append(label[:60])
+            controls.append(_EMAIL_REDACTION_RE.sub("[redacted email]", label[:60]))
         if len(controls) >= 25:
             break
-    return controls, _overlay_notice_text(driver)
+    return controls, _EMAIL_REDACTION_RE.sub("[redacted email]", _overlay_notice_text(driver))
 
 
 def _miss_evidence(driver) -> str:
@@ -1427,13 +1512,18 @@ def _confirm_invite_outcome(driver: WebDriver, user_id: int) -> InviteOutcome:
     return InviteOutcome.UNCONFIRMED
 
 
-def invite_to_connect_now(user_id: int, profile_url: str, message: str = None) -> "tuple[bool, str]":
+def invite_to_connect_now(user_id: int, profile_url: str, message: str = None,
+                          recipient_email: "str | None" = None) -> "tuple[bool, str]":
     """Core connect-invite send: open the profile, click Connect (+ optional note), log the result.
     Returns (sent, result_message) — the message is the failure reason when `sent` is False, which
     the proactive flow stores on the request row (issue #623). Shared by invite_to_connect (reactive
     profile-viewer flow) and send_connection_request (issue #398 approval-gated proactive flow) so
     both use the same send + log path (mirrors send_dm_now). Re-raises LinkedInRateLimited when the
     kill-switch / 429 breaker is open so callers can defer rather than record a false failure.
+
+    `recipient_email` (issue #1836) is used ONLY when the dialog that opens turns out to be the
+    email-verification variant; `invite_to_connect` and `send_roster_connect_invite` never pass one,
+    so this defaults to None and their callers are unchanged.
     """
     user_email, user_password = get_user_password_pair_by_id(user_id)
 
@@ -1502,17 +1592,49 @@ def invite_to_connect_now(user_id: int, profile_url: str, message: str = None) -
                      user_id=user_id, action_type="invite_connect")
             result = INVITE_ALREADY_PENDING_MESSAGE
         else:
-            # The note is an optional extra on an invite we already decided to send — a missing
-            # note affordance must not abandon an open Connect dialog, so it goes out bare (#573).
-            noted = bool(message) and _add_connect_note(driver, wait, message, user_id)
-
-            # TWO steps, and only the second one may say 'sent' (#1867). `_submit_connect_invite`
-            # answers whether a Send affordance was CLICKABLE — the #573 failure it owns, and a
-            # real one. Whether an invitation now EXISTS is a different question that only
-            # re-reading the page can answer, and answering it from the click wrote ten false rows.
-            dispatched = _submit_connect_invite(driver, wait, user_id, with_note=noted)
-            result = (_OUTCOME_MESSAGES[_confirm_invite_outcome(driver, user_id)] if dispatched
-                      else INVITE_NOT_SENT_MESSAGE)
+            # Class C (#1836): the dialog opened, but it may be the email-verification variant,
+            # which will not accept the invite without the recipient's email. Both variants expose
+            # the same `Send without a note` control and only one of them sends, so without this
+            # read the lane clicks it, the click lands, nothing raises, and — before #1867 — the row
+            # was recorded SENT for an invite LinkedIn never accepted (production evidence,
+            # 2026-09-01). `_confirm_invite_outcome` now catches that after the fact; this catches
+            # it BEFORE the click, which is strictly less egress and keeps the account's invite
+            # envelope unspent on a person LinkedIn was never going to let us reach.
+            #
+            # A target fact — LinkedIn is deliberately gating THIS person, not a selector that
+            # missed — so it deliberately sits BELOW record_invite_dialog_miss / hold_invites above,
+            # both of which are for a dialog that never opened at all.
+            email_field = _find_connect_dialog_email_input(driver)
+            wants_email = email_field is not None or _connect_dialog_wants_email(driver)
+            if wants_email and not recipient_email:
+                log_debug("Connect dialog demands an email we do not have; cannot send",
+                          user_id=user_id, action_type="invite_connect")
+                result = EMAIL_VERIFICATION_REQUIRED_MESSAGE
+            elif wants_email and (email_field is None
+                                  or not _fill_connect_dialog_email(email_field, recipient_email,
+                                                                    user_id)):
+                result = EMAIL_VERIFICATION_REQUIRED_MESSAGE
+            else:
+                # The note is an optional extra on an invite we already decided to send — a missing
+                # note affordance must not abandon an open Connect dialog, so it goes out bare (#573).
+                noted = bool(message) and _add_connect_note(driver, wait, message, user_id)
+                # Add-a-note can replace the dialog node. Re-find only after that transition, then
+                # re-fill so a valid address is never silently dropped before Send.
+                if wants_email and noted:
+                    email_field = _find_connect_dialog_email_input(driver)
+                if wants_email and noted and (email_field is None
+                                              or not _fill_connect_dialog_email(
+                                                  email_field, recipient_email, user_id)):
+                    result = EMAIL_VERIFICATION_REQUIRED_MESSAGE
+                else:
+                    # TWO steps, and only the second one may say 'sent' (#1867).
+                    # `_submit_connect_invite` answers whether a Send affordance was CLICKABLE — the
+                    # #573 failure it owns, and a real one. Whether an invitation now EXISTS is a
+                    # different question that only re-reading the page can answer, and answering it
+                    # from the click wrote ten false rows.
+                    dispatched = _submit_connect_invite(driver, wait, user_id, with_note=noted)
+                    result = (_OUTCOME_MESSAGES[_confirm_invite_outcome(driver, user_id)]
+                              if dispatched else INVITE_NOT_SENT_MESSAGE)
     except LinkedInRateLimited:
         # Kill-switch / 429 breaker is open — let the caller defer instead of logging a false failure.
         raise
@@ -1715,7 +1837,8 @@ def send_connection_request(self, request_id: int):
         return f"Connection request {request_id} deferred (daily invite cap reached)"
 
     try:
-        sent, reason = invite_to_connect_now(user_id, req["recipient_profile_url"], req["message"])
+        sent, reason = invite_to_connect_now(user_id, req["recipient_profile_url"], req["message"],
+                                             recipient_email=req.get("recipient_email"))
     except LinkedInRateLimited as e:
         # DEBUG, matching the other two wrappers: the request stays 'approved' and the next scan
         # picks it up, so nothing was lost and nothing here is new information.
@@ -1730,6 +1853,15 @@ def send_connection_request(self, request_id: int):
         track_invite_outcome(user_id, INVITE_RESULT_SENT, _invite_outcome_reason(reason),
                              attempts_before + 1)
         return f"Connection request {request_id} -> sent"
+    if reason == EMAIL_VERIFICATION_REQUIRED_MESSAGE:
+        # Class C (#1836): a target fact, not selector drift or an account wall — terminal on the
+        # FIRST occurrence rather than record_connection_request_attempt's ceiling. Retrying without
+        # a new email would spend up to three ~90s Chrome sessions learning nothing new; `retry`
+        # (PUT action=retry, refused for an agent session) is the way back in once one is supplied.
+        update_connection_request_status(request_id, ConnectionRequestStatus.FAILED, failure_reason=reason)
+        log_debug(f"Connection request {request_id} failed: {reason}", user_id=user_id,
+                 action_type="invite_connect", task_name="send_connection_request")
+        return f"Connection request {request_id} -> failed ({reason})"
     # A real attempt reached LinkedIn and did not send (issue #1814) — this counts toward the
     # ceiling, unlike the three defers above. The reason was already logged at its owning step; a
     # warning here would only fork a second grouped issue for the same invite (#1038).

@@ -25,6 +25,10 @@ interface ConnectionRequest {
   reasons: string | null
   // Why a send failed (issue #623) — e.g. already connected, or no Connect button on the profile.
   failure_reason: string | null
+  // Whether an email is stored for this target (issue #1836). The address itself is NEVER sent to
+  // the browser — GET /connection_requests returns only this boolean — so the UI can say "on file"
+  // without ever rendering a third party's contact detail.
+  has_recipient_email?: boolean
 }
 
 const SOURCE_LABELS: Record<string, string> = {
@@ -55,6 +59,13 @@ export default function ConnectionRequests({ userTimezone }: { userTimezone: str
   const [url, setUrl] = useState('')
   const [name, setName] = useState('')
   const [note, setNote] = useState('')
+  const [email, setEmail] = useState('')
+
+  // Per-row email attach (issue #1836). Which row's input is open, and what has been typed into it.
+  // A value only ever exists because a human typed it against ONE row — nothing derives an address
+  // from contact data LEM already holds, by explicit decision.
+  const [emailRowId, setEmailRowId] = useState<number | null>(null)
+  const [rowEmail, setRowEmail] = useState('')
 
   const queryKey = ['connection-requests', sessionToken, filter]
   const { data, isLoading } = useQuery({
@@ -82,9 +93,10 @@ export default function ConnectionRequests({ userTimezone }: { userTimezone: str
         recipient_profile_url: url.trim(),
         recipient_name: name.trim() || null,
         message: note.trim() || null,
+        recipient_email: email.trim() || null,
       }),
     onSuccess: () => {
-      invalidate(); setUrl(''); setName(''); setNote('')
+      invalidate(); setUrl(''); setName(''); setNote(''); setEmail('')
       flash(true, 'Target added.')
     },
     onError: () => flash(false, 'Could not add — check the fields and try again.'),
@@ -95,6 +107,21 @@ export default function ConnectionRequests({ userTimezone }: { userTimezone: str
       api.put('/connection_request', { session_token: sessionToken, request_id: v.id, action: v.action }),
     onSuccess: () => invalidate(),
     onError: () => flash(false, 'Could not update — please try again.'),
+  })
+
+  // A field-only PUT: no `action`, so this saves the address and nothing else. It cannot approve or
+  // retry anything — those are separate actions on the same route, and the server refuses them for
+  // an agent-scoped token while leaving a field-only save alone.
+  const emailMutation = useMutation({
+    mutationFn: (v: { id: number; email: string }) =>
+      api.put('/connection_request', {
+        session_token: sessionToken, request_id: v.id, recipient_email: v.email,
+      }),
+    onSuccess: () => {
+      setEmailRowId(null); setRowEmail(''); invalidate()
+      flash(true, 'Email saved for this target.')
+    },
+    onError: () => flash(false, 'Could not save that email — check the address and try again.'),
   })
 
   const canSubmit = !!url.trim()
@@ -113,6 +140,12 @@ export default function ConnectionRequests({ userTimezone }: { userTimezone: str
           you to approve first. Sends honor your combined Max invites/day cap and pause automatically
           when LinkedIn throttles. This is not volume prospecting.
         </p>
+        <p className="text-xs text-gray-500">
+          <strong>Recipient email</strong> is optional and almost always left blank. For a few
+          profiles LinkedIn refuses the invite until you confirm their email address. LEM never
+          guesses one and never fills one in from anything it already knows — it is only ever the
+          address you type here, for this one person, and it is discarded once the invite is done.
+        </p>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <input type="url" value={url} onChange={(e) => setUrl(e.target.value)} maxLength={512}
             placeholder="Profile URL (https://www.linkedin.com/in/…)"
@@ -121,6 +154,10 @@ export default function ConnectionRequests({ userTimezone }: { userTimezone: str
             placeholder="Name (optional)"
             className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm" />
         </div>
+        <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} maxLength={255}
+          aria-label="Recipient email (optional)"
+          placeholder="Recipient email (optional — only used if LinkedIn asks to verify you know them)"
+          {...maskProps('w-full border border-gray-300 rounded-lg px-3 py-2 text-sm')} />
         <textarea value={note} onChange={(e) => setNote(e.target.value)} rows={2} maxLength={NOTE_MAX}
           placeholder="Connection note (optional, ≤300 chars)"
           {...maskProps('w-full border border-gray-300 rounded-lg px-3 py-2 text-sm')} />
@@ -188,6 +225,42 @@ export default function ConnectionRequests({ userTimezone }: { userTimezone: str
               </p>
             )}
             {req.message && <p className="text-sm text-gray-700 whitespace-pre-wrap line-clamp-3">{req.message}</p>}
+            {/* Email attach (issue #1836). Only on rows that can still be dispatched — LEM clears a
+                stored address once a row goes terminal, so offering it on a sent/canceled row would
+                promise something that cannot happen. */}
+            {['pending', 'approved', 'failed'].includes(req.status) && (
+              <div className="mt-2">
+                {emailRowId === req.id ? (
+                  <div className="flex flex-wrap items-center gap-2">
+                    <input type="email" value={rowEmail} onChange={(e) => setRowEmail(e.target.value)}
+                      maxLength={255} aria-label={`Recipient email for ${req.recipient_name || req.recipient_profile_url}`}
+                      placeholder="name@company.com"
+                      {...maskProps('flex-1 min-w-[12rem] border border-gray-300 rounded px-2 py-1 text-xs')} />
+                    <button onClick={() => emailMutation.mutate({ id: req.id, email: rowEmail.trim() })}
+                      disabled={!rowEmail.trim() || emailMutation.isPending}
+                      className="px-3 py-1 bg-blue-600 text-white rounded text-xs font-semibold hover:bg-blue-700 disabled:opacity-50">
+                      Save email
+                    </button>
+                    <button onClick={() => { setEmailRowId(null); setRowEmail('') }}
+                      className="px-3 py-1 border border-gray-300 text-gray-600 rounded text-xs font-semibold hover:bg-gray-50">
+                      Cancel
+                    </button>
+                  </div>
+                ) : (
+                  <div className="flex flex-wrap items-center gap-2">
+                    {req.has_recipient_email && (
+                      <span className="px-2 py-0.5 rounded-full bg-gray-100 text-gray-600 text-xs font-medium">
+                        Email on file
+                      </span>
+                    )}
+                    <button onClick={() => { setEmailRowId(req.id); setRowEmail('') }}
+                      className="text-xs font-semibold text-blue-700 hover:underline">
+                      {req.has_recipient_email ? 'Replace email' : 'Add email'}
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
             {['pending', 'approved', 'sending', 'failed'].includes(req.status) && (
               <div className="flex gap-2 mt-2">
                 {req.status === 'pending' && (

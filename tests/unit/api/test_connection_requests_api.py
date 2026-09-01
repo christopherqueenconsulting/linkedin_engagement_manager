@@ -74,6 +74,109 @@ class TestCreateConnectionRequest:
         assert resp.status_code == 401
 
 
+class TestRecipientEmail:
+    """Issue #1836 — accept a known email and use it to clear LinkedIn's verification challenge."""
+
+    def test_a_known_email_is_persisted(self, api_client):
+        with patch("cqc_lem.api.main.get_session_user_id", return_value=_U), \
+             patch("cqc_lem.api.main.insert_connection_request", return_value=11) as ins:
+            resp = api_client.post("/api/connection_request", json={
+                "session_token": _S, "recipient_profile_url": "https://x/in/jane",
+                "recipient_email": "jane@example.com"})
+        assert resp.status_code == 200
+        assert ins.call_args.kwargs["recipient_email"] == "jane@example.com"
+
+    def test_a_malformed_email_is_rejected_422(self, api_client):
+        with patch("cqc_lem.api.main.get_session_user_id", return_value=_U), \
+             patch("cqc_lem.api.main.insert_connection_request", return_value=11) as ins:
+            resp = api_client.post("/api/connection_request", json={
+                "session_token": _S, "recipient_profile_url": "https://x/in/jane",
+                "recipient_email": "not-an-email"})
+        assert resp.status_code == 422
+        ins.assert_not_called()
+
+    def test_an_agent_scoped_session_supplying_an_email_still_lands_pending(self, api_client):
+        # Section 3's guarantee: adding a field must not add a fourth road to APPROVED.
+        with patch("cqc_lem.api.main.get_session_user_id", return_value=_U), \
+             patch("cqc_lem.api.main._agent_scoped", return_value=True), \
+             patch("cqc_lem.api.main.get_engagement_preferences",
+                   return_value={"connection_request_mode": "auto_approve"}), \
+             patch("cqc_lem.api.main.insert_connection_request", return_value=11) as ins:
+            resp = api_client.post("/api/connection_request", json={
+                "session_token": _S, "recipient_profile_url": "https://x/in/jane",
+                "recipient_email": "jane@example.com"})
+        assert resp.status_code == 200
+        from cqc_lem.utilities.db import ConnectionRequestStatus
+        assert ins.call_args.kwargs["status"] == ConnectionRequestStatus.PENDING
+        assert ins.call_args.kwargs["recipient_email"] == "jane@example.com"
+
+    def test_an_agent_scoped_session_still_cannot_approve_even_with_an_email(self, api_client):
+        with patch("cqc_lem.api.main.get_session_user_id", return_value=_U), \
+             patch("cqc_lem.api.main._agent_scoped", return_value=True), \
+             patch("cqc_lem.api.main.insert_connection_request") as ins:
+            resp = api_client.post("/api/connection_request", json={
+                "session_token": _S, "recipient_profile_url": "https://x/in/jane",
+                "recipient_email": "jane@example.com", "status": "approved"})
+        assert resp.status_code == 403
+        ins.assert_not_called()
+
+    def test_update_can_supply_an_email_ahead_of_a_retry(self, api_client):
+        with patch("cqc_lem.api.main.get_session_user_id", return_value=_U), \
+             patch("cqc_lem.api.main.get_connection_request_user_id", return_value=_U), \
+             patch("cqc_lem.api.main.update_connection_request", return_value=True) as upd:
+            resp = api_client.put("/api/connection_request", json={
+                "session_token": _S, "request_id": 3, "recipient_email": "jane@example.com"})
+        assert resp.status_code == 200
+        assert upd.call_args.kwargs["recipient_email"] == "jane@example.com"
+
+    def test_an_empty_email_is_absent_not_malformed(self, api_client):
+        # A caller with no address for this row says so with "" and must not be punished with a 422
+        # — "" is normalised to None, exactly as if the key had been omitted.
+        with patch("cqc_lem.api.main.get_session_user_id", return_value=_U), \
+             patch("cqc_lem.api.main.insert_connection_request", return_value=11) as ins:
+            resp = api_client.post("/api/connection_request", json={
+                "session_token": _S, "recipient_profile_url": "https://x/in/jane",
+                "recipient_email": "   "})
+        assert resp.status_code == 200
+        assert ins.call_args.kwargs["recipient_email"] is None
+
+    def test_an_empty_email_on_a_put_is_not_an_update_at_all(self, api_client):
+        # Consequence of the same normalisation: "" reaches the handler as None, so it can never
+        # blank an address a human already saved — and alone it is "nothing to update".
+        with patch("cqc_lem.api.main.get_session_user_id", return_value=_U), \
+             patch("cqc_lem.api.main.get_connection_request_user_id", return_value=_U), \
+             patch("cqc_lem.api.main.update_connection_request", return_value=True) as upd:
+            resp = api_client.put("/api/connection_request", json={
+                "session_token": _S, "request_id": 3, "recipient_email": ""})
+        assert resp.status_code == 422
+        upd.assert_not_called()
+
+    def test_a_field_only_put_carrying_an_email_is_not_an_approval(self, api_client):
+        # The owner's decision note on #1836, asserted rather than asserted-in-prose:
+        # `_refuse_agent_approval` gates 'approve' and 'retry' only, so an agent-scoped field-only
+        # PUT was already reachable before this field existed and stays reachable after.
+        with patch("cqc_lem.api.main.get_session_user_id", return_value=_U), \
+             patch("cqc_lem.api.main._agent_scoped", return_value=True), \
+             patch("cqc_lem.api.main.get_connection_request_user_id", return_value=_U), \
+             patch("cqc_lem.api.main.update_connection_request", return_value=True) as upd:
+            resp = api_client.put("/api/connection_request", json={
+                "session_token": _S, "request_id": 3, "recipient_email": "jane@example.com"})
+        assert resp.status_code == 200
+        assert upd.call_args.kwargs["status"] is None
+
+    def test_an_agent_scoped_email_put_still_cannot_retry(self, api_client):
+        with patch("cqc_lem.api.main.get_session_user_id", return_value=_U), \
+             patch("cqc_lem.api.main._agent_scoped", return_value=True), \
+             patch("cqc_lem.api.main.get_connection_request_user_id", return_value=_U), \
+             patch("cqc_lem.api.main.get_connection_request", return_value={"status": "failed"}), \
+             patch("cqc_lem.api.main.update_connection_request") as upd:
+            resp = api_client.put("/api/connection_request", json={
+                "session_token": _S, "request_id": 3, "recipient_email": "jane@example.com",
+                "action": "retry"})
+        assert resp.status_code == 403
+        upd.assert_not_called()
+
+
 class TestListConnectionRequests:
     def test_lists(self, api_client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_U), \
@@ -82,6 +185,20 @@ class TestListConnectionRequests:
             resp = api_client.get(f"/api/connection_requests?session_token={_S}&status_filter=pending")
         assert resp.status_code == 200
         assert lst.call_args.kwargs["status_filter"] == "pending"
+
+    def test_recipient_email_is_never_echoed(self, api_client):
+        # Issue #1836 — a `has_recipient_email` boolean stands in for the address itself.
+        with patch("cqc_lem.api.main.get_session_user_id", return_value=_U), \
+             patch("cqc_lem.api.main.get_connection_requests",
+                   return_value={"requests": [
+                       {"id": 1, "has_recipient_email": True},
+                       {"id": 2, "has_recipient_email": False}],
+                                "total": 2, "page": 1, "page_size": 25}):
+            resp = api_client.get(f"/api/connection_requests?session_token={_S}")
+        assert resp.status_code == 200
+        rows = resp.json()["detail"]["requests"]
+        assert all("recipient_email" not in row for row in rows)
+        assert [row["has_recipient_email"] for row in rows] == [True, False]
 
 
 class TestUpdateAndCancel:

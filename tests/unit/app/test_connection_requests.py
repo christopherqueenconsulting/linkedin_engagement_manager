@@ -15,9 +15,9 @@ _RS = "cqc_lem.app.run_scheduler"
 
 
 class TestSendConnectionRequest:
-    def _req(self, status="approved"):
+    def _req(self, status="approved", recipient_email=None):
         return {"id": 3, "user_id": 1, "recipient_profile_url": "https://x/in/jane",
-                "message": "hi jane", "status": status}
+                "message": "hi jane", "status": status, "recipient_email": recipient_email}
 
     def test_sends_and_marks_sent(self):
         from cqc_lem.app.engagement import invites as ra
@@ -28,11 +28,45 @@ class TestSendConnectionRequest:
              patch("cqc_lem.utilities.db.update_connection_request_status") as upd, \
              patch("cqc_lem.utilities.db.record_connection_request_attempt") as rec:
             out = ra.send_connection_request(3)
-        send.assert_called_once_with(1, "https://x/in/jane", "hi jane")
+        send.assert_called_once_with(1, "https://x/in/jane", "hi jane", recipient_email=None)
         from cqc_lem.utilities.db import ConnectionRequestStatus
         upd.assert_called_once_with(3, ConnectionRequestStatus.SENT)
         rec.assert_not_called()  # a sent invite is terminal already, no attempt bookkeeping needed
         assert "sent" in out
+
+    def test_passes_the_known_recipient_email_through(self):
+        # issue #1836 — the one place a stored recipient_email reaches the send rail.
+        from cqc_lem.app.engagement import invites as ra
+        with patch("cqc_lem.utilities.db.get_connection_request",
+                   return_value=self._req(recipient_email="jane@example.com")), \
+             patch("cqc_lem.utilities.db.count_invites_sent_today", return_value=0), \
+             patch(f"{_INV}.get_engagement_preferences", return_value={"max_invites_per_day": 10}), \
+             patch(f"{_INV}.invite_to_connect_now",
+                   return_value=(True, "Connection Request Sent Successfully")) as send, \
+             patch("cqc_lem.utilities.db.update_connection_request_status"), \
+             patch("cqc_lem.utilities.db.record_connection_request_attempt"):
+            ra.send_connection_request(3)
+        send.assert_called_once_with(1, "https://x/in/jane", "hi jane",
+                                     recipient_email="jane@example.com")
+
+    def test_email_verification_required_goes_terminal_without_burning_attempts(self):
+        # Class C (#1836) — a target fact, not selector drift: terminal on the FIRST occurrence,
+        # never through record_connection_request_attempt's ceiling.
+        from cqc_lem.app.engagement import invites as ra
+        from cqc_lem.utilities.db import EMAIL_VERIFICATION_REQUIRED_MESSAGE
+        with patch("cqc_lem.utilities.db.get_connection_request", return_value=self._req()), \
+             patch("cqc_lem.utilities.db.count_invites_sent_today", return_value=0), \
+             patch(f"{_INV}.get_engagement_preferences", return_value={"max_invites_per_day": 10}), \
+             patch(f"{_INV}.invite_to_connect_now",
+                   return_value=(False, EMAIL_VERIFICATION_REQUIRED_MESSAGE)), \
+             patch("cqc_lem.utilities.db.update_connection_request_status") as upd, \
+             patch("cqc_lem.utilities.db.record_connection_request_attempt") as rec:
+            out = ra.send_connection_request(3)
+        from cqc_lem.utilities.db import ConnectionRequestStatus
+        upd.assert_called_once_with(3, ConnectionRequestStatus.FAILED,
+                                    failure_reason=EMAIL_VERIFICATION_REQUIRED_MESSAGE)
+        rec.assert_not_called()  # not "burn one of three attempts" — terminal immediately
+        assert "failed" in out.lower()
 
     def test_failed_send_records_attempt_and_defers_below_ceiling(self):
         # A real attempt reached LinkedIn and did not send — counts toward the ceiling, but stays
