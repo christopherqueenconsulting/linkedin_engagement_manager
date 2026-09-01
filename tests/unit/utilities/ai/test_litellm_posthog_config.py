@@ -39,11 +39,16 @@ class TestPostHogCallback:
         assert re.search(r'failure_callback:\s*\[.*"posthog".*\]', CONFIG_SETTINGS)
 
     def test_the_complexity_router_is_still_mounted(self):
-        """success_callback and custom_callbacks are separate keys — adding one must not shadow the
+        """`success_callback` and `callbacks` are separate keys — adding one must not shadow the
         cost-aware routing hook (issue #494).
+
+        `callbacks`, not `custom_callbacks`: the latter is not read by LiteLLM at all, which is why
+        the hook had never run (issue #1880). The entry's resolvability is asserted in
+        `test_litellm_callback_wiring.py`; this only pins that it is present and on the live key.
         """
-        assert "custom_callbacks:" in CONFIG_SETTINGS
-        assert "/app/.litellm/complexity_router.py" in CONFIG_SETTINGS
+        assert "callbacks:" in CONFIG_SETTINGS
+        assert "custom_callbacks:" not in CONFIG_SETTINGS
+        assert "complexity_router.proxy_handler_instance" in CONFIG_SETTINGS
 
     def test_prompts_and_completions_are_redacted_by_default(self) -> None:
         """The global floor stays `true`: every call is redacted unless it opts out per request.

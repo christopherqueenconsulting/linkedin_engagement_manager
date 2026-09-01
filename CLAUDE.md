@@ -55,7 +55,7 @@ tests/
 ├── unit/          Fast tests — mock all I/O
 └── integration/   Require MySQL + Redis (TWO lanes; #1215 deleted tests/e2e/)
 compose/local/database/migrations/  Flyway migrations
-.litellm/         config.yaml + complexity_router.py (lem-router pre-call hook)
+.litellm/         config.yaml + complexity_router.py + PostHog guards (#1880)
 ```
 
 ## Code Conventions
@@ -86,10 +86,9 @@ compose/local/database/migrations/  Flyway migrations
 
 All LLM calls go through the LiteLLM proxy via `client.chat.completions.create(model="lem-simple",
 …)` in `utilities/ai/client.py`. `AttributedOpenAI` is the ONE client — it stamps attribution + trace ids on every endpoint, and
-**rides out a proxy that is not accepting connections** (#986, a container restarted on deploys):
-ONLY a connection that was never established is retried (`LLM_CONNECT_RETRY_ATTEMPTS` /
-`LLM_CONNECT_RETRY_BACKOFF_SECONDS`) — nothing was sent, so there is no spend to duplicate. A
-timeout, 4xx or 5xx is the proxy answering, and fails as before.
+**rides out a proxy not accepting connections** (#986, a container restarted on deploys): ONLY a
+connection never established is retried (`LLM_CONNECT_RETRY_*`) — nothing was sent, so no spend to
+duplicate. A timeout, 4xx or 5xx is the proxy answering, and fails as before.
 
 **Model tier aliases** (`.litellm/config.yaml`):
 
@@ -99,15 +98,16 @@ timeout, 4xx or 5xx is the proxy answering, and fails as before.
 | `lem-medium` | Balanced: comments, post refinement, blog summaries |
 | `lem-complex` | Long-form: thought leadership, personal story, industry news |
 | `lem-image` | Image generation (gpt-image-2, gpt-image-1 in-group fallback) |
-| `lem-vision` | Render quality gate — looks at a generated image |
-| `lem-embedding` | Embeddings for feedback dedup/clustering |
-| `lem-router` | Auto-routes by prompt complexity via `LEMComplexityRouter` |
+| `lem-vision` | Render quality gate — looks at a render |
+| `lem-embedding` | Vectors for feedback dedup/clustering |
+| `lem-router` | Auto-routes by prompt complexity via `LEMComplexityRouter`; INERT until #1880 |
 
 **Cost-aware down-routing** (`utilities/routing_policy.py`, `utilities/cost_routing.py`): routes a
 tier ONE step down for the treatment cohort of an active cost/quality experiment. `routing_policy.py`
-is the shared decision core — the app imports it AND docker-compose mounts that same file into the
-LiteLLM container — so it stays **stdlib-only** (no `cqc_lem.*` imports). Off unless BOTH
-`COST_ROUTING_ENABLED` and `COST_AWARE_ROUTING_ENABLED` are set.
+is the shared decision core — the app imports it AND docker-compose mounts it into the LiteLLM
+container — so it stays **stdlib-only** (no `cqc_lem.*` imports). Off unless BOTH
+`COST_ROUTING_ENABLED` and `COST_AWARE_ROUTING_ENABLED` are set — and **never run pre-#1880**: a
+`.litellm/*.py` hook loads via `litellm_settings.callbacks`, never `custom_callbacks`.
 `docs/cost-performance-margin-plan.md` §D.1.1. Per-function assignment: `ai_helper.py`.
 
 **Image stack (ONE engine, two modules, `docs/image-stack.md`):** `utilities/ai/image_brief.py`
@@ -115,10 +115,10 @@ authors every image prompt — never add a per-content-type prompt helper, add a
 `utilities/ai/image_gen.py` renders it; `render_image_gated` adds the bounded `lem-vision` check,
 failing OPEN. Avatar likeness NEVER renders in `image_gen` — `generate_post_image` owns the LoRA path
 behind `avatar/guardrails.resolve_avatar_for`. NO text/logos in a render prompt.
-`utilities/post_image.py` (#1030) is the ONE place a POST's image is validated, stored and removed.
-A compose-time `image_url` is CALLER input — `/schedule_post/` takes it only when
-`owns_post_image_url` says it is a preview we issued that caller, and a stored URL never resolves
-outside `assets_dir`. `utilities/post_video.py` (#1443) is its VIDEO counterpart, with a separate
+`utilities/post_image.py` (#1030) is the ONE place a POST's image is validated, stored, removed.
+A compose-time `image_url` is CALLER input: `/schedule_post/` takes it only when
+`owns_post_image_url` says it is a preview we issued that caller, and a stored URL never leaves
+`assets_dir`. `utilities/post_video.py` (#1443) is its VIDEO counterpart with its own
 ownership gate, so `image_url` can never be handed an MP4.
 
 ## Selenium Pattern
