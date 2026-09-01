@@ -30,9 +30,16 @@ export CELERY_USER
 
 printf "Starting Celery Worker as: %s\n" "$CELERY_USER"
 # exec through /run-as-celery so Docker's SIGTERM reaches celery and warm-shuts it down (#549).
+# --hostname: no compose service runs this script today, so it carried no `--hostname` at all and
+# would have registered under Celery's default `celery@<container-id>` — a name that is neither
+# stable across deploys nor distinct from a second solo worker (#1869). The prefix is derived from
+# the lane, exactly as start-selenium does, so two solo services can never collide; the HOST half
+# still comes from the container hostname, which compose pins per service (docker-compose.yml).
+# Any service added for this script MUST set `hostname:` there too or it reintroduces the churn.
 exec /run-as-celery celery --app cqc_lem.app.my_celery worker \
   --pool=solo \
   --concurrency=1 \
   --queues="$CELERY_QUEUE" \
+  --hostname="solo-${CELERY_QUEUE//,/-}-worker@%h" \
   --loglevel=INFO \
   -E
