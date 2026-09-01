@@ -28,7 +28,7 @@ import replicate
 from dotenv import load_dotenv
 
 from cqc_lem import assets_dir
-from cqc_lem.utilities.ai import content_framework as _framework, slop_lint as _slop
+from cqc_lem.utilities.ai import content_framework as _framework, slop_lint as _slop, story_bank as _story_bank
 from cqc_lem.utilities.ai.client import attribution_metadata, client
 
 # The ONE alignment core (voice + prefs + LEM purpose + promo policy) shared by newsletters,
@@ -504,6 +504,12 @@ def generate_ai_response(post_content: Any, profile: LinkedInProfile,
     to `comment_gate_max_attempts()` times — and if it still fails, this returns None so the caller
     SKIPS the post. A template comment costs reach; a skipped post costs one comment.
 
+    A number the draft attaches to "we"/"our"/"I" answers to that same contract (issue #1834): it
+    must trace to the target post, to the `research` findings that were actually supplied, or to the
+    user's story bank, because a comment publishes under the user's name with nobody reading it
+    first. An invented one — "we logged 1,200 errors per week, then 300" — becomes a fix-list entry
+    on the SAME retry budget, and a draft that keeps inventing one is skipped like any other failure.
+
     That grounding contract is ENFORCED, not just promised (issue #1833): a `post_content` with no
     readable body in it — empty, whitespace, or nothing but the post's own shortlink — never reaches
     the model, because a model handed no post invents one. This returns None on that path too, so
@@ -644,22 +650,109 @@ def generate_ai_response(post_content: Any, profile: LinkedInProfile,
         return lint_repaired(_draft(), "comment", _draft,
                              user_id=user_id, action_type="comment")
 
-    return _gated_comment(_draft, post_content, recent_comments=recent_comments, user_id=user_id)
+    return _gated_comment(_draft, post_content, recent_comments=recent_comments, user_id=user_id,
+                          research_findings=findings, ground_specifics=True)
+
+
+def _story_bank_sources(user_id: "int | None") -> list:
+    """Read the user's story bank as an allow-list of specifics they really have (issue #620).
+
+    Consulted only once a draft has already claimed something the cheap sources do not cover, so
+    the common comment costs no query at all.
+
+    Args:
+        user_id: Whose bank to read. None (an unattributed draft) has no bank and returns [].
+
+    Returns:
+        Source strings for `story_bank.unsourced_specifics`. Empty on any read failure, which
+        leaves the check running against the post and the research findings alone — strictly the
+        behaviour before the bank existed, never a free pass.
+    """
+    if not user_id:
+        return []
+    try:
+        from cqc_lem.utilities.db import get_story_bank_entries
+        entries = get_story_bank_entries(user_id, active_only=True)
+    except Exception as exc:
+        log_warning("Story bank unreadable — grading this comment's specifics against the post and "
+                    "research only", exc=exc, user_id=user_id, action_type="comment")
+        return []
+    return [source for entry in (entries or []) for source in _story_bank.fact_sources(entry)]
+
+
+def _ungrounded_first_person_metrics(candidate: "str | None", post_content: Any,
+                                     research_findings: "str | None" = None,
+                                     user_id: int = None) -> list:
+    """First-person specifics a comment draft asserts that NOTHING we supplied backs (issue #1834).
+
+    A number tied to "we"/"our"/"I" in the same sentence is a claim about the author's own operating
+    history, and a comment ships publicly under their name with no review step. It is legitimate
+    only when it traces to one of three places: the target post (the comment's primary grounding),
+    the research `findings` block if one was actually supplied, or the user's story bank. Anything
+    else the model wrote down, it made up — that is the whole finding behind this check.
+
+    The post and the findings are free to check, the bank costs a query, so the bank is read ONLY
+    when the cheap sources already failed a token. A comment with no first-person numbers — the
+    common case, at comment volume — makes no DB call at all.
+
+    Args:
+        candidate: The finished draft, post-humanization, exactly as it would ship.
+        post_content: The target post. Guaranteed to carry a readable body on the feed path
+            (issue #1833 refuses to draft otherwise), so this allow-list is never empty there.
+        research_findings: The research block that was passed to the writer, when one was — never a
+            block that was merely available, or the check would sanction numbers the model never saw.
+        user_id: Whose story bank backs the author's own numbers.
+
+    Returns:
+        The offending specifics in the order they appear, or [] when every one of them traces.
+    """
+    sources = [str(post_content or ""), str(research_findings or "")]
+    if not _story_bank.unsourced_specifics(candidate, sources):
+        return []
+    return _story_bank.unsourced_specifics(candidate, sources + _story_bank_sources(user_id))
 
 
 def _gated_comment(draft, post_content, recent_comments: list = None,
-                   user_id: int = None) -> "str | None":
+                   user_id: int = None, research_findings: str = None,
+                   ground_specifics: bool = False) -> "str | None":
     """Run a comment `draft(fix_directive)` callable through the quality contract, the similarity
-    gate and the slop lint until it passes, and return None when it never does.
+    gate, the slop lint and (opt-in) the fact-grounding check until it passes, and return None when
+    it never does.
 
     The checks run on the FINAL text (post-humanization) — what would actually ship — so nothing
     downstream can reintroduce a banned opener or a tell. Shared by every self-authored comment
     surface (feed comments #617, the golden-hour second wave #622) so a new surface can never ship
     with a weaker contract than the one it copied.
+
+    Grounding (issue #1834) joins that same contract rather than standing beside it as a second
+    gate: an invented first-person metric is one more entry in the fix-list the next attempt is
+    steered by, and a draft that keeps inventing one is skipped on the SAME budget as a draft that
+    keeps opening on filler. `fact_grounding_severity` decides whether it BLOCKS — HARD on comments,
+    which have no review step to catch it later.
+
+    `ground_specifics` is opt-in per CALLER, not because the rule is weaker elsewhere, but because
+    the allow-list is a property of the call: a fresh feed comment is grounded in a target post the
+    author did not write, so any first-person number in it came from the model. The second wave is
+    the author commenting on their OWN post and is asked for the number behind their own claim, an
+    allow-list this function is not handed — enabling it there is one argument, and wants its own
+    evidence rather than a side effect of this one.
+
+    Args:
+        draft: Callable taking the fix directive and returning the next candidate, or None.
+        post_content: The target post — the comment's primary grounding, and a grounding source.
+        recent_comments: The author's recent comments, for the near-duplicate gate.
+        user_id: Log attribution, and whose story bank backs a first-person specific.
+        research_findings: The research block actually handed to the writer, if any.
+        ground_specifics: Run the #1834 grounding check on this surface.
+
+    Returns:
+        The first candidate that clears every gate, or None when none of them does.
     """
     fix_directive = ""
     failures = []
     attempts = _framework.comment_gate_max_attempts()
+    severity = _story_bank.fact_grounding_severity("comment")
+    checking_specifics = ground_specifics and severity != _slop.SEVERITY_OFF
     for attempt in range(1, attempts + 1):
         candidate = draft(fix_directive)
         if candidate is None:
@@ -667,9 +760,22 @@ def _gated_comment(draft, post_content, recent_comments: list = None,
         report = _framework.comment_contract_report(candidate, str(post_content or ""))
         similar = _framework.comment_similarity_report(candidate, recent_comments)
         slop = _slop.lint_report(candidate, "comment")
-        if report["passes"] and not similar["too_similar"] and slop["passes"]:
+        invented = (_ungrounded_first_person_metrics(candidate, post_content, research_findings,
+                                                     user_id=user_id)
+                    if checking_specifics else [])
+        blocking = invented if severity == _slop.SEVERITY_HARD else []
+        if invented and not blocking:
+            log_debug("Comment states first-person specifics nothing supplied backs "
+                      f"({', '.join(invented)}) — recorded, not blocking at severity {severity}",
+                      user_id=user_id, action_type="comment")
+        if report["passes"] and not similar["too_similar"] and slop["passes"] and not blocking:
             return candidate
         failures = list(report["failures"])
+        if blocking:
+            failures.append(
+                "states first-person specifics that appear in neither the post, the research "
+                f"provided, nor the author's own material ({', '.join(blocking)}) — drop the "
+                "invented numbers rather than rephrasing them")
         if similar["too_similar"]:
             failures.append(f"near-duplicate of a recent comment ({similar['measure']} similarity "
                             f"{similar['score']:.2f} > max {similar['threshold']:.2f})")
@@ -1251,6 +1357,9 @@ def generate_second_wave_comment(post_content, profile: "LinkedInProfile", prefs
 
     `story_directive` is the story-bank injection (issue #620): its facts are the ONLY personal
     specifics the model may state, so the added insight is the user's own material, never invented.
+    That is still an ASK here, not a check: the #1834 grounding gate is off on this surface, because
+    this comment is the author's own follow-up and is explicitly asked for the number behind their
+    own claim — see `_gated_comment`'s `ground_specifics` for what turning it on would need.
     """
     system_prompt = {
         "role": "system",

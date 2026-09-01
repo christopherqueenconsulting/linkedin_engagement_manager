@@ -554,8 +554,10 @@ class TestPostGateWiring:
 class TestCommentGenerationWiring:
     """generate_ai_response spends the SAME retry budget on slop and then skips the post."""
 
-    _POST = ("We cut our warehouse pick times by moving the fast movers to the front aisle. "
-             "Nobody talks about how much layout beats software here.")
+    # The post carries the drafts' numbers so the only thing under test here is the LINT: an
+    # un-grounded first-person metric is its own skip (issue #1834).
+    _POST = ("We cut our warehouse pick times 18% by moving the fast movers to the front aisle "
+             "across two sites. Nobody talks about how much layout beats software here.")
     _GOOD = ("The front-aisle move is the part most layout posts skip. We tried it across two "
              "warehouses last year and pick times fell 18% before we touched the software. "
              "How long did the fast movers stay stable for you?")

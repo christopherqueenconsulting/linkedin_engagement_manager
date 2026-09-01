@@ -81,9 +81,11 @@ class TestGenerateAiResponseGrounding:
         draft = ("Your line about warehouse robotics changing pick paths is where I'd push back. "
                  "We ran that pilot last year and throughput only moved 8% until the aisles were "
                  "re-mapped. What did month three look like for you?")
+        # The post states the 8% the draft quotes back: an un-grounded first-person metric is a
+        # skip of its own now (issue #1834), and this test is about the alignment guardrail.
         with patch(f"{_AI}._call_llm", return_value=_resp(draft)) as m:
             out = ai_helper.generate_ai_response(
-                "POST ABOUT WAREHOUSE ROBOTICS", _profile(),
+                "POST ABOUT WAREHOUSE ROBOTICS AND THE 8% PICK-PATH GAIN", _profile(),
                 prefs={"focus_topics": ["logistics"], "business_goals": "book calls"})
         assert out == draft
         msgs = _messages(m)
