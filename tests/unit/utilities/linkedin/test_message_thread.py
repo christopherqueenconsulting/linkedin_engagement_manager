@@ -435,6 +435,26 @@ class TestLadderContract:
         result = mt.open_message_thread(d, MagicMock(), PROFILE, timeout=0)
         assert not result.opened and result.tried == []
 
+    def test_skip_routes_stops_before_the_named_route(self):
+        # The read-only live probe skips messaging-search so the ladder never types into its search
+        # box (issue #1857). The route function must not run at all, and the walk records it skipped.
+        d = FakeDriver()
+        with patch.object(mt, "_try_messaging_search") as search:
+            result = mt.open_message_thread(d, MagicMock(), PROFILE, timeout=0,
+                                            skip_routes=(mt.ROUTE_MESSAGING_SEARCH,))
+        search.assert_not_called()
+        assert mt.ROUTE_MESSAGING_SEARCH not in result.tried
+        assert result.skipped == [mt.ROUTE_MESSAGING_SEARCH]
+        assert not result.opened
+
+    def test_skip_routes_defaults_to_walking_every_route(self):
+        # No skip list → the full ladder still runs, unchanged for production callers.
+        d = FakeDriver()
+        with patch.object(mt, "_try_messaging_search", return_value=None) as search:
+            result = mt.open_message_thread(d, MagicMock(), PROFILE, timeout=0)
+        search.assert_called_once()
+        assert result.tried == list(mt.ROUTES) and result.skipped == []
+
     def test_thread_open_is_falsy_when_nothing_opened(self):
         assert not mt.ThreadOpen()
         assert mt.ThreadOpen(opened=True, route=mt.ROUTE_ANCHOR)

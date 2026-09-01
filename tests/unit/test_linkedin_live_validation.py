@@ -352,23 +352,35 @@ class TestMessageThreadProbe:
         assert llv.message_thread_verdict({"opened": True, "route": "anchor", "events": 12,
                                            "self_name": "Christopher Queen"}) == "opened via anchor"
 
-    def test_the_search_route_is_not_probe_able_and_says_so_instead_of_crashing(self, monkeypatch):
+    def test_the_search_route_is_skipped_and_grades_unknown_not_broken(self, monkeypatch):
         """The production ladder's last resort types a name and presses Enter.
 
-        The #1301 guard refuses that — a box that takes text and commits on Enter is, from here,
-        indistinguishable from a composer — so the probe must report an UNKNOWN naming the guard,
-        not die mid-run and not read as a broken route.
+        The #1301 guard refuses that, and the ladder's own broad ``except Exception`` would swallow
+        the refusal and report an ordinary failed walk (the #1857 defect). So the probe SKIPS that
+        route: a walk that then opens nothing must grade UNKNOWN naming the guard, not read as a
+        broken route.
         """
-        thread = types.ModuleType("cqc_lem.utilities.linkedin.message_thread")
-        thread.open_message_thread = MagicMock(
-            side_effect=llv.ReadOnlyViolation("refused to type text"))
-        thread.read_last_sender = lambda d: ""
-        thread.profile_urn_from_page = lambda d, u: ""
-        monkeypatch.setitem(sys.modules, "cqc_lem.utilities.linkedin.message_thread", thread)
+        from cqc_lem.utilities.linkedin.message_thread import ROUTE_MESSAGING_SEARCH, ThreadOpen
 
-        reading = llv.probe_message_thread(MagicMock(), "https://www.linkedin.com/in/jane/")
+        captured = {}
+
+        def _fake_open(driver, wait, profile_url, **kwargs):
+            captured.update(kwargs)
+            return ThreadOpen(opened=False,
+                              tried=["anchor", "button", "text_node", "overflow", "direct_url"],
+                              skipped=[ROUTE_MESSAGING_SEARCH])
+
+        monkeypatch.setattr("cqc_lem.utilities.linkedin.message_thread.open_message_thread",
+                            _fake_open)
+        monkeypatch.setattr("cqc_lem.utilities.linkedin.message_thread.profile_urn_from_page",
+                            lambda *_a: "")
+
+        reading = llv.probe_message_thread(MagicMock(), "https://www.linkedin.com/in/jane/",
+                                           sleep=lambda s: None)
+        # The fix: the probe asks the ladder to stop before the route that would type.
+        assert ROUTE_MESSAGING_SEARCH in tuple(captured.get("skip_routes") or ())
         assert reading["state"] == llv.STATE_UNKNOWN
-        assert "messaging-search route" in reading["verdict"]
+        assert "messaging-search" in reading["verdict"]
         assert reading["read_only_blocked"]
 
     def test_a_readable_thread_with_no_saved_name_is_still_unknown(self):

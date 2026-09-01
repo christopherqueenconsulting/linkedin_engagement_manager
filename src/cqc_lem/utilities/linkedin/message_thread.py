@@ -30,7 +30,7 @@ import re
 import time
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Optional
+from typing import Iterable, Optional
 from urllib.parse import quote, unquote
 
 from selenium.common import NoSuchElementException, StaleElementReferenceException, WebDriverException
@@ -180,6 +180,7 @@ class ThreadOpen:
     composer: bool = False
     surface: Optional[str] = None
     tried: list = field(default_factory=list)
+    skipped: list = field(default_factory=list)
 
     def __bool__(self) -> bool:
         return self.opened
@@ -654,13 +655,20 @@ def _try_messaging_search(driver: WebDriver, wait: WebDriverWait, person_name: O
 
 def open_message_thread(driver: WebDriver, wait: WebDriverWait, profile_url: str,
                         person_name: Optional[str] = None, user_id: Optional[int] = None,
-                        timeout: float = THREAD_RENDER_TIMEOUT_SECONDS) -> ThreadOpen:
+                        timeout: float = THREAD_RENDER_TIMEOUT_SECONDS,
+                        skip_routes: Optional[Iterable[str]] = None) -> ThreadOpen:
     """Open this person's 1:1 message thread, walking every known route until one VERIFIABLY works.
 
     Routes, in order: profile anchor → legacy button → tag-agnostic 'Message' text node → the
     top-card More menu → the direct compose URL built from the profile URN → messaging search.
     Returns a `ThreadOpen`; `opened` is False only when every route failed, and the winning route is
     logged so the next rotation shows up in telemetry rather than in user complaints.
+
+    Routes named in `skip_routes` are not walked and are recorded in `ThreadOpen.skipped`. The
+    read-only live probe uses this to stop before `messaging_search`, whose search box takes a typed
+    name and commits on Enter — a write the probe must not make. A walk that skips a route grounds
+    nothing about it, so the caller reads `skipped` to grade the run rather than treating an
+    unfinished walk as broken routes.
 
     Every route exhausted is the EXPECTED outcome for anyone this account cannot message this way
     (not a 1st-degree connection, InMail-only, messaging restricted) — not evidence the selectors
@@ -688,7 +696,11 @@ def open_message_thread(driver: WebDriver, wait: WebDriverWait, profile_url: str
         (ROUTE_MESSAGING_SEARCH, lambda: _try_messaging_search(driver, wait, person_name,
                                                                profile_url, timeout)),
     )
+    skip = set(skip_routes or ())
     for route, attempt in attempts:
+        if route in skip:
+            result.skipped.append(route)
+            continue
         result.tried.append(route)
         try:
             reading = attempt()

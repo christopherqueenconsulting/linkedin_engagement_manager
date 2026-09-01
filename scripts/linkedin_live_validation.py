@@ -1684,6 +1684,10 @@ def message_thread_verdict(reading: Optional[dict]) -> str:
     """
     reading = dict(reading or {})
     if not reading.get("opened"):
+        if reading.get("routes_skipped"):
+            return ("no direct route opened a thread, and the messaging-search route is skipped "
+                    "under the read-only guard (it types a name and presses Enter) — this run "
+                    "grounds nothing; re-run with a person whose thread one of the direct routes opens")
         return "no route opened a thread"
     route = reading.get("route")
     if not reading.get("events"):
@@ -1695,14 +1699,19 @@ def message_thread_verdict(reading: Optional[dict]) -> str:
 
 
 def message_thread_state(reading: Optional[dict]) -> str:
-    """Three-state grade for one ladder walk. Six routes are tried, so a walk that opened NOTHING
-    while the profile page rendered is drift; a walk that never reached a rendered page is unknown.
+    """Three-state grade for one ladder walk. A COMPLETE walk that opened NOTHING while the profile
+    page rendered is drift; a walk that skipped a route or never reached a rendered page is unknown.
     A thread that opened but reads no message events is drift too — that is exactly the reply
     detection going quiet.
     """
     reading = dict(reading or {})
     if not reading.get("opened"):
-        return STATE_DRIFT if reading.get("routes_tried") else STATE_UNKNOWN
+        # A walk that skipped a route (the read-only probe stops before messaging-search) or never
+        # reached a rendered page grounds nothing — unknown. Only a COMPLETE walk that opened
+        # nothing is drift.
+        if reading.get("routes_skipped") or not reading.get("routes_tried"):
+            return STATE_UNKNOWN
+        return STATE_DRIFT
     return STATE_OK if reading.get("events") else STATE_DRIFT
 
 
@@ -5667,32 +5676,35 @@ def probe_message_thread(driver, profile_url: str, person_name: str = "", self_n
     One route of the production ladder is NOT probe-able under the #1301 guard: the last-resort
     messaging SEARCH types a name into a box and presses Enter, and the guard refuses every
     printable character precisely because a box that takes text and commits on Enter is
-    indistinguishable, from here, from a composer. That grades `unknown` — the ladder was not fully
-    walked, so this run grounds nothing about it — rather than pretending the route is broken.
+    indistinguishable, from here, from a composer. So the probe SKIPS that route (`skip_routes`)
+    rather than letting it type: the ladder's own broad `except Exception` would otherwise swallow
+    the guard's refusal and report an ordinary failed walk. A run that then opens nothing was not
+    fully walked, so it grades `unknown` — grounds nothing — rather than pretending the routes are
+    broken.
     """
     from selenium.webdriver.support.ui import WebDriverWait
 
-    from cqc_lem.utilities.linkedin.message_thread import open_message_thread, profile_urn_from_page, read_last_sender
+    from cqc_lem.utilities.linkedin.message_thread import (ROUTE_MESSAGING_SEARCH,
+                                                           open_message_thread, profile_urn_from_page,
+                                                           read_last_sender)
 
     wait = WebDriverWait(driver, 10)
-    try:
-        opened = open_message_thread(driver, wait, profile_url, person_name=person_name or None)
-    except ReadOnlyViolation as e:
-        return graded({"profile_url": profile_url, "opened": False, "route": None,
-                       "read_only_blocked": str(e)}, STATE_UNKNOWN,
-                      "the ladder reached the messaging-search route, which types a name and "
-                      "presses Enter — the read-only guard refuses that, so this run grounds "
-                      "nothing about the earlier routes either; re-run with a person whose thread "
-                      "one of the direct routes opens")
+    opened = open_message_thread(driver, wait, profile_url, person_name=person_name or None,
+                                 skip_routes=(ROUTE_MESSAGING_SEARCH,))
     reading = {"profile_url": profile_url,
                "opened": opened.opened,
                "route": opened.route,
                "routes_tried": list(opened.tried),
+               "routes_skipped": list(opened.skipped),
                "surface": opened.surface,
                "events": opened.events,
                "composer": opened.composer,
                "self_name": self_name or "",
                "profile_urn": profile_urn_from_page(driver, profile_url)}
+    if not opened.opened and opened.skipped:
+        reading["read_only_blocked"] = (
+            "the messaging-search route types a name and presses Enter, which the read-only guard "
+            "refuses, so it was skipped — this run grounds nothing about the routes it did try")
     sleep(1)
     reading["last_sender"] = read_last_sender(driver) if opened.opened else ""
     reading["reply_state"] = _reply_state(reading)
