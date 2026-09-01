@@ -335,6 +335,54 @@ class TestOutreachFunnelSourcing:
         assert ra._draft_funnel_comment(1, {"context_text": ""}, MagicMock()) == ""
 
 
+class TestOutreachFunnelScanEvent:
+    """issue #1816: `outreach_funnel_scan` fires on EVERY exit, zeros included — the table had
+    ZERO rows in production and every early exit only ever logged at DEBUG, so a broken scan and a
+    healthy quiet one were indistinguishable from outside.
+    """
+
+    def test_targeting_off_emits_off_status(self):
+        with patch(f"{_OUT}.track_outreach_funnel_scan") as track:
+            _scan_funnel(prefs=_prefs(connection_targeting_mode="off"))
+        report = track.call_args.args[1]
+        assert report["status"] == "off"
+
+    def test_backlog_full_emits_budget_and_status(self):
+        with patch(f"{_OUT}.track_outreach_funnel_scan") as track:
+            _scan_funnel(open_targets=25)
+        report = track.call_args.args[1]
+        assert report["status"] == "backlog_full"
+        assert report["budget"] == 0
+
+    def test_no_prospects_emits_the_stage_the_zero_happened_at(self):
+        with patch(f"{_OUT}.track_outreach_funnel_scan") as track:
+            _scan_funnel(roster=[_roster()], activity=[])
+        report = track.call_args.args[1]
+        assert report["status"] == "no_prospects"
+        assert report["roster_authors_walked"] == 1
+        assert report["authors_with_a_post"] == 0
+        assert report["prospects"] == 0
+
+    def test_a_filed_run_emits_the_full_funnel(self):
+        with patch(f"{_OUT}.track_outreach_funnel_scan") as track:
+            _scan_funnel(roster=[_roster()])
+        report = track.call_args.args[1]
+        assert report["status"] == "ok"
+        assert report["roster_authors_walked"] == 1
+        assert report["authors_with_a_post"] == 1
+        assert report["prospects"] == 1
+        assert report["filed"] == 1
+
+    def test_engager_candidates_counted_before_the_first_degree_filter(self):
+        # #1091: an all-1st-degree pool is an audience fact, not a sourcing failure — the pre-filter
+        # count has to be visible separately from how many became prospects.
+        with patch(f"{_OUT}.track_outreach_funnel_scan") as track:
+            _scan_funnel(engagers=[_engager(degree="1st")])
+        report = track.call_args.args[1]
+        assert report["engager_candidates"] == 1
+        assert report["prospects"] == 0
+
+
 class TestEmptyFunnelScanIsNotAWarning:
     """Filing nothing is this scan's resting state, so none of its three empty outcomes may warn —
     a daily beat that warns escalates to ERROR and files a defect for working behaviour (#995).

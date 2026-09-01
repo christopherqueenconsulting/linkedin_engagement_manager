@@ -440,6 +440,17 @@ EVENTS = {spec.event: spec for spec in (
         # enough" and looks identical to a healthy account.
         count("entity_mismatch"), count("expansions"),
     )),
+    EventSpec("outreach_funnel_scan", (
+        prop("user_id"), label("status"), count("roster_authors_walked"),
+        count("authors_with_a_post"), count("commenters_harvested"), count("engager_candidates"),
+        count("prospects"), count("filed"), count("budget"),
+        # outreach_funnel_targets held ZERO rows in production since the table shipped, and the
+        # daily scan that is supposed to fill it exits at log_debug either way (issue #1816) — a
+        # run that walks the roster and files nothing looks identical, from outside, to one that
+        # never ran. The per-stage counts are the point: they say which stage the zero happened at,
+        # so a healthy "nobody posted this week" reads differently from a broken
+        # get_profile_recent_activity.
+    )),
     EventSpec("catchup_run", (
         prop("user_id"), label("phase"), label("status"), count("moments"), count("classified"),
         count("enabled_type"), count("excluded"), count("duplicate"), count("below_bar"),
@@ -1514,6 +1525,20 @@ def track_stale_invite_run(user_id: Optional[int], report: Optional[dict] = None
     manager's markup moved, not that the account is clean.
     """
     _emit(EVENTS["stale_invite_run"], {**dict(report or {}), "user_id": user_id}, extra)
+
+
+def track_outreach_funnel_scan(user_id: Optional[int], report: Optional[dict] = None,
+                               **extra) -> None:
+    """Emit one outreach-funnel sourcing scan (issue #1816) — EVERY run, including the ones that
+    file nothing.
+
+    `outreach_funnel_targets` had ZERO rows in production since the table shipped, and the scan
+    that fills it exits at `log_debug` on empty output — indistinguishable, from outside, between
+    "healthy quiet week" and "broken since day one". The per-stage counts (`roster_authors_walked`
+    through `filed`) say which stage the zero happened at, so a flat run of empty scans stops
+    reading as success.
+    """
+    _emit(EVENTS["outreach_funnel_scan"], {**dict(report or {}), "user_id": user_id}, extra)
 
 
 def track_catchup_run(user_id: Optional[int], report: Optional[dict] = None, **extra) -> None:
