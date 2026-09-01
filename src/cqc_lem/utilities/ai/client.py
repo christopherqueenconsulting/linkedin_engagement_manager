@@ -79,6 +79,9 @@ _ALLOWLISTS_ANNOUNCED: set[str] = set()
 #: Request hooks already reported as failing, so a broken hook says so once instead of per call.
 _HOOK_FAILURES_WARNED: set[str] = set()
 
+#: Latch for the "a call site tried to opt itself out" warning, same reason as the two above.
+_HEADER_STRIPPED_WARNED: set[str] = set()
+
 # The LiteLLM proxy is a container LEM restarts on its own schedule (deploys, image pulls, the host's
 # nightly unattended-upgrade reboot). While it is coming back up every call gets
 # `[Errno 111] Connection refused`, and the OpenAI SDK spends its own two retries inside ~1.5s — far
@@ -241,7 +244,8 @@ def prompt_logging_features() -> frozenset[str]:
     allowed = named & _KNOWN_FEATURES
     if allowed:
         # Once per distinct allowlist, so a worker says out loud that prompt content is releasable
-        # before any traffic proves it — "is this on?" should not require waiting for a comment run.
+        # rather than that one just left. It fires on the FIRST chat call a tier alias makes, not at
+        # startup — this function is only reached past the shape gates in `_allowlisted_feature`.
         announced = ",".join(sorted(allowed))
         if announced not in _ALLOWLISTS_ANNOUNCED:
             _ALLOWLISTS_ANNOUNCED.add(announced)
@@ -307,9 +311,13 @@ def _attach_prompt_logging(options: Any) -> None:
         if not present:
             return
         options.headers = {key: value for key, value in headers.items() if key not in present}
-        log_warning("A call site set the prompt-redaction opt-out header on a request that is not "
-                    f"allowlisted ({_PROMPT_LOGGING_FEATURES_ENV}); stripped it",
-                    api_provider="litellm")
+        # Latched like every other warning in this module: it sits in the path of every LLM call, and
+        # the escalation contract turns a repeated warning into an ERROR and a grouped $exception.
+        if _REDACTION_OFF_HEADER not in _HEADER_STRIPPED_WARNED:
+            _HEADER_STRIPPED_WARNED.add(_REDACTION_OFF_HEADER)
+            log_warning("A call site set the prompt-redaction opt-out header on a request that is "
+                        f"not allowlisted ({_PROMPT_LOGGING_FEATURES_ENV}); stripped it",
+                        api_provider="litellm")
         return
 
     for key in present:
@@ -320,8 +328,11 @@ def _attach_prompt_logging(options: Any) -> None:
     # leaving the stack is to go and read PostHog. INFO rather than WARNING because an allowlisted
     # feature doing exactly what it was allowlisted for is not a defect, and rather than DEBUG
     # because releasing user content to a third party should be legible in the logs by default.
+    # `user_id` names WHOSE material left, which is the difference between an audit trail and a
+    # counter: a subject-access or deletion request has to be answerable from these lines alone.
     log_info("Prompt logging: sending this call's messages to PostHog un-redacted",
-             feature=feature, model=str(body.get("model") or ""), api_provider="litellm")
+             feature=feature, model=str(body.get("model") or ""),
+             user_id=(_request_metadata(options) or {}).get("user_id"), api_provider="litellm")
 
 
 class AttributedOpenAI(OpenAI):

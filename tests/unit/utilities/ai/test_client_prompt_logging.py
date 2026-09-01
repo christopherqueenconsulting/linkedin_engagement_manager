@@ -68,7 +68,8 @@ def _fresh_process_state(monkeypatch: pytest.MonkeyPatch) -> None:
     writes a bad name into the set silences a later assertion, and nobody would remember why.
     """
     from cqc_lem.utilities.ai import client as mod
-    for name in ("_UNKNOWN_FEATURES_WARNED", "_ALLOWLISTS_ANNOUNCED", "_HOOK_FAILURES_WARNED"):
+    for name in ("_UNKNOWN_FEATURES_WARNED", "_ALLOWLISTS_ANNOUNCED", "_HOOK_FAILURES_WARNED",
+                 "_HEADER_STRIPPED_WARNED"):
         monkeypatch.setattr(mod, name, set())
 
 
@@ -252,8 +253,10 @@ class TestTheAllowlistIsAuthoritative:
         with patch("cqc_lem.utilities.ai.client.log_warning") as warned:
             sent = _send(client, recorder, extra_headers={_HEADER: "true"},
                          extra_body={"metadata": {"feature": "dm", "user_id": 7}})
+            _send(client, recorder, extra_headers={_HEADER: "true"},
+                  extra_body={"metadata": {"feature": "dm", "user_id": 7}})
         assert not _opted_out(sent)
-        assert warned.call_count == 1
+        assert warned.call_count == 1, "latched like every other warning here — this is a per-call path"
 
 
 class TestItFailsClosed:
@@ -317,6 +320,23 @@ class TestItFailsClosed:
                                   files=[("file", b"audio")], headers={})
         assert _allowlisted_feature(options, options.json_data) is None
 
+    def test_a_real_headers_mapping_is_added_to_rather_than_replaced(
+            self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A caller's own headers must survive the one this hook adds.
+
+        Everywhere else in this file `options.headers` is the SDK's falsy `NOT_GIVEN` default, so a
+        bug that only handles the empty case would pass. Drive a real `httpx.Headers` through.
+        """
+        from cqc_lem.utilities.ai.client import _attach_prompt_logging
+        monkeypatch.setenv(_ENV, "comment")
+        options = SimpleNamespace(json_data={"model": "lem-medium",
+                                             "messages": [{"role": "user", "content": "hi"}],
+                                             "metadata": {"feature": "comment", "user_id": 7}},
+                                  files=None, headers=httpx.Headers({"x-caller": "keep-me"}))
+        _attach_prompt_logging(options)
+        assert options.headers[_HEADER] == "true"
+        assert options.headers["x-caller"] == "keep-me"
+
     def test_an_unreadable_headers_object_is_left_completely_alone(
             self, monkeypatch: pytest.MonkeyPatch) -> None:
         """If it cannot be READ it must not be WRITTEN: replacing it would drop Authorization.
@@ -376,6 +396,9 @@ class TestTheEgressIsLogged:
         released = _release_lines(logged)
         assert len(released) == 1
         assert released[0].kwargs["feature"] == "comment"
+        # WHOSE material left, not just that some did — a deletion or subject-access request has to
+        # be answerable from these lines alone.
+        assert released[0].kwargs["user_id"] == 7
 
     def test_a_redacted_call_logs_nothing(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """One line per RELEASE. A redacted call is the norm and would drown the signal."""
@@ -384,3 +407,15 @@ class TestTheEgressIsLogged:
         with patch("cqc_lem.utilities.ai.client.log_info") as logged:
             _comment_call(client, recorder, feature="dm")
         assert _release_lines(logged) == []
+
+    def test_the_real_logger_accepts_every_kwarg_this_module_sends(self) -> None:
+        """Anti-vacuity: every other assertion here PATCHES the logger, which cannot prove a signature.
+
+        A kwarg the real logger rejects would raise inside `_build_request`'s except block — the one
+        place an exception escapes and costs the generation.
+        """
+        from cqc_lem.utilities.logger import log_info, log_warning
+        log_info("prompt-logging signature probe", feature="comment", model="lem-medium",
+                 user_id=7, api_provider="litellm")
+        log_warning("prompt-logging signature probe", exc=RuntimeError("probe"),
+                    api_provider="litellm")
