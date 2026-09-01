@@ -418,9 +418,11 @@ class TestCommentingHold:
 
 
 class TestInviteHoldLogLevel:
-    """A stored invite hold is a state transition, not a degraded path (issue #917 precedent). The
-    Connect-dialog breakage that trips the miss-streak hold already warns and files its own grouped
-    $exception, so warning here too filed a SECOND issue that re-fired while the route stayed broken.
+    """A stored invite hold is a state transition, not a degraded path (issue #917 precedent).
+
+    The Connect-dialog breakage that trips the miss-streak hold already warns and files its own
+    grouped $exception, so warning here too filed a SECOND issue that re-fired while the route
+    stayed broken.
     """
 
     def test_hold_logs_info_not_warning(self, fake_redis):
