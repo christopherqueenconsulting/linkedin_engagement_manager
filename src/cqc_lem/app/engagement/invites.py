@@ -322,11 +322,18 @@ def _wait_for_profile_top_card(driver, wait) -> None:
     failure: polling that here would multiply one warning by the poll count instead of leaving it
     to the single read that follows. Falls through silently on timeout; the read's own
     None/[]/DRIFT handling covers a page that never settles, exactly as before this existed.
+
+    The name anchor is `h2`, not `h1`. Measured live 2026-09-01: a profile page carries NO `h1` at
+    all, in `main` or anywhere else, and the member's name is the FIRST `h2` under `main`. An `h1`
+    clause here would never match, leaving the badge as the only thing gating the wait.
     """
     try:
-        wait.until(lambda d: d.find_elements(By.CSS_SELECTOR, "main h1") or
+        wait.until(lambda d: d.find_elements(By.CSS_SELECTOR, "main h2") or
                              d.find_elements(By.XPATH, _DEGREE_LEAF_XPATH))
     except Exception:
+        # Deliberate, and the reason it is not logged: settling is best-effort. A page that never
+        # paints is already handled by the degree read's own None/[]/DRIFT path, and warning here
+        # would file a second grouped issue for every profile the one read below already reports.
         pass
 
 
