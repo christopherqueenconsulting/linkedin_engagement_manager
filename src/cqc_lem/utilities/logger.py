@@ -23,6 +23,7 @@ import datetime as DT
 import logging
 import os
 import sys
+import time
 from logging.handlers import RotatingFileHandler
 from typing import Callable, Optional
 
@@ -206,11 +207,25 @@ def _build_posthog_handler(level: int) -> Optional[logging.Handler]:
 
 
 class _LevelFormatter(logging.Formatter):
+    """Per-level format strings, all sharing ONE clock: UTC, explicitly marked (issue #1839).
+
+    Before this, only the DEBUG format carried `%(asctime)s`, and prod runs `LOG_LEVEL=INFO` — so
+    the shipped log file was 100% timestamp-free and its line order (which interleaves six Celery
+    containers writing the same bind-mounted file) was the only, unusable, ordering signal. Every
+    level below now stamps `%(asctime)sZ`, and `converter` is pinned to `time.gmtime` (the stdlib
+    default is localtime) so the stamp agrees with the UTC-rolling filename (`_utc_today`) rather
+    than the container's `America/New_York` clock.
+    """
+
+    #: Built-in function, not a plain Python one, so accessing it via `self.converter` does not bind
+    #: `self` as its first argument (mirrors how `time.localtime` works as the stdlib default).
+    converter = time.gmtime
+
     _fmt_debug = "[%(asctime)s %(filename)s->%(funcName)s():%(lineno)s] DEBUG: %(message)s"
-    _fmt_info = "%(message)s"
-    _fmt_warning = "WARNING [%(filename)s:%(lineno)s]: %(message)s"
-    _fmt_error = "ERROR [%(filename)s->%(funcName)s():%(lineno)s]: %(message)s"
-    _fmt_critical = "CRITICAL [%(filename)s->%(funcName)s():%(lineno)s]: %(message)s"
+    _fmt_info = "%(asctime)sZ %(message)s"
+    _fmt_warning = "%(asctime)sZ WARNING [%(filename)s:%(lineno)s]: %(message)s"
+    _fmt_error = "%(asctime)sZ ERROR [%(filename)s->%(funcName)s():%(lineno)s]: %(message)s"
+    _fmt_critical = "%(asctime)sZ CRITICAL [%(filename)s->%(funcName)s():%(lineno)s]: %(message)s"
 
     _map = {
         logging.DEBUG: _fmt_debug,
@@ -219,6 +234,10 @@ class _LevelFormatter(logging.Formatter):
         logging.ERROR: _fmt_error,
         logging.CRITICAL: _fmt_critical,
     }
+
+    def __init__(self) -> None:
+        """Fix the timestamp shape to seconds, ISO-8601-ish, no locale/millisecond noise."""
+        super().__init__(datefmt="%Y-%m-%d %H:%M:%S")
 
     def format(self, record: logging.LogRecord) -> str:
         self._style._fmt = self._map.get(record.levelno, "%(levelname)s: %(message)s")

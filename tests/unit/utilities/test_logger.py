@@ -3,6 +3,7 @@
 import datetime
 import logging
 import os
+import time
 from unittest.mock import patch
 
 import pytest
@@ -126,6 +127,89 @@ class TestTestSuiteNeverShipsLogsToPostHog:
         from cqc_lem.utilities import logger as mod
 
         assert "LoggingHandler" not in [type(h).__name__ for h in mod.logger.handlers]
+
+
+# ---------------------------------------------------------------------------
+# _LevelFormatter — per-level UTC timestamps (#1839)
+# ---------------------------------------------------------------------------
+
+_A_MOMENT = 1700000000.0  # 2023-11-14 22:13:20 UTC / 17:13:20 EST — the two must read differently
+
+
+def _record(level, msg, created=_A_MOMENT, pathname="some_file.py", lineno=42, func="do_thing"):
+    record = logging.LogRecord("cqc-lem", level, pathname, lineno, msg, None, None, func=func)
+    record.created = created  # LogRecord.__init__ stamps time.time(); pin it for a stable assertion
+    return record
+
+
+class TestLevelFormatterIsUTC:
+    """Only DEBUG carried a timestamp, so the shipped file was 100% timestamp-free (#1839).
+
+    Prod runs `LOG_LEVEL=INFO`. These pin the fix at the level that actually proves it: the
+    rendered string, not an attribute that could be reverted without any test noticing.
+    """
+
+    def test_converter_is_gmtime_not_the_stdlib_localtime_default(self):
+        from cqc_lem.utilities.logger import _LevelFormatter
+
+        assert _LevelFormatter.converter is time.gmtime
+
+    def test_rendered_timestamp_is_utc_even_under_a_non_utc_host_clock(self, monkeypatch):
+        """Forcing the host off UTC catches a converter that silently reverted to localtime.
+
+        A substring check against `datetime.now()` would pass by coincidence on a UTC CI runner.
+        """
+        from cqc_lem.utilities.logger import _LevelFormatter
+
+        monkeypatch.setenv("TZ", "America/New_York")
+        time.tzset()
+        try:
+            expected_utc = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(_A_MOMENT))
+            expected_local = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(_A_MOMENT))
+            assert expected_utc != expected_local, "test setup did not actually shift the clock"
+
+            formatted = _LevelFormatter().format(_record(logging.INFO, "hello"))
+
+            assert expected_utc in formatted
+            assert expected_local not in formatted
+        finally:
+            monkeypatch.delenv("TZ", raising=False)
+            time.tzset()
+
+
+class TestLevelFormatterPrefixesUnchanged:
+    """Adding the timestamp must not disturb the existing per-level prefixes (#1839 AC3).
+
+    The `WARNING [file:line]:` shape is grep- and escalation-key load-bearing
+    (`src/cqc_lem/utilities/CLAUDE.md`).
+    """
+
+    @staticmethod
+    def _line(level, msg="boom"):
+        from cqc_lem.utilities.logger import _LevelFormatter
+
+        return _LevelFormatter().format(_record(level, msg))
+
+    @property
+    def _ts(self):
+        return time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(_A_MOMENT))
+
+    def test_debug_format_unchanged_and_stamped(self):
+        assert self._line(logging.DEBUG) == f"[{self._ts} some_file.py->do_thing():42] DEBUG: boom"
+
+    def test_info_gains_only_a_leading_stamp(self):
+        assert self._line(logging.INFO) == f"{self._ts}Z boom"
+
+    def test_warning_prefix_unchanged_shape(self):
+        assert self._line(logging.WARNING) == f"{self._ts}Z WARNING [some_file.py:42]: boom"
+
+    def test_error_prefix_unchanged_shape(self):
+        assert self._line(logging.ERROR) == (
+            f"{self._ts}Z ERROR [some_file.py->do_thing():42]: boom")
+
+    def test_critical_prefix_unchanged_shape(self):
+        assert self._line(logging.CRITICAL) == (
+            f"{self._ts}Z CRITICAL [some_file.py->do_thing():42]: boom")
 
 
 # ---------------------------------------------------------------------------
