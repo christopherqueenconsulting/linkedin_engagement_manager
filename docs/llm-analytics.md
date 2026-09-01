@@ -79,9 +79,20 @@ redacted. `utilities/ai/client.py` sets that header for the `feature` values nam
 | Granularity | the `feature` bucket (`comment` / `content` / `dm` / `newsletter` / `marketing` / `system`) |
 | Chat only | keyed on the request carrying `messages`, so an image `prompt` or an embedding `input` is never disclosed even when its feature IS allowlisted — `$ai_output_choices` is a chat shape and nothing grades the others |
 | Audit trail | one `log_info` per released call, naming the feature. A redacted call logs nothing, so the line means content left |
+| Authoritative | a call site cannot opt itself out — the header is STRIPPED (and warned) off a request the env allowlist does not cover |
+| Typos | a name that is not a real feature is dropped and warned about once per process, because `comment_generation` (the trace name) and `comments` are the obvious things to type |
 | Fails | CLOSED — unset, empty, unparseable, unattributed, a raw provider model, a non-chat endpoint, or a throwing hook all stay redacted |
 | Not a flag | `utilities/flags.py` fails OPEN to its default; a data-egress control must not. Env var only |
 | Sign-off | issue **#1832** — processor, retention, and whether `PrivacyPolicy.tsx` §7 has to name it |
+
+**Re-verify the header on a LiteLLM upgrade.** The stack runs a floating
+`ghcr.io/berriai/litellm:main-latest`, so this contract can change on an image pull with no commit
+here. It was read off `litellm/litellm_core_utils/redact_messages.py` on `main`: priority 2 of
+`should_redact_message_logging`, matched as
+`bool(request_headers.get("litellm-disable-message-redaction", False))` against
+`litellm_params.metadata.headers`. Nothing in this repo can prove the proxy still honours it — the
+unit tests prove only that LEM *sends* it. If the name moves, grading reverts to constant scores:
+safe, but silent. Check that file when the image moves, or when an evaluation's pass rate goes flat.
 
 Three limits worth knowing:
 

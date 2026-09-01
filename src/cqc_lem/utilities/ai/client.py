@@ -19,7 +19,7 @@ from typing import Any, Optional, Tuple
 import httpx
 from openai import APIConnectionError, OpenAI
 
-from cqc_lem.utilities.logger import log_debug, log_info
+from cqc_lem.utilities.logger import log_debug, log_info, log_warning
 from cqc_lem.utilities.routing_policy import SYSTEM_USER_ID
 
 # Only tier aliases are routable AND priced by the proxy, so nothing is attached to a call that
@@ -61,6 +61,16 @@ _REDACTION_OFF_HEADER = "litellm-disable-message-redaction"
 # fails OPEN to its default and safety controls are never flags. Setting it is an owner decision:
 # issue #1832 carries the processor, retention and privacy-language questions it turns on.
 _PROMPT_LOGGING_FEATURES_ENV = "LLM_PROMPT_LOGGING_FEATURES"
+
+# Mirrors observability.FEATURE_* for the same reason _SYSTEM_FEATURE does — importing observability
+# here would drag the DB and PostHog into every `from ...ai.client import client`. The mirror cannot
+# drift silently: test_client_prompt_logging.py reads the real constants and fails on any difference.
+# Anything not in here is dropped from the allowlist, so an added-but-unmirrored feature fails CLOSED
+# (redacted) and CI says so, rather than being quietly disclosed.
+_KNOWN_FEATURES = frozenset({"content", "comment", "dm", "newsletter", "marketing", "system"})
+
+#: Names already reported as unrecognised, so the warning is once per process, not once per call.
+_UNKNOWN_FEATURES_WARNED: set[str] = set()
 
 # The LiteLLM proxy is a container LEM restarts on its own schedule (deploys, image pulls, the host's
 # nightly unattended-upgrade reboot). While it is coming back up every call gets
@@ -205,42 +215,82 @@ def prompt_logging_features() -> frozenset[str]:
     Read here rather than at import so an operator can widen or (more importantly) close it with an
     `.env` edit and a worker restart, and normalized to lower case because the value is typed by
     hand. Anything unset, empty or whitespace yields the empty set, which redacts everything.
+
+    An unrecognised name is DROPPED, not honoured — the failure of a misconfigured egress control has
+    to be "nothing left the stack". It is also warned about exactly once per name per process,
+    because the silent version of this is an operator setting `comments` or `comment_generation` (the
+    trace name, not the feature) and concluding the mechanism is broken.
     """
     raw = os.getenv(_PROMPT_LOGGING_FEATURES_ENV) or ""
-    return frozenset(part.strip().lower() for part in raw.split(",") if part.strip())
+    named = frozenset(part.strip().lower() for part in raw.split(",") if part.strip())
+    unwarned = (named - _KNOWN_FEATURES) - _UNKNOWN_FEATURES_WARNED
+    if unwarned:
+        # Once per distinct name, not once per call: this sits in the path of every LLM request, and
+        # the escalation contract turns a repeated warning into an ERROR and a grouped $exception.
+        _UNKNOWN_FEATURES_WARNED.update(unwarned)
+        log_warning(f"{_PROMPT_LOGGING_FEATURES_ENV} names features that do not exist: "
+                    f"{', '.join(sorted(unwarned))} — they allowlist nothing. Valid: "
+                    f"{', '.join(sorted(_KNOWN_FEATURES))}")
+    return named & _KNOWN_FEATURES
 
 
-def _attach_prompt_logging(options) -> None:
-    """Let THIS request's messages reach PostHog, if and only if its feature is allowlisted.
+def _allowlisted_feature(options: Any, body: dict) -> Optional[str]:
+    """This request's feature if its content may be logged, else None.
 
-    Fails closed at every step: an un-allowlisted feature, a request that carries no attribution at
-    all, a raw provider model, a non-chat endpoint, or an empty allowlist all leave the proxy's
-    global redaction in place. The hook only ever ADDS the opt-out header, so the worst outcome of a
-    bug here is that content stays redacted — never that it leaks.
+    Total: it never raises for a shape it does not recognise, because every unrecognised shape is
+    itself a reason to stay redacted.
     """
-    body = getattr(options, "json_data", None)
-    if not isinstance(body, dict) or getattr(options, "files", None):
-        return
+    if getattr(options, "files", None):
+        return None
     if not str(body.get("model") or "").startswith(_TIER_PREFIX):
-        return
+        return None
     # CHAT ONLY. `$ai_input`/`$ai_output_choices` is what an evaluation grades, and it is what a chat
     # completion produces — an image `prompt`, an embedding `input` or a TTS `input` would be
     # disclosed for a reading nothing takes. Keyed on the body shape rather than an alias blocklist,
     # so a new non-chat alias is excluded the day it is added instead of the day someone remembers.
     if not isinstance(body.get("messages"), list):
-        return
+        return None
     allowed = prompt_logging_features()
     if not allowed:
-        return
+        return None
     metadata = _request_metadata(options)
     feature = str((metadata or {}).get("feature") or "").strip().lower()
-    if not feature or feature not in allowed:
+    return feature if feature and feature in allowed else None
+
+
+def _attach_prompt_logging(options: Any) -> None:
+    """Decide, for THIS request, whether its messages may reach PostHog un-redacted.
+
+    Fails closed at every step: an un-allowlisted feature, a request that carries no attribution at
+    all, a raw provider model, a non-chat endpoint, or an empty allowlist all leave the proxy's
+    global redaction in place — as does any exception, since `_build_request` swallows one and the
+    header is simply never added.
+
+    The env allowlist is AUTHORITATIVE, which is why this also strips the header off a request that
+    is not allowlisted. An allowlist a call site can override per request is not an allowlist, and
+    LiteLLM matches the header with `bool(...)`, so a caller writing "false" to ask FOR redaction
+    would get the opposite. Nothing in LEM sets it today; this keeps that true.
+    """
+    body = getattr(options, "json_data", None)
+    if not isinstance(body, dict):
         return
     headers = getattr(options, "headers", None)
-    sent = dict(headers) if isinstance(headers, Mapping) else {}
-    # A caller that set the header itself owns the decision — headers are case-insensitive.
-    if any(str(key).lower() == _REDACTION_OFF_HEADER for key in sent):
+    present = [key for key in headers if str(key).lower() == _REDACTION_OFF_HEADER] \
+        if isinstance(headers, Mapping) else []
+    feature = _allowlisted_feature(options, body)
+
+    if feature is None:
+        if not present:
+            return
+        options.headers = {key: value for key, value in dict(headers).items() if key not in present}
+        log_warning("A call site set the prompt-redaction opt-out header on a request that is not "
+                    f"allowlisted ({_PROMPT_LOGGING_FEATURES_ENV}); stripped it",
+                    api_provider="litellm")
         return
+
+    if present:
+        return
+    sent = dict(headers) if isinstance(headers, Mapping) else {}
     sent[_REDACTION_OFF_HEADER] = "true"
     options.headers = sent
     # The audit trail for the egress itself: without it, the only way to learn that content is
@@ -248,7 +298,7 @@ def _attach_prompt_logging(options) -> None:
     # feature doing exactly what it was allowlisted for is not a defect, and rather than DEBUG
     # because releasing user content to a third party should be legible in the logs by default.
     log_info("Prompt logging: sending this call's messages to PostHog un-redacted",
-             feature=feature, api_provider="litellm")
+             feature=feature, model=str(body.get("model") or ""), api_provider="litellm")
 
 
 class AttributedOpenAI(OpenAI):

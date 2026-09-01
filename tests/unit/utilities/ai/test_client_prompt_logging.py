@@ -79,12 +79,12 @@ def _opted_out(sent: tuple[httpx.Headers, Any]) -> bool:
 
 
 class TestTheAllowlistDecidesPerRequest:
-    def test_an_allowlisted_feature_opts_this_request_out_of_redaction(self, monkeypatch) -> None:
+    def test_an_allowlisted_feature_opts_this_request_out_of_redaction(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv(_ENV, "comment")
         client, recorder = _client()
         assert _opted_out(_comment_call(client, recorder))
 
-    def test_every_other_feature_stays_redacted(self, monkeypatch) -> None:
+    def test_every_other_feature_stays_redacted(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """The whole point of scoping.
 
         Grading the comment drafter must not also ship draft DMs and profile synthesis, which are
@@ -95,7 +95,7 @@ class TestTheAllowlistDecidesPerRequest:
         for feature in ("dm", "content", "newsletter", "system", "marketing"):
             assert not _opted_out(_comment_call(client, recorder, feature=feature)), feature
 
-    def test_an_unset_allowlist_redacts_everything(self, monkeypatch) -> None:
+    def test_an_unset_allowlist_redacts_everything(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """It ships EMPTY, so merging the mechanism changes nothing about what leaves the stack.
 
         Turning it on is an owner decision — issue #1832.
@@ -104,28 +104,92 @@ class TestTheAllowlistDecidesPerRequest:
         client, recorder = _client()
         assert not _opted_out(_comment_call(client, recorder))
 
-    def test_an_emptied_allowlist_closes_it_again(self, monkeypatch) -> None:
+    def test_an_emptied_allowlist_closes_it_again(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """The operator's off switch — an `.env` edit, not a file edit and a broken test."""
         monkeypatch.setenv(_ENV, "  ,  ")
         client, recorder = _client()
         assert not _opted_out(_comment_call(client, recorder))
 
-    def test_the_value_is_read_per_call_not_at_import(self, monkeypatch) -> None:
+    def test_the_value_is_read_per_call_not_at_import(self, monkeypatch: pytest.MonkeyPatch) -> None:
         client, recorder = _client()
         monkeypatch.setenv(_ENV, "comment")
         assert _opted_out(_comment_call(client, recorder))
         monkeypatch.setenv(_ENV, "")
         assert not _opted_out(_comment_call(client, recorder))
 
-    def test_spacing_and_case_in_the_env_value_are_tolerated(self, monkeypatch) -> None:
+    def test_spacing_and_case_in_the_env_value_are_tolerated(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Typed by hand into `.env`; `Comment, dm` must not silently mean nothing is allowlisted."""
         monkeypatch.setenv(_ENV, " Comment , dm ")
         client, recorder = _client()
         assert _opted_out(_comment_call(client, recorder, feature="COMMENT"))
 
+    def test_the_header_value_is_one_the_proxy_reads_as_true(self,
+                                                             monkeypatch: pytest.MonkeyPatch) -> None:
+        """Presence is not enough — pin the value.
+
+        LiteLLM matches `bool(request_headers.get(...))`, so an empty value is falsy and a refactor
+        emitting one would pass a presence-only assertion while silently still redacting.
+        """
+        monkeypatch.setenv(_ENV, "comment")
+        client, recorder = _client()
+        headers, _ = _comment_call(client, recorder)
+        assert headers[_HEADER] == "true"
+
+
+class TestTheAllowlistIsAuthoritative:
+    def test_the_mirrored_feature_names_match_observability(self) -> None:
+        """The mirror in `client.py` must not be able to drift.
+
+        That module cannot import observability — it would drag the DB and PostHog into every
+        `from ...ai.client import client` — so the feature names are copied. A drifted copy either
+        warns about a real feature or drops one that should have been allowlistable.
+        """
+        from cqc_lem.utilities import observability
+        from cqc_lem.utilities.ai.client import _KNOWN_FEATURES
+        real = {value for name, value in vars(observability).items()
+                if name.startswith("FEATURE_") and isinstance(value, str)}
+        assert set(_KNOWN_FEATURES) == real
+
+    def test_an_unrecognised_name_allowlists_nothing_and_is_warned_once(
+            self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A typo must be loud, because its silent version reads as a broken mechanism.
+
+        `comment_generation` is the TRACE name and `comments` is the plural; both are easy to type
+        and neither matches anything.
+        """
+        from cqc_lem.utilities.ai import client as mod
+        monkeypatch.setattr(mod, "_UNKNOWN_FEATURES_WARNED", set())
+        monkeypatch.setenv(_ENV, "comment_generation, comments")
+        client, recorder = _client()
+        with patch("cqc_lem.utilities.ai.client.log_warning") as warned:
+            assert not _opted_out(_comment_call(client, recorder))
+            assert not _opted_out(_comment_call(client, recorder))
+        assert warned.call_count == 1, "once per name per process, not once per LLM call"
+        assert "comment_generation" in warned.call_args.args[0]
+
+    def test_a_good_name_alongside_a_typo_still_works(self,
+                                                      monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv(_ENV, "comment,comments")
+        client, recorder = _client()
+        assert _opted_out(_comment_call(client, recorder))
+
+    def test_a_call_site_cannot_opt_itself_out(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The env allowlist is the control, so a header set at a call site is STRIPPED, not honoured.
+
+        Nothing in LEM sets it today; this is what keeps that true. Warned rather than logged at
+        DEBUG because a call site reaching around a data-egress control is a defect.
+        """
+        monkeypatch.setenv(_ENV, "comment")
+        client, recorder = _client()
+        with patch("cqc_lem.utilities.ai.client.log_warning") as warned:
+            sent = _send(client, recorder, extra_headers={_HEADER: "true"},
+                         extra_body={"metadata": {"feature": "dm", "user_id": 7}})
+        assert not _opted_out(sent)
+        assert warned.call_count == 1
+
 
 class TestItFailsClosed:
-    def test_a_call_with_no_attribution_at_all_stays_redacted(self, monkeypatch) -> None:
+    def test_a_call_with_no_attribution_at_all_stays_redacted(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """A request with no attribution can never be allowlisted.
 
         The ambient hook stamps `feature: system` on an unattributed call and `system` is not a
@@ -136,7 +200,7 @@ class TestItFailsClosed:
         with patch("cqc_lem.utilities.ai.client.current_attribution", return_value=(None, None)):
             assert not _opted_out(_send(client, recorder))
 
-    def test_a_raw_provider_model_is_never_opted_out(self, monkeypatch) -> None:
+    def test_a_raw_provider_model_is_never_opted_out(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """A direct provider call has no analytics leg to buy anything with.
 
         Only tier aliases go through the proxy's PostHog logger, so on a raw model the header would
@@ -148,7 +212,7 @@ class TestItFailsClosed:
                      extra_body={"metadata": {"feature": "comment"}})
         assert not _opted_out(sent)
 
-    def test_an_image_prompt_is_never_opted_out(self, monkeypatch) -> None:
+    def test_an_image_prompt_is_never_opted_out(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Image generation shares the `content` feature with the post drafter.
 
         So an allowlist entry aimed at text would otherwise disclose every render prompt too, for a
@@ -165,7 +229,7 @@ class TestItFailsClosed:
             pass  # the stub answers with a chat body; the request was already built and sent
         assert not _opted_out(_record(recorder, before))
 
-    def test_an_embedding_is_never_opted_out(self, monkeypatch) -> None:
+    def test_an_embedding_is_never_opted_out(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Same reason as the image prompt: `input`, not `messages`, and nothing grades it."""
         monkeypatch.setenv(_ENV, "comment")
         client, recorder = _client()
@@ -177,7 +241,7 @@ class TestItFailsClosed:
             pass  # stub response; the request was already built and sent
         assert not _opted_out(_record(recorder, before))
 
-    def test_a_hook_failure_leaves_redaction_in_place(self, monkeypatch) -> None:
+    def test_a_hook_failure_leaves_redaction_in_place(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """A throwing hook must fail TOWARD redacted, and the call must still go out.
 
         Observability is never a reason to lose a generation, and never a reason to leak one either.
@@ -190,7 +254,7 @@ class TestItFailsClosed:
         assert _HEADER not in headers
         assert body["metadata"]["feature"] == "comment"
 
-    def test_the_trace_header_still_rides_alongside(self, monkeypatch) -> None:
+    def test_the_trace_header_still_rides_alongside(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Both hooks write `options.headers`; the second must copy the first, not replace it."""
         from cqc_lem.utilities.observability import llm_trace
         monkeypatch.setenv(_ENV, "comment")
@@ -203,7 +267,7 @@ class TestItFailsClosed:
 
 
 class TestTheEgressIsLogged:
-    def test_releasing_content_leaves_a_line_in_the_log(self, monkeypatch) -> None:
+    def test_releasing_content_leaves_a_line_in_the_log(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Otherwise the only way to learn content is leaving the stack is to go and read PostHog."""
         monkeypatch.setenv(_ENV, "comment")
         client, recorder = _client()
@@ -212,7 +276,7 @@ class TestTheEgressIsLogged:
         assert logged.call_count == 1
         assert logged.call_args.kwargs["feature"] == "comment"
 
-    def test_a_redacted_call_logs_nothing(self, monkeypatch) -> None:
+    def test_a_redacted_call_logs_nothing(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """One line per RELEASE. A redacted call is the norm and would drown the signal."""
         monkeypatch.setenv(_ENV, "comment")
         client, recorder = _client()
