@@ -38,6 +38,7 @@ from cqc_lem.app.engagement.posting import automate_reply_commenting
 from cqc_lem.utilities.db import (
     AuthAuditEvent,
     FeedbackStatus,
+    FeedbackUnreadable,
     PostType,
     admin_email_allowlist,
     count_admin_users,
@@ -585,6 +586,7 @@ def _require_user_admin(session_token: str) -> int:
     200: {"description": "Feedback list returned"},
     401: {"description": "Invalid or expired session"},
     403: {"description": "Admin access required"},
+    503: {"description": "The feedback list could not be read"},
 })
 def admin_feedback_list(
     session_token: str,
@@ -593,9 +595,18 @@ def admin_feedback_list(
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
 ) -> ResponseModel[dict[str, Any]]:
-    """List feedback submissions for the admin triage panel."""
+    """List feedback submissions for the admin triage panel.
+
+    The read failing is **503**, never a 200 with an empty page — same posture as the user list
+    (#1450). The panel renders `items: []` as "nothing matched the filters", which is an answer an
+    operator acts on, and a fault must not be able to say it (issue #1868).
+    """
     _require_user_admin(session_token)
-    rows = get_feedback_list(status=status, source=source, limit=limit, offset=offset)
+    try:
+        rows = get_feedback_list(status=status, source=source, limit=limit, offset=offset)
+    except FeedbackUnreadable as err:
+        raise HTTPException(status_code=503,
+                            detail="Could not read the feedback list. Try again.") from err
     return ResponseModel(status_code=200, detail={
         "items": [
             {
@@ -628,15 +639,24 @@ def admin_feedback_list(
     404: {"description": "Feedback row not found"},
     409: {"description": "Feedback already triaged"},
     422: {"description": "Invalid action"},
+    503: {"description": "The feedback row could not be read"},
 })
 def admin_feedback_review(
     feedback_id: int,
     request: FeedbackReviewRequest,
 ) -> ResponseModel[dict[str, Any]]:
-    """Approve a feedback row for auto-triage or dismiss it."""
+    """Approve a feedback row for auto-triage or dismiss it.
+
+    An unreadable row is **503**: 404 would tell the admin the submission they are looking at no
+    longer exists, and re-filing is not something to guess at (issue #1868).
+    """
     reviewer_user_id = _require_user_admin(request.session_token)
     from cqc_lem.utilities.feedback.issue_service import IssueAction, file_feedback_issue
-    row = get_feedback_by_id(feedback_id)
+    try:
+        row = get_feedback_by_id(feedback_id)
+    except FeedbackUnreadable as err:
+        raise HTTPException(status_code=503,
+                            detail="Could not read that feedback row. Try again.") from err
     if not row:
         raise HTTPException(status_code=404, detail="Feedback not found")
 

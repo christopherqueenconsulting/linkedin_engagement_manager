@@ -204,7 +204,7 @@ How a session stays signed in and unflagged. One row per surface.
 | **Docs surface** (#1020) | `_hide_admin_routes_from_schema()` | Every `/api/admin/*` operation is kept OUT of the published schema. **Hidden ≠ gated** — auth is unchanged. Unauthenticated `GET /health/deep` returns COUNTS only (`docs/stack-watchdog.md`) | `docs/identity-and-sessions.md` |
 | **Strong auth + step-up** (#745 2c) | `utilities/auth_factors.py` (ceremonies in `webauthn_util.py`) | Once an account enrols a passkey or TOTP the email PIN is a **bootstrap** only. `sessions.last_verified_at` gates every credential-touching write; refusal is **403**, never 401 | `docs/strong-authentication.md` |
 | **Session scopes are SURFACES** (#905/#1026) | `get_session_user_id()` — the same resolver | Refusal is 403 + audited. **`agent`** is the headless credential: `_AGENT_SESSION_SURFACE` only, and it may queue but **NEVER approve** | `docs/identity-and-sessions.md` |
-| **Admin user management** (#1450) | `/api/admin/users*` in `api/routers/admin.py` | ONE write: grant/revoke admin, step-up gated, audited against the TARGET. **A failed read is 503, never an empty answer** | `docs/admin-user-management.md` |
+| **Admin panels** (#1450/#1868) | `/api/admin/{users*,feedback}` in `api/routers/admin.py` | ONE write: grant/revoke, step-up gated, audited on the TARGET. **A failed read is 503, never an empty answer** | `docs/admin-user-management.md` |
 ## Agent Working Method
 
 Six practices wrap `ship-issue`'s branch → build → PR flow — three around the PR itself, three
