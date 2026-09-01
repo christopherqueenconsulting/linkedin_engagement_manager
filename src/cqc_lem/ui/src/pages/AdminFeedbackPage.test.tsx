@@ -306,6 +306,17 @@ describe('AdminFeedbackPage (issue #793)', () => {
     expect(screen.queryByRole('button', { name: /dismiss/i })).toBeNull()
   })
 
+  // The server answers a read fault with 503 (not an empty 200), so the list query rejects. The
+  // panel must show that error and NOT the "no submissions" empty state, which would be the empty
+  // panel the 503 exists to prevent.
+  it('shows the error and not an empty state when the list read faults (503)', async () => {
+    get.mockRejectedValue({ response: { status: 503 }, message: 'Request failed with status code 503' })
+
+    harness(<AdminFeedbackPage />)
+    await waitFor(() => expect(screen.getByText(/Could not load feedback/)).toBeTruthy())
+    expect(screen.queryByText(/No feedback submissions match/)).toBeNull()
+  })
+
   it('surfaces a failed review instead of swallowing it', async () => {
     get.mockResolvedValue(listPayload([
       {

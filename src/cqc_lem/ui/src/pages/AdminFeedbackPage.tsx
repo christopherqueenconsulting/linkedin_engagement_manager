@@ -260,7 +260,10 @@ export default function AdminFeedbackPage() {
                   </td>
                 </tr>
               ))}
-              {items.length === 0 && !isLoading && (
+              {/* Not on a load fault: the red banner above already says the read failed, and "no
+                  submissions match" under it would contradict it — the empty panel the 503 exists
+                  to prevent. */}
+              {items.length === 0 && !isLoading && !error && (
                 <tr>
                   <td colSpan={8} className="px-4 py-8 text-center text-gray-500">
                     No feedback submissions match the current filters.
