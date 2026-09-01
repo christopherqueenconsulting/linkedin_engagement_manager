@@ -110,6 +110,7 @@ from cqc_lem.utilities.db import (
     SCHEDULED_DM_SOURCE_PROFILE_VIEWER,
     CatchupTouchStatus,
     ConnectionRequestStatus,
+    FollowupStatus,
     LeadSignalChannel,
     LeadSignalSource,
     LeadSignalStatus,
@@ -159,7 +160,9 @@ from cqc_lem.utilities.db import (
     last_catchup_sent_at,
     mark_followup,
     max_catchup_touches_allowed,
+    record_unreadable_read,
     release_catchup_send_attempt,
+    reset_unreadable_reads,
     stop_followups_for_profile,
     update_catchup_touch_status,
     update_lead_signal,
@@ -1080,6 +1083,45 @@ def check_dm_replied(driver, wait, profile_url: str, my_name: str = None,
 # anything: the draft is 'pending' until a human approves it in the UI, and delivery then runs
 # through send_scheduled_dm with the existing per-day DM cap.
 NURTURE_EVENT_TYPE = "nurture"  # dm_templates / dm_followups event_type for this sequence
+# Issue #1815: a thread that never becomes readable used to stay due forever, so every */30min
+# `send-due-dm-followups` beat re-opened it — 48 Chrome sessions a day for a read that never
+# succeeds. A few UNKNOWN reads on the ordinary cadence are left alone (a rotated selector usually
+# clears on the very next run); only once that stops looking transient does the row back off, by
+# growing intervals, capped, and it stays 'pending' the whole time — #731's UNKNOWN-never-sends is
+# a read-frequency question here, not a send-safety one.
+UNREADABLE_READ_CEILING = 3            # reads at/under this: unchanged cadence, no due_at push
+UNREADABLE_READ_BACKOFF_HOURS = 2      # first backoff step once the ceiling is crossed
+UNREADABLE_READ_BACKOFF_CAP_HOURS = 48  # a single backoff step never exceeds this
+
+
+def _unreadable_backoff_hours(unreadable_reads: int) -> int:
+    """How many hours to defer the next read of a thread that has gone UNKNOWN this many times.
+
+    0 means "do not defer" — at or under `UNREADABLE_READ_CEILING` the row keeps the ordinary
+    cadence, because a rotated selector usually clears on the very next run and deferring a
+    transient miss would delay a real follow-up for nothing.
+
+    Past the ceiling it doubles from `UNREADABLE_READ_BACKOFF_HOURS` (2h, 4h, 8h, …) and stops at
+    `UNREADABLE_READ_BACKOFF_CAP_HOURS`. The EXPONENT is bounded, not just the result: a row that
+    has been dead for two years otherwise builds a several-hundred-digit integer for `min()` to
+    throw away.
+
+    Args:
+        unreadable_reads: Consecutive UNKNOWN reads INCLUDING the one being recorded now.
+
+    Returns:
+        Hours to push `due_at` out by, or 0 to leave it alone.
+    """
+    steps = unreadable_reads - UNREADABLE_READ_CEILING
+    if steps <= 0:
+        return 0
+    # Once 2 ** n clears the cap the answer is the cap forever, so the exponent never needs to grow
+    # past that — +1 keeps the first capped step exact rather than off by one doubling.
+    max_exponent = (UNREADABLE_READ_BACKOFF_CAP_HOURS // UNREADABLE_READ_BACKOFF_HOURS).bit_length()
+    return min(UNREADABLE_READ_BACKOFF_CAP_HOURS,
+               UNREADABLE_READ_BACKOFF_HOURS * (2 ** min(steps - 1, max_exponent)))
+
+
 # Re-check touches per thread. Each one is a Selenium thread-open, so the walk is bounded: after
 # this many rounds a conversation that is going nowhere stops costing us sessions.
 _NURTURE_MAX_STEPS = 3
@@ -1226,7 +1268,10 @@ def process_user_followups(self, user_id: int, max_per_run: int = 20):
     instead of going cold, an approval-gated context-aware next message (issue #485); everyone else
     gets the next-step template rendered in the user's voice, sent, marked, and re-scheduled.
     """
-    due = [f for f in get_due_followups(datetime.now(timezone.utc).replace(tzinfo=None))
+    # Aware UTC: `get_due_followups` normalizes through `to_naive_utc`, the same conversion every
+    # writer of `dm_followups.due_at` applies, so the comparison cannot straddle two clocks
+    # (docs/timezone-contract.md).
+    due = [f for f in get_due_followups(datetime.now(timezone.utc))
            if f["user_id"] == user_id]
     if not due:
         # Not routine: this task is only dispatched for users who HAVE due rows, so an empty list
@@ -1274,8 +1319,8 @@ def process_user_followups(self, user_id: int, max_per_run: int = 20):
                                      person_name=f.get("first_name"), user_id=user_id)
             if state is ThreadState.UNKNOWN:
                 # We could not read the thread, so we do NOT know whether they answered. Sending
-                # anyway is the one irreversible mistake here (issue #731) — leave the row due so
-                # the next run re-reads it, and let the miss be greppable.
+                # anyway is the one irreversible mistake here (issue #731) — leave the row 'pending'
+                # so the next run re-reads it, and let the miss be greppable.
                 skipped += 1
                 # DEBUG, not a warning: check_dm_replied (and the open_message_thread ladder it
                 # calls) already warns at the point the read actually failed — the missing route,
@@ -1284,9 +1329,49 @@ def process_user_followups(self, user_id: int, max_per_run: int = 20):
                 # `invite_to_connect`/`_add_connect_note` pattern in utilities/CLAUDE.md).
                 log_debug(f"Follow-up skipped: could not read the thread with "
                           f"{f.get('first_name') or f['profile_url']} — deferring to the next run",
-                          user_id=user_id, action_type="followup",
+                          user_id=user_id, action_type=LogActionType.FOLLOWUP,
                           task_name="process_user_followups")
+                unreadable_reads = int(f.get("unreadable_reads") or 0) + 1
+                backoff_hours = _unreadable_backoff_hours(unreadable_reads)
+                # Aware UTC on purpose: the repository normalizes it through `to_naive_utc`, the one
+                # storage-side conversion every `dm_followups.due_at` writer and `get_due_followups`
+                # itself go through, so this row cannot land on a different clock than the query
+                # that will pick it up (docs/timezone-contract.md).
+                backoff_due_at = (datetime.now(timezone.utc) + timedelta(hours=backoff_hours)
+                                  if backoff_hours else None)
+                # Write FIRST, warn only if it landed. The decision above is made from the count
+                # read at the start of this run, so a write that matched nothing means the counter
+                # never advanced — warning anyway would announce a backoff that did not happen, and
+                # then announce it again on every following beat.
+                if not record_unreadable_read(f["id"], due_at=backoff_due_at):
+                    log_error(f"Could not count an unreadable read against follow-up {f['id']} — "
+                              f"the row keeps its old due_at and will be re-read next run",
+                              user_id=user_id, action_type=LogActionType.FOLLOWUP,
+                              task_name="process_user_followups")
+                elif backoff_due_at is not None:
+                    # WARNING (not DEBUG): this is new information the miss above doesn't carry —
+                    # a thread that has now stayed unreadable across `unreadable_reads` separate
+                    # runs, not one read failing. Recurrence escalates this to ERROR and files ONE
+                    # grouped issue (utilities/CLAUDE.md) instead of 48 silent SUCCESS runs a day.
+                    # Once per backoff STEP, not per read: the step only grows when the streak does.
+                    #
+                    # The follow-up itself arriving up to a cap-length (48h) late is the accepted
+                    # cost. A nurture touch is not time-critical — the alternative is either sending
+                    # blind (#731's one irreversible mistake) or dropping the row entirely.
+                    log_warning(f"Follow-up thread with {f.get('first_name') or f['profile_url']} "
+                                f"has been unreadable for {unreadable_reads} reads in a row — "
+                                f"backing off to a read every {backoff_hours}h instead of every "
+                                f"run (row stays 'pending'; #731's UNKNOWN still never sends)",
+                                user_id=user_id, action_type=LogActionType.FOLLOWUP,
+                                task_name="process_user_followups")
                 continue
+            # Anything below here is a state check_dm_replied ACTUALLY read, so the row's
+            # consecutive-UNKNOWN streak is over and must not carry into a later unreadable spell
+            # (#1815). Explicit rather than folded into `mark_followup`: every branch below happens
+            # to end the row today, but a future readable branch that leaves it 'pending' would
+            # otherwise inherit a stale streak and back off a perfectly readable thread by 48h.
+            if int(f.get("unreadable_reads") or 0):
+                reset_unreadable_reads(f["id"])
             if state is ThreadState.REPLIED:
                 # Their reply is on screen already — read it once and use it twice: buying-intent
                 # detection (#483) and the auto-nurture next message (#485).
@@ -1302,7 +1387,7 @@ def process_user_followups(self, user_id: int, max_per_run: int = 20):
                 # Stop the old sequence FIRST — the nurture path enqueues its own re-check, and a
                 # blanket stop afterwards would cancel it.
                 stop_followups_for_profile(user_id, f["profile_url"])
-                mark_followup(f["id"], "stopped")
+                mark_followup(f["id"], FollowupStatus.STOPPED)
                 if _nurture_after_reply(user_id, f, their_message, my_profile,
                                         prefs=lead_ctx["prefs"], profile_synthesis=lead_ctx["synthesis"]):
                     nurtured += 1
@@ -1315,16 +1400,16 @@ def process_user_followups(self, user_id: int, max_per_run: int = 20):
             if str(f["event_type"]) == NURTURE_EVENT_TYPE:
                 # A nurture re-check with no new reply. Nothing to send: the drafted message is the
                 # operator's to approve, and nurture NEVER auto-sends a template.
-                mark_followup(f["id"], "stopped")
+                mark_followup(f["id"], FollowupStatus.STOPPED)
                 continue
             msg = build_dm_from_template(user_id, f["event_type"], f["first_name"], my_profile, step=f["next_step"])
             if not msg:
-                mark_followup(f["id"], "stopped")
+                mark_followup(f["id"], FollowupStatus.STOPPED)
                 continue
             send_private_dm.apply_async(kwargs={"user_id": user_id, "profile_url": f["profile_url"], "message": msg})
             insert_new_log(user_id=user_id, action_type=LogActionType.FOLLOWUP, result=LogResultType.SUCCESS,
                            post_url=f["profile_url"], message=msg)
-            mark_followup(f["id"], "sent")
+            mark_followup(f["id"], FollowupStatus.SENT)
             sent += 1
             enqueue_next_followup(user_id, f["profile_url"], f["first_name"], f["event_type"], f["next_step"])
             time.sleep(random.uniform(5, 12))
