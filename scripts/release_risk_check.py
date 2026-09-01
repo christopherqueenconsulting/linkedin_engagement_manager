@@ -257,10 +257,8 @@ def summarize(verdict: Verdict) -> str:
     if not verdict.carried_migration_files:
         return f"{len(verdict.migration_files)} new migration file(s)"
     own = sorted(set(verdict.migration_files) - set(verdict.carried_migration_files))
-    carried_note = (
-        f"{len(verdict.carried_migration_files)} inherited from {verdict.carried_introduced_tag} "
-        "(still undeployed)"
-    )
+    origin = verdict.carried_introduced_tag or "an earlier release"
+    carried_note = f"{len(verdict.carried_migration_files)} inherited from {origin} (still undeployed)"
     if own:
         return f"{len(verdict.migration_files)} migration file(s) — {len(own)} new, {carried_note}"
     return f"{len(verdict.migration_files)} migration file(s) — {carried_note}"
@@ -286,13 +284,14 @@ def format_decision_comment(tag: str, base_tag: str, verdict: Verdict) -> str:
         "",
     ]
     if verdict.carried_migration_files:
+        origin = verdict.carried_introduced_tag or "an earlier release"
         lines.append(
             f"The automatic `deploy` job was **skipped**: production still has an un-applied Flyway "
             f"migration, which is one-way against production data (rolling the image back does not "
             f"roll back applied DDL). Diffed against `{base_tag}` — the last release before this "
             f"still-open hold began (`/api/app-info` was unreadable this run, so the deployed tag "
             f"itself is unconfirmed). The migration(s) below were introduced in "
-            f"`{verdict.carried_introduced_tag}`, **not** `{tag}` — this hold is INHERITED, carried "
+            f"`{origin}`, **not** `{tag}` — this hold is INHERITED, carried "
             f"forward because it was never manually deployed, not newly added by this release."
         )
     else:
@@ -651,12 +650,18 @@ def main(argv: list[str]) -> int:
         # tag-to-tag comparison, but don't let a still-open hold on `previous_tag` evaporate just
         # because THIS release's own range looks clean.
         carried_migration_files = resolve_carried_migration_files(args.repo, releases, previous_tag)
-        if carried_migration_files:
+        carried_base_tag = (
+            resolve_previous_release(releases, previous_tag) if carried_migration_files else None
+        )
+        compare = fetch_compare(args.repo, previous_tag, args.tag)
+        # Only swap `base_tag` once THIS release's own diff (against `previous_tag`) actually came
+        # back — otherwise the "could not diff" fallback-failure message below would name
+        # `carried_base_tag` for a comparison that was never attempted against it (#1893 was exactly
+        # this class of bug: a message naming the wrong bound for what was actually diffed).
+        if compare is not None and carried_migration_files:
             carried_introduced_tag = previous_tag
-            carried_base_tag = resolve_previous_release(releases, previous_tag)
             if carried_base_tag is not None:
                 base_tag = carried_base_tag
-        compare = fetch_compare(args.repo, previous_tag, args.tag)
 
     if compare is None:
         print(

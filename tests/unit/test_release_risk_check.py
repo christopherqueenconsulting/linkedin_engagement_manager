@@ -901,3 +901,39 @@ def test_ac5_carried_hold_message_names_the_real_bound_and_origin_release(monkey
     # Named the real lower bound (the last release before the still-open hold), not v0.172.1.
     assert "v0.172.0" in log
     assert "between v0.172.1 and v0.172.2" not in log
+
+
+def test_ac5_failed_own_diff_names_the_range_actually_attempted_not_the_carried_bound(
+    monkeypatch, tmp_path, capsys
+):
+    """A still-open hold must not make the fail-open message lie about what was diffed.
+
+    Same fixture as AC4/AC5, except this release's OWN diff (`v0.172.1...v0.172.2`) is itself
+    unreadable. `base_tag` gets provisionally reassigned to the carried bound (`v0.172.0`) once a
+    hold is found on `v0.172.1` — but that reassignment must not survive into the "could not diff"
+    message, because the comparison that actually failed was `v0.172.1...v0.172.2`, never
+    `v0.172.0...v0.172.2`. Naming the wrong bound there is exactly #1893's bug, reintroduced.
+    """
+    monkeypatch.setenv("GH_TOKEN", "x")
+    out = tmp_path / "gh_output"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(out))
+
+    def router(args, **kw):
+        joined = " ".join(args)
+        if "release list" in joined:
+            return _completed(0, _V0172_RELEASES)
+        if "compare/v0.172.0...v0.172.1" in joined:
+            return _completed(0, _V0172_COMPARES["v0.172.0...v0.172.1"])
+        if "compare/v0.172.1...v0.172.2" in joined:
+            return _completed(1, "", "rate limited")
+        raise AssertionError(f"unexpected gh call, no matching stub: {args}")
+
+    monkeypatch.setattr(rrc, "_run_gh", router)
+    monkeypatch.setattr(rrc, "fetch_deployed_version", lambda app_url: None)
+
+    rc = rrc.main(["release_risk_check.py", "--tag", "v0.172.2", "--app-url", "", "--no-comment"])
+    assert rc == 0
+    assert "flagged=false" in out.read_text()
+    log = capsys.readouterr().out
+    assert "could not diff v0.172.1...v0.172.2" in log
+    assert "v0.172.0...v0.172.2" not in log
