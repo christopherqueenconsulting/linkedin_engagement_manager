@@ -251,6 +251,22 @@ def test_summarize_distinguishes_new_from_inherited_when_both_are_present():
     assert "inherited from v0.172.6" in reason
 
 
+# ---------------------------------------------------------------- describe_comparison_base
+
+
+def test_describe_comparison_base_names_the_primary_path():
+    desc = rrc.describe_comparison_base("v0.172.5", primary_path_used=True)
+    assert "production v0.172.5" in desc
+    assert "/api/app-info" in desc
+    assert "DEGRADED" not in desc
+
+
+def test_describe_comparison_base_names_the_degraded_fallback():
+    desc = rrc.describe_comparison_base("v0.172.7", primary_path_used=False)
+    assert "DEGRADED" in desc
+    assert "v0.172.7" in desc
+
+
 # ---------------------------------------------------------------- format_decision_comment
 
 
@@ -279,6 +295,20 @@ def test_comment_gives_the_exact_manual_unblock_command():
     verdict = rrc.decide(migration_files=["x"])
     body = rrc.format_decision_comment("v1.0.2", "v1.0.1", verdict)
     assert "gh workflow run deploy-vps.yml -f tag=v1.0.2" in body
+
+
+def test_comment_names_the_primary_path_when_it_was_used():
+    verdict = rrc.decide(migration_files=["x"])
+    body = rrc.format_decision_comment("v1.0.2", "v1.0.1", verdict, primary_path_used=True)
+    assert "read from `GET /api/app-info`" in body
+    assert "DEGRADED" not in body
+
+
+def test_comment_names_the_degraded_fallback_when_it_was_used():
+    verdict = rrc.decide(migration_files=["x"])
+    body = rrc.format_decision_comment("v1.0.2", "v1.0.1", verdict, primary_path_used=False)
+    assert "DEGRADED" in body
+    assert "unreadable" in body
 
 
 def test_comment_says_which_release_a_carried_migration_entered_in():
@@ -722,7 +752,7 @@ def test_fetch_deployed_version_fails_open_when_the_version_is_unknown(monkeypat
 
 def test_resolve_carried_migration_files_is_empty_with_no_earlier_release():
     releases = [{"tagName": "v1.0.0", "createdAt": "2026-08-14T00:00:00Z"}]
-    assert rrc.resolve_carried_migration_files(REPO, releases, "v1.0.0") == ()
+    assert rrc.resolve_carried_migration_files(REPO, releases, "v1.0.0") == ((), None)
 
 
 def test_resolve_carried_migration_files_finds_what_the_previous_release_added(monkeypatch):
@@ -735,18 +765,19 @@ def test_resolve_carried_migration_files_finds_what_the_previous_release_added(m
     )
     monkeypatch.setattr(rrc, "_run_gh", lambda args, **kw: _completed(0, compare))
     assert rrc.resolve_carried_migration_files(REPO, releases, "v1.0.1") == (
-        "compose/local/database/migrations/V1__x.sql",
+        ("compose/local/database/migrations/V1__x.sql",),
+        "v1.0.1",
     )
 
 
-def test_resolve_carried_migration_files_is_empty_when_the_previous_release_added_nothing(monkeypatch):
+def test_resolve_carried_migration_files_is_empty_when_nothing_in_the_whole_window_added_anything(monkeypatch):
     releases = [
         {"tagName": "v1.0.1", "createdAt": "2026-08-15T00:00:00Z"},
         {"tagName": "v1.0.0", "createdAt": "2026-08-14T00:00:00Z"},
     ]
     compare = json.dumps({"files": [], "commits": []})
     monkeypatch.setattr(rrc, "_run_gh", lambda args, **kw: _completed(0, compare))
-    assert rrc.resolve_carried_migration_files(REPO, releases, "v1.0.1") == ()
+    assert rrc.resolve_carried_migration_files(REPO, releases, "v1.0.1") == ((), None)
 
 
 def test_resolve_carried_migration_files_fails_open_when_the_compare_is_unreadable(monkeypatch):
@@ -755,7 +786,45 @@ def test_resolve_carried_migration_files_fails_open_when_the_compare_is_unreadab
         {"tagName": "v1.0.0", "createdAt": "2026-08-14T00:00:00Z"},
     ]
     monkeypatch.setattr(rrc, "_run_gh", lambda args, **kw: _completed(1, "", "boom"))
-    assert rrc.resolve_carried_migration_files(REPO, releases, "v1.0.1") == ()
+    assert rrc.resolve_carried_migration_files(REPO, releases, "v1.0.1") == ((), None)
+
+
+def test_resolve_carried_migration_files_walks_past_a_clean_hop_to_the_real_origin(monkeypatch):
+    """#1896: the immediate predecessor can be clean itself while still sitting on an inherited hold.
+
+    v1.0.2 (this hop's `previous_tag`) added nothing of its own over v1.0.1 — it only inherited
+    v1.0.1's migration. A one-hop check stops at the clean v1.0.1...v1.0.2 diff and loses the hold;
+    walking one more step back to v1.0.0...v1.0.1 finds where it actually entered.
+    """
+    releases = [
+        {"tagName": "v1.0.2", "createdAt": "2026-08-16T00:00:00Z"},
+        {"tagName": "v1.0.1", "createdAt": "2026-08-15T00:00:00Z"},
+        {"tagName": "v1.0.0", "createdAt": "2026-08-14T00:00:00Z"},
+    ]
+    compares = {
+        "v1.0.1...v1.0.2": json.dumps({"files": [], "commits": []}),
+        "v1.0.0...v1.0.1": json.dumps(
+            {
+                "files": [
+                    {"filename": "compose/local/database/migrations/V1__x.sql", "status": "added"}
+                ],
+                "commits": [],
+            }
+        ),
+    }
+
+    def router(args, **kw):
+        joined = " ".join(args)
+        for range_key, payload in compares.items():
+            if f"compare/{range_key}" in joined:
+                return _completed(0, payload)
+        raise AssertionError(f"unexpected gh call, no matching stub: {args}")
+
+    monkeypatch.setattr(rrc, "_run_gh", router)
+    assert rrc.resolve_carried_migration_files(REPO, releases, "v1.0.2") == (
+        ("compose/local/database/migrations/V1__x.sql",),
+        "v1.0.1",
+    )
 
 
 # ---------------------------------------------------------------- main(): #1859 acceptance criteria
@@ -838,10 +907,17 @@ def test_ac2_deployed_version_caught_up_by_hand_clears_the_hold(monkeypatch, tmp
     assert "flagged=false" in out.read_text()
 
 
-def test_ac3_unreadable_deployed_version_with_an_unflagged_previous_release_is_unchanged(monkeypatch, tmp_path):
-    """#1859 AC3: `/api/app-info` unreadable, and the previous release (v0.172.2) was itself clean.
+def test_ac3_unreadable_deployed_version_walks_past_a_clean_predecessor_to_the_still_open_hold(
+    monkeypatch, tmp_path
+):
+    """#1859 AC3, corrected by #1896: a clean IMMEDIATE predecessor is not the same as no open hold.
 
-    Behaviour is exactly today's tag-to-tag comparison, deploying v0.172.3.
+    `/api/app-info` is unreadable for v0.172.3, and its own predecessor v0.172.2 is itself clean
+    (`v0.172.1...v0.172.2`) — but v0.172.2 never actually resolved v0.172.1's migration, it only
+    inherited it, and there is still no evidence (no readable `/api/app-info`) that anyone ever
+    manually deployed it. The one-hop version of this check stopped at v0.172.2's own clean range
+    and deployed v0.172.3 unflagged (the original, since-corrected AC3); walking one hop further
+    back to `v0.172.0...v0.172.1` finds the hold is still open, so v0.172.3 stays held too.
     """
     monkeypatch.setenv("GH_TOKEN", "x")
     out = tmp_path / "gh_output"
@@ -853,7 +929,7 @@ def test_ac3_unreadable_deployed_version_with_an_unflagged_previous_release_is_u
         ["release_risk_check.py", "--tag", "v0.172.3", "--app-url", "https://app.example.com", "--no-comment"]
     )
     assert rc == 0
-    assert "flagged=false" in out.read_text()
+    assert "flagged=true" in out.read_text()
 
 
 def test_ac4_unreadable_deployed_version_with_a_flagged_previous_release_carries_the_hold_forward(
@@ -937,3 +1013,100 @@ def test_ac5_failed_own_diff_names_the_range_actually_attempted_not_the_carried_
     log = capsys.readouterr().out
     assert "could not diff v0.172.1...v0.172.2" in log
     assert "v0.172.0...v0.172.2" not in log
+
+
+# ---------------------------------------------------------------- main(): #1896 acceptance criteria
+#
+# The real sequence that produced #1896: v0.172.5 (deployed, confirmed) -> v0.172.6 (adds a
+# migration, correctly flagged and held) -> v0.172.7 (clean over v0.172.6 but correctly carried one
+# hop back) -> v0.172.8 (this run — clean over v0.172.7, and the OLD one-hop carry-forward also
+# landed on v0.172.7's own clean range and lost the hold entirely). `/api/app-info` is unreadable
+# throughout, matching production's actual state at the time (`PUBLIC_BASE_URL` unset).
+
+_V1896_MIGRATION = "compose/local/database/migrations/V20260901000000__add_recipient_email.sql"
+
+_V1896_RELEASES = json.dumps(
+    [
+        {"tagName": "v0.172.8", "createdAt": "2026-09-01T12:00:00Z"},
+        {"tagName": "v0.172.7", "createdAt": "2026-09-01T09:00:00Z"},
+        {"tagName": "v0.172.6", "createdAt": "2026-09-01T06:00:00Z"},
+        {"tagName": "v0.172.5", "createdAt": "2026-09-01T00:00:00Z"},
+    ]
+)
+
+_V1896_COMPARES = {
+    "v0.172.5...v0.172.6": json.dumps(
+        {"files": [{"filename": _V1896_MIGRATION, "status": "added"}], "commits": []}
+    ),
+    "v0.172.6...v0.172.7": json.dumps({"files": [], "commits": []}),
+    "v0.172.7...v0.172.8": json.dumps({"files": [], "commits": []}),
+}
+
+
+def _v1896_router(**extra_compares):
+    compares = {**_V1896_COMPARES, **extra_compares}
+
+    def _router(args, **kw):
+        joined = " ".join(args)
+        if "release list" in joined:
+            return _completed(0, _V1896_RELEASES)
+        for range_key, payload in compares.items():
+            if f"compare/{range_key}" in joined:
+                return _completed(0, payload)
+        raise AssertionError(f"unexpected gh call, no matching stub: {args}")
+
+    return _router
+
+
+def test_ac_1896_two_consecutive_held_releases_still_flags_the_third(monkeypatch, tmp_path):
+    """The exact case that produced #1896: a hold two releases deep must not evaporate.
+
+    `/api/app-info` is unreadable, so this is entirely the fallback path. v0.172.7's own carry
+    (one hop) correctly caught v0.172.6's migration; v0.172.8's own diff (`v0.172.7...v0.172.8`) is
+    clean, and so is a one-hop check against `v0.172.7`'s own range — only walking a second hop back
+    to `v0.172.5...v0.172.6` finds the still-open migration.
+    """
+    monkeypatch.setenv("GH_TOKEN", "x")
+    out = tmp_path / "gh_output"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(out))
+    monkeypatch.setattr(rrc, "_run_gh", _v1896_router())
+    monkeypatch.setattr(rrc, "fetch_deployed_version", lambda app_url: None)
+
+    rc = rrc.main(
+        ["release_risk_check.py", "--tag", "v0.172.8", "--app-url", "https://app.example.com", "--no-comment"]
+    )
+    assert rc == 0
+    assert "flagged=true" in out.read_text()
+
+
+def test_ac_1896_log_names_the_degraded_fallback_when_app_info_is_unreadable(monkeypatch, tmp_path, capsys):
+    monkeypatch.setenv("GH_TOKEN", "x")
+    out = tmp_path / "gh_output"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(out))
+    monkeypatch.setattr(rrc, "_run_gh", _v1896_router())
+    monkeypatch.setattr(rrc, "fetch_deployed_version", lambda app_url: None)
+
+    rc = rrc.main(
+        ["release_risk_check.py", "--tag", "v0.172.8", "--app-url", "https://app.example.com", "--no-comment"]
+    )
+    assert rc == 0
+    log = capsys.readouterr().out
+    assert "DEGRADED" in log
+    assert "/api/app-info unreadable" in log
+
+
+def test_ac_1896_log_names_the_primary_path_when_app_info_is_readable(monkeypatch, tmp_path, capsys):
+    monkeypatch.setenv("GH_TOKEN", "x")
+    out = tmp_path / "gh_output"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(out))
+    monkeypatch.setattr(rrc, "_run_gh", _v1896_router())
+    monkeypatch.setattr(rrc, "fetch_deployed_version", lambda app_url: "0.172.5")
+
+    rc = rrc.main(
+        ["release_risk_check.py", "--tag", "v0.172.6", "--app-url", "https://app.example.com", "--no-comment"]
+    )
+    assert rc == 0
+    log = capsys.readouterr().out
+    assert "production v0.172.5" in log
+    assert "read from /api/app-info" in log
+    assert "DEGRADED" not in log
