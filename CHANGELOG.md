@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.172.2](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.172.1...v0.172.2) (2026-09-01)
+
+
+### Bug Fixes
+
+* **comments:** block un-grounded first-person metrics in comment drafts (closes [#1834](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1834)) ([#1860](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1860)) ([e8dffa7](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/e8dffa7d2a29d72667e0cf69d56767ffe8ef51d0))
+* **comments:** refuse to draft against a post whose body never arrived (closes [#1833](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1833)) ([#1850](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1850)) ([00ea25e](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/00ea25e0f6c5b7d4f2172f35e519b83cc2737c93))
+* **connections:** reground the profile degree-badge read for the icon-wrapped shape ([#1848](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1848)) ([fca9cc1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/fca9cc172f8540891917fc333160b4e734139730)), closes [#1843](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1843)
+* **dm:** direct_url route must not claim success on zero message events (closes [#1851](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1851)) ([#1853](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1853)) ([259bd35](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/259bd35410dab21bf69f24a1f1611b604e03020b))
+* **dm:** retry an empty DM sender read before treating it as unreadable ([cbb9820](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/cbb982050b2538871b045fbf7f8e5a4a16a8c6d8)), closes [#1864](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1864)
+* **dm:** retry an empty DM sender read before treating it as unreadable (closes [#1864](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1864)) ([#1865](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1865)) ([cbb9820](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/cbb982050b2538871b045fbf7f8e5a4a16a8c6d8))
+* **dm:** the empty-compose-page verdict belongs to the reading, not to one route ([#1858](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1858)) ([bdd51ed](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/bdd51edb7579715512913d8651a484882aead1c6))
+* **docs:** CLAUDE.md's Git Safety section no longer recommends bare git stash (closes [#1854](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1854)) ([#1856](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1856)) ([cce471e](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/cce471e18bf7c1637341370838a0c8f22481933b))
+
 ## [0.172.1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.172.0...v0.172.1) (2026-09-01)
 
 
