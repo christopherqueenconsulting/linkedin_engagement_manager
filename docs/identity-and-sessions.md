@@ -627,6 +627,22 @@ per-device revocable session on the Security card, so a long TTL is not a one-wa
 `sessions.scope` is `VARCHAR(32)` and `auth_audit_log.event` is `VARCHAR(50)`, so `agent` and
 `agent_token_minted` needed **no migration** — an ENUM would have.
 
+### Cross-project suppliers — who actually holds an agent token
+
+One system holds one today: **`christopherqueenconsulting/backfill`**, the outbound pipeline. Its
+sender queues LinkedIn connection targets into LEM through `POST /api/connection_request` on an
+`agent`-scoped token (`LEM_AGENT_TOKEN`) behind the `API_ACCESS_TOKENS` edge bearer, and reads
+`GET /api/connection_requests` each run for its own dedupe. It deliberately never sends a `status` —
+its client carries the "queue, never approve" rule in a comment, and LEM enforces the same rule
+server-side regardless. Setup lives in that repo's `docs/DEPLOY.md`; it is the closest thing either
+side has to an inter-repo contract doc, so a change to this surface belongs there too.
+
+That is why the surface list above is a **contract, not an internal detail**. Adding a field to a
+route on `_AGENT_SESSION_SURFACE` changes what an external system may send us — the live example is
+`recipient_email` on `/connection_request` (#1836, paired with
+`christopherqueenconsulting/backfill#44`), where a machine supplies a third party's address but a
+human still approves every send.
+
 ## The docs surface lives inside `/api` (issue #1020)
 
 At the FastAPI defaults the docs surface sits at `/docs`, `/redoc` and `/openapi.json` — **outside**
