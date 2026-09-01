@@ -429,9 +429,17 @@ class TestInviteHoldLogLevel:
         from cqc_lem.utilities.linkedin.rate_limit import hold_invites
         with patch(f"{_MOD}.log_info") as info, patch(f"{_MOD}.log_warning") as warn:
             assert hold_invites(7, 3600, reason="weekly limit") is True
+        # The hold must actually be STORED, not merely announced: without this a regression that
+        # returns True while writing nothing would pass on the log-level assertions alone.
+        fake_redis.set.assert_called_once_with("linkedin:invite_hold:7", "weekly limit", ex=3600)
+        # log_warning is the ONLY door into log_escalation (logger.py), so "no warning" is the
+        # assertion that no second grouped $exception can be filed for a working state transition.
         warn.assert_not_called()
         info.assert_called_once()
         assert "Connection invites HELD for user 7" in info.call_args.args[0]
+        assert "weekly limit" in info.call_args.args[0]
+        # A demotion is a plausible moment to drop the context that makes the event groupable.
+        assert info.call_args.kwargs == {"action_type": "invite_connect", "user_id": 7}
 
     def test_hold_redis_error_still_warns(self, fake_redis):
         """A hold that failed to store IS a degraded path — that one keeps its warning."""
@@ -441,6 +449,10 @@ class TestInviteHoldLogLevel:
             assert hold_invites(7, 3600) is False
         info.assert_not_called()
         warn.assert_called_once()
+        # Pins the except branch as the source: only there is an exception attached. Without this
+        # the test would still pass if the function returned False before ever reaching the write.
+        assert isinstance(warn.call_args.kwargs.get("exc"), RuntimeError)
+        assert warn.call_args.kwargs.get("user_id") == 7
 
 
 class TestTheRedisHandleIsCachedPerProcess:
