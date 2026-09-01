@@ -1118,8 +1118,19 @@ _RECIPIENT_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 
 def _validate_recipient_email_shape(v: Optional[str]) -> Optional[str]:
-    """Shared by `ConnectionRequestCreate`/`Update` — reject a malformed address as a 422."""
-    if v is not None and not _RECIPIENT_EMAIL_RE.match(v):
+    """Shared by `ConnectionRequestCreate`/`Update` — reject a MALFORMED address as a 422.
+
+    An empty or whitespace-only string is an ABSENT address, not a malformed one, and is normalised
+    to None so it behaves exactly like an omitted key (issue #1836). A caller that has no address
+    for this row must be able to say so without being punished with a 422 — and on the PUT, None
+    means "leave this column alone", so `""` can never blank an address a human already saved.
+    """
+    if v is None:
+        return None
+    v = v.strip()
+    if not v:
+        return None
+    if not _RECIPIENT_EMAIL_RE.match(v):
         raise ValueError(f"'{v}' does not look like an email address")
     return v
 

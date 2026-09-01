@@ -759,7 +759,9 @@ def _connect_dialog_present(driver, wait, user_id: int) -> bool:
 #                  members are more likely to accept invitations that include a note...."
 #
 # The prose is the only thing that differs, so the input is the primary signal and the prose is the
-# fallback for a rotation that renders the notice differently but keeps the same input.
+# fallback for a rotation that renders the notice differently but keeps the same input. Both
+# variants expose `Send without a note` and only one of them sends, so the control scan cannot tell
+# them apart and this read is the only thing that can.
 _CONNECT_DIALOG_EMAIL_INPUT_CSS = "input[type='email']"
 _CONNECT_DIALOG_WANTS_EMAIL_RE = re.compile(r"enter their email", re.IGNORECASE)
 _EMAIL_REDACTION_RE = re.compile(r"\b[^\s@]+@[^\s@]+\b")
@@ -781,25 +783,12 @@ def _connect_dialog_wants_email_from_text(text: "str | None") -> "bool | None":
     return bool(_CONNECT_DIALOG_WANTS_EMAIL_RE.search(normalized))
 
 
-def _connect_dialog_wants_email(driver: WebDriver) -> "bool | None":
-    """Whether the OPEN Connect dialog is the email-verification variant (issue #1836).
+def _find_connect_dialog_email_input(driver: WebDriver) -> "WebElement | None":
+    """The OPEN dialog's email input, shadow root included, or None.
 
     Scoped to the dialog CONTAINER the same way `_overlay_evidence` is, so a rail card's unrelated
-    text or input can never answer this. Prefers the input itself; the prose is a fallback.
+    input can never answer this.
     """
-    containers = find_deep_elements(driver, _CONNECT_DIALOG_CONTAINER_CSS, visible_only=True, limit=3)
-    if not containers:
-        return None
-    for container in containers:
-        if find_deep_elements(driver, _CONNECT_DIALOG_EMAIL_INPUT_CSS, visible_only=True, limit=1,
-                              root=container):
-            return True
-    text = " ".join(_element_text(container) for container in containers)
-    return _connect_dialog_wants_email_from_text(text)
-
-
-def _find_connect_dialog_email_input(driver: WebDriver) -> "WebElement | None":
-    """The OPEN dialog's email input, shadow root included, or None."""
     for container in find_deep_elements(driver, _CONNECT_DIALOG_CONTAINER_CSS, visible_only=True,
                                         limit=3):
         found = find_deep_elements(driver, _CONNECT_DIALOG_EMAIL_INPUT_CSS, visible_only=True,
@@ -807,6 +796,23 @@ def _find_connect_dialog_email_input(driver: WebDriver) -> "WebElement | None":
         if found:
             return found[0]
     return None
+
+
+def _connect_dialog_wants_email(driver: WebDriver) -> "bool | None":
+    """Whether the OPEN Connect dialog is the email-verification variant (issue #1836).
+
+    The input is the primary signal; the prose is the fallback for a rotation that renders the
+    notice differently but keeps the same input.
+
+    The prose comes off `_overlay_notice_text` and nowhere else. That function is the ONE reader of
+    the overlay's words on purpose — a second reader scanning something slightly different is how a
+    log line and a detector come to tell different stories, which is the confusion #1813 spent
+    nineteen days in. This detector pays the same tax as `_invite_restriction_reason`: what it
+    matched on is byte-for-byte what a miss line would have printed.
+    """
+    if _find_connect_dialog_email_input(driver) is not None:
+        return True
+    return _connect_dialog_wants_email_from_text(_overlay_notice_text(driver))
 
 
 def _fill_connect_dialog_email(field: "WebElement", email: str, user_id: int) -> bool:
@@ -824,12 +830,6 @@ def _fill_connect_dialog_email(field: "WebElement", email: str, user_id: int) ->
         log_warning("Could not type the recipient's email into the Connect dialog",
                     user_id=user_id, action_type="invite_connect")
         return False
-
-
-# What the overlay evidence below reads. Same control shape `_deep_dialog_control` matches, so the
-# dump describes the surface the dialog check actually looked at rather than a neighbouring one.
-_OVERLAY_DIALOG_CSS = _CONNECT_DIALOG_CONTAINER_CSS
-_OVERLAY_TEXT_LIMIT = 400
 
 
 def _overlay_evidence(driver) -> "tuple[list[str], str]":
@@ -1279,10 +1279,15 @@ def invite_to_connect_now(user_id: int, profile_url: str, message: str = None,
             return False, reason
 
         # Class C (#1836): the dialog opened, but it may be the email-verification variant, which
-        # will not accept the invite without the recipient's email. A target fact — LinkedIn is
-        # deliberately gating THIS person, not a selector that missed — so it never reaches
-        # record_invite_dialog_miss / hold_invites above, both of which are for a dialog that never
-        # opened at all.
+        # will not accept the invite without the recipient's email. Both variants expose the same
+        # `Send without a note` control and only one of them sends, so without this read the lane
+        # clicks it, the click lands, nothing raises, and the row is recorded SENT for an invite
+        # LinkedIn never accepted (production evidence, 2026-09-01). Stopping here is strictly less
+        # egress than that.
+        #
+        # A target fact — LinkedIn is deliberately gating THIS person, not a selector that missed —
+        # so it deliberately sits BELOW record_invite_dialog_miss / hold_invites above, both of
+        # which are for a dialog that never opened at all.
         email_field = _find_connect_dialog_email_input(driver)
         wants_email = email_field is not None or _connect_dialog_wants_email(driver)
         if wants_email and not recipient_email:
