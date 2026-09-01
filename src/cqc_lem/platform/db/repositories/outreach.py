@@ -555,32 +555,27 @@ def record_connection_request_attempt(request_id: int, failure_reason: str) -> "
     needed. Below the ceiling it goes back to 'approved' for the next scan, same as an untouched
     retry. Returns (terminal, attempts); (False, 0) means the row was gone or the write failed.
     """
-    connection = _connection.get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
-            "UPDATE connection_requests SET "
-            # status is assigned FIRST on purpose: MySQL evaluates SET clauses left to right, so a
-            # later 'attempts = attempts + 1' would make this test read the post-increment count.
-            "status = IF(attempts + 1 >= %s, %s, %s), "
-            "attempts = attempts + 1, "
-            "failure_reason = %s "
-            "WHERE id = %s",
-            (CONNECTION_REQUEST_MAX_ATTEMPTS, ConnectionRequestStatus.FAILED.value,
-             ConnectionRequestStatus.APPROVED.value, str(failure_reason or "")[:512], request_id))
-        connection.commit()
-        if cursor.rowcount <= 0:
-            return False, 0
-        cursor.execute("SELECT attempts FROM connection_requests WHERE id = %s", (request_id,))
-        row = cursor.fetchone()
-        attempts = int(row[0]) if row else 0
-        return attempts >= CONNECTION_REQUEST_MAX_ATTEMPTS, attempts
+        with db_cursor(commit=True) as cursor:
+            cursor.execute(
+                "UPDATE connection_requests SET "
+                # status is assigned FIRST on purpose: MySQL evaluates SET clauses left to right, so
+                # a later 'attempts = attempts + 1' would make this test read the post-increment count.
+                "status = IF(attempts + 1 >= %s, %s, %s), "
+                "attempts = attempts + 1, "
+                "failure_reason = %s "
+                "WHERE id = %s",
+                (CONNECTION_REQUEST_MAX_ATTEMPTS, ConnectionRequestStatus.FAILED.value,
+                 ConnectionRequestStatus.APPROVED.value, str(failure_reason or "")[:512], request_id))
+            if cursor.rowcount <= 0:
+                return False, 0
+            cursor.execute("SELECT attempts FROM connection_requests WHERE id = %s", (request_id,))
+            row = cursor.fetchone()
+            attempts = int(row[0]) if row else 0
+            return attempts >= CONNECTION_REQUEST_MAX_ATTEMPTS, attempts
     except mysql.connector.Error as err:
         log_error(f"Could not record connection request attempt {request_id}", exc=err)
         return False, 0
-    finally:
-        cursor.close()
-        connection.close()
 def update_connection_request(request_id: int, recipient_profile_url: str = None,
                               recipient_name: str = None, message: str = None,
                               status: "ConnectionRequestStatus" = None) -> bool:
