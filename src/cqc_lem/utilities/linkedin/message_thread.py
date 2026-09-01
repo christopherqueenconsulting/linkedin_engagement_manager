@@ -530,13 +530,22 @@ def _try_direct_url(driver: WebDriver, timeout: float, urn: Optional[str] = None
 
     The URN is captured from the PROFILE page before any route clicks, because an earlier route may
     have navigated somewhere that no longer carries it; reading it again here is only the fallback.
+
+    A composer with **zero message events does not count as opened here** (issue #1851). This URL is
+    LinkedIn's compose surface, not a thread view: with no prior history it renders a blank compose
+    form addressed to nobody-yet — a composer, not a thread — and that render is indistinguishable
+    from a genuinely empty real thread. Rather than guess, a zero-event reading is treated as this
+    route not working, so the ladder falls through to `messaging_search`, which either finds a real
+    (possibly empty) conversation or leaves the caller at UNKNOWN — both already-correct outcomes.
+    Accepting composer-only here was the bug: it returned `opened=True` with no sender to read,
+    reported UNKNOWN, AND stopped the ladder before the one route most likely to find real history.
     """
     urn = urn or profile_urn_from_page(driver, profile_url)
     if not urn:
         return None
     driver.get(compose_url_for(urn))
     reading = _wait_thread_open(driver, timeout)
-    return reading if (reading["events"] or reading["composer"]) else None
+    return reading if reading["events"] else None
 
 
 def _try_messaging_search(driver: WebDriver, wait: WebDriverWait, person_name: Optional[str],
