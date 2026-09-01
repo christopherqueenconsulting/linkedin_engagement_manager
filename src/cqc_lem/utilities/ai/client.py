@@ -156,10 +156,17 @@ def attribution_metadata(user_id: Optional[Any], feature: Optional[str]) -> dict
     `user_id` therefore falls back to the SYSTEM_USER_ID sentinel rather than being omitted: an
     absent one mints a throwaway anonymous person per call, while the sentinel is exactly what
     observability.py sends server-side, so proxy and app events land on ONE PostHog person.
+
+    It is always a `str`, never the DB integer (issue #1829). LiteLLM's Anthropic transform
+    regex-matches `metadata.user_id` to decide whether it looks like an email, and `re.match` raises
+    `TypeError` on a non-str — which LiteLLM wraps as `APIConnectionError`, so EVERY Claude call
+    failed before leaving the proxy. No consumer wants the int: PostHog uses it verbatim as the
+    `$ai_generation` distinct_id, which observability.py already sends as `str(user_id)`, and the
+    complexity router reads it through `str(...)`.
     """
     return {
         "feature": feature or _SYSTEM_FEATURE,
-        "user_id": user_id if user_id is not None else SYSTEM_USER_ID,
+        "user_id": str(user_id) if user_id is not None else str(SYSTEM_USER_ID),
     }
 
 

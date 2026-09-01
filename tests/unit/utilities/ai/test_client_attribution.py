@@ -55,7 +55,7 @@ def _sent_metadata(model="lem-complex", attribution=(7, "content"), **kwargs):
 
 class TestAttributionMetadata:
     def test_scope_user_and_feature_ride_along(self):
-        assert _sent_metadata() == {"feature": "content", "user_id": 7}
+        assert _sent_metadata() == {"feature": "content", "user_id": "7"}
 
     def test_unattributed_calls_use_the_system_sentinel(self):
         """No user must NOT mean no distinct_id — PostHog would mint an anonymous person per call."""
@@ -80,7 +80,7 @@ class TestAttributionMetadata:
                 pass  # Expected: mocked network raises; metadata was already stamped.
         body = recorder.bodies[-1]
         assert body["tags"] == ["a"]
-        assert body["metadata"] == {"feature": "dm", "user_id": 3}
+        assert body["metadata"] == {"feature": "dm", "user_id": "3"}
 
     def test_attribution_failure_never_breaks_the_call(self):
         client, recorder = _client()
@@ -105,7 +105,7 @@ class TestAttributionMetadata:
                 client.embeddings.create(model="lem-embedding", input=["a"])
             except Exception:
                 pass  # Expected: mocked network raises; metadata was already stamped.
-        assert recorder.bodies[-1]["metadata"] == {"feature": "comment", "user_id": 5}
+        assert recorder.bodies[-1]["metadata"] == {"feature": "comment", "user_id": "5"}
 
 
 class TestTheSharedClient:
@@ -133,13 +133,32 @@ class TestTheSharedClient:
         with patch("cqc_lem.utilities.observability.current_llm_attribution",
                    return_value=(11, "newsletter")):
             request = client._build_request(options)
-        assert json.loads(request.content)["metadata"] == {"feature": "newsletter", "user_id": 11}
+        assert json.loads(request.content)["metadata"] == {"feature": "newsletter", "user_id": "11"}
 
 
 class TestAttributionMetadataShape:
     def test_zero_is_a_user_id_not_a_missing_one(self):
         from cqc_lem.utilities.ai.client import attribution_metadata
-        assert attribution_metadata(0, "content")["user_id"] == 0
+        from cqc_lem.utilities.routing_policy import SYSTEM_USER_ID
+        # Falsy, but present: it must stringify to its own id, never collapse to the sentinel.
+        assert attribution_metadata(0, "content")["user_id"] == "0"
+        assert attribution_metadata(0, "content")["user_id"] != SYSTEM_USER_ID
+
+    def test_a_real_user_id_is_a_string_not_the_db_integer(self):
+        """LiteLLM's Anthropic transform regex-matches `metadata.user_id`, and `re.match` raises
+        TypeError on an int — wrapped as APIConnectionError, that failed every Claude call before it
+        left the proxy (issue #1829).
+        """
+        from cqc_lem.utilities.ai.client import attribution_metadata
+        value = attribution_metadata(11, "newsletter")["user_id"]
+        assert isinstance(value, str)
+        assert value == "11"
+
+    def test_the_sentinel_fallback_is_a_string_too(self):
+        from cqc_lem.utilities.ai.client import attribution_metadata
+        value = attribution_metadata(None, "newsletter")["user_id"]
+        assert isinstance(value, str)
+        assert value == "system"
 
     def test_the_sentinel_matches_the_server_side_distinct_id_convention(self):
         from cqc_lem.utilities.ai.client import attribution_metadata

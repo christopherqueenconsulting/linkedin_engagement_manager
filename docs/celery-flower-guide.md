@@ -19,6 +19,34 @@ celery_flower ──reads events from broker────────────
 
 **PostHog** receives a `celery_task` event for every task that starts and completes (via `task_prerun` / `task_postrun` signals in `my_celery.py`).
 
+### Worker node names
+
+A Celery node name is `<prefix>@<host>`. The prefix comes from `--hostname=` in the worker start
+script; the host half is `%h`, which Celery expands with the container's hostname. Docker sets that
+hostname to the random container ID unless compose pins it — which is why, before #1869, **every
+deploy minted a new set of node names** and Flower's worker list grew without bound. `hostname:` is
+now pinned per service in `docker-compose.yml`, so these names are the same before and after a
+release:
+
+| Service | Node name |
+|---|---|
+| `celery_worker` | `main-worker@celery-worker` |
+| `celery_worker_selenium` | `selenium-se_engage-worker@celery-worker-selenium` |
+| `celery_worker_selenium_prepost` | `selenium-se_prepost-worker@celery-worker-selenium-prepost` |
+| `celery_worker_selenium_outreach` | `selenium-se_outreach-worker@celery-worker-selenium-outreach` |
+| `celery_worker_selenium_content` | `selenium-se_content-worker@celery-worker-selenium-content` |
+
+`celery_beat` and `flower` register no node name — beat is a scheduler and Flower is a read-only
+monitor, so neither appears in the worker list. Their `hostname:` is pinned only so `$HOSTNAME`
+(the OTel `service.instance.id` in `logger.py`) stops changing every deploy.
+
+**Node names must be unique across the cluster** — control messages, `cancel_consumer` and revokes
+are addressed by node name, so two workers answering to one name cross-talk. Both halves are
+independently unique here: the prefix is derived from the lane's queues, and each service has its
+own hostname. `tests/unit/app/test_celery_node_names.py` fails the build if that stops being true,
+and also proves the lane healthchecks (`inspect ping -d …-worker@$(hostname)`) still resolve to the
+same string `--hostname` does. Neither overlay redefines `hostname:`, so prod inherits the base file.
+
 ---
 
 ## Accessing Flower
@@ -178,6 +206,31 @@ Workers publish heartbeats via Redis broker events. If they appear offline:
 2. Run `inspect ping` (see above) — if this times out, the worker has lost its broker connection
 3. Check Redis is healthy: `docker compose ps redis`
 4. Restart the worker: `docker compose restart celery_worker`
+
+### Flower lists workers that no longer exist
+
+Node names are stable from #1869 onward, but the entries minted *before* it — `main-worker@` and
+`selenium-*-worker@` followed by a 12-hex container ID — are still in Flower's state on the first
+deploy after that change. They are ghosts, not workers: they hold no broker connection and receive
+nothing.
+
+**They do not age out on their own.** Flower only forgets an offline worker when started with
+`--purge_offline_workers`, which `compose/local/celery/flower/start-no-wait` deliberately does not
+pass (a genuinely-down worker showing as offline is a signal worth keeping). In prod
+`FLOWER_PERSISTENT=True` also writes the list to `/data/flower.db` on the `flower_db` volume, so it
+survives a Flower restart too. Clearing them is a one-time manual step — Flower's state file holds
+monitoring history only, no task, queue, or result data:
+
+```bash
+docker compose stop flower
+docker compose run --rm --entrypoint sh flower -c 'rm -f /data/flower.db*'
+docker compose up -d flower
+```
+
+In dev this is simpler: `FLOWER_PERSISTENT=False`, so `docker compose restart flower` is enough.
+
+The workers themselves need nothing. They re-register under their stable names as soon as they
+start, and a ghost never has to be "stopped".
 
 ### Beat tasks not firing
 
