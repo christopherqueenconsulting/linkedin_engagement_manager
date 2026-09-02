@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.173.1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.173.0...v0.173.1) (2026-09-02)
+
+
+### Bug Fixes
+
+* **connections:** revive email_challenge rows when a human attaches an address (closes [#1881](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1881)) ([8bb6b99](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/8bb6b996b54fd113d91a66c2979f4d03999795af))
+* **connections:** revive email_challenge rows when an address is attached (closes [#1881](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1881)) ([#1905](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1905)) ([8bb6b99](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/8bb6b996b54fd113d91a66c2979f4d03999795af))
+* **deploy:** sweep running rename-orphans before the flip and fail fast on an absent color container (closes [#1897](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1897)) ([#1902](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1902)) ([acb1249](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/acb12496a7e1e49ed6a3bcb89ac13120a046f824))
+* **dm:** attribute the message-thread ladder's route logs to a profile ([#1904](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1904)) ([9d5e23b](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/9d5e23ba4843674e490269c218619bd8208fd688))
+* **linkedin:** clear cookies profile-wide so a throttled session can recover from ERR_TOO_MANY_REDIRECTS ([#1911](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1911)) ([569f687](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/569f687d7c77c69eda463ff5e1d67589b6d8c476))
+* **linkedin:** log challenge-page URL when the login form never renders (closes [#1908](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1908)) ([#1909](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1909)) ([97ba2e5](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/97ba2e5eebb85b37b7cf4d6c306916169f611d58))
+* **linkedin:** log the unmatched challenge page's URL when login form fields never appear ([#1908](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1908)) ([97ba2e5](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/97ba2e5eebb85b37b7cf4d6c306916169f611d58))
+* **replies:** land own-post replies, react as the floor, and backstop event mode (closes [#1899](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1899)) ([#1907](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1907)) ([071533c](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/071533c5894cc3e8c65941b43edf7e210ec1963e))
+
 ## [0.173.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.172.8...v0.173.0) (2026-09-01)
 
 
