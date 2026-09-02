@@ -657,6 +657,104 @@ class TestRateLimitCircuitBreaker:
         mock_clear.assert_called_once()
 
 
+class TestChallengeCooldownBreaker:
+    """Issue #1920: back off after an unsolvable login challenge.
+
+    An account whose login challenge was unsolvable by every automated path (Arkose, email PIN,
+    manual approval) must back off instead of repeating the identical failed dance on the very
+    next scheduled run.
+    """
+
+    def test_active_cooldown_skips_navigation(self):
+        """When this account's cooldown is active, login must raise before touching LinkedIn."""
+        driver = _make_driver("https://www.linkedin.com/feed/")
+        wait = _make_wait()
+        from cqc_lem.utilities.linkedin.rate_limit import LinkedInRateLimited
+
+        with patch(f"{_MODULE}._user_id_for_email", return_value=7), \
+             patch(f"{_MODULE}.challenge_cooldown_remaining", return_value=300), \
+             patch(f"{_MODULE}.get_cookies") as mock_cookies, \
+             pytest.raises(LinkedInRateLimited, match="cooling down"):
+            from cqc_lem.utilities.linkedin.helper import login_to_linkedin
+            login_to_linkedin(driver, wait, "u@e.com", "pw")
+
+        driver.get.assert_not_called()
+        mock_cookies.assert_not_called()
+
+    def test_no_cooldown_proceeds_normally(self):
+        """No recorded cooldown must not change ordinary cookie-login behaviour."""
+        driver = _make_driver("https://www.linkedin.com/feed/")
+        wait = _make_wait()
+
+        with patch(f"{_MODULE}._user_id_for_email", return_value=7), \
+             patch(f"{_MODULE}.challenge_cooldown_remaining", return_value=0), \
+             patch(f"{_MODULE}.get_cookies", return_value=[{"name": "li_at"}]), \
+             patch(f"{_MODULE}.load_cookies"), patch(f"{_MODULE}.store_cookies"):
+            from cqc_lem.utilities.linkedin.helper import login_to_linkedin
+            login_to_linkedin(driver, wait, "u@e.com", "pw")
+
+        assert driver.get.called
+
+    def test_unresolvable_user_id_never_blocks_login(self):
+        """A failed uid lookup must fail OPEN.
+
+        Same as the shared 429 breaker — never blocking a login that would otherwise work.
+        """
+        driver = _make_driver("https://www.linkedin.com/feed/")
+        wait = _make_wait()
+
+        with patch(f"{_MODULE}._user_id_for_email", return_value=None), \
+             patch(f"{_MODULE}.challenge_cooldown_remaining") as mock_cooldown, \
+             patch(f"{_MODULE}.get_cookies", return_value=[{"name": "li_at"}]), \
+             patch(f"{_MODULE}.load_cookies"), patch(f"{_MODULE}.store_cookies"):
+            from cqc_lem.utilities.linkedin.helper import login_to_linkedin
+            login_to_linkedin(driver, wait, "u@e.com", "pw")
+
+        mock_cooldown.assert_not_called()
+        assert driver.get.called
+
+    def test_unsolvable_challenge_records_the_cooldown_for_the_next_attempt(self):
+        """The final unsolvable-challenge branch must mark this account for the next attempt.
+
+        A call that follows within the cooldown window takes the fast, no-navigation path above
+        instead of repeating the whole failed login (issue #1920, 19 occurrences in under 5h for
+        one account).
+        """
+        url_seq = [
+            "https://www.linkedin.com",
+            "https://www.linkedin.com/login",
+            "https://www.linkedin.com/checkpoint/challenge",
+        ]
+        idx = [0]
+
+        driver = MagicMock()
+        driver.get_cookies.return_value = [{"name": "li_at"}]
+        driver.find_elements.return_value = []  # no Arkose iframe
+
+        def advance_url(url=None):
+            idx[0] = min(idx[0] + 1, len(url_seq) - 1)
+
+        type(driver).current_url = property(lambda self: url_seq[idx[0]])
+        driver.get.side_effect = advance_url
+        driver.find_element.return_value = MagicMock()
+
+        wait = _make_wait()
+
+        with patch(f"{_MODULE}._user_id_for_email", return_value=7), \
+             patch(f"{_MODULE}.challenge_cooldown_remaining", return_value=0), \
+             patch(f"{_MODULE}.mark_challenge_unsolvable") as mock_mark, \
+             patch(f"{_MODULE}.get_cookies", return_value=None), \
+             patch(f"{_MODULE}.load_cookies"), \
+             patch(f"{_MODULE}.store_cookies"), \
+             patch(f"{_MODULE}.get_visible_element_wait_retry", return_value=MagicMock()), \
+             patch(f"{_MODULE}.solve_arkose_challenge", return_value=False):
+            with pytest.raises(RuntimeError, match="Unsolvable LinkedIn challenge"):
+                from cqc_lem.utilities.linkedin.helper import login_to_linkedin
+                login_to_linkedin(driver, wait, "u@e.com", "pw")
+
+        mock_mark.assert_called_once_with(7)
+
+
 @pytest.mark.unit
 class TestDriveEmailPinChallenge:
     """The email verification-code challenge path (drive_email_pin_challenge)."""

@@ -1287,6 +1287,16 @@ def process_user_followups(self, user_id: int, max_per_run: int = 20):
         # that surface's fastboot app from ever mounting.
         driver, wait, user_email, my_profile = get_current_profile(user_id=user_id, session_name="Follow-ups",
                                                                     needs_images=True)
+    except LinkedInRateLimited as e:
+        # A known, self-clearing back-off (429 breaker, manual pause, or this account's own
+        # challenge-unsolvable cooldown per issue #1920) — not a fresh failure, so WARNING rather
+        # than the ERROR every OTHER exception below gets. Every sibling task in this module
+        # (`send_lead_response`, `send_dm_now`, …) already treats it the same way; this task was
+        # missing the catch, so every breaker trip during follow-ups filed its own error-tracking
+        # occurrence instead of being recognized as an expected skip.
+        log_warning("Follow-ups skipped — LinkedIn rate-limited or cooling down", exc=e,
+                    user_id=user_id, task_name="process_user_followups")
+        return f"Skipped — rate limited: {e}"
     except Exception as e:
         if is_tab_crashed(e):
             # get_current_profile already logs this at WARNING where it's detected (the first

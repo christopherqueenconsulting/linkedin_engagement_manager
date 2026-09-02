@@ -26,6 +26,7 @@ from selenium.webdriver.support.wait import WebDriverWait
 from cqc_lem.utilities.db import get_user_password_pair_by_id
 from cqc_lem.utilities.linkedin.helper import get_my_profile, load_profile_for_user, login_to_linkedin
 from cqc_lem.utilities.linkedin.profile import LinkedInProfile
+from cqc_lem.utilities.linkedin.rate_limit import LinkedInRateLimited
 from cqc_lem.utilities.logger import log_error, log_info, log_warning
 from cqc_lem.utilities.selenium_util import get_driver_wait_pair, is_tab_crashed, quit_gracefully
 
@@ -68,6 +69,16 @@ def get_current_profile(user_id: int, session_name: str = "Get Current Profile",
     try:
         login_to_linkedin(driver, wait, user_email, user_password,
                           measurement_only=measurement_only)
+    except LinkedInRateLimited as e:
+        # A known, self-clearing back-off — the 429 breaker, a manual pause, or (issue #1920) this
+        # account's own challenge-unsolvable cooldown — not a fresh failure to page on. Every lane
+        # that calls `get_current_profile` shares this one gate, so downgrading here (like the
+        # tab-crash branch below) is the single place that stops ALL of them from filing an ERROR
+        # for a condition `login_to_linkedin` already expects and will clear on its own.
+        log_warning("LinkedIn login backed off (rate limit, pause, or challenge cooldown)",
+                    exc=e, user_id=user_id)
+        quit_gracefully(driver)
+        raise e
     except Exception as e:
         if is_tab_crashed(e):
             # The renderer behind this freshly-acquired session's tab was already dead (a Grid slot

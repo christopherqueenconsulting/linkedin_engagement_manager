@@ -34,7 +34,13 @@ from cqc_lem.utilities.db import (
     get_linked_in_profile_by_user_id,
     store_cookies,
 )
-from cqc_lem.utilities.linkedin.login_status import mark_approval_pending, mark_approval_timed_out, mark_signed_in
+from cqc_lem.utilities.linkedin.login_status import (
+    challenge_cooldown_remaining,
+    mark_approval_pending,
+    mark_approval_timed_out,
+    mark_challenge_unsolvable,
+    mark_signed_in,
+)
 from cqc_lem.utilities.linkedin.profile import LinkedInProfile
 from cqc_lem.utilities.linkedin.rate_limit import (
     LinkedInRateLimited,
@@ -477,11 +483,14 @@ def login_to_linkedin(driver: WebDriver, wait: WebDriverWait, user_email: str, u
                       measurement_only: bool = False) -> bool:
     """Sign `driver` in — stored cookies first, a credential login only if they no longer authenticate.
 
-    The central gate for all Selenium work. Both back-off checks run BEFORE any navigation, because
-    the whole point of the 429 breaker is not to touch LinkedIn while throttled. `measurement_only`
-    marks the read-only lanes (post stats, follower capture): they still stop for every pause EXCEPT
-    the suppression tripwire's own, since freezing the very scrape that would show a recovery makes
-    the tripwire self-perpetuating (issue #629).
+    The central gate for all Selenium work. All three back-off checks run BEFORE any navigation,
+    because the whole point of the 429 breaker is not to touch LinkedIn while throttled.
+    `measurement_only` marks the read-only lanes (post stats, follower capture): they still stop
+    for every pause EXCEPT the suppression tripwire's own, since freezing the very scrape that
+    would show a recovery makes the tripwire self-perpetuating (issue #629). The third check is
+    per-account rather than IP-wide: an account whose last login challenge was unsolvable by every
+    automated path cools down on its own instead of repeating the same failed dance (and filing a
+    fresh error-tracking occurrence) every scheduled run (issue #1920).
 
     Being signed in is never decided from the URL alone. A 429 body, a Chrome transport error and a
     cookie/egress-IP redirect loop all sit on `/feed`, and only the first is a real throttle — the
@@ -495,8 +504,9 @@ def login_to_linkedin(driver: WebDriver, wait: WebDriverWait, user_email: str, u
             path raises, so a False return is unambiguous.
 
     Raises:
-        LinkedInRateLimited: automation paused, breaker open, a genuine 429, or a transient
-            proxy/network failure that must NOT trip the breaker.
+        LinkedInRateLimited: automation paused, breaker open, a genuine 429, a transient
+            proxy/network failure that must NOT trip the breaker, or this account's own
+            challenge-unsolvable cooldown is still active.
         RuntimeError: a challenge that neither the CAPTCHA solver, the email PIN flow nor a manual
             mobile approval could clear.
     """
@@ -658,6 +668,12 @@ def login_to_linkedin(driver: WebDriver, wait: WebDriverWait, user_email: str, u
                 return
         if _wait_for_manual_approval():
             return
+        # Every automated path failed. Record it so the NEXT call backs off instead of repeating
+        # this identical ~2min dance (and filing its own error-tracking occurrence) on the very
+        # next scheduled run — issue #1920 saw 19 of these in under 5h for one account.
+        uid = _user_id_for_email(user_email)
+        if uid:
+            mark_challenge_unsolvable(uid)
         raise RuntimeError(f"Unsolvable LinkedIn challenge at {label}: {driver.current_url}")
 
     # Manual global pause: a kill-switch to let a rate-limited account recover. Central gate —
@@ -675,6 +691,20 @@ def login_to_linkedin(driver: WebDriver, wait: WebDriverWait, user_email: str, u
         raise LinkedInRateLimited(
             f"LinkedIn 429 circuit breaker open — skipping login for ~{cooldown}s. "
             "Reduce automation frequency and retry later.")
+
+    # Per-account challenge breaker: a PRIOR run already exhausted every automated way to clear a
+    # login challenge (Arkose, email PIN, manual approval) for this specific account. Unlike the
+    # 429 breaker above this is account-scoped, not IP-wide, so it must not pause every OTHER
+    # user's automation — only this one keeps skipping until the cooldown clears. Raised as
+    # `LinkedInRateLimited` (not the plain `RuntimeError` `_handle_challenge` raises) so it reaches
+    # every caller that already treats that as an expected back-off instead of a fresh failure.
+    challenge_uid = _user_id_for_email(user_email)
+    if challenge_uid:
+        challenge_cooldown = challenge_cooldown_remaining(challenge_uid)
+        if challenge_cooldown > 0:
+            raise LinkedInRateLimited(
+                f"LinkedIn login challenge for this account was unsolvable and is cooling down "
+                f"for ~{challenge_cooldown}s before the next attempt.")
 
     # Load base domain first so cookies can be set against the right origin
     driver.get(linked_url)
