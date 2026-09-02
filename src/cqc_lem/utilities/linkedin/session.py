@@ -90,7 +90,7 @@ def get_current_profile(user_id: int, session_name: str = "Get Current Profile",
         else:
             log_error("LinkedIn login failed", exc=e, user_id=user_id)
         quit_gracefully(driver)
-        raise e
+        raise
 
     # A live profile refresh can fail independently (auth-wall on the profile view,
     # transient DOM change) even when the feed is reachable. Don't let that abort the
