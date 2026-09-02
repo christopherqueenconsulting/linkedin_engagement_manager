@@ -632,7 +632,11 @@ class TestRateLimitCircuitBreaker:
             from cqc_lem.utilities.linkedin.helper import login_to_linkedin
             login_to_linkedin(driver, wait, "u@e.com", "pw")
 
-        driver.delete_all_cookies.assert_called_once()   # stale cookies dropped
+        # Profile-wide, NOT driver.delete_all_cookies — the browser is parked on a Chrome error
+        # page at this point, where the scoped delete clears nothing at all.
+        assert any(c.args and c.args[0] == "Network.clearBrowserCookies"
+                   for c in driver.execute_cdp_cmd.call_args_list), \
+            "stale cookies must be dropped profile-wide"
         mock_mark.assert_not_called()                     # self-healed — breaker NOT opened
         mock_clear.assert_called()                        # fresh login cleared stale breaker state
         mock_store.assert_called()                        # fresh proxy-native cookies stored
@@ -764,8 +768,12 @@ class TestRedirectLoopRecovery:
 
     def test_redirect_loop_clears_cookies_and_reauths(self):
         driver, mock_mark, mock_store = self._run()
-        # Stale browser cookies dropped, then a fresh credential login navigated to /login
-        driver.delete_all_cookies.assert_called_once()
+        # Stale browser cookies dropped, then a fresh credential login navigated to /login.
+        # The clear must be profile-wide: the loop page has no linkedin.com origin, so the
+        # scoped driver.delete_all_cookies() silently clears nothing.
+        assert any(c.args and c.args[0] == "Network.clearBrowserCookies"
+                   for c in driver.execute_cdp_cmd.call_args_list), \
+            "expected a profile-wide cookie clear, not the origin-scoped one"
         assert any("login" in c.args[0] for c in driver.get.call_args_list), \
             "expected a fresh credential login navigation to /login"
 
@@ -778,6 +786,157 @@ class TestRedirectLoopRecovery:
     def test_redirect_loop_recovers_to_successful_login(self):
         _, _, mock_store = self._run()
         mock_store.assert_called_once()  # fresh cookies persisted after re-auth
+
+
+@pytest.mark.unit
+class TestHardClearCookies:
+    """The cookie clear must be profile-wide, not origin-scoped.
+
+    `delete_all_cookies` is scoped to the current document's origin, and every caller of the
+    cookie-clearing recovery paths is parked on a Chrome error page — which has no origin. The
+    clear has to be profile-wide or it silently does nothing.
+    """
+
+    def test_prefers_the_profile_wide_cdp_clear(self):
+        from cqc_lem.utilities.linkedin.helper import hard_clear_cookies
+        driver = MagicMock()
+        assert hard_clear_cookies(driver) is True
+        driver.execute_cdp_cmd.assert_called_once_with("Network.clearBrowserCookies", {})
+        driver.delete_all_cookies.assert_not_called()
+
+    def test_falls_back_when_cdp_is_unavailable(self):
+        from cqc_lem.utilities.linkedin.helper import hard_clear_cookies
+        driver = MagicMock()
+        driver.execute_cdp_cmd.side_effect = Exception("no CDP on this driver")
+        assert hard_clear_cookies(driver) is False
+        driver.delete_all_cookies.assert_called_once()
+
+    def test_never_raises_into_the_login_path(self):
+        """Both clears failing must not abort a login — it is a best-effort recovery step."""
+        from cqc_lem.utilities.linkedin.helper import hard_clear_cookies
+        driver = MagicMock()
+        driver.execute_cdp_cmd.side_effect = Exception("no CDP")
+        driver.delete_all_cookies.side_effect = Exception("no origin either")
+        assert hard_clear_cookies(driver) is False
+
+
+@pytest.mark.unit
+class TestLoopSurvivesTheCookieClear:
+    """A throttle that survives the cookie clear must back off, not retry forever.
+
+    LinkedIn throttles the ACCOUNT, so the same error page comes back after the cookies are
+    dropped. The old code fell through to the username-field wait, timed out, and the task
+    retried a minute later — forever, never opening the breaker and discarding a perfectly
+    good `li_at` on every pass.
+    """
+
+    def _run(self, login_body: str):
+        state = {"url": "https://www.linkedin.com"}
+        body = {"text": ""}
+        def on_get(u):
+            if "feed" in u:
+                state["url"] = "https://www.linkedin.com/feed/"
+                body["text"] = "HTTP ERROR 429 Too Many Requests"
+            elif "login" in u:
+                state["url"] = "https://www.linkedin.com/login"
+                body["text"] = login_body
+            else:
+                state["url"] = "https://www.linkedin.com"
+                body["text"] = ""
+
+        driver = MagicMock()
+        driver.get.side_effect = on_get
+        driver.get_cookies.return_value = [{"name": "li_at", "value": "fresh"}]
+        type(driver).current_url = property(lambda self: state["url"])
+        body_el = MagicMock()
+        type(body_el).text = property(lambda self: body["text"])
+        driver.find_element.return_value = body_el
+
+        with patch(f"{_MODULE}.rate_limit_cooldown_remaining", return_value=0), \
+             patch(f"{_MODULE}.mark_rate_limited") as mock_mark, \
+             patch(f"{_MODULE}.clear_rate_limit"), \
+             patch(f"{_MODULE}.get_cookies", return_value=[{"name": "li_at"}]), \
+             patch(f"{_MODULE}.load_cookies"), \
+             patch(f"{_MODULE}.store_cookies"), \
+             patch(f"{_MODULE}.get_visible_element_wait_retry") as mock_find:
+            from cqc_lem.utilities.linkedin.helper import LinkedInRateLimited, login_to_linkedin
+            with pytest.raises(LinkedInRateLimited) as exc:
+                login_to_linkedin(driver, wait := _make_wait(), "u@e.com", "pw")
+                assert wait
+        return exc.value, mock_mark, mock_find
+
+    def test_still_looping_after_the_clear_opens_the_breaker(self):
+        err, mock_mark, mock_find = self._run(
+            "This page isn't working www.linkedin.com redirected you too many times "
+            "ERR_TOO_MANY_REDIRECTS")
+        assert "ERR_TOO_MANY_REDIRECTS" in str(err)
+        # The breaker is the ONLY thing that lets an account-level throttle decay.
+        mock_mark.assert_called_once()
+        # And we must never fall through to hunting for a form on an error page.
+        mock_find.assert_not_called()
+
+    def test_login_page_429_after_the_clear_opens_the_breaker(self):
+        _, mock_mark, mock_find = self._run("HTTP ERROR 429 Too Many Requests")
+        mock_mark.assert_called_once()
+        mock_find.assert_not_called()
+
+    def test_proxy_blip_on_the_login_page_does_not_open_the_breaker(self):
+        """A proxy blip must stay transient.
+
+        The task retries later, and tripping the shared breaker on a blip would pause every
+        lane for nothing.
+        """
+        err, mock_mark, _ = self._run("This site can't be reached ERR_CONNECTION_RESET")
+        assert "proxy/network error" in str(err)
+        mock_mark.assert_not_called()
+
+    def test_a_usable_login_page_still_proceeds_to_credential_login(self):
+        """Recovery backs off only when the page is genuinely broken.
+
+        A real login form after the clear is the self-heal path and has to keep working.
+        """
+        state = {"url": "https://www.linkedin.com"}
+        body = {"text": ""}
+
+        def on_get(u):
+            if "feed" in u:
+                state["url"] = "https://www.linkedin.com/feed/"
+                body["text"] = "HTTP ERROR 429 Too Many Requests"
+            elif "login" in u:
+                state["url"] = "https://www.linkedin.com/login"
+                body["text"] = "Sign in Email or phone Password"
+            else:
+                state["url"] = "https://www.linkedin.com"
+                body["text"] = ""
+
+        driver = MagicMock()
+        driver.get.side_effect = on_get
+        driver.get_cookies.return_value = [{"name": "li_at", "value": "new"}]
+        type(driver).current_url = property(lambda self: state["url"])
+        body_el = MagicMock()
+        type(body_el).text = property(lambda self: body["text"])
+        driver.find_element.return_value = body_el
+
+        signin = MagicMock()
+
+        def do_click():
+            state["url"] = "https://www.linkedin.com/feed/"
+            body["text"] = "Welcome to your feed"
+        signin.click.side_effect = do_click
+
+        with patch(f"{_MODULE}.rate_limit_cooldown_remaining", return_value=0), \
+             patch(f"{_MODULE}.mark_rate_limited") as mock_mark, \
+             patch(f"{_MODULE}.clear_rate_limit"), \
+             patch(f"{_MODULE}.get_cookies", return_value=[{"name": "li_at"}]), \
+             patch(f"{_MODULE}.load_cookies"), \
+             patch(f"{_MODULE}.store_cookies") as mock_store, \
+             patch(f"{_MODULE}.get_visible_element_wait_retry",
+                   side_effect=[MagicMock(), MagicMock(), signin]):
+            from cqc_lem.utilities.linkedin.helper import login_to_linkedin
+            assert login_to_linkedin(driver, _make_wait(), "u@e.com", "pw") is True
+
+        mock_mark.assert_not_called()
+        mock_store.assert_called()
 
 
 # ---------------------------------------------------------------------------

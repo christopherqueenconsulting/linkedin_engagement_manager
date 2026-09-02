@@ -55,6 +55,35 @@ GET  /api/admin/automation-status           # { paused, pause_remaining_s, break
 Helpers: `pause_automation(seconds, reason)`, `resume_automation()`, `is_automation_paused()`,
 `automation_pause_remaining()` in `utilities/linkedin/rate_limit.py`.
 
+## 3. Recovering a throttled session: clear profile-wide, then verify
+
+The login path (`utilities/linkedin/helper.py`) answers a 429 at `/feed` that arrives **with**
+stored cookies by dropping them and re-authenticating, because a cookie minted from a different
+egress IP genuinely does 429 against the proxy. Two things make that safe, and both were learned
+the hard way — their absence produced a retry loop that ran ~32×/hour for over a day and was
+itself the cause of the throttle it kept re-confirming.
+
+**The clear must be profile-wide.** `WebDriver.delete_all_cookies()` is scoped to the ACTIVE
+DOCUMENT's origin, and by the time we call it the browser is parked on a Chrome error page, which
+has no origin. `get_cookies()` returns `[]` and the delete silently does nothing — it looks like
+it worked. `hard_clear_cookies()` uses CDP `Network.clearBrowserCookies`, which is profile-wide and
+does not care what is on screen, and falls back to the scoped call only for drivers without CDP.
+
+Why it matters that the cookie actually goes: once a throttled session cookie is set, LinkedIn
+bounces **every** path on the domain, not just the one you asked for. Measured live: `/feed`,
+`/login`, `/uas/login` and `/robots.txt` all returned `ERR_TOO_MANY_REDIRECTS`, while a fresh
+browser session through the same proxy loaded `/login` normally. So the redirect-loop check is not
+gated on a logged-in-looking URL — the loop is served everywhere.
+
+**The retry must be verified, not assumed.** `_recover_to_login()` checks that the login page
+actually rendered and trips the breaker when it did not. Dropping cookies is only the right answer
+when the cookies were the problem; when LinkedIn is throttling the ACCOUNT the same error page
+comes back with a perfectly valid `li_at`, and re-logging in every minute both deepens the throttle
+and discards good credentials on every pass. A 429 that survives the clear is an account throttle,
+and §1's escalating cooldown is the only thing that lets it decay. A transport error is exempt —
+that is a proxy blip, transient, and tripping the shared breaker on it would pause every lane for
+nothing.
+
 ## When to use
 
 If the account is 429'd for an extended period (login fails even when the breaker briefly clears),
