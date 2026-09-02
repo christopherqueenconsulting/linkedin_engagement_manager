@@ -1765,6 +1765,10 @@ INVITE_RESULT_DEFERRED = "deferred"
 # stay put. Anything unmapped is `error`: the only reasons that reach here without a constant are
 # the formatted exception strings `invite_to_connect_now` returns.
 INVITE_REASON_UNMAPPED = "error"
+# The defer word for an unsolvable login checkpoint. A named constant, not a bare literal, because
+# the reason is asserted verbatim in the invite_outcome test and PostHog matches it on the exact
+# ingested string — one edit that drifted the two apart would silently empty the tile.
+INVITE_OUTCOME_CHALLENGE = "challenge"
 _INVITE_OUTCOME_REASONS = {
     CONNECTION_REQUEST_SENT_MESSAGE: "sent",
     ALREADY_CONNECTED_MESSAGE: "already_connected",
@@ -1850,7 +1854,7 @@ def send_connection_request(self, request_id: int):
         # An unsolvable login checkpoint defers exactly like a 429 — no attempt charged — but it is
         # a distinct wall word so a breakdown separates "the account could not sign in" from a
         # genuine throttle, instead of the account-level outage landing in the `error` bucket.
-        reason = "challenge" if isinstance(e, LinkedInChallengeUnsolved) else "throttled"
+        reason = INVITE_OUTCOME_CHALLENGE if isinstance(e, LinkedInChallengeUnsolved) else "throttled"
         track_invite_outcome(user_id, INVITE_RESULT_DEFERRED, reason, attempts_before)
         return f"Connection request {request_id} deferred (LinkedIn {reason})"
     if sent:

@@ -133,6 +133,7 @@ class TestLoginToLinkedinCookiePath:
             from cqc_lem.utilities.linkedin.helper import login_to_linkedin
             login_to_linkedin(driver, wait, "user@e.com", "pw")
         mark.assert_called_once()
+        assert "unsolvable login challenge" in mark.call_args.args[0]
 
     def test_no_cookies_goes_to_login_flow(self):
         """No stored cookies → must do credential login (navigate to /login)."""

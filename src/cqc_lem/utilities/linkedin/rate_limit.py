@@ -43,7 +43,8 @@ class LinkedInChallengeUnsolved(LinkedInRateLimited):
     Rate-limit-class on purpose: an account-level checkpoint is never the target's fault, so every
     `except LinkedInRateLimited` handler defers the work and charges no attempt against whoever it
     was for, and the breaker opens so the lanes stop re-submitting a live checkpoint page. It is a
-    subclass, not a reworded LinkedInRateLimited, only so a caller can name it a distinct outcome.
+    subclass, not a reworded LinkedInRateLimited, only so a caller can name it a distinct outcome —
+    it inherits the same breaker / cooldown handling and adds no behaviour of its own.
     """
 
 
