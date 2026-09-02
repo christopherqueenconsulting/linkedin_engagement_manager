@@ -19,7 +19,7 @@ import re
 import time
 from typing import Optional
 
-from selenium.common.exceptions import WebDriverException
+from selenium.common.exceptions import TimeoutException, WebDriverException
 from selenium.webdriver.common.by import By
 from selenium.webdriver.remote.webdriver import WebDriver
 from selenium.webdriver.support import expected_conditions as EC
@@ -713,20 +713,32 @@ def login_to_linkedin(driver: WebDriver, wait: WebDriverWait, user_email: str, u
     # type/autocomplete attributes (and visible text for the button), keeping the legacy
     # selectors as fallbacks for any A/B variant still serving the old form. The page also
     # renders duplicate hidden+visible copies, so we must select the displayed one.
-    username_field = get_visible_element_wait_retry(
-        driver, wait,
-        [(By.CSS_SELECTOR, "input[autocomplete~='username']"),
-         (By.CSS_SELECTOR, "input[name='session_key']"),
-         (By.ID, "username"),
-         (By.CSS_SELECTOR, "input[type='email']")],
-        "Finding Username Field")
-    password_field = get_visible_element_wait_retry(
-        driver, wait,
-        [(By.CSS_SELECTOR, "input[autocomplete~='current-password']"),
-         (By.CSS_SELECTOR, "input[name='session_password']"),
-         (By.ID, "password"),
-         (By.CSS_SELECTOR, "input[type='password']")],
-        "Finding Password Field")
+    try:
+        username_field = get_visible_element_wait_retry(
+            driver, wait,
+            [(By.CSS_SELECTOR, "input[autocomplete~='username']"),
+             (By.CSS_SELECTOR, "input[name='session_key']"),
+             (By.ID, "username"),
+             (By.CSS_SELECTOR, "input[type='email']")],
+            "Finding Username Field")
+        password_field = get_visible_element_wait_retry(
+            driver, wait,
+            [(By.CSS_SELECTOR, "input[autocomplete~='current-password']"),
+             (By.CSS_SELECTOR, "input[name='session_password']"),
+             (By.ID, "password"),
+             (By.CSS_SELECTOR, "input[type='password']")],
+            "Finding Password Field")
+    except TimeoutException:
+        # The login form never rendered — LinkedIn served a page `_is_challenge_url` didn't
+        # recognize as a challenge, so this fell straight through to hunting for a field that
+        # was never there (issue #1908: a 6h outage where the only signal was a bare
+        # "TimeoutException: Finding Username Field", with no way to tell which unmatched
+        # challenge/checkpoint page caused it). Log what was actually on screen so the NEXT
+        # occurrence is diagnosable instead of another blind guess.
+        log_warning(
+            "Login form fields never appeared — unrecognized challenge/checkpoint page",
+            action_type="login", url=driver.current_url, page_snippet=_page_body(driver)[:300])
+        raise
 
     username_field.clear()
     username_field.send_keys(user_email)

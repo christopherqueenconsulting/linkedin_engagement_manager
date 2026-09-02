@@ -201,6 +201,35 @@ class TestLoginToLinkedinCookiePath:
         assert notify.call_args.args[0] == 7
         assert notify.call_args.kwargs.get("revalidation") is True
 
+    def test_login_form_timeout_logs_url_and_reraises(self):
+        """Login form never renders (an unrecognized challenge/checkpoint page, #1908).
+
+        The TimeoutException must still propagate (behavior unchanged), but the current URL
+        and a page-body snippet are logged first so the next occurrence is diagnosable —
+        the original failure left nothing but a bare "Finding Username Field" timeout.
+        """
+        from selenium.common.exceptions import TimeoutException
+
+        driver = _make_driver("https://www.linkedin.com/login")
+        driver.find_element.return_value.text = "Let's do a quick security check"
+        wait = _make_wait()
+
+        with patch(f"{_MODULE}.get_cookies", return_value=None), \
+             patch(f"{_MODULE}.load_cookies"), \
+             patch(f"{_MODULE}.store_cookies"), \
+             patch(f"{_MODULE}.get_visible_element_wait_retry",
+                   side_effect=TimeoutException("Finding Username Field")), \
+             patch(f"{_MODULE}.log_warning") as mock_warn, \
+             pytest.raises(TimeoutException):
+            from cqc_lem.utilities.linkedin.helper import login_to_linkedin
+            login_to_linkedin(driver, wait, "user@e.com", "pw")
+
+        mock_warn.assert_called_once()
+        args, kwargs = mock_warn.call_args
+        assert "unrecognized challenge" in args[0].lower()
+        assert kwargs.get("url") == "https://www.linkedin.com/login"
+        assert "security check" in kwargs.get("page_snippet", "")
+
 
 @pytest.mark.unit
 class TestSolveArkoseChallenge:
