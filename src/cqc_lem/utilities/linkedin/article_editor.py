@@ -293,9 +293,17 @@ def resolve_article_editor_step(
     WARNING. Use it for controls that are legitimately absent on the screen being read
     (Publish on the editor screen before Next is clicked) so the log escalation path does
     not file a defect against correct page behaviour.
+
+    Only the LAST route's miss carries `warn_on_miss` — an earlier route losing is the
+    ladder working as designed (a later route may still resolve it), not evidence the step
+    failed. Warning on every route made one real miss of a 3-route ladder log the identical
+    `Selector miss: Article editor <step>` three times in the same call, crossing
+    `log_escalation`'s 3-in-24h threshold off a SINGLE failed attempt and filing a
+    `RecurringWarning` for a step that had only failed once (#1925).
     """
     result = ResolvedElement(step=step)
-    for route_id, route_locators in locators:
+    last_index = len(locators) - 1
+    for index, (route_id, route_locators) in enumerate(locators):
         result.tried.append(route_id)
         element = find_first(
             driver, wait, route_locators,
@@ -304,7 +312,7 @@ def resolve_article_editor_step(
             max_try=1,
             visible_only=visible_only,
             user_id=user_id,
-            warn_on_miss=warn_on_miss,
+            warn_on_miss=warn_on_miss if index == last_index else False,
         )
         if element is not None:
             # The visibility filter is what `visible_only=False` turns OFF: the cover's
