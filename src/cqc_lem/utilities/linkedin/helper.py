@@ -178,6 +178,46 @@ def _text_is_rate_limited(body: str) -> bool:
     return False
 
 
+def _text_is_redirect_loop(body: str) -> bool:
+    """Chrome's ERR_TOO_MANY_REDIRECTS interstitial.
+
+    LinkedIn bounces a session it has decided to throttle between its auth endpoints, and Chrome
+    gives up with this page. It is served for EVERY path on the domain once the session is in that
+    state — /feed, /login, even /robots.txt — which is what makes it worth its own test: the page
+    also carries an ``ERR_`` code, so `_text_is_transport_error` would otherwise claim it and the
+    caller would wait for a blip that never clears on its own.
+    """
+    low = (body or "").lower()
+    return "err_too_many_redirects" in low or "redirected you too many times" in low
+
+
+def hard_clear_cookies(driver: WebDriver) -> bool:
+    """Drop every cookie in the BROWSER, not just the ones the current document can see.
+
+    `WebDriver.delete_all_cookies` is scoped to the active document's origin, so when the browser is
+    parked on a Chrome error page — exactly where our recovery paths call it, because we only clear
+    cookies after a 429 or a redirect loop — there is no origin, `get_cookies()` reports an empty
+    list and the delete is a SILENT no-op. The stale session cookie survives, every subsequent
+    LinkedIn URL keeps looping, and the task retries forever having "cleared" nothing.
+
+    CDP's `Network.clearBrowserCookies` is profile-wide and does not care what is on screen, so it
+    works from the error page. Falls back to the WebDriver call for any driver without CDP.
+
+    Returns True when the profile-wide clear ran, False when only the scoped fallback did.
+    """
+    try:
+        driver.execute_cdp_cmd("Network.clearBrowserCookies", {})
+        return True
+    except Exception as e:
+        log_debug(f"CDP cookie clear unavailable, falling back to delete_all_cookies: {e}",
+                  action_type="login")
+    try:
+        driver.delete_all_cookies()
+    except Exception as e:
+        log_warning("Could not clear browser cookies", exc=e, action_type="login")
+    return False
+
+
 def solve_arkose_challenge(driver: WebDriver, wait: WebDriverWait) -> bool:
     """Attempt to solve an Arkose Labs (FunCaptcha) challenge on the current page.
 
@@ -497,12 +537,39 @@ def login_to_linkedin(driver: WebDriver, wait: WebDriverWait, user_email: str, u
         looks logged-in (/feed), so detect it from the body to avoid mistaking it for a
         live session — the fix is to drop the cookies and do a fresh credential login.
         """
-        try:
-            body = drv.find_element(By.TAG_NAME, "body").text or ""
-        except Exception:
-            return False
-        low = body.lower()
-        return "err_too_many_redirects" in low or "redirected you too many times" in low
+        return _text_is_redirect_loop(_page_body(drv))
+
+    def _recover_to_login(reason: str) -> None:
+        """Drop the stored session and land on a USABLE login page, or back off.
+
+        Both callers arrive here from a browser parked on a Chrome error page, so the cookie clear
+        has to be profile-wide (`hard_clear_cookies`) — the scoped `delete_all_cookies` silently
+        clears nothing there, which is what let a single throttled session retry forever.
+
+        Backing off is the other half. A 429 answered by dropping cookies is only correct when the
+        cookies were the problem; when LinkedIn is throttling the ACCOUNT the same page comes back
+        with a valid session cookie, and re-logging in every minute both deepens the throttle and
+        discards a good `li_at` on every pass. So we verify the login page actually rendered, and
+        trip the shared breaker when it did not — the escalating cooldown is the only thing that
+        lets the throttle decay.
+        """
+        hard_clear_cookies(driver)
+        driver.get(login_url)
+        time.sleep(1)
+        body = _page_body(driver)
+        if _text_is_redirect_loop(body):
+            mark_rate_limited(f"login page still looping after {reason}")
+            raise LinkedInRateLimited(
+                "LinkedIn is bouncing every request on this session (ERR_TOO_MANY_REDIRECTS) even "
+                "with cookies cleared — the account/egress IP is throttled. Backing off.")
+        if _text_is_rate_limited(body):
+            mark_rate_limited(f"login page 429 after {reason}")
+            raise LinkedInRateLimited(
+                "LinkedIn is rate-limiting the login page (HTTP 429). Backing off.")
+        if _text_is_transport_error(body):
+            raise LinkedInRateLimited(
+                "Login page did not load (proxy/network error) — transient, retrying later without "
+                "tripping the rate-limit breaker.")
 
     def _wait_for_manual_approval() -> bool:
         """Poll for a device-approval / 2FA checkpoint to clear.
@@ -638,12 +705,10 @@ def login_to_linkedin(driver: WebDriver, wait: WebDriverWait, user_email: str, u
     # page that still sits on /feed. Handle this BEFORE the 429 check — the redirect
     # page also says "this page isn't working", which the rate-limit heuristic would
     # otherwise misclassify as a 429. Drop the cookies and do a fresh credential login.
-    if cookies and _is_logged_in(driver.current_url) and _page_is_redirect_loop(driver):
+    if cookies and _page_is_redirect_loop(driver):
         log_info("Stored session unusable (redirect loop) — clearing cookies and re-authenticating")
-        driver.delete_all_cookies()
         cookies = None
-        driver.get(login_url)
-        time.sleep(1)
+        _recover_to_login("redirect loop with stored cookies")
 
     # LinkedIn serves a "HTTP ERROR 429 / This page isn't working" body at the SAME
     # /feed/ URL when the account/IP is rate-limited. A naive URL check would treat
@@ -661,10 +726,8 @@ def login_to_linkedin(driver: WebDriver, wait: WebDriverWait, user_email: str, u
         if cookies:
             log_info("429 at feed with stored cookies — likely a stale-cookie/egress-IP "
                     "mismatch; clearing cookies and re-authenticating fresh")
-            driver.delete_all_cookies()
             cookies = None
-            driver.get(login_url)
-            time.sleep(1)
+            _recover_to_login("429 at feed with stored cookies")
         else:
             mark_rate_limited("429 at feed (no stored cookies to drop)")
             raise LinkedInRateLimited(
