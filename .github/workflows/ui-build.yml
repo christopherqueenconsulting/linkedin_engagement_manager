@@ -34,15 +34,18 @@ jobs:
       # so it was pure write-only duplication, dozens of ~identical `node-cache-Linux-x64-npm-<hash>`
       # entries eating the repo's 10 GB budget. Only main's entry is readable by every other ref, so
       # it is the only one worth writing (`push: branches: [main]` above is what gives this workflow
-      # a main run to write it from).
+      # a main run to write it from). The key carries `runner.arch` (setup-node's built-in key did
+      # too) because ~/.npm holds resolved tarballs including platform-specific optional deps (e.g.
+      # Rollup's `@rollup/rollup-linux-x64-gnu`) — an arm64 runner restoring an x64-warmed entry is a
+      # real hazard, not just a naming nicety.
       - name: Restore npm cache
         id: cache-npm
         uses: actions/cache/restore@v5
         with:
           path: ~/.npm
-          key: node-cache-${{ runner.os }}-npm-${{ hashFiles('src/cqc_lem/ui/package-lock.json') }}
+          key: node-cache-${{ runner.os }}-${{ runner.arch }}-npm-${{ hashFiles('src/cqc_lem/ui/package-lock.json') }}
           restore-keys: |
-            node-cache-${{ runner.os }}-npm-
+            node-cache-${{ runner.os }}-${{ runner.arch }}-npm-
       - name: npm ci (strict — matches the Docker build)
         working-directory: src/cqc_lem/ui
         run: npm ci
@@ -51,7 +54,7 @@ jobs:
         uses: actions/cache/save@v5
         with:
           path: ~/.npm
-          key: node-cache-${{ runner.os }}-npm-${{ hashFiles('src/cqc_lem/ui/package-lock.json') }}
+          key: node-cache-${{ runner.os }}-${{ runner.arch }}-npm-${{ hashFiles('src/cqc_lem/ui/package-lock.json') }}
       - name: Generated API types match the committed schema
         working-directory: src/cqc_lem/ui
         run: npm run check:api-types
