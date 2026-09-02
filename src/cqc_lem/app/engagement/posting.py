@@ -920,8 +920,14 @@ def sweep_reply_comments(self, user_id: int, sweep_slot: int = 0, attempt: int =
     try:
         driver, wait, _user_email, my_profile = get_current_profile(user_id=user_id, session_name="Reply Sweep")
     except LinkedInRateLimited as e:
-        log_warning("Reply sweep skipped — LinkedIn rate-limited", exc=e, user_id=user_id,
-                    task_name="sweep_reply_comments")
+        # DEBUG, not WARNING: this is the documented 429-safe path (a clean skip a later
+        # trigger/sweep retries), not a degraded run. The golden-hour amplifier retries up to
+        # GOLDEN_HOUR_MAX_RETRIES times ~7min apart, so a single automation pause/breaker window
+        # (often ~30min — a deploy pause or a 429 cooldown) reliably produces 3+ hits here, which
+        # used to cross the recurrence-escalation threshold and file a PostHog defect for the
+        # breaker/pause working exactly as designed (issue #1926).
+        log_debug(f"Reply sweep skipped — LinkedIn rate-limited: {e}", user_id=user_id,
+                  task_name="sweep_reply_comments")
         release_run_lock(lock_name, lock_token)
         retried = _retry_golden_hour_sweep(user_id, sweep_slot, attempt, "rate_limited")
         return "Skipped — rate limited" + (" (retry scheduled)" if retried else "")
