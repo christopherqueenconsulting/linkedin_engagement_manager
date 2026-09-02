@@ -153,6 +153,19 @@ class TestConnectionRequestDb:
         assert sql.count("recipient_email") == 1
         assert "recipient_email = %s" in sql
 
+    def test_reviving_to_approved_with_a_fresh_email_keeps_it_set(self, fake_cursor):
+        # Issue #1881 — the revival this backs is `failed -> approved` directly (never through a
+        # terminal status), so this asserts the OTHER half of "a freshly supplied email wins": here
+        # there is no terminal clause to fight in the first place, and the address must still land.
+        conn, cur = fake_cursor(lastrowid=7)
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import ConnectionRequestStatus, update_connection_request
+            assert update_connection_request(7, status=ConnectionRequestStatus.APPROVED,
+                                             recipient_email="jane@example.com") is True
+        sql, params = cur.execute.call_args[0]
+        assert "recipient_email = NULL" not in sql
+        assert "recipient_email = %s" in sql and "jane@example.com" in params
+
     def test_get_user_id_helper(self, fake_cursor):
         conn, cur = fake_cursor(fetch_one={"id": 7, "user_id": 1, "recipient_profile_url": "u",
                                      "recipient_name": None, "message": None, "status": "pending",
