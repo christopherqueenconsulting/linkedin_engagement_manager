@@ -81,6 +81,21 @@ describe('LinkedInSignInStatusCard (issue #933)', () => {
     expect(screen.getByText(/Last successful sign-in/i)).toBeTruthy()
   })
 
+  it('flags an unsolvable challenge instead of reading as "nothing recorded" (issue #1920)', async () => {
+    get.mockResolvedValue(
+      payload({
+        state: 'challenge_unsolvable',
+        signed_in_at: '2026-08-01T12:00:00+00:00',
+      }),
+    )
+    harness(<LinkedInSignInStatusCard />)
+    await waitFor(() =>
+      expect(screen.getByText(/verification automation could not clear/i)).toBeTruthy(),
+    )
+    expect(screen.queryByText(/No LinkedIn sign-in recorded yet/i)).toBeNull()
+    expect(screen.getByText(/Last successful sign-in/i)).toBeTruthy()
+  })
+
   it('reads an empty record as "nothing yet", never as a broken connection', async () => {
     get.mockResolvedValue(payload({ state: 'unknown' }))
     harness(<LinkedInSignInStatusCard />)

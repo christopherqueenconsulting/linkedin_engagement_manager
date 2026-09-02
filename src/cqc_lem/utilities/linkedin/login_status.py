@@ -25,6 +25,11 @@ from cqc_lem.utilities.logger import log_debug
 _KEY_PREFIX = "linkedin:login_status:"
 _DEFAULT_TTL_SECONDS = 30 * 24 * 60 * 60   # a "last signed in" fact stays useful for weeks
 _DEFAULT_PENDING_TTL_SECONDS = 15 * 60     # a stalled run must not say "waiting for you" forever
+# How long a fully-exhausted challenge (Arkose failed, email PIN failed/disabled, manual approval
+# timed out) blocks the NEXT login attempt for this account. Without this, every scheduled beat
+# repeats the identical ~2min failed dance and files its own error-tracking occurrence — 19 in
+# under 5h for one account (issue #1920).
+_DEFAULT_CHALLENGE_COOLDOWN_SECONDS = 6 * 60 * 60  # 6h
 
 
 class LinkedInLoginState(StrEnum):
@@ -33,6 +38,7 @@ class LinkedInLoginState(StrEnum):
     SIGNED_IN = 'signed_in'                    # signed in — any approval asked for landed
     APPROVAL_PENDING = 'approval_pending'      # LinkedIn asked; we emailed and are waiting
     APPROVAL_TIMED_OUT = 'approval_timed_out'  # we stopped waiting; the next run asks again
+    CHALLENGE_UNSOLVABLE = 'challenge_unsolvable'  # every automated solve path failed; cooling down
 
 
 def _ttl_seconds() -> int:
@@ -51,6 +57,14 @@ def _pending_ttl_seconds() -> int:
                              str(_DEFAULT_PENDING_TTL_SECONDS)))
     except ValueError:
         return _DEFAULT_PENDING_TTL_SECONDS
+
+
+def _challenge_cooldown_seconds() -> int:
+    try:
+        return int(os.getenv("LINKEDIN_LOGIN_CHALLENGE_COOLDOWN_SECONDS",
+                             str(_DEFAULT_CHALLENGE_COOLDOWN_SECONDS)))
+    except ValueError:
+        return _DEFAULT_CHALLENGE_COOLDOWN_SECONDS
 
 
 def _key(user_id: int) -> str:
@@ -154,6 +168,40 @@ def mark_signed_in(user_id: int) -> None:
                                 else existing.get("approval_cleared_at") if same_attempt
                                 else None),
     }, ttl=_ttl_seconds())
+
+
+def mark_challenge_unsolvable(user_id: int) -> None:
+    """Every automated way to clear a login challenge failed for this account.
+
+    Arkose, the email PIN, and a manual mobile-app approval all failed. `login_to_linkedin` checks
+    `challenge_cooldown_remaining` before its next attempt so it backs off instead of repeating the
+    same failed dance — and racking up more failed logins against the account — on every scheduled
+    beat.
+    """
+    existing = _read(user_id) or {}
+    _write(user_id, {
+        "state": str(LinkedInLoginState.CHALLENGE_UNSOLVABLE),
+        "signed_in_at": existing.get("signed_in_at"),
+    }, ttl=_challenge_cooldown_seconds())
+
+
+def challenge_cooldown_remaining(user_id: int) -> int:
+    """Seconds left before this account's next login attempt is allowed after an unsolvable challenge.
+
+    0 when nothing is recorded, the cooldown has lapsed, or Redis is unavailable — fails open, same
+    as the shared 429 breaker, so a status blip never blocks a login that would work.
+    """
+    status = _read(user_id)
+    if not status or status.get("state") != str(LinkedInLoginState.CHALLENGE_UNSOLVABLE):
+        return 0
+    client = shared_redis_client()
+    if client is None:
+        return 0
+    try:
+        ttl = client.ttl(_key(user_id))
+    except Exception:
+        return 0
+    return ttl if isinstance(ttl, int) and ttl > 0 else 0
 
 
 def get_login_status(user_id: int) -> Optional[dict]:

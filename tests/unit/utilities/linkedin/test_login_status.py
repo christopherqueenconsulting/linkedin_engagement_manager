@@ -24,6 +24,9 @@ class FakeRedis:
         self.store[key] = value
         self.ttls[key] = ex
 
+    def ttl(self, key):
+        return self.ttls.get(key) if key in self.store else -2
+
 
 @pytest.fixture
 def fake_redis():
@@ -166,6 +169,87 @@ class TestLifecycle:
 
         mark_signed_in(7)
         assert get_login_status(8) is None
+
+
+class TestChallengeCooldown:
+    """Issue #1920: back off after an unsolvable login challenge.
+
+    An account whose login challenge was unsolvable by every automated path must back off instead
+    of repeating the identical failed dance on the next scheduled run.
+    """
+
+    def test_defaults_when_unset(self, monkeypatch):
+        monkeypatch.delenv("LINKEDIN_LOGIN_CHALLENGE_COOLDOWN_SECONDS", raising=False)
+        from cqc_lem.utilities.linkedin.login_status import _challenge_cooldown_seconds
+        assert _challenge_cooldown_seconds() == 6 * 60 * 60
+
+    def test_env_override(self, monkeypatch):
+        monkeypatch.setenv("LINKEDIN_LOGIN_CHALLENGE_COOLDOWN_SECONDS", "120")
+        from cqc_lem.utilities.linkedin.login_status import _challenge_cooldown_seconds
+        assert _challenge_cooldown_seconds() == 120
+
+    def test_bad_env_falls_back(self, monkeypatch):
+        monkeypatch.setenv("LINKEDIN_LOGIN_CHALLENGE_COOLDOWN_SECONDS", "soon")
+        from cqc_lem.utilities.linkedin.login_status import _challenge_cooldown_seconds
+        assert _challenge_cooldown_seconds() == 6 * 60 * 60
+
+    def test_nothing_recorded_means_no_cooldown(self, fake_redis):
+        from cqc_lem.utilities.linkedin.login_status import challenge_cooldown_remaining
+        assert challenge_cooldown_remaining(7) == 0
+
+    def test_marking_unsolvable_trips_the_cooldown(self, fake_redis):
+        from cqc_lem.utilities.linkedin.login_status import (
+            LinkedInLoginState,
+            challenge_cooldown_remaining,
+            get_login_status,
+            mark_challenge_unsolvable,
+        )
+
+        mark_challenge_unsolvable(7)
+        status = get_login_status(7)
+        assert status["state"] == LinkedInLoginState.CHALLENGE_UNSOLVABLE
+        assert challenge_cooldown_remaining(7) > 0
+
+    def test_a_different_state_is_not_a_challenge_cooldown(self, fake_redis):
+        """A `signed_in`/`approval_pending` user must not be gated.
+
+        The cooldown is specifically for the exhausted-every-solve-path state.
+        """
+        from cqc_lem.utilities.linkedin.login_status import challenge_cooldown_remaining, mark_signed_in
+
+        mark_signed_in(7)
+        assert challenge_cooldown_remaining(7) == 0
+
+    def test_carries_the_last_good_sign_in_forward(self, fake_redis):
+        from cqc_lem.utilities.linkedin.login_status import (
+            get_login_status,
+            mark_challenge_unsolvable,
+            mark_signed_in,
+        )
+
+        mark_signed_in(7)
+        signed_in_at = get_login_status(7)["signed_in_at"]
+        mark_challenge_unsolvable(7)
+        assert get_login_status(7)["signed_in_at"] == signed_in_at
+
+    def test_keys_are_per_user(self, fake_redis):
+        from cqc_lem.utilities.linkedin.login_status import challenge_cooldown_remaining, mark_challenge_unsolvable
+
+        mark_challenge_unsolvable(7)
+        assert challenge_cooldown_remaining(8) == 0
+
+    def test_no_redis_reads_as_no_cooldown(self, no_redis):
+        from cqc_lem.utilities.linkedin.login_status import challenge_cooldown_remaining, mark_challenge_unsolvable
+
+        mark_challenge_unsolvable(7)  # must not raise
+        assert challenge_cooldown_remaining(7) == 0
+
+    def test_ttl_read_error_fails_open(self, fake_redis):
+        from cqc_lem.utilities.linkedin.login_status import challenge_cooldown_remaining, mark_challenge_unsolvable
+
+        mark_challenge_unsolvable(7)
+        with patch.object(fake_redis, "ttl", side_effect=RuntimeError("down")):
+            assert challenge_cooldown_remaining(7) == 0
 
 
 class TestFailsOpen:
