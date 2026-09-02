@@ -1310,14 +1310,14 @@ def process_user_followups(self, user_id: int, max_per_run: int = 20):
                       task_name="process_user_followups")
         elif isinstance(e, TimeoutException):
             # A Selenium selector miss during login — e.g. an unrecognized challenge/checkpoint
-            # page LinkedIn served instead of the expected form (#1908, which already logs the
-            # page it actually saw at WARNING where `login_to_linkedin` detects it). This run
-            # degrades gracefully: due follow-ups stay 'pending' and are re-read next beat, no
-            # attempt is burned. `log_error` here filed an immediate, ungrouped `$exception` on
-            # EVERY occurrence — 22 in one day (#1919) — for a fact already diagnosed elsewhere.
-            # WARNING still escalates to ONE grouped defect if the login keeps failing.
-            log_warning("Follow-ups could not start — login selector never resolved",
-                        exc=e, user_id=user_id, task_name="process_user_followups")
+            # page LinkedIn served instead of the expected form (#1908). `get_current_profile`
+            # itself now downgrades this to WARNING where it happens (issue #1919 — its own catch
+            # was firing ERROR here regardless of what any caller did, so a caller-only downgrade
+            # left the SAME immediate `$exception` filing 22x/day). Re-warning here would just
+            # double-count the same event under a second fingerprint, same as the tab-crash branch
+            # above — DEBUG, not another WARNING.
+            log_debug("Follow-ups could not start — login selector never resolved",
+                      exc=e, user_id=user_id, task_name="process_user_followups")
         else:
             log_error("Error getting profile for follow-ups", exc=e, user_id=user_id,
                       task_name="process_user_followups")

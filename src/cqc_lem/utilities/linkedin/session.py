@@ -20,6 +20,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import NamedTuple, Tuple
 
+from selenium.common.exceptions import TimeoutException
 from selenium.webdriver.remote.webdriver import WebDriver
 from selenium.webdriver.support.wait import WebDriverWait
 
@@ -88,6 +89,15 @@ def get_current_profile(user_id: int, session_name: str = "Get Current Profile",
             # other login failure; only the severity changes, to a warning that escalates if it
             # starts recurring (issue #1749).
             log_warning("Browser tab crashed on the first login navigation", exc=e, user_id=user_id)
+        elif isinstance(e, TimeoutException):
+            # The login form never rendered — `login_to_linkedin` already logged the page it
+            # actually saw at WARNING before re-raising (issue #1908). This is the ONE place every
+            # `get_current_profile` caller shares, so downgrading here (like the tab-crash and
+            # rate-limit branches above) is what stops it, not a per-caller re-catch: issue #1919
+            # found the exact same TimeoutException still filing an immediate, ungrouped
+            # `$exception` here 22x/day even after a caller-level downgrade, because this branch
+            # ran and logged ERROR before the exception ever reached the caller's `except`.
+            log_warning("LinkedIn login failed — form fields never appeared", exc=e, user_id=user_id)
         else:
             log_error("LinkedIn login failed (possibly rate-limited)", exc=e, user_id=user_id)
         quit_gracefully(driver)
