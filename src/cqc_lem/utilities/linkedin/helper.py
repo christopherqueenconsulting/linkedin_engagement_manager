@@ -250,7 +250,12 @@ def solve_arkose_challenge(driver: WebDriver, wait: WebDriverWait) -> bool:
         None,
     )
     if arkose_frame is None:
-        log_warning(
+        # `_handle_challenge` tries this solver FIRST on every login challenge, then falls back
+        # to the email verification-code path and manual device approval — so a non-Arkose
+        # challenge (by far the common case; LinkedIn mostly issues email/phone checkpoints) is
+        # an expected leg of that fallback chain, not a defect. Warning here recurred into a
+        # standing PostHog issue (#1923) for working, already-degrading-gracefully behavior.
+        log_debug(
             "LinkedIn challenge is not an Arkose Labs FunCaptcha — cannot auto-solve",
             action_type="login",
             error_message=f"Challenge URL: {driver.current_url}",
