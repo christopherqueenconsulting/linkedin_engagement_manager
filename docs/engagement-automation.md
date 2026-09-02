@@ -982,10 +982,13 @@ three used to arm the same brake.
 - **Everything else is the ordinary miss**, and only that counts toward the streak (#1732).
 
 **Observability:** `invite_outcome` fires on EVERY dispatch of `send_connection_request` — sends,
-failures and the three defers (`invites_held` / `daily_cap` / `throttled`) alike. `result` is
-sent / failed / deferred and `reason` is a short, stable word mapped from the failure message, so a
-reworded message cannot silently empty a tile; `attempts` counts real dispatches that reached
-LinkedIn, this one included, and is 0 exactly when nothing was attempted. A series carrying only
+failures and the four defers (`invites_held` / `daily_cap` / `throttled` / `challenge`) alike.
+`challenge` is an unsolvable login checkpoint: rate-limit-class, so it defers and charges no attempt
+like a 429, but it carries its own word so an account that cannot sign in does not hide behind
+`throttled` or fall into the generic `error` bucket. `result` is sent / failed / deferred and
+`reason` is a short, stable word mapped from the failure message, so a reworded message cannot
+silently empty a tile; `attempts` counts real dispatches that reached LinkedIn, this one included,
+and is 0 exactly when nothing was attempted. A series carrying only
 sends would reproduce the bug it exists to catch, which is the same reason `track_stale_invite_run`
 emits on empty runs. `docs/observability-map.md`.
 
