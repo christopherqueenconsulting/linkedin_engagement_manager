@@ -6,6 +6,8 @@ name: UI Build
 on:
   pull_request:
   merge_group:
+  push:
+    branches: [main]
 
 # Supersede a PR's own in-flight runs when it is pushed to again. cancel-in-progress is gated to
 # pull_request ON PURPOSE: these workflows also run on merge_group, and cancelling a merge-queue run
@@ -24,11 +26,32 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: "24"
-          cache: npm
-          cache-dependency-path: src/cqc_lem/ui/package-lock.json
+      # Restore and save are split, same fix as .github/actions/poetry_setup/action.yml's venv
+      # cache: setup-node's built-in `cache: npm` saved from every ref that ran it (each PR's
+      # refs/pull/<n>/merge, each merge-queue's gh-readonly-queue/main/pr-<n>-<sha>) even though an
+      # Actions cache is readable only from the ref that wrote it plus the default branch. None of
+      # those refs are ever read back — the merge-queue ones are deleted the instant they merge —
+      # so it was pure write-only duplication, dozens of ~identical `node-cache-Linux-x64-npm-<hash>`
+      # entries eating the repo's 10 GB budget. Only main's entry is readable by every other ref, so
+      # it is the only one worth writing (`push: branches: [main]` above is what gives this workflow
+      # a main run to write it from).
+      - name: Restore npm cache
+        id: cache-npm
+        uses: actions/cache/restore@v5
+        with:
+          path: ~/.npm
+          key: node-cache-${{ runner.os }}-npm-${{ hashFiles('src/cqc_lem/ui/package-lock.json') }}
+          restore-keys: |
+            node-cache-${{ runner.os }}-npm-
       - name: npm ci (strict — matches the Docker build)
         working-directory: src/cqc_lem/ui
         run: npm ci
+      - name: Save npm cache
+        if: steps.cache-npm.outputs.cache-hit != 'true' && github.ref == 'refs/heads/main'
+        uses: actions/cache/save@v5
+        with:
+          path: ~/.npm
+          key: node-cache-${{ runner.os }}-npm-${{ hashFiles('src/cqc_lem/ui/package-lock.json') }}
       - name: Generated API types match the committed schema
         working-directory: src/cqc_lem/ui
         run: npm run check:api-types
