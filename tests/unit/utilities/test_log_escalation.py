@@ -214,6 +214,25 @@ def test_other_exceptions_on_the_same_message_still_escalate():
                  exc=RuntimeError("something else entirely")) is not None
 
 
+def test_device_approval_challenges_never_escalate():
+    """A LinkedIn device-approval challenge is an expected security check the account owner clears
+    with a mobile tap, already best-effort handled (SPA badge, owner email) — escalating it filed a
+    GitHub issue against working login handling (#1922).
+    """
+    from cqc_lem.utilities.linkedin.helper import DEVICE_APPROVAL_LOG_PREFIX
+
+    assert DEVICE_APPROVAL_LOG_PREFIX in esc.BUILTIN_EXCLUDED_PREFIXES
+    warning = (
+        f"{DEVICE_APPROVAL_LOG_PREFIX} — open your LinkedIn mobile app and tap "
+        "'Yes' to confirm this sign-in (watch via VNC). Waiting up to 120s for approval."
+    )
+    assert _note(warning, [3]) is None
+    # …and the exclusion is what did it: the identical line escalates once the prefix is gone.
+    esc.reset_state()
+    with patch.object(esc, "BUILTIN_EXCLUDED_PREFIXES", ()):
+        assert _note(warning, [3]) is not None
+
+
 def test_env_exclusions_add_to_the_builtins(monkeypatch):
     """An override must not be able to drop the capture_exception re-entrancy guard."""
     monkeypatch.setenv("LOG_ESCALATE_EXCLUDE", "Custom noise")
