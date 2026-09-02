@@ -76,6 +76,22 @@ class TestGetCurrentProfile:
         assert warn.call_args.kwargs.get("exc") is crash
         err.assert_not_called()
 
+    def test_a_rate_limited_login_logs_debug_not_error(self):
+        # A LinkedInRateLimited abort (breaker open, pause, real 429, unsolvable checkpoint) is a
+        # deliberate back-off already logged where it was detected, so an ERROR here would only fork
+        # a second grouped $exception for the same event. It still propagates so the caller defers.
+        from cqc_lem.utilities.linkedin.rate_limit import LinkedInRateLimited
+        p = _patches()
+        with p["get_user_password_pair_by_id"], p["get_driver_wait_pair"], p["quit_gracefully"], \
+             patch(f"{_SESSION}.login_to_linkedin", side_effect=LinkedInRateLimited("breaker open")), \
+             patch(f"{_SESSION}.log_debug") as dbg, \
+             patch(f"{_SESSION}.log_error") as err:
+            from cqc_lem.utilities.linkedin.session import get_current_profile
+            with pytest.raises(LinkedInRateLimited):
+                get_current_profile(user_id=1)
+        dbg.assert_called_once()
+        err.assert_not_called()
+
     def test_other_login_failures_still_log_error(self):
         p = _patches()
         with p["get_user_password_pair_by_id"], p["get_driver_wait_pair"], p["quit_gracefully"], \
