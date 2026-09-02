@@ -26,7 +26,7 @@ import re
 import time
 from urllib.parse import unquote
 
-from selenium.common import StaleElementReferenceException, WebDriverException
+from selenium.common import StaleElementReferenceException, TimeoutException, WebDriverException
 from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.common.by import By
 from selenium.webdriver.remote.webdriver import WebDriver
@@ -1534,7 +1534,17 @@ def invite_to_connect_now(user_id: int, profile_url: str, message: str = None,
 
     try:
 
-        login_to_linkedin(driver, wait, user_email, user_password)
+        try:
+            login_to_linkedin(driver, wait, user_email, user_password)
+        except TimeoutException as e:
+            # Login itself never completed — e.g. an unrecognized challenge/checkpoint page
+            # (#1908) — which is a fact about THIS SESSION, not about `profile_url`. The generic
+            # `except Exception` below would record it as a per-target failure, burning this
+            # request's attempt ceiling until `record_connection_request_attempt`'s terminal
+            # threshold escalates "exhausted its attempts; giving up" for a target we never even
+            # reached (#1924). Defer like a 429 instead — nothing was learned about this target.
+            raise LinkedInRateLimited(
+                f"LinkedIn login failed before inviting to connect: {e}") from e
 
         if profile_url != driver.current_url:
             # Open the profile URL
