@@ -358,6 +358,7 @@ class TestReadPathWiring:
              patch(f"{_POST}.upsert_engager"), \
              patch(f"{_POST}._flag_lead_signal", return_value=1) as flag, \
              patch(f"{_POST}.generate_thread_reply", return_value=None), \
+             patch(f"{_POST}._react_to_comment_inline", return_value=True), \
              patch(f"{_POST}.insert_new_log"):
             driver = MagicMock()
             driver.current_url = "https://x/post/7"

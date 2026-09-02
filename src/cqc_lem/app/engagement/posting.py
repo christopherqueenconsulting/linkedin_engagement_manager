@@ -273,8 +273,19 @@ def _reply_to_comment_inline(driver, wait, comment_el, reply_text: str, user_id:
     """Open a comment's inline reply box, type the reply, and submit (same SDUI pattern as
     post_comment_inline: role=textbox composer + Ctrl+Enter fallback). The composer is resolved
     against THIS comment (`_reply_composer_for_comment`), never page-wide. Returns True if posted.
+
+    The comment's action bar is HOVER-HIDDEN — same as the Like control `_react_to_comment_inline`
+    hovers for, and the Reply button `_reply_under_comment_inline`'s #478 fix scrolls + hovers for
+    on the other reply path (issue #1899: a reply to a comment on our OWN post never actually
+    landed because this path skipped that step, so `click_first`'s `visible_only` lookup found
+    nothing to click). Scroll + hover first, same as the other two.
     """
     try:
+        driver.execute_script("arguments[0].scrollIntoView({block:'center'});", comment_el)
+        try:
+            ActionChains(driver).move_to_element(comment_el).pause(0.5).perform()  # reveal action bar
+        except Exception:
+            pass  # hover is best-effort; the click_first lookup below still runs
         if click_first(driver, wait, [(By.CSS_SELECTOR, "button[aria-label='Reply']")],
                        "Open reply box", parent_element=comment_el, required=False, user_id=user_id) is None:
             return False
@@ -813,6 +824,14 @@ def _reply_to_comments_on_open_post(driver, wait, user_id: int, post_id: int, my
             log_debug("Already replied to this comment", user_id=user_id, post_id=post_id, comment_text=short_comment_text)
             continue
         log_debug("Responding to this comment", user_id=user_id, post_id=post_id, comment_text=short_comment_text)
+        # A reaction is the FLOOR engagement every comment on our own post gets — a comment that
+        # doesn't warrant a full reply still ends with our account acknowledging it (issue #1899).
+        # Best-effort and idempotent: `_react_to_comment_inline`'s own aria-pressed check skips a
+        # comment we already liked, so this never duplicates across sweeps.
+        if _react_to_comment_inline(driver, wait, comment, user_id=user_id):
+            insert_new_log(user_id=user_id, post_id=post_id, action_type=LogActionType.ENGAGED,
+                           result=LogResultType.SUCCESS, post_url=post_url,
+                           message="Reacted to comment on our post")
         # Thread-builder: reply in a way that ends with a follow-up question so the commenter
         # replies again — first-hour thread depth is the top 2026 reach signal.
         with llm_attribution(user_id=user_id, feature=FEATURE_COMMENT):

@@ -24,6 +24,13 @@ Event mode replies only when a comment actually happens — no browser polling, 
 Event mode also schedules **one** golden-hour safety sweep ~35 min after each post publishes, in case
 a notification isn't forwarded.
 
+Both of those only ever reach a comment inside the first hour after publish, or when LinkedIn
+actually emails the notification — which an always-active account rarely does in practice (observed
+near-permanently absent, issue #1899), so a comment landing later got no follow-up at all. A
+`dispatch_scheduled_reply_sweeps` backstop (once/day, `golden_hour.event_mode_backstop_seconds`) now
+covers event-mode users too — far below `scheduled` mode's cadence, so it doesn't reintroduce the
+429 exposure event mode exists to avoid.
+
 ## User setup
 
 1. **Enable LinkedIn email notifications** for comments: LinkedIn → Settings & Privacy →
@@ -37,7 +44,7 @@ a notification isn't forwarded.
 
 | Mode | Behavior |
 |---|---|
-| `event` (default) | Forwarded-email webhook + one golden-hour safety sweep per post. |
+| `event` (default) | Forwarded-email webhook + one golden-hour safety sweep per post + a once/day backstop sweep. |
 | `scheduled` | A beat dispatcher runs a recent-posts sweep `reply_sweeps_per_day` times/day (2–12). Shows a 429 warning in the UI. |
 | `off` | No reply automation. |
 
@@ -67,4 +74,7 @@ alongside). Healthy = a steady share of `comment_accepted`; broken = mail volume
 - `src/cqc_lem/app/engagement/posting.py` — `sweep_reply_comments`, `post_to_linkedin` mode
   branch (moved out of `run_automation.py` in #1154; both still answer to their
   `cqc_lem.app.run_automation.<fn>` wire names).
+- `src/cqc_lem/app/run_scheduler.py` — `dispatch_scheduled_reply_sweeps`, the beat that also carries
+  the once/day event-mode backstop.
+- `src/cqc_lem/utilities/golden_hour.py` — `event_mode_backstop_seconds`.
 - `src/cqc_lem/utilities/linkedin/verification_pin.py` — the PIN inbound flow this mirrors.

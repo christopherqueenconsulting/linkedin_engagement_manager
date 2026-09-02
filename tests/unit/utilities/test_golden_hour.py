@@ -61,6 +61,32 @@ class TestReplySweeps:
         assert g.reply_sweeps() == g.GOLDEN_HOUR_REPLY_SWEEPS
 
 
+class TestEventModeBackstopSeconds:
+    """Issue #1899: the once-a-day fallback interval for everything past the first hour.
+
+    Event mode's own coverage (webhook + golden-hour amplifier) only ever answers a comment
+    inside the first hour after publish.
+    """
+
+    def test_default(self, monkeypatch):
+        monkeypatch.delenv("EVENT_MODE_BACKSTOP_HOURS", raising=False)
+        assert g.event_mode_backstop_seconds() == g.EVENT_MODE_BACKSTOP_HOURS * 60 * 60
+
+    def test_env_override(self, monkeypatch):
+        monkeypatch.setenv("EVENT_MODE_BACKSTOP_HOURS", "6")
+        assert g.event_mode_backstop_seconds() == 6 * 60 * 60
+
+    def test_garbage_env_falls_back(self, monkeypatch):
+        monkeypatch.setenv("EVENT_MODE_BACKSTOP_HOURS", "lots")
+        assert g.event_mode_backstop_seconds() == g.EVENT_MODE_BACKSTOP_HOURS * 60 * 60
+
+    def test_zero_or_negative_env_floors_to_one_hour(self, monkeypatch):
+        # A misconfigured 0/negative interval must never mean "always due" — that would turn the
+        # backstop into unbounded polling, exactly the 429 exposure event mode exists to avoid.
+        monkeypatch.setenv("EVENT_MODE_BACKSTOP_HOURS", "0")
+        assert g.event_mode_backstop_seconds() == 60 * 60
+
+
 class TestLatencyMinutes:
     def test_normalizes_a_db_reading(self):
         assert g.latency_minutes(42) == 42.0

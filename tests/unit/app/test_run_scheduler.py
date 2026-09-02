@@ -1048,13 +1048,23 @@ class TestAutomationPauseGating:
         assert "paused" not in result.lower()
 
 
+def _reply_mode_users(scheduled=None, event=None):
+    """`get_users_with_reply_mode` side_effect: distinct populations per mode.
+
+    So a test can control the 'scheduled' and 'event' lists independently instead of one shared
+    return_value answering both calls identically.
+    """
+    mapping = {"scheduled": scheduled or [], "event": event or []}
+    return lambda mode: mapping.get(mode, [])
+
+
 class TestDispatchScheduledReplySweeps:
     _M = "cqc_lem.app.run_scheduler"
 
     def test_dispatches_when_due_and_has_session(self):
         from cqc_lem.app.run_scheduler import dispatch_scheduled_reply_sweeps
         redis = MagicMock(); redis.set.return_value = True  # nx=True → key absent → due
-        with patch(f"{self._M}.get_users_with_reply_mode", return_value=[1, 2]), \
+        with patch(f"{self._M}.get_users_with_reply_mode", side_effect=_reply_mode_users(scheduled=[1, 2])), \
              patch(f"{self._M}.has_linkedin_session", return_value=True), \
              patch(f"{self._M}.get_engagement_preferences", return_value={"reply_sweeps_per_day": 4}), \
              patch("cqc_lem.utilities.linkedin.rate_limit._redis_client", return_value=redis), \
@@ -1071,7 +1081,7 @@ class TestDispatchScheduledReplySweeps:
     def test_skips_when_interval_not_elapsed(self):
         from cqc_lem.app.run_scheduler import dispatch_scheduled_reply_sweeps
         redis = MagicMock(); redis.set.return_value = False  # key present → too soon
-        with patch(f"{self._M}.get_users_with_reply_mode", return_value=[1]), \
+        with patch(f"{self._M}.get_users_with_reply_mode", side_effect=_reply_mode_users(scheduled=[1])), \
              patch(f"{self._M}.has_linkedin_session", return_value=True), \
              patch(f"{self._M}.get_engagement_preferences", return_value={"reply_sweeps_per_day": 2}), \
              patch("cqc_lem.utilities.linkedin.rate_limit._redis_client", return_value=redis), \
@@ -1081,28 +1091,74 @@ class TestDispatchScheduledReplySweeps:
 
     def test_skips_users_without_session(self):
         from cqc_lem.app.run_scheduler import dispatch_scheduled_reply_sweeps
-        with patch(f"{self._M}.get_users_with_reply_mode", return_value=[1]), \
+        with patch(f"{self._M}.get_users_with_reply_mode", side_effect=_reply_mode_users(scheduled=[1])), \
              patch(f"{self._M}.has_linkedin_session", return_value=False), \
              patch("cqc_lem.utilities.linkedin.rate_limit._redis_client", return_value=None), \
              patch(f"{self._M}.sweep_reply_comments") as sweep:
             dispatch_scheduled_reply_sweeps()
         sweep.apply_async.assert_not_called()
 
-    def test_no_scheduled_users(self):
+    def test_no_scheduled_or_event_users(self):
         from cqc_lem.app.run_scheduler import dispatch_scheduled_reply_sweeps
         with patch(f"{self._M}.get_users_with_reply_mode", return_value=[]):
-            assert "No scheduled-mode users" in dispatch_scheduled_reply_sweeps()
+            assert "No scheduled-mode or event-mode users" in dispatch_scheduled_reply_sweeps()
 
     def test_caps_interval_floor_at_2h(self):
         from cqc_lem.app.run_scheduler import dispatch_scheduled_reply_sweeps
         redis = MagicMock(); redis.set.return_value = True
-        with patch(f"{self._M}.get_users_with_reply_mode", return_value=[1]), \
+        with patch(f"{self._M}.get_users_with_reply_mode", side_effect=_reply_mode_users(scheduled=[1])), \
              patch(f"{self._M}.has_linkedin_session", return_value=True), \
              patch(f"{self._M}.get_engagement_preferences", return_value={"reply_sweeps_per_day": 12}), \
              patch("cqc_lem.utilities.linkedin.rate_limit._redis_client", return_value=redis), \
              patch(f"{self._M}.sweep_reply_comments"):
             dispatch_scheduled_reply_sweeps()
         assert redis.set.call_args.kwargs["ex"] == 2 * 60 * 60  # 12/day = 2h, the floor
+
+    def test_event_mode_users_get_a_once_daily_backstop_sweep(self):
+        """Issue #1899: event mode's own coverage only ever answers a comment in the first hour.
+
+        The webhook + golden-hour amplifier answer a comment in the first hour after publish, or
+        when LinkedIn actually emails the notification — which an always-active account rarely
+        does. This backstop is what still reaches a comment that lands later.
+        """
+        from cqc_lem.app.run_scheduler import dispatch_scheduled_reply_sweeps
+        from cqc_lem.utilities.golden_hour import event_mode_backstop_seconds
+        redis = MagicMock()
+        redis.set.return_value = True
+        with patch(f"{self._M}.get_users_with_reply_mode", side_effect=_reply_mode_users(event=[3])), \
+             patch(f"{self._M}.has_linkedin_session", return_value=True), \
+             patch("cqc_lem.utilities.linkedin.rate_limit._redis_client", return_value=redis), \
+             patch(f"{self._M}.sweep_reply_comments") as sweep:
+            result = dispatch_scheduled_reply_sweeps()
+        sweep.apply_async.assert_called_once()
+        assert sweep.apply_async.call_args.kwargs["kwargs"] == {"user_id": 3, "sweep_slot": 0}
+        assert redis.set.call_args.kwargs["ex"] == event_mode_backstop_seconds()
+        assert "1/1" in result
+
+    def test_event_mode_backstop_skips_when_interval_not_elapsed(self):
+        from cqc_lem.app.run_scheduler import dispatch_scheduled_reply_sweeps
+        redis = MagicMock()
+        redis.set.return_value = False  # key present → too soon
+        with patch(f"{self._M}.get_users_with_reply_mode", side_effect=_reply_mode_users(event=[3])), \
+             patch(f"{self._M}.has_linkedin_session", return_value=True), \
+             patch("cqc_lem.utilities.linkedin.rate_limit._redis_client", return_value=redis), \
+             patch(f"{self._M}.sweep_reply_comments") as sweep:
+            dispatch_scheduled_reply_sweeps()
+        sweep.apply_async.assert_not_called()
+
+    def test_scheduled_and_event_populations_both_dispatch_in_one_pass(self):
+        from cqc_lem.app.run_scheduler import dispatch_scheduled_reply_sweeps
+        redis = MagicMock()
+        redis.set.return_value = True
+        with patch(f"{self._M}.get_users_with_reply_mode",
+                   side_effect=_reply_mode_users(scheduled=[1], event=[2])), \
+             patch(f"{self._M}.has_linkedin_session", return_value=True), \
+             patch(f"{self._M}.get_engagement_preferences", return_value={"reply_sweeps_per_day": 2}), \
+             patch("cqc_lem.utilities.linkedin.rate_limit._redis_client", return_value=redis), \
+             patch(f"{self._M}.sweep_reply_comments") as sweep:
+            result = dispatch_scheduled_reply_sweeps()
+        assert sweep.apply_async.call_count == 2
+        assert "2/2" in result
 
 
 # ---------------------------------------------------------------------------
