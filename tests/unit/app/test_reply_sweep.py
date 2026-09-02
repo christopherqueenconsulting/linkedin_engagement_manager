@@ -337,13 +337,66 @@ class TestReplyToCommentsOnOpenPost:
              patch(f"{_POST}.get_engagement_preferences", return_value={}), \
              patch(f"{_POST}._flag_lead_signal", return_value=None), \
              patch(f"{_POST}._reply_to_comment_inline", return_value=True) as rep, \
+             patch(f"{_POST}._react_to_comment_inline", return_value=True) as react, \
              patch(f"{_POST}.insert_new_log") as log:
             result = _reply_to_comments_on_open_post(driver, MagicMock(), 1, 9, self._profile(), "synth")
         driver.get.assert_called_once()  # navigated to the post
         rep.assert_called_once()
-        log.assert_called_once()
+        react.assert_called_once()   # the floor engagement — a reaction, in addition to the reply
+        assert log.call_count == 2   # one for the reaction, one for the reply
         assert result == {"status": "ok", "summary": "Replied to 1 comments",
                           "comments_found": 1, "replies_sent": 1}
+
+    def test_reacts_even_when_no_reply_is_generated(self):
+        """Issue #1899: a comment that doesn't warrant a full reply still gets a reaction.
+
+        The reaction is the floor engagement, not conditional on the LLM producing a response.
+        """
+        from cqc_lem.app.engagement.posting import _reply_to_comments_on_open_post
+        driver = _sweep_driver("other")
+        with patch(f"{_POST}.get_post_url_from_log_for_user", return_value="https://li/feed/update/urn:li:share:1/"), \
+             patch(f"{_POST}.get_post_content", return_value="post body"), \
+             patch(f"{_POST}.click_first", return_value=None), \
+             patch(f"{_POST}._comment_items_from_thread", return_value=[_FakeComment("Nice post")]), \
+             patch(f"{_POST}.get_lead_magnet_settings", return_value={"enabled": False}), \
+             patch(f"{_POST}.upsert_engager"), \
+             patch(f"{_POST}.generate_thread_reply", return_value=None), \
+             patch(f"{_POST}.get_engagement_preferences", return_value={}), \
+             patch(f"{_POST}._flag_lead_signal", return_value=None), \
+             patch(f"{_POST}._reply_to_comment_inline") as rep, \
+             patch(f"{_POST}._react_to_comment_inline", return_value=True) as react, \
+             patch(f"{_POST}.insert_new_log") as log:
+            result = _reply_to_comments_on_open_post(driver, MagicMock(), 1, 9, self._profile(), "synth")
+        react.assert_called_once()   # reacted regardless of the missing reply
+        rep.assert_not_called()      # no response text → no reply attempted
+        assert log.call_count == 2   # the reaction's SUCCESS log + the reply's FAILURE log
+        assert result["replies_sent"] == 0
+
+    def test_react_failure_does_not_log_or_block_the_reply(self):
+        """A reaction miss (already reacted, or the like button never resolved) must not block.
+
+        It is best-effort — it must not stop the reply that follows, and only a SUCCESSFUL
+        reaction gets logged.
+        """
+        from cqc_lem.app.engagement.posting import _reply_to_comments_on_open_post
+        driver = _sweep_driver("other")
+        with patch(f"{_POST}.get_post_url_from_log_for_user", return_value="https://li/feed/update/urn:li:share:1/"), \
+             patch(f"{_POST}.get_post_content", return_value="post body"), \
+             patch(f"{_POST}.click_first", return_value=None), \
+             patch(f"{_POST}._comment_items_from_thread", return_value=[_FakeComment("Nice post")]), \
+             patch(f"{_POST}.get_lead_magnet_settings", return_value={"enabled": False}), \
+             patch(f"{_POST}.upsert_engager"), \
+             patch(f"{_POST}.generate_thread_reply", return_value="Thanks!"), \
+             patch(f"{_POST}.get_engagement_preferences", return_value={}), \
+             patch(f"{_POST}._flag_lead_signal", return_value=None), \
+             patch(f"{_POST}._reply_to_comment_inline", return_value=True) as rep, \
+             patch(f"{_POST}._react_to_comment_inline", return_value=False) as react, \
+             patch(f"{_POST}.insert_new_log") as log:
+            result = _reply_to_comments_on_open_post(driver, MagicMock(), 1, 9, self._profile(), "synth")
+        react.assert_called_once()
+        rep.assert_called_once()     # the reply still went out
+        assert log.call_count == 1   # only the reply's SUCCESS log — no log for the reaction miss
+        assert result["replies_sent"] == 1
 
     def test_engager_is_recorded_when_the_avatar_anchor_comes_first(self):
         """#1091: an avatar-first card must still record its commenter.
@@ -367,6 +420,7 @@ class TestReplyToCommentsOnOpenPost:
              patch(f"{_POST}.get_engagement_preferences", return_value={}), \
              patch(f"{_POST}._flag_lead_signal", return_value=None) as flag, \
              patch(f"{_POST}._reply_to_comment_inline", return_value=True), \
+             patch(f"{_POST}._react_to_comment_inline", return_value=True), \
              patch(f"{_POST}.insert_new_log"):
             _reply_to_comments_on_open_post(driver, MagicMock(), 1, 9, self._profile(), "synth")
         upsert.assert_called_once_with(1, "Jane Doe", "https://www.linkedin.com/in/jane",
@@ -390,6 +444,7 @@ class TestReplyToCommentsOnOpenPost:
              patch(f"{_POST}.generate_thread_reply", return_value="Thanks!"), \
              patch(f"{_POST}.get_engagement_preferences", return_value={}), \
              patch(f"{_POST}._reply_to_comment_inline", return_value=True) as rep, \
+             patch(f"{_POST}._react_to_comment_inline", return_value=True), \
              patch(f"{_POST}.log_debug") as debug, \
              patch(f"{_POST}.log_warning") as warn, \
              patch(f"{_POST}.insert_new_log"):
@@ -475,6 +530,7 @@ class TestReplyToCommentsOnOpenPost:
              patch(f"{_POST}.get_engagement_preferences", return_value={"max_dms_per_day": 5}), \
              patch(f"{_POST}._flag_lead_signal", return_value=None), \
              patch(f"{_POST}._reply_to_comment_inline", return_value=True), \
+             patch(f"{_POST}._react_to_comment_inline", return_value=True), \
              patch(f"{_POST}.insert_new_log"):
             _reply_to_comments_on_open_post(driver, MagicMock(), 1, 9, self._profile(), "synth")
         ins.assert_called_once()
@@ -513,6 +569,7 @@ class TestReplyToCommentsOnOpenPost:
              patch(f"{_POST}.get_engagement_preferences", return_value={"max_dms_per_day": 5}), \
              patch(f"{_POST}._flag_lead_signal", return_value=None), \
              patch(f"{_POST}._reply_to_comment_inline", return_value=True) as rep, \
+             patch(f"{_POST}._react_to_comment_inline", return_value=True), \
              patch(f"{_POST}.insert_new_log"):
             _reply_to_comments_on_open_post(driver, MagicMock(), 1, 9, self._profile(), "synth")
         ins.assert_not_called()
@@ -557,6 +614,7 @@ class TestReplyToCommentsOnOpenPost:
              patch(f"{_POST}.get_engagement_preferences", return_value={}), \
              patch(f"{_POST}._flag_lead_signal", return_value=None), \
              patch(f"{_POST}._reply_to_comment_inline", return_value=True) as rep, \
+             patch(f"{_POST}._react_to_comment_inline", return_value=True), \
              patch(f"{_POST}.insert_new_log"):
             _reply_to_comments_on_open_post(_sweep_driver(), MagicMock(), 1, 9, self._profile(), "s")
         assert rep.call_count == _MAX_REPLIES_PER_SWEEP
@@ -627,6 +685,7 @@ class TestReplyToCommentsOnOpenPost:
              patch(f"{_POST}.get_engagement_preferences", return_value={"reply_max_post_age_days": 3}), \
              patch(f"{_POST}._redis_client", return_value=redis), \
              patch(f"{_POST}._reply_to_comment_inline", return_value=True), \
+             patch(f"{_POST}._react_to_comment_inline", return_value=True), \
              patch(f"{_POST}.insert_new_log"):
             _reply_to_comments_on_open_post(driver, MagicMock(), 1, 9, self._profile(), "synth")
         assert redis.set.call_count == 1

@@ -58,6 +58,15 @@ GOLDEN_HOUR_MAX_SWEEPS = 12
 GOLDEN_HOUR_RETRY_MINUTES = 7
 GOLDEN_HOUR_MAX_RETRIES = 2
 
+# Event mode's OWN coverage — the forwarded-email webhook plus the golden-hour amplifier above —
+# only ever answers a comment inside the first hour after publish, or when LinkedIn actually emails
+# the "commented on your post" notification. Both are opportunistic: an always-active account rarely
+# draws that email at all (observed near-permanently absent, issue #1899), so a comment landing after
+# the golden hour got NO follow-up, ever, until a new post reset the window. This is the backstop
+# interval `dispatch_scheduled_reply_sweeps` uses for event-mode users too — once/day, far below
+# `scheduled` mode's 2–12x/day, so it doesn't reintroduce the 429 exposure event mode exists to avoid.
+EVENT_MODE_BACKSTOP_HOURS = 24
+
 # Total self-comments allowed on one of our own posts: the #344 seed comment plus the second wave.
 # A third would read as thread-stuffing, and it is the seed/second-wave collision the issue calls
 # out — so the cap is enforced on the COUNT of our own comments, not on either task knowing about
@@ -96,6 +105,15 @@ def reply_sweeps() -> int:
     GOLDEN_HOUR_REPLY_SWEEPS without a restart.
     """
     return _env_int("GOLDEN_HOUR_REPLY_SWEEPS", GOLDEN_HOUR_REPLY_SWEEPS)
+
+
+def event_mode_backstop_seconds() -> int:
+    """Interval, in seconds, between backstop reply sweeps for event-mode users.
+
+    Read at call time so ops can tune EVENT_MODE_BACKSTOP_HOURS without a restart, same as
+    `reply_sweeps()`.
+    """
+    return max(1, _env_int("EVENT_MODE_BACKSTOP_HOURS", EVENT_MODE_BACKSTOP_HOURS)) * 60 * 60
 
 
 def sweep_countdowns(sweeps: int = GOLDEN_HOUR_REPLY_SWEEPS,

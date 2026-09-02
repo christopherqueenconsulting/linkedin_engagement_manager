@@ -339,8 +339,9 @@ def _reply_under_comment_inline(driver, wait, comment_el, reply_text: str, user_
     resolution is now `_reply_composer_for_comment`, shared with `_reply_to_comment_inline` (#883):
     a box inside this comment wins, a box above it is rejected outright, a box owned by a DIFFERENT
     comment is rejected, and no box of ours means skip. This function keeps only its own way of
-    OPENING the box — the #478 thread path needs the scroll + hover that renders a hover-hidden Reply
-    button before it can be clicked.
+    OPENING the box — the scroll + hover that renders a hover-hidden Reply button before it can be
+    clicked (the #478 thread path was fixed first; `_reply_to_comment_inline` needed the identical
+    fix for the same reason, issue #1899).
     """
     try:
         driver.execute_script("arguments[0].scrollIntoView({block:'center'});", comment_el)

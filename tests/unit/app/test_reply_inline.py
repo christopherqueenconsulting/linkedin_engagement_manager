@@ -205,8 +205,9 @@ class TestReplyInline:
         # Submit failed: composer keeps the text and it's not in the list → NOT a false positive.
         from cqc_lem.app.engagement import posting
         composer = MagicMock(); composer.text = "hello this is my reply text still here"
-        # composer-centering scrollIntoView (#815); then: no submit button; text not in list
-        driver = MagicMock(); driver.execute_script.side_effect = [None, False, False]
+        # comment-hover scrollIntoView (#1899); composer-centering scrollIntoView (#815);
+        # then: no submit button; text not in list
+        driver = MagicMock(); driver.execute_script.side_effect = [None, None, False, False]
         with patch(f"{_POST}.click_first", return_value=MagicMock()), \
              patch(f"{_POST}._reply_composer_for_comment", return_value=composer):
             ok = posting._reply_to_comment_inline(driver, MagicMock(), MagicMock(),
@@ -214,7 +215,7 @@ class TestReplyInline:
         assert ok is False
         # Pin the sequence: a shift would exhaust the side_effect list and make _composer_submitted
         # return False off a swallowed StopIteration instead of off the comment-list check.
-        assert driver.execute_script.call_count == 3
+        assert driver.execute_script.call_count == 4
 
     def test_returns_false_when_no_reply_button(self):
         from cqc_lem.app.engagement import posting
@@ -240,6 +241,45 @@ class TestReplyInline:
              patch(f"{_POST}._reply_composer_for_comment", return_value=composer) as rc:
             posting._reply_to_comment_inline(driver, MagicMock(), comment, "a reply worth posting", user_id=1)
         assert rc.call_args.args[1] is comment
+
+    def test_hovers_before_looking_for_the_reply_button(self):
+        """Issue #1899: the comment's action bar is hover-hidden, same as the Like control.
+
+        The other reply path (#478) already scrolls + hovers, so a reply to a comment on our OWN
+        post never actually landed here: the Reply button lookup ran before anything revealed it.
+        Scroll + hover must happen first.
+        """
+        from cqc_lem.app.engagement import posting
+        comment = MagicMock()
+        driver = MagicMock()
+        driver.execute_script.return_value = True
+        with patch(f"{_POST}.ActionChains") as ac, \
+             patch(f"{_POST}.click_first", return_value=MagicMock()) as click, \
+             patch(f"{_POST}._reply_composer_for_comment", return_value=None):
+            posting._reply_to_comment_inline(driver, MagicMock(), comment, "hi", user_id=1)
+        driver.execute_script.assert_any_call("arguments[0].scrollIntoView({block:'center'});", comment)
+        ac.assert_called_once_with(driver)
+        ac.return_value.move_to_element.assert_called_once_with(comment)
+        click.assert_called_once()   # the lookup still runs after the hover attempt
+
+    def test_a_failed_hover_never_blocks_the_reply(self):
+        """Hover is best-effort and must never stop the reply that follows.
+
+        A `comment_el` that isn't a real WebElement (as in most of this file's unit tests) raises
+        out of `ActionChains.move_to_element`.
+        """
+        from cqc_lem.app.engagement import posting
+        composer = MagicMock()
+        composer.text = ""
+        driver = MagicMock()
+        driver.execute_script.return_value = True
+        with patch(f"{_POST}.click_first", return_value=MagicMock()), \
+             patch(f"{_POST}._reply_composer_for_comment", return_value=composer):
+            # comment_el is a plain MagicMock, not a WebElement — real ActionChains.move_to_element
+            # raises AttributeError on it, exercising the swallow this test pins.
+            ok = posting._reply_to_comment_inline(driver, MagicMock(), MagicMock(),
+                                             "a real reply", user_id=1)
+        assert ok is True
 
 
 def _thread_comment(y, height=120, composers=()):

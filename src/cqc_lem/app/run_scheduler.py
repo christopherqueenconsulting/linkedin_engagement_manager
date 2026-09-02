@@ -50,6 +50,7 @@ from cqc_lem.app.engagement.posting import (
 )
 from cqc_lem.app.my_celery import app as shared_task
 from cqc_lem.app.queue_once import QueueOnce
+from cqc_lem.utilities import golden_hour as _golden
 from cqc_lem.utilities.db import (
     CatchupTouchStatus,
     ConnectionRequestStatus,
@@ -537,25 +538,36 @@ def dispatch_golden_hour_engagement(user_id: int, loop_for_duration: int = 60 * 
 
 @shared_task.task
 def dispatch_scheduled_reply_sweeps():
-    """Beat: for users on reply_check_mode='scheduled', run a recent-posts reply sweep at their
-    configured cadence (reply_sweeps_per_day, 2–12). A per-user Redis key with TTL = the cadence
-    interval gates it: while the key exists we're within the interval and skip, so running this beat
-    every ~30 min naturally yields ~reply_sweeps_per_day sweeps. Fails open on Redis outage (dispatch
+    """Beat: the reply-sweep backstop for two populations sharing one dispatcher.
+
+    'scheduled' users get a recent-posts sweep at their configured cadence (reply_sweeps_per_day,
+    2–12). 'event' users normally rely on the forwarded-email webhook plus the golden-hour amplifier
+    (`post_to_linkedin`'s first-hour sweeps) — both opportunistic: they only ever answer a comment
+    inside the hour after publish, or when LinkedIn actually emails the notification, which an
+    always-active account rarely draws at all (observed near-permanently absent, issue #1899). A
+    comment landing after that window got no automated follow-up, ever. This adds ONE once-a-day
+    backstop sweep (`golden_hour.event_mode_backstop_seconds`) for event-mode users too — far below
+    'scheduled's cadence, so it does not reintroduce the 429 exposure event mode exists to avoid.
+
+    Both populations share the same per-user Redis key with TTL = the mode's interval: while the key
+    exists we're within the interval and skip, so running this beat every ~30 min naturally yields
+    the right cadence for whichever mode the user is in. Fails open on Redis outage (dispatch
     anyway) — sweep_reply_comments itself is QueueOnce + 429-safe, so an extra run is harmless.
     """
     if _skip_if_throttled("dispatch_scheduled_reply_sweeps"):
         return "Automation throttled"
     from cqc_lem.utilities.linkedin.rate_limit import _redis_client
-    users = get_users_with_reply_mode("scheduled")
-    if not users:
-        return "No scheduled-mode users"
+    scheduled_users = get_users_with_reply_mode("scheduled")
+    event_users = get_users_with_reply_mode("event")
+    if not scheduled_users and not event_users:
+        return "No scheduled-mode or event-mode users"
     client = _redis_client()
     dispatched = 0
-    for user_id in users:
+
+    def _dispatch_if_due(user_id: int, interval_s: int) -> None:
+        nonlocal dispatched
         if not has_linkedin_session(user_id):
-            continue
-        sweeps = int(get_engagement_preferences(user_id).get("reply_sweeps_per_day") or 2)
-        interval_s = max(2 * 60 * 60, (24 * 60 * 60) // max(1, sweeps))  # floor 2h between sweeps
+            return
         due = True
         if client is not None:
             try:
@@ -573,7 +585,15 @@ def dispatch_scheduled_reply_sweeps():
             sweep_reply_comments.apply_async(kwargs={'user_id': user_id, 'sweep_slot': 0},
                                              countdown=dispatch_jitter_seconds(PACE_RESPONSIVE))
             dispatched += 1
-    return f"Scheduled reply sweeps dispatched for {dispatched}/{len(users)} user(s)"
+
+    for user_id in scheduled_users:
+        sweeps = int(get_engagement_preferences(user_id).get("reply_sweeps_per_day") or 2)
+        interval_s = max(2 * 60 * 60, (24 * 60 * 60) // max(1, sweeps))  # floor 2h between sweeps
+        _dispatch_if_due(user_id, interval_s)
+    for user_id in event_users:
+        _dispatch_if_due(user_id, _golden.event_mode_backstop_seconds())
+    total = len(scheduled_users) + len(event_users)
+    return f"Reply sweeps dispatched for {dispatched}/{total} user(s)"
 
 
 @shared_task.task
