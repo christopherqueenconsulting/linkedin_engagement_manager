@@ -137,8 +137,10 @@ class TestThreadReading:
 
 
 class TestWaitThreadOpen:
-    """A bare composer must not end the wait: LinkedIn paints the compose form before the message
-    list, and a thread reported with zero events is UNKNOWN — which parks that person's follow-up.
+    """A bare composer must not end the wait.
+
+    LinkedIn paints the compose form before the message list, and a thread reported with zero
+    events is UNKNOWN — which parks that person's follow-up.
     """
 
     def test_events_that_arrive_after_the_composer_are_still_read(self, monkeypatch):
@@ -162,8 +164,10 @@ class TestWaitThreadOpen:
 
 
 class TestNameMatches:
-    """Whole-word, both directions of harm: a loose match opens a stranger's thread, and a loose
-    SELF match reads their reply as our own message and sends the follow-up anyway.
+    """Whole-word, both directions of harm.
+
+    A loose match opens a stranger's thread, and a loose SELF match reads their reply as our own
+    message and sends the follow-up anyway.
     """
 
     def test_a_full_name_matches_inside_a_label(self):
@@ -369,13 +373,13 @@ class TestRoutes:
         assert result.route == mt.ROUTE_MESSAGING_SEARCH
 
     def test_missing_search_box_is_not_a_warning(self):
-        """Messaging search is the LAST route in the ladder — reached only once every earlier route
-        has already failed. A missing search box there is the expected shape of "this account
-        cannot message this person at all" (or the messaging SPA didn't boot, issue #1774), not
-        selector rot, so it must not WARN — a WARNING here recurred into
-        `RecurringWarning: Selector miss: Messaging search box` for working refusal-to-follow-up-blind
-        behavior (issue #1783), the same reasoning `open_message_thread` already applies to the
-        ladder as a whole (issue #1752).
+        """Messaging search is the LAST route in the ladder — reached only once every earlier route has already failed.
+
+        A missing search box there is the expected shape of "this account cannot message this
+        person at all" (or the messaging SPA didn't boot, issue #1774), not selector rot, so it
+        must not WARN — a WARNING here recurred into `RecurringWarning: Selector miss: Messaging
+        search box` for working refusal-to-follow-up-blind behavior (issue #1783), the same
+        reasoning `open_message_thread` already applies to the ladder as a whole (issue #1752).
         """
         d = FakeDriver()
         with patch.object(mt, "find_first", return_value=None) as find_first:
@@ -478,6 +482,17 @@ class TestLadderContract:
     def test_thread_open_is_falsy_when_nothing_opened(self):
         assert not mt.ThreadOpen()
         assert mt.ThreadOpen(opened=True, route=mt.ROUTE_ANCHOR)
+
+    def test_the_winning_route_log_carries_profile_url(self):
+        # #1857's log-attribution step needs to join a winning-route log line back to a
+        # dm_followups row; the route name alone can't do that without the profile it ran against.
+        d = FakeDriver()
+        anchor = FakeElement({"href": "/messaging/compose/?x"}, on_click=_opens(d))
+        d.dom[(By.CSS_SELECTOR, "main a[href*='/messaging/compose/']")] = [anchor]
+        with patch.object(mt, "log_info") as info:
+            result = mt.open_message_thread(d, MagicMock(), PROFILE, timeout=0)
+        assert result.opened
+        assert info.call_args.kwargs.get("profile_url") == PROFILE
 
 
 class TestProfileSideSkip:
@@ -661,9 +676,10 @@ class TestReaders:
 
 
 class TestResolveSelfName:
-    """The name reply detection compares the last sender against (issue #731). The SAVED settings
-    value is the user's own declaration of what LinkedIn renders; the scraped profile is only the
-    fallback, and '' means UNKNOWN — never 'they replied'.
+    """The name reply detection compares the last sender against (issue #731).
+
+    The SAVED settings value is the user's own declaration of what LinkedIn renders; the scraped
+    profile is only the fallback, and '' means UNKNOWN — never 'they replied'.
     """
 
     def _saved(self, value):
@@ -702,8 +718,10 @@ class TestResolveSelfName:
 
 
 class TestComposeUrl:
-    """LinkedIn's own top-card link carries profileUrn AND recipient — the 2026-08-04 grounding run
-    found that dropping the second one opens a composer addressed to nobody.
+    """LinkedIn's own top-card link carries profileUrn AND recipient.
+
+    The 2026-08-04 grounding run found that dropping the second one opens a composer addressed to
+    nobody.
     """
 
     def test_the_url_addresses_the_person_not_just_the_thread(self):
