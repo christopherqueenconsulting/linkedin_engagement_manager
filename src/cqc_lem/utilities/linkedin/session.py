@@ -96,10 +96,9 @@ def get_current_profile(user_id: int, session_name: str = "Get Current Profile",
         if is_tab_crashed(e):
             # The renderer behind this freshly-acquired session's tab was already dead (a Grid slot
             # reused from a previous heavy session that OOM-killed it, issue #1746) before the very
-            # first navigation — never a login/rate-limit fault, so "possibly rate-limited" would be
-            # actively wrong here. The caller aborts this run and quits the session the same as any
-            # other login failure; only the severity changes, to a warning that escalates if it
-            # starts recurring (issue #1749).
+            # first navigation — never a login/rate-limit fault. The caller aborts this run and
+            # quits the session the same as any other login failure; only the severity changes, to
+            # a warning that escalates if it starts recurring (issue #1749).
             log_warning("Browser tab crashed on the first login navigation", exc=e, user_id=user_id)
         elif isinstance(e, TimeoutException):
             # The login form never rendered — `login_to_linkedin` already logged the page it
@@ -111,7 +110,7 @@ def get_current_profile(user_id: int, session_name: str = "Get Current Profile",
             # ran and logged ERROR before the exception ever reached the caller's `except`.
             log_warning("LinkedIn login failed — form fields never appeared", exc=e, user_id=user_id)
         else:
-            log_error("LinkedIn login failed (possibly rate-limited)", exc=e, user_id=user_id)
+            log_error("LinkedIn login failed", exc=e, user_id=user_id)
         quit_gracefully(driver)
         raise e
 

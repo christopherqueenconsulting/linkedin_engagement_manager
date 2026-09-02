@@ -43,6 +43,7 @@ from cqc_lem.utilities.linkedin.login_status import (
 )
 from cqc_lem.utilities.linkedin.profile import LinkedInProfile
 from cqc_lem.utilities.linkedin.rate_limit import (
+    LinkedInChallengeUnsolved,
     LinkedInRateLimited,
     automation_pause_remaining,
     clear_rate_limit,
@@ -519,8 +520,9 @@ def login_to_linkedin(driver: WebDriver, wait: WebDriverWait, user_email: str, u
         LinkedInRateLimited: automation paused, breaker open, a genuine 429, a transient
             proxy/network failure that must NOT trip the breaker, or this account's own
             challenge-unsolvable cooldown is still active.
-        RuntimeError: a challenge that neither the CAPTCHA solver, the email PIN flow nor a manual
-            mobile approval could clear.
+        LinkedInChallengeUnsolved: a challenge that neither the CAPTCHA solver, the email PIN flow
+            nor a manual mobile approval could clear. Rate-limit-class (trips the breaker and defers)
+            because it is an account-level wall, not the fault of whatever the run was for.
     """
     linked_url = "https://www.linkedin.com"
     feed_url = "https://www.linkedin.com/feed/"
@@ -680,13 +682,19 @@ def login_to_linkedin(driver: WebDriver, wait: WebDriverWait, user_email: str, u
                 return
         if _wait_for_manual_approval():
             return
-        # Every automated path failed. Record it so the NEXT call backs off instead of repeating
-        # this identical ~2min dance (and filing its own error-tracking occurrence) on the very
-        # next scheduled run — issue #1920 saw 19 of these in under 5h for one account.
+        # The ladder is spent and the checkpoint is still up — an ACCOUNT-level wall, never the
+        # target's fault. Record the per-account cooldown so the NEXT call backs off instead of
+        # repeating this identical ~2min dance (issue #1920 saw 19 of these in under 5h for one
+        # account), open the breaker so the lanes stop re-submitting a live checkpoint page (each
+        # submit is what hardens a temporary challenge into a durable restriction), and raise
+        # rate-limit-class so every caller defers and charges no attempt. A plain RuntimeError fell
+        # through to the per-target attempt ledger and retired reachable targets at the ceiling.
         uid = _user_id_for_email(user_email)
         if uid:
             mark_challenge_unsolvable(uid)
-        raise RuntimeError(f"Unsolvable LinkedIn challenge at {label}: {driver.current_url}")
+        mark_rate_limited(f"unsolvable login challenge at {label}")
+        raise LinkedInChallengeUnsolved(
+            f"Unsolvable LinkedIn challenge at {label}: {driver.current_url}")
 
     # Manual global pause: a kill-switch to let a rate-limited account recover. Central gate —
     # every Selenium task logs in through here, so a pause halts all of them without navigating.
