@@ -76,6 +76,27 @@ class TestGetCurrentProfile:
         assert warn.call_args.kwargs.get("exc") is crash
         err.assert_not_called()
 
+    def test_login_timeout_logs_warning_not_error(self):
+        # Issue #1919: PostHog grouped 22 occurrences/24h of `TimeoutException: Finding Username
+        # Field` off this exact call site. `login_to_linkedin` already logs the unrecognized
+        # challenge/checkpoint page at WARNING (#1908) before re-raising; this ONE place —
+        # `get_current_profile`, shared by every lane — was still filing an immediate, ungrouped
+        # `$exception` via the generic `else: log_error` branch on every attempt regardless of
+        # which caller was running it.
+        from selenium.common.exceptions import TimeoutException
+        p = _patches()
+        timeout = TimeoutException("Finding Username Field")
+        with p["get_user_password_pair_by_id"], p["get_driver_wait_pair"], p["quit_gracefully"], \
+             patch(f"{_SESSION}.login_to_linkedin", side_effect=timeout), \
+             patch(f"{_SESSION}.log_warning") as warn, \
+             patch(f"{_SESSION}.log_error") as err:
+            from cqc_lem.utilities.linkedin.session import get_current_profile
+            with pytest.raises(TimeoutException):
+                get_current_profile(user_id=1)
+        warn.assert_called_once()
+        assert warn.call_args.kwargs.get("exc") is timeout
+        err.assert_not_called()
+
     def test_rate_limited_login_logs_warning_not_error(self):
         # Issue #1920: `LinkedInRateLimited` is a known, self-clearing back-off (429 breaker,
         # manual pause, or a per-account challenge cooldown) — not a fresh failure to page on.
