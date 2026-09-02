@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.173.2](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.173.1...v0.173.2) (2026-09-02)
+
+
+### Bug Fixes
+
+* **errors:** stop escalating a login TimeoutException into  on every process_user_followups attempt (closes [#1919](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1919)) ([#1934](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1934)) ([c9692be](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/c9692be7b43e20f9ba20b32b519f202e3a9aca1a))
+* **errors:** stop escalating the 429-safe reply-sweep skip into PostHog ([0cfb5b9](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/0cfb5b9b98f1cc3efa5da32ce4d7b7d63067537e)), closes [#1926](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1926)
+* **errors:** stop escalating the 429-safe reply-sweep skip into PostHog (closes [#1926](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1926)) ([#1927](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1927)) ([0cfb5b9](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/0cfb5b9b98f1cc3efa5da32ce4d7b7d63067537e))
+* **invites:** defer connect invites on login failure instead of burning attempts (closes [#1924](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1924)) ([#1931](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1931)) ([bb8e20a](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/bb8e20aed52a589ffe0912b86cc3604440e87737))
+* **invites:** defer on an unsolvable login challenge instead of filing an ERROR (closes [#1918](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1918)) ([#1935](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1935)) ([22063f3](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/22063f392faf29e73e32638f5669539827fc2a19))
+* **linkedin:** back off a per-account unsolvable login challenge (closes [#1920](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1920)) ([#1933](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1933)) ([1a4d6ef](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/1a4d6efa7f7ced8087be8bf19210109f2e813045))
+* **linkedin:** warn once per article-editor step, not once per route (closes [#1925](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1925)) ([#1928](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1928)) ([f9aeb0e](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/f9aeb0e538e360daf0a5801a69ecf3889294f8f8))
+
 ## [0.173.1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.173.0...v0.173.1) (2026-09-02)
 
 
