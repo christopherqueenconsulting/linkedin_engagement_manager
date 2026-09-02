@@ -128,20 +128,53 @@ persist_image_tag() {
 # proceed — never abort the deploy. (An un-guarded `x="$(docker ...)"` assignment exits the shell
 # under `set -e` when docker is absent, which is exactly how this wedged the unit tests.)
 sweep_rename_orphans() {
-  local ids id name running
+  local ids id name running bare active
   command -v docker >/dev/null 2>&1 || return 0
   # `docker ps` (not `compose ps`) on purpose: the orphan has been renamed out from under compose,
   # and going direct also keeps this off the compose CLI the deploy tests stub out.
   ids="$(docker ps -aq --filter 'label=com.docker.compose.project' 2>/dev/null || true)"
   [[ -n "${ids}" ]] || return 0
+  active="$(cat "${ROOT_DIR}/.active_color" 2>/dev/null || true)"
   while read -r id; do
     [[ -n "${id}" ]] || continue
     name="$(docker inspect -f '{{.Name}}' "${id}" 2>/dev/null | sed 's|^/||' || true)"
     [[ "${name}" =~ ^[0-9a-f]{12}_.+$ ]] || continue
     running="$(docker inspect -f '{{.State.Running}}' "${id}" 2>/dev/null || true)"
-    [[ "${running}" == "false" ]] || continue
-    log "Removing leftover rename-orphan container ${name} (interrupted prior converge)"
-    docker rm "${id}" >/dev/null 2>&1 || log "WARN: could not remove orphan ${name}"
+    if [[ "${running}" == "false" ]]; then
+      log "Removing leftover rename-orphan container ${name} (interrupted prior converge)"
+      docker rm "${id}" >/dev/null 2>&1 || log "WARN: could not remove orphan ${name}"
+      continue
+    fi
+    # Anything other than a definite "false" or "true" (an unreadable state, a container that
+    # vanished mid-sweep) is never acted on: the sweep only removes what it positively identifies.
+    [[ "${running}" == "true" ]] || continue
+
+    # A RUNNING shadow is the case that broke every deploy to blue for a day (issue #1897): compose
+    # renamed web_api_blue to <12hex>_web_api_blue and left it running, so `docker exec web_api_blue`
+    # could never resolve. This sweep declined running containers outright, which is why it skipped
+    # that one on every converge instead of clearing it. Remove it — but only where it is provably
+    # safe to.
+    bare="${name#*_}"
+    # Something still holds the canonical name, so this shadow is not what is blocking anyone, and
+    # which of the two is serving is not knowable from here. Leave both to a human.
+    if docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qx "${bare}"; then
+      log "WARN: running rename-orphan ${name} shadows ${bare}, which also exists — leaving both alone"
+      continue
+    fi
+    # PRECAUTION, not a measured fact: a compose network alias is set at connect time from the
+    # SERVICE name, and a container rename does not necessarily drop it — so a shadowed ACTIVE
+    # colour may still be answering edge traffic under that alias. Removing it could drop live
+    # requests, and a deploy to the STANDBY does not need it gone. Name it and carry on; if it does
+    # matter, color_healthy now aborts promptly with this same remediation instead of hanging.
+    if [[ -n "${active}" && "${bare}" == "web_api_${active}" ]]; then
+      log "WARN: ${name} shadows the ACTIVE color ${bare} — NOT removing it (its network alias may still serve traffic)"
+      log "WARN: remediate by hand: cd ${ROOT_DIR} && ${COMPOSE} up -d --force-recreate --no-deps ${bare}"
+      continue
+    fi
+    # The standby colour: nginx's upstream addresses the bare name, so a shadow of it serves no
+    # traffic, and the `up -d --no-deps web_api_<target>` moments later recreates it properly.
+    log "Removing RUNNING rename-orphan container ${name} — nothing holds ${bare} (issue #1897)"
+    docker rm -f "${id}" >/dev/null 2>&1 || log "WARN: could not remove orphan ${name}"
   done <<< "${ids}"
   return 0
 }
@@ -230,6 +263,34 @@ verify_stack_running() {
 
   log "Verified all expected services are running"
   return 0
+}
+
+# Probe one colour's FastAPI container. THREE-valued (issue #1897):
+#   0 = healthy, 1 = the container answered but never became healthy inside the timeout,
+#   2 = Docker has no container by that name at all.
+# The old form sent stderr to /dev/null, so `No such container: web_api_blue` — the signature of a
+# compose rename that left `<12hex>_web_api_blue` running in its place — was indistinguishable from
+# a slow-starting app: the probe spun for the whole HEALTH_TIMEOUT and then reported the wrong
+# reason. A name that does not resolve will not resolve in 180 more seconds, so return at once.
+# Lives at top level (not nested in main) so the unit tests can source and call it directly. It
+# reads ${API_PORT}, which main sets before any call to it.
+color_healthy() {  # $1 = color, $2 = timeout seconds
+  local name="web_api_$1"
+  local deadline=$(( $(date +%s) + $2 ))
+  local err shadow
+  while (( $(date +%s) < deadline )); do
+    # `2>&1 >/dev/null` in THAT order: stderr into the capture, stdout to /dev/null.
+    if err="$(docker exec "${name}" curl -fsS "http://localhost:${API_PORT}/health" 2>&1 >/dev/null)"; then
+      return 0
+    fi
+    if [[ "${err}" == *"No such container"* ]]; then
+      shadow="$(docker ps -a --format '{{.Names}}' 2>/dev/null | grep -E "^[0-9a-f]{12}_${name}\$" || true)"
+      log "ERROR: Docker has no container named ${name}${shadow:+ — it has been renamed to ${shadow}}"
+      return 2
+    fi
+    sleep 5
+  done
+  return 1
 }
 
 main() {
@@ -328,22 +389,17 @@ STATE_FILE="${ROOT_DIR}/.active_color"
 NGINX_DIR="${ROOT_DIR}/deploy/nginx"
 mkdir -p "${NGINX_DIR}"
 
+# Sweep rename-orphans HERE, before anything reads a colour's container name. The only other call
+# is inside converge_stack, which is step 7 — after this flip — so a shadow like the
+# `<12hex>_web_api_blue` of issue #1897 could never be cleared in time to save the deploy that
+# tripped over it. Best-effort, as always: it never aborts the deploy.
+sweep_rename_orphans
+
 render_nginx() {  # $1 = color to route to
   sed -e "s/__ACTIVE_COLOR__/web_api_$1/" \
       -e "s/__EDGE_PORT__/${EDGE_PORT}/" \
       -e "s/__BACKEND_PORT__/${API_PORT}/" \
     "${ROOT_DIR}/compose/prod/nginx/default.conf.tmpl" > "${NGINX_DIR}/default.conf"
-}
-
-color_healthy() {  # $1 = color, $2 = timeout seconds
-  local deadline=$(( $(date +%s) + $2 ))
-  while (( $(date +%s) < deadline )); do
-    if docker exec "web_api_$1" curl -fsS "http://localhost:${API_PORT}/health" >/dev/null 2>&1; then
-      return 0
-    fi
-    sleep 5
-  done
-  return 1
 }
 
 ACTIVE="$(cat "${STATE_FILE}" 2>/dev/null || echo "")"
@@ -363,8 +419,19 @@ fi
 log "Blue/green: active=${ACTIVE:-<none>} -> deploying ${TAG} to ${TARGET}"
 ${COMPOSE} up -d --no-deps "web_api_${TARGET}"
 
-if ! color_healthy "${TARGET}" "${HEALTH_TIMEOUT}"; then
-  log "ERROR: web_api_${TARGET} did not become healthy on ${TAG}."
+# `|| health_rc=$?` rather than `if !`: the return code carries WHICH failure this was, and the
+# assignment keeps it `set -e`-safe.
+health_rc=0
+color_healthy "${TARGET}" "${HEALTH_TIMEOUT}" || health_rc=$?
+if (( health_rc != 0 )); then
+  if (( health_rc == 2 )); then
+    # Not a sick app — there is no such container. Almost always a compose rename left the colour
+    # running under `<12hex>_web_api_${TARGET}` (issue #1897).
+    log "ERROR: web_api_${TARGET} does not exist — this is a deploy-infrastructure fault, not an unhealthy app."
+    log "ERROR: recreate it under its proper name: cd ${ROOT_DIR} && ${COMPOSE} up -d --force-recreate --no-deps web_api_${TARGET}"
+  else
+    log "ERROR: web_api_${TARGET} did not become healthy on ${TAG}."
+  fi
   if [[ -n "${ACTIVE}" && -n "${PREV_TAG}" ]]; then
     # The active color was never touched — the site is still up on ${PREV_TAG}. Just restore the
     # standby to the last good tag and abort; no user-facing downtime.
