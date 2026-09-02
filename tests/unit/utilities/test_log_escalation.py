@@ -215,9 +215,10 @@ def test_other_exceptions_on_the_same_message_still_escalate():
 
 
 def test_device_approval_challenges_never_escalate():
-    """A LinkedIn device-approval challenge is an expected security check the account owner clears
-    with a mobile tap, already best-effort handled (SPA badge, owner email) — escalating it filed a
-    GitHub issue against working login handling (#1922).
+    """A LinkedIn device-approval challenge is an expected security check the account owner clears.
+
+    Already best-effort handled (SPA badge, owner email) — escalating it filed a GitHub issue
+    against working login handling (#1922).
     """
     from cqc_lem.utilities.linkedin.helper import DEVICE_APPROVAL_LOG_PREFIX
 
