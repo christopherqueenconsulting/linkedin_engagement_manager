@@ -16,6 +16,7 @@ from unittest.mock import patch
 
 import pytest
 
+from cqc_lem.app.engagement.invites import INVITE_OUTCOME_CHALLENGE
 from cqc_lem.utilities.db import (
     ACCOUNT_RESTRICTED_MESSAGE,
     ALREADY_CONNECTED_MESSAGE,
@@ -25,6 +26,7 @@ from cqc_lem.utilities.db import (
     INVITE_NOT_SENT_MESSAGE,
     NO_CONNECT_BUTTON_MESSAGE,
 )
+from cqc_lem.utilities.linkedin.rate_limit import LinkedInChallengeUnsolved
 from cqc_lem.utilities.observability import EVENTS
 
 pytestmark = pytest.mark.unit
@@ -106,9 +108,8 @@ class TestEveryOutcomeIsEmitted:
 
     def test_an_unsolvable_checkpoint_defers_with_its_own_word(self):
         """It charges no attempt but gets its own wall word, not buried with throttles or `error`."""
-        from cqc_lem.utilities.linkedin.rate_limit import LinkedInChallengeUnsolved
         _, result, reason, attempts = _run(send=LinkedInChallengeUnsolved("checkpoint"))
-        assert (result, reason, attempts) == ("deferred", "challenge", 0)
+        assert (result, reason, attempts) == ("deferred", INVITE_OUTCOME_CHALLENGE, 0)
 
     def test_a_row_that_already_had_attempts_carries_them_forward_on_a_defer(self):
         _, _, _, attempts = _run(req=_req(attempts=2), held=True)
