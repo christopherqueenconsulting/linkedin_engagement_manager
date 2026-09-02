@@ -114,16 +114,25 @@ class TestLoginToLinkedinCookiePath:
         )
 
     def test_challenge_url_after_cookies_raises(self):
-        """Security challenge after cookie load → RuntimeError (not silent fail)."""
+        """An unclearable checkpoint is rate-limit-class and trips the breaker (not silent fail).
+
+        A plain RuntimeError fell through to the per-target attempt ledger and retired reachable
+        targets at the ceiling; LinkedInChallengeUnsolved makes every caller defer and charge no
+        attempt, and mark_rate_limited stops the lanes re-submitting a live checkpoint page.
+        """
+        from cqc_lem.utilities.linkedin.rate_limit import LinkedInChallengeUnsolved
+
         driver = _make_driver("https://www.linkedin.com/checkpoint/challenge")
         wait = _make_wait()
 
         with patch(f"{_MODULE}.get_cookies", return_value=[{"name": "x"}]), \
              patch(f"{_MODULE}.load_cookies"), \
              patch(f"{_MODULE}.store_cookies"), \
-             pytest.raises(RuntimeError, match="Unsolvable LinkedIn challenge"):
+             patch(f"{_MODULE}.mark_rate_limited") as mark, \
+             pytest.raises(LinkedInChallengeUnsolved, match="Unsolvable LinkedIn challenge"):
             from cqc_lem.utilities.linkedin.helper import login_to_linkedin
             login_to_linkedin(driver, wait, "user@e.com", "pw")
+        mark.assert_called_once()
 
     def test_no_cookies_goes_to_login_flow(self):
         """No stored cookies → must do credential login (navigate to /login)."""

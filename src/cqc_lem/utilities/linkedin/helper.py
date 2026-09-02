@@ -37,6 +37,7 @@ from cqc_lem.utilities.db import (
 from cqc_lem.utilities.linkedin.login_status import mark_approval_pending, mark_approval_timed_out, mark_signed_in
 from cqc_lem.utilities.linkedin.profile import LinkedInProfile
 from cqc_lem.utilities.linkedin.rate_limit import (
+    LinkedInChallengeUnsolved,
     LinkedInRateLimited,
     automation_pause_remaining,
     clear_rate_limit,
@@ -497,8 +498,9 @@ def login_to_linkedin(driver: WebDriver, wait: WebDriverWait, user_email: str, u
     Raises:
         LinkedInRateLimited: automation paused, breaker open, a genuine 429, or a transient
             proxy/network failure that must NOT trip the breaker.
-        RuntimeError: a challenge that neither the CAPTCHA solver, the email PIN flow nor a manual
-            mobile approval could clear.
+        LinkedInChallengeUnsolved: a challenge that neither the CAPTCHA solver, the email PIN flow
+            nor a manual mobile approval could clear. Rate-limit-class (trips the breaker and defers)
+            because it is an account-level wall, not the fault of whatever the run was for.
     """
     linked_url = "https://www.linkedin.com"
     feed_url = "https://www.linkedin.com/feed/"
@@ -587,7 +589,12 @@ def login_to_linkedin(driver: WebDriver, wait: WebDriverWait, user_email: str, u
         uid = _user_id_for_email(user_email)
         if uid:
             mark_approval_pending(uid)
-        log_warning(
+        # INFO, not WARNING (precedent: f28f8bd): a device-approval prompt is an expected LinkedIn
+        # checkpoint, not a degraded path detected here. A warning re-emits at ERROR on repeat and
+        # files a grouped $exception for every prompt; the ask is already published to the SPA and
+        # the email above, and an approval that never lands surfaces where it is actioned — the
+        # unsolvable-challenge raise below trips the breaker and defers.
+        log_info(
             "LinkedIn device-approval required — open your LinkedIn mobile app and tap "
             "'Yes' to confirm this sign-in (watch via VNC). Waiting up to "
             f"{timeout}s for approval.",
@@ -658,7 +665,15 @@ def login_to_linkedin(driver: WebDriver, wait: WebDriverWait, user_email: str, u
                 return
         if _wait_for_manual_approval():
             return
-        raise RuntimeError(f"Unsolvable LinkedIn challenge at {label}: {driver.current_url}")
+        # The ladder is spent and the checkpoint is still up — an ACCOUNT-level wall, never the
+        # target's fault, so treat it exactly like a 429: open the breaker so the lanes stop
+        # re-submitting a live checkpoint page (each submit is what hardens a temporary challenge
+        # into a durable restriction), and raise rate-limit-class so every caller defers and charges
+        # no attempt. A plain RuntimeError did neither — it fell through to the per-target attempt
+        # ledger and retired reachable targets at the ceiling.
+        mark_rate_limited(f"unsolvable login challenge at {label}")
+        raise LinkedInChallengeUnsolved(
+            f"Unsolvable LinkedIn challenge at {label}: {driver.current_url}")
 
     # Manual global pause: a kill-switch to let a rate-limited account recover. Central gate —
     # every Selenium task logs in through here, so a pause halts all of them without navigating.

@@ -37,6 +37,16 @@ class LinkedInRateLimited(RuntimeError):
     """
 
 
+class LinkedInChallengeUnsolved(LinkedInRateLimited):
+    """A login checkpoint (device approval / captcha / email PIN) the ladder could not clear.
+
+    Rate-limit-class on purpose: an account-level checkpoint is never the target's fault, so every
+    `except LinkedInRateLimited` handler defers the work and charges no attempt against whoever it
+    was for, and the breaker opens so the lanes stop re-submitting a live checkpoint page. It is a
+    subclass, not a reworded LinkedInRateLimited, only so a caller can name it a distinct outcome.
+    """
+
+
 def _cooldown_seconds() -> int:
     try:
         return int(os.getenv("LINKEDIN_RATE_LIMIT_COOLDOWN_SECONDS", str(_DEFAULT_COOLDOWN_SECONDS)))

@@ -72,6 +72,7 @@ from cqc_lem.utilities.linkedin.company_page_inviter import (
 from cqc_lem.utilities.linkedin.helper import is_first_degree, login_to_linkedin
 from cqc_lem.utilities.linkedin.rate_limit import (
     INVITE_HOLD_DEFAULT_SECONDS,
+    LinkedInChallengeUnsolved,
     LinkedInRateLimited,
     clear_invite_dialog_misses,
     hold_invites,
@@ -1846,8 +1847,12 @@ def send_connection_request(self, request_id: int):
                   user_id=user_id, action_type="invite_connect",
                   task_name="send_connection_request")
         update_connection_request_status(request_id, ConnectionRequestStatus.APPROVED)  # retry on next scan
-        track_invite_outcome(user_id, INVITE_RESULT_DEFERRED, "throttled", attempts_before)
-        return f"Connection request {request_id} deferred (LinkedIn throttled)"
+        # An unsolvable login checkpoint defers exactly like a 429 — no attempt charged — but it is
+        # a distinct wall word so a breakdown separates "the account could not sign in" from a
+        # genuine throttle, instead of the account-level outage landing in the `error` bucket.
+        reason = "challenge" if isinstance(e, LinkedInChallengeUnsolved) else "throttled"
+        track_invite_outcome(user_id, INVITE_RESULT_DEFERRED, reason, attempts_before)
+        return f"Connection request {request_id} deferred (LinkedIn {reason})"
     if sent:
         update_connection_request_status(request_id, ConnectionRequestStatus.SENT)
         track_invite_outcome(user_id, INVITE_RESULT_SENT, _invite_outcome_reason(reason),

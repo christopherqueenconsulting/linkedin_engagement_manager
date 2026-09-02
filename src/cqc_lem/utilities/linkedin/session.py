@@ -26,7 +26,8 @@ from selenium.webdriver.support.wait import WebDriverWait
 from cqc_lem.utilities.db import get_user_password_pair_by_id
 from cqc_lem.utilities.linkedin.helper import get_my_profile, load_profile_for_user, login_to_linkedin
 from cqc_lem.utilities.linkedin.profile import LinkedInProfile
-from cqc_lem.utilities.logger import log_error, log_info, log_warning
+from cqc_lem.utilities.linkedin.rate_limit import LinkedInRateLimited
+from cqc_lem.utilities.logger import log_debug, log_error, log_info, log_warning
 from cqc_lem.utilities.selenium_util import get_driver_wait_pair, is_tab_crashed, quit_gracefully
 
 
@@ -68,17 +69,26 @@ def get_current_profile(user_id: int, session_name: str = "Get Current Profile",
     try:
         login_to_linkedin(driver, wait, user_email, user_password,
                           measurement_only=measurement_only)
+    except LinkedInRateLimited as e:
+        # A deliberate back-off, not a login failure to guess about: the breaker is open, automation
+        # is paused, LinkedIn returned a real 429, or a checkpoint could not be cleared. Whatever
+        # tripped it already logged where it detected it (mark_rate_limited warns, the pause is
+        # INFO), so an ERROR here would only fork a second grouped $exception for the same event.
+        # DEBUG and re-raise; the caller defers exactly as it does for any rate-limit-class abort.
+        log_debug("LinkedIn login skipped — rate-limited / paused / unsolvable checkpoint", exc=e,
+                  user_id=user_id)
+        quit_gracefully(driver)
+        raise
     except Exception as e:
         if is_tab_crashed(e):
             # The renderer behind this freshly-acquired session's tab was already dead (a Grid slot
             # reused from a previous heavy session that OOM-killed it, issue #1746) before the very
-            # first navigation — never a login/rate-limit fault, so "possibly rate-limited" would be
-            # actively wrong here. The caller aborts this run and quits the session the same as any
-            # other login failure; only the severity changes, to a warning that escalates if it
-            # starts recurring (issue #1749).
+            # first navigation — never a login/rate-limit fault. The caller aborts this run and
+            # quits the session the same as any other login failure; only the severity changes, to
+            # a warning that escalates if it starts recurring (issue #1749).
             log_warning("Browser tab crashed on the first login navigation", exc=e, user_id=user_id)
         else:
-            log_error("LinkedIn login failed (possibly rate-limited)", exc=e, user_id=user_id)
+            log_error("LinkedIn login failed", exc=e, user_id=user_id)
         quit_gracefully(driver)
         raise e
 
