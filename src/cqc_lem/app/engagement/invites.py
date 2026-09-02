@@ -1545,6 +1545,18 @@ def invite_to_connect_now(user_id: int, profile_url: str, message: str = None,
             # reached (#1924). Defer like a 429 instead — nothing was learned about this target.
             raise LinkedInRateLimited(
                 f"LinkedIn login failed before inviting to connect: {e}") from e
+        except RuntimeError as e:
+            # `login_to_linkedin` raises a plain RuntimeError when every automated way to clear a
+            # login challenge (Arkose, email PIN, manual approval) failed
+            # (`helper._handle_challenge`, issue #1920) — an account-level fact, not something
+            # `profile_url` did. `_handle_challenge` already recorded the per-account cooldown
+            # before raising, so the NEXT call backs off instead of repeating the dance; the
+            # generic `except Exception` below would still burn THIS request's attempt ceiling and
+            # file a fresh ERROR for a failure that already degrades gracefully — 79 occurrences
+            # for one account in under 5h (#1918). Defer exactly like the TimeoutException case
+            # above.
+            raise LinkedInRateLimited(
+                f"LinkedIn login failed before inviting to connect: {e}") from e
 
         if profile_url != driver.current_url:
             # Open the profile URL
