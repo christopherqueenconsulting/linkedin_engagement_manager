@@ -1932,6 +1932,16 @@ def update_stale_profile(self, user_id: int, force_refresh: bool = False):
     try:
         driver, wait, user_email, my_profile = get_current_profile(
             user_id=user_id, session_name="Update Stale Profile", force_refresh=force_refresh)
+    except LinkedInRateLimited as e:
+        # A known, self-clearing back-off (429 breaker, manual pause, or this account's own
+        # challenge-unsolvable cooldown per issue #1920) — not a fresh failure, so WARNING rather
+        # than the ERROR the generic except below gives. Every sibling task already treats this the
+        # same way (`process_user_followups`, `automate_reply_commenting`, …); this task was
+        # missing the catch, so every breaker trip during the daily sweep filed its own
+        # error-tracking occurrence instead of being recognized as an expected skip (issue #1946).
+        log_warning("Profile refresh skipped — LinkedIn rate-limited or cooling down", exc=e,
+                    user_id=user_id, task_name="update_stale_profile")
+        return f"Skipped — rate limited: {e}"
     except Exception as e:
         log_error("Error while updating stale profile", exc=e, user_id=user_id, task_name="update_stale_profile")
         return f"Failed to update profile: {e}"
