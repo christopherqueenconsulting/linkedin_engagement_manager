@@ -42,6 +42,7 @@ from cqc_lem.utilities.db import (
     record_newsletter_subscriber_stat,
 )
 from cqc_lem.utilities.linkedin.article_editor import fill_article_editor
+from cqc_lem.utilities.linkedin.rate_limit import LinkedInRateLimited
 from cqc_lem.utilities.linkedin.session import get_current_profile
 from cqc_lem.utilities.linkedin_formatter import strip_non_bmp
 from cqc_lem.utilities.logger import log_debug, log_error, log_info, log_warning
@@ -212,6 +213,16 @@ def auto_publish_edition(self, edition_id: int):
         return f"Edition {edition_id} awaiting approval"
     try:
         driver, wait, user_email, my_profile = get_current_profile(user_id=user_id, session_name="Newsletter")
+    except LinkedInRateLimited as e:
+        # `get_current_profile` already downgraded this to a WARNING (429 breaker, manual pause, or
+        # this account's own challenge-unsolvable cooldown, issue #1920) before re-raising — a known,
+        # self-clearing back-off, not a fresh failure. The generic `except Exception` below would
+        # still file a fresh ERROR for a condition that already degrades gracefully: one account hit
+        # this 18x in 24h (issue #1939). Leave the edition's status untouched (no `mark_edition_failed`)
+        # so it stays eligible for the next scheduled publish attempt once the cooldown clears.
+        log_debug(f"Newsletter edition {edition_id} publish skipped — LinkedIn rate-limited: {e}",
+                  user_id=user_id, task_name="auto_publish_edition", edition_id=edition_id)
+        return f"Skipped edition {edition_id} — rate limited"
     except Exception as e:
         log_error("Error getting profile for newsletter edition", exc=e, user_id=user_id, task_name="auto_publish_edition")
         return f"Failed to start newsletter edition: {e}"

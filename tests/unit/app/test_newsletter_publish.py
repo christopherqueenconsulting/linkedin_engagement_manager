@@ -171,6 +171,29 @@ class TestAutoPublishEdition:
         assert log_err.call_args.kwargs.get("failed_step") == "article_publish"
         assert "did not complete" in result
 
+    def test_rate_limited_login_skips_without_filing_error(self):
+        """Rate-limited login must skip quietly, not file an ERROR.
+
+        Issue #1939: `get_current_profile` already downgrades a login rate-limit/cooldown to a
+        WARNING and re-raises `LinkedInRateLimited` — the generic `except Exception` here used to
+        catch it too and file a fresh ERROR (PostHog $exception) for a self-clearing back-off, 18x
+        in 24h for one account. The edition must stay untouched (no `mark_edition_failed`) so it
+        stays eligible for the next scheduled attempt.
+        """
+        from cqc_lem.app.engagement.newsletter import auto_publish_edition
+        from cqc_lem.utilities.linkedin.rate_limit import LinkedInRateLimited
+        edition = {"id": 9, "user_id": 1, "status": "approved", "title": "T", "subtitle": None, "body": "B"}
+        with patch(f"{_NL}.get_newsletter_edition", return_value=edition), \
+             patch(f"{_NL}.get_current_profile", side_effect=LinkedInRateLimited("login cooldown")), \
+             patch(f"{_NL}.mark_edition_failed") as fail, \
+             patch(f"{_NL}.log_error") as log_err, \
+             patch(f"{_NL}.log_debug") as dbg:
+            result = auto_publish_edition.run(edition_id=9)
+        fail.assert_not_called()
+        log_err.assert_not_called()
+        dbg.assert_called_once()
+        assert "rate limited" in result
+
     def test_logs_error_when_flow_incomplete_for_generated_edition(self):
         from cqc_lem.app.engagement.newsletter import auto_publish_newsletter_edition
         edition = {"title": "5 Levers", "subtitle": "S", "body": "B"}
