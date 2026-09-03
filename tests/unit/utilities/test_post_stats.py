@@ -363,6 +363,31 @@ class TestScrapeStatsTask:
             result = auto_scrape_post_stats.run(user_id=1)
         assert rec.call_count == 2 and "Scraped stats for 2" in result
 
+    def test_rate_limited_login_defers_without_error_log(self):
+        """Issue #1945: an unsolvable-challenge cooldown must degrade to a WARNING, not an ERROR.
+
+        get_current_profile already warned once at the shared session gate, so this task
+        re-logging LinkedInRateLimited as an ERROR filed a fresh, ungrouped PostHog $exception
+        on every scheduled beat of a cooldown that was already expected to clear on its own.
+        """
+        from unittest.mock import patch
+
+        from cqc_lem.utilities.linkedin.rate_limit import LinkedInRateLimited
+
+        _RA = "cqc_lem.app.engagement.posting"
+        with patch(f"{_RA}.get_recent_posted_post_ids", return_value=[9]), \
+             patch(f"{_RA}.get_uncaptured_posted_post_ids", return_value=[]), \
+             patch(f"{_RA}.get_current_profile", side_effect=LinkedInRateLimited("cooling down")), \
+             patch(f"{_RA}.log_warning") as warn, \
+             patch(f"{_RA}.log_error") as err:
+            from cqc_lem.app.engagement.posting import auto_scrape_post_stats
+            result = auto_scrape_post_stats.run(user_id=1)
+        assert result == "Skipped — rate limited"
+        err.assert_not_called()
+        warn.assert_called_once()
+        assert warn.call_args.kwargs.get("user_id") == 1
+        assert warn.call_args.kwargs.get("task_name") == "auto_scrape_post_stats"
+
 
 def _variant_row(variant_key, scheduled_time, reactions=0, comments=0, reposts=0, impressions=None):
     """A `db.get_variant_outcome_rows` dict."""
