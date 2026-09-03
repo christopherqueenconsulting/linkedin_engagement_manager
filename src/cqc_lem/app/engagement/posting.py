@@ -363,6 +363,17 @@ def auto_scrape_post_stats(self, user_id: int):
     try:
         driver, wait, user_email, my_profile = get_current_profile(user_id=user_id, session_name="Post Stats",
                                                                    measurement_only=True)
+    except LinkedInRateLimited as e:
+        # A known, self-clearing back-off (429 breaker, manual pause, or this account's own
+        # challenge-unsolvable cooldown, #1920) — not a fresh failure. Every sibling task that
+        # opens a session through get_current_profile (automate_reply_commenting, the comment
+        # sweeps) already treats this the same way; this task's generic except-Exception was
+        # re-logging it as an ERROR (a fresh, ungrouped PostHog $exception) on every occurrence
+        # even though get_current_profile itself already warned and this sweep just retries on
+        # its next scheduled beat.
+        log_warning("Post stats scrape skipped — LinkedIn rate-limited", exc=e, user_id=user_id,
+                    task_name="auto_scrape_post_stats")
+        return "Skipped — rate limited"
     except Exception as e:
         log_error("Error getting profile for post stats", exc=e, user_id=user_id, task_name="auto_scrape_post_stats")
         return f"Failed: {e}"
