@@ -90,6 +90,34 @@ def _excluded_prefixes() -> tuple:
     return BUILTIN_EXCLUDED_PREFIXES + tuple(p.strip() for p in raw.split(",") if p.strip())
 
 
+def _is_self_clearing_backoff(exc: Optional[BaseException]) -> bool:
+    """Whether `exc` is a KNOWN, self-clearing back-off that must never itself escalate.
+
+    A `LinkedInRateLimited` is, by definition, a back-off that clears on its own — the 429 breaker,
+    a manual pause, or a per-account challenge cooldown — and every raise site already downgrades it
+    to WARNING for exactly that reason (`utilities/CLAUDE.md`'s "once is a warning, repeatedly is a
+    defect" only holds when repetition carries NEW information).
+
+    A per-account challenge cooldown defaults to 6h and the follow-up beat that hits it re-dispatches
+    every 30min (issue #1948), so the SAME already-downgraded warning re-crosses this module's own
+    threshold well before the cooldown clears — escalating the exact condition the WARNING was
+    written to stop paging on. Message-prefix exclusion (see `BUILTIN_EXCLUDED_PREFIXES`) does not
+    scale here: every `LinkedInRateLimited` catch across the engagement lanes writes its own message,
+    so this is keyed on the EXCEPTION TYPE instead — it is the one property every one of those call
+    sites shares, and a new call site is covered for free.
+
+    Lazy import (like `_redis()` below): `rate_limit.py` imports `log_warning` from this package's
+    sibling `logger.py`, so an eager import here would cycle.
+    """
+    if exc is None:
+        return False
+    try:
+        from cqc_lem.utilities.linkedin.rate_limit import LinkedInRateLimited
+        return isinstance(exc, LinkedInRateLimited)
+    except Exception:
+        return False
+
+
 # ── Message normalization ─────────────────────────────────────────────────────
 # The logger only ever sees the INTERPOLATED string, so volatile tokens are masked out before
 # hashing. Order matters: URLs before the bare-number rule, or a URL's digits get masked first and
@@ -199,16 +227,20 @@ def _should_escalate(count: int) -> bool:
     return bool(repeat) and count > threshold and (count - threshold) % repeat == 0
 
 
-def note(message: str, level: str, origin: str, context: Optional[dict] = None) -> Optional[dict]:
+def note(message: str, level: str, origin: str, context: Optional[dict] = None,
+         exc: Optional[BaseException] = None) -> Optional[dict]:
     """Count this occurrence; return an escalation record when it crosses the threshold, else None.
 
     Never raises. Returning None means "carry on exactly as before" — that is the fail-open path for
-    a missing Redis, a disabled switch, an excluded message, or any internal error.
+    a missing Redis, a disabled switch, an excluded message, an excluded exception type, or any
+    internal error.
     """
     try:
         if not enabled() or getattr(_state, "escalating", False):
             return None
         if any(message.startswith(prefix) for prefix in _excluded_prefixes()):
+            return None
+        if _is_self_clearing_backoff(exc):
             return None
 
         display, key_text = normalize_message(message)
