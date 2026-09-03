@@ -1585,6 +1585,15 @@ def automate_appreciation_dms_for_user(self, user_id: int, loop_for_duration: in
                 # Call self again in the future
                 globals()[current_function_name].apply_async(kwargs=kwargs, countdown=future_forward)
 
+    except LinkedInRateLimited as e:
+        # A known, self-clearing back-off (429 breaker, manual pause, or this account's own
+        # challenge-unsolvable cooldown, issue #1944) — not a fresh failure. Every sibling task in
+        # this module (`process_user_followups`, `send_lead_response`, …) already treats it the
+        # same way; this task was missing the catch, so a breaker trip during the appreciation DM
+        # sweep filed an error-tracking occurrence instead of being recognized as an expected skip.
+        log_warning("Appreciation DMs skipped — LinkedIn rate-limited or cooling down", exc=e,
+                    user_id=user_id, task_name="automate_appreciation_dms_for_user", action_type="dm")
+        result = f"Skipped — rate limited: {e}"
     except Exception as e:
         log_error("Error while sending appreciation DMs", exc=e, user_id=user_id, task_name="automate_appreciation_dms_for_user", action_type="dm")
         result = f"Error while sending appreciation DMs: {e}"

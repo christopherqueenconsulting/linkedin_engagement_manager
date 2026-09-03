@@ -562,3 +562,32 @@ class TestTheBeatSpendsOneBudget:
         recs.assert_called_once()
         mentions.assert_called_once()
         assert dispatch.call_count == 3
+
+
+class TestRateLimitedLoginIsDeferredNotErrored:
+    """Login-challenge cooldown must be deferred, not filed as an error.
+
+    A login-challenge cooldown (issue #1944, PostHog `LinkedInRateLimited`) is a known,
+    self-clearing back-off — the same as every sibling task in this module already treats it
+    (`process_user_followups`, `send_lead_response`, …). It must never file an error-tracking
+    occurrence.
+    """
+
+    def test_rate_limited_login_is_a_warning_not_an_error(self):
+        from cqc_lem.app.engagement.outreach import automate_appreciation_dms_for_user
+        from cqc_lem.utilities.linkedin.rate_limit import LinkedInRateLimited
+
+        with patch(f"{_OUT}.get_user_password_pair_by_id", return_value=("a@b.c", "pw")), \
+             patch(f"{_OUT}.get_driver_wait_pair", return_value=(MagicMock(), MagicMock())), \
+             patch(f"{_OUT}.login_to_linkedin",
+                   side_effect=LinkedInRateLimited(
+                       "LinkedIn login challenge for this account was unsolvable and is cooling "
+                       "down for ~17788s before the next attempt.")), \
+             patch(f"{_OUT}.quit_gracefully"), \
+             patch(f"{_OUT}.log_warning") as warning, \
+             patch(f"{_OUT}.log_error") as error:
+            result = automate_appreciation_dms_for_user.run(user_id=1)
+
+        error.assert_not_called()
+        warning.assert_called_once()
+        assert "rate limited" in result.lower()
