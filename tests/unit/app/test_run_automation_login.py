@@ -74,6 +74,41 @@ class TestAutomateCommentingLoginError:
 
         mock_quit.assert_not_called()
 
+    def test_rate_limited_getting_profile_logs_warning_not_error(self):
+        # Issue #1941: `LinkedInRateLimited` is a known, self-clearing back-off (429 breaker,
+        # manual pause, or a per-account challenge-unsolvable cooldown, #1920) — every sibling
+        # task that opens a session through `get_current_profile` already special-cases it
+        # (log_warning, no capture_exception); `automate_commenting` was still falling through to
+        # the generic `except Exception` -> `log_error` below, so every breaker trip during feed
+        # commenting filed its own grouped `$exception` (LinkedInRateLimited) instead of being
+        # recognized as an expected skip.
+        from cqc_lem.app.engagement.feed import automate_commenting
+        from cqc_lem.utilities.linkedin.rate_limit import LinkedInRateLimited
+        breaker = LinkedInRateLimited(
+            "LinkedIn login challenge for this account was unsolvable and is cooling down "
+            "for ~19344s before the next attempt.")
+        with patch(_FEED_GET_PROFILE, side_effect=breaker), \
+             patch(f"{_FEED}.log_warning") as warn, \
+             patch(_FEED_LOG_ERROR) as err:
+            result = automate_commenting.run(user_id=1)
+
+        assert "Skipped" in result
+        warn.assert_called_once()
+        assert warn.call_args.kwargs.get("exc") is breaker
+        err.assert_not_called()
+
+    def test_rate_limited_getting_profile_releases_run_lock(self):
+        """The single-flight lock is released on the rate-limited skip, same as any other failure."""
+        from cqc_lem.app.engagement.feed import automate_commenting
+        from cqc_lem.utilities.linkedin.rate_limit import LinkedInRateLimited
+        breaker = LinkedInRateLimited("LinkedIn 429 circuit breaker open")
+        with patch(_FEED_GET_PROFILE, side_effect=breaker), \
+             patch(f"{_FEED}.log_warning"), \
+             patch(f"{_FEED}.release_run_lock") as mock_release:
+            automate_commenting.run(user_id=1)
+
+        mock_release.assert_called_once()
+
 
 # ---------------------------------------------------------------------------
 # automate_reply_commenting
