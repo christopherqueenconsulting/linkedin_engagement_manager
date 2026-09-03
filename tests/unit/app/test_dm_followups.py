@@ -208,6 +208,27 @@ class TestProcessUserFollowups:
         assert warn.call_args.kwargs.get("exc") is breaker
         err.assert_not_called()
 
+    def test_profile_unavailable_getting_profile_logs_warning_not_error(self):
+        # Issue #1947: a fresh account with nothing cached yet, or a scrape that missed once, is
+        # not a code defect — `get_current_profile` already logged the miss at ERROR (without
+        # `exc=`, so no $exception) before raising this specific condition. This wrapper must
+        # downgrade it to WARNING rather than the generic-`Exception` else branch's `log_error`, so
+        # a one-off stays quiet and only a profile that stays unresolvable across repeated runs
+        # escalates into a filed defect (utilities/CLAUDE.md).
+        from cqc_lem.app.engagement.outreach import process_user_followups
+        from cqc_lem.utilities.linkedin.session import ProfileUnavailableError
+        unavailable = ProfileUnavailableError(
+            "Profile unavailable: live scrape failed and no cached profile to fall back on")
+        with patch(f"{_OUT}.get_due_followups", return_value=[_due()]), \
+             patch(f"{_OUT}.get_current_profile", side_effect=unavailable), \
+             patch(f"{_OUT}.log_warning") as warn, \
+             patch(f"{_OUT}.log_error") as err:
+            result = process_user_followups.run(user_id=1)
+        assert "Skipped" in result
+        warn.assert_called_once()
+        assert warn.call_args.kwargs.get("exc") is unavailable
+        err.assert_not_called()
+
     def test_login_timeout_getting_profile_logs_debug_not_error_or_warning(self):
         # Issue #1919: a TimeoutException out of get_current_profile's login step is a Selenium
         # selector miss — e.g. an unrecognized challenge/checkpoint page (#1908). `login_to_linkedin`

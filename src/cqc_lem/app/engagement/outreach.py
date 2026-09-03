@@ -224,7 +224,7 @@ from cqc_lem.utilities.linkedin.profile import LinkedInProfile
 from cqc_lem.utilities.linkedin.rate_limit import (
     LinkedInRateLimited,
 )
-from cqc_lem.utilities.linkedin.session import get_current_profile
+from cqc_lem.utilities.linkedin.session import ProfileUnavailableError, get_current_profile
 from cqc_lem.utilities.linkedin_formatter import normalize_public_text
 from cqc_lem.utilities.log_escalation import masked_recipient
 from cqc_lem.utilities.logger import log_debug, log_error, log_info, log_warning
@@ -1298,6 +1298,16 @@ def process_user_followups(self, user_id: int, max_per_run: int = 20):
         log_warning("Follow-ups skipped — LinkedIn rate-limited or cooling down", exc=e,
                     user_id=user_id, task_name="process_user_followups")
         return f"Skipped — rate limited: {e}"
+    except ProfileUnavailableError as e:
+        # Issue #1947: a fresh account with nothing cached yet, or a scrape that missed once, is
+        # not a code defect — `get_current_profile` already logged the miss at ERROR (no `exc=`,
+        # so no $exception) before raising this specific, named condition. WARNING here is what
+        # the recurrence-escalation contract expects (utilities/CLAUDE.md): a one-off stays quiet,
+        # and only a profile that STAYS unresolvable across repeated runs escalates into a filed
+        # defect, same as the rate-limit and tab-crash branches around this one.
+        log_warning("Follow-ups skipped — no profile available (live scrape failed, nothing "
+                    "cached)", exc=e, user_id=user_id, task_name="process_user_followups")
+        return f"Skipped — no profile available: {e}"
     except Exception as e:
         if is_tab_crashed(e):
             # get_current_profile already logs this at WARNING where it's detected (the first
