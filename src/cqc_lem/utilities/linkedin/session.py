@@ -32,6 +32,18 @@ from cqc_lem.utilities.logger import log_error, log_info, log_warning
 from cqc_lem.utilities.selenium_util import get_driver_wait_pair, is_tab_crashed, quit_gracefully
 
 
+class ProfileUnavailableError(RuntimeError):
+    """Neither a live scrape nor a cached profile resolved for this user (issue #1947).
+
+    A `RuntimeError` subclass, not a new hierarchy — every existing `except RuntimeError` /
+    `pytest.raises(RuntimeError, ...)` still matches. The point of naming it is so a caller can
+    catch THIS specific, expected condition (a fresh account with nothing cached yet, or a
+    transient scrape miss) apart from a genuinely unknown `RuntimeError` and log it at the level
+    the recurrence-escalation contract expects — WARNING, not an immediate `$exception`
+    (`utilities/CLAUDE.md`).
+    """
+
+
 def get_current_profile(user_id: int, session_name: str = "Get Current Profile",
                         measurement_only: bool = False, debug: bool = False,
                         force_refresh: bool = False, debug_required: bool = False,
@@ -119,7 +131,8 @@ def get_current_profile(user_id: int, session_name: str = "Get Current Profile",
     if my_profile is None:
         log_error("No profile available (live scrape failed and no cached profile)", user_id=user_id)
         quit_gracefully(driver)
-        raise RuntimeError("Profile unavailable: live scrape failed and no cached profile to fall back on")
+        raise ProfileUnavailableError(
+            "Profile unavailable: live scrape failed and no cached profile to fall back on")
 
     return driver, wait, user_email, my_profile
 
