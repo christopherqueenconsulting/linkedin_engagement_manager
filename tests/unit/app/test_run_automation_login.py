@@ -146,6 +146,29 @@ class TestAutomateProfileViewerEngagementLoginError:
 # ---------------------------------------------------------------------------
 
 class TestUpdateStaleProfileLoginError:
+    def test_defers_on_challenge_unsolvable_cooldown_instead_of_filing_an_error(self):
+        """update_stale_profile defers on LinkedInRateLimited instead of filing an ERROR.
+
+        A LinkedInRateLimited (429 breaker / manual pause / challenge-unsolvable cooldown, issue
+        #1920) is an expected, self-clearing back-off — issue #1946 saw this task file a fresh
+        ERROR on every occurrence instead of the WARNING every sibling task already gives it.
+        """
+        from cqc_lem.utilities.linkedin.rate_limit import LinkedInRateLimited
+
+        with patch(_POST_GET_PROFILE,
+                   side_effect=LinkedInRateLimited(
+                       "LinkedIn login challenge for this account was unsolvable and is cooling "
+                       "down for ~11244s before the next attempt.")), \
+             patch(_POST_LOG_ERROR) as mock_error, \
+             patch(f"{_POST}.log_warning") as mock_warning:
+            from cqc_lem.app.engagement.posting import update_stale_profile
+
+            result = update_stale_profile.run(user_id=1)
+
+        assert "Skipped — rate limited" in result
+        mock_error.assert_not_called()
+        mock_warning.assert_called_once()
+
     def test_returns_error_string_on_login_challenge(self):
         """update_stale_profile returns error string instead of raising when login fails."""
         with patch(_POST_GET_PROFILE, side_effect=RuntimeError("Unsolvable LinkedIn challenge")), \
