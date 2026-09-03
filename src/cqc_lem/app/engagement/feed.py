@@ -193,6 +193,7 @@ from cqc_lem.utilities.linkedin.poster import (
 )
 from cqc_lem.utilities.linkedin.profile import LinkedInProfile
 from cqc_lem.utilities.linkedin.rate_limit import (
+    LinkedInRateLimited,
     _redis_client,
     acquire_run_lock,
     automation_pause_reason,
@@ -3416,6 +3417,17 @@ def auto_comment_in_groups(self, user_id: int, max_per_group: int = 2):
         driver, wait, user_email, my_profile = get_current_profile(user_id=user_id,
                                                                     session_name="Group Commenting",
                                                                     needs_images=True)
+    except LinkedInRateLimited as e:
+        # A known, self-clearing back-off (429 breaker, manual pause, or this account's own
+        # challenge-unsolvable cooldown, issue #1920) — not a fresh failure. `get_current_profile`
+        # already logged it at WARNING where it happened; this generic `except Exception` below
+        # was still re-logging it at ERROR here, filing a grouped $exception for a run that was
+        # never going to succeed until the cooldown clears on its own (issue #1942). Every sibling
+        # task that calls `get_current_profile` (`process_user_followups`, `invite_to_connect_now`,
+        # …) already carries this same catch.
+        log_warning("Group commenting skipped — LinkedIn rate-limited or cooling down", exc=e,
+                    user_id=user_id, task_name="auto_comment_in_groups")
+        return f"Skipped — rate limited: {e}"
     except Exception as e:
         log_error("Error getting profile for group commenting", exc=e, user_id=user_id,
                   task_name="auto_comment_in_groups")
