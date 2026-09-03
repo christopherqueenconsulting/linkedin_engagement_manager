@@ -1757,6 +1757,16 @@ def automate_profile_viewer_engagement(self, user_id: int, loop_for_duration: in
 
     try:
         driver, wait, user_email, my_profile = get_current_profile(user_id=user_id, session_name="Profile Viewer DMs")
+    except LinkedInRateLimited as e:
+        # A known, self-clearing back-off (429 breaker, manual pause, or this account's own
+        # challenge-unsolvable cooldown per issue #1920) — not a fresh failure, so WARNING rather
+        # than the ERROR the generic branch below gets. Every sibling task in this module
+        # (`send_lead_response`, `process_user_followups`, …) already treats it the same way; this
+        # task was missing the catch, so every breaker trip during the profile-viewer walk filed
+        # its own error-tracking occurrence instead of being recognized as an expected skip.
+        log_warning("Profile viewer engagement skipped — LinkedIn rate-limited or cooling down",
+                    exc=e, user_id=user_id, task_name="automate_profile_viewer_engagement")
+        return f"Skipped — rate limited: {e}"
     except Exception as e:
         log_error(
             "Failed to get profile for profile viewer engagement",

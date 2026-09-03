@@ -19,6 +19,7 @@ pytestmark = pytest.mark.unit
 _OUT = "cqc_lem.app.engagement.outreach"
 _PATCH_GET_PROFILE = f"{_OUT}.get_current_profile"
 _PATCH_LOG_ERROR = f"{_OUT}.log_error"
+_PATCH_LOG_WARNING = f"{_OUT}.log_warning"
 _FEED = "cqc_lem.app.engagement.feed"
 _FEED_GET_PROFILE = f"{_FEED}.get_current_profile"
 _FEED_LOG_ERROR = f"{_FEED}.log_error"
@@ -139,6 +140,27 @@ class TestAutomateProfileViewerEngagementLoginError:
                 automate_profile_viewer_engagement.run(user_id=1)
             except Exception as exc:
                 pytest.fail(f"Task raised unexpectedly: {exc!r}")
+
+    def test_rate_limited_getting_profile_logs_warning_not_error(self):
+        # Issue #1943: `LinkedInRateLimited` (429 breaker, manual pause, or a per-account
+        # challenge-unsolvable cooldown per #1920) is a known, self-clearing back-off — every
+        # sibling task in this module (`send_lead_response`, `process_user_followups`, …) already
+        # special-cases it (log_warning, no capture). This task's generic `except Exception` was
+        # missing that catch, so every breaker trip during the profile-viewer walk fell through and
+        # re-filed an ERROR ($exception) for a condition `get_current_profile` already downgraded
+        # and expects to clear on its own.
+        from cqc_lem.app.engagement.outreach import automate_profile_viewer_engagement
+        from cqc_lem.utilities.linkedin.rate_limit import LinkedInRateLimited
+        breaker = LinkedInRateLimited("LinkedIn login challenge for this account was unsolvable")
+        with patch(_PATCH_GET_PROFILE, side_effect=breaker), \
+             patch(_PATCH_LOG_WARNING) as warn, \
+             patch(_PATCH_LOG_ERROR) as err:
+            result = automate_profile_viewer_engagement.run(user_id=1)
+
+        assert "Skipped" in result
+        warn.assert_called_once()
+        assert warn.call_args.kwargs.get("exc") is breaker
+        err.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
