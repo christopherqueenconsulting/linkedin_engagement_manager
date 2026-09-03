@@ -384,7 +384,7 @@ def log_warning(
         # note() swallows its own errors, but this is the logging path: if escalation ever raises,
         # every warning in the app would raise with it. Belt and braces.
         try:
-            escalation = log_escalation.note(message, "WARNING", _caller_origin(), context)
+            escalation = log_escalation.note(message, "WARNING", _caller_origin(), context, exc=exc)
         except Exception:  # pragma: no cover - defensive
             escalation = None
 

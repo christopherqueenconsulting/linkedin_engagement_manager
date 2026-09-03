@@ -34,9 +34,9 @@ def _fake_redis(counts, budget=1):
     return client
 
 
-def _note(message, counts, budget=1, origin="mod.func"):
+def _note(message, counts, budget=1, origin="mod.func", exc=None):
     with patch.object(esc, "_redis", return_value=_fake_redis(counts, budget)):
-        return esc.note(message, "WARNING", origin)
+        return esc.note(message, "WARNING", origin, exc=exc)
 
 
 # ── normalization / fingerprinting (pure) ─────────────────────────────────────
@@ -182,6 +182,36 @@ def test_cost_alert_breaches_never_escalate():
 def test_cost_alert_delivery_failures_still_escalate():
     """The exclusion is scoped to the breach digest — an alerter that cannot deliver IS a defect."""
     assert _note("Cost alert email failed", [3]) is not None
+
+
+def test_linked_in_rate_limited_never_escalates():
+    """A LinkedInRateLimited never escalates, however many times it recurs in the window.
+
+    It is a KNOWN, self-clearing back-off (429 breaker, manual pause, or a per-account challenge
+    cooldown) — every raise site already downgrades it to WARNING for that reason. A per-account
+    cooldown defaults to 6h and the follow-up beat re-dispatches every 30min, so the identical
+    warning re-crosses the threshold well before the cooldown clears unless the exception TYPE
+    itself is excluded, not just a message prefix (issue #1948).
+    """
+    from cqc_lem.utilities.linkedin.rate_limit import LinkedInRateLimited
+
+    assert _note("Follow-ups skipped — LinkedIn rate-limited or cooling down", [3],
+                 exc=LinkedInRateLimited("cooling down")) is None
+    # …at any count, not just the threshold — Redis is never even consulted for this exception type.
+    esc.reset_state()
+    with patch.object(esc, "_redis") as redis_mock:
+        assert esc.note("boom", "WARNING", "m.f", exc=LinkedInRateLimited("x")) is None
+    redis_mock.assert_not_called()
+
+
+def test_other_exceptions_on_the_same_message_still_escalate():
+    """The exclusion is keyed on the exception TYPE, not the message.
+
+    A genuine defect that happens to share wording with a back-off warning must not be swallowed
+    by it.
+    """
+    assert _note("Follow-ups skipped — LinkedIn rate-limited or cooling down", [3],
+                 exc=RuntimeError("something else entirely")) is not None
 
 
 def test_env_exclusions_add_to_the_builtins(monkeypatch):
