@@ -1290,13 +1290,17 @@ def process_user_followups(self, user_id: int, max_per_run: int = 20):
                                                                     needs_images=True)
     except LinkedInRateLimited as e:
         # A known, self-clearing back-off (429 breaker, manual pause, or this account's own
-        # challenge-unsolvable cooldown per issue #1920) — not a fresh failure, so WARNING rather
-        # than the ERROR every OTHER exception below gets. Every sibling task in this module
-        # (`send_lead_response`, `send_dm_now`, …) already treats it the same way; this task was
-        # missing the catch, so every breaker trip during follow-ups filed its own error-tracking
-        # occurrence instead of being recognized as an expected skip.
-        log_warning("Follow-ups skipped — LinkedIn rate-limited or cooling down", exc=e,
-                    user_id=user_id, task_name="process_user_followups")
+        # challenge-unsolvable cooldown per issue #1920) — not a fresh failure. Issue #1940: this
+        # task is dispatched every few minutes while `process_user_followups` has due rows, but the
+        # challenge-unsolvable cooldown runs ~175s — well under that cadence — so WARNING here
+        # recurred 3x/24h and the recurrence-escalation rule (`utilities/CLAUDE.md`) re-emitted it
+        # at ERROR and filed a grouped `$exception` for working back-off behaviour. Nothing else
+        # logs this specific cooldown-check raise (`mark_challenge_unsolvable` fires once, when the
+        # challenge FIRST goes unsolvable — a real failure, logged where it happens), so DEBUG here
+        # is the only place this expected no-op is recorded, same as the throttle deferrals in
+        # `automate_catchup_touches`.
+        log_debug("Follow-ups skipped — LinkedIn rate-limited or cooling down", exc=e,
+                  user_id=user_id, task_name="process_user_followups")
         return f"Skipped — rate limited: {e}"
     except ProfileUnavailableError as e:
         # Issue #1947: a fresh account with nothing cached yet, or a scrape that missed once, is

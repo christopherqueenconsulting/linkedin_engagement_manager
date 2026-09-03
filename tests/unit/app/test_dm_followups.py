@@ -190,22 +190,26 @@ class TestProcessUserFollowups:
         warn.assert_not_called()
         err.assert_not_called()
 
-    def test_rate_limited_getting_profile_logs_warning_not_error(self):
-        # Issue #1920: `LinkedInRateLimited` is a known, self-clearing back-off (429 breaker,
-        # manual pause, or a per-account challenge cooldown) — every sibling task in this module
-        # already special-cases it (log_warning, no capture); this task was missing that catch, so
-        # a breaker trip during follow-ups filed its own error-tracking occurrence.
+    def test_rate_limited_getting_profile_logs_debug_not_warning_or_error(self):
+        # Issue #1940: `LinkedInRateLimited` is a known, self-clearing back-off (429 breaker,
+        # manual pause, or a per-account challenge-unsolvable cooldown, ~175s). This task is
+        # dispatched every few minutes while due rows exist, so the cooldown trips repeatedly
+        # within a day — WARNING here (the #1920 fix) recurred 3x/24h and the recurrence-escalation
+        # rule re-emitted it at ERROR, filing a grouped `$exception` for working back-off behaviour.
+        # Nothing else logs this specific cooldown-check raise, so DEBUG is the only record kept.
         from cqc_lem.app.engagement.outreach import process_user_followups
         from cqc_lem.utilities.linkedin.rate_limit import LinkedInRateLimited
         breaker = LinkedInRateLimited("LinkedIn 429 circuit breaker open")
         with patch(f"{_OUT}.get_due_followups", return_value=[_due()]), \
              patch(f"{_OUT}.get_current_profile", side_effect=breaker), \
+             patch(f"{_OUT}.log_debug") as dbg, \
              patch(f"{_OUT}.log_warning") as warn, \
              patch(f"{_OUT}.log_error") as err:
             result = process_user_followups.run(user_id=1)
         assert "Skipped" in result
-        warn.assert_called_once()
-        assert warn.call_args.kwargs.get("exc") is breaker
+        dbg.assert_called_once()
+        assert dbg.call_args.kwargs.get("exc") is breaker
+        warn.assert_not_called()
         err.assert_not_called()
 
     def test_profile_unavailable_getting_profile_logs_warning_not_error(self):
