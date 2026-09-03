@@ -193,6 +193,7 @@ from cqc_lem.utilities.linkedin.poster import (
 )
 from cqc_lem.utilities.linkedin.profile import LinkedInProfile
 from cqc_lem.utilities.linkedin.rate_limit import (
+    LinkedInRateLimited,
     _redis_client,
     acquire_run_lock,
     automation_pause_reason,
@@ -3984,6 +3985,17 @@ def automate_commenting(self, user_id: int, loop_for_duration: int = None, futur
 
     try:
         driver, wait, user_email, my_profile = get_current_profile(user_id=user_id, session_name="Auto Commenting")
+    except LinkedInRateLimited as e:
+        # A known, self-clearing back-off (429 breaker, manual pause, or this account's own
+        # challenge-unsolvable cooldown per issue #1920) — not a fresh failure, so WARNING rather
+        # than ERROR. Every sibling task that opens a session the same way (`process_user_followups`,
+        # `send_dm_now`, …) already treats it this way; this task was still raising it through the
+        # generic `except Exception` below, so every breaker trip filed its own error-tracking
+        # occurrence instead of being recognized as an expected skip (issue #1941).
+        log_warning("Auto commenting skipped — LinkedIn rate-limited or cooling down", exc=e,
+                    user_id=user_id, task_name="automate_commenting")
+        release_run_lock(lock_name, lock_token)
+        return f"Skipped — rate limited: {e}"
     except Exception as e:
         log_error("Error while getting profile for auto commenting", exc=e, user_id=user_id,
                   task_name="automate_commenting")
