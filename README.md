@@ -8,7 +8,7 @@ LinkedIn Engagement Manager (LEM) is an automated solution for managing engageme
 
 ### Content generation & scheduling
 - **Buyer-journey content plan**: A balanced 30-day plan across awareness / consideration / decision stages — thought-leadership, industry-news commentary, personal-story, and engagement-prompt posts, carousels (educational / case-study / product-demo / insights), native video, native PDF documents, and blog summaries. The plan balances four post types (`PLANNED_POST_TYPES` in `src/cqc_lem/app/run_content_plan.py`) and never schedules two posts inside 24 hours.
-- **AI-Generated Content**: LiteLLM-proxied models generate text, carousel, and video content with tiered routing (`lem-simple`, `lem-medium`, `lem-complex`, `lem-image`).
+- **AI-Generated Content**: LiteLLM-proxied models generate text and carousel content with tiered routing (`lem-simple`, `lem-medium`, `lem-complex`, `lem-image`); video is rendered by RunwayML (`src/cqc_lem/utilities/ai/video_models.py`) from a LiteLLM-written prompt and source frame, with Pexels stock as the fallback.
 - **Peak-hour scheduling**: Auto-schedules posts around golden/peak hours, with self-healing carousels and media asset backfill.
 - **Quality gates & approval workflow**: Drafts go through a slop lint and an authenticity score, and `src/cqc_lem/utilities/content_quality.py` tracks the trend; preview and approve manually or let it auto-approve. Native `LinkedInPostPreview` component and a date-time picker for editing scheduled posts.
 
@@ -25,7 +25,7 @@ LinkedIn Engagement Manager (LEM) is an automated solution for managing engageme
 - **Caps**: Per-day comment and DM limits; DM template editor with follow-up steps; Login Location (city/state geocoding).
 
 ### Platform
-- **Anti-bot infra**: Per-user static residential proxy with an MV3 proxy-auth extension, cookie persistence, and an email-PIN LinkedIn verification flow; 429/auth-wall backoff.
+- **Anti-bot infra**: Per-user proxy (`users.proxy_url`, optionally a residential provider — see `docs/PER_USER_PROXY.md`) with an MV3 proxy-auth extension, cookie persistence, and an email-PIN LinkedIn verification flow; 429/auth-wall backoff.
 - **Dockerized Environment**: One Docker Compose stack, run locally or on a VPS.
 - **Modular Design**: Content generation providers are swappable via LiteLLM aliases.
 - **React SPA Dashboard**: Mobile- and web-friendly dashboard for monitoring and controlling engagement.
@@ -49,7 +49,7 @@ LinkedIn Engagement Manager (LEM) is an automated solution for managing engageme
 2. **Python 3.12+** for local development (managed via Poetry).
 3. **Poetry** for Python package management (`pip install poetry`).
 4. **Node.js** for frontend development (only needed if editing the React UI; CI builds the UI with Node 24, see `.github/workflows/ui-build.yml`).
-5. API keys for the LLM providers wired up in `.litellm/config.yaml`: Ollama Cloud (`OLLAMA_CLOUD_API_KEY`) serves the text tiers, and OpenAI (`OPENAI_API_KEY`) is the in-group fallback and the only provider for the image, vision, embedding, and TTS aliases. Anthropic and Perplexity keys are optional.
+5. API keys for the LLM providers wired up in `.litellm/config.yaml`: Ollama Cloud (`OLLAMA_CLOUD_API_KEY`) serves the text tiers, and OpenAI (`OPENAI_API_KEY`) sits in the same text-tier groups (under latency-based routing it competes rather than waits) and is the only provider for the image, vision, embedding, and TTS aliases. Anthropic and Perplexity keys are optional.
 6. (Optional) **ngrok** for exposing local services publicly:
    ```bash
    brew install ngrok/ngrok/ngrok
@@ -70,8 +70,9 @@ LinkedIn Engagement Manager (LEM) is an automated solution for managing engageme
    # AI API keys, LiteLLM master key, Docker image name, etc.
    ```
 
-3. (Optional) Configure ngrok by setting `NGROK_AUTH_TOKEN`, `NGROK_CUSTOM_DOMAIN`,
-   `NGROK_EDGE_TOKEN`, and the `NGROK_*_PREFIX` variables in your `.env` file.
+3. (Optional) Configure ngrok by setting `NGROK_PLAN` (tunnels are off by default),
+   `NGROK_AUTH_TOKEN`, `NGROK_CUSTOM_DOMAIN` or `NGROK_FREE_DOMAIN`, and the `NGROK_*_PREFIX`
+   variables in your `.env` file (see `run.sh` and `generate-ngrok-config.sh`).
 
 4. Set up Stripe for subscription billing — see **[docs/stripe-setup-guide.md](docs/stripe-setup-guide.md)** for
    the full walkthrough. At minimum you need:
@@ -105,7 +106,7 @@ pushes to GHCR instead — see `docs/DEPLOYMENT.md`.
 
 ### AI Proxy (LiteLLM)
 
-All LLM calls are routed through the LiteLLM proxy at `http://litellm:4000`. Model tier
+App LLM calls go through the LiteLLM proxy at `http://litellm:4000`; the exceptions are the direct Perplexity helper in `src/cqc_lem/utilities/ai/tools.py` (the `lem-research` fallback), Replicate for avatar images, and RunwayML for video. Model tier
 aliases are defined in `.litellm/config.yaml`:
 
 | Alias | Use case |

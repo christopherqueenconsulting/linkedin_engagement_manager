@@ -33,8 +33,8 @@ Thank you for your interest in contributing to the LinkedIn Engagement Manager! 
 
 ```bash
 # Clone the repository
-git clone https://github.com/your-username/linkedin-engagement-manager.git
-cd linkedin-engagement-manager
+git clone https://github.com/your-username/linkedin_engagement_manager.git
+cd linkedin_engagement_manager
 
 # Install dependencies
 poetry install --with test,dev,lint
@@ -364,7 +364,7 @@ Brief description of what this PR does.
 
 ### Review Process
 
-1. PRs require at least one approval
+1. Branch protection on `main` sets no minimum reviewer count (`required_approving_review_count: 0`). Paths listed in `.github/CODEOWNERS` auto-request a code-owner review, but as that file documents, with zero required approvals this is not an enforced gate
 2. All CI checks must pass
 3. Code coverage must not decrease
 4. Address all review comments
