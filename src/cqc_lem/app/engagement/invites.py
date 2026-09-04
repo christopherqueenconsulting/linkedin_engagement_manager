@@ -1540,7 +1540,7 @@ def invite_to_connect_now(user_id: int, profile_url: str, message: str = None,
         if note_refusal:
             log_warning(f"Dropping an unsendable connect note for {profile_url}; sending the "
                         f"invite bare: {note_refusal}", user_id=user_id,
-                        action_type="invite_connect")
+                        action_type="invite_connect", refusal_reason=note_refusal)
             message = None
 
     user_email, user_password = get_user_password_pair_by_id(user_id)
