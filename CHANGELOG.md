@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.173.4](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.173.3...v0.173.4) (2026-09-04)
+
+
+### Bug Fixes
+
+* **errors:** stop escalating the expected LinkedIn device-approval warning (closes [#1922](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1922)) ([#1932](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1932)) ([18f7d00](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/18f7d004f9a7892a3536e76af3d443e6cf8c813e))
+* **outbound:** refuse an LLM meta-response before it reaches LinkedIn ([#1964](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1964)) ([3e85ee2](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/3e85ee26f7c980c0e3a60a73fd5e3a2ea5b993a4))
+* **outbound:** refuse an LLM meta-response before it reaches LinkedIn (closes [#1963](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1963)) ([3e85ee2](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/3e85ee26f7c980c0e3a60a73fd5e3a2ea5b993a4))
+
 ## [0.173.3](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.173.2...v0.173.3) (2026-09-03)
 
 
