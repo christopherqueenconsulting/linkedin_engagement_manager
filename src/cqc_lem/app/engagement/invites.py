@@ -37,6 +37,10 @@ from selenium.webdriver.support.wait import WebDriverWait
 from cqc_lem.app.my_celery import app as shared_task
 from cqc_lem.app.queue_once import QueueOnce
 from cqc_lem.utilities.ai.ai_helper import get_ai_message_refinement
+from cqc_lem.utilities.ai.outbound_qa import (
+    SURFACE_INVITE_NOTE as OUTBOUND_SURFACE_INVITE_NOTE,
+    refusal_reason as outbound_refusal_reason,
+)
 from cqc_lem.utilities.db import (
     ACCOUNT_RESTRICTED_MESSAGE,
     ALREADY_CONNECTED_MESSAGE,
@@ -1525,6 +1529,20 @@ def invite_to_connect_now(user_id: int, profile_url: str, message: str = None,
     email-verification variant; `invite_to_connect` and `send_roster_connect_invite` never pass one,
     so this defaults to None and their callers are unchanged.
     """
+    # The note is LLM-authored and goes verbatim to a named human, so it answers to the same gate as
+    # a DM (#1963). The VERDICT differs, though, and that is the whole point: a DM *is* its body, so
+    # a refused body means there is nothing to send — but a note is an optional extra on an invite we
+    # already decided to send, and #573 already built the bare-send path for exactly this. Dropping
+    # the note keeps the invite; refusing the invite would throw away a good one over a bad garnish
+    # and burn the request's attempt ceiling for a target nothing was wrong with.
+    if message:
+        note_refusal = outbound_refusal_reason(message, surface=OUTBOUND_SURFACE_INVITE_NOTE)
+        if note_refusal:
+            log_warning(f"Dropping an unsendable connect note for {profile_url}; sending the "
+                        f"invite bare: {note_refusal}", user_id=user_id,
+                        action_type="invite_connect")
+            message = None
+
     user_email, user_password = get_user_password_pair_by_id(user_id)
 
     driver, wait = get_driver_wait_pair(session_name='Invite to Connect', user_id=user_id)

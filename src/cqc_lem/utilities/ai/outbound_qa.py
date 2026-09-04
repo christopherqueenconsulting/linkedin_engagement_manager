@@ -39,6 +39,10 @@ from typing import Optional
 # same on both, so the surface only tunes the length floor.
 SURFACE_DM = "dm"
 SURFACE_COMMENT = "comment"
+# A connect-invite note is the one surface whose refusal does NOT stop the send: the note is an
+# optional extra on an invite already decided (#573), so `invite_to_connect_now` drops a refused
+# note and sends the invite bare. Same checks, different verdict at the call site.
+SURFACE_INVITE_NOTE = "invite_note"
 
 VIOLATION_EMPTY = "empty_body"
 VIOLATION_NO_CONTENT = "no_readable_content"
@@ -59,7 +63,7 @@ _HAS_READABLE_RE = re.compile(r"[A-Za-z0-9]")
 # model dumping its reasoning rather than writing a message — the same failure mode as the incident
 # body, caught by size when the wording is novel. Set high enough that ordinary variation never
 # trips it. A comment has no such budget and gets no cap.
-_MAX_CHARS = {SURFACE_DM: 900}
+_MAX_CHARS = {SURFACE_DM: 900, SURFACE_INVITE_NOTE: 900}
 
 # The assistant addressing the OPERATOR instead of writing the message. This is the same failure
 # `content_alignment.is_assistant_aside` catches for newsletter headlines (#1284), but its pattern
