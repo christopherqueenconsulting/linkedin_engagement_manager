@@ -20,6 +20,13 @@
         "--headless",
         "--isolated"
       ]
+    },
+    "posthog": {
+      "type": "http",
+      "url": "https://mcp.posthog.com/mcp",
+      "headers": {
+        "Authorization": "Bearer ${POSTHOG_BEARER_TOKEN}"
+      }
     }
   }
 }
