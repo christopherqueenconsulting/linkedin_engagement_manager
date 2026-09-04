@@ -160,8 +160,8 @@ def test_function_with_external_api(mock_openai_client):
 
 ### Test Coverage Requirements
 
-- **Minimum**: 70% code coverage for core modules
-- **Target**: 85%+ code coverage
+- **Patch**: 80% of changed lines (Codecov, `codecov.yml`)
+- **Project**: 93% target with a 1% threshold (`codecov.yml`)
 - **New Code**: All new code must include tests
 - **Bug Fixes**: Include a test that would have caught the bug
 
