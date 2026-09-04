@@ -38,6 +38,8 @@ poetry install --with mcp        # one-time: pulls the `mcp` SDK
 It picks up `SE_REMOTE_URL` (default `http://127.0.0.1:4444`). On the VPS that's the
 loopback-mapped hub; from a laptop, the SSH tunnel above makes it reach the box.
 Restart Claude Code after editing `.mcp.json` — MCP servers load at session start.
+The template's `posthog` server takes its key from `POSTHOG_BEARER_TOKEN` in the shell env
+(see `.env.example`); never write a `phx_` key into `.mcp.json` itself.
 
 Tools: `start_browser`, `navigate`, `current_state`, `list_inputs`, `list_buttons`,
 `type_into`, `click`, `screenshot`, `page_source`, `execute_js`, `quit_browser`.
