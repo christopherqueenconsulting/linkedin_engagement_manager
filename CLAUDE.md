@@ -293,6 +293,7 @@ local dev → PR to main → CI gates pass → release-please tags vX.Y.Z → bu
 - Stack launches with **both** compose files — prod overlay strips dev bind-mount, so app services run image code; **editing files on disk does nothing until new image ships**. `web_app` routes blue/green; releases batch 4x/day (`docs/zero-downtime-deploys.md`), and **`release:now`** ships at merge (`docs/release-fast-lane.md`).
 - **Runtime state (429 breaker, manual automation pause, reply-sweep cadence keys) lives in Redis**, not the DB or containers — it survives deploys.
 - A **local hotfix deploy** fallback exists when CI/release is blocked; it diverges prod from `main` until the fix lands via the normal PR flow. Compose layering + image refs: `docs/DEPLOYMENT.md`.
+- `CQC_VAULT` + cross-project context (vault note, handoffs, decisions): `docs/cross-project-context.md`.
 
 ## Known Gotchas
 
@@ -359,11 +360,3 @@ Full mechanics + exact commands: `docs/git-safety-multi-agent.md`.
   pipeline runs with the owner's credentials, so `agent:ready` / `release:now` are verified by
   **provenance, not presence**; an unreadable answer REFUSES. The pipeline's credential has **no
   `workflows` permission** — the hard control, since agent and owner share one identity.
-
-## Cross-project context
-Global rules for every session live in `~/.claude/CLAUDE.md` (sourced from the CQC Boss Vault, `00-Home/CLAUDE.global.md`). The vault is at `$CQC_VAULT` (fallback: `~/Library/Mobile Documents/iCloud~md~obsidian/Documents/CQC Boss Vault`); read it as plain files.
-- This project's vault note: `60-Projects/LEM.md` (create it per `00-Home/Vault-Conventions.md` if missing).
-- Handoff packets: `80-Handoffs/HO-<date>-<n>-<slug>.md` per `80-Handoffs/Handoff-Protocol.md`.
-- Tracker: none recorded.
-- Other projects: look them up in `00-Home/Source-Map.md`; write anything another project needs to the vault, not to auto-memory.
-- Decisions for Christopher: options with a recommendation, in chat (see `00-Home/Working-With-Christopher.md`).
