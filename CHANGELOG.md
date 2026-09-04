@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.173.5](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.173.4...v0.173.5) (2026-09-04)
+
+
+### Bug Fixes
+
+* **invites:** drop an unsendable connect note instead of sending it ([#1970](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1970)) ([259dc19](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/259dc19acdeb3a9ce36bc1d594f1243e882d5cc4))
+
+
+### Documentation
+
+* cross-project context (vault pointer + obsidianvault MCP) ([#1962](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1962)) ([45e3b07](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/45e3b070e86cb58a98766438808fb1999a648f57))
+
 ## [0.173.4](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.173.3...v0.173.4) (2026-09-04)
 
 
