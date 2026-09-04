@@ -95,6 +95,10 @@ from cqc_lem.utilities.ai.dm_nurture import (
     nurture_delay_hours,
     recipient_context,
 )
+from cqc_lem.utilities.ai.outbound_qa import (
+    SURFACE_DM as OUTBOUND_SURFACE_DM,
+    refusal_reason as outbound_refusal_reason,
+)
 from cqc_lem.utilities.connection_targeting import (
     SOURCE_ADJACENT_POST,
     SOURCE_OWN_POST,
@@ -2350,6 +2354,18 @@ def send_dm_now(user_id: int, profile_url: str, message: str, person_name: str =
     every DM send lane (private, scheduled, catch-up, nurture, appreciation) shares this function,
     so this is the ONE place the exemption needs to be set.
     """
+    # The LAST look at the body, and the reason it is here rather than at each of the five lanes
+    # that call this: whatever any of them hands over gets typed into a named person's inbox. On
+    # 2026-09-04 that was a model asking the operator for input it thought was missing, and two
+    # other DMs shipped an invented `[link]`. Refusing costs one message; sending costs the account.
+    # Checked BEFORE a browser session is opened — a body we will not send is not worth a Chrome
+    # slot off the fixed pool.
+    refusal = outbound_refusal_reason(message, surface=OUTBOUND_SURFACE_DM)
+    if refusal:
+        log_warning(f"Refusing to send an unsendable DM to {profile_url}: {refusal}",
+                    user_id=user_id, action_type="dm")
+        return False
+
     user_email, user_password = get_user_password_pair_by_id(user_id)
 
     driver, wait = get_driver_wait_pair(session_name='Private DM', user_id=user_id, needs_images=True)

@@ -78,6 +78,10 @@ from cqc_lem.utilities.ai.content_alignment import (
     append_link_to_comment,
 )
 from cqc_lem.utilities.ai.content_framework import select_blueprint
+from cqc_lem.utilities.ai.outbound_qa import (
+    SURFACE_COMMENT as OUTBOUND_SURFACE_COMMENT,
+    refusal_reason as outbound_refusal_reason,
+)
 from cqc_lem.utilities.connection_targeting import (
     SOURCE_ROSTER,
     ScoredCandidate,
@@ -784,6 +788,13 @@ def post_comment_inline(driver, wait, card, comment_text: str, user_id: int = No
     try:
         comment_text = strip_non_bmp(comment_text)  # ChromeDriver send_keys throws on non-BMP emoji
         if not comment_text.strip():
+            return False
+        # Selenium half of the outbound gate (`comment_on_linkedin_post` is the API half). Checked
+        # before the composer is opened so a body we will not post never touches the card.
+        refusal = outbound_refusal_reason(comment_text, surface=OUTBOUND_SURFACE_COMMENT)
+        if refusal:
+            log_warning(f"Refusing to post an unsendable comment: {refusal}", user_id=user_id,
+                        action_type="comment")
             return False
         if composer is None:
             step = "open composer"

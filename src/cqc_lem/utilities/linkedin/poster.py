@@ -27,6 +27,10 @@ from linkedin_api.clients.restli.client import RestliClient
 from pydantic import BaseModel, Field
 from pydantic.types import StringConstraints
 
+from cqc_lem.utilities.ai.outbound_qa import (
+    SURFACE_COMMENT as OUTBOUND_SURFACE_COMMENT,
+    refusal_reason as outbound_refusal_reason,
+)
 from cqc_lem.utilities.db import get_user_access_token, get_user_linked_sub_id
 from cqc_lem.utilities.env_constants import LI_API_VERSION
 from cqc_lem.utilities.logger import log_debug, log_error, log_info, log_warning
@@ -658,6 +662,14 @@ def comment_on_linkedin_post(user_id: int, object_urn: str, text: str,
         log_debug(f"No LinkedIn credentials for user {user_id} — cannot comment via API")
         return None
     if not object_urn or not (text or "").strip():
+        return None
+    # A comment is PUBLIC, so an assistant aside or a leaked placeholder here is worse than the same
+    # text in a DM. This is the API half of the outbound gate; `post_comment_inline` is the Selenium
+    # half. Both refuse rather than post — see `utilities/ai/outbound_qa.py` for what this is for.
+    refusal = outbound_refusal_reason(text, surface=OUTBOUND_SURFACE_COMMENT)
+    if refusal:
+        log_warning(f"Refusing to comment on {object_urn} — unsendable body: {refusal}",
+                    user_id=user_id, action_type="comment")
         return None
     entity = {"actor": f"urn:li:person:{sub_id}", "message": {"text": text}}
     if parent_comment_urn:
