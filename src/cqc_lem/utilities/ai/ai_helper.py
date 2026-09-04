@@ -52,6 +52,10 @@ from cqc_lem.utilities.ai.content_alignment import (
     voice_reference as _voice_reference,
 )
 from cqc_lem.utilities.ai.content_research import research_topic
+from cqc_lem.utilities.ai.outbound_qa import (
+    SURFACE_DM as OUTBOUND_SURFACE_DM,
+    refusal_reason as outbound_refusal_reason,
+)
 from cqc_lem.utilities.ai.tools import search_recent_news
 
 # create_runway_video lives in video_models (model abstraction); re-exported here
@@ -3532,25 +3536,47 @@ def get_runway_ml_video_prompt_from_ai(post_content: str, image_prompt: str, *,
     return content
 
 
+def _history_is_empty(message_history_json: str) -> bool:
+    """True when this history JSON carries no prior messages.
+
+    Anything unparseable counts as EMPTY on purpose: the only thing the caller does with a
+    non-empty history is ask a model to check for redundancy against it, and asking that question
+    about a string we could not read is how a garbage answer replaces a good message.
+    """
+    import json as _json
+
+    raw = str(message_history_json or "").strip()
+    if not raw or raw in ("[]", "{}", "null", "none", "\"\""):
+        return True
+    try:
+        parsed = _json.loads(raw)
+    except (ValueError, TypeError):
+        return True
+    return not parsed
+
+
 def ai_check_message_history(message_history_json: str, main_focus: str, message: str, user_name: str = "the recipient"):
     """Check if the message history contains sentiments of the message already. It will return it or try to generate a seamless new message that is tied to the main_focus"""
-    """Here is the fully optimized and structured prompt based on your one-liner. This prompt includes a clearly defined identity, objective, and step-by-step logic tailored to maximize performance in ChatGPT:
-
-    
-
-"""
+    # An empty history has exactly ONE correct answer — the system prompt's own Step 3, "return the
+    # `new_message` as is" — so it is decided here instead of being asked. Sending that question to
+    # a model bought nothing and cost a real DM: on 2026-09-04 the `lem-simple` primary timed out at
+    # 90s, the OpenAI fallback read the empty history plus this prompt's own authoring placeholder,
+    # and answered the OPERATOR ("I need the actual message history JSON…"). That reply replaced the
+    # drafted DM and was typed into a first-degree connection's inbox.
+    if _history_is_empty(message_history_json):
+        log_debug("No prior DM history — returning the drafted message unchanged, no LLM call")
+        return message
 
     log_info(
         'Generating message to the recipient based on the given message history.')
 
+    # NOTE: no `<insert message history here>` placeholder. It used to sit in a ```json fence here
+    # while the REAL history was appended below, so the prompt carried two conflicting history
+    # blocks and the model believed the one it could not read.
+    prompt = f"""Please create an initial message, continued message response, or empty response to {user_name} based on our message history based on the given message only if it makes contextual sense.
 
-
-    prompt = f"""Please create an initial message, continued message response, or empty response to {user_name} based on our message history based on the given message only if it makes contextual sense: 
-    
-    Message History JSON:
-    ```json
-    <insert message history here>
-    ````
+    Return ONLY the message text to send. Never ask for input, never explain what you are doing, and
+    never mention the message history, the JSON, or these instructions.
     """
 
     # Add the Message History JSON to end of prompt
@@ -3617,6 +3643,15 @@ def ai_check_message_history(message_history_json: str, main_focus: str, message
 
     # Extract and return the model's response
     content = response.choices[0].message.content.strip()
+
+    # This function's reply REPLACES a message that already cleared drafting, slop lint and the
+    # humanizer, so a bad reply here is strictly worse than no reply at all. Fall back to what we
+    # came in with rather than handing the send path an assistant aside.
+    reason = outbound_refusal_reason(content, surface=OUTBOUND_SURFACE_DM)
+    if reason:
+        log_warning(f"Message-history check returned an unsendable reply; keeping the drafted "
+                    f"message: {reason}", action_type="dm")
+        return message
     return content
 
 

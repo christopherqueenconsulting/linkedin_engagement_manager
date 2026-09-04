@@ -454,7 +454,7 @@ class TestAiCheckMessageHistory:
             from cqc_lem.utilities.ai.ai_helper import ai_check_message_history
 
             ai_check_message_history(
-                message_history_json="[]",
+                message_history_json='[{"sender": "Bob", "text": "Hi"}]',
                 main_focus="sales",
                 message="Are you interested?",
             )
@@ -462,12 +462,74 @@ class TestAiCheckMessageHistory:
             call_kwargs = mock_openai_client.chat.completions.create.call_args[1]
             assert call_kwargs.get("model") == "lem-simple"
 
+    def test_empty_history_returns_the_message_without_an_llm_call(self, mock_openai_client):
+        """The system prompt's own Step 3 ("return the new_message as is") decided in code.
+
+        Asking a model this question bought nothing and cost a real DM: on 2026-09-04 the
+        lem-simple primary timed out at 90s and the OpenAI fallback answered the operator instead,
+        and that reply was typed into a first-degree connection's inbox.
+        """
+        with patch("cqc_lem.utilities.ai.ai_helper.client", mock_openai_client):
+            from cqc_lem.utilities.ai.ai_helper import ai_check_message_history
+
+            for empty in ("[]", "", "   ", "{}", "null", "not json at all", None):
+                mock_openai_client.chat.completions.create.reset_mock()
+                result = ai_check_message_history(
+                    message_history_json=empty,
+                    main_focus="networking",
+                    message="Saw you checked my profile — what caught your eye?",
+                )
+                assert result == "Saw you checked my profile — what caught your eye?"
+                assert not mock_openai_client.chat.completions.create.called, empty
+
+    def test_prompt_carries_no_authoring_placeholder(self, mock_openai_client):
+        """The prompt must not carry its own authoring placeholder.
+
+        The `<insert message history here>` block sat in a fenced code block while the REAL history
+        was appended below it, so the prompt held two conflicting history blocks and the model
+        believed the one it could not read.
+        """
+        with patch("cqc_lem.utilities.ai.ai_helper.client", mock_openai_client):
+            from cqc_lem.utilities.ai.ai_helper import ai_check_message_history
+
+            ai_check_message_history(
+                message_history_json='[{"sender": "Bob", "text": "Hi"}]',
+                main_focus="networking",
+                message="Good to connect",
+            )
+
+            sent = str(mock_openai_client.chat.completions.create.call_args[1]["messages"])
+            assert "insert message history here" not in sent
+            assert "<insert" not in sent
+
+    def test_unsendable_reply_falls_back_to_the_drafted_message(self, mock_openai_client):
+        """An unsendable reply falls back to the drafted message.
+
+        This function REPLACES a message that already cleared drafting, slop lint and the
+        humanizer, so a bad reply here is worse than no reply. Body is the verbatim incident text.
+        """
+        leak = ("To assist you effectively, I need the actual message history JSON to analyze the "
+                "conversation context. Please provide the message history so I can proceed with "
+                "evaluating the new message and generating a response accordingly.")
+        mock_openai_client.chat.completions.create.return_value.choices[0].message.content = leak
+
+        with patch("cqc_lem.utilities.ai.ai_helper.client", mock_openai_client):
+            from cqc_lem.utilities.ai.ai_helper import ai_check_message_history
+
+            result = ai_check_message_history(
+                message_history_json='[{"sender": "Bob", "text": "Hi"}]',
+                main_focus="networking",
+                message="Good to connect, Bob — what are you working on?",
+            )
+
+            assert result == "Good to connect, Bob — what are you working on?"
+
     def test_main_focus_in_prompt(self, mock_openai_client):
         with patch("cqc_lem.utilities.ai.ai_helper.client", mock_openai_client):
             from cqc_lem.utilities.ai.ai_helper import ai_check_message_history
 
             ai_check_message_history(
-                message_history_json="[]",
+                message_history_json='[{"sender": "Bob", "text": "Hi"}]',
                 main_focus="cloud computing partnerships",
                 message="Let's connect!",
             )
@@ -479,8 +541,10 @@ class TestAiCheckMessageHistory:
 
 @pytest.mark.unit
 class TestGenerateCarouselContent:
-    """Tests for generate_carousel_content(). The function lazy-imports db and selenium helpers
-    inside its body, so we patch those at their source module paths.
+    """Tests for generate_carousel_content().
+
+    The function lazy-imports db and selenium helpers inside its body, so we patch those at their
+    source module paths.
     """
 
     def _make_carousel_response(self, mock_client, post_text="Check this out!", carousel=None):
