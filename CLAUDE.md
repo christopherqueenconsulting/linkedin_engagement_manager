@@ -293,7 +293,6 @@ local dev → PR to main → CI gates pass → release-please tags vX.Y.Z → bu
 - Stack launches with **both** compose files — prod overlay strips dev bind-mount, so app services run image code; **editing files on disk does nothing until new image ships**. `web_app` routes blue/green; releases batch 4x/day (`docs/zero-downtime-deploys.md`), and **`release:now`** ships at merge (`docs/release-fast-lane.md`).
 - **Runtime state (429 breaker, manual automation pause, reply-sweep cadence keys) lives in Redis**, not the DB or containers — it survives deploys.
 - A **local hotfix deploy** fallback exists when CI/release is blocked; it diverges prod from `main` until the fix lands via the normal PR flow. Compose layering + image refs: `docs/DEPLOYMENT.md`.
-- `CQC_VAULT` + cross-project context (vault note, handoffs, decisions): `docs/cross-project-context.md`.
 
 ## Known Gotchas
 
