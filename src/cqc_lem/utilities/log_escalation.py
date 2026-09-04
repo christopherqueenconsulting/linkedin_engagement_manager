@@ -82,6 +82,12 @@ BUILTIN_EXCLUDED_PREFIXES = (
     # repetition carries no new information. Escalating it filed a code defect (#1071) against
     # tooling that was working exactly as designed.
     "Cost alert [",
+    # `linkedin.helper._wait_for_manual_approval`'s prompt (`helper.DEVICE_APPROVAL_LOG_PREFIX`). A
+    # LinkedIn device-approval challenge is a security check the account owner clears with a mobile
+    # tap, not a bug — it is already best-effort handled (SPA badge, owner email) and degrades
+    # gracefully into a bounded wait. Escalating it filed a GitHub issue against working login
+    # handling for an event only the owner can act on (#1922).
+    "LinkedIn device-approval required",
 )
 
 

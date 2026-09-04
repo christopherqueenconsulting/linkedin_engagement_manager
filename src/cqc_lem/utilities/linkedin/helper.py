@@ -61,6 +61,13 @@ from cqc_lem.utilities.selenium_util import (
     load_cookies,
 )
 
+# The device-approval-required warning below is EXPECTED LinkedIn behavior (a security challenge
+# the account owner clears with a mobile-app tap), not a code defect — it is already best-effort
+# handled (SPA badge via `mark_approval_pending`, an owner email) and degrades gracefully into the
+# manual-approval wait. Excluded from recurrence escalation in `log_escalation.BUILTIN_EXCLUDED_
+# PREFIXES` so repeated challenges stop filing a GitHub issue against working tooling (#1922).
+DEVICE_APPROVAL_LOG_PREFIX = "LinkedIn device-approval required"
+
 
 def _human_pause(min_seconds: float, max_seconds: float) -> None:
     """Sleep a random human-like interval to space out automated navigations. Set
@@ -598,7 +605,7 @@ def login_to_linkedin(driver: WebDriver, wait: WebDriverWait, user_email: str, u
         if uid:
             mark_approval_pending(uid)
         log_warning(
-            "LinkedIn device-approval required — open your LinkedIn mobile app and tap "
+            f"{DEVICE_APPROVAL_LOG_PREFIX} — open your LinkedIn mobile app and tap "
             "'Yes' to confirm this sign-in (watch via VNC). Waiting up to "
             f"{timeout}s for approval.",
             action_type="login",
