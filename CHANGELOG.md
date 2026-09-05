@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.173.6](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.173.5...v0.173.6) (2026-09-05)
+
+
+### Documentation
+
+* README accuracy pass (2026-09-04) ([#1973](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1973)) ([c79c948](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/c79c94888784d9d0980841e454674b7f52188bf7))
+
 ## [0.173.5](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.173.4...v0.173.5) (2026-09-04)
 
 
