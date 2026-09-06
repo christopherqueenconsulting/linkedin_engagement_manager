@@ -279,6 +279,26 @@ class TestSolveArkoseChallenge:
 
         assert result is False
 
+    def test_no_arkose_iframe_logs_debug_not_warning(self, monkeypatch):
+        """A non-Arkose challenge is the expected common case — the fallback chain in
+        `_handle_challenge` (email PIN, then manual approval) already handles it, so this
+        must never escalate into a recurring PostHog warning (issue #1923).
+        """
+        monkeypatch.setenv("CAPSOLVER_API_KEY", "CAP-test-key-abc123")
+        driver = self._make_driver(iframes=[])
+        wait = _make_wait()
+
+        with patch(f"{_MODULE}.capsolver", create=True), \
+             patch(f"{_MODULE}.log_debug") as mock_debug, \
+             patch(f"{_MODULE}.log_warning") as mock_warning:
+            from cqc_lem.utilities.linkedin.helper import solve_arkose_challenge
+            result = solve_arkose_challenge(driver, wait)
+
+        assert result is False
+        mock_debug.assert_called_once()
+        assert "not an Arkose Labs FunCaptcha" in mock_debug.call_args[0][0]
+        mock_warning.assert_not_called()
+
     def test_returns_false_when_iframe_has_no_arkoselabs_src(self, monkeypatch):
         """Iframe present but not from arkoselabs.com → not an Arkose challenge."""
         monkeypatch.setenv("CAPSOLVER_API_KEY", "CAP-test-key-abc123")
