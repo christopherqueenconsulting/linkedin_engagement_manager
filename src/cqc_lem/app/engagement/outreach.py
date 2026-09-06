@@ -2370,13 +2370,19 @@ def send_dm_now(user_id: int, profile_url: str, message: str, person_name: str =
 
     driver, wait = get_driver_wait_pair(session_name='Private DM', user_id=user_id, needs_images=True)
 
-    login_to_linkedin(driver, wait, user_email, user_password)
-
     dm_sent = False
 
     log_info("Sending DM: " + message)
 
     try:
+        # login_to_linkedin used to run BEFORE this try — a LinkedInRateLimited it raises (429
+        # breaker, manual pause, or this account's own challenge-unsolvable cooldown, issue #1920)
+        # propagated straight out of send_dm_now uncaught: no FAILURE log row, no quit_gracefully
+        # (a leaked Chrome slot off the fixed pool, on top of an unhandled Celery task exception
+        # filing a fresh $exception every time the breaker was open, issue #1975). It is inside the
+        # try now so the same finally and except branches every other failure here already gets.
+        login_to_linkedin(driver, wait, user_email, user_password)
+
         composer = open_addressed_composer(driver, wait, profile_url, person_name=person_name,
                                            user_id=user_id)
         if not composer.addressed:
@@ -2397,6 +2403,14 @@ def send_dm_now(user_id: int, profile_url: str, message: str, person_name: str =
                                      "Finding Send Button", max_retry=1, use_action_chain=True)
 
             dm_sent = _dm_send_landed(driver, message, user_id=user_id, profile_url=profile_url)
+
+    except LinkedInRateLimited as e:
+        # A known, self-clearing back-off (429 breaker, manual pause, or a per-account
+        # challenge-unsolvable cooldown, issue #1920) — not a fresh failure to page on. WARNING
+        # here never escalates: `log_escalation._is_self_clearing_backoff` keys off the exception
+        # TYPE, not the message, so this stays out of PostHog error tracking however often it fires.
+        log_warning("DM send skipped — LinkedIn rate-limited or cooling down", exc=e,
+                    user_id=user_id, action_type="dm")
 
     except Exception as e:
         # ERROR, not myprint: this lane failed silently for weeks because every send logged its
