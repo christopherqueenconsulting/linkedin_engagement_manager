@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.173.7](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.173.6...v0.173.7) (2026-09-06)
+
+
+### Bug Fixes
+
+* **outreach:** stop LinkedInRateLimited from escaping send_dm_now uncaught ([f41af2c](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/f41af2cb04cd19a7c593ff55295633737a93c69f)), closes [#1975](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1975)
+* **outreach:** stop LinkedInRateLimited from escaping send_dm_now uncaught (closes [#1975](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1975)) ([#1976](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1976)) ([f41af2c](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/f41af2cb04cd19a7c593ff55295633737a93c69f))
+
 ## [0.173.6](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.173.5...v0.173.6) (2026-09-05)
 
 
