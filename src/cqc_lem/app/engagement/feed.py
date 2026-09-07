@@ -4067,7 +4067,14 @@ def automate_commenting(self, user_id: int, loop_for_duration: int = None, futur
                  task_name="automate_commenting")
 
     try:
-        driver, wait, user_email, my_profile = get_current_profile(user_id=user_id, session_name="Auto Commenting")
+        # needs_images=True (#1979): this run's roster pass (`comment_on_roster_posts`) opens a
+        # target's `/recent-activity/*` page BEFORE the home feed gets a look, and that page is
+        # fastboot the same way `/messaging/*` (#1774) and `/groups/*` (#1778) are — a
+        # bandwidth-saver session with images blocked never mounts `<main>` at all, live-confirmed
+        # 2026-09-07 (empty `<main>`, a bare "LinkedIn" `<title>`, zero posts read, despite the page
+        # holding real content: `has_arvid=True` only inside the unrendered hydration payload).
+        driver, wait, user_email, my_profile = get_current_profile(user_id=user_id, session_name="Auto Commenting",
+                                                                    needs_images=True)
     except LinkedInRateLimited as e:
         # A known, self-clearing back-off (429 breaker, manual pause, or this account's own
         # challenge-unsolvable cooldown per issue #1920) — not a fresh failure, so WARNING rather

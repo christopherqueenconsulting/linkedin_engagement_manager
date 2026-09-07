@@ -625,6 +625,13 @@ their posts. Authors who restrict commenting to connections or followers render 
 affordance at all**, and `comment_on_roster_posts` skips them fail-closed. Before #962 that skip was
 invisible: the user could never learn that following or connecting would unlock the account.
 
+- **The activity page is fastboot, the same way `/messaging/*` (#1774) and `/groups/*` (#1778)
+  are** (#1979): its `<img>` load events drive the client boot, so a bandwidth-saver session with
+  images blocked never mounts `<main>` at all — live-confirmed 2026-09-07 (a bare `"LinkedIn"`
+  `<title>`, zero posts, the owner's name readable only inside the unrendered hydration payload).
+  `automate_commenting` — the task `comment_on_roster_posts` runs inside, BEFORE the home feed gets
+  a look — opens its session with `needs_images=True` for exactly that reason.
+
 - **The signature is "posts, but nothing to comment with."** A visit that finds post text but where
   EVERY card resolves to `_card_for_textbox → None` records one blocked visit
   (`record_target_comment_blocked`). A page with no posts, or only short/reshare text nodes, is a
