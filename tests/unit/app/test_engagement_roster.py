@@ -839,6 +839,33 @@ class TestResolveFollowControl:
         report.assert_not_called()
 
 
+class TestFollowControlRouteCShortenedLabel:
+    """Route C only runs in a real browser, so a unit test can only hold its safety invariant.
+
+    An open-profile/creator page shows "Message <first>" to strangers too (#1979), so it must
+    never count as evidence of following while a Connect/Invite affordance is still on the page —
+    the same `message && !connect` gate `_CONNECT_STATE_JS` already applies to its own sibling
+    shortened-label read.
+    """
+
+    def test_the_shortened_message_match_is_gated_on_no_connect_offered(self):
+        from cqc_lem.app.engagement.feed import _FOLLOW_CONTROL_JS
+        lines = _FOLLOW_CONTROL_JS.splitlines()
+        message_line = next(i for i, line in enumerate(lines) if "message ' + FIRST" in line)
+        assert "connected = true" in lines[message_line + 1], \
+            "expected the shortened-Message match immediately followed by `connected = true`"
+        # The block guarding the shortened-Message match must be `if (!connectOffered)` — a page
+        # still offering to Connect must never reach the shortened-Message check at all.
+        opened = [i for i, line in enumerate(lines[:message_line])
+                 if "if (!connectOffered)" in line]
+        assert opened, "shortened Message match is not gated on Connect at all"
+        assert opened[-1] < message_line
+
+    def test_connect_offered_is_detected_page_wide_when_it_names_the_owner(self):
+        from cqc_lem.app.engagement.feed import _FOLLOW_CONTROL_JS
+        assert "namesOwner(text) || ownerCard(b)" in _FOLLOW_CONTROL_JS
+
+
 class TestActivityPageOwnerName:
     def test_reads_the_middle_segment_of_the_title(self):
         from cqc_lem.app.engagement import feed as ra

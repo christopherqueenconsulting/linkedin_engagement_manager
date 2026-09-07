@@ -1331,7 +1331,9 @@ if (hit) return hit;  // Route B — any owner-named control on the page.
 // shortened-label shape _CONNECT_STATE_JS already trusts for the sibling connect-state read, and a
 // 1st-degree badge is the same strongest-evidence signal that read uses too. LinkedIn auto-follows a
 // connection, so this is read-only — no control names the target, so nothing is ever clicked here,
-// only a state inferred.
+// only a state inferred. The shortened Message alone is gated the same way _CONNECT_STATE_JS gates
+// it (`message && !connect`) — a Connect/Invite affordance still on the page means the target is
+// NOT yet 1st-degree, so Message there is an open-profile artifact, never evidence of following.
 const FIRST = NAME.split(' ')[0] || '';
 const ownerCard = (el) => {
   let cur = el.parentElement, d = 0;
@@ -1361,11 +1363,28 @@ if (SLUG) {
   }
 }
 if (!connected) {
+  // A shortened "Message <first>" alone is too weak to trust: an open-profile or creator page
+  // shows Message to strangers too, exactly the ambiguity _CONNECT_STATE_JS guards against with its
+  // own `message && !connect` check. Mirror it here — a Connect/Invite affordance still offered
+  // anywhere naming the owner, or a bare one inside the owner's own card, means this is NOT (yet) a
+  // 1st-degree connection, so the shortened Message never counts as evidence of following.
+  const namesOwner = (text) => !!NAME && text.includes(NAME);
+  const isConnectText = (text) =>
+    text.includes('to connect') || text === 'connect' || text.startsWith('connect ');
+  let connectOffered = false;
   for (const b of document.querySelectorAll("button, [role='button'], a[role='link']")) {
-    if (!shown(b) || !ownerCard(b)) continue;
+    if (!shown(b)) continue;
     const text = label(b);
-    if (!!FIRST && (text === 'message ' + FIRST || text.startsWith('message ' + FIRST + ' '))) {
-      connected = true; break;
+    if (!isConnectText(text)) continue;
+    if (namesOwner(text) || ownerCard(b)) { connectOffered = true; break; }
+  }
+  if (!connectOffered) {
+    for (const b of document.querySelectorAll("button, [role='button'], a[role='link']")) {
+      if (!shown(b) || !ownerCard(b)) continue;
+      const text = label(b);
+      if (!!FIRST && (text === 'message ' + FIRST || text.startsWith('message ' + FIRST + ' '))) {
+        connected = true; break;
+      }
     }
   }
 }
