@@ -3005,6 +3005,26 @@ class TestGroupFeedComposerProbe:
         assert llv.main(["--feed-sort"]) == 0
         assert captured["needs_images"] is False
 
+    def test_a_roster_follow_flag_requests_needs_images(self, monkeypatch):
+        """Issue #1979: a roster target's `/recent-activity/*` page is fastboot too.
+
+        Live-confirmed 2026-09-07 that without images `<main>` never mounts, the same empty-render
+        misread #1778 already named for `/groups/*`.
+        """
+        captured = {}
+
+        def _open(fn, uid, require_debug_node=False, needs_images=False):
+            captured["needs_images"] = needs_images
+            return MagicMock(), MagicMock(), {"state": "signed_in"}
+
+        monkeypatch.setattr(llv, "open_probe_session", _open)
+        monkeypatch.setattr(llv, "install_read_only_guard", lambda: None)
+        monkeypatch.setattr(llv, "probe_roster_follow",
+                            lambda d, url: {"verdict": "ok"})
+        clear_the_breaker(monkeypatch)
+        assert llv.main(["--roster-follow", "https://www.linkedin.com/in/someone"]) == 0
+        assert captured["needs_images"] is True
+
 
 @pytest.mark.unit
 class TestCompanyInviteProbe:

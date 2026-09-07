@@ -786,7 +786,84 @@ class TestResolveFollowControl:
     def test_an_unrecognized_state_is_unknown(self):
         from cqc_lem.app.engagement import feed as ra
         driver = self._driver(result=["followed?", MagicMock()])
-        assert ra._resolve_follow_control(driver, self._URL) == ("unknown", None)
+        with patch(f"{_FEED}._report_zero_walk"):
+            assert ra._resolve_follow_control(driver, self._URL) == ("unknown", None)
+
+    def test_following_with_no_element_is_accepted(self):
+        # Route C (#1979): a 1st-degree connection's page renders no toggle at all, so `following`
+        # is read off a page-native signal instead of a control — there is nothing to click either
+        # way, and a caller must not require an element to trust the state.
+        from cqc_lem.app.engagement import feed as ra
+        driver = self._driver(result=["following", None])
+        assert ra._resolve_follow_control(driver, self._URL) == ("following", None)
+
+    def test_a_real_miss_is_cross_checked_against_the_page(self):
+        # #1979: an `unknown` that followed a real scan must be graded against an anchor the scan
+        # itself never reads (the post cards), so a rotated selector on a page with real content
+        # escalates instead of going quiet forever.
+        from cqc_lem.app.engagement import feed as ra
+        from cqc_lem.utilities.linkedin.cards import _FEED_POST_TEXT_SEL
+        driver = self._driver(result=["unknown", None])
+        with patch(f"{_FEED}._report_zero_walk") as report:
+            assert ra._resolve_follow_control(driver, self._URL) == ("unknown", None)
+        report.assert_called_once()
+        assert report.call_args.args[1] == _FEED_POST_TEXT_SEL
+
+    def test_a_rendered_page_with_no_control_and_no_signal_warns(self):
+        from cqc_lem.app.engagement import feed as ra
+        driver = self._driver(result=["unknown", None])
+        driver.find_elements.return_value = [MagicMock(), MagicMock()]
+        with patch("cqc_lem.utilities.linkedin.zero_walk.log_warning") as log_warning:
+            assert ra._resolve_follow_control(driver, self._URL) == ("unknown", None)
+        assert log_warning.called
+
+    def test_an_empty_page_does_not_warn(self):
+        from cqc_lem.app.engagement import feed as ra
+        driver = self._driver(result=["unknown", None])
+        driver.find_elements.return_value = []
+        with patch("cqc_lem.utilities.linkedin.zero_walk.log_warning") as log_warning:
+            assert ra._resolve_follow_control(driver, self._URL) == ("unknown", None)
+        log_warning.assert_not_called()
+
+    def test_no_owner_name_never_pays_for_the_cross_check(self):
+        from cqc_lem.app.engagement import feed as ra
+        driver = self._driver(title="LinkedIn")
+        with patch(f"{_FEED}._report_zero_walk") as report:
+            ra._resolve_follow_control(driver, self._URL)
+        report.assert_not_called()
+
+    def test_a_js_error_never_pays_for_the_cross_check(self):
+        from cqc_lem.app.engagement import feed as ra
+        with patch(f"{_FEED}._report_zero_walk") as report:
+            ra._resolve_follow_control(self._driver(raises=True), self._URL)
+        report.assert_not_called()
+
+
+class TestFollowControlRouteCShortenedLabel:
+    """Route C only runs in a real browser, so a unit test can only hold its safety invariant.
+
+    An open-profile/creator page shows "Message <first>" to strangers too (#1979), so it must
+    never count as evidence of following while a Connect/Invite affordance is still on the page —
+    the same `message && !connect` gate `_CONNECT_STATE_JS` already applies to its own sibling
+    shortened-label read.
+    """
+
+    def test_the_shortened_message_match_is_gated_on_no_connect_offered(self):
+        from cqc_lem.app.engagement.feed import _FOLLOW_CONTROL_JS
+        lines = _FOLLOW_CONTROL_JS.splitlines()
+        message_line = next(i for i, line in enumerate(lines) if "message ' + FIRST" in line)
+        assert "connected = true" in lines[message_line + 1], \
+            "expected the shortened-Message match immediately followed by `connected = true`"
+        # The block guarding the shortened-Message match must be `if (!connectOffered)` — a page
+        # still offering to Connect must never reach the shortened-Message check at all.
+        opened = [i for i, line in enumerate(lines[:message_line])
+                 if "if (!connectOffered)" in line]
+        assert opened, "shortened Message match is not gated on Connect at all"
+        assert opened[-1] < message_line
+
+    def test_connect_offered_is_detected_page_wide_when_it_names_the_owner(self):
+        from cqc_lem.app.engagement.feed import _FOLLOW_CONTROL_JS
+        assert "namesOwner(text) || ownerCard(b)" in _FOLLOW_CONTROL_JS
 
 
 class TestActivityPageOwnerName:

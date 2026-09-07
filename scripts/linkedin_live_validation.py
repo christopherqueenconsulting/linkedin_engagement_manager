@@ -6282,9 +6282,13 @@ def main(argv: Optional[list] = None) -> int:
 
     # #1778: any group surface (or a sweep, which walks them too) needs images on, the same way a
     # messaging-surface run does — otherwise the session reproduces the empty-<main> misread rather
-    # than grounding the surface.
+    # than grounding the surface. #1979 widens this to a roster target's `/recent-activity/*` page
+    # (the follow/connect-state readings): live-confirmed 2026-09-07 to be fastboot the same way —
+    # without this, `<main>` never mounts and the follow control read is a false `unknown`, not a
+    # true miss.
     needs_images = bool(args.group_composer or args.group_membership is not None
-                        or args.group_feed_composer is not None or args.sweep)
+                        or args.group_feed_composer is not None or args.sweep
+                        or args.roster_follow or args.roster_connect)
     try:
         driver, profile, session_reading = open_probe_session(
             get_current_profile, args.user_id, require_debug_node=args.require_debug_node,
