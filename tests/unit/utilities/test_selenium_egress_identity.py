@@ -126,12 +126,14 @@ class TestEverySessionPassesUserId:
 
 
 class TestNeedsImagesExemptionIsScoped:
-    """AST guard for issue #1774, widened by #1778: the exemption is scoped, not a global flip.
+    """AST guard for issue #1774, widened by #1778 and #1979: the exemption is scoped, not a
+    global flip.
 
-    `needs_images=True` must appear at exactly the DM-send and group-surface session-open call
-    sites the scoped exemption was granted to (#1774 for `/messaging/*`, #1778 for `/groups/*` —
-    both fastboot the SPA through `<img>` load events the same way). Any other call site widening
-    the exemption is the regression this issue explicitly warned against.
+    `needs_images=True` must appear at exactly the DM-send, group-surface and roster-comment
+    session-open call sites the scoped exemption was granted to (#1774 for `/messaging/*`, #1778
+    for `/groups/*`, #1979 for `automate_commenting`'s roster `/recent-activity/*` pass — all
+    fastboot the SPA through `<img>` load events the same way). Any other call site widening the
+    exemption is the regression this issue explicitly warned against.
     """
 
     _ALLOWED = {
@@ -140,9 +142,10 @@ class TestNeedsImagesExemptionIsScoped:
         ("app/engagement/feed.py", "auto_sync_user_groups"),
         ("app/engagement/feed.py", "auto_comment_in_groups"),
         ("app/engagement/feed.py", "auto_post_to_group"),
+        ("app/engagement/feed.py", "automate_commenting"),
     }
 
-    def test_only_the_messaging_and_groups_call_sites_request_images(self):
+    def test_only_the_messaging_groups_and_roster_call_sites_request_images(self):
         offenders = []
         for path in _SRC.rglob("*.py"):
             text = path.read_text()
