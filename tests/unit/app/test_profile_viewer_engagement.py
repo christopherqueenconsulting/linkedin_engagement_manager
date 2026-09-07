@@ -43,7 +43,7 @@ def _driver_scripting(rows_per_round: list[list[dict]], headline_stat=None) -> M
     def _execute(script, *args):
         if "Profile viewers" in script:
             return headline_stat
-        if "scrollIntoView" in script:
+        if "scrollTop" in script:
             return None
         result = rows_per_round[min(reads["i"], len(rows_per_round) - 1)]
         reads["i"] += 1
@@ -153,7 +153,7 @@ class TestWalkTermination:
 
         # Two rows-reads: the grown list's last row is out of range, so no third scroll happens.
         rows_reads = [c for c in driver.execute_script.call_args_list
-                      if "Viewed " in c.args[0] and "scrollIntoView" not in c.args[0]]
+                      if "Viewed " in c.args[0] and "scrollTop" not in c.args[0]]
         assert len(rows_reads) == 2
         assert _engaged_urls(mocks) == ["https://www.linkedin.com/in/ada/"]
 
@@ -194,6 +194,23 @@ class TestDateFilter:
 
         assert sorted(_engaged_urls(mocks)) == ["https://www.linkedin.com/in/ada-1/",
                                                 "https://www.linkedin.com/in/ada-2/"]
+
+
+class TestScrollTargetsTheRealScrollContainer:
+    """Regression guard for #1978.
+
+    `window`/`document.body` are not the scrolling element on the profile-views page
+    (body.scrollHeight sits flat at the viewport height), so a scroll script that only touches
+    `window` or calls `scrollIntoView` fires the lazy loader once and then goes quiet — read as
+    "list stopped growing" while the page's own headline says there is much more.
+    """
+
+    def test_scroll_script_never_relies_on_window_alone(self):
+        from cqc_lem.app.engagement.outreach import _PROFILE_VIEWER_SCROLL_JS
+
+        assert "scrollIntoView" not in _PROFILE_VIEWER_SCROLL_JS
+        assert "scrollTop" in _PROFILE_VIEWER_SCROLL_JS
+        assert "scrollHeight" in _PROFILE_VIEWER_SCROLL_JS
 
 
 class TestUnexpectedFailureStillErrors:
