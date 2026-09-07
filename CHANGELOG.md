@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.173.8](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.173.7...v0.173.8) (2026-09-07)
+
+
+### Bug Fixes
+
+* **engagement:** roster follow control resolution + activity-page fastboot (closes [#1979](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1979)) ([#1982](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1982)) ([1235ccf](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/1235ccfadca2e720f1c959b4ea333ba32c70e00e))
+* **outreach:** mention card walk falls back to &lt;body&gt; when &lt;main&gt; never paints (closes [#1985](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1985)) ([#1986](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1986)) ([0224342](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/0224342249ae42ce3dedd9376ae6a7a41511177f))
+* **outreach:** scroll the profile-viewer list's real container, not window (closes [#1978](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1978)) ([#1984](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1984)) ([d97f620](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/d97f6205ae0aae7610ea56a22a83a92429e81979))
+* **sdui-probe:** appreciation_sources ok grade no longer masked by empty mentions sibling (closes [#1980](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1980)) ([#1981](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1981)) ([5964437](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/596443732ff5ea60c0c95b089974491090da52ac))
+* **sdui-probe:** appreciation_sources overall grade no longer masked by an empty sibling ([5964437](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/596443732ff5ea60c0c95b089974491090da52ac)), closes [#1980](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1980)
+
 ## [0.173.7](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.173.6...v0.173.7) (2026-09-06)
 
 
