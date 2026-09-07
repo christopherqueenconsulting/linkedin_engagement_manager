@@ -206,11 +206,20 @@ A viewer row is an `/in/` anchor (componentkey UUID) whose innerText carries a
 `Viewed 1h ago`-style caption line (`1h`/`20h`/`1d`/`1w`/`1mo`/`2mo`); non-viewer profile
 anchors ("Interesting viewers", nav) carry no such line, so the caption IS the discriminator.
 The walk reads name+href+caption in ONE `execute_script` pass (`_PROFILE_VIEWER_ROWS_JS`) —
-per-element XPath reads go stale as the list re-renders. `window.scrollTo` alone never grows
-the list; `scrollIntoView` on the LAST row is what triggers the lazy loader (8 → 58 rows).
-Zero rows against a non-zero "N Profile viewers" headline stat is selector drift and warns;
-zero rows with no stat is a quiet no-op. Re-ground with
-`scripts/linkedin_live_validation.py --profile-views`.
+per-element XPath reads go stale as the list re-renders. Zero rows against a non-zero
+"N Profile viewers" headline stat is selector drift and warns; zero rows with no stat is a
+quiet no-op. Re-ground with `scripts/linkedin_live_validation.py --profile-views`.
+
+**Re-grounded live 2026-09-07 (#1978):** `window`/`document.body` are not the scrolling element
+on this page — `document.body.scrollHeight` sits flat at the viewport height and `window.scrollY`
+never moves no matter how much scroll script runs. The list's real scroll container is an inner
+ancestor of the row anchors (`scrollHeight` >> `clientHeight`); `scrollIntoView` on the last row
+only scrolls that container far enough to make that one row visible, fires the lazy loader
+**once**, then goes quiet even though there is far more list left — the exact "6 rows matched,
+scroll didn't grow it, headline says 340" shape #1978 reported. `_PROFILE_VIEWER_SCROLL_JS` now
+walks up from the last row to the nearest element whose content overflows its box and drives
+*that* element's `scrollTop` to its `scrollHeight` — live-verified to keep growing the list every
+pass (6 → 69 rows over twelve 2-second-spaced scrolls) instead of stalling after one.
 
 ## Recommendations Received has no list item, no `<time>` and no `role=tab` (#1007)
 

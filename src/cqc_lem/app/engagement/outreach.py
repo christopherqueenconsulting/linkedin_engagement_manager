@@ -1745,12 +1745,23 @@ const m = (document.body.innerText || '').match(/([\\d,]+)\\s*\\n\\s*Profile vie
 return m ? parseInt(m[1].replace(/,/g, ''), 10) : null;
 """
 
-# Window scrollTo alone does not grow this list — scrolling the LAST viewer row into view is
-# what triggers the lazy loader (grounded live: 8 -> 58 rows this way, scrollTo-only stayed at 8).
+# Re-grounded live 2026-09-07 (#1978): `document.body`/`window` are NOT the scrolling element on
+# this page (body.scrollHeight == innerHeight, scrollY never moves) — an inner ancestor of the
+# row list owns the scrollbar. `scrollIntoView` on the last row only moves the container far enough
+# to make that ONE row visible, so it fires the lazy loader once and then goes quiet even though
+# the container has grown — exactly the "6 rows, scroll didn't grow it" drift #1978 reported.
+# Walking up from the last row to the nearest element whose content overflows its box and driving
+# ITS scrollTop to the bottom keeps triggering the loader every pass (live-verified: 6 -> 69 rows
+# over twelve 2s-spaced scrolls). No class names — walks by scroll geometry, not a selector.
 _PROFILE_VIEWER_SCROLL_JS = """
 const rows = [...document.querySelectorAll('a[href*="/in/"]')].filter(a =>
   /(^|\\n)Viewed /.test(a.innerText || ''));
-if (rows.length) rows[rows.length - 1].scrollIntoView({block: 'end'});
+if (!rows.length) { return; }
+let el = rows[rows.length - 1];
+while (el && el !== document.documentElement) {
+  if (el.scrollHeight > el.clientHeight + 10) { el.scrollTop = el.scrollHeight; return; }
+  el = el.parentElement;
+}
 window.scrollTo(0, document.body.scrollHeight);
 """
 
