@@ -644,6 +644,13 @@ _MENTION_CARD_LOCATORS = [
     (By.CSS_SELECTOR, "main div[data-view-name='notification-card']"),
     (By.XPATH, "//main//article[.//a[contains(@href,'/in/')]]"),
     (By.XPATH, "//main//li[.//a[contains(@href,'/in/')]][.//time or .//span]"),
+    # #1985: every rung above is scoped under <main>, but `_mentions_page_native_count` — the
+    # independent cross-check this walk is graded against — already falls back to <body> when the
+    # SPA doesn't paint a <main> landmark on this load. That asymmetry alone reads as "selector
+    # drift" (the cross-check finds a mention sentence, every card rung sees none) with nothing
+    # about the card markup itself having changed. Mirror the same body fallback here.
+    (By.CSS_SELECTOR, "body article[data-view-name='notification-card']"),
+    (By.CSS_SELECTOR, "body div[data-view-name='notification-card']"),
 ]
 _MENTION_ACTOR_LOCATORS = [
     (By.CSS_SELECTOR, "a[data-view-name='notification-actor']"),
