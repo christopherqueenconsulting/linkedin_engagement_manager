@@ -126,8 +126,7 @@ class TestEverySessionPassesUserId:
 
 
 class TestNeedsImagesExemptionIsScoped:
-    """AST guard for issue #1774, widened by #1778 and #1979: the exemption is scoped, not a
-    global flip.
+    """AST guard for issue #1774, widened by #1778 and #1979: the exemption is scoped, not a global flip.
 
     `needs_images=True` must appear at exactly the DM-send, group-surface and roster-comment
     session-open call sites the scoped exemption was granted to (#1774 for `/messaging/*`, #1778
