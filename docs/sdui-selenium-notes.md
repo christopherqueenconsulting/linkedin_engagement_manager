@@ -534,6 +534,28 @@ returns on the first hit. Reading "any badge on the page" is the #1012 rail haza
 instead of a click: it cancels the invite to a 2nd-degree target because one of their mutuals is a
 1st.
 
+## A 1st-degree connection's activity page renders NO Follow/Unfollow toggle at all (#1979)
+
+The weekly drift sweep caught `_resolve_follow_control` (`engagement.feed`) reading `unknown` on
+`hamelhusain`'s `/recent-activity/all/` page — a page that plainly rendered content (six posts) but
+carried not one control whose label named the page owner with `follow`/`following`/`unfollow`. The
+`visible_controls` dump (capped at 40, and NOT truncated before the top card — global nav then
+`Message Hamel` / `Save Hamel Husain as a lead in Sales Navigator` render complete) shows why: this
+target is a 1st-degree connection, and LinkedIn no longer exposes a Follow/Unfollow toggle for one on
+this page at all. Only the shortened top-card `Message <first>` action (or, elsewhere on the page, a
+`1st` degree badge) survives — exactly the page-native signal `_CONNECT_STATE_JS` already trusted for
+the sibling connect-state read (grounded 2026-08-03 against a connection named "Harshal").
+
+The fix adds that same signal as a third route (Route C) in `_FOLLOW_CONTROL_JS`, tried only after
+Routes A and B (the owner-named control, scoped then page-wide) both miss: a `1st` badge or a
+shortened `Message <first>` inside the owner's own card resolves `following`, with no element — read
+only, since LinkedIn auto-follows a connection and there is nothing to click either way. An
+explicit `Follow <Name>` control still wins whenever it renders (an unfollowed-but-connected target),
+so Route C only ever fires when no explicit toggle exists at all. A genuine miss on all three routes
+is now cross-checked against the page's post cards (`_FEED_POST_TEXT_SEL`, an anchor the control scan
+never reads) via the shared zero-walk grader, so real drift on a page that plainly has content
+escalates instead of reading identically to an ordinary quiet page forever.
+
 ## The feed share-box composer is a non-button clickable (#1107)
 
 Live-grounded 2026-08-08 (`/feed/`, user 1): the share-box trigger renders the text

@@ -1263,8 +1263,13 @@ def _roster_activity_url(profile_url: str) -> str:
 # that names anyone else (or nobody) is never clickable. Route A still prefers the control nearest
 # the target's own /in/<slug> anchor (exact path-segment match — a substring also hits
 # /in/<slug>-2b41, a different person); Route B scans the whole page for an owner-named control. A
-# miss on both returns 'unknown' and NOTHING is clicked — fail closed, exactly like the comment
-# affordance above.
+# miss on both falls to Route C (#1979): since 2026-09 the weekly drift sweep caught a 1st-degree
+# connection's activity page rendering NO Follow/Unfollow toggle at all — LinkedIn auto-follows a
+# connection and folds the toggle elsewhere, leaving only the shortened "Message <first>" action or a
+# 1st-degree badge, the same page-native signal `_CONNECT_STATE_JS` already trusts. Route C only ever
+# READS that signal — no control names the target there either, so nothing is clicked — and answers
+# 'following'. A miss on all three routes returns 'unknown' and NOTHING is clicked — fail closed,
+# exactly like the comment affordance above.
 _FOLLOW_CONTROL_JS = r"""
 const SLUG = (arguments[0] || '').toLowerCase(), NAME = (arguments[1] || '')
   .replace(/\s+/g, ' ').trim().toLowerCase();
@@ -1318,8 +1323,53 @@ if (SLUG) {
   }
 }
 
-// Route B — any owner-named control on the page.
-return controls(document) || ['unknown', null];
+const hit = controls(document);
+if (hit) return hit;  // Route B — any owner-named control on the page.
+
+// Route C (#1979) — since 2026-09 a 1st-degree connection's activity page top card renders no
+// Follow/Unfollow toggle AT ALL: a shortened "Message <first>" replaces it, exactly the
+// shortened-label shape _CONNECT_STATE_JS already trusts for the sibling connect-state read, and a
+// 1st-degree badge is the same strongest-evidence signal that read uses too. LinkedIn auto-follows a
+// connection, so this is read-only — no control names the target, so nothing is ever clicked here,
+// only a state inferred.
+const FIRST = NAME.split(' ')[0] || '';
+const ownerCard = (el) => {
+  let cur = el.parentElement, d = 0;
+  while (SLUG && cur && d < 8) {
+    let own = false, other = false;
+    for (const a of cur.querySelectorAll("a[href*='/in/']")) {
+      const s = slugOf(a.getAttribute('href'));
+      if (!s) continue;
+      if (s === SLUG) own = true; else other = true;
+    }
+    if (other) return false;
+    if (own) return true;
+    cur = cur.parentElement; d++;
+  }
+  return false;
+};
+let connected = false;
+if (SLUG) {
+  for (const a of document.querySelectorAll("a[href*='/in/']")) {
+    if (slugOf(a.getAttribute('href')) !== SLUG) continue;
+    let el = a, d = 0;
+    while (el && d < 8) {
+      if (/(^|[^a-z0-9])1st([^a-z0-9]|$)/.test(norm(el.textContent))) { connected = true; break; }
+      el = el.parentElement; d++;
+    }
+    if (connected) break;
+  }
+}
+if (!connected) {
+  for (const b of document.querySelectorAll("button, [role='button'], a[role='link']")) {
+    if (!shown(b) || !ownerCard(b)) continue;
+    const text = label(b);
+    if (!!FIRST && (text === 'message ' + FIRST || text.startsWith('message ' + FIRST + ' '))) {
+      connected = true; break;
+    }
+  }
+}
+return connected ? ['following', null] : ['unknown', null];
 """
 
 
@@ -1369,11 +1419,16 @@ def _resolve_follow_control(driver: WebDriver, profile_url: str,
     """`(state, element)` for a roster target's follow control on the activity page already open.
 
     The control must carry the page owner's name in its label — see `_FOLLOW_CONTROL_JS` for why
-    that, and not top-card geometry, is the scoping rule.
+    that, and not top-card geometry, is the scoping rule. `FOLLOWING` with no element is expected
+    (#1979): a 1st-degree connection's page renders no toggle at all, so that reading comes from a
+    page-native signal instead of a control, and there is nothing for a caller to click either way.
 
     `FollowStatus.UNKNOWN` means we could not read it, NOT that there is nothing to follow — the
-    caller must treat it as "do nothing", never as "click the first Follow you can find". The
-    element is None on every state but `NOT_FOLLOWING`, so a caller that clicks must check it.
+    caller must treat it as "do nothing", never as "click the first Follow you can find". Zero items
+    is not "nothing to do" until the page agrees (`docs/sdui-selenium-notes.md`): an `UNKNOWN` that
+    followed a real scan is cross-checked against the post cards on the page, which the scan itself
+    never reads, so a rotated selector on a page that plainly has content escalates instead of going
+    quiet forever.
     """
     owner = _activity_page_owner_name(driver) or str(name or "").strip()
     if not owner:
@@ -1392,6 +1447,11 @@ def _resolve_follow_control(driver: WebDriver, profile_url: str,
         return FollowStatus.UNKNOWN, None
     state, element = result[0], result[1]
     if state not in (FollowStatus.FOLLOWING, FollowStatus.NOT_FOLLOWING):
+        # The scan ran and genuinely found neither a control nor the connected fallback — cross-check
+        # against the post cards, an anchor this scan never touches, so real drift (the page has
+        # content the walk cannot see) escalates instead of reading identically to an ordinary page.
+        _report_zero_walk(driver, _FEED_POST_TEXT_SEL, "Roster follow control walk",
+                          action_type="follow", task_name="_resolve_follow_control")
         return FollowStatus.UNKNOWN, None
     return FollowStatus(state), element
 
@@ -1511,9 +1571,10 @@ def auto_follow_roster_target(driver: WebDriver, user_id: int, target: dict,
             set_target_follow_status(user_id, profile_url, FollowStatus.FOLLOWING)
         return FollowOutcome.ALREADY_FOLLOWING
     if state != FollowStatus.NOT_FOLLOWING or control is None:
-        # Expected no-op, not selector rot: plenty of profiles expose no Follow control at all
-        # (already connected with following off, a creator-mode-off account, a restricted page). A
-        # warning here would file a defect for working behaviour on every such target.
+        # Expected no-op, not selector rot: a page can genuinely expose no Follow control (a
+        # creator-mode-off account, a restricted page) — an already-following connection resolves to
+        # `FOLLOWING` via Route C instead of landing here. `_resolve_follow_control` already grades a
+        # real miss against the page's own post cards, so a warning here on top would double it.
         # Nothing is written: "we could not read it" is what `unknown` already means, so storing it
         # would spend a round-trip per visit to overwrite a state with itself — and would erase a
         # `not_following` an earlier, readable visit had established.

@@ -669,8 +669,14 @@ invisible: the user could never learn that following or connecting would unlock 
   fallback) and every follow control's aria-label ("Follow \<Name\>") are written from the same
   string, so `_resolve_follow_control` accepts only owner-named labels (never a class name, never a
   bare nameless "Follow") — Route A prefers the control nearest the target's own exact-`/in/<slug>`
-  anchor, Route B takes any owner-named control on the page. No owner name, or no owner-named
-  control, returns `unknown` and clicks **nothing**.
+  anchor, Route B takes any owner-named control on the page. **A 1st-degree connection renders no
+  toggle at all** (#1979) — LinkedIn auto-follows a connection and folds the control elsewhere — so a
+  miss on both falls to Route C: the same page-native signal (`1st` badge, or the shortened top-card
+  `Message <first>`) the sibling `_resolve_connect_state` already trusted resolves `following`, no
+  element, and nothing is clicked either way. No owner name, or a miss on all three routes, returns
+  `unknown` and clicks **nothing** — and a genuine three-route miss is now cross-checked against the
+  page's own post cards (`docs/sdui-selenium-notes.md`), so real drift on a page with content
+  escalates instead of reading as an ordinary quiet page forever.
 - **`following` is written only after the control confirms it.** LinkedIn REPLACES the top card
   rather than relabelling the button, so the check POLLS (`_await_follow_flip`) instead of re-reading
   once — losing that render race would cost the target a failed attempt it never earned. A flip that
