@@ -108,8 +108,8 @@ REPORT_JSON_END = "===LEM-PROBE-JSON-END==="
 STATE_OK = "ok"
 STATE_DRIFT = "drift"
 STATE_UNKNOWN = "unknown"
-# Worst-wins ordering when a probe grades several sections (appreciation reads two surfaces) or the
-# sweep summarizes many probes: a drift anywhere is the report's state.
+# Worst-wins ordering when the sweep summarizes many UNRELATED probes, or a probe's sections all
+# need to render off the SAME page: a drift anywhere is the report's state.
 _STATE_RANK = {STATE_OK: 0, STATE_UNKNOWN: 1, STATE_DRIFT: 2}
 
 
@@ -121,6 +121,25 @@ def worst_state(states) -> str:
     if not ranked:
         return STATE_UNKNOWN
     return max(ranked, key=lambda s: _STATE_RANK[s])
+
+
+def independent_surfaces_state(states) -> str:
+    """Combine states across surfaces that are standing lists in their own right (issue #1980).
+
+    Unlike `worst_state`, appreciation-sources' recommendations-received and mentions feeds are
+    independent, so one of them being a legitimately-empty account forever (`unknown`) must not
+    mask the other having just proven its locator chain resolves real, dated cards (`ok`). Under
+    `worst_state`'s drift-beats-unknown-beats-ok ranking, an eternally-empty sibling pins the WHOLE
+    probe to `unknown` even on a run where the other half is grounded — the exact blind spot #1980
+    filed. `drift` still wins over everything: a page-native cross-check proving the chain missed
+    something real is never masked by a healthy sibling.
+    """
+    ranked = [s for s in (states or []) if s in _STATE_RANK]
+    if STATE_DRIFT in ranked:
+        return STATE_DRIFT
+    if STATE_OK in ranked:
+        return STATE_OK
+    return STATE_UNKNOWN
 
 
 def graded(reading: dict, state: str, verdict: str) -> dict:
@@ -2812,10 +2831,11 @@ def probe_appreciation_sources(driver, user_id: int, profile_url: str = "",
                                _parse_relative_age_days, "collaboration",
                                require=lambda t: bool(_MENTION_TEXT_RE.search(t or "")),
                                name_of=_mention_actor_name, page_native=mentions_page_read())
-    # Two surfaces, one report: worst-wins, so a dead recommendations trigger is not hidden by a
-    # healthy mentions feed.
+    # Two INDEPENDENT surfaces, one report (#1980): a dead recommendations trigger is never hidden
+    # by a healthy mentions feed (drift still wins), but a mentions feed that is legitimately empty
+    # forever must not pin the whole probe to `unknown` when recommendations just proved itself ok.
     sections = (report["recommendations_received"], report["mentions"])
-    return graded(report, worst_state([s.get("state") for s in sections]),
+    return graded(report, independent_surfaces_state([s.get("state") for s in sections]),
                   " | ".join(f"{name}: {section.get('verdict')}"
                              for name, section in (("recommendations", sections[0]),
                                                    ("mentions", sections[1]))))
