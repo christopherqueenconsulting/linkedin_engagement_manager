@@ -94,6 +94,30 @@ class TestBriefReceiptRoundTrip:
         assert recovered["post_id"] == 84 and recovered["user_id"] == 1
         assert recovered["media"] == "images/posts/84/img_a1.webp"
 
+    def test_extra_fields_merge_on_top_of_the_brief_fields(self, tmp_path):
+        # issue #1992: a newsletter cover carries edition_id/edition_format/hook_style, which
+        # ImageBrief itself has no concept of — the receipt shape stays generic across surfaces.
+        url = _url("images/newsletter_covers/3/ed9_a1.png")
+        with patch("cqc_lem.assets_dir", str(tmp_path)):
+            mp.write_brief_receipt(url, _Brief(), post_id=None, user_id=3,
+                                   extra={"edition_id": 9, "edition_format": "case_study",
+                                         "hook_style": "personal_story"})
+            recovered = mp.read_brief_receipt(url)
+        assert recovered["edition_id"] == 9
+        assert recovered["edition_format"] == "case_study"
+        assert recovered["hook_style"] == "personal_story"
+        assert recovered["focal_concept"] == "a steering wheel, not a brake pedal"
+
+    def test_fallback_field_round_trips_when_the_brief_carries_it(self, tmp_path):
+        @dataclass
+        class _FallbackBrief(_Brief):
+            fallback: bool = True
+
+        url = _url("images/newsletter_covers/3/ed9_a1.png")
+        with patch("cqc_lem.assets_dir", str(tmp_path)):
+            mp.write_brief_receipt(url, _FallbackBrief())
+            assert mp.read_brief_receipt(url)["fallback"] is True
+
     def test_survives_the_file_it_describes(self, tmp_path):
         # The whole point: the audit reads content that has ALREADY shipped, by which time
         # purge_post_assets has removed the render.

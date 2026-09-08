@@ -57,8 +57,12 @@ _PURGED_AT_PUBLISH_STATUSES = (PostStatus.POSTED.value,)
 
 # The brief fields a receipt carries. `focal_concept` is the one row 6 of the image rubric is graded
 # on ("the render depicts the brief's stated idea"); the rest is what makes a bad render diagnosable
-# — the preset that framed it, the surface it was for, and whether the vision gate had an opinion.
-_BRIEF_FIELDS = ("focal_concept", "prompt", "surface", "style_preset", "ratio")
+# — the preset that framed it, the surface it was for, whether the vision gate had an opinion, and
+# whether the AUTHOR LLM ever ran at all (`fallback` — issue #1992's Box 5: a receipt is the only
+# way to tell these five newsletter covers apart from `_fallback_brief`'s deterministic template,
+# which describes almost exactly what shipped). Absent on a duck-typed `brief` with no such
+# attribute, never fabricated as False.
+_BRIEF_FIELDS = ("focal_concept", "prompt", "surface", "style_preset", "ratio", "fallback")
 
 
 def _assets_root() -> str:
@@ -133,12 +137,17 @@ def is_brief_receipt(path: Optional[str]) -> bool:
 
 def write_brief_receipt(media_url: Optional[str], brief: Any, *,
                         post_id: Optional[int] = None, user_id: Optional[int] = None,
-                        gate_verdict: Optional[str] = None) -> Optional[str]:
+                        gate_verdict: Optional[str] = None,
+                        extra: Optional[Mapping[str, Any]] = None) -> Optional[str]:
     """Record the brief beside its stored render; return the receipt path, or None.
 
     `brief` is duck-typed (anything carrying `focal_concept`, and optionally the rest of
     `ImageBrief`) so this module never imports the AI stack — the readers are an audit script and a
     reporting beat, and neither should pull in a rendering import graph.
+
+    `extra` (issue #1992) carries fields the brief itself does not — a newsletter cover's
+    `edition_id`/`edition_format`/`hook_style` — merged in on top of the brief fields, so the one
+    receipt shape stays generic across every surface rather than growing a per-surface schema.
 
     Never raises and never writes a placeholder: a brief with no `focal_concept` records nothing,
     because an empty receipt would read as "the render depicted nothing" rather than as "no brief
@@ -155,6 +164,8 @@ def write_brief_receipt(media_url: Optional[str], brief: Any, *,
     for field in _BRIEF_FIELDS:
         payload[field] = getattr(brief, field, None)
     payload["focal_concept"] = focal
+    if extra:
+        payload.update(extra)
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "w", encoding="utf-8") as handle:

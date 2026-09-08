@@ -95,6 +95,77 @@ class TestVisionGate:
             verdict = image_gen.inspect_render_quality(str(img), "focal")
         assert verdict.acceptable and not verdict.checked
 
+    def test_gate_fails_open_on_vision_outage_for_newsletter_too(self, tmp_path):
+        img = tmp_path / "a.png"
+        img.write_bytes(b"png")
+        with patch.object(image_gen, "client") as mock_client:
+            mock_client.chat.completions.create.side_effect = RuntimeError("proxy down")
+            verdict = image_gen.inspect_render_quality(str(img), "focal", surface="newsletter")
+        assert verdict.acceptable and not verdict.checked
+
+    def test_newsletter_surface_adds_the_stock_office_cliche_rule(self, tmp_path):
+        img = tmp_path / "a.png"
+        img.write_bytes(b"png")
+        with patch.object(image_gen, "client") as mock_client:
+            mock_client.chat.completions.create.return_value = self._verdict_response(
+                {"acceptable": True, "relevance": 5, "issues": []})
+            image_gen.inspect_render_quality(str(img), "a leak", surface="newsletter")
+        prompt_text = mock_client.chat.completions.create.call_args[1]["messages"][0]["content"][0]["text"]
+        assert "person at laptop" in prompt_text
+
+    def test_other_surfaces_never_get_the_newsletter_rule(self, tmp_path):
+        img = tmp_path / "a.png"
+        img.write_bytes(b"png")
+        with patch.object(image_gen, "client") as mock_client:
+            mock_client.chat.completions.create.return_value = self._verdict_response(
+                {"acceptable": True, "relevance": 5, "issues": []})
+            image_gen.inspect_render_quality(str(img), "a leak", surface="post_image")
+        prompt_text = mock_client.chat.completions.create.call_args[1]["messages"][0]["content"][0]["text"]
+        assert "person at laptop" not in prompt_text
+
+    def test_newsletter_rejects_a_low_relevance_stock_scene_even_when_the_model_says_acceptable(
+            self, tmp_path):
+        # A laptop-on-desk cover for an AI-cost edition is "in the same domain" — a lenient vision
+        # call answers acceptable=true at relevance 3 every time. The floor overrides it.
+        img = tmp_path / "a.png"
+        img.write_bytes(b"png")
+        with patch.object(image_gen, "client") as mock_client:
+            mock_client.chat.completions.create.return_value = self._verdict_response(
+                {"acceptable": True, "relevance": 3,
+                 "issues": ["person at laptop with notebook and coffee mug"]})
+            verdict = image_gen.inspect_render_quality(str(img), "a leak", surface="newsletter")
+        assert not verdict.acceptable
+
+    def test_newsletter_synthesizes_an_issue_when_the_model_gave_none(self, tmp_path):
+        # The model can say acceptable=true, relevance=2, issues=[] all at once — the override
+        # must still leave something readable in the verdict, not an empty issues list.
+        img = tmp_path / "a.png"
+        img.write_bytes(b"png")
+        with patch.object(image_gen, "client") as mock_client:
+            mock_client.chat.completions.create.return_value = self._verdict_response(
+                {"acceptable": True, "relevance": 2, "issues": []})
+            verdict = image_gen.inspect_render_quality(str(img), "a leak", surface="newsletter")
+        assert not verdict.acceptable
+        assert verdict.issues
+
+    def test_newsletter_accepts_an_object_first_scene_with_relevance_at_least_4(self, tmp_path):
+        img = tmp_path / "a.png"
+        img.write_bytes(b"png")
+        with patch.object(image_gen, "client") as mock_client:
+            mock_client.chat.completions.create.return_value = self._verdict_response(
+                {"acceptable": True, "relevance": 4, "issues": []})
+            verdict = image_gen.inspect_render_quality(str(img), "a leak", surface="newsletter")
+        assert verdict.acceptable
+
+    def test_non_newsletter_surface_keeps_the_bare_relevance_floor(self, tmp_path):
+        img = tmp_path / "a.png"
+        img.write_bytes(b"png")
+        with patch.object(image_gen, "client") as mock_client:
+            mock_client.chat.completions.create.return_value = self._verdict_response(
+                {"acceptable": True, "relevance": 3, "issues": []})
+            verdict = image_gen.inspect_render_quality(str(img), "a leak", surface="post_image")
+        assert verdict.acceptable
+
     def test_enforced_surface_regenerates_with_the_issues_appended(self):
         verdicts = [QualityVerdict(acceptable=False, issues=["distorted face"]),
                     QualityVerdict(acceptable=True)]

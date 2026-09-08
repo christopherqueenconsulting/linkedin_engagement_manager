@@ -128,6 +128,58 @@ filesystem path.
 - render: `render_avatar_image_gated` when an avatar is resolved, else `render_image_gated`, at
   `COVER_IMAGE_RATIO` — the bounded `lem-vision` quality check, failing OPEN
 
+### Concept-first briefs, not the hook (issue #1992)
+
+Five straight covers in the same queue all rendered the same "person at laptop with notebook and
+coffee mug on a wooden desk" scene — none of them encoded the edition's actual idea. Root cause:
+`_edition_text` fed the brief author title + subtitle + the **first 1500 chars of body**, which for
+a hook-first newsletter is the FRUSTRATION, never the PAYOFF (a routing switch, a silent failure, a
+budget leak). The only concrete nouns in a hook about AI costs are laptop/screen/LinkedIn, so the
+brief converged on stock office imagery every time.
+
+`generate_cover_for_edition` no longer sends that excerpt. `_cover_concept_text` builds the brief's
+content from:
+
+1. **`_extract_cover_concept`** — a cheap `lem-simple` call over the edition's **full** body (not
+   the first 1500 chars), returning `{core_mechanism, tangible_metaphor_candidates[≤3], avoid[]}`.
+   `core_mechanism` and the candidates are folded into the brief content as "Core mechanism to
+   depict" / "Candidate physical metaphors"; `avoid` names the generic nouns the edition's own hook
+   keeps repeating. Fails closed to the old title/subtitle + 1500-char excerpt on any error or an
+   empty response — a dead LLM degrades the steering, never the image.
+2. **Cross-edition variety** (`_recent_focal_concepts`) — the `focal_concept` of the user's last
+   `_VARIETY_WINDOW` (5) cover receipts, most-recent first, read straight off the `.brief.json`
+   sidecars already on the assets volume (no new DB column, mirrors `enforce_variety`'s approach for
+   posts). Folded in as "Already used by recent covers — pick something visually distinct".
+3. **`edition_format` / `hook_style`** — threaded from the edition row into `build_image_brief`'s
+   `content_shape` param, so a listicle cover and a personal-story cover read differently.
+
+The `newsletter` preset in `image_brief.py` was rewritten from a bare "no generic office stock"
+negation (which the renderer, and apparently the brief LLM, both ignore) to a POSITIVE
+object-first instruction with a metaphor vocabulary for abstract/financial/software topics (cost →
+drip/leak/meter/scale, routing → switch/valve/fork, failure → cracked gear/fallen domino, audit →
+magnifier/caliper/tally). `_NO_ANONYMOUS_PERSON` no longer invites "a close-up of hands mid-action"
+— hands are the renderer's weakest anatomy regardless of what they're near.
+
+**The stock-office gate.** Even with a better preset, `build_image_brief` rejects and retries (then
+falls back to the deterministic template) a `newsletter`-surface brief whose prompt names one of
+`laptop, notebook, coffee, desk, office, typing, keyboard, screen, monitor, phone` — unless an
+avatar is in frame, where a person at a desk is a legitimate scene. `ImageBrief.fallback` records
+whether the deterministic template shipped.
+
+**The vision gate.** `inspect_render_quality(..., surface="newsletter")` adds a rejection bullet for
+the literal "person at laptop/desk/keyboard with notebook or coffee mug" scene and raises the
+relevance floor to 4 (`_NEWSLETTER_MIN_RELEVANCE`) — a render merely IN THE SAME DOMAIN as the
+edition (a laptop for an AI-cost topic) used to clear a bare "it relates" relevance-3 bar every
+time. Still fails OPEN on a vision outage.
+
+**Receipts (issue #1377's pattern, extended).** `generate_cover_for_edition` writes a
+`<stem>.brief.json` sidecar beside every STORED cover — real brief and deterministic fallback
+alike — via `media_provenance.write_brief_receipt(cover_public_url(relative), brief, ...,
+extra={"edition_id": ..., "edition_format": ..., "hook_style": ...})`. `write_brief_receipt`'s
+`extra` param merges surface-specific fields on top of the generic `ImageBrief` fields, so the one
+receipt shape stays generic rather than growing a per-surface schema. Nothing is written for a
+render that never gets stored (a failed generation, a rejected gate verdict).
+
 **Image guidance (issue #1890):** the cover editor's "Image guidance" field is free-text direction
 for THIS render only — separate from the edition's "Added Guidance" field, which steers the article
 text and never reaches here. It rides `NewsletterCoverRequest.guidance` →
@@ -150,6 +202,18 @@ the author's own choice and is never replaced automatically;
 not necessarily change the visual idea, so the author decides whether to regenerate;
 - the old AI cover file is removed, a new `generate_newsletter_cover` task is queued, and the new
 render still lands `pending_review` — the hard-approval gate is unchanged.
+
+### Re-running the five-edition sample set
+
+The golden set behind Box 1-4's acceptance criteria — the five real editions from issue #1992
+(routing switch, silent multi-agent failure, cost audit, overlooked costs, budget leak) — lives as
+fixtures in `tests/unit/utilities/ai/test_image_brief.py::_FIVE_FIXTURE_EDITIONS` (mocked LLM
+responses; no spend). To regenerate real sample covers for a human quality check against those same
+five editions (real spend against `lem-simple`/`lem-medium`/`lem-image`/`lem-vision`): call
+`generate_cover_for_edition` once per edition with that edition's real title/subtitle/body (or the
+fixtures' text), inspect the `.brief.json` written beside each render for `focal_concept` and
+`fallback`, and do **not** call `set_edition_cover_image` against a live edition row — the author
+approves covers from the review queue, and this path is for a sample review only.
 
 ## Cost
 

@@ -346,7 +346,20 @@ Mark it unacceptable when ANY of these hold:
   resolution: tiled app icons or a company mark on a laptop screen is the single most common
   way this leaks, and it stays legible when the image is scaled to feed width
 - it looks like generic meaningless abstract filler rather than a composed scene
-Each issue string must be a short actionable phrase (e.g. "garbled text on whiteboard")."""
+{cliche_rule}Each issue string must be a short actionable phrase (e.g. "garbled text on whiteboard")."""
+
+# Appended only for the `newsletter` surface (issue #1992): five straight covers passed this gate
+# at "laptop on desk, relevance 3" because a laptop IS in the same domain as an AI-cost edition —
+# just never the edition's actual idea. Named as its own bullet rather than folded into the
+# relevance line above, because a lenient vision call answers "acceptable" long before it answers
+# "generic" — this gives it a concrete visual pattern to match instead.
+_STOCK_OFFICE_CLICHE_RULE = (
+    "- a person, torso, or hands positioned at a laptop, desk, or keyboard with a notebook or "
+    "coffee mug as the main subject — this is the generic \"person at laptop\" stock-photo scene "
+    "and is unacceptable regardless of relevance score\n")
+# Below this the render is "in the same domain" but not "of the idea" — a laptop-on-desk cover for
+# an AI-cost edition clears a bare relevance>=3 bar every time.
+_NEWSLETTER_MIN_RELEVANCE = 4
 
 # The gate is asked whether the render carries marks, so it has to be able to READ one. At
 # `low` the API downsamples to ~512px on the long edge, where four logo tiles on a laptop screen
@@ -358,19 +371,28 @@ Each issue string must be a short actionable phrase (e.g. "garbled text on white
 _VISION_GATE_DETAIL = "high"
 
 
-def inspect_render_quality(image_path: str, focal_concept: str) -> QualityVerdict:
-    """Vision look at a finished render. Fails OPEN — any error returns acceptable/unchecked."""
+def inspect_render_quality(image_path: str, focal_concept: str,
+                           surface: Optional[str] = None) -> QualityVerdict:
+    """Vision look at a finished render. Fails OPEN — any error returns acceptable/unchecked.
+
+    ``surface`` (issue #1992) turns on the newsletter-only stock-office cliché rule and raises the
+    relevance floor to ``_NEWSLETTER_MIN_RELEVANCE`` — a scene merely IN THE SAME DOMAIN as the
+    edition (a laptop for an AI-cost topic) clears a bare relevance>=3 "it relates" bar every time,
+    which is how five straight covers passed a gate asking only "does this relate".
+    """
     try:
         with open(image_path, "rb") as fh:
             encoded = base64.b64encode(fh.read()).decode("ascii")
         ext = os.path.splitext(image_path)[1].lstrip(".").lower() or "png"
         mime = "jpeg" if ext in ("jpg", "jpeg") else ext
+        cliche_rule = _STOCK_OFFICE_CLICHE_RULE if surface == "newsletter" else ""
         response = client.chat.completions.create(
             model="lem-vision",
             messages=[{"role": "user", "content": [
                 {"type": "text",
-                 "text": _VISION_GATE_PROMPT.format(focal=(focal_concept or "professional "
-                                                           "LinkedIn content")[:400])},
+                 "text": _VISION_GATE_PROMPT.format(
+                     focal=(focal_concept or "professional LinkedIn content")[:400],
+                     cliche_rule=cliche_rule)},
                 {"type": "image_url",
                  "image_url": {"url": f"data:image/{mime};base64,{encoded}",
                                "detail": _VISION_GATE_DETAIL}},
@@ -380,10 +402,16 @@ def inspect_render_quality(image_path: str, focal_concept: str) -> QualityVerdic
             max_tokens=300,
         )
         verdict = json.loads(response.choices[0].message.content)
-        issues = verdict.get("issues") or []
-        return QualityVerdict(acceptable=bool(verdict.get("acceptable")),
-                              relevance=verdict.get("relevance"),
-                              issues=[str(i) for i in issues][:6])
+        acceptable = bool(verdict.get("acceptable"))
+        relevance = verdict.get("relevance")
+        issues = [str(i) for i in (verdict.get("issues") or [])][:6]
+        if (surface == "newsletter" and isinstance(relevance, (int, float))
+                and relevance < _NEWSLETTER_MIN_RELEVANCE):
+            acceptable = False
+            if not issues:
+                issues = ["relevance below the newsletter floor — depicts the domain, not the "
+                          "edition's actual idea"]
+        return QualityVerdict(acceptable=acceptable, relevance=relevance, issues=issues)
     except Exception as e:
         log_debug("Image quality gate unavailable — passing render through", error=str(e))
         return QualityVerdict(acceptable=True, checked=False)
@@ -436,7 +464,7 @@ def render_avatar_image_gated(prompt: str, *, avatar: dict, user_id: Optional[in
             _record_avatar_media(path, post_id, user_id)
         if not path:
             return None
-        verdict = inspect_render_quality(path, focal_concept or prompt[:200])
+        verdict = inspect_render_quality(path, focal_concept or prompt[:200], surface=surface)
         last_verdict = verdict
         if verdict.acceptable or not verdict.checked:
             break
@@ -503,7 +531,7 @@ def render_image_gated(prompt: str, *, surface: str, ratio: str = "1:1",
                                                  user_id=user_id, post_id=post_id,
                                                  image_model=image_model, surface=surface,
                                                  scene=prompt)
-        verdict = inspect_render_quality(path, focal_concept or prompt[:200])
+        verdict = inspect_render_quality(path, focal_concept or prompt[:200], surface=surface)
         last_verdict = verdict
         if verdict.acceptable or not verdict.checked:
             break

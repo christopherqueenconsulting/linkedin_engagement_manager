@@ -1262,7 +1262,9 @@ def generate_newsletter_cover(edition_id: int, use_avatar: bool = None, guidance
     path, reason = generate_cover_for_edition(user_id, edition_id, edition.get("title"),
                                               edition.get("subtitle"), edition.get("body"),
                                               profile=profile, use_avatar=use_avatar,
-                                              guidance=guidance)
+                                              guidance=guidance,
+                                              edition_format=edition.get("format"),
+                                              hook_style=edition.get("hook_style"))
     if not path:
         log_warning("Newsletter cover generation produced nothing", user_id=user_id,
                     task_name="generate_newsletter_cover", reason=reason)
