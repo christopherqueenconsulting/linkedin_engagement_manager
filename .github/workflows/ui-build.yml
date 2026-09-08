@@ -40,7 +40,7 @@ jobs:
       # real hazard, not just a naming nicety.
       - name: Restore npm cache
         id: cache-npm
-        uses: actions/cache/restore@v5
+        uses: actions/cache/restore@v6
         with:
           path: ~/.npm
           key: node-cache-${{ runner.os }}-${{ runner.arch }}-npm-${{ hashFiles('src/cqc_lem/ui/package-lock.json') }}
@@ -51,7 +51,7 @@ jobs:
         run: npm ci
       - name: Save npm cache
         if: steps.cache-npm.outputs.cache-hit != 'true' && github.ref == 'refs/heads/main'
-        uses: actions/cache/save@v5
+        uses: actions/cache/save@v6
         with:
           path: ~/.npm
           key: node-cache-${{ runner.os }}-${{ runner.arch }}-npm-${{ hashFiles('src/cqc_lem/ui/package-lock.json') }}
