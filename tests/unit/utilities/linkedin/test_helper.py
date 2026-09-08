@@ -280,9 +280,11 @@ class TestSolveArkoseChallenge:
         assert result is False
 
     def test_no_arkose_iframe_logs_debug_not_warning(self, monkeypatch):
-        """A non-Arkose challenge is the expected common case — the fallback chain in
-        `_handle_challenge` (email PIN, then manual approval) already handles it, so this
-        must never escalate into a recurring PostHog warning (issue #1923).
+        """A non-Arkose challenge must log at debug, not warning.
+
+        It is the expected common case — the fallback chain in `_handle_challenge`
+        (email PIN, then manual approval) already handles it, so this must never
+        escalate into a recurring PostHog warning (issue #1923).
         """
         monkeypatch.setenv("CAPSOLVER_API_KEY", "CAP-test-key-abc123")
         driver = self._make_driver(iframes=[])
