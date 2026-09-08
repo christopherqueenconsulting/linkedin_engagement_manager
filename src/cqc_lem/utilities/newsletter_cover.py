@@ -21,7 +21,7 @@ import os
 import secrets
 import shutil
 from dataclasses import dataclass
-from typing import Optional
+from typing import Any, Optional
 
 from cqc_lem import assets_dir
 from cqc_lem.utilities.logger import log_debug, log_info, log_warning
@@ -187,7 +187,7 @@ def _edition_text(title: Optional[str], subtitle: Optional[str], body: Optional[
 
 
 def _extract_cover_concept(title: Optional[str], subtitle: Optional[str],
-                           body: Optional[str]) -> dict:
+                           body: Optional[str]) -> dict[str, Any]:
     """Cheap `lem-simple` read of the edition's PAYOFF concept, from the FULL body.
 
     `_edition_text` sends the first 1500 chars of body to the brief author, which is the HOOK —
@@ -234,7 +234,7 @@ def _extract_cover_concept(title: Optional[str], subtitle: Optional[str],
 
 
 def _cover_concept_text(title: Optional[str], subtitle: Optional[str], body: Optional[str],
-                        variety_avoid: Optional[list] = None) -> str:
+                        variety_avoid: Optional[list[str]] = None) -> str:
     """The content string a cover's brief is authored from — the edition's PAYOFF, not its hook.
 
     Falls back to the old excerpt (title/subtitle + first 1500 chars of body) when concept
@@ -257,7 +257,7 @@ def _cover_concept_text(title: Optional[str], subtitle: Optional[str], body: Opt
     return "\n\n".join(p for p in parts if p)
 
 
-def _recent_focal_concepts(user_id: int, limit: int = _VARIETY_WINDOW) -> list:
+def _recent_focal_concepts(user_id: int, limit: int = _VARIETY_WINDOW) -> list[str]:
     """The last `limit` cover receipts' `focal_concept`, most-recent first (issue #1992).
 
     Mirrors `enforce_variety`'s cross-item memory for posts, but reads it off the assets volume

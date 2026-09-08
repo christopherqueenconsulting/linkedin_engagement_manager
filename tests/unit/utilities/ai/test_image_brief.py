@@ -317,3 +317,16 @@ class TestNewsletterPreset:
         preset = _STYLE_PRESETS["newsletter"]
         for word in ("switch", "valve", "leak", "scale", "gear", "domino"):
             assert word in preset.lower()
+
+    def test_word_boundary_gate_does_not_reject_substring_lookalikes(self):
+        # A bare substring match on "phone" also flags saxophone/microphone/telephone; "screen"
+        # also flags "screening"/"green screen". The gate must reject only the whole-word noun.
+        clean = {"focal_concept": "a brass saxophone on a stage",
+                 "prompt": ("A weathered brass saxophone rests on a velvet-lined stand under a "
+                           "warm stage spotlight, soft window light from camera left, shot on "
+                           "an 85mm lens at f/1.8, subtle film grain, editorial photograph.")}
+        with patch("cqc_lem.utilities.ai.ai_helper._call_llm", return_value=_resp(clean)) as llm:
+            brief = build_image_brief("content", surface="newsletter")
+        assert llm.call_count == 1, "saxophone must not be rejected as a 'phone' cliché"
+        assert not brief.fallback
+        assert brief.prompt == clean["prompt"]

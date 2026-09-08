@@ -162,7 +162,8 @@ def write_brief_receipt(media_url: Optional[str], brief: Any, *,
                      "media": asset_relative_path(media_url),
                      "gate_verdict": gate_verdict}
     for field in _BRIEF_FIELDS:
-        payload[field] = getattr(brief, field, None)
+        if hasattr(brief, field):
+            payload[field] = getattr(brief, field)
     payload["focal_concept"] = focal
     if extra:
         payload.update(extra)

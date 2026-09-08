@@ -10,8 +10,9 @@ Repo doctrine applies: do NOT add a parallel per-content-type prompt helper — 
 """
 
 import json
+import re
 from dataclasses import dataclass
-from typing import Optional
+from typing import Any, Optional
 
 from cqc_lem.utilities.logger import log_debug, log_warning
 
@@ -144,6 +145,11 @@ _NO_ANONYMOUS_PERSON = (
 # rather than shipped as the same scene the last five editions got.
 _STOCK_OFFICE_NOUNS = ("laptop", "notebook", "coffee", "desk", "office", "typing", "keyboard",
                        "screen", "monitor", "phone")
+# Word-boundary, not substring: a bare `"phone" in lowered` also rejects "saxophone",
+# "microphone", "telephone" and "screening"/"green screen" rejects legitimate metaphors that
+# merely contain the noun as a substring rather than naming the cliché object itself.
+_STOCK_OFFICE_PATTERN = re.compile(
+    r"\b(?:" + "|".join(re.escape(noun) for noun in _STOCK_OFFICE_NOUNS) + r")\b")
 
 _MIN_PROMPT_CHARS = 60
 _MAX_PROMPT_CHARS = 2400
@@ -181,7 +187,8 @@ class ImageBrief:
     fallback: bool = False
 
 
-def _valid(parsed: dict, *, surface: Optional[str] = None, avatar: Optional[dict] = None) -> bool:
+def _valid(parsed: dict[str, Any], *, surface: Optional[str] = None,
+          avatar: Optional[dict[str, Any]] = None) -> bool:
     prompt = str(parsed.get("prompt") or "").strip()
     focal = str(parsed.get("focal_concept") or "").strip()
     if not (_MIN_PROMPT_CHARS <= len(prompt) <= _MAX_PROMPT_CHARS) or not (3 <= len(focal) <= 300):
@@ -191,9 +198,11 @@ def _valid(parsed: dict, *, surface: Optional[str] = None, avatar: Optional[dict
         return False
     # Newsletter only, and only with no avatar in frame — a person at a desk is a legitimate
     # scene once the author's own likeness is the point (issue #1992).
-    if surface == "newsletter" and not avatar and any(noun in lowered for noun in
-                                                       _STOCK_OFFICE_NOUNS):
-        return False
+    if surface == "newsletter" and not avatar:
+        hit = _STOCK_OFFICE_PATTERN.search(lowered)
+        if hit:
+            log_debug("Newsletter brief rejected — stock-office noun", noun=hit.group(0))
+            return False
     return True
 
 
@@ -214,7 +223,7 @@ def _fallback_brief(content: str, *, surface: str, ratio: str, context: str) -> 
 
 
 def build_image_brief(content: str, *, surface: str, ratio: str = "1:1",
-                      profile=None, avatar: Optional[dict] = None,
+                      profile=None, avatar: Optional[dict[str, Any]] = None,
                       extra_direction: Optional[str] = None,
                       content_shape: Optional[str] = None) -> ImageBrief:
     """Author the brief for one render. Never raises — degrades to a deterministic brief.
