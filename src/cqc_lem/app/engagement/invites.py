@@ -26,7 +26,7 @@ import re
 import time
 from urllib.parse import unquote
 
-from selenium.common import StaleElementReferenceException, WebDriverException
+from selenium.common import StaleElementReferenceException, TimeoutException, WebDriverException
 from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.common.by import By
 from selenium.webdriver.remote.webdriver import WebDriver
@@ -37,6 +37,10 @@ from selenium.webdriver.support.wait import WebDriverWait
 from cqc_lem.app.my_celery import app as shared_task
 from cqc_lem.app.queue_once import QueueOnce
 from cqc_lem.utilities.ai.ai_helper import get_ai_message_refinement
+from cqc_lem.utilities.ai.outbound_qa import (
+    SURFACE_INVITE_NOTE as OUTBOUND_SURFACE_INVITE_NOTE,
+    refusal_reason as outbound_refusal_reason,
+)
 from cqc_lem.utilities.db import (
     ACCOUNT_RESTRICTED_MESSAGE,
     ALREADY_CONNECTED_MESSAGE,
@@ -1525,6 +1529,20 @@ def invite_to_connect_now(user_id: int, profile_url: str, message: str = None,
     email-verification variant; `invite_to_connect` and `send_roster_connect_invite` never pass one,
     so this defaults to None and their callers are unchanged.
     """
+    # The note is LLM-authored and goes verbatim to a named human, so it answers to the same gate as
+    # a DM (#1963). The VERDICT differs, though, and that is the whole point: a DM *is* its body, so
+    # a refused body means there is nothing to send — but a note is an optional extra on an invite we
+    # already decided to send, and #573 already built the bare-send path for exactly this. Dropping
+    # the note keeps the invite; refusing the invite would throw away a good one over a bad garnish
+    # and burn the request's attempt ceiling for a target nothing was wrong with.
+    if message:
+        note_refusal = outbound_refusal_reason(message, surface=OUTBOUND_SURFACE_INVITE_NOTE)
+        if note_refusal:
+            log_warning(f"Dropping an unsendable connect note for {profile_url}; sending the "
+                        f"invite bare: {note_refusal}", user_id=user_id,
+                        action_type="invite_connect", refusal_reason=note_refusal)
+            message = None
+
     user_email, user_password = get_user_password_pair_by_id(user_id)
 
     driver, wait = get_driver_wait_pair(session_name='Invite to Connect', user_id=user_id)
@@ -1534,7 +1552,29 @@ def invite_to_connect_now(user_id: int, profile_url: str, message: str = None,
 
     try:
 
-        login_to_linkedin(driver, wait, user_email, user_password)
+        try:
+            login_to_linkedin(driver, wait, user_email, user_password)
+        except TimeoutException as e:
+            # Login itself never completed — e.g. an unrecognized challenge/checkpoint page
+            # (#1908) — which is a fact about THIS SESSION, not about `profile_url`. The generic
+            # `except Exception` below would record it as a per-target failure, burning this
+            # request's attempt ceiling until `record_connection_request_attempt`'s terminal
+            # threshold escalates "exhausted its attempts; giving up" for a target we never even
+            # reached (#1924). Defer like a 429 instead — nothing was learned about this target.
+            raise LinkedInRateLimited(
+                f"LinkedIn login failed before inviting to connect: {e}") from e
+        except RuntimeError as e:
+            # `login_to_linkedin` raises a plain RuntimeError when every automated way to clear a
+            # login challenge (Arkose, email PIN, manual approval) failed
+            # (`helper._handle_challenge`, issue #1920) — an account-level fact, not something
+            # `profile_url` did. `_handle_challenge` already recorded the per-account cooldown
+            # before raising, so the NEXT call backs off instead of repeating the dance; the
+            # generic `except Exception` below would still burn THIS request's attempt ceiling and
+            # file a fresh ERROR for a failure that already degrades gracefully — 79 occurrences
+            # for one account in under 5h (#1918). Defer exactly like the TimeoutException case
+            # above.
+            raise LinkedInRateLimited(
+                f"LinkedIn login failed before inviting to connect: {e}") from e
 
         if profile_url != driver.current_url:
             # Open the profile URL

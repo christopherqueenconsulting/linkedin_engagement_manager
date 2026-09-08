@@ -182,6 +182,44 @@ class TestResolveArticleEditorStep:
         assert result.element is None
         assert set(result.tried) == {ae.ROUTE_PUBLISH_TEXT, ae.ROUTE_PUBLISH_ARIA}
 
+    def test_only_last_route_miss_carries_warn_on_miss(self, monkeypatch):
+        """A single failed step must fire ONE `Selector miss:` warning, not one per route (#1925).
+
+        Every earlier route losing is the ladder working as designed — only the final route's
+        miss is evidence the whole step failed, so only it may carry the caller's `warn_on_miss`.
+        """
+        driver = FakeDriver()
+        wait = MagicMock()
+        calls = []
+
+        def fake_find_first(*args, **kwargs):
+            calls.append(kwargs.get("warn_on_miss"))
+            return None
+
+        monkeypatch.setattr(ae, "find_first", fake_find_first)
+        result = ae.resolve_article_editor_step(driver, wait, ae.STEP_BODY, ae._BODY_LOCATORS,
+                                                 warn_on_miss=True)
+        assert not result.ok
+        assert len(calls) == len(ae._BODY_LOCATORS)
+        # Every route but the last must be forced to DEBUG (warn_on_miss=False); only the last
+        # route reflects the caller's requested level.
+        assert calls[:-1] == [False] * (len(calls) - 1)
+        assert calls[-1] is True
+
+    def test_warn_on_miss_false_propagates_to_last_route_only(self, monkeypatch):
+        driver = FakeDriver()
+        wait = MagicMock()
+        calls = []
+
+        def fake_find_first(*args, **kwargs):
+            calls.append(kwargs.get("warn_on_miss"))
+            return None
+
+        monkeypatch.setattr(ae, "find_first", fake_find_first)
+        ae.resolve_article_editor_step(driver, wait, ae.STEP_PUBLISH, ae._PUBLISH_LOCATORS,
+                                       warn_on_miss=False)
+        assert all(v is False for v in calls)
+
     def test_not_displayed_element_is_skipped(self, monkeypatch):
         hidden = FakeElement(tag="textarea", attrs={"placeholder": "Title"}, displayed=False)
         driver = FakeDriver({(By.CSS_SELECTOR, "textarea[placeholder='Title']"): [hidden]})

@@ -1228,6 +1228,33 @@ class TestAppreciationSourcesProbe:
         assert report["mentions"]["cards"] == 0
         assert "no cards resolved" in report["mentions"]["verdict"]
 
+    def test_a_healthy_recommendations_read_is_not_masked_by_a_forever_empty_mentions_feed(self):
+        """The reading `--appreciation-sources` grounded live on the real account (issue #1980).
+
+        Recommendations resolve and date real cards (`ok`) while mentions is a notifications feed
+        that has never fired for this account and the page agrees it is empty (`unknown`). Under
+        the old worst-wins combine that pinned the WHOLE probe to `unknown` forever, which is
+        exactly the blind spot the weekly sweep flagged three sweeps running.
+        """
+        from unittest.mock import patch
+
+        driver = _fake_driver(current_url="https://www.linkedin.com/in/christopherqueen")
+        driver.execute_script.return_value = {
+            "rows": [{"href": "https://www.linkedin.com/in/uday", "name": "Uday Shankar",
+                      "text": "Uday Shankar\n· 1st\nApril 25, 2012, Uday was Christopher's client"}],
+            "anchors": 7, "page_dated": True}
+        root = MagicMock()
+        root.text = "No new notifications"
+        driver.find_element.return_value = root
+        with patch("cqc_lem.utilities.selenium_util.find_all_first", return_value=[]), \
+             patch("cqc_lem.utilities.db.has_appreciation_touch", return_value=False):
+            report = llv.probe_appreciation_sources(
+                driver, 1, "https://www.linkedin.com/in/christopherqueen/", sleep=lambda s: None)
+
+        assert report["recommendations_received"]["state"] == llv.STATE_OK
+        assert report["mentions"]["state"] == llv.STATE_UNKNOWN
+        assert report["state"] == llv.STATE_OK
+
     def test_the_probe_reports_the_grounded_shape_of_this_profile(self):
         """The acceptance reading from the issue: two 2010-2012 recommendations resolve, both date,
         and NEITHER is inside the 30-day window — a fixed reader that still sends nothing today.
@@ -1472,6 +1499,17 @@ class TestThreeStateVerdicts:
         """An empty grade list must never read as a clean bill of health."""
         assert llv.worst_state([]) == llv.STATE_UNKNOWN
         assert llv.worst_state([None, "nonsense"]) == llv.STATE_UNKNOWN
+
+    def test_independent_surfaces_lets_ok_outrank_a_legitimately_empty_sibling(self):
+        """Unlike `worst_state`, `ok` beats a legitimately-empty sibling (issue #1980).
+
+        An eternally-empty sibling (`unknown`) must not mask a surface that just proved its own
+        locator chain (`ok`) — only `drift` still wins outright.
+        """
+        assert llv.independent_surfaces_state([llv.STATE_OK, llv.STATE_UNKNOWN]) == llv.STATE_OK
+        assert llv.independent_surfaces_state([llv.STATE_DRIFT, llv.STATE_OK]) == llv.STATE_DRIFT
+        assert llv.independent_surfaces_state([llv.STATE_UNKNOWN, llv.STATE_UNKNOWN]) == llv.STATE_UNKNOWN
+        assert llv.independent_surfaces_state([]) == llv.STATE_UNKNOWN
 
     def test_post_stats_labels_on_the_page_turn_zero_counts_into_drift(self):
         zeroed = {"signals": {"reactions": {"value": 0}}, "detail_lines": ["72 | Impressions | x"]}
@@ -2966,6 +3004,26 @@ class TestGroupFeedComposerProbe:
         clear_the_breaker(monkeypatch)
         assert llv.main(["--feed-sort"]) == 0
         assert captured["needs_images"] is False
+
+    def test_a_roster_follow_flag_requests_needs_images(self, monkeypatch):
+        """Issue #1979: a roster target's `/recent-activity/*` page is fastboot too.
+
+        Live-confirmed 2026-09-07 that without images `<main>` never mounts, the same empty-render
+        misread #1778 already named for `/groups/*`.
+        """
+        captured = {}
+
+        def _open(fn, uid, require_debug_node=False, needs_images=False):
+            captured["needs_images"] = needs_images
+            return MagicMock(), MagicMock(), {"state": "signed_in"}
+
+        monkeypatch.setattr(llv, "open_probe_session", _open)
+        monkeypatch.setattr(llv, "install_read_only_guard", lambda: None)
+        monkeypatch.setattr(llv, "probe_roster_follow",
+                            lambda d, url: {"verdict": "ok"})
+        clear_the_breaker(monkeypatch)
+        assert llv.main(["--roster-follow", "https://www.linkedin.com/in/someone"]) == 0
+        assert captured["needs_images"] is True
 
 
 @pytest.mark.unit

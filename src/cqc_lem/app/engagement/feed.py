@@ -78,6 +78,10 @@ from cqc_lem.utilities.ai.content_alignment import (
     append_link_to_comment,
 )
 from cqc_lem.utilities.ai.content_framework import select_blueprint
+from cqc_lem.utilities.ai.outbound_qa import (
+    SURFACE_COMMENT as OUTBOUND_SURFACE_COMMENT,
+    refusal_reason as outbound_refusal_reason,
+)
 from cqc_lem.utilities.connection_targeting import (
     SOURCE_ROSTER,
     ScoredCandidate,
@@ -193,6 +197,7 @@ from cqc_lem.utilities.linkedin.poster import (
 )
 from cqc_lem.utilities.linkedin.profile import LinkedInProfile
 from cqc_lem.utilities.linkedin.rate_limit import (
+    LinkedInRateLimited,
     _redis_client,
     acquire_run_lock,
     automation_pause_reason,
@@ -784,6 +789,13 @@ def post_comment_inline(driver, wait, card, comment_text: str, user_id: int = No
         comment_text = strip_non_bmp(comment_text)  # ChromeDriver send_keys throws on non-BMP emoji
         if not comment_text.strip():
             return False
+        # Selenium half of the outbound gate (`comment_on_linkedin_post` is the API half). Checked
+        # before the composer is opened so a body we will not post never touches the card.
+        refusal = outbound_refusal_reason(comment_text, surface=OUTBOUND_SURFACE_COMMENT)
+        if refusal:
+            log_warning(f"Refusing to post an unsendable comment: {refusal}", user_id=user_id,
+                        action_type="comment")
+            return False
         if composer is None:
             step = "open composer"
             if click_first(driver, wait, _COMMENT_ACTION_LOCATORS,
@@ -1251,8 +1263,13 @@ def _roster_activity_url(profile_url: str) -> str:
 # that names anyone else (or nobody) is never clickable. Route A still prefers the control nearest
 # the target's own /in/<slug> anchor (exact path-segment match — a substring also hits
 # /in/<slug>-2b41, a different person); Route B scans the whole page for an owner-named control. A
-# miss on both returns 'unknown' and NOTHING is clicked — fail closed, exactly like the comment
-# affordance above.
+# miss on both falls to Route C (#1979): since 2026-09 the weekly drift sweep caught a 1st-degree
+# connection's activity page rendering NO Follow/Unfollow toggle at all — LinkedIn auto-follows a
+# connection and folds the toggle elsewhere, leaving only the shortened "Message <first>" action or a
+# 1st-degree badge, the same page-native signal `_CONNECT_STATE_JS` already trusts. Route C only ever
+# READS that signal — no control names the target there either, so nothing is clicked — and answers
+# 'following'. A miss on all three routes returns 'unknown' and NOTHING is clicked — fail closed,
+# exactly like the comment affordance above.
 _FOLLOW_CONTROL_JS = r"""
 const SLUG = (arguments[0] || '').toLowerCase(), NAME = (arguments[1] || '')
   .replace(/\s+/g, ' ').trim().toLowerCase();
@@ -1306,8 +1323,72 @@ if (SLUG) {
   }
 }
 
-// Route B — any owner-named control on the page.
-return controls(document) || ['unknown', null];
+const hit = controls(document);
+if (hit) return hit;  // Route B — any owner-named control on the page.
+
+// Route C (#1979) — since 2026-09 a 1st-degree connection's activity page top card renders no
+// Follow/Unfollow toggle AT ALL: a shortened "Message <first>" replaces it, exactly the
+// shortened-label shape _CONNECT_STATE_JS already trusts for the sibling connect-state read, and a
+// 1st-degree badge is the same strongest-evidence signal that read uses too. LinkedIn auto-follows a
+// connection, so this is read-only — no control names the target, so nothing is ever clicked here,
+// only a state inferred. The shortened Message alone is gated the same way _CONNECT_STATE_JS gates
+// it (`message && !connect`) — a Connect/Invite affordance still on the page means the target is
+// NOT yet 1st-degree, so Message there is an open-profile artifact, never evidence of following.
+const FIRST = NAME.split(' ')[0] || '';
+const ownerCard = (el) => {
+  let cur = el.parentElement, d = 0;
+  while (SLUG && cur && d < 8) {
+    let own = false, other = false;
+    for (const a of cur.querySelectorAll("a[href*='/in/']")) {
+      const s = slugOf(a.getAttribute('href'));
+      if (!s) continue;
+      if (s === SLUG) own = true; else other = true;
+    }
+    if (other) return false;
+    if (own) return true;
+    cur = cur.parentElement; d++;
+  }
+  return false;
+};
+let connected = false;
+if (SLUG) {
+  for (const a of document.querySelectorAll("a[href*='/in/']")) {
+    if (slugOf(a.getAttribute('href')) !== SLUG) continue;
+    let el = a, d = 0;
+    while (el && d < 8) {
+      if (/(^|[^a-z0-9])1st([^a-z0-9]|$)/.test(norm(el.textContent))) { connected = true; break; }
+      el = el.parentElement; d++;
+    }
+    if (connected) break;
+  }
+}
+if (!connected) {
+  // A shortened "Message <first>" alone is too weak to trust: an open-profile or creator page
+  // shows Message to strangers too, exactly the ambiguity _CONNECT_STATE_JS guards against with its
+  // own `message && !connect` check. Mirror it here — a Connect/Invite affordance still offered
+  // anywhere naming the owner, or a bare one inside the owner's own card, means this is NOT (yet) a
+  // 1st-degree connection, so the shortened Message never counts as evidence of following.
+  const namesOwner = (text) => !!NAME && text.includes(NAME);
+  const isConnectText = (text) =>
+    text.includes('to connect') || text === 'connect' || text.startsWith('connect ');
+  let connectOffered = false;
+  for (const b of document.querySelectorAll("button, [role='button'], a[role='link']")) {
+    if (!shown(b)) continue;
+    const text = label(b);
+    if (!isConnectText(text)) continue;
+    if (namesOwner(text) || ownerCard(b)) { connectOffered = true; break; }
+  }
+  if (!connectOffered) {
+    for (const b of document.querySelectorAll("button, [role='button'], a[role='link']")) {
+      if (!shown(b) || !ownerCard(b)) continue;
+      const text = label(b);
+      if (!!FIRST && (text === 'message ' + FIRST || text.startsWith('message ' + FIRST + ' '))) {
+        connected = true; break;
+      }
+    }
+  }
+}
+return connected ? ['following', null] : ['unknown', null];
 """
 
 
@@ -1357,11 +1438,16 @@ def _resolve_follow_control(driver: WebDriver, profile_url: str,
     """`(state, element)` for a roster target's follow control on the activity page already open.
 
     The control must carry the page owner's name in its label — see `_FOLLOW_CONTROL_JS` for why
-    that, and not top-card geometry, is the scoping rule.
+    that, and not top-card geometry, is the scoping rule. `FOLLOWING` with no element is expected
+    (#1979): a 1st-degree connection's page renders no toggle at all, so that reading comes from a
+    page-native signal instead of a control, and there is nothing for a caller to click either way.
 
     `FollowStatus.UNKNOWN` means we could not read it, NOT that there is nothing to follow — the
-    caller must treat it as "do nothing", never as "click the first Follow you can find". The
-    element is None on every state but `NOT_FOLLOWING`, so a caller that clicks must check it.
+    caller must treat it as "do nothing", never as "click the first Follow you can find". Zero items
+    is not "nothing to do" until the page agrees (`docs/sdui-selenium-notes.md`): an `UNKNOWN` that
+    followed a real scan is cross-checked against the post cards on the page, which the scan itself
+    never reads, so a rotated selector on a page that plainly has content escalates instead of going
+    quiet forever.
     """
     owner = _activity_page_owner_name(driver) or str(name or "").strip()
     if not owner:
@@ -1380,6 +1466,11 @@ def _resolve_follow_control(driver: WebDriver, profile_url: str,
         return FollowStatus.UNKNOWN, None
     state, element = result[0], result[1]
     if state not in (FollowStatus.FOLLOWING, FollowStatus.NOT_FOLLOWING):
+        # The scan ran and genuinely found neither a control nor the connected fallback — cross-check
+        # against the post cards, an anchor this scan never touches, so real drift (the page has
+        # content the walk cannot see) escalates instead of reading identically to an ordinary page.
+        _report_zero_walk(driver, _FEED_POST_TEXT_SEL, "Roster follow control walk",
+                          action_type="follow", task_name="_resolve_follow_control")
         return FollowStatus.UNKNOWN, None
     return FollowStatus(state), element
 
@@ -1499,9 +1590,10 @@ def auto_follow_roster_target(driver: WebDriver, user_id: int, target: dict,
             set_target_follow_status(user_id, profile_url, FollowStatus.FOLLOWING)
         return FollowOutcome.ALREADY_FOLLOWING
     if state != FollowStatus.NOT_FOLLOWING or control is None:
-        # Expected no-op, not selector rot: plenty of profiles expose no Follow control at all
-        # (already connected with following off, a creator-mode-off account, a restricted page). A
-        # warning here would file a defect for working behaviour on every such target.
+        # Expected no-op, not selector rot: a page can genuinely expose no Follow control (a
+        # creator-mode-off account, a restricted page) — an already-following connection resolves to
+        # `FOLLOWING` via Route C instead of landing here. `_resolve_follow_control` already grades a
+        # real miss against the page's own post cards, so a warning here on top would double it.
         # Nothing is written: "we could not read it" is what `unknown` already means, so storing it
         # would spend a round-trip per visit to overwrite a state with itself — and would erase a
         # `not_following` an earlier, readable visit had established.
@@ -3416,6 +3508,17 @@ def auto_comment_in_groups(self, user_id: int, max_per_group: int = 2):
         driver, wait, user_email, my_profile = get_current_profile(user_id=user_id,
                                                                     session_name="Group Commenting",
                                                                     needs_images=True)
+    except LinkedInRateLimited as e:
+        # A known, self-clearing back-off (429 breaker, manual pause, or this account's own
+        # challenge-unsolvable cooldown, issue #1920) — not a fresh failure. `get_current_profile`
+        # already logged it at WARNING where it happened; this generic `except Exception` below
+        # was still re-logging it at ERROR here, filing a grouped $exception for a run that was
+        # never going to succeed until the cooldown clears on its own (issue #1942). Every sibling
+        # task that calls `get_current_profile` (`process_user_followups`, `invite_to_connect_now`,
+        # …) already carries this same catch.
+        log_warning("Group commenting skipped — LinkedIn rate-limited or cooling down", exc=e,
+                    user_id=user_id, task_name="auto_comment_in_groups")
+        return f"Skipped — rate limited: {e}"
     except Exception as e:
         log_error("Error getting profile for group commenting", exc=e, user_id=user_id,
                   task_name="auto_comment_in_groups")
@@ -3983,7 +4086,25 @@ def automate_commenting(self, user_id: int, loop_for_duration: int = None, futur
                  task_name="automate_commenting")
 
     try:
-        driver, wait, user_email, my_profile = get_current_profile(user_id=user_id, session_name="Auto Commenting")
+        # needs_images=True (#1979): this run's roster pass (`comment_on_roster_posts`) opens a
+        # target's `/recent-activity/*` page BEFORE the home feed gets a look, and that page is
+        # fastboot the same way `/messaging/*` (#1774) and `/groups/*` (#1778) are — a
+        # bandwidth-saver session with images blocked never mounts `<main>` at all, live-confirmed
+        # 2026-09-07 (empty `<main>`, a bare "LinkedIn" `<title>`, zero posts read, despite the page
+        # holding real content: `has_arvid=True` only inside the unrendered hydration payload).
+        driver, wait, user_email, my_profile = get_current_profile(user_id=user_id, session_name="Auto Commenting",
+                                                                    needs_images=True)
+    except LinkedInRateLimited as e:
+        # A known, self-clearing back-off (429 breaker, manual pause, or this account's own
+        # challenge-unsolvable cooldown per issue #1920) — not a fresh failure, so WARNING rather
+        # than ERROR. Every sibling task that opens a session the same way (`process_user_followups`,
+        # `send_dm_now`, …) already treats it this way; this task was still raising it through the
+        # generic `except Exception` below, so every breaker trip filed its own error-tracking
+        # occurrence instead of being recognized as an expected skip (issue #1941).
+        log_warning("Auto commenting skipped — LinkedIn rate-limited or cooling down", exc=e,
+                    user_id=user_id, task_name="automate_commenting")
+        release_run_lock(lock_name, lock_token)
+        return f"Skipped — rate limited: {e}"
     except Exception as e:
         log_error("Error while getting profile for auto commenting", exc=e, user_id=user_id,
                   task_name="automate_commenting")

@@ -190,6 +190,74 @@ class TestProcessUserFollowups:
         warn.assert_not_called()
         err.assert_not_called()
 
+    def test_rate_limited_getting_profile_logs_debug_not_warning_or_error(self):
+        # Issue #1940: `LinkedInRateLimited` is a known, self-clearing back-off (429 breaker,
+        # manual pause, or a per-account challenge-unsolvable cooldown, ~175s). This task is
+        # dispatched every few minutes while due rows exist, so the cooldown trips repeatedly
+        # within a day — WARNING here (the #1920 fix) recurred 3x/24h and the recurrence-escalation
+        # rule re-emitted it at ERROR, filing a grouped `$exception` for working back-off behaviour.
+        # Nothing else logs this specific cooldown-check raise, so DEBUG is the only record kept.
+        from cqc_lem.app.engagement.outreach import process_user_followups
+        from cqc_lem.utilities.linkedin.rate_limit import LinkedInRateLimited
+        breaker = LinkedInRateLimited("LinkedIn 429 circuit breaker open")
+        with patch(f"{_OUT}.get_due_followups", return_value=[_due()]), \
+             patch(f"{_OUT}.get_current_profile", side_effect=breaker), \
+             patch(f"{_OUT}.log_debug") as dbg, \
+             patch(f"{_OUT}.log_warning") as warn, \
+             patch(f"{_OUT}.log_error") as err:
+            result = process_user_followups.run(user_id=1)
+        assert "Skipped" in result
+        dbg.assert_called_once()
+        assert dbg.call_args.kwargs.get("exc") is breaker
+        warn.assert_not_called()
+        err.assert_not_called()
+
+    def test_profile_unavailable_getting_profile_logs_warning_not_error(self):
+        # Issue #1947: a fresh account with nothing cached yet, or a scrape that missed once, is
+        # not a code defect — `get_current_profile` already logged the miss at ERROR (without
+        # `exc=`, so no $exception) before raising this specific condition. This wrapper must
+        # downgrade it to WARNING rather than the generic-`Exception` else branch's `log_error`, so
+        # a one-off stays quiet and only a profile that stays unresolvable across repeated runs
+        # escalates into a filed defect (utilities/CLAUDE.md).
+        from cqc_lem.app.engagement.outreach import process_user_followups
+        from cqc_lem.utilities.linkedin.session import ProfileUnavailableError
+        unavailable = ProfileUnavailableError(
+            "Profile unavailable: live scrape failed and no cached profile to fall back on")
+        with patch(f"{_OUT}.get_due_followups", return_value=[_due()]), \
+             patch(f"{_OUT}.get_current_profile", side_effect=unavailable), \
+             patch(f"{_OUT}.log_warning") as warn, \
+             patch(f"{_OUT}.log_error") as err:
+            result = process_user_followups.run(user_id=1)
+        assert "Skipped" in result
+        warn.assert_called_once()
+        assert warn.call_args.kwargs.get("exc") is unavailable
+        err.assert_not_called()
+
+    def test_login_timeout_getting_profile_logs_debug_not_error_or_warning(self):
+        # Issue #1919: a TimeoutException out of get_current_profile's login step is a Selenium
+        # selector miss — e.g. an unrecognized challenge/checkpoint page (#1908). `login_to_linkedin`
+        # already logs the page it saw at WARNING, and `get_current_profile` itself now downgrades
+        # this to WARNING too (utilities/linkedin/session.py) before re-raising — a caller-only
+        # downgrade left the SAME exception filing an immediate, ungrouped `$exception` 22x/day,
+        # because `get_current_profile`'s own catch fired ERROR before this wrapper ever saw it.
+        # This outer catch is a wrapper re-reporting the same occurrence, so it stays DEBUG rather
+        # than filing a second warning for one event (same precedent as the tab-crash branch above).
+        from selenium.common.exceptions import TimeoutException
+
+        from cqc_lem.app.engagement.outreach import process_user_followups
+        timeout = TimeoutException("Finding Username Field")
+        with patch(f"{_OUT}.get_due_followups", return_value=[_due()]), \
+             patch(f"{_OUT}.get_current_profile", side_effect=timeout), \
+             patch(f"{_OUT}.log_debug") as dbg, \
+             patch(f"{_OUT}.log_warning") as warn, \
+             patch(f"{_OUT}.log_error") as err:
+            result = process_user_followups.run(user_id=1)
+        assert "Failed to start follow-ups" in result
+        dbg.assert_called_once()
+        assert dbg.call_args.kwargs.get("exc") is timeout
+        warn.assert_not_called()
+        err.assert_not_called()
+
     def test_other_profile_failures_still_log_error(self):
         from cqc_lem.app.engagement.outreach import process_user_followups
         with patch(f"{_OUT}.get_due_followups", return_value=[_due()]), \

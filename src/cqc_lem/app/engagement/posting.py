@@ -363,6 +363,17 @@ def auto_scrape_post_stats(self, user_id: int):
     try:
         driver, wait, user_email, my_profile = get_current_profile(user_id=user_id, session_name="Post Stats",
                                                                    measurement_only=True)
+    except LinkedInRateLimited as e:
+        # A known, self-clearing back-off (429 breaker, manual pause, or this account's own
+        # challenge-unsolvable cooldown, #1920) — not a fresh failure. Every sibling task that
+        # opens a session through get_current_profile (automate_reply_commenting, the comment
+        # sweeps) already treats this the same way; this task's generic except-Exception was
+        # re-logging it as an ERROR (a fresh, ungrouped PostHog $exception) on every occurrence
+        # even though get_current_profile itself already warned and this sweep just retries on
+        # its next scheduled beat.
+        log_warning("Post stats scrape skipped — LinkedIn rate-limited", exc=e, user_id=user_id,
+                    task_name="auto_scrape_post_stats")
+        return "Skipped — rate limited"
     except Exception as e:
         log_error("Error getting profile for post stats", exc=e, user_id=user_id, task_name="auto_scrape_post_stats")
         return f"Failed: {e}"
@@ -920,8 +931,14 @@ def sweep_reply_comments(self, user_id: int, sweep_slot: int = 0, attempt: int =
     try:
         driver, wait, _user_email, my_profile = get_current_profile(user_id=user_id, session_name="Reply Sweep")
     except LinkedInRateLimited as e:
-        log_warning("Reply sweep skipped — LinkedIn rate-limited", exc=e, user_id=user_id,
-                    task_name="sweep_reply_comments")
+        # DEBUG, not WARNING: this is the documented 429-safe path (a clean skip a later
+        # trigger/sweep retries), not a degraded run. The golden-hour amplifier retries up to
+        # GOLDEN_HOUR_MAX_RETRIES times ~7min apart, so a single automation pause/breaker window
+        # (often ~30min — a deploy pause or a 429 cooldown) reliably produces 3+ hits here, which
+        # used to cross the recurrence-escalation threshold and file a PostHog defect for the
+        # breaker/pause working exactly as designed (issue #1926).
+        log_debug(f"Reply sweep skipped — LinkedIn rate-limited: {e}", user_id=user_id,
+                  task_name="sweep_reply_comments")
         release_run_lock(lock_name, lock_token)
         retried = _retry_golden_hour_sweep(user_id, sweep_slot, attempt, "rate_limited")
         return "Skipped — rate limited" + (" (retry scheduled)" if retried else "")
@@ -1926,6 +1943,16 @@ def update_stale_profile(self, user_id: int, force_refresh: bool = False):
     try:
         driver, wait, user_email, my_profile = get_current_profile(
             user_id=user_id, session_name="Update Stale Profile", force_refresh=force_refresh)
+    except LinkedInRateLimited as e:
+        # A known, self-clearing back-off (429 breaker, manual pause, or this account's own
+        # challenge-unsolvable cooldown per issue #1920) — not a fresh failure, so WARNING rather
+        # than the ERROR the generic except below gives. Every sibling task already treats this the
+        # same way (`process_user_followups`, `automate_reply_commenting`, …); this task was
+        # missing the catch, so every breaker trip during the daily sweep filed its own
+        # error-tracking occurrence instead of being recognized as an expected skip (issue #1946).
+        log_warning("Profile refresh skipped — LinkedIn rate-limited or cooling down", exc=e,
+                    user_id=user_id, task_name="update_stale_profile")
+        return f"Skipped — rate limited: {e}"
     except Exception as e:
         log_error("Error while updating stale profile", exc=e, user_id=user_id, task_name="update_stale_profile")
         return f"Failed to update profile: {e}"

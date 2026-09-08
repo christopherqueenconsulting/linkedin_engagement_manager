@@ -60,6 +60,7 @@ from selenium.common import (
     JavascriptException,
     NoSuchElementException,
     StaleElementReferenceException,
+    TimeoutException,
     WebDriverException,
 )
 from selenium.webdriver import ActionChains, Keys
@@ -93,6 +94,10 @@ from cqc_lem.utilities.ai.dm_nurture import (
     is_stop_intent,
     nurture_delay_hours,
     recipient_context,
+)
+from cqc_lem.utilities.ai.outbound_qa import (
+    SURFACE_DM as OUTBOUND_SURFACE_DM,
+    refusal_reason as outbound_refusal_reason,
 )
 from cqc_lem.utilities.connection_targeting import (
     SOURCE_ADJACENT_POST,
@@ -223,7 +228,7 @@ from cqc_lem.utilities.linkedin.profile import LinkedInProfile
 from cqc_lem.utilities.linkedin.rate_limit import (
     LinkedInRateLimited,
 )
-from cqc_lem.utilities.linkedin.session import get_current_profile
+from cqc_lem.utilities.linkedin.session import ProfileUnavailableError, get_current_profile
 from cqc_lem.utilities.linkedin_formatter import normalize_public_text
 from cqc_lem.utilities.log_escalation import masked_recipient
 from cqc_lem.utilities.logger import log_debug, log_error, log_info, log_warning
@@ -639,6 +644,13 @@ _MENTION_CARD_LOCATORS = [
     (By.CSS_SELECTOR, "main div[data-view-name='notification-card']"),
     (By.XPATH, "//main//article[.//a[contains(@href,'/in/')]]"),
     (By.XPATH, "//main//li[.//a[contains(@href,'/in/')]][.//time or .//span]"),
+    # #1985: every rung above is scoped under <main>, but `_mentions_page_native_count` — the
+    # independent cross-check this walk is graded against — already falls back to <body> when the
+    # SPA doesn't paint a <main> landmark on this load. That asymmetry alone reads as "selector
+    # drift" (the cross-check finds a mention sentence, every card rung sees none) with nothing
+    # about the card markup itself having changed. Mirror the same body fallback here.
+    (By.CSS_SELECTOR, "body article[data-view-name='notification-card']"),
+    (By.CSS_SELECTOR, "body div[data-view-name='notification-card']"),
 ]
 _MENTION_ACTOR_LOCATORS = [
     (By.CSS_SELECTOR, "a[data-view-name='notification-actor']"),
@@ -1287,6 +1299,30 @@ def process_user_followups(self, user_id: int, max_per_run: int = 20):
         # that surface's fastboot app from ever mounting.
         driver, wait, user_email, my_profile = get_current_profile(user_id=user_id, session_name="Follow-ups",
                                                                     needs_images=True)
+    except LinkedInRateLimited as e:
+        # A known, self-clearing back-off (429 breaker, manual pause, or this account's own
+        # challenge-unsolvable cooldown per issue #1920) — not a fresh failure. Issue #1940: this
+        # task is dispatched every few minutes while `process_user_followups` has due rows, but the
+        # challenge-unsolvable cooldown runs ~175s — well under that cadence — so WARNING here
+        # recurred 3x/24h and the recurrence-escalation rule (`utilities/CLAUDE.md`) re-emitted it
+        # at ERROR and filed a grouped `$exception` for working back-off behaviour. Nothing else
+        # logs this specific cooldown-check raise (`mark_challenge_unsolvable` fires once, when the
+        # challenge FIRST goes unsolvable — a real failure, logged where it happens), so DEBUG here
+        # is the only place this expected no-op is recorded, same as the throttle deferrals in
+        # `automate_catchup_touches`.
+        log_debug("Follow-ups skipped — LinkedIn rate-limited or cooling down", exc=e,
+                  user_id=user_id, task_name="process_user_followups")
+        return f"Skipped — rate limited: {e}"
+    except ProfileUnavailableError as e:
+        # Issue #1947: a fresh account with nothing cached yet, or a scrape that missed once, is
+        # not a code defect — `get_current_profile` already logged the miss at ERROR (no `exc=`,
+        # so no $exception) before raising this specific, named condition. WARNING here is what
+        # the recurrence-escalation contract expects (utilities/CLAUDE.md): a one-off stays quiet,
+        # and only a profile that STAYS unresolvable across repeated runs escalates into a filed
+        # defect, same as the rate-limit and tab-crash branches around this one.
+        log_warning("Follow-ups skipped — no profile available (live scrape failed, nothing "
+                    "cached)", exc=e, user_id=user_id, task_name="process_user_followups")
+        return f"Skipped — no profile available: {e}"
     except Exception as e:
         if is_tab_crashed(e):
             # get_current_profile already logs this at WARNING where it's detected (the first
@@ -1297,6 +1333,16 @@ def process_user_followups(self, user_id: int, max_per_run: int = 20):
             # utilities/CLAUDE.md — DEBUG, not another WARNING.
             log_debug("Browser tab crashed while starting follow-ups", exc=e, user_id=user_id,
                       task_name="process_user_followups")
+        elif isinstance(e, TimeoutException):
+            # A Selenium selector miss during login — e.g. an unrecognized challenge/checkpoint
+            # page LinkedIn served instead of the expected form (#1908). `get_current_profile`
+            # itself now downgrades this to WARNING where it happens (issue #1919 — its own catch
+            # was firing ERROR here regardless of what any caller did, so a caller-only downgrade
+            # left the SAME immediate `$exception` filing 22x/day). Re-warning here would just
+            # double-count the same event under a second fingerprint, same as the tab-crash branch
+            # above — DEBUG, not another WARNING.
+            log_debug("Follow-ups could not start — login selector never resolved",
+                      exc=e, user_id=user_id, task_name="process_user_followups")
         else:
             log_error("Error getting profile for follow-ups", exc=e, user_id=user_id,
                       task_name="process_user_followups")
@@ -1564,6 +1610,15 @@ def automate_appreciation_dms_for_user(self, user_id: int, loop_for_duration: in
                 # Call self again in the future
                 globals()[current_function_name].apply_async(kwargs=kwargs, countdown=future_forward)
 
+    except LinkedInRateLimited as e:
+        # A known, self-clearing back-off (429 breaker, manual pause, or this account's own
+        # challenge-unsolvable cooldown, issue #1944) — not a fresh failure. Every sibling task in
+        # this module (`process_user_followups`, `send_lead_response`, …) already treats it the
+        # same way; this task was missing the catch, so a breaker trip during the appreciation DM
+        # sweep filed an error-tracking occurrence instead of being recognized as an expected skip.
+        log_warning("Appreciation DMs skipped — LinkedIn rate-limited or cooling down", exc=e,
+                    user_id=user_id, task_name="automate_appreciation_dms_for_user", action_type="dm")
+        result = f"Skipped — rate limited: {e}"
     except Exception as e:
         log_error("Error while sending appreciation DMs", exc=e, user_id=user_id, task_name="automate_appreciation_dms_for_user", action_type="dm")
         result = f"Error while sending appreciation DMs: {e}"
@@ -1697,12 +1752,23 @@ const m = (document.body.innerText || '').match(/([\\d,]+)\\s*\\n\\s*Profile vie
 return m ? parseInt(m[1].replace(/,/g, ''), 10) : null;
 """
 
-# Window scrollTo alone does not grow this list — scrolling the LAST viewer row into view is
-# what triggers the lazy loader (grounded live: 8 -> 58 rows this way, scrollTo-only stayed at 8).
+# Re-grounded live 2026-09-07 (#1978): `document.body`/`window` are NOT the scrolling element on
+# this page (body.scrollHeight == innerHeight, scrollY never moves) — an inner ancestor of the
+# row list owns the scrollbar. `scrollIntoView` on the last row only moves the container far enough
+# to make that ONE row visible, so it fires the lazy loader once and then goes quiet even though
+# the container has grown — exactly the "6 rows, scroll didn't grow it" drift #1978 reported.
+# Walking up from the last row to the nearest element whose content overflows its box and driving
+# ITS scrollTop to the bottom keeps triggering the loader every pass (live-verified: 6 -> 69 rows
+# over twelve 2s-spaced scrolls). No class names — walks by scroll geometry, not a selector.
 _PROFILE_VIEWER_SCROLL_JS = """
 const rows = [...document.querySelectorAll('a[href*="/in/"]')].filter(a =>
   /(^|\\n)Viewed /.test(a.innerText || ''));
-if (rows.length) rows[rows.length - 1].scrollIntoView({block: 'end'});
+if (!rows.length) { return; }
+let el = rows[rows.length - 1];
+while (el && el !== document.documentElement) {
+  if (el.scrollHeight > el.clientHeight + 10) { el.scrollTop = el.scrollHeight; return; }
+  el = el.parentElement;
+}
 window.scrollTo(0, document.body.scrollHeight);
 """
 
@@ -1736,6 +1802,16 @@ def automate_profile_viewer_engagement(self, user_id: int, loop_for_duration: in
 
     try:
         driver, wait, user_email, my_profile = get_current_profile(user_id=user_id, session_name="Profile Viewer DMs")
+    except LinkedInRateLimited as e:
+        # A known, self-clearing back-off (429 breaker, manual pause, or this account's own
+        # challenge-unsolvable cooldown per issue #1920) — not a fresh failure, so WARNING rather
+        # than the ERROR the generic branch below gets. Every sibling task in this module
+        # (`send_lead_response`, `process_user_followups`, …) already treats it the same way; this
+        # task was missing the catch, so every breaker trip during the profile-viewer walk filed
+        # its own error-tracking occurrence instead of being recognized as an expected skip.
+        log_warning("Profile viewer engagement skipped — LinkedIn rate-limited or cooling down",
+                    exc=e, user_id=user_id, task_name="automate_profile_viewer_engagement")
+        return f"Skipped — rate limited: {e}"
     except Exception as e:
         log_error(
             "Failed to get profile for profile viewer engagement",
@@ -2296,17 +2372,35 @@ def send_dm_now(user_id: int, profile_url: str, message: str, person_name: str =
     every DM send lane (private, scheduled, catch-up, nurture, appreciation) shares this function,
     so this is the ONE place the exemption needs to be set.
     """
+    # The LAST look at the body, and the reason it is here rather than at each of the five lanes
+    # that call this: whatever any of them hands over gets typed into a named person's inbox. On
+    # 2026-09-04 that was a model asking the operator for input it thought was missing, and two
+    # other DMs shipped an invented `[link]`. Refusing costs one message; sending costs the account.
+    # Checked BEFORE a browser session is opened — a body we will not send is not worth a Chrome
+    # slot off the fixed pool.
+    refusal = outbound_refusal_reason(message, surface=OUTBOUND_SURFACE_DM)
+    if refusal:
+        log_warning(f"Refusing to send an unsendable DM to {profile_url}: {refusal}",
+                    user_id=user_id, action_type="dm")
+        return False
+
     user_email, user_password = get_user_password_pair_by_id(user_id)
 
     driver, wait = get_driver_wait_pair(session_name='Private DM', user_id=user_id, needs_images=True)
-
-    login_to_linkedin(driver, wait, user_email, user_password)
 
     dm_sent = False
 
     log_info("Sending DM: " + message)
 
     try:
+        # login_to_linkedin used to run BEFORE this try — a LinkedInRateLimited it raises (429
+        # breaker, manual pause, or this account's own challenge-unsolvable cooldown, issue #1920)
+        # propagated straight out of send_dm_now uncaught: no FAILURE log row, no quit_gracefully
+        # (a leaked Chrome slot off the fixed pool, on top of an unhandled Celery task exception
+        # filing a fresh $exception every time the breaker was open, issue #1975). It is inside the
+        # try now so the same finally and except branches every other failure here already gets.
+        login_to_linkedin(driver, wait, user_email, user_password)
+
         composer = open_addressed_composer(driver, wait, profile_url, person_name=person_name,
                                            user_id=user_id)
         if not composer.addressed:
@@ -2327,6 +2421,14 @@ def send_dm_now(user_id: int, profile_url: str, message: str, person_name: str =
                                      "Finding Send Button", max_retry=1, use_action_chain=True)
 
             dm_sent = _dm_send_landed(driver, message, user_id=user_id, profile_url=profile_url)
+
+    except LinkedInRateLimited as e:
+        # A known, self-clearing back-off (429 breaker, manual pause, or a per-account
+        # challenge-unsolvable cooldown, issue #1920) — not a fresh failure to page on. WARNING
+        # here never escalates: `log_escalation._is_self_clearing_backoff` keys off the exception
+        # TYPE, not the message, so this stays out of PostHog error tracking however often it fires.
+        log_warning("DM send skipped — LinkedIn rate-limited or cooling down", exc=e,
+                    user_id=user_id, action_type="dm")
 
     except Exception as e:
         # ERROR, not myprint: this lane failed silently for weeks because every send logged its

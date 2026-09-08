@@ -783,6 +783,27 @@ class TestCommentInGroups:
         assert "No enabled groups" in result
         gp.assert_not_called()
 
+    def test_a_login_cooldown_is_a_skip_not_an_error(self):
+        """Issue #1942: a login cooldown must skip, not file an ERROR.
+
+        `get_current_profile` re-raises `LinkedInRateLimited` for a known, self-clearing back-off
+        (429 breaker, manual pause, or this account's own challenge-unsolvable cooldown, #1920)
+        after already logging it at WARNING. The old blanket `except Exception` here re-logged it
+        at ERROR, filing a grouped $exception for a run that was never going to succeed until the
+        cooldown clears on its own.
+        """
+        from cqc_lem.app.engagement.feed import auto_comment_in_groups
+        from cqc_lem.utilities.linkedin.rate_limit import LinkedInRateLimited
+        with patch(f"{_FEED}.get_enabled_group_ids", return_value=["1"]), \
+             patch(f"{_FEED}.get_current_profile",
+                  side_effect=LinkedInRateLimited("cooling down for ~1044s")), \
+             patch(f"{_FEED}.log_warning") as warned, \
+             patch(f"{_FEED}.log_error") as err:
+            result = auto_comment_in_groups.run(user_id=1)
+        assert "Skipped" in result and "rate limited" in result
+        warned.assert_called_once()
+        err.assert_not_called()
+
     def test_a_session_quit_out_from_under_the_run_ends_it_on_what_shipped(self):
         """Issue #988: a deploy recreates the containers once the drain window is spent, so a group
         walk that outlives it loses its browser. That is a routine release, not a defect — the run

@@ -206,6 +206,22 @@ class TestWarningEscalation:
         assert extra["log_fingerprint"] == "deadbeefcafe"
         mock_esc.assert_called_once()
 
+    def test_exc_is_forwarded_to_note(self):
+        """`log_warning` passes its `exc` through to `note()`.
+
+        `note()` needs the exception to recognize a self-clearing back-off (issue #1948) — a
+        message-only check can't tell a `LinkedInRateLimited` apart from a real defect that happens
+        to share wording.
+        """
+        from cqc_lem.utilities import logger as mod
+
+        original = ValueError("boom")
+        with patch.object(mod.log_escalation, "note", return_value=None) as mock_note, \
+             patch.object(mod.logger, "warning"):
+            mod.log_warning("boom", exc=original, post_id=1)
+
+        assert mock_note.call_args.kwargs["exc"] is original
+
     def test_escalation_failure_never_breaks_logging(self):
         from cqc_lem.utilities import logger as mod
 

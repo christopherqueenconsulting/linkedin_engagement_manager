@@ -54,16 +54,22 @@ class TestSweepReplyComments:
         gcp.assert_not_called()
 
     def test_rate_limited_session_returns_clean_skip(self):
+        """The rate-limited path is 429-safe by design (issue #1926) — DEBUG, not WARNING, so a
+        single pause/breaker window spanning the golden-hour amplifier's retries never escalates
+        into a PostHog defect for the breaker working as intended.
+        """
         from cqc_lem.app.engagement.posting import sweep_reply_comments
         from cqc_lem.utilities.linkedin.rate_limit import LinkedInRateLimited
         with patch(f"{_POST}.get_engagement_preferences", return_value={}), \
              patch(f"{_POST}.get_recent_posted_post_ids", return_value=[10]), \
              patch(f"{_POST}.get_current_profile", side_effect=LinkedInRateLimited("429")), \
              patch(f"{_POST}._retry_golden_hour_sweep", return_value=False), \
+             patch(f"{_POST}.log_debug") as debug, \
              patch(f"{_POST}.log_warning") as warn:
             result = sweep_reply_comments.run(user_id=1)
         assert "rate limited" in result.lower()
-        warn.assert_called_once()
+        debug.assert_called_once()
+        warn.assert_not_called()
 
     def test_rate_limited_golden_hour_sweep_retries_inside_the_window(self):
         """#401's amplifier lost the whole hour to one transient 429 — the sweep now asks for one
@@ -75,7 +81,7 @@ class TestSweepReplyComments:
              patch(f"{_POST}.get_recent_posted_post_ids", return_value=[10]), \
              patch(f"{_POST}.get_current_profile", side_effect=LinkedInRateLimited("429")), \
              patch(f"{_POST}._retry_golden_hour_sweep", return_value=True) as retry, \
-             patch(f"{_POST}.log_warning"):
+             patch(f"{_POST}.log_debug"):
             result = sweep_reply_comments.run(user_id=1, sweep_slot=2, attempt=0)
         retry.assert_called_once_with(1, 2, 0, "rate_limited")
         assert "retry scheduled" in result

@@ -12,7 +12,12 @@ import { useAuth } from '../../contexts/useAuth'
 // `unknown` is NOT a failure: it just means nothing has been recorded (no sign-in since the record
 // expired, or the runtime store is unavailable), so it must never read as a broken connection.
 
-type SignInState = 'signed_in' | 'approval_pending' | 'approval_timed_out' | 'unknown'
+type SignInState =
+  | 'signed_in'
+  | 'approval_pending'
+  | 'approval_timed_out'
+  | 'challenge_unsolvable'
+  | 'unknown'
 
 type SignInStatus = {
   state: SignInState
@@ -54,7 +59,7 @@ export default function LinkedInSignInStatusCard() {
       ? { dot: 'bg-green-500', box: 'border-gray-200' }
       : data.state === 'approval_pending'
         ? { dot: 'bg-amber-500', box: 'border-amber-300' }
-        : data.state === 'approval_timed_out'
+        : data.state === 'approval_timed_out' || data.state === 'challenge_unsolvable'
           ? { dot: 'bg-red-500', box: 'border-red-200' }
           : { dot: 'bg-gray-300', box: 'border-gray-200' }
 
@@ -65,7 +70,9 @@ export default function LinkedInSignInStatusCard() {
         ? 'Waiting for you to approve a LinkedIn sign-in'
         : data.state === 'approval_timed_out'
           ? 'Your LinkedIn sign-in was not approved in time'
-          : 'No LinkedIn sign-in recorded yet'
+          : data.state === 'challenge_unsolvable'
+            ? 'LinkedIn is asking for verification automation could not clear'
+            : 'No LinkedIn sign-in recorded yet'
 
   return (
     <div
@@ -109,6 +116,18 @@ export default function LinkedInSignInStatusCard() {
           <p>
             We stopped waiting {askedAt ? `after asking ${askedAt}` : ''} — automation will ask
             again on its next run, and approving from the LinkedIn app is all that is needed.
+          </p>
+          {lastSignIn && <p>Last successful sign-in: {lastSignIn}.</p>}
+        </div>
+      )}
+
+      {data.state === 'challenge_unsolvable' && (
+        <div className="text-xs text-gray-600 space-y-1">
+          <p>
+            Arkose, the email verification code, and a mobile-app approval all failed to clear
+            LinkedIn's challenge — automation is backing off this account for a few hours rather
+            than repeat the same failed sign-in. Signing in yourself from a browser (and approving
+            any device prompt from the <strong>LinkedIn mobile app</strong>) clears this early.
           </p>
           {lastSignIn && <p>Last successful sign-in: {lastSignIn}.</p>}
         </div>

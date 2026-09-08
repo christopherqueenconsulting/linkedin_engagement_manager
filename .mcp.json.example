@@ -1,11 +1,18 @@
 {
-  "_comment": "Copy to .mcp.json (gitignored) to enable the Selenium MCP server. Requires `poetry install --with mcp`. SE_REMOTE_URL points at the loopback-mapped selenium-chrome hub on the VPS; tunnel 4444 from a laptop. See docs/SELENIUM_DEBUGGING.md.",
+  "_comment": "Copy to .mcp.json (gitignored) to enable the Selenium and PostHog MCP servers. `posthog` reads POSTHOG_BEARER_TOKEN from the shell env (Claude Code expands ${VAR} in .mcp.json) -- never paste a phx_ key into this file. Requires `poetry install --with mcp`. SE_REMOTE_URL points at the loopback-mapped selenium-chrome hub on the VPS; tunnel 4444 from a laptop. See docs/SELENIUM_DEBUGGING.md.",
   "mcpServers": {
     "selenium-lem": {
       "command": "poetry",
       "args": ["run", "python", "tools/selenium_mcp_server.py"],
       "env": {
         "SE_REMOTE_URL": "http://127.0.0.1:4444"
+      }
+    },
+    "posthog": {
+      "type": "http",
+      "url": "https://mcp.posthog.com/mcp",
+      "headers": {
+        "Authorization": "Bearer ${POSTHOG_BEARER_TOKEN}"
       }
     }
   }

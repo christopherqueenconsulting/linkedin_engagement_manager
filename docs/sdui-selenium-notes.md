@@ -206,11 +206,20 @@ A viewer row is an `/in/` anchor (componentkey UUID) whose innerText carries a
 `Viewed 1h ago`-style caption line (`1h`/`20h`/`1d`/`1w`/`1mo`/`2mo`); non-viewer profile
 anchors ("Interesting viewers", nav) carry no such line, so the caption IS the discriminator.
 The walk reads name+href+caption in ONE `execute_script` pass (`_PROFILE_VIEWER_ROWS_JS`) —
-per-element XPath reads go stale as the list re-renders. `window.scrollTo` alone never grows
-the list; `scrollIntoView` on the LAST row is what triggers the lazy loader (8 → 58 rows).
-Zero rows against a non-zero "N Profile viewers" headline stat is selector drift and warns;
-zero rows with no stat is a quiet no-op. Re-ground with
-`scripts/linkedin_live_validation.py --profile-views`.
+per-element XPath reads go stale as the list re-renders. Zero rows against a non-zero
+"N Profile viewers" headline stat is selector drift and warns; zero rows with no stat is a
+quiet no-op. Re-ground with `scripts/linkedin_live_validation.py --profile-views`.
+
+**Re-grounded live 2026-09-07 (#1978):** `window`/`document.body` are not the scrolling element
+on this page — `document.body.scrollHeight` sits flat at the viewport height and `window.scrollY`
+never moves no matter how much scroll script runs. The list's real scroll container is an inner
+ancestor of the row anchors (`scrollHeight` >> `clientHeight`); `scrollIntoView` on the last row
+only scrolls that container far enough to make that one row visible, fires the lazy loader
+**once**, then goes quiet even though there is far more list left — the exact "6 rows matched,
+scroll didn't grow it, headline says 340" shape #1978 reported. `_PROFILE_VIEWER_SCROLL_JS` now
+walks up from the last row to the nearest element whose content overflows its box and drives
+*that* element's `scrollTop` to its `scrollHeight` — live-verified to keep growing the list every
+pass (6 → 69 rows over twelve 2-second-spaced scrolls) instead of stalling after one.
 
 ## Recommendations Received has no list item, no `<time>` and no `role=tab` (#1007)
 
@@ -533,6 +542,38 @@ not) and `_profile_is_first_degree` judges `texts[0]`, while `_degree_from_sourc
 returns on the first hit. Reading "any badge on the page" is the #1012 rail hazard in a read
 instead of a click: it cancels the invite to a 2nd-degree target because one of their mutuals is a
 1st.
+
+## A roster target's `/recent-activity/*` page is ALSO fastboot — it needs images too (#1979)
+
+The weekly drift sweep's evidence (owner name and six posts read fine, only the follow control
+missing) came from a `--sweep` run, which has carried `needs_images=True` since #1778. A standalone
+`--roster-follow <url>` run does not, and live-confirmed 2026-09-07 against two different targets
+(`arvidkahl`, `hamelhusain`) that this is NOT a quiet page: `document.title` stays a bare
+`"LinkedIn"` forever (never the `"… | <Name> | LinkedIn"` shape `_activity_page_owner_name` reads),
+`document.querySelector('main')` returns `null`, and the owner's name is present ONLY inside the
+unrendered `<meta name="__init">` hydration payload — the exact empty-`<main>` misread #1774 and
+#1778 already named for `/messaging/*` and `/groups/*`. A roster target's activity page is the SAME
+fastboot family: its `<img>` load events drive the client boot, so a bandwidth-saver session with
+images blocked never mounts it. Both `automate_commenting` (the production session `comment_on_roster_posts`
+runs inside, before the home feed gets a look) and this probe's `--roster-follow`/`--roster-connect`
+now pass `needs_images=True`, the same scoped exemption `auto_sync_user_groups` and the DM composer
+already carry — confirmed live: with it, the SAME two profiles resolve their real title, five-plus
+real posts, and the real top-card controls.
+
+With the page actually rendering, the second finding stands: neither target carries an explicit
+Follow/Unfollow control naming the owner at all — only the shortened top-card `Message <first>`
+action (and, elsewhere on the page, a `1st` degree badge) survives, exactly the page-native signal
+`_CONNECT_STATE_JS` already trusted for the sibling connect-state read (grounded 2026-08-03 against a
+connection named "Harshal"). The fix adds that same signal as a third route (Route C) in
+`_FOLLOW_CONTROL_JS`, tried only after Routes A and B (the owner-named control, scoped then
+page-wide) both miss: a `1st` badge or a shortened `Message <first>` inside the owner's own card
+resolves `following`, with no element — read only, since LinkedIn auto-follows a connection and
+there is nothing to click either way. An explicit `Follow <Name>` control still wins whenever it
+renders (an unfollowed-but-connected target), so Route C only ever fires when no explicit toggle
+exists at all. A genuine miss on all three routes is now cross-checked against the page's post cards
+(`_FEED_POST_TEXT_SEL`, an anchor the control scan never reads) via the shared zero-walk grader, so
+real drift on a page that plainly has content escalates instead of reading identically to an
+ordinary quiet page forever.
 
 ## The feed share-box composer is a non-button clickable (#1107)
 

@@ -18,6 +18,7 @@ index and the `CLAUDE.md` row that points at it, or the pointer becomes a dead e
 
 - ★ [Spec, Verifier, Environment](spec-verifier-environment.md) — grounding an issue before any code is written; the `spec-first` skill's authority
 - ★ [Agent Workflow Playbook](AGENT_WORKFLOW_PLAYBOOK.md) — issues, PRs, labels, Decision Comments; the human contract for the pipeline
+- [Cross-project context](cross-project-context.md) — the CQC vault as shared memory across projects: this project's vault note, handoff packets, tracker, how decisions reach Christopher
 - ★ [Gauntlet Loop](gauntlet-loop.md) — the optional pre-PR quality bar: builder/critic pairs blind-compared against a reference exemplar
 - ★ [Docstrings & lint — the house standard](docstring-standard.md) — Google convention, the `.ruff-baseline` ratchet, `agent:docfix`
 - [Testing LinkedIn engagement via the API](TESTING_ENGAGEMENT_API.md) — hitting comment / reply / DM by hand

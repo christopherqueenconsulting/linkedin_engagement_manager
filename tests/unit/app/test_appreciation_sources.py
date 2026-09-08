@@ -410,6 +410,38 @@ class TestZeroMentionCardsIsGradedNotAssumed:
             assert _mentions_page_native_count(driver, 1) is None
 
 
+class TestMentionCardLocatorsFallBackToBody:
+    """#1985: production warned "Mention card walk matched nothing" for several minutes straight.
+
+    Real recurring drift, not a one-off. Every rung of `_MENTION_CARD_LOCATORS` was scoped under
+    `<main>`, but `_mentions_page_native_count` (the cross-check this walk is graded against)
+    already falls back to `<body>` when the SPA doesn't paint a `<main>` landmark on this load.
+    That asymmetry alone reproduces the exact signature: the cross-check finds a mention sentence,
+    the card chain sees nothing, with no change to the card markup itself.
+    """
+
+    def test_locators_carry_a_body_scoped_fallback(self):
+        from cqc_lem.app.engagement.outreach import _MENTION_CARD_LOCATORS
+        assert any("body" in value for _, value in _MENTION_CARD_LOCATORS)
+
+    def test_walk_finds_cards_under_body_when_main_never_painted(self):
+        """Prove the new rungs actually catch what the main-scoped ones miss.
+
+        `find_all_first` tries every rung in order, so an unreachable fallback would pass
+        `test_locators_carry_a_body_scoped_fallback` while still never firing in production.
+        """
+        from cqc_lem.app.engagement.outreach import _MENTION_CARD_LOCATORS
+        from cqc_lem.utilities.selenium_util import find_all_first
+        card = MagicMock()
+
+        def fake_find_elements(_by, value):
+            return [card] if value.startswith("body") else []
+
+        driver = MagicMock()
+        driver.find_elements.side_effect = fake_find_elements
+        assert find_all_first(driver, _MENTION_CARD_LOCATORS) == [card]
+
+
 class TestDispatchDedup:
     """`automate_appreciation_dms_for_user` re-queues itself every ~60s, so the ledger claim is the
     only thing standing between one thank-you and a thank-you a minute.
@@ -562,3 +594,32 @@ class TestTheBeatSpendsOneBudget:
         recs.assert_called_once()
         mentions.assert_called_once()
         assert dispatch.call_count == 3
+
+
+class TestRateLimitedLoginIsDeferredNotErrored:
+    """Login-challenge cooldown must be deferred, not filed as an error.
+
+    A login-challenge cooldown (issue #1944, PostHog `LinkedInRateLimited`) is a known,
+    self-clearing back-off — the same as every sibling task in this module already treats it
+    (`process_user_followups`, `send_lead_response`, …). It must never file an error-tracking
+    occurrence.
+    """
+
+    def test_rate_limited_login_is_a_warning_not_an_error(self):
+        from cqc_lem.app.engagement.outreach import automate_appreciation_dms_for_user
+        from cqc_lem.utilities.linkedin.rate_limit import LinkedInRateLimited
+
+        with patch(f"{_OUT}.get_user_password_pair_by_id", return_value=("a@b.c", "pw")), \
+             patch(f"{_OUT}.get_driver_wait_pair", return_value=(MagicMock(), MagicMock())), \
+             patch(f"{_OUT}.login_to_linkedin",
+                   side_effect=LinkedInRateLimited(
+                       "LinkedIn login challenge for this account was unsolvable and is cooling "
+                       "down for ~17788s before the next attempt.")), \
+             patch(f"{_OUT}.quit_gracefully"), \
+             patch(f"{_OUT}.log_warning") as warning, \
+             patch(f"{_OUT}.log_error") as error:
+            result = automate_appreciation_dms_for_user.run(user_id=1)
+
+        error.assert_not_called()
+        warning.assert_called_once()
+        assert "rate limited" in result.lower()

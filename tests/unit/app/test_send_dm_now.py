@@ -82,6 +82,56 @@ class TestAddressedComposerGate:
         assert m["opened"].call_args.kwargs["person_name"] == "Jane Doe"
 
 
+class TestRateLimitedLoginDefersInsteadOfEscalating:
+    """Issue #1975: a rate-limited login used to escape as an unhandled Celery exception.
+
+    `login_to_linkedin` used to run BEFORE the try block, so a `LinkedInRateLimited` it raised (429
+    breaker, manual pause, per-account challenge cooldown) skipped the FAILURE log row, skipped
+    `quit_gracefully` (a leaked Chrome slot off the fixed pool) and propagated out of
+    `send_private_dm` uncaught — an unhandled Celery task exception that filed a fresh, ungrouped
+    PostHog `$exception` every time the breaker was open.
+    """
+
+    @staticmethod
+    def _send_with_rate_limited_login():
+        from cqc_lem.app.engagement import outreach as ra
+        from cqc_lem.utilities.linkedin.rate_limit import LinkedInRateLimited
+
+        with patch(f"{_OUT}.get_user_password_pair_by_id", return_value=("e", "p")), \
+             patch(f"{_OUT}.get_driver_wait_pair", return_value=(MagicMock(), MagicMock())), \
+             patch(f"{_OUT}.login_to_linkedin",
+                   side_effect=LinkedInRateLimited("Automation is paused for ~1784s — "
+                                                    "skipping login.")), \
+             patch(f"{_OUT}.open_addressed_composer") as opened, \
+             patch(f"{_OUT}.insert_new_log") as logged, \
+             patch(f"{_OUT}.record_action") as recorded, \
+             patch(f"{_OUT}.quit_gracefully") as quit_driver, \
+             patch(f"{_OUT}.log_warning") as warned, \
+             patch(f"{_OUT}.log_error") as errored:
+            result = ra.send_dm_now(1, "https://www.linkedin.com/in/jane", "Congrats Jane!")
+        return result, {"opened": opened, "log": logged, "recorded": recorded,
+                        "quit": quit_driver, "warned": warned, "errored": errored}
+
+    def test_returns_false_without_reaching_the_composer(self):
+        result, m = self._send_with_rate_limited_login()
+        assert result is False
+        m["opened"].assert_not_called()
+
+    def test_the_browser_is_still_closed(self):
+        _, m = self._send_with_rate_limited_login()
+        m["quit"].assert_called_once()
+
+    def test_a_failure_row_is_still_logged(self):
+        _, m = self._send_with_rate_limited_login()
+        assert m["log"].call_args.kwargs["result"] is LogResultType.FAILURE
+        m["recorded"].assert_not_called()
+
+    def test_it_downgrades_to_a_warning_never_an_error(self):
+        _, m = self._send_with_rate_limited_login()
+        m["warned"].assert_called_once()
+        m["errored"].assert_not_called()
+
+
 class TestOutcomeIsRecorded:
     def test_a_refused_send_is_logged_as_a_failure_not_skipped_silently(self):
         _, m = _send(composer=ComposerOpen(opened=False, reason="no_urn"))

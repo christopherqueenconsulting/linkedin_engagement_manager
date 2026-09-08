@@ -20,14 +20,28 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import NamedTuple, Tuple
 
+from selenium.common.exceptions import TimeoutException
 from selenium.webdriver.remote.webdriver import WebDriver
 from selenium.webdriver.support.wait import WebDriverWait
 
 from cqc_lem.utilities.db import get_user_password_pair_by_id
 from cqc_lem.utilities.linkedin.helper import get_my_profile, load_profile_for_user, login_to_linkedin
 from cqc_lem.utilities.linkedin.profile import LinkedInProfile
+from cqc_lem.utilities.linkedin.rate_limit import LinkedInRateLimited
 from cqc_lem.utilities.logger import log_error, log_info, log_warning
 from cqc_lem.utilities.selenium_util import get_driver_wait_pair, is_tab_crashed, quit_gracefully
+
+
+class ProfileUnavailableError(RuntimeError):
+    """Neither a live scrape nor a cached profile resolved for this user (issue #1947).
+
+    A `RuntimeError` subclass, not a new hierarchy — every existing `except RuntimeError` /
+    `pytest.raises(RuntimeError, ...)` still matches. The point of naming it is so a caller can
+    catch THIS specific, expected condition (a fresh account with nothing cached yet, or a
+    transient scrape miss) apart from a genuinely unknown `RuntimeError` and log it at the level
+    the recurrence-escalation contract expects — WARNING, not an immediate `$exception`
+    (`utilities/CLAUDE.md`).
+    """
 
 
 def get_current_profile(user_id: int, session_name: str = "Get Current Profile",
@@ -68,6 +82,16 @@ def get_current_profile(user_id: int, session_name: str = "Get Current Profile",
     try:
         login_to_linkedin(driver, wait, user_email, user_password,
                           measurement_only=measurement_only)
+    except LinkedInRateLimited as e:
+        # A known, self-clearing back-off — the 429 breaker, a manual pause, or (issue #1920) this
+        # account's own challenge-unsolvable cooldown — not a fresh failure to page on. Every lane
+        # that calls `get_current_profile` shares this one gate, so downgrading here (like the
+        # tab-crash branch below) is the single place that stops ALL of them from filing an ERROR
+        # for a condition `login_to_linkedin` already expects and will clear on its own.
+        log_warning("LinkedIn login backed off (rate limit, pause, or challenge cooldown)",
+                    exc=e, user_id=user_id)
+        quit_gracefully(driver)
+        raise e
     except Exception as e:
         if is_tab_crashed(e):
             # The renderer behind this freshly-acquired session's tab was already dead (a Grid slot
@@ -77,6 +101,15 @@ def get_current_profile(user_id: int, session_name: str = "Get Current Profile",
             # other login failure; only the severity changes, to a warning that escalates if it
             # starts recurring (issue #1749).
             log_warning("Browser tab crashed on the first login navigation", exc=e, user_id=user_id)
+        elif isinstance(e, TimeoutException):
+            # The login form never rendered — `login_to_linkedin` already logged the page it
+            # actually saw at WARNING before re-raising (issue #1908). This is the ONE place every
+            # `get_current_profile` caller shares, so downgrading here (like the tab-crash and
+            # rate-limit branches above) is what stops it, not a per-caller re-catch: issue #1919
+            # found the exact same TimeoutException still filing an immediate, ungrouped
+            # `$exception` here 22x/day even after a caller-level downgrade, because this branch
+            # ran and logged ERROR before the exception ever reached the caller's `except`.
+            log_warning("LinkedIn login failed — form fields never appeared", exc=e, user_id=user_id)
         else:
             log_error("LinkedIn login failed (possibly rate-limited)", exc=e, user_id=user_id)
         quit_gracefully(driver)
@@ -98,7 +131,8 @@ def get_current_profile(user_id: int, session_name: str = "Get Current Profile",
     if my_profile is None:
         log_error("No profile available (live scrape failed and no cached profile)", user_id=user_id)
         quit_gracefully(driver)
-        raise RuntimeError("Profile unavailable: live scrape failed and no cached profile to fall back on")
+        raise ProfileUnavailableError(
+            "Profile unavailable: live scrape failed and no cached profile to fall back on")
 
     return driver, wait, user_email, my_profile
 
