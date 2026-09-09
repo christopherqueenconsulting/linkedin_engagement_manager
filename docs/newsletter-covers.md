@@ -145,11 +145,22 @@ content from:
    `core_mechanism` and the candidates are folded into the brief content as "Core mechanism to
    depict" / "Candidate physical metaphors"; `avoid` names the generic nouns the edition's own hook
    keeps repeating. Fails closed to the old title/subtitle + 1500-char excerpt on any error or an
-   empty response — a dead LLM degrades the steering, never the image.
+   empty response — a dead LLM degrades the steering, never the image. **Its `max_tokens` is
+   `_CONCEPT_MAX_TOKENS` (2000), not a tight budget:** `lem-simple` is a reasoning model, and at
+   300 the entire budget went to reasoning tokens — every one of the five live editions came back
+   EMPTY with `finish_reason='length'`, silently, at DEBUG. A real extraction costs 540-1020
+   completion tokens. This is the same trap `_BRIEF_MAX_TOKENS` documents; treat any new call on a
+   `lem-*` tier the same way.
 2. **Cross-edition variety** (`_recent_focal_concepts`) — the `focal_concept` of the user's last
    `_VARIETY_WINDOW` (5) cover receipts, most-recent first, read straight off the `.brief.json`
    sidecars already on the assets volume (no new DB column, mirrors `enforce_variety`'s approach for
-   posts). Folded in as "Already used by recent covers — pick something visually distinct".
+   posts).
+
+   `_cover_concept_text` returns **`(content, avoid_terms)`** — the avoid nouns come back separately
+   and reach `build_image_brief`'s `avoid_terms` param, which puts them in the AUTHOR's user message
+   only. They must never be folded into the content: the content is what the deterministic fallback
+   turns into a RENDER prompt, and a renderer reads "laptop; screen; desk" as a request. That is
+   exactly how a fallback cover for the leak edition came back as a laptop on a desk.
 3. **`edition_format` / `hook_style`** — threaded from the edition row into `build_image_brief`'s
    `content_shape` param, so a listicle cover and a personal-story cover read differently.
 
@@ -164,7 +175,18 @@ magnifier/caliper/tally). `_NO_ANONYMOUS_PERSON` no longer invites "a close-up o
 falls back to the deterministic template) a `newsletter`-surface brief whose prompt names one of
 `laptop, notebook, coffee, desk, office, typing, keyboard, screen, monitor, phone` — unless an
 avatar is in frame, where a person at a desk is a legitimate scene. `ImageBrief.fallback` records
-whether the deterministic template shipped.
+whether the deterministic template shipped. The **retry carries the rejection reason** ("your
+previous attempt was REJECTED: the prompt named the stock-office object 'laptop'") — re-sending the
+identical prompt just re-drew the same rejected scene, which is what pushed four of five live
+editions onto the fallback.
+
+**The newsletter fallback is its own scene.** `_fallback_brief` for `surface="newsletter"` with no
+avatar uses `_NEWSLETTER_FALLBACK_SCENE` (one tangible object on a workshop surface) instead of the
+generic template, and strips the stock-office nouns out of the content summary first. The generic
+template pasted the surface's INSTRUCTION preset into a RENDER prompt — including "People and
+screens stay out of the frame" — and then asked for "blank screens" and "plain unbranded clothing".
+A render prompt has no negation: every noun in it is a request, and the renderer duly produced a man
+at a laptop. An avatar cover keeps the generic template, where a person genuinely belongs.
 
 **The vision gate.** `inspect_render_quality(..., surface="newsletter")` adds a rejection bullet for
 the literal "person at laptop/desk/keyboard with notebook or coffee mug" scene and raises the
@@ -214,6 +236,14 @@ five editions (real spend against `lem-simple`/`lem-medium`/`lem-image`/`lem-vis
 fixtures' text), inspect the `.brief.json` written beside each render for `focal_concept` and
 `fallback`, and do **not** call `set_edition_cover_image` against a live edition row — the author
 approves covers from the review queue, and this path is for a sample review only.
+
+Point `cqc_lem.assets_dir` (and `newsletter_cover.assets_dir`, which binds it at import) at a
+scratch directory for the run: the cover file and its receipt both land there, the variety window
+then reads that run's own receipts, and the live assets volume is never written.
+
+**Read `fallback` on every receipt before judging the images.** The first live run of this set
+looked like five renders of the new pipeline and was actually four renders of the deterministic
+template — the receipt was the only thing that said so.
 
 ## Cost
 

@@ -70,6 +70,19 @@ alternative — hands stay the renderer's weakest anatomy regardless of what the
 `hook_style`) folds a caller's shape tag into the context so a listicle cover and a personal-story
 cover read differently; full posture in `docs/newsletter-covers.md`.
 
+**A rejection is only useful if the retry hears it.** The second attempt carries the reason the
+first was thrown out, naming the offending noun. Re-sending the identical prompt just re-drew the
+same rejected scene — on the five live editions of #1992 that put four of five covers on the
+deterministic fallback.
+
+**`avoid_terms` never reach a render prompt.** `build_image_brief(..., avoid_terms=[...])` puts a
+caller's "not these" nouns in the AUTHOR's user message only, and `_fallback_brief` never sees them.
+The fallback template IS a render prompt, and a render prompt has no negation: every noun in it is a
+request. Same reason `_fallback_brief` gives `surface="newsletter"` with no avatar its own
+`_NEWSLETTER_FALLBACK_SCENE` rather than pasting the surface preset ("People and screens stay out of
+the frame") plus "blank screens" and "plain unbranded clothing" into one — which is how a fallback
+cover rendered a man at a laptop.
+
 ## `image_gen.py` — the ONE renderer
 
 `render_image_from_prompt(prompt, ratio=...)` picks the backend from `IMAGE_BACKEND`:

@@ -330,3 +330,76 @@ class TestNewsletterPreset:
         assert llm.call_count == 1, "saxophone must not be rejected as a 'phone' cliché"
         assert not brief.fallback
         assert brief.prompt == clean["prompt"]
+
+
+@pytest.mark.unit
+class TestLiveSampleRegressions:
+    """Regressions from issue #1992's five-edition live sample run.
+
+    Four of five covers shipped from the deterministic fallback, and the fallback drew the exact
+    "man at a laptop" scene the issue was filed about.
+    """
+
+    _STOCK = {"focal_concept": "a person at a laptop",
+              "prompt": ("A confident professional sits at a laptop on a wooden desk with a "
+                        "notebook and coffee mug beside them, soft window light, editorial "
+                        "photograph.")}
+
+    def test_newsletter_fallback_never_asks_for_people_screens_or_clothing(self):
+        """The fallback template is a RENDER prompt: every noun in it is a request.
+
+        The generic one pasted the surface preset's "People and screens stay out of the frame"
+        into it and then asked for "blank screens" and "plain unbranded clothing" — which is how
+        a fallback cover came back as a man at a laptop.
+        """
+        with patch("cqc_lem.utilities.ai.ai_helper._call_llm", return_value=_resp(self._STOCK)):
+            brief = build_image_brief("Spot the leak in your AI budget", surface="newsletter",
+                                      ratio="16:9")
+        assert brief.fallback
+        lowered = brief.prompt.lower()
+        for noun in ("people", "person", "clothing", "screen", "laptop", "desk", "notebook"):
+            assert noun not in lowered, f"the newsletter fallback prompt still names {noun!r}"
+
+    def test_the_editions_own_stock_nouns_are_stripped_from_the_fallback_summary(self):
+        with patch("cqc_lem.utilities.ai.ai_helper._call_llm", return_value=_resp(self._STOCK)):
+            brief = build_image_brief("How much did your last laptop draft cost on screen?",
+                                      surface="newsletter", ratio="16:9")
+        assert brief.fallback
+        assert "laptop" not in brief.prompt.lower()
+        assert "screen" not in brief.prompt.lower()
+
+    def test_an_avatar_newsletter_fallback_keeps_the_generic_template(self):
+        """A person and a desk genuinely belong once the author's own likeness is the subject."""
+        avatar = {"status": "succeeded", "model_ref": "owner/lora:v1", "trigger_word": "TOK"}
+        with patch("cqc_lem.utilities.ai.ai_helper._call_llm", side_effect=RuntimeError("down")):
+            brief = build_image_brief("content", surface="newsletter", ratio="16:9",
+                                      avatar=avatar)
+        assert brief.fallback
+        assert "A single professional photograph representing:" in brief.prompt
+
+    def test_avoid_terms_reach_the_author_but_never_the_fallback_prompt(self):
+        with patch("cqc_lem.utilities.ai.ai_helper._call_llm",
+                   return_value=_resp(self._STOCK)) as llm:
+            brief = build_image_brief("an edition about token spend", surface="newsletter",
+                                      ratio="16:9", avoid_terms=["laptop", "a prior gear"])
+        user_msg = llm.call_args[1]["messages"][1]["content"]
+        assert "Do NOT build the scene around any of these" in user_msg
+        assert "a prior gear" in user_msg
+        assert brief.fallback
+        assert "a prior gear" not in brief.prompt
+
+    def test_the_retry_is_told_which_noun_was_rejected(self):
+        """Re-sending the identical prompt just re-drew the rejected scene."""
+        good = {"focal_concept": "a cracked brass gear",
+                "prompt": ("A cracked brass gear resting on a worn workbench, dramatic raking "
+                          "side light, macro still life, shot on a 100mm lens at f/2.8, subtle "
+                          "film grain, editorial photograph.")}
+        with patch("cqc_lem.utilities.ai.ai_helper._call_llm",
+                   side_effect=[_resp(self._STOCK), _resp(good)]) as llm:
+            brief = build_image_brief("content", surface="newsletter", ratio="16:9")
+        assert not brief.fallback
+        first = llm.call_args_list[0][1]["messages"][1]["content"]
+        second = llm.call_args_list[1][1]["messages"][1]["content"]
+        assert "REJECTED" not in first
+        assert "Your previous attempt was REJECTED" in second
+        assert "'laptop'" in second, "the retry must name the offending noun"

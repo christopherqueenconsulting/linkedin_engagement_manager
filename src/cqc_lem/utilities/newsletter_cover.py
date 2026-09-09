@@ -30,6 +30,12 @@ from cqc_lem.utilities.logger import log_debug, log_info, log_warning
 # `enforce_variety`'s window for posts; reads what is already on disk rather than a new DB column.
 _VARIETY_WINDOW = 5
 
+# `lem-simple` is a reasoning model: at 300 the WHOLE budget went to reasoning tokens and the
+# concept came back EMPTY with finish_reason='length' on every one of the five live editions —
+# the same trap `_BRIEF_MAX_TOKENS` already documents. A real extraction costs 540-1020 completion
+# tokens including reasoning; this leaves headroom for a longer edition.
+_CONCEPT_MAX_TOKENS = 2000
+
 COVER_SOURCE_UPLOAD = "upload"
 COVER_SOURCE_AI = "ai"
 COVER_STATUS_PENDING = "pending_review"
@@ -216,7 +222,7 @@ def _extract_cover_concept(title: Optional[str], subtitle: Optional[str],
                 f"<edition>{text}</edition>")}],
             response_format={"type": "json_object"},
             temperature=0.4,
-            max_tokens=300,
+            max_tokens=_CONCEPT_MAX_TOKENS,
         )
         parsed = json.loads(response.choices[0].message.content or "{}")
     except Exception as e:
@@ -234,11 +240,17 @@ def _extract_cover_concept(title: Optional[str], subtitle: Optional[str],
 
 
 def _cover_concept_text(title: Optional[str], subtitle: Optional[str], body: Optional[str],
-                        variety_avoid: Optional[list[str]] = None) -> str:
-    """The content string a cover's brief is authored from — the edition's PAYOFF, not its hook.
+                        variety_avoid: Optional[list[str]] = None) -> "tuple[str, list[str]]":
+    """`(content, avoid_terms)` for a cover's brief — the edition's PAYOFF, not its hook.
 
     Falls back to the old excerpt (title/subtitle + first 1500 chars of body) when concept
     extraction returns nothing, so the brief author always has SOMETHING concrete to draw from.
+
+    The avoid terms come back SEPARATELY rather than appended to the content, because they steer
+    the brief AUTHOR only. Folded into the content they also reached the deterministic fallback,
+    whose template is a RENDER prompt — and a renderer reads "laptop; screen; desk" as a request,
+    not as a prohibition. That is how a fallback cover for the leak edition came back as a laptop
+    on a desk (issue #1992's live sample run).
     """
     concept = _extract_cover_concept(title, subtitle, body)
     parts = [p for p in (title, subtitle) if p]
@@ -251,10 +263,7 @@ def _cover_concept_text(title: Optional[str], subtitle: Optional[str], body: Opt
     else:
         parts.append((body or "")[:1500])
     avoid_all = list(concept.get("avoid") or []) + list(variety_avoid or [])
-    if avoid_all:
-        parts.append("Already used by recent covers — pick something visually distinct: "
-                     + "; ".join(avoid_all))
-    return "\n\n".join(p for p in parts if p)
+    return "\n\n".join(p for p in parts if p), avoid_all
 
 
 def _recent_focal_concepts(user_id: int, limit: int = _VARIETY_WINDOW) -> list[str]:
@@ -406,8 +415,8 @@ def generate_cover_for_edition(user_id: int, edition_id: int, title: Optional[st
     from cqc_lem.utilities.media_provenance import write_brief_receipt
 
     avatar = _resolve_cover_avatar(user_id, use_avatar, title, subtitle, body)
-    content = _cover_concept_text(title, subtitle, body,
-                                  variety_avoid=_recent_focal_concepts(user_id))
+    content, avoid_terms = _cover_concept_text(
+        title, subtitle, body, variety_avoid=_recent_focal_concepts(user_id))
     shape = (f"format={edition_format or 'unspecified'}, hook_style={hook_style or 'unspecified'}"
             if edition_format or hook_style else None)
 
@@ -416,7 +425,8 @@ def generate_cover_for_edition(user_id: int, edition_id: int, title: Optional[st
         # stops the prompt LLM inventing a different person for the LoRA to contradict (#744).
         brief = build_image_brief(content, surface="newsletter",
                                   ratio=COVER_IMAGE_RATIO, profile=profile, avatar=avatar,
-                                  extra_direction=guidance, content_shape=shape)
+                                  extra_direction=guidance, content_shape=shape,
+                                  avoid_terms=avoid_terms)
     except Exception as e:
         log_warning("Newsletter cover prompt failed", exc=e, user_id=user_id,
                     action_type="newsletter_cover")

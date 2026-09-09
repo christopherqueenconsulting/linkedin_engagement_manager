@@ -207,6 +207,20 @@ class TestExtractCoverConcept:
         assert concept["tangible_metaphor_candidates"] == payload["tangible_metaphor_candidates"]
         assert concept["avoid"] == ["laptop", "screen"]
 
+    def test_the_token_budget_leaves_room_for_reasoning_tokens(self):
+        """`lem-simple` is a reasoning model, so the budget covers thinking tokens too.
+
+        At 300 the whole budget went to reasoning and every one of the five live editions came
+        back EMPTY with finish_reason='length'.
+        """
+        with patch("cqc_lem.utilities.ai.client.client") as mock_client:
+            mock_client.chat.completions.create.return_value = _concept_resp(
+                {"core_mechanism": "m", "tangible_metaphor_candidates": ["o"], "avoid": []})
+            nc._extract_cover_concept("T", "S", "B")
+        kwargs = mock_client.chat.completions.create.call_args[1]
+        assert kwargs["max_tokens"] >= 1200, (
+            "a real extraction costs 540-1020 completion tokens including reasoning")
+
     def test_the_full_body_reaches_the_prompt_not_a_1500_char_excerpt(self):
         long_body = "x" * 5000
         with patch("cqc_lem.utilities.ai.client.client") as mock_client:
@@ -243,27 +257,31 @@ class TestCoverConceptText:
         with patch.object(nc, "_extract_cover_concept", return_value={
                 "core_mechanism": "a leak drips from a pipe",
                 "tangible_metaphor_candidates": ["a copper pipe joint"], "avoid": []}):
-            content = nc._cover_concept_text("T", "S", "B")
+            content, avoid = nc._cover_concept_text("T", "S", "B")
+        assert avoid == []
         assert "Core mechanism to depict: a leak drips from a pipe" in content
         assert "Candidate physical metaphors: a copper pipe joint" in content
         assert "B" not in content, "the raw hook excerpt is dropped once a concept exists"
 
     def test_falls_back_to_the_excerpt_when_extraction_is_empty(self):
         with patch.object(nc, "_extract_cover_concept", return_value={}):
-            content = nc._cover_concept_text("T", "S", "the raw body text")
+            content, _avoid = nc._cover_concept_text("T", "S", "the raw body text")
         assert "the raw body text" in content
 
-    def test_variety_avoid_is_appended(self):
-        with patch.object(nc, "_extract_cover_concept", return_value={}):
-            content = nc._cover_concept_text("T", "S", "B",
-                                             variety_avoid=["prior concept one"])
-        assert "prior concept one" in content
-        assert "Already used by recent covers" in content
+    def test_variety_avoid_comes_back_separately_never_in_the_content(self):
+        """The content reaches a RENDERER on the fallback path, so an avoid noun in it is drawn."""
+        with patch.object(nc, "_extract_cover_concept",
+                          return_value={"core_mechanism": "m", "avoid": ["laptop"]}):
+            content, avoid = nc._cover_concept_text("T", "S", "B",
+                                                    variety_avoid=["prior concept one"])
+        assert avoid == ["laptop", "prior concept one"]
+        assert "prior concept one" not in content
+        assert "laptop" not in content
 
-    def test_no_avoid_at_all_adds_nothing(self):
+    def test_no_avoid_at_all_returns_an_empty_list(self):
         with patch.object(nc, "_extract_cover_concept", return_value={}):
-            content = nc._cover_concept_text("T", "S", "B")
-        assert "Already used by recent covers" not in content
+            _content, avoid = nc._cover_concept_text("T", "S", "B")
+        assert avoid == []
 
 
 _USABLE_AVATAR = {"status": "succeeded", "model_ref": "owner/lora:v1", "trigger_word": "TOK",
@@ -568,9 +586,9 @@ class TestCoverVariety:
                        return_value=_brief(focal="a brand new concept")) as brief, \
                  patch("cqc_lem.utilities.ai.image_gen.render_image_gated", return_value=None):
                 nc.generate_cover_for_edition(3, 9, "T", "S", "B")
-        content = brief.call_args[0][0]
+        avoid = brief.call_args[1]["avoid_terms"]
         for i in range(5):
-            assert f"prior-concept-{i}" in content
+            assert f"prior-concept-{i}" in avoid
 
     def test_no_prior_covers_adds_no_avoid_line(self, tmp_path):
         assets = tmp_path / "assets"
@@ -580,7 +598,7 @@ class TestCoverVariety:
                    return_value=_brief()) as brief, \
              patch("cqc_lem.utilities.ai.image_gen.render_image_gated", return_value=None):
             nc.generate_cover_for_edition(3, 9, "T", "S", "B")
-        assert "Already used by recent covers" not in brief.call_args[0][0]
+        assert brief.call_args[1]["avoid_terms"] == []
 
 
 class TestContentShape:

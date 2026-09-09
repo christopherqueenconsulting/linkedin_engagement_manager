@@ -149,7 +149,17 @@ _STOCK_OFFICE_NOUNS = ("laptop", "notebook", "coffee", "desk", "office", "typing
 # "microphone", "telephone" and "screening"/"green screen" rejects legitimate metaphors that
 # merely contain the noun as a substring rather than naming the cliché object itself.
 _STOCK_OFFICE_PATTERN = re.compile(
-    r"\b(?:" + "|".join(re.escape(noun) for noun in _STOCK_OFFICE_NOUNS) + r")\b")
+    r"\b(?:" + "|".join(re.escape(noun) for noun in _STOCK_OFFICE_NOUNS) + r")\b",
+    re.IGNORECASE)
+
+# The scene `_fallback_brief` renders for a newsletter cover with no avatar. Purely POSITIVE: the
+# generic template's negations ("People and screens stay out of the frame", "blank screens") are
+# read by the renderer as things to draw, which is what put a man at a laptop on four of the five
+# live sample covers for issue #1992.
+_NEWSLETTER_FALLBACK_SCENE = (
+    "A wide editorial still-life photograph of one tangible object alone on a worn workshop "
+    "surface — a brass valve, a mechanical gauge, a balance scale, a single gear or a hand tool — "
+    "filling the frame as the entire subject, an empty workshop wall behind it.")
 
 _MIN_PROMPT_CHARS = 60
 _MAX_PROMPT_CHARS = 2400
@@ -206,9 +216,29 @@ def _valid(parsed: dict[str, Any], *, surface: Optional[str] = None,
     return True
 
 
-def _fallback_brief(content: str, *, surface: str, ratio: str, context: str) -> ImageBrief:
-    """Deterministic last resort when the brief author is down — bland beats broken."""
+def _fallback_brief(content: str, *, surface: str, ratio: str, context: str,
+                    avatar: Optional[dict[str, Any]] = None) -> ImageBrief:
+    """Deterministic last resort when the brief author is down — bland beats broken.
+
+    The newsletter surface with no avatar gets its OWN scene, because this template is a RENDER
+    prompt and every noun in it is a request: the generic one pasted in the surface's instruction
+    preset ("People and screens stay out of the frame"), then asked for "blank screens" and "plain
+    unbranded clothing", and the renderer duly produced a man at a laptop — the exact scene issue
+    #1992 was filed about, on 4 of 5 live editions.
+    """
     summary = " ".join((content or "").split())[:300]
+    if surface == "newsletter" and not avatar:
+        # Strip the edition's own stock-office nouns out of the summary too: the hook supplies
+        # them, and the renderer draws whatever the summary names.
+        summary = " ".join(_STOCK_OFFICE_PATTERN.sub(" ", summary).split())
+        prompt = (f"{_NEWSLETTER_FALLBACK_SCENE} The object stands in for this idea: {summary}. "
+                  f"Macro still-life composed for a {ratio} aspect ratio, dramatic raking side "
+                  f"light, shallow depth of field, shot on a 100mm macro lens at f/2.8, tactile "
+                  f"aged metal and worn wood texture, subtle film grain, clean unmarked "
+                  f"surfaces.")
+        return ImageBrief(prompt=prompt, ratio=ratio, surface=surface, style_preset=surface,
+                          focal_concept=summary[:120] or "a single tangible object",
+                          fallback=True)
     direction = _STYLE_PRESETS.get(surface, _STYLE_PRESETS[_DEFAULT_PRESET])
     # Positive phrasing throughout — FLUX ignores negation, so "no logos" summons logos.
     prompt = (f"{context}{direction} A single professional photograph representing: "
@@ -225,12 +255,18 @@ def _fallback_brief(content: str, *, surface: str, ratio: str, context: str) -> 
 def build_image_brief(content: str, *, surface: str, ratio: str = "1:1",
                       profile=None, avatar: Optional[dict[str, Any]] = None,
                       extra_direction: Optional[str] = None,
-                      content_shape: Optional[str] = None) -> ImageBrief:
+                      content_shape: Optional[str] = None,
+                      avoid_terms: Optional[list[str]] = None) -> ImageBrief:
     """Author the brief for one render. Never raises — degrades to a deterministic brief.
 
     ``content_shape`` (issue #1992) is a short caller-supplied tag — a newsletter edition's
     format + hook style — folded into the context so the brief distinguishes a listicle cover
     from a personal-story one; unused by callers that have no equivalent shape.
+
+    ``avoid_terms`` are nouns the caller already knows are wrong for this image — the concepts of
+    the last few covers, the generic nouns the edition's own hook keeps repeating. They reach the
+    AUTHOR only and never the deterministic fallback, because a fallback prompt goes straight to a
+    renderer, which reads every noun in it as a request.
     """
     from cqc_lem.utilities.ai.ai_helper import _call_llm, _profile_visual_context
     from cqc_lem.utilities.avatar.attributes import subject_directive
@@ -245,16 +281,25 @@ def build_image_brief(content: str, *, surface: str, ratio: str = "1:1",
         f"Compose for a {ratio} aspect ratio.\n"
         + ("" if avatar else _NO_ANONYMOUS_PERSON)
         + (f"Content shape: {content_shape}\n" if content_shape else "")
+        + (f"Do NOT build the scene around any of these, and do not name them in the prompt: "
+           f"{'; '.join(avoid_terms)}\n" if avoid_terms else "")
         + (f"Additional direction: {extra_direction}\n" if extra_direction else "")
         + f"\nHere is the content the image must represent:\n<content>{content}</content>")
 
     reason = "unknown"
     for attempt in (1, 2):
         try:
+            # The retry carries WHY the last attempt was thrown out. Re-sending the identical
+            # prompt just re-drew the same rejected scene: on the five live editions of issue
+            # #1992 the second attempt named a stock-office noun as often as the first, and four
+            # of five covers shipped from the deterministic fallback because of it.
+            retry_note = ("" if attempt == 1 else
+                          f"\n\nYour previous attempt was REJECTED: {reason}. Write a different "
+                          f"scene built on a different object — do not repeat the rejected one.")
             response = _call_llm(
                 model="lem-medium",
                 messages=[{"role": "system", "content": _SYSTEM_PROMPT},
-                          {"role": "user", "content": user_prompt}],
+                          {"role": "user", "content": user_prompt + retry_note}],
                 temperature=0.6,
                 max_tokens=_BRIEF_MAX_TOKENS,
                 response_format={"type": "json_object"},
@@ -273,10 +318,14 @@ def build_image_brief(content: str, *, surface: str, ratio: str = "1:1",
                                   surface=surface, style_preset=preset,
                                   focal_concept=str(parsed["focal_concept"]).strip(),
                                   fallback=False)
-            reason = ("failed validation (length bounds, refusal phrasing, or a stock-office "
-                      "cliché the newsletter gate rejects)")
+            # Name the offending noun when that is what failed: it is what makes the retry note
+            # above actionable rather than a repeat of the same instruction.
+            hit = (_STOCK_OFFICE_PATTERN.search(str(parsed.get("prompt") or ""))
+                   if surface == "newsletter" and not avatar else None)
+            reason = (f"the prompt named the stock-office object {hit.group(0)!r}" if hit else
+                      "failed validation (length bounds or refusal phrasing)")
             log_debug("Image brief failed validation — retrying", surface=surface,
-                      attempt=attempt, ai_model="lem-medium")
+                      attempt=attempt, ai_model="lem-medium", reason=reason)
         except Exception as e:
             # One condition, ONE warning: the fallback below carries it — per-attempt noise
             # would double-file the same fault with the escalation cron.
@@ -287,4 +336,4 @@ def build_image_brief(content: str, *, surface: str, ratio: str = "1:1",
     # alone gave no way to tell an outage from an empty response from a validation reject.
     log_warning("Image brief fell back to the deterministic template", surface=surface,
                 action_type="image_brief", reason=reason)
-    return _fallback_brief(content, surface=surface, ratio=ratio, context=context)
+    return _fallback_brief(content, surface=surface, ratio=ratio, context=context, avatar=avatar)
