@@ -163,6 +163,21 @@ class TestPostCommentInline:
         lw.assert_not_called()
         composer.send_keys.assert_called_once()
 
+    def test_open_composer_click_miss_does_not_warn(self):
+        """Issue #1994: a `RecurringWarning: Click miss: Open comment composer` got auto-filed.
+
+        The card is centered well before this click, but the read-pace delay and the
+        react-before-comment step run in between, so the feed can reflow and leave a
+        found-but-unclickable button by the time we get here — the same documented best-effort
+        no-op as the sibling "composer never opened" miss right below it. The caller already
+        skips the post and a later run retries it, so a miss here must not warn.
+        """
+        from cqc_lem.app.engagement import feed as ra
+        with patch(f"{_FEED}.click_first", return_value=None) as cf:
+            ok = ra.post_comment_inline(MagicMock(), MagicMock(), MagicMock(), "Great post", user_id=1)
+        assert ok is False
+        assert cf.call_args.kwargs["warn_on_miss"] is False
+
 
 def _textbox_source(*elements):
     """find_elements stand-in that answers the composer locators and nothing else."""
@@ -805,3 +820,26 @@ class TestEngageCardReactionLogging:
         assert self._engage(True, warn, debug) is True
         warn.assert_not_called()
         debug.assert_not_called()
+
+
+class TestEngageCardGroupFeedComposerOpen:
+    """Issue #1994: the group-feed composer-reachability click (issue #1084) is best-effort.
+
+    A found-but-unclickable button here must skip the post without warning, the same as the
+    home-feed miss in `post_comment_inline`, not file a defect.
+    """
+
+    def test_click_miss_skips_without_warning_or_llm_spend(self):
+        from cqc_lem.app.engagement import feed as ra
+        with patch(f"{_FEED}.claim_post_for_comment", return_value=True), \
+             patch(f"{_FEED}.click_first", return_value=None) as cf, \
+             patch(f"{_FEED}.release_post_claim") as rpc, \
+             patch(f"{_FEED}.generate_ai_response") as gen, \
+             patch(f"{_FEED}.log_warning") as warn:
+            ok = ra._engage_card(_ctx(), MagicMock(), "feedurn://x", "a post body", "Jane",
+                                 is_group_feed=True)
+        assert ok is False
+        warn.assert_not_called()
+        gen.assert_not_called()  # the whole point of #1084: skip before the LLM call
+        rpc.assert_called_once()
+        assert cf.call_args.kwargs["warn_on_miss"] is False
