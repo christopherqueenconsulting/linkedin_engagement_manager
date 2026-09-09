@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.173.10](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.173.9...v0.173.10) (2026-09-09)
+
+
+### Bug Fixes
+
+* **linkedin:** downgrade non-Arkose challenge detection to debug (closes [#1923](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1923)) ([#1929](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1929)) ([9019509](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/9019509639af8d2e832f9fdc90f2627381152c0f))
+
 ## [0.173.9](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.173.8...v0.173.9) (2026-09-09)
 
 
