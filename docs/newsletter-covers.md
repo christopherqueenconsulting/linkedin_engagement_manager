@@ -142,6 +142,14 @@ content from:
 
 1. **`_extract_cover_concept`** — a cheap `lem-simple` call over the edition's **full** body (not
    the first 1500 chars), returning `{core_mechanism, tangible_metaphor_candidates[≤3], avoid[]}`.
+   **The title and subtitle are sent as their own sections and named as the governing promise**
+   (#2008). A newsletter series overlaps: these editions are all about AI cost and several bodies
+   discuss routing, which is the most mechanism-shaped idea in the text — so an unanchored "name
+   its core mechanism" returned edition 14's routing idea for "Spot the Leak in Your LinkedIn AI
+   Budget". The mechanism must be the one the TITLE promises; the body is supporting detail.
+   The candidate OBJECTS lead the brief content and `core_mechanism` follows as labelled context,
+   because the two can disagree — edition 15 came back as "intelligent model routing" while its
+   objects were correctly a dripping faucet and a leaky pipe.
    `core_mechanism` and the candidates are folded into the brief content as "Core mechanism to
    depict" / "Candidate physical metaphors"; `avoid` names the generic nouns the edition's own hook
    keeps repeating. Fails closed to the old title/subtitle + 1500-char excerpt on any error or an
@@ -178,6 +186,15 @@ object-first instruction with a metaphor vocabulary for abstract/financial/softw
 drip/leak/meter/scale, routing → switch/valve/fork, failure → cracked gear/fallen domino, audit →
 magnifier/caliper/tally). `_NO_ANONYMOUS_PERSON` no longer invites "a close-up of hands mid-action"
 — hands are the renderer's weakest anatomy regardless of what they're near.
+
+**An edition is never steered off its own subject (#2008).** `_drop_topic_words` filters the
+EXTRACTOR's avoid list as well as the variety terms, with singular/plural tolerance. It returns the
+generic nouns the hook repeats, and for "Audit AI LinkedIn engagement to cut costs" that was `cost`
+and `engagement` — so the gate rejected "Balance scale weighing cost against engagement", the one
+correct concept it had, and the retry drifted onto a ledger on a desk. For the same reason a variety
+term naming this edition's own mechanism or candidate objects is dropped: **relevance outranks
+variety**, because banning the right object does not produce a different picture of THIS article, it
+produces a picture of a DIFFERENT one.
 
 **The repeat-object gate (#2000).** `avoid_terms` is not only a prompt line — `_valid()` rejects a
 `newsletter` brief whose **`focal_concept`** names one of them, and the retry-with-reason above
