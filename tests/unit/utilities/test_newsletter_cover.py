@@ -702,5 +702,38 @@ class TestRecentFocalObjects:
                  patch("cqc_lem.utilities.ai.image_gen.render_image_gated", return_value=None):
                 nc.generate_cover_for_edition(3, 9, "T", "S", "B")
         avoid = brief.call_args[1]["avoid_terms"]
-        assert "valve" in avoid
+        # The PRIMARY object of that concept, never the whole sentence (#2000), and one per
+        # cover so the topic's own noun is not banned alongside it (#2005).
+        assert avoid == ["leak"]
         assert not any(" " in term for term in avoid), "sentences steer nothing"
+
+
+class TestTopicWordsAreNeverBanned:
+    """Issue #2005: an edition about a leak cannot be steered away from a leak."""
+
+    def test_a_term_the_title_uses_is_dropped(self):
+        assert nc._drop_topic_words(["valve", "leak"],
+                                    "Spot the Leak in Your LinkedIn AI Budget", None) == ["valve"]
+
+    def test_a_term_the_subtitle_uses_is_dropped(self):
+        assert nc._drop_topic_words(["gear"], "T", "A cracked gear in the chain") == []
+
+    def test_unrelated_terms_survive(self):
+        assert nc._drop_topic_words(["valve", "gear"], "Audit your AI spend", "") == \
+            ["valve", "gear"]
+
+    def test_no_title_or_subtitle_bans_nothing(self):
+        assert nc._drop_topic_words(["valve"], None, None) == ["valve"]
+
+
+class TestOnlyThePrimaryObjectSteers:
+    def test_the_second_object_in_a_concept_is_the_topics_own_noun(self, tmp_path):
+        assets = tmp_path / "assets"
+        with patch.object(nc, "assets_dir", str(assets)):
+            directory = nc._cover_dir(5)
+            os.makedirs(directory, exist_ok=True)
+            with open(os.path.join(directory, "a.brief.json"), "w", encoding="utf-8") as fh:
+                json.dump({"focal_concept": "Budget leak depicted as a dripping valve",
+                           "fallback": False}, fh)
+            objects = nc._recent_focal_objects(5)
+        assert objects == ["leak"], "one object per prior cover, the primary one"

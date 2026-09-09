@@ -186,6 +186,15 @@ background of an otherwise distinct scene is not a repeat and must not cost a re
 capped at `_MAX_AVOID_TERMS` (8) so a long history can never starve the author into the fallback on
 every run.
 
+**The variety gate can never force the fallback (#2005).** A brief rejected ONLY for reusing an
+object is held and returned if the retry cannot do better — a real brief beats the deterministic
+template every time, and this is a DEBUG line, not the fallback warning. Two more guards on the
+same failure: `_recent_focal_objects` contributes the PRIMARY object of each prior cover only (the
+second is usually the topic's own noun), and `_drop_topic_words` removes any term the edition's own
+title or subtitle uses. "Spot the Leak in Your LinkedIn AI Budget" cannot be steered away from a
+leak; asking for it rejected both attempts and shipped the template. All four live editions fell
+back at once that way.
+
 **The stock-office gate.** Even with a better preset, `build_image_brief` rejects and retries (then
 falls back to the deterministic template) a `newsletter`-surface brief whose prompt names one of
 `laptop, notebook, coffee, desk, office, typing, keyboard, screen, monitor, phone` — unless an

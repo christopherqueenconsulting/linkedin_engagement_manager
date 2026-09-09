@@ -333,6 +333,8 @@ def build_image_brief(content: str, *, surface: str, ratio: str = "1:1",
         + f"\nHere is the content the image must represent:\n<content>{content}</content>")
 
     reason = "unknown"
+    # The best brief seen that failed ONLY the variety gate — see the comment at its assignment.
+    repeat_brief: Optional[ImageBrief] = None
     for attempt in (1, 2):
         try:
             # The retry carries WHY the last attempt was thrown out. Re-sending the identical
@@ -359,6 +361,17 @@ def build_image_brief(content: str, *, surface: str, ratio: str = "1:1",
                           ai_model="lem-medium", reason=reason)
                 continue
             parsed = json.loads(raw)
+            # Graded WITHOUT the variety gate first: a brief that is wrong only because it
+            # repeats an object is still a real brief, and a real brief beats the deterministic
+            # template every time. Held as `repeat_brief` and returned below if the retry cannot
+            # do better, so the variety gate can never be what pushes a cover onto the fallback
+            # (issue #2005 — it did, on all four live editions at once).
+            if _valid(parsed, surface=surface, avatar=avatar):
+                if repeat_brief is None:
+                    repeat_brief = ImageBrief(
+                        prompt=str(parsed["prompt"]).strip(), ratio=ratio, surface=surface,
+                        style_preset=preset,
+                        focal_concept=str(parsed["focal_concept"]).strip(), fallback=False)
             if _valid(parsed, surface=surface, avatar=avatar,
                       avoid_terms=avoid_terms):
                 return ImageBrief(prompt=str(parsed["prompt"]).strip(), ratio=ratio,
@@ -388,6 +401,12 @@ def build_image_brief(content: str, *, surface: str, ratio: str = "1:1",
             reason = f"{type(e).__name__}: {e}"[:120]
             log_debug("Image brief attempt failed", error=str(e), ai_model="lem-medium",
                       attempt=attempt)
+    if repeat_brief is not None:
+        # Expected, and not a defect: the author had a usable scene and only reused an object.
+        # DEBUG, not a warning — a repeated warning re-emits at ERROR and files an exception.
+        log_debug("Image brief reused a recent object rather than falling back", surface=surface,
+                  action_type="image_brief", focal_concept=repeat_brief.focal_concept)
+        return repeat_brief
     # Carry WHY on the warning: this fell back on every generation for weeks and the message
     # alone gave no way to tell an outage from an empty response from a validation reject.
     log_warning("Image brief fell back to the deterministic template", surface=surface,
