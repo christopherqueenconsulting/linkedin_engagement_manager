@@ -46,6 +46,31 @@ class TestEngagementPurpose:
         assert ca.engagement_purpose("post") in d
 
 
+class TestLanguageDirective:
+    """Issue #2001: every comment/reply prompt must state the OUTPUT language explicitly.
+
+    Without it, the model can drift into mirroring the language of whatever post/comment it is
+    grounded in instead of the user's own.
+    """
+
+    def test_defaults_to_english_with_no_user(self):
+        d = ca.language_directive(None)
+        assert "English" in d
+        assert "no matter what language" in d
+
+    def test_uses_the_users_configured_content_language(self):
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr("cqc_lem.utilities.db.get_user_content_language", lambda user_id: "es")
+            d = ca.language_directive(7)
+        assert "Spanish" in d
+        assert "English" not in d
+
+    def test_unconditional_like_intention_directive(self):
+        # Unlike style_directive, this carries no early-return-on-empty-prefs shape — it has no
+        # `prefs` parameter at all, so every caller gets it regardless of engagement preferences.
+        assert ca.language_directive() != ""
+
+
 class TestStyleDirectivePerType:
     _PREFS = {"tone": "warm", "comment_length": "long", "use_emojis": False, "use_hashtags": False}
 

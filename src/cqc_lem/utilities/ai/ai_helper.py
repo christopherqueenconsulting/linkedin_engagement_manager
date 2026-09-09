@@ -44,6 +44,7 @@ from cqc_lem.utilities.ai.content_alignment import (
     humanize_text as _humanize_text,
     humanize_title as _humanize_title,
     intention_directive as _intention_directive,
+    language_directive as _language_directive,
     lead_magnet_preserve_note as _lead_magnet_preserve_note,
     mechanical_edit_text as _mechanical_edit_text,
     repair_directive as _repair_directive,
@@ -545,7 +546,10 @@ def generate_ai_response(post_content: Any, profile: LinkedInProfile,
 
     image_attached = "(image attached)" if post_img_url else ""
     _no_hashtags = "" if (prefs and prefs.get("use_hashtags")) else " without using any hashtags"
-    user_comment = f"\n\nRespond to this Comment Directly: <comment>{post_comment}</comment>\n\nYou are responding as the author of the LinkedIn Content. Keep your response short and sweet{_no_hashtags}.\n\n" if post_comment else ""
+    # NOT "as the author of the LinkedIn Content" — this function comments on SOMEONE ELSE'S post, so
+    # a reply here is a fellow commenter replying to a specific comment on that post, never its author
+    # (issue #2001 — a mislabeled role read as confusable with an initial, top-level comment).
+    user_comment = f"\n\nRespond to this Comment Directly: <comment>{post_comment}</comment>\n\nThis is a REPLY to that specific comment, not a fresh top-level comment — you are a fellow commenter on this post, not its author. Keep your response short and sweet{_no_hashtags}.\n\n" if post_comment else ""
 
     # Angle rotation applies to fresh feed comments only — replying to a specific comment already has
     # its own fixed contract (acknowledge + respond directly).
@@ -576,6 +580,7 @@ def generate_ai_response(post_content: Any, profile: LinkedInProfile,
                 {user_comment}
                 {_intention_directive(prefs)}
                 {_style_directive(prefs)}
+                {_language_directive(user_id)}
                 {_profile_skills_directive(user_id)}
                 {research_block}
 
@@ -1335,7 +1340,7 @@ def generate_seed_comment(post_content, profile: "LinkedInProfile", prefs: dict 
         "role": "user",
         "content": f"My LinkedIn profile:\n{_voice_reference(profile, profile_synthesis)}\n\n"
                    f"My post:\n<content>{post_content}</content>\n{_intention_directive(prefs)}{_style_directive(prefs)}"
-                   f"{_profile_skills_directive(user_id)}"
+                   f"{_language_directive(user_id)}{_profile_skills_directive(user_id)}"
     }
     temperature = round(random.uniform(0.5, 0.7), 2)
 
@@ -1396,7 +1401,7 @@ def generate_second_wave_comment(post_content, profile: "LinkedInProfile", prefs
         "content": f"My LinkedIn profile:\n{_voice_reference(profile, profile_synthesis)}\n\n"
                    f"My post (published earlier today):\n<content>{post_content}</content>\n"
                    f"{story_directive or ''}{_intention_directive(prefs)}{_style_directive(prefs)}"
-                   f"{_profile_skills_directive(user_id)}",
+                   f"{_language_directive(user_id)}{_profile_skills_directive(user_id)}",
     }
     temperature = round(random.uniform(0.5, 0.7), 2)
 
@@ -1438,7 +1443,7 @@ def generate_thread_reply(post_content: str, comment_text: str, profile: "Linked
     user_prompt = {"role": "user", "content":
         f"Author profile:\n{_voice_reference(profile, profile_synthesis)}\n\nMy post:\n{post_content}\n\n"
         f"Their comment:\n{comment_text}\n{_intention_directive(prefs)}{_style_directive(prefs)}"
-        f"{_profile_skills_directive(user_id)}"}
+        f"{_language_directive(user_id)}{_profile_skills_directive(user_id)}"}
     temperature = round(random.uniform(0.5, 0.7), 2)
 
     def _draft(fix: str = "") -> "str | None":
@@ -1481,7 +1486,7 @@ def generate_comment_reply_followup(their_reply: str, profile: "LinkedInProfile"
     user_prompt = {"role": "user", "content":
         f"My voice:\n{_voice_reference(profile, profile_synthesis)}\n\n{ctx}"
         f"Their reply to me:\n{their_reply}\n{_intention_directive(prefs)}{_style_directive(prefs)}"
-        f"{_profile_skills_directive(user_id)}"}
+        f"{_language_directive(user_id)}{_profile_skills_directive(user_id)}"}
     temperature = round(random.uniform(0.5, 0.7), 2)
 
     def _draft(fix: str = "") -> "str | None":
