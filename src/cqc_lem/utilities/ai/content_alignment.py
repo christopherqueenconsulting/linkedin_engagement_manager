@@ -640,6 +640,27 @@ def profile_niche_anchors(profile: "Optional[LinkedInProfile]" = None) -> list:
     return _typed_terms(getattr(profile, "skills", None), limit=5)
 
 
+def language_directive(user_id: Optional[int] = None) -> str:
+    """The OUTPUT language every comment/reply prompt gets, ALWAYS (issue #2001).
+
+    Exactly like `intention_directive`, this is unconditional and does not depend on `prefs`. A
+    feed comment or reply is grounded in someone else's post or comment, and left unstated the
+    model happily mirrors whatever language THAT text is written in instead of the user's own,
+    which is how a comment or reply ends up in a language the user never asked for.
+
+    Backed by `get_user_content_language` (issue #548's precedence: the user's explicit
+    `users.content_language` setting → their Login Location locale → 'en-US'), the same source
+    already used to keep video voiceover in the user's language — this wires it into TEXT generation
+    for the first time.
+    """
+    from cqc_lem.utilities.db import get_user_content_language
+    from cqc_lem.utilities.geocoding import language_name
+    language = language_name(get_user_content_language(user_id))
+    return ("\n\nLanguage (follow exactly): write your ENTIRE response in "
+            f"{language}, no matter what language the post or comment you are responding to is "
+            "written in. Never switch languages to match it.\n")
+
+
 def intention_directive(prefs: dict = None) -> str:
     """Engagement steering for comments/replies/seed comments. ALWAYS states LEM's baseline
     relationship-building intention (the effective default that works with everything left blank);
