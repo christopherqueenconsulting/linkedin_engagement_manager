@@ -257,11 +257,14 @@ class TestCoverConceptText:
         with patch.object(nc, "_extract_cover_concept", return_value={
                 "core_mechanism": "a leak drips from a pipe",
                 "tangible_metaphor_candidates": ["a copper pipe joint"], "avoid": []}):
-            content, avoid = nc._cover_concept_text("T", "S", "B")
+            content, avoid = nc._cover_concept_text("T", "S", "RAW-HOOK-EXCERPT")
         assert avoid == []
-        assert "Core mechanism to depict: a leak drips from a pipe" in content
-        assert "Candidate physical metaphors: a copper pipe joint" in content
-        assert "B" not in content, "the raw hook excerpt is dropped once a concept exists"
+        # Objects lead, mechanism follows as context — they must not pull toward two pictures.
+        assert content.index("a copper pipe joint") < content.index("a leak drips from a pipe")
+        assert "Build the cover on one of these objects: a copper pipe joint" in content
+        assert "the picture is the object above" in content
+        assert "RAW-HOOK-EXCERPT" not in content, \
+            "the raw hook excerpt is dropped once a concept exists"
 
     def test_falls_back_to_the_excerpt_when_extraction_is_empty(self):
         with patch.object(nc, "_extract_cover_concept", return_value={}):
@@ -737,3 +740,35 @@ class TestOnlyThePrimaryObjectSteers:
                            "fallback": False}, fh)
             objects = nc._recent_focal_objects(5)
         assert objects == ["leak"], "one object per prior cover, the primary one"
+
+
+class TestTheExtractorsAvoidListIsFilteredToo:
+    """The extractor returns the hook's generic nouns, which can be the title's own words.
+
+    "Audit AI LinkedIn engagement to cut costs" came back with `avoid=['cost', 'engagement']`,
+    so the gate rejected "Balance scale weighing cost against engagement" — the one correct
+    concept it had — and the retry drifted onto a ledger on a desk.
+    """
+
+    def test_a_concept_avoid_term_from_the_title_is_dropped(self):
+        with patch.object(nc, "_extract_cover_concept", return_value={
+                "core_mechanism": "a balance scale", "tangible_metaphor_candidates": ["a scale"],
+                "avoid": ["cost", "engagement", "laptop"]}):
+            _content, avoid = nc._cover_concept_text(
+                "Audit AI LinkedIn engagement to cut costs", None, "body")
+        assert "cost" not in avoid and "engagement" not in avoid
+        assert "laptop" in avoid, "the genuinely generic nouns still steer"
+
+
+class TestSingularPluralTopicWords:
+    def test_a_plural_in_the_title_matches_the_singular_term(self):
+        assert nc._drop_topic_words(["cost"], "Audit engagement to cut costs", None) == []
+
+    def test_a_singular_in_the_title_matches_the_plural_term(self):
+        assert nc._drop_topic_words(["leaks"], "Spot the Leak in Your Budget", None) == []
+
+    def test_a_double_s_word_is_not_stripped(self):
+        assert nc._singular("process") == "process"
+
+    def test_short_words_are_left_alone(self):
+        assert nc._singular("gas") == "gas"

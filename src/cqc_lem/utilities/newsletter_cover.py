@@ -225,8 +225,7 @@ def _extract_cover_concept(title: Optional[str], subtitle: Optional[str],
     failure or an unusable response — the caller still has title/subtitle/body to fall back to, so
     a dead LLM degrades to weaker steering, never to no image at all.
     """
-    text = "\n\n".join(p for p in (title, subtitle, body) if p)[:8000]
-    if not text.strip():
+    if not any(p and p.strip() for p in (title, subtitle, body)):
         return {}
     from cqc_lem.utilities.ai.client import client
 
@@ -234,14 +233,21 @@ def _extract_cover_concept(title: Optional[str], subtitle: Optional[str],
         response = client.chat.completions.create(
             model="lem-simple",
             messages=[{"role": "user", "content": (
-                "Read this newsletter edition and name its core MECHANISM — not its topic, the "
-                "topic's PHYSICAL METAPHOR. Never a person, laptop, screen, or office scene. "
-                "Respond with ONLY a JSON object: {\"core_mechanism\": \"<the idea reduced to a "
-                "physical mechanism, one sentence — a switch, a leak, a scale, a chain, a "
-                "valve...>\", \"tangible_metaphor_candidates\": [\"<object>\", \"<object>\", "
-                "\"<object>\"], \"avoid\": [\"<generic noun this edition's hook keeps repeating, "
-                "e.g. laptop, screen, desk>\"]}\n\n"
-                f"<edition>{text}</edition>")}],
+                "The TITLE and SUBTITLE below are this edition's editorial promise — the one idea "
+                "a reader opened it for. Newsletters in a series overlap, so the body will also "
+                "discuss neighbouring ideas that OTHER editions are about; those are not this "
+                "cover's subject no matter how vividly the body describes them. Name the core "
+                "MECHANISM OF WHAT THE TITLE PROMISES — not the topic, the topic's PHYSICAL "
+                "METAPHOR — and pick one a reader of the title ALONE would recognise as this "
+                "edition. Never a person, laptop, screen, or office scene. "
+                "Respond with ONLY a JSON object: {\"core_mechanism\": \"<the title's promise "
+                "reduced to a physical mechanism, one sentence — a switch, a leak, a scale, a "
+                "chain, a valve...>\", \"tangible_metaphor_candidates\": [\"<object>\", "
+                "\"<object>\", \"<object>\"], \"avoid\": [\"<generic noun this edition's hook "
+                "keeps repeating, e.g. laptop, screen, desk>\"]}\n\n"
+                f"<title>{title or ''}</title>\n"
+                f"<subtitle>{subtitle or ''}</subtitle>\n"
+                f"<body>{(body or '')[:8000]}</body>")}],
             response_format={"type": "json_object"},
             temperature=0.4,
             max_tokens=_CONCEPT_MAX_TOKENS,
@@ -261,6 +267,13 @@ def _extract_cover_concept(title: Optional[str], subtitle: Optional[str],
            "avoid": avoid}
 
 
+def _concept_words(concept: dict[str, Any]) -> set[str]:
+    """Every word this edition's OWN concept uses — its mechanism and its candidate objects."""
+    text = " ".join([str(concept.get("core_mechanism") or "")]
+                    + [str(c) for c in (concept.get("tangible_metaphor_candidates") or [])])
+    return {t for t in re.split(r"[^a-z0-9-]+", text.lower()) if t}
+
+
 def _cover_concept_text(title: Optional[str], subtitle: Optional[str], body: Optional[str],
                         variety_avoid: Optional[list[str]] = None) -> "tuple[str, list[str]]":
     """`(content, avoid_terms)` for a cover's brief — the edition's PAYOFF, not its hook.
@@ -277,14 +290,31 @@ def _cover_concept_text(title: Optional[str], subtitle: Optional[str], body: Opt
     concept = _extract_cover_concept(title, subtitle, body)
     parts = [p for p in (title, subtitle) if p]
     if concept.get("core_mechanism") or concept.get("tangible_metaphor_candidates"):
-        if concept.get("core_mechanism"):
-            parts.append(f"Core mechanism to depict: {concept['core_mechanism']}")
+        # The OBJECTS lead. The extractor's `core_mechanism` restates what the edition explains,
+        # and on an edition whose body dwells on a neighbouring article's idea it can name that
+        # idea instead ("Spot the Leak" came back as "intelligent model routing" while its objects
+        # were correctly a dripping faucet and a leaky pipe). Objects first, mechanism as context,
+        # so the two cannot pull the author toward two different pictures.
         if concept.get("tangible_metaphor_candidates"):
-            parts.append("Candidate physical metaphors: "
+            parts.append("Build the cover on one of these objects: "
                          + "; ".join(concept["tangible_metaphor_candidates"]))
+        if concept.get("core_mechanism"):
+            parts.append("What the edition explains, for context — the picture is the object "
+                         f"above, not this sentence: {concept['core_mechanism']}")
     else:
         parts.append((body or "")[:1500])
-    avoid_all = list(concept.get("avoid") or []) + list(variety_avoid or [])
+    # RELEVANCE OUTRANKS VARIETY. A variety term that names this edition's OWN mechanism or one of
+    # its own candidate objects is dropped: banning it does not produce a different picture of THIS
+    # article, it produces a picture of a DIFFERENT article. That is how "Spot the Leak in Your
+    # LinkedIn AI Budget" ended up with a railway track switch — the neighbouring edition's idea.
+    own = _concept_words(concept)
+    kept_variety = [t for t in (variety_avoid or []) if t.lower() not in own]
+    # `_drop_topic_words` covers the EXTRACTOR's avoid list too, not just the variety terms. It
+    # returns the generic nouns the hook repeats, and for an edition titled "Audit AI LinkedIn
+    # engagement to cut costs" that was `cost` and `engagement` — so the gate rejected the one
+    # correct concept it had, "Balance scale weighing cost against engagement", and the retry
+    # drifted to a ledger on a desk. An edition can never be steered off its own subject.
+    avoid_all = _drop_topic_words(list(concept.get("avoid") or []) + kept_variety, title, subtitle)
     return "\n\n".join(p for p in parts if p), avoid_all
 
 
@@ -347,6 +377,11 @@ def _recent_focal_concepts(user_id: int, limit: int = _VARIETY_WINDOW,
     return concepts
 
 
+def _singular(word: str) -> str:
+    """`costs` and `cost` are the same word here — a title saying one must match the other."""
+    return word[:-1] if len(word) > 3 and word.endswith("s") and not word.endswith("ss") else word
+
+
 def _drop_topic_words(terms: list[str], title: Optional[str],
                       subtitle: Optional[str]) -> list[str]:
     """Drop avoid terms the edition's OWN title or subtitle uses (issue #2005).
@@ -355,8 +390,8 @@ def _drop_topic_words(terms: list[str], title: Optional[str],
     names it, the gate rejects it twice, and the cover ships from the deterministic template. A
     prior cover's object is only worth avoiding when this edition is not itself about it.
     """
-    own = set(re.split(r"[^a-z0-9-]+", f"{title or ''} {subtitle or ''}".lower()))
-    return [t for t in terms if t.lower() not in own]
+    own = {_singular(t) for t in re.split(r"[^a-z0-9-]+", f"{title or ''} {subtitle or ''}".lower())}
+    return [t for t in terms if _singular(t.lower()) not in own]
 
 
 def _recent_focal_objects(user_id: int, limit: int = _VARIETY_WINDOW) -> list[str]:
