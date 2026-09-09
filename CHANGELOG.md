@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.173.9](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.173.8...v0.173.9) (2026-09-09)
+
+
+### Bug Fixes
+
+* **errors:** exclude comment quality-contract skip from recurrence escalation (closes [#1995](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1995)) ([#1996](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1996)) ([11b0b67](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/11b0b67af327f18c3070e321cc65d1c14df2532e))
+* **errors:** stop the composer-open click miss escalating as a defect (closes [#1994](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1994)) ([#1997](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1997)) ([520128f](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/520128feecd22ece5f3383b7d0b6af22e4968624))
+
 ## [0.173.8](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.173.7...v0.173.8) (2026-09-07)
 
 
