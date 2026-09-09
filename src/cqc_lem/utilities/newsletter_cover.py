@@ -18,6 +18,7 @@ Paths are stored RELATIVE to ``assets_dir`` so they map straight onto ``/api/ass
 
 import json
 import os
+import re
 import secrets
 import shutil
 from dataclasses import dataclass
@@ -35,6 +36,27 @@ _VARIETY_WINDOW = 5
 # the same trap `_BRIEF_MAX_TOKENS` already documents. A real extraction costs 540-1020 completion
 # tokens including reasoning; this leaves headroom for a longer edition.
 _CONCEPT_MAX_TOKENS = 2000
+
+# How many objects one prior cover contributes to the next brief's avoid list, and the abstract
+# vocabulary a focal concept wraps its object in ("a valve SYMBOLIZING EFFICIENCY in AI AUDITING").
+# Only what survives is a thing that can be photographed (issue #2000).
+_MAX_OBJECTS_PER_CONCEPT = 2
+_CONCEPT_FILLER = frozenset({
+    "with", "that", "this", "from", "into", "onto", "over", "under", "beside", "above",
+    "concept", "metaphor", "symbol", "image", "photo", "photograph", "scene", "visual", "cover",
+    "idea", "theme", "style", "shot", "frame", "view", "editorial", "professional", "single",
+    "budget", "cost", "costs", "spend", "money", "price", "value", "waste", "efficiency",
+    "quality", "content", "strategy", "system", "process", "workflow", "pipeline", "audit",
+    "linkedin", "engagement", "token", "tokens", "model", "models", "agent", "agents",
+    "silent", "hidden", "overlooked", "quiet", "slow", "small", "large", "using", "represents",
+    "your", "their", "them", "they", "have", "been", "will", "just", "stop", "more", "most",
+    "when", "what", "which", "while", "about", "after", "before", "other", "some", "such",
+    "than", "then", "were", "here", "there", "only", "also", "very", "much", "many",
+    # Modifiers, not objects: a focal concept describes its subject before it names it.
+    "empty", "full", "worn", "weathered", "cracked", "broken", "rusty", "rusted", "clean",
+    "dirty", "still", "heavy", "light", "dark", "bright", "brass", "copper", "wooden", "metal",
+    "antique", "vintage", "modern", "close", "macro", "wide", "against", "beneath",
+})
 
 COVER_SOURCE_UPLOAD = "upload"
 COVER_SOURCE_AI = "ai"
@@ -266,13 +288,43 @@ def _cover_concept_text(title: Optional[str], subtitle: Optional[str], body: Opt
     return "\n\n".join(p for p in parts if p), avoid_all
 
 
-def _recent_focal_concepts(user_id: int, limit: int = _VARIETY_WINDOW) -> list[str]:
+def _focal_objects(concept: Optional[str]) -> list[str]:
+    """The concrete OBJECT(s) a prior cover's `focal_concept` was built on (issue #2000).
+
+    A focal concept is a sentence — "Budget leak depicted as a dripping valve spilling money" —
+    and passing the sentence to the next brief steers nothing, because the next sentence never
+    matches it. Four consecutive live covers all chose a valve while every one of those sentences
+    was "already used" context.
+
+    Two passes, precision first: intersect with `image_brief.METAPHOR_OBJECTS`, the vocabulary the
+    preset actually offers the author, and only when nothing matches fall back to the longest
+    non-filler tokens. Returns `[]` for empty or unusable input — steering that is merely weaker
+    is always better than a term so generic it starves the author into the fallback.
+    """
+    from cqc_lem.utilities.ai.image_brief import METAPHOR_OBJECTS
+
+    tokens = [t for t in re.split(r"[^a-z0-9-]+", (concept or "").lower()) if t]
+    named = [t for t in tokens if t in METAPHOR_OBJECTS]
+    if named:
+        # dict.fromkeys, not set(): the object named FIRST is the one the cover was built on.
+        return list(dict.fromkeys(named))[:_MAX_OBJECTS_PER_CONCEPT]
+    generic = [t for t in tokens
+              if len(t) >= 4 and t not in _CONCEPT_FILLER and not t.endswith(("ing", "ed"))]
+    return list(dict.fromkeys(generic))[:_MAX_OBJECTS_PER_CONCEPT]
+
+
+def _recent_focal_concepts(user_id: int, limit: int = _VARIETY_WINDOW,
+                           include_fallback: bool = True) -> list[str]:
     """The last `limit` cover receipts' `focal_concept`, most-recent first (issue #1992).
 
     Mirrors `enforce_variety`'s cross-item memory for posts, but reads it off the assets volume
     rather than a new DB column — the brief receipt (`media_provenance.write_brief_receipt`) is
     already the durable record. Never raises: a directory that doesn't exist yet, or a receipt
     that won't parse, just contributes nothing to the variety context.
+
+    ``include_fallback=False`` skips receipts the deterministic template wrote: their focal concept
+    is the edition's own title text, not an object, so it contributes only noise to an avoid list
+    (issue #2000).
     """
     directory = _cover_dir(user_id)
     try:
@@ -287,10 +339,24 @@ def _recent_focal_concepts(user_id: int, limit: int = _VARIETY_WINDOW) -> list[s
                 payload = json.load(fh)
         except (OSError, ValueError):
             continue
+        if not include_fallback and payload.get("fallback"):
+            continue
         concept = str(payload.get("focal_concept") or "").strip()
         if concept:
             concepts.append(concept)
     return concepts
+
+
+def _recent_focal_objects(user_id: int, limit: int = _VARIETY_WINDOW) -> list[str]:
+    """The OBJECTS the last `limit` covers were built on, most-recent first (issue #2000).
+
+    What actually steers the next brief: `_recent_focal_concepts` returns whole sentences, and a
+    sentence never matches the next one, so nothing was ever suppressed.
+    """
+    objects: list[str] = []
+    for concept in _recent_focal_concepts(user_id, limit=limit, include_fallback=False):
+        objects.extend(_focal_objects(concept))
+    return list(dict.fromkeys(objects))
 
 
 def build_cover_prompt(title: Optional[str], subtitle: Optional[str], body: Optional[str],
@@ -416,7 +482,7 @@ def generate_cover_for_edition(user_id: int, edition_id: int, title: Optional[st
 
     avatar = _resolve_cover_avatar(user_id, use_avatar, title, subtitle, body)
     content, avoid_terms = _cover_concept_text(
-        title, subtitle, body, variety_avoid=_recent_focal_concepts(user_id))
+        title, subtitle, body, variety_avoid=_recent_focal_objects(user_id))
     shape = (f"format={edition_format or 'unspecified'}, hook_style={hook_style or 'unspecified'}"
             if edition_format or hook_style else None)
 

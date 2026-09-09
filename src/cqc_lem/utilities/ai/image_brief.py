@@ -25,9 +25,13 @@ _STYLE_PRESETS: dict[str, str] = {
         "product-photography framing, readable at thumbnail size, with environmental depth. "
         "People and screens stay out of the frame unless the author's own likeness belongs in "
         "this image. For an abstract, financial or software idea, reach for its physical "
-        "metaphor: cost or waste as a drip, a leak, a meter or a scale; routing as a switch, a "
-        "valve or a fork in a track; a silent failure as a cracked gear or a fallen domino; an "
-        "audit as a magnifier, a caliper or a tally counter."),
+        "metaphor, and pick from a DIFFERENT family each time — plumbing (a drip, a leak, a "
+        "valve, a funnel), measuring (a balance scale, a pressure gauge, a caliper, an "
+        "hourglass, a tally counter), mechanical (a cracked gear, a blown fuse, a snapped chain "
+        "link, a fallen domino), routing (a track switch, a fork in a road, a signal lever, a "
+        "junction box), or tools and containers (a sledgehammer beside a thumbtack, a sieve, a "
+        "ledger, a stack of weights). Cost, waste and routing ideas all reach for plumbing by "
+        "default, so when the already-used list names one family, pick from another."),
     "post_image": (
         "A scroll-stopping single-subject photograph for a LinkedIn feed post. One person or "
         "tangible object central to the post's message, one strong color accent."),
@@ -161,6 +165,24 @@ _NEWSLETTER_FALLBACK_SCENE = (
     "surface — a brass valve, a mechanical gauge, a balance scale, a single gear or a hand tool — "
     "filling the frame as the entire subject, an empty workshop wall behind it.")
 
+# The metaphor objects the newsletter preset offers, as a lookup. `newsletter_cover` reads it to
+# pull the OBJECT out of a prior cover's `focal_concept` — "Budget leak depicted as a dripping
+# valve spilling money" has to become `leak, valve` before it can steer the next brief, because a
+# whole sentence never matches the next one and so never suppressed anything (issue #2000).
+# Kept here, beside the preset that names them: this is the vocabulary the author draws from.
+METAPHOR_OBJECTS: frozenset[str] = frozenset({
+    "drip", "leak", "valve", "funnel", "pipe", "faucet", "tap", "stopcock", "manifold",
+    "scale", "gauge", "caliper", "hourglass", "tally", "counter", "meter", "dial", "ruler",
+    "gear", "fuse", "chain", "link", "domino", "spring", "bolt", "cog", "bearing",
+    "switch", "fork", "lever", "junction", "track", "signal", "points",
+    "sledgehammer", "thumbtack", "sieve", "ledger", "weight", "wrench", "magnifier",
+    "hammer", "anchor", "key", "lock", "compass", "thermostat", "bucket", "tank", "jar",
+})
+
+# A capped avoid list, so a long history can never starve the author into the fallback on every
+# run: past this many terms the oldest steering is dropped rather than the newest.
+_MAX_AVOID_TERMS = 8
+
 _MIN_PROMPT_CHARS = 60
 _MAX_PROMPT_CHARS = 2400
 
@@ -197,8 +219,17 @@ class ImageBrief:
     fallback: bool = False
 
 
+def _avoid_pattern(avoid_terms: Optional[list[str]]) -> Optional["re.Pattern[str]"]:
+    """Whole-word matcher for the caller's avoid terms, or None when there is nothing to match."""
+    terms = [t.strip() for t in (avoid_terms or []) if t and t.strip()][:_MAX_AVOID_TERMS]
+    if not terms:
+        return None
+    return re.compile(r"\b(?:" + "|".join(re.escape(t) for t in terms) + r")\b", re.IGNORECASE)
+
+
 def _valid(parsed: dict[str, Any], *, surface: Optional[str] = None,
-          avatar: Optional[dict[str, Any]] = None) -> bool:
+          avatar: Optional[dict[str, Any]] = None,
+          avoid_terms: Optional[list[str]] = None) -> bool:
     prompt = str(parsed.get("prompt") or "").strip()
     focal = str(parsed.get("focal_concept") or "").strip()
     if not (_MIN_PROMPT_CHARS <= len(prompt) <= _MAX_PROMPT_CHARS) or not (3 <= len(focal) <= 300):
@@ -212,6 +243,17 @@ def _valid(parsed: dict[str, Any], *, surface: Optional[str] = None,
         hit = _STOCK_OFFICE_PATTERN.search(lowered)
         if hit:
             log_debug("Newsletter brief rejected — stock-office noun", noun=hit.group(0))
+            return False
+        # The avoid terms carry the objects the last few covers already used. Graded against the
+        # FOCAL CONCEPT only, never the whole prompt: the focal concept is where the chosen
+        # subject is named, so a valve lying in the background of an otherwise distinct scene is
+        # not a repeat and must not cost a retry (issue #2000). As a line in the user prompt alone
+        # this had no teeth — four consecutive live covers all chose a valve.
+        pattern = _avoid_pattern(avoid_terms)
+        repeat = pattern.search(focal) if pattern else None
+        if repeat:
+            log_debug("Newsletter brief rejected — object already used by a recent cover",
+                      noun=repeat.group(0))
             return False
     return True
 
@@ -263,10 +305,13 @@ def build_image_brief(content: str, *, surface: str, ratio: str = "1:1",
     format + hook style — folded into the context so the brief distinguishes a listicle cover
     from a personal-story one; unused by callers that have no equivalent shape.
 
-    ``avoid_terms`` are nouns the caller already knows are wrong for this image — the concepts of
-    the last few covers, the generic nouns the edition's own hook keeps repeating. They reach the
+    ``avoid_terms`` are nouns the caller already knows are wrong for this image — the OBJECTS the
+    last few covers used, the generic nouns the edition's own hook keeps repeating. They reach the
     AUTHOR only and never the deterministic fallback, because a fallback prompt goes straight to a
-    renderer, which reads every noun in it as a request.
+    renderer, which reads every noun in it as a request. They are also a GATE on the returned focal
+    concept (issue #2000): as a prompt line alone they had no teeth, and four consecutive live
+    covers all chose a valve. Capped at ``_MAX_AVOID_TERMS`` so a long history can never starve the
+    author into the fallback on every run.
     """
     from cqc_lem.utilities.ai.ai_helper import _call_llm, _profile_visual_context
     from cqc_lem.utilities.avatar.attributes import subject_directive
@@ -281,8 +326,9 @@ def build_image_brief(content: str, *, surface: str, ratio: str = "1:1",
         f"Compose for a {ratio} aspect ratio.\n"
         + ("" if avatar else _NO_ANONYMOUS_PERSON)
         + (f"Content shape: {content_shape}\n" if content_shape else "")
-        + (f"Do NOT build the scene around any of these, and do not name them in the prompt: "
-           f"{'; '.join(avoid_terms)}\n" if avoid_terms else "")
+        + (f"Recent covers already used these objects, so this one must NOT be built on any of "
+           f"them — pick an object from a different family: "
+           f"{'; '.join(avoid_terms[:_MAX_AVOID_TERMS])}\n" if avoid_terms else "")
         + (f"Additional direction: {extra_direction}\n" if extra_direction else "")
         + f"\nHere is the content the image must represent:\n<content>{content}</content>")
 
@@ -313,17 +359,27 @@ def build_image_brief(content: str, *, surface: str, ratio: str = "1:1",
                           ai_model="lem-medium", reason=reason)
                 continue
             parsed = json.loads(raw)
-            if _valid(parsed, surface=surface, avatar=avatar):
+            if _valid(parsed, surface=surface, avatar=avatar,
+                      avoid_terms=avoid_terms):
                 return ImageBrief(prompt=str(parsed["prompt"]).strip(), ratio=ratio,
                                   surface=surface, style_preset=preset,
                                   focal_concept=str(parsed["focal_concept"]).strip(),
                                   fallback=False)
             # Name the offending noun when that is what failed: it is what makes the retry note
             # above actionable rather than a repeat of the same instruction.
+            newsletter_gate = surface == "newsletter" and not avatar
             hit = (_STOCK_OFFICE_PATTERN.search(str(parsed.get("prompt") or ""))
-                   if surface == "newsletter" and not avatar else None)
-            reason = (f"the prompt named the stock-office object {hit.group(0)!r}" if hit else
-                      "failed validation (length bounds or refusal phrasing)")
+                   if newsletter_gate else None)
+            avoid_pattern = _avoid_pattern(avoid_terms) if newsletter_gate else None
+            repeat = (avoid_pattern.search(str(parsed.get("focal_concept") or ""))
+                      if avoid_pattern else None)
+            if hit:
+                reason = f"the prompt named the stock-office object {hit.group(0)!r}"
+            elif repeat:
+                reason = (f"the focal concept was built on {repeat.group(0)!r}, which a recent "
+                          f"cover already used — pick an object from a different family")
+            else:
+                reason = "failed validation (length bounds or refusal phrasing)"
             log_debug("Image brief failed validation — retrying", surface=surface,
                       attempt=attempt, ai_model="lem-medium", reason=reason)
         except Exception as e:

@@ -623,3 +623,84 @@ class TestContentShape:
              patch("cqc_lem.utilities.ai.image_gen.render_image_gated", return_value=None):
             nc.generate_cover_for_edition(3, 9, "T", "S", "B")
         assert brief.call_args[1]["content_shape"] is None
+
+
+class TestFocalObjects:
+    """Issue #2000: a focal concept is a SENTENCE, and a sentence never matches the next one.
+
+    Four consecutive live covers all chose a valve while every one of those sentences sat in the
+    "already used" context doing nothing.
+    """
+
+    def test_the_preset_vocabulary_wins_over_the_generic_pass(self):
+        assert nc._focal_objects(
+            "Budget leak depicted as a dripping valve spilling money") == ["leak", "valve"]
+
+    def test_abstract_wrapping_is_stripped(self):
+        assert nc._focal_objects(
+            "A valve symbolizing efficiency in AI auditing for e-commerce") == ["valve"]
+
+    def test_the_first_named_object_leads(self):
+        """dict.fromkeys, not set(): the object named FIRST is the one the cover was built on."""
+        assert nc._focal_objects("A cracked gear beside a small valve")[0] == "gear"
+
+    def test_a_concept_naming_no_known_object_falls_back_to_tokens(self):
+        assert nc._focal_objects("A weathered anvil in an empty forge") == ["anvil", "forge"]
+
+    def test_empty_or_unusable_input_steers_nothing(self):
+        assert nc._focal_objects("") == []
+        assert nc._focal_objects(None) == []
+        assert nc._focal_objects("the a of in") == []
+
+    def test_never_more_than_the_cap_from_one_concept(self):
+        objects = nc._focal_objects("a valve a gear a scale a domino a fuse")
+        assert len(objects) <= nc._MAX_OBJECTS_PER_CONCEPT
+
+
+class TestRecentFocalObjects:
+    @staticmethod
+    def _receipt(directory, name, concept, mtime, fallback=False):
+        os.makedirs(directory, exist_ok=True)
+        path = os.path.join(directory, name)
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump({"focal_concept": concept, "fallback": fallback}, fh)
+        os.utime(path, (mtime, mtime))
+
+    def test_objects_come_back_deduped_most_recent_first(self, tmp_path):
+        assets = tmp_path / "assets"
+        with patch.object(nc, "assets_dir", str(assets)):
+            directory = nc._cover_dir(7)
+            self._receipt(directory, "a.brief.json", "A cracked gear in a still machine", 1000)
+            self._receipt(directory, "b.brief.json", "A dripping valve over a puddle", 2000)
+            self._receipt(directory, "c.brief.json", "A leaking valve on a bench", 3000)
+            objects = nc._recent_focal_objects(7)
+        assert objects[0] == "valve", "most recent first"
+        assert objects.count("valve") == 1, "deduped"
+        assert "gear" in objects
+
+    def test_a_fallback_receipt_contributes_nothing(self, tmp_path):
+        """Its focal concept is the edition's own title text, not an object."""
+        assets = tmp_path / "assets"
+        with patch.object(nc, "assets_dir", str(assets)):
+            directory = nc._cover_dir(7)
+            self._receipt(directory, "a.brief.json",
+                          "The Overlooked Costs of Your AI LinkedIn Strategy", 1000,
+                          fallback=True)
+            objects = nc._recent_focal_objects(7)
+        assert objects == []
+
+    def test_the_variety_avoid_list_carries_objects_not_sentences(self, tmp_path):
+        assets = tmp_path / "assets"
+        with patch.object(nc, "assets_dir", str(assets)):
+            directory = nc._cover_dir(3)
+            self._receipt(directory, "a.brief.json",
+                          "Budget leak depicted as a dripping valve spilling money", 1000)
+            with patch.object(nc, "_resolve_cover_avatar", return_value=None), \
+                 patch.object(nc, "_extract_cover_concept", return_value={}), \
+                 patch("cqc_lem.utilities.ai.image_brief.build_image_brief",
+                       return_value=_brief()) as brief, \
+                 patch("cqc_lem.utilities.ai.image_gen.render_image_gated", return_value=None):
+                nc.generate_cover_for_edition(3, 9, "T", "S", "B")
+        avoid = brief.call_args[1]["avoid_terms"]
+        assert "valve" in avoid
+        assert not any(" " in term for term in avoid), "sentences steer nothing"
