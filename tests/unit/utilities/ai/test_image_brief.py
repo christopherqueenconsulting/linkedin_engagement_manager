@@ -500,3 +500,46 @@ class TestNewsletterPresetFamilies:
         for family_word in ("scale", "gear", "domino", "caliper", "sieve"):
             assert family_word in preset
         assert "different family" in preset
+
+
+@pytest.mark.unit
+class TestVarietyGateCannotStarve:
+    """Issue #2005: the variety gate pushed all four live editions onto the fallback at once.
+
+    A brief that is wrong only because it reuses an object is still a real brief, and a real
+    brief beats the deterministic template every time.
+    """
+
+    _VALVE = {"focal_concept": "Budget leak shown as a dripping valve",
+              "prompt": ("A brass valve dripping onto a worn workbench, dramatic raking side "
+                        "light, macro still life, shot on a 100mm lens at f/2.8, subtle film "
+                        "grain, editorial photograph.")}
+
+    def test_a_repeat_on_both_attempts_ships_the_repeat_not_the_fallback(self):
+        with patch("cqc_lem.utilities.ai.ai_helper._call_llm",
+                   return_value=_resp(self._VALVE)) as llm:
+            brief = build_image_brief("content", surface="newsletter", ratio="16:9",
+                                      avoid_terms=["valve"])
+        assert llm.call_count == 2, "it must still try for something distinct first"
+        assert not brief.fallback, "a repeated object beats the deterministic template"
+        assert brief.prompt == self._VALVE["prompt"]
+
+    def test_a_repeat_does_not_file_the_fallback_warning(self):
+        """A reused object is expected, not a defect — a repeated warning re-emits at ERROR."""
+        with patch("cqc_lem.utilities.ai.ai_helper._call_llm",
+                   return_value=_resp(self._VALVE)), \
+             patch("cqc_lem.utilities.ai.image_brief.log_warning") as warn:
+            build_image_brief("content", surface="newsletter", ratio="16:9",
+                              avoid_terms=["valve"])
+        assert not warn.called
+
+    def test_a_genuinely_unusable_brief_still_falls_back(self):
+        stock = {"focal_concept": "a person at a laptop",
+                 "prompt": ("A confident professional sits at a laptop on a wooden desk with a "
+                           "notebook and coffee mug, soft window light, editorial photograph.")}
+        with patch("cqc_lem.utilities.ai.ai_helper._call_llm", return_value=_resp(stock)), \
+             patch("cqc_lem.utilities.ai.image_brief.log_warning") as warn:
+            brief = build_image_brief("content", surface="newsletter", ratio="16:9",
+                                      avoid_terms=["valve"])
+        assert brief.fallback
+        assert warn.called

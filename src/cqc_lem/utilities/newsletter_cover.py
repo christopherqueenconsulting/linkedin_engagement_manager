@@ -347,6 +347,18 @@ def _recent_focal_concepts(user_id: int, limit: int = _VARIETY_WINDOW,
     return concepts
 
 
+def _drop_topic_words(terms: list[str], title: Optional[str],
+                      subtitle: Optional[str]) -> list[str]:
+    """Drop avoid terms the edition's OWN title or subtitle uses (issue #2005).
+
+    "Spot the Leak in Your LinkedIn AI Budget" cannot be steered away from a leak: the author
+    names it, the gate rejects it twice, and the cover ships from the deterministic template. A
+    prior cover's object is only worth avoiding when this edition is not itself about it.
+    """
+    own = set(re.split(r"[^a-z0-9-]+", f"{title or ''} {subtitle or ''}".lower()))
+    return [t for t in terms if t.lower() not in own]
+
+
 def _recent_focal_objects(user_id: int, limit: int = _VARIETY_WINDOW) -> list[str]:
     """The OBJECTS the last `limit` covers were built on, most-recent first (issue #2000).
 
@@ -355,7 +367,10 @@ def _recent_focal_objects(user_id: int, limit: int = _VARIETY_WINDOW) -> list[st
     """
     objects: list[str] = []
     for concept in _recent_focal_concepts(user_id, limit=limit, include_fallback=False):
-        objects.extend(_focal_objects(concept))
+        # The PRIMARY object only. The second object in a concept is usually the topic's own noun
+        # ("Budget LEAK depicted as a dripping VALVE"), and banning the topic's noun corners the
+        # author on the very editions this steers (issue #2005).
+        objects.extend(_focal_objects(concept)[:1])
     return list(dict.fromkeys(objects))
 
 
@@ -482,7 +497,8 @@ def generate_cover_for_edition(user_id: int, edition_id: int, title: Optional[st
 
     avatar = _resolve_cover_avatar(user_id, use_avatar, title, subtitle, body)
     content, avoid_terms = _cover_concept_text(
-        title, subtitle, body, variety_avoid=_recent_focal_objects(user_id))
+        title, subtitle, body,
+        variety_avoid=_drop_topic_words(_recent_focal_objects(user_id), title, subtitle))
     shape = (f"format={edition_format or 'unspecified'}, hook_style={hook_style or 'unspecified'}"
             if edition_format or hook_style else None)
 
