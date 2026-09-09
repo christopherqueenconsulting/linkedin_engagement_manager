@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.173.11](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.173.10...v0.173.11) (2026-09-09)
+
+
+### Bug Fixes
+
+* **feed-commenting:** state output language in every comment/reply prompt (closes [#2001](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2001)) ([#2007](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2007)) ([2344f06](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/2344f060b9ba9611544a4977aad02c4c1737aa17))
+* **newsletter-covers:** steer variety on the OBJECT, and give it teeth (closes [#2000](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2000)) ([#2002](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2002)) ([94eab2a](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/94eab2a2e4ad3f0eaadf2b1c73bb7f653e5c6a4e))
+* **newsletter-covers:** the cover must depict THIS edition, not its neighbour (closes [#2008](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2008)) ([#2009](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2009)) ([5eaf816](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/5eaf81672e4ef8b6a90f7b3595368659477f816a))
+* **newsletter-covers:** the variety gate must never force the fallback (closes [#2005](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2005)) ([#2006](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2006)) ([43cbbab](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/43cbbab41af95028b11d3ef899ac42f9fd17462d))
+
 ## [0.173.10](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.173.9...v0.173.10) (2026-09-09)
 
 
