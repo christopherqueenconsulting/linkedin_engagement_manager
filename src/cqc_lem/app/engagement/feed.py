@@ -798,8 +798,16 @@ def post_comment_inline(driver, wait, card, comment_text: str, user_id: int = No
             return False
         if composer is None:
             step = "open composer"
+            # warn_on_miss=False (issue #1994): the card is scrolled into view well before this
+            # click, but a long `pace_read` delay and the react-before-comment step run in between,
+            # so the feed can reflow (an ad, a live update) and leave a found-but-unclickable button
+            # by the time we get here. `_post_composer_for_card` right below treats the sibling
+            # "composer never opened" miss the same way, for the same reason — the caller already
+            # skips this post and a later run retries it, so this is the documented best-effort
+            # no-op, not selector rot.
             if click_first(driver, wait, _COMMENT_ACTION_LOCATORS,
-                           "Open comment composer", parent_element=card, required=False, user_id=user_id) is None:
+                           "Open comment composer", parent_element=card, required=False,
+                           warn_on_miss=False, user_id=user_id) is None:
                 return False
             time.sleep(random.uniform(1.5, 3))
             step = "find composer"
@@ -2111,9 +2119,12 @@ def _engage_card(ctx: FeedRunContext, card, key: str, content: str, author: str,
         # group posts per day were being run through `generate_ai_response` even though the composer
         # never resolved, so this ordering saves real cost (issue #1084). The click itself is best-
         # effort and leaves the composer open for the type/submit path below.
+        # warn_on_miss=False (issue #1994): a found-but-unclickable button here is the same
+        # documented best-effort no-op as the equivalent home-feed composer-open miss — this run
+        # skips the post without spending an LLM call, and a later pass retries it.
         if click_first(driver, wait, _COMMENT_ACTION_LOCATORS,
                        "Open comment composer", parent_element=card, required=False,
-                       user_id=user_id) is None:
+                       warn_on_miss=False, user_id=user_id) is None:
             log_debug("Group feed comment action not found — skipping without LLM generation",
                       user_id=user_id, action_type="comment")
             release_post_claim(user_id, key)
