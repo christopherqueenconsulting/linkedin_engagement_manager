@@ -716,6 +716,15 @@ def _ungrounded_first_person_metrics(candidate: "str | None", post_content: Any,
     return _story_bank.unsourced_specifics(candidate, sources + _story_bank_sources(user_id))
 
 
+# The skip-line's stable prefix (issue #1995), pinned in `log_escalation.BUILTIN_EXCLUDED_PREFIXES`.
+# The grounding gate is HARD-blocking by design (#1834: a comment ships with no review step), and its
+# own docstring documents an accepted false-positive rate — a spelled quantity counting nothing the
+# sources mention costs one bounded regeneration, and a draft that never recovers is skipped rather
+# than shipped. That skip recurs at whatever rate the model can't ground a personal claim for a given
+# post; escalating it filed a GitHub issue against a safety gate working exactly as designed.
+COMMENT_QUALITY_SKIP_LOG_PREFIX = "Comment failed the quality contract after "
+
+
 def _gated_comment(draft, post_content, recent_comments: list = None,
                    user_id: int = None, research_findings: str = None,
                    ground_specifics: bool = False) -> "str | None":
@@ -791,7 +800,7 @@ def _gated_comment(draft, post_content, recent_comments: list = None,
         if attempt < attempts:
             fix_directive = _framework.comment_retry_directive(
                 failures, offending_comment=similar["match"] if similar["too_similar"] else None)
-    log_warning(f"Comment failed the quality contract after {attempts} attempt(s) — skipping this "
+    log_warning(f"{COMMENT_QUALITY_SKIP_LOG_PREFIX}{attempts} attempt(s) — skipping this "
                 f"post: {'; '.join(failures)}", user_id=user_id, action_type="comment")
     return None
 
