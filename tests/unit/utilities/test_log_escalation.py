@@ -234,6 +234,27 @@ def test_device_approval_challenges_never_escalate():
         assert _note(warning, [3]) is not None
 
 
+def test_comment_quality_skips_never_escalate():
+    """A comment-grounding skip must never escalate.
+
+    The comment grounding gate is HARD by design (#1834) with a documented, accepted
+    false-positive rate — a draft that never recovers in `comment_gate_max_attempts` is skipped
+    rather than shipped, and that skip recurs at whatever rate a post can't be grounded. Escalating
+    it filed a GitHub issue against a safety gate working exactly as designed (#1995).
+    """
+    from cqc_lem.utilities.ai.ai_helper import COMMENT_QUALITY_SKIP_LOG_PREFIX
+
+    assert COMMENT_QUALITY_SKIP_LOG_PREFIX in esc.BUILTIN_EXCLUDED_PREFIXES
+    skip = (f"{COMMENT_QUALITY_SKIP_LOG_PREFIX}3 attempt(s) — skipping this post: states "
+            "first-person specifics that appear in neither the post, the research provided, nor "
+            "the author's own material (1200)")
+    assert _note(skip, [3]) is None
+    # …and the exclusion is what did it: the identical line escalates once the prefix is gone.
+    esc.reset_state()
+    with patch.object(esc, "BUILTIN_EXCLUDED_PREFIXES", ()):
+        assert _note(skip, [3]) is not None
+
+
 def test_env_exclusions_add_to_the_builtins(monkeypatch):
     """An override must not be able to drop the capture_exception re-entrancy guard."""
     monkeypatch.setenv("LOG_ESCALATE_EXCLUDE", "Custom noise")

@@ -65,3 +65,19 @@ class TestPrePostEngagementMarker:
 
         assert "Skipped" in result
         record.assert_not_called()
+
+
+class TestAutomateCommentingSessionNeedsImages:
+    def test_session_open_requests_needs_images(self, commenting_env):
+        """Issue #1979: the roster pass this task runs FIRST opens a target's `/recent-activity/*` page.
+
+        That page is fastboot the same way `/messaging/*` (#1774) and `/groups/*` (#1778) are — a
+        bandwidth-saver session with images blocked never mounts `<main>` at all.
+        """
+        from cqc_lem.app.engagement.feed import automate_commenting
+        with patch(f"{_MOD}.get_current_profile",
+                  return_value=(MagicMock(), MagicMock(), "a@b.c", MagicMock())) as gcp, \
+             patch(f"{_MOD}.navigate_to_feed"), patch(f"{_MOD}.quit_gracefully"), \
+             patch(f"{_MOD}.comment_on_feed_inline", return_value=0):
+            automate_commenting.run(user_id=7)
+        assert gcp.call_args.kwargs["needs_images"] is True

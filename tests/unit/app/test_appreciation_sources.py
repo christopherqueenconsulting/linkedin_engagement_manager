@@ -410,6 +410,38 @@ class TestZeroMentionCardsIsGradedNotAssumed:
             assert _mentions_page_native_count(driver, 1) is None
 
 
+class TestMentionCardLocatorsFallBackToBody:
+    """#1985: production warned "Mention card walk matched nothing" for several minutes straight.
+
+    Real recurring drift, not a one-off. Every rung of `_MENTION_CARD_LOCATORS` was scoped under
+    `<main>`, but `_mentions_page_native_count` (the cross-check this walk is graded against)
+    already falls back to `<body>` when the SPA doesn't paint a `<main>` landmark on this load.
+    That asymmetry alone reproduces the exact signature: the cross-check finds a mention sentence,
+    the card chain sees nothing, with no change to the card markup itself.
+    """
+
+    def test_locators_carry_a_body_scoped_fallback(self):
+        from cqc_lem.app.engagement.outreach import _MENTION_CARD_LOCATORS
+        assert any("body" in value for _, value in _MENTION_CARD_LOCATORS)
+
+    def test_walk_finds_cards_under_body_when_main_never_painted(self):
+        """Prove the new rungs actually catch what the main-scoped ones miss.
+
+        `find_all_first` tries every rung in order, so an unreachable fallback would pass
+        `test_locators_carry_a_body_scoped_fallback` while still never firing in production.
+        """
+        from cqc_lem.app.engagement.outreach import _MENTION_CARD_LOCATORS
+        from cqc_lem.utilities.selenium_util import find_all_first
+        card = MagicMock()
+
+        def fake_find_elements(_by, value):
+            return [card] if value.startswith("body") else []
+
+        driver = MagicMock()
+        driver.find_elements.side_effect = fake_find_elements
+        assert find_all_first(driver, _MENTION_CARD_LOCATORS) == [card]
+
+
 class TestDispatchDedup:
     """`automate_appreciation_dms_for_user` re-queues itself every ~60s, so the ledger claim is the
     only thing standing between one thank-you and a thank-you a minute.

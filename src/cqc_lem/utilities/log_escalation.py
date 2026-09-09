@@ -88,6 +88,14 @@ BUILTIN_EXCLUDED_PREFIXES = (
     # gracefully into a bounded wait. Escalating it filed a GitHub issue against working login
     # handling for an event only the owner can act on (#1922).
     "LinkedIn device-approval required",
+    # `ai_helper._gated_comment`'s skip line (`ai_helper.COMMENT_QUALITY_SKIP_LOG_PREFIX`). The
+    # first-person grounding gate is HARD on comments by design (#1834: a comment ships with no
+    # review step), and its own docstring documents an accepted false-positive rate — a spelled
+    # quantity counting nothing the sources mention costs one bounded regeneration, and a draft that
+    # never recovers is skipped rather than shipped. That skip recurs at whatever rate the model
+    # can't ground a personal claim for a given post; escalating it filed a GitHub issue against a
+    # safety gate working exactly as designed (#1995).
+    "Comment failed the quality contract after ",
 )
 
 
