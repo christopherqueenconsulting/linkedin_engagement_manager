@@ -5,7 +5,12 @@ from unittest.mock import patch
 
 import pytest
 
-from cqc_lem.utilities.ai.image_brief import _STYLE_PRESETS, ImageBrief, build_image_brief
+from cqc_lem.utilities.ai.image_brief import (
+    _MAX_AVOID_TERMS,
+    _STYLE_PRESETS,
+    ImageBrief,
+    build_image_brief,
+)
 
 _GOOD = {"focal_concept": "a founder reviewing a growth chart",
          "prompt": ("A confident founder stands beside a floor-to-ceiling window in a sunlit "
@@ -333,6 +338,102 @@ class TestNewsletterPreset:
 
 
 @pytest.mark.unit
+class TestAvoidTermsGate:
+    """Issue #2000: `avoid_terms` gets TEETH.
+
+    A repeated object is rejected and retried, not just discouraged in a prompt line nobody
+    enforced.
+    """
+
+    _VALVE = {"focal_concept": "a person at a valve station",
+             "prompt": ("A weathered brass valve sits alone on a worn workshop bench under "
+                       "dramatic side light, shot on an 85mm lens at f/1.8, subtle film grain, "
+                       "editorial still-life photograph.")}
+    _DOMINO = {"focal_concept": "a single fallen domino",
+              "prompt": ("A single fallen domino rests on a polished dark wood table, dramatic "
+                        "raking side light, shot on an 85mm lens at f/1.8, subtle film grain, "
+                        "editorial still-life photograph.")}
+
+    def test_a_focal_concept_naming_an_avoid_term_is_rejected_and_retried(self):
+        with patch("cqc_lem.utilities.ai.ai_helper._call_llm",
+                   side_effect=[_resp(self._VALVE), _resp(self._DOMINO)]) as llm:
+            brief = build_image_brief("content", surface="newsletter", avoid_terms=["valve"])
+        assert llm.call_count == 2
+        assert not brief.fallback
+        assert brief.focal_concept == self._DOMINO["focal_concept"]
+
+    def test_a_focal_concept_naming_a_different_object_is_accepted_outright(self):
+        with patch("cqc_lem.utilities.ai.ai_helper._call_llm",
+                   return_value=_resp(self._DOMINO)) as llm:
+            brief = build_image_brief("content", surface="newsletter", avoid_terms=["valve"])
+        assert llm.call_count == 1
+        assert not brief.fallback
+        assert brief.focal_concept == self._DOMINO["focal_concept"]
+
+    def test_exhausting_retries_on_a_repeated_object_falls_back(self):
+        with patch("cqc_lem.utilities.ai.ai_helper._call_llm",
+                   return_value=_resp(self._VALVE)) as llm, \
+             patch("cqc_lem.utilities.ai.image_brief.log_warning") as warn:
+            brief = build_image_brief("content", surface="newsletter", avoid_terms=["valve"])
+        assert llm.call_count == 2
+        assert brief.fallback
+        assert warn.called
+
+    def test_the_gate_only_checks_the_focal_concept_never_the_prompt_body(self):
+        # "valve" sits in the PROMPT body only — the focal concept names a different object, so
+        # this is not a repeat and must not cost a retry (a valve in the background of an
+        # otherwise distinct scene is legitimate).
+        distinct = {"focal_concept": "a single fallen domino",
+                   "prompt": ("A single fallen domino rests on a workbench beside a coiled "
+                             "brass valve, dramatic side light, shot on an 85mm lens at f/1.8, "
+                             "subtle film grain, editorial still-life photograph.")}
+        with patch("cqc_lem.utilities.ai.ai_helper._call_llm",
+                   return_value=_resp(distinct)) as llm:
+            brief = build_image_brief("content", surface="newsletter", avoid_terms=["valve"])
+        assert llm.call_count == 1
+        assert not brief.fallback
+        assert brief.prompt == distinct["prompt"]
+
+    def test_the_gate_only_applies_to_the_newsletter_surface(self):
+        with patch("cqc_lem.utilities.ai.ai_helper._call_llm",
+                   return_value=_resp(self._VALVE)) as llm:
+            brief = build_image_brief("content", surface="post_image", avoid_terms=["valve"])
+        assert llm.call_count == 1
+        assert not brief.fallback
+
+    def test_the_gate_never_applies_when_the_avatar_is_in_frame(self):
+        avatar = {"gender_presentation": "man", "age_band": "40s", "trigger_word": "TOK"}
+        with patch("cqc_lem.utilities.ai.ai_helper._call_llm",
+                   return_value=_resp(self._VALVE)) as llm:
+            brief = build_image_brief("content", surface="newsletter", avoid_terms=["valve"],
+                                      avatar=avatar)
+        assert llm.call_count == 1
+        assert not brief.fallback
+
+    def test_no_avoid_terms_never_rejects_on_them(self):
+        with patch("cqc_lem.utilities.ai.ai_helper._call_llm",
+                   return_value=_resp(self._VALVE)) as llm:
+            brief = build_image_brief("content", surface="newsletter")
+        assert llm.call_count == 1
+        assert not brief.fallback
+
+    def test_the_gate_is_capped_so_a_long_history_cannot_starve_every_run(self):
+        # More avoid terms than `_MAX_AVOID_TERMS` — a term past the cap must not be checked,
+        # so a focal concept naming ONLY that overflow term is accepted, not endlessly rejected.
+        overflow_terms = [f"object{i}" for i in range(_MAX_AVOID_TERMS + 3)]
+        response = {"focal_concept": f"a {overflow_terms[-1]} on a shelf",
+                   "prompt": ("A single weathered object rests alone on a worn wooden shelf, "
+                             "dramatic side light, shot on an 85mm lens at f/1.8, subtle film "
+                             "grain, editorial still-life photograph.")}
+        with patch("cqc_lem.utilities.ai.ai_helper._call_llm",
+                   return_value=_resp(response)) as llm:
+            brief = build_image_brief("content", surface="newsletter",
+                                      avoid_terms=overflow_terms)
+        assert llm.call_count == 1, "a term past the cap must never cost a retry"
+        assert not brief.fallback
+
+
+@pytest.mark.unit
 class TestLiveSampleRegressions:
     """Regressions from issue #1992's five-edition live sample run.
 
@@ -383,7 +484,7 @@ class TestLiveSampleRegressions:
             brief = build_image_brief("an edition about token spend", surface="newsletter",
                                       ratio="16:9", avoid_terms=["laptop", "a prior gear"])
         user_msg = llm.call_args[1]["messages"][1]["content"]
-        assert "Do NOT build the scene around any of these" in user_msg
+        assert "Recent covers already used these objects" in user_msg
         assert "a prior gear" in user_msg
         assert brief.fallback
         assert "a prior gear" not in brief.prompt

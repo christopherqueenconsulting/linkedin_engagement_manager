@@ -18,6 +18,7 @@ Paths are stored RELATIVE to ``assets_dir`` so they map straight onto ``/api/ass
 
 import json
 import os
+import re
 import secrets
 import shutil
 from dataclasses import dataclass
@@ -29,6 +30,28 @@ from cqc_lem.utilities.logger import log_debug, log_info, log_warning
 # How many prior covers' focal concepts a new brief is steered away from (issue #1992). Mirrors
 # `enforce_variety`'s window for posts; reads what is already on disk rather than a new DB column.
 _VARIETY_WINDOW = 5
+
+# How a `focal_concept` SENTENCE gets reduced to the one OBJECT it was built on (issue #2000):
+# "Budget leak depicted as a dripping valve spilling money" and "Identifying AI budget leaks
+# using a dripping valve metaphor" are two different sentences that dedupe on nothing, but they
+# name the same object. Stopwords/prepositions plus the topic-shaped abstract nouns these
+# sentences are full of (cost, budget, strategy, metaphor, AI, ...) get stripped; deliberately not
+# real NLP (no new dependency) — a heuristic word filter, not a parser.
+_OBJECT_STOPWORDS = frozenset("""
+    a an the of in on for with by to as is are was were be being been and or but its it at over
+    under through from into onto your our their his her this that these those via
+""".split())
+_OBJECT_ABSTRACT_WORDS = frozenset("""
+    cost costs budget budgets money efficiency strategy strategies idea ideas concept concepts
+    mechanism mechanisms metaphor metaphors process processes waste routing audit auditing
+    identifying depicting depicted depict symbolizing symbolize representing represents
+    illustrating illustrates showing shows spilling dripping revealing capturing visualizing
+    conveying overlooked ai linkedin ecommerce e-commerce saas market marketing audience content
+    team teams customer customers client clients workflow workflows system systems business
+    businesses industry industries growth revenue brand branding startup startups founder
+    founders leadership management
+""".split())
+_OBJECT_TOKEN = re.compile(r"[A-Za-z][A-Za-z-]*")
 
 # `lem-simple` is a reasoning model: at 300 the WHOLE budget went to reasoning tokens and the
 # concept came back EMPTY with finish_reason='length' on every one of the five live editions —
@@ -293,6 +316,40 @@ def _recent_focal_concepts(user_id: int, limit: int = _VARIETY_WINDOW) -> list[s
     return concepts
 
 
+def _focal_object(concept: str) -> Optional[str]:
+    """The one concrete OBJECT a `focal_concept` SENTENCE was built on, or None if it names none.
+
+    See the module-level comment above `_OBJECT_STOPWORDS` for why this exists. Tokenizes, strips
+    stopwords/prepositions and the abstract topic-shaped words, and takes the LAST word left — the
+    object typically lands right before the sentence trails into its abstract payoff ("...a
+    dripping valve spilling money"). A sentence that names no concrete object (a plain title used
+    by the deterministic fallback) correctly returns None: there was nothing to avoid repeating.
+    """
+    tokens = [t.lower() for t in _OBJECT_TOKEN.findall(concept or "")]
+    kept = [t for t in tokens
+           if len(t) > 2 and t not in _OBJECT_STOPWORDS and t not in _OBJECT_ABSTRACT_WORDS]
+    if not kept:
+        return None
+    obj = kept[-1]
+    # Cheap de-pluralization: a whole-word avoid-gate match on "valves" would never match a
+    # prompt that names the singular "valve" (image_brief._avoid_pattern).
+    if obj.endswith("es") and len(obj) > 4:
+        obj = obj[:-2]
+    elif obj.endswith("s") and not obj.endswith("ss") and len(obj) > 3:
+        obj = obj[:-1]
+    return obj
+
+
+def _focal_objects(concepts: list[str]) -> list[str]:
+    """Distinct objects across several `focal_concept` sentences, most-recent first, deduped."""
+    objects: list[str] = []
+    for concept in concepts:
+        obj = _focal_object(concept)
+        if obj and obj not in objects:
+            objects.append(obj)
+    return objects
+
+
 def build_cover_prompt(title: Optional[str], subtitle: Optional[str], body: Optional[str],
                        profile=None) -> str:
     """The image prompt for an edition's cover, via the ONE brief engine.
@@ -416,7 +473,7 @@ def generate_cover_for_edition(user_id: int, edition_id: int, title: Optional[st
 
     avatar = _resolve_cover_avatar(user_id, use_avatar, title, subtitle, body)
     content, avoid_terms = _cover_concept_text(
-        title, subtitle, body, variety_avoid=_recent_focal_concepts(user_id))
+        title, subtitle, body, variety_avoid=_focal_objects(_recent_focal_concepts(user_id)))
     shape = (f"format={edition_format or 'unspecified'}, hook_style={hook_style or 'unspecified'}"
             if edition_format or hook_style else None)
 

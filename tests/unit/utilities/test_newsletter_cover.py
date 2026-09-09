@@ -537,6 +537,43 @@ class TestGenerateCoverForEditionReceipt:
         assert not any(assets.rglob("*.brief.json"))
 
 
+class TestFocalObjects:
+    """Issue #2000: `_focal_objects` reduces a `focal_concept` SENTENCE to the OBJECT it names.
+
+    `_recent_focal_concepts` dedupes on the whole sentence, and three different sentences about
+    the same valve never collided on anything — this is the fix underneath the avoid list.
+    """
+
+    def test_the_reported_sentence_yields_valve(self):
+        # The literal receipt from issue #2000's live sample (edition 16).
+        assert nc._focal_object(
+            "Budget leak depicted as a dripping valve spilling money") == "valve"
+
+    def test_a_differently_worded_sentence_about_the_same_object_still_matches(self):
+        assert nc._focal_object(
+            "Identifying AI budget leaks using a dripping valve metaphor") == "valve"
+
+    def test_a_pure_abstract_sentence_names_no_object(self):
+        # The fallback-path title from issue #2000's edition 14 — nothing concrete to avoid.
+        assert nc._focal_object("The Overlooked Costs of Your AI LinkedIn Strategy") is None
+
+    def test_empty_or_none_is_none(self):
+        assert nc._focal_object("") is None
+        assert nc._focal_object(None) is None
+
+    def test_focal_objects_dedupes_across_a_list_keeping_order(self):
+        concepts = [
+            "Budget leak depicted as a dripping valve spilling money",
+            "The Overlooked Costs of Your AI LinkedIn Strategy",
+            "Identifying AI budget leaks using a dripping valve metaphor",
+            "A valve symbolizing efficiency in AI auditing",
+        ]
+        assert nc._focal_objects(concepts) == ["valve"]
+
+    def test_no_concepts_is_an_empty_list(self):
+        assert nc._focal_objects([]) == []
+
+
 class TestCoverVariety:
     """Issue #1992 Box 2: a new cover's brief is steered away from the last few covers.
 
@@ -575,20 +612,31 @@ class TestCoverVariety:
 
     def test_a_sixth_brief_is_steered_away_from_the_prior_five_concepts(self, tmp_path):
         assets = tmp_path / "assets"
+        prior_sentences = [
+            "Cost efficiency depicted as a mechanical gear",
+            "Workflow routing depicted as a compass",
+            "Budget waste depicted as a leaking bucket",
+            "Silent failure depicted as a fallen domino",
+            "Financial audit depicted as a brass scale",
+        ]
         with patch.object(nc, "assets_dir", str(assets)):
             directory = nc._cover_dir(3)
-            for i in range(5):
-                self._write_receipt(directory, f"ed{i}_x.brief.json", f"prior-concept-{i}",
-                                    1000 + i)
+            for i, sentence in enumerate(prior_sentences):
+                self._write_receipt(directory, f"ed{i}_x.brief.json", sentence, 1000 + i)
 
             with patch.object(nc, "_resolve_cover_avatar", return_value=None), \
                  patch("cqc_lem.utilities.ai.image_brief.build_image_brief",
                        return_value=_brief(focal="a brand new concept")) as brief, \
                  patch("cqc_lem.utilities.ai.image_gen.render_image_gated", return_value=None):
                 nc.generate_cover_for_edition(3, 9, "T", "S", "B")
+        # Issue #2000: the OBJECT each sentence was built on reaches the brief, never the whole
+        # sentence — a differently-worded sentence about the same object would otherwise never
+        # collide with it.
         avoid = brief.call_args[1]["avoid_terms"]
-        for i in range(5):
-            assert f"prior-concept-{i}" in avoid
+        for obj in ("gear", "compass", "bucket", "domino", "scale"):
+            assert obj in avoid
+        for sentence in prior_sentences:
+            assert sentence not in avoid
 
     def test_no_prior_covers_adds_no_avoid_line(self, tmp_path):
         assets = tmp_path / "assets"
