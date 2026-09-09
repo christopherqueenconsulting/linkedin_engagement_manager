@@ -5,6 +5,7 @@ sides: what it accepts, and every reason it rejects.
 """
 
 import io
+import json
 import os
 from unittest.mock import patch
 
@@ -130,10 +131,10 @@ class TestSaveAndResolve:
         assert nc.cover_public_url(None) is None
 
 
-def _brief(prompt="a prompt", focal="a focal concept"):
+def _brief(prompt="a prompt", focal="a focal concept", fallback=False):
     from cqc_lem.utilities.ai.image_brief import ImageBrief
     return ImageBrief(prompt=prompt, ratio=nc.COVER_IMAGE_RATIO, surface="newsletter",
-                      style_preset="newsletter", focal_concept=focal)
+                      style_preset="newsletter", focal_concept=focal, fallback=fallback)
 
 
 class TestBuildCoverPrompt:
@@ -179,6 +180,108 @@ class TestAvatarRelevanceClassifier:
         with patch("cqc_lem.utilities.ai.client.client") as mock_client:
             assert nc.classify_avatar_relevance(None, None, None) is False
         mock_client.chat.completions.create.assert_not_called()
+
+
+def _concept_resp(payload):
+    import json as _json
+    from types import SimpleNamespace
+    content = payload if isinstance(payload, str) else _json.dumps(payload)
+    return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=content))])
+
+
+class TestExtractCoverConcept:
+    """Issue #1992: the concept-extraction call reads the FULL body, never the hook excerpt.
+
+    `_edition_text` sends the brief author the hook; this degrades to `{}` on anything but a
+    usable reply.
+    """
+
+    def test_a_usable_response_is_parsed(self):
+        payload = {"core_mechanism": "a switch routes cheap traffic down the cheap path",
+                  "tangible_metaphor_candidates": ["a rotary switch", "a rail track fork"],
+                  "avoid": ["laptop", "screen"]}
+        with patch("cqc_lem.utilities.ai.client.client") as mock_client:
+            mock_client.chat.completions.create.return_value = _concept_resp(payload)
+            concept = nc._extract_cover_concept("T", "S", "B")
+        assert concept["core_mechanism"] == payload["core_mechanism"]
+        assert concept["tangible_metaphor_candidates"] == payload["tangible_metaphor_candidates"]
+        assert concept["avoid"] == ["laptop", "screen"]
+
+    def test_the_token_budget_leaves_room_for_reasoning_tokens(self):
+        """`lem-simple` is a reasoning model, so the budget covers thinking tokens too.
+
+        At 300 the whole budget went to reasoning and every one of the five live editions came
+        back EMPTY with finish_reason='length'.
+        """
+        with patch("cqc_lem.utilities.ai.client.client") as mock_client:
+            mock_client.chat.completions.create.return_value = _concept_resp(
+                {"core_mechanism": "m", "tangible_metaphor_candidates": ["o"], "avoid": []})
+            nc._extract_cover_concept("T", "S", "B")
+        kwargs = mock_client.chat.completions.create.call_args[1]
+        assert kwargs["max_tokens"] >= 1200, (
+            "a real extraction costs 540-1020 completion tokens including reasoning")
+
+    def test_the_full_body_reaches_the_prompt_not_a_1500_char_excerpt(self):
+        long_body = "x" * 5000
+        with patch("cqc_lem.utilities.ai.client.client") as mock_client:
+            mock_client.chat.completions.create.return_value = _concept_resp(
+                {"core_mechanism": "m", "tangible_metaphor_candidates": [], "avoid": []})
+            nc._extract_cover_concept("T", "S", long_body)
+        sent = mock_client.chat.completions.create.call_args[1]["messages"][0]["content"]
+        assert "x" * 4000 in sent, "the concept extractor must see well past the 1500-char hook"
+
+    def test_empty_edition_never_calls_the_llm(self):
+        with patch("cqc_lem.utilities.ai.client.client") as mock_client:
+            assert nc._extract_cover_concept(None, None, None) == {}
+        mock_client.chat.completions.create.assert_not_called()
+
+    def test_llm_outage_degrades_to_empty(self):
+        with patch("cqc_lem.utilities.ai.client.client") as mock_client:
+            mock_client.chat.completions.create.side_effect = RuntimeError("down")
+            assert nc._extract_cover_concept("T", "S", "B") == {}
+
+    def test_unparseable_response_degrades_to_empty(self):
+        with patch("cqc_lem.utilities.ai.client.client") as mock_client:
+            mock_client.chat.completions.create.return_value = _concept_resp("not json")
+            assert nc._extract_cover_concept("T", "S", "B") == {}
+
+    def test_a_response_with_neither_mechanism_nor_candidates_is_empty(self):
+        with patch("cqc_lem.utilities.ai.client.client") as mock_client:
+            mock_client.chat.completions.create.return_value = _concept_resp(
+                {"core_mechanism": "", "tangible_metaphor_candidates": [], "avoid": ["laptop"]})
+            assert nc._extract_cover_concept("T", "S", "B") == {}
+
+
+class TestCoverConceptText:
+    def test_uses_the_extracted_concept_when_available(self):
+        with patch.object(nc, "_extract_cover_concept", return_value={
+                "core_mechanism": "a leak drips from a pipe",
+                "tangible_metaphor_candidates": ["a copper pipe joint"], "avoid": []}):
+            content, avoid = nc._cover_concept_text("T", "S", "B")
+        assert avoid == []
+        assert "Core mechanism to depict: a leak drips from a pipe" in content
+        assert "Candidate physical metaphors: a copper pipe joint" in content
+        assert "B" not in content, "the raw hook excerpt is dropped once a concept exists"
+
+    def test_falls_back_to_the_excerpt_when_extraction_is_empty(self):
+        with patch.object(nc, "_extract_cover_concept", return_value={}):
+            content, _avoid = nc._cover_concept_text("T", "S", "the raw body text")
+        assert "the raw body text" in content
+
+    def test_variety_avoid_comes_back_separately_never_in_the_content(self):
+        """The content reaches a RENDERER on the fallback path, so an avoid noun in it is drawn."""
+        with patch.object(nc, "_extract_cover_concept",
+                          return_value={"core_mechanism": "m", "avoid": ["laptop"]}):
+            content, avoid = nc._cover_concept_text("T", "S", "B",
+                                                    variety_avoid=["prior concept one"])
+        assert avoid == ["laptop", "prior concept one"]
+        assert "prior concept one" not in content
+        assert "laptop" not in content
+
+    def test_no_avoid_at_all_returns_an_empty_list(self):
+        with patch.object(nc, "_extract_cover_concept", return_value={}):
+            _content, avoid = nc._cover_concept_text("T", "S", "B")
+        assert avoid == []
 
 
 _USABLE_AVATAR = {"status": "succeeded", "model_ref": "owner/lora:v1", "trigger_word": "TOK",
@@ -366,3 +469,157 @@ class TestGenerateCoverForEdition:
         retry = lora.call_args[0][0]
         assert "naturally proportioned subject" in retry
         assert "distorted" not in retry
+
+
+class TestGenerateCoverForEditionReceipt:
+    """Issue #1992: every stored cover gets a `.brief.json` receipt beside it.
+
+    Real brief AND fallback alike — the only way to tell these apart after the fact (Box 5).
+    """
+
+    def _generated(self, tmp_path, name="gen.png", data=None):
+        path = tmp_path / name
+        path.write_bytes(data if data is not None else _image_bytes())
+        return str(path)
+
+    def test_writes_a_brief_receipt_beside_the_stored_cover(self, tmp_path):
+        from cqc_lem.utilities.media_provenance import read_brief_receipt
+
+        generated = self._generated(tmp_path)
+        assets = tmp_path / "assets"
+        assets.mkdir()
+        with patch.object(nc, "assets_dir", str(assets)), \
+             patch("cqc_lem.assets_dir", str(assets)), \
+             patch.object(nc, "_resolve_cover_avatar", return_value=None), \
+             patch("cqc_lem.utilities.ai.image_brief.build_image_brief",
+                   return_value=_brief(focal="a switch")), \
+             patch("cqc_lem.utilities.ai.image_gen.render_image_gated",
+                   return_value=generated):
+            rel, reason = nc.generate_cover_for_edition(
+                3, 9, "T", "S", "B", edition_format="case_study", hook_style="personal_story")
+            assert reason is None
+            receipt = read_brief_receipt(nc.cover_public_url(rel))
+        assert receipt is not None
+        assert receipt["focal_concept"] == "a switch"
+        assert receipt["fallback"] is False
+        assert receipt["edition_format"] == "case_study"
+        assert receipt["hook_style"] == "personal_story"
+        assert receipt["edition_id"] == 9
+
+    def test_fallback_brief_still_gets_a_receipt_and_says_so(self, tmp_path):
+        from cqc_lem.utilities.media_provenance import read_brief_receipt
+
+        generated = self._generated(tmp_path)
+        assets = tmp_path / "assets"
+        assets.mkdir()
+        with patch.object(nc, "assets_dir", str(assets)), \
+             patch("cqc_lem.assets_dir", str(assets)), \
+             patch.object(nc, "_resolve_cover_avatar", return_value=None), \
+             patch("cqc_lem.utilities.ai.image_brief.build_image_brief",
+                   return_value=_brief(focal="deterministic fallback subject", fallback=True)), \
+             patch("cqc_lem.utilities.ai.image_gen.render_image_gated",
+                   return_value=generated):
+            rel, reason = nc.generate_cover_for_edition(3, 9, "T", "S", "B")
+            assert reason is None
+            receipt = read_brief_receipt(nc.cover_public_url(rel))
+        assert receipt["fallback"] is True
+
+    def test_no_receipt_for_a_render_that_never_gets_stored(self, tmp_path):
+        assets = tmp_path / "assets"
+        assets.mkdir()
+        with patch.object(nc, "assets_dir", str(assets)), \
+             patch("cqc_lem.assets_dir", str(assets)), \
+             patch.object(nc, "_resolve_cover_avatar", return_value=None), \
+             patch("cqc_lem.utilities.ai.image_brief.build_image_brief", return_value=_brief()), \
+             patch("cqc_lem.utilities.ai.image_gen.render_image_gated", return_value=None):
+            rel, reason = nc.generate_cover_for_edition(3, 9, "T", "S", "B")
+        assert rel is None
+        assert not any(assets.rglob("*.brief.json"))
+
+
+class TestCoverVariety:
+    """Issue #1992 Box 2: a new cover's brief is steered away from the last few covers.
+
+    Read off the last `_VARIETY_WINDOW` covers' `.brief.json` receipts — no new DB column.
+    """
+
+    def _write_receipt(self, directory, name, focal_concept, mtime):
+        os.makedirs(directory, exist_ok=True)
+        path = os.path.join(directory, name)
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump({"focal_concept": focal_concept}, fh)
+        os.utime(path, (mtime, mtime))
+
+    def test_recent_focal_concepts_reads_the_last_five_most_recent_first(self, tmp_path):
+        assets = tmp_path / "assets"
+        with patch.object(nc, "assets_dir", str(assets)):
+            directory = nc._cover_dir(3)
+            for i in range(7):
+                self._write_receipt(directory, f"ed{i}_x.brief.json", f"concept-{i}", 1000 + i)
+            recent = nc._recent_focal_concepts(3)
+        assert recent == ["concept-6", "concept-5", "concept-4", "concept-3", "concept-2"]
+
+    def test_no_receipts_yet_is_an_empty_list(self, tmp_path):
+        with patch.object(nc, "assets_dir", str(tmp_path / "assets")):
+            assert nc._recent_focal_concepts(3) == []
+
+    def test_a_broken_receipt_is_skipped_not_fatal(self, tmp_path):
+        assets = tmp_path / "assets"
+        with patch.object(nc, "assets_dir", str(assets)):
+            directory = nc._cover_dir(3)
+            os.makedirs(directory, exist_ok=True)
+            with open(os.path.join(directory, "bad.brief.json"), "w") as fh:
+                fh.write("not json")
+            self._write_receipt(directory, "good.brief.json", "concept-good", 1000)
+            assert nc._recent_focal_concepts(3) == ["concept-good"]
+
+    def test_a_sixth_brief_is_steered_away_from_the_prior_five_concepts(self, tmp_path):
+        assets = tmp_path / "assets"
+        with patch.object(nc, "assets_dir", str(assets)):
+            directory = nc._cover_dir(3)
+            for i in range(5):
+                self._write_receipt(directory, f"ed{i}_x.brief.json", f"prior-concept-{i}",
+                                    1000 + i)
+
+            with patch.object(nc, "_resolve_cover_avatar", return_value=None), \
+                 patch("cqc_lem.utilities.ai.image_brief.build_image_brief",
+                       return_value=_brief(focal="a brand new concept")) as brief, \
+                 patch("cqc_lem.utilities.ai.image_gen.render_image_gated", return_value=None):
+                nc.generate_cover_for_edition(3, 9, "T", "S", "B")
+        avoid = brief.call_args[1]["avoid_terms"]
+        for i in range(5):
+            assert f"prior-concept-{i}" in avoid
+
+    def test_no_prior_covers_adds_no_avoid_line(self, tmp_path):
+        assets = tmp_path / "assets"
+        with patch.object(nc, "assets_dir", str(assets)), \
+             patch.object(nc, "_resolve_cover_avatar", return_value=None), \
+             patch("cqc_lem.utilities.ai.image_brief.build_image_brief",
+                   return_value=_brief()) as brief, \
+             patch("cqc_lem.utilities.ai.image_gen.render_image_gated", return_value=None):
+            nc.generate_cover_for_edition(3, 9, "T", "S", "B")
+        assert brief.call_args[1]["avoid_terms"] == []
+
+
+class TestContentShape:
+    def test_edition_format_and_hook_style_reach_the_brief(self, tmp_path):
+        assets = tmp_path / "assets"
+        with patch.object(nc, "assets_dir", str(assets)), \
+             patch.object(nc, "_resolve_cover_avatar", return_value=None), \
+             patch("cqc_lem.utilities.ai.image_brief.build_image_brief",
+                   return_value=_brief()) as brief, \
+             patch("cqc_lem.utilities.ai.image_gen.render_image_gated", return_value=None):
+            nc.generate_cover_for_edition(3, 9, "T", "S", "B", edition_format="case_study",
+                                          hook_style="personal_story")
+        assert brief.call_args[1]["content_shape"] == \
+            "format=case_study, hook_style=personal_story"
+
+    def test_neither_format_nor_hook_style_passes_none(self, tmp_path):
+        assets = tmp_path / "assets"
+        with patch.object(nc, "assets_dir", str(assets)), \
+             patch.object(nc, "_resolve_cover_avatar", return_value=None), \
+             patch("cqc_lem.utilities.ai.image_brief.build_image_brief",
+                   return_value=_brief()) as brief, \
+             patch("cqc_lem.utilities.ai.image_gen.render_image_gated", return_value=None):
+            nc.generate_cover_for_edition(3, 9, "T", "S", "B")
+        assert brief.call_args[1]["content_shape"] is None

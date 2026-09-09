@@ -26,7 +26,7 @@ brief decides whether the render is relevant at all — the failure the cheap ti
 
 | Preset | What that surface's image is for |
 |---|---|
-| `newsletter` | Wide editorial cover; one bold scene from the edition's core idea, readable at thumbnail size |
+| `newsletter` | Wide editorial cover; one tangible object or physical mechanism standing in for the edition's core idea, object-first, readable at thumbnail size; a metaphor vocabulary for abstract/financial/software topics (see below) |
 | `post_image` | Scroll-stopping single subject for a feed post; one strong color accent |
 | `carousel` | Quiet supporting photo for ONE slide; uncluttered background a text panel can sit beside |
 | `video` | Opening frame posed so subtle motion can bring it alive; layered depth |
@@ -56,7 +56,32 @@ than a screen, and states that a screen which genuinely belongs in the frame is 
 dark; `with_no_marks()` adds the same thing on the render side for any prompt that names one.
 
 An unparseable or invalid model reply falls back to `_fallback_brief` — deterministic, so a bad
-generation never means no image.
+generation never means no image. `ImageBrief.fallback` records which one shipped, for the receipt
+below.
+
+**The newsletter stock-office gate (#1992).** Five straight covers converged on "person at laptop
+with notebook and coffee mug" despite the preset saying "no generic office stock" — a negation the
+renderer, and apparently the brief LLM, both honor loosely. `_valid()` now rejects (and retries,
+then falls back) a `newsletter`-surface prompt naming `laptop, notebook, coffee, desk, office,
+typing, keyboard, screen, monitor, phone`, unless an avatar is in frame — where a person at a desk
+is legitimate. `_NO_ANONYMOUS_PERSON` no longer offers "a close-up of hands mid-action" as an
+alternative — hands stay the renderer's weakest anatomy regardless of what they're near.
+`build_image_brief`'s `content_shape` param (used by newsletter covers for `edition_format` +
+`hook_style`) folds a caller's shape tag into the context so a listicle cover and a personal-story
+cover read differently; full posture in `docs/newsletter-covers.md`.
+
+**A rejection is only useful if the retry hears it.** The second attempt carries the reason the
+first was thrown out, naming the offending noun. Re-sending the identical prompt just re-drew the
+same rejected scene — on the five live editions of #1992 that put four of five covers on the
+deterministic fallback.
+
+**`avoid_terms` never reach a render prompt.** `build_image_brief(..., avoid_terms=[...])` puts a
+caller's "not these" nouns in the AUTHOR's user message only, and `_fallback_brief` never sees them.
+The fallback template IS a render prompt, and a render prompt has no negation: every noun in it is a
+request. Same reason `_fallback_brief` gives `surface="newsletter"` with no avatar its own
+`_NEWSLETTER_FALLBACK_SCENE` rather than pasting the surface preset ("People and screens stay out of
+the frame") plus "blank screens" and "plain unbranded clothing" into one — which is how a fallback
+cover rendered a man at a laptop.
 
 ## `image_gen.py` — the ONE renderer
 
@@ -114,6 +139,12 @@ grades the rendered file against the brief's `focal_concept` — with bounded re
   `unchecked` (the fail-open case), the surface, the issue categories, attempt count, and whether
   the gate actually ran (`checked`). This is the image half of content-quality telemetry; it does not
   change what the gate decides.
+- **The `newsletter` surface adds a stock-office cliché rule and a higher relevance floor (#1992).**
+  `inspect_render_quality(..., surface="newsletter")` appends a rejection bullet naming the literal
+  "person at laptop/desk/keyboard with notebook or coffee mug" scene, and overrides the verdict to
+  unacceptable when `relevance < 4` even if the model itself said `acceptable=true` — a render merely
+  in the same DOMAIN as the edition (a laptop for an AI-cost topic) cleared a bare relevance-3 "it
+  relates" bar every time. Other surfaces keep the plain relevance-1/2 floor. Still fails OPEN.
 
 Full grading of this engine's output, its per-surface gaps and what is still unmeasurable:
 **`docs/content-quality-audits/image.md`**.
@@ -208,6 +239,11 @@ Three rules:
   sidecar survives for free (the purge removes only the exact `.mp4`); the image one is named in
   `purge_post_assets`'s carve-out, because that branch clears the whole directory.
 - **A receipt that will not parse is no receipt** — absent and broken both read as unknown.
+
+`write_brief_receipt`'s `extra` param (#1992) merges caller-supplied fields on top of the
+`ImageBrief` ones without growing a per-surface schema — a newsletter cover's receipt carries
+`edition_id` / `edition_format` / `hook_style` this way, and `fallback` (from `ImageBrief.fallback`)
+records whether the deterministic template shipped instead of a real brief.
 
 ## Environment
 

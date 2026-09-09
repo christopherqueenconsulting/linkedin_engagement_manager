@@ -16,14 +16,25 @@ truncated — from ever reaching the publish step; approval is the human half on
 Paths are stored RELATIVE to ``assets_dir`` so they map straight onto ``/api/assets?file_name=``.
 """
 
+import json
 import os
 import secrets
 import shutil
 from dataclasses import dataclass
-from typing import Optional
+from typing import Any, Optional
 
 from cqc_lem import assets_dir
 from cqc_lem.utilities.logger import log_debug, log_info, log_warning
+
+# How many prior covers' focal concepts a new brief is steered away from (issue #1992). Mirrors
+# `enforce_variety`'s window for posts; reads what is already on disk rather than a new DB column.
+_VARIETY_WINDOW = 5
+
+# `lem-simple` is a reasoning model: at 300 the WHOLE budget went to reasoning tokens and the
+# concept came back EMPTY with finish_reason='length' on every one of the five live editions —
+# the same trap `_BRIEF_MAX_TOKENS` already documents. A real extraction costs 540-1020 completion
+# tokens including reasoning; this leaves headroom for a longer edition.
+_CONCEPT_MAX_TOKENS = 2000
 
 COVER_SOURCE_UPLOAD = "upload"
 COVER_SOURCE_AI = "ai"
@@ -181,6 +192,107 @@ def _edition_text(title: Optional[str], subtitle: Optional[str], body: Optional[
     return "\n\n".join(p for p in (title, subtitle, (body or "")[:1500]) if p)
 
 
+def _extract_cover_concept(title: Optional[str], subtitle: Optional[str],
+                           body: Optional[str]) -> dict[str, Any]:
+    """Cheap `lem-simple` read of the edition's PAYOFF concept, from the FULL body.
+
+    `_edition_text` sends the first 1500 chars of body to the brief author, which is the HOOK —
+    for an edition about a routing switch, a silent failure, or a budget leak, the payoff concept
+    those actually name sits past that boundary, so the brief author fell to the only concrete
+    nouns in the hook (laptop, screen, LinkedIn) every time (issue #1992). Returns `{}` on any
+    failure or an unusable response — the caller still has title/subtitle/body to fall back to, so
+    a dead LLM degrades to weaker steering, never to no image at all.
+    """
+    text = "\n\n".join(p for p in (title, subtitle, body) if p)[:8000]
+    if not text.strip():
+        return {}
+    from cqc_lem.utilities.ai.client import client
+
+    try:
+        response = client.chat.completions.create(
+            model="lem-simple",
+            messages=[{"role": "user", "content": (
+                "Read this newsletter edition and name its core MECHANISM — not its topic, the "
+                "topic's PHYSICAL METAPHOR. Never a person, laptop, screen, or office scene. "
+                "Respond with ONLY a JSON object: {\"core_mechanism\": \"<the idea reduced to a "
+                "physical mechanism, one sentence — a switch, a leak, a scale, a chain, a "
+                "valve...>\", \"tangible_metaphor_candidates\": [\"<object>\", \"<object>\", "
+                "\"<object>\"], \"avoid\": [\"<generic noun this edition's hook keeps repeating, "
+                "e.g. laptop, screen, desk>\"]}\n\n"
+                f"<edition>{text}</edition>")}],
+            response_format={"type": "json_object"},
+            temperature=0.4,
+            max_tokens=_CONCEPT_MAX_TOKENS,
+        )
+        parsed = json.loads(response.choices[0].message.content or "{}")
+    except Exception as e:
+        log_debug("Cover concept extraction unavailable — brief falls back to raw edition text",
+                  error=str(e), action_type="newsletter_cover")
+        return {}
+    mechanism = str(parsed.get("core_mechanism") or "").strip()
+    candidates = [str(c).strip() for c in (parsed.get("tangible_metaphor_candidates") or [])
+                 if str(c).strip()][:3]
+    avoid = [str(a).strip() for a in (parsed.get("avoid") or []) if str(a).strip()]
+    if not mechanism and not candidates:
+        return {}
+    return {"core_mechanism": mechanism, "tangible_metaphor_candidates": candidates,
+           "avoid": avoid}
+
+
+def _cover_concept_text(title: Optional[str], subtitle: Optional[str], body: Optional[str],
+                        variety_avoid: Optional[list[str]] = None) -> "tuple[str, list[str]]":
+    """`(content, avoid_terms)` for a cover's brief — the edition's PAYOFF, not its hook.
+
+    Falls back to the old excerpt (title/subtitle + first 1500 chars of body) when concept
+    extraction returns nothing, so the brief author always has SOMETHING concrete to draw from.
+
+    The avoid terms come back SEPARATELY rather than appended to the content, because they steer
+    the brief AUTHOR only. Folded into the content they also reached the deterministic fallback,
+    whose template is a RENDER prompt — and a renderer reads "laptop; screen; desk" as a request,
+    not as a prohibition. That is how a fallback cover for the leak edition came back as a laptop
+    on a desk (issue #1992's live sample run).
+    """
+    concept = _extract_cover_concept(title, subtitle, body)
+    parts = [p for p in (title, subtitle) if p]
+    if concept.get("core_mechanism") or concept.get("tangible_metaphor_candidates"):
+        if concept.get("core_mechanism"):
+            parts.append(f"Core mechanism to depict: {concept['core_mechanism']}")
+        if concept.get("tangible_metaphor_candidates"):
+            parts.append("Candidate physical metaphors: "
+                         + "; ".join(concept["tangible_metaphor_candidates"]))
+    else:
+        parts.append((body or "")[:1500])
+    avoid_all = list(concept.get("avoid") or []) + list(variety_avoid or [])
+    return "\n\n".join(p for p in parts if p), avoid_all
+
+
+def _recent_focal_concepts(user_id: int, limit: int = _VARIETY_WINDOW) -> list[str]:
+    """The last `limit` cover receipts' `focal_concept`, most-recent first (issue #1992).
+
+    Mirrors `enforce_variety`'s cross-item memory for posts, but reads it off the assets volume
+    rather than a new DB column — the brief receipt (`media_provenance.write_brief_receipt`) is
+    already the durable record. Never raises: a directory that doesn't exist yet, or a receipt
+    that won't parse, just contributes nothing to the variety context.
+    """
+    directory = _cover_dir(user_id)
+    try:
+        names = [n for n in os.listdir(directory) if n.endswith(".brief.json")]
+    except OSError:
+        return []
+    names.sort(key=lambda n: os.path.getmtime(os.path.join(directory, n)), reverse=True)
+    concepts = []
+    for name in names[:max(0, int(limit))]:
+        try:
+            with open(os.path.join(directory, name), "r", encoding="utf-8") as fh:
+                payload = json.load(fh)
+        except (OSError, ValueError):
+            continue
+        concept = str(payload.get("focal_concept") or "").strip()
+        if concept:
+            concepts.append(concept)
+    return concepts
+
+
 def build_cover_prompt(title: Optional[str], subtitle: Optional[str], body: Optional[str],
                        profile=None) -> str:
     """The image prompt for an edition's cover, via the ONE brief engine.
@@ -276,7 +388,9 @@ def generate_cover_for_edition(user_id: int, edition_id: int, title: Optional[st
                                subtitle: Optional[str], body: Optional[str],
                                profile=None,
                                use_avatar: Optional[bool] = None,
-                               guidance: Optional[str] = None
+                               guidance: Optional[str] = None,
+                               edition_format: Optional[str] = None,
+                               hook_style: Optional[str] = None,
                                ) -> "tuple[Optional[str], Optional[str]]":
     """Generate a cover for one edition. Returns ``(relative_path, None)`` or ``(None, reason)``.
 
@@ -288,33 +402,48 @@ def generate_cover_for_edition(user_id: int, edition_id: int, title: Optional[st
     ``guidance`` (issue #1890) is the author's free-text direction for THIS image — distinct from
     the edition's article-text "Added Guidance" — and is threaded straight into the brief's
     ``extra_direction`` rather than a new per-surface prompt helper (per CLAUDE.md's image stack).
+
+    ``edition_format``/``hook_style`` (issue #1992) distinguish a listicle cover from a
+    personal-story one; folded into the brief's ``content_shape``. The content itself is drawn
+    from ``_cover_concept_text`` (the edition's PAYOFF, steered away from the last
+    ``_VARIETY_WINDOW`` covers' focal concepts) rather than the edition's raw hook text — a real
+    brief AND the deterministic fallback both get a ``.brief.json`` receipt beside the stored
+    cover (``media_provenance.write_brief_receipt``), so every generation is auditable.
     """
     from cqc_lem.utilities.ai.image_brief import build_image_brief
     from cqc_lem.utilities.ai.image_gen import render_avatar_image_gated, render_image_gated
+    from cqc_lem.utilities.media_provenance import write_brief_receipt
 
     avatar = _resolve_cover_avatar(user_id, use_avatar, title, subtitle, body)
+    content, avoid_terms = _cover_concept_text(
+        title, subtitle, body, variety_avoid=_recent_focal_concepts(user_id))
+    shape = (f"format={edition_format or 'unspecified'}, hook_style={hook_style or 'unspecified'}"
+            if edition_format or hook_style else None)
 
     try:
         # The avatar is resolved BEFORE the brief is authored: its declared subject clause is what
         # stops the prompt LLM inventing a different person for the LoRA to contradict (#744).
-        brief = build_image_brief(_edition_text(title, subtitle, body), surface="newsletter",
+        brief = build_image_brief(content, surface="newsletter",
                                   ratio=COVER_IMAGE_RATIO, profile=profile, avatar=avatar,
-                                  extra_direction=guidance)
+                                  extra_direction=guidance, content_shape=shape,
+                                  avoid_terms=avoid_terms)
     except Exception as e:
         log_warning("Newsletter cover prompt failed", exc=e, user_id=user_id,
                     action_type="newsletter_cover")
         return None, "Could not write a cover prompt"
 
+    render_info: dict = {}
     try:
         if avatar:
             generated_path = render_avatar_image_gated(
                 brief.prompt, avatar=avatar, user_id=user_id, surface="newsletter",
-                ratio=COVER_IMAGE_RATIO, focal_concept=brief.focal_concept)
+                ratio=COVER_IMAGE_RATIO, focal_concept=brief.focal_concept,
+                render_info=render_info)
         else:
             generated_path = render_image_gated(brief.prompt, surface="newsletter",
                                                 ratio=COVER_IMAGE_RATIO,
                                                 focal_concept=brief.focal_concept,
-                                                user_id=user_id)
+                                                user_id=user_id, render_info=render_info)
     except Exception as e:
         log_warning("Newsletter cover generation failed", exc=e, user_id=user_id,
                     action_type="newsletter_cover")
@@ -342,5 +471,12 @@ def generate_cover_for_edition(user_id: int, edition_id: int, title: Optional[st
         return None, "Could not store the generated image"
 
     relative = f"{COVER_SUBDIR}/{int(user_id)}/{name}"
+    # Keyed by the STORED public URL, so a later audit resolves it the same way it resolves the
+    # row's cover_image_path. Written for the real brief AND the deterministic fallback alike —
+    # `brief.fallback` is what tells the two apart (issue #1992).
+    write_brief_receipt(cover_public_url(relative), brief, user_id=user_id,
+                        gate_verdict=render_info.get("gate_verdict"),
+                        extra={"edition_id": edition_id, "edition_format": edition_format,
+                               "hook_style": hook_style})
     log_info("Generated newsletter cover", user_id=user_id, action_type="newsletter_cover")
     return relative, None
