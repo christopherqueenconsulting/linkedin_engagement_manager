@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.173.12](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.173.11...v0.173.12) (2026-09-09)
+
+
+### Bug Fixes
+
+* **newsletter-covers:** delete the brief receipt when a cover file is removed (closes [#2010](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2010)) ([#2011](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2011)) ([b2eb85a](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/b2eb85a9434b70d6e7bbad165dc85a4ce338e5f9))
+
 ## [0.173.11](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.173.10...v0.173.11) (2026-09-09)
 
 
