@@ -123,6 +123,26 @@ class TestSaveAndResolve:
         with patch.object(nc, "assets_dir", str(tmp_path)):
             assert nc.remove_cover_file("images/newsletter_covers/7/gone.png") is False
 
+    def test_remove_also_deletes_the_brief_receipt(self, tmp_path):
+        """Issue #2010: a regenerated cover must not orphan its `.brief.json` forever."""
+        with patch.object(nc, "assets_dir", str(tmp_path)):
+            rel = nc.save_cover_bytes(7, 42, _image_bytes())
+            abs_path = nc.cover_abs_path(rel)
+            receipt_path = os.path.splitext(abs_path)[0] + ".brief.json"
+            with open(receipt_path, "w", encoding="utf-8") as fh:
+                json.dump({"focal_concept": "a valve"}, fh)
+
+            assert nc.remove_cover_file(rel) is True
+
+            assert not os.path.isfile(abs_path)
+            assert not os.path.isfile(receipt_path)
+
+    def test_remove_without_a_receipt_still_deletes_the_cover(self, tmp_path):
+        with patch.object(nc, "assets_dir", str(tmp_path)):
+            rel = nc.save_cover_bytes(7, 42, _image_bytes())
+            assert nc.remove_cover_file(rel) is True
+            assert nc.cover_abs_path(rel) is None
+
     def test_public_url_carries_the_relative_path(self):
         url = nc.cover_public_url("images/newsletter_covers/7/ed42_ab.png")
         assert url.endswith("/api/assets?file_name=images/newsletter_covers/7/ed42_ab.png")
@@ -602,6 +622,32 @@ class TestCoverVariety:
              patch("cqc_lem.utilities.ai.image_gen.render_image_gated", return_value=None):
             nc.generate_cover_for_edition(3, 9, "T", "S", "B")
         assert brief.call_args[1]["avoid_terms"] == []
+
+    def test_regenerating_leaves_exactly_one_receipt_per_stored_cover(self, tmp_path):
+        """Issue #2010: the real regeneration flow — save, receipt, then replace.
+
+        Must not leave the superseded cover's `.brief.json` behind with nothing left to
+        reference it.
+        """
+        assets = tmp_path / "assets"
+        with patch.object(nc, "assets_dir", str(assets)):
+            first_rel = nc.save_cover_bytes(3, 9, _image_bytes())
+            first_abs = nc.cover_abs_path(first_rel)
+            self._write_receipt(os.path.dirname(first_abs), os.path.basename(
+                os.path.splitext(first_abs)[0] + ".brief.json"), "concept-one", 1000)
+
+            # Regeneration: the new cover is saved, then the previous one is torn down — the
+            # order every real caller (`api/routers/user.py`, `run_scheduler.py`) uses.
+            second_rel = nc.save_cover_bytes(3, 9, _image_bytes())
+            second_abs = nc.cover_abs_path(second_rel)
+            self._write_receipt(os.path.dirname(second_abs), os.path.basename(
+                os.path.splitext(second_abs)[0] + ".brief.json"), "concept-two", 1001)
+            assert nc.remove_cover_file(first_rel) is True
+
+            directory = nc._cover_dir(3)
+            receipts = [n for n in os.listdir(directory) if n.endswith(".brief.json")]
+            assert len(receipts) == 1
+            assert nc._recent_focal_concepts(3) == ["concept-two"]
 
 
 class TestContentShape:

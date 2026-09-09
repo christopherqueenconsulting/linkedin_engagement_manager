@@ -172,6 +172,13 @@ content from:
    (issue #2000). A receipt written by the deterministic fallback is skipped: its focal concept is
    the edition's title text, not an object.
 
+   The window only ever sees receipts for covers still on disk (issue #2010): `remove_cover_file`
+   deletes a cover's `.brief.json` sidecar in the same call that deletes the cover image, so a
+   regenerated or replaced cover stops steering variety the moment its file is gone rather than
+   surviving as an orphan nothing references. Deliberate, not an accident of cleanup order — a
+   superseded regeneration is not "an object this account already used," it is an object this
+   account tried and moved away from, so it should not keep pushing later editions off it either.
+
    `_cover_concept_text` returns **`(content, avoid_terms)`** — the avoid nouns come back separately
    and reach `build_image_brief`'s `avoid_terms` param, which puts them in the AUTHOR's user message
    only. They must never be folded into the content: the content is what the deterministic fallback
@@ -241,7 +248,11 @@ alike — via `media_provenance.write_brief_receipt(cover_public_url(relative), 
 extra={"edition_id": ..., "edition_format": ..., "hook_style": ...})`. `write_brief_receipt`'s
 `extra` param merges surface-specific fields on top of the generic `ImageBrief` fields, so the one
 receipt shape stays generic rather than growing a per-surface schema. Nothing is written for a
-render that never gets stored (a failed generation, a rejected gate verdict).
+render that never gets stored (a failed generation, a rejected gate verdict). `remove_cover_file`
+is the matching teardown: it deletes the receipt alongside the cover it describes, so
+`images/newsletter_covers/<user_id>/` never accumulates a receipt with no cover left to reference
+it (issue #2010) — see the variety-window note above for why that pairing is deliberate rather
+than incidental.
 
 **Image guidance (issue #1890):** the cover editor's "Image guidance" field is free-text direction
 for THIS render only — separate from the edition's "Added Guidance" field, which steers the article

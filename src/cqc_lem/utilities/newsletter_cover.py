@@ -197,17 +197,33 @@ def save_cover_bytes(user_id: int, edition_id: int, data: bytes) -> str:
 
 
 def remove_cover_file(relative_path: Optional[str]) -> bool:
-    """Best-effort delete of a stored cover file. Never raises — the DB row is the source of truth."""
+    """Best-effort delete of a stored cover file AND its `.brief.json` receipt (issue #2010).
+
+    Never raises — the DB row is the source of truth. The receipt lives and dies with the cover it
+    describes: `_recent_focal_concepts` only ever reads receipts for covers still on disk, so a
+    superseded regeneration stops steering variety the moment its file is gone, instead of an
+    orphan surviving in `images/newsletter_covers/<user_id>/` forever with nothing left to
+    reference it.
+    """
+    from cqc_lem.utilities.media_provenance import BRIEF_RECEIPT_SUFFIX
+
     abs_path = cover_abs_path(relative_path)
     if not abs_path:
         return False
     try:
         os.remove(abs_path)
-        return True
     except OSError as e:
         log_debug("Could not delete newsletter cover file", error=str(e),
                   action_type="newsletter_cover")
         return False
+    receipt_path = os.path.splitext(abs_path)[0] + BRIEF_RECEIPT_SUFFIX
+    if os.path.isfile(receipt_path):
+        try:
+            os.remove(receipt_path)
+        except OSError as e:
+            log_debug("Could not delete newsletter cover brief receipt", error=str(e),
+                      action_type="newsletter_cover")
+    return True
 
 
 def _edition_text(title: Optional[str], subtitle: Optional[str], body: Optional[str]) -> str:
