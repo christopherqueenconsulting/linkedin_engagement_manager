@@ -75,6 +75,15 @@ first was thrown out, naming the offending noun. Re-sending the identical prompt
 same rejected scene — on the five live editions of #1992 that put four of five covers on the
 deterministic fallback.
 
+**`avoid_terms` is a GATE, not just a hint (#2000).** `_valid()` rejects a `newsletter` brief whose
+focal concept names one, driving the same retry-with-reason the stock-office noun does. As a prompt
+line alone it had no teeth: four consecutive live covers all chose a valve. It grades the focal
+concept only — a repeated object in the background is not a repeat — and is capped at
+`_MAX_AVOID_TERMS`, so a long avoid list can never starve the author into the fallback. The caller
+passes OBJECTS, not sentences (`newsletter_cover._focal_objects`, vocabulary in
+`METAPHOR_OBJECTS`); the newsletter preset lists several object FAMILIES for the same reason, since
+cost and routing ideas both reach for plumbing by default.
+
 **`avoid_terms` never reach a render prompt.** `build_image_brief(..., avoid_terms=[...])` puts a
 caller's "not these" nouns in the AUTHOR's user message only, and `_fallback_brief` never sees them.
 The fallback template IS a render prompt, and a render prompt has no negation: every noun in it is a

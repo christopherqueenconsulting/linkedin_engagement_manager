@@ -383,7 +383,7 @@ class TestLiveSampleRegressions:
             brief = build_image_brief("an edition about token spend", surface="newsletter",
                                       ratio="16:9", avoid_terms=["laptop", "a prior gear"])
         user_msg = llm.call_args[1]["messages"][1]["content"]
-        assert "Do NOT build the scene around any of these" in user_msg
+        assert "must NOT be built on any of them" in user_msg
         assert "a prior gear" in user_msg
         assert brief.fallback
         assert "a prior gear" not in brief.prompt
@@ -403,3 +403,100 @@ class TestLiveSampleRegressions:
         assert "REJECTED" not in first
         assert "Your previous attempt was REJECTED" in second
         assert "'laptop'" in second, "the retry must name the offending noun"
+
+
+@pytest.mark.unit
+class TestAvoidTermGate:
+    """Issue #2000: `avoid_terms` as a prompt line alone had no teeth.
+
+    Four consecutive live newsletter covers all chose a valve while every prior valve sat in the
+    avoid list. It now gates the returned FOCAL CONCEPT and drives the same retry-with-reason the
+    stock-office noun does.
+    """
+
+    _VALVE = {"focal_concept": "Budget leak shown as a dripping valve",
+              "prompt": ("A brass valve dripping onto a worn workbench, dramatic raking side "
+                        "light, macro still life, shot on a 100mm lens at f/2.8, subtle film "
+                        "grain, editorial photograph.")}
+    _GEAR = {"focal_concept": "A cracked gear stopped mid-turn",
+             "prompt": ("A cracked cast-iron gear resting on a stone slab, low-key light from "
+                       "camera left, macro still life, shot on a 100mm lens at f/2.8, subtle "
+                       "film grain, editorial photograph.")}
+
+    def test_a_repeated_object_is_rejected_and_retried(self):
+        with patch("cqc_lem.utilities.ai.ai_helper._call_llm",
+                   side_effect=[_resp(self._VALVE), _resp(self._GEAR)]) as llm:
+            brief = build_image_brief("content", surface="newsletter", ratio="16:9",
+                                      avoid_terms=["valve"])
+        assert llm.call_count == 2
+        assert not brief.fallback
+        assert brief.focal_concept == self._GEAR["focal_concept"]
+
+    def test_the_retry_names_the_repeated_object(self):
+        with patch("cqc_lem.utilities.ai.ai_helper._call_llm",
+                   side_effect=[_resp(self._VALVE), _resp(self._GEAR)]) as llm:
+            build_image_brief("content", surface="newsletter", ratio="16:9",
+                              avoid_terms=["valve"])
+        second = llm.call_args_list[1][1]["messages"][1]["content"]
+        assert "'valve'" in second
+        assert "different family" in second
+
+    def test_a_distinct_object_passes_first_time(self):
+        with patch("cqc_lem.utilities.ai.ai_helper._call_llm",
+                   return_value=_resp(self._GEAR)) as llm:
+            brief = build_image_brief("content", surface="newsletter", ratio="16:9",
+                                      avoid_terms=["valve", "leak"])
+        assert llm.call_count == 1
+        assert not brief.fallback
+
+    def test_the_gate_reads_the_focal_concept_not_the_whole_prompt(self):
+        """A valve in the background of an otherwise distinct scene is not a repeat."""
+        background = {"focal_concept": "A cracked gear stopped mid-turn",
+                      "prompt": ("A cracked cast-iron gear on a stone slab with a brass valve "
+                                "far behind it out of focus, low-key light, macro still life, "
+                                "shot on a 100mm lens at f/2.8, editorial photograph.")}
+        with patch("cqc_lem.utilities.ai.ai_helper._call_llm",
+                   return_value=_resp(background)) as llm:
+            brief = build_image_brief("content", surface="newsletter", ratio="16:9",
+                                      avoid_terms=["valve"])
+        assert llm.call_count == 1
+        assert not brief.fallback
+
+    def test_a_long_avoid_list_cannot_starve_the_author(self):
+        from cqc_lem.utilities.ai.image_brief import _MAX_AVOID_TERMS
+
+        avoid = [f"object{i}" for i in range(40)] + ["gear"]
+        with patch("cqc_lem.utilities.ai.ai_helper._call_llm",
+                   return_value=_resp(self._GEAR)) as llm:
+            brief = build_image_brief("content", surface="newsletter", ratio="16:9",
+                                      avoid_terms=avoid)
+        assert llm.call_count == 1, "the capped list drops the oldest steering, never the author"
+        assert not brief.fallback
+        user_msg = llm.call_args[1]["messages"][1]["content"]
+        assert f"object{_MAX_AVOID_TERMS}" not in user_msg
+
+    def test_the_gate_is_off_for_other_surfaces(self):
+        with patch("cqc_lem.utilities.ai.ai_helper._call_llm",
+                   return_value=_resp(self._VALVE)) as llm:
+            brief = build_image_brief("content", surface="post_image", avoid_terms=["valve"])
+        assert llm.call_count == 1
+        assert not brief.fallback
+
+    def test_the_gate_is_off_when_an_avatar_is_in_frame(self):
+        avatar = {"status": "succeeded", "model_ref": "owner/lora:v1", "trigger_word": "TOK"}
+        with patch("cqc_lem.utilities.ai.ai_helper._call_llm",
+                   return_value=_resp(self._VALVE)) as llm:
+            brief = build_image_brief("content", surface="newsletter", ratio="16:9",
+                                      avatar=avatar, avoid_terms=["valve"])
+        assert llm.call_count == 1
+        assert not brief.fallback
+
+
+@pytest.mark.unit
+class TestNewsletterPresetFamilies:
+    def test_the_preset_offers_more_than_plumbing(self):
+        """Cost and routing ideas both reach for plumbing; one family is not a vocabulary."""
+        preset = _STYLE_PRESETS["newsletter"].lower()
+        for family_word in ("scale", "gear", "domino", "caliper", "sieve"):
+            assert family_word in preset
+        assert "different family" in preset

@@ -156,6 +156,14 @@ content from:
    sidecars already on the assets volume (no new DB column, mirrors `enforce_variety`'s approach for
    posts).
 
+   `_recent_focal_objects` is what the brief actually gets: `_focal_objects` pulls the OBJECT out
+   of each prior `focal_concept` first (`image_brief.METAPHOR_OBJECTS` for precision, a filler-strip
+   token pass otherwise). **Passing the whole sentence steers nothing** — a focal concept is prose
+   ("Budget leak depicted as a dripping valve spilling money") and the next one never matches it, so
+   four consecutive live covers all chose a valve while every prior valve sat in the avoid list
+   (issue #2000). A receipt written by the deterministic fallback is skipped: its focal concept is
+   the edition's title text, not an object.
+
    `_cover_concept_text` returns **`(content, avoid_terms)`** — the avoid nouns come back separately
    and reach `build_image_brief`'s `avoid_terms` param, which puts them in the AUTHOR's user message
    only. They must never be folded into the content: the content is what the deterministic fallback
@@ -170,6 +178,13 @@ object-first instruction with a metaphor vocabulary for abstract/financial/softw
 drip/leak/meter/scale, routing → switch/valve/fork, failure → cracked gear/fallen domino, audit →
 magnifier/caliper/tally). `_NO_ANONYMOUS_PERSON` no longer invites "a close-up of hands mid-action"
 — hands are the renderer's weakest anatomy regardless of what they're near.
+
+**The repeat-object gate (#2000).** `avoid_terms` is not only a prompt line — `_valid()` rejects a
+`newsletter` brief whose **`focal_concept`** names one of them, and the retry-with-reason above
+names the repeated object. Graded on the focal concept, never the whole prompt: a valve in the
+background of an otherwise distinct scene is not a repeat and must not cost a retry. The list is
+capped at `_MAX_AVOID_TERMS` (8) so a long history can never starve the author into the fallback on
+every run.
 
 **The stock-office gate.** Even with a better preset, `build_image_brief` rejects and retries (then
 falls back to the deterministic template) a `newsletter`-surface brief whose prompt names one of
