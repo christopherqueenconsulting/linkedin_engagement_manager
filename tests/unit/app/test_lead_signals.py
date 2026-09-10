@@ -370,3 +370,82 @@ class TestReadPathWiring:
         assert flag.call_args.args[1] == "Do you offer this for agencies?"
         assert flag.call_args.kwargs["person_name"] == "Jane Doe"
         assert flag.call_args.kwargs["post_id"] == 7
+
+
+class TestAnUndeliveredLeadReplyIsNotDropped:
+    """Issue #2028: an approved reply that did not land used to be terminal and silent.
+
+    `status='failed'` and nothing else — no retry, no fallback, no surface saying it never arrived.
+    Three of the five lead signals this account has ever produced ended there, and every one was a
+    real person who had written a substantive reply to us.
+    """
+
+    _SIGNAL = {
+        "id": 5, "user_id": 1, "status": "approved", "channel": "reply",
+        "draft_response": "Happy to compare notes on that.",
+        "person_profile_url": "https://www.linkedin.com/in/someone",
+        "context_url": "https://www.linkedin.com/feed/update/urn:li:activity:1/",
+        "post_id": 9, "delivery_attempts": 0,
+    }
+
+    def _run(self, signal, landed):
+        from unittest.mock import MagicMock, patch
+
+        from cqc_lem.app.engagement import outreach as mod
+
+        with patch(f"{_OUT}.get_lead_signal", return_value=dict(signal)), \
+             patch(f"{_OUT}.get_current_profile",
+                   return_value=(MagicMock(), MagicMock(), "e", MagicMock())), \
+             patch(f"{_OUT}._reply_to_person_on_post", return_value=landed), \
+             patch(f"{_OUT}.insert_new_log"), \
+             patch(f"{_OUT}.quit_gracefully"), \
+             patch(f"{_OUT}.update_lead_signal") as upd, \
+             patch(f"{_OUT}.send_lead_response") as task, \
+             patch(f"{_OUT}.log_warning") as warn:
+            result = mod._send_lead_response(5)
+        return result, upd, task, warn
+
+    def test_a_first_failure_is_retried_and_the_row_stays_approved(self):
+        result, upd, task, warn = self._run(self._SIGNAL, landed=False)
+
+        task.apply_async.assert_called_once()
+        assert task.apply_async.call_args.kwargs["countdown"] > 0
+        # No status change: leaving it APPROVED is what makes a later run pick it up, the same
+        # shape the rate-limited path already uses.
+        assert "status" not in upd.call_args.kwargs
+        assert upd.call_args.kwargs["delivery_attempts"] == 1
+        warn.assert_not_called()
+        assert "retrying" in result
+
+    def test_a_second_failure_is_terminal_and_names_the_person(self):
+        from cqc_lem.utilities.db import LeadSignalStatus
+
+        result, upd, task, warn = self._run({**self._SIGNAL, "delivery_attempts": 1}, landed=False)
+
+        task.apply_async.assert_not_called()
+        assert upd.call_args.kwargs["status"] is LeadSignalStatus.FAILED
+        warn.assert_called_once()
+        # A human has to be able to act on it: who, and where.
+        assert "someone" in warn.call_args.args[0]
+        assert "urn:li:activity:1" in warn.call_args.args[0]
+        assert "failed after 2 attempts" in result
+
+    def test_a_delivered_reply_is_marked_sent_and_never_retried(self):
+        from cqc_lem.utilities.db import LeadSignalStatus
+
+        result, upd, task, warn = self._run(self._SIGNAL, landed=True)
+
+        assert upd.call_args.kwargs["status"] is LeadSignalStatus.SENT
+        task.apply_async.assert_not_called()
+        warn.assert_not_called()
+        assert "sent" in result
+
+    def test_the_retry_is_bounded(self):
+        """The retry is bounded at one.
+
+        Not a ladder: an approved response goes stale, and a lead who wrote to us deserves an
+        answer or a person, not a queue.
+        """
+        from cqc_lem.app.engagement.outreach import LEAD_RESPONSE_MAX_ATTEMPTS
+
+        assert LEAD_RESPONSE_MAX_ATTEMPTS == 2

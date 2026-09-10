@@ -154,6 +154,7 @@ from cqc_lem.utilities.db import (
     get_user_password_pair_by_id,
     has_appreciation_touch,
     has_catchup_touch,
+    has_dm_within_days,
     has_engaged_url_with_x_days,
     has_open_scheduled_dm,
     has_user_commented_on_post_url,
@@ -1952,14 +1953,32 @@ def automate_profile_viewer_engagement(self, user_id: int, loop_for_duration: in
     return result
 
 
-def _profile_viewer_dm_blocked(user_id: int, profile_url: str, viewer_name: str) -> bool:
-    """True when a queued profile-viewer DM could not be filed for this person (issue #1137).
+# How long a cold profile-viewer DM claims its recipient (issue #2028). A viewer stays on the
+# analytics page for days, and the walk re-lists them every run — so "once per viewer per day",
+# which is all the outer guard enforces, means a DM a day for as long as they linger. Six people
+# received exactly two on consecutive days before this existed.
+PROFILE_VIEWER_DM_INTERVAL_DAYS = int(os.getenv("PROFILE_VIEWER_DM_INTERVAL_DAYS", "30"))
 
-    Asked BEFORE the message is written as well as before the insert, because an open draft is the
-    STEADY STATE for this lane, not the exception: the walk re-lists the same viewer every loop for
-    as long as they sit inside the lookback window, and only the first visit can queue anything.
-    Answering this late would render the template and run the history-dedup call on every later
-    visit, forever, for a draft that can never be written.
+
+def _profile_viewer_dm_blocked(user_id: int, profile_url: str, viewer_name: str) -> bool:
+    """True when a cold profile-viewer DM must not be made to this person right now.
+
+    Two rules, and the second is why this applies to BOTH branches (issues #1137, #2028).
+
+    An OPEN DRAFT blocks a second one: an open draft is the STEADY STATE for this lane, not the
+    exception — the walk re-lists the same viewer every loop for as long as they sit inside the
+    lookback window, and only the first visit can queue anything. Asked BEFORE the message is
+    written as well as before the insert, or the template render and the history-dedup call are paid
+    on every later visit, forever, for a draft that can never be written.
+
+    A DM ALREADY SENT inside `PROFILE_VIEWER_DM_INTERVAL_DAYS` blocks another. That half is new, and
+    it is the half the direct-dispatch path never had: its comment used to read "direct dispatch
+    skips the question — it has no queue to collide with", which is true and beside the point. The
+    queue was never what stopped a duplicate; it just happened to. With `profile_viewer_dm_auto_send`
+    ON, six recipients got two DMs on consecutive days in production.
+
+    Deliberately NOT keyed on the ENGAGED row `has_engaged_url_with_x_days` reads: the walk writes
+    one on every run, so a window measured against it always finds yesterday and never expires.
     """
     if (has_open_scheduled_dm(user_id, profile_url, source=SCHEDULED_DM_SOURCE_PROFILE_VIEWER)
             or has_open_scheduled_dm(user_id, profile_url, source=SCHEDULED_DM_SOURCE_NURTURE)
@@ -1967,6 +1986,13 @@ def _profile_viewer_dm_blocked(user_id: int, profile_url: str, viewer_name: str)
         # DEBUG: one open draft per conversation is the designed rule, and the analytics page lists
         # the same viewer on consecutive runs — an expected no-op, not a missed opportunity.
         log_debug(f"Profile viewer: {viewer_name} already has a queued draft; not queueing another",
+                  user_id=user_id, action_type="dm", task_name="engage_with_profile_viewer")
+        return True
+    if has_dm_within_days(user_id, profile_url, PROFILE_VIEWER_DM_INTERVAL_DAYS):
+        # DEBUG for the same reason: a viewer who lingers on the analytics page is the expected
+        # case, and declining to message them twice is the guard working.
+        log_debug(f"Profile viewer: {viewer_name} was messaged within the last "
+                  f"{PROFILE_VIEWER_DM_INTERVAL_DAYS} days; not messaging again",
                   user_id=user_id, action_type="dm", task_name="engage_with_profile_viewer")
         return True
     return False
@@ -2170,9 +2196,13 @@ def engage_with_profile_viewer(self, user_id: int, viewer_url, viewer_name):
                     # one: an open draft is this lane's steady state, and the walk re-lists the
                     # same viewer every loop. Direct dispatch skips the question — it has no queue
                     # to collide with, and that is the pre-#1137 behaviour the toggle restores.
-                    if not able_to_comment and not auto_send and _profile_viewer_dm_blocked(
+                    # BOTH branches now (issue #2028). The gated path asks whether a draft could be
+                    # FILED before it pays to write one; the direct path asks whether this person
+                    # was already messaged. The second question has no queue behind it, which is
+                    # precisely why direct dispatch was the one sending duplicates.
+                    if not able_to_comment and _profile_viewer_dm_blocked(
                             acting_user_id, profile_url_str, viewer_name):
-                        result = f"Did not queue a DM to {viewer_name}"
+                        result = f"Did not message {viewer_name}"
 
                     elif not able_to_comment:
                         # Retrieve past DM history with this profile to avoid repeating messages
@@ -2544,6 +2574,47 @@ def send_lead_response(self, signal_id: int):
     return _send_lead_response(signal_id)
 
 
+# A hot-lead reply that did not land is retried ONCE before it is written off (issue #2028).
+# Deliberately not a long ladder: an approved response gets stale, and a lead who wrote to us
+# deserves an answer or a person, not a queue.
+LEAD_RESPONSE_RETRY_SECONDS = int(os.getenv("LEAD_RESPONSE_RETRY_SECONDS", str(2 * 60 * 60)))
+LEAD_RESPONSE_MAX_ATTEMPTS = 2
+
+
+def _lead_reply_not_delivered(signal_id: int, signal: dict, user_id: int) -> str:
+    """What happens when an APPROVED lead reply does not land (issue #2028).
+
+    It used to be `status=FAILED` and nothing else — no retry, no fallback, no surface saying it
+    never arrived. Three of the five lead signals this account has ever produced ended there, and
+    every one of them was a real person who had written us a substantive reply. That is the highest
+    value event this system can observe, failing into a dead row.
+
+    The commonest cause was mechanical and is now fixed: `_reply_to_person_on_post` returns False
+    when it cannot find the person's comment on the page, and until #2020 the comment readers were
+    blind. So the first failure is retried rather than believed — the rate-limited path above
+    already models leaving the row APPROVED for a later run, and this reuses that shape.
+
+    A second failure is TERMINAL but no longer silent: it warns (which escalates on repeat, per the
+    logging contract) with the person and the post, so a human can answer them by hand. Nothing here
+    ever auto-responds — the signal was human-approved before it reached this function.
+    """
+    attempts = int(signal.get("delivery_attempts") or 0) + 1
+    person = signal.get("person_profile_url") or "unknown"
+    if attempts < LEAD_RESPONSE_MAX_ATTEMPTS:
+        update_lead_signal(signal_id, delivery_attempts=attempts)  # left APPROVED on purpose
+        send_lead_response.apply_async(kwargs={"signal_id": signal_id},
+                                       countdown=LEAD_RESPONSE_RETRY_SECONDS)
+        log_info(f"Lead reply did not land for {person}; retrying in "
+                 f"{LEAD_RESPONSE_RETRY_SECONDS}s (attempt {attempts})",
+                 user_id=user_id, action_type="reply", task_name="send_lead_response")
+        return f"Lead signal {signal_id} reply -> retrying (attempt {attempts})"
+    update_lead_signal(signal_id, status=LeadSignalStatus.FAILED, delivery_attempts=attempts)
+    log_warning(f"Lead reply could not be delivered after {attempts} attempts — answer "
+                f"{person} by hand: {signal.get('context_url') or 'no post url'}",
+                user_id=user_id, action_type="reply", task_name="send_lead_response")
+    return f"Lead signal {signal_id} reply -> failed after {attempts} attempts"
+
+
 def _send_lead_response(signal_id: int) -> str:
     """Body of send_lead_response, extracted for unit testing (no QueueOnce/Redis). Only ever acts
     on a signal a human APPROVED — nothing here can auto-respond to a lead on its own.
@@ -2579,11 +2650,13 @@ def _send_lead_response(signal_id: int) -> str:
     try:
         sent = _reply_to_person_on_post(driver, wait, signal["context_url"],
                                         signal.get("person_profile_url") or "", message, user_id=user_id)
-        update_lead_signal(signal_id, status=LeadSignalStatus.SENT if sent else LeadSignalStatus.FAILED)
         insert_new_log(user_id=user_id, post_id=signal.get("post_id"), action_type=LogActionType.REPLY,
                        result=LogResultType.SUCCESS if sent else LogResultType.FAILURE,
                        post_url=signal["context_url"], message=message)
-        return f"Lead signal {signal_id} reply -> {'sent' if sent else 'failed'}"
+        if sent:
+            update_lead_signal(signal_id, status=LeadSignalStatus.SENT)
+            return f"Lead signal {signal_id} reply -> sent"
+        return _lead_reply_not_delivered(signal_id, signal, user_id)
     finally:
         quit_gracefully(driver)
 

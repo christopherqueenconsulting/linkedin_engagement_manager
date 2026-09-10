@@ -158,6 +158,33 @@ def get_post_message_from_log_for_user(user_id: int, post_id: int) -> Optional[s
         message = None
 
     return message
+
+
+def has_dm_within_days(user_id: int, profile_url: str, days: int) -> bool:
+    """Have we successfully DM'd this profile inside the last `days` days (issue #2028)?
+
+    Deliberately NOT `has_engaged_url_with_x_days`. That one reads the ENGAGED row the
+    profile-viewer walk writes on EVERY run, so it is rewritten daily and a window measured against
+    it can never actually expire — it always finds yesterday's row. A DM row is only written when a
+    DM is really sent, which is what makes it a claim rather than a heartbeat.
+
+    A failed read counts zero, i.e. "not yet messaged", which lets the touch through. That is the
+    fail-open direction the sibling reader takes and the wrong one for a spam guard — but the
+    alternative is a database blip silently muting outreach, and the daily cap plus the account-level
+    governor still bound the damage.
+    """
+    try:
+        with db_cursor() as cursor:
+            cursor.execute(
+                "SELECT COUNT(*) FROM logs WHERE user_id = %s AND post_url = %s "
+                "AND action_type = %s AND result = %s AND created_at > NOW() - INTERVAL %s DAY",
+                (user_id, profile_url, LogActionType.DM.value, LogResultType.SUCCESS.value, days))
+            return int(cursor.fetchone()[0] or 0) > 0
+    except mysql.connector.Error as err:
+        log_error("Could not check recent DMs to profile", exc=err, user_id=user_id)
+        return False
+
+
 def has_engaged_url_with_x_days(user_id: int, post_url: str, days: int):
     """Did we record an ENGAGED action against this URL inside the last `days` days?
 

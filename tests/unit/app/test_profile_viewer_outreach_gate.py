@@ -33,7 +33,8 @@ _UNSET = object()
 
 def _engage(connection: str, *, auto_send=False, prefs_row=_UNSET, activities=(),
             commented=False, message="Hi Jane", open_draft=False, requested_keys=(),
-            dm_id=7, request_id=9, max_invites=10, invites_sent=0, open_requests=0):
+            dm_id=7, request_id=9, max_invites=10, invites_sent=0, open_requests=0,
+            messaged_recently=False):
     """Run ONE profile-viewer engagement and hand back every dispatch/queue mock.
 
     `prefs_row` replaces the whole preference dict (so a test can model a read that came back
@@ -65,6 +66,7 @@ def _engage(connection: str, *, auto_send=False, prefs_row=_UNSET, activities=()
         "summarize_recent_activity": "they shipped a thing",
         "get_ai_message_refinement": "Hi Jane",
         "has_open_scheduled_dm": open_draft,
+        "has_dm_within_days": messaged_recently,
         "get_requested_person_keys": set(requested_keys),
         "insert_scheduled_dm": dm_id,
         "insert_connection_request": request_id,
@@ -211,7 +213,9 @@ class TestDedupBeforeQueueing:
 
         mocks["sched"].assert_not_called()
         mocks["dm"].apply_async.assert_not_called()
-        assert "Did not queue a DM" in result
+        # Wording widened with the guard (#2028): it now covers "already messaged", not only
+        # "a draft already exists", and it applies on the direct-dispatch path too.
+        assert "Did not message" in result
         assert not _log_result(mocks)
 
     def test_the_open_draft_check_covers_all_three_drafting_sources(self):
@@ -321,6 +325,8 @@ class TestAFailedInsertIsNotASuccess:
     def test_a_dm_insert_that_returned_nothing_records_failure(self):
         result, mocks = _engage("1st", dm_id=None)
 
+        # A FAILED INSERT, which is a different fact from the dedup guard declining to message —
+        # and keeps its own wording so the two are distinguishable in a log.
         assert "Did not queue a DM" in result
         assert not _log_result(mocks)
 
@@ -426,3 +432,49 @@ class TestRosterConnectEscalationIsUntouched:
 
         source = inspect.getsource(getattr(feed, name))
         assert "profile_viewer_dm_auto_send" not in source
+
+
+class TestOneColdDmPerPerson:
+    """Issue #2028: a viewer who lingers on the analytics page must not be messaged twice.
+
+    The walk re-lists the same viewer on consecutive runs, and the only bound was
+    `has_engaged_url_with_x_days(..., 1)` — once per viewer per DAY. With
+    `profile_viewer_dm_auto_send` ON, six recipients received exactly two DMs on consecutive days in
+    production. The gated path happened to be safe because an open draft blocked a second one; the
+    direct path had nothing, and its own comment said so: "direct dispatch skips the question — it
+    has no queue to collide with".
+    """
+
+    def test_direct_dispatch_declines_someone_already_messaged(self):
+        result, mocks = _engage("1st", auto_send=True, messaged_recently=True)
+
+        mocks["dm"].apply_async.assert_not_called()
+        assert "Did not message" in result
+
+    def test_direct_dispatch_still_messages_someone_new(self):
+        _result, mocks = _engage("1st", auto_send=True, messaged_recently=False)
+
+        mocks["dm"].apply_async.assert_called_once()
+
+    def test_the_gated_path_declines_them_too(self):
+        result, mocks = _engage("1st", auto_send=False, messaged_recently=True)
+
+        mocks["sched"].assert_not_called()
+        assert "Did not message" in result
+
+    def test_the_claim_is_not_paid_for_with_a_rendered_draft(self):
+        """The claim is asked before the draft is paid for.
+
+        Before the template render and the history-dedup call, like the draft check — the walk
+        re-lists the same viewer every loop, so answering late pays for a message forever.
+        """
+        _result, mocks = _engage("1st", auto_send=True, messaged_recently=True)
+
+        mocks["draft"].assert_not_called()
+        mocks["history_check"].assert_not_called()
+
+    def test_the_window_is_configurable_and_long(self):
+        """Thirty days, not one: a viewer sits on the analytics page for days at a time."""
+        from cqc_lem.app.engagement.outreach import PROFILE_VIEWER_DM_INTERVAL_DAYS
+
+        assert PROFILE_VIEWER_DM_INTERVAL_DAYS >= 7

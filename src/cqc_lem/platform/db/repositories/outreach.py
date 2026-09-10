@@ -1141,7 +1141,7 @@ def record_lead_magnet_sent(user_id: int, recipient_profile: str, post_id: int =
 # --- inbound hot-lead signals (issue #483) ----------------------------------------------------
 _LEAD_SIGNAL_COLS = ("id", "user_id", "source", "channel", "person_name", "person_profile_url",
                      "thread_key", "snippet", "score", "matched_signals", "post_id", "context_url",
-                     "draft_response", "status", "created_at", "updated_at")
+                     "draft_response", "status", "delivery_attempts", "created_at", "updated_at")
 def insert_lead_signal(user_id: int, source: "LeadSignalSource", thread_key: str,
                        person_name: str = None, person_profile_url: str = None,
                        snippet: str = None, score: int = 0, matched_signals: str = None,
@@ -1219,12 +1219,20 @@ def get_lead_signals(user_id: int, status_filter: str = None, page: int = 1, pag
         return {"signals": [], "total": 0, "page": page, "page_size": page_size}
 def update_lead_signal(signal_id: int, draft_response: str = None,
                        status: "LeadSignalStatus" = None,
-                       channel: "LeadSignalChannel" = None) -> bool:
-    """Edit a lead's draft and/or move its status. Only the supplied fields change."""
+                       channel: "LeadSignalChannel" = None,
+                       delivery_attempts: int = None) -> bool:
+    """Edit a lead's draft and/or move its status. Only the supplied fields change.
+
+    `delivery_attempts` counts DELIVERY tries, not approvals — a reply that did not land is retried
+    once before it is written off (issue #2028), and the counter is what stops that being a loop.
+    """
     fields, params = [], []
     if draft_response is not None:
         fields.append("draft_response = %s")
         params.append(draft_response)
+    if delivery_attempts is not None:
+        fields.append("delivery_attempts = %s")
+        params.append(int(delivery_attempts))
     for col, val in (("status", status), ("channel", channel)):
         if val is not None:
             fields.append(f"{col} = %s")
