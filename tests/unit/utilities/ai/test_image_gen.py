@@ -157,12 +157,34 @@ class TestVisionGate:
             verdict = image_gen.inspect_render_quality(str(img), "a leak", surface="newsletter")
         assert verdict.acceptable
 
-    def test_non_newsletter_surface_keeps_the_bare_relevance_floor(self, tmp_path):
+    def test_non_strict_surface_keeps_the_bare_relevance_floor(self, tmp_path):
         img = tmp_path / "a.png"
         img.write_bytes(b"png")
         with patch.object(image_gen, "client") as mock_client:
             mock_client.chat.completions.create.return_value = self._verdict_response(
                 {"acceptable": True, "relevance": 3, "issues": []})
+            verdict = image_gen.inspect_render_quality(str(img), "a leak", surface="carousel")
+        assert verdict.acceptable
+
+    def test_post_image_rejects_a_low_relevance_scene_even_when_the_model_says_acceptable(
+            self, tmp_path):
+        # Issue #2015: text-post images hit the same "relates but doesn't depict" failure the
+        # newsletter floor (#1992) already fixed — a bare relevance-3 "it relates" is not enough.
+        img = tmp_path / "a.png"
+        img.write_bytes(b"png")
+        with patch.object(image_gen, "client") as mock_client:
+            mock_client.chat.completions.create.return_value = self._verdict_response(
+                {"acceptable": True, "relevance": 3, "issues": []})
+            verdict = image_gen.inspect_render_quality(str(img), "a leak", surface="post_image")
+        assert not verdict.acceptable
+        assert verdict.issues
+
+    def test_post_image_accepts_a_scene_with_relevance_at_least_4(self, tmp_path):
+        img = tmp_path / "a.png"
+        img.write_bytes(b"png")
+        with patch.object(image_gen, "client") as mock_client:
+            mock_client.chat.completions.create.return_value = self._verdict_response(
+                {"acceptable": True, "relevance": 4, "issues": []})
             verdict = image_gen.inspect_render_quality(str(img), "a leak", surface="post_image")
         assert verdict.acceptable
 

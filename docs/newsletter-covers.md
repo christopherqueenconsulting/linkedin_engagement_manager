@@ -238,9 +238,11 @@ at a laptop. An avatar cover keeps the generic template, where a person genuinel
 
 **The vision gate.** `inspect_render_quality(..., surface="newsletter")` adds a rejection bullet for
 the literal "person at laptop/desk/keyboard with notebook or coffee mug" scene and raises the
-relevance floor to 4 (`_NEWSLETTER_MIN_RELEVANCE`) — a render merely IN THE SAME DOMAIN as the
+relevance floor to 4 (`_STRICT_MIN_RELEVANCE`) — a render merely IN THE SAME DOMAIN as the
 edition (a laptop for an AI-cost topic) used to clear a bare "it relates" relevance-3 bar every
-time. Still fails OPEN on a vision outage.
+time. Still fails OPEN on a vision outage. `post_image` gets the same raised floor (issue #2015) —
+only the stock-office cliché bullet stays newsletter-only, since a `post_image` preset legitimately
+wants a person as the subject.
 
 **Receipts (issue #1377's pattern, extended).** `generate_cover_for_edition` writes a
 `<stem>.brief.json` sidecar beside every STORED cover — real brief and deterministic fallback

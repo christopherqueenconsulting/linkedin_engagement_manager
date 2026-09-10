@@ -358,8 +358,12 @@ _STOCK_OFFICE_CLICHE_RULE = (
     "coffee mug as the main subject — this is the generic \"person at laptop\" stock-photo scene "
     "and is unacceptable regardless of relevance score\n")
 # Below this the render is "in the same domain" but not "of the idea" — a laptop-on-desk cover for
-# an AI-cost edition clears a bare relevance>=3 bar every time.
-_NEWSLETTER_MIN_RELEVANCE = 4
+# an AI-cost edition clears a bare relevance>=3 bar every time. Issue #2015: text-post images hit
+# the exact same "relates but doesn't depict" failure the newsletter fix (#1992) already solved,
+# so the raised floor applies to `post_image` too — only the cliché rule (below) stays
+# newsletter-only, since `post_image`'s own preset legitimately wants a person as the subject.
+_STRICT_RELEVANCE_SURFACES = frozenset({"newsletter", "post_image"})
+_STRICT_MIN_RELEVANCE = 4
 
 # The gate is asked whether the render carries marks, so it has to be able to READ one. At
 # `low` the API downsamples to ~512px on the long edge, where four logo tiles on a laptop screen
@@ -375,10 +379,12 @@ def inspect_render_quality(image_path: str, focal_concept: str,
                            surface: Optional[str] = None) -> QualityVerdict:
     """Vision look at a finished render. Fails OPEN — any error returns acceptable/unchecked.
 
-    ``surface`` (issue #1992) turns on the newsletter-only stock-office cliché rule and raises the
-    relevance floor to ``_NEWSLETTER_MIN_RELEVANCE`` — a scene merely IN THE SAME DOMAIN as the
-    edition (a laptop for an AI-cost topic) clears a bare relevance>=3 "it relates" bar every time,
-    which is how five straight covers passed a gate asking only "does this relate".
+    ``surface`` (issue #1992) turns on the newsletter-only stock-office cliché rule, and for
+    ``newsletter``/``post_image`` (issue #2015) raises the relevance floor to
+    ``_STRICT_MIN_RELEVANCE`` — a scene merely IN THE SAME DOMAIN as the content (a laptop for an
+    AI-cost topic) clears a bare relevance>=3 "it relates" bar every time, which is how five
+    straight newsletter covers passed a gate asking only "does this relate", and how text-post
+    images kept the same generic look.
     """
     try:
         with open(image_path, "rb") as fh:
@@ -405,12 +411,12 @@ def inspect_render_quality(image_path: str, focal_concept: str,
         acceptable = bool(verdict.get("acceptable"))
         relevance = verdict.get("relevance")
         issues = [str(i) for i in (verdict.get("issues") or [])][:6]
-        if (surface == "newsletter" and isinstance(relevance, (int, float))
-                and relevance < _NEWSLETTER_MIN_RELEVANCE):
+        if (surface in _STRICT_RELEVANCE_SURFACES and isinstance(relevance, (int, float))
+                and relevance < _STRICT_MIN_RELEVANCE):
             acceptable = False
             if not issues:
-                issues = ["relevance below the newsletter floor — depicts the domain, not the "
-                          "edition's actual idea"]
+                issues = ["relevance below the floor — depicts the domain, not the content's "
+                          "actual idea"]
         return QualityVerdict(acceptable=acceptable, relevance=relevance, issues=issues)
     except Exception as e:
         log_debug("Image quality gate unavailable — passing render through", error=str(e))

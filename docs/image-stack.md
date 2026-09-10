@@ -153,7 +153,10 @@ grades the rendered file against the brief's `focal_concept` — with bounded re
   "person at laptop/desk/keyboard with notebook or coffee mug" scene, and overrides the verdict to
   unacceptable when `relevance < 4` even if the model itself said `acceptable=true` — a render merely
   in the same DOMAIN as the edition (a laptop for an AI-cost topic) cleared a bare relevance-3 "it
-  relates" bar every time. Other surfaces keep the plain relevance-1/2 floor. Still fails OPEN.
+  relates" bar every time. **`post_image` gets the same raised floor (#2015)** — text-post images
+  hit the identical "relates but doesn't depict" failure — but not the cliché rule, since a
+  `post_image` preset legitimately wants a person as the subject. Remaining surfaces (`carousel`,
+  `video`, `thumbnail`) keep the plain relevance-1/2 floor. Still fails OPEN.
 
 Full grading of this engine's output, its per-surface gaps and what is still unmeasurable:
 **`docs/content-quality-audits/image.md`**.
