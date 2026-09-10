@@ -1439,13 +1439,22 @@ def get_content_quality_scores(user_id: int, days: int = 14) -> list:
         return []  # table not created yet (or unreadable) — the rollup reports an empty window
 def record_post_stats(user_id: int, post_id: int, reactions: Optional[int], comments: Optional[int],
                       reposts: Optional[int] = 0, impressions: Optional[int] = None,
-                      saves: Optional[int] = 0) -> bool:
+                      saves: Optional[int] = None,
+                      own_comments: Optional[int] = None) -> bool:
     """Append one engagement snapshot for a post, with the post's SHAPE copied in beside the numbers.
 
     archetype / hook_style / format / topic / buyer_stage are snapshotted from `posts` at capture time so
     the feedback loop (issue #386) still knows which shape earned these numbers after the post is edited.
     That SELECT is scoped to `(post_id, user_id)`; when it matches nothing the stats row is still written,
     with those columns NULL.
+
+    `saves` and `own_comments` are written THROUGH, not coerced (issue #2023). `comments` is the
+    count the page renders, and our own seed (#344) plus second wave (#622) are part of it on every
+    post we publish; `own_comments` is how many of them were ours, so third-party engagement is
+    recoverable. Both are None when the reading could not be taken, and `saves` defaults to None
+    rather than 0 for the same reason `impressions` already does — a label the page never rendered
+    is not a zero. `reactions`, `comments` and `reposts` keep their `or 0` coercion because the
+    callers that write them have always treated a missing bar as no engagement.
     """
     try:
         with db_cursor(commit=True) as cursor:
@@ -1458,11 +1467,13 @@ def record_post_stats(user_id: int, post_id: int, reactions: Optional[int], comm
             row = cursor.fetchone()
             archetype, hook_style, fmt, topic, buyer_stage = row if row else (None, None, None, None, None)
             cursor.execute(
-                "INSERT INTO post_stats (user_id, post_id, reactions, comments, reposts, impressions, "
-                "saves, archetype, hook_style, `format`, topic, buyer_stage) "
-                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
-                (user_id, post_id, int(reactions or 0), int(comments or 0), int(reposts or 0),
-                 impressions, int(saves or 0), archetype, hook_style, fmt, topic, buyer_stage))
+                "INSERT INTO post_stats (user_id, post_id, reactions, comments, own_comments, "
+                "reposts, impressions, saves, archetype, hook_style, `format`, topic, buyer_stage) "
+                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                (user_id, post_id, int(reactions or 0), int(comments or 0),
+                 None if own_comments is None else int(own_comments), int(reposts or 0),
+                 impressions, None if saves is None else int(saves),
+                 archetype, hook_style, fmt, topic, buyer_stage))
             return True
     except mysql.connector.Error as err:
         log_error("Could not record post stats", exc=err, user_id=user_id)

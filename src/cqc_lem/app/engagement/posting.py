@@ -107,6 +107,7 @@ from cqc_lem.utilities.db import (
     insert_new_log,
     insert_scheduled_dm,
     normalize_posting_days,
+    own_comment_count_or_none,
     record_comment_followup,
     record_comment_outcome,
     record_follower_stat,
@@ -154,6 +155,7 @@ from cqc_lem.utilities.linkedin.cards import (
     _parse_count,
     _post_permalink_from_card,
     _post_social_counts,
+    rendered_signal_labels as _rendered_signal_labels,
 )
 from cqc_lem.utilities.linkedin.composer import (
     _comment_items,
@@ -449,6 +451,15 @@ def auto_scrape_post_stats(self, user_id: int):
             # the analytics view doesn't render can't zero out one the detail page did.
             for key, val in _post_analytics_counts(driver, url).items():
                 counts[key] = max(counts.get(key) or 0, val)
+            # WHICH signals the two pages put a number against, as opposed to what those numbers
+            # were (issue #2023). `_post_social_counts` flattens a label it never found to 0, which
+            # is right for scoring and wrong for a stored reading: "the analytics page rendered no
+            # Saves row" and "the page said 0 saves" become the same row and the claim stops being
+            # falsifiable. `_post_analytics_counts` leaves the driver ON the analytics page, so its
+            # text is readable here without navigating again — the same thing the zero-walk
+            # cross-check below already relies on.
+            seen = (_rendered_signal_labels(detail_text)
+                    | _rendered_signal_labels(_main_text(driver)))
             # NOTHING parsed (a readable page always yields the full zero-filled dict) means the page
             # never rendered — auth wall, 429, dead permalink — not that the post earned nothing.
             # Recording those zeros publishes a fabricated row to the analytics panel, and for a
@@ -468,14 +479,23 @@ def auto_scrape_post_stats(self, user_id: int):
                 if _grade_zero_walk(native, "Post social-count parse", user_id=user_id,
                                     post_id=pid, task_name="auto_scrape_post_stats") == "drift":
                     continue
+            # How many of `comments` are OURS — the #344 seed and the #622 second wave are in that
+            # total on every post we publish (issue #2023). Measured 2026-09-10 across the last 20
+            # published posts: 19 carry exactly 2 comments and both are ours, so the unadjusted
+            # number is structurally >= 2 and almost entirely us. `own_comment_count_or_none`
+            # rather than the capped reader: a failed read must not claim we left none, which would
+            # book our own comments as audience engagement.
+            own_comments = own_comment_count_or_none(user_id, url)
             record_post_stats(user_id, pid, counts.get("reactions", 0), counts.get("comments", 0),
                               reposts=counts.get("reposts") or 0,
                               impressions=counts.get("impressions") or None,
-                              saves=counts.get("saves") or 0)
+                              saves=counts.get("saves") if "saves" in seen else None,
+                              own_comments=own_comments)
             track_post_outcome(post_id=pid, reactions=counts.get("reactions", 0),
                                comments=counts.get("comments", 0), reposts=counts.get("reposts") or 0,
                                impressions=counts.get("impressions") or None,
-                               saves=counts.get("saves") or 0, user_id=user_id,
+                               saves=counts.get("saves") if "saves" in seen else None,
+                               own_comments=own_comments, user_id=user_id,
                                post_type=post_types.get(pid),
                                variant_key=shipped_variants.get(pid))
             scraped += 1

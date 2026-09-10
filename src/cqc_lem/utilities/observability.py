@@ -139,6 +139,10 @@ def _count_or_none(value) -> Optional[int]:
     return int(value) if value else None
 
 
+def _reading(value) -> Optional[int]:
+    return None if value is None else int(value)
+
+
 def _flag(value) -> bool:
     return bool(value)
 
@@ -180,6 +184,20 @@ def count_or_none(name: str, key: Optional[str] = None) -> Field:
     A 0 here would show up in a growth chart as a real collapse.
     """
     return Field(name, _count_or_none, key)
+
+
+def reading(name: str, key: Optional[str] = None) -> Field:
+    """A measurement where ZERO is a real answer and only an absent read is None (issue #2023).
+
+    The third option between `count` and `count_or_none`, and the one several fields actually
+    wanted. `count` floors a missing read to 0, which invents a measurement. `count_or_none` is
+    `int(value) if value else None`, so it maps a genuine 0 to None as well — right for
+    `impressions`, where a real zero is near-impossible and a 0 in a growth chart reads as a
+    collapse, and wrong for anything whose zero is ordinary. "This post has no saves" and "the page
+    never rendered a Saves row" are different facts, and a post with no third-party comments at all
+    is the NORMAL case on this account.
+    """
+    return Field(name, _reading, key)
 
 
 def flag(name: str, key: Optional[str] = None) -> Field:
@@ -314,8 +332,15 @@ EVENTS = {spec.event: spec for spec in (
     # on this event (issue #1513), and a dashboard filter matches on the ingested type.
     EventSpec("post_outcome", (
         prop("post_id"), label("post_type"), text("variant_key"), count("reactions"),
-        count("comments"), count("reposts"), count("saves"), count_or_none("impressions"),
+        count("comments"), count("reposts"), reading("saves"), count_or_none("impressions"),
         prop("engagement"), prop("engagement_rate"),
+        # `comments` is the count the PAGE renders, and our own seed (#344) plus second wave (#622)
+        # are part of it on every post we publish — measured 2026-09-10, 19 of the last 20 posts
+        # carry exactly 2 comments and both are ours. `engagement` and `engagement_rate` are
+        # computed from that unadjusted number and stay as they are so their history remains
+        # comparable; these three are the honest read beside them (issue #2023).
+        reading("own_comments"), reading("third_party_comments"),
+        prop("third_party_engagement_rate"),
     )),
     EventSpec("audience_snapshot", (
         prop("user_id"), prop("follower_count"), prop("connection_count"),
@@ -1333,9 +1358,10 @@ def track_post_outcome(
     comments: Optional[int],
     reposts: Optional[int] = 0,
     impressions: Optional[int] = None,
-    saves: Optional[int] = 0,
+    saves: Optional[int] = None,
     user_id: Optional[int] = None,
     post_type: Optional[str] = None,
+    own_comments: Optional[int] = None,
     **extra,
 ) -> None:
     """Emit a LinkedIn post-outcome event so content performance (impressions / engagement rate) is
@@ -1355,6 +1381,13 @@ def track_post_outcome(
     """
     from cqc_lem.utilities.post_stats import engagement_rate, engagement_score
     shipped = extra.pop("variant_key", None)
+    # Third-party comments are DERIVED, never stored twice, and stay None when either half is
+    # unknown — an unknown own-comment count must not silently book our own comments as the
+    # audience's. Floored at 0 because the two numbers are read at different moments: a stats
+    # capture that ran between our seed and the page updating its count can legitimately show
+    # fewer comments than we have logged (production post 81 computes to -1 that way).
+    third_party = (None if comments is None or own_comments is None
+                   else max(0, int(comments) - int(own_comments)))
     # The `$feature/*` keys can never collide with a declared property, so riding in `extra` puts
     # them on the event exactly as spreading them first did.
     _emit(EVENTS["post_outcome"], {
@@ -1363,6 +1396,10 @@ def track_post_outcome(
         "user_id": user_id,
         "engagement": engagement_score(reactions, comments, reposts),
         "engagement_rate": engagement_rate(reactions, comments, reposts, impressions),
+        "own_comments": own_comments, "third_party_comments": third_party,
+        "third_party_engagement_rate": (
+            None if third_party is None
+            else engagement_rate(reactions, third_party, reposts, impressions)),
     }, {**experiment_props(user_id, keys=(COST_ROUTING_ARM,),
                            shipped={POST_MEDIA_VARIANT: shipped} if shipped else None), **extra})
 
