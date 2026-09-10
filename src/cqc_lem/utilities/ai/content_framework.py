@@ -702,6 +702,14 @@ COMMENT_FORMATS: dict = {
     # storyteller, disagreement → respectful_contrarian, question → questioner, DATA → here).
     "evidence_add": {
         "label": "Evidence Add",
+        # fact_anchored (issue #2034): this shape REQUIRES a real figure, and
+        # `fact_grounding_severity("comment")` is HARD — `has_unsourced_specifics` rejects any
+        # number that is not in the author's own sourced material. Handed to a writer with an empty
+        # story bank the two contracts cannot both be satisfied, and the draft is regenerated until
+        # `COMMENT_GATE_MAX_ATTEMPTS` runs out and the post is skipped entirely. Production, three
+        # days: 18 comments lost to "states first-person specifics that appear in neither the post,
+        # the research provided, nor the author's own material".
+        "fact_anchored": True,
         "guidance": ("Bring ONE concrete number, benchmark, or measured result that supports or "
                      "complicates the post's specific claim — a real figure the commenter actually "
                      "knows, never an invented statistic. If no real number is available, use a "

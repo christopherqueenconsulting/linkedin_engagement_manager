@@ -77,11 +77,12 @@ from cqc_lem.utilities.ai.ai_helper import (
 from cqc_lem.utilities.ai.content_alignment import (
     append_link_to_comment,
 )
-from cqc_lem.utilities.ai.content_framework import select_blueprint
+from cqc_lem.utilities.ai.content_framework import fact_anchored_formats, select_blueprint
 from cqc_lem.utilities.ai.outbound_qa import (
     SURFACE_COMMENT as OUTBOUND_SURFACE_COMMENT,
     refusal_reason as outbound_refusal_reason,
 )
+from cqc_lem.utilities.comment_rotation import recent_comment_shapes, record_comment_shape
 from cqc_lem.utilities.connection_targeting import (
     SOURCE_ROSTER,
     ScoredCandidate,
@@ -2288,7 +2289,15 @@ def _engage_card(ctx: FeedRunContext, card, key: str, content: str, author: str,
             release_post_claim(user_id, key)
             return False
 
-    comment_blueprint = select_blueprint("comment", recent_formats=ctx.used_comment_shapes)
+    # Keep the fact-anchored shapes off the menu when the author has no sourced numbers to reach
+    # for (issue #2034). The post path has done this since #1265 (`run_content_plan` passes
+    # `exclude_formats=fact_anchored_formats(...)`); the comment path never did, so `evidence_add`
+    # kept being handed to a writer that could only satisfy it by inventing a figure the HARD fact
+    # gate then rejected — 18 skipped posts in three days, each having spent its whole regeneration
+    # budget first. Excluding every format falls back to the full menu rather than to nothing.
+    comment_blueprint = select_blueprint(
+        "comment", recent_formats=ctx.used_comment_shapes,
+        exclude_formats=None if ctx.has_sourced_facts else fact_anchored_formats("comment"))
     with llm_attribution(user_id=user_id, feature=FEATURE_COMMENT):
         comment_text = generate_ai_response(content, my_profile, None, prefs=prefs,
                                             profile_synthesis=ctx.profile_synthesis,
@@ -2297,6 +2306,10 @@ def _engage_card(ctx: FeedRunContext, card, key: str, content: str, author: str,
                                             post_id=key)
     if comment_text and comment_blueprint.get("format"):
         ctx.used_comment_shapes.insert(0, comment_blueprint["format"])
+        # And durably, so the next RUN starts where this one left off rather than at the top of the
+        # menu (issue #2034). Best-effort — a rotation that could block a comment would be worse
+        # than the repetition it exists to stop.
+        record_comment_shape(user_id, comment_blueprint["format"])
     if not comment_text:
         release_post_claim(user_id, key)  # no comment generated (or none cleared the quality gate)
         return False
@@ -2560,6 +2573,30 @@ def _record_blocked_visits(user_id: int, blocked_visits: list, targets_visited: 
                      action_type="invite_connect", task_name="comment_on_roster_posts")
 
 
+def _has_sourced_facts(user_id: int) -> bool:
+    """Does this author have story-bank material carrying a NUMBER (issue #2034)?
+
+    ONE read per run, not per card. It decides whether the fact-anchored comment archetypes may be
+    offered: `evidence_add` demands "ONE concrete number… a real figure the commenter actually
+    knows", and `fact_grounding_severity("comment")` is HARD, so a writer with nothing to cite can
+    only satisfy the shape by inventing a figure the gate then rejects. Production, three days: 18
+    comments lost that way, each having spent its whole regeneration budget first.
+
+    Fails CLOSED — an unreadable story bank reads as "no facts", which keeps the fact-anchored
+    shapes off the menu. The cost of being wrong that way is a slightly narrower rotation; the cost
+    the other way is the skipped post this exists to prevent.
+    """
+    try:
+        entries = get_story_bank_entries(user_id, active_only=True) or []
+    except Exception as e:
+        log_debug(f"Could not read the story bank for user {user_id} — treating it as unsourced",
+                  user_id=user_id)
+        del e
+        return False
+    return any(re.search(r"\d", str(entry.get("body") or entry.get("fact") or ""))
+               for entry in entries)
+
+
 def comment_on_feed_inline(driver, wait, my_profile: LinkedInProfile, user_id: int,
                            max_posts: int = 10, deadline_ts: float = None, prefs: dict = None,
                            engagers: set = None, is_group_feed: bool = False) -> int:
@@ -2600,9 +2637,11 @@ def comment_on_feed_inline(driver, wait, my_profile: LinkedInProfile, user_id: i
 
     # Per-run comment ANGLE rotation from the shared framework core: each comment this run gets a
     # different archetype (Expander, Storyteller, Questioner, ...) so a day's comments never all
-    # read from the same template. In-memory only — comments are too high-volume to justify a DB
-    # shape history, and per-run rotation is what a reader of the same feed would notice.
-    used_comment_shapes: list = []
+    # read from the same template. Seeded from the DURABLE rotation (issue #2034): this list used to
+    # start empty every run, and a run lands one or two comments — so the rotation reset before it
+    # could rotate, and production shipped the same shapes and the same closing question day after
+    # day. Redis-backed, and an empty read degrades to exactly the per-run behaviour it replaces.
+    used_comment_shapes: list = list(recent_comment_shapes(user_id))
 
     # The user's own recent comments — what the comment-side similarity gate dedups each fresh draft
     # against (issue #617). Loaded once per run and appended to as comments land, so neither a
@@ -2621,7 +2660,8 @@ def comment_on_feed_inline(driver, wait, my_profile: LinkedInProfile, user_id: i
     ctx = FeedRunContext(driver=driver, wait=wait, my_profile=my_profile, user_id=user_id,
                          prefs=prefs, profile_synthesis=profile_synthesis, seen=seen,
                          used_comment_shapes=used_comment_shapes, recent_comments=recent_comments,
-                         engagers=engagers, deadline_ts=deadline_ts, is_group_feed=is_group_feed)
+                         engagers=engagers, has_sourced_facts=_has_sourced_facts(user_id),
+                         deadline_ts=deadline_ts, is_group_feed=is_group_feed)
     # Roster FIRST (issue #616): curated peers / ICP / large creators outrank whatever the home
     # feed happens to serve. An empty roster returns zeros here and the run degrades to the plain
     # feed walk below. `seen` is shared, so a roster post can never be re-commented from the feed.
