@@ -9,7 +9,6 @@ which is exactly the failure the cheapest tier kept producing.
 Repo doctrine applies: do NOT add a parallel per-content-type prompt helper — add a preset here.
 """
 
-import json
 import re
 from dataclasses import dataclass
 from typing import Any, Optional
@@ -313,7 +312,7 @@ def build_image_brief(content: str, *, surface: str, ratio: str = "1:1",
     covers all chose a valve. Capped at ``_MAX_AVOID_TERMS`` so a long history can never starve the
     author into the fallback on every run.
     """
-    from cqc_lem.utilities.ai.ai_helper import _call_llm, _profile_visual_context
+    from cqc_lem.utilities.ai.ai_helper import _call_llm, _loads_json_object, _profile_visual_context
     from cqc_lem.utilities.avatar.attributes import subject_directive
 
     preset = surface if surface in _STYLE_PRESETS else _DEFAULT_PRESET
@@ -360,7 +359,17 @@ def build_image_brief(content: str, *, surface: str, ratio: str = "1:1",
                 log_debug("Image brief came back empty", surface=surface, attempt=attempt,
                           ai_model="lem-medium", reason=reason)
                 continue
-            parsed = json.loads(raw)
+            # `response_format={"type": "json_object"}` is a request, not a guarantee — lem-medium
+            # (a reasoning model) sometimes wraps the object in a ```json fence anyway, which a bare
+            # `json.loads` rejects at character 0. That fenced reply is a perfectly good brief, so
+            # parse it the same tolerant way every other JSON-object caller does (issue #1323)
+            # instead of losing the whole attempt to a `JSONDecodeError` (issue #2013).
+            parsed = _loads_json_object(raw)
+            if parsed is None:
+                reason = "unparsable JSON (fenced or malformed reply)"
+                log_debug("Image brief reply was not valid JSON", surface=surface,
+                          attempt=attempt, ai_model="lem-medium", reason=reason)
+                continue
             # Graded WITHOUT the variety gate first: a brief that is wrong only because it
             # repeats an object is still a real brief, and a real brief beats the deterministic
             # template every time. Held as `repeat_brief` and returned below if the retry cannot
