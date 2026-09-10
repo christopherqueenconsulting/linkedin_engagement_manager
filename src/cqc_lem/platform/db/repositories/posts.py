@@ -1160,6 +1160,48 @@ def get_next_planned_post_date(user_id: int) -> Optional[datetime]:
     except mysql.connector.Error as err:
         log_error("Could not get next planned post date", exc=err, user_id=user_id)
         return None
+def get_future_planned_posts(user_id: int) -> list:
+    """`[(id, scheduled_time)]` for every FUTURE status=planning row, soonest first (issue #2021).
+
+    The cadence reconcile reads this. Scoped to `planning` and to the future on purpose: a row that
+    has been approved, scheduled or posted is a commitment, and a row in the past is history.
+    """
+    try:
+        with db_cursor() as cursor:
+            cursor.execute(
+                "SELECT id, scheduled_time FROM posts"
+                " WHERE status = 'planning' AND user_id = %s AND scheduled_time > NOW()"
+                " ORDER BY scheduled_time",
+                (user_id,))
+            return list(cursor.fetchall() or [])
+    except mysql.connector.Error as err:
+        log_error("Could not read the planned tail", exc=err, user_id=user_id)
+        return []
+
+
+def delete_planned_posts(user_id: int, post_ids: list) -> int:
+    """Delete FUTURE status=planning rows by id. Returns how many went (issue #2021).
+
+    The status and the future are re-asserted in the WHERE clause rather than trusted from the
+    caller: this deletes rows, and the one thing it must never be able to do — even given a stale id
+    list — is remove a post somebody approved or that has already published.
+    """
+    ids = [int(i) for i in (post_ids or []) if i is not None]
+    if not ids:
+        return 0
+    try:
+        with db_cursor(commit=True) as cursor:
+            placeholders = ", ".join(["%s"] * len(ids))
+            cursor.execute(
+                f"DELETE FROM posts WHERE user_id = %s AND status = 'planning'"
+                f" AND scheduled_time > NOW() AND id IN ({placeholders})",
+                (user_id, *ids))
+            return int(cursor.rowcount or 0)
+    except mysql.connector.Error as err:
+        log_error("Could not delete planned posts", exc=err, user_id=user_id)
+        return 0
+
+
 def get_user_ids_with_planned_posts_within_buffer(days: int = MAX_CONTENT_BUFFER_DAYS) -> list[int]:
     """User IDs that have any status=planning post due within the next `days` days.
 

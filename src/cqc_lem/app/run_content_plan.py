@@ -108,8 +108,10 @@ from cqc_lem.utilities.db import (
     PostStatus,
     PostType,
     count_ready_posts_within_buffer,
+    delete_planned_posts,
     get_active_user_ids,
     get_engagement_preferences,
+    get_future_planned_posts,
     get_last_planned_post_date_for_user,
     get_lead_magnet_settings,
     get_newsletter_settings,
@@ -241,8 +243,12 @@ def _plan_window_end(start_date: datetime) -> datetime:
     return start_date.replace(day=calendar.monthrange(start_date.year, start_date.month)[1])
 
 
-def _cadence_slots(user_id: int, start_date: datetime, end_date: datetime) -> list:
-    """The dates this user's day-type calendar fills between two dates, inclusive.
+def _resolve_cadence(user_id: int) -> tuple:
+    """`(weekdays, posts_per_week)` for this user — the ONE reading of their cadence.
+
+    Extracted so the plan walk and the tail reconcile (issue #2021) cannot disagree about what the
+    cadence currently is. They would otherwise each resolve it, and a reconcile that trimmed the
+    tail to a different answer than the planner refills it with is worse than no reconcile at all.
 
     Cadence, not volume, is the 2026 lever (issue #621 / G6): instead of one post on every remaining
     day of the month, a user publishes on the `posts_per_week` weekdays their fixed day-type
@@ -277,7 +283,12 @@ def _cadence_slots(user_id: int, start_date: datetime, end_date: datetime) -> li
         # user-facing half of the same fact.
         log_debug(f"Cadence fills {posts_per_week} of the {len(posting_days)} day(s) switched on "
                   f"for user {user_id}: {sorted(weekdays)}")
+    return weekdays, posts_per_week
 
+
+def _cadence_slots(user_id: int, start_date: datetime, end_date: datetime) -> list:
+    """The dates this user's day-type calendar fills between two dates, inclusive."""
+    weekdays, _posts_per_week = _resolve_cadence(user_id)
     slots = []
     day = start_date.date()
     last = end_date.date()
@@ -307,6 +318,49 @@ def _schedule_slot_utc(post_date, user_id: int, previous_utc: Optional[datetime]
     if previous_utc is not None and scheduled_datetime - previous_utc < MIN_POST_INTERVAL:
         scheduled_datetime = previous_utc + MIN_POST_INTERVAL + timedelta(minutes=1)
     return scheduled_datetime
+
+
+def planned_slots_to_drop(rows: list, weekdays: set, posts_per_week: int) -> list:
+    """Which future PLANNING post ids the current cadence would not have laid (issue #2021).
+
+    Pure, so the rule is testable without a database. Two reasons a slot goes:
+
+    * its weekday is not in `posting_days` — the HARDER bound (#581): cadence says how many,
+      the allow-list says which days are eligible at all;
+    * its ISO week already holds `posts_per_week` slots. The EARLIEST slots in a week are kept, so
+      lowering a cadence trims from the end of each week rather than reshuffling what is already
+      laid — the same "adding days never moves the ones in use" property `weekly_post_slots` has.
+
+    Returns ids only. Deciding is separate from deleting on purpose: this function cannot touch a
+    row that somebody approved, because it never touches a row at all.
+    """
+    per_week: dict = {}
+    drop = []
+    for row in rows or []:
+        post_id, when = row[0], row[1]
+        if when is None:
+            continue
+        if weekdays and when.weekday() not in weekdays:
+            drop.append(post_id)
+            continue
+        key = when.isocalendar()[:2]
+        per_week[key] = per_week.get(key, 0) + 1
+        if per_week[key] > max(0, int(posts_per_week)):
+            drop.append(post_id)
+    return drop
+
+
+def reconcile_planned_cadence(user_id: int, weekdays: set, posts_per_week: int) -> int:
+    """Drop the future planning slots the user's CURRENT cadence would not have laid.
+
+    Only `planning`, only the future, and the repository re-asserts both in its own WHERE clause —
+    an approved, scheduled or published post is a commitment and is never in scope. A planning row
+    is a slot reservation carrying a placeholder body, so dropping one costs the slot and nothing
+    else.
+    """
+    rows = get_future_planned_posts(user_id)
+    drop = planned_slots_to_drop(rows, weekdays, posts_per_week)
+    return delete_planned_posts(user_id, drop) if drop else 0
 
 
 @shared_task.task(bind=True, reject_on_worker_lost=True, rate_limit='1/m')
@@ -342,6 +396,19 @@ def plan_content_for_user(self, user_id: int):
     now = datetime.now()
     days_in_month = calendar.monthrange(now.year, now.month)[1]
     log_info(f"Days in Month: {days_in_month}")
+
+    # Reconcile the tail BEFORE reading it (issue #2021). A cadence change only affects posts the
+    # planner has not laid yet, and the planner will not lay any while the tail already reaches past
+    # its horizon — so without this, a change to `posts_per_week` or `posting_days` does not take
+    # effect until the existing tail drains. Production on 2026-09-10: the tail ran to 2026-10-30, so
+    # a change made in September would first apply in November, and the account kept publishing
+    # 5/week against a setting of 3 for seven weeks. A setting that takes seven weeks to do anything
+    # reads to the user as a setting that does nothing.
+    _weekdays, _per_week = _resolve_cadence(user_id)
+    dropped = reconcile_planned_cadence(user_id, _weekdays, _per_week)
+    if dropped:
+        log_info(f"Content Plan | dropped {dropped} planned slot(s) the current cadence would not "
+                 f"have laid", user_id=user_id, task_name="auto_create_content_plan")
 
     # Determine the start date as the day after the last scheduled post in planning status
     last_planned_date = get_last_planned_post_date_for_user(user_id)
