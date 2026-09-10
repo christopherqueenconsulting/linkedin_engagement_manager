@@ -47,6 +47,21 @@ class TestBuildImageBrief:
         assert "logos" in system_msg and "watermarks" in system_msg
         assert "plain unbranded clothing" in system_msg
 
+    def test_a_fenced_json_reply_is_accepted_without_a_retry(self):
+        """Issue #2013.
+
+        `response_format={"type": "json_object"}` is a request, not a guarantee — lem-medium
+        (a reasoning model) sometimes wraps the object in a ```json fence anyway, and a bare
+        `json.loads` rejected that reply at character 0, burning the attempt and eventually the
+        whole brief onto the deterministic fallback for a perfectly good brief.
+        """
+        fenced = "```json\n" + json.dumps(_GOOD) + "\n```"
+        with patch("cqc_lem.utilities.ai.ai_helper._call_llm", return_value=_resp(fenced)) as llm:
+            brief = build_image_brief("My post about growth", surface="post_image")
+        assert llm.call_count == 1, "a fenced-but-valid reply must not cost a retry"
+        assert not brief.fallback
+        assert brief.prompt == _GOOD["prompt"]
+
     def test_invalid_json_retries_then_falls_back_deterministically(self):
         with patch("cqc_lem.utilities.ai.ai_helper._call_llm",
                    return_value=_resp("not json at all")) as llm:
