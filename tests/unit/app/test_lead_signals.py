@@ -441,8 +441,10 @@ class TestAnUndeliveredLeadReplyIsNotDropped:
         assert "sent" in result
 
     def test_the_retry_is_bounded(self):
-        """One retry, not a ladder: an approved response goes stale, and a lead who wrote to us
-        deserves an answer or a person — not a queue.
+        """The retry is bounded at one.
+
+        Not a ladder: an approved response goes stale, and a lead who wrote to us deserves an
+        answer or a person, not a queue.
         """
         from cqc_lem.app.engagement.outreach import LEAD_RESPONSE_MAX_ATTEMPTS
 

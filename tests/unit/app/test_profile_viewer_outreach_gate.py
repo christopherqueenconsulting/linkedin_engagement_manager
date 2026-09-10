@@ -463,8 +463,10 @@ class TestOneColdDmPerPerson:
         assert "Did not message" in result
 
     def test_the_claim_is_not_paid_for_with_a_rendered_draft(self):
-        """Asked BEFORE the template render and the history-dedup call, like the draft check — the
-        walk re-lists the same viewer every loop, so answering late pays for a message forever.
+        """The claim is asked before the draft is paid for.
+
+        Before the template render and the history-dedup call, like the draft check — the walk
+        re-lists the same viewer every loop, so answering late pays for a message forever.
         """
         _result, mocks = _engage("1st", auto_send=True, messaged_recently=True)
 

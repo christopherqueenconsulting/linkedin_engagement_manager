@@ -158,8 +158,10 @@ def get_post_message_from_log_for_user(user_id: int, post_id: int) -> Optional[s
         message = None
 
     return message
+
+
 def has_dm_within_days(user_id: int, profile_url: str, days: int) -> bool:
-    """Have we successfully DM'd this profile inside the last `days` days? (issue #2028)
+    """Have we successfully DM'd this profile inside the last `days` days (issue #2028)?
 
     Deliberately NOT `has_engaged_url_with_x_days`. That one reads the ENGAGED row the
     profile-viewer walk writes on EVERY run, so it is rewritten daily and a window measured against
