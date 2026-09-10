@@ -181,21 +181,20 @@ def _worker_env(es, reply_text="Thanks! How do you test drift?", followup_state=
 
     driver = MagicMock()
     driver.current_url = "https://www.linkedin.com/feed/update/urn:li:activity:1/"
-    def find_elements(by, sel):
-        from cqc_lem.utilities.linkedin.composer import _COMMENTLIST_TEXTBOX
-        if sel == _COMMENTLIST_TEXTBOX:
-            return [our_tb, reply_tb]
-        return []  # scroll sentinel + expand buttons
-    driver.find_elements.side_effect = find_elements
+    driver.find_elements.side_effect = lambda _by, _sel: []  # scroll sentinel + expand buttons
     driver.execute_script.return_value = None  # scrollBy + contains() -> falsy (use mentions path)
 
-    def container(_drv, tb):
-        return our_cont if tb is our_tb else reply_cont
+    def body(_drv, cont):
+        return our_tb if cont is our_cont else reply_tb
     def author(_drv, cont):
         return "https://www.linkedin.com/in/me/" if cont is our_cont else "https://www.linkedin.com/in/glenda/"
 
-    # `_comment_items` is composer.py's now, and it calls ITS OWN container/author readers.
-    es.enter_context(patch(f"{COMPOSER}._comment_container", side_effect=container))
+    # Since #2020 `_comment_items` enters through the shared anchor ladder rather than one
+    # selector, so the seam this fixture stubs is the ladder's RESULT — which is what this test is
+    # actually about (two comments, one ours). How they were found is the ladder's own suite.
+    es.enter_context(patch(f"{COMPOSER}._comment_containers",
+                           return_value=([our_cont, reply_cont], "reply_prefix")))
+    es.enter_context(patch(f"{COMPOSER}._comment_body", side_effect=body))
     es.enter_context(patch(f"{COMPOSER}._comment_header_author", side_effect=author))
     _p(es, "get_comment_followup", return_value=followup_state)
     rec = _p(es, "record_comment_followup", return_value=True)

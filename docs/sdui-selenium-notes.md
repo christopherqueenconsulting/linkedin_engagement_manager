@@ -4,10 +4,10 @@ Full detail for the SDUI DOM/composer invariant CLAUDE.md's "Known Gotchas" only
 line. Which surface is covered by which read-only probe, and the weekly drift cron that grades them
 all: **`docs/sdui-probe-coverage.md`**.
 
-## The two fix invariants (issue #1013)
+## The three fix invariants (issues #1013, #2020)
 
 Every SDUI fix obeys these. They are not style — each one is the direct lesson of a shipped
-incident, and both failures looked like success at the time.
+incident, and every one of those failures looked like success at the time.
 
 ### 1. Success is the OUTCOME being present, never a click having landed
 
@@ -38,10 +38,53 @@ control that cannot be attributed is precisely the one that must never be clicke
 addressable route (the `/preload/custom-invite/?vanityName=<slug>` URL) over hunting a button, and
 scope every locator to the owning card or dialog.
 
-## Anchors are gone
+### 3. There is no ONE path to an element — build a CHAIN and exhaust it (issue #2020)
 
-The old `urn:`, `feed-shared-*`, and `comments-comment-*` DOM anchors no longer exist. Prefer
-`data-testid` / `aria-label` selectors via `find_first`/`click_first`.
+LinkedIn does not serve a single DOM. What a page renders varies **by day and time, by who is
+viewing, by the connection degree between viewer and author, and by the route taken to the page**.
+A selector that was live-grounded last month is a snapshot of one rendering seen by one account on
+one path — not a fact about the surface.
+
+So a locator is an **ordered chain of independent strategies**, not a selector. Each rung recognises
+the thing a different way; the first rung that yields anything wins; and **only when every rung has
+been tried and come back empty is the answer "not found"** — which is then handed to the zero-walk
+grader above, because "no rung answered" and "the page genuinely has none" are still different
+facts. A rung that stops answering is not removed: a rendering LinkedIn stopped serving is one it
+can serve again, and an unused rung costs one `find_elements`.
+
+**Record which rung answered.** That is most of the value. A funnel that says `reply_prefix` every
+day and then starts saying `article` has told you LinkedIn moved — weeks before the day no rung
+answers at all, which is the only signal the single-selector design ever gave.
+
+The worked example is `_COMMENT_ANCHOR_LADDER` / `_comment_containers` in
+`utilities/linkedin/composer.py`. What it was built from, measured live on 2026-09-10 against a post
+whose own page said "4 comments":
+
+| rung | hits |
+|---|---|
+| `button[aria-label='Reply']` (exact) | **0** — what both shipped readers depended on |
+| `button[aria-label^='Reply']` (prefix) | **4** — the label is now `Reply to Matthew B.'s comment` |
+| `[data-testid*='commentList']` | 0 |
+| `main [data-testid]` (any testid at all) | **0** — the whole testid vocabulary was gone |
+| `main article` | 4 — the container was back to being an `<article>` |
+
+Two lessons in that table beyond the fix. **Prefix, not exact**, wherever a label can grow to name an
+entity — the same asymmetry the like control (`React Like to …`) had already shown on this very
+surface, recorded in the code and not generalised. And **keep a purely structural rung**: `main
+article` names no label and no testid, so it is the one that still answered when everything else was
+renamed.
+
+## Anchors are gone — but they come BACK
+
+The old `urn:`, `feed-shared-*`, and `comments-comment-*` DOM anchors were replaced by
+`data-testid` / `aria-label` selectors, and `find_first`/`click_first` are still the right way to
+reach them.
+
+Do not read that as a one-way migration. On 2026-09-10 a post permalink served **zero** `data-testid`
+attributes anywhere under `<main>`, with comments rendered as `<article class="comments-comment-entity">`
+— the exact vocabulary this section says is gone (#2020). Both statements are true of different
+renderings, which is precisely why locators are chains (invariant 3 above) and why a rung is kept
+after it stops answering rather than deleted.
 
 ## The home feed's sort control is not a `<button>` (#1108)
 

@@ -158,6 +158,7 @@ from cqc_lem.utilities.linkedin.cards import (
     rendered_signal_labels as _rendered_signal_labels,
 )
 from cqc_lem.utilities.linkedin.composer import (
+    _COMMENT_REPLY_CONTROL_SCOPED,
     _comment_items,
     _comment_items_from_thread,
     _reply_composer_for_comment,
@@ -325,7 +326,7 @@ def _reply_to_comment_inline(driver, wait, comment_el, reply_text: str, user_id:
             ActionChains(driver).move_to_element(comment_el).pause(0.5).perform()  # reveal action bar
         except Exception:
             pass  # hover is best-effort; the click_first lookup below still runs
-        if click_first(driver, wait, [(By.CSS_SELECTOR, "button[aria-label='Reply']")],
+        if click_first(driver, wait, [(By.CSS_SELECTOR, _COMMENT_REPLY_CONTROL_SCOPED)],
                        "Open reply box", parent_element=comment_el, required=False, user_id=user_id) is None:
             return False
         time.sleep(random.uniform(1.5, 3))

@@ -365,20 +365,27 @@ class TestReplyUnderCommentComposerPick:
 
 
 class TestCommentItemsFromThread:
-    def test_walks_up_from_reply_buttons(self):
+    """Since #2020 this is the shared anchor ladder — it enters from `find_elements` per rung
+    rather than one `find_all_first`, because LinkedIn serves different DOMs by day, viewer,
+    connection degree and route. Ladder mechanics live in
+    `tests/unit/utilities/linkedin/test_comment_anchor_ladder.py`; these two keep this caller's
+    own contract: containers out, and an exhausted chain is empty.
+    """
+
+    def test_walks_up_from_reply_controls(self):
         from cqc_lem.utilities.linkedin import composer as mod
-        rb1, rb2 = MagicMock(), MagicMock()
         item1, item2 = MagicMock(), MagicMock()
         driver = MagicMock()
-        driver.execute_script.side_effect = [item1, item2]  # JS walk-up returns a container each
-        with patch(f"{_CMP}.find_all_first", return_value=[rb1, rb2]):
-            items = mod._comment_items_from_thread(driver)
-        assert items == [item1, item2]
+        driver.find_elements.side_effect = lambda _by, sel: (
+            [MagicMock(), MagicMock()] if "aria-label^='Reply'" in sel else [])
+        driver.execute_script.side_effect = [item1, item2]
+        assert mod._comment_items_from_thread(driver) == [item1, item2]
 
-    def test_empty_when_no_reply_buttons(self):
+    def test_empty_when_no_rung_answers(self):
         from cqc_lem.utilities.linkedin import composer as mod
-        with patch(f"{_CMP}.find_all_first", return_value=[]):
-            assert mod._comment_items_from_thread(MagicMock()) == []
+        driver = MagicMock()
+        driver.find_elements.side_effect = lambda _by, _sel: []
+        assert mod._comment_items_from_thread(driver) == []
 
 
 class TestCommentAuthorIdentity:

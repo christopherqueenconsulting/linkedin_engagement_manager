@@ -301,11 +301,11 @@ local dev → PR to main → CI gates pass → release-please tags vX.Y.Z → bu
 - **ENUM columns:** `logs.action_type` and other status columns are MySQL ENUMs — adding a value
   needs a migration, and new migrations use **TIMESTAMP** versions so two branches never collide.
   The **db-migration** skill, `compose/local/database/migrations/README.md`.
-- **LinkedIn SDUI** (`docs/sdui-selenium-notes.md`, `docs/sdui-probe-coverage.md`): the old `urn:`
-  and `feed-shared-*` anchors are gone — prefer `data-testid` / `aria-label`. Fix invariants (#1013):
-  **success is the OUTCOME being present, never a click having landed**; **never click a control
-  whose label names a different entity than the target** (#1012); **zero items is not "nothing to
-  do" until the page agrees**. Every surface has a read-only probe flag.
+- **LinkedIn SDUI** (`docs/sdui-selenium-notes.md`, `docs/sdui-probe-coverage.md`): LinkedIn serves
+  different DOMs per viewer and route, so a locator is a CHAIN, exhausted before "not found"
+  (#2020). Fix invariants (#1013): **success is the OUTCOME, never a click having landed**;
+  **never click a control whose label names a different entity than the target** (#1012);
+  **zero items is not "nothing to do" until the page agrees**. Every surface has a probe flag.
 - **Unified content core** (`docs/content-core.md`): newsletters, posts AND comments draw framework,
   research and alignment from `content_{framework,research,alignment}.py` — never add a
   per-content-type prompt helper. Comments: quality contract + similarity gate (#617) SKIPS the post

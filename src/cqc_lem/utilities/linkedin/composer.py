@@ -38,7 +38,6 @@ from selenium.webdriver.remote.webelement import WebElement
 from cqc_lem.utilities.linkedin.helper import clean_person_name, connection_degree
 from cqc_lem.utilities.linkedin_formatter import strip_non_bmp
 from cqc_lem.utilities.logger import log_debug, log_warning
-from cqc_lem.utilities.selenium_util import find_all_first
 
 # The SDUI comment/reply composer has NO <form> ancestor, so walk up from the textbox and click
 # the enabled submit button whose text is Comment/Post/Reply — excluding the aria-label
@@ -217,22 +216,128 @@ def _type_and_submit_reply(driver: WebDriver, composer: WebElement, reply_text: 
     return _composer_submitted(driver, composer, reply_text)
 
 
-def _comment_items_from_thread(driver):
-    """Comment items on the SDUI thread — walk up from each Reply button to the container that
-    also holds the author link + text (comments are no longer <article> elements).
+# The reply control is the ONE thing the page renders exactly once per comment, in BOTH DOM
+# generations, so it is what both readers below anchor on (issue #2020). Prefix-matched, never
+# exact: LinkedIn now scopes the label to the comment's author ("Reply to Matthew B.'s comment"),
+# and the exact match that used to work returns zero. Live 2026-09-10 on a post whose own page said
+# "4 comments": exact 0, prefix 4. `[role='button']` is carried alongside `button` because the
+# reply control is not guaranteed to be a real button element on either generation.
+# The SDUI comment list, as grounded 2026-07-24. Defined here rather than beside the rest of the
+# SDUI notes below because `_COMMENT_ANCHOR_LADDER` names it as a rung and Python reads a module
+# top to bottom. Returned zero on 2026-09-10; kept as a rung, never as the only way in (#2020).
+_COMMENTLIST_TEXTBOX = "[data-testid*='commentList'] [data-testid='expandable-text-box']"
+
+_COMMENT_REPLY_CONTROLS = ("main button[aria-label^='Reply'], main [role='button'][aria-label^='Reply'], "
+                           "button[aria-label^='Reply'], [role='button'][aria-label^='Reply']")
+# The same control, looked up INSIDE one comment. Kept separate because the page-wide form above is
+# `main`-scoped first and a `find_elements` on an element ignores that prefix — and because the
+# clicks that use this one are already scoped to the comment they mean, which is what keeps #1012's
+# rule ("never click a control whose label names a different entity than the target") satisfied even
+# though the label now names an entity.
+_COMMENT_REPLY_CONTROL_SCOPED = "button[aria-label^='Reply'], [role='button'][aria-label^='Reply']"
+
+# Walk up from a reply control to the comment it belongs to: the nearest ancestor that carries a
+# profile link and is not the POST wrapper (which uniquely holds the GIF/Repost/Emoji composer
+# controls). Structural on purpose — it resolved the same container on the testid-era DOM and on the
+# class-era DOM LinkedIn served on 2026-09-10, where `data-testid` had vanished from the thread
+# entirely (`main [data-testid]` matched nothing) and the container was back to being an <article>.
+# Never keys on a class name: `docs/sdui-selenium-notes.md`.
+_COMMENT_FROM_REPLY_JS = (
+    "let el=arguments[0].parentElement,d=0;"
+    "while(el&&d<10){"
+    " if(el.querySelector&&el.querySelector(\"a[href*='/in/']\")){"
+    "   const post=[...el.querySelectorAll('button')].some("
+    "     b=>/GIF|Repost|Emoji Picker/.test(b.getAttribute('aria-label')||''));"
+    "   if(!post) return el;"
+    " }"
+    " el=el.parentElement;d++;}"
+    "return null;")
+
+
+# The ladder (issue #2020). LinkedIn does not serve ONE DOM: what a page renders varies by day, by
+# viewer, by the connection degree between the viewer and the author, and by the route taken to the
+# page. A single selector — however carefully live-grounded — is therefore a snapshot of one
+# rendering, and every silent outage in this repo's history (#964, #1009, #1774, #2020) is the same
+# story: the one anchor stopped matching and the walk reported "nothing here" instead of "I no
+# longer know how to look".
+#
+# So comments are found by an ORDERED CHAIN of independent strategies. Each rung is a way of
+# recognising a comment that does not depend on the rungs above it; the first rung that yields
+# anything wins, and the reading names which one answered. Only when EVERY rung has been tried and
+# come back empty is the answer "no comments" — and that is the answer the zero-walk tripwire then
+# grades against the page's own count.
+#
+# Naming the winning rung is half the value: a rung that stops answering is visible in the funnel
+# long before it becomes an outage, which is exactly the warning none of the four issues above got.
+#
+# Ordered cheapest-and-most-current first. ADD to this list rather than replacing it — a rung that
+# looks dead today is a rendering LinkedIn may serve again tomorrow, and keeping it costs one
+# `find_elements` on a page that does not use it.
+_COMMENT_ANCHOR_LADDER = (
+    # 2026-09-10: the entity-scoped reply control ("Reply to Matthew B.'s comment"). Live-measured
+    # 4 hits on a post whose own page said "4 comments", where the exact-label rung returned 0.
+    ("reply_prefix", "main button[aria-label^='Reply'], main [role='button'][aria-label^='Reply'], "
+                     "button[aria-label^='Reply'], [role='button'][aria-label^='Reply']"),
+    # 2026-07-24: the bare reply control, before the label carried the author's name.
+    ("reply_exact", "button[aria-label='Reply'], [role='button'][aria-label='Reply']"),
+    # The SDUI generation's comment list. Returned 0 on 2026-09-10 — `main [data-testid]` matched
+    # nothing at all on that rendering — and is kept because it is what some renderings still serve.
+    ("commentlist_testid", _COMMENTLIST_TEXTBOX),
+    # Purely structural, and the rung that survives a vocabulary change: a comment is an <article>
+    # carrying somebody's profile link. This is what the page reverted TO on 2026-09-10.
+    ("article", "main article"),
+)
+
+
+def _comment_containers(driver, ladder=_COMMENT_ANCHOR_LADDER) -> tuple:
+    """`(containers, rung)` — the rendered comments, and WHICH strategy found them.
+
+    The ONE walk both readers share (issue #2020). They used to disagree about how to find a
+    comment — one walked up from the reply control, the other keyed on the comment list's testid —
+    so they could go blind independently, and on 2026-09-10 both had.
+
+    `rung` is `""` when every strategy came back empty. That is the only reading that means "no
+    comments", and it is deliberately indistinguishable at this level from "the page changed again":
+    telling those apart is the caller's job, by asking the PAGE (`zero_walk`), never this function's.
     """
-    items = []
-    reply_btns = find_all_first(driver, [
-        (By.CSS_SELECTOR, "[data-testid*='-commentList'] button[aria-label='Reply']"),
-        (By.CSS_SELECTOR, "button[aria-label='Reply']")])
-    for rb in reply_btns:
-        item = driver.execute_script(
-            "let el=arguments[0],d=0;while(el&&d<8){"
-            "if(el.querySelector&&el.querySelector(\"a[href*='/in/']\"))return el;"
-            "el=el.parentElement;d++;}return arguments[0].parentElement;", rb)
-        if item is not None:
-            items.append(item)
-    return items
+    for name, selector in ladder:
+        seen, items = [], []
+        try:
+            anchors = driver.find_elements(By.CSS_SELECTOR, selector)
+        except Exception:
+            continue
+        for anchor in anchors:
+            try:
+                cont = driver.execute_script(_COMMENT_FROM_REPLY_JS, anchor)
+            except Exception:
+                continue
+            if cont is None or any(cont == s for s in seen):
+                continue
+            seen.append(cont)
+            items.append(cont)
+        if items:
+            return items, name
+    return [], ""
+
+
+def _comment_items_from_thread(driver):
+    """Comment containers on the thread — see `_comment_containers`.
+
+    Kept as a name because the reply sweep reads it; it is now the same walk `_comment_items` uses.
+    Drops the rung, because this caller counts comments rather than diagnosing the page;
+    `comment_containers_with_rung` is for callers that want to record which strategy answered.
+    """
+    return _comment_containers(driver)[0]
+
+
+def comment_containers_with_rung(driver) -> tuple:
+    """`(containers, rung)` for callers that record WHICH anchor strategy answered.
+
+    Public because the value of a ladder is mostly in noticing a rung go quiet: a funnel that says
+    `reply_prefix` every day and then says `article` has told you LinkedIn moved, weeks before the
+    day no rung answers at all.
+    """
+    return _comment_containers(driver)
 
 
 # SDUI comment thread (validated live 2026-07-24 on a moderated group post, issue #478):
@@ -241,21 +346,53 @@ def _comment_items_from_thread(driver):
 #   * a comment's author is the header /in/ link that is NOT inside the text box (an @mention in a
 #     reply body is also an /in/ link — that was the false "mine" match);
 #   * replies are nested inside their parent comment's container (DOM containment);
-#   * the like control is a button whose aria-label starts "React " (e.g. "React Like"); the reply
-#     control is aria-label="Reply". "…more" truncates long replies until expanded.
-_COMMENTLIST_TEXTBOX = "[data-testid*='commentList'] [data-testid='expandable-text-box']"
+#   * the like control is a button whose aria-label starts "React "; so does the reply control.
+#     Both are ENTITY-SCOPED as of 2026-09-10 ("React Like to Matthew B.'s comment", "Reply to
+#     Matthew B.'s comment"), so both must be matched by PREFIX. The reply control's exact
+#     `aria-label="Reply"` was the shape on 2026-07-24 and returned zero on 2026-09-10 (#2020).
+#     "…more" truncates long replies until expanded.
+#   * RE-GROUNDED 2026-09-10: the testid vocabulary this block describes is GONE on the post
+#     permalink — `main [data-testid]` matched nothing at all, and the comment container was back to
+#     `<article>`. Everything below that names a `data-testid` is kept only as a fallback for the
+#     generation that still serves it; nothing may depend on it alone.
+
+
+# The header-author read, as a named constant so the probe's carried copy can be held
+# identical to it by a build guard (`TestCarriedLadderCopy`). See
+# `_comment_header_author` for what each of the three rules is defending against.
+_COMMENT_HEADER_AUTHOR_JS = (
+    "const c=arguments[0];"
+    "const own=(el)=>{let s='';for(const n of el.childNodes) if(n.nodeType===3) s+=n.textContent;"
+    "                 return s.trim();};"
+    "let body=null,bestLen=0;"
+    "for(const el of c.querySelectorAll('*')){const len=own(el).length;"
+    " if(len>bestLen){body=el;bestLen=len;}}"
+    "let fallback='';"
+    "for(const a of c.querySelectorAll(\"a[href*='/in/']\")){"
+    "  if(a.closest(\"[data-testid='expandable-text-box']\")) continue;"
+    "  if(body&&body.contains(a)&&body!==a) continue;"
+    "  const href=(a.href||'').split('?')[0];"
+    "  if(((a.innerText||a.textContent||'')+'').trim()) return href;"
+    "  if(!fallback) fallback=href;"
+    "}return fallback;")
 
 
 def _comment_header_author(driver, container) -> str:
-    """A comment's author profile href from its HEADER link — never an @mention inside the body
-    text box (that false match flagged a reply that mentioned us as 'ours').
+    """A comment's author profile href from its HEADER link — never an @mention inside the body.
+
+    #1091 is the bug this exists to prevent: the avatar anchor (no text) and an @mention in a reply
+    body are both `/in/` links, so a naive "first profile link" read named nobody, `upsert_engager`
+    was skipped in silence, and `post_engagers` recorded nothing for a month.
+
+    That fix excluded links inside `[data-testid='expandable-text-box']` — and on 2026-09-10 that
+    testid was gone from the page entirely, which quietly turned the guard into a no-op and would
+    have let #1091 back in behind a fixed reader. The rule is now expressed three ways, so no single
+    vocabulary change disarms it (issue #2020): skip a link inside the testid'd box when the page
+    still serves one, skip a link inside the element this comment's text lives in, and prefer a link
+    that carries visible TEXT — an avatar anchor has none, and a header link always does.
     """
     try:
-        return driver.execute_script(
-            "const c=arguments[0];"
-            "for(const a of c.querySelectorAll(\"a[href*='/in/']\")){"
-            "  if(!a.closest(\"[data-testid='expandable-text-box']\")) return (a.href||'').split('?')[0];"
-            "}return '';", container) or ""
+        return driver.execute_script(_COMMENT_HEADER_AUTHOR_JS, container) or ""
     except Exception:
         return ""
 
@@ -349,7 +486,7 @@ def _reply_under_comment_inline(driver, wait, comment_el, reply_text: str, user_
             ActionChains(driver).move_to_element(comment_el).pause(0.5).perform()  # reveal action bar
         except Exception:
             pass  # hover is best-effort; the Reply button lookup below still runs
-        rbtns = comment_el.find_elements(By.CSS_SELECTOR, "button[aria-label='Reply']")
+        rbtns = comment_el.find_elements(By.CSS_SELECTOR, _COMMENT_REPLY_CONTROL_SCOPED)
         if not rbtns:
             log_warning("Reply-under-comment: no Reply button found", action_type="reply", user_id=user_id)
             return False
@@ -367,15 +504,41 @@ def _reply_under_comment_inline(driver, wait, comment_el, reply_text: str, user_
         return False
 
 
+# The comment BODY inside a resolved container: the element carrying the longest run of its OWN
+# text. Structural because the body's vocabulary is exactly what keeps changing —
+# `[data-testid='expandable-text-box']` on the 2026-07-24 rendering, a bare
+# `<span>` under `update-components-text` on 2026-09-10 — while "the comment's text is the longest
+# thing written in it" has been true of every rendering. Own text only: an ancestor inherits every
+# descendant's text, so measuring `innerText` would always pick the container itself.
+_COMMENT_BODY_JS = (
+    "const c=arguments[0];let best=null,bestLen=0;"
+    "const own=(el)=>{let s='';for(const n of el.childNodes) if(n.nodeType===3) s+=n.textContent;"
+    "                 return s.trim();};"
+    "for(const el of c.querySelectorAll('*')){"
+    " const len=own(el).length;"
+    " if(len>bestLen){best=el;bestLen=len;}}"
+    "return best;")
+
+
+def _comment_body(driver, container):
+    """The element holding a comment's text, or the container itself when nothing stands out."""
+    try:
+        return driver.execute_script(_COMMENT_BODY_JS, container) or container
+    except Exception:
+        return container
+
+
 def _comment_items(driver) -> list:
-    """[(text_box, container, author_href)] for every comment/reply currently rendered in the
-    thread. Text boxes with no resolvable container are dropped — a comment we can't scope to a
-    container has no author and no action bar, so it is not addressable.
+    """[(body, container, author_href)] for every comment/reply currently rendered in the thread.
+
+    Rebuilt on the shared anchor ladder (issue #2020). It used to enter from
+    `_COMMENTLIST_TEXTBOX` alone, which is one rendering's vocabulary — when LinkedIn stopped
+    serving that rendering the list came back empty on a thread the page said held four comments,
+    and nothing distinguished that from a post nobody had commented on.
+
+    The first tuple slot is the comment BODY rather than a testid'd text box. Callers use it for its
+    text and to scope a search, both of which the body element still satisfies; `_comment_container`
+    remains for the one caller that starts from a text box it already has.
     """
-    items = []
-    for tb in driver.find_elements(By.CSS_SELECTOR, _COMMENTLIST_TEXTBOX):
-        cont = _comment_container(driver, tb)
-        if cont is None:
-            continue
-        items.append((tb, cont, _comment_header_author(driver, cont)))
-    return items
+    return [(_comment_body(driver, cont), cont, _comment_header_author(driver, cont))
+            for cont in _comment_containers(driver)[0]]
