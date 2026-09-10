@@ -416,11 +416,27 @@ def replace_meeting_ask_cta(content: Optional[str], lead_magnet: Optional[dict] 
     return normalize_public_text(stripped)
 
 
+# The surfaces where WE wrote the post being commented on: the #344 seed comment and the #622
+# second wave. Every other use of the "comment" surface is a comment on somebody ELSE'S post.
+OWN_POST_COMMENT = "own_post_comment"
+_COMMENT_SURFACES = ("comment", OWN_POST_COMMENT)
+
+
 def style_directive(prefs: dict = None, content_type: str = "comment") -> str:
     """Turn the user's engagement preferences into an explicit style directive that overrides
     the profile-inferred defaults (tone, length, emoji/hashtag rules, freeform style). The
     comment-length cap only applies to comments — posts and newsletters carry their own length
     guidance in their prompts.
+
+    `comment_style` is the one preference here that is NOT surface-neutral (issue #2020). Users
+    author it against somebody else's post — production's real value opens "Lead with a specific
+    point from THEIR post" — so pasting it into an author-voice prompt overrides the system prompt's
+    own "You are the AUTHOR of the post below", and the model writes to an interlocutor who does not
+    exist. What shipped publicly in the first-comment slot of our own posts: "Your tip to
+    health-check each LiteLLM alias hit home…" and "I hit the same silent retirement when a Cohere
+    model vanished…" — and "hit home" is a phrase that same preference explicitly bans, which is the
+    tell that the directive was steering the draft rather than the system prompt. Tone, length,
+    emoji and hashtag guidance ARE surface-neutral and stay everywhere.
     """
     from cqc_lem.utilities.ai.content_framework import hashtag_directive
     if not prefs:
@@ -429,7 +445,7 @@ def style_directive(prefs: dict = None, content_type: str = "comment") -> str:
     tone = prefs.get("tone")
     if tone:
         parts.append(f"Write in a {tone} tone.")
-    if content_type == "comment":
+    if content_type in _COMMENT_SURFACES:
         length = prefs.get("comment_length") or "medium"
         parts.append(f"Write a substantive comment of at least {COMMENT_MIN_WORDS} words — add a specific "
                      f"insight, example, or genuine question that invites a reply; never a generic "
@@ -437,8 +453,12 @@ def style_directive(prefs: dict = None, content_type: str = "comment") -> str:
                      f"~{COMMENT_LENGTH_CHARS.get(length, 320)} characters.")
     parts.append("You may use one tasteful emoji." if prefs.get("use_emojis") else "Do not use emojis.")
     parts.append(hashtag_directive(prefs))
-    if prefs.get("comment_style"):
+    if prefs.get("comment_style") and content_type != OWN_POST_COMMENT:
         parts.append(f"Style guidance: {prefs['comment_style']}.")
+    if content_type == OWN_POST_COMMENT:
+        parts.append("This is YOUR OWN post — you wrote it. Never address its author in the second "
+                     "person, never thank them, and never respond to it as if somebody else wrote "
+                     "it.")
     return "\n\nStyle requirements (follow these):\n- " + "\n- ".join(parts) + "\n"
 
 

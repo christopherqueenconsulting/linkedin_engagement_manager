@@ -26,7 +26,7 @@ import re
 import statistics
 from typing import Optional
 
-from cqc_lem.utilities.ai.content_alignment import AI_TELL_WORDS
+from cqc_lem.utilities.ai.content_alignment import AI_TELL_WORDS, OWN_POST_COMMENT
 from cqc_lem.utilities.ai.content_framework import (
     MOTION_BANNED_AUDIO,
     MOTION_BANNED_MONTAGE,
@@ -54,6 +54,7 @@ CHECK_BURSTINESS = "burstiness"
 CHECK_RHETORICAL_HOOK = "rhetorical_hook"
 CHECK_SCAFFOLD = "canned_scaffold"
 CHECK_BLOG_ALIGNMENT = "blog_alignment"
+CHECK_SECOND_PERSON_AUTHOR = "second_person_author"
 
 # Default severities. HARD violations are regenerated and then block; WARN ones are recorded and
 # reported but never hold a draft.
@@ -78,6 +79,10 @@ DEFAULT_SEVERITIES: dict = {
     CHECK_RHETORICAL_HOOK: SEVERITY_WARN,
     CHECK_SCAFFOLD: SEVERITY_WARN,
     CHECK_BLOG_ALIGNMENT: SEVERITY_WARN,
+    # OFF by default and HARD on `own_post_comment` below (issue #2020): addressing 'your
+    # post' is correct and normal on every OTHER surface — it is only a defect on a comment
+    # we are leaving on a post we wrote ourselves.
+    CHECK_SECOND_PERSON_AUTHOR: SEVERITY_OFF,
 }
 
 # Per-SURFACE severity, applied on top of DEFAULT_SEVERITIES (issue #1285). A check's false-positive
@@ -90,6 +95,12 @@ DEFAULT_SEVERITIES: dict = {
 # HARD violations only) and the reasons in the log, and never blocks a publish.
 SURFACE_SEVERITIES: dict = {
     "newsletter": {CHECK_SCAFFOLD: SEVERITY_HARD},
+    # The seed comment (#344) and second wave (#622) are the AUTHOR's own comments on the
+    # author's own post. HARD rather than WARN because the failure is not a matter of taste:
+    # it is factually wrong about who wrote the post, it lands in the first-comment slot —
+    # the most-read position under the post — and it reads as an obvious bot. Production
+    # shipped "Your tip to health-check each LiteLLM alias hit home…" on our own post.
+    OWN_POST_COMMENT: {CHECK_SECOND_PERSON_AUTHOR: SEVERITY_HARD},
 }
 
 # How many DISTINCT tier-1 tell words a draft may carry before the lexicon check fires. Not zero on
@@ -601,6 +612,39 @@ def _check_scaffold(text: str, sents: list, ctx: dict) -> Optional[dict]:
                        + ", ".join(f'"{h}"' for h in hits[:5])),
             "evidence": hits[:5], "score": float(len(hits)), "threshold": 0.0}
 
+# Phrases that only make sense said TO someone else about THEIR post. Deliberately narrow: each one
+# has to name the post or its author in the second person, so "what would you do differently?" — a
+# perfectly good question to your own readers — is untouched. "Great point" and "well said" are here
+# because they are addressed AT an author, which on our own post is ourselves.
+_SECOND_PERSON_AUTHOR_RE = re.compile(
+    r"\b(?:"
+    r"your (?:post|point|take|article|write-?up|thread|piece|framing|tip|insight|comment|breakdown)"
+    r"|you(?:'re| are) (?:right|spot on|onto something)"
+    r"|(?:great|excellent|solid|good|strong|fair) (?:post|point|take|write-?up|thread|breakdown)"
+    r"|(?:well|nicely) (?:said|put)"
+    r"|thanks for (?:sharing|posting|writing)"
+    r"|this (?:post|piece) (?:of yours|nails|really)"
+    r")\b",
+    re.IGNORECASE)
+
+
+def second_person_author_hits(text: Optional[str]) -> list:
+    """Phrases in `text` that address the post's author as somebody other than the writer.
+
+    Public because the seed/second-wave generators want the same list for their regeneration hint,
+    and a second copy of this vocabulary would drift from the one that grades.
+    """
+    return [m.group(0) for m in _SECOND_PERSON_AUTHOR_RE.finditer(_plain(text or ""))]
+
+
+def _check_second_person_author(text: str, sents: list, ctx: dict) -> Optional[dict]:
+    hits = second_person_author_hits(text)
+    if not hits:
+        return None
+    return {"detail": ("addresses the post's author in the second person on a post the writer "
+                       "wrote themselves: " + ", ".join(hits[:5])),
+            "evidence": hits[:5], "score": float(len(hits)), "threshold": 0.0}
+
 
 _CHECKS: tuple = (
     (CHECK_LEXICON, _check_lexicon),
@@ -614,6 +658,7 @@ _CHECKS: tuple = (
     (CHECK_RHETORICAL_HOOK, _check_rhetorical_hook),
     (CHECK_SCAFFOLD, _check_scaffold),
     (CHECK_BLOG_ALIGNMENT, _check_blog_alignment),
+    (CHECK_SECOND_PERSON_AUTHOR, _check_second_person_author),
 )
 
 
