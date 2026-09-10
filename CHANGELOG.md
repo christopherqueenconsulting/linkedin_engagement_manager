@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.173.13](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.173.12...v0.173.13) (2026-09-10)
+
+
+### Bug Fixes
+
+* **comments:** read the thread through an anchor chain, not one selector ([#2025](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2025)) ([4821ede](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/4821ede05d8182247dbaf4c28d116148da1392ee))
+* **comments:** stop our own posts' first comment from addressing us in the second person ([#2022](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2022)) ([f4335e6](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/f4335e6cf1a3bb445e18a6685f1ef045a0228d84))
+* **engagement:** judge a post on the DOMAIN, and give every roster target a turn ([a1e4de4](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/a1e4de4f4f801bb5f9ec8a4acede36cab8564fcd))
+* **engagement:** judge a post on the domain, and give every roster target a turn ([#2027](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2027)) ([a1e4de4](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/a1e4de4f4f801bb5f9ec8a4acede36cab8564fcd))
+* **engagement:** the post permalink never rendered, so no sweep could read it ([#2019](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2019)) ([615c31a](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/615c31a09cdcbf697a446a4032ac085934a308a4))
+* **errors:** image brief must tolerate a fenced JSON reply from lem-medium (closes [#2013](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2013)) ([#2014](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2014)) ([5a1be91](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/5a1be9172295c267b69303a474bbe3762d5bd7d1))
+* **feed-commenting:** sync roster follow status regardless of auto-follow toggle (closes [#1991](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1991)) ([#2016](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2016)) ([00bbad5](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/00bbad51f092303689885a059ea83a5756cbccd9))
+* **image-gen:** raise the relevance floor for text-post images too (closes [#2015](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2015)) ([#2017](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2017)) ([89b0b87](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/89b0b87ee8d37ef1eb4afa289e7c1695bb725d28))
+* **post-stats:** tell our own engagement apart from the audience's ([#2024](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2024)) ([6b11d83](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/6b11d83036bff48d56e3a310b68a8e47f7e6d526))
+
 ## [0.173.12](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.173.11...v0.173.12) (2026-09-09)
 
 
