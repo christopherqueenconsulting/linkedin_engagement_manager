@@ -1791,9 +1791,29 @@ ENGAGEMENT_TARGET_FOLLOW_TERMINAL = frozenset({FollowStatus.FOLLOWING, FollowSta
 # author restricts commenting.
 ENGAGEMENT_TARGET_BLOCKED_BADGE_STREAK = 2
 _ENGAGEMENT_TARGET_COLS = ("id", "profile_url", "name", "category", "max_comments_per_week",
-                           "active", "last_engaged_at", "comments_this_week", "week_start",
+                           "active", "last_engaged_at", "last_visited_at", "comments_this_week",
+                           "week_start",
                            "source", "comment_blocked_streak", "last_blocked_at", "follow_status",
                            "followed_at", "follow_attempts", "connect_status", "connect_requested_at")
+
+
+def record_roster_visit(user_id: int, target_id: int) -> bool:
+    """Stamp that a roster target was VISITED, whether or not anything came of it.
+
+    Issue #2026. The rotation used to advance only on a landed comment, so a target we looked at and found
+    nothing commentable on kept its place at the head of the queue and was walked again next run —
+    64 times in three days for one account, while 67 of 82 targets were never visited at all.
+    A visit is a turn.
+    """
+    try:
+        with db_cursor(commit=True) as cursor:
+            cursor.execute(
+                "UPDATE engagement_targets SET last_visited_at = NOW() WHERE id=%s AND user_id=%s",
+                (target_id, user_id))
+            return cursor.rowcount > 0
+    except mysql.connector.Error as err:
+        log_error("Could not record roster visit", exc=err, user_id=user_id)
+        return False
 def resolve_weekly_cap(value: Any) -> int:
     """The per-author weekly cap, with an EXPLICIT 0 preserved. 0 is how the SPA pauses an account
     without removing it, so `value or DEFAULT` would read that pause as "unset" and hand the account
