@@ -128,6 +128,7 @@ from cqc_lem.utilities.db import (
     record_group_comment_run,
     record_group_post,
     record_group_post_run,
+    record_roster_visit,
     record_story_bank_use,
     record_target_comment_blocked,
     record_target_engagement,
@@ -588,6 +589,11 @@ _SCORE_W_RECENCY = 0.5
 _SCORE_W_RELEVANCE = 0.2
 _SCORE_W_RECIPROCITY = 0.2
 _SCORE_W_ACTIVITY = 0.1
+# The authority thesis, as a RANKING term (issue #2026). It used to be the hard gate, where a
+# list of long phrases like "cost-per-successful-call" excluded essentially every real post;
+# ordering is the question it can actually answer. Deliberately smaller than recency: #817
+# keeps this scorer recency-DOMINANT, and 0.5 is still more than three times this term.
+_SCORE_W_FOCUS = 0.15
 _RECENCY_HALFLIFE_MIN = 180.0  # exp decay: ~1.0 under an hour, ~0.37 at 3h, small by a day
 
 
@@ -656,8 +662,15 @@ def _literal_relevant(content: str, author: str, prefs: dict) -> bool:
 def _score_feed_post(meta: dict, prefs: dict, engagers: set = None) -> float:
     """Prioritize which feed post to comment on.
 
-    Recency-dominant, then relevance, reciprocity (author engaged with us / is a target), and a
-    healthy-activity bonus. Higher = comment first.
+    Recency-dominant, then relevance, reciprocity (author engaged with us / is a target), a
+    healthy-activity bonus, and how close the post sits to the user's authority thesis
+    (`focus_affinity`, issue #2026). Higher = comment first.
+
+    The focus term is where `focus_topics` belongs. As a hard GATE it asked a membership question of
+    a thesis — "is this post about cost-per-successful-call?" — and the honest answer for almost
+    every real post is no, which is how 82 curated roster targets produced zero comments in a month.
+    As a RANKING term it asks the question it can answer: of the posts already judged on-domain,
+    which is closest to what this account wants to be known for.
     """
     engagers = engagers or set()
     recency = _recency_score(meta.get("age_minutes"))
@@ -667,10 +680,13 @@ def _score_feed_post(meta: dict, prefs: dict, engagers: set = None) -> float:
     reciprocal = bool(author) and (author in engagers or any(a and a in author for a in incl_auth))
     reciprocity = 1.0 if reciprocal else 0.0
     activity = _activity_score(meta.get("comments", 0))
+    # `focus` is precomputed by the caller when it has the body; absent, it costs nothing.
+    focus = float(meta.get("focus_affinity") or 0.0)
     return (_env_float("FEED_SCORE_W_RECENCY", _SCORE_W_RECENCY) * recency
             + _env_float("FEED_SCORE_W_RELEVANCE", _SCORE_W_RELEVANCE) * relevance
             + _env_float("FEED_SCORE_W_RECIPROCITY", _SCORE_W_RECIPROCITY) * reciprocity
-            + _env_float("FEED_SCORE_W_ACTIVITY", _SCORE_W_ACTIVITY) * activity)
+            + _env_float("FEED_SCORE_W_ACTIVITY", _SCORE_W_ACTIVITY) * activity
+            + _env_float("FEED_SCORE_W_FOCUS", _SCORE_W_FOCUS) * focus)
 
 
 # How long a composer gets to mount after the Comment click. The old `find_first` chain spent
@@ -1145,15 +1161,51 @@ def post_matches_preferences(content: str, author: str, prefs: dict) -> bool:
 
 
 def _topic_gate_topics(prefs: dict) -> list:
-    """Return the topics a candidate post is judged on-topic against.
+    """The topics a candidate post is judged on-topic against — the user's DOMAIN (issue #2026).
 
-    Uses the user's focus_topics (what they want authority in), falling back to include_topics when
-    no focus is set.
+    `include_topics`, falling back to `focus_topics` when no domain is configured. That is the
+    reverse of the original reading, and the reversal is the fix.
+
+    `focus_topics` is the user's authority THESIS — production's real value is
+    ["LLM/AI cost efficiency", "cost-per-successful-call", "model & complexity routing", …]. Judged
+    as a membership test those phrases exclude almost everything: `_mentions_topic` whole-term
+    matches the ENTIRE phrase, so the cheap literal short-circuit can essentially never fire (no
+    post contains the string "cost-per-successful-call"), and every candidate falls through to
+    `post_is_relevant` asked "is this about cost-per-successful-call?" — to which a post about
+    agents or evals honestly answers no.
+
+    Measured 2026-09-10: 163 posts rejected in three days, **zero roster comments in the whole of
+    September** across 82 curated targets, and 64 visits to people who post about AI daily (Andrew
+    Ng, Eugene Yan, Ethan Mollick) every one of which graded "off-topic". `include_topics`
+    ("Claude", "LLM", "AI", "RAG", "OpenAI", "MCP") literally matched all three sample posts the
+    focus list matched none of.
+
+    The thesis is not discarded — it moved to where it belongs. #616's guarantee is a MEMBERSHIP
+    question ("is this in my domain at all?"), which is what a hard gate can answer honestly;
+    "how close is this to what I want to be known for?" is a RANKING question, and it is now a
+    scoring term in `_score_feed_post` so the most on-thesis of the on-domain posts is still picked
+    first.
     """
-    focus = [t for t in ((prefs or {}).get("focus_topics") or []) if t]
-    if focus:
-        return focus
-    return [t for t in ((prefs or {}).get("include_topics") or []) if t]
+    include = [t for t in ((prefs or {}).get("include_topics") or []) if t]
+    if include:
+        return include
+    return [t for t in ((prefs or {}).get("focus_topics") or []) if t]
+
+
+def focus_affinity(content: str, prefs: dict) -> float:
+    """How close a post sits to the user's authority thesis: 1.0 on a literal focus-topic mention,
+    else 0.0 (issue #2026).
+
+    Deliberately literal-only and never an LLM call. This runs on every scored candidate, where the
+    gate runs once on the chosen one — and its job is to ORDER posts that have already been judged
+    on-domain, so a cheap signal that is sometimes silent costs a little ranking quality, while a
+    per-candidate `lem-simple` call would cost real money on every feed walk.
+    """
+    topics = [t for t in ((prefs or {}).get("focus_topics") or []) if t]
+    if not topics:
+        return 0.0
+    text = (content or "").lower()
+    return 1.0 if any(_mentions_topic(text, t) for t in topics) else 0.0
 
 
 def passes_topic_gate(content: str, prefs: dict) -> bool:
@@ -1198,8 +1250,24 @@ _ROSTER_MAX_POSTS_PER_AUTHOR = 1
 
 
 def _target_staleness(target: dict) -> tuple:
-    """Rotation sort key: never-engaged targets first, then least-recently-engaged."""
-    last = target.get("last_engaged_at")
+    """Rotation sort key: whoever has waited longest for a TURN, engaged or not (issue #2026).
+
+    Ordered on the last VISIT, falling back to the last engagement for rows written before the
+    visit stamp existed. The bug this replaces: the key was `last_engaged_at` alone, which is None
+    for every never-engaged target and so produced the IDENTICAL key `(0, 0.0)` for all of them.
+    Python's sort is stable, so the order among them was DB order — the same on every run — and the
+    run budget took the head of that list each time. A target only left the head when a comment
+    actually landed on it.
+
+    That is a starvation loop, and it is independent of whether the on-topic gate works: a target
+    whose posts are genuinely off-domain never earns a comment, so under the old key it would hold
+    the head of the queue forever. Measured over three days of production: 64 visits to one target,
+    51 to another, 29 to a third, while 67 of 82 curated targets were never visited at all.
+
+    A target that has never been visited still sorts first — that part was right, and it is what
+    lets a newly added target jump the queue.
+    """
+    last = target.get("last_visited_at") or target.get("last_engaged_at")
     if last is None:
         return (0, 0.0)
     try:
@@ -2344,6 +2412,12 @@ def comment_on_roster_posts(ctx: FeedRunContext, max_posts: int) -> dict:
             continue
         time.sleep(random.uniform(2, 4))
         stats["targets_visited"] += 1
+        # A visit is a TURN, whether or not anything comes of it (issue #2026). Stamped HERE, right
+        # after the page loads and before any gate can skip the target, because the rotation's job
+        # is to give everyone a turn — and a target we looked at and found nothing on has had one.
+        # Stamping only on a landed comment is what let four targets absorb 156 visits in three days
+        # while 67 others were never opened.
+        record_roster_visit(user_id, target.get("id"))
         weekly_left = max(0, resolve_weekly_cap(target.get("max_comments_per_week"))
                           - int(target.get("comments_this_week") or 0))
         allowed_here = min(_ROSTER_MAX_POSTS_PER_AUTHOR, weekly_left, max_posts - stats["posted"])
@@ -2647,7 +2721,10 @@ def comment_on_feed_inline(driver, wait, my_profile: LinkedInProfile, user_id: i
                     soft_seen.add(key)
                     continue
             meta = {"author": author, "age_minutes": age, "comments": counts["comments"],
-                    "reactions": counts["reactions"], "relevant": _literal_relevant(content, author, prefs)}
+                    "reactions": counts["reactions"], "relevant": _literal_relevant(content, author, prefs),
+                    # Literal-only and free (issue #2026) — it ORDERS on-domain candidates, so a
+                    # per-candidate LLM call would be paying for ranking on every card of every walk.
+                    "focus_affinity": focus_affinity(content, prefs)}
             hard_keys.add(key)
             candidates.append((_score_feed_post(meta, ctx.prefs, ctx.engagers), key, card, content,
                                author, age, fps, key_source))

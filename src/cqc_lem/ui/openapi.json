@@ -1956,6 +1956,18 @@
             ],
             "title": "Last Engaged At"
           },
+          "last_visited_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Visited At"
+          },
           "max_comments_per_week": {
             "title": "Max Comments Per Week",
             "type": "integer"
@@ -2004,6 +2016,7 @@
           "max_comments_per_week",
           "active",
           "last_engaged_at",
+          "last_visited_at",
           "comments_this_week",
           "week_start",
           "source",

@@ -37,6 +37,72 @@ def _target(url, category="peer", *, last=None, cap=2, used=0, active=True, name
             "last_engaged_at": last, "comments_this_week": used, "source": "user"}
 
 
+class TestRotationGivesEveryoneATurn:
+    """Issue #2026: a VISIT is a turn, not only a landed comment.
+
+    The old key was `last_engaged_at` alone, which is None for every never-engaged target — so all
+    of them sorted to the IDENTICAL key `(0, 0.0)`, Python's stable sort left them in DB order, and
+    the run budget took the same head of that list every run. A target only left the head when a
+    comment landed on it.
+
+    Measured over three days of production: 64 visits to one target, 51 to another, 29 to a third,
+    while 67 of 82 curated targets were never opened at all — and those three are exactly the first
+    never-engaged rows in id order.
+    """
+
+    def _t(self, url, visited=None, engaged=None):
+        return {"profile_url": url, "name": url, "category": "peer", "active": True,
+                "max_comments_per_week": 2, "comments_this_week": 0,
+                "last_visited_at": visited, "last_engaged_at": engaged}
+
+    def test_a_visited_target_yields_to_one_that_has_not_been(self):
+        from datetime import datetime
+
+        from cqc_lem.app.engagement.feed import select_roster_targets
+        visited = self._t("seen", visited=datetime(2026, 9, 10, 12, 0))
+        fresh = self._t("never")
+        picked = select_roster_targets([visited, fresh], 1)
+        assert [p["profile_url"] for p in picked] == ["never"]
+
+    def test_the_starvation_loop_does_not_re_form(self):
+        """The exact production shape must not recur.
+
+        Nobody has ever been ENGAGED, and the first target has been visited many times. Under the
+        old key it would be picked again.
+        """
+        from datetime import datetime
+
+        from cqc_lem.app.engagement.feed import select_roster_targets
+        head = self._t("aurimas", visited=datetime(2026, 9, 10, 13, 0))
+        rest = [self._t(f"target{i}") for i in range(5)]
+        picked = select_roster_targets([head, *rest], 3)
+        assert "aurimas" not in [p["profile_url"] for p in picked]
+
+    def test_it_still_orders_by_the_engagement_stamp_for_rows_written_before_the_visit_column(self):
+        from datetime import datetime
+
+        from cqc_lem.app.engagement.feed import select_roster_targets
+        older = self._t("older", engaged=datetime(2026, 9, 1, 9, 0))
+        newer = self._t("newer", engaged=datetime(2026, 9, 9, 9, 0))
+        picked = select_roster_targets([newer, older], 1)
+        assert [p["profile_url"] for p in picked] == ["older"]
+
+    def test_a_visit_outranks_a_stale_engagement(self):
+        """A recent visit outranks a stale engagement.
+
+        A target commented on last month but walked this morning has had its turn more recently
+        than the engagement stamp alone would say.
+        """
+        from datetime import datetime
+
+        from cqc_lem.app.engagement.feed import select_roster_targets
+        walked_today = self._t("today", visited=datetime(2026, 9, 10, 8, 0),
+                               engaged=datetime(2026, 8, 1, 8, 0))
+        engaged_last_week = self._t("lastweek", engaged=datetime(2026, 9, 3, 8, 0))
+        picked = select_roster_targets([walked_today, engaged_last_week], 1)
+        assert [p["profile_url"] for p in picked] == ["lastweek"]
+
+
 class TestSelectRosterTargets:
     def test_blends_fifty_thirty_twenty(self):
         from cqc_lem.app.engagement.feed import select_roster_targets
@@ -137,17 +203,103 @@ class TestTopicGate:
         with patch(f"{_FEED}.post_is_relevant", return_value=False):
             assert passes_topic_gate("AI in HR hiring screens", {"focus_topics": ["RevOps"]}) is False
 
-    def test_focus_topics_win_over_include_topics(self):
-        from cqc_lem.app.engagement.feed import passes_topic_gate
-        with patch(f"{_FEED}.post_is_relevant", return_value=True) as classifier:
-            passes_topic_gate("some post", {"focus_topics": ["RevOps"], "include_topics": ["HR"]})
-        assert classifier.call_args[0][1] == ["RevOps"]
+    def test_the_gate_judges_the_DOMAIN_not_the_thesis(self):
+        """Issue #2026 — the reversal, and the whole point of it.
 
-    def test_falls_back_to_include_topics(self):
+        `include_topics` is the user's domain; `focus_topics` is the authority THESIS they want to
+        be known for. Asked as a membership question a thesis excludes nearly everything —
+        production's real focus list is ["LLM/AI cost efficiency", "cost-per-successful-call", …],
+        and `post_is_relevant` answering "is this post about cost-per-successful-call?" honestly
+        says no for a post about agents. 82 curated roster targets produced ZERO comments in a
+        month that way.
+        """
         from cqc_lem.app.engagement.feed import passes_topic_gate
         with patch(f"{_FEED}.post_is_relevant", return_value=True) as classifier:
-            passes_topic_gate("some post", {"include_topics": ["HR tech"]})
+            passes_topic_gate("some post", {"focus_topics": ["LLM/AI cost efficiency"],
+                                            "include_topics": ["LLM", "AI"]})
+        assert classifier.call_args[0][1] == ["LLM", "AI"]
+
+    def test_falls_back_to_focus_topics_when_no_domain_is_configured(self):
+        """A thesis-only user still gets #616's protection.
+
+        The gate is never inert while ANY topic is configured.
+        """
+        from cqc_lem.app.engagement.feed import passes_topic_gate
+        with patch(f"{_FEED}.post_is_relevant", return_value=True) as classifier:
+            passes_topic_gate("some post", {"focus_topics": ["HR tech"]})
         assert classifier.call_args[0][1] == ["HR tech"]
+
+    def test_the_real_production_prefs_now_admit_a_real_post(self):
+        """The measurement that produced this fix, as a regression test.
+
+        Verbatim from production 2026-09-10. Under the old precedence the literal short-circuit
+        could never fire — no post contains the string "cost-per-successful-call" — so every
+        candidate fell to the classifier and was rejected.
+        """
+        from cqc_lem.app.engagement.feed import passes_topic_gate
+        prefs = {
+            "focus_topics": ["LLM/AI cost efficiency", "cost-per-successful-call",
+                             "model & complexity routing", "AI reliability & observability",
+                             "AI governance & vendor risk", "running AI in production"],
+            "include_topics": ["Claude", "Anthropic", "ChatGPT", "LLM", "AI", "RAG", "OpenAI",
+                               "LiteLLM", "MCP"],
+        }
+        post = ("Most teams building LLM agents underestimate evaluation. I spent the last month "
+                "building an eval harness for a RAG pipeline and here is what broke.")
+        with patch(f"{_FEED}.post_is_relevant", return_value=False) as classifier:
+            assert passes_topic_gate(post, prefs) is True
+        classifier.assert_not_called()  # a literal domain term short-circuits it, for free
+
+
+class TestFocusAffinity:
+    """The thesis, moved to where it can be answered: RANKING (issue #2026)."""
+
+    _PREFS = {"focus_topics": ["LLM/AI cost efficiency", "model & complexity routing"]}
+
+    def test_a_literal_thesis_mention_scores(self):
+        from cqc_lem.app.engagement.feed import focus_affinity
+        assert focus_affinity("we cut our model & complexity routing bill", self._PREFS) == 1.0
+
+    def test_an_on_domain_post_that_is_off_thesis_scores_zero_but_is_not_excluded(self):
+        from cqc_lem.app.engagement.feed import focus_affinity
+        assert focus_affinity("a post about RAG evals", self._PREFS) == 0.0
+
+    def test_no_focus_configured_is_inert(self):
+        from cqc_lem.app.engagement.feed import focus_affinity
+        assert focus_affinity("anything", {}) == 0.0
+
+    def test_it_never_calls_the_classifier(self):
+        """It never calls the classifier.
+
+        This runs per CANDIDATE where the gate runs once on the chosen one, so an LLM call here
+        would be paying for ranking on every card of every walk.
+        """
+        from cqc_lem.app.engagement.feed import focus_affinity
+        with patch(f"{_FEED}.post_is_relevant") as classifier:
+            focus_affinity("a post about RAG evals", self._PREFS)
+        classifier.assert_not_called()
+
+    def test_it_orders_two_on_domain_posts(self):
+        from cqc_lem.app.engagement.feed import _score_feed_post
+        base = {"author": "A", "age_minutes": 30, "comments": 2, "relevant": True}
+        on_thesis = _score_feed_post({**base, "focus_affinity": 1.0}, {})
+        off_thesis = _score_feed_post({**base, "focus_affinity": 0.0}, {})
+        assert on_thesis > off_thesis
+
+    def test_recency_still_dominates_the_thesis(self):
+        """Recency still dominates the thesis.
+
+        #817's invariant: this scorer is recency-DOMINANT. A fresh off-thesis post must still
+        outrank a day-old on-thesis one, or the golden hour stops being the point.
+        """
+        from cqc_lem.app.engagement.feed import _score_feed_post
+        fresh_off = _score_feed_post(
+            {"author": "A", "age_minutes": 10, "comments": 2, "relevant": True,
+             "focus_affinity": 0.0}, {})
+        stale_on = _score_feed_post(
+            {"author": "A", "age_minutes": 2000, "comments": 2, "relevant": True,
+             "focus_affinity": 1.0}, {})
+        assert fresh_off > stale_on
 
 
 def _box(text):

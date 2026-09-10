@@ -4279,6 +4279,8 @@ export interface components {
             last_blocked_at: string | null;
             /** Last Engaged At */
             last_engaged_at: string | null;
+            /** Last Visited At */
+            last_visited_at: string | null;
             /** Max Comments Per Week */
             max_comments_per_week: number;
             /** Name */

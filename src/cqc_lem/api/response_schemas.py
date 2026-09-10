@@ -199,6 +199,10 @@ class EngagementTarget(BaseModel):
     max_comments_per_week: int
     active: bool
     last_engaged_at: Optional[datetime]
+    # When this target was last WALKED, whether or not a comment came of it (#2026). Distinct from
+    # `last_engaged_at` on purpose: the rotation orders on turns taken, and a target we opened and
+    # found nothing commentable on has had its turn.
+    last_visited_at: Optional[datetime]
     comments_this_week: int
     week_start: Optional[date]
     source: Literal["user", "suggested"]
