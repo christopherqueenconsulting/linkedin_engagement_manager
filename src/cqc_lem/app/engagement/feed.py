@@ -57,6 +57,8 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.remote.webdriver import WebDriver
 from selenium.webdriver.remote.webelement import WebElement
 
+from cqc_lem.app.celeryconfig import SE_PREPOST_QUEUE
+
 # `queue_roster_connect_invite` dispatches the connect rail's task (#1154); the rail moved to
 # `app.engagement.invites` first and imports nothing from here, so the edge runs one way.
 from cqc_lem.app.engagement.invites import send_roster_connect_invite
@@ -4289,8 +4291,17 @@ def automate_commenting(self, user_id: int, loop_for_duration: int = None, futur
                 # Remove 'self' from kwargs if it exists
                 if 'self' in kwargs:
                     del kwargs['self']
-                # Call self again in the future
-                globals()[current_function_name].apply_async(kwargs=kwargs, countdown=future_forward)
+                # Call self again in the future — on the SAME lane this pass ran on (issue #2032).
+                # The pre-post warm-up is dispatched with `queue=se_prepost` explicitly, because on
+                # `se_engage` an eta-bound run waits behind whatever 15-minute golden-hour loop is
+                # already going and starts after its own window has closed (#553). The re-queue
+                # passed no queue at all, so `task_routes` sent every pass after the first back to
+                # `se_engage` — the exact lane the dispatch had paid to escape. `post_id` is set
+                # only by that dispatch, so it is what identifies a window run.
+                requeue = {"kwargs": kwargs, "countdown": future_forward}
+                if post_id:
+                    requeue["queue"] = SE_PREPOST_QUEUE
+                globals()[current_function_name].apply_async(**requeue)
 
     except Exception as e:
         log_error("Error while automating commenting", exc=e, user_id=user_id, task_name="automate_commenting")

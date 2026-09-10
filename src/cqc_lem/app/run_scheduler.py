@@ -18,7 +18,7 @@ from typing import Tuple
 
 from cqc_lem import assets_dir
 from cqc_lem.app.celeryconfig import SE_PREPOST_QUEUE
-from cqc_lem.app.engagement.feed import automate_commenting
+from cqc_lem.app.engagement.feed import auto_seed_comment_on_post, automate_commenting
 from cqc_lem.app.engagement.invites import (
     automate_invites_to_company_page_for_user,
     clean_stale_invites,
@@ -70,6 +70,7 @@ from cqc_lem.utilities.db import (
     get_orphaned_occasion_claims,
     get_orphaned_scheduled_dms,
     get_orphaned_scheduled_posts,
+    get_posts_missing_their_seed_comment,
     get_ready_occasion_posts,
     get_ready_to_post_posts,
     get_user_timezone,
@@ -285,6 +286,23 @@ def auto_check_scheduled_posts(self):
             post_id=post_id, user_id=user_id, task_name="auto_check_scheduled_posts",
         )
         post_to_linkedin.apply_async(kwargs={'user_id': user_id, 'post_id': post_id})
+
+    # A post that PUBLISHED and then lost its worker keeps its golden hour (issue #2032).
+    #
+    # The whole lifecycle — seed comment, reply sweeps, second wave — is dispatched from inside
+    # `post_to_linkedin` on its success branch, so a worker that dies between the status write and
+    # that block leaves a live post with none of it. The orphan re-queue above does NOT cover that:
+    # it re-runs `post_to_linkedin`, which returns early on the POSTED guard.
+    #
+    # A separate reconciler rather than a loosened publish guard, on purpose. POSTED is what stops a
+    # double publish, and the recovery must not be able to weaken it. Re-arming is safe because
+    # `auto_seed_comment_on_post` is idempotent on `has_user_commented_on_post_url` and
+    # `SELF_COMMENT_MAX_PER_POST` bounds the pair — so the worst case of a false positive here is a
+    # no-op, while the cost of missing one is a post that never got a first comment.
+    for post_id, user_id in get_posts_missing_their_seed_comment():
+        log_warning("Post published but its lifecycle never started — re-arming the seed comment",
+                    post_id=post_id, user_id=user_id, task_name="auto_check_scheduled_posts")
+        auto_seed_comment_on_post.apply_async(kwargs={'user_id': user_id, 'post_id': post_id})
 
     # Occasion/milestone drafts (issue #1088). A SEPARATE queue on purpose: the rows above are
     # excluded from every query here by `manual_publish = 0`, which is what keeps `post_to_linkedin`

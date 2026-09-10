@@ -1202,6 +1202,40 @@ def delete_planned_posts(user_id: int, post_ids: list) -> int:
         return 0
 
 
+def get_posts_missing_their_seed_comment(lookback_hours: int = 24,
+                                         min_age_minutes: int = 15) -> list:
+    """`[(post_id, user_id)]` for posts that PUBLISHED but never got their first comment (#2032).
+
+    The whole post lifecycle — the seed comment, the golden-hour reply sweeps, the second wave — is
+    dispatched from inside `post_to_linkedin` on its success branch. A worker that dies between the
+    status write and that block leaves a live post with none of it, and no beat re-adds them: the
+    orphan re-queue re-runs `post_to_linkedin`, which returns early on the POSTED guard.
+
+    Identified by the LOGS, not by `posts.status`: a SUCCESS post row with no COMMENT row against
+    the same post. `min_age_minutes` keeps a post that is merely mid-flight out of the answer — the
+    seed is dispatched with a three-minute countdown, so anything younger has not had its chance
+    yet.
+    """
+    try:
+        with db_cursor() as cursor:
+            cursor.execute(
+                "SELECT p.post_id, p.user_id FROM logs p"
+                " WHERE p.action_type = %s AND p.result = %s AND p.post_id IS NOT NULL"
+                "   AND p.created_at > NOW() - INTERVAL %s HOUR"
+                "   AND p.created_at < NOW() - INTERVAL %s MINUTE"
+                "   AND NOT EXISTS (SELECT 1 FROM logs c WHERE c.post_id = p.post_id"
+                "                     AND c.user_id = p.user_id AND c.action_type = %s"
+                "                     AND c.result = %s)"
+                " GROUP BY p.post_id, p.user_id",
+                (LogActionType.POST.value, LogResultType.SUCCESS.value,
+                 int(lookback_hours), int(min_age_minutes),
+                 LogActionType.COMMENT.value, LogResultType.SUCCESS.value))
+            return [(int(r[0]), int(r[1])) for r in (cursor.fetchall() or []) if r and r[0]]
+    except mysql.connector.Error as err:
+        log_error("Could not find posts missing their seed comment", exc=err)
+        return []
+
+
 def get_user_ids_with_planned_posts_within_buffer(days: int = MAX_CONTENT_BUFFER_DAYS) -> list[int]:
     """User IDs that have any status=planning post due within the next `days` days.
 
