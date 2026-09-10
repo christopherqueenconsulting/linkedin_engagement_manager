@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.174.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.173.13...v0.174.0) (2026-09-10)
+
+
+### Features
+
+* **kpi:** put the honest engagement number on the dashboard ([#2036](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2036)) ([5f92f73](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/5f92f7345d08665ae70e8d740a8fd5a4820d9bd1))
+
+
+### Bug Fixes
+
+* **comments:** a rotation that survives the run, and a shape the fact gate can accept ([#2035](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2035)) ([a01f1c1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/a01f1c17451d420c553e2aa92751b7a502839901))
+* **comments:** a rotation that survives the run, and a shape the fact gate can accept (closes [#2034](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2034)) ([a01f1c1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/a01f1c17451d420c553e2aa92751b7a502839901))
+* **content-plan:** a cadence change takes effect next run, not in seven weeks ([#2030](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2030)) ([a0de43f](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/a0de43f1dd654f87d0e5ff6cd1021f55cd43d476))
+* **content-plan:** a cadence change takes effect next run, not in seven weeks (closes [#2021](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2021)) ([a0de43f](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/a0de43f1dd654f87d0e5ff6cd1021f55cd43d476))
+* **outreach:** stop duplicate cold DMs, and stop dropping answered leads ([#2029](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2029)) ([4cf8147](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/4cf8147e1b2c6adf3224516727691bc2db607123))
+* **posting:** grade the outcome skip, keep the warm-up lane, re-arm a lost lifecycle ([#2033](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2033)) ([1acdee0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/1acdee0c98c0dc4e67ca2efca47dbca20049962e))
+* **posting:** grade the outcome skip, keep the warm-up lane, re-arm a lost lifecycle (closes [#2032](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2032)) ([1acdee0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/1acdee0c98c0dc4e67ca2efca47dbca20049962e))
+
 ## [0.173.13](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.173.12...v0.173.13) (2026-09-10)
 
 
