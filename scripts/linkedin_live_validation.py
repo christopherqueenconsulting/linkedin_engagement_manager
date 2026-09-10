@@ -512,6 +512,8 @@ _PROBE_CAPABILITY_SYMBOLS = {
     "connect_dialog.top_card_controls": "top_card_controls",
     "connect_dialog.menu_items": "probe_more_menu_items",
     "connect_dialog.restriction": "invite_limit_signal",
+    "comment_list.dom_evidence": "comment_list_dom_evidence",
+    "comment_list.ladder": "comment_ladder_reading",
     "feed_sort.selector_evidence": "_feed_sort_evidence_scan",
     "occasion_composer.share_box_dom": "share_box_dom_evidence",
     "occasion_composer.share_box_activation": "share_box_activation_ladder",
@@ -987,6 +989,213 @@ def comment_outcome_state(reading: Optional[dict]) -> str:
     return STATE_OK
 
 
+# Bounded on purpose — this ships as an event and a handful of rows is enough to rewrite a locator.
+_COMMENT_DOM_SCAN_CAP = 10
+
+# What a comment CARD looks like without naming any of the anchors under suspicion: an element that
+# carries a profile link and a paragraph's worth of its own text. Both current readers key off the
+# comment list (`_comment_items` on `[data-testid*='commentList']`, `_comment_items_from_thread`
+# walking up from `button[aria-label='Reply']`), so neither can be used to find the thing they have
+# both stopped finding.
+_COMMENT_LIST_DOM_SCAN_JS = r"""
+const CAP = arguments[0];
+const own = (el) => {
+  let s = '';
+  for (const n of el.childNodes) if (n.nodeType === 3) s += n.textContent;
+  return s.trim();
+};
+const describe = (el) => ({
+  tag: el.tagName.toLowerCase(),
+  testid: el.getAttribute('data-testid') || '',
+  role: el.getAttribute('role') || '',
+  aria: (el.getAttribute('aria-label') || '').slice(0, 60),
+});
+const out = {locator_hits: {}, testids: [], action_labels: [], candidates: []};
+
+// What the shipped locators see right now.
+const probes = {
+  "commentList container": "[data-testid*='commentList']",
+  "expandable-text-box (any)": "[data-testid='expandable-text-box']",
+  "commentList + expandable-text-box": "[data-testid*='commentList'] [data-testid='expandable-text-box']",
+  "button[aria-label='Reply'] (exact)": "button[aria-label='Reply']",
+  "button[aria-label^='Reply'] (prefix)": "button[aria-label^='Reply']",
+  "profile links in main": "main a[href*='/in/']",
+};
+for (const [name, sel] of Object.entries(probes)) {
+  try { out.locator_hits[name] = document.querySelectorAll(sel).length; }
+  catch (e) { out.locator_hits[name] = 'selector error'; }
+}
+
+// Every data-testid the page renders, with counts — the vocabulary a new locator is written from.
+const tally = {};
+for (const el of document.querySelectorAll('main [data-testid]')) {
+  const id = el.getAttribute('data-testid');
+  tally[id] = (tally[id] || 0) + 1;
+}
+out.testids = Object.entries(tally).sort((a, b) => b[1] - a[1])
+  .slice(0, 40).map(([id, n]) => id + ' x' + n);
+
+// The action controls on a comment, whatever they are called now.
+const seen = new Set();
+for (const el of document.querySelectorAll('main button, main [role="button"]')) {
+  const label = (el.getAttribute('aria-label') || own(el) || '').trim();
+  if (!label || label.length > 60) continue;
+  if (!/repl|react|like|comment|more|load/i.test(label)) continue;
+  if (seen.has(label)) continue;
+  seen.add(label);
+  if (seen.size > 25) break;
+}
+out.action_labels = [...seen];
+
+// The comment CONTAINER, anchored on the one control the page still renders per comment. Walking
+// up from the reply control is how `_comment_items_from_thread` already works, so this describes
+// exactly the levels a rewritten locator has to choose between: for each ancestor, whether it holds
+// the author link and how much text it carries.
+const replies = document.querySelectorAll("main button[aria-label^='Reply'], main [role='button'][aria-label^='Reply']");
+for (const rb of replies) {
+  if (out.candidates.length >= CAP) break;
+  const chain = [];
+  let up = rb.parentElement;
+  for (let d = 0; up && d < 8; d++, up = up.parentElement) {
+    const links = up.querySelectorAll("a[href*='/in/']");
+    chain.push({
+      depth: d,
+      ...describe(up),
+      cls: (up.getAttribute('class') || '').slice(0, 80),
+      profile_links: links.length,
+      inner_len: (up.innerText || '').trim().length,
+      own_len: own(up).length,
+    });
+  }
+  out.candidates.push({
+    reply_label: (rb.getAttribute('aria-label') || '').slice(0, 80),
+    chain: chain,
+  });
+}
+
+// Where the comment BODY text actually lives: the deepest element carrying a run of its own text,
+// under the smallest ancestor of a reply control that holds a profile link.
+out.body_hosts = [];
+for (const rb of replies) {
+  if (out.body_hosts.length >= 4) break;
+  let box = rb.parentElement;
+  for (let d = 0; box && d < 8; d++, box = box.parentElement) {
+    if (box.querySelector("a[href*='/in/']")) break;
+  }
+  if (!box) continue;
+  let best = null;
+  for (const el of box.querySelectorAll('*')) {
+    const len = own(el).length;
+    if (len >= 15 && (!best || len > own(best).length)) best = el;
+  }
+  if (!best) continue;
+  const chain = [];
+  let up = best;
+  for (let d = 0; up && d < 4; d++, up = up.parentElement) {
+    chain.push({...describe(up), cls: (up.getAttribute('class') || '').slice(0, 80)});
+  }
+  out.body_hosts.push({excerpt: own(best).slice(0, 100), chain: chain});
+}
+return out;
+"""
+
+
+# Carried copy of the #2020 anchor ladder, so it can be graded on a live page BEFORE it ships.
+# Same posture as `_CARRIED_COMMENT_AUTHOR_ANCHORS_JS`: the probe is piped into the DEPLOYED image,
+# which cannot import a reader that is still on a branch. `TestCommentLadderCopy` fails the build if
+# this drifts from the shipped one.
+_CARRIED_COMMENT_LADDER = (
+    ("reply_prefix", "main button[aria-label^='Reply'], main [role='button'][aria-label^='Reply'], "
+                     "button[aria-label^='Reply'], [role='button'][aria-label^='Reply']"),
+    ("reply_exact", "button[aria-label='Reply'], [role='button'][aria-label='Reply']"),
+    ("commentlist_testid", "[data-testid*='commentList'] [data-testid='expandable-text-box']"),
+    ("article", "main article"),
+)
+
+_CARRIED_COMMENT_FROM_ANCHOR_JS = (
+    "let el=arguments[0].parentElement,d=0;"
+    "while(el&&d<10){"
+    " if(el.querySelector&&el.querySelector(\"a[href*='/in/']\")){"
+    "   const post=[...el.querySelectorAll('button')].some("
+    "     b=>/GIF|Repost|Emoji Picker/.test(b.getAttribute('aria-label')||''));"
+    "   if(!post) return el;"
+    " }"
+    " el=el.parentElement;d++;}"
+    "return null;")
+
+_CARRIED_COMMENT_AUTHOR_JS = (
+    "const c=arguments[0];"
+    "const own=(el)=>{let s='';for(const n of el.childNodes) if(n.nodeType===3) s+=n.textContent;"
+    "                 return s.trim();};"
+    "let body=null,bestLen=0;"
+    "for(const el of c.querySelectorAll('*')){const len=own(el).length;"
+    " if(len>bestLen){body=el;bestLen=len;}}"
+    "let fallback='';"
+    "for(const a of c.querySelectorAll(\"a[href*='/in/']\")){"
+    "  if(a.closest(\"[data-testid='expandable-text-box']\")) continue;"
+    "  if(body&&body.contains(a)&&body!==a) continue;"
+    "  const href=(a.href||'').split('?')[0];"
+    "  if(((a.innerText||a.textContent||'')+'').trim()) return href;"
+    "  if(!fallback) fallback=href;"
+    "}return fallback;")
+
+
+def comment_ladder_reading(driver) -> dict:
+    """What the #2020 ladder resolves on THIS page, rung by rung.
+
+    Reports every rung rather than stopping at the first that answers, because the point of the
+    ladder is knowing which strategies are alive — a rung that has gone quiet is the early warning
+    that the shipped order needs revisiting, weeks before the day none of them answer.
+    """
+    out = {"rungs": [], "winning_rung": "", "authors": []}
+    for name, selector in _CARRIED_COMMENT_LADDER:
+        row = {"rung": name, "anchors": 0, "containers": 0}
+        try:
+            anchors = driver.find_elements("css selector", selector)
+        except Exception as e:  # noqa: BLE001 - a diagnostic never breaks its host run
+            row["error"] = f"{type(e).__name__}: {e}"
+            out["rungs"].append(row)
+            continue
+        row["anchors"] = len(anchors)
+        seen = []
+        for a in anchors:
+            try:
+                cont = driver.execute_script(_CARRIED_COMMENT_FROM_ANCHOR_JS, a)
+            except Exception:
+                continue
+            if cont is not None and not any(cont == s for s in seen):
+                seen.append(cont)
+        row["containers"] = len(seen)
+        out["rungs"].append(row)
+        if seen and not out["winning_rung"]:
+            out["winning_rung"] = name
+            for cont in seen[:10]:
+                try:
+                    out["authors"].append(driver.execute_script(_CARRIED_COMMENT_AUTHOR_JS, cont))
+                except Exception:
+                    out["authors"].append({"href": "", "body": ""})
+    return out
+
+
+def comment_list_dom_evidence(driver) -> dict:
+    """A bounded description of what the post page renders where the comment readers look (#2020).
+
+    Written because the readers went blind and there was nothing to rewrite them FROM: on
+    2026-09-10 a post whose own analytics page reported 4 comments returned zero items from BOTH
+    `_comment_items` and `_comment_items_from_thread`, with images on and the thread loaded.
+
+    Deliberately anchored on neither of them. A scan that looks for comments via the comment list
+    can only report that the comment list is missing, which is the thing already known — so this
+    finds "an element carrying a profile link and a paragraph of its own text" and describes what it
+    is nested in. Same posture as the sort-control scan (#1117/#1270): read-only, bounded, and it
+    swallows its own failure so a diagnostic can never cost the reading it rode in on.
+    """
+    try:
+        return driver.execute_script(_COMMENT_LIST_DOM_SCAN_JS, _COMMENT_DOM_SCAN_CAP) or {}
+    except Exception as e:  # noqa: BLE001 - a diagnostic must never break the run it rode in on
+        return {"error": f"{type(e).__name__}: {e}"}
+
+
 def probe_comment_outcome(driver, post_url: str, our_slug: str, comment_text: str = "",
                           sleep=time.sleep) -> dict:
     """D4 (#628): on a post the user has ALREADY commented on, report what the outcome reader sees
@@ -1051,6 +1260,14 @@ def probe_comment_outcome(driver, post_url: str, our_slug: str, comment_text: st
     if not reading["sort_control_found"] and items:
         from cqc_lem.app.engagement.posting import _diagnose_sort_control_miss
         reading["sort_control_candidates"] = _diagnose_sort_control_miss(driver)
+    # The reason this probe exists after #2020: a walk that read nothing has to say what the page
+    # rendered instead, or the next locator is a guess. Only on the empty case — on a healthy thread
+    # the reading above already IS the evidence.
+    if not items:
+        reading["dom_evidence"] = comment_list_dom_evidence(driver)
+        # And what the #2020 ladder WOULD resolve here — the half that says whether a fix works,
+        # rather than only why the old reader failed.
+        reading["comment_ladder"] = comment_ladder_reading(driver)
     return graded(reading, comment_outcome_state(reading), comment_outcome_verdict(reading))
 
 
