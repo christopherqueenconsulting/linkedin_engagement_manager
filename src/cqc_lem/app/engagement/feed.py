@@ -2419,21 +2419,25 @@ def comment_on_roster_posts(ctx: FeedRunContext, max_posts: int) -> dict:
         # Auto-follow LAST, on the page that is already open: a follow click re-renders the top card,
         # and doing it before the comment walk would stale the very cards that walk reads.
         follow_status = str(target.get("follow_status") or "")
-        if follow_status != FollowStatus.FOLLOWING:
+        # Re-read per target, not decremented from a per-run local: the click is recorded on
+        # dispatch, so this is also what stops two overlapping runs each spending the cap.
+        attempting_click = (follow_enabled and follow_status not in ENGAGEMENT_TARGET_FOLLOW_TERMINAL
+                            and roster_follow_budget(user_id, prefs) > 0)
+        if follow_status != FollowStatus.FOLLOWING and not attempting_click:
             # Read-only catch-up (issue #1991), NEVER gated on `follow_enabled`: a user who
             # followed this target by hand on LinkedIn — or with the auto-follow lane off
             # entirely, its default — must not have `follow_status` (and the connect escalation
             # it gates, issue #979) stuck stale forever just because we never asked again. Costs
-            # no budget: the activity page is already open for the comment walk.
+            # no budget: the activity page is already open for the comment walk. Skipped when a
+            # click is about to happen anyway: `auto_follow_roster_target` does its own resolve of
+            # the same control, and resolving it twice would double any selector-drift warning it
+            # raises against the escalation threshold (`utilities/log_escalation.py`) for one visit.
             if reconcile_roster_follow_state(driver, user_id, target) == FollowStatus.FOLLOWING:
                 follow_status = FollowStatus.FOLLOWING.value
                 target["follow_status"] = follow_status
-        if follow_enabled and follow_status not in ENGAGEMENT_TARGET_FOLLOW_TERMINAL:
-            if roster_follow_budget(user_id, prefs) > 0:
-                # Re-read per target, not decremented from a per-run local: the click is recorded on
-                # dispatch, so this is also what stops two overlapping runs each spending the cap.
-                if auto_follow_roster_target(driver, user_id, target) == FollowOutcome.FOLLOWED:
-                    stats["followed"] += 1
+        if attempting_click:
+            if auto_follow_roster_target(driver, user_id, target) == FollowOutcome.FOLLOWED:
+                stats["followed"] += 1
         # The rung above follow (#979): free read-only advancement for a target already on the
         # ladder, and — only when the user opted in — the one connect invite for a target following
         # demonstrably did not unlock. Never gated on `follow_enabled`: a user who turned auto-follow

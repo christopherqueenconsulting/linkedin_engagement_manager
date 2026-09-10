@@ -511,6 +511,17 @@ class TestRosterAutoFollow:
         r["follow"].assert_called_once()
         assert r["stats"]["followed"] == 1
 
+    def test_a_click_this_visit_skips_the_separate_reconcile_read(self):
+        # `auto_follow_roster_target` resolves the same follow control itself before clicking, so
+        # calling `reconcile_roster_follow_state` first too would resolve it twice for one visit —
+        # doubling any selector-drift WARNING it raises against the escalation threshold
+        # (`utilities/log_escalation.py`) for a single real-world event (issue #1991 follow-up).
+        r = _run_roster([_box("A roster author's post, long enough to scan.")],
+                        [_target("https://www.linkedin.com/in/jane")],
+                        follow_budget=1, follow_outcome="followed")
+        r["follow"].assert_called_once()
+        r["reconcile"].assert_not_called()
+
     def test_an_already_followed_target_is_never_re_examined(self):
         target = _target("https://www.linkedin.com/in/jane")
         target["follow_status"] = "following"
