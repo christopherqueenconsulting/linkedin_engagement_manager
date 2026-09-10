@@ -1773,6 +1773,44 @@ def _post_author_href(driver) -> str:
         return ""
 
 
+# Skip reasons for a comment-outcome read that could not find our comment (issue #2032). Stable
+# strings: `docs/content-quality-telemetry.md` groups by them, and the demotion verdict excludes
+# whichever of them means "we could not look".
+OUTCOME_SKIP_POST_UNAVAILABLE = "post-unavailable"
+OUTCOME_SKIP_COMMENT_REMOVED = "comment-removed"
+OUTCOME_SKIP_UNREADABLE = "unreadable"
+
+
+def _comment_outcome_skip_reason(driver, items: list) -> str:
+    """WHY our comment was not found — asked of the PAGE, not inferred from the reader (issue #2032).
+
+    It used to be `"post-unavailable" if not items else "comment-not-found"`: a claim about the post
+    derived entirely from the reader's own empty result. That is the #1013 zero-walk anti-pattern,
+    and it was wrong at scale — 39 of 96 outcome rows were discarded, 23 of them as
+    `post-unavailable` on pages where our comment demonstrably existed, because the comment readers
+    had gone blind (#2020). Those 39 rows are the denominator of the author-reply rate, so the one
+    metric this sweep exists to produce was computed on a corpus 41% of which had been thrown away
+    for a reason nobody had checked.
+
+    Three answers, and the middle one is the only one that means what the old string claimed:
+
+    * `unreadable` — the walk found nothing AND the page's own social bar says there are comments.
+      We could not look; the row is excluded from the demotion denominator, not counted against us.
+    * `post-unavailable` — nothing rendered and the page agrees there is nothing: deleted, gated, or
+      an auth wall.
+    * `comment-removed` — the thread rendered other people's comments and ours is not among them,
+      which is the only reading that is genuinely about OUR comment.
+    """
+    if items:
+        return OUTCOME_SKIP_COMMENT_REMOVED
+    rendered = _rendered_comment_count(_main_text(driver))
+    if rendered is None or rendered > 0:
+        # The page says there ARE comments (or could not be read at all) while the walk saw none —
+        # we cannot attribute this to the post or to our comment, so it grounds neither.
+        return OUTCOME_SKIP_UNREADABLE
+    return OUTCOME_SKIP_POST_UNAVAILABLE
+
+
 def _read_comment_outcome(driver, wait, user_id: int, post_url: str, our_slug: str,
                           comment_text: str) -> dict:
     """Revisit ONE post and read what our comment there actually earned (issue #628).
@@ -1835,7 +1873,7 @@ def _read_comment_outcome(driver, wait, user_id: int, post_url: str, our_slug: s
     outcome["visible_most_relevant"] = visible
     if ours is None:
         outcome["status"] = "skipped"
-        outcome["skip_reason"] = "post-unavailable" if not items else "comment-not-found"
+        outcome["skip_reason"] = _comment_outcome_skip_reason(driver, items)
         # DEBUG: the comment above already calls a `post-unavailable` skip working behaviour, and
         # the caller writes the skip as a durable comment_outcomes row — that is the record.
         log_debug(f"Comment outcome skipped ({outcome['skip_reason']}) on {post_url}",

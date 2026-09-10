@@ -574,14 +574,16 @@ class TestReadCommentOutcome:
             driver = _outcome_env(es, theirs, switched=True, items_after=theirs)
             _p(es, "log_info")
             out = _fn("_read_comment_outcome")(driver, MagicMock(), 1, "https://post", "me", "ours")
-        assert out["status"] == "skipped" and out["skip_reason"] == "comment-not-found"
+        assert out["status"] == "skipped" and out["skip_reason"] == "comment-removed"
         assert out["visible_most_relevant"] is None
         assert out["reply_count"] == 0 and out["like_count"] == 0
 
     def test_deleted_or_private_post_renders_no_comments(self):
+        """Nothing walked AND the page's own social bar agrees there is nothing (issue #2032)."""
         with ExitStack() as es:
             driver = _outcome_env(es, [], sort_label="", switched=False)
             _p(es, "log_info")
+            _p(es, "_rendered_comment_count", return_value=0)
             out = _fn("_read_comment_outcome")(driver, MagicMock(), 1, "https://post", "me", "ours")
             label = _fn("_comment_sort_label")
         assert out["status"] == "skipped" and out["skip_reason"] == "post-unavailable"
@@ -627,7 +629,7 @@ class TestReadCommentOutcome:
             _p(es, "log_info")
             report = _p(es, "_report_sort_control_miss", return_value=[])
             out = _fn("_read_comment_outcome")(driver, MagicMock(), 1, "https://post", "me", "ours")
-        assert out["skip_reason"] == "comment-not-found"
+        assert out["skip_reason"] == "comment-removed"
         assert report.called
         # A comment we never FOUND is not visible-by-inference: the 2B reading needs both halves.
         assert out["visible_most_relevant"] is None
@@ -1014,3 +1016,42 @@ class TestLiveValidationVerdict:
         assert self._llv().comment_outcome_verdict(
             {"sort_control_found": True, "found_most_relevant": False,
              "switched_to_recent": True, "found_most_recent": False}).startswith("ambiguous")
+
+
+class TestTheSkipReasonIsGradedNotInferred:
+    """The skip reason is graded, not inferred (issue #2032).
+
+    `"post-unavailable" if not items else "comment-not-found"` was a claim about the POST derived
+    from the reader's own empty result — the #1013 zero-walk anti-pattern.
+
+    It was wrong at scale. 39 of 96 outcome rows were discarded, 23 of them as `post-unavailable`,
+    on pages where our comment demonstrably existed — the comment readers had gone blind (#2020).
+    Those rows are the denominator of the author-reply rate, so the one number this sweep exists to
+    produce was computed on a corpus 41% of which had been thrown away for an unchecked reason.
+    """
+
+    def _reason(self, items, rendered):
+        from unittest.mock import MagicMock, patch
+
+        from cqc_lem.app.engagement import posting as mod
+
+        with patch(f"{POST}._rendered_comment_count", return_value=rendered):
+            return mod._comment_outcome_skip_reason(MagicMock(), items)
+
+    def test_a_thread_that_rendered_other_comments_means_ours_is_gone(self):
+        """The only reading genuinely about OUR comment."""
+        assert self._reason([object()], 4) == "comment-removed"
+
+    def test_nothing_walked_but_the_page_says_there_are_comments_is_unreadable(self):
+        """The exact production shape: 4 comments on the page, zero from the walk.
+
+        Attributable to neither the post nor our comment, so it grounds neither.
+        """
+        assert self._reason([], 4) == "unreadable"
+
+    def test_nothing_walked_and_the_page_agrees_is_the_post(self):
+        assert self._reason([], 0) == "post-unavailable"
+
+    def test_a_page_we_could_not_read_at_all_is_unreadable_not_a_missing_post(self):
+        """None is "we could not ask", which must never be recorded as "the page said zero"."""
+        assert self._reason([], None) == "unreadable"
