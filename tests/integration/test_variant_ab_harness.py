@@ -40,13 +40,15 @@ class _FakeCursor:
             self._result = [(p["archetype"], p["hook_style"], p["post_type"],
                              p["topic"], p["buyer_stage"])] if p else []
         elif s.startswith("INSERT INTO post_stats"):
-            (user_id, post_id, reactions, comments, reposts, impressions, saves,
+            # own_comments sits directly after comments (issue #2023) — the two are read
+            # together and third-party engagement is derived from both.
+            (user_id, post_id, reactions, comments, own_comments, reposts, impressions, saves,
              archetype, hook_style, fmt, topic, buyer_stage) = params
             self.lastrowid = len(self.stats) + 1
             self.stats.append({
                 "id": self.lastrowid, "user_id": user_id, "post_id": post_id,
-                "reactions": reactions, "comments": comments, "reposts": reposts,
-                "impressions": impressions, "saves": saves,
+                "reactions": reactions, "comments": comments, "own_comments": own_comments,
+                "reposts": reposts, "impressions": impressions, "saves": saves,
             })
             self.rowcount = 1
         elif s.startswith("SELECT v.variant_key, p.scheduled_time, s.reactions"):
