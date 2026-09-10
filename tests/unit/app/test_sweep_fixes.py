@@ -124,6 +124,9 @@ class TestScrapeRecordsImpressions:
              patch(f"{_POST}.get_current_profile", return_value=(MagicMock(), MagicMock(), "e", MagicMock())), \
              patch(f"{_POST}.get_post_url_from_log_for_user", return_value="https://x/urn"), \
              patch(f"{_POST}._post_social_counts", return_value=counts), \
+             patch(f"{_POST}._rendered_signal_labels",
+                   return_value={"reactions", "comments", "reposts", "impressions", "saves"}), \
+             patch(f"{_POST}.own_comment_count_or_none", return_value=0), \
              patch(f"{_POST}.get_shipped_variant_keys", return_value={}), \
              patch(f"{_POST}.record_post_stats") as rec, patch(f"{_POST}.quit_gracefully"):
             from cqc_lem.app.engagement.posting import auto_scrape_post_stats
@@ -194,12 +197,78 @@ class TestScrapeRecordsImpressions:
              patch(f"{_POST}.get_post_url_from_log_for_user", return_value="https://x/urn"), \
              patch(f"{_POST}._post_social_counts", return_value=detail), \
              patch(f"{_POST}._post_analytics_counts", return_value=analytics), \
+             patch(f"{_POST}._rendered_signal_labels",
+                   return_value={"reactions", "comments", "reposts", "impressions", "saves"}), \
+             patch(f"{_POST}.own_comment_count_or_none", return_value=2), \
              patch(f"{_POST}.get_shipped_variant_keys", return_value={}), \
              patch(f"{_POST}.record_post_stats") as rec, patch(f"{_POST}.quit_gracefully"):
             from cqc_lem.app.engagement.posting import auto_scrape_post_stats
             auto_scrape_post_stats.run(user_id=1)
-        assert rec.call_args.kwargs == {"reposts": 6, "impressions": 72, "saves": 9}
+        assert rec.call_args.kwargs == {"reposts": 6, "impressions": 72, "saves": 9,
+                                        "own_comments": 2}
         assert rec.call_args.args[2:] == (5, 2)
+
+
+class TestOwnVersusThirdPartyEngagement:
+    """Issue #2023: our own comments are part of the count the page renders.
+
+    The #344 seed and the #622 second wave are in `comments` on every post we publish. Measured
+    across the last 20 published posts on 2026-09-10: 19 carry exactly 2 comments and both are
+    ours. Everything computed off the unadjusted number — every dashboard, every
+    `get_shape_performance` archetype weight, the content-quality trend — was reading a figure that
+    is structurally >= 2 and almost entirely us.
+    """
+
+    _COUNTS = {"reactions": 1, "comments": 4, "reposts": 0, "impressions": 72, "saves": 0}
+
+    def _run(self, *, seen, own, counts=None):
+        with patch(f"{_POST}.time.sleep"), \
+             patch(f"{_POST}.get_recent_posted_post_ids", return_value=[9]), \
+             patch(f"{_POST}.get_uncaptured_posted_post_ids", return_value=[]), \
+             patch(f"{_POST}.get_current_profile",
+                   return_value=(MagicMock(), MagicMock(), "e", MagicMock())), \
+             patch(f"{_POST}.get_post_url_from_log_for_user", return_value="https://x/urn"), \
+             patch(f"{_POST}._post_social_counts", return_value=dict(counts or self._COUNTS)), \
+             patch(f"{_POST}._post_analytics_counts", return_value={}), \
+             patch(f"{_POST}._rendered_signal_labels", return_value=seen), \
+             patch(f"{_POST}.own_comment_count_or_none", return_value=own), \
+             patch(f"{_POST}.get_shipped_variant_keys", return_value={}), \
+             patch(f"{_POST}.record_post_stats") as rec, \
+             patch(f"{_POST}.track_post_outcome") as outcome, \
+             patch(f"{_POST}.quit_gracefully"):
+            from cqc_lem.app.engagement.posting import auto_scrape_post_stats
+            auto_scrape_post_stats.run(user_id=1)
+        return rec, outcome
+
+    def test_own_comments_are_stored_beside_the_page_total(self):
+        rec, outcome = self._run(seen={"comments", "saves"}, own=2)
+        assert rec.call_args.args[3] == 4               # what the page rendered
+        assert rec.call_args.kwargs["own_comments"] == 2
+        assert outcome.call_args.kwargs["own_comments"] == 2
+
+    def test_an_unreadable_own_count_stays_unknown(self):
+        """A failed read must not claim we left no comments.
+
+        That books OUR comments as the audience's and inflates the exact number this column exists
+        to measure honestly.
+        """
+        rec, outcome = self._run(seen={"comments"}, own=None)
+        assert rec.call_args.kwargs["own_comments"] is None
+        assert outcome.call_args.kwargs["own_comments"] is None
+
+    def test_a_rendered_zero_saves_is_recorded_as_zero(self):
+        """`Saves 0` on the analytics page is a real reading and must not become NULL."""
+        rec, _ = self._run(seen={"comments", "saves"}, own=2)
+        assert rec.call_args.kwargs["saves"] == 0
+
+    def test_a_saves_row_the_page_never_rendered_is_NULL(self):
+        """A saves row the page never rendered is NULL, not zero.
+
+        The defect this replaces: `NOT NULL DEFAULT 0` made an unrendered label and a genuine zero
+        the same row, so the claim was unfalsifiable from the database.
+        """
+        rec, _ = self._run(seen={"comments"}, own=2)
+        assert rec.call_args.kwargs["saves"] is None
 
 
 class TestScrapeStopsOnCrashedTab:

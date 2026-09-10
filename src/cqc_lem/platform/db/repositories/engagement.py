@@ -53,22 +53,44 @@ def insert_new_log(user_id: int, action_type: LogActionType, result: LogResultTy
         success = False
 
     return success
-def count_user_comments_on_post_url(user_id: int, post_url: str) -> int:
-    """How many top-level comments WE have successfully left on this post URL. Replies
-    (LogActionType.REPLY) are deliberately not counted — the self-comment cap (issue #622) is about
-    seeding our own thread, not about answering the people in it.
+def _read_own_comment_count(user_id: int, post_url: str) -> "int | None":
+    """Our own successful top-level comments on `post_url`, or None when the read failed.
+
+    One SQL string for both public readers below, which differ only in what they do with a failure.
     """
     try:
         with db_cursor() as cursor:
             cursor.execute(
                 "SELECT COUNT(*) FROM logs WHERE user_id = %s AND post_url = %s AND action_type = %s AND result = %s",
                 (user_id, post_url, LogActionType.COMMENT.value, LogResultType.SUCCESS.value))
-            count = cursor.fetchone()[0]
+            return int(cursor.fetchone()[0] or 0)
     except mysql.connector.Error as err:
         log_error("Could not count user comments on post url", exc=err)
-        count = 0
+        return None
 
-    return int(count or 0)
+
+def count_user_comments_on_post_url(user_id: int, post_url: str) -> int:
+    """How many top-level comments WE have successfully left on this post URL.
+
+    Replies (LogActionType.REPLY) are deliberately not counted — the self-comment cap (issue #622)
+    is about seeding our own thread, not about answering the people in it.
+
+    A failed read is 0, which for the CAP is the fail-open direction: a database blip must not
+    silently stop the seed comment. Anything STORING this number wants
+    `own_comment_count_or_none` instead — see the note there.
+    """
+    return _read_own_comment_count(user_id, post_url) or 0
+
+
+def own_comment_count_or_none(user_id: int, post_url: str) -> "int | None":
+    """Same count, but None when the read failed (issue #2023).
+
+    `post_stats` subtracts this from the page's total comment count to get third-party comments, and
+    there the fail-open 0 above points the wrong way: it would claim we left no comments, making our
+    own seed and second wave look like audience engagement and inflating the exact number this
+    column exists to measure honestly. Unknown has to stay unknown.
+    """
+    return _read_own_comment_count(user_id, post_url)
 def get_post_age_minutes(user_id: int, post_id: int):
     """Minutes since this post actually went live, or None when it never published.
 

@@ -299,6 +299,31 @@ def _post_social_counts(card) -> dict:
             "reposts": _num(_REPOSTS_RE, "reposts"), "impressions": _num(_IMPRESSIONS_RE, "impressions"),
             "saves": _num(_SAVES_RE, "saves")}
 
+
+_SIGNAL_PATTERNS = (("reactions", _REACTIONS_RE), ("comments", _COMMENTS_RE),
+                    ("reposts", _REPOSTS_RE), ("impressions", _IMPRESSIONS_RE),
+                    ("saves", _SAVES_RE))
+
+
+def rendered_signal_labels(text: "str | None") -> set:
+    """Which engagement signals the page actually put a number against (issue #2023).
+
+    `_post_social_counts` flattens a missing label to 0, which is the right default for scoring —
+    a feed card with no repost count should score as no reposts. It is the wrong answer for a
+    STORED reading: "the analytics page rendered no Saves row" and "the page said 0 saves" become
+    the same database row, and the claim stops being falsifiable. This says which of the two it was,
+    without changing what any existing caller reads.
+
+    Membership means a value was FOUND, not that it was non-zero — a rendered "Saves 0" is a real
+    reading of zero and belongs in the set.
+    """
+    # Anything that is not a string is a read that did not happen — `_main_text` returns None when
+    # <main> is unreachable. Answering "no labels" there is the fail-safe direction: the caller
+    # stores None for the signals it could not confirm rather than a zero it never saw.
+    body = text if isinstance(text, str) else ""
+    stacked = _stacked_counts(body)
+    return {key for key, rx in _SIGNAL_PATTERNS if rx.search(body) or key in stacked}
+
 # Declared because this module exists to be imported FROM: the `app.engagement.*` lanes read these
 # selectors and helpers, and nothing in this file uses several of them, so CodeQL reports
 # them as unused globals without it (py/unused-global-variable).
@@ -317,6 +342,7 @@ __all__ = [
     "_SEP",
     "_STACKED_LABEL_FIRST",
     "_STACKED_VALUE_FIRST",
+    "rendered_signal_labels",
     "_URN_RE",
     "_URN_SCAN_JS",
     "_X_AZ_LOWER",

@@ -390,6 +390,68 @@ class TestTrackPostOutcome:
         assert props["engagement"] == 22
         assert props["engagement_rate"] == pytest.approx(22 / 500)
 
+    def test_third_party_engagement_is_reported_beside_the_raw_numbers(self):
+        """Issue #2023: `comments` counts OUR OWN seed (#344) and second wave (#622) too.
+
+        `engagement` / `engagement_rate` keep reading the unadjusted number so their history stays
+        comparable; the third-party figures are the honest read beside them. Measured on the real
+        account, the two differ by roughly 5x.
+        """
+        with patch(f"{_MOD}.posthog") as mock_ph:
+            from cqc_lem.utilities.observability import track_post_outcome
+            track_post_outcome(post_id=9, reactions=1, comments=4, reposts=0, impressions=72,
+                               saves=0, own_comments=2, user_id=1)
+
+        props = mock_ph.capture.call_args.kwargs["properties"]
+        assert props["comments"] == 4 and props["own_comments"] == 2
+        assert props["third_party_comments"] == 2
+        # engagement counts all 4 comments; the third-party rate counts the 2 that were not ours.
+        assert props["engagement_rate"] == pytest.approx((1 + 2 * 4) / 72)
+        assert props["third_party_engagement_rate"] == pytest.approx((1 + 2 * 2) / 72)
+
+    def test_an_unknown_own_count_leaves_the_third_party_read_unknown(self):
+        """An unknown own-count must leave the third-party read unknown.
+
+        Defaulting it to 0 would book our own comments as the audience's — the precise
+        overstatement this event exists to stop making.
+        """
+        with patch(f"{_MOD}.posthog") as mock_ph:
+            from cqc_lem.utilities.observability import track_post_outcome
+            track_post_outcome(post_id=9, reactions=1, comments=4, impressions=72, user_id=1)
+
+        props = mock_ph.capture.call_args.kwargs["properties"]
+        assert props["own_comments"] is None
+        assert props["third_party_comments"] is None
+        assert props["third_party_engagement_rate"] is None
+        assert props["engagement_rate"] == pytest.approx((1 + 2 * 4) / 72)
+
+    def test_more_own_comments_than_the_page_shows_floors_at_zero(self):
+        """More own comments than the page shows floors at zero, never goes negative.
+
+        The two numbers are read at different moments: a capture between our seed landing and the
+        page's count updating legitimately shows fewer comments than we have logged. Production
+        post 81 computes to -1 that way.
+        """
+        with patch(f"{_MOD}.posthog") as mock_ph:
+            from cqc_lem.utilities.observability import track_post_outcome
+            track_post_outcome(post_id=81, reactions=1, comments=1, impressions=115,
+                               own_comments=2, user_id=1)
+
+        props = mock_ph.capture.call_args.kwargs["properties"]
+        assert props["third_party_comments"] == 0
+
+    def test_unread_saves_stay_none_rather_than_zero(self):
+        """An unread `saves` stays None rather than becoming a zero.
+
+        Same reason `impressions` always has: a label the page never rendered is not a reading of
+        zero.
+        """
+        with patch(f"{_MOD}.posthog") as mock_ph:
+            from cqc_lem.utilities.observability import track_post_outcome
+            track_post_outcome(post_id=9, reactions=1, comments=0, user_id=1)
+
+        assert mock_ph.capture.call_args.kwargs["properties"]["saves"] is None
+
     def test_post_type_is_ingested_as_a_string_a_breakdown_can_filter(self):
         """The format is a dashboard BREAKDOWN (issue #1513).
 
