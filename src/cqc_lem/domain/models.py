@@ -79,6 +79,11 @@ class FeedRunContext:
     used_comment_shapes: list = field(default_factory=list)
     recent_comments: list = field(default_factory=list)
     engagers: set = field(default_factory=set)
+    # Does this author have sourced material with a NUMBER in it (issue #2034)? Decided once per
+    # run, because it gates which comment archetypes may be offered at all: the fact-anchored ones
+    # demand a real figure, and `fact_grounding_severity("comment")` is HARD, so offering one to a
+    # writer with nothing to cite spends the whole regeneration budget and then skips the post.
+    has_sourced_facts: bool = False
     deadline_ts: Optional[float] = None
     # True only for the LinkedIn GROUP feed lane, which resolves the comment composer before
     # spending an LLM call (issue #1084). It is a property of the RUN, not of a card — the roster
