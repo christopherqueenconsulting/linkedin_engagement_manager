@@ -226,6 +226,18 @@ __all__ = [
     "_GOLDEN_HOUR_REPLY_SWEEPS",
 ]
 
+# ── the images exemption every reader in this module shares (issue #2020) ───────────────────────
+# Each Selenium session opened below reads a page LinkedIn fastboots through `<img>` load events —
+# a post permalink (`/feed/update/*`), or a profile's `/recent-activity/*` for the URN reconcile.
+# With the bandwidth saver on, such a page never mounts at all, so each one passes
+# `needs_images=True`. Live-confirmed 2026-09-10, one post, both ways in a single probe run:
+# images blocked → every detail signal read 0, `detail_lines` empty, no comment-sort control;
+# images on, same URL → 4 comments off the detail page and the sort control found. Same class as
+# `/messaging/*` (#1774), `/groups/*` (#1778) and the roster activity page (#1979). The exemption
+# stays scoped, and `TestNeedsImagesExemptionIsScoped` is the brake: a new call site means naming
+# the surface and the probe run that grounded it.
+
+
 # ── zero-walk tripwire (issues #1013, #1021) ────────────────────────────────────────────────────
 # The grading itself lives in utilities/linkedin/zero_walk.py. `run_automation` keeps its own alias
 # of the same module for the catch-up walk: aliasing the upstream original in BOTH modules is what
@@ -259,6 +271,31 @@ def _rendered_count_signals(text: str) -> int:
         if any(_BARE_COUNT_RE.match(n) and _parse_count(n) > 0 for n in neighbours):
             found += 1
     return found
+
+
+def _rendered_comment_count(text: "str | None") -> "int | None":
+    """What the page's own social bar says the COMMENT count is, or None when it cannot be read.
+
+    The zero-walk cross-check for a comment walk that found nothing (issue #2020). Deliberately
+    narrower than `_rendered_count_signals`, which answers "does this page render ANY non-zero
+    engagement count" — a post with three reactions and genuinely no comments would make that one
+    say drift. None is load-bearing: an unreadable page must never be recorded as "the page says
+    zero comments".
+    """
+    lines = [line.strip() for line in (text or "").splitlines()]
+    lines = [line for line in lines if line]
+    for i, line in enumerate(lines):
+        if not re.match(r"^comments?$", line.rstrip(":"), re.IGNORECASE):
+            continue
+        # The FOLLOWING line only — never the preceding one. On the analytics layout every row is
+        # `<label>` then `<value>`, so a row's value sits directly above the NEXT row's label: read
+        # backwards and "Comments" happily returns the reactions count, which is how a post with 3
+        # reactions and no comments would grade as selector drift. `_stacked_counts` in
+        # `linkedin/cards.py` takes the same direction for the same reason.
+        nxt = lines[i + 1] if i + 1 < len(lines) else ""
+        if _BARE_COUNT_RE.match(nxt):
+            return _parse_count(nxt)
+    return None
 
 
 def _main_text(driver) -> "str | None":
@@ -361,8 +398,9 @@ def auto_scrape_post_stats(self, user_id: int):
     # (issue #1513), so reach and saves are readable per format instead of pooled.
     post_types = get_post_types_for_user(user_id)
     try:
+        # needs_images=True — the fastboot exemption noted at the top of this module (#2020).
         driver, wait, user_email, my_profile = get_current_profile(user_id=user_id, session_name="Post Stats",
-                                                                   measurement_only=True)
+                                                                   measurement_only=True, needs_images=True)
     except LinkedInRateLimited as e:
         # A known, self-clearing back-off (429 breaker, manual pause, or this account's own
         # challenge-unsolvable cooldown, #1920) — not a fresh failure. Every sibling task that
@@ -724,24 +762,36 @@ def _reply_to_comments_on_open_post(driver, wait, user_id: int, post_id: int, my
     if driver.current_url != post_url:
         driver.get(post_url)
 
-    # SDUI: expand more replies where available, then collect comment items from the
-    # new data-testid comment list (comments are no longer article.comments-comment-entity).
-    # The miss IS this loop's exit condition, so it never warns (utilities/CLAUDE.md): a post whose
-    # comments already fit on one page never renders the control, and one that does stops rendering
-    # it once the last page is in — every sweep ends on a miss by design.
-    for _ in range(5):
-        more = click_first(driver, wait,
-                           [(By.XPATH, "//button[contains(@aria-label,'more comment') or "
-                                       "contains(normalize-space(),'Load more') or "
-                                       "contains(normalize-space(),'more repl')]")],
-                           "Load more comments", required=False, warn_on_miss=False,
-                           user_id=user_id, post_id=post_id)
-        if not more:
-            break
-        time.sleep(2)
+    # `_load_comment_thread` FIRST, and it is not optional (issue #2020). This sweep used to go
+    # straight from `driver.get` to a 'Load more comments' click loop on the default 1080-tall
+    # window — but #478 established live that a tall viewport, not scrolling, is what lazy-renders
+    # the comments a long post pushes below the fold. Every OTHER reader of this same page already
+    # calls it (`_read_comment_outcome`, `_run_single_post_followup`, and the lead-response reply in
+    # `outreach._reply_to_person_on_post` resizes by hand for the same reason); the golden-hour reply
+    # sweep never did. So it read an unrendered thread, found no 'Load more' control to click, exited
+    # on the first miss and reported `Comments Found: 0` — on 100% of sweeps in the production log,
+    # every day, never once non-zero, on posts whose own analytics page reported 4 comments. The
+    # helper also expands the '…more' / 'previous replies' controls, which is what the removed loop
+    # was for.
+    _load_comment_thread(driver)
 
     comments = _comment_items_from_thread(driver)
     log_info(f"Comments Found: {len(comments)}")
+    if not comments:
+        # Zero-walk tripwire (#1013, #2020). This sweep reported `Comments Found: 0` on EVERY
+        # reading in the production log and nothing ever graded it, so a reader that had gone blind
+        # was indistinguishable from a post nobody commented on — for months.
+        #
+        # The cross-check is the post's OWN social bar, not another comment-list selector. Both
+        # comment-list anchors are candidates for the same rot — `_comment_items_from_thread` walks
+        # up from `button[aria-label='Reply']` and `_comment_items` keys on
+        # `[data-testid*='commentList']` — and zero_walk's whole point is that asking a chain to
+        # vouch for itself proves nothing. The social bar is a different vocabulary AND was live-read
+        # working on 2026-09-10 (4 comments off the detail page) in the same run where BOTH item
+        # walks returned nothing, so it is the anchor that would actually have caught this.
+        _grade_zero_walk(_rendered_comment_count(_main_text(driver)),
+                         "Post comment-thread walk", user_id=user_id, post_id=post_id,
+                         task_name="sweep_reply_comments")
 
     # our profile slug — used to detect comments we AUTHORED or already replied to (the loop-breaker).
     our_slug = profile_slug(str(my_profile.profile_url))
@@ -929,7 +979,9 @@ def sweep_reply_comments(self, user_id: int, sweep_slot: int = 0, attempt: int =
         log_debug(f"Another reply sweep is already running for user {user_id} — skipping.")
         return "Skipped — another reply sweep in progress"
     try:
-        driver, wait, _user_email, my_profile = get_current_profile(user_id=user_id, session_name="Reply Sweep")
+        # needs_images=True — the fastboot exemption noted at the top of this module (#2020).
+        driver, wait, _user_email, my_profile = get_current_profile(user_id=user_id, session_name="Reply Sweep",
+                                                                    needs_images=True)
     except LinkedInRateLimited as e:
         # DEBUG, not WARNING: this is the documented 429-safe path (a clean skip a later
         # trigger/sweep retries), not a degraded run. The golden-hour amplifier retries up to
@@ -1198,7 +1250,9 @@ def _run_comment_followups_sweep(user_id: int) -> str:
     prefs = get_engagement_preferences(user_id)
     replies_remaining = max(0, _MAX_FOLLOWUP_REPLIES_PER_DAY - count_followup_replies_today(user_id))
     try:
-        driver, wait, _email, my_profile = get_current_profile(user_id=user_id, session_name="Comment Follow-ups")
+        # needs_images=True — the fastboot exemption noted at the top of this module (#2020).
+        driver, wait, _email, my_profile = get_current_profile(user_id=user_id, session_name="Comment Follow-ups",
+                                                               needs_images=True)
     except LinkedInRateLimited as e:
         log_warning("Follow-up sweep skipped — rate-limited", exc=e, user_id=user_id,
                     task_name="sweep_comment_followups")
@@ -1257,7 +1311,10 @@ def _run_single_post_followup(user_id: int, post_url: str) -> str:
     prefs = get_engagement_preferences(user_id)
     replies_remaining = max(0, _MAX_FOLLOWUP_REPLIES_PER_DAY - count_followup_replies_today(user_id))
     try:
-        driver, wait, _email, my_profile = get_current_profile(user_id=user_id, session_name="Comment Follow-up (single)")
+        # needs_images=True — the fastboot exemption noted at the top of this module (#2020).
+        driver, wait, _email, my_profile = get_current_profile(user_id=user_id,
+                                                               session_name="Comment Follow-up (single)",
+                                                               needs_images=True)
     except Exception as e:
         log_error("Error starting single follow-up", exc=e, user_id=user_id,
                   task_name="process_comment_followups_for_url")
@@ -1329,7 +1386,10 @@ def _run_reconcile_comment_urns(user_id: int, days: int = _FOLLOWUP_WINDOW_DAYS)
     if lock_token is None:
         return "Skipped — reconcile already running"
     try:
-        driver, wait, _email, my_profile = get_current_profile(user_id=user_id, session_name="Reconcile Comment URNs")
+        # needs_images=True — the fastboot exemption noted at the top of this module (#2020).
+        driver, wait, _email, my_profile = get_current_profile(user_id=user_id,
+                                                               session_name="Reconcile Comment URNs",
+                                                               needs_images=True)
     except Exception as e:
         log_error("Error starting reconcile", exc=e, user_id=user_id, task_name="reconcile_recent_comment_urns")
         release_run_lock(lock_name, lock_token)
@@ -1797,8 +1857,10 @@ def _run_comment_outcomes_sweep(user_id: int) -> str:
     if lock_token is None:
         return "Skipped — another outcome sweep in progress"
     try:
+        # needs_images=True — the fastboot exemption noted at the top of this module (#2020).
         driver, wait, _email, my_profile = get_current_profile(user_id=user_id,
-                                                              session_name="Comment Outcomes")
+                                                              session_name="Comment Outcomes",
+                                                              needs_images=True)
     except LinkedInRateLimited as e:
         log_warning("Comment outcome sweep skipped — rate-limited", exc=e, user_id=user_id,
                     task_name="sweep_comment_outcomes")
@@ -1851,7 +1913,10 @@ def automate_reply_commenting(self, user_id: int, post_id: int, loop_for_duratio
     429-safe: a rate-limited session returns cleanly instead of dying before the re-queue.
     """
     try:
-        driver, wait, user_email, my_profile = get_current_profile(user_id=user_id, session_name="Reply to Comments")
+        # needs_images=True — the fastboot exemption noted at the top of this module (#2020).
+        driver, wait, user_email, my_profile = get_current_profile(user_id=user_id,
+                                                                   session_name="Reply to Comments",
+                                                                   needs_images=True)
     except LinkedInRateLimited as e:
         log_warning("Reply commenting skipped — LinkedIn rate-limited", exc=e, user_id=user_id,
                     task_name="automate_reply_commenting")
