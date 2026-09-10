@@ -159,13 +159,14 @@ def _box(text):
 def _run_roster(boxes, targets, *, prefs=None, relevant=True, engage=True, max_posts=5,
                 card=True, follow_budget=0, follow_outcome="", follow_on=None, follow_hold="",
                 blocked_streak=1, blocked_connect="unknown", connect_outcome=None,
-                deadline_ts=None):
+                deadline_ts=None, reconcile_state="unknown"):
     """Drive comment_on_roster_posts with every Selenium/DB collaborator mocked.
 
     `card=False` makes every item render WITHOUT a comment affordance — the restricted-comments
     signature #962 detects. `follow_budget`/`follow_outcome` drive the opt-in auto-follow lane;
     `follow_on` overrides the toggle so the budget gate and the toggle can be tested apart.
     `blocked_connect` is the connect state the blocked-visit write reports back (#979).
+    `reconcile_state` is what the read-only follow-status catch-up (issue #1991) reports back.
     """
     from cqc_lem.app.engagement import feed as ra
     from cqc_lem.utilities.db import BlockedVisit, ConnectStatus
@@ -178,7 +179,7 @@ def _run_roster(boxes, targets, *, prefs=None, relevant=True, engage=True, max_p
     record = MagicMock(return_value=True)
     blocked = MagicMock(return_value=BlockedVisit(blocked_streak, blocked_connect))
     follow = MagicMock(return_value=follow_outcome)
-    reconcile = MagicMock(return_value="unknown")
+    reconcile = MagicMock(return_value=reconcile_state)
     connect = MagicMock(return_value=connect_outcome
                         or ra.RosterConnectOutcome(ConnectStatus.UNKNOWN, False))
     prefs = dict(prefs or {})
@@ -494,12 +495,14 @@ class TestRosterAutoFollow:
         r["follow"].assert_not_called()
 
     def test_lane_is_off_unless_the_user_opted_in(self):
-        # The budget is never even read: the toggle is what makes this an outbound lane at all.
+        # The budget is never even read: the toggle is what makes CLICKING an outbound action at
+        # all. The read-only reconcile is NOT gated on it (issue #1991) — a user who followed this
+        # target by hand while the lane was off must still have that noticed.
         r = _run_roster([_box("A roster author's post, long enough to scan.")],
                         [_target("https://www.linkedin.com/in/jane")], follow_on=False,
                         follow_budget=5)
         r["follow"].assert_not_called()
-        r["reconcile"].assert_not_called()
+        r["reconcile"].assert_called_once()
 
     def test_follows_within_budget_and_counts_it(self):
         r = _run_roster([_box("A roster author's post, long enough to scan.")],
@@ -507,6 +510,17 @@ class TestRosterAutoFollow:
                         follow_budget=1, follow_outcome="followed")
         r["follow"].assert_called_once()
         assert r["stats"]["followed"] == 1
+
+    def test_a_click_this_visit_skips_the_separate_reconcile_read(self):
+        # `auto_follow_roster_target` resolves the same follow control itself before clicking, so
+        # calling `reconcile_roster_follow_state` first too would resolve it twice for one visit —
+        # doubling any selector-drift WARNING it raises against the escalation threshold
+        # (`utilities/log_escalation.py`) for a single real-world event (issue #1991 follow-up).
+        r = _run_roster([_box("A roster author's post, long enough to scan.")],
+                        [_target("https://www.linkedin.com/in/jane")],
+                        follow_budget=1, follow_outcome="followed")
+        r["follow"].assert_called_once()
+        r["reconcile"].assert_not_called()
 
     def test_an_already_followed_target_is_never_re_examined(self):
         target = _target("https://www.linkedin.com/in/jane")
@@ -525,6 +539,27 @@ class TestRosterAutoFollow:
                         follow_budget=3)
         r["follow"].assert_not_called()
         r["reconcile"].assert_called_once()
+
+    def test_a_manual_linkedin_follow_is_caught_up_with_the_lane_off(self):
+        # Issue #1991: a user who followed this target by hand on LinkedIn, with roster
+        # auto-follow OFF (its default), must still have that read and written — otherwise
+        # `follow_status` never leaves its stale value no matter what the user does.
+        target = _target("https://www.linkedin.com/in/jane")
+        r = _run_roster([_box("A roster author's post, long enough to scan.")], [target],
+                        follow_on=False, follow_budget=0, reconcile_state="following")
+        r["reconcile"].assert_called_once()
+        r["follow"].assert_not_called()  # the lane stays off — this is a read, never a click
+
+    def test_a_reconciled_follow_skips_the_click_this_visit(self):
+        # A target that came in 'follow_failed' but reads back as genuinely following this visit
+        # must not also draw a click from the auto-follow branch below it (issue #1991) — the
+        # in-memory status has to reflect what reconcile just learned, not the stale DB row.
+        target = _target("https://www.linkedin.com/in/jane")
+        target["follow_status"] = "follow_failed"
+        r = _run_roster([_box("A roster author's post, long enough to scan.")], [target],
+                        follow_on=True, follow_budget=3, reconcile_state="following")
+        r["reconcile"].assert_called_once()
+        r["follow"].assert_not_called()
 
     def test_the_budget_is_re_read_per_target_not_decremented_locally(self):
         # The click is recorded on dispatch, so re-reading is what makes two overlapping runs for
