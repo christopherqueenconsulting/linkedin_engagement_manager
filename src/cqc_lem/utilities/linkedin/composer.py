@@ -276,8 +276,7 @@ _COMMENT_FROM_REPLY_JS = (
 _COMMENT_ANCHOR_LADDER = (
     # 2026-09-10: the entity-scoped reply control ("Reply to Matthew B.'s comment"). Live-measured
     # 4 hits on a post whose own page said "4 comments", where the exact-label rung returned 0.
-    ("reply_prefix", "main button[aria-label^='Reply'], main [role='button'][aria-label^='Reply'], "
-                     "button[aria-label^='Reply'], [role='button'][aria-label^='Reply']"),
+    ("reply_prefix", _COMMENT_REPLY_CONTROLS),
     # 2026-07-24: the bare reply control, before the label carried the author's name.
     ("reply_exact", "button[aria-label='Reply'], [role='button'][aria-label='Reply']"),
     # The SDUI generation's comment list. Returned 0 on 2026-09-10 — `main [data-testid]` matched
