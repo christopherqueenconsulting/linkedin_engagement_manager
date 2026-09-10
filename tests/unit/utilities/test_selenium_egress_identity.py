@@ -126,13 +126,19 @@ class TestEverySessionPassesUserId:
 
 
 class TestNeedsImagesExemptionIsScoped:
-    """AST guard for issue #1774, widened by #1778 and #1979: the exemption is scoped, not a global flip.
+    """AST guard for issue #1774, widened by #1778, #1979 and #2020: scoped, not a global flip.
 
-    `needs_images=True` must appear at exactly the DM-send, group-surface and roster-comment
-    session-open call sites the scoped exemption was granted to (#1774 for `/messaging/*`, #1778
-    for `/groups/*`, #1979 for `automate_commenting`'s roster `/recent-activity/*` pass — all
-    fastboot the SPA through `<img>` load events the same way). Any other call site widening the
-    exemption is the regression this issue explicitly warned against.
+    `needs_images=True` must appear at exactly the session-open call sites the exemption was
+    granted to, one live-grounded surface at a time — #1774 for `/messaging/*`, #1778 for
+    `/groups/*`, #1979 for a profile's `/recent-activity/*`, #2020 for a post permalink
+    (`/feed/update/*`). All four fastboot the SPA through `<img>` load events the same way, so a
+    bandwidth-saver session never mounts them at all. Any OTHER call site widening the exemption is
+    the regression #1774 explicitly warned against, and this list is the brake: adding a row means
+    naming the surface and the probe run that grounded it.
+
+    #2020's evidence: one post, both ways in a single live probe run. Images blocked — every detail
+    signal read 0, `detail_lines` empty, no comment-sort control. Images on, same URL — 4 comments
+    off the detail page and the sort control found. Every reader below opens a post permalink.
     """
 
     _ALLOWED = {
@@ -142,9 +148,17 @@ class TestNeedsImagesExemptionIsScoped:
         ("app/engagement/feed.py", "auto_comment_in_groups"),
         ("app/engagement/feed.py", "auto_post_to_group"),
         ("app/engagement/feed.py", "automate_commenting"),
+        # #2020 — post permalink (`/feed/update/*`) readers.
+        ("app/engagement/posting.py", "auto_scrape_post_stats"),
+        ("app/engagement/posting.py", "sweep_reply_comments"),
+        ("app/engagement/posting.py", "_run_comment_followups_sweep"),
+        ("app/engagement/posting.py", "_run_single_post_followup"),
+        ("app/engagement/posting.py", "_run_reconcile_comment_urns"),
+        ("app/engagement/posting.py", "_run_comment_outcomes_sweep"),
+        ("app/engagement/posting.py", "automate_reply_commenting"),
     }
 
-    def test_only_the_messaging_groups_and_roster_call_sites_request_images(self):
+    def test_only_the_grounded_fastboot_call_sites_request_images(self):
         offenders = []
         for path in _SRC.rglob("*.py"):
             text = path.read_text()

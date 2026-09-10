@@ -460,40 +460,92 @@ class TestReplyToCommentsOnOpenPost:
         warn.assert_not_called()
         assert any("name unreadable" in str(c.args[0]) for c in debug.call_args_list)
 
-    def test_load_more_miss_never_warns(self):
-        """Issue #1041: the miss IS the expansion loop's exit condition — every sweep ends on one,
-        so warning would escalate to a grouped $exception for working behaviour.
-        """
-        from cqc_lem.app.engagement.posting import _reply_to_comments_on_open_post
-        driver = _sweep_driver()
-        with patch(f"{_POST}.get_post_url_from_log_for_user", return_value="https://li/feed/update/urn:li:share:1/"), \
-             patch(f"{_POST}.get_post_content", return_value="post body"), \
-             patch(f"{_POST}.click_first", return_value=None) as click, \
-             patch(f"{_POST}._comment_items_from_thread", return_value=[]), \
-             patch(f"{_POST}.get_lead_magnet_settings", return_value={"enabled": False}), \
-             patch(f"{_POST}.get_engagement_preferences", return_value={}), \
-             patch(f"{_POST}.log_warning") as warn:
-            _reply_to_comments_on_open_post(driver, MagicMock(), 1, 9, self._profile(), "synth")
-        click.assert_called_once()                       # the miss breaks the loop, no re-clicking
-        assert click.call_args.args[3] == "Load more comments"
-        assert click.call_args.kwargs["required"] is False
-        assert click.call_args.kwargs["warn_on_miss"] is False
-        warn.assert_not_called()
+    def test_loads_the_thread_before_reading_it(self):
+        """Issue #2020: the sweep must render the thread before walking it.
 
-    def test_load_more_expands_until_the_control_is_gone(self):
-        """Silencing the miss must not silence the expansion: a rendered control still gets clicked
-        until LinkedIn stops rendering it.
+        It used to go straight from `driver.get` to a 'Load more comments' click loop on the
+        default 1080-tall window. #478 established live that a TALL VIEWPORT — not scrolling — is
+        what lazy-renders the comments a long post pushes below the fold, and every other reader of
+        this page already called `_load_comment_thread` for exactly that reason. This one did not,
+        so it read an unrendered thread and reported `Comments Found: 0` on 100% of production
+        sweeps, on posts whose own analytics page reported four comments.
         """
         from cqc_lem.app.engagement.posting import _reply_to_comments_on_open_post
         driver = _sweep_driver()
+        calls = []
         with patch(f"{_POST}.get_post_url_from_log_for_user", return_value="https://li/feed/update/urn:li:share:1/"), \
              patch(f"{_POST}.get_post_content", return_value="post body"), \
-             patch(f"{_POST}.click_first", side_effect=[MagicMock(), MagicMock(), None]) as click, \
-             patch(f"{_POST}._comment_items_from_thread", return_value=[]), \
+             patch(f"{_POST}._load_comment_thread", side_effect=lambda d: calls.append("loaded")) as load, \
+             patch(f"{_POST}._comment_items_from_thread",
+                   side_effect=lambda d: (calls.append("read") or [])), \
              patch(f"{_POST}.get_lead_magnet_settings", return_value={"enabled": False}), \
              patch(f"{_POST}.get_engagement_preferences", return_value={}):
             _reply_to_comments_on_open_post(driver, MagicMock(), 1, 9, self._profile(), "synth")
-        assert click.call_count == 3
+        load.assert_called_once_with(driver)
+        assert calls == ["loaded", "read"], "the thread must be rendered BEFORE it is walked"
+
+    def test_empty_thread_is_graded_not_assumed(self):
+        """Issue #2020: a zero-item walk asks the PAGE before it counts as 'nobody commented'.
+
+        The cross-check is the post's own social bar — NOT another comment-list selector. Both item
+        walks key off the comment list and are candidates for the same rot, and zero_walk exists
+        because a chain vouching for itself proves nothing (#1013). A social bar reporting comments
+        the walk could not see is drift (a WARNING, which escalates); a page reporting none is an
+        ordinary quiet post; an unreadable page grounds nothing. The last two must stay silent.
+        """
+        from cqc_lem.app.engagement.posting import _reply_to_comments_on_open_post
+
+        def _run(main_text):
+            driver = _sweep_driver()
+            with patch(f"{_POST}.get_post_url_from_log_for_user", return_value="https://li/feed/update/urn:li:share:1/"), \
+                 patch(f"{_POST}.get_post_content", return_value="post body"), \
+                 patch(f"{_POST}._load_comment_thread"), \
+                 patch(f"{_POST}._comment_items_from_thread", return_value=[]), \
+                 patch(f"{_POST}.get_lead_magnet_settings", return_value={"enabled": False}), \
+                 patch(f"{_POST}.get_engagement_preferences", return_value={}), \
+                 patch(f"{_POST}._main_text", return_value=main_text), \
+                 patch("cqc_lem.utilities.linkedin.zero_walk.log_warning") as warn:
+                _reply_to_comments_on_open_post(driver, MagicMock(), 1, 9, self._profile(), "synth")
+            return warn
+
+        # The exact shape the live probe read back on 2026-09-10, where both item walks saw nothing.
+        assert _run("Impressions\n72\nReactions\n1\nComments\n4\nReposts\n0").call_count == 1
+        _run("Reactions\n3\nComments\n0\nReposts\n0").assert_not_called()   # a quiet post
+        _run(None).assert_not_called()                                          # page unreadable
+        _run("Reactions\n3\nReposts\n0").assert_not_called()                  # no comment label
+
+    def test_rendered_comment_count_is_narrower_than_the_all_signal_check(self):
+        """A post with reactions but no comments must not read as drift (issue #2020)."""
+        from cqc_lem.app.engagement.posting import _rendered_comment_count, _rendered_count_signals
+
+        reactions_only = "Reactions\n3\nComments\n0"
+        # 2, not 1: the all-signal check looks BOTH ways, so "Comments" pairs with the reactions
+        # value on the line above it and a post with no comments reads as if it had some.
+        assert _rendered_count_signals(reactions_only) == 2
+        assert _rendered_comment_count(reactions_only) == 0   # the comment check says "no comments"
+        assert _rendered_comment_count("Comments\n4") == 4
+        assert _rendered_comment_count("Comments") is None    # a label with no count beside it
+        assert _rendered_comment_count(None) is None
+
+    def test_a_thread_that_renders_is_never_graded(self):
+        """The tripwire only fires on a ZERO walk — a sweep that read comments never asks."""
+        from cqc_lem.app.engagement.posting import _reply_to_comments_on_open_post
+        driver = _sweep_driver("other")
+        with patch(f"{_POST}.get_post_url_from_log_for_user", return_value="https://li/feed/update/urn:li:share:1/"), \
+             patch(f"{_POST}.get_post_content", return_value="post body"), \
+             patch(f"{_POST}._load_comment_thread"), \
+             patch(f"{_POST}._comment_items_from_thread", return_value=[_FakeComment("Nice post")]), \
+             patch(f"{_POST}.get_lead_magnet_settings", return_value={"enabled": False}), \
+             patch(f"{_POST}.upsert_engager"), \
+             patch(f"{_POST}.generate_thread_reply", return_value="Thanks! What resonated most?"), \
+             patch(f"{_POST}.get_engagement_preferences", return_value={}), \
+             patch(f"{_POST}._flag_lead_signal", return_value=None), \
+             patch(f"{_POST}._reply_to_comment_inline", return_value=True), \
+             patch(f"{_POST}._react_to_comment_inline", return_value=True), \
+             patch(f"{_POST}.insert_new_log"), \
+             patch(f"{_POST}._zw.page_native_count") as native:
+            _reply_to_comments_on_open_post(driver, MagicMock(), 1, 9, self._profile(), "synth")
+        native.assert_not_called()
 
     def test_skips_already_replied(self):
         from cqc_lem.app.engagement.posting import _reply_to_comments_on_open_post
