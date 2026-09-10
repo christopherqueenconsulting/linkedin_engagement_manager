@@ -427,19 +427,65 @@ ORDER BY week ASC
         ),
         _tile(
             "Growth — Engagement rate & reach per week",
-            "The outcome the whole content loop exists to move: weekly median engagement rate with "
-            "the impressions and reactions underneath it.",
+            "The outcome the whole content loop exists to move. TWO rates, and the second is the "
+            "real one: `engagement_rate` counts our own seed comment and second wave, which are on "
+            "every post we publish, so it reads roughly 5x the truth. `third_party_engagement_rate` "
+            "(#2024) counts only the audience. The inflated series is kept so its history stays "
+            "comparable — not because it is the number to steer by.",
             _hogql(f"""
 SELECT toStartOfWeek(timestamp) AS week,
        count() AS readings,
        round(median(toFloat(properties.engagement_rate)), 6) AS median_engagement_rate,
+       round(median(toFloat(properties.third_party_engagement_rate)), 6)
+             AS median_third_party_rate,
        coalesce(sum(toFloat(properties.impressions)), 0) AS impressions,
        coalesce(sum(toFloat(properties.reactions)), 0) AS reactions
 FROM events
 WHERE event = 'post_outcome' AND timestamp >= now() - {GROWTH_WINDOW}
 GROUP BY week
 ORDER BY week ASC
-""", "ActionsLineGraph", _line("week", ["median_engagement_rate"])),
+""", "ActionsLineGraph",
+                   _line("week", ["median_third_party_rate", "median_engagement_rate"])),
+        ),
+        _tile(
+            "Growth — Third-party engagement per post",
+            "Did anyone but us engage? `comments` is the count the PAGE renders and always includes "
+            "our own seed and second wave, so this splits them (#2024). Measured 2026-09-10 before "
+            "the split: 19 of the last 20 posts carried exactly 2 comments and both were ours. "
+            "`posts_with_any` is the number to watch — it is the flywheel's only real input.",
+            _hogql(f"""
+SELECT toStartOfWeek(timestamp) AS week,
+       count() AS posts,
+       countIf(toFloat(properties.third_party_comments) > 0) AS posts_with_any,
+       coalesce(sum(toFloat(properties.third_party_comments)), 0) AS third_party_comments,
+       coalesce(sum(toFloat(properties.own_comments)), 0) AS our_own_comments,
+       countIf(properties.third_party_comments IS NULL) AS unread
+FROM events
+WHERE event = 'post_outcome' AND timestamp >= now() - {GROWTH_WINDOW}
+GROUP BY week
+ORDER BY week ASC
+""", "ActionsLineGraph", _line("week", ["posts_with_any", "third_party_comments"])),
+        ),
+        _tile(
+            "Growth — Comment-outcome readability",
+            "How much of the outcome corpus we can actually READ, by reason (#2032). The "
+            "author-reply rate is computed over `checked` rows, so a rising `unreadable` share "
+            "silently starves the metric rather than moving it — 41% of rows were being discarded "
+            "before the skip reason was graded against the page.",
+            _hogql(f"""
+SELECT toStartOfWeek(timestamp) AS week,
+       count() AS readings,
+       countIf(properties.status = 'checked') AS checked,
+       countIf(properties.skip_reason = 'unreadable') AS unreadable,
+       countIf(properties.skip_reason = 'comment-removed') AS comment_removed,
+       countIf(properties.skip_reason = 'post-unavailable') AS post_unavailable,
+       round(100 * countIf(properties.skip_reason = 'unreadable') / nullIf(count(), 0), 2)
+             AS unreadable_pct
+FROM events
+WHERE event = 'comment_outcome' AND timestamp >= now() - {GROWTH_WINDOW}
+GROUP BY week
+ORDER BY week ASC
+""", "ActionsLineGraph", _line("week", ["unreadable_pct"])),
         ),
         _tile(
             "Growth — Audience growth per week",
