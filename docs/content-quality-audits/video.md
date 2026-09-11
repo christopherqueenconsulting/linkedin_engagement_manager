@@ -274,8 +274,15 @@ poetry run python scripts/sample_shipped_videos.py --no-frames           # probe
 
 - **It samples 6–10 published video posts** (`MIN_CORPUS` / `MAX_SAMPLES`), newest first, and counts
   a post as *gradable* only when its **body and its asset are both available** — the pairing the
-  issue asks for. A post whose stored MP4 does not resolve under `assets_dir` is sampled and
-  reported, never graded.
+  issue asks for. An asset is available from **either** source (#1654): the MP4 still on disk and
+  probing `ok`, **or** the `.probe.json` receipt plus at least one retained keyframe — which is
+  what a shipped post looks like after the purge, and what §8 says retention keeps. Every row names
+  which (`asset_source: mp4 | receipt+keyframes | receipt | missing`), and the summary counts them
+  (`asset_sources`; `asset_probes` puts receipt-sourced rows in their own `receipt` bucket rather
+  than under `ok`). A receipt with **no** keyframe beside it is `receipt`: its duration band and
+  caption are still read and reported on the row, but it is not gradable — nothing depicts the
+  clip, and six frameless rows must not clear `MIN_CORPUS`. A post with none of these is sampled
+  and reported, never graded.
 - **It reads through the existing seam.** `db.get_posted_posts`, `db.get_post_video_url` and
   `db.get_post_captions` are the readers; `content_quality.score_item` and `score_video_asset` are
   the scorer. That is deliberate: a row in this report and a row in the nightly
@@ -339,6 +346,19 @@ and none of those files exist on the volume. That is **by design**: `purge_post_
 `post_to_linkedin` succeeds, because LinkedIn re-hosts the media and the local copy is dead weight.
 It was checked against the alternative explanation — the pre-#148 renders (post ids 2, 6 and other
 early rows) still have their `.mp4` on disk, so the volume is mounted and readable.
+
+**Re-read 2026-09-11 (#1654): the "missing: 10" readings of 2026-08-14 and 2026-08-30 were partly a
+sidecar mount error.** The app reads the volume at **`/app/src/cqc_lem/assets`** (`docker inspect
+celery_worker` shows that destination); a sidecar that bind-mounts only `src` shadows that path
+with the checkout's empty dev tree, and every row then reads `missing` for a reason that has nothing
+to do with the purge. With the `lem_assets` volume mounted where the app reads it, the same command
+against `v0.174.0` graded 2 of 10 (`asset_probes: ok 2, missing 8`), and the volume held 14 MP4s,
+4 `.probe.json` receipts and 12 keyframes (4 videos × open/mid/close). So when the MP4 is purged the
+sampler grades from **the receipt + the retained keyframes** — duration, aspect and probe state off
+the receipt, R1/R8 frames off the keyframes, captions off the post's own columns — and reports the
+row as `asset_source: receipt+keyframes` (§7), which is the difference between waiting for six more
+MP4s to outlive the purge and reading what retention already keeps. `purge_hint` now names the
+mount alongside the purge.
 
 ### F7 — A shipped video's asset measures do not survive publication → **#1517**
 
