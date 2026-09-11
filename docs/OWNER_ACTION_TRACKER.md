@@ -144,11 +144,11 @@ output.
 
 ## 3. Credentials — the reconciliation you asked for
 
-**Everything the system needs is present except one.** No PAT is missing except `ANTHROPIC_API_KEY`.
+**Everything the system needs is present.** `ANTHROPIC_API_KEY` was the last gap and is no longer one — the deployment that wanted it was removed on #2059.
 
 | Credential | Lives in | Status |
 |---|---|---|
-| `ANTHROPIC_API_KEY` | repo secret + `/opt/lem/.env` | **MISSING in both.** Only effect: the `lem-complex` Claude fallback in `.litellm/config.yaml:165` is dead config. Everything else routes fine. |
+| `ANTHROPIC_API_KEY` | — | **No longer needed** (#2059). The `lem-complex` Claude fallback it would have activated was removed: unkeyed, it failed instantly, and under latency-based routing an instant failure WINS its group, so it was taking real traffic (58 calls / 47 errors, 30 days to 2026-09-11). Re-adding a Claude deployment is a spend decision + a benchmark, and the key has to be set first. |
 | `RELEASE_DISPATCH_TOKEN` | repo secret | Present |
 | `GHCR_PAT` | repo secret | Present |
 | `FEEDBACK_GITHUB_TOKEN` | `/opt/lem/.env` | Present |
@@ -235,8 +235,8 @@ not to act on them if you read them before the fix lands.
   until #965 rotates them". Rotated today; old values 401.
 - `docs/secrets-at-rest.md:60,113-121` and `docs/AUTH_SECURITY_DESIGN.md:253` and `CLAUDE.md:176` —
   `ENCRYPTION_REQUIRED` framed as a future flip. It is ON, and reads are fail-closed.
-- `Needs_From_Chris.md:56-71` — error cron and PostHog tokens listed as pending. All done. **Only
-  `ANTHROPIC_API_KEY` on line 15 is still real.**
+- `Needs_From_Chris.md:56-71` — error cron and PostHog tokens listed as pending. All done. As of
+  #2059 `ANTHROPIC_API_KEY` is no longer real either: nothing in the roster reads it.
 - `docs/contribution-security.md:124-149` — create the scoped PAT and set
   `AGENT_REQUIRE_SCOPED_TOKEN=1`. Both done.
 - `docs/stack-watchdog.md:44-53` — install the watchdog. Armed; timer green.

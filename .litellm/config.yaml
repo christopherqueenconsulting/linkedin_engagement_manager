@@ -148,11 +148,20 @@ model_list:
       model: openai/gpt-4o
       api_key: os.environ/OPENAI_API_KEY
 
-  # Claude fallback — activated once ANTHROPIC_API_KEY is configured
-  - model_name: lem-complex
-    litellm_params:
-      model: anthropic/claude-sonnet-4-6
-      api_key: os.environ/ANTHROPIC_API_KEY
+  # NOTE: anthropic/claude-sonnet-4-6 was REMOVED 2026-09-11 (issue #2059). It sat here from the
+  # start as a "Claude fallback — activated once ANTHROPIC_API_KEY is configured", and that key was
+  # never configured in prod, so every pick answered `x-api-key header is required` instantly. Under
+  # (1) above an instant failure is the FASTEST answer in the group, so the dead deployment competed
+  # for lem-complex traffic and each pick cost a retry before qwen3.5:397b answered — the same
+  # ministral-3:8b shape as the NOTEs above. Measured on PostHog `$ai_generation` (30 days to
+  # 2026-09-11): 58 calls, 47 errors. A SECOND fault rode underneath the missing key: LiteLLM's
+  # Anthropic transform regex-matches `metadata.user_id`, and AttributedOpenAI stamped the DB
+  # integer, so `re.match` raised `TypeError` before the request left the proxy. That one is fixed
+  # (#1829/#1870 — attribution_metadata now sends `str(user_id)`), and it is why the type bug is not
+  # a reason to keep the deployment: the tier does not need a paid Claude fallback it has never
+  # served a single call from. Re-adding one is an owner spend decision plus a benchmark
+  # (scripts/benchmark_models.py), never a config edit — and it needs ANTHROPIC_API_KEY set FIRST,
+  # because an unkeyed deployment does not sit idle here, it wins.
 
   # ── RESEARCH: web-grounded current facts via Perplexity Sonar ────────────────
   # Used by newsletter_research.research_newsletter_topic (one call per edition) to ground
