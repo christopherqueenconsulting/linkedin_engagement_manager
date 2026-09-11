@@ -188,6 +188,7 @@ from cqc_lem.utilities.observability import (
 )
 from cqc_lem.utilities.quality_gates import (
     GATE_FACT_GROUNDING,
+    GATE_FORBIDDEN_CLAIM,
     GATE_MALFORMED_ASSET,
     GATE_SIMILARITY,
     GATE_SLIDE_SLOP,
@@ -1666,6 +1667,50 @@ def _recorded_similarity_finding(post_id: int) -> list[dict]:
         return []
 
 
+def _recorded_forbidden_claim_finding(post_id: int) -> list[dict]:
+    """The forbidden-claim verdict last recorded on this post, if any (issue #2047).
+
+    Read only when the user's own list could not be loaded: the gate then checks the global floor
+    alone, and a hold that came from the USER's list would be released by a re-score that never
+    saw the list. Never raises — an unreadable verdict only costs the hold.
+    """
+    try:
+        return [f for f in get_post_gate_reason(post_id) if f.get("gate") == GATE_FORBIDDEN_CLAIM]
+    except Exception as e:
+        log_warning("Could not read the recorded forbidden-claim verdict — a hold from the user's "
+                    "own list may be released while their preferences are unreadable",
+                    exc=e, post_id=post_id, task_name="create_content")
+        return []
+
+
+def _carry_forbidden_claim_hold(post_id: int, findings: list[dict]) -> list[dict]:
+    """Keep the recorded `forbidden_claim` hold when the user's list could not be read (#2047).
+
+    A gate pass that could not load `engagement_preferences` graded the draft against the global
+    floor only, so a subject that was on the user's list is invisible to it — and persisting its
+    findings would replace the recorded hold with nothing and let `_may_auto_approve` promote the
+    post. The last recorded verdict stands instead: appended when this pass found no forbidden
+    claim, merged into this pass's finding (subjects it did not name) when it did.
+
+    Args:
+        post_id: The post whose recorded verdict is carried.
+        findings: This pass's findings, graded against the global list only.
+
+    Returns:
+        `findings`, with the recorded forbidden-claim hold carried forward.
+    """
+    recorded = _recorded_forbidden_claim_finding(post_id)
+    if not recorded:
+        return findings
+    fresh = [f for f in findings if f.get("gate") == GATE_FORBIDDEN_CLAIM]
+    if not fresh:
+        return findings + recorded[:1]
+    for detail in recorded[0].get("details") or []:
+        if detail not in fresh[0].setdefault("details", []):
+            fresh[0]["details"].append(detail)
+    return findings
+
+
 def _recorded_slide_slop_notes(post_id: int) -> list[dict]:
     """The slide-level slop note `_report_carousel_slide_slop` recorded on this deck (issue #1512).
 
@@ -2450,8 +2495,7 @@ def evaluate_post_gates(post_id: int, content: str, post_type: Union[PostType, s
     # the user's own (`engagement_prefs.forbidden_claim_terms`, issue #2047) PLUS the global floor.
     if content:
         forbidden = _story_bank.forbidden_claims(
-            content, terms=_story_bank.effective_forbidden_claim_terms(
-                prefs.get("forbidden_claim_terms")))
+            content, _story_bank.effective_forbidden_claim_terms(prefs))
         if forbidden:
             findings.append(forbidden_claim_finding(forbidden))
 
@@ -2496,10 +2540,11 @@ def _gate_findings_for_post(user_id: int, post_id: int, content: str,
         score = None
     archetype = _post_archetype_or_none(post_id)
     similarity = _recorded_similarity_finding(post_id)
+    prefs, prefs_readable = _engagement_prefs_for_gates(user_id)
     try:
-        return evaluate_post_gates(
+        findings = evaluate_post_gates(
             post_id, content, post_type, video_url,
-            engagement_prefs=_engagement_prefs_or_empty(user_id),
+            engagement_prefs=prefs,
             authenticity_score=score,
             archetype=archetype,
             fact_anchors=_fact_anchors_for(user_id, archetype),
@@ -2508,6 +2553,8 @@ def _gate_findings_for_post(user_id: int, post_id: int, content: str,
             # than in `evaluate_post_gates` so the re-score endpoint stays free of the registry.
             extra_fact_sources=_post_material_sources(user_id, post_id)
             if _grades_fact_grounding(archetype) else None) + similarity
+        # An unreadable list must not release a hold it produced (issue #2047).
+        return findings if prefs_readable else _carry_forbidden_claim_hold(post_id, findings)
     except Exception as e:
         log_warning("Could not evaluate the quality gates for this post", exc=e,
                     user_id=user_id, post_id=post_id, task_name="create_content")
@@ -2620,6 +2667,31 @@ def _may_auto_approve(user_id: int, post_id: int, auto_schedule: bool,
     return not hold
 
 
+def _engagement_prefs_for_gates(user_id: int) -> tuple[dict, bool]:
+    """The user's engagement preferences for a gate pass, and whether they were actually READ.
+
+    `get_engagement_preferences` answers a failed read with the code defaults, which a gate cannot
+    tell from "the user has no list" — and the forbidden-claim gate (issue #2047) must: a re-score
+    that cannot see the user's list would release a hold that list produced. So the read is made
+    strict here, and a failure is reported as `readable=False` for the caller to carry the
+    recorded hold forward, while every other gate still falls back to the deploy-wide defaults.
+
+    Args:
+        user_id: Whose preferences.
+
+    Returns:
+        `(prefs, readable)` — the preferences (empty when unreadable) and whether the read
+        succeeded.
+    """
+    try:
+        return get_engagement_preferences(user_id, raise_on_error=True) or {}, True
+    except Exception as e:
+        log_warning("Could not load engagement preferences — the gates fall back to the deploy-wide "
+                    "defaults and any recorded forbidden-claim hold is carried forward",
+                    exc=e, user_id=user_id, task_name="create_content")
+        return {}, False
+
+
 def _engagement_prefs_or_empty(user_id: int) -> dict:
     """Engagement preferences for threshold resolution, never raising — a prefs read that fails just
     means the gates fall back to the deploy-wide defaults.
@@ -2652,7 +2724,7 @@ def rescore_post(post_id: int) -> dict:
 
     post_type = get_post_type(post_id)
     post_type = post_type.value if isinstance(post_type, PostType) else post_type
-    prefs = _engagement_prefs_or_empty(user_id)
+    prefs, prefs_readable = _engagement_prefs_for_gates(user_id)
     user_profile = load_profile_for_user(user_id)
     try:
         profile_synthesis = get_or_create_profile_synthesis(user_id, user_profile)
@@ -2681,6 +2753,11 @@ def rescore_post(post_id: int) -> dict:
         author_edited=True, cta_keyword=_cta_keyword_for(user_id, post_id),
         extra_fact_sources=_post_material_sources(user_id, post_id, profile_synthesis),
         previously_unverified=_recorded_unbacked_specifics(post_id))
+    # A re-score that could not read the user's forbidden-claim list graded against the global
+    # floor only (issue #2047): the hold that list produced is carried forward, never cleared by a
+    # pass that could not see it — persisting an empty verdict here would auto-approve the post.
+    if not prefs_readable:
+        findings = _carry_forbidden_claim_hold(post_id, findings)
     _persist_gate_findings(user_id, post_id, findings)
 
     passed = not demoting_findings(findings)
@@ -2925,9 +3002,8 @@ def _review_generated_post(ctx: PostDraftContext, content: str, recent_texts: li
     # Forbidden claims (issue #1971): a figure attached to a subject the author has ruled out,
     # HARD regardless of grounding. The user's own list (issue #2047) plus the global floor,
     # resolved ONCE for both the draft and its repair.
-    forbidden_terms = _story_bank.effective_forbidden_claim_terms(
-        (prefs or {}).get("forbidden_claim_terms"))
-    forbidden = _story_bank.forbidden_claims(content, terms=forbidden_terms)
+    forbidden_terms = _story_bank.effective_forbidden_claim_terms(prefs)
+    forbidden = _story_bank.forbidden_claims(content, forbidden_terms)
     # Deterministic slop lint (issue #625 / D1) — one regeneration here, then the `ai_slop` gate
     # holds whatever still trips it. Only HARD violations are worth a retry; the warn-severity
     # signals (burstiness, rule-of-three) are advisory and reported by the gate.
@@ -2986,7 +3062,7 @@ def _review_generated_post(ctx: PostDraftContext, content: str, recent_texts: li
     second_similarity = post_similarity_report(second, recent_texts, prefs)
     still_fabricated = _fabricated_specifics(second, story, profile_synthesis, lead_magnet_cta)
     second_fact_report = fact_grounding_report(second, anchors) if fact_report is not None else None
-    second_forbidden = _story_bank.forbidden_claims(second, terms=forbidden_terms)
+    second_forbidden = _story_bank.forbidden_claims(second, forbidden_terms)
     second_slop = slop_lint_report(second, "post", exempt_keyword=cta_keyword)
     # Recorded BEFORE the similarity verdict is merged in: this write replaces the column, and
     # `_record_post_similarity_finding` is what owns the similarity half of it. An empty list is

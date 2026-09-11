@@ -127,6 +127,28 @@ class TestForbiddenClaimTerms:
     def test_a_malformed_value_stores_an_empty_list_not_a_failure(self, fake_cursor):
         assert self._saved(fake_cursor, {"forbidden_claim_terms": "complexity router"})[
             "forbidden_claim_terms"] == "[]"
+        # A non-string element is dropped, never str()-coerced into a subject.
+        assert self._saved(fake_cursor, {"forbidden_claim_terms": [7, True, ["x"], "router"]})[
+            "forbidden_claim_terms"] == json.dumps(["router"])
+
+    def test_a_failed_read_can_be_told_from_a_missing_row(self, fake_cursor):
+        """A gate that cannot see the list must not release a hold it produced (issue #2047).
+
+        So the reader can be asked to RAISE on a fault instead of answering with the defaults.
+        """
+        import mysql.connector
+
+        from cqc_lem.utilities.db import get_engagement_preferences
+        conn, _ = fake_cursor(execute_error=mysql.connector.Error(msg="db down"))
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+            with pytest.raises(mysql.connector.Error):
+                get_engagement_preferences(1, raise_on_error=True)
+            # The default posture is unchanged: a fault reads as the code defaults.
+            assert get_engagement_preferences(1)["forbidden_claim_terms"] == []
+        conn, _ = fake_cursor(fetch_one=None)
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+            # A MISSING row is not a fault — still the defaults, even when asked to raise.
+            assert get_engagement_preferences(1, raise_on_error=True)["forbidden_claim_terms"] == []
 
     def test_a_partial_update_keeps_the_saved_list(self, fake_cursor):
         saved = self._saved(fake_cursor, {"tone": "blunt"},

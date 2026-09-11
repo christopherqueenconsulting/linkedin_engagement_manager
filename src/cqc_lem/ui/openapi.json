@@ -1209,11 +1209,18 @@
             "type": "array"
           },
           "forbidden_claim_terms": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Forbidden Claim Terms",
-            "type": "array"
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Forbidden Claim Terms"
           },
           "gate_defaults": {
             "$ref": "#/components/schemas/GateDefaults"
@@ -1633,12 +1640,18 @@
             "type": "array"
           },
           "forbidden_claim_terms": {
-            "default": [],
-            "items": {
-              "type": "string"
-            },
-            "title": "Forbidden Claim Terms",
-            "type": "array"
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Forbidden Claim Terms"
           },
           "hold_repaired_posts_for_review": {
             "default": true,

@@ -187,16 +187,25 @@ Account → Who I Engage → Advanced; a JSON array, ≤50 subjects of ≤80 cha
 `story_bank.normalize_forbidden_claim_terms` at the API boundary AND in the repository upsert so
 one bad value can never roll the whole settings save back) on top of the global
 `FORBIDDEN_CLAIM_TERMS` floor (`;`-separated, applies to every user). The ONE place they meet is
-`story_bank.effective_forbidden_claim_terms(user_terms)` — user terms plus the env terms, never
-instead of, folded and de-duplicated, read at call time — and every gated surface passes its
-result as `terms=` to `forbidden_claims`: `evaluate_post_gates` reads it off `engagement_prefs`,
-`_review_generated_post` off `ctx.prefs`, and `_gated_comment` off the author's prefs through
-`ai_helper._forbidden_claim_terms_for_user` (read ONCE per call, failing OPEN to the global
-list when the row is unreadable). A draft that names a listed subject anywhere as whole words
-(punctuation folded: "cost per call" matches "cost-per-call", "ai" never matches "said") and
-asserts any numeric claim (`numeric_claims`: years, list numbering and version numbers excluded)
-gets the `forbidden_claim` finding at HARD, grounded or not, and an author's edit does not clear
-it. One user's list never touches another user's posts. **Gated surfaces today: posts
+`story_bank.effective_forbidden_claim_terms(prefs)` — it reads `FORBIDDEN_CLAIM_TERMS_PREF` off the
+prefs dict (the key is spelled there and nowhere else in the content core), user terms plus the env
+terms, never instead of, one per folded key, read at call time — and every gated surface hands its
+result to `forbidden_claims(content, terms)` (no env-only fallback): `evaluate_post_gates` from
+`engagement_prefs`, `_review_generated_post` from `ctx.prefs`, and `_gated_comment` from the
+`prefs=` both comment writers already hold — never a DB read per draft. Matching is on the folded
+key (`str.casefold`, every non-letter/digit run in any script one space: "cost per call" matches
+"cost-per-call", "Café" matches "café", "ai" never matches "said") and the finding names the subject
+**as the user spelled it**. A key shorter than 3 characters ("C++" folds to "c") is dropped at save;
+a subject the API could not keep — too short, no letters, over 80 chars, past the 50-term cap — is
+**named in the PUT response**, never swallowed, and a PUT that omits or nulls the field leaves the
+stored list alone (an older SPA build cannot wipe it). A draft that names a listed subject anywhere
+as whole words and asserts any numeric claim (`numeric_claims`: years, list numbering and version
+numbers excluded) gets the `forbidden_claim` finding at HARD, grounded or not, and an author's edit
+does not clear it. One user's list never touches another user's posts. **A gate pass that cannot
+READ the user's list never releases a hold it produced**: `_engagement_prefs_for_gates` makes the
+read strict (`raise_on_error=True`), and on a fault `rescore_post` / `_gate_findings_for_post` carry
+the recorded `forbidden_claim` finding forward (`_carry_forbidden_claim_hold`) instead of
+persisting the global-only verdict that would auto-approve the post. **Gated surfaces today: posts
 (`evaluate_post_gates`) and feed/second-wave comments (`_gated_comment`, skipped on the #617
 budget).** The newsletter, weekly group post and DM writers go through the slop lint only — not
 yet covered.

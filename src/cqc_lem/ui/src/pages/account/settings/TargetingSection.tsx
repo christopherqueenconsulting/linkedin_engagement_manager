@@ -5,13 +5,24 @@ import CsvInput from './CsvInput'
 import { useEngagementPrefs } from './engagementPrefsCtx'
 import { Advanced, Field, SectionCard, inputClass } from './Field'
 
-const FILTERS: [keyof EngPrefs, string][] = [
-  ['include_topics', 'include_topics'],
-  ['exclude_topics', 'exclude_topics'],
-  ['include_keywords', 'include_keywords'],
-  ['exclude_keywords', 'exclude_keywords'],
-  ['include_authors', 'include_authors'],
-  ['exclude_authors', 'exclude_authors'],
+type ListField = {
+  field: keyof EngPrefs
+  /** Sits behind the card's Advanced disclosure (the primary-control cap is already met). */
+  advanced?: boolean
+  /** Masked from session replay — free text the user cannot put a number to is content, not a filter. */
+  masked?: boolean
+}
+
+const FILTERS: ListField[] = [
+  { field: 'include_topics' },
+  { field: 'exclude_topics' },
+  { field: 'include_keywords' },
+  { field: 'exclude_keywords' },
+  { field: 'include_authors' },
+  { field: 'exclude_authors' },
+  // Issue #2047: the per-user forbidden-claim list — the same comma-separated control, but it
+  // grades what LEM WRITES (posts and comments), not which posts it reads.
+  { field: 'forbidden_claim_terms', advanced: true, masked: true },
 ]
 
 // The live funnel from the last real feed scan — so a targeting warning cites the user's own data
@@ -67,19 +78,22 @@ export default function TargetingSection() {
   const { eng, setEng } = useEngagementPrefs()
   if (!eng) return null
 
+  const listField = ({ field, masked }: ListField) => (
+    <Field key={field} settingKey={field}>
+      <CsvInput value={eng[field] as string[]}
+        onChange={(values) => setEng({ [field]: values } as Partial<EngPrefs>)}
+        placeholder="comma, separated, values"
+        {...(masked ? maskProps(inputClass) : {})} />
+    </Field>
+  )
+
   return (
     <SectionCard
       title="Which posts LEM comments on"
       blurb="Comma-separated. Exclusions always win; if any include filter is set, a post must match one of them (keywords and authors literally, topics via AI relevance)."
     >
       <FeedReachFunnel />
-      {FILTERS.map(([field, key]) => (
-        <Field key={key} settingKey={key}>
-          <CsvInput value={eng[field] as string[]}
-            onChange={(values) => setEng({ [field]: values } as Partial<EngPrefs>)}
-            placeholder="comma, separated, values" />
-        </Field>
-      ))}
+      {FILTERS.filter((f) => !f.advanced).map(listField)}
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
         <Field settingKey="min_reactions">
           <input type="number" min={0} value={eng.min_reactions ?? ''}
@@ -97,16 +111,7 @@ export default function TargetingSection() {
           onClick={() => setEng({ feed_fallback_when_empty: !eng.feed_fallback_when_empty })} />
       </Field>
       <Advanced>
-        {/* Issue #2047: the per-user forbidden-claim list, beside the exclude filters it reads like
-            but graded on what LEM WRITES, not on which posts it reads. Masked from session replay
-            like every other free-text content editor (docs/posthog-advanced-surface.md): a subject
-            the user cannot put a number to is exactly the kind of detail a replay must not carry. */}
-        <Field settingKey="forbidden_claim_terms">
-          <CsvInput value={eng.forbidden_claim_terms as string[]}
-            onChange={(values) => setEng({ forbidden_claim_terms: values } as Partial<EngPrefs>)}
-            placeholder="comma, separated, subjects"
-            {...maskProps(inputClass)} />
-        </Field>
+        {FILTERS.filter((f) => f.advanced).map(listField)}
       </Advanced>
     </SectionCard>
   )

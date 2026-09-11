@@ -2299,13 +2299,26 @@ def _code_engagement_defaults(user_id: int) -> dict:
     defaults = dict(_ENGAGEMENT_DEFAULTS)
     defaults["feed_fallback_when_empty"] = flag_enabled(FEED_FALLBACK_DEFAULT, user_id=user_id)
     return defaults
-def get_engagement_preferences(user_id: int) -> dict:
+def get_engagement_preferences(user_id: int, *, raise_on_error: bool = False) -> dict:
     """Return the user's engagement preferences (voice/targeting/caps) with code-level
     defaults when no row exists — so behaviour is unchanged until the user customizes.
+
+    Args:
+        user_id: Whose preferences.
+        raise_on_error: Let a read FAILURE escape as `mysql.connector.Error` instead of answering
+            with the code defaults. Off, a failed read and a missing row are indistinguishable —
+            fine for a comment cap, not for a gate that would release a hold it can no longer see
+            (issue #2047: a re-score during a DB fault must carry a forbidden-claim hold forward,
+            not clear it). A missing row still returns the defaults either way.
+
+    Returns:
+        The saved row, decoded, or the code defaults.
     """
     try:
         row = _select_engagement_row(user_id)
     except mysql.connector.Error as err:
+        if raise_on_error:
+            raise
         log_error("Could not get engagement prefs", exc=err, user_id=user_id)
         return _code_engagement_defaults(user_id)
     return _code_engagement_defaults(user_id) if row is None else row

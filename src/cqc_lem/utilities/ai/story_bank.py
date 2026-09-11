@@ -279,107 +279,139 @@ FACT_GROUNDING_SEVERITY_DEFAULT = SEVERITY_WARN
 # is the only place they meet — the user's terms PLUS the global ones, never instead of — so a
 # per-user list can widen what is forbidden and can never narrow it.
 _FORBIDDEN_TERMS_ENV = "FORBIDDEN_CLAIM_TERMS"
-_FOLD_RE = re.compile(r"[^a-z0-9]+")
+#: The engagement-preferences key carrying the user's list. Spelled HERE and nowhere else in the
+#: content core — the repository names the column and the API names the field, and every gate
+#: hands the whole prefs dict to `effective_forbidden_claim_terms` rather than reading the key.
+FORBIDDEN_CLAIM_TERMS_PREF = "forbidden_claim_terms"
+# The comparison form: `str.casefold` plus every run of anything that is not a letter or digit in
+# ANY script (underscore included) folded to one space. "Café" keeps its é and "Яндекс" its
+# letters, so a non-ASCII subject matches the draft that names it; "C++" is just "c".
+_FOLD_RE = re.compile(r"[\W_]+", re.UNICODE)
 # Bounds on the per-user list, enforced at the API boundary AND in the repository upsert (the V52
 # lesson: the engagement row is ONE upsert, so a single bad value rolls back every section). 50
 # subjects is far past any real list; 80 chars holds a product name plus a qualifier.
 FORBIDDEN_CLAIM_TERMS_MAX = 50
 FORBIDDEN_CLAIM_TERM_MAX_LEN = 80
+# The shortest folded key a subject may have. "C++" folds to "c": a one- or two-character key is a
+# stray word in almost any draft, so it is dropped at save — and NAMED, never silently.
+FORBIDDEN_CLAIM_KEY_MIN_LEN = 3
 
 
-def _fold(text: str) -> str:
-    """Lower-case with every punctuation/whitespace run folded to ONE space, space-padded."""
-    return " " + _FOLD_RE.sub(" ", str(text or "").lower()).strip() + " "
+def _fold_key(text: str) -> str:
+    """The comparison form of a subject or a draft — case-folded, non-word runs ONE space, trimmed."""
+    return _FOLD_RE.sub(" ", str(text or "").casefold()).strip()
 
 
-def normalize_forbidden_claim_terms(values: Optional[list]) -> list:
-    """The per-user forbidden-claim list as it is STORED — bounded, tidy, and never a surprise.
+def _folded_unique(items) -> list:
+    """The strings in `items` that can serve as subjects, ONE per folded key, first spelling kept.
 
-    Args:
-        values: What the client or caller handed over. Anything that is not a list is treated as
-            an empty one, so a malformed value can never fail the whole settings save.
-
-    Returns:
-        Each term whitespace-normalised (runs collapsed to one space, ends trimmed) in the order
-        given, with empties dropped, terms over `FORBIDDEN_CLAIM_TERM_MAX_LEN` dropped (a clipped
-        subject would never match the text it was meant to catch), duplicates on the folded form
-        dropped (the first spelling wins), and the list cut at `FORBIDDEN_CLAIM_TERMS_MAX`.
+    A non-string element (a nested list, a dict, a bool) is dropped, never `str()`-coerced;
+    whitespace runs collapse to one space; a key shorter than `FORBIDDEN_CLAIM_KEY_MIN_LEN`
+    (including an empty one — "→" folds to nothing) is dropped.
     """
-    if not isinstance(values, (list, tuple)):
-        return []
     out: list = []
     seen: set = set()
-    for value in values:
-        if value is None:
+    for value in items or []:
+        if not isinstance(value, str):
             continue
-        term = " ".join(str(value).split())
-        key = _fold(term).strip()
-        if not key or len(term) > FORBIDDEN_CLAIM_TERM_MAX_LEN or key in seen:
+        term = " ".join(value.split())
+        key = _fold_key(term)
+        if len(key) < FORBIDDEN_CLAIM_KEY_MIN_LEN or key in seen:
             continue
         seen.add(key)
         out.append(term)
-        if len(out) >= FORBIDDEN_CLAIM_TERMS_MAX:
-            break
     return out
+
+
+def split_forbidden_claim_terms(values: Optional[list]) -> tuple:
+    """The per-user list as it will be STORED, and every subject that did not make it.
+
+    Args:
+        values: What the client or caller handed over. Anything that is not a list stores nothing.
+
+    Returns:
+        `(kept, dropped)`. `kept` is each term whitespace-normalised in the order given, one per
+        folded key (the first spelling wins), terms over `FORBIDDEN_CLAIM_TERM_MAX_LEN` gone (a
+        clipped subject would never match the text it was meant to catch), cut at
+        `FORBIDDEN_CLAIM_TERMS_MAX`. `dropped` names every non-blank string that was NOT kept for
+        a reason other than duplicating a kept one — too short to be a subject, no letters at
+        all, too long, or past the cap — so nothing vanishes from a save without being said.
+    """
+    if not isinstance(values, (list, tuple)):
+        return [], []
+    strings = [" ".join(v.split()) for v in values if isinstance(v, str)]
+    kept = _folded_unique(s for s in strings if len(s) <= FORBIDDEN_CLAIM_TERM_MAX_LEN)
+    kept = kept[:FORBIDDEN_CLAIM_TERMS_MAX]
+    kept_keys = {_fold_key(t) for t in kept}
+    dropped: list = []
+    for term in strings:
+        if term and _fold_key(term) not in kept_keys and term not in dropped:
+            dropped.append(term)
+    return kept, dropped
+
+
+def normalize_forbidden_claim_terms(values: Optional[list]) -> list:
+    """The per-user forbidden-claim list as it is STORED — `split_forbidden_claim_terms`'s kept half.
+
+    Args:
+        values: What the client or caller handed over.
+
+    Returns:
+        The bounded, tidied list; empty when nothing usable was given.
+    """
+    return split_forbidden_claim_terms(values)[0]
 
 
 def forbidden_claim_terms() -> list:
-    """The operator's forbidden-claim subjects, read at call time from `FORBIDDEN_CLAIM_TERMS`.
+    """The operator's global forbidden-claim subjects, read at call time from `FORBIDDEN_CLAIM_TERMS`.
 
     Returns:
-        The non-empty phrases, whitespace-normalised and lower-cased, in the order configured.
-        An unset or blank variable is an empty list, which forbids nothing.
+        The usable `;`-separated phrases as spelled, whitespace-normalised, one per folded key, in
+        the order configured. An unset or blank variable is an empty list, which forbids nothing.
     """
     raw = os.environ.get(_FORBIDDEN_TERMS_ENV) or ""
-    out = []
-    for part in raw.split(";"):
-        term = _fold(part).strip()
-        if term and term not in out:
-            out.append(term)
-    return out
+    return _folded_unique(raw.split(";"))
 
 
-def effective_forbidden_claim_terms(user_terms: Optional[list] = None) -> list:
+def effective_forbidden_claim_terms(prefs: Optional[dict] = None) -> list:
     """The ONE list a draft is checked against: the user's own subjects PLUS the global floor.
 
     The env list is read here, at call time, so an ops change lands without a restart, and it is
     always included — a user's list widens what is forbidden and can never narrow it.
 
     Args:
-        user_terms: The user's `forbidden_claim_terms` preference, as stored. `None` or anything
-            that is not a list means the user has none.
+        prefs: The user's engagement preferences, as `get_engagement_preferences` returns them;
+            `FORBIDDEN_CLAIM_TERMS_PREF` is read off it here. `None`, no key, or a value that is
+            not a list means the user has no subjects of their own.
 
     Returns:
-        The user's terms first, then the global ones, each folded (lower-cased, punctuation and
-        whitespace runs collapsed) and listed once. Empty forbids nothing.
+        The user's terms first, then the global ones, as SPELLED (a finding names what the user
+        typed), one per folded key. Empty forbids nothing.
     """
-    out: list = []
-    candidates = list(user_terms) if isinstance(user_terms, (list, tuple)) else []
-    for raw in candidates + forbidden_claim_terms():
-        term = _fold(raw).strip()
-        if term and term not in out:
-            out.append(term)
-    return out
+    user_terms = prefs.get(FORBIDDEN_CLAIM_TERMS_PREF) if isinstance(prefs, dict) else None
+    own = list(user_terms) if isinstance(user_terms, (list, tuple)) else []
+    return _folded_unique(own + forbidden_claim_terms())
 
 
-def forbidden_claims(content: Optional[str], terms: Optional[list] = None) -> list:
+def forbidden_claims(content: Optional[str], terms: list) -> list:
     """The forbidden subjects this draft attaches a number to.
 
     Args:
         content: The draft, exactly as it would ship.
-        terms: The forbidden subjects; `None` reads them from the environment.
+        terms: The forbidden subjects — `effective_forbidden_claim_terms(prefs)` on every gated
+            surface, so the user's list and the global floor can never be checked separately.
 
     Returns:
-        Each matched term once, in configured order — the draft names the subject as whole words
-        AND asserts a numeric claim (`content_framework.numeric_claims`: years, list numbering and
-        version numbers are not claims). Empty when nothing is forbidden or nothing matched.
+        Each matched term once, as spelled in `terms`, in the order given — the draft names the
+        subject as whole words (compared on the folded key) AND asserts a numeric claim
+        (`content_framework.numeric_claims`: years, list numbering and version numbers are not
+        claims). Empty when nothing is forbidden or nothing matched.
     """
-    subjects = forbidden_claim_terms() if terms is None else [
-        _fold(t).strip() for t in terms if _fold(t).strip()]
+    subjects = [(t, _fold_key(t)) for t in (terms or []) if isinstance(t, str) and _fold_key(t)]
     if not subjects or not content:
         return []
-    folded = _fold(content)
-    named = [term for term in subjects if f" {term} " in folded]
+    folded = f" {_fold_key(content)} "
+    named = [term for term, key in subjects if f" {key} " in folded]
     if not named or not numeric_claims(content):
         return []
     return named

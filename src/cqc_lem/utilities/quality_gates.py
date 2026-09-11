@@ -243,8 +243,9 @@ def forbidden_claim_finding(terms: Optional[list] = None) -> dict:
         explanation=(f"This draft attaches a number to {len(hit)} subject(s) on your forbidden-claim "
                      f"list — figures you have said must never be published about them."),
         remediation=("Remove the number from every sentence that names the subject, or drop the "
-                     "sentence. Edit FORBIDDEN_CLAIM_TERMS if the subject no longer belongs on the "
-                     "list."),
+                     "sentence. If the subject no longer belongs on the list, remove it under "
+                     "Account → Who I Engage → Advanced → \"Never attach a number to…\" (or from "
+                     "FORBIDDEN_CLAIM_TERMS if it is a global one)."),
         details=[f"Forbidden subject with a figure: {t}" for t in hit[:10]])
 
 

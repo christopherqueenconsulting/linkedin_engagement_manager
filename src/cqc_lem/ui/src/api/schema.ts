@@ -3919,7 +3919,7 @@ export interface components {
             /** Focus Topics */
             focus_topics: string[];
             /** Forbidden Claim Terms */
-            forbidden_claim_terms: string[];
+            forbidden_claim_terms: string[] | null;
             gate_defaults: components["schemas"]["GateDefaults"];
             gmail_forward_confirmation: components["schemas"]["GmailForwardConfirmation"] | null;
             /** Has Saved Preferences */
@@ -4081,11 +4081,8 @@ export interface components {
              * @default []
              */
             focus_topics: string[];
-            /**
-             * Forbidden Claim Terms
-             * @default []
-             */
-            forbidden_claim_terms: string[];
+            /** Forbidden Claim Terms */
+            forbidden_claim_terms?: string[] | null;
             /**
              * Hold Repaired Posts For Review
              * @default true
