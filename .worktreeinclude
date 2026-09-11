@@ -1,0 +1,8 @@
+# Gitignored files Claude Code copies from the main checkout into every worktree it creates
+# (subagent `isolation: "worktree"`, desktop parallel sessions, `claude --worktree`).
+#
+# graft/ is the local context graph (#2039). Copying it means a new worktree starts with the graph
+# instead of none, and graft's next build only re-parses the files the branch changed. The agent
+# pipeline creates its worktrees itself, so this file does not reach it: `seed_graft` in
+# scripts/agent-pipeline/lib/guards.sh does the same job there.
+graft/
