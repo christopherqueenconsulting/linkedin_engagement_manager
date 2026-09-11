@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.175.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.174.0...v0.175.0) (2026-09-11)
+
+
+### Features
+
+* **observability:** log comment bodies so the comment lanes can be audited ([#1965](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1965)) ([#2045](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2045)) ([6516df1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/6516df16476efe97d9d5c0c0a1935e7e9390355c))
+
+
+### Bug Fixes
+
+* **agents:** post the options menu once for an issue that arrives already held ([#1736](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1736)) ([#2050](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2050)) ([3b657f2](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/3b657f2662e023528d362307c07abc10059103ed))
+* **agents:** v2 daemon sweeps stale worktrees hourly, opt-in .claude/worktrees sweep ([3d18458](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/3d184582ada27b6ca9c56832a0de00425903c8ca)), closes [#2041](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2041)
+* **agents:** v2 daemon sweeps stale worktrees hourly, opt-in .claude/worktrees sweep ([#2041](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2041)) ([#2046](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2046)) ([3d18458](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/3d184582ada27b6ca9c56832a0de00425903c8ca))
+* **dms:** own the thread ladder's windows, retire the dead button route, scope the anchor route to the target ([b8929f9](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/b8929f993e957cbdbd2609a7dd912670c005816d))
+* **dms:** own the thread ladder's windows, retire the dead button route, scope the anchor route to the target ([#1796](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1796)) ([#2051](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2051)) ([b8929f9](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/b8929f993e957cbdbd2609a7dd912670c005816d))
+* **posts:** grade every post's numbers at HARD, hold ungrounded ones, refuse forbidden claims ([#1971](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1971)) ([#2052](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2052)) ([b345412](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/b3454121f29b4b6726c529afb667bc825571fde1))
+
 ## [0.174.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.173.13...v0.174.0) (2026-09-10)
 
 
