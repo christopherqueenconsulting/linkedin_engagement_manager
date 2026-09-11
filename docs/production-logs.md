@@ -30,6 +30,23 @@ to the last recreate — the dated files on disk are the durable record.
 - **`POSTHOG_LOG_LEVEL=WARNING` in production** — WARNING and above also reach PostHog; INFO does
   not. PostHog is not a superset of the log file or vice versa; check both when triaging.
 
+## Structured context IS on the line (since #2057)
+
+Every `log_*` call passes context kwargs (`user_id=`, `post_id=`, `profile_url=`, `task_name=`,
+`action_type=`, …). Until #2057 only PostHog received them and the file line was the bare message,
+so a run could not be attributed to a person or a post from the persistent log — the reason #1857's
+log-attribution step was "not doable". The documented keys (`_LevelFormatter.CONTEXT_KEYS`) now
+trail every line, in a fixed order, AFTER the level prefix the greps and the escalation contract key
+on:
+
+```
+2026-09-11 04:18:40Z Message thread opened via 'direct_url' (page, 0 message event(s)) | user_id=1 profile_url=https://www.linkedin.com/in/hortonandre action_type=followup
+```
+
+So joining a run to a row is one grep: `grep 'profile_url=https://www.linkedin.com/in/<slug>'
+/opt/lem/logs/cqc_lem_*.log`, or `grep 'post_id=101 '`. `exc` and undocumented keys never render.
+The escalation dedup key is built from the MESSAGE, not the line, so grouping is unchanged.
+
 ## Outbound bodies ARE in these files
 
 Every DM body is logged at INFO as `Sending DM: <body>` (`send_dm_now`), and since #1965 every
