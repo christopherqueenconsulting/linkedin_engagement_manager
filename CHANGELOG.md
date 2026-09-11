@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.176.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.175.0...v0.176.0) (2026-09-11)
+
+
+### Features
+
+* **posts:** per-user forbidden-claim list with an Account editor ([#2047](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2047)) ([#2055](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2055)) ([0152988](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/01529888a59abeb123bbaf10cda0fb8599c3f9bf))
+
+
+### Bug Fixes
+
+* **content-quality:** grade shipped videos off the retained receipt + keyframes when the MP4 is purged ([#1654](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1654)) ([#2054](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2054)) ([68d5712](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/68d571260f0b043151ee0f30d7bd0c75fd2771d2))
+* **logging:** trail the documented structured context onto the file/console line ([97fe7df](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/97fe7df83d94294f9413c8f8e991946a9ecda9c3)), closes [#2057](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2057)
+* **logging:** trail the documented structured context onto the file/console line ([#2057](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2057)) ([#2058](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2058)) ([97fe7df](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/97fe7df83d94294f9413c8f8e991946a9ecda9c3))
+
 ## [0.175.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.174.0...v0.175.0) (2026-09-11)
 
 
