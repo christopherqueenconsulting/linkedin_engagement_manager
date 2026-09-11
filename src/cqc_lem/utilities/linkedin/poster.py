@@ -28,6 +28,7 @@ from pydantic import BaseModel, Field
 from pydantic.types import StringConstraints
 
 from cqc_lem.utilities.ai.outbound_qa import (
+    COMMENT_BODY_LOG_PREFIX,
     SURFACE_COMMENT as OUTBOUND_SURFACE_COMMENT,
     refusal_reason as outbound_refusal_reason,
 )
@@ -674,6 +675,8 @@ def comment_on_linkedin_post(user_id: int, object_urn: str, text: str,
     entity = {"actor": f"urn:li:person:{sub_id}", "message": {"text": text}}
     if parent_comment_urn:
         entity["parentComment"] = parent_comment_urn
+    # The body itself, at INFO, so a bad batch can be bounded by one grep (#1965). Never a warning.
+    log_info(COMMENT_BODY_LOG_PREFIX + text, user_id=user_id, action_type="comment")
     resp = _restli().create(
         resource_path="/socialActions/{urn}/comments",
         path_keys={"urn": object_urn},
