@@ -367,6 +367,66 @@ class TestSocialActionsComments:
              patch(f"{self._P}.get_user_access_token", return_value=None):
             assert delete_linkedin_comment(1, "urn:li:ugcPost:1", "urn:li:comment:(x,1)") is False
 
+
+@pytest.mark.unit
+class TestCommentBodyIsLogged:
+    """Issue #1965: the API write path logs the comment BODY at INFO under the shared prefix.
+
+    A comment is the public surface, and until this line existed a defect that shipped bad copy
+    could not be bounded after the fact. INFO on purpose — prod retains INFO, and an INFO line
+    never enters the warning-escalation path, so an unbounded body here can never file a defect.
+    """
+
+    _P = "cqc_lem.utilities.linkedin.poster"
+
+    def _post(self, text: str):
+        from cqc_lem.utilities.linkedin.poster import comment_on_linkedin_post
+        resp = MagicMock()
+        resp.entity_id = "urn:li:comment:(x,1)"
+        client = MagicMock()
+        client.create.return_value = resp
+        with patch(f"{self._P}.get_user_linked_sub_id", return_value="sub123"), \
+             patch(f"{self._P}.get_user_access_token", return_value="tok"), \
+             patch(f"{self._P}._restli", return_value=client), \
+             patch(f"{self._P}.log_info") as info, \
+             patch(f"{self._P}.log_warning") as warn:
+            out = comment_on_linkedin_post(7, "urn:li:ugcPost:99", text)
+        return out, client, info, warn
+
+    def test_body_reaches_log_info_under_the_shared_prefix(self):
+        from cqc_lem.utilities.ai.outbound_qa import COMMENT_BODY_LOG_PREFIX
+        body = "Great point about the rollout pacing."
+        out, client, info, _ = self._post(body)
+        assert out == "urn:li:comment:(x,1)"
+        body_lines = [c for c in info.call_args_list
+                      if c.args and c.args[0].startswith(COMMENT_BODY_LOG_PREFIX)]
+        assert len(body_lines) == 1, info.call_args_list
+        assert body_lines[0].args[0] == "Posting comment: " + body
+        assert body_lines[0].kwargs.get("user_id") == 7
+        assert body_lines[0].kwargs.get("action_type") == "comment"
+        assert client.create.called, "the body line must be the SEND, not a refusal"
+
+    def test_the_existing_commented_via_api_line_still_stands(self):
+        _, _, info, _ = self._post("Great point.")
+        assert any(c.args and c.args[0].startswith("Commented on urn:li:ugcPost:99 via API")
+                   for c in info.call_args_list)
+
+    def test_body_never_goes_through_log_warning(self):
+        body = "Great point about the rollout pacing."
+        _, _, _, warn = self._post(body)
+        assert not any(body in (c.args[0] if c.args else "") for c in warn.call_args_list)
+        assert not warn.called
+
+    def test_a_refused_body_is_not_logged_as_posted(self):
+        """The line means the comment WENT OUT; a refusal must never write it."""
+        from cqc_lem.utilities.ai.outbound_qa import COMMENT_BODY_LOG_PREFIX
+        refused = "Please provide the message history so I can proceed."
+        out, client, info, warn = self._post(refused)
+        assert out is None and not client.create.called
+        assert not any(c.args and c.args[0].startswith(COMMENT_BODY_LOG_PREFIX)
+                       for c in info.call_args_list)
+        assert warn.called
+
     def test_delete_derives_id_from_plain_urn(self):
         from cqc_lem.utilities.linkedin.poster import delete_linkedin_comment
         client = MagicMock()

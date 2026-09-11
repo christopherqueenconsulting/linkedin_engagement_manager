@@ -149,6 +149,47 @@ class TestPostCommentInline:
         assert all(ord(c) <= 0xFFFF for c in typed)
         assert "Shipped it" in typed and "🚀" not in typed
 
+    def test_body_is_logged_at_info_when_committed(self):
+        """Issue #1965: the inline path logs the BODY under the shared prefix, at INFO, never WARNING.
+
+        The line is written at the submit step — after the text is typed and the outbound gate has
+        passed — and carries the body AS TYPED (post `strip_non_bmp`), because that is what went out.
+        """
+        from cqc_lem.app.engagement import feed as ra
+        from cqc_lem.utilities.ai.outbound_qa import COMMENT_BODY_LOG_PREFIX
+        composer = MagicMock()
+        composer.text = ""
+        driver = MagicMock()
+        driver.execute_script.return_value = True
+        with patch(f"{_FEED}.click_first", return_value=MagicMock()), \
+             patch(f"{_FEED}._post_composer_for_card", return_value=composer), \
+             patch(f"{_FEED}.log_info") as info, \
+             patch(f"{_FEED}.log_warning") as warn:
+            ok = ra.post_comment_inline(driver, MagicMock(), MagicMock(),
+                                        "Shipped it 🚀 and the numbers held", user_id=7)
+        assert ok is True
+        body_lines = [c for c in info.call_args_list
+                      if c.args and c.args[0].startswith(COMMENT_BODY_LOG_PREFIX)]
+        assert len(body_lines) == 1, info.call_args_list
+        typed = composer.send_keys.call_args_list[0].args[0]
+        assert body_lines[0].args[0] == "Posting comment: " + typed
+        assert "Shipped it" in typed and "🚀" not in typed
+        assert body_lines[0].kwargs.get("user_id") == 7
+        assert body_lines[0].kwargs.get("action_type") == "comment"
+        warn.assert_not_called()
+
+    def test_body_is_not_logged_as_posted_when_the_composer_never_opens(self):
+        """The line means the comment WENT OUT — a skipped post must not write it."""
+        from cqc_lem.app.engagement import feed as ra
+        from cqc_lem.utilities.ai.outbound_qa import COMMENT_BODY_LOG_PREFIX
+        with patch(f"{_FEED}.click_first", return_value=MagicMock()), \
+             patch(f"{_FEED}._post_composer_for_card", return_value=None), \
+             patch(f"{_FEED}.log_info") as info:
+            ok = ra.post_comment_inline(MagicMock(), MagicMock(), MagicMock(), "hello", user_id=1)
+        assert ok is False
+        assert not any(c.args and c.args[0].startswith(COMMENT_BODY_LOG_PREFIX)
+                       for c in info.call_args_list)
+
     def test_click_interception_survived_by_recentering(self):
         # The live #815 failure: first click stolen by the sticky nav, the retry lands.
         from cqc_lem.app.engagement import feed as ra

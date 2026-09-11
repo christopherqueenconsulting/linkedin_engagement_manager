@@ -44,6 +44,14 @@ SURFACE_COMMENT = "comment"
 # note and sends the invite bare. Same checks, different verdict at the call site.
 SURFACE_INVITE_NOTE = "invite_note"
 
+# The ONE prefix both comment write paths log the body under, at INFO (#1965). A comment is the
+# PUBLIC surface, and until this line existed a defect that shipped bad comment copy could not be
+# bounded after the fact — the DM half of the 2026-09-04 incident was one grep on
+# `Sending DM: `, the comment half was unanswerable. INFO on purpose: prod retains INFO and an
+# INFO line never enters the warning-escalation path, so an unbounded body here can never file a
+# defect. Sweep: `grep 'Posting comment: ' /opt/lem/logs/cqc_lem_*.log`.
+COMMENT_BODY_LOG_PREFIX = "Posting comment: "
+
 VIOLATION_EMPTY = "empty_body"
 VIOLATION_NO_CONTENT = "no_readable_content"
 VIOLATION_OVERLONG = "over_budget"

@@ -81,6 +81,7 @@ from cqc_lem.utilities.ai.content_alignment import (
 )
 from cqc_lem.utilities.ai.content_framework import fact_anchored_formats, select_blueprint
 from cqc_lem.utilities.ai.outbound_qa import (
+    COMMENT_BODY_LOG_PREFIX,
     SURFACE_COMMENT as OUTBOUND_SURFACE_COMMENT,
     refusal_reason as outbound_refusal_reason,
 )
@@ -846,6 +847,9 @@ def post_comment_inline(driver, wait, card, comment_text: str, user_id: int = No
         composer.send_keys(comment_text)
         time.sleep(random.uniform(1, 2))
         step = "submit composer"
+        # The body as typed (post-strip), at INFO, right where it is committed — so a bad batch
+        # can be bounded by one grep (#1965). Never a warning: the body is unbounded text.
+        log_info(COMMENT_BODY_LOG_PREFIX + comment_text, user_id=user_id, action_type="comment")
         if not driver.execute_script(_SUBMIT_NEAR_COMPOSER_JS, composer):
             composer.send_keys(Keys.CONTROL, Keys.RETURN)  # fallback
         time.sleep(random.uniform(3, 5))

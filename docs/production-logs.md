@@ -30,6 +30,22 @@ to the last recreate — the dated files on disk are the durable record.
 - **`POSTHOG_LOG_LEVEL=WARNING` in production** — WARNING and above also reach PostHog; INFO does
   not. PostHog is not a superset of the log file or vice versa; check both when triaging.
 
+## Outbound bodies ARE in these files
+
+Every DM body is logged at INFO as `Sending DM: <body>` (`send_dm_now`), and since #1965 every
+comment body is too, as **`Posting comment: <body>`** on BOTH comment write paths — the socialActions
+API (`poster.comment_on_linkedin_post`) and the inline Selenium composer (`feed.post_comment_inline`),
+written at the point the comment is committed and never on a refused or skipped body. The prefix is
+the ONE constant `outbound_qa.COMMENT_BODY_LOG_PREFIX`, so bounding a bad batch is a single sweep:
+
+```
+grep 'Posting comment: ' /opt/lem/logs/cqc_lem_*.log
+```
+
+INFO on purpose: prod retains INFO, and an INFO line never enters the warning-escalation path, so an
+unbounded body here can never file a defect. Forward-looking only — comments posted before this
+line shipped remain unrecoverable from the logs.
+
 ## The prod volume mount, so it doesn't look like dead config
 
 `docker-compose.prod.yml` mounts `./logs:/app/logs` **explicitly** on `web_api_blue`/`_green` and on
