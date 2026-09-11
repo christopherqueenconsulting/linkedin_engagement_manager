@@ -12,6 +12,7 @@ agents that ran to completion but never wrote a manifest of what to drop. Two la
 | **Auto-delete-on-merge** (repo setting) | Every PR merged AFTER 2026-07-28 — the head branch disappears ~30s after the merge button | `delete_branch_on_merge=true` (one-line repo setting) |
 | **Weekly orphan sweep** (`.github/workflows/stale-branches.yml`) | Orphan branches, closed-without-merge PR branches, anything the setting didn't catch because the PR merged before the setting was flipped | Mon 06:00 UTC cron + `actions/github-script` |
 | **Weekly worktree sweep** (`scripts/worktree_cleanup.sh`) | `git worktree` REGISTRATIONS left behind by finished agents — the branch layers never touch these | Mon 07:00 UTC systemd timer on the agent host (Actions cannot see them); see [The third layer](#the-third-layer--worktree-registrations) |
+| **Opt-in `.claude/worktrees/` sweep** (`scripts/claude_worktree_cleanup.sh`, #2041) | Claude Code's own session/subagent trees, on GitHub's evidence: clean + MERGED PR + untouched 48h | Nothing schedules it — an operator runs it; see [Claude Code's own worktrees](#claude-codes-own-worktrees) |
 
 The **one-time manual sweep** in `docs/branch-cleanup-audit-2026-07-28.md` cleaned out the ~491 stale
 branches that already existed before the layers above were turned on. That manifest is the recovery
@@ -182,6 +183,31 @@ prune` handles it, and the script calls it on both ends of the sweep.
 
 Decision coverage lives in `tests/unit/scripts/test_worktree_cleanup.py`, which builds a throwaway
 repo with a real worktree in each state and asserts on the report lines.
+
+**The pipeline's own `work/` trees have a fourth sweep**, and it is not this one: `sweep_stale_worktrees`
+in `scripts/agent-pipeline/lib/guards.sh`, which since #2041 the v2 daemon spawns hourly as
+`v2/actions/sweep.sh` (`docs/agent-pipeline-v2.md` §2). It asks GitHub which branches have an open or
+merged PR, so it can remove a squash-merged tree that this script would also remove — the two agree
+on the outcome and differ on the evidence.
+
+## Claude Code's own worktrees
+
+Claude Code registers a worktree under `<repo>/.claude/worktrees/` per session and per
+`isolation: "worktree"` subagent, and removes it only when the run leaves it unchanged — so every
+run that committed and opened a PR leaves its tree behind (33 trees, 6.1 GB on 2026-09-11, 21 of them
+clean with a merged PR). `scripts/claude_worktree_cleanup.sh` (#2041) is the **opt-in** sweep for
+exactly that directory. Its evidence is GitHub's, asked per branch (`gh pr list --head … --state all`),
+and the removal rule is a conjunction: the tree is **clean** (no tracked changes, no untracked files)
+AND its branch has a **MERGED** PR AND neither the directory nor its HEAD commit was touched in
+`GRACE_HOURS` (48). Everything else is `HELD` with its reason on the line — `uncommitted`, `open-pr`,
+`no-merged-pr` (which is what "unpushed commits and no PR" reads as), `within grace`, `detached`,
+`active process`, `locked`, `unreadable`, and `pr-unreadable` when gh could not answer, because "could
+not ask" is never "no PR". Trees outside `.claude/worktrees/` are counted (`outside-scope=N`) and never
+examined; the weekly sweep above still covers them. Report-only is the default and needs no gh;
+`--apply` removes, with `git worktree remove` and never `--force` or a `branch -d`, so
+`refs/heads/<branch>` outlives the removal. Nothing schedules it: run
+`scripts/claude_worktree_cleanup.sh` from the main checkout, read the report, then `--apply`.
+`tests/unit/scripts/test_claude_worktree_cleanup.py` pins every bucket against a stub `gh`.
 
 ## Future sweeps
 

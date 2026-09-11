@@ -44,6 +44,12 @@ EX_BUSY = 72
 EX_SETUP = 73
 REFUSALS = frozenset({EX_TRUST, EX_BUDGET, EX_BUSY, EX_SETUP})
 
+#: The housekeeping pool (#2041): capped at 1, separate from `agent` and `gh` so a worktree sweep
+#: never holds a slot a merge-enable is waiting for. `SWEEP_MODE` is the child's mode AND the name
+#: `collect()` sees — it is not an item mode and never reaches `decide()`.
+MAINT_POOL = "maint"
+SWEEP_MODE = "sweep"
+
 
 @dataclass
 class Child:
@@ -144,6 +150,11 @@ class Supervisor:
 
     def _cap(self, pool: str) -> int:
         """The ceiling in force for one pool right now."""
+        if pool == MAINT_POOL:
+            # Housekeeping never competes with the lanes: a sweep counted against `gh` would refuse
+            # a merge-enable with `pool_full` for as long as it stats worktrees, and there is never
+            # a reason to run two sweeps at once.
+            return 1
         caps = getattr(self, "_caps", None)
         if caps is None:
             return self.cfg.max_agents if pool == "agent" else self.cfg.gh_slots
@@ -163,12 +174,20 @@ class Supervisor:
     # ------------------------------------------------------------------ spawning
 
     def _spawn(self, argv: list[str], *, pool: str, mode: str, kind: str, number: int,
-               item_id: int | None, timeout_s: int) -> Child | None:
-        """Start one action detached into its own process group."""
+               item_id: int | None, timeout_s: int, log_name: str | None = None,
+               extra_env: dict[str, str] | None = None) -> Child | None:
+        """Start one action detached into its own process group.
+
+        `log_name` pins the log file for a RECURRING action: the default per-spawn name is right
+        for a run that belongs to one item, and wrong for housekeeping that fires every hour for
+        ever — that is 24 near-empty files a day under `logs/`. `extra_env` reaches only this
+        child; the daemon's own environment is never the channel.
+        """
         logdir = Path(self.cfg.base) / "logs"
         logdir.mkdir(parents=True, exist_ok=True)
-        log_path = logdir / f"v2-{mode}-{kind}{number}-{int(time.time())}.log"
+        log_path = logdir / (log_name or f"v2-{mode}-{kind}{number}-{int(time.time())}.log")
         env = dict(os.environ)
+        env.update(extra_env or {})
         env.update({
             "BASE": str(self.cfg.base),
             "REPO": str(self.cfg.repo),
@@ -230,6 +249,27 @@ class Supervisor:
         # starves the lane that exists to be fast.
         return self._spawn([str(script), *args], pool="gh", mode=action, kind=kind,
                            number=number, item_id=item_id, timeout_s=180)
+
+    def sweep_in_flight(self) -> bool:
+        """True while a stale-worktree sweep this daemon spawned is still running."""
+        return any(c.mode == SWEEP_MODE for c in self.children)
+
+    def dispatch_sweep(self, *, interval_s: int) -> Child | None:
+        """Launch the stale-worktree sweep (`actions/sweep.sh`, #2041).
+
+        Not an item: `item_id=None`, so no `runs` row is opened and `collect()` skips it — its
+        whole report is the action's own log. `kind`/`number` are placeholders the `Child` shape
+        requires; nothing keys on them. `interval_s` is handed to the child as the guard the
+        function itself reads, so the daemon's clock and `sweep_stale_worktrees`'s stamp agree.
+        """
+        if self.sweep_in_flight() or self.free(MAINT_POOL) <= 0:
+            return None
+        # 600s: 76 worktrees was ~a minute of `git status` per tree plus two gh calls. A sweep still
+        # running after ten minutes is wedged on a hung git or gh, and killpg is the right answer.
+        return self._spawn([str(self.actions / "sweep.sh")], pool=MAINT_POOL, mode=SWEEP_MODE,
+                           kind=SWEEP_MODE, number=0, item_id=None, timeout_s=600,
+                           log_name="v2-sweep.log",
+                           extra_env={"WORKTREE_SWEEP_INTERVAL": str(interval_s)})
 
     # ------------------------------------------------------------------ reaping
 

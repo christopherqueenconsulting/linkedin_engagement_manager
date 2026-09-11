@@ -238,7 +238,9 @@ sweep_stale_worktrees() {
   # repo squash-merges and auto-deletes the branch, so a merged worktree has no `origin/<branch>`
   # and its commits never appear on main — `origin/main..HEAD` stays non-empty forever and the
   # unsaved-work check reads shipped work as unsaved. Measured: 198 of 255 worktrees here.
-  merged="$(gh pr list --repo "$SLUG" --state merged --limit 400 --json headRefName --jq '.[].headRefName' 2>/dev/null || true)"
+  # 1000, not 400 (#2041): a month without a sweep is ~700 merged PRs on this repo, and a tree whose
+  # PR fell off the end of the list reads as "no merged PR" and is kept for ever. Ten pages, hourly.
+  merged="$(gh pr list --repo "$SLUG" --state merged --limit 1000 --json headRefName --jq '.[].headRefName' 2>/dev/null || true)"
   # Iterate GIT'S OWN inventory, not a glob. A branch name contains slashes, so a worktree lands at
   # work/feature/claude-issue-123 — two levels down. A `"$WORKROOT"/*/` glob sees only the
   # intermediate `work/feature/` directory, which is not a worktree, so the first version of this
