@@ -132,10 +132,11 @@ class TestUpdateEngagementPreferences:
 
 
 class TestForbiddenClaimTermsBounds:
-    """Issue #2047: the per-user forbidden-claim list is bounded at the boundary; a subject that
-    cannot be kept is tidied out and NAMED rather than 422-ing the whole settings save (the SPA
-    writes every field at once), and a request that never sent the field leaves the saved list
-    alone — exactly like `max_follows_per_day`.
+    """Issue #2047: the per-user forbidden-claim list is bounded at the boundary.
+
+    A subject that cannot be kept is tidied out and NAMED rather than 422-ing the whole settings
+    save (the SPA writes every field at once), and a request that never sent the field leaves the
+    saved list alone — exactly like `max_follows_per_day`.
     """
 
     def _put(self, api_client, body):

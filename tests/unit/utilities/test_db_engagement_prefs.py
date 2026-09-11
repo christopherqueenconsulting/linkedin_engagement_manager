@@ -83,9 +83,10 @@ class TestUpdateEngagementPreferences:
 
 
 class TestForbiddenClaimTerms:
-    """Issue #2047: the per-user forbidden-claim list is one more JSON list column, bounded in the
-    upsert itself — the row is ONE upsert (the V52 lesson), so a caller that bypasses the API must
-    not be able to store an unbounded blob or roll every other section back.
+    """Issue #2047: the per-user forbidden-claim list is one more JSON list column.
+
+    Bounded in the upsert itself — the row is ONE upsert (the V52 lesson), so a caller that
+    bypasses the API must not be able to store an unbounded blob or roll every other section back.
     """
 
     def _saved(self, fake_cursor, prefs, stored=None):
