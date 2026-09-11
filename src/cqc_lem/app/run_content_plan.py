@@ -39,6 +39,7 @@ from cqc_lem.utilities.ai import story_bank as _story_bank
 from cqc_lem.utilities.ai.ai_helper import (
     apply_post_guidance,
     create_runway_video,
+    forget_supplied_material,
     generate_engagement_prompt_post,
     get_ai_linked_post_refinement,
     get_blog_summary_post_from_ai,
@@ -50,8 +51,8 @@ from cqc_lem.utilities.ai.ai_helper import (
     get_thought_leadership_post_from_ai,
     get_website_content_post_from_ai,
     optimize_post_hook,
+    record_supplied_material,
     supplied_material_for,
-    forget_supplied_material,
 )
 from cqc_lem.utilities.ai.content_alignment import (
     ContentMix,
@@ -186,6 +187,7 @@ from cqc_lem.utilities.observability import (
     track_video_asset_probe,
 )
 from cqc_lem.utilities.quality_gates import (
+    GATE_FACT_GROUNDING,
     GATE_MALFORMED_ASSET,
     GATE_SIMILARITY,
     GATE_SLIDE_SLOP,
@@ -199,6 +201,7 @@ from cqc_lem.utilities.quality_gates import (
     malformed_asset_finding,
     meeting_cta_finding,
     missing_asset_finding,
+    parse_gate_findings,
     proof_finding,
     similarity_finding,
     slide_slop_finding,
@@ -760,8 +763,19 @@ def _post_material_sources(user_id: int, post_id: Optional[int],
             if stored and stored[0]:
                 sources.append(str(stored[0]))
         except Exception as e:
-            log_debug("Profile synthesis unreadable for the grounding allow-list", exc=e,
-                      user_id=user_id, post_id=post_id)
+            log_warning("Profile synthesis unreadable — the grounding allow-list runs without it",
+                        exc=e, user_id=user_id, post_id=post_id, task_name="create_content")
+    # The lead-magnet resource name is appended to the post AFTER the review gate
+    # (`ensure_lead_magnet_cta` in the status-setter path), so "my 12-point checklist" would read
+    # as invented at the gate pass unless the configured message is a source here.
+    if user_id:
+        try:
+            message = str((get_lead_magnet_settings(user_id) or {}).get("message") or "").strip()
+            if message:
+                sources.append(message)
+        except Exception as e:
+            log_warning("Lead-magnet settings unreadable — the grounding allow-list runs without "
+                        "them", exc=e, user_id=user_id, post_id=post_id, task_name="create_content")
     supplied = supplied_material_for(post_id)
     if supplied:
         sources.append(supplied)
@@ -1617,6 +1631,24 @@ def _record_post_similarity_finding(post_id: Optional[int], similarity: dict,
                     task_name="create_text_post")
 
 
+def _recorded_unbacked_specifics(post_id: int) -> list[str]:
+    """The figures the post's LAST recorded `fact_grounding` finding named as unbacked (issue #1971).
+
+    Read off the persisted `gate_reason` so a re-score can keep holding a number the author never
+    touched. Never raises — an unreadable reason credits the author with every figure, which is
+    the pre-#1971 behaviour of the re-score, not a new hold.
+    """
+    prefix = "Unbacked specific: "
+    try:
+        findings = parse_gate_findings(get_post_gate_reason(post_id))
+    except Exception as e:
+        log_warning("Could not read the recorded gate findings for the re-score", exc=e,
+                    post_id=post_id, task_name="rescore_post")
+        return []
+    return [str(d)[len(prefix):] for f in findings if f.get("gate") == GATE_FACT_GROUNDING
+            for d in (f.get("details") or []) if str(d).startswith(prefix)]
+
+
 def _recorded_similarity_finding(post_id: int) -> list[dict]:
     """The near-duplicate verdict the review gate recorded on this post, if any (issue #1452).
 
@@ -1960,6 +1992,9 @@ def _apply_guidance_to_text_post(user_id: int, post_id: int, content: str,
     guidance = (guidance or "").strip()
     if not guidance or not content:
         return content
+    # The author's own guidance is a source a number may legitimately come from (#1971): a
+    # regenerate asked for "mention we cut latency by 40%" must not hold the post on the 40%.
+    record_supplied_material(post_id, guidance)
     try:
         prefs = get_engagement_preferences(user_id)
         synthesis = get_or_create_profile_synthesis(user_id, user_profile)
@@ -2008,6 +2043,7 @@ def _finish_regenerated_post(user_id: int, post_id: int, content: str,
     update_db_post_content(post_id, content)
     _persist_gate_findings(user_id, post_id,
                            _gate_findings_for_post(user_id, post_id, content, post_type_value, video_url))
+    forget_supplied_material(post_id)
     # create_carousel_content flags a slide-render failure as ERROR so it gets a manual fix; resetting
     # that to PENDING would hide a deck carrying the PREVIOUS draft's slides behind a normal-looking
     # review row (the missing-asset gate reads those stale slides as present).
@@ -2326,7 +2362,8 @@ def evaluate_post_gates(post_id: int, content: str, post_type: Union[PostType, s
                         fact_anchors: Optional[list] = None,
                         author_edited: bool = False,
                         cta_keyword: Optional[str] = None,
-                        extra_fact_sources: Optional[list] = None) -> list[dict]:
+                        extra_fact_sources: Optional[list] = None,
+                        previously_unverified: Optional[list] = None) -> list[dict]:
     """Run the quality gates over a FINISHED post and return their structured findings (issue #421).
 
     One evaluator for both callers: the content-plan status-setter (which knows the freshly persisted
@@ -2392,12 +2429,18 @@ def evaluate_post_gates(post_id: int, content: str, post_type: Union[PostType, s
     # the author's own numbers are verified by definition and only unfilled placeholders can still
     # hold the post — otherwise filling them in could never clear it. `extra_fact_sources` is the
     # material the writer was actually given (profile brief, research, CTA, story directive).
+    # `previously_unverified` (issue #1971) narrows the author's credit: a re-score cannot tell an
+    # edit from a bare click, so a figure the LAST grade already named as unbacked and the author
+    # left untouched stays held — only the numbers they changed or added are theirs.
     if content and _grades_fact_grounding(archetype):
         anchors = list(fact_anchors or []) + [s for s in (extra_fact_sources or []) if s]
         if profile_synthesis:
             anchors.append(str(profile_synthesis))
         report = fact_grounding_report(content, anchors)
-        unverified = [] if author_edited else report["unverified_values"]
+        unverified = report["unverified_values"]
+        if author_edited:
+            still_there = {str(v) for v in (previously_unverified or [])}
+            unverified = [v for v in unverified if v in still_there]
         if unverified or report["placeholders"]:
             findings.append(fact_grounding_finding(unverified, report["placeholders"]))
 
@@ -2628,9 +2671,13 @@ def rescore_post(post_id: int) -> dict:
         recent_texts=get_recent_post_texts(user_id, exclude_post_id=post_id),
         user_profile=user_profile, profile_synthesis=profile_synthesis,
         # Re-runs the no-fabrication guard against the EDITED text, so filling the placeholders in
-        # with real numbers is what clears the hold.
+        # with real numbers is what clears the hold — but a figure the last grade named as unbacked
+        # and the author left in place stays held (issue #1971): Re-score without an edit is not
+        # an approval.
         archetype=archetype, fact_anchors=_fact_anchors_for(user_id, archetype),
-        author_edited=True, cta_keyword=_cta_keyword_for(user_id, post_id))
+        author_edited=True, cta_keyword=_cta_keyword_for(user_id, post_id),
+        extra_fact_sources=_post_material_sources(user_id, post_id, profile_synthesis),
+        previously_unverified=_recorded_unbacked_specifics(post_id))
     _persist_gate_findings(user_id, post_id, findings)
 
     passed = not demoting_findings(findings)
@@ -2961,14 +3008,16 @@ def _review_generated_post(ctx: PostDraftContext, content: str, recent_texts: li
         log_warning(f"Post still states first-person specifics not in the story bank after repair "
                     f"({', '.join(still_fabricated)}); keeping the repaired draft",
                     user_id=user_id, post_id=post_id, task_name="create_text_post")
+    # INFO, not WARNING: a gate holding a draft for review is the expected outcome of this path
+    # (every post is graded since #1971), and the status-setter already warns once per held post.
     if second_fact_report is not None and second_fact_report["unverified"]:
-        log_warning("Post still states unverified specifics after repair — the fact-grounding gate "
-                    "will hold it for review",
-                    user_id=user_id, post_id=post_id, task_name="create_text_post")
+        log_info("Post still states unverified specifics after repair — the fact-grounding gate "
+                 "will hold it for review",
+                 user_id=user_id, post_id=post_id, task_name="create_text_post")
     if second_forbidden:
-        log_warning("Post still attaches a figure to a forbidden-claim subject after repair — the "
-                    "forbidden-claim gate will hold it for review",
-                    user_id=user_id, post_id=post_id, task_name="create_text_post")
+        log_info("Post still attaches a figure to a forbidden-claim subject after repair — the "
+                 "forbidden-claim gate will hold it for review",
+                 user_id=user_id, post_id=post_id, task_name="create_text_post")
     if not second_slop["passes"]:
         log_warning("Post still trips the AI-slop lint after repair — the ai_slop gate will hold it "
                     "for review: " + "; ".join(violation_reasons(second_slop["hard"])),
@@ -3279,6 +3328,8 @@ def _draft_from_source(ctx: PostDraftContext) -> Tuple[Optional[str], bool]:
             log_info("No blog post found for this user. Generating another post type")
             return None, False
         process_selected_post(blog_post_url, blog_post_content)
+        # The user's own article is the source every number in this draft may come from (#1971).
+        record_supplied_material(ctx.post_id, blog_post_content)
         return get_blog_summary_post_from_ai(blog_post_url, blog_post_content, ctx.user_profile,
                                              ctx.stage, **steering), True
 
@@ -3288,7 +3339,7 @@ def _draft_from_source(ctx: PostDraftContext) -> Tuple[Optional[str], bool]:
             log_info("No sitemap found for this user. Generating another post type")
             return None, False
         content = generate_website_content_post(sitemap_url, ctx.user_profile, ctx.stage,
-                                                **steering)
+                                                post_id=ctx.post_id, **steering)
         if not content:
             log_info("No relevant content found in the sitemap. Generating another post type")
             return None, False
@@ -3749,7 +3800,8 @@ def process_selected_post(url, content):
 def generate_website_content_post(sitemap_url, linked_user_profile, stage: str, prefs: dict = None,
                                   profile_synthesis: Optional[str] = None, blueprint: dict = None,
                                   lead_magnet_cta: str = None, history_directive: str = None,
-                                  story_directive: str = None, content_mix: str = None):
+                                  story_directive: str = None, content_mix: str = None,
+                                  post_id: Optional[int] = None):
     """Generate a post based on content found on the user's website using their sitemap url catered to readers in the desired buyers journey stage.
     Scrapes or retrieves key points from the website's sitemap.
     """
@@ -3775,6 +3827,8 @@ def generate_website_content_post(sitemap_url, linked_user_profile, stage: str, 
                 relevant_urls.remove(selected_url)
                 attempts -= 1
         if content is not None:
+            # The user's own page is the source every number in this draft may come from (#1971).
+            record_supplied_material(post_id, content)
             # 4. Generate a social media post based on the extracted content
             social_media_post = get_website_content_post_from_ai(content, selected_url, linked_user_profile, stage,
                                                                  prefs=prefs, profile_synthesis=profile_synthesis,

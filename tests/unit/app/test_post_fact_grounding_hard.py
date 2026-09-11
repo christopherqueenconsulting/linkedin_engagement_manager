@@ -80,7 +80,8 @@ class TestGroundedNumbersStillShip:
         assert _gates(_LIVE_POSTS["throughput"], fact_anchors=anchors) == []
 
     def test_a_number_from_the_research_actually_supplied_passes(self):
-        research = "Industry survey: AI inference costs fell 30% in Q2 2026; routing adopters report 20% faster time-to-value."
+        research = ("Industry survey: AI inference costs fell 30% in Q2 2026; routing adopters "
+                    "report 20% faster time-to-value.")
         assert _gates(_LIVE_POSTS["inference"], extra_fact_sources=[research]) == []
 
     def test_a_number_from_the_profile_brief_passes(self):
@@ -116,7 +117,7 @@ class TestForbiddenClaims:
 
     def test_the_term_list_is_parsed_and_normalised(self, monkeypatch):
         monkeypatch.setenv("FORBIDDEN_CLAIM_TERMS", " Complexity   Router ;; lem-router ; ")
-        assert sb.forbidden_claim_terms() == ["complexity router", "lem-router"]
+        assert sb.forbidden_claim_terms() == ["complexity router", "lem router"]
         assert sb.forbidden_claims("Our complexity router saved 12 hours.") == ["complexity router"]
         assert sb.forbidden_claims("Our complexity router saved 12 hours.", terms=[]) == []
         assert sb.forbidden_claims(None, terms=["router"]) == []
@@ -128,6 +129,70 @@ class TestForbiddenClaims:
     def test_a_year_or_list_numbering_is_not_a_figure(self):
         draft = "The complexity router shipped in 2026.\n\n1. Route\n2. Measure\n3. Repeat"
         assert sb.forbidden_claims(draft, ["complexity router"]) == []
+
+    def test_a_term_matches_whole_words_only_with_punctuation_folded(self):
+        # "ai" must never match "said"; "cost per call" must match the hyphenated spelling.
+        assert sb.forbidden_claims("I said we shipped 3 things.", ["ai"]) == []
+        assert sb.forbidden_claims("The problem cost us 3 days.", ["lem"]) == []
+        assert sb.forbidden_claims("≈45% lower cost-per-call on the router.", ["cost per call"]) \
+            == ["cost per call"]
+        assert sb.forbidden_claims("Our AI router saved 12 hours.", ["AI  Router"]) == ["ai router"]
+
+
+class TestReScoreIsNotAnApproval:
+    """An unedited Re-score must not clear a figure the last grade already named as unbacked."""
+
+    def test_an_untouched_unbacked_figure_stays_held_on_re_score(self):
+        findings = _gates(_LIVE_POSTS["router"], author_edited=True,
+                          previously_unverified=["45%"])
+        assert [f["gate"] for f in findings] == [GATE_FACT_GROUNDING]
+        assert findings[0]["details"] == ["Unbacked specific: 45%"]
+
+    def test_a_figure_the_author_changed_or_added_is_credited(self):
+        # The last grade named 45%; the author rewrote that sentence with 40%, so nothing holds.
+        edited = _LIVE_POSTS["router"].replace("≈45%", "40%")
+        assert _gates(edited, author_edited=True, previously_unverified=["45%"]) == []
+        # And with no recorded finding at all, the author is credited with every figure.
+        assert _gates(_LIVE_POSTS["router"], author_edited=True) == []
+
+    def test_the_recorded_unbacked_figures_are_read_off_the_gate_reason(self):
+        from cqc_lem.app import run_content_plan as rcp
+        from cqc_lem.utilities.quality_gates import fact_grounding_finding
+        stored = [fact_grounding_finding(["45%", "350"], []), {"gate": "ai_slop", "details": ["x"]}]
+        with patch(f"{_RCP}.get_post_gate_reason", return_value=stored):
+            assert rcp._recorded_unbacked_specifics(77) == ["45%", "350"]
+        with patch(f"{_RCP}.get_post_gate_reason", side_effect=RuntimeError("db down")), \
+             patch(f"{_RCP}.log_warning") as warn:
+            assert rcp._recorded_unbacked_specifics(77) == []
+        warn.assert_called_once()
+
+    def test_the_re_score_passes_the_recorded_figures_through(self):
+        from cqc_lem.app import run_content_plan as rcp
+        from cqc_lem.utilities.quality_gates import fact_grounding_finding
+        _DB = "cqc_lem.utilities.db"
+        with patch(f"{_DB}.get_post_user_id", return_value=1), \
+             patch(f"{_RCP}.get_post_content", return_value=_LIVE_POSTS["router"]), \
+             patch(f"{_DB}.get_post_type", return_value="text"), \
+             patch(f"{_DB}.get_post_video_url", return_value=None), \
+             patch(f"{_DB}.get_post_status", return_value="pending"), \
+             patch(f"{_RCP}.get_engagement_preferences", return_value={}), \
+             patch(f"{_RCP}.load_profile_for_user", return_value=MagicMock()), \
+             patch(f"{_RCP}.get_or_create_profile_synthesis", return_value="voice"), \
+             patch(f"{_RCP}._score_and_persist_authenticity"), \
+             patch(f"{_RCP}.get_post_authenticity_score", return_value=90), \
+             patch(f"{_RCP}.get_recent_post_texts", return_value=[]), \
+             patch(f"{_RCP}._post_missing_required_asset", return_value=False), \
+             patch(f"{_RCP}._fact_anchors", return_value=[]), \
+             patch(f"{_RCP}._post_material_sources", return_value=[]), \
+             patch(f"{_RCP}.get_post_gate_reason",
+                   return_value=[fact_grounding_finding(["45%"], [])]), \
+             patch(f"{_RCP}.update_db_post_gate_reason") as reason, \
+             patch(f"{_RCP}.update_db_post_status") as status, \
+             patch(f"{_RCP}.get_user_preferences", return_value={"auto_schedule_posts": True}):
+            result = rcp.rescore_post(77)
+        assert result["status"] == "pending"
+        assert [f["gate"] for f in reason.call_args.args[1]] == [GATE_FACT_GROUNDING]
+        status.assert_not_called()
 
     def test_an_unset_list_forbids_nothing(self):
         assert sb.forbidden_claim_terms() == []
@@ -158,9 +223,10 @@ class TestTheReviewGateRepairsBeforeTheHold:
              patch(f"{_RCP}._fact_anchors", return_value=list(anchors)), \
              patch(f"{_RCP}._post_material_sources", return_value=list(material)), \
              patch(f"{_RCP}.get_ai_linked_post_refinement", return_value=repaired) as refine, \
-             patch(f"{_RCP}.log_warning") as warn:
+             patch(f"{_RCP}.log_warning") as warn, \
+             patch(f"{_RCP}.log_info") as info:
             out = rcp._review_generated_post(self._ctx(), draft, ["an earlier post"], story=None)
-        return out, refine, warn
+        return out, refine, (warn, info)
 
     def test_an_ungrounded_number_sends_the_draft_to_the_editor_with_the_finding(self):
         out, refine, _ = self._review(_LIVE_POSTS["throughput"], _NO_NUMBERS)
@@ -170,9 +236,12 @@ class TestTheReviewGateRepairsBeforeTheHold:
         assert any("41" in d for d in findings[0]["details"])
 
     def test_a_repair_that_still_invents_is_kept_for_the_gate_to_hold(self):
-        out, _, warn = self._review(_LIVE_POSTS["throughput"], _LIVE_POSTS["inference"])
+        out, _, (warn, info) = self._review(_LIVE_POSTS["throughput"], _LIVE_POSTS["inference"])
         assert out == _LIVE_POSTS["inference"]
-        assert any("fact-grounding gate will hold it" in c.args[0] for c in warn.call_args_list)
+        # INFO, never WARNING: a gate holding a draft is the expected outcome, and a warning here
+        # would escalate into a filed defect on the third held post of the day.
+        assert any("fact-grounding gate will hold it" in c.args[0] for c in info.call_args_list)
+        assert not any("fact-grounding gate" in c.args[0] for c in warn.call_args_list)
 
     def test_grounded_numbers_never_reach_the_editor(self):
         out, refine, _ = self._review(_LIVE_POSTS["inference"], "unused",
@@ -194,6 +263,61 @@ class TestTheWritersMaterialWidensTheAllowList:
         assert ai_helper.supplied_material_for(77) == "costs fell 30% in Q2"
         ai_helper.forget_supplied_material(77)
         assert ai_helper.supplied_material_for(77) is None
+
+    def test_material_accumulates_per_post(self):
+        ai_helper.record_supplied_material(77, "research block")
+        ai_helper.record_supplied_material(77, "the author's guidance")
+        assert ai_helper.supplied_material_for(77) == "research block\n\nthe author's guidance"
+
+    def test_the_lead_magnet_message_is_a_source_at_the_gate_pass(self):
+        # `ensure_lead_magnet_cta` appends the resource name AFTER the review gate, so the
+        # status-setter's grade would otherwise hold "my 12-point checklist" as invented.
+        from cqc_lem.app import run_content_plan as rcp
+        with patch(f"{_RCP}.get_profile_synthesis", return_value=None), \
+             patch(f"{_RCP}.get_lead_magnet_settings",
+                   return_value={"enabled": True, "keyword": "AUDIT",
+                                 "message": "my 12-point AI readiness checklist"}):
+            assert rcp._post_material_sources(1, 77) == ["my 12-point AI readiness checklist"]
+        with patch(f"{_RCP}.get_profile_synthesis", return_value=None), \
+             patch(f"{_RCP}.get_lead_magnet_settings", side_effect=RuntimeError("db down")), \
+             patch(f"{_RCP}.log_warning") as warn:
+            assert rcp._post_material_sources(1, 77) == []
+        warn.assert_called_once()
+
+    def test_a_blog_summary_records_the_users_own_article(self):
+        from cqc_lem.app import run_content_plan as rcp
+        from cqc_lem.domain.models import PostDraftContext
+        ctx = PostDraftContext(user_id=1, stage="awareness", post_type="blog_summary",
+                               user_profile=MagicMock(), prefs={}, post_id=78)
+        with patch(f"{_RCP}.get_user_blog_url", return_value="https://x.test/blog"), \
+             patch(f"{_RCP}.get_main_blog_url_content",
+                   return_value=("https://x.test/blog/p", "We cut onboarding time 40%.")), \
+             patch(f"{_RCP}.process_selected_post"), \
+             patch(f"{_RCP}.get_blog_summary_post_from_ai", return_value="draft"):
+            assert rcp._draft_from_source(ctx) == ("draft", True)
+        assert ai_helper.supplied_material_for(78) == "We cut onboarding time 40%."
+
+    def test_a_website_post_records_the_selected_page(self):
+        from cqc_lem.app import run_content_plan as rcp
+        with patch(f"{_RCP}.fetch_sitemap_urls", return_value=["https://x.test/a"]), \
+             patch(f"{_RCP}.filter_relevant_urls", return_value=["https://x.test/a"]), \
+             patch(f"{_RCP}.extract_page_content", return_value=("Title", "Latency fell 40%.")), \
+             patch(f"{_RCP}.get_website_content_post_from_ai", return_value="draft"):
+            assert rcp.generate_website_content_post("https://x.test/sitemap.xml", MagicMock(),
+                                                     "awareness", post_id=79) == "draft"
+        assert ai_helper.supplied_material_for(79) == "Latency fell 40%."
+
+    def test_a_regenerates_guidance_is_the_authors_own_material(self):
+        from cqc_lem.app import run_content_plan as rcp
+        with patch(f"{_RCP}.get_engagement_preferences", return_value={}), \
+             patch(f"{_RCP}.get_or_create_profile_synthesis", return_value="voice"), \
+             patch(f"{_RCP}.apply_post_guidance", return_value="We cut latency by 40%."), \
+             patch(f"{_RCP}.get_lead_magnet_settings", return_value={"enabled": False}), \
+             patch(f"{_RCP}.ensure_lead_magnet_cta", side_effect=lambda c, *a, **kw: c):
+            out = rcp._apply_guidance_to_text_post(1, 80, "old draft", MagicMock(),
+                                                   "mention we cut latency by 40%")
+        assert "40%" in out
+        assert ai_helper.supplied_material_for(80) == "mention we cut latency by 40%"
 
     def test_nothing_is_recorded_for_an_unattributed_or_empty_draft(self):
         ai_helper.record_supplied_material(None, "x")

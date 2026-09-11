@@ -233,8 +233,9 @@ def fact_grounding_finding(unverified: Optional[list] = None,
 def forbidden_claim_finding(terms: Optional[list] = None) -> dict:
     """A number attached to a subject the author has forbidden any figure for (issue #1971).
 
-    HARD on every surface and independent of grounding: the subject is on the list precisely
-    because no figure about it can be sourced, so a "grounded" one is still invented.
+    HARD and independent of grounding: the subject is on the list precisely because no figure
+    about it can be sourced, so a "grounded" one is still invented. Built for posts here; the
+    comment contract refuses the same way without a finding.
     """
     hit = [str(t).strip() for t in (terms or []) if str(t).strip()]
     return build_finding(

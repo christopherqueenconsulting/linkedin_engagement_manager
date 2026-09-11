@@ -182,10 +182,20 @@ model made up is held. `FACT_GROUNDING_SEVERITY_POST=warn` restores the pre-#197
 **Forbidden claims** are the other half: `FORBIDDEN_CLAIM_TERMS` (`;`-separated subjects) names
 things the operator has said may never carry a figure — the router that filed the issue meters its
 targets at zero, so ANY cost or latency number about it is invented by construction. A draft that
-names a listed subject anywhere and asserts any numeric claim (`numeric_claims`: years, list
-numbering and version numbers excluded) gets the `forbidden_claim` finding at HARD on every surface,
-grounded or not, and an author's edit does not clear it; a comment is skipped on the #617 budget.
-Global today; the per-user list and its Account UI are #1971's follow-up phase.
+names a listed subject anywhere as whole words (punctuation folded: "cost per call" matches
+"cost-per-call", "ai" never matches "said") and asserts any numeric claim (`numeric_claims`: years,
+list numbering and version numbers excluded) gets the `forbidden_claim` finding at HARD, grounded or
+not, and an author's edit does not clear it. **Gated surfaces today: posts (`evaluate_post_gates`)
+and feed/second-wave comments (`_gated_comment`, skipped on the #617 budget).** The newsletter,
+weekly group post and DM writers go through the slop lint only — not yet covered. Global today; the
+per-user list and its Account UI are #1971's follow-up phase (#2047).
+
+Two more things the allow-list honours so a real figure is never held as invented: the user's own
+**source text** (`_draft_from_source` records the blog post / sitemap page a `blog_summary` /
+`website_content` draft is written from) and a **regenerate's guidance** ("mention we cut latency
+40%" is the author's number). And a **Re-score without an edit is not an approval**: a figure the
+last grade named as unbacked and the author left in place stays held (`_recorded_unbacked_specifics`);
+only the numbers they changed or added are credited to them.
 
 ### Occasion / milestone archetypes (issue #1074)
 

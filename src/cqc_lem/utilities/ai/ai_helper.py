@@ -676,17 +676,25 @@ _SUPPLIED_MATERIAL_MAX = 64
 
 
 def record_supplied_material(post_id: "int | None", material: "str | None") -> None:
-    """Remember the research block handed to this post's writer, for the review gate to read.
+    """Remember material handed to this post's writer, for the review gate to read.
+
+    Appends: a post can be written from several supplied texts (the research block, the blog post
+    it summarises, the author's regenerate guidance), and every one of them is a source a number
+    may legitimately come from.
 
     Args:
         post_id: The post being written; None (an unattributed draft) records nothing.
-        material: The research/analysis text as it went into the prompt; empty records nothing.
+        material: The text as it went into the prompt; empty records nothing.
     """
     if post_id is None or not (material or "").strip():
         return
-    while len(_SUPPLIED_MATERIAL) >= _SUPPLIED_MATERIAL_MAX:
-        _SUPPLIED_MATERIAL.pop(next(iter(_SUPPLIED_MATERIAL)))
-    _SUPPLIED_MATERIAL[int(post_id)] = str(material)
+    key = int(post_id)
+    if key not in _SUPPLIED_MATERIAL:
+        while len(_SUPPLIED_MATERIAL) >= _SUPPLIED_MATERIAL_MAX:
+            _SUPPLIED_MATERIAL.pop(next(iter(_SUPPLIED_MATERIAL)))
+        _SUPPLIED_MATERIAL[key] = str(material)
+        return
+    _SUPPLIED_MATERIAL[key] = _SUPPLIED_MATERIAL[key] + "\n\n" + str(material)
 
 
 def supplied_material_for(post_id: "int | None") -> "str | None":
@@ -828,8 +836,9 @@ def _gated_comment(draft, post_content, recent_comments: list = None,
                                                      user_id=user_id)
                     if checking_specifics else [])
         blocking = invented if severity == _slop.SEVERITY_HARD else []
-        # Forbidden claims (issue #1971) block on EVERY surface regardless of the grounding
-        # severity: the subject is on the list because no figure about it can be sourced.
+        # Forbidden claims (issue #1971) block here regardless of the grounding severity: the
+        # subject is on the list because no figure about it can be sourced. Gated surfaces today:
+        # this comment contract and the post gates — not the newsletter, group-post or DM writers.
         forbidden = _story_bank.forbidden_claims(candidate)
         if invented and not blocking:
             log_debug("Comment states first-person specifics nothing supplied backs "

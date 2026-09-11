@@ -262,16 +262,25 @@ FACT_GROUNDING_SEVERITY_DEFAULT = SEVERITY_WARN
 # subject, however well-grounded the draft looks. A claim can be ungrounded in general AND
 # specifically forbidden for a reason the story bank cannot know — the case that filed the issue was
 # a router whose config meters its targets at zero, so ANY cost or latency figure quoted about it is
-# invented by construction. Checked at HARD on every surface, before grounding is even consulted.
+# invented by construction. Checked at HARD before grounding is even consulted, on the two gated
+# surfaces — posts (`evaluate_post_gates`) and comments (`_gated_comment`); the newsletter,
+# group-post and DM writers are not covered yet.
 #
 # `FORBIDDEN_CLAIM_TERMS` is a `;`-separated list of phrases. A phrase matches a draft when it
-# appears anywhere in it (case-insensitively, whitespace-normalised) AND the draft asserts at least
-# one numeric claim — the term names the SUBJECT, the numbers are the claims being forbidden. The
-# window is the whole draft on purpose: the post that filed the issue named the router in its first
-# sentence and quoted its "≈45% lower cost-per-call" two sentences later, so a same-sentence rule
-# would have waved it through. A wrong match costs one human review, never a publish. Global for
-# now; the per-user list is the follow-up phase of #1971.
+# appears anywhere in it as WHOLE WORDS (case-insensitive, punctuation folded to spaces, so
+# "cost per call" matches "cost-per-call" and "ai" never matches "said") AND the draft asserts at
+# least one numeric claim — the term names the SUBJECT, the numbers are the claims being forbidden.
+# The window is the whole draft on purpose: the post that filed the issue named the router in its
+# first sentence and quoted its "≈45% lower cost-per-call" two sentences later, so a same-sentence
+# rule would have waved it through. A wrong match costs one human review, never a publish. Global
+# for now; the per-user list is the follow-up phase of #1971.
 _FORBIDDEN_TERMS_ENV = "FORBIDDEN_CLAIM_TERMS"
+_FOLD_RE = re.compile(r"[^a-z0-9]+")
+
+
+def _fold(text: str) -> str:
+    """Lower-case with every punctuation/whitespace run folded to ONE space, space-padded."""
+    return " " + _FOLD_RE.sub(" ", str(text or "").lower()).strip() + " "
 
 
 def forbidden_claim_terms() -> list:
@@ -284,7 +293,7 @@ def forbidden_claim_terms() -> list:
     raw = os.environ.get(_FORBIDDEN_TERMS_ENV) or ""
     out = []
     for part in raw.split(";"):
-        term = " ".join(part.split()).strip().lower()
+        term = _fold(part).strip()
         if term and term not in out:
             out.append(term)
     return out
@@ -298,16 +307,16 @@ def forbidden_claims(content: Optional[str], terms: Optional[list] = None) -> li
         terms: The forbidden subjects; `None` reads them from the environment.
 
     Returns:
-        Each matched term once, in configured order — the draft names the subject AND asserts a
-        numeric claim (`content_framework.numeric_claims`: years, list numbering and version
-        numbers are not claims). Empty when nothing is forbidden or nothing matched.
+        Each matched term once, in configured order — the draft names the subject as whole words
+        AND asserts a numeric claim (`content_framework.numeric_claims`: years, list numbering and
+        version numbers are not claims). Empty when nothing is forbidden or nothing matched.
     """
     subjects = forbidden_claim_terms() if terms is None else [
-        " ".join(str(t).split()).strip().lower() for t in terms if str(t).strip()]
+        _fold(t).strip() for t in terms if _fold(t).strip()]
     if not subjects or not content:
         return []
-    low = " ".join(str(content).split()).lower()
-    named = [term for term in subjects if term in low]
+    folded = _fold(content)
+    named = [term for term in subjects if f" {term} " in folded]
     if not named or not numeric_claims(content):
         return []
     return named
