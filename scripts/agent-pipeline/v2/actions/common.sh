@@ -39,7 +39,8 @@ export BASE REPO SLUG OWNER WORKROOT LOGDIR RUNBOOK DRY_RUN
 # PATH not at all. The daemon spawns these actions, so without this line every agent run reached
 # `claude` and got rc=127: budget charged, worktree built, and nothing to show for it. A missing
 # interpreter is not a lane failure, but it looks exactly like one in the outcome log.
-export PATH="/home/lem/.local/bin:/usr/local/bin:/usr/bin:/bin"
+# Linuxbrew goes LAST so it only adds commands (graft, #2039) and never shadows a system one.
+export PATH="/home/lem/.local/bin:/usr/local/bin:/usr/bin:/bin:/home/linuxbrew/.linuxbrew/bin"
 
 mkdir -p "$LOGDIR" "$BASE/locks" "$BASE/state" "$WORKROOT"
 LOG="${LOG:-$LOGDIR/v2-actions-$(date +%Y%m%d).log}"

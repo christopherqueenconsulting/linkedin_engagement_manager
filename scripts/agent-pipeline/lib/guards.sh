@@ -262,6 +262,33 @@ sweep_stale_worktrees() {
   return 0
 }
 
+# graft/ is the local context graph (#2039). It is gitignored, so a fresh worktree has none, and the
+# agent's graft hooks, MCP server and skill have nothing to answer from. Seed it from the main
+# checkout, then let an incremental build re-parse only what this branch changed: ~5s warm against
+# ~35s cold, because graft keys its cache on repo-relative path + content hash and a copy from
+# another checkout replays. Claude Code's own worktrees get the same copy via .worktreeinclude.
+#
+# Every step fails OPEN and writes nothing to stdout — add_worktree's stdout IS its return value,
+# and a context cache must never be the reason a tick cannot build a worktree.
+seed_graft() {  # $1=worktree path -> always 0
+  local wt="$1" src="${REPO:-}/graft"
+  [ -d "$src" ] || return 0
+  command -v graft >/dev/null 2>&1 || return 0
+  # A branch cut before #2039 has no /graft/ ignore rule, so a seeded graph there is 120MB of
+  # untracked files one `git add -A` away from a commit. Skip rather than risk it.
+  git -C "$wt" check-ignore -q graft/ 2>/dev/null || return 0
+  if [ ! -e "$wt/graft" ] && ! cp -a --reflink=auto "$src" "$wt/graft" >/dev/null 2>&1; then
+    rm -rf "$wt/graft"
+    log "seed_graft: copying $src failed; $wt starts without a graph." >&2
+    return 0
+  fi
+  rm -rf "$wt/graft/.cache/session"   # the main checkout's per-session scoring, not this run's
+  # --no-gitignore/--no-ignore: never let the build write .gitignore/.ignore into the agent's tree.
+  timeout 180 graft build "$wt" --no-gitignore --no-ignore >/dev/null 2>&1 \
+    || log "seed_graft: graft build failed in $wt; keeping the copied graph as-is." >&2
+  return 0
+}
+
 add_worktree() {  # $1=branch  $2=base(ref)  -> path on stdout
   local branch="$1" base="$2" wt="$WORKROOT/$1"
   git -C "$REPO" worktree remove --force "$wt" >/dev/null 2>&1 || true
@@ -298,6 +325,7 @@ add_worktree() {  # $1=branch  $2=base(ref)  -> path on stdout
   # Recorded so the EXIT trap can release it on EVERY path, including a crash or a kill. Set here
   # rather than at the nine call sites, for the same reason the worktree guard lives in run_lane().
   TICK_WORKTREE="$wt"
+  seed_graft "$wt"
   echo "$wt"
 }
 

@@ -87,7 +87,8 @@ BUSY_DAYS="${BUSY_DAYS:-}"
 BUSY_MAX_AGENTS="${BUSY_MAX_AGENTS:-1}"
 USAGE_PAUSE_MINUTES="${USAGE_PAUSE_MINUTES:-60}"
 
-export PATH="/home/lem/.local/bin:/usr/local/bin:/usr/bin:/bin"
+# Linuxbrew goes LAST so it only adds commands (graft, #2039) and never shadows a system one.
+export PATH="/home/lem/.local/bin:/usr/local/bin:/usr/bin:/bin:/home/linuxbrew/.linuxbrew/bin"
 # cron supplies no locale, so anything touching non-ASCII text (agent prompts, PR bodies, comment
 # markers) runs under the C locale and mangles it. Set one explicitly.
 export LANG="${LANG:-C.UTF-8}" LC_ALL="${LC_ALL:-C.UTF-8}"
