@@ -33,7 +33,7 @@ from typing import Any, Dict, List, Optional
 
 import requests
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, PrivateAttr, field_validator, model_validator
 
 from cqc_lem.api.models import (
     _LEN_DM_TEMPLATE,
@@ -62,6 +62,7 @@ from cqc_lem.api.response_schemas import (
 from cqc_lem.app.engagement.posting import update_stale_profile
 from cqc_lem.utilities.ai.content_alignment import profile_niche_anchors
 from cqc_lem.utilities.ai.content_framework import GROUP_POST_BEST_PRACTICES
+from cqc_lem.utilities.ai.story_bank import split_forbidden_claim_terms
 from cqc_lem.utilities.auth_factors import (
     METHOD_PASSKEY,
     METHOD_TOTP,
@@ -613,6 +614,14 @@ class EngagementPreferencesRequest(BaseModel):
     focus_topics: List[str] = []
     business_goals: Optional[str] = Field(default=None, max_length=_LEN_GOALS)
     personal_goals: Optional[str] = Field(default=None, max_length=_LEN_GOALS)
+    # Subjects that may never carry a figure in a post or comment (issue #2047). None (omitted by
+    # the client) means "leave what is stored" — like `max_follows_per_day`, NOT the code default,
+    # so an older SPA build that never learned this field cannot wipe a saved list. A list is
+    # bounded by the validator below (≤50 terms of ≤80 chars, tidied; anything it drops is named
+    # in the PUT response); a non-list is the same 422 its sibling list fields raise. The global
+    # FORBIDDEN_CLAIM_TERMS floor applies on top of whatever is stored.
+    forbidden_claim_terms: Optional[List[str]] = None
+    _dropped_forbidden_claim_terms: List[str] = PrivateAttr(default_factory=list)
     # Quality-gate sensitivity (issue #421). None = keep the deploy default.
     authenticity_score_min: Optional[int] = None
     post_similarity_max_pct: Optional[int] = None
@@ -756,6 +765,31 @@ class EngagementPreferencesRequest(BaseModel):
     @classmethod
     def _clean_posting_days(cls, v) -> List[int]:
         return normalize_posting_days(v)
+
+    # After pydantic has proved it a list of strings (a non-list is a 422, exactly like
+    # `include_topics`): the SPA saves every engagement field in one request, so an over-long or
+    # blank SUBJECT is tidied out rather than failing the whole save — and named, see below.
+    @field_validator("forbidden_claim_terms")
+    @classmethod
+    def _clean_forbidden_claim_terms(cls, v: Optional[List[str]]) -> Optional[List[str]]:
+        return None if v is None else split_forbidden_claim_terms(v)[0]
+
+    # The subjects the validator above dropped, kept beside the model so the handler can NAME them
+    # in its response: a term that vanishes from a save without a word is the silent failure the
+    # bounds exist to prevent. `wrap` because only the raw body still holds what was sent.
+    @model_validator(mode="wrap")
+    @classmethod
+    def _note_dropped_forbidden_claim_terms(cls, data: Any, handler: Any) -> "EngagementPreferencesRequest":
+        request = handler(data)
+        raw = data.get("forbidden_claim_terms") if isinstance(data, dict) else None
+        if isinstance(raw, list):
+            request._dropped_forbidden_claim_terms = split_forbidden_claim_terms(raw)[1]
+        return request
+
+    @property
+    def dropped_forbidden_claim_terms(self) -> List[str]:
+        """The forbidden-claim subjects this request sent that will not be stored, as sent."""
+        return list(self._dropped_forbidden_claim_terms)
 
     @field_validator("authenticity_score_min")
     @classmethod
@@ -1934,9 +1968,20 @@ def update_engagement_preferences_endpoint(request: EngagementPreferencesRequest
     # which would overwrite a deliberate 0 and restart an outbound lane the user had switched off.
     if prefs.get("max_follows_per_day") is None:
         prefs.pop("max_follows_per_day", None)
+    # Same rule for the forbidden-claim list (issue #2047): omitted or null is "leave what is
+    # stored", never "store an empty list" — the saved subjects must survive a partial PUT.
+    if prefs.get("forbidden_claim_terms") is None:
+        prefs.pop("forbidden_claim_terms", None)
     if not update_engagement_preferences(user_id, prefs):
         raise HTTPException(status_code=500, detail="Could not update engagement preferences")
-    return ResponseModel(status_code=200, detail="Engagement preferences updated")
+    detail = "Engagement preferences updated"
+    dropped = request.dropped_forbidden_claim_terms
+    if dropped:
+        # Said, not swallowed: a subject that is too short, too long, has no letters, or is past
+        # the cap is not stored, and the caller is told which.
+        detail += (" — these forbidden-claim subjects were not kept (too short, too long, no "
+                   "letters, or past the 50-subject cap): " + ", ".join(dropped))
+    return ResponseModel(status_code=200, detail=detail)
 
 
 @router.get("/newsletter-settings",

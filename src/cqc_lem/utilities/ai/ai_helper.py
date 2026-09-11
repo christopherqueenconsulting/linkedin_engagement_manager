@@ -661,7 +661,7 @@ def generate_ai_response(post_content: Any, profile: LinkedInProfile,
                              user_id=user_id, action_type="comment")
 
     return _gated_comment(_draft, post_content, recent_comments=recent_comments, user_id=user_id,
-                          research_findings=findings, ground_specifics=True)
+                          research_findings=findings, ground_specifics=True, prefs=prefs)
 
 
 # Research material ACTUALLY handed to a post's writer, keyed by post id (issue #1971). The post
@@ -780,7 +780,7 @@ COMMENT_QUALITY_SKIP_LOG_PREFIX = "Comment failed the quality contract after "
 def _gated_comment(draft, post_content, recent_comments: list = None,
                    user_id: int = None, research_findings: str = None,
                    ground_specifics: bool = False,
-                   surface: str = "comment") -> "str | None":
+                   surface: str = "comment", prefs: dict = None) -> "str | None":
     """Run a comment `draft(fix_directive)` callable through the quality contract, the similarity
     gate, the slop lint and (opt-in) the fact-grounding check until it passes, and return None when
     it never does.
@@ -808,6 +808,8 @@ def _gated_comment(draft, post_content, recent_comments: list = None,
         post_content: The target post — the comment's primary grounding, and a grounding source.
         recent_comments: The author's recent comments, for the near-duplicate gate.
         user_id: Log attribution, and whose story bank backs a first-person specific.
+        prefs: The author's engagement preferences, already held by every caller — the
+            forbidden-claim list (issue #2047) is read off them here, never fetched per draft.
         research_findings: The research block actually handed to the writer, if any.
         ground_specifics: Run the #1834 grounding check on this surface.
         surface: The slop-lint surface to grade against — `own_post_comment` for the
@@ -821,6 +823,9 @@ def _gated_comment(draft, post_content, recent_comments: list = None,
     attempts = _framework.comment_gate_max_attempts()
     severity = _story_bank.fact_grounding_severity("comment")
     checking_specifics = ground_specifics and severity != _slop.SEVERITY_OFF
+    # The author's own forbidden subjects (issue #2047) plus the global floor, resolved ONCE per
+    # call from the prefs the caller already holds — no DB read per draft or per attempt.
+    forbidden_terms = _story_bank.effective_forbidden_claim_terms(prefs)
     for attempt in range(1, attempts + 1):
         candidate = draft(fix_directive)
         if candidate is None:
@@ -839,7 +844,7 @@ def _gated_comment(draft, post_content, recent_comments: list = None,
         # Forbidden claims (issue #1971) block here regardless of the grounding severity: the
         # subject is on the list because no figure about it can be sourced. Gated surfaces today:
         # this comment contract and the post gates — not the newsletter, group-post or DM writers.
-        forbidden = _story_bank.forbidden_claims(candidate)
+        forbidden = _story_bank.forbidden_claims(candidate, forbidden_terms)
         if invented and not blocking:
             log_debug("Comment states first-person specifics nothing supplied backs "
                       f"({', '.join(invented)}) — recorded, not blocking at severity {severity}",
@@ -1489,7 +1494,7 @@ def generate_second_wave_comment(post_content, profile: "LinkedInProfile", prefs
                               profile_synthesis=profile_synthesis, prefs=prefs)
 
     return _gated_comment(_draft, post_content, recent_comments=recent_comments,
-                          user_id=user_id, surface=_OWN_POST_COMMENT)
+                          user_id=user_id, surface=_OWN_POST_COMMENT, prefs=prefs)
 
 
 def generate_thread_reply(post_content: str, comment_text: str, profile: "LinkedInProfile",

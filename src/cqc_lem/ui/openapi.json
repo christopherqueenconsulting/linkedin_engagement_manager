@@ -1208,6 +1208,20 @@
             "title": "Focus Topics",
             "type": "array"
           },
+          "forbidden_claim_terms": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Forbidden Claim Terms"
+          },
           "gate_defaults": {
             "$ref": "#/components/schemas/GateDefaults"
           },
@@ -1442,6 +1456,7 @@
           "focus_topics",
           "business_goals",
           "personal_goals",
+          "forbidden_claim_terms",
           "authenticity_score_min",
           "post_similarity_max_pct",
           "min_reactions",
@@ -1623,6 +1638,20 @@
             },
             "title": "Focus Topics",
             "type": "array"
+          },
+          "forbidden_claim_terms": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Forbidden Claim Terms"
           },
           "hold_repaired_posts_for_review": {
             "default": true,

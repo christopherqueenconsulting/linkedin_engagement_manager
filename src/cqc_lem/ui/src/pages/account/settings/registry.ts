@@ -150,6 +150,12 @@ export const SETTINGS: SettingDescriptor[] = [
     what: 'When no post matches your include filters, comment on the best posts in your feed instead.',
     why: 'Without it, a sparse day produces zero comments. Excludes, recency and min-reactions still apply.',
     recommended: 'On. It only does anything once you have set an include filter.' }),
+  // Issue #2047: the per-user half of the forbidden-claim gate. Not a feed filter — it grades what
+  // LEM WRITES (posts and comments), so it sits behind Advanced rather than among the six filters.
+  D({ key: 'forbidden_claim_terms', section: 'targeting', label: 'Never attach a number to…', advanced: true,
+    what: 'Subjects that may never carry a figure in a post or comment (e.g. a product whose cost you cannot measure).',
+    why: 'A draft that names one of these AND states any number is held for your review (posts) or skipped (comments), however well-sourced the number looks — the subject is here because no figure about it can be trusted.',
+    recommended: 'Leave empty unless you have been burned. Up to 50 subjects, 80 characters each; matched as whole words, so "cost per call" also catches "cost-per-call".' }),
 
   // ── How Much & How Often ───────────────────────────────────────────────────────────────────
   D({ key: 'max_comments_per_day', section: 'volume', label: 'Comments per day',
