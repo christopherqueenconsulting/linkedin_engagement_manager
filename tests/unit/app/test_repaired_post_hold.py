@@ -52,7 +52,11 @@ def _review(verdicts, repaired=_REPAIRED):
          patch(f"{_RCP}.mark_post_gate_demoted") as marked, \
          patch(f"{_RCP}.humanize_text", side_effect=lambda text, **_: text), \
          patch(f"{_RCP}._check_post_alignment", return_value=True), \
+         patch(f"{_RCP}._fact_anchors", return_value=[_DRAFT, _REPAIRED]), \
+         patch(f"{_RCP}._post_material_sources", return_value=[]), \
          repair as refine:
+        # The drafts' numbers are GROUNDED here (issue #1971 grades every post's numbers), so the
+        # only findings under test are the ones each case sets up.
         out = rcp._review_generated_post(_ctx(), _DRAFT, ["an earlier post"], story=None)
     return out, refine, marked
 
@@ -130,6 +134,8 @@ class TestTheRepairIsTheEditorNotTheWriter:
              patch(f"{_RCP}.mark_post_gate_demoted") as marked, \
              patch(f"{_RCP}.humanize_text", side_effect=lambda text, **_: text), \
              patch(f"{_RCP}._check_post_alignment", return_value=True), \
+             patch(f"{_RCP}._fact_anchors", return_value=[_DRAFT, _REPAIRED]), \
+             patch(f"{_RCP}._post_material_sources", return_value=[]), \
              patch(f"{_RCP}.get_ai_linked_post_refinement", return_value=_REPAIRED) as refine:
             out = rcp._review_generated_post(_ctx(), _DRAFT, ["an earlier post"], story=None)
         assert out == _REPAIRED

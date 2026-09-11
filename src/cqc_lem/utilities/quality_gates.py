@@ -23,6 +23,7 @@ GATE_FACT_GROUNDING = "fact_grounding"
 GATE_SLOP = "ai_slop"
 GATE_SLIDE_SLOP = "slide_ai_slop"
 GATE_AFFILIATE_PROMO = "affiliate_promo"
+GATE_FORBIDDEN_CLAIM = "forbidden_claim"
 # The two review-gate checks that had no finding shape until the repair pass needed one (issue
 # #1134). Both are built ONLY by `_review_generated_post`, never by `evaluate_post_gates` — they
 # describe why a draft was sent to the editor for repair, so nothing holds a post on them, and both
@@ -42,6 +43,7 @@ GATE_LABELS = {
     GATE_SLOP: "AI-slop patterns",
     GATE_SLIDE_SLOP: "AI-slop patterns on the slides",
     GATE_AFFILIATE_PROMO: "Affiliate promotion",
+    GATE_FORBIDDEN_CLAIM: "Forbidden claim",
     GATE_PERSONAL_PROOF: "Missing personal proof",
     GATE_FABRICATION: "Unsourced personal specifics",
 }
@@ -204,9 +206,9 @@ def meeting_cta_finding(phrases: Optional[list] = None) -> dict:
 
 def fact_grounding_finding(unverified: Optional[list] = None,
                            placeholders: Optional[list] = None) -> dict:
-    """No-fabrication guard for the save-targeted archetypes (issue #619 / G4). Two shapes, both
-    holding the post: a draft that stated specifics nothing verifies (it made them up), and a draft
-    that honestly deferred them to placeholders the author still has to fill in.
+    """No-fabrication guard (issue #619 / G4, every post since #1971). Two shapes, both holding
+    the post: a draft that stated specifics nothing verifies (it made them up), and a draft that
+    honestly deferred them to placeholders the author still has to fill in.
     """
     made_up = [str(u).strip() for u in (unverified or []) if str(u).strip()]
     to_fill = [str(p).strip() for p in (placeholders or []) if str(p).strip()]
@@ -214,10 +216,11 @@ def fact_grounding_finding(unverified: Optional[list] = None,
         return build_finding(
             GATE_FACT_GROUNDING,
             explanation=(f"This draft states {len(made_up)} specific(s) that no verified fact backs "
-                         f"— on a build receipt or resource list those numbers ARE the post, so an "
-                         f"invented one is the fastest way to lose the audience's trust."),
-            remediation=("Replace each one with the real figure, or delete it. Adding the project to "
-                         "your story bank lets future drafts use these numbers automatically."),
+                         f"— it publishes under your name, so a number nothing sources is the "
+                         f"fastest way to lose the audience's trust."),
+            remediation=("Replace each one with the real figure and its source, or delete it. Adding "
+                         "the project to your story bank lets future drafts use these numbers "
+                         "automatically."),
             details=[f"Unbacked specific: {m}" for m in made_up[:10]])
     return build_finding(
         GATE_FACT_GROUNDING,
@@ -225,6 +228,24 @@ def fact_grounding_finding(unverified: Optional[list] = None,
                      f"It deliberately did not invent them, so it is held until you fill them in."),
         remediation="Edit the post, replace each [[...]] placeholder with the real detail, and re-score it.",
         details=[f"Fill in: {p}" for p in to_fill[:10]])
+
+
+def forbidden_claim_finding(terms: Optional[list] = None) -> dict:
+    """A number attached to a subject the author has forbidden any figure for (issue #1971).
+
+    HARD and independent of grounding: the subject is on the list precisely because no figure
+    about it can be sourced, so a "grounded" one is still invented. Built for posts here; the
+    comment contract refuses the same way without a finding.
+    """
+    hit = [str(t).strip() for t in (terms or []) if str(t).strip()]
+    return build_finding(
+        GATE_FORBIDDEN_CLAIM,
+        explanation=(f"This draft attaches a number to {len(hit)} subject(s) on your forbidden-claim "
+                     f"list — figures you have said must never be published about them."),
+        remediation=("Remove the number from every sentence that names the subject, or drop the "
+                     "sentence. Edit FORBIDDEN_CLAIM_TERMS if the subject no longer belongs on the "
+                     "list."),
+        details=[f"Forbidden subject with a figure: {t}" for t in hit[:10]])
 
 
 def slop_finding(hard_reasons: Optional[list] = None,

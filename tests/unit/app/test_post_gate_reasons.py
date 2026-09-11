@@ -23,6 +23,9 @@ class TestEvaluatePostGates:
         from cqc_lem.app import run_content_plan as rcp
         kwargs.setdefault("post_type", "text")
         kwargs.setdefault("content", _POST)
+        # Every post's numbers are graded since issue #1971; `_POST`'s 38% is grounded here so the
+        # gate each test targets is the only one that can fire.
+        kwargs.setdefault("fact_anchors", [_POST])
         with patch(f"{_RCP}._post_missing_required_asset",
                    return_value=kwargs.pop("missing_asset", False)):
             return rcp.evaluate_post_gates(42, kwargs.pop("content"), kwargs.pop("post_type"),
@@ -114,6 +117,8 @@ class TestStatusSetterRecordsTheReason:
              patch(f"{_RCP}.get_user_preferences",
                    return_value={"auto_schedule_posts": auto_schedule}), \
              patch(f"{_RCP}._post_missing_required_asset", return_value=missing_asset), \
+             patch(f"{_RCP}._fact_anchors", return_value=[_POST]), \
+             patch(f"{_RCP}._post_material_sources", return_value=[]), \
              patch(f"{_RCP}.get_post_authenticity_score", return_value=authenticity_score):
             rcp.auto_create_weekly_content(user_id=1)
         return status, reason
@@ -185,6 +190,8 @@ class TestStatusSetterRecordsTheReason:
              patch(f"{_RCP}.get_engagement_preferences", return_value={}), \
              patch(f"{_RCP}.get_user_preferences", return_value={"auto_schedule_posts": True}), \
              patch(f"{_RCP}._post_missing_required_asset", return_value=False), \
+             patch(f"{_RCP}._fact_anchors", return_value=[_POST]), \
+             patch(f"{_RCP}._post_material_sources", return_value=[]), \
              patch(f"{_RCP}.get_post_authenticity_score", return_value=95):
             rcp.auto_create_weekly_content(user_id=1)
         status.assert_called_once_with(42, PostStatus.APPROVED)

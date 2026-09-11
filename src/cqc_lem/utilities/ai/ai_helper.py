@@ -664,6 +664,52 @@ def generate_ai_response(post_content: Any, profile: LinkedInProfile,
                           research_findings=findings, ground_specifics=True)
 
 
+# Research material ACTUALLY handed to a post's writer, keyed by post id (issue #1971). The post
+# review gate grades every number in a draft against what the writer was given, and the research
+# block is the one source it could not see: `get_industry_trend_analysis_based_on_user_profile`
+# returns it to the generator, which folds it into the prompt and returns only the draft. Recording
+# it here is what lets a stat the research supplied pass while an invented one is held — without
+# it every industry figure would read as fabricated. Bounded and process-local: the review runs in
+# the same Celery task as the draft, and the status-setter forgets the entry once the gates ran.
+_SUPPLIED_MATERIAL: dict = {}
+_SUPPLIED_MATERIAL_MAX = 64
+
+
+def record_supplied_material(post_id: "int | None", material: "str | None") -> None:
+    """Remember material handed to this post's writer, for the review gate to read.
+
+    Appends: a post can be written from several supplied texts (the research block, the blog post
+    it summarises, the author's regenerate guidance), and every one of them is a source a number
+    may legitimately come from.
+
+    Args:
+        post_id: The post being written; None (an unattributed draft) records nothing.
+        material: The text as it went into the prompt; empty records nothing.
+    """
+    if post_id is None or not (material or "").strip():
+        return
+    key = int(post_id)
+    if key not in _SUPPLIED_MATERIAL:
+        while len(_SUPPLIED_MATERIAL) >= _SUPPLIED_MATERIAL_MAX:
+            _SUPPLIED_MATERIAL.pop(next(iter(_SUPPLIED_MATERIAL)))
+        _SUPPLIED_MATERIAL[key] = str(material)
+        return
+    _SUPPLIED_MATERIAL[key] = _SUPPLIED_MATERIAL[key] + "\n\n" + str(material)
+
+
+def supplied_material_for(post_id: "int | None") -> "str | None":
+    """The research block recorded for this post, or None when nothing was supplied."""
+    if post_id is None:
+        return None
+    return _SUPPLIED_MATERIAL.get(int(post_id))
+
+
+def forget_supplied_material(post_id: "int | None") -> None:
+    """Drop this post's recorded research once its gates have run."""
+    if post_id is not None:
+        _SUPPLIED_MATERIAL.pop(int(post_id), None)
+
+
 def _story_bank_sources(user_id: "int | None") -> list:
     """Read the user's story bank as an allow-list of specifics they really have (issue #620).
 
@@ -790,11 +836,16 @@ def _gated_comment(draft, post_content, recent_comments: list = None,
                                                      user_id=user_id)
                     if checking_specifics else [])
         blocking = invented if severity == _slop.SEVERITY_HARD else []
+        # Forbidden claims (issue #1971) block here regardless of the grounding severity: the
+        # subject is on the list because no figure about it can be sourced. Gated surfaces today:
+        # this comment contract and the post gates — not the newsletter, group-post or DM writers.
+        forbidden = _story_bank.forbidden_claims(candidate)
         if invented and not blocking:
             log_debug("Comment states first-person specifics nothing supplied backs "
                       f"({', '.join(invented)}) — recorded, not blocking at severity {severity}",
                       user_id=user_id, action_type="comment")
-        if report["passes"] and not similar["too_similar"] and slop["passes"] and not blocking:
+        if (report["passes"] and not similar["too_similar"] and slop["passes"] and not blocking
+                and not forbidden):
             return candidate
         failures = list(report["failures"])
         if blocking:
@@ -802,6 +853,10 @@ def _gated_comment(draft, post_content, recent_comments: list = None,
                 "states first-person specifics that appear in neither the post, the research "
                 f"provided, nor the author's own material ({', '.join(blocking)}) — drop the "
                 "invented numbers rather than rephrasing them")
+        if forbidden:
+            failures.append(
+                "attaches a figure to a subject the author has forbidden any number for "
+                f"({', '.join(forbidden)}) — remove the number from every sentence naming it")
         if similar["too_similar"]:
             failures.append(f"near-duplicate of a recent comment ({similar['measure']} similarity "
                             f"{similar['score']:.2f} > max {similar['threshold']:.2f})")
@@ -2461,6 +2516,7 @@ def get_industry_trend_analysis_based_on_user_profile(linked_in_profile: LinkedI
                               blueprint={"format": "industry_observation"},
                               prefs=prefs)
     if research.get("findings"):
+        record_supplied_material(sequence_index, research["findings"])
         return {
             'industry': industry.strip(),
             'analysis': research["findings"],
@@ -2487,6 +2543,7 @@ def get_industry_trend_analysis_based_on_user_profile(linked_in_profile: LinkedI
 
     # Get the trend analysis of the industry (scoped to the anchored focus topic when present)
     trend_analysis = get_industry_trend_from_ai(focus_topic or industry, articles)
+    record_supplied_material(sequence_index, trend_analysis)
 
     return {
         'industry': industry.strip(),
