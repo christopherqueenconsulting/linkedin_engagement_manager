@@ -392,6 +392,24 @@ def get_orphaned_scheduled_dms(lookback_hours: int = 2) -> list:
     except mysql.connector.Error as err:
         log_error("Could not get orphaned scheduled DMs", exc=err)
         return []
+# The audit readers (issue #1968) are the ONE cross-user, unpaged read of an outbound body. Every
+# other reader here is scoped to a user or a status because it serves a queue; these serve
+# `scripts/audit_outbound_drafts.py`, which grades every stored body against the send-path gate.
+_AUDIT_COLS = ("id", "user_id", "message", "status", "source")
+def list_scheduled_dms_for_audit() -> Optional[list]:
+    """Every `scheduled_dms` row across all users, as dicts of `id/user_id/message/status/source`.
+
+    Returns None — not an empty list — when the read failed. An audit that reads an empty table
+    as "nothing tripped" is the silent-fault shape issue #1968 exists to remove, so the caller
+    must be able to tell "no rows" from "could not look".
+    """
+    try:
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(f"SELECT {', '.join(_AUDIT_COLS)} FROM scheduled_dms ORDER BY id ASC")
+            return cursor.fetchall() or []
+    except mysql.connector.Error as err:
+        log_error("Could not list scheduled DMs for audit", exc=err)
+        return None
 def update_scheduled_dm_status(dm_id: int, status: "ScheduledDmStatus") -> bool:
     """Move a queued DM's status.
 
@@ -548,6 +566,20 @@ def get_orphaned_connection_requests(lookback_hours: int = 2) -> list:
     except mysql.connector.Error as err:
         log_error("Could not get orphaned connection requests", exc=err)
         return []
+def list_connection_requests_for_audit() -> Optional[list]:
+    """Every `connection_requests` row across all users, as `id/user_id/message/status/source`.
+
+    Same contract as `list_scheduled_dms_for_audit`: None means the read failed, never "no
+    rows". `message` is the invite note and is NULLABLE — an invite sent bare has no body to grade,
+    which is the caller's distinction to make, not this reader's.
+    """
+    try:
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(f"SELECT {', '.join(_AUDIT_COLS)} FROM connection_requests ORDER BY id ASC")
+            return cursor.fetchall() or []
+    except mysql.connector.Error as err:
+        log_error("Could not list connection requests for audit", exc=err)
+        return None
 def update_connection_request_status(request_id: int, status: "ConnectionRequestStatus",
                                      failure_reason: str = None) -> bool:
     """Move a request to `status`. `failure_reason` records WHY a send failed (issue #623) — it is

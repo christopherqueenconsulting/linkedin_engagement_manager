@@ -169,3 +169,43 @@ class TestNurtureSourceDb:
     def test_nurture_default_template_exists(self):
         from cqc_lem.utilities.db import _DM_DEFAULT_TEMPLATES
         assert "{first_name}" in _DM_DEFAULT_TEMPLATES["nurture"]
+
+
+class TestAuditReaders:
+    """The two cross-user readers behind `scripts/audit_outbound_drafts.py` (issue #1968).
+
+    Their one contract that matters: a read FAULT is None, never an empty list — an audit that
+    read an empty table as "nothing tripped" is the silent-fault shape the issue exists to remove.
+    """
+
+    def test_scheduled_dms_reader_returns_every_row_with_the_audit_columns(self, fake_cursor):
+        conn, cur = fake_cursor(fetch_all=[{"id": 1, "user_id": 2, "message": "hi",
+                                            "status": "pending", "source": None}])
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import list_scheduled_dms_for_audit
+            rows = list_scheduled_dms_for_audit()
+        assert rows == [{"id": 1, "user_id": 2, "message": "hi", "status": "pending", "source": None}]
+        sql = cur.execute.call_args[0][0]
+        assert sql.startswith("SELECT id, user_id, message, status, source FROM scheduled_dms")
+        assert "WHERE" not in sql  # every user, every status
+
+    def test_connection_requests_reader_returns_every_row_with_the_audit_columns(self, fake_cursor):
+        conn, cur = fake_cursor(fetch_all=[{"id": 9, "user_id": 2, "message": None,
+                                            "status": "sent", "source": "profile_viewer"}])
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import list_connection_requests_for_audit
+            rows = list_connection_requests_for_audit()
+        assert rows[0]["message"] is None  # a bare invite's NULL note reaches the caller as NULL
+        sql = cur.execute.call_args[0][0]
+        assert sql.startswith("SELECT id, user_id, message, status, source FROM connection_requests")
+        assert "WHERE" not in sql
+
+    @pytest.mark.parametrize("reader_name", ["list_scheduled_dms_for_audit",
+                                             "list_connection_requests_for_audit"])
+    def test_a_read_fault_is_none_never_an_empty_list(self, fake_cursor, reader_name):
+        import mysql.connector
+        conn, cur = fake_cursor(lastrowid=7)
+        cur.execute.side_effect = mysql.connector.Error(msg="db down")
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+            from cqc_lem.utilities import db
+            assert getattr(db, reader_name)() is None
