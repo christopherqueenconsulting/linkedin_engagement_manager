@@ -7,7 +7,7 @@ const base = (over: Partial<EngPrefs> = {}): EngPrefs => ({
   tone: null, comment_length: 'medium', comment_style: null, use_emojis: true, use_hashtags: false,
   include_topics: [], exclude_topics: [], include_keywords: [], exclude_keywords: [],
   include_authors: [], exclude_authors: [], post_types: [], default_buyer_stage: null,
-  focus_topics: [], business_goals: null, personal_goals: null,
+  focus_topics: [], business_goals: null, personal_goals: null, forbidden_claim_terms: [],
   authenticity_score_min: null, post_similarity_max_pct: null,
   min_reactions: null, max_post_age_hours: 24, reply_to_own_comments: true,
   max_comments_per_day: 20, max_dms_per_day: 20, max_invites_per_day: 10,

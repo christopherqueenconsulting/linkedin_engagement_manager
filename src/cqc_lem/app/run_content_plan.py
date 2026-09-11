@@ -2446,9 +2446,12 @@ def evaluate_post_gates(post_id: int, content: str, post_type: Union[PostType, s
 
     # Forbidden claims (issue #1971): a figure attached to a subject the author has ruled out is
     # held on every surface, whoever wrote the sentence — the subject is on the list because no
-    # number about it can be sourced, so an author's edit does not clear it either.
+    # number about it can be sourced, so an author's edit does not clear it either. The list is
+    # the user's own (`engagement_prefs.forbidden_claim_terms`, issue #2047) PLUS the global floor.
     if content:
-        forbidden = _story_bank.forbidden_claims(content)
+        forbidden = _story_bank.forbidden_claims(
+            content, terms=_story_bank.effective_forbidden_claim_terms(
+                prefs.get("forbidden_claim_terms")))
         if forbidden:
             findings.append(forbidden_claim_finding(forbidden))
 
@@ -2920,8 +2923,11 @@ def _review_generated_post(ctx: PostDraftContext, content: str, recent_texts: li
     fact_report = fact_grounding_report(content, anchors) if grading_facts else None
     unverified = bool(fact_report and fact_report["unverified"])
     # Forbidden claims (issue #1971): a figure attached to a subject the author has ruled out,
-    # HARD regardless of grounding.
-    forbidden = _story_bank.forbidden_claims(content)
+    # HARD regardless of grounding. The user's own list (issue #2047) plus the global floor,
+    # resolved ONCE for both the draft and its repair.
+    forbidden_terms = _story_bank.effective_forbidden_claim_terms(
+        (prefs or {}).get("forbidden_claim_terms"))
+    forbidden = _story_bank.forbidden_claims(content, terms=forbidden_terms)
     # Deterministic slop lint (issue #625 / D1) — one regeneration here, then the `ai_slop` gate
     # holds whatever still trips it. Only HARD violations are worth a retry; the warn-severity
     # signals (burstiness, rule-of-three) are advisory and reported by the gate.
@@ -2980,7 +2986,7 @@ def _review_generated_post(ctx: PostDraftContext, content: str, recent_texts: li
     second_similarity = post_similarity_report(second, recent_texts, prefs)
     still_fabricated = _fabricated_specifics(second, story, profile_synthesis, lead_magnet_cta)
     second_fact_report = fact_grounding_report(second, anchors) if fact_report is not None else None
-    second_forbidden = _story_bank.forbidden_claims(second)
+    second_forbidden = _story_bank.forbidden_claims(second, terms=forbidden_terms)
     second_slop = slop_lint_report(second, "post", exempt_keyword=cta_keyword)
     # Recorded BEFORE the similarity verdict is merged in: this write replaces the column, and
     # `_record_post_similarity_finding` is what owns the similarity half of it. An empty list is

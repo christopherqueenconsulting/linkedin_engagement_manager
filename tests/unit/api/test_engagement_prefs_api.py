@@ -131,6 +131,55 @@ class TestUpdateEngagementPreferences:
         assert upd.call_args[0][1]["tone"] == long_tone
 
 
+class TestForbiddenClaimTermsBounds:
+    """Issue #2047: the per-user forbidden-claim list is bounded at the boundary, and a bad value
+    is tidied out rather than 422-ing the whole settings save (the SPA writes every field at once).
+    """
+
+    def _put(self, api_client, body):
+        with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
+             patch("cqc_lem.api.routers.user.update_engagement_preferences", return_value=True) as upd:
+            resp = api_client.put("/api/user/engagement-preferences",
+                                  json={"session_token": _SESSION, **body})
+        assert resp.status_code == 200
+        return upd.call_args[0][1]["forbidden_claim_terms"]
+
+    def test_passes_a_tidy_list_through(self, api_client):
+        assert self._put(api_client, {"forbidden_claim_terms": ["complexity router", "LEM router"]}) \
+            == ["complexity router", "LEM router"]
+
+    def test_defaults_to_an_empty_list_when_omitted(self, api_client):
+        assert self._put(api_client, {}) == []
+
+    def test_normalises_whitespace_drops_empties_and_duplicates(self, api_client):
+        assert self._put(api_client, {"forbidden_claim_terms": [
+            "  complexity   router ", "", "   ", "Complexity-Router", "lem router"]}) \
+            == ["complexity router", "lem router"]
+
+    def test_caps_the_list_length(self, api_client):
+        from cqc_lem.utilities.ai.story_bank import FORBIDDEN_CLAIM_TERMS_MAX
+        terms = [f"subject {i}" for i in range(FORBIDDEN_CLAIM_TERMS_MAX + 10)]
+        assert len(self._put(api_client, {"forbidden_claim_terms": terms})) == FORBIDDEN_CLAIM_TERMS_MAX
+
+    def test_drops_an_over_long_term_without_failing_the_save(self, api_client):
+        from cqc_lem.utilities.ai.story_bank import FORBIDDEN_CLAIM_TERM_MAX_LEN
+        too_long = "x" * (FORBIDDEN_CLAIM_TERM_MAX_LEN + 1)
+        assert self._put(api_client, {"forbidden_claim_terms": [too_long, "router"]}) == ["router"]
+
+    def test_a_malformed_value_is_an_empty_list_not_a_422(self, api_client):
+        assert self._put(api_client, {"forbidden_claim_terms": "complexity router"}) == []
+        assert self._put(api_client, {"forbidden_claim_terms": None}) == []
+
+    def test_the_get_returns_the_saved_list(self, api_client):
+        with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
+             patch("cqc_lem.api.routers.user.has_engagement_preferences", return_value=True), \
+             patch("cqc_lem.api.routers.user.get_engagement_preferences",
+                   return_value={"forbidden_claim_terms": ["complexity router"]}):
+            resp = api_client.get(f"/api/user/engagement-preferences?session_token={_SESSION}")
+        assert resp.status_code == 200
+        assert resp.json()["detail"]["forbidden_claim_terms"] == ["complexity router"]
+
+
 class TestReplyCheckConfig:
     def test_get_includes_reply_inbound_address(self, api_client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \

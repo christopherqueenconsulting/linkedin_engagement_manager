@@ -401,3 +401,157 @@ class TestCommentsRefuseForbiddenClaimsToo:
             out = ai_helper._gated_comment(lambda fix: draft, post, recent_comments=[], user_id=7)
         assert out is None
         assert "forbidden" in warn.call_args.args[0]
+
+
+# The per-user list (issue #2047, phase 2 of #1971): a user's own subjects on top of the global
+# floor, resolved in ONE helper and handed to every gated surface as `terms=`.
+_COMMENT_POST = "Routing by complexity is the cheapest reliability win most teams skip."
+_COMMENT_DRAFT = ("Routing by complexity being the skipped win is the part most cost posts miss. "
+                  "Our complexity router cut the bill 45% the month we switched. "
+                  "What made you finally route?")
+_USER_PREFS = {"forbidden_claim_terms": ["Complexity Router"]}
+
+
+class TestTheEffectiveListIsUserPlusGlobal:
+    def test_the_users_terms_are_added_to_the_global_floor_never_instead_of_it(self, monkeypatch):
+        monkeypatch.setenv("FORBIDDEN_CLAIM_TERMS", "lem router; agent pipeline")
+        assert sb.effective_forbidden_claim_terms(["Complexity Router"]) == [
+            "complexity router", "lem router", "agent pipeline"]
+
+    def test_the_two_lists_are_folded_and_de_duplicated(self, monkeypatch):
+        monkeypatch.setenv("FORBIDDEN_CLAIM_TERMS", "LEM-Router")
+        assert sb.effective_forbidden_claim_terms(["lem router", " Lem   Router ", ""]) == ["lem router"]
+
+    def test_no_user_list_is_exactly_the_global_list(self, monkeypatch):
+        monkeypatch.setenv("FORBIDDEN_CLAIM_TERMS", "lem router")
+        assert sb.effective_forbidden_claim_terms(None) == ["lem router"]
+        assert sb.effective_forbidden_claim_terms("not a list") == ["lem router"]
+        assert sb.effective_forbidden_claim_terms([]) == ["lem router"]
+
+    def test_neither_list_forbids_nothing(self):
+        assert sb.effective_forbidden_claim_terms(None) == []
+        assert sb.effective_forbidden_claim_terms([]) == []
+
+    def test_the_env_is_read_at_call_time(self, monkeypatch):
+        assert sb.effective_forbidden_claim_terms(["x"]) == ["x"]
+        monkeypatch.setenv("FORBIDDEN_CLAIM_TERMS", "y")
+        assert sb.effective_forbidden_claim_terms(["x"]) == ["x", "y"]
+
+
+class TestTheStoredListIsBounded:
+    def test_terms_are_tidied_and_empties_dropped(self):
+        assert sb.normalize_forbidden_claim_terms([" Complexity   Router ", "", "   ", None, 7]) == [
+            "Complexity Router", "7"]
+
+    def test_duplicates_on_the_folded_form_keep_the_first_spelling(self):
+        assert sb.normalize_forbidden_claim_terms(["LEM-Router", "lem router", "Lem  Router"]) == [
+            "LEM-Router"]
+
+    def test_the_list_is_capped(self):
+        terms = [f"subject {i}" for i in range(sb.FORBIDDEN_CLAIM_TERMS_MAX + 5)]
+        out = sb.normalize_forbidden_claim_terms(terms)
+        assert len(out) == sb.FORBIDDEN_CLAIM_TERMS_MAX
+        assert out[0] == "subject 0" and out[-1] == f"subject {sb.FORBIDDEN_CLAIM_TERMS_MAX - 1}"
+
+    def test_an_over_long_term_is_dropped_not_clipped(self):
+        # A clipped subject would never match the text it was meant to catch — silent non-enforcement.
+        long_term = "x" * (sb.FORBIDDEN_CLAIM_TERM_MAX_LEN + 1)
+        edge = "y" * sb.FORBIDDEN_CLAIM_TERM_MAX_LEN
+        assert sb.normalize_forbidden_claim_terms([long_term, edge, "router"]) == [edge, "router"]
+
+    def test_anything_but_a_list_is_an_empty_list(self):
+        assert sb.normalize_forbidden_claim_terms(None) == []
+        assert sb.normalize_forbidden_claim_terms("complexity router") == []
+        assert sb.normalize_forbidden_claim_terms({"a": 1}) == []
+        assert sb.normalize_forbidden_claim_terms(("a", "b")) == ["a", "b"]
+
+
+class TestAUsersOwnListHoldsTheirPostsOnly:
+    def test_a_post_on_a_user_term_is_held_even_when_grounded(self):
+        anchors = [_LIVE_POSTS["router"]]
+        findings = _gates(_LIVE_POSTS["router"], fact_anchors=anchors, engagement_prefs=_USER_PREFS)
+        assert [f["gate"] for f in demoting_findings(findings)] == [GATE_FORBIDDEN_CLAIM]
+        assert "complexity router" in " ".join(findings[0]["details"])
+
+    def test_another_user_without_the_term_is_unaffected(self):
+        anchors = [_LIVE_POSTS["router"]]
+        assert _gates(_LIVE_POSTS["router"], fact_anchors=anchors, engagement_prefs={}) == []
+        assert _gates(_LIVE_POSTS["router"], fact_anchors=anchors,
+                      engagement_prefs={"forbidden_claim_terms": ["agent pipeline"]}) == []
+
+    def test_the_global_floor_still_applies_to_a_user_with_their_own_list(self, monkeypatch):
+        monkeypatch.setenv("FORBIDDEN_CLAIM_TERMS", "complexity router")
+        anchors = [_LIVE_POSTS["router"]]
+        findings = _gates(_LIVE_POSTS["router"], fact_anchors=anchors,
+                          engagement_prefs={"forbidden_claim_terms": ["agent pipeline"]})
+        assert [f["gate"] for f in findings] == [GATE_FORBIDDEN_CLAIM]
+        assert "complexity router" in " ".join(findings[0]["details"])
+
+    def test_a_user_term_that_is_never_given_a_figure_holds_nothing(self):
+        assert _gates("The complexity router is the part I would build first again.",
+                      engagement_prefs=_USER_PREFS) == []
+
+    def test_the_review_gate_reads_the_list_off_the_draft_context(self):
+        from cqc_lem.app import run_content_plan as rcp
+        from cqc_lem.domain.models import PostDraftContext
+        ctx = PostDraftContext(user_id=1, stage="awareness", post_type="thought_leadership",
+                               user_profile=MagicMock(), prefs=_USER_PREFS, profile_synthesis="voice",
+                               blueprint={"format": "personal_lesson"}, post_id=77,
+                               lead_magnet_cta="", story_directive="STORY DIRECTIVE")
+        clear = {"score": 0.2, "threshold": 0.78, "match": "x", "measure": "embedding",
+                 "too_similar": False}
+        with patch(f"{_RCP}.post_similarity_report", return_value=dict(clear)), \
+             patch(f"{_RCP}.get_post_gate_reason", return_value=[]), \
+             patch(f"{_RCP}.update_db_post_gate_reason"), \
+             patch(f"{_RCP}.mark_post_gate_demoted"), \
+             patch(f"{_RCP}.humanize_text", side_effect=lambda text, **_: text), \
+             patch(f"{_RCP}._check_post_alignment", return_value=True), \
+             patch(f"{_RCP}.has_first_person_proof", return_value=True), \
+             patch(f"{_RCP}._fact_anchors", return_value=[_LIVE_POSTS["router"]]), \
+             patch(f"{_RCP}._post_material_sources", return_value=[]), \
+             patch(f"{_RCP}.get_ai_linked_post_refinement", return_value=_NO_NUMBERS) as refine, \
+             patch(f"{_RCP}.log_info"):
+            out = rcp._review_generated_post(ctx, _LIVE_POSTS["router"], ["an earlier post"], story=None)
+        assert out == _NO_NUMBERS
+        assert [f["gate"] for f in refine.call_args.kwargs["repair_findings"]] == [GATE_FORBIDDEN_CLAIM]
+
+
+class TestACommentReadsTheAuthorsList:
+    def _comment(self, prefs, user_id=7):
+        with patch("cqc_lem.utilities.db.get_engagement_preferences",
+                   return_value=prefs) as read, \
+             patch("cqc_lem.utilities.ai.ai_helper.log_warning"):
+            out = ai_helper._gated_comment(lambda fix: _COMMENT_DRAFT, _COMMENT_POST,
+                                           recent_comments=[], user_id=user_id)
+        return out, read
+
+    def test_a_comment_on_the_authors_own_forbidden_subject_is_skipped(self, monkeypatch):
+        monkeypatch.setenv("COMMENT_GATE_MAX_ATTEMPTS", "3")
+        out, read = self._comment(_USER_PREFS)
+        assert out is None
+        # ONE prefs read per call, not one per attempt.
+        read.assert_called_once_with(7)
+
+    def test_another_authors_comment_is_untouched(self, monkeypatch):
+        monkeypatch.setenv("COMMENT_GATE_MAX_ATTEMPTS", "3")
+        out, _ = self._comment({"forbidden_claim_terms": ["agent pipeline"]}, user_id=8)
+        assert out == _COMMENT_DRAFT
+
+    def test_an_unreadable_row_fails_open_to_the_global_list(self, monkeypatch):
+        monkeypatch.setenv("FORBIDDEN_CLAIM_TERMS", "complexity router")
+        with patch("cqc_lem.utilities.db.get_engagement_preferences",
+                   side_effect=RuntimeError("db down")), \
+             patch("cqc_lem.utilities.ai.ai_helper.log_warning") as warn:
+            assert ai_helper._forbidden_claim_terms_for_user(7) == ["complexity router"]
+        assert any("forbidden-claim preference" in c.args[0] for c in warn.call_args_list)
+        monkeypatch.delenv("FORBIDDEN_CLAIM_TERMS")
+        with patch("cqc_lem.utilities.db.get_engagement_preferences",
+                   side_effect=RuntimeError("db down")), \
+             patch("cqc_lem.utilities.ai.ai_helper.log_warning"):
+            assert ai_helper._forbidden_claim_terms_for_user(7) == []
+
+    def test_an_unattributed_caller_reads_no_row(self, monkeypatch):
+        monkeypatch.setenv("FORBIDDEN_CLAIM_TERMS", "complexity router")
+        with patch("cqc_lem.utilities.db.get_engagement_preferences") as read:
+            assert ai_helper._forbidden_claim_terms_for_user(None) == ["complexity router"]
+        read.assert_not_called()

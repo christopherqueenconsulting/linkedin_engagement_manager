@@ -272,15 +272,55 @@ FACT_GROUNDING_SEVERITY_DEFAULT = SEVERITY_WARN
 # least one numeric claim — the term names the SUBJECT, the numbers are the claims being forbidden.
 # The window is the whole draft on purpose: the post that filed the issue named the router in its
 # first sentence and quoted its "≈45% lower cost-per-call" two sentences later, so a same-sentence
-# rule would have waved it through. A wrong match costs one human review, never a publish. Global
-# for now; the per-user list is the follow-up phase of #1971.
+# rule would have waved it through. A wrong match costs one human review, never a publish.
+#
+# Two lists, ONE effective list (issue #2047): the env variable is the global FLOOR every user gets,
+# and `engagement_preferences.forbidden_claim_terms` is the user's own. `effective_forbidden_claim_terms`
+# is the only place they meet — the user's terms PLUS the global ones, never instead of — so a
+# per-user list can widen what is forbidden and can never narrow it.
 _FORBIDDEN_TERMS_ENV = "FORBIDDEN_CLAIM_TERMS"
 _FOLD_RE = re.compile(r"[^a-z0-9]+")
+# Bounds on the per-user list, enforced at the API boundary AND in the repository upsert (the V52
+# lesson: the engagement row is ONE upsert, so a single bad value rolls back every section). 50
+# subjects is far past any real list; 80 chars holds a product name plus a qualifier.
+FORBIDDEN_CLAIM_TERMS_MAX = 50
+FORBIDDEN_CLAIM_TERM_MAX_LEN = 80
 
 
 def _fold(text: str) -> str:
     """Lower-case with every punctuation/whitespace run folded to ONE space, space-padded."""
     return " " + _FOLD_RE.sub(" ", str(text or "").lower()).strip() + " "
+
+
+def normalize_forbidden_claim_terms(values: Optional[list]) -> list:
+    """The per-user forbidden-claim list as it is STORED — bounded, tidy, and never a surprise.
+
+    Args:
+        values: What the client or caller handed over. Anything that is not a list is treated as
+            an empty one, so a malformed value can never fail the whole settings save.
+
+    Returns:
+        Each term whitespace-normalised (runs collapsed to one space, ends trimmed) in the order
+        given, with empties dropped, terms over `FORBIDDEN_CLAIM_TERM_MAX_LEN` dropped (a clipped
+        subject would never match the text it was meant to catch), duplicates on the folded form
+        dropped (the first spelling wins), and the list cut at `FORBIDDEN_CLAIM_TERMS_MAX`.
+    """
+    if not isinstance(values, (list, tuple)):
+        return []
+    out: list = []
+    seen: set = set()
+    for value in values:
+        if value is None:
+            continue
+        term = " ".join(str(value).split())
+        key = _fold(term).strip()
+        if not key or len(term) > FORBIDDEN_CLAIM_TERM_MAX_LEN or key in seen:
+            continue
+        seen.add(key)
+        out.append(term)
+        if len(out) >= FORBIDDEN_CLAIM_TERMS_MAX:
+            break
+    return out
 
 
 def forbidden_claim_terms() -> list:
@@ -294,6 +334,29 @@ def forbidden_claim_terms() -> list:
     out = []
     for part in raw.split(";"):
         term = _fold(part).strip()
+        if term and term not in out:
+            out.append(term)
+    return out
+
+
+def effective_forbidden_claim_terms(user_terms: Optional[list] = None) -> list:
+    """The ONE list a draft is checked against: the user's own subjects PLUS the global floor.
+
+    The env list is read here, at call time, so an ops change lands without a restart, and it is
+    always included — a user's list widens what is forbidden and can never narrow it.
+
+    Args:
+        user_terms: The user's `forbidden_claim_terms` preference, as stored. `None` or anything
+            that is not a list means the user has none.
+
+    Returns:
+        The user's terms first, then the global ones, each folded (lower-cased, punctuation and
+        whitespace runs collapsed) and listed once. Empty forbids nothing.
+    """
+    out: list = []
+    candidates = list(user_terms) if isinstance(user_terms, (list, tuple)) else []
+    for raw in candidates + forbidden_claim_terms():
+        term = _fold(raw).strip()
         if term and term not in out:
             out.append(term)
     return out

@@ -2133,6 +2133,9 @@ _ENGAGEMENT_DEFAULTS: dict = {
     "include_topics": [], "exclude_topics": [], "include_keywords": [], "exclude_keywords": [],
     "include_authors": [], "exclude_authors": [], "post_types": [],
     "focus_topics": [], "business_goals": None, "personal_goals": None,
+    # Subjects that may never carry a figure in this user's posts or comments (issue #2047). The
+    # global FORBIDDEN_CLAIM_TERMS floor applies on top of this list, never instead of it.
+    "forbidden_claim_terms": [],
     # Quality-gate thresholds (issue #421). None = follow the deploy default
     # (AUTHENTICITY_SCORE_MIN / POST_SIMILARITY_MAX), so the gates behave exactly as before until
     # the user tunes them.
@@ -2192,7 +2195,7 @@ _ENGAGEMENT_DEFAULTS: dict = {
 _ENGAGEMENT_JSON_FIELDS = ("include_topics", "exclude_topics", "include_keywords",
                            "exclude_keywords", "include_authors", "exclude_authors", "post_types",
                            "focus_topics", "connection_target_authors", "catchup_event_types",
-                           "posting_days")
+                           "posting_days", "forbidden_claim_terms")
 _ENGAGEMENT_BOOL_FIELDS = ("use_emojis", "use_hashtags", "reply_to_own_comments",
                            "feed_fallback_when_empty", "link_in_first_comment",
                            "text_post_images", "roster_auto_follow", "roster_auto_connect",
@@ -2216,7 +2219,7 @@ _ENGAGEMENT_COLS = ("tone", "comment_length", "comment_style", "use_emojis", "us
                     "max_catchup_touches_per_contact_days", "posts_per_week", "posting_days",
                     "text_post_images", "roster_auto_follow", "max_follows_per_day",
                     "roster_auto_connect", "hold_repaired_posts_for_review",
-                    "profile_viewer_dm_auto_send")
+                    "profile_viewer_dm_auto_send", "forbidden_claim_terms")
 VALID_REPLY_MODES = ("event", "scheduled", "off")
 # Approval posture for the proactive connect flow (issue #398 owner review).
 VALID_CONNECTION_REQUEST_MODES = ("auto_approve", "pre_review")
@@ -2389,6 +2392,12 @@ def update_engagement_preferences(user_id: int, prefs: dict) -> bool:
         merged.get("authenticity_score_min"), *AUTHENTICITY_SCORE_MIN_BOUNDS)
     merged["post_similarity_max_pct"] = clamp_threshold(
         merged.get("post_similarity_max_pct"), *SIMILARITY_MAX_PCT_BOUNDS)
+    # The per-user forbidden-claim list (issue #2047): bounded here as well as at the API, because
+    # this one upsert writes every column and a caller that bypasses the router (or a client that
+    # predates the bound) must not be able to roll the whole save back or store an unbounded blob.
+    from cqc_lem.utilities.ai.story_bank import normalize_forbidden_claim_terms
+    merged["forbidden_claim_terms"] = normalize_forbidden_claim_terms(
+        merged.get("forbidden_claim_terms"))
     if merged.get("catchup_touch_mode") not in VALID_CATCHUP_TOUCH_MODES:
         merged["catchup_touch_mode"] = "pre_review"
     if merged.get("catchup_message_source") not in VALID_CATCHUP_MESSAGE_SOURCES:

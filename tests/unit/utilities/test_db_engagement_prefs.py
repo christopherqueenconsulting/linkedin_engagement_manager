@@ -82,6 +82,58 @@ class TestUpdateEngagementPreferences:
         assert "5 calls/mo" in params and "thought leader" in params
 
 
+class TestForbiddenClaimTerms:
+    """Issue #2047: the per-user forbidden-claim list is one more JSON list column, bounded in the
+    upsert itself — the row is ONE upsert (the V52 lesson), so a caller that bypasses the API must
+    not be able to store an unbounded blob or roll every other section back.
+    """
+
+    def _saved(self, fake_cursor, prefs, stored=None):
+        conn, cursor = fake_cursor(fetch_one=stored, rowcount=1)
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn), \
+             patch("cqc_lem.platform.db.repositories.users.max_catchup_touches_allowed", return_value=5):
+            from cqc_lem.utilities.db import _ENGAGEMENT_COLS, update_engagement_preferences
+            assert update_engagement_preferences(3, prefs) is True
+        return dict(zip(_ENGAGEMENT_COLS, cursor.execute.call_args[0][1][1:]))
+
+    def test_defaults_to_an_empty_list(self, fake_cursor):
+        conn, _ = fake_cursor(fetch_one=None)
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import get_engagement_preferences
+            assert get_engagement_preferences(1)["forbidden_claim_terms"] == []
+
+    def test_a_null_column_reads_as_an_empty_list_and_a_saved_one_decodes(self, fake_cursor):
+        from cqc_lem.utilities.db import get_engagement_preferences
+        conn, _ = fake_cursor(fetch_one={"forbidden_claim_terms": None})
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+            assert get_engagement_preferences(1)["forbidden_claim_terms"] == []
+        conn, _ = fake_cursor(fetch_one={"forbidden_claim_terms": json.dumps(["complexity router"])})
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+            assert get_engagement_preferences(1)["forbidden_claim_terms"] == ["complexity router"]
+
+    def test_the_upsert_json_encodes_the_tidied_list(self, fake_cursor):
+        saved = self._saved(fake_cursor, {"forbidden_claim_terms": [
+            "  complexity   router ", "", "Complexity-Router", "lem router"]})
+        assert saved["forbidden_claim_terms"] == json.dumps(["complexity router", "lem router"])
+
+    def test_the_upsert_bounds_the_list_itself(self, fake_cursor):
+        from cqc_lem.utilities.ai.story_bank import FORBIDDEN_CLAIM_TERM_MAX_LEN, FORBIDDEN_CLAIM_TERMS_MAX
+        terms = ["x" * (FORBIDDEN_CLAIM_TERM_MAX_LEN + 1)] + [
+            f"subject {i}" for i in range(FORBIDDEN_CLAIM_TERMS_MAX + 5)]
+        stored = json.loads(self._saved(fake_cursor, {"forbidden_claim_terms": terms})["forbidden_claim_terms"])
+        assert len(stored) == FORBIDDEN_CLAIM_TERMS_MAX
+        assert all(len(t) <= FORBIDDEN_CLAIM_TERM_MAX_LEN for t in stored)
+
+    def test_a_malformed_value_stores_an_empty_list_not_a_failure(self, fake_cursor):
+        assert self._saved(fake_cursor, {"forbidden_claim_terms": "complexity router"})[
+            "forbidden_claim_terms"] == "[]"
+
+    def test_a_partial_update_keeps_the_saved_list(self, fake_cursor):
+        saved = self._saved(fake_cursor, {"tone": "blunt"},
+                            stored={"forbidden_claim_terms": '["complexity router"]'})
+        assert saved["forbidden_claim_terms"] == json.dumps(["complexity router"])
+
+
 class TestPartialUpdateKeepsTheRest:
     """Issue #639 — the upsert writes EVERY column, so a partial dict must merge over the user's
     SAVED row. Merging over `_ENGAGEMENT_DEFAULTS` let one sparse caller wipe the whole row.
@@ -114,6 +166,7 @@ class TestPartialUpdateKeepsTheRest:
         "roster_auto_follow": 1, "max_follows_per_day": 4, "roster_auto_connect": 1,
         "hold_repaired_posts_for_review": 1,
         "profile_viewer_dm_auto_send": 1,
+        "forbidden_claim_terms": '["complexity router"]',
     }
     # Round-tripped through the upsert, every column persists back exactly as it was stored.
     _EXPECTED = dict(_STORED)

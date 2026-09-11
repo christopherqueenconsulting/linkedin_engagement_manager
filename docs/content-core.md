@@ -179,16 +179,27 @@ status-setter forgets once the gates ran. A stat the research supplied therefore
 model made up is held. `FACT_GROUNDING_SEVERITY_POST=warn` restores the pre-#1971 posture
 (fact-anchored archetypes only) without a deploy.
 
-**Forbidden claims** are the other half: `FORBIDDEN_CLAIM_TERMS` (`;`-separated subjects) names
-things the operator has said may never carry a figure — the router that filed the issue meters its
-targets at zero, so ANY cost or latency number about it is invented by construction. A draft that
-names a listed subject anywhere as whole words (punctuation folded: "cost per call" matches
-"cost-per-call", "ai" never matches "said") and asserts any numeric claim (`numeric_claims`: years,
-list numbering and version numbers excluded) gets the `forbidden_claim` finding at HARD, grounded or
-not, and an author's edit does not clear it. **Gated surfaces today: posts (`evaluate_post_gates`)
-and feed/second-wave comments (`_gated_comment`, skipped on the #617 budget).** The newsletter,
-weekly group post and DM writers go through the slop lint only — not yet covered. Global today; the
-per-user list and its Account UI are #1971's follow-up phase (#2047).
+**Forbidden claims** are the other half: subjects the author has said may never carry a figure —
+the router that filed the issue meters its targets at zero, so ANY cost or latency number about it
+is invented by construction. The list is **per-user PLUS global** (#2047): the user's own
+`engagement_preferences.forbidden_claim_terms` (the "Never attach a number to…" editor under
+Account → Who I Engage → Advanced; a JSON array, ≤50 subjects of ≤80 chars, tidied by
+`story_bank.normalize_forbidden_claim_terms` at the API boundary AND in the repository upsert so
+one bad value can never roll the whole settings save back) on top of the global
+`FORBIDDEN_CLAIM_TERMS` floor (`;`-separated, applies to every user). The ONE place they meet is
+`story_bank.effective_forbidden_claim_terms(user_terms)` — user terms plus the env terms, never
+instead of, folded and de-duplicated, read at call time — and every gated surface passes its
+result as `terms=` to `forbidden_claims`: `evaluate_post_gates` reads it off `engagement_prefs`,
+`_review_generated_post` off `ctx.prefs`, and `_gated_comment` off the author's prefs through
+`ai_helper._forbidden_claim_terms_for_user` (read ONCE per call, failing OPEN to the global
+list when the row is unreadable). A draft that names a listed subject anywhere as whole words
+(punctuation folded: "cost per call" matches "cost-per-call", "ai" never matches "said") and
+asserts any numeric claim (`numeric_claims`: years, list numbering and version numbers excluded)
+gets the `forbidden_claim` finding at HARD, grounded or not, and an author's edit does not clear
+it. One user's list never touches another user's posts. **Gated surfaces today: posts
+(`evaluate_post_gates`) and feed/second-wave comments (`_gated_comment`, skipped on the #617
+budget).** The newsletter, weekly group post and DM writers go through the slop lint only — not
+yet covered.
 
 Two more things the allow-list honours so a real figure is never held as invented: the user's own
 **source text** (`_draft_from_source` records the blog post / sitemap page a `blog_summary` /

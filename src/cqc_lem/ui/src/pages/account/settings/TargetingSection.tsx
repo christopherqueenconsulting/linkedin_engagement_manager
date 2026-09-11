@@ -1,8 +1,9 @@
 import Toggle from '../../../components/Toggle'
+import { maskProps } from '../../../utils/analytics'
 import type { EngPrefs } from '../types'
 import CsvInput from './CsvInput'
 import { useEngagementPrefs } from './engagementPrefsCtx'
-import { Field, SectionCard, inputClass } from './Field'
+import { Advanced, Field, SectionCard, inputClass } from './Field'
 
 const FILTERS: [keyof EngPrefs, string][] = [
   ['include_topics', 'include_topics'],
@@ -95,6 +96,18 @@ export default function TargetingSection() {
         <Toggle on={eng.feed_fallback_when_empty}
           onClick={() => setEng({ feed_fallback_when_empty: !eng.feed_fallback_when_empty })} />
       </Field>
+      <Advanced>
+        {/* Issue #2047: the per-user forbidden-claim list, beside the exclude filters it reads like
+            but graded on what LEM WRITES, not on which posts it reads. Masked from session replay
+            like every other free-text content editor (docs/posthog-advanced-surface.md): a subject
+            the user cannot put a number to is exactly the kind of detail a replay must not carry. */}
+        <Field settingKey="forbidden_claim_terms">
+          <CsvInput value={eng.forbidden_claim_terms as string[]}
+            onChange={(values) => setEng({ forbidden_claim_terms: values } as Partial<EngPrefs>)}
+            placeholder="comma, separated, subjects"
+            {...maskProps(inputClass)} />
+        </Field>
+      </Advanced>
     </SectionCard>
   )
 }

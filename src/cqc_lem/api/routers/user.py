@@ -62,6 +62,7 @@ from cqc_lem.api.response_schemas import (
 from cqc_lem.app.engagement.posting import update_stale_profile
 from cqc_lem.utilities.ai.content_alignment import profile_niche_anchors
 from cqc_lem.utilities.ai.content_framework import GROUP_POST_BEST_PRACTICES
+from cqc_lem.utilities.ai.story_bank import normalize_forbidden_claim_terms
 from cqc_lem.utilities.auth_factors import (
     METHOD_PASSKEY,
     METHOD_TOTP,
@@ -613,6 +614,10 @@ class EngagementPreferencesRequest(BaseModel):
     focus_topics: List[str] = []
     business_goals: Optional[str] = Field(default=None, max_length=_LEN_GOALS)
     personal_goals: Optional[str] = Field(default=None, max_length=_LEN_GOALS)
+    # Subjects that may never carry a figure in a post or comment (issue #2047). Bounded by the
+    # validator below (≤50 terms of ≤80 chars, tidied, never a 422) — the global
+    # FORBIDDEN_CLAIM_TERMS floor applies on top of this list.
+    forbidden_claim_terms: List[str] = []
     # Quality-gate sensitivity (issue #421). None = keep the deploy default.
     authenticity_score_min: Optional[int] = None
     post_similarity_max_pct: Optional[int] = None
@@ -756,6 +761,13 @@ class EngagementPreferencesRequest(BaseModel):
     @classmethod
     def _clean_posting_days(cls, v) -> List[int]:
         return normalize_posting_days(v)
+
+    # mode="before" for the same reason: the SPA saves every engagement field in one request, so
+    # one over-long or blank subject must be tidied out, never 422 the whole save.
+    @field_validator("forbidden_claim_terms", mode="before")
+    @classmethod
+    def _clean_forbidden_claim_terms(cls, v) -> List[str]:
+        return normalize_forbidden_claim_terms(v)
 
     @field_validator("authenticity_score_min")
     @classmethod

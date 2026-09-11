@@ -93,3 +93,33 @@ describe('comma-separated settings fields', () => {
     expect(box('include_topics').value).toBe('ai, ')
   })
 })
+
+// Issue #2047: the per-user forbidden-claim list is the same comma-separated control, parked
+// behind Advanced, and masked from session replay like every other free-text content editor.
+describe('forbidden_claim_terms editor', () => {
+  const openAdvanced = () => fireEvent.click(screen.getByRole('button', { name: /Advanced/ }))
+
+  it('is a CSV box behind the Advanced disclosure that publishes the parsed list', () => {
+    eng = { forbidden_claim_terms: ['complexity router'] }
+    render(<TargetingSection />)
+    expect(screen.queryByTestId('field-forbidden_claim_terms')).toBeNull()
+    openAdvanced()
+    expect(box('forbidden_claim_terms').value).toBe('complexity router')
+    for (const keystroke of ['complexity router,', 'complexity router, ', 'complexity router, lem router']) {
+      fireEvent.change(box('forbidden_claim_terms'), { target: { value: keystroke } })
+      expect(box('forbidden_claim_terms').value).toBe(keystroke)
+    }
+    expect(eng.forbidden_claim_terms).toEqual(['complexity router', 'lem router'])
+    expect(eng.exclude_keywords).toBeUndefined()
+  })
+
+  it('is masked from session replay', () => {
+    render(<TargetingSection />)
+    openAdvanced()
+    const input = box('forbidden_claim_terms')
+    expect(input.getAttribute('data-ph-mask')).toBe('true')
+    expect(input.className).toContain('ph-no-capture')
+    // The other filters describe what LEM READS, not what the user cannot say — unmasked as before.
+    expect(box('exclude_keywords').getAttribute('data-ph-mask')).toBeNull()
+  })
+})
