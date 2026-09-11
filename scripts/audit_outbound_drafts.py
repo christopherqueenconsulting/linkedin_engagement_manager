@@ -37,14 +37,24 @@ whitespace-flattened, URL/email-masked excerpt of the first 80 characters per tr
 
 import argparse
 import json
+import os
 import re
 import sys
 from collections import Counter
 from dataclasses import dataclass, field
 from typing import Callable, Optional, Sequence
 
-from cqc_lem.platform.db.enums import ConnectionRequestStatus, ScheduledDmStatus
-from cqc_lem.utilities.ai.outbound_qa import SURFACE_DM, SURFACE_INVITE_NOTE, outbound_violations
+# Operator CLI, not the app: its documented "no database reachable here" refusal must not file
+# a production error-tracking issue (#1661, see `logger.telemetry_muted`). Set BEFORE cqc_lem is
+# imported — the PostHog Logs handler is built at import time. `LEM_TELEMETRY_MUTED=0` opts in.
+os.environ.setdefault("LEM_TELEMETRY_MUTED", "1")
+
+from cqc_lem.platform.db.enums import ConnectionRequestStatus, ScheduledDmStatus  # noqa: E402
+from cqc_lem.utilities.ai.outbound_qa import (  # noqa: E402
+    SURFACE_DM,
+    SURFACE_INVITE_NOTE,
+    outbound_violations,
+)
 
 TABLE_SCHEDULED_DMS = "scheduled_dms"
 TABLE_CONNECTION_REQUESTS = "connection_requests"
