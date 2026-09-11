@@ -23,9 +23,47 @@ V2_ACTION="park"
 KIND="${1:-}"; NUMBER="${2:-}"; REASON="${3:-unspecified}"; DETAIL="${4:-}"
 [ -n "$KIND" ] && [ -n "$NUMBER" ] || { echo "usage: park.sh <issue|pr> <number> <reason> [detail]" >&2; exit 2; }
 
+# menu_posted_on_thread <issue|pr> <number> -> prints "yes" when a Decision Comment is on the thread,
+# "no" when the thread is readable and carries none, and "" when it could not be read.
+#
+# The SAME body marker `lemd/answers.py` and `v2_owner_answered` key on, by body and not by author:
+# the pipeline has posted under two logins, and a menu from the PAT era is still the question the
+# answer lane reads. Re-read at execution time, exactly as `v2_hold_present` re-reads the labels,
+# because the daemon's snapshot can be minutes old and the one thing this path must never do is
+# post a second menu.
+menu_posted_on_thread() {
+  local kind="$1" n="$2" count
+  count="$(gh "$kind" view "$n" --repo "$SLUG" --json comments --jq '
+    [ (.comments // [])[] | select((.body // "") | test("Human decision needed"; "i")) ] | length' 2>/dev/null)"
+  case "$count" in
+    "") printf '' ;;
+    0)  printf 'no' ;;
+    *)  printf 'yes' ;;
+  esac
+}
+
 # Parking is a REFUSAL to keep working, so it is the one action that does not need permission to
 # proceed — but it still must not spam a thread the owner already holds.
-if v2_hold_present "$KIND" "$NUMBER"; then
+#
+# `human_hold_unasked` (#1736) is the ONE reason for which "already held" is the premise rather than
+# the stop: the item ARRIVED carrying `needs-human` — the triage cron, a hand-filed issue — so no
+# park ever ran and no menu was ever posted, and the hold had no way out. For that reason the early
+# exit inverts: a hold that has since been LIFTED means nobody is waiting on a question, so it is
+# the no-op, and a hold still present goes on to ask. Exactly once, keyed on the THREAD rather than
+# the head-SHA state file, because the thread is the evidence the daemon decided on: a state file
+# left by a menu that never landed would otherwise silence this for ever, and one that reads as
+# fresh would let a second menu through. Unreadable REFUSES — an unreadable thread is never
+# evidence that no menu exists.
+if [ "$REASON" = "human_hold_unasked" ]; then
+  if ! v2_hold_present "$KIND" "$NUMBER"; then
+    log "$KIND #$NUMBER hold lifted since the decision — nothing to ask."; exit 0
+  fi
+  case "$(menu_posted_on_thread "$KIND" "$NUMBER")" in
+    yes) log "$KIND #$NUMBER already carries a Decision Comment — not asking twice."; exit 0 ;;
+    no)  ;;
+    *)   log "$KIND #$NUMBER thread unreadable — refusing to post a menu on it."; exit 0 ;;
+  esac
+elif v2_hold_present "$KIND" "$NUMBER"; then
   log "$KIND #$NUMBER is already held — park is a no-op."; exit 0
 fi
 
@@ -36,7 +74,7 @@ if [ "$KIND" = "pr" ]; then
 fi
 
 KEY="$BASE/state/v2park-$KIND-$NUMBER.sha"
-if [ "$(cat "$KEY" 2>/dev/null)" = "$SHA" ]; then
+if [ "$REASON" != "human_hold_unasked" ] && [ "$(cat "$KEY" 2>/dev/null)" = "$SHA" ]; then
   log "$KIND #$NUMBER already parked at ${SHA:0:8} — not repeating."; exit 0
 fi
 
@@ -71,9 +109,12 @@ fi
 # parks `decide()` raises (#1405): a merged linked PR means the work already shipped and a
 # closed-unmerged one means the approach was turned down, and retrying either is the one thing not
 # to do. An unrecognised reason keeps the retry recommendation, so this can only ever soften.
+# `human_hold_unasked` (#1736) has attempted nothing, so there is nothing to rebase: `A` (as-is)
+# is the honest release, and its detail says so.
 REC="B"
 case "$REASON" in
   work_shipped_needs_close|approach_rejected) REC="C" ;;
+  human_hold_unasked) REC="A" ;;
 esac
 MARK=" ✅ *recommended*"
 A_MARK=""; B_MARK=""; C_MARK=""

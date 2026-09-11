@@ -75,6 +75,24 @@ class Answer:
         return self.verdict in ACTIONABLE
 
 
+@dataclass(frozen=True)
+class Thread:
+    """What ONE read of a held item's comments says, both halves from the same call (#1736).
+
+    `answer` is the owner's newest reply to the latest Decision Comment, exactly as `newest`
+    returns it. `menu_posted` is whether a Decision Comment exists on the thread AT ALL — the fact
+    that tells "held and asked" from "held and never asked". Three-valued on purpose: `None` is an
+    unreadable thread, and an unreadable thread is never evidence that no menu exists.
+    """
+
+    answer: Answer | None = None
+    menu_posted: bool | None = None
+
+
+#: What an unreadable thread reads as: no answer, and NO claim about the menu either way.
+UNREADABLE = Thread(answer=None, menu_posted=None)
+
+
 def verdict_for(body: str) -> str | None:
     """Classify one comment body: `answer` | `directive` | `hold` | `question` | None.
 
@@ -107,16 +125,35 @@ def verdict_for(body: str) -> str | None:
     return shape
 
 
+def _last_decision_index(comments: list[dict[str, Any]]) -> int:
+    """Index of the newest Decision Comment in `comments`, or -1 when there is none."""
+    last_decision = -1
+    for i, c in enumerate(comments):
+        if _DECISION.search(c.get("body") or ""):
+            last_decision = i
+    return last_decision
+
+
+def menu_posted(comments: list[dict[str, Any]]) -> bool:
+    """Does this thread carry a Decision Comment — has a question ever been put to the owner?
+
+    Pure. Recognised by BODY, the same marker `parse` and `common.sh`'s `v2_owner_answered` key
+    on, and deliberately not by author: the pipeline has posted under two logins (the owner's own
+    PAT identity, then the App bot), and a menu the PAT era posted is still the question the answer
+    lane reads. Requiring today's login would read that thread as unasked and post a second menu —
+    the one outcome #1736 names as worse than the silence it fixes. The only misread this shape
+    allows is an owner comment that quotes the phrase, and that fails toward NOT asking.
+    """
+    return _last_decision_index(comments) >= 0
+
+
 def parse(comments: list[dict[str, Any]], owner: str) -> Answer | None:
     """The newest owner reply to the LATEST Decision Comment in a thread, classified.
 
     Pure: `comments` is GitHub's list in chronological order. Returns None when the thread holds no
     Decision Comment, no owner reply after it, or a reply that is not a decision.
     """
-    last_decision = -1
-    for i, c in enumerate(comments):
-        if _DECISION.search(c.get("body") or ""):
-            last_decision = i
+    last_decision = _last_decision_index(comments)
     if last_decision < 0:
         return None
 
@@ -139,17 +176,19 @@ def parse(comments: list[dict[str, Any]], owner: str) -> Answer | None:
     return None
 
 
-def newest(slug: str, kind: str, number: int, owner: str, *,
-           timeout: int = 30) -> Answer | None:
-    """Read one thread and classify the owner's newest reply.
+def read_thread(slug: str, kind: str, number: int, owner: str, *,
+                timeout: int = 30) -> Thread:
+    """Read one thread ONCE: the owner's newest reply, and whether a menu was ever posted.
 
     One API call, made only for items already carrying a hold label — every other observation
-    reaches its decision without it.
+    reaches its decision without it. Both facts come off the same read so #1736's `menu_posted`
+    costs nothing the answer lane was not already paying.
 
     Returns:
-        None both when there is no answer and when the thread could not be read. That collapse is
-        safe here and only here: the consequence of "no answer" is that the item stays parked,
-        which is exactly the right outcome for an unreadable thread.
+        `UNREADABLE` when the thread could not be read: no answer, and `menu_posted=None`. The
+        answer half of that collapse is safe — "no answer" keeps the item parked, which is right
+        for an unreadable thread. The menu half is why this is three-valued: `None` is what stops
+        an unreadable thread being read as "no menu yet" and posting one.
     """
     try:
         facts = github.gh_json(
@@ -158,5 +197,20 @@ def newest(slug: str, kind: str, number: int, owner: str, *,
         ) or {}
     except github.GitHubUnavailable as exc:
         LOG.warning("%s #%s comments unreadable — staying parked: %s", kind, number, exc)
-        return None
-    return parse(list(facts.get("comments") or []), owner)
+        return UNREADABLE
+    comments = list(facts.get("comments") or [])
+    return Thread(answer=parse(comments, owner), menu_posted=menu_posted(comments))
+
+
+def newest(slug: str, kind: str, number: int, owner: str, *,
+           timeout: int = 30) -> Answer | None:
+    """Read one thread and classify the owner's newest reply.
+
+    The answer half of `read_thread`, kept for callers that only want the reply.
+
+    Returns:
+        None both when there is no answer and when the thread could not be read. That collapse is
+        safe here and only here: the consequence of "no answer" is that the item stays parked,
+        which is exactly the right outcome for an unreadable thread.
+    """
+    return read_thread(slug, kind, number, owner, timeout=timeout).answer
