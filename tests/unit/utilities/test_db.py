@@ -446,6 +446,26 @@ class TestGetPostRejectionReason:
 
 @pytest.mark.unit
 class TestSoftDeletePosts:
+    """Both halves of `soft_delete_posts`: WHAT status it writes, and that the reason rides along.
+
+    These were two classes of the same name (#2037). The second shadowed the first, so
+    `test_passes_rejection_reason_to_bulk_update` was defined and never collected — the
+    rejection-reason path went untested for as long as both existed.
+    """
+
+    def test_sets_status_to_rejected(self, mock_database_connection):
+        from cqc_lem.utilities.db import soft_delete_posts
+
+        with patch("cqc_lem.platform.db.repositories.posts.bulk_update_posts") as mock_bulk:
+            mock_bulk.return_value = True
+
+            result = soft_delete_posts([10, 11])
+
+            assert result is True
+            mock_bulk.assert_called_once()
+            _, kwargs = mock_bulk.call_args
+            assert kwargs["status"].value == "rejected"
+
     def test_passes_rejection_reason_to_bulk_update(self, mock_database_connection):
         from cqc_lem.utilities.db import PostStatus, soft_delete_posts
 
@@ -1046,22 +1066,6 @@ class TestBulkUpdatePosts:
         result = bulk_update_posts([1, 2])
 
         assert result is False
-
-
-@pytest.mark.unit
-class TestSoftDeletePosts:
-    def test_sets_status_to_rejected(self, mock_database_connection):
-        from cqc_lem.utilities.db import soft_delete_posts
-
-        with patch("cqc_lem.platform.db.repositories.posts.bulk_update_posts") as mock_bulk:
-            mock_bulk.return_value = True
-
-            result = soft_delete_posts([10, 11])
-
-            assert result is True
-            mock_bulk.assert_called_once()
-            _, kwargs = mock_bulk.call_args
-            assert kwargs["status"].value == "rejected"
 
 
 @pytest.mark.unit
