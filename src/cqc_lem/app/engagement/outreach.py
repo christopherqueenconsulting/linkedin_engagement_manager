@@ -1296,7 +1296,7 @@ def process_user_followups(self, user_id: int, max_per_run: int = 20):
         return "No due follow-ups"
     try:
         # needs_images=True (#1774): this session's own `check_dm_replied` walks
-        # `open_message_thread`'s 6-route ladder, which reads `/messaging/*` — blocked images stop
+        # `open_message_thread`'s 5-route ladder, which reads `/messaging/*` — blocked images stop
         # that surface's fastboot app from ever mounting.
         driver, wait, user_email, my_profile = get_current_profile(user_id=user_id, session_name="Follow-ups",
                                                                     needs_images=True)
