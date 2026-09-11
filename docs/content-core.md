@@ -47,7 +47,8 @@ first-person SENTENCES so a stat quoted from research is not a personal claim. S
 surface (`story_bank.fact_grounding_severity`, overridable with
 `FACT_GROUNDING_SEVERITY_<SURFACE>`): **HARD on comments**, because a comment publishes under the
 user's name with no review step, so the finding joins the #617 fix-list and the post is SKIPPED
-rather than commented on. Posts stay WARN — the #1134 repair loop already runs this check and holds
+rather than commented on. **HARD on posts too, since #1971** — see "Every post's numbers" below;
+the paragraph that follows records the pre-#1971 reasoning. Posts stayed WARN — the #1134 repair loop already ran this check and held
 the draft at PENDING for a human. The bank is read only once a draft has claimed something the post
 and the findings do not cover, so a comment with no numbers costs no query.
 
@@ -156,6 +157,35 @@ regeneration and then holds the post PENDING behind the `fact_grounding` quality
 unfilled placeholders hold it too until the author fills them in (a re-score of human-EDITED
 text treats the author's own numbers as verified, or the hold could never clear). An empty bank
 means every such draft is placeholder-only and approval-gated.
+
+### Every post's numbers (issue #1971)
+
+Three generated posts carrying invented figures — "≈45% lower cost-per-call", "AI inference costs
+dropped 30% in Q2 2026", "41 PRs in a day" — published to the operator's own profile. Two gaps let
+them through: the story-bank check is scoped to FIRST-PERSON sentences (a third-person industry
+claim never matched), and `fact_grounding_report` ran only on the two fact-anchored archetypes.
+The "posts stay WARN because the review gate holds them" premise was false in production: a
+preview queue trains its reviewer to trust it.
+
+Since #1971 `fact_grounding_severity("post")` is **HARD** and it is CONSUMED: `_grades_fact_grounding`
+(`run_content_plan.py`) grades EVERY post's numbers, whatever the archetype, in both the review
+gate (`_review_generated_post` → one editor repair with the numbers named) and the status-setter /
+re-score gate (`evaluate_post_gates` → HELD at PENDING, the `fact_grounding` finding naming each
+number in Content Studio). The allow-list is the story bank PLUS the material the writer was
+actually handed — `_post_material_sources`: the profile brief, the lead-magnet CTA, the story
+directive, and the research block, which `ai_helper.record_supplied_material` records per post
+when `get_industry_trend_analysis_based_on_user_profile` hands it to a generator and the
+status-setter forgets once the gates ran. A stat the research supplied therefore passes; one the
+model made up is held. `FACT_GROUNDING_SEVERITY_POST=warn` restores the pre-#1971 posture
+(fact-anchored archetypes only) without a deploy.
+
+**Forbidden claims** are the other half: `FORBIDDEN_CLAIM_TERMS` (`;`-separated subjects) names
+things the operator has said may never carry a figure — the router that filed the issue meters its
+targets at zero, so ANY cost or latency number about it is invented by construction. A draft that
+names a listed subject anywhere and asserts any numeric claim (`numeric_claims`: years, list
+numbering and version numbers excluded) gets the `forbidden_claim` finding at HARD on every surface,
+grounded or not, and an author's edit does not clear it; a comment is skipped on the #617 budget.
+Global today; the per-user list and its Account UI are #1971's follow-up phase.
 
 ### Occasion / milestone archetypes (issue #1074)
 

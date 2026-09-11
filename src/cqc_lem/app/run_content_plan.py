@@ -50,6 +50,8 @@ from cqc_lem.utilities.ai.ai_helper import (
     get_thought_leadership_post_from_ai,
     get_website_content_post_from_ai,
     optimize_post_hook,
+    supplied_material_for,
+    forget_supplied_material,
 )
 from cqc_lem.utilities.ai.content_alignment import (
     ContentMix,
@@ -87,7 +89,7 @@ from cqc_lem.utilities.ai.content_framework import (
     shape_for_dwell,
     weekly_post_slots,
 )
-from cqc_lem.utilities.ai.slop_lint import lint_report as slop_lint_report, violation_reasons
+from cqc_lem.utilities.ai.slop_lint import SEVERITY_HARD, lint_report as slop_lint_report, violation_reasons
 from cqc_lem.utilities.content_generation_status import (
     ContentGenerationEmptyReason,
     mark_empty,
@@ -124,6 +126,7 @@ from cqc_lem.utilities.db import (
     get_post_ever_gate_demoted,
     get_post_gate_reason,
     get_post_type_counts,
+    get_profile_synthesis,
     get_recent_post_shape_history,
     get_recent_post_texts,
     get_shape_performance,
@@ -192,6 +195,7 @@ from cqc_lem.utilities.quality_gates import (
     fabrication_finding,
     fact_grounding_finding,
     focus_finding,
+    forbidden_claim_finding,
     malformed_asset_finding,
     meeting_cta_finding,
     missing_asset_finding,
@@ -701,11 +705,67 @@ def _fact_anchors(user_id: int) -> list:
     return [source for entry in (entries or []) for source in _story_bank.fact_sources(entry)]
 
 
-def _fact_anchors_for(user_id: int, archetype: Optional[str]) -> list:
-    """The verified facts for the gate pass on THIS post — read only when the post's archetype is
-    actually fact-anchored, so an ordinary post never pays for a story-bank read it cannot use.
+def _post_grounding_is_hard() -> bool:
+    """True when EVERY post's numbers are graded against the user's material (issue #1971).
+
+    Read at call time like every severity knob in the content core: `FACT_GROUNDING_SEVERITY_POST`
+    can put the post surface back to WARN (the pre-#1971 posture, where only the fact-anchored
+    archetypes are graded) without a deploy.
     """
-    return _fact_anchors(user_id) if requires_fact_anchor("post", archetype) else []
+    return _story_bank.fact_grounding_severity("post") == SEVERITY_HARD
+
+
+def _grades_fact_grounding(archetype: Optional[str]) -> bool:
+    """Whether this post's numbers are graded at all.
+
+    Always for a fact-anchored archetype, and for every post while the post surface is HARD.
+    """
+    return requires_fact_anchor("post", archetype) or _post_grounding_is_hard()
+
+
+def _fact_anchors_for(user_id: int, archetype: Optional[str]) -> list:
+    """The verified facts for the gate pass on THIS post.
+
+    Read only when the post is actually graded, so a post that is not never pays for a story-bank
+    read it cannot use.
+    """
+    return _fact_anchors(user_id) if _grades_fact_grounding(archetype) else []
+
+
+def _post_material_sources(user_id: int, post_id: Optional[int],
+                           profile_synthesis: Optional[str] = None,
+                           *extra: Optional[str]) -> list:
+    """The material this post was legitimately written FROM, beyond the story bank (issue #1971).
+
+    The user's own profile brief, the research block actually handed to the writer, and whatever
+    the caller adds (the lead-magnet CTA, the story directive). A number out of any of these is not
+    one the model invented, so they widen the grounding allow-list; nothing here narrows it.
+
+    The profile brief is READ, never created: `get_profile_synthesis` is the stored tuple, and an
+    unreadable one costs the allow-list a source, never the post.
+
+    Args:
+        user_id: Whose profile brief to read when none is given.
+        post_id: The post whose recorded research is read.
+        profile_synthesis: The brief the caller already holds, which skips the read.
+        *extra: Other text the writer was handed (the lead-magnet CTA, the story directive).
+
+    Returns:
+        The non-empty source strings, in a stable order.
+    """
+    sources = [str(s) for s in (profile_synthesis, *extra) if s and str(s).strip()]
+    if not profile_synthesis and user_id:
+        try:
+            stored = get_profile_synthesis(user_id)
+            if stored and stored[0]:
+                sources.append(str(stored[0]))
+        except Exception as e:
+            log_debug("Profile synthesis unreadable for the grounding allow-list", exc=e,
+                      user_id=user_id, post_id=post_id)
+    supplied = supplied_material_for(post_id)
+    if supplied:
+        sources.append(supplied)
+    return sources
 
 
 def _select_post_blueprint(user_id: int, prefer_save_targeted: bool = False,
@@ -2265,7 +2325,8 @@ def evaluate_post_gates(post_id: int, content: str, post_type: Union[PostType, s
                         archetype: Optional[str] = None,
                         fact_anchors: Optional[list] = None,
                         author_edited: bool = False,
-                        cta_keyword: Optional[str] = None) -> list[dict]:
+                        cta_keyword: Optional[str] = None,
+                        extra_fact_sources: Optional[list] = None) -> list[dict]:
     """Run the quality gates over a FINISHED post and return their structured findings (issue #421).
 
     One evaluator for both callers: the content-plan status-setter (which knows the freshly persisted
@@ -2323,17 +2384,30 @@ def evaluate_post_gates(post_id: int, content: str, post_type: Union[PostType, s
             findings.append(similarity_finding(sim["score"], sim["threshold"], sim["match"],
                                                measure=sim["measure"]))
 
-    # No-fabrication guard (issue #619 / G4): only the save-targeted archetypes whose value IS the
-    # specifics. A draft that invented a number is held; so is one that honestly deferred its
-    # numbers to placeholders — those need the author's real figures before it can publish.
-    # `author_edited` marks a re-score of text a HUMAN has since edited: the guard exists to stop
-    # the MODEL inventing specifics, so the author's own numbers are verified by definition and only
-    # unfilled placeholders can still hold the post — otherwise filling them in could never clear it.
-    if content and requires_fact_anchor("post", archetype):
-        report = fact_grounding_report(content, fact_anchors)
+    # No-fabrication guard (issue #619 / G4): the save-targeted archetypes whose value IS the
+    # specifics — and EVERY post while the post surface is HARD (issue #1971). A draft that
+    # invented a number is held; so is one that honestly deferred its numbers to placeholders —
+    # those need the author's real figures before it can publish. `author_edited` marks a re-score
+    # of text a HUMAN has since edited: the guard exists to stop the MODEL inventing specifics, so
+    # the author's own numbers are verified by definition and only unfilled placeholders can still
+    # hold the post — otherwise filling them in could never clear it. `extra_fact_sources` is the
+    # material the writer was actually given (profile brief, research, CTA, story directive).
+    if content and _grades_fact_grounding(archetype):
+        anchors = list(fact_anchors or []) + [s for s in (extra_fact_sources or []) if s]
+        if profile_synthesis:
+            anchors.append(str(profile_synthesis))
+        report = fact_grounding_report(content, anchors)
         unverified = [] if author_edited else report["unverified_values"]
         if unverified or report["placeholders"]:
             findings.append(fact_grounding_finding(unverified, report["placeholders"]))
+
+    # Forbidden claims (issue #1971): a figure attached to a subject the author has ruled out is
+    # held on every surface, whoever wrote the sentence — the subject is on the list because no
+    # number about it can be sourced, so an author's edit does not clear it either.
+    if content:
+        forbidden = _story_bank.forbidden_claims(content)
+        if forbidden:
+            findings.append(forbidden_claim_finding(forbidden))
 
     topics = [str(t).strip() for t in (prefs.get("focus_topics") or []) if str(t).strip()]
     if content and topics:
@@ -2383,7 +2457,11 @@ def _gate_findings_for_post(user_id: int, post_id: int, content: str,
             authenticity_score=score,
             archetype=archetype,
             fact_anchors=_fact_anchors_for(user_id, archetype),
-            cta_keyword=_cta_keyword_for(user_id, post_id)) + similarity
+            cta_keyword=_cta_keyword_for(user_id, post_id),
+            # The writer's own material widens the allow-list (issue #1971); read here rather
+            # than in `evaluate_post_gates` so the re-score endpoint stays free of the registry.
+            extra_fact_sources=_post_material_sources(user_id, post_id)
+            if _grades_fact_grounding(archetype) else None) + similarity
     except Exception as e:
         log_warning("Could not evaluate the quality gates for this post", exc=e,
                     user_id=user_id, post_id=post_id, task_name="create_content")
@@ -2629,7 +2707,8 @@ def _fabricated_specifics(content: str, story: Optional[dict],
 def _review_gate_findings(similarity: Optional[dict], *, proof_missing: bool,
                           fabricated: Optional[list], fact_report: Optional[dict],
                           slop: Optional[dict],
-                          profile_synthesis: Optional[str] = None) -> list[dict]:
+                          profile_synthesis: Optional[str] = None,
+                          forbidden: Optional[list] = None) -> list[dict]:
     """The review gate's deterministic failures as structured findings (issue #1134).
 
     The same vocabulary `evaluate_post_gates` speaks, built from the measurements the review gate
@@ -2644,6 +2723,7 @@ def _review_gate_findings(similarity: Optional[dict], *, proof_missing: bool,
         fact_report: the fact-grounding report, only when it found unverified specifics.
         slop: the slop-lint report, only when a HARD check fired.
         profile_synthesis: the author's voice brief, which the proof finding points the editor at.
+        forbidden: the forbidden-claim subjects the draft attached a figure to (issue #1971).
 
     Returns:
         The findings, in the order the checks are named in the review gate. Empty when the draft
@@ -2660,6 +2740,8 @@ def _review_gate_findings(similarity: Optional[dict], *, proof_missing: bool,
     if fact_report and fact_report.get("unverified"):
         findings.append(fact_grounding_finding(fact_report["unverified_values"],
                                                fact_report.get("placeholders")))
+    if forbidden:
+        findings.append(forbidden_claim_finding(forbidden))
     if slop and not slop.get("passes", True):
         findings.append(slop_finding(violation_reasons(slop["hard"]),
                                      violation_reasons(slop.get("warnings"))))
@@ -2776,21 +2858,31 @@ def _review_generated_post(ctx: PostDraftContext, content: str, recent_texts: li
     proof_regen = missing_proof and _proof_regen_enabled()
     fabricated = _fabricated_specifics(content, story, profile_synthesis, lead_magnet_cta)
     fabrication_regen = bool(fabricated) and _fabrication_regen_enabled()
-    # No-fabrication guard (issue #619 / G4) — only on the archetypes whose value IS the specifics.
-    # Checked against the user's verified story bank (#620 / G5), so a real number out of their own
-    # material passes and only an invented one is flagged. The story-exact check above is the
-    # stricter of the two and stays responsible for first-person specifics.
-    fact_anchored = requires_fact_anchor("post", (blueprint or {}).get("format"))
-    anchors = _fact_anchors(user_id) if fact_anchored else []
-    fact_report = fact_grounding_report(content, anchors) if fact_anchored else None
+    # No-fabrication guard (issue #619 / G4) on the archetypes whose value IS the specifics — and,
+    # since #1971, on EVERY post while the post surface is HARD: a third-person industry figure
+    # publishes under the same byline as a first-person one, and the first-person-only check above
+    # let three invented ones ship. Checked against the user's verified story bank (#620 / G5) plus
+    # the material the writer was actually given (profile brief, research, CTA), so a real number
+    # out of any of it passes and only an invented one is flagged. The story-exact check above is
+    # the stricter of the two and stays responsible for first-person specifics.
+    archetype = (blueprint or {}).get("format")
+    grading_facts = _grades_fact_grounding(archetype)
+    anchors = (_fact_anchors(user_id) + _post_material_sources(
+        user_id, post_id, profile_synthesis, lead_magnet_cta, ctx.story_directive)
+        if grading_facts else [])
+    fact_report = fact_grounding_report(content, anchors) if grading_facts else None
     unverified = bool(fact_report and fact_report["unverified"])
+    # Forbidden claims (issue #1971): a figure attached to a subject the author has ruled out,
+    # HARD regardless of grounding.
+    forbidden = _story_bank.forbidden_claims(content)
     # Deterministic slop lint (issue #625 / D1) — one regeneration here, then the `ai_slop` gate
     # holds whatever still trips it. Only HARD violations are worth a retry; the warn-severity
     # signals (burstiness, rule-of-three) are advisory and reported by the gate.
     slop = slop_lint_report(content, "post", exempt_keyword=cta_keyword)
     slopped = not slop["passes"]
 
-    if not too_similar and not proof_regen and not fabrication_regen and not unverified and not slopped:
+    if (not too_similar and not proof_regen and not fabrication_regen and not unverified
+            and not slopped and not forbidden):
         if missing_proof:
             log_warning("Generated post lacks a concrete first-person lived detail (A2 proof slot)",
                         user_id=user_id, post_id=post_id, task_name="create_text_post")
@@ -2813,6 +2905,8 @@ def _review_generated_post(ctx: PostDraftContext, content: str, recent_texts: li
     if unverified:
         reasons.append("states specifics no verified fact backs ("
                        + ", ".join(fact_report["unverified_values"][:5]) + ")")
+    if forbidden:
+        reasons.append("attaches a figure to a forbidden-claim subject (" + ", ".join(forbidden) + ")")
     if slopped:
         reasons.append("trips the AI-slop lint (" + "; ".join(violation_reasons(slop["hard"])) + ")")
     log_info(f"Post {'; '.join(reasons)} — repairing once with the editor pass")
@@ -2824,7 +2918,7 @@ def _review_generated_post(ctx: PostDraftContext, content: str, recent_texts: li
         similarity if too_similar else None,
         proof_missing=proof_regen, fabricated=fabricated if fabrication_regen else [],
         fact_report=fact_report if unverified else None, slop=slop if slopped else None,
-        profile_synthesis=profile_synthesis)
+        profile_synthesis=profile_synthesis, forbidden=forbidden)
     _persist_gate_findings(user_id, post_id, findings, mark_repaired=True)
 
     second = _repair_draft(ctx, content, findings, cta_keyword, story=story)
@@ -2839,6 +2933,7 @@ def _review_generated_post(ctx: PostDraftContext, content: str, recent_texts: li
     second_similarity = post_similarity_report(second, recent_texts, prefs)
     still_fabricated = _fabricated_specifics(second, story, profile_synthesis, lead_magnet_cta)
     second_fact_report = fact_grounding_report(second, anchors) if fact_report is not None else None
+    second_forbidden = _story_bank.forbidden_claims(second)
     second_slop = slop_lint_report(second, "post", exempt_keyword=cta_keyword)
     # Recorded BEFORE the similarity verdict is merged in: this write replaces the column, and
     # `_record_post_similarity_finding` is what owns the similarity half of it. An empty list is
@@ -2850,7 +2945,7 @@ def _review_generated_post(ctx: PostDraftContext, content: str, recent_texts: li
         proof_missing=not has_first_person_proof(second), fabricated=still_fabricated,
         fact_report=second_fact_report if (second_fact_report or {}).get("unverified") else None,
         slop=second_slop if not second_slop["passes"] else None,
-        profile_synthesis=profile_synthesis), mark_repaired=True)
+        profile_synthesis=profile_synthesis, forbidden=second_forbidden), mark_repaired=True)
     _record_post_similarity_finding(post_id, second_similarity, user_id=user_id)
     if second_similarity["too_similar"]:
         log_warning(f"Post still similar to a recent post after repair "
@@ -2869,6 +2964,10 @@ def _review_generated_post(ctx: PostDraftContext, content: str, recent_texts: li
     if second_fact_report is not None and second_fact_report["unverified"]:
         log_warning("Post still states unverified specifics after repair — the fact-grounding gate "
                     "will hold it for review",
+                    user_id=user_id, post_id=post_id, task_name="create_text_post")
+    if second_forbidden:
+        log_warning("Post still attaches a figure to a forbidden-claim subject after repair — the "
+                    "forbidden-claim gate will hold it for review",
                     user_id=user_id, post_id=post_id, task_name="create_text_post")
     if not second_slop["passes"]:
         log_warning("Post still trips the AI-slop lint after repair — the ai_slop gate will hold it "
@@ -4202,6 +4301,8 @@ def _create_content_for_planned_post(post: dict, prefs: dict) -> bool:
         # review queue can explain the hold and what to do about it. Only downgrades an APPROVED;
         # never upgrades a PENDING, never blocks when unscored.
         gate_findings = _gate_findings_for_post(user_id, post_id, content, post_type, video_url)
+        # The research recorded for the writer (issue #1971) has done its job once the gates ran.
+        forget_supplied_material(post_id)
         held_by = demoting_findings(gate_findings)
         if held_by and auto_schedule:
             log_warning(f"post_id {post_id}: held PENDING for review — "

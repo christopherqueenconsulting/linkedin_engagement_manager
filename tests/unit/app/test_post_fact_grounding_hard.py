@@ -1,0 +1,279 @@
+"""Post-surface fact grounding is HARD (issue #1971).
+
+Three generated posts carrying invented figures published to the operator's own profile: the
+first-person-only detector never fired on a third-person industry claim, and the number gate ran
+only on the two fact-anchored archetypes. These tests pin the new posture — EVERY post's numbers
+are graded against what the writer was actually given, an ungrounded one is repaired once and then
+HELD at PENDING with the number named, a grounded one still ships, a forbidden-claim subject is
+refused regardless of grounding, and a post with no numbers is untouched.
+
+The three live bodies below are paraphrases of the posts that filed the issue, carrying the exact
+figures that went out.
+"""
+
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+from cqc_lem.utilities.ai import ai_helper, story_bank as sb
+from cqc_lem.utilities.quality_gates import GATE_FACT_GROUNDING, GATE_FORBIDDEN_CLAIM, demoting_findings
+
+pytestmark = pytest.mark.unit
+
+_RCP = "cqc_lem.app.run_content_plan"
+
+_LIVE_POSTS = {
+    "router": ("I built a complexity router for LLM calls.\n\nRoute <500-token prompts to a 350M "
+               "model and you get ≈45% lower cost-per-call and <200ms latency. The frontier model "
+               "only sees the hard prompts."),
+    "inference": ("AI inference costs dropped 30% in Q2 2026. Teams that adopted routing saw 20% "
+                  "faster time-to-value.\n\nWhat changed for you this quarter?"),
+    "throughput": ("41 PRs in a day. 369 that month. That is what an agent pipeline does when the "
+                   "gates are real.\n\nWhat would you ship with that throughput?"),
+}
+_EXPECTED_NUMBERS = {"router": ["500", "350", "45%"], "inference": ["30%", "20%"],
+                     "throughput": ["41", "369"]}
+
+_NO_NUMBERS = ("Routing is a product decision, not a model decision.\n\nI learned that the hard way "
+               "when a client's simplest prompts kept landing on the frontier model.")
+
+
+@pytest.fixture(autouse=True)
+def _clean_env(monkeypatch):
+    for name in ("FACT_GROUNDING_SEVERITY", "FACT_GROUNDING_SEVERITY_POST", "FORBIDDEN_CLAIM_TERMS"):
+        monkeypatch.delenv(name, raising=False)
+    ai_helper._SUPPLIED_MATERIAL.clear()
+
+
+def _gates(content, **kwargs):
+    from cqc_lem.app import run_content_plan as rcp
+    kwargs.setdefault("post_type", "text")
+    with patch(f"{_RCP}._post_missing_required_asset", return_value=False):
+        return rcp.evaluate_post_gates(42, content, kwargs.pop("post_type"), **kwargs)
+
+
+class TestTheThreeLivePostsFailTheGate:
+    """The replay the issue's verifier asks for: each body is refused with its numbers named."""
+
+    @pytest.mark.parametrize("key", sorted(_LIVE_POSTS))
+    def test_each_live_post_is_held_with_its_numbers_named(self, key):
+        findings = _gates(_LIVE_POSTS[key], authenticity_score=95)
+        held = [f for f in demoting_findings(findings) if f["gate"] == GATE_FACT_GROUNDING]
+        assert len(held) == 1, findings
+        details = " ".join(held[0]["details"])
+        for number in _EXPECTED_NUMBERS[key]:
+            assert number in details
+
+    def test_a_third_person_industry_claim_is_graded_too(self):
+        # The first-person-only story-bank check never fired on this one; the post surface now does.
+        findings = _gates(_LIVE_POSTS["inference"], authenticity_score=95)
+        assert [f["gate"] for f in demoting_findings(findings)] == [GATE_FACT_GROUNDING]
+
+    def test_the_archetype_no_longer_decides_whether_numbers_are_graded(self):
+        findings = _gates(_LIVE_POSTS["throughput"], archetype="personal_lesson")
+        assert [f["gate"] for f in findings] == [GATE_FACT_GROUNDING]
+
+
+class TestGroundedNumbersStillShip:
+    def test_a_number_the_story_bank_backs_passes(self):
+        anchors = ["Shipped 41 PRs in one day and 369 over the month on the agent pipeline."]
+        assert _gates(_LIVE_POSTS["throughput"], fact_anchors=anchors) == []
+
+    def test_a_number_from_the_research_actually_supplied_passes(self):
+        research = "Industry survey: AI inference costs fell 30% in Q2 2026; routing adopters report 20% faster time-to-value."
+        assert _gates(_LIVE_POSTS["inference"], extra_fact_sources=[research]) == []
+
+    def test_a_number_from_the_profile_brief_passes(self):
+        brief = "Voice brief: 15+ years full-stack; routed 500-token prompts to a 350M model for a 45% saving."
+        assert _gates(_LIVE_POSTS["router"], profile_synthesis=brief) == []
+
+    def test_a_post_with_no_numbers_is_untouched(self):
+        assert _gates(_NO_NUMBERS, authenticity_score=95) == []
+
+    def test_ops_can_put_the_surface_back_to_warn_without_a_deploy(self, monkeypatch):
+        monkeypatch.setenv("FACT_GROUNDING_SEVERITY_POST", "warn")
+        # A non-fact-anchored archetype is then ungraded, exactly the pre-#1971 posture.
+        assert _gates(_LIVE_POSTS["throughput"], archetype="personal_lesson") == []
+
+
+class TestForbiddenClaims:
+    def test_a_figure_on_a_forbidden_subject_is_held_even_when_grounded(self, monkeypatch):
+        monkeypatch.setenv("FORBIDDEN_CLAIM_TERMS", "complexity router; LEM router")
+        anchors = [_LIVE_POSTS["router"]]  # every number grounded — still refused
+        findings = _gates(_LIVE_POSTS["router"], fact_anchors=anchors)
+        assert [f["gate"] for f in demoting_findings(findings)] == [GATE_FORBIDDEN_CLAIM]
+        assert "complexity router" in " ".join(findings[0]["details"])
+
+    def test_an_authors_edit_does_not_clear_a_forbidden_claim(self, monkeypatch):
+        monkeypatch.setenv("FORBIDDEN_CLAIM_TERMS", "complexity router")
+        findings = _gates(_LIVE_POSTS["router"], fact_anchors=[_LIVE_POSTS["router"]],
+                          author_edited=True)
+        assert [f["gate"] for f in findings] == [GATE_FORBIDDEN_CLAIM]
+
+    def test_naming_the_subject_without_a_figure_is_fine(self, monkeypatch):
+        monkeypatch.setenv("FORBIDDEN_CLAIM_TERMS", "complexity router")
+        assert _gates("The complexity router is the part I would build first again.") == []
+
+    def test_the_term_list_is_parsed_and_normalised(self, monkeypatch):
+        monkeypatch.setenv("FORBIDDEN_CLAIM_TERMS", " Complexity   Router ;; lem-router ; ")
+        assert sb.forbidden_claim_terms() == ["complexity router", "lem-router"]
+        assert sb.forbidden_claims("Our complexity router saved 12 hours.") == ["complexity router"]
+        assert sb.forbidden_claims("Our complexity router saved 12 hours.", terms=[]) == []
+        assert sb.forbidden_claims(None, terms=["router"]) == []
+
+    def test_the_subject_and_the_figure_need_not_share_a_sentence(self):
+        # The post that filed the issue: the router is named first, its figures come two sentences on.
+        assert sb.forbidden_claims(_LIVE_POSTS["router"], ["complexity router"]) == ["complexity router"]
+
+    def test_a_year_or_list_numbering_is_not_a_figure(self):
+        draft = "The complexity router shipped in 2026.\n\n1. Route\n2. Measure\n3. Repeat"
+        assert sb.forbidden_claims(draft, ["complexity router"]) == []
+
+    def test_an_unset_list_forbids_nothing(self):
+        assert sb.forbidden_claim_terms() == []
+        assert sb.forbidden_claims(_LIVE_POSTS["router"]) == []
+
+
+class TestTheReviewGateRepairsBeforeTheHold:
+    """At generation time an ungrounded post goes to the editor ONCE with the numbers named."""
+
+    def _ctx(self):
+        from cqc_lem.domain.models import PostDraftContext
+        return PostDraftContext(user_id=1, stage="awareness", post_type="thought_leadership",
+                                user_profile=MagicMock(), prefs={}, profile_synthesis="voice",
+                                blueprint={"format": "personal_lesson"}, post_id=77,
+                                lead_magnet_cta="", story_directive="STORY DIRECTIVE")
+
+    def _review(self, draft, repaired, anchors=(), material=()):
+        from cqc_lem.app import run_content_plan as rcp
+        clear = {"score": 0.2, "threshold": 0.78, "match": "x", "measure": "embedding",
+                 "too_similar": False}
+        with patch(f"{_RCP}.post_similarity_report", return_value=dict(clear)), \
+             patch(f"{_RCP}.get_post_gate_reason", return_value=[]), \
+             patch(f"{_RCP}.update_db_post_gate_reason"), \
+             patch(f"{_RCP}.mark_post_gate_demoted"), \
+             patch(f"{_RCP}.humanize_text", side_effect=lambda text, **_: text), \
+             patch(f"{_RCP}._check_post_alignment", return_value=True), \
+             patch(f"{_RCP}.has_first_person_proof", return_value=True), \
+             patch(f"{_RCP}._fact_anchors", return_value=list(anchors)), \
+             patch(f"{_RCP}._post_material_sources", return_value=list(material)), \
+             patch(f"{_RCP}.get_ai_linked_post_refinement", return_value=repaired) as refine, \
+             patch(f"{_RCP}.log_warning") as warn:
+            out = rcp._review_generated_post(self._ctx(), draft, ["an earlier post"], story=None)
+        return out, refine, warn
+
+    def test_an_ungrounded_number_sends_the_draft_to_the_editor_with_the_finding(self):
+        out, refine, _ = self._review(_LIVE_POSTS["throughput"], _NO_NUMBERS)
+        assert out == _NO_NUMBERS
+        findings = refine.call_args.kwargs["repair_findings"]
+        assert [f["gate"] for f in findings] == [GATE_FACT_GROUNDING]
+        assert any("41" in d for d in findings[0]["details"])
+
+    def test_a_repair_that_still_invents_is_kept_for_the_gate_to_hold(self):
+        out, _, warn = self._review(_LIVE_POSTS["throughput"], _LIVE_POSTS["inference"])
+        assert out == _LIVE_POSTS["inference"]
+        assert any("fact-grounding gate will hold it" in c.args[0] for c in warn.call_args_list)
+
+    def test_grounded_numbers_never_reach_the_editor(self):
+        out, refine, _ = self._review(_LIVE_POSTS["inference"], "unused",
+                                      material=["costs fell 30% in Q2; 20% faster time-to-value"])
+        assert out == _LIVE_POSTS["inference"]
+        refine.assert_not_called()
+
+    def test_a_forbidden_claim_is_a_repair_finding_too(self, monkeypatch):
+        monkeypatch.setenv("FORBIDDEN_CLAIM_TERMS", "agent pipeline")
+        out, refine, _ = self._review(_LIVE_POSTS["throughput"], _NO_NUMBERS,
+                                      anchors=[_LIVE_POSTS["throughput"]])
+        assert out == _NO_NUMBERS
+        assert [f["gate"] for f in refine.call_args.kwargs["repair_findings"]] == [GATE_FORBIDDEN_CLAIM]
+
+
+class TestTheWritersMaterialWidensTheAllowList:
+    def test_the_research_handed_to_the_writer_is_recorded_per_post(self):
+        ai_helper.record_supplied_material(77, "costs fell 30% in Q2")
+        assert ai_helper.supplied_material_for(77) == "costs fell 30% in Q2"
+        ai_helper.forget_supplied_material(77)
+        assert ai_helper.supplied_material_for(77) is None
+
+    def test_nothing_is_recorded_for_an_unattributed_or_empty_draft(self):
+        ai_helper.record_supplied_material(None, "x")
+        ai_helper.record_supplied_material(78, "   ")
+        assert ai_helper._SUPPLIED_MATERIAL == {}
+        assert ai_helper.supplied_material_for(None) is None
+        ai_helper.forget_supplied_material(None)
+
+    def test_the_registry_is_bounded(self):
+        for i in range(ai_helper._SUPPLIED_MATERIAL_MAX + 5):
+            ai_helper.record_supplied_material(i, f"m{i}")
+        assert len(ai_helper._SUPPLIED_MATERIAL) == ai_helper._SUPPLIED_MATERIAL_MAX
+        assert ai_helper.supplied_material_for(0) is None
+
+    def test_the_trend_analysis_records_what_it_handed_the_writer(self):
+        industry = MagicMock()
+        industry.choices = [MagicMock(message=MagicMock(content="Software"))]
+        with patch("cqc_lem.utilities.ai.ai_helper._call_llm", return_value=industry), \
+             patch("cqc_lem.utilities.ai.ai_helper.research_topic",
+                   return_value={"findings": "median age rose 40%", "sources": []}), \
+             patch("cqc_lem.utilities.ai.ai_helper._select_focus_topic", return_value=None):
+            profile = MagicMock(industry="Software")
+            profile.model_dump_json.return_value = '{"industry": "Software"}'
+            ai_helper.get_industry_trend_analysis_based_on_user_profile(
+                profile, prefs={}, sequence_index=91)
+        assert ai_helper.supplied_material_for(91) == "median age rose 40%"
+
+    def test_the_material_sources_carry_the_brief_and_the_research(self):
+        from cqc_lem.app import run_content_plan as rcp
+        ai_helper.record_supplied_material(77, "research block")
+        with patch(f"{_RCP}.get_profile_synthesis", return_value=("stored brief", None)) as read:
+            assert rcp._post_material_sources(1, 77, None, "cta text") == [
+                "cta text", "stored brief", "research block"]
+            read.assert_called_once_with(1)
+        assert rcp._post_material_sources(1, 77, "given brief") == ["given brief", "research block"]
+
+    def test_an_unreadable_brief_costs_a_source_never_the_post(self):
+        from cqc_lem.app import run_content_plan as rcp
+        with patch(f"{_RCP}.get_profile_synthesis", side_effect=RuntimeError("db down")):
+            assert rcp._post_material_sources(1, 77) == []
+
+    def test_the_anchors_are_read_for_every_post_while_hard(self, monkeypatch):
+        from cqc_lem.app import run_content_plan as rcp
+        with patch(f"{_RCP}._fact_anchors", return_value=["bank"]) as bank:
+            assert rcp._fact_anchors_for(1, "personal_lesson") == ["bank"]
+            monkeypatch.setenv("FACT_GROUNDING_SEVERITY_POST", "warn")
+            assert rcp._fact_anchors_for(1, "personal_lesson") == []
+            assert rcp._fact_anchors_for(1, "build_receipt") == ["bank"]
+        assert bank.call_count == 2
+
+    def test_the_status_setter_forgets_the_material_once_the_gates_ran(self):
+        from cqc_lem.app import run_content_plan as rcp
+        ai_helper.record_supplied_material(42, "research block")
+        post = [{"user_id": 1, "id": 42, "post_type": "text", "buyer_stage": "awareness"}]
+        with patch(f"{_RCP}.get_planned_posts_within_buffer", return_value=post), \
+             patch(f"{_RCP}.count_ready_posts_within_buffer", return_value=0), \
+             patch(f"{_RCP}.create_content", return_value=(_NO_NUMBERS, None)), \
+             patch(f"{_RCP}._score_and_persist_dwell"), \
+             patch(f"{_RCP}.update_db_post_content"), \
+             patch(f"{_RCP}.update_db_post_status"), \
+             patch(f"{_RCP}.update_db_post_gate_reason"), \
+             patch(f"{_RCP}.get_engagement_preferences", return_value={}), \
+             patch(f"{_RCP}.get_user_preferences", return_value={"auto_schedule_posts": True}), \
+             patch(f"{_RCP}._post_missing_required_asset", return_value=False), \
+             patch(f"{_RCP}._fact_anchors", return_value=[]), \
+             patch(f"{_RCP}.get_profile_synthesis", return_value=None), \
+             patch(f"{_RCP}.get_post_authenticity_score", return_value=95):
+            rcp.auto_create_weekly_content(user_id=1)
+        assert ai_helper.supplied_material_for(42) is None
+
+
+class TestCommentsRefuseForbiddenClaimsToo:
+    def test_a_comment_attaching_a_figure_to_a_forbidden_subject_is_skipped(self, monkeypatch):
+        monkeypatch.setenv("FORBIDDEN_CLAIM_TERMS", "complexity router")
+        monkeypatch.setenv("COMMENT_GATE_MAX_ATTEMPTS", "2")
+        post = "Routing by complexity is the cheapest reliability win most teams skip."
+        draft = ("Routing by complexity being the skipped win is the part most cost posts miss. "
+                 "Our complexity router cut the bill 45% the month we switched. "
+                 "What made you finally route?")
+        with patch("cqc_lem.utilities.ai.ai_helper.log_warning") as warn:
+            out = ai_helper._gated_comment(lambda fix: draft, post, recent_comments=[], user_id=7)
+        assert out is None
+        assert "forbidden" in warn.call_args.args[0]

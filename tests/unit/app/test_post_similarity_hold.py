@@ -59,7 +59,11 @@ def _review(verdicts, second=_SECOND, existing=None, write=None):
          patch(f"{_RCP}.mark_post_gate_demoted"), \
          patch(f"{_RCP}.humanize_text", side_effect=lambda text, **_: text), \
          patch(f"{_RCP}._check_post_alignment", return_value=True), \
+         patch(f"{_RCP}._fact_anchors", return_value=[_DRAFT, _SECOND]), \
+         patch(f"{_RCP}._post_material_sources", return_value=[]), \
          repair:
+        # Both drafts' numbers are grounded (issue #1971 grades every post's numbers), so the
+        # similarity verdict is the only thing that can hold them here.
         out = rcp._review_generated_post(ctx, _DRAFT, ["an earlier post"], story=None)
     return out, sim, upd
 

@@ -53,14 +53,21 @@ class TestFactGroundingGate:
         findings = self._gates("I keep 14 tools in this stack.", "resource_compendium")
         assert [f["gate"] for f in findings] == ["fact_grounding"]
 
-    def test_other_archetypes_are_not_guarded(self):
-        # An ordinary post's numbers come from research/profile grounding, not a fact anchor —
-        # guarding every archetype would hold nearly every post.
-        assert self._gates(_RECEIPT_WITH_INVENTED_NUMBERS, "personal_lesson") == []
+    def test_every_archetype_is_guarded_while_the_post_surface_is_hard(self):
+        # Issue #1971: an ordinary post's invented numbers publish under the same byline as a
+        # receipt's, so the guard no longer keys on the archetype.
+        for archetype in ("personal_lesson", None, "not_a_format"):
+            findings = self._gates(_RECEIPT_WITH_INVENTED_NUMBERS, archetype)
+            assert [f["gate"] for f in findings] == ["fact_grounding"], archetype
 
-    def test_an_unknown_or_missing_archetype_is_not_guarded(self):
+    def test_other_archetypes_are_not_guarded_once_ops_put_posts_back_to_warn(self, monkeypatch):
+        # The pre-#1971 posture, one env knob away: only the fact-anchored archetypes are graded.
+        monkeypatch.setenv("FACT_GROUNDING_SEVERITY_POST", "warn")
+        assert self._gates(_RECEIPT_WITH_INVENTED_NUMBERS, "personal_lesson") == []
         assert self._gates(_RECEIPT_WITH_INVENTED_NUMBERS, None) == []
         assert self._gates(_RECEIPT_WITH_INVENTED_NUMBERS, "not_a_format") == []
+        assert [f["gate"] for f in self._gates(_RECEIPT_WITH_INVENTED_NUMBERS, "build_receipt")] \
+            == ["fact_grounding"]
 
     def test_the_archetype_is_read_back_off_the_post_for_the_gate_pass(self):
         from cqc_lem.app import run_content_plan as rcp
@@ -140,7 +147,15 @@ class TestReviewGateSpendsItsRepairOnFabrication:
         details = " ".join(findings[0]["details"])
         assert "20" in details and "62%" in details
 
-    def test_the_same_draft_under_another_archetype_is_left_alone(self):
+    def test_the_same_draft_under_another_archetype_is_repaired_too(self):
+        # Issue #1971: the post surface is HARD, so the archetype no longer decides.
+        out, regen = self._review(_RECEIPT_WITH_INVENTED_NUMBERS, "second draft",
+                                  {"format": "personal_lesson"})
+        assert out == "second draft"
+        regen.assert_called_once()
+
+    def test_the_same_draft_under_another_archetype_is_left_alone_at_warn(self, monkeypatch):
+        monkeypatch.setenv("FACT_GROUNDING_SEVERITY_POST", "warn")
         out, regen = self._review(_RECEIPT_WITH_INVENTED_NUMBERS, "second draft",
                                   {"format": "personal_lesson"})
         assert out == _RECEIPT_WITH_INVENTED_NUMBERS
@@ -189,14 +204,19 @@ class TestFactAnchorsComeFromTheStoryBank:
         with patch(f"{_RCP}.get_story_bank_entries", side_effect=RuntimeError("db down")):
             assert rcp._fact_anchors(1) == []
 
-    def test_an_ordinary_archetype_never_pays_for_the_bank_read(self):
+    def test_an_ordinary_archetype_never_pays_for_the_bank_read_at_warn(self, monkeypatch):
+        # At HARD (the default since #1971) every post is graded, so every post reads the bank;
+        # the read is skipped only where the grade is — the pre-#1971 posture under the env knob.
         from cqc_lem.app import run_content_plan as rcp
         with patch(f"{_RCP}.get_story_bank_entries", return_value=[self._ENTRY]) as fetch:
+            assert rcp._fact_anchors_for(1, "personal_lesson")
+            fetch.assert_called_once()
+            monkeypatch.setenv("FACT_GROUNDING_SEVERITY_POST", "warn")
             assert rcp._fact_anchors_for(1, "personal_lesson") == []
             assert rcp._fact_anchors_for(1, None) == []
-            fetch.assert_not_called()
-            assert rcp._fact_anchors_for(1, "build_receipt")
             fetch.assert_called_once()
+            assert rcp._fact_anchors_for(1, "build_receipt")
+            assert fetch.call_count == 2
 
     def test_the_writer_may_only_use_the_entry_this_post_was_anchored_to(self):
         # A number from some OTHER bank entry was never in this prompt, so the writer stating one

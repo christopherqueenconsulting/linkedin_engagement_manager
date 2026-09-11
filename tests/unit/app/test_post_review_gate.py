@@ -73,6 +73,11 @@ def _run(outputs, recent=None, prefs=None, post_id=77, log=None, repaired=None):
         # retry and make these call-count assertions depend on the roll of the rotation.
         patch(f"{_RCP}._select_post_blueprint", return_value=dict(_NEUTRAL_BLUEPRINT)),
         patch(f"{_RCP}.update_db_post_shape"),
+        # Every post's numbers are graded since issue #1971; the fixtures' figures are grounded so
+        # the gates under test here are the only ones that can fire.
+        patch(f"{_RCP}._fact_anchors",
+              return_value=[_RECENT, _NEAR_DUP, _FRESH, _WITH_PROOF, _NO_PROOF]),
+        patch(f"{_RCP}._post_material_sources", return_value=[]),
         patch(f"{_RCP}.get_thought_leadership_post_from_ai", gen),
         # Identity refinement passes so the gate sees the generator output verbatim.
         patch(f"{_RCP}.get_ai_linked_post_refinement", side_effect=_refine),

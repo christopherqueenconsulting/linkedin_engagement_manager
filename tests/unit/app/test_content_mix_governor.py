@@ -237,7 +237,9 @@ class TestReviewGateLint:
     def _findings(self, content):
         from cqc_lem.app.run_content_plan import evaluate_post_gates
         with patch(f"{_RCP}._post_missing_required_asset", return_value=False):
-            return evaluate_post_gates(5, content, "text")
+            # The fixtures' churn figures are grounded (issue #1971 grades every post's numbers),
+            # so the CTA lint is the only gate that can fire here.
+            return evaluate_post_gates(5, content, "text", fact_anchors=[content])
 
     def test_meeting_ask_is_held_for_review(self):
         from cqc_lem.utilities.quality_gates import GATE_MEETING_CTA, demoting_findings

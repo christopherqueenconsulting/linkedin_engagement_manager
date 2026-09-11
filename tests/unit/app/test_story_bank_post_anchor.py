@@ -97,12 +97,19 @@ def _ctx(lead_magnet_cta=""):
 def _review(content, story=_STORY, second="second draft", lead_magnet_cta="", **env):
     """Drive the review gate; `repair` is the EDITOR call the repair path makes (issue #1134)."""
     from cqc_lem.app import run_content_plan as rcp
+    from cqc_lem.utilities.ai import story_bank as sb
+    # The bank holds the selected entry (issue #1971 grades every post's numbers against it), so
+    # the story-exact fabrication check is the only thing a sourced draft can trip here.
+    anchors = sb.fact_sources(story) if story else []
     with patch(f"{_RCP}.get_ai_linked_post_refinement", return_value=second) as repair, \
          patch(f"{_RCP}.humanize_text", side_effect=lambda text, **_: text), \
          patch(f"{_RCP}.update_db_post_gate_reason"), \
          patch(f"{_RCP}.get_post_gate_reason", return_value=[]), \
          patch(f"{_RCP}.mark_post_gate_demoted"), \
          patch(f"{_RCP}._check_post_alignment", return_value=True), \
+         patch(f"{_RCP}._fact_anchors", return_value=anchors), \
+         patch(f"{_RCP}._post_material_sources",
+               side_effect=lambda uid, pid, synth=None, *extra: [s for s in extra if s]), \
          patch.dict("os.environ", env, clear=False):
         out = rcp._review_generated_post(_ctx(lead_magnet_cta), content, [], story=story)
     return out, repair
@@ -125,7 +132,9 @@ class TestFabricationGate:
         # not a fresh brief the writer could answer with a different invention.
         assert repair.call_args.args[0] == self._INVENTED
         findings = repair.call_args.kwargs["repair_findings"]
-        assert [f["gate"] for f in findings] == ["fabrication"]
+        # The story-exact check names it as a fabrication; the post-surface number gate (#1971)
+        # names the same figure as unverified. Both brief the editor, fabrication first.
+        assert [f["gate"] for f in findings] == ["fabrication", "fact_grounding"]
         assert any("47" in d for d in findings[0]["details"])
 
     def test_lead_magnet_cta_numbers_are_not_flagged_as_fabricated(self):
@@ -139,15 +148,34 @@ class TestFabricationGate:
         assert out == content
         repair.assert_not_called()
 
-    def test_the_repair_can_be_switched_off(self):
+    def test_the_fabrication_repair_can_be_switched_off(self):
+        # The story-exact check stops steering the editor, but the post-surface number gate
+        # (#1971) still does — an invented figure is repaired either way, on its own finding.
         out, repair = _review(self._INVENTED, POST_FABRICATION_REGEN_ENABLED="off")
+        assert out == "second draft"
+        findings = repair.call_args.kwargs["repair_findings"]
+        assert [f["gate"] for f in findings] == ["fact_grounding"]
+
+    def test_both_repairs_off_leaves_the_draft_alone(self):
+        out, repair = _review(self._INVENTED, POST_FABRICATION_REGEN_ENABLED="off",
+                              FACT_GROUNDING_SEVERITY_POST="warn")
         assert out == self._INVENTED
         repair.assert_not_called()
 
-    def test_no_story_means_no_allow_list_and_no_gate(self):
-        # Without an entry every number would look fabricated — the check must not run at all.
+    def test_no_story_means_no_story_exact_check_but_the_numbers_are_still_graded(self):
+        # Without an entry the story-EXACT check has no allow-list and must not run — but since
+        # issue #1971 the post-surface number gate grades the draft anyway, so the invented
+        # figures still send it to the editor, as the `fact_grounding` finding rather than
+        # `fabrication`.
         out, repair = _review(self._INVENTED, story=None)
-        assert out == self._INVENTED
+        assert out == "second draft"
+        findings = repair.call_args.kwargs["repair_findings"]
+        assert [f["gate"] for f in findings] == ["fact_grounding"]
+
+    def test_no_story_and_no_numbers_needs_no_repair(self):
+        out, repair = _review("I learned more from the rollout that failed than the one that shipped.",
+                              story=None)
+        assert out.startswith("I learned more")
         repair.assert_not_called()
 
     def test_a_still_fabricating_repair_is_kept_not_looped(self):

@@ -80,7 +80,12 @@ class TestSeverityPerSurface:
     def test_comments_are_hard_because_nobody_reviews_them(self):
         assert sb.fact_grounding_severity("comment") == sb.SEVERITY_HARD
 
-    def test_posts_stay_warn_because_the_review_gate_already_holds_them(self):
+    def test_posts_are_hard_because_a_human_byline_publishes_them(self):
+        # Issue #1971: the "review gate already holds them" premise was false in production.
+        assert sb.fact_grounding_severity("post") == sb.SEVERITY_HARD
+
+    def test_ops_can_put_posts_back_to_warn_without_a_deploy(self, monkeypatch):
+        monkeypatch.setenv("FACT_GROUNDING_SEVERITY_POST", "warn")
         assert sb.fact_grounding_severity("post") == sb.SEVERITY_WARN
 
     def test_unknown_and_missing_surfaces_take_the_default(self):

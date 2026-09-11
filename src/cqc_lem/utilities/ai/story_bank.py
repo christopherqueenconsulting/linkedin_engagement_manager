@@ -17,7 +17,11 @@ import re
 from datetime import date, datetime
 from typing import Optional
 
-from cqc_lem.utilities.ai.content_framework import content_tokens, first_person_proof_sentences
+from cqc_lem.utilities.ai.content_framework import (
+    content_tokens,
+    first_person_proof_sentences,
+    numeric_claims,
+)
 from cqc_lem.utilities.ai.slop_lint import SEVERITY_HARD, SEVERITY_OFF, SEVERITY_WARN
 
 # How many content tokens an entry must share with the post's subject/focus topics to count as
@@ -236,19 +240,84 @@ def has_unsourced_specifics(content: Optional[str], sources: Optional[list]) -> 
 # caps the spend) and the retry directive names the token, so the rewrite drops it rather than
 # paraphrasing around it. That is the trade HARD is buying.
 #
-# Everything else stays WARN. A POST is graded by the review gate and repaired by the #1134 editor
-# loop, which already runs this same check against the story bank and then HOLDS the post at
-# PENDING for a human — a second HARD verdict here would block the draft that path exists to fix.
+# POSTS are HARD too (issue #1971). The earlier premise — "the review gate already holds them" —
+# was false in production: three generated posts carrying invented figures ("≈45% lower
+# cost-per-call", "AI inference costs dropped 30% in Q2 2026", "41 PRs in a day") published to the
+# operator's own profile, because the first-person-only detector never fired on a third-person
+# industry claim and the number gate ran only on the two fact-anchored archetypes. A human byline
+# is the argument FOR hard, not against it: a preview queue trains its reviewer to trust it. At HARD
+# every post's numbers are graded by `content_framework.fact_grounding_report` against the user's
+# whole verified material (story bank, profile, the research actually supplied), repaired once by
+# the editor, and then HELD at PENDING with the offending numbers named — never published.
+#
+# Everything else stays WARN. `FACT_GROUNDING_SEVERITY_POST=warn` restores the pre-#1971 posture
+# without a deploy.
 FACT_GROUNDING_SEVERITIES: dict = {
     "comment": SEVERITY_HARD,
+    "post": SEVERITY_HARD,
 }
 FACT_GROUNDING_SEVERITY_DEFAULT = SEVERITY_WARN
 
+# Forbidden claims (issue #1971): a specific the author has said must NEVER be attached to a
+# subject, however well-grounded the draft looks. A claim can be ungrounded in general AND
+# specifically forbidden for a reason the story bank cannot know — the case that filed the issue was
+# a router whose config meters its targets at zero, so ANY cost or latency figure quoted about it is
+# invented by construction. Checked at HARD on every surface, before grounding is even consulted.
+#
+# `FORBIDDEN_CLAIM_TERMS` is a `;`-separated list of phrases. A phrase matches a draft when it
+# appears anywhere in it (case-insensitively, whitespace-normalised) AND the draft asserts at least
+# one numeric claim — the term names the SUBJECT, the numbers are the claims being forbidden. The
+# window is the whole draft on purpose: the post that filed the issue named the router in its first
+# sentence and quoted its "≈45% lower cost-per-call" two sentences later, so a same-sentence rule
+# would have waved it through. A wrong match costs one human review, never a publish. Global for
+# now; the per-user list is the follow-up phase of #1971.
+_FORBIDDEN_TERMS_ENV = "FORBIDDEN_CLAIM_TERMS"
+
+
+def forbidden_claim_terms() -> list:
+    """The operator's forbidden-claim subjects, read at call time from `FORBIDDEN_CLAIM_TERMS`.
+
+    Returns:
+        The non-empty phrases, whitespace-normalised and lower-cased, in the order configured.
+        An unset or blank variable is an empty list, which forbids nothing.
+    """
+    raw = os.environ.get(_FORBIDDEN_TERMS_ENV) or ""
+    out = []
+    for part in raw.split(";"):
+        term = " ".join(part.split()).strip().lower()
+        if term and term not in out:
+            out.append(term)
+    return out
+
+
+def forbidden_claims(content: Optional[str], terms: Optional[list] = None) -> list:
+    """The forbidden subjects this draft attaches a number to.
+
+    Args:
+        content: The draft, exactly as it would ship.
+        terms: The forbidden subjects; `None` reads them from the environment.
+
+    Returns:
+        Each matched term once, in configured order — the draft names the subject AND asserts a
+        numeric claim (`content_framework.numeric_claims`: years, list numbering and version
+        numbers are not claims). Empty when nothing is forbidden or nothing matched.
+    """
+    subjects = forbidden_claim_terms() if terms is None else [
+        " ".join(str(t).split()).strip().lower() for t in terms if str(t).strip()]
+    if not subjects or not content:
+        return []
+    low = " ".join(str(content).split()).lower()
+    named = [term for term in subjects if term in low]
+    if not named or not numeric_claims(content):
+        return []
+    return named
+
 
 def fact_grounding_severity(content_type: Optional[str] = None) -> str:
-    """Resolve this surface's verdict when a draft states an unsourced first-person specific.
+    """Resolve this surface's verdict when a draft states an unsourced specific.
 
-    'hard' regenerates and then blocks, 'warn' records it and ships anyway, 'off' skips the check.
+    'hard' regenerates and then blocks (a comment is skipped, a post is held at PENDING), 'warn'
+    records it and ships anyway, 'off' skips the check.
     Resolved most-specific-first so ops can overrule a built-in without a deploy:
     `FACT_GROUNDING_SEVERITY_<SURFACE>` beats the global `FACT_GROUNDING_SEVERITY`, which beats
     `FACT_GROUNDING_SEVERITIES` and then the WARN default. Read at call time, like every other
