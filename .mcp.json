@@ -1,6 +1,13 @@
 {
   "mcpServers": {
-    "obsidianvault": {"command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "${CQC_VAULT}"]},
+    "obsidianvault": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-filesystem",
+        "${CQC_VAULT}"
+      ]
+    },
     "selenium-lem": {
       "command": "poetry",
       "args": [
@@ -27,6 +34,12 @@
       "headers": {
         "Authorization": "Bearer ${POSTHOG_BEARER_TOKEN}"
       }
+    },
+    "graft": {
+      "command": "graft",
+      "args": [
+        "mcp"
+      ]
     }
   }
 }
