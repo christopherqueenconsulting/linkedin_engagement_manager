@@ -210,19 +210,24 @@ def test_a_held_issue_is_un_parked_by_an_answer_on_its_own_thread():
 
 
 def test_the_answer_read_is_skipped_when_nothing_is_held(monkeypatch):
-    """Cost gate: one `gh view --json comments` per HELD item, never on the hot path."""
+    """Cost gate: one `gh view --json comments` per HELD item, never on the hot path.
+
+    Patched at `read_thread` since #1736 — the one read now carries `menu_posted` as well as the
+    answer, and `newest` is a wrapper over it rather than the call site.
+    """
     calls = []
-    monkeypatch.setattr(answers, "newest", lambda *a, **k: calls.append(a))
-    assert observe._answer_for("slug", "pr", 1, frozenset({"agent:working"}), OWNER) is None
+    monkeypatch.setattr(answers, "read_thread", lambda *a, **k: calls.append(a))
+    got = observe._thread_for("slug", "pr", 1, frozenset({"agent:working"}), OWNER)
+    assert (got.answer, got.menu_posted) == (None, None)
     assert calls == []
 
 
 def test_the_answer_read_happens_for_a_held_item(monkeypatch):
     """...and it DOES happen when the item is held, or the lane never fires at all."""
-    monkeypatch.setattr(answers, "newest",
-                        lambda *a, **k: answers.Answer("a1", "answer", "1B"))
-    got = observe._answer_for("slug", "pr", 1, frozenset({"needs-human"}), OWNER)
-    assert got.verdict == "answer"
+    monkeypatch.setattr(answers, "read_thread",
+                        lambda *a, **k: answers.Thread(answers.Answer("a1", "answer", "1B"), True))
+    got = observe._thread_for("slug", "pr", 1, frozenset({"needs-human"}), OWNER)
+    assert got.answer.verdict == "answer"
 
 
 def test_an_unreadable_thread_leaves_the_item_parked(monkeypatch):

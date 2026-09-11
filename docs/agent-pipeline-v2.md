@@ -244,8 +244,9 @@ second one — same action, same head-keyed comment, same counted lap.
 | 5 | hold label on a PR with auto-merge **armed** | disarm | `human_hold_armed` | — |
 | 6 | hold label + actionable answer, **and this reason has parked `LEMD_MAX_PARK_LAPS` times** | abandon | `park_laps_exhausted` | — |
 | 7 | hold label + actionable answer | unpark | `owner_answered` | — |
-| 7 | hold label + `hold`/`question` answer | none → parked | `human_hold:{verdict}` | 6h |
+| 8 | hold label + `hold`/`question` answer | none → parked | `human_hold:{verdict}` | 6h |
 | 9 | hold label + an answer already spent | none → parked | `human_hold:answer_already_routed` | 6h |
+| 9a | `needs-human`, no answer, and the thread is READABLE with **no Decision Comment on it** (`menu_posted is False`) | **park** | `human_hold_unasked` | — |
 | 10 | hold label, no answer | none → parked | `human_hold` | 6h |
 
 Row 5 sits above the answer deliberately. Only `park.sh` ever ran `--disable-auto`, so a hold a
@@ -268,6 +269,24 @@ nothing says it exists.
 `HOLD_LABELS = {needs-human, agent:blocked}`. A held item carrying no `agent:*` label is still
 admitted (row 4 makes an exception) — otherwise an item parked with only `needs-human` would be
 unanswerable, and the owner's reply to their own issue would be read, classified, and discarded.
+
+**Row 9a is the hold that arrived already placed (#1736).** Every menu in v2 is written by `park.sh`,
+which runs only on `ACT_PARK` — so an item that was ALREADY `needs-human` on its first observation
+(the triage cron's `--hourly` route, a hand-filed issue) went straight to row 10, no question was ever
+put to the owner, and `answer` stayed `None` for ever: six issues sat like that on 2026-08-29, the
+issue for this fix among them. `Snapshot.menu_posted` is the fact that tells *held and asked* from
+*held and never asked*, read off the same `--json comments` call the answer lane already makes, by
+the same body marker (`Human decision needed`) rather than by author — the pipeline has posted under
+two logins, and a PAT-era menu is still the question the answer lane reads. Row 9a fires on a literal
+`False` only: `None` is an unreadable (or unread) thread, and **an unreadable thread is never
+evidence that no menu exists**, so it posts nothing and row 10 waits as before. It needs
+`needs-human` specifically — a bare `agent:blocked` is a dependency hold, not a question for the
+owner. It sits below row 5 (an armed PR still disarms first) and below the answer rows (a reply that
+somehow exists is routed, not re-asked). The hold itself is unchanged: `park.sh` finds the labels
+already on and adds only the comment, keyed on the thread rather than the head-SHA state file, so the
+next observation reads `menu_posted=True` and takes row 10. The answer then routes through `unpark.sh`
+like any other — an issue with no PR goes back to `agent:ready`, so the backfill for the six is the
+fix's own next pass, not a one-shot.
 
 **Ambiguity never starts a build.** A reply that leads with `1B` and then says "but don't merge until
 Friday" reads as `hold` and stays parked.

@@ -83,6 +83,13 @@ PARK_DETAILS: dict[str, str] = {
         "request number, so this never turns into a silent loop on the same rejected approach. `C` "
         "still closes it for you to handle manually."
     ),
+    "human_hold_unasked": (
+        "This item arrived already carrying `needs-human` — applied by the triage cron or by "
+        "hand — and no question was ever put to you, so the hold had no way out (#1736). Nothing "
+        "has been attempted and no budget was spent. `1A` or `1B` releases the hold and puts it "
+        "back on the queue (an issue goes to `agent:ready`; there is nothing to rebase). `C` "
+        "closes it for you to handle manually."
+    ),
 }
 
 
@@ -129,6 +136,12 @@ class Snapshot:
     #: one reply being routed twice: after a successful un-park the labels are gone, but a park that
     #: lands again later must not re-route on the answer to the PREVIOUS question.
     answer_routed: str | None = None
+    #: Does the thread carry a Decision Comment at all (#1736)? Read off the SAME call as `answer`,
+    #: and only for held items. Three-valued, and the default is the safe value: `None` is "not
+    #: read" or "unreadable", and only a literal `False` — a readable thread with no menu on it —
+    #: may raise the one park that posts one. An item that ARRIVED held (triage cron, hand-filed)
+    #: was never asked anything, so `answer` stays None for ever and the hold is permanent.
+    menu_posted: bool | None = None
     #: How many times this item has already been parked for its CURRENT reason — the lap counter
     #: behind the give-up rule. 0 for anything that has never parked.
     park_laps: int = 0
@@ -402,6 +415,23 @@ def decide(snap: Snapshot, *, ttl_ci: int, ttl_review: int, ttl_queue: int,
                                 park_reason="needs_human", wake_in=ttl_parked)
             return Decision(ACT_UNPARK, db.STATE_READY, "owner_answered", mode="unpark",
                             details={"verdict": ans.verdict, "answer": ans.excerpt})
+        if "needs-human" in snap.labels and snap.menu_posted is False:
+            # Held and NEVER ASKED (#1736). Every park in v2 is written by `park.sh`, which only
+            # runs on ACT_PARK — so an item that arrived already labelled `needs-human` (the triage
+            # cron, a hand-filed issue) took this branch's `human_hold` below on its first
+            # observation, no menu was ever posted, and the answer lane above had nothing to read
+            # for ever. Six issues sat like that on 2026-08-29, one of them the issue for this fix.
+            #
+            # ONE park, and only the question is added: the hold still blocks dispatch, the labels
+            # are already on, and `park.sh` keys the comment on the thread itself, so the next
+            # observation reads `menu_posted=True` and takes the ordinary hold. Three things keep it
+            # narrow. It sits BELOW the disarm and the answer routing — safety first, and a reply
+            # that somehow exists is still routed rather than re-asked. It fires on a literal
+            # `False` only: `None` is an unreadable (or unread) thread, and unreadable is never
+            # evidence that no menu exists. And it needs `needs-human` specifically — a bare
+            # `agent:blocked` is a dependency hold, not a question for the owner.
+            return Decision(ACT_PARK, db.STATE_PARKED, "human_hold_unasked", mode="park",
+                            park_reason="human_hold_unasked")
         # Event-driven (an owner comment or a label removal), with a slow safety re-check so a
         # missed webhook costs hours, not forever.
         return Decision(ACT_NONE, db.STATE_PARKED, "human_hold",
@@ -594,17 +624,23 @@ def decide(snap: Snapshot, *, ttl_ci: int, ttl_review: int, ttl_queue: int,
                     wait_reason="merge_queue", wake_in=ttl_queue)
 
 
-def _answer_for(slug: str, kind: str, number: int, labels: frozenset[str],
-                owner: str | None) -> answers.Answer | None:
-    """Read the owner's newest Decision-Comment reply, but only when it can change the answer.
+#: What an item that is not held reads as: nothing was read, so nothing is claimed either way.
+_THREAD_NOT_READ = answers.Thread(answer=None, menu_posted=None)
+
+
+def _thread_for(slug: str, kind: str, number: int, labels: frozenset[str],
+                owner: str | None) -> answers.Thread:
+    """Read the held item's thread — the owner's newest reply AND whether a menu exists.
 
     Gated on the hold labels for cost, not for correctness: this is one `gh view --json comments`
     call, and asking it for every observation would put it on the hot path of a queue whose whole
-    point is that a waiting item costs nothing.
+    point is that a waiting item costs nothing. `menu_posted` (#1736) rides on the same call, so
+    telling "held and asked" from "held and never asked" costs no read the answer lane was not
+    already making. An item that is not held gets `menu_posted=None` — not read, so not claimed.
     """
     if not owner or not (labels & HOLD_LABELS):
-        return None
-    return answers.newest(slug, kind, number, owner)
+        return _THREAD_NOT_READ
+    return answers.read_thread(slug, kind, number, owner)
 
 
 def snapshot_pr(slug: str, number: int, *, owner: str | None = None,
@@ -631,6 +667,7 @@ def snapshot_pr(slug: str, number: int, *, owner: str | None = None,
         return Snapshot(kind="pr", number=number, readable=False)
 
     labels = frozenset(github.label_names(facts))
+    thread = _thread_for(slug, "pr", number, labels, owner)
     pending = github.owner_review_pending(facts, owner or "")
     # Only asked when it can change anything. The CODEOWNERS read is cached for an hour, but the
     # path match runs per observation, and there is nothing to match FOR once the owner is already
@@ -653,8 +690,9 @@ def snapshot_pr(slug: str, number: int, *, owner: str | None = None,
         review_fresh=reviews.fresh,
         unresolved_threads=reviews.unresolved,
         phase_gap=reviews.phase_gap,
-        answer=_answer_for(slug, "pr", number, labels, owner),
+        answer=thread.answer,
         answer_routed=answer_routed,
+        menu_posted=thread.menu_posted,
         codeowned=codeowned,
         owner_review_pending=pending,
         readable=True,
@@ -699,6 +737,7 @@ def snapshot_issue(slug: str, number: int, *, owner: str | None = None,
         LOG.warning("issue #%s unreadable: %s", number, exc)
         return Snapshot(kind="issue", number=number, readable=False)
     labels = frozenset(github.label_names(facts))
+    thread = _thread_for(slug, "issue", number, labels, owner)
     work = None
     has_open_pr = None
     linked_state = None
@@ -733,8 +772,9 @@ def snapshot_issue(slug: str, number: int, *, owner: str | None = None,
         # `""` (read, nothing linked) is a fact about the READ, useful only to the two helpers
         # above. `decide` asks a state question, so it sees the same None a failed read gives it.
         linked_pr_state=linked_state or None,
-        answer=_answer_for(slug, "issue", number, labels, owner),
+        answer=thread.answer,
         answer_routed=answer_routed,
+        menu_posted=thread.menu_posted,
         readable=True,
     )
 
