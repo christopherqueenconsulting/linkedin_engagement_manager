@@ -26,13 +26,20 @@
 #     is requested with response_format (see generate_carousel_content), not with a forced tool.
 model_list:
   # ── SIMPLE tier: fast, lightweight — refine/summarize/list tasks ──────────────
+  # request_timeout is MEASURED, not guessed (issue #1966). PostHog `$ai_generation` for
+  # `openai/gpt-oss:20b`, 30 days to 2026-09-11, n=3187: p50 2.16s, p95 10.31s, p99 19.13s,
+  # max 90.01s (= the two calls that hit the old 90s wall; timeout rate 0.06%). A ≤300-char
+  # completion that has not answered in 40s (~2x p99, ~4x p95) is not going to: 40 keeps every
+  # call under p99 with margin and frees the Celery slot 50s sooner before the in-group fallback
+  # (gpt-4o-mini, p99 9.4s) takes over. Re-measure before changing: a value under p95 turns
+  # working calls into paid OpenAI fallbacks.
   - model_name: lem-simple
     litellm_params:
       model: openai/gpt-oss:20b
       api_base: os.environ/OLLAMA_CLOUD_URL
       api_key: os.environ/OLLAMA_CLOUD_API_KEY
       max_parallel_requests: 8
-      request_timeout: 90
+      request_timeout: 40
       rpm: 100
 
   # NOTE: openai/ministral-3:8b was RETIRED 2026-07-15 (returns 410) and was removed — same
@@ -281,6 +288,22 @@ router_settings:
   routing_strategy: latency-based-routing
   num_retries: 2
   retry_after: 5
+  # Timeout-fallback posture, decided per tier (issue #1966). A timeout is NOT a connection
+  # failure — the primary may have been mid-answer — and the app-side retry in AttributedOpenAI
+  # deliberately does not retry it. The proxy's in-group fallback DOES fall through on a timeout,
+  # and on 2026-09-04 that produced the DM incident (#1963): gpt-oss:20b timed out at 90s and
+  # gpt-4o-mini answered a prompt the primary never finished — with an assistant aside that went
+  # to a real person. The posture is KEPT on every tier, on purpose:
+  #   - lem-simple / lem-medium / lem-complex: fall back in-group on timeout. Availability wins —
+  #     the fallback is what keeps content, comments and DMs running through an Ollama Cloud
+  #     outage, and the failure mode that mattered (an unreviewed meta-response reaching a
+  #     person) is now stopped at the send path by the #1964 outbound gate, not by the router.
+  #     The measured lem-simple timeout rate is 0.06%, so the fallback is rare AND the timeout
+  #     above is short enough that a slot is not parked for a minute and a half first.
+  #   - lem-agent-tier*: fall back to the cheaper tier on timeout — an agent run has no human
+  #     recipient, only a diff that CI grades.
+  # What would change this: a timeout rate above ~1% on a tier (measure it in PostHog before
+  # tuning), or a surface that sends model output to a person WITHOUT an outbound gate.
   fallbacks:
     - lem-complex:
         - lem-medium
