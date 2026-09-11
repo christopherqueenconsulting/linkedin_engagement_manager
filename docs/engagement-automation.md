@@ -432,6 +432,34 @@ now gated by **ONE** preference, `profile_viewer_dm_auto_send` (default OFF).
   already means zero exposure with no dispatch path around it — that toggle IS the human in the
   loop. Full rubric and the round-2 revert: `docs/graphs/engagement-outreach-dm.md`.
 
+## The outbound gate, and the audit that reads its backlog (`utilities/ai/outbound_qa.py`, issues #1964 / #1968)
+
+`outbound_violations(text, surface=…)` is the last look at a body before it leaves for a real
+person. It grades whether the text is a MESSAGE at all — an assistant aside ("To assist you
+effectively, I need the actual message history JSON…"), a prompt-vocabulary leak, an unfilled
+`[link]` — not its quality, and it is a fail-closed predicate on the send path, never a flag or
+a score. `send_dm_now` refuses a tripped body and gives up on that message; `invite_to_connect_now`
+drops a tripped invite note (`SURFACE_INVITE_NOTE`) and sends the invite bare, because the note
+is optional on an invite already decided. The anchoring rule for every pattern is in the module
+docstring: each one earns its place against the FALSE positive, since a hit discards real copy.
+
+The gate bounds what SENDS. It does not count what was drafted before it existed and is still
+sitting in an approval queue — those rows never reached the `Sending DM:` log line the 2026-09-04
+incident was traced from. `scripts/audit_outbound_drafts.py` (#1968) is that count: every
+`scheduled_dms.message` (graded as a DM) and `connection_requests.message` (graded as an invite
+note; a NULL note is counted apart, never tripped) through the SAME predicate, reported by table /
+status / source / check with an 80-char masked excerpt per row and never a full body. It reads
+through `list_scheduled_dms_for_audit` / `list_connection_requests_for_audit` on the db facade —
+the one cross-user, unpaged read of an outbound body — and those return **None on a fault**, which
+the script refuses (exit 2) rather than report as zero. It is read-only by default; `--cancel` is
+the one write and never a side effect of the report: it moves a tripped row to `canceled` only
+while the row is still queued (`pending`/`approved`/`scheduled` for a DM, `pending`/`approved` for
+a connection request — `sending` is in flight and belongs to its task), via the same status
+updaters the SPA's Cancel button uses. `sent` / `failed` rows are the historical record and are
+never touched. It runs from STDIN inside the production image
+(`sudo docker exec -i celery_worker python - [--cancel] [--json] < scripts/audit_outbound_drafts.py`),
+against `mysql_db`, never `lem-it-mysql`.
+
 ## Human pacing (`utilities/human_pacing.py`, issue #626)
 
 The ONE place cadence is decided.
