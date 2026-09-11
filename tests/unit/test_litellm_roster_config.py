@@ -101,6 +101,23 @@ class TestRoster:
         for group in ("lem-simple", "lem-medium", "lem-complex", "lem-router"):
             assert not any(m.startswith("minimax-m2") for m in _ollama_models(group))
 
+    def test_no_tier_carries_an_anthropic_deployment(self):
+        """#2059: `anthropic/claude-sonnet-4-6` served `lem-complex` with no ANTHROPIC_API_KEY set,
+        so every pick answered `x-api-key header is required` instantly — and under latency-based
+        routing an instant failure is the FASTEST answer in its group, so the dead deployment kept
+        winning the race and each pick cost a retry before qwen3.5:397b answered (58 calls / 47
+        errors over the 30 days to 2026-09-11). Same shape as retired ministral-3:8b.
+
+        Matched by PROVIDER PREFIX, not by model id: the fault is an unkeyed paid deployment
+        competing for traffic, and it would come straight back under the next Claude model name.
+        Re-adding one is an owner spend decision plus a benchmark, and the key has to exist first.
+        """
+        anthropic = [d for d in DEPLOYMENTS if d["model"].startswith("anthropic/")]
+        assert not anthropic, (
+            f"anthropic deployments in the roster: {[(d['group'], d['model']) for d in anthropic]}. "
+            f"ANTHROPIC_API_KEY is not configured in prod, and an unkeyed deployment does not sit "
+            f"idle under latency-based routing — it fails fast and therefore wins.")
+
     def test_every_ollama_tag_exists_verbatim_in_the_committed_catalog(self):
         """A tag the catalog has never listed is a 404, and a 404 is the FASTEST answer in the
         group — latency routing then sends it MORE traffic (how retired ministral-3:8b kept winning

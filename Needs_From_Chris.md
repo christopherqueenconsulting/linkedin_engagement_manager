@@ -12,7 +12,7 @@ These go in **GitHub → Settings → Secrets and variables → Actions → Repo
 
 - [x] **`CODECOV_TOKEN`** — Required by all three test workflows for coverage upload. _(complete)_
 
-- [ ] **`ANTHROPIC_API_KEY`** — Required by LiteLLM to route `lem-complex` requests to Claude. Get from `https://console.anthropic.com/settings/keys`. _(adding later)_
+- [x] **`ANTHROPIC_API_KEY`** — **No longer needed** (#2059). The `lem-complex` Claude deployment it would have activated was removed from `.litellm/config.yaml`: unkeyed, it failed instantly, and latency-based routing sends the fastest answer the traffic. _(closed, not pending)_
 
 - [x] **`OPENROUTER_API_KEY`** — Required by LiteLLM for `lem-medium` fallback routing. _(complete)_
 
@@ -28,9 +28,6 @@ Add these to your `.env` file in the project root (alongside existing `OPENAI_AP
 # LiteLLM proxy
 LITELLM_BASE_URL=http://litellm:4000
 LITELLM_MASTER_KEY=<same value as GitHub secret above>
-
-# Claude / Anthropic
-ANTHROPIC_API_KEY=<your key from console.anthropic.com>
 
 # OpenRouter
 OPENROUTER_API_KEY=<your key from openrouter.ai>
@@ -96,4 +93,4 @@ Migration can run once all prior dependent code is merged to main first. _Will c
 - All secrets must be set in GitHub before CI workflows can pass (GitGuardian scan will fail without `GITGUARDIAN_API_KEY`; coverage upload will warn without `CODECOV_TOKEN`).
 - The `.env` changes are needed before running `docker compose up` locally with LiteLLM.
 - Existing secrets (`OPENAI_API_KEY`, `AWS_*`, etc.) are unchanged.
-- `ANTHROPIC_API_KEY` is the only remaining item — add it when ready and the `lem-complex` LLM tier will activate.
+- Nothing is outstanding. `ANTHROPIC_API_KEY` was the last item and is closed by #2059 — `lem-complex` serves from `qwen3.5:397b` with an `openai/gpt-4o` fallback, and no deployment reads that key.
