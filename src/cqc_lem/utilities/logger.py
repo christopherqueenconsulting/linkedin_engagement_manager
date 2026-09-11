@@ -228,9 +228,22 @@ class _LevelFormatter(logging.Formatter):
     The level prefixes are unchanged. `WARNING [file:line]:` is grepped by hand and named by the
     escalation contract in `utilities/CLAUDE.md`; this adds a field, it does not restructure the
     line. DEBUG keeps its bracketed stamp rather than gaining a second one.
+
+    Issue #2057: the structured context every call site passes (`user_id=`, `post_id=`,
+    `profile_url=`, …) reached only the PostHog backend — the file line was the bare message, so a
+    14-day log could not attribute a run to a person, a post or a user. The documented context keys
+    (`CONTEXT_KEYS`) now trail the line as ` | key=value …`, in a fixed order, AFTER the prefix
+    the greps key on. The escalation dedup key is built from the MESSAGE, never the formatted
+    line, so grouping is unaffected; `exc` and undocumented keys never render.
     """
 
     converter = time.gmtime
+
+    #: The structured-context keys rendered onto the file/console line, in this order. The same
+    #: fields `utilities/CLAUDE.md` documents for `**context`, plus `profile_url`, which the
+    #: outreach lanes pass and an incident needs to join against `dm_followups`.
+    CONTEXT_KEYS = ("user_id", "post_id", "profile_url", "task_name", "task_id", "action_type",
+                    "duration_ms", "ai_model", "api_provider", "http_status")
 
     _fmt_debug = "[%(asctime)s %(filename)s->%(funcName)s():%(lineno)s] DEBUG: %(message)s"
     _fmt_info = "%(asctime)s %(message)s"
@@ -265,10 +278,33 @@ class _LevelFormatter(logging.Formatter):
 
         Returns:
             The formatted line, leading with a UTC timestamp at every level except DEBUG, whose
-            stamp sits inside its existing bracket.
+            stamp sits inside its existing bracket, and trailing the record's documented context
+            as ` | key=value …` when any is present.
         """
         self._style._fmt = self._map.get(record.levelno, self._fmt_fallback)
-        return super().format(record)
+        line = super().format(record)
+        suffix = self.context_suffix(record)
+        return f"{line} | {suffix}" if suffix else line
+
+    @classmethod
+    def context_suffix(cls, record: logging.LogRecord) -> str:
+        """The ` key=value` fields for the documented context present on `record`.
+
+        Args:
+            record: The record whose `extra` attributes are read.
+
+        Returns:
+            `key=value` pairs joined by single spaces in `CONTEXT_KEYS` order, or an empty string
+            when the record carries none of them. A value's own whitespace is collapsed so the
+            suffix stays one greppable token per field.
+        """
+        parts = []
+        for key in cls.CONTEXT_KEYS:
+            value = getattr(record, key, None)
+            if value is None or value == "":
+                continue
+            parts.append(f"{key}={' '.join(str(value).split())}")
+        return " ".join(parts)
 
 
 # ── Build logger ─────────────────────────────────────────────────────────────
