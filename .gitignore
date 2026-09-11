@@ -239,3 +239,6 @@ state/
 # tracking it dirties the tree on every tick, conflicts across the per-agent worktrees, and lets a
 # checkout clobber locks a running dispatch is holding.
 locks/
+
+# graft's local graph cache — regenerable, not committed (run `graft build`).
+/graft/
