@@ -2,6 +2,10 @@ name: Claude Code Review
 
 on:
   pull_request:
+    # `synchronize` is KEPT deliberately (issue #1910): a session-authored PR is force-pushed after
+    # review fixes, and reviewing only the opening push would grade a diff that no longer exists.
+    # The run multiplier that issue measured (179 runs/day) came from the AUDIENCE — release-please
+    # and pipeline PRs — which the job-level `if:` below now skips, not from re-reviewing real pushes.
     types: [opened, synchronize]
     branches: [main]
 
@@ -21,8 +25,19 @@ jobs:
   claude-review:
     name: Claude Code Review
     runs-on: ubuntu-latest
-    # Skip Dependabot and bot PRs — they don't benefit from AI review
-    if: github.actor != 'dependabot[bot]' && github.actor != 'github-actions[bot]'
+    # Audience (issue #1910): this is the ONLY automated review a session-authored PR gets, so the
+    # workflow stays — but it skips PRs that already have a review or have nothing to review:
+    #   - Dependabot / github-actions bot PRs (no reviewable intent);
+    #   - release-please PRs (`chore(main): release …` — a version bump, no code);
+    #   - pipeline-authored PRs (`cqc-lem-agent-pipeline` posts its own adversarial review).
+    # Measured 2026-09-02: 61 of the last 200 runs were release PRs and 84 of 200 PRs were
+    # pipeline-authored — most of the OpenRouter spend bought a second review nobody read.
+    if: >-
+      github.actor != 'dependabot[bot]'
+      && github.actor != 'github-actions[bot]'
+      && github.event.pull_request.user.login != 'cqc-lem-agent-pipeline[bot]'
+      && github.event.pull_request.user.login != 'cqc-lem-agent-pipeline'
+      && !startsWith(github.event.pull_request.title, 'chore(main): release')
 
     steps:
       - uses: actions/checkout@v7
@@ -55,7 +70,12 @@ jobs:
         id: review
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-          REVIEW_MODEL: ${{ vars.REVIEW_MODEL || 'anthropic/claude-opus-5' }}
+          # Repo variable first so the model can be changed without a workflow edit (the pipeline's
+          # credential cannot make one). The in-file default MUST match `gh variable list`'s
+          # REVIEW_MODEL and must never be an `anthropic/` slug: Opus is reached only through the
+          # Anthropic subscription, never billed on OpenRouter (issue #1910). kimi-k2.7-code is this
+          # repo's `lem-agent-tier2` in .litellm/config.yaml — a known quantity, ~7.5x cheaper.
+          REVIEW_MODEL: ${{ vars.REVIEW_MODEL || 'moonshotai/kimi-k2.7-code' }}
           PR_TITLE: ${{ github.event.pull_request.title }}
           PR_BODY: ${{ github.event.pull_request.body }}
           PR_DIFF: ${{ steps.diff.outputs.diff }}
@@ -114,7 +134,7 @@ jobs:
 
           try:
               completion = client.chat.completions.create(
-                  model=os.environ.get("REVIEW_MODEL") or "anthropic/claude-opus-5",
+                  model=os.environ.get("REVIEW_MODEL") or "moonshotai/kimi-k2.7-code",
                   max_tokens=16000,
                   messages=[{"role": "system", "content": system_prompt},
                             {"role": "user", "content": user_prompt}],
