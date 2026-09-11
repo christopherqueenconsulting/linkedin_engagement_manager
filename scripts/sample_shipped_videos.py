@@ -8,8 +8,10 @@ collects representative frames, and prints the scorecard the audit doc is missin
 
 A SHIPPED post no longer has its MP4 — `purge_post_assets` (#148) deletes it at publish — so its
 frames are the keyframes the store path retained beside it (#1363) and its measures come from the
-`.probe.json` receipt (#1517). Frames extracted here and frames retained there are reported
-separately: only the retained ones depict the clip LinkedIn actually received.
+`.probe.json` receipt (#1517). A row is gradable from EITHER the MP4 probing ok OR the receipt plus
+at least one retained keyframe (#1654), and says which (`asset_source`). Frames extracted here and
+frames retained there are reported separately: only the retained ones depict the clip LinkedIn
+actually received.
 
 Read-only: it opens no browser, writes nothing to the database and calls no LLM. It re-uses the
 existing readers (`db.get_posted_posts`, `db.get_post_video_url`, `db.get_post_captions`) and the
@@ -54,11 +56,21 @@ from cqc_lem.utilities.content_quality import (  # noqa: E402
     score_video_asset,
 )
 from cqc_lem.utilities.video_frames import extract_frames, retained_keyframes  # noqa: E402
+from cqc_lem.utilities.video_receipt import read_video_receipt, video_receipt_path  # noqa: E402
 
 # The corpus band the issue asks for: fewer than MIN_CORPUS cannot support a scorecard, and more
 # than MAX_SAMPLES is not a bigger answer — it is a slower one, over older renders.
 MIN_CORPUS = 6
 MAX_SAMPLES = 10
+# What graded a row's asset (#1654). `score_video_asset` answers the same shape from a live probe
+# and from the store-time receipt, so the sampler has to say which one it was looking at: a
+# receipt-sourced "ok" is a clip that is GONE, and the frames for it are the retained keyframes.
+ASSET_SOURCE_MP4 = "mp4"
+ASSET_SOURCE_RECEIPT_KEYFRAMES = "receipt+keyframes"
+ASSET_SOURCE_RECEIPT_ONLY = "receipt"
+ASSET_SOURCE_MISSING = "missing"
+# The `asset_probes` bucket every receipt-sourced row lands in, whatever the recorded state was.
+ASSET_PROBE_RECEIPT = "receipt"
 # Rubric row R4: LinkedIn feed video is rewarded at 5-10 seconds, and every model default sits
 # inside that band. A clip outside it is the regression this measure exists to catch.
 DURATION_BAND = (5, 10)
@@ -71,14 +83,65 @@ DEFAULT_FRAMES_DIR = os.path.join("docs", "content-quality-audits", "assets", "1
 # stored MP4 was gone. That is the DESIGNED behaviour, not a broken mount — `purge_post_assets`
 # (#148) deletes the local copy the moment LinkedIn re-hosts the media — and a report that prints
 # "10 missing" without saying so sends the next reader to check volume permissions for an afternoon.
+# The 2026-09-11 re-run found the OTHER half of that reading (#1654): a sidecar that mounts only
+# `src` shadows the assets volume with an empty dev tree, and every row reads "missing" for a
+# reason that has nothing to do with the purge. Both explanations are named, because a reader who
+# is only handed the first one never checks the mount.
 PURGE_HINT = (
     "NOTE: nothing was gradable and every sampled asset is missing on disk. Expected, not a mount\n"
     "  fault: purge_post_assets (#148, 2026-06-25) deletes a post's stored MP4 as soon as it\n"
     "  publishes. Since #1517 the asset MEASURES are recorded at store time and survive that purge,\n"
     "  so a sample of posts shipped after it grades normally — a corpus that is still entirely\n"
     "  missing is one that shipped BEFORE #1517 landed, and those renders also predate the #1293\n"
-    "  aspect fix and the #1278 caption burn. Sample a more recent window."
+    "  aspect fix and the #1278 caption burn. Sample a more recent window.\n"
+    "  ALSO CHECK THE MOUNT (#1654): a receipt or keyframe that survived the purge reads as\n"
+    "  'missing' too when the sidecar does not mount the assets volume at\n"
+    "  /app/src/cqc_lem/assets — mounting only `src` shadows it with an empty tree."
 )
+
+
+def _mp4_on_disk(local_path: Optional[str]) -> bool:
+    """True when the stored MP4 itself is still present and non-empty — i.e. not yet purged."""
+    path = str(local_path or "").strip()
+    try:
+        return bool(path) and os.path.exists(path) and os.path.getsize(path) > 0
+    except OSError:
+        return False
+
+
+def asset_source(local_path: Optional[str], probe_state: Optional[str]) -> tuple:
+    """`(source, keyframes retained)` — what a shipped post's asset can be graded FROM (#1654).
+
+    `score_video_asset` prefers the store-time receipt over a live probe (#1517), so its `"ok"` no
+    longer means the MP4 is on disk. The 2026-08-30 reading was misread for exactly that reason:
+    `asset_available` keyed on the probe state alone could not tell a receipt-sourced "ok" from a
+    live one, and a purged post with a receipt and its three keyframes — the very thing #1517/#1595
+    retain — graded the same as a post with nothing.
+
+    The rule, in precedence order:
+
+    * `mp4` — the probe read `ok` and the file is still on disk (or no receipt exists, in which
+      case the live probe is the only thing that could have said `ok`). Frames are extractable.
+    * `receipt+keyframes` — the MP4 is gone, the receipt recorded `ok`, and at least one retained
+      keyframe exists. The receipt carries the measures the probe would have produced; the
+      keyframes are the frames R1/R8 need. This is what a shipped post looks like after the purge.
+    * `receipt` — receipt recorded `ok`, MP4 gone, NO keyframe survived. Duration and aspect are
+      still readable, but nothing depicts the clip, so it is NOT gradable for the corpus — the
+      scorecard is graded on pixels as well as numbers, and counting it would let six frameless
+      rows clear `MIN_CORPUS`.
+    * `missing` — nothing graded it. The probe state on the row says why (`missing`, `empty`,
+      `unreadable`), and a receipt that RECORDED an unreadable file is a measurement of a failed
+      render, not a source to grade from.
+    """
+    retained = retained_keyframes(local_path)
+    if probe_state != VIDEO_PROBE_OK:
+        return ASSET_SOURCE_MISSING, len(retained)
+    recorded = read_video_receipt(video_receipt_path(local_path))
+    if recorded is None or _mp4_on_disk(local_path):
+        return ASSET_SOURCE_MP4, len(retained)
+    if retained:
+        return ASSET_SOURCE_RECEIPT_KEYFRAMES, len(retained)
+    return ASSET_SOURCE_RECEIPT_ONLY, len(retained)
 
 
 def video_posts(posts: Optional[Iterable[Mapping[str, Any]]], limit: int = MAX_SAMPLES) -> list:
@@ -162,6 +225,14 @@ def sample_report(post: Mapping[str, Any], video_url: Optional[str],
 
     Everything scored here comes from `content_quality`, the module the nightly beat scores with, so
     a row in this report and a row in `content_quality_scores` cannot disagree about the same post.
+
+    `asset_available` — the bit that makes a row count toward `MIN_CORPUS` — is `asset_source`
+    being `mp4` or `receipt+keyframes` (#1654), never the probe state alone: since #1517 that state
+    is answered from the receipt for a purged clip, and a receipt with no keyframe beside it can be
+    measured but not LOOKED at. Such a row is still reported with its duration band and caption
+    read, under `asset_source: "receipt"`, so the reader can see what retention kept and what it
+    did not. Captions never come from the receipt: they are the post's own `caption_text` /
+    `caption_srt_url` (#1278), which survive the purge in the database.
     """
     body = str(post.get("content") or "")
     video = score_video_asset(video_url=video_url)
@@ -170,20 +241,37 @@ def sample_report(post: Mapping[str, Any], video_url: Optional[str],
     caption_text = str((captions or {}).get("caption_text") or "").strip()
     duration = video.get("video_duration_seconds")
     low, high = DURATION_BAND
+    local_path = resolve_local_video_path(video_url)
+    source, keyframes_retained = asset_source(local_path, video.get("video_asset_probe"))
     return {
         **row,
         "post_id": post.get("id"),
         "user_id": user_id,
         "video_url": video_url,
-        "local_path": resolve_local_video_path(video_url),
+        "local_path": local_path,
         "body_available": bool(body.strip()),
-        "asset_available": video.get("video_asset_probe") == VIDEO_PROBE_OK,
+        "asset_available": source in (ASSET_SOURCE_MP4, ASSET_SOURCE_RECEIPT_KEYFRAMES),
+        "asset_source": source,
+        "keyframes_retained": keyframes_retained,
         "duration_in_band": (low <= duration <= high) if duration is not None else None,
         "captioned": bool(caption_text),
         "caption_srt": bool((captions or {}).get("caption_srt_url")),
         "frames": list(frames or []),
         "frames_source": None,
     }
+
+
+def _probe_bucket(row: Mapping[str, Any]) -> str:
+    """The `asset_probes` bucket for one row: `receipt` when the measures came off the receipt.
+
+    A receipt-sourced row's probe state is whatever the store-time probe recorded — `ok`, for a
+    clip that is now gone. Counting it under `ok` next to a clip that is still on disk is the
+    conflation #1654 exists to undo, so every receipt-sourced row (with or without keyframes)
+    is bucketed as `receipt`, and `ok` is left meaning "the MP4 was probed live".
+    """
+    if row.get("asset_source") in (ASSET_SOURCE_RECEIPT_KEYFRAMES, ASSET_SOURCE_RECEIPT_ONLY):
+        return ASSET_PROBE_RECEIPT
+    return str(row.get("video_asset_probe") or "unknown")
 
 
 def summarize(rows: Sequence[Mapping[str, Any]]) -> dict:
@@ -194,6 +282,11 @@ def summarize(rows: Sequence[Mapping[str, Any]]) -> dict:
     how an audit invents a calibration. `duration_in_band` is counted over the clips whose duration
     was actually READ — an unprobed clip is excluded from the denominator, never scored as a pass
     and never as a failure.
+
+    `asset_sources` counts every sampled row by what graded it (#1654), and `asset_probes` keeps
+    the probe states with receipt-sourced rows in their own `receipt` bucket. `receipt_only` is
+    the number of rows retention half-kept — measures but no keyframe — which are NOT in
+    `gradable` and are named here so a short corpus can be read for what it is missing.
     """
     graded = [r for r in rows if r.get("body_available") and r.get("asset_available")]
     banded = [r for r in graded if r.get("duration_in_band") is not None]
@@ -202,6 +295,9 @@ def summarize(rows: Sequence[Mapping[str, Any]]) -> dict:
         "sampled": len(rows),
         "gradable": len(graded),
         "sufficient_corpus": len(graded) >= MIN_CORPUS,
+        "asset_sources": dict(Counter(str(r.get("asset_source") or ASSET_SOURCE_MISSING)
+                                      for r in rows).most_common()),
+        "receipt_only": sum(1 for r in rows if r.get("asset_source") == ASSET_SOURCE_RECEIPT_ONLY),
         "min_corpus": MIN_CORPUS,
         "duration_band": list(DURATION_BAND),
         "duration_measured": len(banded),
@@ -212,8 +308,7 @@ def summarize(rows: Sequence[Mapping[str, Any]]) -> dict:
                                       for r in graded).most_common()),
         "model_tiers": dict(Counter(str(r.get("video_model_tier") or "unknown")
                                     for r in graded).most_common()),
-        "asset_probes": dict(Counter(str(r.get("video_asset_probe") or "unknown")
-                                     for r in rows).most_common()),
+        "asset_probes": dict(Counter(_probe_bucket(r) for r in rows).most_common()),
         "hook_within_budget": sum(1 for r in graded if r.get("hook_within_budget")),
         "slop_hard": sum(int(r.get("slop_hard") or 0) for r in graded),
         "frames": [f for r in rows for f in (r.get("frames") or [])],
@@ -288,19 +383,23 @@ def _render(summary: Mapping[str, Any]) -> str:
     # Never a bare count: this is summed over the GRADABLE rows, so an all-missing corpus would
     # otherwise print "Hard slop violations : 0" and read as "checked, and clean".
     lines.append(f"Hard slop violations      : {summary['slop_hard']} (over {gradable} graded)")
+    # Named even at zero: a corpus short of the floor is read for what retention half-kept.
+    lines.append(f"Receipt but no keyframes  : {summary.get('receipt_only', 0)}"
+                 "  (measured, not gradable — nothing depicts the clip)")
     lines.append("")
     for title, key in (("Aspect ratios", "aspect_ratios"), ("Model tiers", "model_tiers"),
-                       ("Asset probe states", "asset_probes")):
+                       ("Asset sources", "asset_sources"), ("Asset probe states", "asset_probes")):
         lines.append(f"{title}:")
-        for name, count in (summary[key] or {"— none —": 0}).items():
+        for name, count in (summary.get(key) or {"— none —": 0}).items():
             lines.append(f"  {count:>4}  {name}")
     lines.append("")
-    lines.append("Per post (id | duration | ratio | captioned | probe)")
+    lines.append("Per post (id | duration | ratio | captioned | probe | graded from)")
     for row in summary["per_post"]:
         lines.append(f"  {row.get('post_id')} | {row.get('video_duration_seconds')}s | "
                      f"{row.get('video_aspect_ratio')} | "
                      f"{'yes' if row.get('captioned') else 'no'} | "
-                     f"{row.get('video_asset_probe')}")
+                     f"{row.get('video_asset_probe')} | "
+                     f"{row.get('asset_source') or ASSET_SOURCE_MISSING}")
     lines.append("")
     sources = summary.get("frames_by_source") or {}
     lines.append("Frames ({}):".format(

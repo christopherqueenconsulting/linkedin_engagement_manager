@@ -36,6 +36,39 @@ def _probe(duration=6, ratio="9:16", probe="ok", render_ok=True, tier="gen4_turb
             "video_asset_probe": probe}
 
 
+_ASSET_URL = "http://x/api/assets?file_name=videos/runwayml/clip.mp4"
+
+
+@pytest.fixture
+def volume(tmp_path, monkeypatch):
+    """A temp `assets_dir` holding `videos/runwayml/clip.mp4`'s slot — the file itself is opt-in.
+
+    Returns the MP4 path. Helpers write what the store path writes (`write_video_receipt`,
+    the `.frame-<label>.jpg` sidecars) so the sampler is exercised against the REAL receipt reader
+    inside `score_video_asset`, not a mocked probe: the #1654 rule is about telling those apart.
+    """
+    from cqc_lem.utilities import content_quality
+
+    monkeypatch.setattr(content_quality, "assets_dir", str(tmp_path))
+    clip = tmp_path / "videos" / "runwayml" / "clip.mp4"
+    clip.parent.mkdir(parents=True)
+    return clip
+
+
+def _write_receipt(clip, *, duration=6, probe="ok", has_stream=True, ratio="9:16"):
+    from cqc_lem.utilities.video_receipt import write_video_receipt
+
+    return write_video_receipt(str(clip), 7, {"duration_seconds": duration, "aspect_ratio": ratio,
+                                              "asset_probe": probe, "has_video_stream": has_stream})
+
+
+def _write_keyframes(clip, labels=("open", "mid", "close")):
+    from cqc_lem.utilities.video_frames import keyframe_path
+
+    for label in labels:
+        pathlib.Path(keyframe_path(str(clip), label)).write_bytes(b"jpeg-bytes")
+
+
 class TestVideoPosts:
     def test_keeps_only_video_posts_that_have_a_body(self, tool):
         rows = tool.video_posts([_post(1), _post(2, post_type="text"), _post(3, content="  ")])
@@ -151,6 +184,46 @@ class TestFramesFor:
         assert frames == [str(f) for f in retained] and source == "retained"
 
 
+class TestAssetSource:
+    """The #1654 gradability rule: MP4 probes ok, OR the receipt plus at least one keyframe.
+
+    `score_video_asset` answers `ok` from the receipt once the MP4 is purged, so the probe state
+    alone cannot say what a row was graded from — and the 2026-08-30 reading was misread because
+    of exactly that.
+    """
+
+    def test_a_clip_still_on_disk_is_graded_from_the_mp4(self, tool, volume):
+        volume.write_bytes(b"\x00\x00\x00\x18ftypmp42")
+        assert tool.asset_source(str(volume), "ok") == ("mp4", 0)
+
+    def test_the_mp4_wins_over_a_receipt_while_both_exist(self, tool, volume):
+        # Not yet purged: the file is there to extract from, whatever the receipt says.
+        volume.write_bytes(b"\x00\x00\x00\x18ftypmp42")
+        _write_receipt(volume)
+        _write_keyframes(volume)
+        assert tool.asset_source(str(volume), "ok") == ("mp4", 3)
+
+    def test_a_purged_clip_with_receipt_and_keyframes_is_gradable(self, tool, volume):
+        _write_receipt(volume)
+        _write_keyframes(volume, labels=("open",))
+        assert tool.asset_source(str(volume), "ok") == ("receipt+keyframes", 1)
+
+    def test_a_receipt_with_no_keyframe_is_measured_but_not_gradable(self, tool, volume):
+        _write_receipt(volume)
+        assert tool.asset_source(str(volume), "ok") == ("receipt", 0)
+
+    def test_a_receipt_that_recorded_a_failed_probe_grades_nothing(self, tool, volume):
+        # A receipt is a MEASUREMENT: one that read `unreadable` at store time is evidence of a
+        # failed render, not a source to grade a duration from — even with a keyframe beside it.
+        _write_receipt(volume, duration=None, probe="unreadable", has_stream=False, ratio=None)
+        _write_keyframes(volume, labels=("open",))
+        assert tool.asset_source(str(volume), "unreadable") == ("missing", 1)
+
+    def test_nothing_on_disk_is_missing(self, tool, volume):
+        assert tool.asset_source(str(volume), "missing") == ("missing", 0)
+        assert tool.asset_source(None, "missing") == ("missing", 0)
+
+
 class TestSampleReport:
     def test_scores_the_body_and_the_asset_in_one_row(self, tool, monkeypatch):
         monkeypatch.setattr(tool, "score_video_asset", lambda **kwargs: _probe())
@@ -160,6 +233,8 @@ class TestSampleReport:
                                  frames=["docs/f.jpg"], user_id=1)
         assert row["post_id"] == 11 and row["user_id"] == 1
         assert row["body_available"] is True and row["asset_available"] is True
+        # A live `ok` with no receipt can only have come from the MP4 — the row unchanged by #1654.
+        assert row["asset_source"] == "mp4" and row["keyframes_retained"] == 0
         assert row["duration_in_band"] is True
         assert row["captioned"] is True and row["caption_srt"] is True
         assert row["frames"] == ["docs/f.jpg"]
@@ -172,9 +247,34 @@ class TestSampleReport:
                                                     probe="unreadable", render_ok=False))
         row = tool.sample_report(_post(12), "http://x/api/assets?file_name=videos/runwayml/a.mp4")
         assert row["asset_available"] is False
+        assert row["asset_source"] == "missing"
         # Unmeasured duration is None — never scored as out of band.
         assert row["duration_in_band"] is None
         assert row["captioned"] is False
+
+    def test_a_purged_post_grades_off_the_receipt_and_its_keyframes(self, tool, volume):
+        # The shape #1517/#1595 leave behind: no MP4, a receipt, three keyframes. Nothing is mocked
+        # — the measures reach the row through the real `score_video_asset` receipt read.
+        _write_receipt(volume, duration=8, ratio="9:16")
+        _write_keyframes(volume)
+        row = tool.sample_report(_post(13), _ASSET_URL,
+                                 captions={"caption_text": "A real hook line",
+                                           "caption_srt_url": None})
+        assert row["asset_available"] is True
+        assert row["asset_source"] == "receipt+keyframes" and row["keyframes_retained"] == 3
+        assert row["video_duration_seconds"] == 8 and row["duration_in_band"] is True
+        assert row["video_aspect_ratio"] == "9:16" and row["video_asset_probe"] == "ok"
+        assert row["captioned"] is True
+
+    def test_a_receipt_without_keyframes_is_duration_graded_but_not_gradable(self, tool, volume):
+        _write_receipt(volume, duration=12)
+        row = tool.sample_report(_post(14), _ASSET_URL,
+                                 captions={"caption_text": "hook", "caption_srt_url": None})
+        # Says so in the row: measured (the band is answered, the caption is read) but frameless.
+        assert row["asset_available"] is False
+        assert row["asset_source"] == "receipt" and row["keyframes_retained"] == 0
+        assert row["video_duration_seconds"] == 12 and row["duration_in_band"] is False
+        assert row["captioned"] is True
 
     def test_the_duration_band_is_inclusive_at_both_ends(self, tool, monkeypatch):
         low, high = tool.DURATION_BAND
@@ -207,6 +307,33 @@ class TestSummarize:
             "sufficient_corpus"] is False
         assert tool.summarize([self._row(i) for i in range(tool.MIN_CORPUS)])[
             "sufficient_corpus"] is True
+
+    def test_receipt_sourced_rows_are_bucketed_apart_from_a_live_ok(self, tool):
+        # Tonight's volume: MP4s still on disk, receipts with keyframes, one receipt retention
+        # half-kept, and rows with nothing. The receipt rows read `ok` from the store-time probe,
+        # and must not be counted as "the MP4 was probed live".
+        summary = tool.summarize([
+            self._row(1, asset_source="mp4"),
+            self._row(2, asset_source="receipt+keyframes"),
+            self._row(3, asset_source="receipt+keyframes"),
+            self._row(4, asset_available=False, asset_source="receipt"),
+            self._row(5, asset_available=False, asset_source="missing",
+                      video_asset_probe="missing")])
+        assert summary["gradable"] == 3
+        assert summary["asset_sources"] == {"receipt+keyframes": 2, "mp4": 1, "receipt": 1,
+                                            "missing": 1}
+        assert summary["asset_probes"] == {"receipt": 3, "ok": 1, "missing": 1}
+        assert summary["receipt_only"] == 1
+
+    def test_receipt_and_keyframes_rows_clear_the_corpus_floor_but_frameless_ones_do_not(
+            self, tool):
+        framed = [self._row(i, asset_source="receipt+keyframes") for i in range(tool.MIN_CORPUS)]
+        assert tool.summarize(framed)["sufficient_corpus"] is True
+        frameless = [self._row(i, asset_available=False, asset_source="receipt")
+                     for i in range(tool.MIN_CORPUS)]
+        summary = tool.summarize(frameless)
+        assert summary["gradable"] == 0 and summary["sufficient_corpus"] is False
+        assert summary["receipt_only"] == tool.MIN_CORPUS
 
     def test_unmeasured_clips_leave_the_band_denominator(self, tool):
         summary = tool.summarize([self._row(1), self._row(2, duration_in_band=False),
@@ -254,6 +381,17 @@ class TestPurgeHint:
         assert tool.purge_hint(summary) == tool.PURGE_HINT
         rendered = tool._render(summary)
         assert "purge_post_assets" in rendered and "#1517" in rendered
+        # The 2026-08-14/08-30 "missing: 10" readings were partly a sidecar that never mounted
+        # the assets volume where the app reads it; the hint names that too (#1654).
+        assert "/app/src/cqc_lem/assets" in rendered
+
+    def test_a_receipt_only_corpus_is_not_blamed_on_the_purge(self, tool):
+        # Nothing gradable, but nothing MISSING either — retention kept the measures and lost the
+        # frames, which is a different finding from "every MP4 was purged".
+        summary = tool.summarize([self._row(i, asset_available=False, asset_source="receipt")
+                                  for i in range(3)])
+        assert summary["asset_probes"] == {"receipt": 3}
+        assert tool.purge_hint(summary) is None
 
     def test_a_corpus_that_graded_something_gets_no_hint(self, tool):
         summary = tool.summarize([self._row(1),
@@ -337,6 +475,27 @@ class TestCollect:
         # One probe per sampled post — the frame timestamps read the duration the row reports.
         assert len(probes) == 4
 
+    def test_a_purged_post_is_graded_and_framed_from_what_retention_kept(self, tool, volume,
+                                                                        tmp_path, monkeypatch):
+        # End to end through the facade with NO scorer mocked: the MP4 is gone, the receipt and
+        # keyframes are what the store path left, and the row grades with `retained` frames.
+        from cqc_lem.utilities import db
+
+        _write_receipt(volume, duration=7)
+        _write_keyframes(volume)
+        monkeypatch.setattr(db, "get_posted_posts", lambda user_id: [_post(1)])
+        monkeypatch.setattr(db, "get_post_video_url", lambda post_id: _ASSET_URL)
+        monkeypatch.setattr(db, "get_post_captions",
+                            lambda post_id: {"caption_text": "hook", "caption_srt_url": None})
+
+        summary = tool.collect([1], limit=10, frames_dir=str(tmp_path / "frames"))
+        assert summary["gradable"] == 1 and summary["asset_sources"] == {"receipt+keyframes": 1}
+        assert summary["asset_probes"] == {"receipt": 1}
+        assert summary["duration_measured"] == 1 and summary["duration_in_band"] == 1
+        row = summary["per_post"][0]
+        assert row["frames_source"] == "retained" and len(row["frames"]) == 3
+        assert summary["frames_by_source"] == {"retained": 3}
+
 
 class TestRender:
     def test_every_frame_is_printed_with_where_it_came_from(self, tool):
@@ -346,6 +505,18 @@ class TestRender:
         rendered = tool._render(summary)
         assert "Frames (1 retained):" in rendered
         assert "assets/1363/post1_open.jpg  [retained]" in rendered
+
+    def test_every_row_prints_what_graded_it(self, tool):
+        summary = tool.summarize([
+            TestSummarize()._row(1, asset_source="receipt+keyframes"),
+            TestSummarize()._row(2, asset_available=False, asset_source="receipt"),
+            TestSummarize()._row(3, asset_available=False, asset_source="missing",
+                                 video_asset_probe="missing")])
+        rendered = tool._render(summary)
+        assert "| ok | receipt+keyframes" in rendered
+        assert "| ok | receipt" in rendered and "| missing | missing" in rendered
+        assert "Receipt but no keyframes  : 1" in rendered
+        assert "Asset sources:" in rendered and "   1  receipt+keyframes" in rendered
 
     def test_the_slop_count_carries_its_denominator(self, tool):
         rows = [TestSummarize()._row(i, asset_available=False, video_asset_probe="missing")
