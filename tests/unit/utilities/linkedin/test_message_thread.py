@@ -7,7 +7,7 @@ raises) hands off to the next one, and that NO route counts until the thread is 
 from unittest.mock import MagicMock, patch
 
 import pytest
-from selenium.common import WebDriverException
+from selenium.common import NoSuchWindowException, WebDriverException
 from selenium.webdriver.common.by import By
 
 from cqc_lem.utilities.linkedin import message_thread as mt
@@ -22,16 +22,24 @@ VIEWER_URN = "urn:li:fsd_profile:ACoAAAVIEWER"
 PAGE_MODEL = ('{"me":{"entityUrn":"' + VIEWER_URN + '"},'
               '"included":[{"publicIdentifier":"jane-doe-8a4b21","entityUrn":"' + URN + '"}]}')
 
+MAIN_ANCHOR = (By.CSS_SELECTOR, "main a[href*='/messaging/compose/']")
+ANY_ANCHOR = (By.CSS_SELECTOR, "a[href*='/messaging/compose/']")
+TEXT_NODE = (By.XPATH, mt._TEXT_NODE_LOCATORS[0][1])
+COMPOSE_HREF = "/messaging/compose/?profileUrn=urn%3Ali%3Afsd_profile%3AACoAAABCDEF"
+ORIGIN = "origin-window"
+
 
 class FakeElement:
     def __init__(self, attrs: dict = None, text: str = "", displayed: bool = True,
-                 children: dict = None, on_click=None):
+                 children: dict = None, on_click=None, size: dict = None):
         self._attrs = attrs or {}
         self.text = text
         self._displayed = displayed
         self._children = children or {}
         self._on_click = on_click
         self.clicked = 0
+        # A rendered control by default; the `0x0` sticky-header duplicate passes `size=` explicitly.
+        self.size = {"width": 120, "height": 32} if size is None else size
 
     def is_displayed(self):
         return self._displayed
@@ -54,8 +62,25 @@ class FakeElement:
         return None
 
 
+class _FakeSwitchTo:
+    def __init__(self, driver):
+        self._driver = driver
+
+    def window(self, handle):
+        if handle not in self._driver.window_handles:
+            raise NoSuchWindowException(f"no such window: {handle}")
+        self._driver.current_window_handle = handle
+        self._driver.switched.append(handle)
+
+
 class FakeDriver:
-    """A driver whose DOM is a dict of locator -> elements, mutated by whatever a click does."""
+    """A driver whose DOM is a dict of locator -> elements, mutated by whatever a click does.
+
+    Windows are modelled too (issue #1796): `window_handles` starts as the one ORIGIN window, a click
+    handler may append a handle, and `_THREAD_STATE_JS` / `current_url` answer for whichever window
+    the driver is currently switched to (`window_threads` / `window_urls`), falling back to the
+    origin's `thread` / last `get`.
+    """
 
     def __init__(self, dom: dict = None, thread=None, page_source: str = ""):
         self.dom = dom or {}
@@ -63,19 +88,44 @@ class FakeDriver:
         self.thread = thread
         self.page_source = page_source
         self.urls = []
+        self.queries = []
         self.sender = None
         self.body = None
         # What the composer's recipient container renders; None means there is no container at all.
         self.recipient = None
+        self.window_handles = [ORIGIN]
+        self.current_window_handle = ORIGIN
+        self.window_threads = {}
+        self.window_urls = {}
+        self.switched = []
+        self.closed = []
+        self.switch_to = _FakeSwitchTo(self)
 
     def get(self, url):
         self.urls.append(url)
 
+    @property
+    def current_url(self):
+        if self.current_window_handle in self.window_urls:
+            return self.window_urls[self.current_window_handle]
+        return self.urls[-1] if self.urls else ""
+
+    def close(self):
+        handle = self.current_window_handle
+        if handle not in self.window_handles:
+            raise NoSuchWindowException("target window already closed")
+        self.window_handles.remove(handle)
+        self.closed.append(handle)
+        self.current_window_handle = None
+
     def find_elements(self, by, value):
+        self.queries.append((by, value))
         return self.dom.get((by, value), [])
 
     def execute_script(self, script, *args):
         if script is mt._THREAD_STATE_JS:
+            if self.current_window_handle in self.window_threads:
+                return self.window_threads[self.current_window_handle]
             return self.thread or {"events": 0, "composer": False, "overlay": False}
         if script is mt._LAST_SENDER_JS:
             return self.sender
@@ -203,13 +253,23 @@ class TestRoutes:
         assert result.events == 4 and result.surface == "page"
         assert result.tried == [mt.ROUTE_ANCHOR]
 
-    def test_button_route_still_works_where_linkedin_renders_one(self):
+    def test_the_button_route_is_retired(self):
+        # Issue #1796, grounded 2026-09-01 on two profiles: `button[aria-label^='Message']` and
+        # `//button[normalize-space()='Message']` match ZERO elements — the affordance is an <a>.
+        # The route is gone, not emptied: nothing persists route ids, and a dead rung was paying
+        # its full poll budget on every walk.
         d = FakeDriver()
         btn = FakeElement({"aria-label": "Message Jane"}, on_click=_opens(d))
         d.dom[(By.CSS_SELECTOR, "button[aria-label^='Message']")] = [btn]
+        d.dom[(By.XPATH, "//button[normalize-space()='Message']")] = [btn]
         result = self._ladder(d)
-        assert result.route == mt.ROUTE_BUTTON
-        assert result.tried == [mt.ROUTE_ANCHOR, mt.ROUTE_BUTTON]
+        assert not result.opened and btn.clicked == 0
+        assert "button" not in mt.ROUTES and "button" not in result.tried
+        assert not hasattr(mt, "ROUTE_BUTTON") and not hasattr(mt, "_BUTTON_LOCATORS")
+        assert (By.CSS_SELECTOR, "button[aria-label^='Message']") not in d.queries
+        assert (By.XPATH, "//button[normalize-space()='Message']") not in d.queries
+        with pytest.raises(ValueError):
+            mt.open_message_thread(d, MagicMock(), PROFILE, timeout=0, skip_routes=("button",))
 
     def test_text_node_route_catches_a_tag_agnostic_control(self):
         d = FakeDriver()
@@ -297,8 +357,8 @@ class TestRoutes:
         with patch.object(mt, "find_first", return_value=FakeElement()):
             result = self._ladder(d, person_name="Jane Doe")
         assert result.route == mt.ROUTE_MESSAGING_SEARCH
-        assert result.tried == [mt.ROUTE_ANCHOR, mt.ROUTE_BUTTON, mt.ROUTE_TEXT_NODE,
-                                mt.ROUTE_OVERFLOW, mt.ROUTE_DIRECT_URL, mt.ROUTE_MESSAGING_SEARCH]
+        assert result.tried == [mt.ROUTE_ANCHOR, mt.ROUTE_TEXT_NODE, mt.ROUTE_OVERFLOW,
+                                mt.ROUTE_DIRECT_URL, mt.ROUTE_MESSAGING_SEARCH]
 
     def test_direct_url_route_prefers_the_compose_anchors_own_urn(self):
         d = FakeDriver(page_source="<code>urn:li:fsd_profile:WRONGONE</code>")
@@ -418,13 +478,12 @@ class TestLadderContract:
 
     def test_a_raising_route_does_not_end_the_ladder(self):
         d = FakeDriver()
-        btn = FakeElement({"aria-label": "Message"}, on_click=_opens(d))
-        d.dom[(By.CSS_SELECTOR, "button[aria-label^='Message']")] = [btn]
         with patch.object(mt, "_try_control",
                           side_effect=[RuntimeError("route 1 exploded"),
                                        {"events": 3, "composer": True, "surface": "page"}]):
             result = mt.open_message_thread(d, MagicMock(), PROFILE, timeout=0)
-        assert result.route == mt.ROUTE_BUTTON
+        assert result.route == mt.ROUTE_TEXT_NODE
+        assert result.tried == [mt.ROUTE_ANCHOR, mt.ROUTE_TEXT_NODE]
 
     def test_a_hidden_control_is_never_clicked(self):
         d = FakeDriver()
@@ -532,8 +591,7 @@ class TestProfileSideSkip:
     def test_a_2nd_degree_profile_skips_the_profile_side_routes(self):
         d = FakeDriver(page_source=self.SECOND_DEGREE_SOURCE)
         result = mt.open_message_thread(d, MagicMock(), PROFILE, timeout=0)
-        assert result.skipped == [mt.ROUTE_ANCHOR, mt.ROUTE_BUTTON, mt.ROUTE_TEXT_NODE,
-                                  mt.ROUTE_OVERFLOW]
+        assert result.skipped == [mt.ROUTE_ANCHOR, mt.ROUTE_TEXT_NODE, mt.ROUTE_OVERFLOW]
         assert result.tried == [mt.ROUTE_DIRECT_URL, mt.ROUTE_MESSAGING_SEARCH]
         assert not result.opened
 
@@ -555,8 +613,7 @@ class TestProfileSideSkip:
         d = FakeDriver(page_source=self.SECOND_DEGREE_SOURCE)
         result = mt.open_message_thread(d, MagicMock(), PROFILE, timeout=0,
                                         skip_routes=(mt.ROUTE_ANCHOR,))
-        assert result.skipped == [mt.ROUTE_ANCHOR, mt.ROUTE_BUTTON, mt.ROUTE_TEXT_NODE,
-                                  mt.ROUTE_OVERFLOW]
+        assert result.skipped == [mt.ROUTE_ANCHOR, mt.ROUTE_TEXT_NODE, mt.ROUTE_OVERFLOW]
 
 
 class TestEmptyComposePageIsNotAThread:
@@ -828,3 +885,293 @@ class TestOpenAddressedComposer:
         result = mt.open_addressed_composer(d, MagicMock(), PROFILE, user_id=1, timeout=0)
         assert result.addressed
         assert stranger.clicked == 0
+
+
+class TestWindowOwnership:
+    """Issue #1796 §1: the ladder owns every window a route opens.
+
+    A Follow-ups session was watched leaving six duplicate tabs while every route graded as a miss,
+    because the driver kept reading the tab it was already on. Whatever a route opens is graded on
+    the NEWEST window, then closed, and the driver is back on the original window before the next
+    route — or the next person — on success AND on failure.
+    """
+
+    THREAD = {"events": 3, "composer": True, "overlay": False}
+    THREAD_URL = "https://www.linkedin.com/messaging/thread/2-abc/"
+
+    @staticmethod
+    def _opens_a_tab(driver, thread, url=THREAD_URL, handle="tab-1"):
+        """A click handler that renders the outcome in a NEW window, not the one the driver is on."""
+        def _handler():
+            driver.window_handles.append(handle)
+            driver.window_threads[handle] = thread
+            driver.window_urls[handle] = url
+        return _handler
+
+    def _driver_whose_origin_can_render(self, url=THREAD_URL):
+        d = FakeDriver()
+
+        def _get(target):
+            d.urls.append(target)
+            if target == url:
+                d.thread = self.THREAD
+        d.get = _get
+        return d
+
+    def test_a_thread_that_opened_in_a_new_tab_is_graded_there_and_rehomed(self):
+        d = self._driver_whose_origin_can_render()
+        anchor = FakeElement({"href": COMPOSE_HREF}, on_click=self._opens_a_tab(d, self.THREAD))
+        d.dom[MAIN_ANCHOR] = [anchor]
+        result = mt.open_message_thread(d, MagicMock(), PROFILE, timeout=0)
+        assert result.opened and result.route == mt.ROUTE_ANCHOR and result.events == 3
+        assert "tab-1" in d.switched  # the outcome was graded on the window it rendered in
+        # …and NOTHING outlives the route: same handle set, driver on the original window, the
+        # thread re-opened there by URL so the caller's sender read lands on it.
+        assert d.window_handles == [ORIGIN] and d.current_window_handle == ORIGIN
+        assert d.closed == ["tab-1"]
+        assert d.urls[-1] == self.THREAD_URL
+        assert d.thread == self.THREAD
+
+    def test_a_failed_route_that_opened_a_tab_leaves_no_tab_behind(self):
+        d = FakeDriver()
+        nothing = {"events": 0, "composer": False, "overlay": False}
+        anchor = FakeElement({"href": COMPOSE_HREF}, on_click=self._opens_a_tab(d, nothing))
+        d.dom[MAIN_ANCHOR] = [anchor]
+        result = mt.open_message_thread(d, MagicMock(), PROFILE, timeout=0)
+        assert not result.opened
+        assert d.window_handles == [ORIGIN] and d.current_window_handle == ORIGIN
+        assert d.closed == ["tab-1"]
+
+    def test_a_thread_the_original_window_cannot_reproduce_is_a_miss_not_a_success(self):
+        # The tab proved a thread, but the ladder must leave the driver on the origin and the
+        # caller reads the sender THERE — so a URL the origin cannot render is an honest miss and
+        # the walk continues, never "opened" on a tab that was then closed.
+        d = FakeDriver()  # its `get` never renders anything
+        anchor = FakeElement({"href": COMPOSE_HREF}, on_click=self._opens_a_tab(d, self.THREAD))
+        d.dom[MAIN_ANCHOR] = [anchor]
+        result = mt.open_message_thread(d, MagicMock(), PROFILE, timeout=0)
+        assert result.route != mt.ROUTE_ANCHOR and mt.ROUTE_TEXT_NODE in result.tried
+        assert self.THREAD_URL in d.urls  # it did try to re-home it (later routes navigate on)
+        assert d.window_handles == [ORIGIN] and d.current_window_handle == ORIGIN
+
+    def test_a_tab_opened_by_a_route_that_then_raised_is_still_closed(self):
+        d = FakeDriver()
+        calls = []
+
+        def _route(*_a, **_k):
+            calls.append(1)
+            if len(calls) == 1:
+                d.window_handles.append("tab-1")
+                raise RuntimeError("route 1 exploded after opening a tab")
+            return None
+
+        with patch.object(mt, "_try_control", side_effect=_route):
+            result = mt.open_message_thread(d, MagicMock(), PROFILE, timeout=0)
+        assert not result.opened
+        assert d.window_handles == [ORIGIN] and d.current_window_handle == ORIGIN
+        assert d.closed == ["tab-1"]
+
+    def test_a_tab_left_by_the_more_menu_click_is_closed_before_the_next_route(self):
+        d = FakeDriver()
+        more = FakeElement({"aria-label": "More actions"}, on_click=self._opens_a_tab(
+            d, {"events": 0, "composer": False, "overlay": False}))
+        d.dom[(By.CSS_SELECTOR, "main button[aria-label^='More actions']")] = [more]
+        result = mt.open_message_thread(d, MagicMock(), PROFILE, timeout=0)
+        assert not result.opened and more.clicked == 1
+        assert d.window_handles == [ORIGIN] and d.current_window_handle == ORIGIN
+
+    def test_a_close_failure_never_masks_a_success(self):
+        d = self._driver_whose_origin_can_render()
+        anchor = FakeElement({"href": COMPOSE_HREF}, on_click=self._opens_a_tab(d, self.THREAD))
+        d.dom[MAIN_ANCHOR] = [anchor]
+        d.close = MagicMock(side_effect=WebDriverException("window vanished"))
+        with patch.object(mt, "log_warning") as warn:
+            result = mt.open_message_thread(d, MagicMock(), PROFILE, timeout=0)
+        assert result.opened and result.route == mt.ROUTE_ANCHOR
+        assert d.current_window_handle == ORIGIN  # still switched back
+        warn.assert_not_called()  # tidying is DEBUG, never a warning
+
+    def test_a_close_failure_never_masks_a_miss(self):
+        d = FakeDriver()
+        nothing = {"events": 0, "composer": False, "overlay": False}
+        anchor = FakeElement({"href": COMPOSE_HREF}, on_click=self._opens_a_tab(d, nothing))
+        d.dom[MAIN_ANCHOR] = [anchor]
+        d.close = MagicMock(side_effect=WebDriverException("window vanished"))
+        result = mt.open_message_thread(d, MagicMock(), PROFILE, timeout=0)
+        assert not result.opened and result.tried == list(mt.ROUTES)
+        assert d.current_window_handle == ORIGIN
+
+    def test_an_unreadable_window_set_changes_nothing(self):
+        class _Blind(FakeDriver):
+            @property
+            def window_handles(self):
+                raise WebDriverException("no session")
+
+            @window_handles.setter
+            def window_handles(self, _value):
+                pass
+
+        d = _Blind()
+        anchor = FakeElement({"href": COMPOSE_HREF}, on_click=_opens(d))
+        d.dom[MAIN_ANCHOR] = [anchor]
+        result = mt.open_message_thread(d, MagicMock(), PROFILE, timeout=0)
+        assert result.opened and result.route == mt.ROUTE_ANCHOR
+        assert d.closed == []
+
+    def test_the_direct_url_route_is_graded_on_a_window_it_opened(self):
+        d = FakeDriver(page_source=PAGE_MODEL)
+
+        def _get(url):
+            d.urls.append(url)
+            if "compose" in url:
+                # A navigation that lands in a new window: the verdict must come from THAT window.
+                d.window_handles.append("tab-1")
+                d.window_threads["tab-1"] = self.THREAD
+                d.window_urls["tab-1"] = self.THREAD_URL
+            if url == self.THREAD_URL:
+                d.thread = self.THREAD
+        d.get = _get
+        result = mt.open_message_thread(d, MagicMock(), PROFILE, timeout=0)
+        assert result.route == mt.ROUTE_DIRECT_URL and result.events == 3
+        assert d.window_handles == [ORIGIN] and d.current_window_handle == ORIGIN
+
+
+class TestTargetScopedControls:
+    """Issue #1796 §3: a Message control is clicked only when it provably belongs to the TARGET.
+
+    Measured 2026-09-01: the target's own compose anchor carries NO `aria-label` (absent, not empty);
+    every "People also viewed" rail anchor carries `aria-label="Message <Other Person>"`; the first
+    match in document order can be a `0x0` sticky-header duplicate; and the first text-node XPath hit
+    was `displayed: false`. The rule is the positive one — select what belongs to the target —
+    mirroring `_click_own_custom_invite_anchor`.
+    """
+
+    # The real rail labels from the issue's probe.
+    RAIL = ("Message SATHISH N", "Message Harun Reşit Zafer", "Message Ali Raza",
+            "Message Emmanuval Siby")
+
+    def _ladder(self, driver, person_name="Jane Doe", profile=PROFILE):
+        return mt.open_message_thread(driver, MagicMock(), profile, person_name=person_name,
+                                      timeout=0)
+
+    def _rail(self, driver):
+        return [FakeElement({"href": COMPOSE_HREF, "aria-label": label}, on_click=_opens(driver))
+                for label in self.RAIL]
+
+    def test_the_anchor_route_skips_the_hidden_duplicate_and_the_rail_and_clicks_the_targets_own(self):
+        d = FakeDriver()
+        duplicate = FakeElement({"href": COMPOSE_HREF}, size={"width": 0, "height": 0},
+                                on_click=_opens(d))
+        own = FakeElement({"href": COMPOSE_HREF}, on_click=_opens(d))
+        rail = self._rail(d)
+        d.dom[MAIN_ANCHOR] = [duplicate, own, *rail]  # measured document order: duplicate FIRST
+        result = self._ladder(d)
+        assert result.opened and result.route == mt.ROUTE_ANCHOR
+        assert own.clicked == 1 and duplicate.clicked == 0
+        assert all(el.clicked == 0 for el in rail)
+
+    def test_a_rail_anchor_is_never_clicked_even_when_it_is_the_only_one(self):
+        # The case this ladder exists to survive — the target's own anchor absent — must NOT
+        # degrade into opening a stranger's thread and judging this person's follow-up from it.
+        d = FakeDriver()
+        rail = self._rail(d)
+        d.dom[MAIN_ANCHOR] = rail
+        d.dom[ANY_ANCHOR] = rail
+        result = self._ladder(d)
+        assert result.route != mt.ROUTE_ANCHOR
+        assert all(el.clicked == 0 for el in rail)
+        assert mt.ROUTE_TEXT_NODE in result.tried  # the ladder walked on rather than guessing
+
+    def test_a_lone_stranger_anchor_is_refused_without_a_stored_name_too(self):
+        d = FakeDriver()
+        stranger = FakeElement({"href": COMPOSE_HREF, "aria-label": "Message Ali Raza"},
+                               on_click=_opens(d))
+        d.dom[MAIN_ANCHOR] = [stranger]
+        result = self._ladder(d, person_name=None)
+        assert not result.opened and stranger.clicked == 0
+
+    def test_an_anchor_naming_the_target_belongs_to_the_target(self):
+        d = FakeDriver()
+        named = FakeElement({"href": COMPOSE_HREF, "aria-label": "Message Jane Doe"},
+                            on_click=_opens(d))
+        d.dom[MAIN_ANCHOR] = [named]
+        assert self._ladder(d).route == mt.ROUTE_ANCHOR and named.clicked == 1
+
+    def test_the_slug_derived_name_attributes_an_anchor_when_no_name_is_stored(self):
+        d = FakeDriver()
+        named = FakeElement({"href": COMPOSE_HREF, "aria-label": "Message Jane Doe"},
+                            on_click=_opens(d))
+        d.dom[MAIN_ANCHOR] = [named]
+        assert self._ladder(d, person_name=None).route == mt.ROUTE_ANCHOR
+
+    def test_a_named_anchor_with_nothing_known_about_the_target_is_refused(self):
+        d = FakeDriver()
+        named = FakeElement({"href": COMPOSE_HREF, "aria-label": "Message Jane Doe"},
+                            on_click=_opens(d))
+        d.dom[MAIN_ANCHOR] = [named]
+        result = self._ladder(d, person_name=None, profile="https://www.linkedin.com/feed/")
+        assert not result.opened and named.clicked == 0
+
+    def test_a_name_that_merely_starts_the_same_is_somebody_else(self):
+        d = FakeDriver()
+        janet = FakeElement({"href": COMPOSE_HREF, "aria-label": "Message Janet Smithers"},
+                            on_click=_opens(d))
+        d.dom[MAIN_ANCHOR] = [janet]
+        assert not self._ladder(d, person_name="Jane").opened and janet.clicked == 0
+
+    def test_the_text_node_route_skips_a_hidden_hit(self):
+        # Measured: hit #1 of 7 was `displayed: false`. Taking "the first element the XPath
+        # yields" clicked a hidden node and missed the plainly visible affordance beside it.
+        d = FakeDriver()
+        hidden = FakeElement(text="Message", displayed=False, on_click=_opens(d))
+        shown = FakeElement(text="Message", on_click=_opens(d, overlay=True))
+        d.dom[TEXT_NODE] = [hidden, shown]
+        result = self._ladder(d)
+        assert result.route == mt.ROUTE_TEXT_NODE
+        assert hidden.clicked == 0 and shown.clicked == 1
+
+    def test_the_text_node_route_refuses_the_rail_as_well(self):
+        # Rows 4-7 of the same measurement were rail strangers reached by this very XPath.
+        d = FakeDriver()
+        rail = [FakeElement(text="Message", attrs={"aria-label": label}, on_click=_opens(d))
+                for label in self.RAIL]
+        d.dom[TEXT_NODE] = rail
+        result = self._ladder(d)
+        assert result.route != mt.ROUTE_TEXT_NODE and all(el.clicked == 0 for el in rail)
+
+    def test_the_overflow_route_is_scoped_too(self):
+        d = FakeDriver()
+        stranger = FakeElement({"href": COMPOSE_HREF, "aria-label": "Message Ali Raza"},
+                               on_click=_opens(d))
+
+        def _reveal():
+            d.dom[MAIN_ANCHOR] = [stranger]
+
+        more = FakeElement({"aria-label": "More actions"}, on_click=_reveal)
+        d.dom[(By.CSS_SELECTOR, "main button[aria-label^='More actions']")] = [more]
+        result = self._ladder(d)
+        assert more.clicked == 1 and stranger.clicked == 0
+        assert result.route != mt.ROUTE_OVERFLOW
+
+    def test_an_unreadable_label_is_precisely_the_control_never_to_click(self):
+        el = FakeElement({"href": COMPOSE_HREF})
+        el.get_attribute = MagicMock(side_effect=WebDriverException("stale"))
+        assert mt._control_belongs_to_target(el, "Jane Doe", PROFILE) is False
+
+    def test_a_label_that_names_nobody_is_bare(self):
+        assert mt._control_belongs_to_target(FakeElement({"aria-label": "Message"}), "Jane Doe",
+                                             PROFILE) is True
+        assert mt._control_belongs_to_target(FakeElement({"aria-label": "  "}), None,
+                                             PROFILE) is True
+
+    def test_a_label_of_another_phrasing_cannot_be_attributed(self):
+        el = FakeElement({"aria-label": "Send InMail to Jane Doe"})
+        assert mt._control_belongs_to_target(el, "Jane Doe", PROFILE) is False
+
+    def test_zero_size_is_not_shown_whatever_is_displayed_says(self):
+        assert mt._is_shown(FakeElement(size={"width": 0, "height": 0})) is False
+        assert mt._is_shown(FakeElement(displayed=False)) is False
+        assert mt._is_shown(FakeElement()) is True
+
+    def test_an_unparseable_size_is_left_to_is_displayed(self):
+        assert mt._is_shown(FakeElement(size={"width": "wide", "height": None})) is True

@@ -306,9 +306,20 @@ not return through the prompt.
 
 The ONE way LEM opens (and reads) a 1:1 thread.
 
-- `open_message_thread` walks SIX routes in order: profile anchor → legacy button → tag-agnostic
-  'Message' text node → top-card **More** menu → direct compose URL from the profile URN
-  (captured BEFORE any route navigates away) → messaging search.
+- `open_message_thread` walks FIVE routes in order: profile anchor → tag-agnostic 'Message' text
+  node → top-card **More** menu → direct compose URL from the profile URN (captured BEFORE any
+  route navigates away) → messaging search. The legacy `button` route was retired 2026-09-01
+  (#1796: zero matches on two live passes — the control is an `<a>`).
+- Every profile-side Message control is attributed to the TARGET before it is clicked
+  (`_control_belongs_to_target`, #1796): the target's own anchor carries NO `aria-label`, a
+  "People also viewed" rail anchor carries `Message <Other Person>`, and a rail control is never
+  clicked even when it is the only match. Candidates must also be shown (`is_displayed()` AND a
+  non-zero size — the `0x0` sticky-header duplicate sits FIRST in document order).
+- The ladder OWNS its windows (#1796): each route records `window_handles`, grades on the newest
+  window, and closes what it opened — driver back on the original window — before the next route
+  or the next person, success or failure. A thread verified in a new tab is re-homed onto the
+  original by URL and verified again there, since `check_dm_replied` reads the sender from the
+  window the driver is left on. `docs/sdui-selenium-notes.md` holds the measurements.
 - A route only counts when the thread is **provably open** (`msg-s-*` events readable or compose
   form present), on either surface (profile may yield bottom-right `msg-overlay-*` chat, not
   `/messaging/`).

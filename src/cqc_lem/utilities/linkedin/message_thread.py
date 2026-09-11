@@ -5,7 +5,7 @@ profile, and by connection state. The 2026-07-27 live probe found an ``<a href='
 on a 1st-degree profile where `check_dm_replied` was still looking for a ``<button aria-label='Message'>``
 — so the reply detector returned "no reply" for everybody and the follow-up sequencer kept messaging
 people who had already answered. Hardcoding the anchor instead would just move that breakage to the
-next rotation, so this module is a RESOLUTION LADDER: six independent routes, tried in order, each one
+next rotation, so this module is a RESOLUTION LADDER: five independent routes, tried in order, each one
 verified before it counts.
 
 A route only succeeds when the thread is PROVABLY open: message events readable, or — on the chat
@@ -23,6 +23,35 @@ Both messaging surfaces are handled: opening from a profile may yield the bottom
 (``msg-overlay-*`` containers) rather than the full ``/messaging/`` page. The message events themselves
 carry the same ``msg-s-*`` classes in both, so the reader is surface-agnostic and only the container
 detection distinguishes them.
+
+Grounding, 2026-09-01 (issue #1796, two independent read-only passes on two 1st-degree profiles):
+
+* **The legacy ``button`` route is RETIRED.** ``button[aria-label^='Message']`` and
+  ``//button[normalize-space()='Message']`` matched ZERO elements in both passes; the messaging
+  affordance is an ``<a href="/messaging/compose/…">`` (attributes: ``class``, ``aria-disabled``,
+  ``href``, ``componentkey`` — no ``aria-label``, no ``data-testid``, no ``data-view-name``). Route 2
+  had silently been a no-op paying its full poll budget on every walk, so it is gone rather than
+  emptied — nothing persists route ids (they are log vocabulary only).
+* **The target's own Message anchor carries NO ``aria-label`` at all** — absent from
+  ``getAttributeNames()``, not present-and-empty — while every "People also viewed" rail anchor
+  carries ``aria-label="Message <Other Person>"``. That absence is the discriminator
+  (`_control_belongs_to_target`): the rule is *select the control that provably belongs to the
+  target*, never *exclude the ones that name somebody else*, the same shape as
+  `_click_own_custom_invite_anchor` in `app/engagement/invites.py`. The rail's composition varies by
+  profile (one pass saw four stranger anchors, the other none), so a positional ``[0]`` rule is
+  wrong in both directions and document order is never trusted.
+* **A ``0x0`` sticky-header duplicate of the target's anchor sits FIRST in document order**
+  (``visibility: visible``, ``opacity: 1``, only ``offsetParent === null`` and a zero-size rect tell
+  it apart), and the first text-node XPath hit read ``displayed: false``. Every clickable candidate
+  is therefore filtered on `is_displayed()` AND a non-zero size (`_is_shown`) before anything else.
+* **The ladder OWNS its windows.** A `CQC_LEM (Follow-ups)` session was watched opening six
+  duplicate tabs (2026-08-31) while grading every route as a miss: the driver kept reading the tab
+  it was already on. Every action now records `driver.window_handles` first (`_WindowLedger`),
+  grades the outcome on the NEWEST window, and — success or failure — closes every window it opened
+  and returns to the original before the next route or the next person. A thread that verified in a
+  new tab is re-homed onto the original tab by URL and verified AGAIN there, because the caller
+  (`check_dm_replied`) reads the sender from whichever window the driver is left on. Tidying is
+  fail-open: a `WebDriverException` while closing never changes the route's verdict.
 """
 
 import random
@@ -50,18 +79,17 @@ MESSAGING_URL = "https://www.linkedin.com/messaging/"
 COMPOSE_URL = "https://www.linkedin.com/messaging/compose/"
 
 # Route ids — these are the telemetry vocabulary, so they are stable strings, not incidental labels.
+# `button` was retired 2026-09-01 (module docstring): it is not a valid `skip_routes` name any more.
 ROUTE_ANCHOR = "anchor"
-ROUTE_BUTTON = "button"
 ROUTE_TEXT_NODE = "text_node"
 ROUTE_OVERFLOW = "overflow"
 ROUTE_DIRECT_URL = "direct_url"
 ROUTE_MESSAGING_SEARCH = "messaging_search"
 
-ROUTES = (ROUTE_ANCHOR, ROUTE_BUTTON, ROUTE_TEXT_NODE, ROUTE_OVERFLOW,
-          ROUTE_DIRECT_URL, ROUTE_MESSAGING_SEARCH)
+ROUTES = (ROUTE_ANCHOR, ROUTE_TEXT_NODE, ROUTE_OVERFLOW, ROUTE_DIRECT_URL, ROUTE_MESSAGING_SEARCH)
 
 # How long one route's post-click render is given before it is declared a miss. The ladder walks up
-# to six routes per person, so this is a POLL budget, not a WebDriverWait per locator: the DOM scan
+# to five routes per person, so this is a POLL budget, not a WebDriverWait per locator: the DOM scan
 # itself is instant and only the verification waits.
 THREAD_RENDER_TIMEOUT_SECONDS = 8.0
 _POLL_SECONDS = 0.5
@@ -70,7 +98,9 @@ SURFACE_OVERLAY = "overlay"
 SURFACE_PAGE = "page"
 
 # The visible label is nested in obfuscated-class span/div nodes under the control, so every locator
-# here keys on href / aria-label / TEXT — never on a class name.
+# here keys on href / aria-label / TEXT — never on a class name. None of these is scoped to the
+# target by itself — `main` also holds the "People also viewed" rail — so every candidate they yield
+# is attributed in Python by `_control_belongs_to_target` before it may be clicked.
 _ANCHOR_LOCATORS: list[tuple[str, str]] = [
     (By.CSS_SELECTOR, "main a[href*='/messaging/compose/']"),
     (By.CSS_SELECTOR, "a[href*='/messaging/compose/']"),
@@ -78,17 +108,19 @@ _ANCHOR_LOCATORS: list[tuple[str, str]] = [
     (By.XPATH, "//a[normalize-space()='Message']"),
 ]
 
-_BUTTON_LOCATORS: list[tuple[str, str]] = [
-    (By.CSS_SELECTOR, "button[aria-label^='Message']"),
-    (By.XPATH, "//button[normalize-space()='Message']"),
-]
-
 # Tag-agnostic: the clickable ancestor of a node whose trimmed text is exactly 'Message'.
 # ancestor-or-self is a REVERSE axis, so [1] is the NEAREST clickable ancestor, not the outermost.
+# Measured 2026-09-01: 7 hits on one profile — the target's own (some hidden) AND four rail
+# strangers' — so this route is attributed and visibility-filtered exactly like the anchor route.
 _TEXT_NODE_LOCATORS: list[tuple[str, str]] = [
     (By.XPATH, "//*[normalize-space(text())='Message']"
                "/ancestor-or-self::*[self::a or self::button or @role='button'][1]"),
 ]
+
+# The ONLY labelled shape measured on a Message control: the rail's `aria-label="Message <Name>"`.
+# The target's own control carries no aria-label at all. A label that names nobody ("Message") is
+# treated as bare; a label of any OTHER phrasing names something this module cannot attribute.
+_MESSAGE_LABEL_RE = re.compile(r"^message(?:\s+(?P<name>.+))?$", re.IGNORECASE)
 
 # The compose link LinkedIn's own top card renders carries TWO params, and both matter:
 # `profileUrn` selects the thread, `recipient` is what actually ADDS the person to it. Built with
@@ -539,24 +571,192 @@ def read_last_message(driver: WebDriver) -> str:
         return ""
 
 
-def _visible_elements(root, locators: list[tuple[str, str]]) -> list[WebElement]:
-    """Displayed matches from the FIRST locator that yields any.
+@dataclass(frozen=True)
+class _WindowLedger:
+    """The window set as it stood BEFORE an action, so what the action opened can be told apart.
+
+    `origin` is the handle the driver was on; `handles` every handle that existed. Either may be
+    unreadable (`None` / empty) — the ledger then still closes nothing it cannot prove it opened.
+    """
+    origin: Optional[str]
+    handles: tuple[str, ...]
+
+
+def _window_ledger(driver: WebDriver) -> _WindowLedger:
+    """Record the driver's current window and the full handle set (fail-open: unreadable is empty)."""
+    try:
+        origin = driver.current_window_handle
+    except WebDriverException as e:
+        log_debug("Could not read the current window handle before a message-thread route", exc=e,
+                  action_type="followup")
+        origin = None
+    try:
+        handles = tuple(str(h) for h in (driver.window_handles or ()))
+    except WebDriverException as e:
+        log_debug("Could not read the window handles before a message-thread route", exc=e,
+                  action_type="followup")
+        handles = ()
+    return _WindowLedger(origin=origin, handles=handles)
+
+
+def _windows_opened_since(driver: WebDriver, ledger: _WindowLedger) -> list[str]:
+    """Handles that exist now and did not when the ledger was taken, oldest first."""
+    try:
+        now = [str(h) for h in (driver.window_handles or ())]
+    except WebDriverException as e:
+        log_debug("Could not read the window handles after a message-thread route", exc=e,
+                  action_type="followup")
+        return []
+    known = set(ledger.handles)
+    return [h for h in now if h not in known]
+
+
+def _close_opened_windows(driver: WebDriver, ledger: _WindowLedger) -> None:
+    """Close every window opened since the ledger and return to its origin. Never raises.
+
+    No tab may outlive the person it was opened for (issue #1796). This is tidying, not grading: a
+    `WebDriverException` here is logged at DEBUG and must never change the verdict the caller
+    already holds — hence the blanket guards.
+    """
+    opened = _windows_opened_since(driver, ledger)
+    if not opened:
+        return
+    for handle in opened:
+        try:
+            driver.switch_to.window(handle)
+            driver.close()
+        except WebDriverException as e:
+            log_debug(f"Could not close a window the message-thread ladder opened ({handle})",
+                      exc=e, action_type="followup")
+    home = ledger.origin or (ledger.handles[0] if ledger.handles else None)
+    if home is None:
+        log_debug("No original window recorded to return to after a message-thread route",
+                  action_type="followup")
+        return
+    try:
+        driver.switch_to.window(home)
+    except WebDriverException as e:
+        log_debug(f"Could not return to the original window ({home}) after a message-thread route",
+                  exc=e, action_type="followup")
+
+
+def _rehome_reading(driver: WebDriver, ledger: _WindowLedger, timeout: float) -> Optional[dict]:
+    """A thread verified in a NEW window is closed and re-opened, by URL, on the original window.
+
+    The caller reads the sender from whichever window the driver is left on, and the ladder promises
+    to leave it on the original — so the two are reconciled by navigating the original window to
+    the thread the new one had proven, and verifying AGAIN there. A URL the original window cannot
+    render is an honest miss for this route (the ladder walks on), never a success on a tab that
+    was then closed.
+    """
+    try:
+        url = str(driver.current_url or "")
+    except WebDriverException as e:
+        log_debug("Could not read the URL of the window a message-thread route opened", exc=e,
+                  action_type="followup")
+        url = ""
+    _close_opened_windows(driver, ledger)
+    if not url:
+        return None
+    log_debug(f"Message thread opened in a new window — re-homing {url} onto the original window",
+              action_type="followup")
+    try:
+        driver.get(url)
+    except WebDriverException as e:
+        log_debug("Could not re-open the thread on the original window", exc=e,
+                  action_type="followup")
+        return None
+    return _verified_reading(_wait_thread_open(driver, timeout))
+
+
+def _grade_after_action(driver: WebDriver, ledger: _WindowLedger, timeout: float) -> Optional[dict]:
+    """Verify the outcome of ONE click/navigation, on whichever window it rendered in.
+
+    If the action opened windows, the newest is where the outcome is graded — the driver reading the
+    tab it was already on is how a thread that opened fine was scored as a miss (#1796). Whatever
+    the verdict, the windows the action opened are closed and the driver is back on the original
+    before this returns: a verified thread is re-homed there (`_rehome_reading`), a miss just tidied.
+    """
+    opened = _windows_opened_since(driver, ledger)
+    if not opened:
+        return _verified_reading(_wait_thread_open(driver, timeout))
+    try:
+        driver.switch_to.window(opened[-1])
+    except WebDriverException as e:
+        log_debug("Could not switch to the window a message-thread route opened", exc=e,
+                  action_type="followup")
+    verified = _verified_reading(_wait_thread_open(driver, timeout))
+    if verified:
+        return _rehome_reading(driver, ledger, timeout)
+    _close_opened_windows(driver, ledger)
+    return None
+
+
+def _is_shown(element: WebElement) -> bool:
+    """Displayed AND non-zero size — the `0x0` sticky-header duplicate passes neither on purpose.
+
+    Measured 2026-09-01: the duplicate is `visibility: visible`, `opacity: 1`, and only a zero-size
+    rect (`offsetParent === null`) distinguishes it, so the rect is checked explicitly rather than
+    inherited from whatever `is_displayed()` happens to do with it. An element whose size cannot be
+    parsed is not evidence of a zero-size render and is left to `is_displayed()`.
+    """
+    try:
+        if not element.is_displayed():
+            return False
+        size = element.size or {}
+    except (StaleElementReferenceException, WebDriverException):
+        return False
+    try:
+        return float(size.get("width") or 0) > 0 and float(size.get("height") or 0) > 0
+    except (AttributeError, TypeError, ValueError):
+        return True
+
+
+def _control_belongs_to_target(element: WebElement, person_name: Optional[str],
+                               profile_url: str) -> bool:
+    """Is this Message control provably the TARGET's, by its own `aria-label`?
+
+    The positive rule measured 2026-09-01 (module docstring): the target's own control carries NO
+    aria-label, every rail stranger's carries `Message <Their Name>`. So a bare control belongs to
+    the target; a named one belongs to the target only when the name it carries is the target's —
+    matched as a whole name (`name_matches`) against the stored `person_name` or the slug-derived
+    name, so `Message Jane` fits `Jane Doe` and `Message Jane Smith` never does. A control whose
+    label cannot be read, or names somebody when no name of the target's is known, is precisely the
+    one never to click (#1012).
+    """
+    try:
+        label = element.get_attribute("aria-label")
+    except (StaleElementReferenceException, WebDriverException):
+        return False
+    label = " ".join(str(label or "").split())
+    if not label:
+        return True
+    match = _MESSAGE_LABEL_RE.match(label)
+    if not match:
+        return False
+    named = (match.group("name") or "").strip()
+    if not named:
+        return True
+    for known in ((person_name or "").strip(), name_from_profile_url(profile_url)):
+        if known and name_matches(named, known):
+            return True
+    return False
+
+
+def _visible_elements(root, locators: list[tuple[str, str]], accept=None) -> list[WebElement]:
+    """Shown matches (that `accept` allows) from the FIRST locator that yields any, in document order.
 
     The ladder needs a fail-FAST scan, so this never waits (routes get their patience in the
-    post-click verification instead).
+    post-click verification instead). A rung whose every match is hidden or refused by `accept`
+    yields nothing and the next rung is tried — a positional `[0]` never wins by document order.
     """
     for find_by, value in locators:
         try:
             found = root.find_elements(find_by, value)
         except (WebDriverException, StaleElementReferenceException, NoSuchElementException):
             continue
-        visible = []
-        for el in found or []:
-            try:
-                if el.is_displayed():
-                    visible.append(el)
-            except (StaleElementReferenceException, WebDriverException):
-                continue
+        visible = [el for el in found or []
+                   if _is_shown(el) and (accept is None or accept(el))]
         if visible:
             return visible
     return []
@@ -576,29 +776,35 @@ def _click(driver: WebDriver, element: WebElement) -> bool:
 
 
 def _try_control(driver: WebDriver, locators: list[tuple[str, str]], root=None,
-                 timeout: float = THREAD_RENDER_TIMEOUT_SECONDS) -> Optional[dict]:
-    """Click the first matching control and return the verification reading if a thread opened."""
-    for element in _visible_elements(root if root is not None else driver, locators):
+                 timeout: float = THREAD_RENDER_TIMEOUT_SECONDS, accept=None) -> Optional[dict]:
+    """Click each accepted, shown control in turn; return the verification reading once one opens.
+
+    `accept` is the attribution gate (`_control_belongs_to_target`): a candidate it refuses is never
+    clicked, even when it is the only match. Every click is graded through `_grade_after_action`,
+    so a click that opened a window has it closed again before the next candidate is tried.
+    """
+    for element in _visible_elements(root if root is not None else driver, locators, accept):
+        ledger = _window_ledger(driver)
         if not _click(driver, element):
             continue
-        verified = _verified_reading(_wait_thread_open(driver, timeout))
+        verified = _grade_after_action(driver, ledger, timeout)
         if verified:
             return verified
     return None
 
 
-def _try_overflow(driver: WebDriver, timeout: float) -> Optional[dict]:
+def _try_overflow(driver: WebDriver, timeout: float, accept=None) -> Optional[dict]:
     """LinkedIn demotes Message into the top-card **More** menu for some profiles/states.
 
-    Several 'More' controls can share a page, so each is opened in turn and routes 1-3 re-run
-    inside it.
+    Several 'More' controls can share a page, so each is opened in turn and routes 1-2 re-run
+    inside it, under the same attribution gate.
     """
     for menu in _visible_elements(driver, _MORE_LOCATORS):
         if not _click(driver, menu):
             continue
         time.sleep(_POLL_SECONDS)
-        for locators in (_ANCHOR_LOCATORS, _BUTTON_LOCATORS, _TEXT_NODE_LOCATORS):
-            reading = _try_control(driver, locators, timeout=timeout)
+        for locators in (_ANCHOR_LOCATORS, _TEXT_NODE_LOCATORS):
+            reading = _try_control(driver, locators, timeout=timeout, accept=accept)
             if reading:
                 return reading
     return None
@@ -627,8 +833,9 @@ def _try_direct_url(driver: WebDriver, timeout: float, urn: Optional[str] = None
     urn = urn or profile_urn_from_page(driver, profile_url)
     if not urn:
         return None
+    ledger = _window_ledger(driver)
     driver.get(compose_url_for(urn))
-    return _verified_reading(_wait_thread_open(driver, timeout))
+    return _grade_after_action(driver, ledger, timeout)
 
 
 def _try_messaging_search(driver: WebDriver, wait: WebDriverWait, person_name: Optional[str],
@@ -680,9 +887,10 @@ def _try_messaging_search(driver: WebDriver, wait: WebDriverWait, person_name: O
             continue  # it names SOMEBODY ELSE — never guess past that
         elif not (name_matches(name, text) or name_matches(derived, text)):
             continue
+        ledger = _window_ledger(driver)
         if not _click(driver, item):
             continue
-        verified = _verified_reading(_wait_thread_open(driver, timeout))
+        verified = _grade_after_action(driver, ledger, timeout)
         if verified:
             return verified
     return None
@@ -717,10 +925,20 @@ def open_message_thread(driver: WebDriver, wait: WebDriverWait, profile_url: str
                         skip_routes: Optional[Collection[str]] = None) -> ThreadOpen:
     """Open this person's 1:1 message thread, walking every known route until one VERIFIABLY works.
 
-    Routes, in order: profile anchor → legacy button → tag-agnostic 'Message' text node → the
-    top-card More menu → the direct compose URL built from the profile URN → messaging search.
-    Returns a `ThreadOpen`; `opened` is False only when every route failed, and the winning route is
-    logged so the next rotation shows up in telemetry rather than in user complaints.
+    Routes, in order: profile anchor → tag-agnostic 'Message' text node → the top-card More menu →
+    the direct compose URL built from the profile URN → messaging search. (The legacy `button`
+    route was retired 2026-09-01 — module docstring.) Returns a `ThreadOpen`; `opened` is False
+    only when every route failed, and the winning route is logged so the next rotation shows up in
+    telemetry rather than in user complaints.
+
+    Every Message control a profile-side route may click is attributed to THIS person first
+    (`_control_belongs_to_target`, keyed on `person_name` and the profile slug) and must be shown
+    (`_is_shown`): a rail stranger's control is never clicked, even when it is the only one.
+
+    The ladder owns its windows (issue #1796): every route runs against a `_WindowLedger`, and
+    whatever the route opened is closed — with the driver back on the original window — before the
+    next route runs or this returns, success or failure. The driver is therefore always left on the
+    window it started on, which is where `check_dm_replied` reads the sender.
 
     Routes named in `skip_routes` are not walked and are recorded in `ThreadOpen.skipped`. The
     read-only live probe uses this to stop before `messaging_search`, whose search box takes a typed
@@ -728,10 +946,10 @@ def open_message_thread(driver: WebDriver, wait: WebDriverWait, profile_url: str
     (`ROUTES`); an unknown name is a caller typo that would silently skip nothing, so it raises
     `ValueError` rather than letting the walk reach the route it meant to stop.
 
-    Routes 1-4 are ALSO auto-skipped, the same way, whenever `_profile_side_routes_worth_trying`
+    Routes 1-3 are ALSO auto-skipped, the same way, whenever `_profile_side_routes_worth_trying`
     reads the just-rendered profile page as confidently not 1st degree (issue #1857): those routes
     only ever reach a control the top card renders for a 1st-degree connection, so walking them on
-    anyone else is four guaranteed misses and a full page render for nothing. An unreadable badge
+    anyone else is three guaranteed misses and a full page render for nothing. An unreadable badge
     changes nothing here — every route is still tried, exactly as before this existed.
 
     Every route exhausted is the EXPECTED outcome for anyone this account cannot message this way
@@ -751,11 +969,15 @@ def open_message_thread(driver: WebDriver, wait: WebDriverWait, profile_url: str
     time.sleep(random.uniform(2, 4))
     urn = profile_urn_from_page(driver)  # captured here: a clicked route may navigate away from it
 
+    def belongs(element: WebElement) -> bool:
+        return _control_belongs_to_target(element, person_name, profile_url)
+
     attempts = (
-        (ROUTE_ANCHOR, lambda: _try_control(driver, _ANCHOR_LOCATORS, timeout=timeout)),
-        (ROUTE_BUTTON, lambda: _try_control(driver, _BUTTON_LOCATORS, timeout=timeout)),
-        (ROUTE_TEXT_NODE, lambda: _try_control(driver, _TEXT_NODE_LOCATORS, timeout=timeout)),
-        (ROUTE_OVERFLOW, lambda: _try_overflow(driver, timeout)),
+        (ROUTE_ANCHOR, lambda: _try_control(driver, _ANCHOR_LOCATORS, timeout=timeout,
+                                            accept=belongs)),
+        (ROUTE_TEXT_NODE, lambda: _try_control(driver, _TEXT_NODE_LOCATORS, timeout=timeout,
+                                               accept=belongs)),
+        (ROUTE_OVERFLOW, lambda: _try_overflow(driver, timeout, accept=belongs)),
         (ROUTE_DIRECT_URL, lambda: _try_direct_url(driver, timeout, urn, profile_url)),
         (ROUTE_MESSAGING_SEARCH, lambda: _try_messaging_search(driver, wait, person_name,
                                                                profile_url, timeout)),
@@ -766,7 +988,7 @@ def open_message_thread(driver: WebDriver, wait: WebDriverWait, profile_url: str
         raise ValueError(f"skip_routes names unknown route(s): {sorted(unknown)}; valid ids are "
                          f"{list(ROUTES)}")
     if not _profile_side_routes_worth_trying(driver, profile_url):
-        profile_side = {ROUTE_ANCHOR, ROUTE_BUTTON, ROUTE_TEXT_NODE, ROUTE_OVERFLOW} - skip
+        profile_side = {ROUTE_ANCHOR, ROUTE_TEXT_NODE, ROUTE_OVERFLOW} - skip
         if profile_side:
             log_debug(f"{profile_url} is not 1st degree — skipping the profile-side Message "
                       f"routes {sorted(profile_side)}", user_id=user_id, action_type="followup")
@@ -778,6 +1000,7 @@ def open_message_thread(driver: WebDriver, wait: WebDriverWait, profile_url: str
                       action_type="followup")
             continue
         result.tried.append(route)
+        ledger = _window_ledger(driver)
         try:
             reading = attempt()
         except Exception as e:
@@ -786,6 +1009,11 @@ def open_message_thread(driver: WebDriver, wait: WebDriverWait, profile_url: str
             log_warning(f"Message-thread route '{route}' raised", exc=e, user_id=user_id,
                         action_type="followup", profile_url=profile_url)
             continue
+        finally:
+            # Belt and braces over the per-click grading: whatever the route left open — a More
+            # menu's tab, a window a raising route never graded — is closed here, before the next
+            # route or the next person. Fail-open, and never a change to `reading`.
+            _close_opened_windows(driver, ledger)
         if reading:
             result.opened = True
             result.route = route

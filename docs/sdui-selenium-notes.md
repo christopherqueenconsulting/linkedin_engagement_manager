@@ -447,6 +447,57 @@ already resolves connection emails via apollo.io and supplies them to LEM throug
 `/api/connection_request` surface. See the handoff note under "Cross-project suppliers" in
 [`identity-and-sessions.md`](identity-and-sessions.md).
 
+## The Message control is an anchor with NO aria-label — and the rail's have one (#1796)
+
+Grounded 2026-09-01, two independent read-only passes on two different 1st-degree profiles (the
+issue's probe plus `harshal-karanpuriya`), no outbound control clicked. This is the messaging-surface
+twin of the Connect hazards above, and `utilities/linkedin/message_thread.py` is where it lands.
+
+* **`button[aria-label^='Message']` and `//button[normalize-space()='Message']` match ZERO
+  elements on both profiles.** The affordance is `<a href="/messaging/compose/…">Message</a>` with
+  attributes `class`, `aria-disabled`, `href`, `componentkey` — and nothing else: no `aria-label`,
+  no `data-testid`, no `data-view-name`, and the top card exposes no `data-view-name` at all.
+  `componentkey` is a per-render UUID, not an anchor. The ladder's legacy `button` route (route 2)
+  was therefore a silent no-op paying its full poll budget on every walk, and it is **retired**, not
+  emptied — route ids are log vocabulary only, nothing persists them, and `skip_routes=("button",)`
+  now raises like any other unknown id. This is a deliberate exception to "keep a rung that stopped
+  answering": there is nothing for the rung to come back AS, because the `<a>` rung already covers
+  the control under every phrasing LinkedIn has served.
+* **The target's own anchor has NO `aria-label` — absent from `getAttributeNames()`, not
+  present-and-empty.** Every "People also viewed" rail anchor carries
+  `aria-label="Message <Other Person>"` (measured: `Message SATHISH N`, `Message Harun Reşit Zafer`,
+  `Message Ali Raza`, `Message Emmanuval Siby`). So the one attribute that can disambiguate is
+  empty on the element we want and populated on the ones we must never touch — and that IS the
+  discriminator. `_control_belongs_to_target` applies the positive rule (invariant 2): a bare
+  control is the target's; a named one is the target's only when the name is a whole-name match
+  (`name_matches`) for the stored `person_name` or the slug-derived name; a control whose label
+  cannot be read, or names somebody when nothing of the target's is known, is precisely the one
+  never clicked. The rail's composition **varies by profile** — the second pass saw "People similar
+  to", whose controls are Connect *buttons*, so ZERO foreign anchors — which is why a positional
+  `find_elements(...)[0]` was wrong in both directions and document order is never trusted.
+* **The first match in document order is a `0x0` sticky-header duplicate** of the target's own
+  anchor: a real element, `visibility: visible`, `opacity: 1`, only `offsetParent === null` and a
+  zero-size rect tell it apart. And the text-node XPath
+  (`//*[normalize-space(text())='Message']/ancestor-or-self::*[…][1]`) resolved **7** hits on one
+  profile, the FIRST of them `displayed: false`, four of them the rail strangers above. Every
+  clickable candidate on every profile-side route is therefore filtered on `is_displayed()` AND a
+  non-zero size (`_is_shown`) before attribution, rather than inheriting whatever order the DOM
+  yields.
+* **The ladder owns its windows.** A `CQC_LEM (Follow-ups)` session was watched opening six
+  duplicate tabs while grading every route as a miss (the driver kept reading the tab it was
+  already on). Each action now records `window_handles` first, grades on the NEWEST window, and —
+  success or failure — closes what it opened and returns to the original window before the next
+  route or the next person; a thread that verified in a new tab is re-homed onto the original by
+  URL and verified again there, because `check_dm_replied` reads the sender from whichever window
+  the driver is left on. What opens the tabs is still unknown (the anchors carry no `target`), and
+  needs the live watch the issue calls for; the ownership fix is correct whichever it is.
+* **Not reproducible: the "sends via Sales Navigator" report.** On the profile page
+  `[data-sn-view-name]` and `[class*='sales']` are 0 nodes and the only `/sales/` href is the global
+  nav launcher every Sales-Nav account gets; `/messaging/` and `compose_url_for()` stay on
+  `www.linkedin.com/messaging/…` with the native composer (`msg-form__contenteditable`) and the
+  native `button.msg-form__send-button`. The nearest real thing is the composer's "Open send
+  options" control beside Send, which LEM never clicks. Left open as unconfirmed, not closed.
+
 ## Profile experience rows: the a11y twin, not a line index (#970)
 
 `/details/experience/` renders most text **twice** — a visible `span[aria-hidden="true"]` beside a
