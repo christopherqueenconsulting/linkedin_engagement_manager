@@ -114,6 +114,10 @@ class Config:
     #: How long a SIGTERM waits for in-flight children before giving up on watching them. Rollback
     #: is measured in minutes, so this bounds it — the children keep running either way.
     drain_seconds: int
+    #: How often the daemon spawns `actions/sweep.sh` to reclaim finished worktrees under `work/`
+    #: (#2041). Read against the SAME stamp file `sweep_stale_worktrees` keeps, and exported to the
+    #: child as `WORKTREE_SWEEP_INTERVAL`, so the daemon's clock and the function's guard agree.
+    worktree_sweep_interval: int
     #: Shadow mode: observe and log decisions, mutate nothing. The migration runs here for >=3 days.
     shadow: bool
     raw: dict[str, str] = field(default_factory=dict, repr=False)
@@ -127,6 +131,11 @@ class Config:
     def heartbeat_file(self) -> Path:
         """Freshness beacon the failsafe cron reads to decide whether v1 should take over."""
         return self.base / "state" / "lemd.heartbeat"
+
+    @property
+    def worktree_sweep_stamp(self) -> Path:
+        """The stamp `sweep_stale_worktrees` (lib/guards.sh) touches when it actually runs."""
+        return self.base / "locks" / ".worktree-sweep"
 
     def is_paused(self) -> bool:
         """True when the owner has stopped the whole pipeline."""
@@ -164,6 +173,7 @@ def load(base: str | Path | None = None) -> Config:
         webhook_stale_seconds=_int(env, "LEMD_WEBHOOK_STALE_SECONDS", 1800),
         usage_probe_interval=_int(env, "LEMD_USAGE_PROBE_INTERVAL", 900),
         drain_seconds=_int(env, "LEMD_DRAIN_SECONDS", 20),
+        worktree_sweep_interval=_int(env, "LEMD_WORKTREE_SWEEP_INTERVAL", 3600),
         shadow=_str(env, "LEMD_SHADOW", "1") not in ("0", "false", "no"),
         raw=env,
     )

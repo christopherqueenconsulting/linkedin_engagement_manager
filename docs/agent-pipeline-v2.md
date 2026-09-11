@@ -49,6 +49,8 @@ load-bearing:
 heartbeat        write state/lemd.heartbeat        (the watchdog's liveness signal)
 collect          reap finished runs                 ← runs even while PAUSED, or a pause
                                                       would strand claims and branch locks
+sweep_worktrees  spawn actions/sweep.sh             ← also while PAUSED; at most hourly, by the
+                                                      locks/.worktree-sweep stamp (#2041)
 ── if PAUSED: stop here ──
 drain_events     webhook rows  → items.dirty=1      (≤200 per pass)
 reconcile        GitHub labels → the queue          (600s; 120s only if silent AND drifting)
@@ -77,6 +79,20 @@ event path and a quiet repository, and polling 5× harder on a quiet repo is bac
 
 Events never decide anything. They only say *"this item changed, look again"*, which is what makes a
 duplicate or out-of-order delivery harmless.
+
+**The stale-worktree sweep runs from the loop, not from a work path** (#2041). `sweep_stale_worktrees`
+(`lib/guards.sh`) had one caller, `tick.sh`, which stands down at the top of a `V1_RETIRED` box — so
+from the 2026-08-10 cutover nothing swept `work/` (76 trees, 8.7 GB by 2026-09-11, most of them clean
+trees whose PR had squash-merged). `Daemon.sweep_worktrees()` now spawns `v2/actions/sweep.sh` in its
+own `maint` pool (cap 1, never a `gh` or `agent` slot) whenever `locks/.worktree-sweep` is older than
+`LEMD_WORKTREE_SWEEP_INTERVAL` (3600s) — the SAME stamp the function touches, so the daemon never
+starts a process the function's own hourly guard would send home. It runs before the PAUSED gate,
+because it starts no work; it does not run in shadow mode, where v1 still owns dispatch. It is
+deliberately NOT called from `agent_run.sh`: a call site inside a dispatch dies with the dispatch (an
+idle pipeline would never sweep), and it would sit on the run's critical path after the budget was
+charged. What is removable is unchanged — `release_worktree` still refuses a dirty tree, a claimed
+branch and anything outside `work/`. Log lines: `worktree sweep: …` in `logs/v2-actions-*.log`.
+`tests/unit/test_agent_pipeline_v2_worktree_sweep.py` pins the wiring end to end.
 
 ---
 

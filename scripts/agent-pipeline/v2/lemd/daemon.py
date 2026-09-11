@@ -122,6 +122,9 @@ class Daemon:
         #: Undelivered changes the last reconcile found. The evidence half of the staleness
         #: detector — webhook silence on its own cannot tell a quiet repo from a broken event path.
         self._reconcile_drift = 0
+        #: When the stale-worktree sweep was last SPAWNED (not when it last ran — that is the stamp
+        #: file). Bounds the retry when a spawn fails or the action exits before touching the stamp.
+        self._last_sweep_spawn = 0.0
 
     # ---------------------------------------------------------------- lifecycle
 
@@ -897,6 +900,10 @@ class Daemon:
         # running children uncollected would hold their claims and their branches for the whole
         # duration of the pause, so the resume would find every branch locked.
         self.collect()
+        # So does the worktree sweep, for the same reason: it starts no work, it only returns disk
+        # that finished work is still holding — and a pause is when an operator is most likely to
+        # be looking at the box and asking why 8.7 GB of merged trees are still there.
+        self.sweep_worktrees()
         if self.cfg.is_paused():
             LOG.info("PAUSED file present — observing nothing this pass")
             return
@@ -907,6 +914,54 @@ class Daemon:
         self.observe_dirty()
         self.sweep_ttls()
         self.act()
+
+    #: Minimum seconds between two ATTEMPTS to spawn the sweep. Only matters when a spawn fails or
+    #: the action exits without touching its stamp (no gh credential, say): without it the loop
+    #: would spawn a doomed process on every pass — up to once a second — until the box recovered.
+    SWEEP_RETRY_SECONDS = 300
+
+    def sweep_worktrees(self) -> bool:
+        """Spawn `actions/sweep.sh` once the last stale-worktree sweep is older than the interval.
+
+        This is the v2 call site of `sweep_stale_worktrees` (#2041). Its only other caller was
+        `tick.sh`, which stands down at the top on a `V1_RETIRED` box, so from the 2026-08-10
+        cutover NOTHING swept `work/`: 76 worktrees / 8.7 GB by 2026-09-11, most of them clean trees
+        whose PR had squash-merged weeks earlier. It lives in the LOOP rather than in `agent_run.sh`
+        because a call site that exists only inside a work path dies with that path — an idle
+        pipeline would never sweep, and a sweep on the dispatch's critical path would run after the
+        budget was charged, with the run's kill deadline already ticking.
+
+        The clock is the function's own stamp file, read here BEFORE spawning: the daemon never
+        starts a process the function's hourly guard would only send home, and the two halves
+        cannot disagree about "an hour" because the child is handed the same interval.
+
+        Returns:
+            True when a sweep was spawned this pass.
+        """
+        if self.cfg.shadow:
+            # Shadow mode's contract is "spawn nothing". v1 still owns dispatch there, and its tick
+            # still sweeps.
+            return False
+        now = time.time()
+        if now - self._last_sweep_spawn < self.SWEEP_RETRY_SECONDS:
+            return False
+        try:
+            age = now - self.cfg.worktree_sweep_stamp.stat().st_mtime
+        except OSError:
+            age = float("inf")   # never swept: due now
+        if age < self.cfg.worktree_sweep_interval:
+            return False
+        if self.sup.sweep_in_flight():
+            return False
+        self._last_sweep_spawn = now
+        child = self.sup.dispatch_sweep(interval_s=self.cfg.worktree_sweep_interval)
+        if child is None:
+            LOG.warning("stale-worktree sweep could not be spawned; retrying in %ss",
+                        self.SWEEP_RETRY_SECONDS)
+            return False
+        LOG.info("stale-worktree sweep spawned (last ran %s ago)",
+                 "never" if age == float("inf") else f"{int(age)}s")
+        return True
 
     def refresh_usage(self) -> None:
         """Keep the subscription meter fresh so the dispatch action can read it.
