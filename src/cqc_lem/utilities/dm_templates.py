@@ -21,6 +21,8 @@ call it; `default_connect_note` — the pure template it starts from — stays i
 `connection_targeting.py`, which is deliberately LLM-free.
 """
 
+import re
+
 from cqc_lem.utilities.ai.ai_helper import get_ai_message_refinement
 from cqc_lem.utilities.connection_targeting import CONNECT_NOTE_LIMIT, ScoredCandidate, default_connect_note
 from cqc_lem.utilities.logger import log_warning
@@ -34,6 +36,26 @@ class _SafePlaceholders(dict):
         return "{" + key + "}"
 
 
+_BLOG_URL_TOKEN = "{blog_url}"
+
+# One sentence, delimiter kept: text up to the next `.`/`!`/`?`/newline, or the tail of the body.
+_SENTENCE_RE = re.compile(r"[^.!?\n]*(?:[.!?]+|\n+|$)")
+
+
+def _drop_link_clause(text: str) -> str:
+    """Remove the sentence that promises a link when there is no link to fill it with (#2061).
+
+    `{blog_url}` is the one token with no grammatical fallback: `{first_name}` empty reads "there",
+    but an empty URL leaves a sentence that ends "…here's a quick breakdown: " — a link-shaped hole.
+    The refiner then either invents `[link]` (the send path refuses that body outright) or ships the
+    dangling lead-in to a real person, which is what happened on 2026-09-12. Dropping the whole
+    clause leaves a shorter message that is still true, and a template that was ONLY the link clause
+    renders empty so the caller can stop the step instead of sending a fragment.
+    """
+    kept = [s for s in _SENTENCE_RE.findall(text) if _BLOG_URL_TOKEN not in s]
+    return "".join(kept).strip()
+
+
 def render_dm_placeholders(text: str, *, first_name: str = "", headline: str = "",
                            blog_url: str = "", event_detail: str = "") -> str:
     """Single source of truth for filling DM / lead-magnet {placeholders}: {first_name},
@@ -42,6 +64,10 @@ def render_dm_placeholders(text: str, *, first_name: str = "", headline: str = "
     """
     if not text:
         return text or ""
+    if not blog_url and _BLOG_URL_TOKEN in text:
+        text = _drop_link_clause(text)
+        if not text:
+            return ""
     ctx = _SafePlaceholders(first_name=first_name or "there",
                             headline=headline or "my professional field",
                             blog_url=blog_url or "",

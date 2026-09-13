@@ -43,6 +43,35 @@ class TestRenderDmPlaceholders:
         assert render_dm_placeholders(None) == ""
 
 
+class TestLinkClauseWithoutALink:
+    """`{blog_url}` is the one token with no grammatical fallback (#2061).
+
+    An empty one leaves a sentence that ends in a colon and nothing else, which is what shipped to
+    a real contact on 2026-09-12.
+    """
+
+    def test_the_sentence_promising_the_link_is_dropped(self):
+        from cqc_lem.utilities.dm_templates import render_dm_placeholders
+        out = render_dm_placeholders("No problem if the timing missed. Here's a breakdown: {blog_url}",
+                                     first_name="Jane")
+        assert out == "No problem if the timing missed."
+
+    def test_only_the_link_sentence_goes(self):
+        from cqc_lem.utilities.dm_templates import render_dm_placeholders
+        out = render_dm_placeholders("Hi {first_name}. Read {blog_url} first. Talk soon!",
+                                     first_name="Jane")
+        assert out == "Hi Jane. Talk soon!"
+
+    def test_a_template_that_is_only_the_link_clause_renders_empty(self):
+        from cqc_lem.utilities.dm_templates import render_dm_placeholders
+        assert render_dm_placeholders("Here you go: {blog_url}") == ""
+
+    def test_a_real_url_keeps_the_whole_sentence(self):
+        from cqc_lem.utilities.dm_templates import render_dm_placeholders
+        out = render_dm_placeholders("Here's a breakdown: {blog_url}", blog_url="https://x.co/b")
+        assert out == "Here's a breakdown: https://x.co/b"
+
+
 class TestBuildDmRoutesThroughEngine:
     def test_template_still_fills_first_name(self):
         from cqc_lem.app.engagement.outreach import build_dm_from_template

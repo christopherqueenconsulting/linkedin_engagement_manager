@@ -957,15 +957,36 @@ def build_dm_from_template(user_id: int, event_type: str, first_name: str,
                            event_detail: str = "") -> "str | None":
     """Render the user's DM template for an event (filling {first_name}/{headline}/{blog_url}/
     {event_detail}) and LLM-refine it to their voice (<=300 chars). Falls back to the code-default
-    template; returns None only when no template exists for that (event, step).
+    template, and to the rendered template whenever the refined body is one `send_dm_now` would
+    refuse. Returns None when no template exists for that (event, step), or when the template was
+    only a link clause and no blog URL resolved.
     """
     tmpl = get_dm_template(user_id, event_type, step)
     if not tmpl:
         return None
     headline = getattr(my_profile, "job_title", None) or "my professional field"
-    rendered = render_dm_placeholders(tmpl["template_text"], first_name=first_name,
+    template_text = str(tmpl["template_text"] or "")
+    if not blog_url and "{blog_url}" in template_text:
+        # #2061: the follow-up ladder, the catch-up lane and the funnel all call this without a blog
+        # URL, so a step template that promises a link rendered a link-shaped hole — and the refiner
+        # filled it with an invented `[link]` (refused outright by `send_dm_now`) or shipped the
+        # dangling lead-in. Resolved HERE, the one place every DM lane renders through, rather than
+        # at each call site; read only when the template actually asks for it.
+        blog_url = get_user_blog_url(user_id) or ""
+    rendered = render_dm_placeholders(template_text, first_name=first_name,
                                       headline=headline, blog_url=blog_url,
-                                      event_detail=event_detail)
+                                      event_detail=event_detail).strip()
+    if not rendered:
+        # The template was ONLY its link clause and there is no link (see `_drop_link_clause`).
+        # None is the caller's existing "no template for this step" answer: the sequence stops
+        # rather than sending a fragment.
+        # INFO, not WARNING: this is a steady state of one user's template, not an event — every
+        # contact on that drip renders the same empty body, so a warning would clear the 3-in-24h
+        # escalation and file the defect this branch exists to remove. The caller logs the skip.
+        log_info(f"DM template for '{event_type}' step {step} carries only a link clause and no "
+                 f"blog URL resolved; nothing to send", user_id=user_id, action_type="dm")
+        return None
+
     def _refine(fix_directive: str = "") -> str:
         refined = get_ai_message_refinement(rendered, character_limit=300,
                                             extra_directive=fix_directive)
@@ -977,10 +998,27 @@ def build_dm_from_template(user_id: int, event_type: str, first_name: str,
         # Deterministic slop lint + bounded re-refine (issue #625 / D1). A DM has no review queue,
         # so a still-slopped one is sent with the patterns named in the log rather than dropped —
         # dropping it would silently break the outreach sequence.
-        return lint_repaired(_refine(), "dm", _refine, user_id=user_id, action_type="dm")
+        final = lint_repaired(_refine(), "dm", _refine, user_id=user_id, action_type="dm")
     except Exception as e:
         log_warning("DM refinement failed; sending rendered template", exc=e, action_type="dm", user_id=user_id)
-        return rendered.strip()
+        return rendered
+
+    # A rewrite may only polish what the template said. Refine, humanize and the lint repair are
+    # three separate models' chances to put a slot name where the template had a real value, and
+    # `send_dm_now` answers such a body by dropping the whole outreach step (#2061). When the
+    # rendered template IS sendable, it is the better answer than nothing. INFO, not WARNING: the
+    # degradation is bounded and correct, and a line that escalates on recurrence would re-file the
+    # very defect this branch exists to absorb.
+    # Graded WITHOUT an `if final` guard: an empty rewrite is the most unsendable body there is
+    # (`outbound_qa` names it `empty_body`), and short-circuiting it here would return "" — falsy,
+    # so every caller marks the follow-up `stopped` and the sequence dies on a step whose rendered
+    # template was fine to send.
+    rewrite_refusal = outbound_refusal_reason(final, surface=OUTBOUND_SURFACE_DM)
+    if rewrite_refusal and not outbound_refusal_reason(rendered, surface=OUTBOUND_SURFACE_DM):
+        log_info(f"DM rewrite was unsendable ({rewrite_refusal}); sending the rendered template "
+                 f"instead", user_id=user_id, action_type="dm")
+        return rendered
+    return final
 
 
 # How long after an outbound DM we come back to look for a reply when the user has configured no

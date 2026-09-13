@@ -219,8 +219,31 @@ Two fail-open decisions in that chain, both deliberate:
   queue, so dropping it would silently break the outreach sequence — the louder failure is the
   quiet one. Refinement raising at all falls back to the plainly-rendered template.
 
-`None` comes back **only** when no template exists for that `(event_type, step)`, and `None` is what
-ends a sequence: the caller marks the row `stopped`.
+`None` comes back when no template exists for that `(event_type, step)`, and `None` is what ends a
+sequence: the caller marks the row `stopped`.
+
+#### `{blog_url}` is the one token with no grammatical fallback (issue #2061)
+
+An empty `{first_name}` reads `"there"` and an empty `{event_detail}` reads `"the news"`. An empty
+`{blog_url}` leaves a sentence that ends `"…here's a quick breakdown: "` and nothing after it — a
+link-shaped hole, and every rewrite downstream treats a hole as something to fill. Over 24h in
+September 2026 four follow-ups were refused by the outbound gate for an invented `[link]` and a
+fifth was typed into a real inbox ending on the bare colon, all because the follow-up ladder, the
+catch-up lane and the funnel call `build_dm_from_template` without a `blog_url`. Three rules now
+close that:
+
+- **The URL is resolved in `build_dm_from_template`**, the one place every DM lane renders through,
+  from the user's stored `blog_url` — and only when the template actually contains the token, so a
+  template that asks for no link costs no read.
+- **With no URL anywhere, `render_dm_placeholders` drops the whole sentence carrying the token**
+  rather than leaving the hole. A shorter message that is still true beats a promise with nothing
+  behind it. A template that was ONLY its link clause renders empty, and that is the second way
+  `None` comes back — the sequence stops instead of sending a fragment.
+- **A rewrite may only polish what the template said.** Refine, humanize and the lint repair are
+  three separate chances to put a slot name where a real value stood, so the refined body is graded
+  by `outbound_qa` before it leaves: unsendable rewrite + sendable rendered template = send the
+  template, logged at INFO. `send_dm_now` would otherwise refuse the body and drop the outreach
+  step entirely.
 
 ### Scheduling the next step — and the reply check that has no step (`enqueue_next_followup`, issue #623)
 
