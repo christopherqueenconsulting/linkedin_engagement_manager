@@ -980,8 +980,11 @@ def build_dm_from_template(user_id: int, event_type: str, first_name: str,
         # The template was ONLY its link clause and there is no link (see `_drop_link_clause`).
         # None is the caller's existing "no template for this step" answer: the sequence stops
         # rather than sending a fragment.
-        log_warning(f"DM template for '{event_type}' step {step} rendered empty without a blog URL; "
-                    f"not sending", user_id=user_id, action_type="dm")
+        # INFO, not WARNING: this is a steady state of one user's template, not an event — every
+        # contact on that drip renders the same empty body, so a warning would clear the 3-in-24h
+        # escalation and file the defect this branch exists to remove. The caller logs the skip.
+        log_info(f"DM template for '{event_type}' step {step} carries only a link clause and no "
+                 f"blog URL resolved; nothing to send", user_id=user_id, action_type="dm")
         return None
 
     def _refine(fix_directive: str = "") -> str:
@@ -1006,7 +1009,11 @@ def build_dm_from_template(user_id: int, event_type: str, first_name: str,
     # rendered template IS sendable, it is the better answer than nothing. INFO, not WARNING: the
     # degradation is bounded and correct, and a line that escalates on recurrence would re-file the
     # very defect this branch exists to absorb.
-    rewrite_refusal = outbound_refusal_reason(final, surface=OUTBOUND_SURFACE_DM) if final else None
+    # Graded WITHOUT an `if final` guard: an empty rewrite is the most unsendable body there is
+    # (`outbound_qa` names it `empty_body`), and short-circuiting it here would return "" — falsy,
+    # so every caller marks the follow-up `stopped` and the sequence dies on a step whose rendered
+    # template was fine to send.
+    rewrite_refusal = outbound_refusal_reason(final, surface=OUTBOUND_SURFACE_DM)
     if rewrite_refusal and not outbound_refusal_reason(rendered, surface=OUTBOUND_SURFACE_DM):
         log_info(f"DM rewrite was unsendable ({rewrite_refusal}); sending the rendered template "
                  f"instead", user_id=user_id, action_type="dm")

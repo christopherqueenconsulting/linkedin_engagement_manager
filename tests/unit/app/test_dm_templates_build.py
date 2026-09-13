@@ -135,3 +135,27 @@ class TestLinkPlaceholderNeverLeaves:
              patch(f"{_OUT}.lint_repaired", side_effect=lambda t, *a, **kw: t):
             msg = build_dm_from_template(1, "connection_accepted", "Jane", MagicMock(), step=1)
         assert msg == "Here you go [link]"
+
+    def test_an_empty_rewrite_still_falls_back_to_the_rendered_template(self):
+        # `empty_body` is a refusal like any other: short-circuiting it would return "", which every
+        # caller reads as "no template for this step" and answers by stopping the sequence.
+        from cqc_lem.app.engagement.outreach import build_dm_from_template
+        with ExitStack() as stack:
+            for p in self._patches(lambda m, character_limit=300, extra_directive="": "   "):
+                stack.enter_context(p)
+            msg = build_dm_from_template(1, "connection_accepted", "Jane", MagicMock(), step=1)
+        assert msg == ("No problem if the timing missed. Here's a quick breakdown: "
+                       "https://blog.example.com/x")
+
+    def test_a_link_only_template_never_warns(self):
+        # One user's template plus one missing blog URL is a steady state, not an event: every
+        # contact on that drip renders the same empty body, so a WARNING here would clear the
+        # 3-in-24h escalation and re-file the very defect #2061 is.
+        from cqc_lem.app.engagement.outreach import build_dm_from_template
+        with patch(f"{_OUT}.get_dm_template",
+                   return_value={"template_text": "Here you go: {blog_url}", "delay_hours": 0,
+                                 "step": 1}), \
+             patch(f"{_OUT}.get_user_blog_url", return_value=None), \
+             patch(f"{_OUT}.log_warning") as warn:
+            assert build_dm_from_template(1, "connection_accepted", "Jane", MagicMock(), step=1) is None
+        warn.assert_not_called()
