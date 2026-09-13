@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.176.1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.176.0...v0.176.1) (2026-09-13)
+
+
+### Bug Fixes
+
+* **dm:** never render a link-shaped hole a rewrite can fill with [link] (closes [#2061](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2061)) ([#2062](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2062)) ([c159205](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/c159205c4d6db46ac1e3baef56a4dc84fca4e334))
+
 ## [0.176.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.175.0...v0.176.0) (2026-09-11)
 
 
