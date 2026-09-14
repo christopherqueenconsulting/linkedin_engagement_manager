@@ -2104,6 +2104,23 @@ class TestCatchupDefaultResponseProbe:
         assert dr["classified_with_neither"] == 0
 
 
+def _fake_share_composer(monkeypatch, **attrs):
+    """Stand in for the DEPLOYED `share_composer`, both ways the probe can reach it.
+
+    `sys.modules` alone is not enough: `from cqc_lem.utilities.linkedin import share_composer`
+    resolves the PACKAGE attribute when the real module has already been imported, so a test that
+    patched only the module table would silently grade the real one.
+    """
+    from cqc_lem.utilities import linkedin as package
+
+    module = types.ModuleType("cqc_lem.utilities.linkedin.share_composer")
+    for name, value in attrs.items():
+        setattr(module, name, value)
+    monkeypatch.setitem(sys.modules, "cqc_lem.utilities.linkedin.share_composer", module)
+    monkeypatch.setattr(package, "share_composer", module, raising=False)
+    return module
+
+
 @pytest.mark.unit
 class TestOccasionComposerProbe:
     """#1088: grounding this route is the precondition for flipping the native-publish flag on."""
@@ -2136,6 +2153,57 @@ class TestOccasionComposerProbe:
                    "modal_containers": [{"tag": "div", "class": "share-box"}]}
         assert "re-ground the container" in llv.occasion_composer_verdict(reading)
         assert "NOTHING opened" not in llv.occasion_composer_verdict(reading)
+
+    def test_the_carried_container_rule_is_asked_when_the_image_misses(self, monkeypatch):
+        """#2067: the image MISSING it is exactly when the carried copy has to answer.
+
+        Returning "none" the moment the shipped lookup came back empty graded a pre-merge fix
+        against the code it replaces, so a new container rung could never be grounded until after
+        it had already shipped.
+        """
+        _fake_share_composer(monkeypatch, find_composer_container=lambda driver: None)
+        carried = MagicMock()
+        carried.find_elements.return_value = [MagicMock()]
+        monkeypatch.setattr(llv, "carried_deep_elements", lambda *a, **k: [carried])
+
+        assert llv._composer_container(MagicMock()) == (carried, "script")
+
+    def test_the_carried_labels_extend_the_image_chain_rather_than_losing_to_it(self,
+                                                                               monkeypatch):
+        """A label THIS branch added is what a pre-merge pass has to ask the live page about."""
+        _fake_share_composer(monkeypatch,
+                             OCCASION_ENTRY_LABELS=("celebrate an occasion",),
+                             OCCASION_MORE_LABELS=("more",),
+                             POST_BUTTON_LABELS=("post",),
+                             OCCASION_TYPE_LABELS={"project_launch": ("project launch",)},
+                             COMPOSER_AFFORDANCE_CSS="button",
+                             COMPOSER_EDITOR_CSS="[role='textbox']",
+                             TEMPLATE_CHOOSER_NEXT_LABELS=("next",))
+
+        entry, more, _post, _types, _css, _editor, _next, source = llv._occasion_composer_chains()
+
+        assert source == "image+script"
+        assert entry[0] == "celebrate an occasion"
+        assert "celebration" in entry
+        assert "expand content types" in more
+
+    def test_an_image_that_already_has_every_label_still_reads_as_the_image(self, monkeypatch):
+        _fake_share_composer(
+            monkeypatch,
+            OCCASION_ENTRY_LABELS=llv._CARRIED_OCCASION_ENTRY_LABELS,
+            OCCASION_MORE_LABELS=llv._CARRIED_OCCASION_MORE_LABELS,
+            POST_BUTTON_LABELS=llv._CARRIED_POST_BUTTON_LABELS,
+            OCCASION_TYPE_LABELS=dict(llv._CARRIED_OCCASION_TYPE_LABELS),
+            COMPOSER_AFFORDANCE_CSS="button",
+            COMPOSER_EDITOR_CSS="[role='textbox']",
+            TEMPLATE_CHOOSER_NEXT_LABELS=llv._CARRIED_TEMPLATE_CHOOSER_NEXT_LABELS)
+
+        assert llv._occasion_composer_chains()[-1] == "image"
+
+    def test_the_entry_lookup_admits_a_link_when_the_image_has_no_rule_for_it(self, monkeypatch):
+        """The entry is an `<a href>` on `/sharing/compose`; nothing else on the composer is."""
+        _fake_share_composer(monkeypatch)
+        assert llv._occasion_entry_css("button") == "button, a[href]"
 
     def test_a_composer_with_no_occasion_affordance_is_drift(self):
         reading = {"page_text": "x", "share_box_present": True, "dialog_present": True,
