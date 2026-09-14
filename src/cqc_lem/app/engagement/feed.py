@@ -1516,6 +1516,25 @@ def _activity_page_owner_name(driver: WebDriver) -> str:
     return ""
 
 
+def _follow_control_crosscheck_sel(owner: str) -> str:
+    """CSS matching the page's OWN follow affordance for `owner` — the anchor a three-route miss is graded against.
+
+    Post cards were the wrong anchor (#2073): an activity page renders posts whether or not it
+    offers a follow control, so every page that legitimately exposes none — a creator-mode-off
+    account, a restricted profile, a 1st-degree connection whose page-native signal did not resolve
+    — graded as drift and warned on EVERY roster visit, which is how one expected no-op filed
+    itself as a recurring `$exception`. This asks the question that is actually about the control:
+    does the page render an aria-label naming THIS owner that the resolver chain should have seen?
+    Other people's Follow buttons (the "More profiles for you" rail, a feed card's author) name
+    someone else, so they never answer yes — the same owner-name scoping rule `_FOLLOW_CONTROL_JS`
+    exists for. It stays an INDEPENDENT read: a CSS prefix match on the raw attribute, never the
+    JS chain's normalisation, visibility test or route walk, so a rotated route still escalates.
+    """
+    escaped = " ".join(str(owner).split()).replace("\\", "\\\\").replace('"', '\\"')
+    return ", ".join(f'[aria-label^="{verb} {escaped}" i]'
+                     for verb in ("Follow", "Following", "Unfollow"))
+
+
 def _resolve_follow_control(driver: WebDriver, profile_url: str,
                             name: str = "") -> tuple[FollowStatus, WebElement | None]:
     """`(state, element)` for a roster target's follow control on the activity page already open.
@@ -1528,9 +1547,9 @@ def _resolve_follow_control(driver: WebDriver, profile_url: str,
     `FollowStatus.UNKNOWN` means we could not read it, NOT that there is nothing to follow — the
     caller must treat it as "do nothing", never as "click the first Follow you can find". Zero items
     is not "nothing to do" until the page agrees (`docs/sdui-selenium-notes.md`): an `UNKNOWN` that
-    followed a real scan is cross-checked against the post cards on the page, which the scan itself
-    never reads, so a rotated selector on a page that plainly has content escalates instead of going
-    quiet forever.
+    followed a real scan is cross-checked against the owner's own follow affordance
+    (`_follow_control_crosscheck_sel`), which the scan itself never reads that way, so a rotated
+    route escalates while a page that simply offers no control stays the quiet no-op it is.
     """
     owner = _activity_page_owner_name(driver) or str(name or "").strip()
     if not owner:
@@ -1550,9 +1569,10 @@ def _resolve_follow_control(driver: WebDriver, profile_url: str,
     state, element = result[0], result[1]
     if state not in (FollowStatus.FOLLOWING, FollowStatus.NOT_FOLLOWING):
         # The scan ran and genuinely found neither a control nor the connected fallback — cross-check
-        # against the post cards, an anchor this scan never touches, so real drift (the page has
-        # content the walk cannot see) escalates instead of reading identically to an ordinary page.
-        _report_zero_walk(driver, _FEED_POST_TEXT_SEL, "Roster follow control walk",
+        # against the OWNER'S OWN follow affordance, so only a control the page plainly renders and
+        # the chain could not see reads as drift. Post cards answered a different question and said
+        # "drift" on every page that simply has none (#2073).
+        _report_zero_walk(driver, _follow_control_crosscheck_sel(owner), "Roster follow control walk",
                           action_type="follow", task_name="_resolve_follow_control")
         return FollowStatus.UNKNOWN, None
     return FollowStatus(state), element
@@ -1679,7 +1699,8 @@ def auto_follow_roster_target(driver: WebDriver, user_id: int, target: dict,
         # Expected no-op, not selector rot: a page can genuinely expose no Follow control (a
         # creator-mode-off account, a restricted page) — an already-following connection resolves to
         # `FOLLOWING` via Route C instead of landing here. `_resolve_follow_control` already grades a
-        # real miss against the page's own post cards, so a warning here on top would double it.
+        # real miss against the owner's own follow affordance, so a warning here on top would
+        # double it — and this branch is the ordinary shape, not the drift.
         # Nothing is written: "we could not read it" is what `unknown` already means, so storing it
         # would spend a round-trip per visit to overwrite a state with itself — and would erase a
         # `not_following` an earlier, readable visit had established.
