@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.176.2](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.176.1...v0.176.2) (2026-09-14)
+
+
+### Bug Fixes
+
+* **sdui-probe:** ground the company-invite credit cross-check so the surface is measured again (closes [#2068](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2068)) ([#2069](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2069)) ([b57b0c8](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/b57b0c8682a07b3eb4bbe75b849f14fde9f0a0d5))
+* **sdui:** re-ground the share-box composer on the full-page route (closes [#2066](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2066)) ([#2072](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2072)) ([f13fff6](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/f13fff67bfed4ecd9b2e92e3e975fe2a9bad07e8))
+
 ## [0.176.1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.176.0...v0.176.1) (2026-09-13)
 
 
