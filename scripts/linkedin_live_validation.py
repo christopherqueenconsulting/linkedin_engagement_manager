@@ -5642,7 +5642,7 @@ def company_invite_verdict(reading: Optional[dict]) -> str:
                 "either this page has no invite affordance for this account, or the invite panel "
                 "never opened; grounds nothing")
     if reading.get("total_credits") in (None, 0):
-        if not str(reading.get("panel_text") or "").strip():
+        if not panel_names_the_invite(reading.get("panel_text")):
             return ("the page's own copy says invitations remain, but the invite PANEL never "
                     "rendered on this navigation — production reads 0 credits here and stands "
                     "down as `credits_exhausted` with credits left; re-ground how the panel opens")
@@ -5655,22 +5655,48 @@ def company_invite_verdict(reading: Optional[dict]) -> str:
 _INVITE_PANEL_SELECTORS = ("div[role='dialog']", ".artdeco-modal", ".invitee-picker")
 
 
+def panel_names_the_invite(panel_text: str) -> bool:
+    """Whether text read off a dialog is the INVITE panel's own, or some other overlay's.
+
+    A company admin dashboard renders other dialogs (onboarding callouts, consent prompts), and the
+    first visible one is not necessarily the invite modal. Taking any dialog as "the panel opened"
+    would suppress the one re-navigation that opens it and would misname the drift verdict
+    afterwards (#2068), so the panel has to say something about invites to count as one.
+    """
+    lowered = " ".join(str(panel_text or "").split()).lower()
+    if not lowered:
+        return False
+    if any(pattern.search(lowered) for _name, pattern in _CREDIT_COPY_PATTERNS):
+        return True
+    return any(label in lowered for label in _CREDIT_CONTROL_LABELS)
+
+
 def _invite_panel_text(driver, limit: int = 1200) -> str:
     """The invite panel's OWN words.
 
     Best-effort, and a chain: the modal is not inside `<main>`, which is the first thing
     `page_text_sample` returns, so the page sample alone can be a full dashboard of prose with
-    nothing about invites in it (#2068).
+    nothing about invites in it (#2068). Every candidate dialog is read before the first non-empty
+    one is settled for — the invite modal is preferred over whatever else is on screen, and an
+    unrelated overlay is only reported when nothing on the page names invites at all.
     """
+    fallback = ""
     for selector in _INVITE_PANEL_SELECTORS:
         try:
-            for element in driver.find_elements(By.CSS_SELECTOR, selector):
-                text = " ".join((element.text or "").split())
-                if text:
-                    return text[:limit]
+            elements = list(driver.find_elements(By.CSS_SELECTOR, selector))
         except Exception:
             continue
-    return ""
+        for element in elements:
+            try:
+                text = " ".join((element.text or "").split())
+            except Exception:
+                continue
+            if not text:
+                continue
+            if panel_names_the_invite(text):
+                return text[:limit]
+            fallback = fallback or text[:limit]
+    return fallback
 
 
 def probe_company_invite(driver, user_id: int, company_url: str = "", sleep=time.sleep) -> dict:
@@ -5703,7 +5729,7 @@ def probe_company_invite(driver, user_id: int, company_url: str = "", sleep=time
     # query that opens the panel (measured 2026-09-07 against 2026-09-14, where the same account's
     # landed URL KEPT it and the panel rendered). Re-issue the same navigation once against where we
     # landed: the panel opens from the URL alone, so this stays read-only — no control is clicked.
-    if not panel and "invite=true" not in landed.lower():
+    if not panel_names_the_invite(panel) and "invite=true" not in landed.lower():
         reopen_url = f"{landed.split('?')[0].rstrip('/')}/?invite=true"
         reading["reopen_url"] = reopen_url
         driver.get(reopen_url)

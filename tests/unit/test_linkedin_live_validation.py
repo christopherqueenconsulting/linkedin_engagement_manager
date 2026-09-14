@@ -3119,10 +3119,11 @@ class TestCompanyInviteProbe:
 
         PANEL = "50/50 credits available Unselect all"
 
-        def __init__(self, opens_on_retry: bool = True):
+        def __init__(self, opens_on_retry: bool = True, overlay: str = ""):
             self.gets: list = []
             self.current_url = ""
             self.opens_on_retry = opens_on_retry
+            self.overlay = overlay
 
         @property
         def _panel_open(self) -> bool:
@@ -3143,7 +3144,9 @@ class TestCompanyInviteProbe:
                 return [element]
 
             if by == llv.By.CSS_SELECTOR and selector == "div[role='dialog']":
-                return _element(self.PANEL) if self._panel_open else []
+                # An unrelated overlay renders FIRST, the way an onboarding callout does.
+                dialogs = _element(self.overlay) if self.overlay else []
+                return dialogs + (_element(self.PANEL) if self._panel_open else [])
             if by == llv.By.CSS_SELECTOR and selector in ("main", "body"):
                 return _element("Grow your followers 4x faster Track performance")
             if by == llv.By.TAG_NAME:
@@ -3176,6 +3179,34 @@ class TestCompanyInviteProbe:
         assert reading["reopen_url"].endswith("/admin/dashboard/?invite=true")
         assert reading["panel_text"] == ""
         assert reading["state"] == llv.STATE_UNKNOWN
+
+    def test_an_unrelated_overlay_is_not_mistaken_for_the_invite_panel(self):
+        """An onboarding overlay is not "the panel opened".
+
+        Settling for the first visible `role=dialog` would skip the one re-navigation that opens
+        the invite modal, so the surface would go back to grading on a page whose panel never
+        rendered — the #2068 silence, one layer further in.
+        """
+        driver = self._InvitePageDriver(overlay="Welcome to your new page admin experience")
+        reading = self._probe(driver)
+        assert len(driver.gets) == 2
+        assert reading["panel_text"] == driver.PANEL
+        assert reading["credits_copy_source"] == "credits_available"
+        assert reading["state"] == llv.STATE_OK
+
+    def test_an_overlay_never_stands_in_for_the_panel_in_the_drift_verdict(self):
+        """Some other dialog's words never stand in for the panel's in the verdict.
+
+        The 2026-09-07 shape with an overlay open: the callout promises credits, the invite panel
+        never rendered, and production stands down as `credits_exhausted` with 50 in the pool. The
+        verdict has to keep naming the panel rather than the '<span>N/M</span>' locator.
+        """
+        reading = {"page_text": "You have 50 invitations remaining.",
+                   "panel_text": "Welcome to your new page admin experience Dismiss",
+                   "total_credits": 0}
+        assert llv.panel_names_the_invite(reading["panel_text"]) is False
+        assert llv.company_invite_state(reading) == llv.STATE_DRIFT
+        assert "PANEL never rendered" in llv.company_invite_verdict(reading)
 
     def test_the_credit_cross_check_never_derives_from_the_counter_it_checks(self):
         """The cross-check never derives from the counter it cross-checks.
