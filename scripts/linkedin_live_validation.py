@@ -5577,18 +5577,49 @@ def probe_group_feed_composer(driver, user_id: int = 1, group_id: Optional[str] 
 
 # ─────────────────────────── company-page invite modal (#732) ────────────────────────────────
 _CREDITS_TEXT_RE = re.compile(r"credits? available", re.IGNORECASE)
+# The invite affordance's own copy, as a CHAIN (#2020) — exhausted before "no invite panel here".
+# `credits available` is the string `get_available_credits` parses, but it lives INSIDE the modal,
+# and `page_text_sample` reads `<main>` first, where the modal does not mount; the admin dashboard's
+# own callout says "You have N invitations remaining" instead. A single pattern over `<main>` is why
+# this surface graded `unknown` for three consecutive sweeps while the readers underneath it were
+# resolving 50/50 credits and 20 invitee rows (#2068).
+_CREDIT_COPY_PATTERNS = (
+    ("credits_available", _CREDITS_TEXT_RE),
+    ("invitations_remaining", re.compile(r"invitations? remaining", re.IGNORECASE)),
+    ("credits_remaining", re.compile(r"credits? remaining", re.IGNORECASE)),
+    ("invite_credits", re.compile(r"invite credits?", re.IGNORECASE)),
+)
+# Last rung: the panel's OWN controls name the affordance when neither string is in the sampled
+# text. Deliberately independent of `get_available_credits` — deriving the cross-check from the
+# parser it cross-checks would turn every drift (copy present, counter unread) into `unknown`.
+_CREDIT_CONTROL_LABELS = ("learn more about credits", "unselect all")
+
+
+def company_invite_credit_copy(reading: Optional[dict]) -> str:
+    """Which page-native evidence says this page HAS an invite affordance; `''` when none does."""
+    reading = dict(reading or {})
+    haystack = " ".join(str(reading.get(key) or "") for key in ("page_text", "panel_text"))
+    for name, pattern in _CREDIT_COPY_PATTERNS:
+        if pattern.search(haystack):
+            return name
+    for label in (reading.get("visible_controls") or []):
+        lowered = str(label or "").strip().lower()
+        for wanted in _CREDIT_CONTROL_LABELS:
+            if wanted in lowered:
+                return f"control:{wanted}"
+    return ""
 
 
 def company_invite_state(reading: Optional[dict]) -> str:
-    """Three-state grade for one company-invite read. The page's own 'credits available' copy is
-    the cross-check: credit text the parser could not read, or an invitee list the row locator
+    """Three-state grade for one company-invite read. The page's own credit copy is the
+    cross-check: credit text the parser could not read, or an invitee list the row locator
     missed on a page that renders one, is drift. A page that never rendered is unknown, and so is
     a genuinely exhausted credit pool — production stands down for that by design.
     """
     reading = dict(reading or {})
     if not str(reading.get("page_text") or "").strip():
         return STATE_UNKNOWN
-    if not reading.get("credits_text_on_page"):
+    if not (reading.get("credits_text_on_page") or company_invite_credit_copy(reading)):
         return STATE_UNKNOWN
     if reading.get("total_credits") in (None, 0):
         return STATE_DRIFT
@@ -5606,14 +5637,40 @@ def company_invite_verdict(reading: Optional[dict]) -> str:
                 f"{reading.get('checkboxes')} checkbox(es) resolved")
     if not str(reading.get("page_text") or "").strip():
         return "the invite page did not render — re-run"
-    if not reading.get("credits_text_on_page"):
-        return ("no 'credits available' copy on the page — either this page has no invite "
-                "affordance for this account, or the invite panel never opened; grounds nothing")
+    if not (reading.get("credits_text_on_page") or company_invite_credit_copy(reading)):
+        return ("no invite-credit copy or panel control on the page (whole chain exhausted) — "
+                "either this page has no invite affordance for this account, or the invite panel "
+                "never opened; grounds nothing")
     if reading.get("total_credits") in (None, 0):
-        return ("the page says 'credits available' but get_available_credits parsed nothing — "
-                "re-ground its '<span>N/M</span>' locator from `page_text`")
+        if not str(reading.get("panel_text") or "").strip():
+            return ("the page's own copy says invitations remain, but the invite PANEL never "
+                    "rendered on this navigation — production reads 0 credits here and stands "
+                    "down as `credits_exhausted` with credits left; re-ground how the panel opens")
+        return ("the panel says credits are available but get_available_credits parsed nothing — "
+                "re-ground its '<span>N/M</span>' locator from `panel_text`/`page_text`")
     return (f"credits remain ({reading.get('credits_remaining')}) but the invitee-row locator "
             f"matched none — re-ground select_connection_checkboxes' list/checkbox XPaths")
+
+
+_INVITE_PANEL_SELECTORS = ("div[role='dialog']", ".artdeco-modal", ".invitee-picker")
+
+
+def _invite_panel_text(driver, limit: int = 1200) -> str:
+    """The invite panel's OWN words.
+
+    Best-effort, and a chain: the modal is not inside `<main>`, which is the first thing
+    `page_text_sample` returns, so the page sample alone can be a full dashboard of prose with
+    nothing about invites in it (#2068).
+    """
+    for selector in _INVITE_PANEL_SELECTORS:
+        try:
+            for element in driver.find_elements(By.CSS_SELECTOR, selector):
+                text = " ".join((element.text or "").split())
+                if text:
+                    return text[:limit]
+        except Exception:
+            continue
+    return ""
 
 
 def probe_company_invite(driver, user_id: int, company_url: str = "", sleep=time.sleep) -> dict:
@@ -5639,6 +5696,19 @@ def probe_company_invite(driver, user_id: int, company_url: str = "", sleep=time
     reading["invite_url"] = invite_url
     driver.get(invite_url)
     sleep(6)
+    landed = str(getattr(driver, "current_url", "") or invite_url)
+    reading["landed_url"] = landed
+    panel = _invite_panel_text(driver)
+    # LinkedIn redirects a vanity company URL to the numeric `/admin/dashboard/` one and DROPS the
+    # query that opens the panel (measured 2026-09-07 against 2026-09-14, where the same account's
+    # landed URL KEPT it and the panel rendered). Re-issue the same navigation once against where we
+    # landed: the panel opens from the URL alone, so this stays read-only — no control is clicked.
+    if not panel and "invite=true" not in landed.lower():
+        reopen_url = f"{landed.split('?')[0].rstrip('/')}/?invite=true"
+        reading["reopen_url"] = reopen_url
+        driver.get(reopen_url)
+        sleep(6)
+        panel = _invite_panel_text(driver)
     current, total = get_available_credits(driver, wait)
     text = page_text_sample(driver, limit=1200)
 
@@ -5651,7 +5721,9 @@ def probe_company_invite(driver, user_id: int, company_url: str = "", sleep=time
     reading.update({
         "url": getattr(driver, "current_url", invite_url),
         "page_text": text,
-        "credits_text_on_page": bool(_CREDITS_TEXT_RE.search(text or "")),
+        # The modal mounts OUTSIDE `<main>`, so its copy never reaches `page_text` — read it
+        # separately or the cross-check below has nothing to match (#2068).
+        "panel_text": panel,
         "credits_remaining": current,
         "total_credits": total,
         # The SAME XPaths select_connection_checkboxes drives, counted rather than clicked.
@@ -5660,6 +5732,8 @@ def probe_company_invite(driver, user_id: int, company_url: str = "", sleep=time
         "invite_button_present": bool(_count(
             "//div[contains(@class,'modal')]//button[contains(@class,'artdeco-button--primary')]")),
         "visible_controls": visible_button_labels(driver)})
+    reading["credits_copy_source"] = company_invite_credit_copy(reading)
+    reading["credits_text_on_page"] = bool(reading["credits_copy_source"])
     return graded(reading, company_invite_state(reading), company_invite_verdict(reading))
 
 
@@ -6503,9 +6577,13 @@ def main(argv: Optional[list] = None) -> int:
     # (the follow/connect-state readings): live-confirmed 2026-09-07 to be fastboot the same way —
     # without this, `<main>` never mounts and the follow control read is a false `unknown`, not a
     # true miss.
+    # #2068 adds the company admin dashboard the invite panel lives on: a standalone
+    # `--company-invite` run came back with an EMPTY `page_text` where the (always-images) sweep
+    # read 1,200 chars of it — the same empty-render misread, and it grades the surface `unknown`
+    # without ever reaching the panel.
     needs_images = bool(args.group_composer or args.group_membership is not None
                         or args.group_feed_composer is not None or args.sweep
-                        or args.roster_follow or args.roster_connect)
+                        or args.roster_follow or args.roster_connect or args.company_invite)
     try:
         driver, profile, session_reading = open_probe_session(
             get_current_profile, args.user_id, require_debug_node=args.require_debug_node,

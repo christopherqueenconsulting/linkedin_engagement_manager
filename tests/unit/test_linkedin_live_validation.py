@@ -3025,14 +3025,47 @@ class TestGroupFeedComposerProbe:
         assert llv.main(["--roster-follow", "https://www.linkedin.com/in/someone"]) == 0
         assert captured["needs_images"] is True
 
+    def test_a_company_invite_flag_requests_needs_images(self, monkeypatch):
+        """Issue #2068: the company admin dashboard the invite panel opens over is fastboot too.
+
+        Live-confirmed 2026-09-14: the same run reads an EMPTY `page_text` without images and the
+        full panel (50/50 credits, 20 rows) with them, so the standalone flag graded `unknown`
+        where the always-images sweep did not.
+        """
+        captured = {}
+
+        def _open(fn, uid, require_debug_node=False, needs_images=False):
+            captured["needs_images"] = needs_images
+            return MagicMock(), MagicMock(), {"state": "signed_in"}
+
+        monkeypatch.setattr(llv, "open_probe_session", _open)
+        monkeypatch.setattr(llv, "install_read_only_guard", lambda: None)
+        monkeypatch.setattr(llv, "probe_company_invite",
+                            lambda d, uid, url: {"verdict": "ok"})
+        clear_the_breaker(monkeypatch)
+        assert llv.main(["--company-invite"]) == 0
+        assert captured["needs_images"] is True
+
 
 @pytest.mark.unit
 class TestCompanyInviteProbe:
     def test_credit_copy_the_parser_cannot_read_is_drift(self):
-        reading = {"page_text": "50 credits available", "credits_text_on_page": True,
-                   "total_credits": 0}
+        reading = {"page_text": "50 credits available", "panel_text": "50 credits available",
+                   "credits_text_on_page": True, "total_credits": 0}
         assert llv.company_invite_state(reading) == llv.STATE_DRIFT
         assert "parsed nothing" in llv.company_invite_verdict(reading)
+
+    def test_a_callout_promising_credits_with_no_panel_names_the_silent_stand_down(self):
+        """A callout promising credits with no panel is drift, named as such.
+
+        The 2026-09-07 shape: the dashboard callout says invitations remain, the panel never
+        opened, so production's own reader sees 0 credits and stands down as `credits_exhausted`
+        with 50 in the pool. The verdict has to name the panel, not the counter.
+        """
+        reading = {"page_text": "Invite connections You have 50 invitations remaining.",
+                   "panel_text": "", "total_credits": 0}
+        assert llv.company_invite_state(reading) == llv.STATE_DRIFT
+        assert "PANEL never rendered" in llv.company_invite_verdict(reading)
 
     def test_credits_with_no_invitee_rows_is_drift(self):
         reading = {"page_text": "x credits available", "credits_text_on_page": True,
@@ -3048,6 +3081,112 @@ class TestCompanyInviteProbe:
                    "total_credits": 100, "credits_remaining": 50, "invitee_rows": 20,
                    "checkboxes": 20}
         assert llv.company_invite_state(reading) == llv.STATE_OK
+
+    def test_a_panel_that_rendered_is_measured_even_when_main_never_says_credits(self):
+        """A rendered panel is measured even when `<main>` never says "credits".
+
+        #2068, the reading that went `unknown` three sweeps running: the modal mounts outside
+        `<main>`, so `page_text` is a dashboard of unrelated prose while the readers underneath
+        resolved 50/50 credits, 20 rows and 20 checkboxes. The panel's own controls ground it.
+        """
+        reading = {"page_text": "Grow your followers 4x faster Track performance",
+                   "panel_text": "", "credits_text_on_page": False,
+                   "visible_controls": ["Dismiss", "Learn more about credits", "Unselect all",
+                                        "Invite"],
+                   "total_credits": 50, "credits_remaining": 50, "invitee_rows": 20,
+                   "checkboxes": 20}
+        assert llv.company_invite_credit_copy(reading) == "control:learn more about credits"
+        assert llv.company_invite_state(reading) == llv.STATE_OK
+
+    def test_the_panels_own_copy_grounds_it_when_main_does_not(self):
+        reading = {"page_text": "Track performance", "panel_text": "50/50 credits available",
+                   "total_credits": 50, "credits_remaining": 50, "invitee_rows": 20}
+        assert llv.company_invite_credit_copy(reading) == "credits_available"
+        assert llv.company_invite_state(reading) == llv.STATE_OK
+
+    def test_the_copy_chain_is_exhausted_before_grounds_nothing(self):
+        reading = {"page_text": "Company home", "panel_text": "", "visible_controls": ["Create"]}
+        assert llv.company_invite_credit_copy(reading) == ""
+        assert llv.company_invite_state(reading) == llv.STATE_UNKNOWN
+        assert "chain exhausted" in llv.company_invite_verdict(reading)
+
+    class _InvitePageDriver:
+        """A company page whose redirect drops `?invite=true` on the first navigation.
+
+        Measured 2026-09-07 (query gone, no panel) against 2026-09-14 (query kept, panel rendered)
+        on the same account.
+        """
+
+        PANEL = "50/50 credits available Unselect all"
+
+        def __init__(self, opens_on_retry: bool = True):
+            self.gets: list = []
+            self.current_url = ""
+            self.opens_on_retry = opens_on_retry
+
+        @property
+        def _panel_open(self) -> bool:
+            return "invite=true" in self.current_url and self.opens_on_retry
+
+        def get(self, url: str) -> None:
+            self.gets.append(url)
+            base = "https://www.linkedin.com/company/16204362/admin/dashboard/"
+            # First navigation lands on the numeric admin URL with the query stripped.
+            self.current_url = base if len(self.gets) == 1 else url
+
+        def find_elements(self, by, selector):
+            def _element(text):
+                element = MagicMock()
+                element.text = text
+                element.is_displayed.return_value = True
+                element.get_attribute.return_value = text
+                return [element]
+
+            if by == llv.By.CSS_SELECTOR and selector == "div[role='dialog']":
+                return _element(self.PANEL) if self._panel_open else []
+            if by == llv.By.CSS_SELECTOR and selector in ("main", "body"):
+                return _element("Grow your followers 4x faster Track performance")
+            if by == llv.By.TAG_NAME:
+                return _element("Invite") if self._panel_open else _element("Create")
+            if by == llv.By.XPATH:
+                return _element("row") * 20 if self._panel_open else []
+            return []
+
+    def _probe(self, driver, credits=(50, 50)):
+        with patch("cqc_lem.utilities.db.get_company_linked_in_url_for_user",
+                   return_value="https://www.linkedin.com/company/christopherqueenconsulting"), \
+             patch("cqc_lem.utilities.linkedin.company_page_inviter.get_available_credits",
+                   return_value=credits):
+            return llv.probe_company_invite(driver, user_id=1, sleep=lambda *_: None)
+
+    def test_a_stripped_invite_query_is_re_issued_against_where_we_landed(self):
+        driver = self._InvitePageDriver()
+        reading = self._probe(driver)
+        assert driver.gets == [
+            "https://www.linkedin.com/company/christopherqueenconsulting?invite=true",
+            "https://www.linkedin.com/company/16204362/admin/dashboard/?invite=true"]
+        assert reading["panel_text"] == driver.PANEL
+        assert reading["credits_copy_source"] == "credits_available"
+        assert reading["state"] == llv.STATE_OK
+
+    def test_a_panel_that_stays_shut_is_re_issued_once_and_still_grounds_nothing(self):
+        driver = self._InvitePageDriver(opens_on_retry=False)
+        reading = self._probe(driver, credits=(0, 0))
+        assert len(driver.gets) == 2  # navigation only — the panel's Invite control is never used
+        assert reading["reopen_url"].endswith("/admin/dashboard/?invite=true")
+        assert reading["panel_text"] == ""
+        assert reading["state"] == llv.STATE_UNKNOWN
+
+    def test_the_credit_cross_check_never_derives_from_the_counter_it_checks(self):
+        """The cross-check never derives from the counter it cross-checks.
+
+        Deriving `credits_text_on_page` from `get_available_credits` would turn every drift
+        (copy on the page, counter unread) into `unknown` — the exact silence #2068 is about.
+        """
+        reading = {"page_text": "50 credits available", "panel_text": "50 credits available",
+                   "total_credits": 0, "credits_remaining": 0}
+        assert llv.company_invite_credit_copy(reading) == "credits_available"
+        assert llv.company_invite_state(reading) == llv.STATE_DRIFT
 
 
 @pytest.mark.unit
