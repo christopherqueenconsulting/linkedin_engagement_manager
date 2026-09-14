@@ -237,6 +237,55 @@ class TestProbeComposer:
         # …and the evidence that says which fix it needs rides along.
         assert "deep_overlay" in report
 
+    def test_the_drift_evidence_is_read_before_the_composer_is_dismissed(self, monkeypatch):
+        """#2066: the verdict said "re-ground the container from `deep_overlay`" — after Escape.
+
+        Every run of this shape therefore reported an empty overlay no matter where the composer
+        had mounted, which is why two live readings in a row named a fix the evidence could not
+        support. The reading has to be taken while the surface is still up.
+        """
+        order = []
+        driver = _fake_driver()
+        driver.find_elements.side_effect = lambda *a, **k: []
+        monkeypatch.setattr("cqc_lem.utilities.selenium_util.click_first",
+                            lambda *a, **k: MagicMock())
+        monkeypatch.setattr(llv, "_composer_container", lambda d: (None, "none"))
+        monkeypatch.setattr(llv, "deep_overlay_evidence",
+                            lambda d: order.append("overlay") or {})
+        monkeypatch.setattr(llv, "_modal_container_evidence", lambda d, **k: [])
+        monkeypatch.setattr(llv, "share_box_dom_evidence", lambda d, **k: [])
+        monkeypatch.setattr(llv, "share_box_activation_ladder",
+                            lambda d, sleep=None: {"attempts": [], "opened_by": None})
+
+        class _Chain:
+            def __init__(self, _driver):
+                pass
+
+            def send_keys(self, _key):
+                return self
+
+            def perform(self):
+                order.append("escape")
+
+        monkeypatch.setattr("selenium.webdriver.ActionChains", _Chain)
+        llv.probe_composer(driver, sleep=lambda s: None)
+        assert order.index("overlay") < order.index("escape"), order
+
+    def test_the_share_box_nest_is_captured_before_the_trigger_is_pressed(self, monkeypatch):
+        """Once the composer is over the feed, the nest that re-grounds the TRIGGER is gone."""
+        order = []
+        driver = _fake_driver()
+        driver.find_elements.side_effect = lambda *a, **k: []
+        monkeypatch.setattr(llv, "share_box_dom_evidence",
+                            lambda d, **k: order.append("nest") or [])
+        monkeypatch.setattr("cqc_lem.utilities.selenium_util.click_first",
+                            lambda *a, **k: order.append("click") or None)
+
+        report = llv.probe_composer(driver, sleep=lambda s: None)
+        assert order == ["nest", "click"]
+        # It rides along even on the branch where the share box itself never resolved.
+        assert "share_box_dom" in report
+
     def test_reports_a_composer_that_never_opened(self, monkeypatch):
         monkeypatch.setattr("cqc_lem.utilities.selenium_util.click_first", lambda *a, **k: None)
         driver = MagicMock()
@@ -271,6 +320,93 @@ class TestProbeComposer:
         driver.find_elements.return_value = []
         llv.probe_composer(driver, sleep=lambda s: None)
         assert any(k.get("warn_on_miss") is False for k in calls), calls
+
+
+@pytest.mark.unit
+class TestComposerDriftVerdict:
+    """#2066: one sentence used to cover three findings with three different fixes."""
+
+    def test_a_visible_editor_with_no_dialog_names_the_full_page_route(self):
+        verdict = llv.composer_drift_verdict({
+            "deep_overlay": {"visible_textboxes": 1, "visible_dialogs": 0,
+                             "visible_aria_modals": 0},
+            "url_after_open": "https://www.linkedin.com/sharing/compose"})
+        assert "full-page compose ROUTE" in verdict
+        assert "/sharing/compose" in verdict
+
+    def test_a_hidden_dialog_is_not_a_composer(self):
+        """The raw counts are never zero on a feed page — the video player ships two hidden ones."""
+        verdict = llv.composer_drift_verdict({
+            "deep_overlay": {"dialogs": 2, "textboxes": 0, "visible_dialogs": 0,
+                             "visible_textboxes": 0, "visible_aria_modals": 0},
+            "share_box_activation": {"opened_by": None}})
+        assert "re-ground the trigger" in verdict
+
+    def test_a_shadow_mounted_composer_still_names_its_host(self):
+        verdict = llv.composer_drift_verdict({
+            "deep_overlay": {"shadow_overlays": [{"host": "div", "role": "dialog"}]}})
+        assert "shadow root" in verdict
+
+    def test_an_iframe_mounted_composer_names_the_frame(self):
+        verdict = llv.composer_drift_verdict({
+            "deep_overlay": {"frame_overlays": [{"src": "/preload/?_bprMode=vanilla"}]}})
+        assert "IFRAME" in verdict
+        assert "_bprMode=vanilla" in verdict
+
+    def test_a_working_activation_rung_blames_the_press_not_the_locator(self):
+        verdict = llv.composer_drift_verdict({
+            "deep_overlay": {"visible_dialogs": 0, "visible_textboxes": 0},
+            "share_box_activation": {"opened_by": "js_click"}})
+        assert "js_click" in verdict
+        assert "re-ground the press" in verdict
+
+
+@pytest.mark.unit
+class TestComposerContainerOpen:
+    def test_only_a_visible_surface_counts_as_open(self, monkeypatch):
+        """A ladder whose open-test is always True names no rung (#2066)."""
+        monkeypatch.setattr(llv, "deep_overlay_evidence",
+                            lambda d: {"dialogs": 2, "textboxes": 0, "visible_dialogs": 0,
+                                       "visible_textboxes": 0, "visible_aria_modals": 0})
+        assert llv._composer_container_open(MagicMock()) is False
+
+        monkeypatch.setattr(llv, "deep_overlay_evidence",
+                            lambda d: {"visible_textboxes": 1})
+        assert llv._composer_container_open(MagicMock()) is True
+
+
+@pytest.mark.unit
+class TestComposerContainerSource:
+    """The pre-merge grounding seam: an image that resolves nothing must not end the chain.
+
+    This script is piped into whatever image is DEPLOYED, so the one run that matters most — the
+    branch fixing a container the deployed image cannot see — could never grade anything but drift
+    while the image's `None` was taken as final. `container_source` keeps the two apart.
+    """
+
+    def test_the_image_wins_when_it_resolves_something(self, monkeypatch):
+        found = MagicMock()
+        monkeypatch.setattr(
+            "cqc_lem.utilities.linkedin.share_composer.find_composer_container",
+            lambda d, **k: found)
+        assert llv._composer_container(MagicMock()) == (found, "image")
+
+    def test_an_image_that_resolves_nothing_falls_through_to_the_carried_chain(self, monkeypatch):
+        carried = MagicMock()
+        monkeypatch.setattr(
+            "cqc_lem.utilities.linkedin.share_composer.find_composer_container",
+            lambda d, **k: None)
+        monkeypatch.setattr(llv, "carried_deep_elements", lambda d, css, limit=20: [])
+        monkeypatch.setattr(llv, "_carried_full_page_composer", lambda d: carried)
+        assert llv._composer_container(MagicMock()) == (carried, "script")
+
+    def test_nothing_anywhere_is_still_none(self, monkeypatch):
+        monkeypatch.setattr(
+            "cqc_lem.utilities.linkedin.share_composer.find_composer_container",
+            lambda d, **k: None)
+        monkeypatch.setattr(llv, "carried_deep_elements", lambda d, css, limit=20: [])
+        monkeypatch.setattr(llv, "_carried_full_page_composer", lambda d: None)
+        assert llv._composer_container(MagicMock()) == (None, "none")
 
 
 @pytest.mark.unit

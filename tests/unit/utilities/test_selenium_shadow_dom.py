@@ -16,7 +16,12 @@ from unittest.mock import MagicMock
 import pytest
 from selenium.common.exceptions import WebDriverException
 
-from cqc_lem.utilities.selenium_util import element_label, find_deep_elements, find_labelled
+from cqc_lem.utilities.selenium_util import (
+    element_label,
+    find_deep_elements,
+    find_enclosing_container,
+    find_labelled,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -157,3 +162,60 @@ class TestFindLabelled:
         root = self._root([stale, wanted])
 
         assert find_labelled(root, "button", ("post",), exact=True) is wanted
+
+
+class TestFindEnclosingContainer:
+    """#2066: naming a container by what it CONTAINS, for a surface with no anchor of its own.
+
+    LinkedIn's full-page share composer carries no `role`, no `data-testid`, no `aria-label`, and
+    only rotating hashed class names — which locators are banned from anyway. The one description
+    that survives is "the smallest ancestor holding the editor and the Post button".
+    """
+
+    def test_returns_what_the_ancestor_walk_found(self):
+        box = MagicMock()
+        driver = MagicMock()
+        driver.execute_script.return_value = box
+
+        assert find_enclosing_container(driver, MagicMock(), "button", ("post",)) is box
+
+    def test_passes_the_element_selector_labels_and_depth_through(self):
+        driver = MagicMock()
+        editor = MagicMock()
+        find_enclosing_container(driver, editor, "button", ("Post", " "), max_depth=7)
+
+        _js, element, css, labels, depth = driver.execute_script.call_args.args
+        assert element is editor
+        assert css == "button"
+        # Lowercased and cleaned here, so the walk itself compares like with like.
+        assert labels == ["post"]
+        assert depth == 7
+
+    def test_no_element_and_no_labels_never_ask_the_page(self):
+        """An empty label set must resolve NOTHING rather than the first ancestor it finds."""
+        driver = MagicMock()
+
+        assert find_enclosing_container(driver, None, "button", ("post",)) is None
+        assert find_enclosing_container(driver, MagicMock(), "button", ()) is None
+        assert find_enclosing_container(driver, MagicMock(), "button", ("  ",)) is None
+        driver.execute_script.assert_not_called()
+
+    def test_a_driver_fault_answers_none_rather_than_raising(self):
+        driver = MagicMock()
+        driver.execute_script.side_effect = WebDriverException("detached")
+
+        assert find_enclosing_container(driver, MagicMock(), "button", ("post",)) is None
+
+    def test_the_walk_stops_at_the_page_and_crosses_out_of_a_shadow_root(self):
+        """Two rules that only exist in the JS, asserted on the JS.
+
+        Stopping at `body`/`html`/`main` is what keeps this from handing back the whole page, which
+        is the page-wide fallback #1012 forbids. `getRootNode().host` is the only way out of a
+        shadow root — `parentElement` is null at that boundary and the walk would strand one node
+        above the editor.
+        """
+        from cqc_lem.utilities.selenium_util import _ENCLOSING_CONTAINER_JS
+
+        assert "'BODY', 'HTML', 'MAIN'" in _ENCLOSING_CONTAINER_JS
+        assert "getRootNode" in _ENCLOSING_CONTAINER_JS
+        assert ".host" in _ENCLOSING_CONTAINER_JS

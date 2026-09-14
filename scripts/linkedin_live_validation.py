@@ -515,6 +515,9 @@ _PROBE_CAPABILITY_SYMBOLS = {
     "comment_list.dom_evidence": "comment_list_dom_evidence",
     "comment_list.ladder": "comment_ladder_reading",
     "feed_sort.selector_evidence": "_feed_sort_evidence_scan",
+    "composer.share_box_dom": "share_box_dom_evidence",
+    "composer.share_box_activation": "share_box_activation_ladder",
+    "composer.drift_verdict": "composer_drift_verdict",
     "occasion_composer.share_box_dom": "share_box_dom_evidence",
     "occasion_composer.share_box_activation": "share_box_activation_ladder",
     "occasion_composer.deep_overlay": "deep_overlay_evidence",
@@ -889,6 +892,43 @@ def _share_box_chains() -> tuple:
         return _CARRIED_GROUP_SHARE_BOX_LOCATORS, "script"
 
 
+def composer_drift_verdict(reading: dict) -> str:
+    """Which fix a share-box press that opened no container needs, in the page's own terms.
+
+    Three different findings used to share one sentence ("re-ground the container from
+    `deep_overlay`"), and only one of them was ever that. They are told apart by evidence the
+    reading already carries: a composer the deep read FOUND somewhere the shipped container CSS
+    does not key on, a press that opened nothing the shipped click makes but another rung does,
+    and a press that opens nothing at all.
+    """
+    overlay = reading.get("deep_overlay") or {}
+    frames = overlay.get("frame_overlays") or []
+    shadow = overlay.get("shadow_overlays") or []
+    opened_by = (reading.get("share_box_activation") or {}).get("opened_by")
+    if frames:
+        return ("the composer mounted inside a same-origin IFRAME — re-ground the container to "
+                f"switch into {frames[0].get('src')!r} before looking for it; a document-level "
+                "query cannot reach another document at all")
+    if shadow:
+        return ("the composer mounted in a shadow root the container CSS does not key on — "
+                f"re-ground it from `deep_overlay.shadow_overlays` (host {shadow[0].get('host')})")
+    if overlay.get("visible_textboxes") and not overlay.get("visible_aria_modals") \
+            and not overlay.get("visible_dialogs"):
+        return ("the composer's EDITOR is on screen with no dialog and no `aria-modal` around it "
+                f"(url {reading.get('url_after_open')!r}) — this is the full-page compose ROUTE, "
+                "so the container has to be named by what it contains, not by a role")
+    if overlay.get("visible_textboxes") or overlay.get("visible_aria_modals") \
+            or overlay.get("visible_dialogs"):
+        return ("a composer-shaped surface is open but the container CSS does not match it — "
+                "re-ground `COMPOSER_CONTAINER_CSS` from `deep_overlay.containers`")
+    if opened_by:
+        return (f"the shipped click opens nothing and {opened_by!r} does — the trigger is fine and "
+                "the way production presses it is not; re-ground the press, not the locator")
+    return ("the share-box control was clicked and NO composer container resolved — re-ground the "
+            "trigger from `share_box_dom`; the control labels this probe reports are the "
+            "composer's own, never the feed's")
+
+
 def probe_composer(driver, sleep=time.sleep) -> dict:
     """Open the feed composer, capture its attach-control labels (the document-upload anchors
     LEM has never needed, because documents publish through the API), then close it.
@@ -897,17 +937,33 @@ def probe_composer(driver, sleep=time.sleep) -> dict:
     page-wide `<button>` scan when the container lookup missed, which is how this probe graded `ok`
     against a composer that never opened — it was describing the feed's 84 controls (#1621). A run
     that resolves no container is drift now, and says so.
+
+    The drift evidence is read BEFORE the Escape (#2066). It used to be read after, so the
+    `deep_overlay` the verdict told the next agent to re-ground the container from was describing
+    a composer this probe had already dismissed — every run of that shape reported an empty
+    overlay no matter where the composer had mounted.
     """
     from selenium.webdriver import ActionChains
     from selenium.webdriver.support.ui import WebDriverWait
 
     from cqc_lem.utilities.selenium_util import click_first
 
+    def close_composer():
+        try:
+            ActionChains(driver).send_keys(Keys.ESCAPE).perform()
+        except Exception:
+            # Closing the composer is courtesy only — the driver is quit right after in main(),
+            # and a failed Escape must not mask the anchors this probe exists to report.
+            pass
+
     wait = WebDriverWait(driver, 10)
     driver.get(FEED_URL)
     sleep(5)
     # Same locator chain auto_post_to_group uses for the share box — one composer, one map.
     share_box_locators, chain_source = _share_box_chains()
+    # Read BEFORE the click, and independent of the shipped chain: once the composer is over the
+    # feed the "Start a post" nest this re-grounds the trigger from is gone.
+    share_box_dom = share_box_dom_evidence(driver)
     opened = click_first(driver, wait, share_box_locators, "Composer share box",
                          required=False, warn_on_miss=False)
     if opened is None:
@@ -916,6 +972,7 @@ def probe_composer(driver, sleep=time.sleep) -> dict:
         reading = {"opened": False, "controls": [], "document_affordance": None,
                    "page_text": page_text_sample(driver),
                    "visible_controls": visible_button_labels(driver),
+                   "share_box_dom": share_box_dom,
                    "chain_source": chain_source}
         if reading["page_text"]:
             return graded(reading, STATE_DRIFT,
@@ -928,26 +985,28 @@ def probe_composer(driver, sleep=time.sleep) -> dict:
 
     dialog, container_source = _composer_container(driver)
     controls = composer_affordance_labels(dialog) if dialog is not None else []
-
-    try:
-        ActionChains(driver).send_keys(Keys.ESCAPE).perform()
-    except Exception:
-        # Closing the composer is courtesy only — the driver is quit right after in main(), and
-        # a failed Escape must not mask the anchors this probe exists to report.
-        pass
     reading = {"opened": True, "container_present": dialog is not None,
                "container_source": container_source, "controls": controls,
                "document_affordance": find_document_affordance(controls),
                "chain_source": chain_source}
     if dialog is None:
-        # The trigger was pressed and no composer container resolved anywhere — shadow roots
-        # included. Whatever the feed still shows behind it is not this probe's subject.
+        # The trigger was pressed and no composer container resolved anywhere — shadow roots and
+        # same-origin iframes included. Two findings wear this one miss, and they need different
+        # fixes: the composer opened where this reader does not key on (re-ground the container),
+        # or the press never opened one (re-ground the trigger, or the way it is pressed). All of
+        # it is read while the composer is still up.
         reading["deep_overlay"] = deep_overlay_evidence(driver)
         reading["page_controls"] = visible_button_labels(driver)
-        return graded(reading, STATE_DRIFT,
-                      "the share-box control was clicked and NO composer container resolved — "
-                      "re-ground the container from `deep_overlay`; the control labels this probe "
-                      "reports are the composer's own, never the feed's")
+        reading["url_after_open"] = getattr(driver, "current_url", "")
+        reading["modal_containers"] = _modal_container_evidence(driver)
+        reading["share_box_dom"] = share_box_dom
+        close_composer()
+        # And WHICH press opens it, when the shipped one did not — the ladder presses the same
+        # trigger one way at a time and stops at the first rung that mounts a container.
+        reading["share_box_activation"] = share_box_activation_ladder(driver, sleep=sleep)
+        close_composer()
+        return graded(reading, STATE_DRIFT, composer_drift_verdict(reading))
+    close_composer()
     if not controls:
         return graded(reading, STATE_DRIFT,
                       "the composer opened but carries no readable control labels — its dialog "
@@ -4152,7 +4211,8 @@ def share_box_dom_evidence(driver, limit: int = 6) -> list:
 # reader cannot reach" answer identically without this (#1621).
 _DEEP_OVERLAY_JS = """
 const out = {dialogs: 0, textboxes: 0, aria_modals: 0, shadow_hosts: 0, iframes: [],
-             shadow_overlays: [], containers: []};
+             shadow_overlays: [], containers: [], frame_overlays: [],
+             visible_dialogs: 0, visible_textboxes: 0, visible_aria_modals: 0};
 function describe(el) {
   if (!el || !el.tagName) return null;
   let cls = el.className;
@@ -4187,9 +4247,14 @@ function scan(root, depth, path) {
   for (const el of nodes) {
     const role = el.getAttribute && el.getAttribute('role');
     const modal = el.getAttribute && el.getAttribute('aria-modal') === 'true';
-    if (role === 'dialog') out.dialogs++;
-    if (role === 'textbox') out.textboxes++;
-    if (modal) out.aria_modals++;
+    // Counted twice, visible and not: a LinkedIn feed page ships two HIDDEN `role='dialog'`
+    // surfaces of its own (the video player's error and caption dialogs), so the raw count is
+    // never zero and anything keyed on it answers "a composer is open" on every page (#2066).
+    const box = el.getBoundingClientRect ? el.getBoundingClientRect() : null;
+    const shown = !!(box && (box.width || box.height));
+    if (role === 'dialog') { out.dialogs++; if (shown) out.visible_dialogs++; }
+    if (role === 'textbox') { out.textboxes++; if (shown) out.visible_textboxes++; }
+    if (modal) { out.aria_modals++; if (shown) out.visible_aria_modals++; }
     if ((role === 'dialog' || modal) && out.containers.length < 5) {
       const entry = describe(el);
       entry.shadow_path = path;
@@ -4208,13 +4273,33 @@ function scan(root, depth, path) {
       }
       scan(el.shadowRoot, depth + 1, path.concat([el.tagName.toLowerCase()]));
     }
+    if (el.tagName === 'IFRAME') {
+      // Same-origin only: a cross-origin `contentDocument` throws, and that throw is the answer
+      // ("cannot look"), never "nothing there".
+      let doc = null;
+      try { doc = el.contentDocument; } catch (e) { doc = null; }
+      if (doc) {
+        const frameRef = 'iframe[' + String(el.getAttribute('src') || '').slice(0, 60) + ']';
+        const before = out.dialogs + out.textboxes + out.aria_modals;
+        scan(doc, depth + 1, path.concat([frameRef]));
+        if (out.dialogs + out.textboxes + out.aria_modals > before &&
+            out.frame_overlays.length < 5) {
+          out.frame_overlays.push({src: String(el.getAttribute('src') || '').slice(0, 120),
+                                   title: el.getAttribute('title'),
+                                   name: el.getAttribute('name')});
+        }
+      }
+    }
   }
 }
 scan(document, 0, []);
 for (const frame of document.querySelectorAll('iframe')) {
   if (out.iframes.length >= 5) break;
+  let reachable = false;
+  try { reachable = !!frame.contentDocument; } catch (e) { reachable = false; }
   out.iframes.push({src: (frame.getAttribute('src') || '').slice(0, 120),
                     title: frame.getAttribute('title'),
+                    same_origin: reachable,
                     displayed: !!(frame.offsetParent)});
 }
 return out;
@@ -4271,9 +4356,15 @@ def carried_deep_elements(driver, css: str, limit: int = 20) -> list:
 
 
 def _composer_container_open(driver) -> bool:
-    """Did SOMETHING composer-shaped open — a dialog, an editor, or a modal — anywhere on the page?"""
+    """Did SOMETHING composer-shaped open — a dialog, an editor, or a modal — anywhere on the page?
+
+    VISIBLE surfaces only (#2066). The raw counts include the two hidden `role='dialog'` surfaces
+    LinkedIn's video player ships on every feed page, so keying on those graded the ladder's first
+    rung `opened` before it had pressed anything — and a ladder that always succeeds names no rung.
+    """
     reading = deep_overlay_evidence(driver)
-    return bool(reading.get("dialogs") or reading.get("textboxes") or reading.get("aria_modals"))
+    return bool(reading.get("visible_dialogs") or reading.get("visible_textboxes")
+                or reading.get("visible_aria_modals"))
 
 
 def share_box_activation_ladder(driver, sleep=time.sleep) -> dict:
@@ -4395,13 +4486,20 @@ def _composer_container(driver) -> tuple:
     does; otherwise the carried shadow-aware query, which is the same rule written twice on purpose
     (a pre-merge pass has to be able to ground the fix that has not shipped yet).
 
+    An image that resolves NOTHING falls through to the carried chain (#2066). It used to stop at
+    the image's answer, which meant the one run that matters most — the branch fixing a container
+    the deployed image cannot see — could never grade anything but drift. `container_source` is
+    what keeps the two apart: `script` says this reading grounds the BRANCH's chain, not a
+    deployed one.
+
     Returns:
         `(element_or_None, source)` — source is `image`, `script`, or `none` when nothing opened.
     """
     try:
         from cqc_lem.utilities.linkedin.share_composer import find_composer_container
         container = find_composer_container(driver)
-        return container, ("image" if container is not None else "none")
+        if container is not None:
+            return container, "image"
     except Exception:
         pass
     containers = carried_deep_elements(driver, _CARRIED_COMPOSER_CONTAINER_CSS, limit=8)
@@ -4411,9 +4509,63 @@ def _composer_container(driver) -> tuple:
                 return container, "script"
         except Exception:
             continue
+    full_page = _carried_full_page_composer(driver)
+    if full_page is not None:
+        return full_page, "script"
     if containers:
         return containers[0], "script"
     return None, "none"
+
+
+# The carried half of `share_composer._full_page_composer` (#2066). LinkedIn's "Start a post" now
+# navigates to `/sharing/compose` and mounts the composer over the still-rendered feed with no
+# `role='dialog'` and no `aria-modal` anywhere on it, so the container is named by what it CONTAINS
+# — the editor, plus a control whose whole label is "Post".
+_CARRIED_ENCLOSING_CONTAINER_JS = """
+const start = arguments[0];
+const css = arguments[1];
+const labels = arguments[2];
+const maxDepth = arguments[3];
+const stopTags = ['BODY', 'HTML', 'MAIN'];
+function labelOf(el) {
+  const value = el.getAttribute('aria-label') || el.innerText || '';
+  return value.replace(/\\s+/g, ' ').trim().toLowerCase();
+}
+function up(node) {
+  if (node.parentElement) return node.parentElement;
+  const root = node.getRootNode ? node.getRootNode() : null;
+  return (root && root.host) ? root.host : null;
+}
+if (!start) return null;
+let node = up(start);
+for (let depth = 0; node && depth < maxDepth; depth++) {
+  if (stopTags.indexOf(node.tagName) !== -1) return null;
+  let found;
+  try { found = node.querySelectorAll(css); } catch (e) { found = []; }
+  for (const el of found) {
+    if (el === start || start.contains(el)) continue;
+    const rect = el.getBoundingClientRect();
+    if (!(rect.width || rect.height)) continue;
+    if (labels.indexOf(labelOf(el)) !== -1) return node;
+  }
+  node = up(node);
+}
+return null;
+"""
+
+
+def _carried_full_page_composer(driver):
+    """The full-page composer's own container, read without the image's help."""
+    for editor in carried_deep_elements(driver, _CARRIED_COMPOSER_EDITOR_CSS, limit=4):
+        try:
+            container = driver.execute_script(
+                _CARRIED_ENCLOSING_CONTAINER_JS, editor, _CARRIED_COMPOSER_AFFORDANCE_CSS,
+                [label.lower() for label in _CARRIED_POST_BUTTON_LABELS], 12)
+        except Exception:
+            continue
+        if container is not None:
+            return container
+    return None
 
 
 def _composer_editor(container, css: str = None):

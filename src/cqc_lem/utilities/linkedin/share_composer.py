@@ -49,7 +49,9 @@ from cqc_lem.utilities.linkedin_formatter import strip_non_bmp
 from cqc_lem.utilities.logger import log_debug, log_info
 from cqc_lem.utilities.selenium_util import (
     click_first,
+    element_label,
     find_deep_elements,
+    find_enclosing_container,
     find_labelled,
 )
 
@@ -203,11 +205,71 @@ def find_composer_container(driver, user_id: int = None, post_id: int = None):
                 return container
         except WebDriverException:
             continue
+    full_page = _full_page_composer(driver, user_id=user_id, post_id=post_id)
+    if full_page is not None:
+        return full_page
     if containers:
         log_debug("Composer container resolved with no editor in it", user_id=user_id,
                   post_id=post_id)
         return containers[0]
     return None
+
+
+def _full_page_composer(driver, user_id: int = None, post_id: int = None):
+    """The composer when LinkedIn renders it as a full-page ROUTE rather than a dialog (#2066).
+
+    Live grounding on 2026-09-14 found "Start a post" navigating to `/sharing/compose` and mounting
+    the composer over the still-rendered feed with **no** `role='dialog'` and no `aria-modal` on it
+    anywhere — so the chain above resolved nothing while the editor and the Post button were both on
+    screen, and `auto_post_to_group` read that as a group refusing member posts.
+
+    That box carries no `role`, no `data-testid` and only hashed class names, and class-name
+    locators are banned. It is named here by what it CONTAINS instead — the editor plus a control
+    labelled exactly "Post" — which is the one description that survives the next hash rotation.
+
+    Args:
+        driver: The Selenium driver, on the page whose composer was just opened.
+        user_id: For the structured log context.
+        post_id: For the structured log context.
+
+    Returns:
+        The composer's own container element, or None when the page is not showing one.
+    """
+    for editor in find_deep_elements(driver, COMPOSER_EDITOR_CSS, visible_only=True, limit=4):
+        container = find_enclosing_container(driver, editor, COMPOSER_AFFORDANCE_CSS,
+                                             POST_BUTTON_LABELS)
+        if container is not None:
+            log_debug("Composer resolved as a full-page route, not a dialog", user_id=user_id,
+                      post_id=post_id)
+            return container
+    return None
+
+
+def composer_open_signal(driver) -> Optional[int]:
+    """How many controls the PAGE renders that only an open composer has — the zero-walk anchor.
+
+    Independent of `find_composer_container` on purpose, which is the whole point of a cross-check
+    (#1013): the container chain matches this label only INSIDE a container it already resolved, so
+    a page still rendering it while the chain resolves nothing is drift and nothing else. Live
+    grounding (2026-09-14) confirms the discriminator both ways — a feed with the composer closed
+    renders no control with this exact label, and the open composer renders one.
+
+    Args:
+        driver: The Selenium driver, on the page the composer should be open on.
+
+    Returns:
+        The count, or None when the page could not be read at all. None is load-bearing: "we could
+        not ask" must never be recorded as "the page said zero".
+    """
+    try:
+        controls = find_deep_elements(driver, COMPOSER_AFFORDANCE_CSS, visible_only=True, limit=60)
+    except WebDriverException:
+        return None
+    if not controls:
+        # `find_deep_elements` answers `[]` for a failed read and for an empty page alike, and a
+        # LinkedIn page that renders NO clickable at all is the failed read, not an empty one.
+        return None
+    return sum(1 for control in controls if element_label(control) in POST_BUTTON_LABELS)
 
 
 def find_composer_control(container, labels, exact: bool = False,

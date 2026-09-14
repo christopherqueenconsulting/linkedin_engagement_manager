@@ -322,7 +322,8 @@ class TestFindComposerContainer:
 
     def test_a_container_without_an_editor_is_still_better_than_nothing(self):
         decoy = self._container(editors=0)
-        with patch(f"{_MOD}.find_deep_elements", return_value=[decoy]):
+        with patch(f"{_MOD}.find_deep_elements", return_value=[decoy]), \
+             patch(f"{_MOD}.find_enclosing_container", return_value=None):
             assert sc.find_composer_container(MagicMock()) is decoy
 
     def test_nothing_open_answers_none(self):
@@ -339,7 +340,84 @@ class TestFindComposerContainer:
         """The whole point: `driver.find_elements` cannot reach `#interop-outlet`'s shadow root."""
         with patch(f"{_MOD}.find_deep_elements", return_value=[]) as deep:
             sc.find_composer_container(MagicMock())
-        assert deep.call_args.args[1] == sc.COMPOSER_CONTAINER_CSS
+        assert deep.call_args_list[0].args[1] == sc.COMPOSER_CONTAINER_CSS
+
+    def test_the_dialog_rung_is_tried_before_the_full_page_one(self):
+        """An ordered CHAIN, not a replacement (#2020).
+
+        LinkedIn serves different DOMs per viewer, and the shadow-mounted modal #1621 measured is
+        still one of them — so the full-page walk must never pre-empt a dialog that has the editor.
+        """
+        composer = self._container()
+        with patch(f"{_MOD}.find_deep_elements", return_value=[composer]), \
+             patch(f"{_MOD}.find_enclosing_container") as walk:
+            assert sc.find_composer_container(MagicMock()) is composer
+        walk.assert_not_called()
+
+
+class TestTheFullPageComposer:
+    """#2066: "Start a post" navigates to `/sharing/compose` and there is no dialog at all.
+
+    Live-grounded 2026-09-14: the editor is on screen, `role='dialog'` and `aria-modal` are both
+    absent, and every class on the nest is a rotating hash. The container can only be named by what
+    it CONTAINS, which is what this rung does.
+    """
+
+    def test_the_editor_s_enclosing_box_is_the_composer(self):
+        editor, box = MagicMock(), MagicMock()
+        with patch(f"{_MOD}.find_deep_elements", side_effect=[[], [editor]]), \
+             patch(f"{_MOD}.find_enclosing_container", return_value=box) as walk:
+            assert sc.find_composer_container(MagicMock()) is box
+        assert walk.call_args.args[1] is editor
+        assert walk.call_args.args[3] == sc.POST_BUTTON_LABELS
+
+    def test_an_editor_with_no_post_control_above_it_is_not_a_composer(self):
+        """A comment box on a feed card has an editor too — the commit control is the difference."""
+        with patch(f"{_MOD}.find_deep_elements", side_effect=[[], [MagicMock()]]), \
+             patch(f"{_MOD}.find_enclosing_container", return_value=None):
+            assert sc.find_composer_container(MagicMock()) is None
+
+    def test_the_walk_tries_every_editor_before_giving_up(self):
+        """A locator is an exhausted CHAIN, never the first candidate (#2020)."""
+        first, second, box = MagicMock(), MagicMock(), MagicMock()
+        with patch(f"{_MOD}.find_deep_elements", side_effect=[[], [first, second]]), \
+             patch(f"{_MOD}.find_enclosing_container", side_effect=[None, box]):
+            assert sc.find_composer_container(MagicMock()) is box
+
+
+class TestComposerOpenSignal:
+    """The page-native cross-check: is a composer open, asked WITHOUT the container chain."""
+
+    def _control(self, label):
+        control = MagicMock()
+        control.get_attribute.side_effect = lambda name: label if name == "aria-label" else None
+        return control
+
+    def test_counts_only_controls_whose_whole_label_is_the_commit_one(self):
+        controls = [self._control("Post"), self._control("Repost"), self._control("Schedule post")]
+        with patch(f"{_MOD}.find_deep_elements", return_value=controls):
+            assert sc.composer_open_signal(MagicMock()) == 1
+
+    def test_a_closed_composer_answers_zero_not_none(self):
+        """Zero is a real answer — it is what makes a quiet no-op an EMPTY verdict, not drift."""
+        with patch(f"{_MOD}.find_deep_elements",
+                   return_value=[self._control("Follow Sundar Pichai")]):
+            assert sc.composer_open_signal(MagicMock()) == 0
+
+    def test_a_page_with_no_clickable_at_all_is_unreadable_not_empty(self):
+        """A read we could not take must never be recorded as the page saying zero (#1013)."""
+        with patch(f"{_MOD}.find_deep_elements", return_value=[]):
+            assert sc.composer_open_signal(MagicMock()) is None
+
+    def test_a_driver_fault_answers_none(self):
+        with patch(f"{_MOD}.find_deep_elements", side_effect=WebDriverException("gone")):
+            assert sc.composer_open_signal(MagicMock()) is None
+
+    def test_the_signal_does_not_reuse_the_container_chain(self):
+        """Cross-checking a chain against its own selector proves nothing (zero_walk.py)."""
+        with patch(f"{_MOD}.find_deep_elements", return_value=[]) as deep:
+            sc.composer_open_signal(MagicMock())
+        assert deep.call_args.args[1] != sc.COMPOSER_CONTAINER_CSS
 
 
 class TestTheShareBoxChainIsShared:
