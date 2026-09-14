@@ -4501,6 +4501,8 @@ def _composer_container(driver) -> tuple:
         if container is not None:
             return container, "image"
     except Exception:
+        # Deliberate: an image without the symbol, or one whose resolver raises, is the case this
+        # probe exists to grade. Falling through to the carried chain below IS the handling.
         pass
     containers = carried_deep_elements(driver, _CARRIED_COMPOSER_CONTAINER_CSS, limit=8)
     for container in containers:
