@@ -32,7 +32,7 @@ code is missing from this table.
 |---|---|---|---|---|
 | Home feed "Sort by → Recent" | `_switch_feed_to_recent` | `--feed-sort` | yes | `feed_sort` on the funnel + `feed_scan` (#817). A home feed that rendered cards and still resolved no sort control also ships a bounded DOM sample as `sdui_selector_evidence` (`surface='feed_sort_control'`) — the same two-pass scan the comment sweep uses (`utilities/linkedin/sort_evidence.py`), shipped as an EVENT so prod's log filters cannot drop it (#1270). Nothing is emitted off the home feed or on a feed the zero-walk cross-check says rendered nothing |
 | Feed card walk + reactions | `_card_for_textbox` / `react_to_post_inline` | `--reaction-probe` | yes | `feed_walk` / `cards_seen` (and `textboxes_seen`) on the funnel — zero markers is cross-checked against the REACTION control (`_FEED_WALK_CROSSCHECK_SEL`), never against a marker the walk already counts; `no_text` (image/video-only cards) and `not_walked` (budget spent / deadline passed) are DEBUG, only `drift` warns (#1013/#1081) |
-| Feed share-box composer | `_post_composer_for_card` | `--probe-composer` | yes | per-card miss is a DEBUG no-op by design (#876). The probe reports the COMPOSER's own controls and nothing else: it used to fall back to a page-wide `<button>` scan whenever its container lookup missed, so a composer that never opened graded `ok` on the feed's 84 controls behind it — a closed composer is `drift` now (#1621) |
+| Feed share-box composer | `_post_composer_for_card` | `--probe-composer` | yes | per-card miss is a DEBUG no-op by design (#876). The probe reports the COMPOSER's own controls and nothing else: it used to fall back to a page-wide `<button>` scan whenever its container lookup missed, so a composer that never opened graded `ok` on the feed's 84 controls behind it — a closed composer is `drift` now (#1621). The drift evidence is read BEFORE the Escape and names which of three fixes it needs — full-page route, shadow/iframe mount, or the press itself (#2066) |
 | Profile-views viewer list | `_PROFILE_VIEWER_ROWS_JS` | `--profile-views` | yes | zero rows vs the page's headline stat (#1009) |
 | Profile header scrape + degree badge | `parse_profile_header` / `_profile_is_first_degree` | `--profile-scrape` | yes | no name vs the page's `/in/` links; no badge vs the page's own degree LINE (#1021) |
 | Profile experience rows (`/details/experience/`) | `parse_profile_experiences` | `--profile-experiences` | yes | dated rows the parser cannot read is drift; an entity with no date range yields nothing rather than a guessed company (#970); every role parsed and NONE attributed is drift too, some blank is not (`experiences_without_company`, #1096); `dated_line_containers` names the ancestor chain each dated line actually sits in, so a render with no markup vocabulary is readable from the first report (#1465) |
@@ -166,7 +166,10 @@ deliberately left, and why:
   `--connect-dialog` at a specific profile can still ask about a target the sweep would decline.
 - **Feed share-box composer** — a per-card composer miss stays a DEBUG no-op (#876). The card walk
   above it is what has the tripwire; warning per card would file a defect for a post that legitimately
-  renders no composer.
+  renders no composer. The SHARE-BOX half does have one as of #2066: `auto_post_to_group` grades a
+  container that resolved nothing against `share_composer.composer_open_signal` before deciding the
+  group refuses member posts, because only that verdict may stamp the draft `FAILED` and rotate past
+  the group.
 - **Post media render** — a diagnostic, not a lane. Nothing in production reads it, so there is no
   zero to misread.
 - **Target resolution can still come back empty** (issue #1770) — a brand-new account with no

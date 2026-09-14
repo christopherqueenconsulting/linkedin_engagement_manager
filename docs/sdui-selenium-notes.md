@@ -713,6 +713,66 @@ group lane's editor and Post button still resolved with the old chain. Read that
 difference, not a rule: one lookup that works either way is why both lanes now go through the
 container resolver.
 
+## The share box is now a full-page ROUTE, not a modal at all (#2066)
+
+Live-grounded 2026-09-14 (`/feed/`, user 1, debug node, `--probe-composer`). LinkedIn moved the
+share box again, and this time it did not move the modal — it deleted it. Clicking "Start a post"
+**navigates**: `url_after_open` is `https://www.linkedin.com/sharing/compose`, and the composer
+renders over the still-mounted feed. What the deep read finds on that page:
+
+| Signal | Reading |
+|---|---|
+| `visible_textboxes` | 1 — the editor is on screen |
+| `visible_dialogs` / `aria_modals` | 0 / 0 — **no `role='dialog'`, no `aria-modal` anywhere** |
+| `dialogs` (raw) | 2, both `vjs-modal-dialog … vjs-hidden` — the video player's, hidden, on every feed page |
+| `modal_containers` | `[]` — no `.artdeco-modal`, no `share-box-*`, no `data-testid` |
+| `shadow_overlays` | `[]` — #1621's `#interop-outlet` mount is gone too |
+| composer's own controls | `Christopher Queen`, `Post to Anyone`, `Comments: Anyone`, `Show Emoji Picker`, `Media`, `Expand content types`, `Post` |
+
+So `COMPOSER_CONTAINER_CSS` (`div[role='dialog'], [aria-modal='true']`) matches nothing, and every
+step under it inherits the miss — the same shape as #1621, one rung further out. In
+`auto_post_to_group` that miss was read as "this group refuses member posts": it stamped the draft
+`FAILED` and rotated past a healthy group, weekly, silently.
+
+**The container carries no addressable attribute of its own.** No `role`, no `data-testid`, no
+`aria-label`; every class on the nest is a rotating hash (`_89776803`, `ba166335`), and class-name
+locators are banned anyway. The only stable description is what it CONTAINS, so
+`share_composer._full_page_composer` names it that way: walk UP from a visible `[role='textbox']`
+to the nearest ancestor that also holds a control whose whole label is `Post`
+(`selenium_util.find_enclosing_container`). The walk stops at `body`/`html`/`main` — an ancestor
+that broad is the page, and scoping a later lookup to the page is the page-wide fallback #1012
+forbids. It crosses out of a shadow root explicitly via `getRootNode().host`, because
+`parentElement` stops dead at that boundary.
+
+This is a CHAIN rung, not a replacement (#2020): the dialog lookup is still tried first, because
+LinkedIn serves different DOMs per viewer and the modal variant is what #1621 measured.
+
+**A feed card's comment box fits that description exactly**, and it is the one candidate the walk
+must never accept: LinkedIn labels the comment SUBMIT control "Post" too (it is what
+`linkedin/composer._SUBMIT_NEAR_COMPOSER_JS` clicks), so a card's box is "an editor with a Post
+control above it" and handing one back would make `auto_post_to_group` type the group draft into
+somebody else's post and press its commit control — #1012 on a write that cannot be taken back. The
+discriminator is the card's own comment ACTION (`cards._card_for_textbox`): an editor with one above
+it is a comment box, and an editor the page is too broken to answer for is treated as one as well,
+because the fallback for "no container" is only ever to hold the draft.
+
+**Two things this reading also corrected in the probe itself:**
+
+- **Hidden dialogs are not an open composer.** The raw `dialogs` count is never zero on a feed page
+  (the two `vjs-hidden` ones above), so `_composer_container_open` — the ladder's own open-test —
+  answered `True` before the ladder had pressed anything, and reported `opened_by: wait_longer` on
+  a page with no composer. It keys on `visible_*` counters now.
+- **Escape-then-describe describes nothing.** `probe_composer` used to send Escape before reading
+  the `deep_overlay` its own verdict told the next agent to re-ground the container from, so every
+  run of that shape reported an empty overlay no matter where the composer had mounted. The drift
+  evidence is read while the composer is still up.
+
+The page-native cross-check for "is a composer open" is `share_composer.composer_open_signal` — a
+deep, visible count of controls whose whole label is `Post`. It is independent of the container
+chain, which only ever matches that label INSIDE a container it already resolved, and the live
+reading confirms the discriminator both ways: the closed feed renders no such control, the open
+composer renders one.
+
 ## The occasion composer's template chooser is a permanent read-only-guard boundary (#1621, #1713)
 
 Live-grounded 2026-08-24 (`/feed/`, user 1, debug node, both `project_launch` and

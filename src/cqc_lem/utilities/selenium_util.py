@@ -1011,6 +1011,75 @@ def find_deep_elements(driver: WebDriver, css: str, *, visible_only: bool = True
     return [el for el in (found or []) if el is not None]
 
 
+# The nearest ancestor that encloses BOTH a known inner element and a control answering to a known
+# label. It walks up rather than down because the surface being looked for has no anchor of its own:
+# LinkedIn's full-page share composer (#2066) carries no `role`, no `data-testid` and only hashed
+# class names, so the only honest way to name its box is "the smallest thing holding the editor and
+# the Post button". Crossing OUT of a shadow root is explicit (`getRootNode().host`) — `parentElement`
+# stops dead at that boundary, which would strand the walk one node above the editor.
+_ENCLOSING_CONTAINER_JS = """
+const start = arguments[0];
+const css = arguments[1];
+const labels = arguments[2];
+const maxDepth = arguments[3];
+const stopTags = ['BODY', 'HTML', 'MAIN'];
+function labelOf(el) {
+  const value = el.getAttribute('aria-label') || el.innerText || '';
+  return value.replace(/\\s+/g, ' ').trim().toLowerCase();
+}
+function up(node) {
+  if (node.parentElement) return node.parentElement;
+  const root = node.getRootNode ? node.getRootNode() : null;
+  return (root && root.host) ? root.host : null;
+}
+if (!start) return null;
+let node = up(start);
+for (let depth = 0; node && depth < maxDepth; depth++) {
+  if (stopTags.indexOf(node.tagName) !== -1) return null;
+  let found;
+  try { found = node.querySelectorAll(css); } catch (e) { found = []; }
+  for (const el of found) {
+    if (el === start || start.contains(el)) continue;
+    const rect = el.getBoundingClientRect();
+    if (!(rect.width || rect.height)) continue;
+    if (labels.indexOf(labelOf(el)) !== -1) return node;
+  }
+  node = up(node);
+}
+return null;
+"""
+
+
+def find_enclosing_container(driver: WebDriver, element: WebElement, css: str, labels,
+                             max_depth: int = 12) -> Optional[WebElement]:
+    """The nearest ancestor of `element` that also holds a visible `css` control labelled `labels`.
+
+    For a surface whose own box carries no addressable attribute — no `role`, no `data-testid`,
+    only hashed class names, which class-name locators are banned from anyway. Naming it by what it
+    CONTAINS is the one description LinkedIn cannot rotate out from under us.
+
+    Args:
+        driver: The Selenium driver.
+        element: The inner element the walk starts from.
+        css: The candidate selector for the second element the ancestor must hold.
+        labels: Lowercase labels; a candidate matches when its WHOLE label equals one of them.
+        max_depth: How many ancestors to try. The walk also stops at `body`/`html`/`main`, because
+            an ancestor that broad is the page rather than a container, and scoping a later lookup
+            to the page is exactly the page-wide fallback #1012 forbids.
+
+    Returns:
+        The ancestor element, or None when nothing matched — never raises, because every caller's
+        fallback for "no container" is already its fallback for "could not look".
+    """
+    wanted = [str(label).strip().lower() for label in (labels or ()) if str(label).strip()]
+    if element is None or not wanted:
+        return None
+    try:
+        return driver.execute_script(_ENCLOSING_CONTAINER_JS, element, css, wanted, int(max_depth))
+    except WebDriverException:
+        return None
+
+
 def element_label(element: WebElement) -> str:
     """The label an element answers to — its `aria-label`, else its text — lowercased and collapsed.
 

@@ -1303,6 +1303,7 @@ class TestPostToGroup:
              patch(f"{_FEED}.get_group_post_draft", return_value=dict(_READY_DRAFT)), \
              patch(f"{_FEED}.click_first", return_value=MagicMock()), \
              patch(f"{_FEED}.find_composer_container", return_value=None), \
+             patch(f"{_FEED}.composer_open_signal", return_value=0), \
              patch(f"{_FEED}.find_deep_elements", side_effect=self._deep(editor=MagicMock())), \
              patch(f"{_FEED}.find_composer_control",
                    side_effect=self._control(post_button=MagicMock())), \
@@ -1314,6 +1315,35 @@ class TestPostToGroup:
         rec.assert_not_called()
         run.assert_called_once_with(1, "123")
         assert str(upd.call_args.kwargs["status"]) == "failed"
+
+    @pytest.mark.parametrize("signal,expected", [(1, "drift"), (None, "unknown")])
+    def test_a_composer_the_page_still_shows_never_blames_the_group(self, signal, expected):
+        """#2066: zero items is not "nothing to do" until the page agrees (#1013).
+
+        The share box now navigates to a full-page `/sharing/compose` route with no `role='dialog'`
+        on it at all, so a container chain that has not caught up resolves nothing while the
+        composer is plainly on screen. Reaching `_unpostable` there stamps a healthy draft FAILED
+        and rotates past a postable group — weekly, silently. Drift leaves the draft `ready` so the
+        group keeps its turn. An UNREADABLE cross-check (`None`) is not drift, and must not be
+        treated as one either — but it is not evidence the group is unpostable, so it holds too.
+        """
+        from cqc_lem.app.engagement.feed import auto_post_to_group
+        with self._driver_patches(), \
+             patch(f"{_FEED}.get_group_post_draft", return_value=dict(_READY_DRAFT)), \
+             patch(f"{_FEED}.click_first", return_value=MagicMock()), \
+             patch(f"{_FEED}.find_composer_container", return_value=None), \
+             patch(f"{_FEED}.composer_open_signal", return_value=signal), \
+             patch(f"{_FEED}.find_deep_elements", side_effect=self._deep(editor=MagicMock())), \
+             patch(f"{_FEED}.find_composer_control",
+                   side_effect=self._control(post_button=MagicMock())), \
+             patch(f"{_FEED}.record_group_post") as rec, \
+             patch(f"{_FEED}.update_group_post_draft") as upd, \
+             patch(f"{_FEED}.record_group_post_run") as run, patch(f"{_FEED}.quit_gracefully"):
+            result = auto_post_to_group.run(user_id=1, group_id="123", draft_id=11)
+        assert result == f"Group composer container unresolved ({expected})"
+        rec.assert_not_called()
+        upd.assert_not_called()   # the draft is still the user's to publish next slot
+        run.assert_not_called()   # and the group keeps its turn in the rotation
 
     @pytest.mark.parametrize("draft", [
         None,

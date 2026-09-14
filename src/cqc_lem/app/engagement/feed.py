@@ -218,6 +218,7 @@ from cqc_lem.utilities.linkedin.share_composer import (
     POST_BUTTON_LABELS,
     SHARE_BOX_LOCATORS,
     SHARE_BOX_TEXT_SIGNALS,
+    composer_open_signal,
     find_composer_container,
     find_composer_control,
 )
@@ -4142,6 +4143,18 @@ def auto_post_to_group(self, user_id: int, group_id: str, group_name: str = None
         # as a group that refuses member posts — which is what stamped healthy drafts FAILED.
         composer = find_composer_container(driver, user_id=user_id)
         if composer is None:
+            # Zero items is not "nothing to do" until the page agrees (#1013, #2066). `_unpostable`
+            # is a verdict about the GROUP — it stamps the draft FAILED and rotates past the group
+            # — so a container chain that rotated must never reach it. `composer_open_signal` is
+            # the page's own answer and is independent of the chain: the chain only ever matches
+            # that label INSIDE a container it already resolved. Only EMPTY — the page agreeing
+            # there is no composer — may retire the draft; DRIFT is our chain's fault and UNKNOWN
+            # is a page that never rendered, so both leave it `ready` and the group keeps its turn.
+            verdict = _zw.grade_zero_walk(composer_open_signal(driver), "Group composer container",
+                                          user_id=user_id, group_id=group_id,
+                                          task_name="auto_post_to_group")
+            if verdict != _zw.EMPTY:
+                return f"Group composer container unresolved ({verdict})"
             return _unpostable("Group composer did not open")
         # Media goes in BEFORE the text: LinkedIn's uploader takes over the composer while it
         # transcodes, and text typed first is what the overlay discards.
