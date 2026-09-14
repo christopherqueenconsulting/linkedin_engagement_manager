@@ -946,6 +946,81 @@ class TestProbeScriptProvenance:
 
 
 @pytest.mark.unit
+class TestMentionCardReadCopy:
+    """#2065 rebuilds the mention card read, so the image the probe is piped into does not have it.
+
+    Same posture as the recommendations copy: image first, carried copy otherwise, and the reading
+    names which (`card_source`). A copy that drifts grounds a read nothing ships.
+    """
+
+    def test_carried_climb_is_identical_to_the_one_outreach_uses(self):
+        from cqc_lem.app.engagement import outreach as ra
+
+        assert llv.FALLBACK_MENTION_CARDS_JS == ra._MENTION_CARDS_JS
+
+    def test_the_running_image_wins_when_it_has_the_read(self):
+        from cqc_lem.app.engagement import outreach as ra
+
+        read, source = llv.mention_cards_read()
+        assert source == "image"
+        assert read is ra._mention_cards
+
+    def test_falls_back_to_the_carried_copy_on_an_image_that_predates_2065(self, monkeypatch):
+        import builtins
+        real_import = builtins.__import__
+
+        def _no_read(name, *a, **k):
+            if name == "cqc_lem.app.engagement.outreach":
+                raise ImportError("cannot import name '_mention_cards'")
+            return real_import(name, *a, **k)
+
+        monkeypatch.setattr(builtins, "__import__", _no_read)
+        read, source = llv.mention_cards_read()
+        assert source == "script"
+        assert read is llv._carried_mention_cards
+
+    def test_the_carried_copy_tries_the_named_rungs_before_the_climb(self):
+        driver = MagicMock()
+        card = MagicMock()
+        with patch("cqc_lem.utilities.selenium_util.find_all_first", return_value=[card]):
+            assert llv._carried_mention_cards(driver) == [card]
+        driver.execute_script.assert_not_called()
+
+    def test_the_carried_copy_climbs_when_the_rungs_miss_and_never_raises(self):
+        driver = MagicMock()
+        card = MagicMock()
+        driver.execute_script.return_value = [card, None]
+        with patch("cqc_lem.utilities.selenium_util.find_all_first", return_value=[]):
+            assert llv._carried_mention_cards(driver) == [card]
+            driver.execute_script.side_effect = RuntimeError("boom")
+            assert llv._carried_mention_cards(driver) == []
+            driver.execute_script.side_effect = None
+            driver.execute_script.return_value = "not a reading"
+            assert llv._carried_mention_cards(driver) == []
+
+
+class TestMentionDomEvidence:
+    """The scan a rewrite is written FROM.
+
+    Anchored on the page's own sentence rather than on the chain being graded: a scan that looks for
+    cards via the card locators can only report that the card locators do not match, which is the
+    thing already known.
+    """
+
+    def test_it_returns_what_the_page_answered(self):
+        driver = MagicMock()
+        driver.execute_script.return_value = {"locator_hits": {"main article": 0}}
+        assert llv.mention_card_dom_evidence(driver) == {"locator_hits": {"main article": 0}}
+
+    def test_a_diagnostic_never_breaks_the_reading_it_rode_in_on(self):
+        driver = MagicMock()
+        driver.execute_script.side_effect = RuntimeError("boom")
+        assert "error" in llv.mention_card_dom_evidence(driver)
+
+    def test_it_is_declared_as_a_capability_so_a_stale_pipe_is_visible(self):
+        assert "appreciation_sources.mention_dom" in llv.probe_script_reading()["capabilities"]
+
+
 class TestRecommendationReadCopy:
     """#1007's read is NEW, so the image the probe is piped into does not have it — and grounding a
     rebuilt reader only after it merges is exactly how the ladder it replaces shipped dead. Same
@@ -1001,7 +1076,7 @@ class TestRecommendationReadCopy:
     def test_a_reading_taken_from_the_carried_copy_says_so(self):
         verdict = llv.appreciation_verdict({"cards": 2, "dated": 2, "lookback_days": 30,
                                             "people": [], "read_source": "script"})
-        assert "2 card(s), 2 dated" in verdict and "predates #1007" in verdict
+        assert "2 card(s), 2 dated" in verdict and "read carried by this script" in verdict
         assert "predates" not in llv.appreciation_verdict(
             {"cards": 2, "dated": 2, "lookback_days": 30, "people": [], "read_source": "image"})
 
@@ -1332,7 +1407,7 @@ class TestAppreciationSourcesProbe:
         rec = report["recommendations_received"]
         assert rec["read_source"] == "script"
         assert (rec["cards"], rec["dated"]) == (1, 1)
-        assert "predates #1007" in rec["verdict"]
+        assert "read carried by this script" in rec["verdict"]
         assert report["mentions"]["cards"] == 0
 
     def test_an_early_paint_is_re_read_before_it_counts_as_an_empty_section(self):
@@ -1368,7 +1443,9 @@ class TestAppreciationSourcesProbe:
         card.find_elements.return_value = [link]
 
         driver = _fake_driver(current_url="https://www.linkedin.com/notifications/")
-        with patch("cqc_lem.utilities.selenium_util.find_all_first", return_value=[card]), \
+        # `_mention_cards` reads the chain through its OWN import, so the patch goes where the
+        # symbol now lives rather than on the facade the probe used to call directly.
+        with patch("cqc_lem.app.engagement.outreach.find_all_first", return_value=[card]), \
              patch("cqc_lem.utilities.db.has_appreciation_touch", return_value=False), \
              patch("cqc_lem.app.engagement.outreach.getText", side_effect=lambda el: el.text):
             report = llv.probe_appreciation_sources(driver, 1, "https://www.linkedin.com/in/me/",
