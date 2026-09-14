@@ -294,6 +294,42 @@ running image has it and an identical carried copy when it does not, and the rea
 (`read_source: image | script`; a `script` reading has grounded THIS BRANCH, not what is deployed).
 `TestRecommendationReadCopy` fails the build if the copy drifts from the shipped read.
 
+## The mentions notification feed has no `data-view-name` and no `<article>` (#2065)
+
+Live-grounded 2026-09-14 (`/notifications/?filter=mentions`, user 1): hit counts on the live page
+were `[data-view-name]` **0** anywhere in the *document*, `main article` **0**, `main li` 6 (nav
+chrome, never a card), `main [data-testid]` **3** — and all three are page furniture
+(`lazy-column`, `interop-shadowdom`, `interop-iframe`) — against `main a[href*='/in/']` 11. So
+every rung of `_MENTION_CARD_LOCATORS` was unmatchable while `_mentions_page_native_count` read
+two "mentioned you" sentences off the same page: the weekly sweep graded the surface `drift`
+twice, and #1985's `<body>` fallback could not move it because the markup, not the scope, had
+rotated.
+
+What the page renders is one `/in/` anchor per notification inside an **unnamed `<div>`** carrying
+the whole card (~1.5–2.6k chars of innerText, exactly one profile slug), sitting under
+`div[data-testid='lazy-column']` — the one element that holds every card (8 profile links). The
+card body reads `<Actor> mentioned you in a comment.` followed by the quoted comment, and the
+notification age (`2h`, `4h`) is inside the same block.
+
+`_MENTION_CARDS_JS` therefore finds a card the way the recommendations rebuild above does: climb
+from each profile anchor to the OUTERMOST ancestor still about that ONE slug — stop the moment a
+second slug joins — and keep the block only when its own text says `mentioned|tagged you`. It
+returns the ELEMENTS, so `_card_text` / `_card_person` keep reading a real card scoped to itself.
+The named rungs stay ahead of it in `_mention_cards`: LinkedIn serves several DOM generations at
+once, so only an **exhausted** chain means "no cards", and that answer is still graded against the
+page's own sentences (`_grade_zero_walk`) rather than believed. `<main>` first with a `<body>`
+fallback, mirroring the cross-check, because that asymmetry alone read as drift in #1985.
+
+The probe is piped into a worker running the DEPLOYED image, so — as with the recommendations read
+— it drives `_mention_cards` when the running image has it and an identical carried copy when it
+does not, naming which in `card_source`. Each mention row also reports `age_read_from`, the exact
+token the age was parsed out of: a card carries the whole quoted comment, so the notification stamp
+("2h") and a number in the quoted text ("5m ARR") are both in scope for the same regex, and an age
+read off the wrong one is how a two-year-old mention would be DMed as today's. A zero reading
+carries `dom_evidence` — locator hit counts, the page's `data-view-name`/`data-testid` vocabulary,
+and the ancestor chain above each mention sentence — which is what the next re-grounding is written
+from. Re-ground with `scripts/linkedin_live_validation.py --appreciation-sources`.
+
 ## The Connect invite is a URL, and unscoped "Invite …" buttons are a WRONG-PERSON hazard
 
 Live-grounded 2026-08-03 (3rd-degree profile, user 1, Sales-Nav overlay): the profile top card
