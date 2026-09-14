@@ -1527,8 +1527,19 @@ def _follow_control_crosscheck_sel(owner: str) -> str:
     does the page render an aria-label naming THIS owner that the resolver chain should have seen?
     Other people's Follow buttons (the "More profiles for you" rail, a feed card's author) name
     someone else, so they never answer yes — the same owner-name scoping rule `_FOLLOW_CONTROL_JS`
-    exists for. It stays an INDEPENDENT read: a CSS prefix match on the raw attribute, never the
-    JS chain's normalisation, visibility test or route walk, so a rotated route still escalates.
+    exists for. It is a PARTLY independent read, and the limit is worth stating, because
+    `zero_walk` warns that grading a chain against its own selector proves nothing: this is a CSS
+    prefix match on the raw attribute, so it is independent of the chain's element filter
+    (`button, [role='button']`), its `shown()` visibility test, its normalisation and all three
+    route walks — but it shares the chain's one remaining assumption, that the label READS
+    `"<verb> <owner>"`. So a rotated ROUTE still escalates in-lane, while a rotated LABEL SHAPE
+    answers zero to both questions and stays quiet here. That residual is covered on purpose, not
+    by accident: the Monday sweep's `roster_follow` probe
+    (`scripts/linkedin_live_validation.py::roster_follow_state`) still grades this surface against
+    the page's POST CARDS, and `sdui_drift_issues.py` files its own issue — the false positives
+    that anchor produces are read by a human against the probe's `visible_controls`, which is the
+    re-grounding evidence, instead of re-filing an expected no-op into error tracking every visit.
+    Do not "align" that probe with this selector without replacing the detection it carries.
     """
     escaped = " ".join(str(owner).split()).replace("\\", "\\\\").replace('"', '\\"')
     return ", ".join(f'[aria-label^="{verb} {escaped}" i]'

@@ -753,8 +753,17 @@ invisible: the user could never learn that following or connecting would unlock 
   signal did not resolve) graded as drift and warned on EVERY roster visit, until the repeat
   escalation filed an expected no-op as a recurring `$exception`. Naming the owner is also what
   keeps the "More profiles for you" rail's Follow buttons out of the count, and the read stays a raw
-  CSS prefix match on the attribute — never the JS chain's own normalisation, visibility test or
-  route walk — so it remains the INDEPENDENT anchor the tripwire contract requires.
+  CSS prefix match on the attribute — never the JS chain's own element filter, `shown()` visibility
+  test, normalisation or route walk. **It is only PARTLY independent, and that is the one thing to
+  know before trusting it**: it shares the chain's last assumption, that the label reads
+  `"<verb> <owner>"`. A rotated ROUTE escalates in-lane; a rotated LABEL SHAPE answers zero to both
+  questions and is silent here. The Monday drift sweep is what covers that residual — its
+  `roster_follow` probe (`roster_follow_state` in `scripts/linkedin_live_validation.py`) still
+  grades this surface against the page's POST CARDS and `sdui_drift_issues.py` files its own
+  `agent:ready` issue, so the wrong-for-a-lane anchor keeps the one job it is right for. Its false
+  positives cost a human one read of the probe's `visible_controls` (the re-grounding evidence)
+  once a week, deduped to one open issue — not a recurring `$exception` per roster visit. Aligning
+  that probe with the in-lane selector would silence this lane's total-rot detection entirely.
 - **`following` is written only after the control confirms it.** LinkedIn REPLACES the top card
   rather than relabelling the button, so the check POLLS (`_await_follow_flip`) instead of re-reading
   once — losing that render race would cost the target a failed attempt it never earned. A flip that
