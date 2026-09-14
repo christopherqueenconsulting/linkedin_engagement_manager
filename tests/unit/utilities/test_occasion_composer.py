@@ -366,6 +366,7 @@ class TestTheFullPageComposer:
     def test_the_editor_s_enclosing_box_is_the_composer(self):
         editor, box = MagicMock(), MagicMock()
         with patch(f"{_MOD}.find_deep_elements", side_effect=[[], [editor]]), \
+             patch(f"{_MOD}._card_for_textbox", return_value=None), \
              patch(f"{_MOD}.find_enclosing_container", return_value=box) as walk:
             assert sc.find_composer_container(MagicMock()) is box
         assert walk.call_args.args[1] is editor
@@ -374,6 +375,7 @@ class TestTheFullPageComposer:
     def test_an_editor_with_no_post_control_above_it_is_not_a_composer(self):
         """A comment box on a feed card has an editor too — the commit control is the difference."""
         with patch(f"{_MOD}.find_deep_elements", side_effect=[[], [MagicMock()]]), \
+             patch(f"{_MOD}._card_for_textbox", return_value=None), \
              patch(f"{_MOD}.find_enclosing_container", return_value=None):
             assert sc.find_composer_container(MagicMock()) is None
 
@@ -381,8 +383,35 @@ class TestTheFullPageComposer:
         """A locator is an exhausted CHAIN, never the first candidate (#2020)."""
         first, second, box = MagicMock(), MagicMock(), MagicMock()
         with patch(f"{_MOD}.find_deep_elements", side_effect=[[], [first, second]]), \
+             patch(f"{_MOD}._card_for_textbox", return_value=None), \
              patch(f"{_MOD}.find_enclosing_container", side_effect=[None, box]):
             assert sc.find_composer_container(MagicMock()) is box
+
+    def test_a_cards_comment_box_is_never_the_composer(self):
+        """#1012, on a write that cannot be taken back.
+
+        A card's comment SUBMIT control is labelled "Post" too (`linkedin/composer` matches that
+        exact text), so a comment box answers "an editor with a Post control above it" perfectly.
+        Handing one back would make `auto_post_to_group` type the group draft into somebody else's
+        post and press its commit control. The card's own comment ACTION is the discriminator.
+        """
+        comment_box, composer_editor, box = MagicMock(), MagicMock(), MagicMock()
+        with patch(f"{_MOD}.find_deep_elements",
+                   side_effect=[[], [comment_box, composer_editor]]), \
+             patch(f"{_MOD}._card_for_textbox",
+                   side_effect=lambda d, el: MagicMock() if el is comment_box else None), \
+             patch(f"{_MOD}.find_enclosing_container", return_value=box) as walk:
+            assert sc.find_composer_container(MagicMock()) is box
+        # The card's box was never walked up from at all.
+        assert [call.args[1] for call in walk.call_args_list] == [composer_editor]
+
+    def test_a_page_that_cannot_be_read_resolves_no_composer(self):
+        """Fail CLOSED: an unreadable card check must not become a write to the wrong entity."""
+        with patch(f"{_MOD}.find_deep_elements", side_effect=[[], [MagicMock()]]), \
+             patch(f"{_MOD}._card_for_textbox", side_effect=WebDriverException("gone")), \
+             patch(f"{_MOD}.find_enclosing_container", return_value=MagicMock()) as walk:
+            assert sc.find_composer_container(MagicMock()) is None
+        walk.assert_not_called()
 
 
 class TestComposerOpenSignal:

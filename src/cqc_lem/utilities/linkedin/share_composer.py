@@ -42,6 +42,7 @@ from cqc_lem.utilities.linkedin.cards import (
     _FEED_POST_TEXT_SEL,
     _X_LOWER_ARIA,
     _X_LOWER_TEXT,
+    _card_for_textbox,
     _normalize_post_text,
 )
 from cqc_lem.utilities.linkedin.zero_walk import grade_zero_walk, page_native_count
@@ -215,6 +216,30 @@ def find_composer_container(driver, user_id: int = None, post_id: int = None):
     return None
 
 
+def _is_card_comment_box(driver, editor) -> bool:
+    """Is this editor a feed CARD's comment box rather than the share composer's own?
+
+    The full-page walk names its container by what it contains — an editor, plus a control whose
+    whole label is "Post". A card's comment box answers that description exactly: LinkedIn's comment
+    SUBMIT control is labelled "Post" too (`linkedin/composer._SUBMIT_NEAR_COMPOSER_JS` matches that
+    exact text). Handing one back as "the composer" would make `auto_post_to_group` type the group
+    draft into somebody else's post and press its commit control — #1012's rule, on a write that
+    cannot be taken back. A card's own comment ACTION is what tells the two apart.
+
+    Args:
+        driver: The Selenium driver.
+        editor: The candidate editor the walk would start from.
+
+    Returns:
+        True when the editor belongs to a card. An unreadable page answers True as well: the
+        fallback for "no container" is to hold the draft, which is the cheap side of this call.
+    """
+    try:
+        return _card_for_textbox(driver, editor) is not None
+    except Exception:
+        return True
+
+
 def _full_page_composer(driver, user_id: int = None, post_id: int = None):
     """The composer when LinkedIn renders it as a full-page ROUTE rather than a dialog (#2066).
 
@@ -236,6 +261,8 @@ def _full_page_composer(driver, user_id: int = None, post_id: int = None):
         The composer's own container element, or None when the page is not showing one.
     """
     for editor in find_deep_elements(driver, COMPOSER_EDITOR_CSS, visible_only=True, limit=4):
+        if _is_card_comment_box(driver, editor):
+            continue
         container = find_enclosing_container(driver, editor, COMPOSER_AFFORDANCE_CSS,
                                              POST_BUTTON_LABELS)
         if container is not None:

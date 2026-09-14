@@ -747,6 +747,15 @@ forbids. It crosses out of a shadow root explicitly via `getRootNode().host`, be
 This is a CHAIN rung, not a replacement (#2020): the dialog lookup is still tried first, because
 LinkedIn serves different DOMs per viewer and the modal variant is what #1621 measured.
 
+**A feed card's comment box fits that description exactly**, and it is the one candidate the walk
+must never accept: LinkedIn labels the comment SUBMIT control "Post" too (it is what
+`linkedin/composer._SUBMIT_NEAR_COMPOSER_JS` clicks), so a card's box is "an editor with a Post
+control above it" and handing one back would make `auto_post_to_group` type the group draft into
+somebody else's post and press its commit control — #1012 on a write that cannot be taken back. The
+discriminator is the card's own comment ACTION (`cards._card_for_textbox`): an editor with one above
+it is a comment box, and an editor the page is too broken to answer for is treated as one as well,
+because the fallback for "no container" is only ever to hold the draft.
+
 **Two things this reading also corrected in the probe itself:**
 
 - **Hidden dialogs are not an open composer.** The raw `dialogs` count is never zero on a feed page

@@ -1002,7 +1002,18 @@ def probe_composer(driver, sleep=time.sleep) -> dict:
         reading["share_box_dom"] = share_box_dom
         close_composer()
         # And WHICH press opens it, when the shipped one did not — the ladder presses the same
-        # trigger one way at a time and stops at the first rung that mounts a container.
+        # trigger one way at a time and stops at the first rung that mounts a container. From a
+        # RELOADED feed: the full-page route does not answer Escape (it is a navigation, not a
+        # modal), so the ladder would otherwise grade the composer this probe already opened as
+        # `wait_longer` and name no rung at all — the same defect the visible-only counters just
+        # fixed, arriving by the other road.
+        try:
+            driver.get(FEED_URL)
+            sleep(5)
+        except Exception:
+            # A driver that cannot navigate cannot run the ladder either; the rungs below report
+            # "no element to press" and the evidence above is already captured.
+            pass
         reading["share_box_activation"] = share_box_activation_ladder(driver, sleep=sleep)
         close_composer()
         return graded(reading, STATE_DRIFT, composer_drift_verdict(reading))
@@ -4556,9 +4567,42 @@ return null;
 """
 
 
+# A feed CARD's comment box answers "an editor with a Post control above it" exactly — LinkedIn
+# labels the comment SUBMIT control "Post" too — so the walk has to be able to tell the two apart or
+# this probe grades a card's controls as the composer's and reports `ok` on a drifted one. The
+# card's own comment ACTION is the discriminator, the same walk `linkedin/cards._card_for_textbox`
+# ships in the image.
+_CARRIED_CARD_FOR_ELEMENT_JS = r"""
+const isCommentAction = (b) => {
+  if (!b || !b.getAttribute) return false;
+  const aria = (b.getAttribute('aria-label') || '').trim().toLowerCase();
+  if (aria === 'comment' || aria.startsWith('comment on')) return true;
+  return (b.textContent || '').trim().toLowerCase() === 'comment';
+};
+let el = arguments[0], d = 0;
+while (el && d < 15) {
+  for (const b of el.querySelectorAll("button, [role='button']")) {
+    if (isCommentAction(b)) return el;
+  }
+  el = el.parentElement; d++;
+}
+return null;
+"""
+
+
+def _carried_is_card_comment_box(driver, editor) -> bool:
+    """Is this editor a feed card's comment box rather than the composer's own? Unreadable = yes."""
+    try:
+        return driver.execute_script(_CARRIED_CARD_FOR_ELEMENT_JS, editor) is not None
+    except Exception:
+        return True
+
+
 def _carried_full_page_composer(driver):
     """The full-page composer's own container, read without the image's help."""
     for editor in carried_deep_elements(driver, _CARRIED_COMPOSER_EDITOR_CSS, limit=4):
+        if _carried_is_card_comment_box(driver, editor):
+            continue
         try:
             container = driver.execute_script(
                 _CARRIED_ENCLOSING_CONTAINER_JS, editor, _CARRIED_COMPOSER_AFFORDANCE_CSS,

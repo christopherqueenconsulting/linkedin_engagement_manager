@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from selenium.common.exceptions import WebDriverException
 
 SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "linkedin_live_validation.py"
 _spec = importlib.util.spec_from_file_location("linkedin_live_validation", SCRIPT)
@@ -271,6 +272,32 @@ class TestProbeComposer:
         llv.probe_composer(driver, sleep=lambda s: None)
         assert order.index("overlay") < order.index("escape"), order
 
+    def test_the_activation_ladder_presses_from_a_reloaded_feed(self, monkeypatch):
+        """#2066: the full-page route does not answer Escape — it is a navigation, not a modal.
+
+        Left on `/sharing/compose`, the ladder's own open-test is True before it presses anything,
+        so it reports `wait_longer` and names no rung — the same defect the visible-only counters
+        fixed, arriving by the other road.
+        """
+        order = []
+        driver = _fake_driver()
+        driver.find_elements.side_effect = lambda *a, **k: []
+        driver.get.side_effect = lambda url: order.append(("get", url))
+        monkeypatch.setattr("cqc_lem.utilities.selenium_util.click_first",
+                            lambda *a, **k: MagicMock())
+        monkeypatch.setattr(llv, "_composer_container", lambda d: (None, "none"))
+        monkeypatch.setattr(llv, "deep_overlay_evidence", lambda d: {})
+        monkeypatch.setattr(llv, "_modal_container_evidence", lambda d, **k: [])
+        monkeypatch.setattr(llv, "share_box_dom_evidence", lambda d, **k: [])
+        monkeypatch.setattr(llv, "share_box_activation_ladder",
+                            lambda d, sleep=None: order.append(("ladder", None)) or
+                            {"attempts": [], "opened_by": None})
+
+        llv.probe_composer(driver, sleep=lambda s: None)
+        # The FEED is loaded twice: once to start the run, once to put the ladder back on a page
+        # the share box is actually on — and the second one lands before the ladder runs.
+        assert order[-2:] == [("get", llv.FEED_URL), ("ladder", None)], order
+
     def test_the_share_box_nest_is_captured_before_the_trigger_is_pressed(self, monkeypatch):
         """Once the composer is over the feed, the nest that re-grounds the TRIGGER is gone."""
         order = []
@@ -407,6 +434,39 @@ class TestComposerContainerSource:
         monkeypatch.setattr(llv, "carried_deep_elements", lambda d, css, limit=20: [])
         monkeypatch.setattr(llv, "_carried_full_page_composer", lambda d: None)
         assert llv._composer_container(MagicMock()) == (None, "none")
+
+
+@pytest.mark.unit
+class TestCarriedFullPageComposer:
+    """The carried half of the full-page walk, which has to make the same distinction (#2066)."""
+
+    def test_a_cards_comment_box_is_never_walked_up_from(self):
+        """A card's comment SUBMIT control is labelled "Post" too, so it fits the description.
+
+        Grading a card's own controls as the composer's is how this probe reported `ok` against a
+        composer that never opened (#1621) — one rung further in.
+        """
+        comment_box, editor, box = MagicMock(), MagicMock(), MagicMock()
+        driver = MagicMock()
+
+        def _script(js, element, *args):
+            if js is llv._CARRIED_CARD_FOR_ELEMENT_JS:
+                return MagicMock() if element is comment_box else None
+            return box
+
+        driver.execute_script.side_effect = _script
+        with patch.object(llv, "carried_deep_elements",
+                          return_value=[comment_box, editor]):
+            assert llv._carried_full_page_composer(driver) is box
+        walked = [c.args[1] for c in driver.execute_script.call_args_list
+                  if c.args[0] is llv._CARRIED_ENCLOSING_CONTAINER_JS]
+        assert walked == [editor]
+
+    def test_a_page_that_cannot_be_read_resolves_nothing(self):
+        driver = MagicMock()
+        driver.execute_script.side_effect = WebDriverException("gone")
+        with patch.object(llv, "carried_deep_elements", return_value=[MagicMock()]):
+            assert llv._carried_full_page_composer(driver) is None
 
 
 @pytest.mark.unit
