@@ -984,30 +984,45 @@ class TestResolveFollowControl:
         driver = self._driver(result=["following", None])
         assert ra._resolve_follow_control(driver, self._URL) == ("following", None)
 
-    def test_a_real_miss_is_cross_checked_against_the_page(self):
-        # #1979: an `unknown` that followed a real scan must be graded against an anchor the scan
-        # itself never reads (the post cards), so a rotated selector on a page with real content
-        # escalates instead of going quiet forever.
+    def test_a_real_miss_is_cross_checked_against_the_owners_follow_affordance(self):
+        # #1979/#2073: an `unknown` that followed a real scan must be graded against the ONE anchor
+        # that is about the control — the owner's own follow aria-label — not the post cards, which
+        # an activity page renders whether or not it offers a control at all.
         from cqc_lem.app.engagement import feed as ra
-        from cqc_lem.utilities.linkedin.cards import _FEED_POST_TEXT_SEL
         driver = self._driver(result=["unknown", None])
         with patch(f"{_FEED}._report_zero_walk") as report:
             assert ra._resolve_follow_control(driver, self._URL) == ("unknown", None)
         report.assert_called_once()
-        assert report.call_args.args[1] == _FEED_POST_TEXT_SEL
+        assert report.call_args.args[1] == ra._follow_control_crosscheck_sel("Arvid Kahl")
 
-    def test_a_rendered_page_with_no_control_and_no_signal_warns(self):
+    def test_a_page_rendering_the_owners_follow_control_warns(self):
         from cqc_lem.app.engagement import feed as ra
         driver = self._driver(result=["unknown", None])
-        driver.find_elements.return_value = [MagicMock(), MagicMock()]
+        driver.find_elements.return_value = [MagicMock()]
         with patch("cqc_lem.utilities.linkedin.zero_walk.log_warning") as log_warning:
             assert ra._resolve_follow_control(driver, self._URL) == ("unknown", None)
         assert log_warning.called
 
-    def test_an_empty_page_does_not_warn(self):
+    def test_a_page_with_no_owner_follow_control_does_not_warn(self):
+        # #2073: a creator-mode-off / restricted / already-connected page offers no follow control
+        # at all. That is the ordinary shape of the page, not selector rot — warning on it filed a
+        # recurring $exception for an expected no-op.
         from cqc_lem.app.engagement import feed as ra
         driver = self._driver(result=["unknown", None])
         driver.find_elements.return_value = []
+        with patch("cqc_lem.utilities.linkedin.zero_walk.log_warning") as log_warning:
+            assert ra._resolve_follow_control(driver, self._URL) == ("unknown", None)
+        log_warning.assert_not_called()
+
+    def test_post_cards_alone_never_make_a_missing_control_read_as_drift(self):
+        # The #2073 regression itself: the cross-check must ask for the follow affordance, so a
+        # page full of posts and no control answers zero.
+        from cqc_lem.app.engagement import feed as ra
+        from cqc_lem.utilities.linkedin.cards import _FEED_POST_TEXT_SEL
+        driver = self._driver(result=["unknown", None])
+        driver.find_elements.side_effect = (
+            lambda _by, sel: [MagicMock(), MagicMock()] if sel == _FEED_POST_TEXT_SEL else []
+        )
         with patch("cqc_lem.utilities.linkedin.zero_walk.log_warning") as log_warning:
             assert ra._resolve_follow_control(driver, self._URL) == ("unknown", None)
         log_warning.assert_not_called()
@@ -1024,6 +1039,44 @@ class TestResolveFollowControl:
         with patch(f"{_FEED}._report_zero_walk") as report:
             ra._resolve_follow_control(self._driver(raises=True), self._URL)
         report.assert_not_called()
+
+
+class TestFollowControlCrosscheckSelector:
+    """The cross-check anchor must name the OWNER and stay a raw-attribute read (#2073).
+
+    Naming the owner is what keeps the "More profiles for you" rail's Follow buttons from grading a
+    page that offers the target no control as drift; reading the attribute with a CSS prefix match
+    is what keeps it independent of the JS chain's normalisation, visibility test and route walk.
+    """
+
+    def _sel(self, owner):
+        from cqc_lem.app.engagement.feed import _follow_control_crosscheck_sel
+        return _follow_control_crosscheck_sel(owner)
+
+    def test_all_three_label_verbs_are_covered(self):
+        sel = self._sel("Arvid Kahl")
+        assert '[aria-label^="Follow Arvid Kahl" i]' in sel
+        assert '[aria-label^="Following Arvid Kahl" i]' in sel
+        assert '[aria-label^="Unfollow Arvid Kahl" i]' in sel
+
+    def test_the_owner_name_is_required_in_every_clause(self):
+        # A bare nameless "Follow" is never evidence — it could belong to anyone on the page, which
+        # is the same reason `_FOLLOW_CONTROL_JS` refuses one.
+        assert all("Arvid Kahl" in clause for clause in self._sel("Arvid Kahl").split(", "))
+
+    def test_matching_is_case_insensitive(self):
+        # The <title> and the aria-label are written from the same display name but LinkedIn does
+        # not guarantee the same casing, and CSS attribute matching is case-sensitive by default.
+        assert self._sel("Arvid Kahl").count(" i]") == 3
+
+    def test_whitespace_in_the_name_is_collapsed(self):
+        assert self._sel("  Arvid   Kahl\n") == self._sel("Arvid Kahl")
+
+    def test_quotes_and_backslashes_in_a_name_are_escaped(self):
+        # Display names are attacker-adjacent data: an unescaped quote would end the CSS string and
+        # turn the selector into an InvalidSelectorException — an unreadable cross-check, not drift.
+        sel = self._sel('Ann "Annie" O\\Hara')
+        assert '[aria-label^="Follow Ann \\"Annie\\" O\\\\Hara" i]' in sel
 
 
 class TestFollowControlRouteCShortenedLabel:
