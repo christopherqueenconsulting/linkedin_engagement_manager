@@ -371,7 +371,9 @@ def auto_check_scheduled_dms(self):
         dispatched += 1
 
     # Re-queue DMs stuck in 'scheduled' whose send task was lost (e.g. on container restart) —
-    # mirrors the orphaned-post recovery above. The 2-hour gap avoids racing an in-flight task.
+    # mirrors the orphaned-post recovery above. The 2-hour gap is measured from the status write,
+    # not from `scheduled_time` (#2078), so a DM the daily cap has deferred past its slot for days
+    # is never mistaken for an orphan by the same beat that just dispatched it.
     orphaned = get_orphaned_scheduled_dms(lookback_hours=2)
     for dm_id, scheduled_time, user_id in orphaned:
         log_warning(

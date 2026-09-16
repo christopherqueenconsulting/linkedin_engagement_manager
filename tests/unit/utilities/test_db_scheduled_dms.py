@@ -40,9 +40,25 @@ class TestScheduledDmDb:
             rows = get_orphaned_scheduled_dms(lookback_hours=2)
         assert rows == [(9, cur.fetchall.return_value[0][1], 5)]
         sql, params = cur.execute.call_args[0]
-        assert "status = 'scheduled'" in sql and "scheduled_time <= %s" in sql
+        assert "status = 'scheduled'" in sql
         # cutoff is ~2h in the past
         assert params[0] <= datetime.now(timezone.utc) - timedelta(hours=2) + timedelta(seconds=5)
+
+    def test_get_orphaned_scheduled_dms_ages_the_status_write_not_the_slot(self, fake_cursor):
+        """The reaper's gap is time spent IN 'scheduled', never how overdue the slot is (#2078).
+
+        `get_due_scheduled_dms` has no lower bound, so a DM the daily cap keeps deferring carries a
+        `scheduled_time` days in the past. Keyed on that column it reads as orphaned in the very
+        beat that dispatched it, and the scanner re-queues a send already in flight.
+        """
+        conn, cur = fake_cursor(fetch_all=[], lastrowid=7)
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import get_orphaned_scheduled_dms
+            get_orphaned_scheduled_dms(lookback_hours=2)
+        sql = cur.execute.call_args[0][0]
+        assert "updated_at <= %s" in sql
+        assert "ORDER BY updated_at ASC" in sql
+        assert "scheduled_time <= %s" not in sql
 
     def test_get_orphaned_scheduled_dms_error_returns_empty(self, fake_cursor):
         import mysql.connector
