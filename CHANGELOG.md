@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.176.3](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.176.2...v0.176.3) (2026-09-16)
+
+
+### Bug Fixes
+
+* **dm:** age the orphan reaper off the status write, not the DM's slot (closes [#2078](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2078)) ([#2079](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2079)) ([15c872e](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/15c872e171a1056c783dcdd856f4e7161b13b496))
+
 ## [0.176.2](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.176.1...v0.176.2) (2026-09-14)
 
 
