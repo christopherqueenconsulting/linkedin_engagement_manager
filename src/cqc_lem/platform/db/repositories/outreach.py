@@ -377,16 +377,23 @@ def get_due_scheduled_dms(post_time_delta_minutes: int = 20) -> list:
         return []
 def get_orphaned_scheduled_dms(lookback_hours: int = 2) -> list:
     """DMs stuck in 'scheduled' whose send task was lost (e.g. Celery queue purged on container
-    restart) before reaching sent/failed. Mirrors get_orphaned_scheduled_posts — the lookback gap
-    avoids racing a task that is still in flight. Returns (id, scheduled_time, user_id) tuples.
+    restart) before reaching sent/failed. Mirrors get_orphaned_connection_requests — the lookback
+    gap avoids racing a task that is still in flight. Returns (id, scheduled_time, user_id) tuples.
+
+    The gap is measured off `updated_at` — WHEN THE ROW ENTERED 'scheduled' — never off
+    `scheduled_time` (issue #2078). `get_due_scheduled_dms` deliberately has no lower bound, so an
+    approved DM deferred by the daily cap keeps a `scheduled_time` days in the past; keyed on that
+    column every such DM reads as orphaned in the very beat that dispatched it, and the scanner
+    re-queues a send it just queued. `updated_at` only satisfies the gap once the row has actually
+    sat in 'scheduled' that long, which is the condition the reaper is for.
     """
     cutoff = datetime.now(timezone.utc) - timedelta(hours=lookback_hours)
     try:
         with db_cursor() as cursor:
             cursor.execute(
                 "SELECT id, scheduled_time, user_id FROM scheduled_dms "
-                "WHERE status = 'scheduled' AND scheduled_time <= %s "
-                "ORDER BY scheduled_time ASC",
+                "WHERE status = 'scheduled' AND updated_at <= %s "
+                "ORDER BY updated_at ASC",
                 (cutoff,))
             return cursor.fetchall()
     except mysql.connector.Error as err:
