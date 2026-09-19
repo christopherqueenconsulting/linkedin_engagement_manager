@@ -83,7 +83,12 @@ SHARE_BOX_TEXT_SIGNALS = ("start a post", "start a public post", "create a post"
 # on screen, and every step below it inherited the miss. `find_deep_elements` is the one lookup
 # that walks shadow roots, and everything scoped to the container is CSS + a Python label match for
 # the same reason: XPath cannot address a shadow tree at all.
-COMPOSER_CONTAINER_CSS = "div[role='dialog'], [aria-modal='true']"
+COMPOSER_CONTAINER_CSS = "div[role='dialog'], [aria-modal='true'], dialog"
+# `dialog` is the third rung and the one that matters since 2026-09-14 (#2067): the share box now
+# NAVIGATES to `linkedin.com/sharing/compose`, which mounts the composer — and the occasion picker
+# behind it — in a NATIVE `<dialog data-testid="dialog">` carrying neither `role` nor `aria-modal`.
+# A locator is a CHAIN, so the variant gets its own rung and the two that still serve other surfaces
+# stay where they are.
 # Candidates for anything clickable inside the composer. `li` is here because the occasion TYPE menu
 # renders its options as list rows on some variants.
 COMPOSER_AFFORDANCE_CSS = ("button, [role='button'], [role='menuitem'], [role='radio'], "
@@ -96,8 +101,21 @@ COMPOSER_EDITOR_CSS = "[role='textbox']"
 # mistake `_attach_group_media` documents about the media overlay — one more surface to get back out
 # of. Both label sets are matched INSIDE the resolved container, because an unscoped 'More' on a
 # LinkedIn page belongs to some feed card's overflow menu.
-OCCASION_ENTRY_LABELS = ("celebrate an occasion", "celebrate")
-OCCASION_MORE_LABELS = ("more",)
+# An ordered chain, most exact intent first. "Celebration" is what the `/sharing/compose` composer
+# calls it as of 2026-09-14 (#2067) and it is matched on WORD boundaries, so "celebrate" never
+# reaches it — a renamed label needs its own rung, never a loosened matcher.
+OCCASION_ENTRY_LABELS = ("celebrate an occasion", "celebration", "celebrate")
+# ...and it is an `<a href>` there, not a button or a menu item, so the entry gets its own candidate
+# set. Deliberately NOT folded into `COMPOSER_AFFORDANCE_CSS`: every other lookup on this composer
+# commits something (the occasion TYPE, "Next", "Post") and widening the set they all share is how a
+# walk reaches a control it was never meant to see (#1012).
+OCCASION_ENTRY_CSS = ("button, [role='button'], [role='menuitem'], [role='radio'], "
+                      "[role='option'], li, a[href]")
+# An ordered CHAIN, not a synonym list: LinkedIn renamed the overflow to "Expand content types" on
+# the `/sharing/compose` composer (#2067, live 2026-09-14) while other variants still say "More".
+# Both are matched EXACTLY and inside the resolved container, because an unscoped "more" belongs to
+# some feed card's overflow menu.
+OCCASION_MORE_LABELS = ("more", "expand content types")
 # The composer's own commit control, matched EXACTLY: "Post" is the button, and "Schedule post" is
 # the one beside it that publishes on someone else's timetable (#1012's rule applied to a commit).
 POST_BUTTON_LABELS = ("post",)
@@ -183,11 +201,13 @@ def occasion_type_labels(labels) -> list:
 def find_composer_container(driver, user_id: int = None, post_id: int = None):
     """The open composer, wherever LinkedIn mounted it — shadow root included.
 
-    The redesigned share box lives in `div#interop-outlet`'s shadow root, so the light-DOM lookup
-    this replaced could not see it and every occasion step below it inherited that miss (#1621). A
-    container that carries the editor wins over one that does not: a LinkedIn feed page ships hidden
-    `role='dialog'` surfaces of its own (the video player's error and caption dialogs), and the
-    visibility filter alone is not the whole answer once one of them is shown.
+    An ordered CHAIN, because LinkedIn has moved this surface twice. The redesigned share box lives
+    in `div#interop-outlet`'s shadow root, so the light-DOM lookup this replaced could not see it and
+    every occasion step below it inherited that miss (#1621); the `/sharing/compose` route mounts it
+    in a native `<dialog>` with neither `role` nor `aria-modal`, which is why the tag itself is a
+    rung (#2067). A container that carries the editor wins over one that does not: a LinkedIn feed
+    page ships hidden `role='dialog'` surfaces of its own (the video player's error and caption
+    dialogs), and the visibility filter alone is not the whole answer once one of them is shown.
 
     Args:
         driver: The Selenium driver, on the page whose composer was just opened.
@@ -456,7 +476,7 @@ def publish_occasion_natively(driver, wait, archetype: str, text: str, user_id: 
                 driver, NO_COMPOSER, "composer did not open",
                 _FEED_POST_TEXT_SEL, "Occasion composer container", **context)
 
-        entry = find_composer_control(container, OCCASION_ENTRY_LABELS)
+        entry = find_composer_control(container, OCCASION_ENTRY_LABELS, css=OCCASION_ENTRY_CSS)
         if entry is None:
             # The affordance is filed behind the composer's overflow control on some variants, so
             # a first miss is EXPECTED and must not warn — it is the reason the overflow exists.
@@ -466,13 +486,19 @@ def publish_occasion_natively(driver, wait, archetype: str, text: str, user_id: 
             if overflow is not None:
                 overflow.click()
                 sleep(random.uniform(1, 2))
-            entry = find_composer_control(container, OCCASION_ENTRY_LABELS)
+            container = find_composer_container(driver, user_id=user_id,
+                                                post_id=post_id) or container
+            entry = find_composer_control(container, OCCASION_ENTRY_LABELS,
+                                          css=OCCASION_ENTRY_CSS)
         if entry is None:
             return _graded_miss(
                 driver, NO_OCCASION_ENTRY, "celebrate an occasion control not found",
                 DIALOG_CONTROL_SEL, "Occasion composer entry", container=container, **context)
         entry.click()
-        sleep(random.uniform(2, 3))
+        # Longer than every other step here because this one NAVIGATES: the entry is an `<a href>`
+        # on the `/sharing/compose` composer (#2067), so what follows is a page load, and the
+        # container read below it is re-read for the same reason — the one above went stale.
+        sleep(random.uniform(5, 8))
 
         # The type menu can mount in its OWN container (a menu over the composer), so the container
         # is re-read before the option is asked for.

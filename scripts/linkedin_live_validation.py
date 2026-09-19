@@ -521,6 +521,9 @@ _PROBE_CAPABILITY_SYMBOLS = {
     "occasion_composer.share_box_dom": "share_box_dom_evidence",
     "occasion_composer.share_box_activation": "share_box_activation_ladder",
     "occasion_composer.deep_overlay": "deep_overlay_evidence",
+    "occasion_composer.composer_host": "composer_host_evidence",
+    "occasion_composer.occasion_word_scan": "_occasion_word_scan",
+    "occasion_composer.occasion_screen": "_occasion_screen_evidence",
 }
 
 
@@ -4056,12 +4059,12 @@ def probe_catchup_cards(driver, sleep=time.sleep) -> dict:
 # Every anchor below the trigger is a LABEL matched inside the resolved composer container, not an
 # XPath (#1621): the composer mounts in `div#interop-outlet`'s open shadow root, where no XPath can
 # reach and `driver.find_elements` sees nothing at all.
-_CARRIED_COMPOSER_CONTAINER_CSS = "div[role='dialog'], [aria-modal='true']"
+_CARRIED_COMPOSER_CONTAINER_CSS = "div[role='dialog'], [aria-modal='true'], dialog"
 _CARRIED_COMPOSER_AFFORDANCE_CSS = ("button, [role='button'], [role='menuitem'], [role='radio'], "
                                     "[role='option'], li")
 _CARRIED_COMPOSER_EDITOR_CSS = "[role='textbox']"
-_CARRIED_OCCASION_ENTRY_LABELS = ("celebrate an occasion", "celebrate")
-_CARRIED_OCCASION_MORE_LABELS = ("more",)
+_CARRIED_OCCASION_ENTRY_LABELS = ("celebrate an occasion", "celebration", "celebrate")
+_CARRIED_OCCASION_MORE_LABELS = ("more", "expand content types")
 _CARRIED_POST_BUTTON_LABELS = ("post",)
 _CARRIED_OCCASION_TYPE_LABELS = {"project_launch": ("project launch",),
                                  "educational_milestone": ("educational milestone",)}
@@ -4366,6 +4369,81 @@ def carried_deep_elements(driver, css: str, limit: int = 20) -> list:
         return []
 
 
+# The DOM nest AROUND the composer's own editor, walked upwards. Read only when the container
+# lookup missed: `deep_overlay` says a composer-shaped thing is on the page, `modal_containers` says
+# it is not overlay-shaped, and neither says WHERE it mounted. This does — every ancestor of the
+# editor, with the two facts a container rung is chosen on: does this ancestor also hold the
+# composer's own commit control, and how many editors does it contain. Class names are reported as
+# evidence and are never a locator (`docs/sdui-selenium-notes.md`).
+_COMPOSER_HOST_JS = """
+const limit = arguments[0];
+const depth = arguments[1];
+const out = [];
+function label(el) {
+  const aria = el.getAttribute('aria-label');
+  const text = (el.innerText || el.textContent || '').trim();
+  return (aria && aria.trim() ? aria : text).trim().toLowerCase();
+}
+function describe(el) {
+  let cls = el.className;
+  if (cls && cls.baseVal !== undefined) cls = cls.baseVal;
+  const rect = el.getBoundingClientRect();
+  let commit = 0;
+  let editors = 0;
+  try {
+    editors = el.querySelectorAll('[role="textbox"]').length;
+    for (const c of el.querySelectorAll('button, [role="button"]')) {
+      if (label(c) === 'post') commit++;
+    }
+  } catch (e) {}
+  return {tag: el.tagName.toLowerCase(), role: el.getAttribute('role'),
+          aria_label: el.getAttribute('aria-label'),
+          aria_modal: el.getAttribute('aria-modal'),
+          testid: el.getAttribute('data-testid') || el.getAttribute('data-test-id'),
+          id: el.id || null, class: String(cls || '').slice(0, 140),
+          width: Math.round(rect.width), height: Math.round(rect.height),
+          commit_controls: commit, editors: editors};
+}
+function editors(root, found) {
+  let nodes;
+  try { nodes = root.querySelectorAll('[role="textbox"]'); } catch (e) { return; }
+  for (const el of nodes) {
+    const rect = el.getBoundingClientRect();
+    if (!(rect.width || rect.height)) continue;
+    if (found.length < limit) found.push(el);
+  }
+  let all;
+  try { all = root.querySelectorAll('*'); } catch (e) { return; }
+  for (const el of all) {
+    if (el.shadowRoot) editors(el.shadowRoot, found);
+  }
+}
+const found = [];
+editors(document, found);
+for (const editor of found) {
+  const chain = [describe(editor)];
+  let node = editor.parentNode;
+  while (node && chain.length <= depth) {
+    if (node.host) node = node.host;
+    if (!node || !node.tagName) break;
+    chain.push(describe(node));
+    if (node.tagName.toLowerCase() === 'body') break;
+    node = node.parentNode;
+  }
+  out.push({chain: chain});
+}
+return out;
+"""
+
+
+def composer_host_evidence(driver, limit: int = 3, depth: int = 10) -> list:
+    """Every visible editor on the page and the ancestors above it, shadow hosts crossed."""
+    try:
+        return driver.execute_script(_COMPOSER_HOST_JS, int(limit), int(depth)) or []
+    except Exception as e:
+        return [{"error": type(e).__name__}]
+
+
 def _composer_container_open(driver) -> bool:
     """Did SOMETHING composer-shaped open — a dialog, an editor, or a modal — anywhere on the page?
 
@@ -4466,6 +4544,127 @@ def composer_affordance_labels(root, limit: int = 60) -> list:
     return labels
 
 
+_OCCASION_WORD_SCAN_JS = """
+const words = arguments[0];
+const limit = arguments[1];
+const out = [];
+function label(el) {
+  const aria = el.getAttribute('aria-label');
+  const text = (el.innerText || el.textContent || '').trim();
+  return (aria && aria.trim() ? aria : text).trim();
+}
+function scan(root, depth) {
+  if (!root || depth > 6 || out.length >= limit) return;
+  let nodes;
+  try { nodes = root.querySelectorAll('*'); } catch (e) { return; }
+  for (const el of nodes) {
+    const value = label(el);
+    if (!value || value.length > 80) continue;
+    const lower = value.toLowerCase();
+    if (!words.some(w => lower.indexOf(w) !== -1)) continue;
+    const rect = el.getBoundingClientRect();
+    const entry = {tag: el.tagName.toLowerCase(), role: el.getAttribute('role'),
+                   href: el.getAttribute('href'),
+                   testid: el.getAttribute('data-testid') || el.getAttribute('data-test-id'),
+                   label: value, displayed: !!(rect.width || rect.height)};
+    if (!out.some(e => e.label === entry.label && e.tag === entry.tag)) out.push(entry);
+    if (out.length >= limit) return;
+  }
+  for (const el of nodes) {
+    if (el.shadowRoot) scan(el.shadowRoot, depth + 1);
+    if (out.length >= limit) return;
+  }
+}
+scan(document, 0);
+return out;
+"""
+
+
+_OCCASION_SCREEN_JS = r"""
+const heading = arguments[0];
+const out = {heading_found: false, panels: []};
+function label(el) {
+  const aria = el.getAttribute('aria-label');
+  const text = (el.innerText || el.textContent || '').trim();
+  return (aria && aria.trim() ? aria : text).trim();
+}
+function describe(el) {
+  let cls = el.className;
+  if (cls && cls.baseVal !== undefined) cls = cls.baseVal;
+  const rect = el.getBoundingClientRect();
+  return {tag: el.tagName.toLowerCase(), role: el.getAttribute('role'),
+          aria_label: el.getAttribute('aria-label'),
+          testid: el.getAttribute('data-testid') || el.getAttribute('data-test-id'),
+          id: el.id || null, class: String(cls || '').slice(0, 140),
+          width: Math.round(rect.width), height: Math.round(rect.height)};
+}
+let node = null;
+for (const el of document.querySelectorAll('h1, h2, h3, header, [role="heading"]')) {
+  if (label(el).toLowerCase() === heading) { node = el; break; }
+}
+if (!node) return out;
+out.heading_found = true;
+out.heading = describe(node);
+let current = node.parentNode;
+let depth = 0;
+while (current && current.tagName && depth < 10) {
+  const options = current.querySelectorAll('button, [role="button"], [role="option"], li, a[href]');
+  const labels = [];
+  for (const option of options) {
+    const value = label(option).replace(/\s+/g, ' ').slice(0, 90);
+    if (value && labels.indexOf(value) === -1) labels.push(value);
+  }
+  const entry = describe(current);
+  entry.option_labels = labels.slice(0, 25);
+  out.panels.push(entry);
+  if (current.tagName.toLowerCase() === 'body') break;
+  current = current.parentNode;
+  depth++;
+}
+return out;
+"""
+
+
+def _occasion_screen_evidence(driver, heading: str = "select occasion") -> dict:
+    """The occasion PICKER screen, named by its own heading, with each ancestor's option labels.
+
+    The picker carries no editor at all, so the container rung that keys on one cannot reach it and
+    the walk falls through to the `<dialog>` tag (#2067). This is the reading `OCCASION_TYPE_LABELS`
+    and the picker's own container are re-grounded from when even that misses.
+    """
+    try:
+        return driver.execute_script(_OCCASION_SCREEN_JS, heading) or {}
+    except Exception as e:
+        return {"error": type(e).__name__}
+
+
+def _occasion_word_scan(driver, limit: int = 12) -> list:
+    """Everything on the page whose own label says "celebrate" or "occasion", shadow roots included.
+
+    A rotated affordance still carries one of those words somewhere; a route LinkedIn withdrew
+    carries neither. Reported, never graded — what to DO about an absent route is not a selector
+    question (#2067).
+    """
+    try:
+        return driver.execute_script(_OCCASION_WORD_SCAN_JS,
+                                     ["celebrat", "occasion"], int(limit)) or []
+    except Exception as e:
+        return [{"error": type(e).__name__}]
+
+
+def _occasion_entry_css(affordance_css: str) -> str:
+    """The candidate set the occasion ENTRY is looked for in — the image's, else the carried rule.
+
+    Its own set because the entry is an `<a href>` on the `/sharing/compose` composer (#2067) while
+    every other lookup on this surface commits something and must stay narrow.
+    """
+    try:
+        from cqc_lem.utilities.linkedin import share_composer as sc
+        return sc.OCCASION_ENTRY_CSS
+    except Exception:
+        return f"{affordance_css}, a[href]"
+
+
 def _occasion_composer_chains() -> tuple:
     """The occasion composer's anchors from the running image when it has them, else a carried copy.
 
@@ -4479,10 +4678,28 @@ def _occasion_composer_chains() -> tuple:
     """
     try:
         from cqc_lem.utilities.linkedin import share_composer as sc
-        return (tuple(sc.OCCASION_ENTRY_LABELS), tuple(sc.OCCASION_MORE_LABELS),
-                tuple(sc.POST_BUTTON_LABELS), dict(sc.OCCASION_TYPE_LABELS),
+        added = []
+
+        def chain(shipped, carried):
+            """The image's chain, extended with any carried label it does not have yet."""
+            out = list(shipped)
+            for label in carried:
+                if label not in out:
+                    out.append(label)
+                    added.append(label)
+            return tuple(out)
+
+        # UNION, not "image wins" (#2067): a label this branch added is exactly what a pre-merge
+        # pass has to be able to ask the live page about, and asking only the image's copy grades
+        # the fix against the code it replaces. `chain_source` says when that happened.
+        entry = chain(sc.OCCASION_ENTRY_LABELS, _CARRIED_OCCASION_ENTRY_LABELS)
+        more = chain(sc.OCCASION_MORE_LABELS, _CARRIED_OCCASION_MORE_LABELS)
+        post = chain(sc.POST_BUTTON_LABELS, _CARRIED_POST_BUTTON_LABELS)
+        template_next = chain(sc.TEMPLATE_CHOOSER_NEXT_LABELS,
+                              _CARRIED_TEMPLATE_CHOOSER_NEXT_LABELS)
+        return (entry, more, post, dict(sc.OCCASION_TYPE_LABELS),
                 sc.COMPOSER_AFFORDANCE_CSS, sc.COMPOSER_EDITOR_CSS,
-                tuple(sc.TEMPLATE_CHOOSER_NEXT_LABELS), "image")
+                template_next, "image+script" if added else "image")
     except Exception:
         return (_CARRIED_OCCASION_ENTRY_LABELS, _CARRIED_OCCASION_MORE_LABELS,
                 _CARRIED_POST_BUTTON_LABELS, dict(_CARRIED_OCCASION_TYPE_LABELS),
@@ -4515,6 +4732,9 @@ def _composer_container(driver) -> tuple:
         # Deliberate: an image without the symbol, or one whose resolver raises, is the case this
         # probe exists to grade. Falling through to the carried chain below IS the handling.
         pass
+    # The image MISSING it is exactly when the carried copy has to be asked (#2067): returning
+    # "none" here graded a pre-merge fix against the code it replaces, so the probe could never
+    # ground a container rung until it had already shipped.
     containers = carried_deep_elements(driver, _CARRIED_COMPOSER_CONTAINER_CSS, limit=8)
     for container in containers:
         try:
@@ -4814,11 +5034,14 @@ def probe_occasion_composer(driver, archetype: str = "project_launch", sleep=tim
         # `find_elements` cannot see into a shadow root or an iframe, so "nothing opened" and "the
         # composer opened where this reader cannot look" are the same answer without this.
         reading["deep_overlay"] = deep_overlay_evidence(driver)
+        reading["composer_host"] = composer_host_evidence(driver)
         # And WHICH press opens it, when the shipped one does not (#1621).
         reading["share_box_activation"] = share_box_activation_ladder(driver, sleep=sleep)
         return graded(reading, occasion_composer_state(reading), occasion_composer_verdict(reading))
 
-    entry = _composer_control(dialog, entry_labels, css=affordance_css)
+    entry_css = _occasion_entry_css(affordance_css)
+    reading["entry_css_source"] = "image" if entry_css != f"{affordance_css}, a[href]" else "script"
+    entry = _composer_control(dialog, entry_labels, css=entry_css)
     reading["occasion_on_first_row"] = entry is not None
     if entry is None:
         # Expected on some variants — the affordance is filed behind the composer's overflow.
@@ -4827,16 +5050,42 @@ def probe_occasion_composer(driver, archetype: str = "project_launch", sleep=tim
         if overflow is not None:
             overflow.click()
         sleep(2)
-        entry = _composer_control(dialog, entry_labels, css=affordance_css)
+        # The expanded row can mount in its OWN container, so the container is re-read the same way
+        # the type menu is — and whichever one answers, its labels are the evidence a rotated
+        # occasion entry is re-grounded from (#2067).
+        expanded, expanded_source = _composer_container(driver)
+        expanded = expanded if expanded is not None else dialog
+        reading["overflow_container_source"] = expanded_source
+        reading["overflow_controls"] = composer_affordance_labels(expanded)
+        entry = (_composer_control(dialog, entry_labels, css=entry_css)
+                 or _composer_control(expanded, entry_labels, css=entry_css))
     reading["occasion_entry_present"] = entry is not None
     if entry is None:
+        reading["page_controls_after_overflow"] = visible_button_labels(driver)
+        # The decisive negative: does the WORD appear anywhere on the page at all? A rotated label
+        # still says "celebrate" or "occasion" somewhere; a route LinkedIn removed says neither, and
+        # those are different findings with different fixes (#2067).
+        reading["occasion_word_scan"] = _occasion_word_scan(driver)
         return graded(reading, occasion_composer_state(reading), occasion_composer_verdict(reading))
     entry.click()
-    sleep(3)
+    # Longer than the other steps on purpose: the entry NAVIGATES on the `/sharing/compose` variant
+    # (#2067), so this waits on a page load, not a menu animation.
+    sleep(6)
 
     # The type menu can mount in its own container over the composer, so the container is re-read
     # before the option is asked for — the same thing the shipped walk does.
     menu, menu_source = _composer_container(driver)
+    reading["menu_source"] = menu_source
+    reading["url_after_entry"] = getattr(driver, "current_url", "")
+    if menu is None:
+        # The entry is a LINK on this variant (#2067), so the click navigates and the container the
+        # composer opened in is stale — falling back to it reads a dead element, which is what
+        # `<enumeration stopped: StaleElementReferenceException>` was. The page's own controls are
+        # what the occasion screen is re-grounded from instead.
+        reading["page_controls_after_entry"] = visible_button_labels(driver)
+        reading["occasion_word_scan_after_entry"] = _occasion_word_scan(driver, limit=30)
+        reading["composer_host_after_entry"] = composer_host_evidence(driver)
+        reading["occasion_screen"] = _occasion_screen_evidence(driver)
     menu = menu if menu is not None else dialog
     reading["menu_source"] = menu_source
     # The menu's own options, before anything is picked: this is the list OCCASION_TYPE_LABELS is
