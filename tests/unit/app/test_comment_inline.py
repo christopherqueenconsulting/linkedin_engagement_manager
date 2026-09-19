@@ -839,6 +839,7 @@ class TestReactToPostInline:
         from cqc_lem.app.engagement import feed as ra
         driver = MagicMock()
         trigger = _state("Reaction button state: no reaction")
+        settled = _state("Reaction button state: no reaction")
         with patch(f"{_FEED}.choose_post_reaction", return_value="Celebrate"), \
              patch(f"{_FEED}.wait_for_ajax"), \
              patch(f"{_FEED}.find_first",
@@ -846,14 +847,37 @@ class TestReactToPostInline:
                                 _state("Reaction button state: no reaction"),
                                 _state("Reaction button state: no reaction"),
                                 _state("Reaction button state: no reaction"),
+                                settled,
                                 _state("Reaction button state: Like reaction")]), \
              patch(f"{_FEED}.click_first", return_value=MagicMock()), \
              patch(f"{_FEED}.log_warning") as warn:
             ok = ra.react_to_post_inline(driver, MagicMock(), card, user_id=1)
         assert ok is True
         warn.assert_not_called()
-        # The recovery is a direct click on THIS card's trigger, never another lookup.
-        assert driver.execute_script.call_args.args[1] is trigger
+        # The recovery clicks the toggle as the confirm just READ it: the card re-renders under a
+        # reaction, so the reference resolved before the fly-out may be detached by now.
+        assert driver.execute_script.call_args.args[1] is settled
+
+    def test_an_undeliverable_recovery_click_keeps_the_specific_warning(self, card):
+        """A detached toggle must not turn one failure into the generic exception warning.
+
+        `execute_script` on a stale element raises, and an unguarded raise here lands in the outer
+        handler as `log_warning(..., exc=...)` — a recurring warning traded for another (#2081).
+        """
+        from selenium.common.exceptions import StaleElementReferenceException
+
+        from cqc_lem.app.engagement import feed as ra
+        driver = MagicMock()
+        driver.execute_script.side_effect = StaleElementReferenceException("detached")
+        with patch(f"{_FEED}.choose_post_reaction", return_value="Celebrate"), \
+             patch(f"{_FEED}.wait_for_ajax"), \
+             patch(f"{_FEED}.find_first",
+                   return_value=_state("Reaction button state: no reaction")), \
+             patch(f"{_FEED}.click_first", return_value=MagicMock()), \
+             patch(f"{_FEED}.log_warning") as warn:
+            ok = ra.react_to_post_inline(driver, MagicMock(), card, user_id=1)
+        assert ok is False
+        assert [c.args[0] for c in warn.call_args_list] == ["Reaction did not register after clicking"]
 
     def test_the_card_toggle_is_never_clicked_twice(self, card):
         """A trigger already default-Liked must not be clicked again.

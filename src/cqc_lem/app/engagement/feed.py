@@ -1169,12 +1169,27 @@ def react_to_post_inline(driver, wait, card, post_content: str = None, comment_t
             # way the card's OWN toggle has not been used yet, so use it once before calling this a
             # failure. Safe to click: we only get here after the toggle has been re-read to a
             # settled 'no reaction', so there is no reaction of ours for it to undo (issue #2081).
-            driver.execute_script("arguments[0].click();", trigger)
-            time.sleep(random.uniform(0.8, 1.5))
-            wait_for_ajax(driver)
-            if _reaction_registered(driver, wait, card, expected=expected, user_id=user_id):
-                log_info("Reacted 'Like' on post (fly-out option never registered)")
-                return True
+            # Click the toggle as the confirm just READ it, not the reference resolved before the
+            # fly-out: a reaction re-renders the card, so the pre-click node can be detached by now,
+            # and serialising a detached element raises straight out of this function into the
+            # generic "Inline post reaction failed" warning — a recurring warning traded for another.
+            settled = find_first(driver, wait, _REACTION_CONFIRM_LOCATORS, "Reaction state (recovery)",
+                                 parent_element=card, required=False, visible_only=True,
+                                 warn_on_miss=False, max_try=1, user_id=user_id) or trigger
+            try:
+                driver.execute_script("arguments[0].click();", settled)
+            except WebDriverException as e:
+                # Undeliverable recovery click: DEBUG, because the verdict below is still the one
+                # this function owes its caller, and warning twice for one failure is what files a
+                # defect. Fall through to the specific warning.
+                log_debug("Reaction recovery click could not be delivered", user_id=user_id,
+                          action_type="comment", exc=e)
+            else:
+                time.sleep(random.uniform(0.8, 1.5))
+                wait_for_ajax(driver)
+                if _reaction_registered(driver, wait, card, expected=expected, user_id=user_id):
+                    log_info("Reacted 'Like' on post (fly-out option never registered)")
+                    return True
         # The card's controls were readable and the click STILL didn't take — the one reaction
         # failure none of the selector misses above stand for, so it gets its single warning
         # here, where it is detected. The caller's blanket warning is DEBUG (issue #878).
