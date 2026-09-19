@@ -744,18 +744,25 @@ class TestReactToPostInline:
         assert confirm[0].kwargs["max_try"] == 1  # no retry sleep for a control this card lacks
 
     def test_post_click_confirm_still_warns_when_the_toggle_was_readable_before(self, card):
-        """It was there before the click and isn't after — that IS selector rot, keep the signal."""
+        """It was there before the click and isn't after — that IS selector rot, keep the signal.
+
+        The signal now rides the LAST read, not the first: the confirm re-reads the toggle
+        (issue #2081), so warning on the first miss would fire for a card that is merely still
+        re-rendering and would have read fine a beat later.
+        """
         from cqc_lem.app.engagement import feed as ra
         with patch(f"{_FEED}.choose_post_reaction", return_value="Like"), \
              patch(f"{_FEED}.wait_for_ajax"), \
              patch(f"{_FEED}.find_first",
-                   side_effect=[_state("Reaction button state: no reaction"), None]) as ff, \
+                   side_effect=[_state("Reaction button state: no reaction")] + [None] * 8) as ff, \
              patch(f"{_FEED}.click_first", return_value=MagicMock()):
             ok = ra.react_to_post_inline(MagicMock(), MagicMock(), card, user_id=1)
-        assert ok is True
+        assert ok is True  # nothing readable to contradict the click — still trust it
         confirm = [c for c in ff.call_args_list if c.args[3] == "Reaction state (post-click)"]
-        assert confirm[0].kwargs["warn_on_miss"] is True
-        assert confirm[0].kwargs["max_try"] == MAX_WAIT_RETRY
+        assert len(confirm) == MAX_WAIT_RETRY + 1
+        assert [c.kwargs["warn_on_miss"] for c in confirm] == [False] * MAX_WAIT_RETRY + [True]
+        # The retry budget moved onto the LABEL, so each individual read is a single lookup.
+        assert all(c.kwargs["max_try"] == 1 for c in confirm)
 
     def test_clicks_the_ai_chosen_reaction(self, card):
         from cqc_lem.app.engagement import feed as ra
@@ -778,10 +785,10 @@ class TestReactToPostInline:
 
     def test_false_when_reaction_did_not_register(self, card):
         from cqc_lem.app.engagement import feed as ra
+        stuck = _state("Reaction button state: no reaction")
         with patch(f"{_FEED}.choose_post_reaction", return_value="Like"), \
              patch(f"{_FEED}.wait_for_ajax"), \
-             patch(f"{_FEED}.find_first", side_effect=[_state("Reaction button state: no reaction"),
-                                                     _state("Reaction button state: no reaction")]), \
+             patch(f"{_FEED}.find_first", return_value=stuck), \
              patch(f"{_FEED}.click_first", return_value=MagicMock()):
             ok = ra.react_to_post_inline(MagicMock(), MagicMock(), card, user_id=1)
         assert ok is False  # toggle never flipped away from 'no reaction'
@@ -794,14 +801,98 @@ class TestReactToPostInline:
         from cqc_lem.app.engagement import feed as ra
         with patch(f"{_FEED}.choose_post_reaction", return_value="Like"), \
              patch(f"{_FEED}.wait_for_ajax"), \
-             patch(f"{_FEED}.find_first", side_effect=[_state("Reaction button state: no reaction"),
-                                                     _state("Reaction button state: no reaction")]), \
+             patch(f"{_FEED}.find_first",
+                   return_value=_state("Reaction button state: no reaction")), \
              patch(f"{_FEED}.click_first", return_value=MagicMock()), \
              patch(f"{_FEED}.log_warning") as warn:
             ok = ra.react_to_post_inline(MagicMock(), MagicMock(), card, user_id=1)
         assert ok is False
         assert len(warn.call_args_list) == 1
         assert warn.call_args_list[0].args[0] == "Reaction did not register after clicking"
+
+    def test_a_toggle_that_flips_on_a_later_read_is_a_success(self, card):
+        """A toggle still reading 'no reaction' a beat after the click is lag, not a failure.
+
+        It is an optimistic re-render. Reading it ONCE turned that lag into a reported failure,
+        and repeated it filed a defect for a reaction sitting right there (issue #2081).
+        """
+        from cqc_lem.app.engagement import feed as ra
+        with patch(f"{_FEED}.choose_post_reaction", return_value="Like"), \
+             patch(f"{_FEED}.wait_for_ajax"), \
+             patch(f"{_FEED}.find_first",
+                   side_effect=[_state("Reaction button state: no reaction"),
+                                _state("Reaction button state: no reaction"),
+                                _state("Reaction button state: Like reaction")]), \
+             patch(f"{_FEED}.click_first", return_value=MagicMock()), \
+             patch(f"{_FEED}.log_warning") as warn:
+            ok = ra.react_to_post_inline(MagicMock(), MagicMock(), card, user_id=1)
+        assert ok is True
+        warn.assert_not_called()
+
+    def test_a_flyout_option_that_never_took_falls_back_to_the_card_toggle(self, card):
+        """A fly-out option can land on another post's control, leaving this card untouched.
+
+        The option lookup is DOCUMENT-scoped, so that click succeeds on the wrong entity (#1012)
+        and is indistinguishable from a click that did nothing. This card's own toggle has not been
+        used in that branch, so it gets one shot before this is called a failure (issue #2081).
+        """
+        from cqc_lem.app.engagement import feed as ra
+        driver = MagicMock()
+        trigger = _state("Reaction button state: no reaction")
+        with patch(f"{_FEED}.choose_post_reaction", return_value="Celebrate"), \
+             patch(f"{_FEED}.wait_for_ajax"), \
+             patch(f"{_FEED}.find_first",
+                   side_effect=[trigger,
+                                _state("Reaction button state: no reaction"),
+                                _state("Reaction button state: no reaction"),
+                                _state("Reaction button state: no reaction"),
+                                _state("Reaction button state: Like reaction")]), \
+             patch(f"{_FEED}.click_first", return_value=MagicMock()), \
+             patch(f"{_FEED}.log_warning") as warn:
+            ok = ra.react_to_post_inline(driver, MagicMock(), card, user_id=1)
+        assert ok is True
+        warn.assert_not_called()
+        # The recovery is a direct click on THIS card's trigger, never another lookup.
+        assert driver.execute_script.call_args.args[1] is trigger
+
+    def test_the_card_toggle_is_never_clicked_twice(self, card):
+        """A trigger already default-Liked must not be clicked again.
+
+        When the fly-out never opened we clicked it directly; a second 'recovery' click would
+        TOGGLE THE REACTION BACK OFF, so that branch must not run.
+        """
+        from cqc_lem.app.engagement import feed as ra
+        driver = MagicMock()
+        with patch(f"{_FEED}.choose_post_reaction", return_value="Like"), \
+             patch(f"{_FEED}.wait_for_ajax"), \
+             patch(f"{_FEED}.find_first",
+                   return_value=_state("Reaction button state: no reaction")), \
+             patch(f"{_FEED}.click_first", return_value=None), \
+             patch(f"{_FEED}.log_warning") as warn:
+            ok = ra.react_to_post_inline(driver, MagicMock(), card, user_id=1)
+        assert ok is False
+        assert driver.execute_script.call_count == 1
+        assert warn.call_args_list[0].args[0] == "Reaction did not register after clicking"
+
+    def test_a_card_that_went_stale_under_the_confirm_trusts_the_click(self, card):
+        """A card re-rendered out from under the re-read says nothing about the reaction.
+
+        A false negative here is what files the defect, so an unreadable label trusts the click.
+        """
+        from selenium.common.exceptions import StaleElementReferenceException
+
+        from cqc_lem.app.engagement import feed as ra
+        gone = MagicMock()
+        gone.get_attribute.side_effect = StaleElementReferenceException("detached")
+        with patch(f"{_FEED}.choose_post_reaction", return_value="Like"), \
+             patch(f"{_FEED}.wait_for_ajax"), \
+             patch(f"{_FEED}.find_first",
+                   side_effect=[_state("Reaction button state: no reaction"), gone]), \
+             patch(f"{_FEED}.click_first", return_value=MagicMock()), \
+             patch(f"{_FEED}.log_warning") as warn:
+            ok = ra.react_to_post_inline(MagicMock(), MagicMock(), card, user_id=1)
+        assert ok is True
+        warn.assert_not_called()
 
     def test_an_unreadable_card_adds_no_warning_of_its_own(self, card):
         """No Reaction-state button and no React toggle: the fly-out opener's miss already warns for

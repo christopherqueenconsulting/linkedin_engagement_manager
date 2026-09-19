@@ -1025,6 +1025,51 @@ def _reaction_option_locators(reaction: str) -> list:
     ]
 
 
+# The card's own reaction toggle, and how patiently the post-click confirm re-reads it. The toggle
+# is an optimistic React re-render, so right after a click it can be present but a beat stale;
+# `MAX_WAIT_RETRY + 1` keeps the same patience knob the old single read spent on `find_first`.
+_REACTION_CONFIRM_LOCATORS = [(By.CSS_SELECTOR, "button[aria-label^='Reaction button state']")]
+_REACTION_CONFIRM_READS = MAX_WAIT_RETRY + 1
+_REACTION_CONFIRM_INTERVAL = 1.2
+
+
+def _reaction_registered(driver, wait, card, *, expected: bool, user_id: int = None) -> bool:
+    """True when the card's own reaction toggle no longer reads 'no reaction'.
+
+    Failure is an OUTCOME, not a snapshot. The old confirm read the toggle ONCE, about a second
+    after the click, and spent its whole retry budget on the one outcome that does not need it —
+    the button being missing, which is already trusted as a pass — while a toggle that was merely a
+    re-render behind reported a failure that had not happened and, repeated, filed it as a defect
+    (issue #2081). The budget therefore moves onto the LABEL: re-read until it flips or the reads
+    run out.
+
+    `expected` is whether the card exposed a readable toggle BEFORE the click. When it did not, an
+    unreadable toggle afterwards is the documented trust-the-click fallback (issue #875) — never
+    warned about, and not worth waiting out twice.
+    """
+    reads = _REACTION_CONFIRM_READS if expected else 1
+    for read in range(reads):
+        last = read == reads - 1
+        after = find_first(driver, wait, _REACTION_CONFIRM_LOCATORS, "Reaction state (post-click)",
+                           parent_element=card, required=False, visible_only=True,
+                           warn_on_miss=expected and last, max_try=1, user_id=user_id)
+        if after is None:
+            # Nothing readable to contradict the click. Keep looking while reads remain (the card
+            # may still be re-rendering), then trust it rather than false-negative.
+            if last:
+                return True
+        else:
+            try:
+                label = (after.get_attribute("aria-label") or "").lower()
+            except StaleElementReferenceException:
+                return True  # the card re-rendered under the read — trust the click
+            if "no reaction" not in label:
+                return True
+        if not last:
+            time.sleep(_REACTION_CONFIRM_INTERVAL)
+    return False
+
+
 def react_to_post_inline(driver, wait, card, post_content: str = None, comment_text: str = None,
                          user_id: int = None) -> Optional[bool]:
     """Leave a single reaction on the card's post via the SDUI reaction fly-out.
@@ -1044,7 +1089,8 @@ def react_to_post_inline(driver, wait, card, post_content: str = None, comment_t
     'Open reactions menu' no longer exists. The fly-out renders OUTSIDE the card subtree, so the
     option lookup is document-scoped. The reaction itself is picked by a fast AI call scoped to the
     post + our comment, which self-falls-back to random. Returns True only if a reaction registered
-    (the toggle no longer reads 'no reaction').
+    — `_reaction_registered` settles the card's own toggle away from 'no reaction', and a fly-out
+    option that never took is retried once against that toggle before this reports a failure.
     """
     try:
         has_reaction_affordance = _card_has_reaction_affordance(card, user_id=user_id)
@@ -1111,26 +1157,30 @@ def react_to_post_inline(driver, wait, card, post_content: str = None, comment_t
             driver.execute_script("arguments[0].click();", trigger)
         time.sleep(random.uniform(0.8, 1.5))
         wait_for_ajax(driver)
-        # Best-effort confirm: label flips away from 'no reaction'. If the toggle can't be re-read,
-        # trust the click rather than false-negative — so the miss only means something when the
-        # card HAD a readable Reaction-state button before the click. Cards that never exposed one
-        # (the fly-out/React-toggle path) take the documented trust-the-click fallback, and warning
-        # about that on every card escalated to ERROR and filed a defect for working behaviour
-        # (issue #875). A control this card never carried is also not worth waiting out twice.
         expected = state is not None
-        after = find_first(driver, wait, [(By.CSS_SELECTOR, "button[aria-label^='Reaction button state']")],
-                           "Reaction state (post-click)", parent_element=card, required=False,
-                           visible_only=True, warn_on_miss=expected,
-                           max_try=MAX_WAIT_RETRY if expected else 1, user_id=user_id)
-        if after is not None and "no reaction" in (after.get_attribute("aria-label") or "").lower():
-            # The card's controls were readable and the click STILL didn't take — the one reaction
-            # failure none of the selector misses above stand for, so it gets its single warning
-            # here, where it is detected. The caller's blanket warning is DEBUG (issue #878).
-            log_warning("Reaction did not register after clicking", user_id=user_id,
-                        action_type="comment")
-            return False
-        log_info(f"Reacted '{reaction}' on post")
-        return True
+        if _reaction_registered(driver, wait, card, expected=expected, user_id=user_id):
+            log_info(f"Reacted '{reaction}' on post")
+            return True
+        if picked is not None and trigger is not None:
+            # The fly-out option we clicked was resolved DOCUMENT-scoped (the menu renders outside
+            # the card subtree), so it can land on a neighbouring post's control when the fly-out
+            # never opened — a click that succeeds on the wrong entity (#1012) and leaves this card
+            # untouched, which from here is indistinguishable from a click that did nothing. Either
+            # way the card's OWN toggle has not been used yet, so use it once before calling this a
+            # failure. Safe to click: we only get here after the toggle has been re-read to a
+            # settled 'no reaction', so there is no reaction of ours for it to undo (issue #2081).
+            driver.execute_script("arguments[0].click();", trigger)
+            time.sleep(random.uniform(0.8, 1.5))
+            wait_for_ajax(driver)
+            if _reaction_registered(driver, wait, card, expected=expected, user_id=user_id):
+                log_info("Reacted 'Like' on post (fly-out option never registered)")
+                return True
+        # The card's controls were readable and the click STILL didn't take — the one reaction
+        # failure none of the selector misses above stand for, so it gets its single warning
+        # here, where it is detected. The caller's blanket warning is DEBUG (issue #878).
+        log_warning("Reaction did not register after clicking", user_id=user_id,
+                    action_type="comment")
+        return False
     except Exception as e:
         log_warning("Inline post reaction failed", exc=e, action_type="comment", user_id=user_id)
         return False
