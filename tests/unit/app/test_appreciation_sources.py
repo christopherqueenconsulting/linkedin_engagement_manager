@@ -442,6 +442,91 @@ class TestMentionCardLocatorsFallBackToBody:
         assert find_all_first(driver, _MENTION_CARD_LOCATORS) == [card]
 
 
+class TestMentionCardChainIsExhaustedBeforeZero:
+    """#2065: the sweep graded this surface `drift` twice and #1985's body fallback did not move it.
+
+    Zero cards resolved against a page rendering two "mentioned you" lines, twice over.
+
+    Live grounding on 2026-09-14 explained why: the notifications feed carries NO `[data-view-name]`
+    anywhere in the document and NO `article`, so every named rung is unmatchable on the DOM shipping
+    now. The rungs stay (LinkedIn serves several generations at once, #2020) and the live-grounded
+    climb is appended, so what must hold is that the chain is ORDERED and only its exhaustion is
+    allowed to mean "no cards".
+    """
+
+    def test_a_named_rung_that_matches_is_the_answer_and_no_script_runs(self):
+        from cqc_lem.app.engagement.outreach import _mention_cards
+        card = MagicMock()
+        driver = MagicMock()
+        with patch(f"{_OUT}.find_all_first", return_value=[card]):
+            assert _mention_cards(driver, 1) == [card]
+        driver.execute_script.assert_not_called()
+
+    def test_the_climb_runs_only_once_every_named_rung_has_missed(self):
+        from cqc_lem.app.engagement.outreach import _MENTION_CARDS_JS, _mention_cards
+        card = MagicMock()
+        driver = MagicMock()
+        driver.execute_script.return_value = [card]
+        with patch(f"{_OUT}.find_all_first", return_value=[]):
+            assert _mention_cards(driver, 1) == [card]
+        driver.execute_script.assert_called_once_with(_MENTION_CARDS_JS)
+
+    def test_the_climb_keeps_the_body_fallback_and_the_mention_sentence(self):
+        """Both halves of the read are in the JS, so they are asserted there.
+
+        `<main>` first with a `<body>` fallback mirrors `_mentions_page_native_count` — the
+        cross-check this walk is graded against — and that asymmetry alone read as drift in #1985.
+        A mentions-filtered feed still mixes in "X posted", so a block only counts when it SAYS it
+        was a mention.
+        """
+        from cqc_lem.app.engagement.outreach import _MENTION_CARDS_JS
+        assert "document.querySelector('main') || document.body" in _MENTION_CARDS_JS
+        assert "(mentioned|tagged)" in _MENTION_CARDS_JS
+
+    def test_a_climb_that_dies_is_an_empty_read_at_debug_never_a_warning(self):
+        """A miss is DEBUG, never a warning.
+
+        The beat re-queues every ~60s, so a warning here would escalate to ERROR and file a grouped
+        `$exception` for a transient miss.
+        """
+        from selenium.common.exceptions import WebDriverException
+
+        from cqc_lem.app.engagement.outreach import _mention_cards
+        driver = MagicMock()
+        driver.execute_script.side_effect = WebDriverException("session died mid-read")
+        with patch(f"{_OUT}.find_all_first", return_value=[]), \
+             patch(f"{_OUT}.log_debug") as debug, patch(f"{_OUT}.log_warning") as warn:
+            assert _mention_cards(driver, 1) == []
+        assert debug.call_count == 1 and warn.call_count == 0
+
+    def test_anything_that_is_not_a_list_of_elements_is_no_reading(self):
+        from cqc_lem.app.engagement.outreach import _mention_cards
+        card = MagicMock()
+        driver = MagicMock()
+        with patch(f"{_OUT}.find_all_first", return_value=[]):
+            for answer in (None, "boom", {"cards": 1}):
+                driver.execute_script.return_value = answer
+                assert _mention_cards(driver, 1) == []
+            driver.execute_script.return_value = [card, None]
+            assert _mention_cards(driver, 1) == [card]
+
+    def test_the_walk_the_zero_grader_reads_is_the_whole_chain(self):
+        """The page-native cross-check must grade an EXHAUSTED chain, never just the named rungs.
+
+        Otherwise the climb could resolve cards and the grader would still be told zero.
+        """
+        from cqc_lem.app.engagement.outreach import get_recent_collaborators
+        driver = MagicMock()
+        driver.execute_script.return_value = [_card("Jane Doe mentioned you in a post 2h")]
+        with patch(f"{_OUT}.find_all_first", return_value=[]), \
+             patch(f"{_OUT}.wait_for_ajax"), \
+             patch(f"{_OUT}.getText", side_effect=lambda el: el.text), \
+             patch(f"{_OUT}._grade_zero_walk") as grade:
+            got = get_recent_collaborators(driver, MagicMock(), 1)
+        assert got == {"https://www.linkedin.com/in/jane": "Jane Doe"}
+        grade.assert_not_called()
+
+
 class TestDispatchDedup:
     """`automate_appreciation_dms_for_user` re-queues itself every ~60s, so the ledger claim is the
     only thing standing between one thank-you and a thank-you a minute.
