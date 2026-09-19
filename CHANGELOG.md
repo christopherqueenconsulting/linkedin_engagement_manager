@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.176.4](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.176.3...v0.176.4) (2026-09-19)
+
+
+### Bug Fixes
+
+* **errors:** settle the reaction confirm before calling a click a failure (closes [#2081](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2081)) ([#2082](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2082)) ([dd174da](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/dd174da0a13b6ed0fcd9bd97d7c6b210f77e5d7c))
+
 ## [0.176.3](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.176.2...v0.176.3) (2026-09-16)
 
 
