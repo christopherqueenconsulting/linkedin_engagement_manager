@@ -23,6 +23,17 @@
       "digest": "db976f1eacdd"
     },
     {
+      "name": "deepseek-v4.1-flash",
+      "model": "deepseek-v4.1-flash",
+      "modified_at": "2026-09-10T03:00:00Z",
+      "size": 486723007816,
+      "details": {
+        "family": "",
+        "parameter_size": ""
+      },
+      "digest": "97308b916fc3"
+    },
+    {
       "name": "gemma4:31b",
       "model": "gemma4:31b",
       "modified_at": "2026-04-02T09:00:00-08:00",
