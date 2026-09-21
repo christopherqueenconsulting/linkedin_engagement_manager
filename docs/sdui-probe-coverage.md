@@ -89,6 +89,17 @@ degree badge and a green verdict there would claim coverage the run does not hav
 40 6 * * 1 /home/lem/<repo-clone>/scripts/weekly_sdui_drift_check.sh
 ```
 
+0. **The probe and the filer are read from `$PROBE_REF` (`origin/main` by default), not from the
+   checkout's working files** (issue #2085). `scripts/` is not in the image, so both are piped in
+   off disk from `$REPO` — and `$REPO` is an ordinary git checkout nobody pulls. On 2026-09-21 it
+   sat one commit behind, re-ran the pre-#2069 company-invite probe, graded `company_invite`
+   `unknown` for a fourth week and re-filed the blind-spot issue that fix had already closed. The
+   sweep now `git fetch`es, resolves each script with `git show` into a temp dir (`pin_script`),
+   and logs the revision that measured the week. It is read-only on the checkout — nothing is
+   reset, pulled into a branch or checked out — and it fails OPEN to the working copy with a
+   `WARNING`, because a sweep on a stale probe still measures more than no sweep at all. The one
+   file this cannot cover is the cron entry's own `weekly_sdui_drift_check.sh`; a checkout that
+   differs from the ref there is ALERTed, not tolerated silently.
 1. Runs `linkedin_live_validation.py --sweep` inside `celery_worker_selenium` — every surface in the
    matrix, ONE Chrome session, off-peak. Since #1770 the 11 surfaces that used to need a
    caller-supplied target resolve one from the account's own data first
@@ -124,7 +135,8 @@ degree badge and a green verdict there would claim coverage the run does not hav
    run(s)** — acceptable at weekly cadence, and not something to fix by raising the cap or filing
    retroactively for a run that already capped out.
 
-Env overrides: `SDUI_PROBE_CONTAINER`, `SDUI_PROBE_USER_ID`, `SDUI_PROBE_PROFILE_URL` (a
+Env overrides: `SDUI_PROBE_REF` (the ref the probe and filer are pinned to, default
+`origin/main`), `SDUI_PROBE_CONTAINER`, `SDUI_PROBE_USER_ID`, `SDUI_PROBE_PROFILE_URL` (a
 2nd/3rd-degree profile, so the degree badge is actually grounded), `SDUI_DRIFT_DIR`,
 `SDUI_DRIFT_REPO`, `DRY_RUN=1`.
 

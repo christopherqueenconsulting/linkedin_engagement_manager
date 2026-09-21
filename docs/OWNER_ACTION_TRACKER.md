@@ -77,6 +77,16 @@ dead by hand instead of by the sweep.
 **⚠️ Still owed by you:** set `SDUI_PROBE_PROFILE_URL` in `/opt/lem/.env` to a **2nd/3rd-degree**
 profile, or the degree badge stays ungrounded (`docs/sdui-probe-coverage.md:99-101`). One line.
 
+**⚠️ Also owed — pull this checkout ONCE (#2085).** The cron entry above runs the *interactive dev
+checkout*, which nobody pulls: on 2026-09-21 it sat at `d45518e8` (2026-09-11) and re-ran the
+pre-#2069 company-invite probe, so `company_invite` graded `unknown` a fourth week and re-filed the
+blind-spot issue #2069 had already closed. The sweep now pins the probe and the filer to
+`origin/main`, but **it cannot pin itself** — cron executes the checkout's copy — so that fix is
+inert until `git -C /home/lem/linkedin_engagement_manager pull` runs once. From then on a checkout
+that drifts from the ref ALERTs by email instead of rotting silently. Pointing the cron at a
+dedicated clone (as `docs/sdui-probe-coverage.md` describes) also works and is the tidier end
+state.
+
 ### 2.3 The perf/margin snapshot cron — ✅ REPOINTED 2026-08-07
 
 The 23:30 entry now runs `/home/lem/linkedin_engagement_manager/scripts/perf_snapshot.sh`. The old

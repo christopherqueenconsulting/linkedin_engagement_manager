@@ -43,6 +43,30 @@ if [ -x "$_DEV_VENV_PY" ]; then PY=("$_DEV_VENV_PY"); else PY=(python3); fi
 
 log(){ echo "[$(date -u +%FT%TZ)] $*" | tee -a "$LOG" >&2; }
 
+# The sweep must measure with the probe that is on `main`, never with whatever the checkout it was
+# installed from happens to hold (issue #2085). `scripts/` is not in the image, so both scripts are
+# read off disk from $REPO — and $REPO is an ordinary git checkout nobody pulls. On 2026-09-21 it
+# sat one commit behind and re-ran the pre-#2069 company-invite probe, so the surface graded
+# `unknown` for a fourth week and re-filed the blind-spot issue that fix had already closed.
+# Resolving each script from a ref is READ-ONLY: the checkout is never reset, pulled or
+# checked out, and only its remote-tracking ref moves. It fails OPEN to the working copy with a
+# loud log line, because a sweep on a stale probe still measures more than no sweep at all.
+PROBE_REF="${SDUI_PROBE_REF:-origin/main}"
+# Made here, not inside `pin_script`: every call site captures the function's stdout, so anything
+# the function assigns dies with its subshell and the trap would never reach this shell.
+PINNED_DIR="$(mktemp -d 2>/dev/null)" && trap 'rm -rf "$PINNED_DIR"' EXIT
+
+pin_script(){  # $1 = repo-relative path; echoes the path to run. Never fails the sweep.
+  local rel="$1" dest="${PINNED_DIR:-}/$(basename "$1")"
+  if [ -n "${PINNED_DIR:-}" ] && git -C "$REPO" show "$PROBE_REF:$rel" >"$dest" 2>>"$LOG" \
+     && [ -s "$dest" ]; then
+    echo "$dest"
+  else
+    log "WARNING: could not read $rel from $PROBE_REF — sweeping with the working copy in $REPO"
+    echo "$REPO/$rel"
+  fi
+}
+
 alert(){  # log + best-effort email to the admin; never fails the run
   log "ALERT: $1"
   [ "$DRY_RUN" = "1" ] && { log "DRY_RUN: skipping alert email"; return 0; }
@@ -64,13 +88,36 @@ log "=== weekly SDUI drift sweep start ==="
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 SWEEP="$DIR/sweep-$STAMP.json"
 
+# Move the remote-tracking ref before pinning, or `origin/main` is exactly as stale as HEAD. A
+# fetch failure is not fatal: `pin_script` still resolves whatever ref is on disk, and the log
+# below names the revision that actually measured this week, so a stale sweep is legible after
+# the fact instead of silently reading as a healthy one.
+git -C "$REPO" fetch --quiet origin main >>"$LOG" 2>&1 \
+  || log "WARNING: git fetch origin main failed in $REPO — $PROBE_REF may be stale"
+log "probe source: $PROBE_REF $(git -C "$REPO" rev-parse --short "$PROBE_REF" 2>/dev/null || echo unknown)" \
+    "(checkout HEAD $(git -C "$REPO" rev-parse --short HEAD 2>/dev/null || echo unknown))"
+PROBE_SCRIPT="$(pin_script scripts/linkedin_live_validation.py)"
+FILER_SCRIPT="$(pin_script scripts/sdui_drift_issues.py)"
+
+# This file is the one thing pinning cannot cover — cron executes the checkout's copy, so a
+# checkout that is never pulled keeps running the orchestration it was installed with. Say so out
+# loud rather than letting it rot the way the probe did: it changes rarely, and an alert is how the
+# checkout gets pulled at all.
+# An unresolvable ref is NOT this warning — `pin_script` already said so, and claiming "out of
+# date" on a ref nobody could read would send a human chasing the wrong thing.
+if git -C "$REPO" rev-parse --verify --quiet "$PROBE_REF" >/dev/null 2>&1 \
+   && ! git -C "$REPO" diff --quiet "$PROBE_REF" -- scripts/weekly_sdui_drift_check.sh; then
+  alert "SDUI drift sweep is running an OUT-OF-DATE scripts/weekly_sdui_drift_check.sh — $REPO differs from $PROBE_REF. The probe and the filer are pinned to the ref; this orchestration cannot be, so pull $REPO."
+fi
+
 PROBE_ARGS=(--user-id "$USER_ID" --sweep --require-debug-node)
 [ -n "$PROFILE_URL" ] && PROBE_ARGS+=(--sweep-profile-url "$PROFILE_URL")
 
 # `scripts/` is not baked into the image, so the probe is piped in on stdin — the same way the
-# weekly LinkedIn version check runs its probe.
+# weekly LinkedIn version check runs its probe. `$PROBE_SCRIPT` is the ref-pinned copy, not the
+# checkout's working file (#2085).
 sudo -n docker exec -i "$CONTAINER" python - "${PROBE_ARGS[@]}" \
-      < "$REPO/scripts/linkedin_live_validation.py" >"$SWEEP" 2>>"$LOG"
+      < "$PROBE_SCRIPT" >"$SWEEP" 2>>"$LOG"
 PROBE_RC=$?
 # 75 (EX_TEMPFAIL) is the probe REFUSING to start: the LinkedIn 429 breaker is open, the breaker
 # could not be read, or the watchable Grid node was unavailable (#1301). None of those is a broken
@@ -102,7 +149,7 @@ log "sweep written -> $SWEEP"
 # otherwise.
 FILER_ARGS=(--sweep-file "$SWEEP" --history-dir "$DIR")
 [ "$DRY_RUN" = "1" ] && FILER_ARGS+=(--dry-run) || FILER_ARGS+=(--apply)
-"${PY[@]}" "$REPO/scripts/sdui_drift_issues.py" "${FILER_ARGS[@]}" >>"$LOG" 2>&1
+"${PY[@]}" "$FILER_SCRIPT" "${FILER_ARGS[@]}" >>"$LOG" 2>&1
 RC=$?
 # 0 = nothing to do / filed; 2 = drift pending in dry-run. Anything else is a real failure, and a
 # filer that cannot reach GitHub must page a human — otherwise this week's drift is simply lost.
