@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.176.5](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.176.4...v0.176.5) (2026-09-21)
+
+
+### Bug Fixes
+
+* **sdui-sweep:** pin the weekly probe to a ref so a stale checkout stops re-filing blind spots (closes [#2085](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2085)) ([#2086](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2086)) ([d13a7dd](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/d13a7dd479a9a71c17542964f68c81988a6040b4))
+
 ## [0.176.4](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.176.3...v0.176.4) (2026-09-19)
 
 
