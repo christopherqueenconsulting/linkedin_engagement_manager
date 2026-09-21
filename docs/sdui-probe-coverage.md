@@ -96,8 +96,10 @@ degree badge and a green verdict there would claim coverage the run does not hav
    `unknown` for a fourth week and re-filed the blind-spot issue that fix had already closed. The
    sweep now `git fetch`es, resolves each script with `git show` into a temp dir (`pin_script`),
    and logs the revision that measured the week. It is read-only on the checkout — nothing is
-   reset, pulled into a branch or checked out — and it fails OPEN to the working copy with a
-   `WARNING`, because a sweep on a stale probe still measures more than no sweep at all. The one
+   reset, pulled into a branch or checked out — and it fails OPEN to the working copy, because a
+   sweep on a stale probe still measures more than no sweep at all. A fail-open pin **ALERTs**,
+   though: it is this same defect in miniature, and a `WARNING` in a log nobody greps is how four
+   sweeps went unnoticed. The one
    file this cannot cover is the cron entry's own `weekly_sdui_drift_check.sh`; a checkout that
    differs from the ref there is ALERTed, not tolerated silently.
 1. Runs `linkedin_live_validation.py --sweep` inside `celery_worker_selenium` — every surface in the

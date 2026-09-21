@@ -99,6 +99,15 @@ log "probe source: $PROBE_REF $(git -C "$REPO" rev-parse --short "$PROBE_REF" 2>
 PROBE_SCRIPT="$(pin_script scripts/linkedin_live_validation.py)"
 FILER_SCRIPT="$(pin_script scripts/sdui_drift_issues.py)"
 
+# A fail-open pin IS the #2085 defect again, in miniature: the week is measured with the checkout's
+# working copy, so a fixed probe can grade its surface `unknown` and re-file a blind spot that was
+# already closed. `pin_script` logged why — but a WARNING in a log nobody greps is exactly how this
+# went unnoticed for four sweeps, so it pages the same way an out-of-date orchestration does.
+if [ "$PROBE_SCRIPT" = "$REPO/scripts/linkedin_live_validation.py" ] \
+   || [ "$FILER_SCRIPT" = "$REPO/scripts/sdui_drift_issues.py" ]; then
+  alert "SDUI drift sweep could not pin the probe/filer to $PROBE_REF in $REPO — it measured this week with the checkout's WORKING COPY, which may be stale. See the WARNING lines in $LOG."
+fi
+
 # This file is the one thing pinning cannot cover — cron executes the checkout's copy, so a
 # checkout that is never pulled keeps running the orchestration it was installed with. Say so out
 # loud rather than letting it rot the way the probe did: it changes rarely, and an alert is how the

@@ -120,6 +120,19 @@ def test_ref_is_refreshed_before_it_is_pinned() -> None:
     assert "|| log" in SOURCE[SOURCE.index(fetch.group(0)):SOURCE.index(fetch.group(0)) + 300]
 
 
+def test_fail_open_pin_pages_instead_of_only_logging() -> None:
+    """A fail-open pin re-creates the defect, so it must alert — a log WARNING is what hid it."""
+    fallback_alert = re.search(
+        r'if \[ "\$PROBE_SCRIPT" = "\$REPO/scripts/linkedin_live_validation\.py" \].*?\nfi\n',
+        SOURCE, re.S)
+    assert fallback_alert, "a fail-open pin must be detected after pinning"
+    assert '"$FILER_SCRIPT" = "$REPO/scripts/sdui_drift_issues.py"' in fallback_alert.group(0)
+    assert "alert " in fallback_alert.group(0), "the fail-open path must page, not just log"
+    # It has to run after both pins and before the probe is piped in, or it reports nothing.
+    assert SOURCE.index('FILER_SCRIPT="$(pin_script') < SOURCE.index(fallback_alert.group(0))
+    assert SOURCE.index(fallback_alert.group(0)) < SOURCE.index('< "$PROBE_SCRIPT"')
+
+
 def test_sweep_logs_which_revision_measured() -> None:
     """A stale sweep has to be legible after the fact, not read as a healthy one."""
     assert "probe source: $PROBE_REF" in SOURCE
