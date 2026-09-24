@@ -108,6 +108,24 @@ be read as recency-sorted:
 
 Live grounding: `scripts/linkedin_live_validation.py --feed-sort`.
 
+### Never twice on one post — guards that do not trust the key (issue #2130)
+
+The post-keyed dedup (`commented_posts` claim, URN key, content fingerprints — #474/#580) is only
+as good as the key, and the 2026-09 audit found 22 same-post pairs 74-98 s apart anyway: after a
+comment lands the card re-renders, a text node holding OUR comment reads as a fresh card, mints a
+fresh key, and the second comment grounds on the first. Two guards in the walk sit beside the key:
+
+- **Own-comment guard** (`_is_own_comment_text`): a card whose normalized text prefix matches one of
+  our own comments — this run's, or any logged in the last 24 h
+  (`get_recent_comment_texts(hours=24)`) — is never a post. Counted as `own_comment_skipped` on the
+  funnel and the `feed_scan` event.
+- **One author, one comment**: at most one comment per author per walk (in-memory), and per 30
+  minutes across walks (Redis `linkedin:feed_author_cooldown:*`, set when a comment lands — a group
+  run walks once per group). Fails OPEN without Redis or on a card that names no author.
+
+Remaining (phase 2, `risk:live-linkedin`): ground activity-URN extraction on group-feed cards so
+≥ 80% of comments are URN-keyed. Verify with V-PAIRS over 7 days of `/opt/lem/logs` (target 0).
+
 ## Replies on our own posts, and the seed comment (`sweep_reply_comments`, `auto_seed_comment_on_post`)
 
 Two different jobs on the user's own post: **seed** the thread, then **answer** it.
