@@ -2485,7 +2485,8 @@ def engage_with_profile_viewer(self, user_id: int, viewer_url, viewer_name):
                         # Send connection request with this message
                         kwargs = {'user_id': acting_user_id,
                                   'profile_url': str(profile.profile_url),
-                                  'message': refined_response}
+                                  'message': refined_response,
+                                  'source': CONNECTION_REQUEST_SOURCE_PROFILE_VIEWER}
                         invite_to_connect.apply_async(kwargs=kwargs)
                         result = f"Profile Viewer Engagement Completed. Sent Connection Request to {viewer_name}"
                         engagement_successful = True
@@ -2967,6 +2968,20 @@ def _connect_target_budget(user_id: int, prefs: dict, max_new: int = None) -> in
     return max(0, min(remaining, ceiling))
 
 
+def _log_candidate_funnel(user_id: int, budget: int, own_post: int = 0, adjacent: int = 0,
+                          ranked: int = 0, filed: int = 0) -> None:
+    """ONE line per scan naming how many candidates survived each stage (issue #2101).
+
+    Every exit reports the same shape, so the stage that empties the set is readable straight off
+    the production log instead of inferred from which DEBUG return fired — and DEBUG is not logged
+    in production. INFO, not a warning: an empty stage is a fact about the audience, not a defect.
+    """
+    log_info(f"Connection candidate funnel: budget={budget} own_post={own_post} "
+             f"adjacent={adjacent} ranked={ranked} filed={filed}", user_id=user_id,
+             task_name="scan_connection_candidates", action_type="connection_targeting",
+             budget=budget, own_post=own_post, adjacent=adjacent, ranked=ranked, filed=filed)
+
+
 def _target_status_for_mode(mode: str, prefs: dict) -> "ConnectionRequestStatus":
     """'suggest' (default) ALWAYS files a draft needing human approval; 'auto_queue' defers to the
     user's #398 connection_request_mode. So enabling targeting alone can never send anything.
@@ -3007,6 +3022,7 @@ def scan_connection_candidates(self, user_id: int, max_new: int = None):
         log_debug("Connection targeting filed nothing: no invite budget left (daily cap already "
                   "spent or fully queued)", user_id=user_id,
                   task_name="scan_connection_candidates", action_type="connection_targeting")
+        _log_candidate_funnel(user_id, budget)
         return f"No invite budget left for user {user_id}"
 
     now = datetime.now(timezone.utc).replace(tzinfo=None)
@@ -3015,6 +3031,7 @@ def scan_connection_candidates(self, user_id: int, max_new: int = None):
                                source=SOURCE_OWN_POST, occurred_at=row.get("occurred_at"),
                                connection_degree=row.get("connection_degree"))
                for row in get_engager_candidates(user_id, days=_CONNECT_ENGAGER_LOOKBACK_DAYS)]
+    own_post = len(signals)
 
     authors = [str(a).strip() for a in (prefs.get("connection_target_authors") or []) if str(a or "").strip()]
     if authors:
@@ -3032,7 +3049,9 @@ def scan_connection_candidates(self, user_id: int, max_new: int = None):
             if driver is not None:
                 quit_gracefully(driver)
 
+    adjacent = len(signals) - own_post
     if not signals:
+        _log_candidate_funnel(user_id, budget, own_post, adjacent)
         log_debug("Connection targeting filed nothing: nobody has engaged with this user's "
                   "content in the lookback window and no adjacent authors are configured",
                   user_id=user_id, task_name="scan_connection_candidates",
@@ -3047,6 +3066,7 @@ def scan_connection_candidates(self, user_id: int, max_new: int = None):
                                  exclude_keys=get_requested_person_keys(user_id),
                                  limit=budget)
     if not candidates:
+        _log_candidate_funnel(user_id, budget, own_post, adjacent)
         log_debug("Connection targeting filed nothing: every candidate was already requested, "
                   "already a 1st-degree connection, or below the ICP floor", user_id=user_id,
                   task_name="scan_connection_candidates", action_type="connection_targeting")
@@ -3083,10 +3103,13 @@ def scan_connection_candidates(self, user_id: int, max_new: int = None):
         log_info(f"Connection target filed ({candidate.source}, score {candidate.score})",
                  user_id=user_id, task_name="scan_connection_candidates",
                  action_type="connection_targeting")
+    _log_candidate_funnel(user_id, budget, own_post, adjacent, len(candidates), filed)
     return f"Filed {filed} connection target(s) as '{status}' for user {user_id}"
 
 
 # --- Comment-first outreach funnel (issue #399) — approval-gated comment->connect->DM ---
+# connection_requests.source for the ledger row the funnel's connect stage writes once it lands.
+CONNECTION_REQUEST_SOURCE_OUTREACH_FUNNEL = "outreach_funnel"
 _FUNNEL_CONNECT_NOTE = ("Hi {first_name}, I've been enjoying your posts and the perspective you "
                         "share — would love to connect and keep in touch.")
 
@@ -3152,7 +3175,8 @@ def _fire_funnel_stage(user_id: int, target: dict) -> str:
         next_stage = OutreachStage.CONNECT
     elif stage == OutreachStage.CONNECT:
         invite_to_connect.apply_async(kwargs={"user_id": user_id, "profile_url": profile_url,
-                                              "message": draft})
+                                              "message": draft,
+                                              "source": CONNECTION_REQUEST_SOURCE_OUTREACH_FUNNEL})
         next_stage = OutreachStage.DM
     elif stage == OutreachStage.DM:
         if remaining_actions(user_id, ACTION_DM, int(prefs.get("max_dms_per_day") or 0),
