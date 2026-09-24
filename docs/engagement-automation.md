@@ -123,6 +123,17 @@ fresh key, and the second comment grounds on the first. Two guards in the walk s
   minutes across walks (Redis `linkedin:feed_author_cooldown:*`, set when a comment lands — a group
   run walks once per group). Fails OPEN without Redis or on a card that names no author.
 
+### Which filter removed each post (issue #2102)
+
+`passed filters 0` alone cannot say whether recency, reactions, excludes or the dedup ledger ate a
+scan. The walk counts each post once, at the stage that removed it, into `feed_drops`; the roster
+pass does the same into `roster_drops`. Both ride the feed funnel and the `Engagement scan:` line
+(`feed drops {...}, roster drops {...}`), and a roster miss line names its own page's drops.
+Reasons: `own_comment`, `author_cooldown`, `already_commented`, `excluded`, `too_old`,
+`low_reactions`, `off_topic`, `include_miss`, `engage_failed` (roster adds
+`no_comment_affordance` and `seen_this_run`). Counts only — they change no gate; the topic-gate
+threshold and the fallback are an owner decision taken from these numbers.
+
 Remaining (phase 2, `risk:live-linkedin`): ground activity-URN extraction on group-feed cards so
 ≥ 80% of comments are URN-keyed. Verify with V-PAIRS over 7 days of `/opt/lem/logs` (target 0).
 

@@ -311,7 +311,7 @@ def _box(text):
 
 
 def _run_roster(boxes, targets, *, prefs=None, relevant=True, engage=True, max_posts=5,
-                card=True, follow_budget=0, follow_outcome="", follow_on=None, follow_hold="",
+                card=True, commented=False, follow_budget=0, follow_outcome="", follow_on=None, follow_hold="",
                 blocked_streak=1, blocked_connect="unknown", connect_outcome=None,
                 deadline_ts=None, reconcile_state="unknown"):
     """Drive comment_on_roster_posts with every Selenium/DB collaborator mocked.
@@ -348,7 +348,7 @@ def _run_roster(boxes, targets, *, prefs=None, relevant=True, engage=True, max_p
         p("_card_for_textbox", side_effect=lambda d, b: MagicMock() if card else None)
         p("_post_author_from_card", return_value="Jane Author")
         p("_post_permalink_from_card", return_value=None)
-        p("has_commented_post", return_value=False)
+        p("has_commented_post", return_value=commented)
         p("has_user_commented_on_post_url", return_value=False)
         p("_passes_hard_excludes", return_value=True)
         p("post_is_relevant", return_value=relevant)
@@ -466,7 +466,8 @@ class TestCommentOnRosterPosts:
         engage.assert_not_called()
 
 
-def _run_feed(boxes, *, prefs=None, relevant=True, roster_stats=None, matches=True):
+def _run_feed(boxes, *, prefs=None, relevant=True, roster_stats=None, matches=True, age=10,
+              reactions=0, excluded=False):
     """Drive comment_on_feed_inline end-to-end with the roster pass stubbed, so the assertions are
     about the feed walk's on-topic gate and the merged funnel.
     """
@@ -495,17 +496,19 @@ def _run_feed(boxes, *, prefs=None, relevant=True, roster_stats=None, matches=Tr
         p("_post_permalink_from_card", return_value=None)
         p("has_commented_post", return_value=False)
         p("has_user_commented_on_post_url", return_value=False)
-        p("_passes_hard_excludes", return_value=True)
-        p("_post_age_minutes", return_value=10)
-        p("_post_social_counts", return_value={"comments": 0, "reactions": 0})
+        p("_passes_hard_excludes", return_value=not excluded)
+        p("_post_age_minutes", return_value=age)
+        p("_post_social_counts", return_value={"comments": 0, "reactions": reactions})
         p("_literal_relevant", return_value=True)
         p("_score_feed_post", return_value=1.0)
         p("post_matches_preferences", return_value=matches)
         p("post_is_relevant", return_value=relevant)
         p("_engage_card", new=engage)
         p("set_feed_funnel", side_effect=lambda uid, f: funnel.update(f))
+        info = p("log_info")
         posted = ra.comment_on_feed_inline(driver, MagicMock(), MagicMock(), user_id=1, max_posts=5)
-    return {"posted": posted, "engage": engage, "funnel": funnel}
+    scan = [c.args[0] for c in info.call_args_list if c.args[0].startswith("Engagement scan:")]
+    return {"posted": posted, "engage": engage, "funnel": funnel, "scan": scan}
 
 
 class TestFeedOnTopicGate:
@@ -559,6 +562,86 @@ class TestFunnelSourceSplit:
                       roster_stats=roster)
         assert r["posted"] == 5
         r["engage"].assert_not_called()
+
+
+class TestPerFilterDropCounts:
+    """Each filter's drop count lands on the stage that removed the post (issue #2102).
+
+    14 of 14 home scans read "passed filters 0" with nothing saying which filter removed the posts.
+    Each fixture below drops the whole feed at ONE stage and asserts the count lands on that stage —
+    on the funnel and on the `Engagement scan:` line.
+    """
+
+    _PREFS = {"max_comments_per_day": 20, "max_post_age_hours": 48, "min_reactions": 5}
+
+    def _boxes(self, n=3):
+        return [_box(f"Feed post number {i}, long enough to be scanned here.") for i in range(n)]
+
+    def test_a_stale_feed_is_dropped_at_the_recency_gate(self):
+        r = _run_feed(self._boxes(), prefs={**self._PREFS, "feed_fallback_when_empty": False},
+                      age=49 * 60, reactions=10)
+        assert r["posted"] == 0
+        assert r["funnel"]["passed_filters"] == 0
+        assert r["funnel"]["feed_drops"] == {"too_old": 3}
+        assert "feed drops {'too_old': 3}" in r["scan"][0]
+
+    def test_a_quiet_feed_is_dropped_at_the_reactions_gate(self):
+        r = _run_feed(self._boxes(), prefs=self._PREFS, age=10, reactions=1)
+        assert r["funnel"]["passed_filters"] == 0
+        assert r["funnel"]["feed_drops"] == {"low_reactions": 3}
+
+    def test_an_excluded_feed_is_dropped_at_the_exclude_gate(self):
+        r = _run_feed(self._boxes(), prefs=self._PREFS, excluded=True, reactions=10)
+        assert r["funnel"]["feed_drops"] == {"excluded": 3}
+
+    def test_an_off_topic_candidate_is_dropped_after_passing_the_hard_filters(self):
+        r = _run_feed(self._boxes(1), prefs={**self._PREFS, "focus_topics": ["RevOps"]},
+                      reactions=10, relevant=False)
+        assert r["funnel"]["passed_filters"] == 1
+        assert r["funnel"]["feed_drops"] == {"off_topic": 1}
+
+    def test_an_include_miss_is_counted(self):
+        r = _run_feed(self._boxes(1), prefs={**self._PREFS, "include_topics": ["RevOps"],
+                                             "feed_fallback_when_empty": False},
+                      reactions=10, matches=False)
+        assert r["funnel"]["feed_drops"] == {"include_miss": 1}
+
+    def test_a_commented_post_drops_nothing(self):
+        r = _run_feed(self._boxes(1), prefs=self._PREFS, reactions=10)
+        assert r["posted"] == 1
+        assert r["funnel"]["feed_drops"] == {}
+
+    def test_a_post_the_fallback_relaxes_and_comments_on_is_not_a_drop(self):
+        # The empty-feed fallback re-reads the posts the recency gate turned away. One it then
+        # comments on was not removed by anything, so it must not stay counted as too_old.
+        r = _run_feed(self._boxes(1), prefs={**self._PREFS, "include_topics": ["RevOps"]},
+                      age=49 * 60, reactions=10)
+        assert r["posted"] == 1
+        assert r["funnel"]["feed_drops"] == {}
+
+    def test_roster_drops_reach_the_funnel_apart_from_the_feed(self):
+        roster = {"posted": 0, "targets_visited": 1, "examined": 2, "off_topic_skipped": 2,
+                  "key_sources": {}, "commented_key_sources": {}, "drops": {"off_topic": 2}}
+        r = _run_feed(self._boxes(1), prefs=self._PREFS, reactions=10, roster_stats=roster)
+        assert r["funnel"]["roster_drops"] == {"off_topic": 2}
+        assert "roster drops {'off_topic': 2}" in r["scan"][0]
+
+    def test_a_roster_page_already_commented_on_says_so(self):
+        r = _run_roster([_box("A roster author's post, long enough to scan.")],
+                        [_target("https://www.linkedin.com/in/jane")], commented=True)
+        assert r["stats"]["posted"] == 0
+        assert r["stats"]["drops"] == {"already_commented": 1}
+
+    def test_a_roster_off_topic_page_says_so(self):
+        r = _run_roster([_box("Wholly unrelated content of sufficient length.")],
+                        [_target("https://www.linkedin.com/in/jane")],
+                        prefs={"focus_topics": ["RevOps"]}, relevant=False)
+        assert r["stats"]["drops"] == {"off_topic": 1}
+
+    def test_a_roster_comment_that_fails_to_land_is_counted(self):
+        r = _run_roster([_box("A roster author's post, long enough to scan.")],
+                        [_target("https://www.linkedin.com/in/jane")], engage=False)
+        assert r["stats"]["drops"] == {"engage_failed": 1}
 
 
 # --- restricted-comment detection + opt-in auto-follow (issue #962) ------------------------------
