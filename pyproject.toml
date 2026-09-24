@@ -73,7 +73,7 @@ boto3 = "^1.36.7"
 sendgrid = "^6.12.5"
 stripe = "^15.2.1"
 
-timezonefinder = ">=6.5,<9.0"
+timezonefinder = ">=6.5,<10.0"
 
 [tool.poetry.group.dev]
 optional = true

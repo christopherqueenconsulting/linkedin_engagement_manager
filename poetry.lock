@@ -5511,16 +5511,16 @@ files = [
 
 [[package]]
 name = "timezonefinder"
-version = "8.3.0"
+version = "9.0.0"
 description = "python package for finding the timezone of any point on earth (coordinates) offline"
 optional = false
 python-versions = "<4,>=3.11"
 groups = ["main"]
 files = [
-    {file = "timezonefinder-8.3.0-cp311-abi3-manylinux1_x86_64.manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_5_x86_64.whl", hash = "sha256:d2413777e443f45260128cdb58db449b16c7783ce414de499475d81500dd5bdf"},
-    {file = "timezonefinder-8.3.0-cp311-abi3-manylinux1_x86_64.manylinux_2_28_x86_64.manylinux_2_5_x86_64.whl", hash = "sha256:61c41ddb7d0518c4df668b705e01c0523e1ca496d75c5721b30a1b03ddd9ae75"},
-    {file = "timezonefinder-8.3.0-cp311-abi3-musllinux_1_1_x86_64.whl", hash = "sha256:2f14364389fceec16915826bc6701bccc074b0159269d0447c8bcf0d647d509b"},
-    {file = "timezonefinder-8.3.0.tar.gz", hash = "sha256:827c056552d7ba481336e62fff58f3a7c81687233d5dc000b13fefaa25c89525"},
+    {file = "timezonefinder-9.0.0-cp311-abi3-manylinux1_x86_64.manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_5_x86_64.whl", hash = "sha256:c259de79c20a32c5fbe2a372232f93a5fd481c487bc0e1b27836d4958bbf2c82"},
+    {file = "timezonefinder-9.0.0-cp311-abi3-manylinux1_x86_64.manylinux_2_28_x86_64.manylinux_2_5_x86_64.whl", hash = "sha256:c824ed2acd207d4a125cf75c2c3b4c6c30ec4636bb02bb15021ee1b598d279fb"},
+    {file = "timezonefinder-9.0.0-cp311-abi3-musllinux_1_2_x86_64.whl", hash = "sha256:2e0533ed629aff05b00f2a2d1bb92b23b79ee5a5ed7e4a3608286efb8eee8679"},
+    {file = "timezonefinder-9.0.0.tar.gz", hash = "sha256:c21c47f1463320eda57c4cbb5b80e875b80e64d6b78e73477e0f8bdc1a112c04"},
 ]
 
 [package.dependencies]
@@ -5528,21 +5528,21 @@ cffi = ">=1.15.1,<3"
 flatbuffers = ">=25.2.10"
 h3 = ">=4"
 numpy = ">=2"
-timezonefinder-data = ">=1.2026.3,<2"
+timezonefinder-data = ">=3.2026.3.post1,<4"
 
 [package.extras]
-numba = ["numba (>=0.60,<1)", "numpy (<2.4)"]
+numba = ["numba (>=0.60,<1)"]
 pytz = ["pytz (>=2022.7.1)"]
 
 [[package]]
 name = "timezonefinder-data"
-version = "1.2026.3"
+version = "3.2026.3.post1"
 description = "the packaged timezone boundary data for the timezonefinder package"
 optional = false
 python-versions = "<4,>=3.11"
 groups = ["main"]
 files = [
-    {file = "timezonefinder_data-1.2026.3-py3-none-any.whl", hash = "sha256:fca9e5d7ff5f86cd7b931b94b24a80347082fac36de35473553dfdf51c5dd151"},
+    {file = "timezonefinder_data-3.2026.3.post1-py3-none-any.whl", hash = "sha256:d71b3814362e69cb208f8d30249efe2fa0d2cd55579679c5ae1727cd38840606"},
 ]
 
 [[package]]
@@ -6092,4 +6092,4 @@ type = ["pytest-mypy (>=1.0.1) ; platform_python_implementation != \"PyPy\""]
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.12,<4.0"
-content-hash = "c449ab4258ce7226deffe3e479fef6bb02b57bb76443f8b5e92fa133a83bbbe8"
+content-hash = "51a1df59c91f3ece759dd22a4128a6de36d65fa829d1f869dcffbbd5022f320c"
