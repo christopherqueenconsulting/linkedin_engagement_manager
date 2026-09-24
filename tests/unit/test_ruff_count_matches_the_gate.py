@@ -57,6 +57,49 @@ class TestTheCounterAgreesWithTheGate:
         assert not pattern.search("[*] 53 fixable with the `--fix` option")
 
 
+def _run_with_fake_poetry(tmp_path: pathlib.Path, output: str, rc: int) -> subprocess.CompletedProcess:
+    """Run the counter against a stub `poetry` that prints `output` and exits `rc`."""
+    stub = tmp_path / "poetry"
+    stub.write_text(f"#!/usr/bin/env bash\ncat <<'OUT'\n{output}\nOUT\nexit {rc}\n", encoding="utf-8")
+    stub.chmod(0o755)
+    env = {"PATH": f"{tmp_path}:/usr/bin:/bin", "HOME": str(tmp_path)}
+    return subprocess.run([str(_SCRIPT)], capture_output=True, text=True, cwd=_ROOT, env=env)
+
+
+class TestTheCounterFailsClosed:
+    """`poetry run` exits 1 when ruff is not installed — the same code as "violations found".
+
+    That is how the nightly lane (which installs `--with test` only) read the tree as 0 findings
+    for weeks (#2111). A count the tool never produced must be a refusal, never a number.
+    """
+
+    def test_ruff_missing_is_a_refusal_not_zero(self, tmp_path):
+        out = _run_with_fake_poetry(tmp_path, "Command not found: ruff", 1)
+        assert out.returncode == 1
+        assert out.stdout == ""
+        assert "cannot measure" in out.stderr
+
+    def test_clean_exit_with_findings_is_a_refusal(self, tmp_path):
+        out = _run_with_fake_poetry(tmp_path, "src/a.py:1:1: D100 Missing docstring", 0)
+        assert out.returncode == 1
+        assert out.stdout == ""
+
+    def test_a_crash_is_a_refusal(self, tmp_path):
+        out = _run_with_fake_poetry(tmp_path, "error: bad config", 2)
+        assert out.returncode == 1
+
+    def test_findings_are_counted_without_the_summary_lines(self, tmp_path):
+        report = "src/a.py:1:1: D100 Missing docstring\nsrc/b.py:2:5: E501 Line too long\nFound 2 errors."
+        out = _run_with_fake_poetry(tmp_path, report, 1)
+        assert out.returncode == 0, out.stderr
+        assert out.stdout.strip() == "2"
+
+    def test_clean_tree_counts_zero(self, tmp_path):
+        out = _run_with_fake_poetry(tmp_path, "All checks passed!", 0)
+        assert out.returncode == 0, out.stderr
+        assert out.stdout.strip() == "0"
+
+
 class TestTheBaselineIsNotInflated:
     def test_baseline_is_an_integer(self):
         raw = (_ROOT / ".ruff-baseline").read_text(encoding="utf-8").strip()
