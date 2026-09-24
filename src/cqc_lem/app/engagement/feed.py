@@ -2937,8 +2937,10 @@ def comment_on_feed_inline(driver, wait, my_profile: LinkedInProfile, user_id: i
     commented_authors: set = set()
     own_comment_skipped = 0
     # Which filter removed each home-feed post, one count per post (issue #2102): "passed filters 0"
-    # alone cannot say whether recency, reactions, excludes or the dedup ledger ate the scan.
-    feed_drops: dict = {}
+    # alone cannot say whether recency, reactions, excludes or the dedup ledger ate the scan. Keyed
+    # by post, LAST reason wins: the empty-feed fallback re-reads a too_old/low_reactions post, so a
+    # plain tally would count it twice — or as dropped by a gate it went on to pass.
+    drop_by_key: dict = {}
     _incl = [f for f in ((prefs.get("include_keywords") or []) + (prefs.get("include_authors") or [])
                          + (prefs.get("include_topics") or [])) if f]
     fallback_enabled = bool(prefs.get("feed_fallback_when_empty", True)) and bool(_incl)
@@ -2969,7 +2971,6 @@ def comment_on_feed_inline(driver, wait, my_profile: LinkedInProfile, user_id: i
                 fps = _feed_content_fingerprints(author, content)
                 if not fps & seen:
                     own_comment_skipped += 1
-                    _count_drop(feed_drops, "own_comment")
                     log_debug(f"Skipped feed card by {author or 'unknown author'}: its text is one "
                               f"of our own recent comments", user_id=user_id,
                               action_type="comment", task_name="comment_on_feed_inline")
@@ -2986,7 +2987,7 @@ def comment_on_feed_inline(driver, wait, my_profile: LinkedInProfile, user_id: i
             # One comment per author per walk, and per 30 minutes across walks (issue #2130).
             if (_author_norm(author) in commented_authors
                     or _author_on_cooldown(user_id, author)):
-                _count_drop(feed_drops, "author_cooldown")
+                drop_by_key[key] = "author_cooldown"
                 seen.add(key)
                 seen.update(fps)
                 log_debug(f"Skipped feed post by {author}: already commented on this author "
@@ -2998,12 +2999,12 @@ def comment_on_feed_inline(driver, wait, my_profile: LinkedInProfile, user_id: i
             # Persistent, cross-run/worker dedup: skip anything already claimed or commented
             # (commented_posts ledger), plus historical SUCCESS comment logs, plus hard excludes.
             if has_commented_post(user_id, key) or has_user_commented_on_post_url(user_id, key):
-                _count_drop(feed_drops, "already_commented")
+                drop_by_key[key] = "already_commented"
                 seen.add(key)
                 seen.update(fps)
                 continue
             if not _passes_hard_excludes(content, author, prefs):
-                _count_drop(feed_drops, "excluded")
+                drop_by_key[key] = "excluded"
                 seen.add(key)
                 seen.update(fps)
                 continue
@@ -3016,11 +3017,11 @@ def comment_on_feed_inline(driver, wait, my_profile: LinkedInProfile, user_id: i
             counts = _post_social_counts(card)
             if not hard_relaxed:
                 if age is not None and age > max_age_min:        # recency gate
-                    _count_drop(feed_drops, "too_old")
+                    drop_by_key[key] = "too_old"
                     soft_seen.add(key)
                     continue
                 if min_reactions and counts["reactions"] < min_reactions:
-                    _count_drop(feed_drops, "low_reactions")
+                    drop_by_key[key] = "low_reactions"
                     soft_seen.add(key)
                     continue
             meta = {"author": author, "age_minutes": age, "comments": counts["comments"],
@@ -3049,7 +3050,7 @@ def comment_on_feed_inline(driver, wait, my_profile: LinkedInProfile, user_id: i
             # user's focus topics — that is what damaged distribution in the 2026-07-25 funnel.
             if not passes_topic_gate(content, prefs):
                 off_topic_skipped += 1
-                _count_drop(feed_drops, "off_topic")
+                drop_by_key[key] = "off_topic"
                 log_info(f"Skipped feed post by {author or 'unknown author'}: off-topic for the "
                          f"user's focus topics", user_id=user_id, action_type="comment",
                          task_name="comment_on_feed_inline")
@@ -3060,7 +3061,7 @@ def comment_on_feed_inline(driver, wait, my_profile: LinkedInProfile, user_id: i
                 include_keys.add(key)
             else:
                 strict_misses += 1
-                _count_drop(feed_drops, "include_miss")
+                drop_by_key[key] = "include_miss"
                 continue
             # _engage_card atomically claims the post BEFORE spending an LLM call or commenting. If
             # a prior/concurrent run already holds it, we lose the race there and move on — at most
@@ -3070,6 +3071,7 @@ def comment_on_feed_inline(driver, wait, my_profile: LinkedInProfile, user_id: i
             engaged = _engage_card(ctx, card, key, content, author,
                                    is_group_feed=ctx.is_group_feed)
             if engaged:
+                drop_by_key.pop(key, None)
                 if _author_norm(author):
                     commented_authors.add(_author_norm(author))
                 posted_key_sources[key_source] = posted_key_sources.get(key_source, 0) + 1
@@ -3085,7 +3087,7 @@ def comment_on_feed_inline(driver, wait, my_profile: LinkedInProfile, user_id: i
                 # specific or already counted elsewhere; for telemetry we count the composer miss.
                 skipped_no_composer += 1
             else:
-                _count_drop(feed_drops, "engage_failed")
+                drop_by_key[key] = "engage_failed"
             continue  # DOM re-rendered / candidate consumed — re-gather from the top
         # Nothing cleared the hard filters this pass. If the whole feed keeps coming up empty
         # (0 posts past excludes + recency + min-reactions) but some only missed the recency/
@@ -3106,6 +3108,9 @@ def comment_on_feed_inline(driver, wait, my_profile: LinkedInProfile, user_id: i
         scrolls += 1
         time.sleep(random.uniform(2.5, 4))
 
+    feed_drops: dict = {"own_comment": own_comment_skipped} if own_comment_skipped else {}
+    for reason in drop_by_key.values():
+        _count_drop(feed_drops, reason)
     examined_key_sources: dict = {}
     for source in key_source_by_key.values():
         examined_key_sources[source] = examined_key_sources.get(source, 0) + 1

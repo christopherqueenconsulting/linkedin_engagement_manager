@@ -611,6 +611,14 @@ class TestPerFilterDropCounts:
         assert r["posted"] == 1
         assert r["funnel"]["feed_drops"] == {}
 
+    def test_a_post_the_fallback_relaxes_and_comments_on_is_not_a_drop(self):
+        # The empty-feed fallback re-reads the posts the recency gate turned away. One it then
+        # comments on was not removed by anything, so it must not stay counted as too_old.
+        r = _run_feed(self._boxes(1), prefs={**self._PREFS, "include_topics": ["RevOps"]},
+                      age=49 * 60, reactions=10)
+        assert r["posted"] == 1
+        assert r["funnel"]["feed_drops"] == {}
+
     def test_roster_drops_reach_the_funnel_apart_from_the_feed(self):
         roster = {"posted": 0, "targets_visited": 1, "examined": 2, "off_topic_skipped": 2,
                   "key_sources": {}, "commented_key_sources": {}, "drops": {"off_topic": 2}}
