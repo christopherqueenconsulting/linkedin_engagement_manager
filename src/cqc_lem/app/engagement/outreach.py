@@ -283,7 +283,7 @@ __all__ = [
     "send_lead_response",
     "send_private_dm",
     "send_scheduled_dm",
-    # The catch-up vocabulary. `run_scheduler` reads eight of these to label its scan/send reports;
+    # The catch-up vocabulary. `run_scheduler` reads nine of these to label its scan/send reports;
     # `zero_walk_verdict` is the catch-up walk's alias of the ONE grader. Nothing INSIDE this module
     # reads the four below, so CodeQL reports them as unused globals unless the public surface is
     # declared (a `# lgtm[...]` comment is the retired syntax and no longer counts).
@@ -3527,6 +3527,7 @@ CATCHUP_STATUS_NONE_QUALIFIED = "none_qualified"    # moments read, none survive
 CATCHUP_STATUS_DISPATCHED = "dispatched"
 CATCHUP_STATUS_NOTHING_TO_SEND = "nothing_to_send"
 CATCHUP_STATUS_CAPPED = "capped"                    # approved touches exist, today's cap is spent
+CATCHUP_STATUS_SPACED = "spaced"                    # approved touches exist, held by per-user spacing (#2141)
 CATCHUP_STATUS_INACTIVE = "inactive_users"          # queue exists but its owners aren't connected
 CATCHUP_STATUS_AWAITING_APPROVAL = "awaiting_approval"  # drafts exist, none approved yet
 # Terminal (deliver) outcomes. `dispatched` is NOT delivery: a touch the DM cap or the breaker defers
@@ -4019,7 +4020,7 @@ def _draft_catchup_message(user_id: int, moment: dict, my_profile: LinkedInProfi
 # state of a healthy account, not events. They log DEBUG (an expected no-op logged INFO is noise, and
 # the throttle already logs its own reason in _skip_if_throttled) — the PostHog series is what
 # carries them, and that's the series a "catch-up never sends" report has to be answered from.
-_CATCHUP_QUIET_STATUSES = frozenset({CATCHUP_STATUS_NOTHING_TO_SEND, CATCHUP_STATUS_CAPPED,
+_CATCHUP_QUIET_STATUSES = frozenset({CATCHUP_STATUS_NOTHING_TO_SEND, CATCHUP_STATUS_CAPPED, CATCHUP_STATUS_SPACED,
                                      CATCHUP_STATUS_THROTTLED, CATCHUP_STATUS_DISABLED,
                                      CATCHUP_STATUS_DM_CAPPED, CATCHUP_STATUS_NOT_SENDABLE,
                                      CATCHUP_STATUS_AWAITING_APPROVAL, CATCHUP_STATUS_CONTACT_COOLDOWN,
@@ -4034,7 +4035,7 @@ def report_catchup_run(user_id: Optional[int], report: dict, task_name: str) -> 
     summary = ", ".join(f"{k}={report[k]}" for k in
                         ("moments", "classified", "enabled_type", "excluded", "duplicate",
                          "below_bar", "drafted", "dispatched", "capped", "inactive", "pending",
-                         "requeued", "touch_id")
+                         "requeued", "spaced", "touch_id")
                         if k in report)
     status = report.get("status")
     emit = log_debug if status in _CATCHUP_QUIET_STATUSES else log_info

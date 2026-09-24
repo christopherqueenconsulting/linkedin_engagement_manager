@@ -577,6 +577,25 @@ The ONE place cadence is decided.
 - Fails open — no Redis, or `HUMAN_PACING_ENABLED=false`, restores pre-#626 behaviour.
 - Pacing only slows us down; the 429 breaker in `rate_limit.py` is the separate, harder gate.
 
+### Catch-up touches leave one at a time (`auto_check_catchup_touches`, issue #2141)
+
+The catch-up drip used to dispatch every approved touch inside the daily budget in the same beat,
+with no eta — seven catch-up DMs went out in 4m50s on 09-21. It now spaces them the way
+`auto_check_scheduled_dms` spaces scheduled DMs (#2103):
+
+- **Stagger.** One user's touches get etas at least `dm_send_gap_seconds` apart (seeded on user +
+  touch, so a re-run beat re-derives the same gap). The first leaves now.
+- **Orphan window.** An eta never lands past `_MAX_CATCHUP_STAGGER_SECONDS` (the reaper's 2h
+  lookback minus 15 min, measured from the `sending` claim). A touch that would is never claimed
+  — it stays `approved`, does not spend the daily budget, and a later beat takes it.
+- **No stacking.** A user with any touch still in `sending` gets no new batch that beat
+  (`get_user_ids_with_catchup_touches_in_flight`, read before the run claims anything; fails open).
+- **Orphans.** The reaper re-queues at most ONE lost touch per user per beat, so a restart that drops
+  a staggered batch does not re-send it as a burst.
+
+Touches held by either rule count as `spaced` on the `catchup_run` report, and a beat that only held
+touches reports status `spaced` (DEBUG — it is the design working, every 20 minutes).
+
 ## Comment outcome tracking (`sweep_comment_outcomes` + `utilities/comment_outcomes.py`, issue #628)
 
 Commenting used to be write-only. Read-only T+24h sweep revisits each un-checked `logs` comment

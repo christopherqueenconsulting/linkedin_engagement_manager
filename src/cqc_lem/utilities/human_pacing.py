@@ -112,6 +112,8 @@ _DEFAULTS = {
     "PACING_JITTER_MIN_MINUTES": 30.0,
     "PACING_JITTER_MAX_MINUTES": 90.0,
     "PACING_RESPONSIVE_JITTER_MAX_SECONDS": 180.0,
+    "PACING_DM_GAP_MIN_MINUTES": 8.0,
+    "PACING_DM_GAP_MAX_MINUTES": 20.0,
     "PACING_BUDGET_MIN_RATIO": 0.4,
     "PACING_BUDGET_MAX_RATIO": 1.0,
     "PACING_REST_DAY_CHANCE": 0.08,
@@ -204,6 +206,20 @@ def dispatch_jitter_seconds(profile: str = PACE_STANDARD,
     low = max(0.0, _env_float("PACING_JITTER_MIN_MINUTES")) * 60.0
     high = max(low, _env_float("PACING_JITTER_MAX_MINUTES") * 60.0)
     return int(rng.uniform(low, high))
+
+
+def dm_send_gap_seconds(user_id: int, dm_id: int) -> int:
+    """The minimum gap (seconds) to hold after one scheduled DM before the next one to go out.
+
+    A backlog of approved DMs that all fell due at once used to leave in one burst — five in two
+    minutes, seven in under five (issue #2103). The draw is seeded on (user, dm), so a re-run scan
+    re-derives the same gap instead of re-rolling it. 0 when pacing is disabled.
+    """
+    if not pacing_enabled():
+        return 0
+    low = max(0.0, _env_float("PACING_DM_GAP_MIN_MINUTES")) * 60.0
+    high = max(low, _env_float("PACING_DM_GAP_MAX_MINUTES") * 60.0)
+    return int(_seeded_rng(user_id, "dm_gap", dm_id).uniform(low, high))
 
 
 # --- 3. variable daily volume ------------------------------------------------------------------
