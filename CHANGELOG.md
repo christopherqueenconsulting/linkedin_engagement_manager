@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.178.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.177.2...v0.178.0) (2026-09-24)
+
+
+### Features
+
+* **feed:** per-filter drop counts on the engagement scan line (refs [#2102](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2102)) ([#2167](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2167)) ([5cba28b](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/5cba28bc1eed51b485f2bfb173347a30a25db20a))
+
+
+### Bug Fixes
+
+* **comments:** drop the humanizer's short-sentence mandate that injects filler into comments (closes [#2123](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2123)) ([#2175](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2175)) ([5050bec](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/5050becbf2e960c828b8f23b7e88783e20b02ce1))
+* **connections:** log the candidate funnel per scan and ledger every direct invite (closes [#2101](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2101)) ([#2170](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2170)) ([2e5eff8](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/2e5eff837c65d2b082d40cd45ba3bb6ced284156))
+* **connections:** log the candidate funnel per scan and ledger every direct invite (refs [#2101](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2101)) ([2e5eff8](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/2e5eff837c65d2b082d40cd45ba3bb6ced284156))
+* **content:** apply_contractions leaves ungrammatical contractions expanded (closes [#2104](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2104)) ([#2162](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2162)) ([67338ae](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/67338ae0b2df2f0dfb9e09b232c8b8e12c2db88e))
+* **content:** hold a carousel whose deck contradicts its caption (closes [#2106](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2106)) ([#2158](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2158)) ([d774ba4](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/d774ba4ff4e7652768951281be52810e287911fa))
+* **content:** mix governor reads the stored mix; promo fits its day and holds without an artifact ([8f4167a](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/8f4167ae321b601f456f68c6482ef0ebeac91a6d))
+* **content:** mix governor reads the stored mix; promo fits its day and holds without an artifact (closes [#2107](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2107)) ([#2166](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2166)) ([8f4167a](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/8f4167ae321b601f456f68c6482ef0ebeac91a6d))
+* **dm:** content gate for nurture and templated DMs (closes [#2099](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2099)) ([#2173](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2173)) ([3044f36](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/3044f3634321e72d2ff6150cb6582eb7d46f3999))
+* **image:** a vision-rejected render never reaches posts.image_url (closes [#2105](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2105)) ([#2164](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2164)) ([d886bc6](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/d886bc6a4f997ff4aa4811d152e9658eb67b7f73))
+* **invites:** 0/0 company-page credits read as unknown, session requests images (refs [#2095](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2095)) ([#2156](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2156)) ([9c579dd](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/9c579dd98585ebba75803a17a5b67370806a96e3))
+* **observability:** book the proxy's LLM price, name the task on every ledger row, one MRR source (closes [#2131](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2131)) ([#2159](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2159)) ([71aaa8d](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/71aaa8d2757f7f48b65b00df9c0189cad55f4d49))
+* **ops:** run every host cron at the deployed tag; perf_snapshot reads margin from web_api (closes [#2109](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2109)) ([#2161](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2161)) ([331dd21](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/331dd21fcd0ad4d9fd4d98f700ed05fdc27394b3))
+* **rate-limit:** require a reason on clear_rate_limit and log every breaker clear (closes [#2092](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2092)) ([#2168](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2168)) ([dc7c63a](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/dc7c63a813b6a5125c71913ae2b586d8c935e795))
+
 ## [0.177.2](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.177.1...v0.177.2) (2026-09-24)
 
 
