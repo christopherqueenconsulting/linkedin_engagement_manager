@@ -1338,27 +1338,45 @@ _PERFECT_ADVERBS = (
     "never", "always", "already", "just", "also", "ever", "finally", "recently", "probably",
     "likely", "clearly", "really", "definitely", "certainly", "all", "both",
 )
-# Irregular past participles; regular ones are matched by their -ed ending below.
-_IRREGULAR_PARTICIPLES = (
-    "been", "seen", "done", "gone", "got", "gotten", "had", "made", "said", "found", "heard", "known",
-    "left", "lost", "met", "paid", "put", "read", "run", "sent", "set", "spent", "told", "thought",
-    "taught", "brought", "bought", "built", "come", "given", "taken", "written", "spoken", "become",
-    "begun", "kept", "felt", "led", "won", "held", "shown", "grown", "drawn", "thrown", "flown",
-    "chosen", "driven", "eaten", "fallen", "forgotten", "hidden", "broken", "proven", "risen",
-    "stolen", "woken", "beaten", "worn", "torn", "sworn", "hit", "cut", "let", "shut", "sold",
-    "stood", "understood", "sat", "slept", "struck", "stuck", "hung", "fought", "caught", "sought",
-    "meant", "dealt", "learnt", "burnt", "dreamt", "lent", "bent", "swum", "sung", "drunk",
+# Irregular past participles that are only ever verbs here, so they contract on sight.
+_VERBAL_PARTICIPLES = (
+    "been", "seen", "done", "gone", "got", "gotten", "had", "made", "said", "found", "heard", "met",
+    "put", "run", "sent", "spent", "told", "thought", "taught", "brought", "bought", "come", "taken",
+    "become", "begun", "kept", "felt", "won", "held", "shown", "flown", "eaten", "risen", "woken",
+    "let", "stood", "understood", "sat", "slept", "struck", "fought", "caught", "sought", "meant",
+    "dealt", "learnt", "dreamt", "lent", "swum", "sung",
 )
-# Next word a participle, optionally after one adverb. A regular "-ed" must be 4+ letters and not
+# Participles that also work as adjectives ("you have hidden costs", "we have proven results"), plus
+# every regular "-ed" word ("Do you have limited time?"): these contract only when a function word
+# or a clause end follows, never a bare noun. A regular "-ed" must be 4+ letters and not
 # "-eed"/"hundred", so "you have red hair" and "you have a need" stay expanded.
+_ADJECTIVAL_PARTICIPLES = (
+    "known", "left", "lost", "paid", "read", "set", "given", "written", "spoken", "built", "led",
+    "grown", "drawn", "thrown", "chosen", "driven", "fallen", "forgotten", "hidden", "broken",
+    "proven", "stolen", "beaten", "worn", "torn", "sworn", "hit", "cut", "shut", "sold", "stuck",
+    "hung", "burnt", "bent", "drunk",
+)
+_PARTICIPLE_FOLLOWERS = (
+    "the", "a", "an", "my", "your", "our", "their", "his", "her", "its", "this", "that", "these",
+    "those", "it", "them", "him", "us", "me", "you", "to", "with", "for", "on", "in", "at", "about",
+    "of", "into", "from", "by", "over", "up", "out", "down", "off", "back", "so", "as", "through",
+    "every", "some", "any", "each", "here", "there", "hard", "well", "together", "before", "since",
+    "yet", "too", "again",
+)
+_FOLLOWED_BY_FUNCTION_WORD = (
+    r"(?=\s*(?:$|[.,;:!?)\]—–-])|\s+(?:" + "|".join(_PARTICIPLE_FOLLOWERS) + r")\b)"
+)
+# Next word a participle, optionally after one adverb.
 _PERFECT_RE = (
     r"(?=\s+(?:(?:" + "|".join(_PERFECT_ADVERBS) + r")\s+)?"
-    r"(?:(?:" + "|".join(_IRREGULAR_PARTICIPLES) + r")\b"
-    r"|(?!hundred\b|\w*eed\b)\w{2,}ed\b))"
+    r"(?:(?:" + "|".join(_VERBAL_PARTICIPLES) + r")\b"
+    r"|(?:(?:" + "|".join(_ADJECTIVAL_PARTICIPLES) + r")\b|(?!hundred\b|\w*eed\b)\w{2,}ed\b)"
+    + _FOLLOWED_BY_FUNCTION_WORD + r"))"
 )
 _GUARDS = {None: "", _END: _NOT_AT_END, _PERFECT: _PERFECT_RE}
+# MULTILINE so a line break is a clause end too ("what it is\n" never becomes "what it's\n").
 _CONTRACTION_RES = tuple(
-    (re.compile(rf"\b{p}\b{_GUARDS[g]}", re.IGNORECASE), r) for p, r, g in _CONTRACTIONS
+    (re.compile(rf"\b{p}\b{_GUARDS[g]}", re.IGNORECASE | re.MULTILINE), r) for p, r, g in _CONTRACTIONS
 )
 
 

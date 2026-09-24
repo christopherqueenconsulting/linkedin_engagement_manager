@@ -351,6 +351,11 @@ class TestApplyContractionsGrammar:
         "That is, we ship.",
         "I am",
         "This is who we are!",
+        "Do you have limited time?",  # participial adjective + noun, not a perfect
+        "We have dedicated support for that.",
+        "You have hidden costs.",
+        "We have proven results.",
+        "what it is\nNext line",      # a line break is a clause end
     ])
     def test_ungrammatical_contraction_is_not_applied(self, text):
         assert ca.apply_contractions(text) == text
@@ -364,6 +369,10 @@ class TestApplyContractionsGrammar:
         ("it is what it is.", "it's what it is."),
         ("I have not", "I haven't"),
         ("Do not.", "Don't."),
+        ("We have dedicated a team to it.", "We've dedicated a team to it."),
+        ("We have hidden it.", "We've hidden it."),
+        ("we have finished.", "we've finished."),
+        ("I have been busy", "I've been busy"),
     ])
     def test_grammatical_contraction_is_applied(self, expanded, contracted):
         assert ca.apply_contractions(expanded) == contracted
