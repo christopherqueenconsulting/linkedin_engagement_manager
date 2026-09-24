@@ -211,3 +211,20 @@ class TestAutoCheckScheduledDms:
         assert 0 < len(etas) < 10
         dispatched = set(etas)
         assert all(c.args[0] in dispatched for c in upd.call_args_list)
+
+
+    def test_reaper_requeues_one_orphan_per_user_per_run(self):
+        # Issue #2103: a restart loses a user's whole staggered batch; re-queueing every orphan at
+        # once would send it as the burst the stagger exists to prevent.
+        from cqc_lem.app import run_scheduler as rs
+        t = datetime(2026, 9, 1, 9, tzinfo=timezone.utc)
+        orphan = [(7, t, 1), (8, t, 1), (9, t, 2)]
+        with patch(f"{_RS}.get_due_scheduled_dms", return_value=[]), \
+             patch(f"{_RS}.get_orphaned_scheduled_dms", return_value=orphan), \
+             patch(f"{_RS}.get_active_user_ids", return_value=[1, 2]), \
+             patch(f"{_RS}.update_scheduled_dm_status"), \
+             patch(f"{_RS}.send_scheduled_dm") as task:
+            out = rs.auto_check_scheduled_dms()
+        requeued = [c.kwargs["kwargs"]["dm_id"] for c in task.apply_async.call_args_list]
+        assert requeued == [7, 9]
+        assert "re-queued 2 orphaned" in out

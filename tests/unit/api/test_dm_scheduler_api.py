@@ -1,5 +1,6 @@
 """Unit tests for the scheduled-DM API endpoints (issue #306)."""
 
+from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
 import pytest
@@ -79,13 +80,38 @@ class TestListDms:
 
 class TestUpdateAndCancel:
     def test_approve(self, api_client):
+        fresh = {"scheduled_time": datetime.now(timezone.utc) + timedelta(hours=1)}
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_U), \
              patch("cqc_lem.api.main.get_scheduled_dm_user_id", return_value=_U), \
+             patch("cqc_lem.api.main.get_scheduled_dm", return_value=fresh), \
              patch("cqc_lem.api.main.update_scheduled_dm", return_value=True) as upd:
             resp = api_client.put("/api/dm", json={"session_token": _S, "dm_id": 3, "action": "approve"})
         assert resp.status_code == 200
         from cqc_lem.utilities.db import ScheduledDmStatus
         assert upd.call_args.kwargs["status"] == ScheduledDmStatus.APPROVED
+        assert upd.call_args.kwargs["scheduled_time"] is None  # a slot still ahead is left alone
+
+    def test_reapproving_a_stale_dm_moves_its_slot_to_now(self, api_client):
+        # Issue #2103: the scanner returns a DM days past its slot to 'pending'. Approving it again
+        # without moving the slot would bounce it straight back, so re-approval could never send.
+        stale = {"scheduled_time": (datetime.now(timezone.utc) - timedelta(days=5)).replace(tzinfo=None)}
+        before = datetime.now(timezone.utc)
+        with patch("cqc_lem.api.main.get_session_user_id", return_value=_U), \
+             patch("cqc_lem.api.main.get_scheduled_dm_user_id", return_value=_U), \
+             patch("cqc_lem.api.main.get_scheduled_dm", return_value=stale), \
+             patch("cqc_lem.api.main.update_scheduled_dm", return_value=True) as upd:
+            resp = api_client.put("/api/dm", json={"session_token": _S, "dm_id": 3, "action": "approve"})
+        assert resp.status_code == 200
+        assert upd.call_args.kwargs["scheduled_time"] >= before
+
+    def test_cancel_action_does_not_read_the_slot(self, api_client):
+        with patch("cqc_lem.api.main.get_session_user_id", return_value=_U), \
+             patch("cqc_lem.api.main.get_scheduled_dm_user_id", return_value=_U), \
+             patch("cqc_lem.api.main.get_scheduled_dm") as get_dm, \
+             patch("cqc_lem.api.main.update_scheduled_dm", return_value=True):
+            resp = api_client.put("/api/dm", json={"session_token": _S, "dm_id": 3, "action": "cancel"})
+        assert resp.status_code == 200
+        get_dm.assert_not_called()
 
     def test_update_404_when_not_owner(self, api_client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_U), \

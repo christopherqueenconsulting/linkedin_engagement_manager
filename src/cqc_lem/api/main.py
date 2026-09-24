@@ -70,7 +70,7 @@ from cqc_lem.api.spa_assets import (
 )
 from cqc_lem.app.aws_test_celery_task import test_get_my_profile
 from cqc_lem.app.engagement.invites import automate_invites_to_company_page_for_user
-from cqc_lem.app.engagement.outreach import send_lead_response
+from cqc_lem.app.engagement.outreach import scheduled_dm_is_stale, send_lead_response
 from cqc_lem.app.engagement.posting import automate_reply_commenting, sweep_reply_comments
 from cqc_lem.app.run_content_plan import auto_create_weekly_content, plan_content_for_user
 from cqc_lem.utilities.auth_factors import (
@@ -121,6 +121,7 @@ from cqc_lem.utilities.db import (
     get_posted_posts,
     get_posts,
     get_recent_logs,
+    get_scheduled_dm,
     get_scheduled_dm_user_id,
     get_scheduled_dms,
     get_session_user_id as _db_get_session_user_id,
@@ -2849,9 +2850,16 @@ def update_scheduled_dm_endpoint(request: UpdateDmRequest) -> ResponseModel[str]
     if status is None and all(v is None for v in (request.recipient_profile_url, request.recipient_name,
                                                   request.message, request.scheduled_datetime)):
         raise HTTPException(status_code=422, detail="Nothing to update — provide at least one field or an action")
+    scheduled_time = request.scheduled_datetime
+    if status == ScheduledDmStatus.APPROVED and scheduled_time is None:
+        # The scanner returns a DM this far past its slot to 'pending' (#2103), so re-approving one
+        # without moving its slot would bounce it straight back. Approving it now means send it now.
+        dm = get_scheduled_dm(request.dm_id)
+        if dm and scheduled_dm_is_stale(dm.get("scheduled_time")):
+            scheduled_time = datetime.now(timezone.utc)
     if not update_scheduled_dm(request.dm_id, recipient_profile_url=request.recipient_profile_url,
                                recipient_name=request.recipient_name, message=request.message,
-                               scheduled_time=request.scheduled_datetime, status=status):
+                               scheduled_time=scheduled_time, status=status):
         raise HTTPException(status_code=500, detail="Could not update scheduled DM")
     return ResponseModel(status_code=200, detail="Scheduled DM updated")
 

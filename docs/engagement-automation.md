@@ -383,13 +383,16 @@ as a burst (five drafts approved for 09-07..09-13 went out 3-9 days late within 
   goes back to `pending` for re-approval instead of sending — the approval was for a message at a
   time. `scheduled_dm_is_stale` is checked by the scanner and again at send time, so a row the
   orphan reaper re-queues is held to the same rule. A DM the daily cap keeps deferring ages out
-  the same way.
+  the same way. Re-approving a stale DM (`PUT /dm` `approve` with no new time) moves its slot to
+  now, or the scanner would return it to `pending` again on the next scan.
 - **Spacing.** One user's due DMs are staggered: each eta is at least `dm_send_gap_seconds`
   (`human_pacing`, `PACING_DM_GAP_MIN/MAX_MINUTES`, default 8-20, seeded on user + DM) after
   the previous one in that run. A stagger stops short of the orphan reaper's 2h window
   (`_MAX_DM_STAGGER_SECONDS`), and the rest stay `approved` for a later scan. A user with a DM
   still in `scheduled` gets no new batch until it drains (`get_user_ids_with_dms_in_flight`,
-  fails open). With `HUMAN_PACING_ENABLED=false` the gap is 0.
+  fails open). The orphan reaper re-queues at most ONE lost DM per user per beat, so a restart
+  that drops a staggered batch does not re-send it as a burst. With `HUMAN_PACING_ENABLED=false`
+  the gap is 0.
 
 ### Who the recipient is comes from stored data, never a page visit (issue #1625)
 

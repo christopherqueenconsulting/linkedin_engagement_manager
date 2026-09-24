@@ -411,17 +411,26 @@ def auto_check_scheduled_dms(self):
     # mirrors the orphaned-post recovery above. The 2-hour gap is measured from the status write,
     # not from `scheduled_time` (#2078), so a DM the daily cap has deferred past its slot for days
     # is never mistaken for an orphan by the same beat that just dispatched it.
+    # A restart loses a user's whole staggered batch at once, so re-queueing every orphan here would
+    # send that batch as the burst the stagger exists to prevent (#2103). ONE per user per beat: the
+    # rest stay 'scheduled' and the next 10-min beat takes the next oldest.
     orphaned = get_orphaned_scheduled_dms(lookback_hours=_DM_ORPHAN_LOOKBACK_HOURS)
+    requeued_users: set = set()
     for dm_id, scheduled_time, user_id in orphaned:
+        if user_id in requeued_users:
+            log_debug(f"Orphaned scheduled DM {dm_id} held for a later beat — one re-queue per user per run",
+                      user_id=user_id, task_name="auto_check_scheduled_dms")
+            continue
+        requeued_users.add(user_id)
         log_warning(
             f"Re-queueing orphaned scheduled DM {dm_id}",
             user_id=user_id, task_name="auto_check_scheduled_dms",
         )
         send_scheduled_dm.apply_async(kwargs={'dm_id': dm_id})
 
-    if dispatched == 0 and len(orphaned) == 0 and stale == 0:
+    if dispatched == 0 and len(requeued_users) == 0 and stale == 0:
         return "No DMs to Schedule"
-    return (f"Scheduled {dispatched} DM(s); re-queued {len(orphaned)} orphaned DM(s); "
+    return (f"Scheduled {dispatched} DM(s); re-queued {len(requeued_users)} orphaned DM(s); "
             f"returned {stale} stale DM(s) to pending")
 
 
