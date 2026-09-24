@@ -223,6 +223,31 @@ class TestAutomateInvitations:
         log.assert_not_called()
         rec.assert_not_called()
 
+    def test_a_zero_total_reads_as_unknown_never_exhausted(self):
+        """0/0 is a counter that never rendered, not an empty pool (#2095).
+
+        The lane read it 15 of 15 times while the probe read 50/50 the same days. Skipped, WARNed
+        with the reading, and reported apart from `credits_exhausted`.
+        """
+        from cqc_lem.utilities.linkedin.company_page_inviter import (
+            INVITE_STATUS_CREDITS_EXHAUSTED,
+            INVITE_STATUS_CREDITS_UNKNOWN,
+        )
+        with patch(f"{_CPI}.log_warning") as warned:
+            report, picked, log, rec = self._run(credits=(0, 0))
+        assert report["status"] == INVITE_STATUS_CREDITS_UNKNOWN
+        assert report["status"] != INVITE_STATUS_CREDITS_EXHAUSTED
+        assert "0/0" in warned.call_args[0][0]
+        picked.assert_not_called()
+        log.assert_not_called()
+        rec.assert_not_called()
+
+    def test_zero_of_a_real_pool_is_exhausted(self):
+        from cqc_lem.utilities.linkedin.company_page_inviter import INVITE_STATUS_CREDITS_EXHAUSTED
+        report, picked, _, _ = self._run(credits=(0, 50))
+        assert report["status"] == INVITE_STATUS_CREDITS_EXHAUSTED
+        picked.assert_not_called()
+
     def test_it_never_recurses(self):
         """The old path called itself while selected_count < credits, draining the pool in one
         sitting. Selecting fewer than the budget used to be the exact trigger; one run is now
@@ -470,6 +495,11 @@ class TestInviteTask:
         assert run.call_args[1]["plan"]["allowance"] == 5
         assert track.call_args[0][1]["invites_sent"] == 3
         assert "3 people" in result
+
+    def test_the_session_requests_images(self):
+        """Images-blocked, the invite modal never rendered its credit counter (#2095)."""
+        _, drv, _, _ = self._run_task({"allowance": 5, "status": "sent", "cap": 5, "sent_today": 0})
+        assert drv.call_args.kwargs["needs_images"] is True
 
     def test_a_selenium_failure_still_emits_a_run_and_quits_the_driver(self):
         from cqc_lem.app.engagement.invites import automate_invites_to_company_page_for_user
