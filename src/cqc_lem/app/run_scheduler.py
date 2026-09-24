@@ -17,7 +17,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Tuple
 
 from cqc_lem import assets_dir
-from cqc_lem.app.celeryconfig import SE_PREPOST_QUEUE
+from cqc_lem.app.celeryconfig import SE_PREPOST_QUEUE, visibility_timeout
 from cqc_lem.app.engagement.feed import auto_seed_comment_on_post, automate_commenting
 from cqc_lem.app.engagement.invites import (
     automate_invites_to_company_page_for_user,
@@ -1845,8 +1845,10 @@ def auto_scan_catchup_moments():
 
 # The orphan reaper re-queues a 'sending' touch 2h after its claim write, so a staggered eta must
 # land well inside that window or the reaper would send it early and break the spacing (#2141).
+# The broker's visibility_timeout is the tighter bound: with task_acks_late an eta task is unacked
+# for its whole wait, and Redis hands one still waiting past that timeout to a second worker.
 _CATCHUP_ORPHAN_LOOKBACK_HOURS = 2
-_MAX_CATCHUP_STAGGER_SECONDS = _CATCHUP_ORPHAN_LOOKBACK_HOURS * 3600 - 15 * 60
+_MAX_CATCHUP_STAGGER_SECONDS = max(0, min(_CATCHUP_ORPHAN_LOOKBACK_HOURS * 3600, visibility_timeout) - 15 * 60)
 
 
 @shared_task.task

@@ -585,8 +585,10 @@ with no eta — seven catch-up DMs went out in 4m50s on 09-21. It now spaces the
 
 - **Stagger.** One user's touches get etas at least `dm_send_gap_seconds` apart (seeded on user +
   touch, so a re-run beat re-derives the same gap). The first leaves now.
-- **Orphan window.** An eta never lands past `_MAX_CATCHUP_STAGGER_SECONDS` (the reaper's 2h
-  lookback minus 15 min, measured from the `sending` claim). A touch that would is never claimed
+- **Orphan window.** An eta never lands past `_MAX_CATCHUP_STAGGER_SECONDS` — the smaller of the
+  reaper's 2h lookback and the broker `visibility_timeout` (~80 min by default), minus 15 min,
+  measured from the `sending` claim. Past `visibility_timeout` Redis re-delivers a still-waiting eta
+  task to a second worker (`task_acks_late`). A touch that would cross it is never claimed
   — it stays `approved`, does not spend the daily budget, and a later beat takes it.
 - **No stacking.** A user with any touch still in `sending` gets no new batch that beat
   (`get_user_ids_with_catchup_touches_in_flight`, read before the run claims anything; fails open).

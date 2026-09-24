@@ -1156,7 +1156,7 @@ class TestCatchupSpacing:
     def test_a_touch_whose_eta_would_cross_the_orphan_window_stays_approved(self):
         from cqc_lem.app.run_scheduler import _MAX_CATCHUP_STAGGER_SECONDS
         from cqc_lem.utilities.db import CatchupTouchStatus
-        gap = 40 * 60  # the fourth touch would land at +120 min, past the 105-min stagger window
+        gap = _MAX_CATCHUP_STAGGER_SECONDS // 2  # the fourth touch would land past the window
         assert 3 * gap > _MAX_CATCHUP_STAGGER_SECONDS >= 2 * gap
         out, task, upd, report, _ = self._run([(1, 7), (2, 7), (3, 7), (4, 7)], gap=gap)
         sent = [c.kwargs["kwargs"]["touch_id"] for c in task.apply_async.call_args_list]
@@ -1173,11 +1173,23 @@ class TestCatchupSpacing:
         etas = self._etas(task, set(range(1, 15)))
         assert etas and max(etas) - start < timedelta(hours=_CATCHUP_ORPHAN_LOOKBACK_HOURS)
 
+    def test_the_stagger_window_stays_inside_the_broker_visibility_timeout(self):
+        """The stagger ends before the broker would re-deliver a still-waiting eta task.
+
+        An eta task is unacked for its whole wait (task_acks_late); Redis hands one waiting past
+        visibility_timeout to a second worker, so the 2h orphan reaper is not the only bound.
+        """
+        from cqc_lem.app.celeryconfig import visibility_timeout
+        from cqc_lem.app.run_scheduler import _MAX_CATCHUP_STAGGER_SECONDS
+        assert 0 <= _MAX_CATCHUP_STAGGER_SECONDS < visibility_timeout
+
     def test_a_held_touch_does_not_spend_the_daily_budget(self):
         """3 left today, the window fits 2: the other two are spaced, not capped — a held touch that
         spent budget would push the fourth into `capped` and strand it until tomorrow.
         """
-        _, _, _, report, _ = self._run([(1, 7), (2, 7), (3, 7), (4, 7)], gap=60 * 60, sent_today=17)
+        from cqc_lem.app.run_scheduler import _MAX_CATCHUP_STAGGER_SECONDS
+        gap = _MAX_CATCHUP_STAGGER_SECONDS  # the window fits the touch leaving now and one more
+        _, _, _, report, _ = self._run([(1, 7), (2, 7), (3, 7), (4, 7)], gap=gap, sent_today=17)
         assert report["dispatched"] == 2
         assert report["spaced"] == 2
         assert report["capped"] == 0
