@@ -12,16 +12,18 @@ import mysql.connector
 from cqc_lem.platform.db import connection as _connection
 from cqc_lem.platform.db.connection import db_cursor
 from cqc_lem.platform.db.enums import (
+    COMMENT_LOG_ACTION_TYPES,
+    INVITE_LOG_ACTION_TYPES,
     LogActionType,
     LogResultType,
 )
 from cqc_lem.utilities.logger import log_error, log_info, log_warning
 
-# Marker message logged (as ENGAGED/SUCCESS) whenever a LinkedIn invite is actually sent — reactive
+# Marker message logged (as INVITE/SUCCESS) whenever a LinkedIn invite is actually sent — reactive
 # profile-viewer AND proactive (issue #398) sends both flow through invite_to_connect_now, so the
 # combined daily invite budget is counted from these log rows (see count_invites_sent_today).
 CONNECTION_REQUEST_SENT_MESSAGE = "Connection Request Sent Successfully"
-# Marker message logged (as ENGAGED/SUCCESS) for a COMPANY-PAGE invite batch (issue #732). Page
+# Marker message logged (as INVITE/SUCCESS) for a COMPANY-PAGE invite batch (issue #732). Page
 # invites are a single batched UI action — select N invitees, click Invite once — so ONE row carries
 # the count, and `count_company_page_invites_sent_today` SUMS the trailing number rather than
 # counting rows. Keep the "<message>: <n>" shape: that suffix is what the SUM parses.
@@ -61,8 +63,9 @@ def _read_own_comment_count(user_id: int, post_url: str) -> "int | None":
     try:
         with db_cursor() as cursor:
             cursor.execute(
-                "SELECT COUNT(*) FROM logs WHERE user_id = %s AND post_url = %s AND action_type = %s AND result = %s",
-                (user_id, post_url, LogActionType.COMMENT.value, LogResultType.SUCCESS.value))
+                "SELECT COUNT(*) FROM logs WHERE user_id = %s AND post_url = %s AND action_type IN (%s, %s) "
+                "AND result = %s",
+                (user_id, post_url, *COMMENT_LOG_ACTION_TYPES, LogResultType.SUCCESS.value))
             return int(cursor.fetchone()[0] or 0)
     except mysql.connector.Error as err:
         log_error("Could not count user comments on post url", exc=err)
@@ -233,13 +236,14 @@ def get_recent_logs(user_id: int, limit: int = 20) -> list:
         rows = []
 
     return rows
-def _count_actions_today(user_id: int, action_type: "LogActionType") -> int:
+def _count_actions_today(user_id: int, *action_types: str) -> int:
+    placeholders = ",".join(["%s"] * len(action_types))
     try:
         with db_cursor() as cursor:
             cursor.execute(
-                "SELECT COUNT(*) FROM logs WHERE user_id=%s AND action_type=%s AND result=%s "
-                "AND created_at >= CURDATE()",
-                (user_id, str(action_type), str(LogResultType.SUCCESS)))
+                f"SELECT COUNT(*) FROM logs WHERE user_id=%s AND action_type IN ({placeholders}) "
+                "AND result=%s AND created_at >= CURDATE()",
+                (user_id, *(str(a) for a in action_types), str(LogResultType.SUCCESS)))
             r = cursor.fetchone()
             return int(r[0]) if r else 0
     except mysql.connector.Error as err:
@@ -251,20 +255,21 @@ def count_comments_today(user_id: int) -> int:
     Counted from `logs` rather than from anything a task remembers, so a retry or a second worker cannot
     spend the same budget twice. A read error counts 0, which fails OPEN: the cap stops nothing.
     """
-    return _count_actions_today(user_id, LogActionType.COMMENT)
+    return _count_actions_today(user_id, *COMMENT_LOG_ACTION_TYPES)
 def count_invites_sent_today(user_id: int) -> int:
     """Invitations actually sent today, counted as a COMBINED daily budget (issue #398 owner review):
     both the reactive profile-viewer flow and the proactive connect flow send via invite_to_connect_now,
-    which logs an ENGAGED/SUCCESS row with CONNECTION_REQUEST_SENT_MESSAGE on every real send. Counting
+    which logs an INVITE/SUCCESS row (ENGAGED before #2117) with CONNECTION_REQUEST_SENT_MESSAGE on
+    every real send. Counting
     those immutable logs (by created_at) covers both flows without double-counting a proactive send (which
     also has a connection_requests row) and avoids the mutable connection_requests.updated_at clock.
     """
     try:
         with db_cursor() as cursor:
             cursor.execute(
-                "SELECT COUNT(*) FROM logs WHERE user_id=%s AND action_type=%s AND result=%s "
+                "SELECT COUNT(*) FROM logs WHERE user_id=%s AND action_type IN (%s, %s) AND result=%s "
                 "AND message=%s AND created_at >= CURDATE()",
-                (user_id, LogActionType.ENGAGED.value, LogResultType.SUCCESS.value,
+                (user_id, *INVITE_LOG_ACTION_TYPES, LogResultType.SUCCESS.value,
                  CONNECTION_REQUEST_SENT_MESSAGE))
             r = cursor.fetchone()
             return int(r[0]) if r else 0
@@ -283,9 +288,9 @@ def count_invite_withdrawals_today(user_id: int) -> int:
     try:
         with db_cursor() as cursor:
             cursor.execute(
-                "SELECT COUNT(*) FROM logs WHERE user_id=%s AND action_type=%s AND message=%s "
+                "SELECT COUNT(*) FROM logs WHERE user_id=%s AND action_type IN (%s, %s) AND message=%s "
                 "AND created_at >= CURDATE()",
-                (user_id, LogActionType.ENGAGED.value, STALE_INVITE_WITHDRAWN_MESSAGE))
+                (user_id, *INVITE_LOG_ACTION_TYPES, STALE_INVITE_WITHDRAWN_MESSAGE))
             r = cursor.fetchone()
             return max(0, int(r[0])) if r and r[0] is not None else 0
     except (mysql.connector.Error, TypeError, ValueError) as err:
@@ -303,9 +308,9 @@ def count_company_page_invites_sent_today(user_id: int) -> int:
         with db_cursor() as cursor:
             cursor.execute(
                 "SELECT COALESCE(SUM(CAST(REGEXP_SUBSTR(message, '[0-9]+') AS UNSIGNED)), 0) FROM logs "
-                "WHERE user_id=%s AND action_type=%s AND result=%s AND message LIKE %s "
+                "WHERE user_id=%s AND action_type IN (%s, %s) AND result=%s AND message LIKE %s "
                 "AND created_at >= CURDATE()",
-                (user_id, LogActionType.ENGAGED.value, LogResultType.SUCCESS.value,
+                (user_id, *INVITE_LOG_ACTION_TYPES, LogResultType.SUCCESS.value,
                  f"{COMPANY_PAGE_INVITE_SENT_MESSAGE}:%"))
             r = cursor.fetchone()
             return max(0, int(r[0])) if r and r[0] is not None else 0
@@ -539,13 +544,13 @@ def get_comment_outcome_targets(user_id: int, min_age_hours: int = 24, max_age_h
                 "SELECT l.id AS log_id, l.post_url, l.message, l.created_at "
                 "FROM logs l LEFT JOIN comment_outcomes co "
                 "  ON co.log_id = l.id AND co.user_id = l.user_id "
-                "WHERE l.user_id=%s AND l.action_type=%s AND l.result=%s "
+                "WHERE l.user_id=%s AND l.action_type IN (%s, %s) AND l.result=%s "
                 "  AND l.post_url LIKE 'feedurn://%%' "
                 "  AND l.created_at <= (NOW() - INTERVAL %s HOUR) "
                 "  AND l.created_at >= (NOW() - INTERVAL %s HOUR) "
                 "  AND co.id IS NULL "
                 "ORDER BY l.created_at ASC LIMIT %s",
-                (user_id, LogActionType.COMMENT.value, LogResultType.SUCCESS.value,
+                (user_id, *COMMENT_LOG_ACTION_TYPES, LogResultType.SUCCESS.value,
                  int(min_age_hours), int(max_age_hours), max(1, int(limit))))
             return list(cursor.fetchall() or [])
     except mysql.connector.Error as err:
@@ -609,10 +614,10 @@ def get_duplicate_comment_posts(user_id: int, hours: int = 24):
         with db_cursor() as cursor:
             cursor.execute(
                 "SELECT post_url, COUNT(*) AS c, MIN(created_at) AS first_at, MAX(created_at) AS last_at "
-                "FROM logs WHERE user_id=%s AND action_type=%s AND result=%s "
+                "FROM logs WHERE user_id=%s AND action_type IN (%s, %s) AND result=%s "
                 "AND post_url IS NOT NULL AND created_at >= (NOW() - INTERVAL %s HOUR) "
                 "GROUP BY post_url HAVING c > 1 ORDER BY c DESC, last_at DESC",
-                (user_id, LogActionType.COMMENT.value, LogResultType.SUCCESS.value, hours))
+                (user_id, *COMMENT_LOG_ACTION_TYPES, LogResultType.SUCCESS.value, hours))
             return [tuple(r) for r in cursor.fetchall()]
     except mysql.connector.Error as err:
         log_error("Could not get duplicate comment posts", exc=err, user_id=user_id)
@@ -627,10 +632,10 @@ def get_recent_comment_texts(user_id: int, limit: int = 50) -> list:
         with db_cursor() as cursor:
             cursor.execute(
                 "SELECT message FROM logs "
-                "WHERE user_id=%s AND action_type=%s AND result=%s "
+                "WHERE user_id=%s AND action_type IN (%s, %s) AND result=%s "
                 "AND message IS NOT NULL AND message <> '' "
                 "ORDER BY id DESC LIMIT %s",
-                (user_id, LogActionType.COMMENT.value, LogResultType.SUCCESS.value, int(limit)))
+                (user_id, *COMMENT_LOG_ACTION_TYPES, LogResultType.SUCCESS.value, int(limit)))
             return [r[0] for r in cursor.fetchall()]
     except mysql.connector.Error as err:
         log_error("Could not get recent comment texts", exc=err, user_id=user_id)
@@ -641,7 +646,8 @@ def get_daily_action_counts(user_id: int, days: int = 90,
     audience-growth chart (issue #627). Defaults to the outbound actions a follower can react to:
     posts, feed comments, replies and DMs. Returns dicts of {date, action_type, count}.
     """
-    types = [LogActionType.POST.value, LogActionType.COMMENT.value, LogActionType.REPLY.value,
+    types = [LogActionType.POST.value, LogActionType.COMMENT.value,
+             LogActionType.GROUP_COMMENT.value, LogActionType.REPLY.value,
              LogActionType.DM.value] if action_types is None else list(action_types)
     if not types:
         return []
@@ -666,9 +672,10 @@ def has_automated_engagement(user_id: int) -> bool:
         with db_cursor() as cursor:
             cursor.execute(
                 "SELECT 1 FROM logs WHERE user_id = %s AND result = %s "
-                "AND action_type IN (%s, %s, %s, %s) LIMIT 1",
+                "AND action_type IN (%s, %s, %s, %s, %s) LIMIT 1",
                 (user_id, str(LogResultType.SUCCESS), str(LogActionType.COMMENT),
-                 str(LogActionType.REPLY), str(LogActionType.DM), str(LogActionType.FOLLOWUP)))
+                 str(LogActionType.GROUP_COMMENT), str(LogActionType.REPLY), str(LogActionType.DM),
+                 str(LogActionType.FOLLOWUP)))
             return cursor.fetchone() is not None
     except mysql.connector.Error as err:
         log_error(f"Could not check automated engagement for user_id {user_id}", exc=err)

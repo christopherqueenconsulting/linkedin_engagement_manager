@@ -21,6 +21,7 @@ from cqc_lem.platform.db.connection import (
     to_naive_utc,
 )
 from cqc_lem.platform.db.enums import (
+    COMMENT_LOG_ACTION_TYPES,
     LogActionType,
     LogResultType,
     PostStatus,
@@ -1396,10 +1397,10 @@ def get_shipped_content_for_quality(user_id: int, days: int = 1) -> list:
 
         cursor.execute(
             "SELECT id, message, DATE(created_at) AS shipped_on FROM logs "
-            "WHERE user_id=%s AND action_type=%s AND result=%s "
+            "WHERE user_id=%s AND action_type IN (%s, %s) AND result=%s "
             "  AND message IS NOT NULL AND message <> '' "
             "  AND created_at >= (NOW() - INTERVAL %s DAY) ORDER BY id DESC",
-            (user_id, LogActionType.COMMENT.value, LogResultType.SUCCESS.value, window))
+            (user_id, *COMMENT_LOG_ACTION_TYPES, LogResultType.SUCCESS.value, window))
         for r in (cursor.fetchall() or []):
             rows.append({
                 "surface": "comment", "ref_id": str(r["id"]), "text": r["message"],

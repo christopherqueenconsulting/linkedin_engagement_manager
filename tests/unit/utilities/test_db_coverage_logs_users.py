@@ -26,7 +26,7 @@ def _err_conn(fake_cursor):
 #  expected execute params or None, SQL fragment that must appear or None)
 _SCALAR_READS = [
     ("has_user_commented_true", "has_user_commented_on_post_url", (1, "https://li.com/p/1"),
-     (2,), True, (1, "https://li.com/p/1", "comment", "success"), None),
+     (2,), True, (1, "https://li.com/p/1", "comment", "group_comment", "success"), None),
     ("has_user_commented_false", "has_user_commented_on_post_url", (1, "u"),
      (0,), False, None, None),
     ("post_url_from_log", "get_post_url_from_log_for_user", (1, 9),
@@ -187,7 +187,7 @@ class TestLogAggregates:
         # comment first, then dm
         first_params = cur.execute.call_args_list[0][0][1]
         second_params = cur.execute.call_args_list[1][0][1]
-        assert first_params == (1, "comment", "success")
+        assert first_params == (1, "comment", "group_comment", "success")
         assert second_params == (1, "dm", "success")
 
     def test_empty_fetchall_none_coerced_to_list(self, fake_cursor):

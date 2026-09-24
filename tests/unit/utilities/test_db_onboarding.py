@@ -146,7 +146,7 @@ class TestStepEvidenceQueries:
         sql, params = cur.execute.call_args[0]
         assert "result = %s" in sql
         assert params[1] == "success"
-        assert set(params[2:]) == {"comment", "reply", "dm", "followup"}
+        assert set(params[2:]) == {"comment", "group_comment", "reply", "dm", "followup"}
 
     def test_evidence_errors_are_swallowed(self, fake_cursor):
         conn, _cur = fake_cursor(execute_error=mysql.connector.Error("boom"))

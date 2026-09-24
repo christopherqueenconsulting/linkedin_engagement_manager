@@ -259,7 +259,7 @@ class TestFollowerStatDb:
             assert get_daily_action_counts(1, days=30)[0]["count"] == 4
         sql, params = cur.execute.call_args[0]
         assert "GROUP BY DATE(created_at), action_type" in sql
-        assert params == (1, "success", "post", "comment", "reply", "dm", 30)
+        assert params == (1, "success", "post", "comment", "group_comment", "reply", "dm", 30)
 
     def test_daily_action_counts_honours_explicit_types(self, fake_cursor):
         from cqc_lem.utilities.db import get_daily_action_counts

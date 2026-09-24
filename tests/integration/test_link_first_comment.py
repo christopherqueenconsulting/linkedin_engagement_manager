@@ -76,10 +76,11 @@ class _FakeCursor:
                      == (user_id, post_id, action_type, result)]
             self._result = [(match[-1]["post_url"],)] if match else []
         elif s.startswith("SELECT COUNT(*) FROM logs"):
-            user_id, post_url, action_type, result = params
-            self._result = [(len([r for r in logs if (r["user_id"], r["post_url"], r["action_type"],
-                                                      r["result"]) == (user_id, post_url, action_type,
-                                                                       result)]),)]
+            # action_type IN (...) since #2117: the comment family spans COMMENT and GROUP_COMMENT.
+            user_id, post_url, *action_types, result = params
+            self._result = [(len([r for r in logs if (r["user_id"], r["post_url"], r["result"])
+                                  == (user_id, post_url, result)
+                                  and r["action_type"] in action_types]),)]
         else:  # pragma: no cover - defensive
             raise AssertionError(f"unexpected SQL: {s}")
 

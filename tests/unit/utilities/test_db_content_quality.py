@@ -113,7 +113,7 @@ class TestGetShippedContentForQuality:
             get_shipped_content_for_quality(1)
         sql, params = cur.execute.call_args_list[1][0]
         assert "FROM logs" in sql
-        assert params[1:3] == ("comment", "success")
+        assert params[1:4] == ("comment", "group_comment", "success")
 
     def test_partial_results_survive_a_db_error_midway(self, fake_cursor):
         # The three queries share a connection; a failure on the newsletter read must not throw away

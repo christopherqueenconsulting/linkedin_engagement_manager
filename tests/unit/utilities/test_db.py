@@ -308,6 +308,35 @@ class TestLogActionTypeEnum:
         assert LogActionType.DM == "dm"
         assert LogActionType.POST == "post"
         assert LogActionType.ENGAGED == "engaged"
+        assert LogActionType.INVITE == "invite"
+        assert LogActionType.FOLLOW == "follow"
+        assert LogActionType.GROUP_COMMENT == "group_comment"
+
+    def test_every_member_is_a_value_the_column_accepts(self):
+        # MySQL strict mode rejects an ENUM value the column does not declare, and insert_new_log
+        # swallows that error — so a member missing from the migration is a log row silently lost.
+        import re
+        from pathlib import Path
+
+        from cqc_lem.utilities.db import LogActionType
+        migrations = Path(__file__).resolve().parents[3] / "compose/local/database/migrations"
+        declared = set()
+        for path in migrations.glob("V*.sql"):
+            for values in re.findall(r"action_type\s+ENUM\s*\(([^)]*)\)", path.read_text(),
+                                     re.IGNORECASE):
+                declared |= set(re.findall(r"'([^']*)'", values))
+        assert {m.value for m in LogActionType} <= declared
+
+    def test_comment_readers_count_group_comments(self, mock_database_connection):
+        from cqc_lem.utilities.db import count_comments_today
+        cursor = mock_database_connection["cursor"]
+        cursor.fetchone.return_value = (3,)
+        with patch("cqc_lem.platform.db.connection.get_db_connection",
+                   return_value=mock_database_connection["connection"]):
+            assert count_comments_today(1) == 3
+        sql, params = cursor.execute.call_args[0]
+        assert "action_type IN (%s,%s)" in sql
+        assert params == (1, "comment", "group_comment", "success")
 
 
 @pytest.mark.unit

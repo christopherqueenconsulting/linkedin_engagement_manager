@@ -8,6 +8,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from cqc_lem.platform.db.enums import LogActionType, LogResultType
+
 pytestmark = pytest.mark.unit
 
 _FEED = "cqc_lem.app.engagement.feed"
@@ -826,6 +828,7 @@ def _follow_env(state_before, state_after=None, hold="", flip_on_attempt=None):
         "set": p("set_target_follow_status", return_value=True),
         "fail": p("record_target_follow_failure", return_value=1),
         "record": p("record_action"),
+        "log": p("insert_new_log", return_value=True),
     }
 
 
@@ -842,6 +845,7 @@ class TestAutoFollowRosterTarget:
         m["set"].assert_called_once_with(1, "https://www.linkedin.com/in/jane", "following")
         driver.execute_script.assert_not_called()
         m["record"].assert_not_called()   # a catch-up spends no daily budget
+        m["log"].assert_not_called()      # nothing was clicked, so nothing is logged
 
     def test_a_verified_flip_records_following_and_spends_the_budget(self):
         from cqc_lem.app.engagement import feed as ra
@@ -852,6 +856,9 @@ class TestAutoFollowRosterTarget:
         m["set"].assert_called_once_with(1, "https://www.linkedin.com/in/jane", "following")
         m["fail"].assert_not_called()
         m["record"].assert_called_once_with(1, ACTION_FOLLOW)
+        m["log"].assert_called_once_with(user_id=1, action_type=LogActionType.FOLLOW,
+                                         result=LogResultType.SUCCESS,
+                                         post_url="https://www.linkedin.com/in/jane", message="Jane")
 
     def test_an_unverified_flip_counts_as_a_failed_attempt(self):
         # Writing 'following' on an unverified click is the one failure that never self-corrects:
@@ -866,6 +873,9 @@ class TestAutoFollowRosterTarget:
         # The click still went to LinkedIn, so it still costs the day's allowance — otherwise a lane
         # whose verification broke would be free to click every target on the roster.
         m["record"].assert_called_once_with(1, ACTION_FOLLOW)
+        # ...and the dispatched click is on the record, as a FAILURE (#2117).
+        assert m["log"].call_args.kwargs["action_type"] == LogActionType.FOLLOW
+        assert m["log"].call_args.kwargs["result"] == LogResultType.FAILURE
 
     def test_a_slow_re_render_is_polled_for_rather_than_called_a_failure(self):
         # LinkedIn REPLACES the top card after a follow; losing that race once used to cost the
@@ -885,6 +895,7 @@ class TestAutoFollowRosterTarget:
             assert ra.auto_follow_roster_target(driver, 1, self._target_dict()) == ""
         driver.execute_script.assert_not_called()
         m["fail"].assert_not_called()
+        m["log"].assert_not_called()
 
     def test_a_hard_gate_stands_the_lane_down(self):
         from cqc_lem.app.engagement import feed as ra

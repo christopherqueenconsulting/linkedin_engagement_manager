@@ -1588,7 +1588,7 @@ def invite_to_connect_now(user_id: int, profile_url: str, message: str = None,
         if _profile_is_first_degree(driver):
             log_info("Skipping invite: already a 1st-degree connection", user_id=user_id,
                      action_type="invite_connect")
-            insert_new_log(user_id=user_id, action_type=LogActionType.ENGAGED,
+            insert_new_log(user_id=user_id, action_type=LogActionType.INVITE,
                            result=LogResultType.FAILURE, post_url=profile_url,
                            message=ALREADY_CONNECTED_MESSAGE)
             return False, ALREADY_CONNECTED_MESSAGE
@@ -1612,7 +1612,7 @@ def invite_to_connect_now(user_id: int, profile_url: str, message: str = None,
                 hold_invites(user_id, INVITE_HOLD_DEFAULT_SECONDS, reason=dialog_reason)
             elif dialog_reason != FOLLOW_ONLY_MESSAGE:
                 record_invite_dialog_miss(user_id)
-            insert_new_log(user_id=user_id, action_type=LogActionType.ENGAGED,
+            insert_new_log(user_id=user_id, action_type=LogActionType.INVITE,
                            result=LogResultType.FAILURE, post_url=profile_url,
                            message=reason)
             return False, reason
@@ -1681,11 +1681,11 @@ def invite_to_connect_now(user_id: int, profile_url: str, message: str = None,
     except Exception as e:
         log_error("Error while inviting to connect", exc=e, user_id=user_id, action_type="invite_connect")
         result = f"Error while inviting to connect: {e}"
-        insert_new_log(user_id=user_id, action_type=LogActionType.ENGAGED,
+        insert_new_log(user_id=user_id, action_type=LogActionType.INVITE,
                        result=LogResultType.FAILURE, post_url=profile_url, message=str(e))
     else:
         invite_sent = result in _INVITE_SENT_RESULTS
-        insert_new_log(user_id=user_id, action_type=LogActionType.ENGAGED,
+        insert_new_log(user_id=user_id, action_type=LogActionType.INVITE,
                        result=LogResultType.SUCCESS if invite_sent else LogResultType.FAILURE,
                        post_url=profile_url, message=result)
         if result in _ACCOUNT_WALL_REASONS:

@@ -20,7 +20,8 @@ class TestCountUserCommentsOnPostUrl:
             from cqc_lem.utilities.db import count_user_comments_on_post_url
             assert count_user_comments_on_post_url(1, _URL) == 2
         params = cur.execute.call_args[0][1]
-        assert params == (1, _URL, LogActionType.COMMENT.value, LogResultType.SUCCESS.value)
+        assert params == (1, _URL, LogActionType.COMMENT.value, LogActionType.GROUP_COMMENT.value,
+                          LogResultType.SUCCESS.value)
 
     def test_db_error_counts_zero(self, fake_cursor):
         conn, _ = fake_cursor(execute_error=mysql.connector.Error("boom"))

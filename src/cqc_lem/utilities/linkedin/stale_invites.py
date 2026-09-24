@@ -527,7 +527,7 @@ def _record_withdrawal(user_id: int, invite: dict, verified: bool) -> None:
     spent on the CLICK: the action already reached LinkedIn, and a lane whose verification broke must
     not be free to click every row on the page. The result flag is what an operator reads to tell an
     unverified withdrawal apart from a confirmed one."""
-    insert_new_log(user_id=user_id, action_type=LogActionType.ENGAGED,
+    insert_new_log(user_id=user_id, action_type=LogActionType.INVITE,
                    result=LogResultType.SUCCESS if verified else LogResultType.FAILURE,
                    post_url=invite.get("profile_url") or None,
                    message=STALE_INVITE_WITHDRAWN_MESSAGE)
