@@ -27,6 +27,7 @@ from celery.signals import (
 
 from cqc_lem.app import celeryconfig
 from cqc_lem.app.celeryconfig import broker_url
+from cqc_lem.app.task_outcome import LaneTaskFailed
 from cqc_lem.utilities.engagement_window import STAGGER_TICK_MINUTES
 from cqc_lem.utilities.env_constants import AWS_REGION
 from cqc_lem.utilities.logger import logger
@@ -524,7 +525,13 @@ def on_task_failure(task_id: str = None, exception: BaseException = None, sender
     """File a failed task's exception as a grouped PostHog error-tracking issue (issue #648). Celery
     swallows the traceback into its own logger, so without this the only trace of a crashed task is
     a log line — nothing that groups, counts or alerts.
+
+    A `LaneTaskFailed` (#2097) is NOT filed: the lane already logged its failure at the level its
+    own contract chose (a crashed tab is a warning that escalates on repeat, #1746), and filing
+    here would turn every such run into a fresh `$exception`. Its FAILURE state is the count.
     """
+    if isinstance(exception, LaneTaskFailed):
+        return
     capture_exception(
         exception,
         user_id=_task_user_id(kwargs),

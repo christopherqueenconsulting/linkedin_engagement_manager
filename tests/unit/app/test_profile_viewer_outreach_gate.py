@@ -355,8 +355,12 @@ class TestTheLadderMovesToTheSend:
              patch(f"{_OUT}.send_dm_now", return_value=sent), \
              patch(f"{_OUT}.enqueue_next_followup") as followup:
             from cqc_lem.app.engagement.outreach import send_scheduled_dm
+            from cqc_lem.app.task_outcome import LaneTaskFailed
 
-            send_scheduled_dm.run(dm_id=3)
+            try:
+                send_scheduled_dm.run(dm_id=3)
+            except LaneTaskFailed:
+                assert not sent, "only a DM that did not land ends the run in FAILURE (#2097)"
         return followup
 
     def test_a_landed_profile_viewer_dm_starts_the_ladder(self):

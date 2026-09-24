@@ -47,6 +47,7 @@ from selenium.webdriver.common.by import By
 from cqc_lem.app.engagement.feed import auto_second_wave_comment, auto_seed_comment_on_post
 from cqc_lem.app.my_celery import app as shared_task
 from cqc_lem.app.queue_once import QueueOnce
+from cqc_lem.app.task_outcome import TaskOutcome, landed_or_no_op, lane_result
 from cqc_lem.utilities import golden_hour as _golden
 from cqc_lem.utilities.ai.ai_helper import (
     generate_comment_reply_followup,
@@ -396,23 +397,27 @@ def _post_stats_recycle_every() -> int:
         return 3
 
 
-def _swap_post_stats_session(user_id: int, old_driver):
-    """Give the sweep's current session back and open a fresh one; None when none can be had.
+def _swap_post_stats_session(user_id: int, old_driver) -> Tuple[Optional[object], bool]:
+    """Give the sweep's current session back and open a fresh one.
 
     Used for the MID-sweep swap only: the posts already recorded stand, so a reopen that fails
-    ends the sweep on them rather than failing the task. `get_current_profile` has already logged
-    why at its own level, so this line is INFO — a second warning would double-count one fault.
+    ends the sweep on them. `get_current_profile` has already logged why at its own level, so this
+    line is INFO — a second warning would double-count one fault.
+
+    Returns:
+        `(driver, rate_limited)`. `driver` is None when no session could be had; `rate_limited` is
+        True when that was the 429 back-off, a designed stop rather than a fault (#2097).
     """
     quit_gracefully(old_driver)
     try:
         # needs_images=True — the fastboot exemption noted at the top of this module (#2020).
         driver, _wait, _email, _profile = get_current_profile(user_id=user_id, session_name="Post Stats",
                                                               measurement_only=True, needs_images=True)
-        return driver
+        return driver, False
     except Exception as e:
         log_info(f"Could not reopen the post-stats session ({type(e).__name__}) — stopping the sweep",
                  user_id=user_id, task_name="auto_scrape_post_stats")
-        return None
+        return None, isinstance(e, LinkedInRateLimited)
 
 
 def _scrape_one_post_stats(driver, user_id: int, pid: int, url: str, post_types: dict,
@@ -504,7 +509,7 @@ def auto_scrape_post_stats(self, user_id: int):
         post_ids = post_ids + [pid for pid in get_uncaptured_posted_post_ids(
             user_id, days=backfill_days, limit=backfill_max) if pid not in already]
     if not post_ids:
-        return "No recent posts to scrape"
+        return lane_result(TaskOutcome.NO_OP, "No recent posts to scrape")
     # One query for the whole sweep, so every outcome event can name the A/B variant its post shipped
     # (issues #396/#652) without a lookup inside the Selenium loop.
     shipped_variants = get_shipped_variant_keys(user_id)
@@ -525,10 +530,10 @@ def auto_scrape_post_stats(self, user_id: int):
         # its next scheduled beat.
         log_warning("Post stats scrape skipped — LinkedIn rate-limited", exc=e, user_id=user_id,
                     task_name="auto_scrape_post_stats")
-        return "Skipped — rate limited"
+        return lane_result(TaskOutcome.NO_OP, "Skipped — rate limited")
     except Exception as e:
         log_error("Error getting profile for post stats", exc=e, user_id=user_id, task_name="auto_scrape_post_stats")
-        return f"Failed: {e}"
+        return lane_result(TaskOutcome.FAILED, f"Failed: {e}", cause=e)
     # One renderer reading post after post is what the node memcg OOM-kills (#2112, same fault as
     # #1746): recycle the session every `recycle_every` posts, and when a tab still crashes, reopen
     # and resume AT the post it crashed on — the ones already recorded stand either way.
@@ -543,9 +548,11 @@ def auto_scrape_post_stats(self, user_id: int):
                 i += 1
                 continue
             if recycle_every and read_on_session >= recycle_every:
-                driver = _swap_post_stats_session(user_id, driver)
+                driver, rate_limited = _swap_post_stats_session(user_id, driver)
                 if driver is None:
-                    return f"Scraped stats for {scraped} post(s) before the session could not be reopened"
+                    return lane_result(landed_or_no_op(scraped) if rate_limited else TaskOutcome.FAILED,
+                                       f"Scraped stats for {scraped} post(s) before the session could "
+                                       f"not be reopened")
                 read_on_session = 0
             try:
                 recorded = _scrape_one_post_stats(driver, user_id, pid, url, post_types, shipped_variants)
@@ -559,20 +566,23 @@ def auto_scrape_post_stats(self, user_id: int):
                     log_warning(f"Browser tab crashed after {scraped} of {len(post_ids)} post(s) and "
                                 f"{recoveries} reopen(s) — stopping post-stats scrape", exc=e,
                                 user_id=user_id, task_name="auto_scrape_post_stats")
-                    return f"Scraped stats for {scraped} post(s) before the browser tab crashed"
+                    return lane_result(TaskOutcome.FAILED, f"Scraped stats for {scraped} post(s) before "
+                                                           f"the browser tab crashed", cause=e)
                 recoveries += 1
                 log_info(f"Browser tab crashed after {scraped} of {len(post_ids)} post(s) — reopening "
                          f"the session to resume", user_id=user_id, post_id=pid,
                          task_name="auto_scrape_post_stats")
-                driver = _swap_post_stats_session(user_id, driver)
+                driver, rate_limited = _swap_post_stats_session(user_id, driver)
                 if driver is None:
-                    return f"Scraped stats for {scraped} post(s) before the browser tab crashed"
+                    return lane_result(landed_or_no_op(scraped) if rate_limited else TaskOutcome.FAILED,
+                                       f"Scraped stats for {scraped} post(s) before the browser tab "
+                                       f"crashed", cause=e)
                 read_on_session = 0
                 continue
             read_on_session += 1
             scraped += int(recorded)
             i += 1
-        return f"Scraped stats for {scraped} post(s)"
+        return lane_result(landed_or_no_op(scraped), f"Scraped stats for {scraped} post(s)")
     finally:
         if driver is not None:
             quit_gracefully(driver)

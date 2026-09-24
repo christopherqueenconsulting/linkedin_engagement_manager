@@ -4,6 +4,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from cqc_lem.app.task_outcome import LaneTaskFailed
+
 pytestmark = pytest.mark.unit
 
 _NL = "cqc_lem.app.engagement.newsletter"
@@ -160,8 +162,9 @@ class TestAutoPublishEdition:
              patch(f"{_NL}.mark_edition_published") as mark, \
              patch(f"{_NL}.mark_edition_failed") as fail, \
              patch(f"{_NL}.log_error") as log_err, \
-             patch(f"{_NL}.quit_gracefully"):
-            result = auto_publish_edition.run(edition_id=9)
+             patch(f"{_NL}.quit_gracefully"), \
+             pytest.raises(LaneTaskFailed, match="publish flow did not complete"):
+            auto_publish_edition.run(edition_id=9)
         mark.assert_not_called()
         fail.assert_called_once_with(9)
         log_err.assert_called_once()
@@ -169,7 +172,6 @@ class TestAutoPublishEdition:
         assert log_err.call_args.kwargs.get("task_name") == "auto_publish_edition"
         assert log_err.call_args.kwargs.get("edition_id") == 9
         assert log_err.call_args.kwargs.get("failed_step") == "article_publish"
-        assert "did not complete" in result
 
     def test_rate_limited_login_skips_without_filing_error(self):
         """Rate-limited login must skip quietly, not file an ERROR.

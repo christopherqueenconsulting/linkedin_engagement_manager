@@ -5,6 +5,8 @@ from unittest.mock import patch
 
 import pytest
 
+from cqc_lem.app.task_outcome import LaneTaskFailed
+
 pytestmark = pytest.mark.unit
 
 _OUT = "cqc_lem.app.engagement.outreach"
@@ -35,7 +37,8 @@ class TestSendScheduledDm:
              patch("cqc_lem.utilities.db.count_dms_sent_today", return_value=0), \
              patch(f"{_OUT}.get_engagement_preferences", return_value={"max_dms_per_day": 10}), \
              patch(f"{_OUT}.send_dm_now", return_value=False), \
-             patch("cqc_lem.utilities.db.update_scheduled_dm_status") as upd:
+             patch("cqc_lem.utilities.db.update_scheduled_dm_status") as upd, \
+             pytest.raises(LaneTaskFailed, match="failed"):
             ra.send_scheduled_dm(3)
         from cqc_lem.utilities.db import ScheduledDmStatus
         upd.assert_called_once_with(3, ScheduledDmStatus.FAILED)

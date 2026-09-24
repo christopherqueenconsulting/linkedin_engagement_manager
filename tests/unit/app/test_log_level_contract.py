@@ -15,6 +15,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from cqc_lem.app.task_outcome import LaneTaskFailed
+
 pytestmark = pytest.mark.unit
 
 _RCP = "cqc_lem.app.run_content_plan"
@@ -453,7 +455,8 @@ class TestOutcomesNothingElseRecords:
                       return_value=(MagicMock(), MagicMock(), "a@b.c", MagicMock())), \
                 patch(f"{_OUTREACH}.get_linkedin_profile_from_url", return_value=None), \
                 patch(f"{_OUTREACH}.insert_new_log"), \
-                patch(f"{_OUTREACH}.quit_gracefully"):
+                patch(f"{_OUTREACH}.quit_gracefully"), \
+                pytest.raises(LaneTaskFailed):
             engage_with_profile_viewer.run(user_id=7, viewer_url="https://x/in/a",
                                            viewer_name="Ada")
         assert lv.warning.called, "an unscrapeable viewer profile is the drift signal"

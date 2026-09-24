@@ -18,12 +18,15 @@ import pytest
 
 from scripts.selenium_lane_event_coverage import (
     selenium_lane_wire_names,
+    swallows_failure,
+    tasks_that_swallow_failure,
     tasks_with_no_outcome_event,
 )
 
 pytestmark = pytest.mark.unit
 
 _BASELINE_PATH = pathlib.Path(__file__).with_name("selenium_lane_event_baseline.json")
+_SWALLOW_BASELINE_PATH = pathlib.Path(__file__).with_name("selenium_lane_swallow_baseline.json")
 
 
 def _baseline() -> set:
@@ -72,3 +75,73 @@ class TestWriteOnlyLaneRatchet:
         same blind spot #1013 calls out for a selector.
         """
         assert _baseline() <= set(selenium_lane_wire_names())
+
+
+def _swallow_baseline() -> set:
+    return set(json.loads(_SWALLOW_BASELINE_PATH.read_text(encoding="utf-8")))
+
+
+class TestSwallowedFailureRatchet:
+    """The second half of the silent-success ratchet (issue #2097).
+
+    A lane that catches `Exception` and returns a string ends in Celery SUCCESS however the run
+    went — the shape behind 0 FAILURE in 20,841 runs. Same ratchet idiom as the class above: the
+    checked-in baseline lists the known offenders, a NEW one fails, and a fixed one must leave it.
+    """
+
+    def test_baseline_file_is_a_sorted_json_list_of_wire_names(self):
+        raw = json.loads(_SWALLOW_BASELINE_PATH.read_text(encoding="utf-8"))
+        assert isinstance(raw, list)
+        assert raw == sorted(raw), "keep it sorted so a diff shows exactly what changed"
+        assert _swallow_baseline() <= set(selenium_lane_wire_names())
+
+    def test_no_new_se_task_catches_exception_and_returns_a_string(self):
+        new_offenders = tasks_that_swallow_failure() - _swallow_baseline()
+        assert not new_offenders, (
+            f"these se_* task(s) catch Exception and return a string, so a failed run reads as "
+            f"Celery SUCCESS: {sorted(new_offenders)} — end the run through "
+            f"cqc_lem.app.task_outcome.lane_result instead."
+        )
+
+    def test_a_fixed_lane_is_removed_from_the_baseline(self):
+        stale = _swallow_baseline() - tasks_that_swallow_failure()
+        assert not stale, (f"these entries no longer swallow a failure and must be removed from "
+                           f"{_SWALLOW_BASELINE_PATH.name}: {sorted(stale)}")
+
+    @pytest.mark.parametrize("wire_name", [
+        "cqc_lem.app.run_automation.auto_publish_edition",
+        "cqc_lem.app.run_automation.engage_with_profile_viewer",
+        "cqc_lem.app.run_automation.auto_scrape_post_stats",
+        "cqc_lem.app.run_automation.auto_comment_in_groups",
+        "cqc_lem.app.run_automation.send_scheduled_dm",
+    ])
+    def test_the_lanes_fixed_by_2097_are_real_and_clean(self, wire_name):
+        assert wire_name in selenium_lane_wire_names()
+        assert wire_name not in tasks_that_swallow_failure()
+
+
+class TestSwallowsFailure:
+    """Anti-vacuity: the scanner has to recognise the shape it gates, and nothing else."""
+
+    @pytest.mark.parametrize("handler", ["except Exception as e:", "except:",
+                                         "except (ValueError, Exception):",
+                                         "except BaseException:"])
+    def test_a_broad_handler_returning_a_string_is_caught(self, handler):
+        src = f"def t():\n    try:\n        go()\n    {handler}\n        return f'Failed: {{1}}'\n"
+        assert swallows_failure(src)
+
+    def test_a_plain_string_literal_is_caught(self):
+        assert swallows_failure("def t():\n    try:\n        go()\n    except Exception:\n"
+                                "        return 'Failed'\n")
+
+    def test_the_outcome_helper_is_not(self):
+        assert not swallows_failure("def t():\n    try:\n        go()\n    except Exception as e:\n"
+                                    "        return lane_result(TaskOutcome.FAILED, 'x', cause=e)\n")
+
+    def test_a_narrow_handler_is_not(self):
+        assert not swallows_failure("def t():\n    try:\n        go()\n    except KeyError:\n"
+                                    "        return 'missing'\n")
+
+    def test_a_nested_function_inside_the_handler_is_not(self):
+        assert not swallows_failure("def t():\n    try:\n        go()\n    except Exception:\n"
+                                    "        def f():\n            return 'x'\n        raise\n")

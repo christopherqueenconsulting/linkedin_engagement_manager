@@ -62,6 +62,7 @@ from selenium.webdriver.remote.webelement import WebElement
 from cqc_lem.app.engagement.invites import send_roster_connect_invite
 from cqc_lem.app.my_celery import app as shared_task
 from cqc_lem.app.queue_once import QueueOnce
+from cqc_lem.app.task_outcome import TaskOutcome, landed_or_no_op, lane_result
 from cqc_lem.domain.models import FeedRunContext
 from cqc_lem.utilities import golden_hour as _golden
 from cqc_lem.utilities.ai import story_bank as _story_bank
@@ -3872,7 +3873,7 @@ def auto_comment_in_groups(self, user_id: int, max_per_group: int = 2):
     started_ts = time.time()
     enabled = get_enabled_group_ids(user_id)
     if not enabled:
-        return "No enabled groups"
+        return lane_result(TaskOutcome.NO_OP, "No enabled groups")
     deadline_ts = _group_walk_deadline(self, started_ts)
     try:
         # needs_images=True (issue #1778): same fastboot dependency as #1774's messaging fix —
@@ -3890,11 +3891,11 @@ def auto_comment_in_groups(self, user_id: int, max_per_group: int = 2):
         # …) already carries this same catch.
         log_warning("Group commenting skipped — LinkedIn rate-limited or cooling down", exc=e,
                     user_id=user_id, task_name="auto_comment_in_groups")
-        return f"Skipped — rate limited: {e}"
+        return lane_result(TaskOutcome.NO_OP, f"Skipped — rate limited: {e}")
     except Exception as e:
         log_error("Error getting profile for group commenting", exc=e, user_id=user_id,
                   task_name="auto_comment_in_groups")
-        return f"Failed: {e}"
+        return lane_result(TaskOutcome.FAILED, f"Failed: {e}", cause=e)
     prefs = get_engagement_preferences(user_id)
     engagers = get_recent_engagers(user_id)
     total = 0
@@ -3908,7 +3909,8 @@ def auto_comment_in_groups(self, user_id: int, max_per_group: int = 2):
                 log_warning(f"Group commenting ran out of time after {walked} of {len(enabled)} "
                             f"group(s) — remaining groups skipped this run", user_id=user_id,
                             action_type="comment", task_name="auto_comment_in_groups")
-                return f"Commented {total} time(s) across {walked} group(s) before running out of time"
+                return lane_result(landed_or_no_op(total), f"Commented {total} time(s) across {walked} group(s) "
+                                                      f"before running out of time")
             try:
                 driver.get(f"https://www.linkedin.com/groups/{gid}/")
                 time.sleep(random.uniform(4, 7))
@@ -3943,7 +3945,8 @@ def auto_comment_in_groups(self, user_id: int, max_per_group: int = 2):
                     # shipped at INFO instead of crashing the task into a grouped $exception.
                     log_info("Browser session ended mid-run (worker or Grid restart) — stopping "
                              "group commenting", user_id=user_id, task_name="auto_comment_in_groups")
-                    return f"Commented {total} time(s) before the browser session ended"
+                    return lane_result(landed_or_no_op(total), f"Commented {total} time(s) before the browser "
+                                                          f"session ended")
                 if is_tab_crashed(e):
                     # The renderer behind the tab died (usually an OOM kill after many group
                     # navigations in one session) — the session is still valid, but no further
@@ -3955,7 +3958,8 @@ def auto_comment_in_groups(self, user_id: int, max_per_group: int = 2):
                     log_warning(f"Browser tab crashed after {walked} of {len(enabled)} group(s) — "
                                 f"stopping group commenting", exc=e, user_id=user_id,
                                 action_type="comment", task_name="auto_comment_in_groups")
-                    return f"Commented {total} time(s) before the browser tab crashed"
+                    return lane_result(TaskOutcome.FAILED, f"Commented {total} time(s) before the browser "
+                                                           f"tab crashed", cause=e)
                 if is_grid_relay_error(e):
                     # The Grid hub's relay to the node dropped ONE command (issue #1784) — a
                     # connectivity blip, not an application defect. The session is very likely
@@ -3966,9 +3970,10 @@ def auto_comment_in_groups(self, user_id: int, max_per_group: int = 2):
                     log_warning(f"Grid relay error after {walked} of {len(enabled)} group(s) — "
                                 f"stopping group commenting", exc=e, user_id=user_id,
                                 action_type="comment", task_name="auto_comment_in_groups")
-                    return f"Commented {total} time(s) before the Grid relay failed"
+                    return lane_result(TaskOutcome.FAILED, f"Commented {total} time(s) before the Grid "
+                                                           f"relay failed", cause=e)
                 raise
-        return f"Commented {total} time(s) across {len(enabled)} group(s)"
+        return lane_result(landed_or_no_op(total), f"Commented {total} time(s) across {len(enabled)} group(s)")
     except SoftTimeLimitExceeded:
         # The deadline above is the intended stop; this is the backstop for a run whose reserve was
         # not enough (issue #1198). It arrives here rather than in the loop's own handler because
@@ -3978,7 +3983,7 @@ def auto_comment_in_groups(self, user_id: int, max_per_group: int = 2):
         log_warning(f"Group commenting hit the Celery soft time limit after {walked} of "
                     f"{len(enabled)} group(s)", user_id=user_id, action_type="comment",
                     task_name="auto_comment_in_groups")
-        return f"Commented {total} time(s) before the task time limit"
+        return lane_result(landed_or_no_op(total), f"Commented {total} time(s) before the task time limit")
     finally:
         quit_gracefully(driver)
 

@@ -304,7 +304,11 @@ class TestScrapeResumesAfterCrashedTab:
              patch(f"{_POST}.log_warning") as warn, \
              patch(f"{_POST}.quit_gracefully") as quit_mock:
             from cqc_lem.app.engagement.posting import auto_scrape_post_stats
-            result = auto_scrape_post_stats.run(user_id=1)
+            from cqc_lem.app.task_outcome import LaneTaskFailed
+            try:
+                result = auto_scrape_post_stats.run(user_id=1)
+            except LaneTaskFailed as e:
+                result = f"FAILURE: {e}"  # a sweep a fault stopped ends in Celery FAILURE (#2097)
         return result, rec, profile, quit_mock, warn
 
     def test_resumes_at_the_crashed_post_on_a_fresh_session(self):
@@ -353,7 +357,7 @@ class TestScrapeResumesAfterCrashedTab:
         result, rec, profile, quit_mock, warn = self._run(drivers, [9, 10, 11])
         # Only post 9 landed; two reopens were spent on post 10, then the sweep ended.
         assert rec.call_count == 1
-        assert result == "Scraped stats for 1 post(s) before the browser tab crashed"
+        assert result == "FAILURE: Scraped stats for 1 post(s) before the browser tab crashed"
         assert profile.call_count == 3
         warn.assert_called_once()
         assert [c.args[0] for c in quit_mock.call_args_list] == drivers
@@ -364,7 +368,7 @@ class TestScrapeResumesAfterCrashedTab:
         result, rec, profile, quit_mock, _ = self._run(
             [], [9, 10], profile_side_effect=[(first, MagicMock(), "e", MagicMock()), RuntimeError("login")])
         assert rec.call_count == 1
-        assert result == "Scraped stats for 1 post(s) before the browser tab crashed"
+        assert result == "FAILURE: Scraped stats for 1 post(s) before the browser tab crashed"
         # The dead session is quit once, and nothing is quit for the reopen that never opened.
         assert [c.args[0] for c in quit_mock.call_args_list] == [first]
 
@@ -374,7 +378,27 @@ class TestScrapeResumesAfterCrashedTab:
             [], [1, 2, 3], env={"POST_STATS_RECYCLE_EVERY": "2"},
             profile_side_effect=[(first, MagicMock(), "e", MagicMock()), RuntimeError("login")])
         assert rec.call_count == 2
+        assert result == "FAILURE: Scraped stats for 2 post(s) before the session could not be reopened"
+
+    def test_a_rate_limited_recycle_is_a_designed_stop_not_a_failure(self):
+        """A 429 back-off on the reopen ends the sweep on what shipped, in SUCCESS (#2097)."""
+        from cqc_lem.utilities.linkedin.rate_limit import LinkedInRateLimited
+        first = MagicMock()
+        result, rec, _, _, _ = self._run(
+            [], [1, 2, 3], env={"POST_STATS_RECYCLE_EVERY": "2"},
+            profile_side_effect=[(first, MagicMock(), "e", MagicMock()), LinkedInRateLimited("cooldown")])
+        assert rec.call_count == 2
         assert result == "Scraped stats for 2 post(s) before the session could not be reopened"
+
+    def test_a_rate_limited_reopen_after_a_crash_is_a_designed_stop(self):
+        from cqc_lem.utilities.linkedin.rate_limit import LinkedInRateLimited
+        first = MagicMock()
+        first.get.side_effect = [None, _crash()]
+        result, rec, _, _, _ = self._run(
+            [], [9, 10], profile_side_effect=[(first, MagicMock(), "e", MagicMock()),
+                                              LinkedInRateLimited("cooldown")])
+        assert rec.call_count == 1
+        assert result == "Scraped stats for 1 post(s) before the browser tab crashed"
 
     def test_recycle_every_env_parsing(self):
         from cqc_lem.app.engagement.posting import _post_stats_recycle_every

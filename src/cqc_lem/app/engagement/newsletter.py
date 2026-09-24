@@ -31,6 +31,7 @@ from selenium.webdriver.common.by import By
 
 from cqc_lem.app.my_celery import app as shared_task
 from cqc_lem.app.queue_once import QueueOnce
+from cqc_lem.app.task_outcome import TaskOutcome, lane_result
 from cqc_lem.utilities.ai.ai_helper import generate_newsletter_edition
 from cqc_lem.utilities.blog_source import resolve_blog_source
 from cqc_lem.utilities.db import (
@@ -205,12 +206,12 @@ def auto_publish_edition(self, edition_id: int):
     """
     edition = get_newsletter_edition(edition_id)
     if not edition or edition.get("status") not in ("draft", "approved"):
-        return f"Edition {edition_id} not publishable"
+        return lane_result(TaskOutcome.NO_OP, f"Edition {edition_id} not publishable")
     user_id = edition["user_id"]
     if edition.get("status") == "draft" and not get_newsletter_settings(user_id).get("auto_publish_newsletters"):
         log_debug(f"Newsletter edition {edition_id} is unapproved and auto-publish is off — holding",
                   user_id=user_id, task_name="auto_publish_edition", edition_id=edition_id)
-        return f"Edition {edition_id} awaiting approval"
+        return lane_result(TaskOutcome.NO_OP, f"Edition {edition_id} awaiting approval")
     try:
         driver, wait, user_email, my_profile = get_current_profile(user_id=user_id, session_name="Newsletter")
     except LinkedInRateLimited as e:
@@ -222,10 +223,10 @@ def auto_publish_edition(self, edition_id: int):
         # so it stays eligible for the next scheduled publish attempt once the cooldown clears.
         log_debug(f"Newsletter edition {edition_id} publish skipped — LinkedIn rate-limited: {e}",
                   user_id=user_id, task_name="auto_publish_edition", edition_id=edition_id)
-        return f"Skipped edition {edition_id} — rate limited"
+        return lane_result(TaskOutcome.NO_OP, f"Skipped edition {edition_id} — rate limited")
     except Exception as e:
         log_error("Error getting profile for newsletter edition", exc=e, user_id=user_id, task_name="auto_publish_edition")
-        return f"Failed to start newsletter edition: {e}"
+        return lane_result(TaskOutcome.FAILED, f"Failed to start newsletter edition: {e}", cause=e)
     try:
         driver.get("https://www.linkedin.com/article/new/")
         time.sleep(random.uniform(6, 9))
@@ -237,17 +238,19 @@ def auto_publish_edition(self, edition_id: int):
         if url:
             mark_edition_published(edition_id, url)
             log_info(f"Published newsletter edition {edition_id} for user {user_id}: {edition['title']}")
-            return f"Published newsletter edition: {edition['title']}"
+            return lane_result(TaskOutcome.LANDED, f"Published newsletter edition: {edition['title']}")
         log_error("Newsletter edition publish flow did not complete",
                   user_id=user_id, task_name="auto_publish_edition", edition_id=edition_id, failed_step=failed_step)
         mark_edition_failed(edition_id)
-        return "Newsletter edition publish flow did not complete"
     except Exception as e:
         log_error("Newsletter edition publish error", exc=e, user_id=user_id, task_name="auto_publish_edition")
         mark_edition_failed(edition_id)
-        return f"Newsletter edition error: {e}"
+        return lane_result(TaskOutcome.FAILED, f"Newsletter edition error: {e}", cause=e)
     finally:
         quit_gracefully(driver)
+    # Raised OUTSIDE the try: inside it, the `except Exception` above would catch the failure and
+    # mark + log the edition a second time.
+    return lane_result(TaskOutcome.FAILED, "Newsletter edition publish flow did not complete")
 
 
 def _parse_subscriber_count(text: "str | None") -> "int | None":
