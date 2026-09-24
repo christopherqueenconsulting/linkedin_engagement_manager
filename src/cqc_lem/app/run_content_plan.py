@@ -1969,13 +1969,10 @@ def regenerate_video_for_post(post_id: int) -> Optional[str]:
                     post_id=post_id, task_name="regenerate_post_video_task")
         return None
 
-    # Symmetric with regenerate_post_carousel_task: a real video now exists, so heal a non-terminal
-    # post (e.g. one left in 'planning' by asset backfill) to 'approved' so it becomes visible in the
-    # Review UI and can post, instead of being stranded despite a correctly-produced video.
-    from cqc_lem.utilities.db import get_post_status
-    if api_video_url and get_post_status(post_id) != PostStatus.POSTED.value:
-        update_db_post_status(post_id, PostStatus.APPROVED)
-        log_info(f"regenerate_video_for_post: post {post_id} healed → approved")
+    # Symmetric with regenerate_post_carousel_task: a real video now exists, so an ERROR post is
+    # re-gated and healed — never straight to 'approved' (issue #2100).
+    if api_video_url:
+        _heal_errored_post(user_id, post_id, text_content, task_name="regenerate_post_video_task")
     log_info(f"regenerate_video_for_post: post_id={post_id} -> {api_video_url}")
     return api_video_url
 
@@ -1998,17 +1995,15 @@ def _carousel_slides_are_real_images(slides) -> bool:
 def regenerate_post_carousel_task(post_id: int):
     """Regenerate a carousel post's slide images (used by the asset-backfill safety net).
 
-    On success (real slide images produced) it clears an 'error'/stale state back to
-    'approved' so the healed carousel can post. create_carousel_content flags 'error' on
+    On success (real slide images produced) an 'error' post is re-gated on its new content and
+    healed through `_heal_errored_post` (issue #2100). create_carousel_content flags 'error' on
     failure, so a failed regeneration stays flagged for manual/dev attention.
     """
     from cqc_lem.utilities.db import (
         get_post_buyer_stage,
         get_post_carousel_slides,
-        get_post_status,
         get_post_user_id,
         update_db_post_content,
-        update_db_post_status,
     )
     user_id = get_post_user_id(post_id)
     if not user_id:
@@ -2020,12 +2015,58 @@ def regenerate_post_carousel_task(post_id: int):
         _score_and_persist_dwell(user_id, post_id, content)
         update_db_post_content(post_id, content)
 
-    # If real slide images now exist, heal the post back to 'approved' (e.g. from 'error').
     if _carousel_slides_are_real_images(get_post_carousel_slides(post_id)):
-        if get_post_status(post_id) != PostStatus.POSTED.value:
-            update_db_post_status(post_id, PostStatus.APPROVED)
-            log_info(f"regenerate_post_carousel_task: post {post_id} healed → approved")
+        _heal_errored_post(user_id, post_id, content or get_post_content(post_id),
+                           task_name="regenerate_post_carousel_task")
     return content
+
+
+def _heal_errored_post(user_id: Optional[int], post_id: int, content: Optional[str],
+                       task_name: str) -> Optional[PostStatus]:
+    """Heal an ERROR post whose media was just regenerated — through the gates, never around them.
+
+    The asset heal used to promote any non-POSTED post straight to APPROVED, so a post the gates
+    had HELD at PENDING published once its media was re-rendered (issue #2100, post 108), and a
+    rewritten carousel caption shipped without ever being graded. Now only ERROR — the media
+    failure the heal exists to repair — moves, and only as far as the post-surface gates re-run on
+    the new content allow: the same `_may_auto_approve` decision generation and the re-score use.
+    `gate_reason` is rewritten with this pass's findings, so it clears only when they pass.
+
+    Args:
+        user_id: the author. None (unresolvable) leaves the post at ERROR — it cannot be graded.
+        post_id: the healed post.
+        content: the post's text as it now stands.
+        task_name: the calling heal, for log context.
+
+    Returns:
+        The status the post was moved to, or None when it was left alone.
+    """
+    from cqc_lem.utilities.db import get_post_status, get_post_type, get_post_video_url
+
+    status = get_post_status(post_id)
+    if status != PostStatus.ERROR.value:
+        # Every other status is someone else's decision — PENDING is a hold, APPROVED/SCHEDULED
+        # already passed, POSTED is terminal. An expected no-op on each backfill pass.
+        log_debug(f"Asset heal leaves post {post_id} at '{status}' — only 'error' is healed",
+                  post_id=post_id, task_name=task_name)
+        return None
+    if not user_id:
+        log_warning("Could not resolve the post's owner — the healed post stays 'error' because its "
+                    "gates cannot be re-run", post_id=post_id, task_name=task_name)
+        return None
+    post_type = get_post_type(post_id)
+    post_type = post_type.value if isinstance(post_type, PostType) else post_type
+    findings = _gate_findings_for_post(user_id, post_id, content or "", post_type,
+                                       get_post_video_url(post_id))
+    _persist_gate_findings(user_id, post_id, findings)
+    auto_schedule = bool((get_user_preferences(user_id) or {}).get("auto_schedule_posts", True))
+    new_status = (PostStatus.APPROVED
+                  if _may_auto_approve(user_id, post_id, auto_schedule, findings)
+                  else PostStatus.PENDING)
+    update_db_post_status(post_id, new_status)
+    log_info(f"{task_name}: post {post_id} healed → {new_status.value}", user_id=user_id,
+             post_id=post_id, task_name=task_name)
+    return new_status
 
 
 def _apply_guidance_to_text_post(user_id: int, post_id: int, content: str,

@@ -46,30 +46,28 @@ class TestPostMissingRequiredAssetCarousel:
 
 
 class TestRegeneratePostCarouselTask:
-    def test_heals_error_to_approved_on_real_images(self):
+    def test_real_images_hand_the_post_to_the_gated_heal(self):
+        # The heal decides the status through the gates (issue #2100), never here.
         from cqc_lem.app.run_content_plan import regenerate_post_carousel_task
-        from cqc_lem.utilities.db import PostStatus
         with patch(f"{_DB}.get_post_user_id", return_value=1), \
              patch(f"{_DB}.get_post_buyer_stage", return_value="awareness"), \
              patch(f"{_DB}.update_db_post_content"), \
              patch(f"{_DB}.get_post_carousel_slides",
                    return_value=["https://x/api/assets?file_name=images/carousel/5/slide_01.png"]), \
-             patch(f"{_DB}.get_post_status", return_value="error"), \
-             patch(f"{_DB}.update_db_post_status") as mock_status, \
+             patch(f"{_RCP}._score_and_persist_dwell"), \
+             patch(f"{_RCP}._heal_errored_post") as heal, \
              patch(f"{_RCP}.create_carousel_content", return_value="post text"):
             regenerate_post_carousel_task(5)
-        statuses = [c.args[1] for c in mock_status.call_args_list]
-        assert PostStatus.APPROVED in statuses
+        heal.assert_called_once_with(1, 5, "post text", task_name="regenerate_post_carousel_task")
 
     def test_does_not_approve_when_still_text(self):
         from cqc_lem.app.run_content_plan import regenerate_post_carousel_task
-        from cqc_lem.utilities.db import PostStatus
         with patch(f"{_DB}.get_post_user_id", return_value=1), \
              patch(f"{_DB}.get_post_buyer_stage", return_value="awareness"), \
              patch(f"{_DB}.update_db_post_content"), \
              patch(f"{_DB}.get_post_carousel_slides", return_value=["Still A Text Title"]), \
-             patch(f"{_DB}.get_post_status", return_value="error"), \
-             patch(f"{_DB}.update_db_post_status") as mock_status, \
+             patch(f"{_RCP}._score_and_persist_dwell"), \
+             patch(f"{_RCP}._heal_errored_post") as heal, \
              patch(f"{_RCP}.create_carousel_content", return_value="post text"):
             regenerate_post_carousel_task(5)
-        assert PostStatus.APPROVED not in [c.args[1] for c in mock_status.call_args_list]
+        heal.assert_not_called()
