@@ -37,10 +37,24 @@ A draft must:
 ### Fact grounding (issue #1834)
 
 A number the draft attaches to **we / our / I** is a claim about the author's own operating history,
-and it must trace to one of three places: the target post, the research `findings` block that was
-actually supplied, or the user's **story bank**. Anything else the model wrote down, it invented — a
-trace audit found "we logged 1,200 errors per week, then 300, a 75% drop" and similar in roughly 8
-of 12 drafts read, none of it in the bank.
+and it must trace to one of two places (issue #2136): the **third-party** target post, or the
+user's **story bank**. Anything else the model wrote down, it invented — a trace audit found "we
+logged 1,200 errors per week, then 300, a 75% drop" and similar in roughly 8 of 12 drafts read,
+none of it in the bank.
+
+**Our own words never ground a claim.** The 2026-09 audit found 24 of 102 shipped comments carrying
+a first-person number, and 6 of 25 sampled ones answering our OWN first comment: the walk re-read a
+card that now held our comment as "the post", so comment 1's invented number grounded comment 2.
+`story_bank.without_own_text` removes every sentence of the author's recent comments (the same
+`recent_comments` the similarity gate uses, which includes this run's) from the post before it is
+used as grounding. Research `findings` no longer ground a first-person claim either — a researched
+statistic restated as "we measured" is still a claim the author never made.
+
+**Rewrite without the claim, then regenerate, then skip** (the owner's #2136 decision). A HARD
+finding first drops the sentences carrying the invented numbers
+(`story_bank.strip_unsourced_sentences`) and re-grades the remainder through every gate; it ships
+only if it passes on its own. Otherwise the numbers join the #617 fix-list, and a draft that never
+recovers is skipped.
 
 The detector is `story_bank.unsourced_specifics`, the same one the post review gate uses, scoped to
 first-person SENTENCES so a stat quoted from research is not a personal claim. Severity is per

@@ -665,7 +665,7 @@ def generate_ai_response(post_content: Any, profile: LinkedInProfile,
                              user_id=user_id, action_type="comment")
 
     return _gated_comment(_draft, post_content, recent_comments=recent_comments, user_id=user_id,
-                          research_findings=findings, ground_specifics=True, prefs=prefs)
+                          ground_specifics=True, prefs=prefs)
 
 
 # Research material ACTUALLY handed to a post's writer, keyed by post id (issue #1971). The post
@@ -741,32 +741,37 @@ def _story_bank_sources(user_id: "int | None") -> list:
 
 
 def _ungrounded_first_person_metrics(candidate: "str | None", post_content: Any,
-                                     research_findings: "str | None" = None,
+                                     own_comments: "list | None" = None,
                                      user_id: int = None) -> list:
     """First-person specifics a comment draft asserts that NOTHING we supplied backs (issue #1834).
 
     A number tied to "we"/"our"/"I" in the same sentence is a claim about the author's own operating
     history, and a comment ships publicly under their name with no review step. It is legitimate
-    only when it traces to one of three places: the target post (the comment's primary grounding),
-    the research `findings` block if one was actually supplied, or the user's story bank. Anything
-    else the model wrote down, it made up — that is the whole finding behind this check.
+    only when it traces to the third-party post body or the user's story bank (issue #2136, the
+    owner's decision). Anything else the model wrote down, it made up. That is the whole finding
+    behind this check.
 
-    The post and the findings are free to check, the bank costs a query, so the bank is read ONLY
-    when the cheap sources already failed a token. A comment with no first-person numbers — the
-    common case, at comment volume — makes no DB call at all.
+    Our OWN earlier comments never count as source text, even when a scraped card carries one
+    inside `post_content`. Otherwise the number comment 1 invented grounds comment 2. Research
+    findings do not count either: a researched statistic restated in the first person is still a
+    claim about the author that they never made.
+
+    The post is free to check, the bank costs a query, so the bank is read ONLY when the post
+    already failed a token. A comment with no first-person numbers (the common case at comment
+    volume) makes no DB call at all.
 
     Args:
         candidate: The finished draft, post-humanization, exactly as it would ship.
         post_content: The target post. Guaranteed to carry a readable body on the feed path
             (issue #1833 refuses to draft otherwise), so this allow-list is never empty there.
-        research_findings: The research block that was passed to the writer, when one was — never a
-            block that was merely available, or the check would sanction numbers the model never saw.
+        own_comments: The author's own recent comments, removed from `post_content` before it is
+            used as grounding.
         user_id: Whose story bank backs the author's own numbers.
 
     Returns:
         The offending specifics in the order they appear, or [] when every one of them traces.
     """
-    sources = [str(post_content or ""), str(research_findings or "")]
+    sources = [_story_bank.without_own_text(str(post_content or ""), own_comments)]
     if not _story_bank.unsourced_specifics(candidate, sources):
         return []
     return _story_bank.unsourced_specifics(candidate, sources + _story_bank_sources(user_id))
@@ -782,8 +787,7 @@ COMMENT_QUALITY_SKIP_LOG_PREFIX = "Comment failed the quality contract after "
 
 
 def _gated_comment(draft, post_content, recent_comments: list = None,
-                   user_id: int = None, research_findings: str = None,
-                   ground_specifics: bool = False,
+                   user_id: int = None, ground_specifics: bool = False,
                    surface: str = "comment", prefs: dict = None) -> "str | None":
     """Run a comment `draft(fix_directive)` callable through the quality contract, the similarity
     gate, the slop lint and (opt-in) the fact-grounding check until it passes, and return None when
@@ -795,10 +799,12 @@ def _gated_comment(draft, post_content, recent_comments: list = None,
     with a weaker contract than the one it copied.
 
     Grounding (issue #1834) joins that same contract rather than standing beside it as a second
-    gate: an invented first-person metric is one more entry in the fix-list the next attempt is
-    steered by, and a draft that keeps inventing one is skipped on the SAME budget as a draft that
-    keeps opening on filler. `fact_grounding_severity` decides whether it BLOCKS — HARD on comments,
-    which have no review step to catch it later.
+    gate. `fact_grounding_severity` decides whether it BLOCKS: HARD on comments, which have no
+    review step to catch it later. A blocked draft is first REWRITTEN WITHOUT THE CLAIM (issue
+    #2136, the owner's call): the sentences carrying the invented number are dropped and what is
+    left is graded again. That rewrite ships only when it clears every gate on its own. Otherwise
+    the invented numbers join the fix-list that steers the next attempt, and a draft that keeps
+    inventing one is skipped on the SAME budget as a draft that keeps opening on filler.
 
     `ground_specifics` is opt-in per CALLER, not because the rule is weaker elsewhere, but because
     the allow-list is a property of the call: a fresh feed comment is grounded in a target post the
@@ -810,11 +816,12 @@ def _gated_comment(draft, post_content, recent_comments: list = None,
     Args:
         draft: Callable taking the fix directive and returning the next candidate, or None.
         post_content: The target post — the comment's primary grounding, and a grounding source.
-        recent_comments: The author's recent comments, for the near-duplicate gate.
+        recent_comments: The author's recent comments, for the near-duplicate gate. They are also
+            removed from `post_content` before it grounds a number (issue #2136), because a card
+            that carries our own earlier comment would otherwise launder that comment's claims.
         user_id: Log attribution, and whose story bank backs a first-person specific.
         prefs: The author's engagement preferences, already held by every caller — the
             forbidden-claim list (issue #2047) is read off them here, never fetched per draft.
-        research_findings: The research block actually handed to the writer, if any.
         ground_specifics: Run the #1834 grounding check on this surface.
         surface: The slop-lint surface to grade against — `own_post_comment` for the
             author's own seed/second-wave comments, `comment` for everything else.
@@ -830,10 +837,9 @@ def _gated_comment(draft, post_content, recent_comments: list = None,
     # The author's own forbidden subjects (issue #2047) plus the global floor, resolved ONCE per
     # call from the prefs the caller already holds — no DB read per draft or per attempt.
     forbidden_terms = _story_bank.effective_forbidden_claim_terms(prefs)
-    for attempt in range(1, attempts + 1):
-        candidate = draft(fix_directive)
-        if candidate is None:
-            return None
+
+    def _grade(candidate: str) -> tuple:
+        """Grade one candidate: (failures, blocking specifics, similarity report)."""
         report = _framework.comment_contract_report(candidate, str(post_content or ""))
         similar = _framework.comment_similarity_report(candidate, recent_comments)
         # The SURFACE, not the literal "comment" (issue #2020): the second wave is the author
@@ -841,7 +847,8 @@ def _gated_comment(draft, post_content, recent_comments: list = None,
         # is HARD. Grading it as an ordinary comment let "Your tip … hit home" ship on a post
         # we wrote ourselves.
         slop = _slop.lint_report(candidate, surface, prefs=prefs)
-        invented = (_ungrounded_first_person_metrics(candidate, post_content, research_findings,
+        invented = (_ungrounded_first_person_metrics(candidate, post_content,
+                                                     own_comments=recent_comments,
                                                      user_id=user_id)
                     if checking_specifics else [])
         blocking = invented if severity == _slop.SEVERITY_HARD else []
@@ -853,25 +860,39 @@ def _gated_comment(draft, post_content, recent_comments: list = None,
             log_debug("Comment states first-person specifics nothing supplied backs "
                       f"({', '.join(invented)}) — recorded, not blocking at severity {severity}",
                       user_id=user_id, action_type="comment")
-        if (report["passes"] and not similar["too_similar"] and slop["passes"] and not blocking
-                and not forbidden):
-            return candidate
-        failures = list(report["failures"])
+        found = list(report["failures"])
         if blocking:
-            failures.append(
-                "states first-person specifics that appear in neither the post, the research "
-                f"provided, nor the author's own material ({', '.join(blocking)}) — drop the "
-                "invented numbers rather than rephrasing them")
+            found.append(
+                "states first-person specifics that appear in neither the post nor the author's "
+                f"own material ({', '.join(blocking)}) — drop the invented numbers rather than "
+                "rephrasing them")
         if forbidden:
-            failures.append(
+            found.append(
                 "attaches a figure to a subject the author has forbidden any number for "
                 f"({', '.join(forbidden)}) — remove the number from every sentence naming it")
         if similar["too_similar"]:
-            failures.append(f"near-duplicate of a recent comment ({similar['measure']} similarity "
-                            f"{similar['score']:.2f} > max {similar['threshold']:.2f})")
+            found.append(f"near-duplicate of a recent comment ({similar['measure']} similarity "
+                         f"{similar['score']:.2f} > max {similar['threshold']:.2f})")
         # Slop violations join the SAME retry budget as the contract failures: a comment that keeps
         # tripping either one is skipped rather than posted (issue #625).
-        failures += _slop.violation_reasons(slop["hard"])
+        if not slop["passes"]:
+            found += _slop.violation_reasons(slop["hard"])
+        return found, blocking, similar
+
+    for attempt in range(1, attempts + 1):
+        candidate = draft(fix_directive)
+        if candidate is None:
+            return None
+        failures, blocking, similar = _grade(candidate)
+        if not failures:
+            return candidate
+        # Rewrite without the claim (issue #2136): drop the sentences carrying the invented
+        # numbers and post the rest, when the rest clears every gate on its own.
+        stripped = _story_bank.strip_unsourced_sentences(candidate, blocking) if blocking else None
+        if stripped is not None and not _grade(stripped)[0]:
+            log_debug(f"Comment draft shipped without its invented specifics "
+                      f"({', '.join(blocking)})", user_id=user_id, action_type="comment")
+            return stripped
         log_debug(f"Comment draft rejected (attempt {attempt}/{attempts}): {'; '.join(failures)}",
                   user_id=user_id, action_type="comment")
         if attempt < attempts:
