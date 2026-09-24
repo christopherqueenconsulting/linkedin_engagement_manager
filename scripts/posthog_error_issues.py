@@ -13,6 +13,12 @@ and no GitHub issue carrying its marker. A brand-new issue therefore files on th
 long-running one is filed once and never again — spikes on an already-filed issue are PostHog's own
 alert's job (docs/error-tracking.md), not a second GitHub issue.
 
+Regressions (issue #2110): when every issue carrying the marker is CLOSED and the exception recurs
+more than `REGRESSION_GRACE_HOURS` after the latest close, the close was wrong — a new issue is filed
+that names the closed one as the defect it regresses. Mention-card drift came back twice after #1985
+closed, and group timeouts after #1719, and neither was refiled because a closed marker counted as
+handled forever. The new body carries the same marker, so an open regression dedups like any other.
+
 Second dedup layer, for the trackers this script did NOT write (issue #1083): the marker is invisible
 to a human who opened an issue for the same defect first, so an escalated warning also matches on its
 normalized string. #1063 auto-filed `Selector miss: Comment sort control` while hand-filed #818
@@ -51,6 +57,7 @@ import os
 import re
 import subprocess
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -117,6 +124,9 @@ MIN_SIGNATURE_WORDS = 3
 # can only widen the candidate set, never loosen the match.
 MAX_SEARCH_CHARS = 120
 MATCH_SEARCH_LIMIT = 30
+# A closing PR merges hours before it deploys (releases batch 4x/day), so exceptions from the old code
+# keep arriving after the close. Only a recurrence past this grace counts as a regression.
+REGRESSION_GRACE_HOURS = 24
 
 
 # ─────────────────────────── pure logic (unit-tested) ────────────────────────────
@@ -269,6 +279,49 @@ def search_phrase(signature: str) -> str:
     return phrase.strip()
 
 
+def parse_timestamp(value) -> Optional[datetime]:
+    """An ISO-8601 timestamp from HogQL or `gh` as an aware UTC datetime, or None when unreadable.
+    A naive value is UTC — HogQL returns UTC unless told otherwise."""
+    text = _text(value)
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def regression_of(row: dict, carriers: Optional[list],
+                  grace_hours: int = REGRESSION_GRACE_HOURS) -> Optional[dict]:
+    """The closed issue this row's recurrence regresses, or None when it is not a regression.
+
+    A regression needs EVERY carrier of the marker closed (an open one is the live tracker) and the
+    last occurrence more than `grace_hours` after the LATEST close — the most recent fix is the one
+    that did not hold. That close must also be COMPLETED: `NOT_PLANNED`/`DUPLICATE` is a human saying
+    stop (an expected no-op, a won't-fix, a dup of a hand-filed tracker), not a fix that failed. An
+    unreadable timestamp or state reason is not a regression: that is today's "already filed", and a
+    false regression would file a duplicate on every run.
+    """
+    issues = [c for c in carriers or [] if isinstance(c, dict)]
+    if not issues or any(_text(c.get("state")).upper() != "CLOSED" for c in issues):
+        return None
+    closes = [(parse_timestamp(c.get("closedAt")), c) for c in issues]
+    if any(closed_at is None for closed_at, _ in closes):
+        return None
+    closed_at, latest = max(closes, key=lambda pair: pair[0])
+    if _text(latest.get("stateReason")).upper() != "COMPLETED":
+        return None
+    last_seen = parse_timestamp(row.get("last_seen"))
+    if last_seen is None or last_seen <= closed_at + timedelta(hours=max(0, int(grace_hours))):
+        return None
+    if _issue_number(latest) <= 0:
+        return None
+    return {"number": _issue_number(latest), "closedAt": _text(latest.get("closedAt"))}
+
+
 def _context_lines(row: dict, hours: int) -> list:
     """The occurrence facts shared by a filed body and a comment on an existing tracker."""
     context = [f"- Occurrences (last {hours}h): **{int(row.get('occurrences') or 0)}** across "
@@ -285,18 +338,25 @@ def _context_lines(row: dict, hours: int) -> list:
 
 
 def build_body(row: dict, hours: int = DEFAULT_HOURS, project_id: str = DEFAULT_PROJECT_ID,
-               app_host: str = DEFAULT_APP_HOST) -> str:
+               app_host: str = DEFAULT_APP_HOST, regression: Optional[dict] = None) -> str:
     """The `MODE=start` body the pipeline reads: Why / Scope / Files / Acceptance, plus the marker
-    that makes this run idempotent."""
+    that makes this run idempotent. A `regression` (issue #2110) names the closed issue it regresses,
+    which GitHub also cross-links onto that issue's timeline."""
     issue_id = _text(row.get("issue_id"))
     context = _context_lines(row, hours)
 
-    lines = ["## Why",
-             f"PostHog error tracking grouped this exception into an issue that is still active: "
-             f"**{_text(row.get('name')) or 'Unknown exception'}**",
-             "",
-             f"> {_text(row.get('description')) or '(no message captured)'}",
-             ""]
+    lines = ["## Why"]
+    if regression:
+        lines += [f"**Regression of #{_issue_number(regression)}** — that issue was closed "
+                  f"`{_text(regression.get('closedAt')) or 'unknown'}`, and this exception recurred "
+                  f"after the close. Read what #{_issue_number(regression)} changed first: its fix "
+                  f"did not hold.",
+                  ""]
+    lines += [f"PostHog error tracking grouped this exception into an issue that is still active: "
+              f"**{_text(row.get('name')) or 'Unknown exception'}**",
+              "",
+              f"> {_text(row.get('description')) or '(no message captured)'}",
+              ""]
     lines += context
     lines += ["",
               f"[Open the issue in PostHog]({issue_url(issue_id, project_id, app_host)}) — it has "
@@ -365,14 +425,19 @@ def build_comment(row: dict, existing: dict, hours: int = DEFAULT_HOURS,
 
 
 def plan_actions(rows: list, filed_markers, max_new: int = DEFAULT_MAX_NEW,
-                 existing_matches: Optional[dict] = None) -> list:
+                 existing_matches: Optional[dict] = None,
+                 regressions: Optional[dict] = None) -> list:
     """What this run would do, in order: one `create` per actionable issue that has no GitHub issue
     yet, `comment` where an open issue already tracks the same warning string, `skip` for everything
     else with the reason. Creates are capped at `max_new` so a bad deploy that produces 50 new issues
     does not open 50 tickets in one go — the rest are `deferred` and picked up by the next run.
     Comments are not capped: they add nothing to the backlog, and each one happens once per PostHog
-    issue id because the comment carries the marker."""
-    already = {str(m) for m in (filed_markers or set())}
+    issue id because the comment carries the marker.
+
+    A marker in `regressions` (issue #2110) is filed again even though it is in `filed_markers`: its
+    every carrier is closed and it recurred after the close. The `create` carries `regression_of`."""
+    reopened = regressions or {}
+    already = {str(m) for m in (filed_markers or set())} - set(reopened)
     matches = existing_matches or {}
     seen = set()
     actions = []
@@ -395,7 +460,10 @@ def plan_actions(rows: list, filed_markers, max_new: int = DEFAULT_MAX_NEW,
             actions.append({"action": "deferred", "reason": "max-new reached", "row": row,
                             "marker": key})
         else:
-            actions.append({"action": "create", "row": row, "marker": key})
+            action = {"action": "create", "row": row, "marker": key}
+            if reopened.get(key):
+                action["regression_of"] = reopened[key]
+            actions.append(action)
             created += 1
     return actions
 
@@ -465,6 +533,8 @@ class GitHubIssues:
 
     def __init__(self, repo: str = DEFAULT_REPO) -> None:
         self.repo = repo
+        # marker -> the issues carrying it, so the regression check reuses is_filed's search.
+        self._carriers: dict = {}
 
     def _run(self, args: list) -> subprocess.CompletedProcess:
         return subprocess.run(args, capture_output=True, text=True, timeout=GH_TIMEOUT_SECONDS)
@@ -483,22 +553,28 @@ class GitHubIssues:
             raise RuntimeError("gh issue list returned unparseable JSON")
         return [item for item in found if isinstance(item, dict)]
 
-    def is_filed(self, issue_marker: str) -> bool:
-        """True when ANY issue — open or closed — already carries this marker. Closed counts: a
-        fixed exception that trickles in for another day must not reopen the backlog item.
+    def carriers(self, issue_marker: str) -> list:
+        """Every issue — open or closed — carrying this marker, with `state`, `stateReason`, `closedAt`.
 
         Comments count as well as bodies: when the marker landed on a hand-filed tracker as a comment
         (issue #1083), that thread IS this exception's GitHub issue and must not also get one of its
         own. GitHub's search tokenizes on hyphens, so a UUID marker can match a NEIGHBOURING issue;
         the returned text is re-checked for the literal marker so dedup stays exact."""
-        found = self._search("all", issue_marker, "number,body,comments", MATCH_SEARCH_LIMIT)
-        for item in found:
-            if issue_marker in (item.get("body") or ""):
-                return True
-            for comment in item.get("comments") or []:
-                if isinstance(comment, dict) and issue_marker in (comment.get("body") or ""):
-                    return True
-        return False
+        if issue_marker not in self._carriers:
+            found = self._search("all", issue_marker, "number,body,comments,state,stateReason,closedAt",
+                                 MATCH_SEARCH_LIMIT)
+            self._carriers[issue_marker] = [
+                item for item in found
+                if issue_marker in (item.get("body") or "")
+                or any(isinstance(comment, dict) and issue_marker in (comment.get("body") or "")
+                       for comment in item.get("comments") or [])]
+        return self._carriers[issue_marker]
+
+    def is_filed(self, issue_marker: str) -> bool:
+        """True when ANY issue — open or closed — already carries this marker. Closed counts here: a
+        fixed exception that trickles in for another day must not reopen the backlog item — whether a
+        closed one has REGRESSED is `regression_of`'s call, off the same search."""
+        return bool(self.carriers(issue_marker))
 
     def search_open(self, signature: str) -> list:
         """Open-issue candidates for a warning string. Open only: a CLOSED tracker says the defect
@@ -541,6 +617,22 @@ def filed_markers(github: GitHubIssues, rows: list) -> set:
     return found
 
 
+def closed_regressions(github: GitHubIssues, rows: list, already=None,
+                       grace_hours: int = REGRESSION_GRACE_HOURS) -> dict:
+    """Marker -> the closed issue it regresses, for the filed rows whose every carrier is closed and
+    which recurred past the grace (issue #2110). Reuses `is_filed`'s search, so it costs no call."""
+    filed = {str(m) for m in (already or set())}
+    found: dict = {}
+    for row in rows or []:
+        key = marker(_text(row.get("issue_id")))
+        if key in found or key not in filed or not is_actionable(row):
+            continue
+        regression = regression_of(row, github.carriers(key), grace_hours)
+        if regression:
+            found[key] = regression
+    return found
+
+
 def open_matches(github: GitHubIssues, rows: list, already=None) -> dict:
     """Marker -> the OPEN issue already tracking that warning string, hand-filed or auto-filed.
 
@@ -572,6 +664,9 @@ def apply_actions(github: GitHubIssues, actions: list, dry_run: bool = True) -> 
         # A comment action without a usable issue number falls back to filing: an unaddressable
         # match is the "false miss" case, and a duplicate is the acceptable half of that trade.
         onto = _issue_number(action.get("existing") or {}) if action["action"] == "comment" else 0
+        regression = action.get("regression_of")
+        if regression:
+            title = f"{title} [regression of #{_issue_number(regression)}]"
         if dry_run:
             print(f"  would {f'comment on #{onto}' if onto else 'file'}: {title}")
             continue
@@ -618,15 +713,19 @@ def main(argv: Optional[list] = None) -> int:
     github = GitHubIssues(repo)
     try:
         already = filed_markers(github, rows)
+        regressions = closed_regressions(github, rows, already)
+        # A regressed marker leaves the id layer, so an OPEN tracker quoting it still gets the comment.
+        already -= set(regressions)
         matches = open_matches(github, rows, already)
     except Exception as e:
         print(f"GitHub dedup lookup failed: {e}", file=sys.stderr)
         return 1
 
-    actions = plan_actions(rows, already, args.max_new, matches)
+    actions = plan_actions(rows, already, args.max_new, matches, regressions)
     for action in actions:
         if action["action"] == "create":
-            action["body"] = build_body(action["row"], args.hours, project_id, app_host)
+            action["body"] = build_body(action["row"], args.hours, project_id, app_host,
+                                        action.get("regression_of"))
         elif action["action"] == "comment":
             action["body"] = build_comment(action["row"], action["existing"], args.hours,
                                            project_id, app_host)
