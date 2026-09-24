@@ -16,6 +16,9 @@ Two guards keep it from crying wolf, because a false trip costs the user a real 
   everyone eventually.
 * Days with no posts are dropped BEFORE anything is measured, so a weekend off or a sparse poster is
   not a collapse. `consecutive_days` therefore means consecutive POSTING days, not calendar days.
+* Posts still accruing impressions are dropped too (#2114). The baseline is made of MATURE posts, so
+  a 1-day-old post at 14 impressions against a median of 87 reads as an 84% "drop" that is nothing
+  but age. Only posts at least `min_post_age_hours()` old are compared.
 """
 
 import os
@@ -42,6 +45,9 @@ DEFAULT_BASELINE_DAYS = 14
 # The trailing window has to contain a real sample before it can be called a baseline — a first-week
 # account comparing post #4 against post #1 would trip on nothing but variance.
 DEFAULT_MIN_BASELINE_POSTS = 3
+# A post keeps accruing impressions for days. Measured live (#2114): posts read at ~1.5 days old sat at
+# 14-25 impressions against a mature median of 87, a 75-91% "drop" that was only age.
+DEFAULT_MIN_POST_AGE_HOURS = 72
 # How long the automation pause lasts once tripped. Recovery from a real penalty takes 60-90 days of
 # clean behaviour, and the daily check RE-ARMS this while the tripwire is still set, so in practice
 # it never lapses on its own — a human clears it.
@@ -128,6 +134,19 @@ def min_baseline_posts() -> int:
     return max(1, _env_int("SUPPRESSION_MIN_BASELINE_POSTS", DEFAULT_MIN_BASELINE_POSTS))
 
 
+def min_post_age_hours() -> int:
+    """How old a post must be before its reach is compared against the baseline (floor 0 = off).
+
+    The trend is bucketed by calendar day, so age is judged per DAY: a day counts once it lies at
+    least `ceil(hours / 24)` days before the day being evaluated.
+    """
+    return max(0, _env_int("SUPPRESSION_MIN_POST_AGE_HOURS", DEFAULT_MIN_POST_AGE_HOURS))
+
+
+def _min_post_age_days() -> int:
+    return ceil(min_post_age_hours() / 24)
+
+
 def pause_seconds() -> int:
     """How long a trip pauses engagement, floored at 60s so a bad override cannot make it a no-op.
 
@@ -142,7 +161,7 @@ def history_days() -> int:
     """How far back the caller must read so a full baseline still exists behind the recent run.
     The recent run is counted in POSTING days, so allow generous calendar room for a sparse poster.
     """
-    return baseline_days() + consecutive_days() * 7
+    return baseline_days() + consecutive_days() * 7 + _min_post_age_days()
 
 
 def comment_history_days() -> int:
@@ -234,6 +253,15 @@ def _posting_days(trend: Optional[Iterable[Mapping[str, Any]]]) -> list:
     return days
 
 
+def _split_mature(series: list, as_of: date, min_age_days: int) -> tuple[list, list]:
+    """Split posting days into (mature, too-young), judged against `as_of` in whole days."""
+    if min_age_days <= 0:
+        return series, []
+    newest = (as_of - timedelta(days=min_age_days)).isoformat()
+    mature = [day for day in series if _date(day) <= newest]
+    return mature, [day for day in series if _date(day) > newest]
+
+
 def _comment_signal(comment_quality: Optional[Mapping[str, Any]]) -> dict:
     """The D4 comment-demotion verdict (issue #628) read as a suppression signal. Its own hold only
     stops commenting; sustained demotion of a user's comments is also evidence the ACCOUNT is being
@@ -258,13 +286,14 @@ def _comment_signal(comment_quality: Optional[Mapping[str, Any]]) -> dict:
 
 
 def _reach_signal(trend: Optional[Iterable[Mapping[str, Any]]], *, ratio: float, run_days: int,
-                  window_days: int, min_posts: int) -> dict:
-    series = _posting_days(trend)
+                  window_days: int, min_posts: int, as_of: date, min_age_days: int) -> dict:
+    series, young = _split_mature(_posting_days(trend), as_of, min_age_days)
     signal: dict[str, Any] = {"name": SIGNAL_REACH, "status": STATUS_UNKNOWN, "reason": "", "metric": None,
                               "baseline": None, "baseline_posts": 0, "baseline_days_sampled": 0,
-                              "posting_days": len(series), "recent": [], "max_drop": None}
+                              "posting_days": len(series), "too_young_days": len(young),
+                              "recent": [], "max_drop": None}
     if len(series) <= run_days:
-        signal["reason"] = (f"Only {len(series)} posting day(s) of history — "
+        signal["reason"] = (f"Only {len(series)} mature posting day(s) of history — "
                             f"{run_days + 1} needed before reach can be compared")
         return signal
 
@@ -328,7 +357,8 @@ def _shift_date(iso_date: str, days: int) -> str:
 
 
 def evaluate_suppression(trend: Optional[Iterable[Mapping[str, Any]]],
-                         comment_quality: Optional[Mapping[str, Any]] = None) -> dict:
+                         comment_quality: Optional[Mapping[str, Any]] = None,
+                         as_of: Optional[date] = None) -> dict:
     """Score one user for silent suppression.
 
     `trend` is `post_stats.build_engagement_trend` output (daily buckets, ascending); `comment_quality`
@@ -339,11 +369,16 @@ def evaluate_suppression(trend: Optional[Iterable[Mapping[str, Any]]],
     'watch' never stops anything: it is the signal present but not yet sustained. 'unknown' means we
     could not measure (cold start, sparse posting, no impressions) and is likewise never actioned —
     a tripwire that fires on absent data is worse than no tripwire.
+
+    `as_of` is the day the reading is taken (default today); posting days younger than
+    `min_post_age_hours()` relative to it are left out of the reach comparison entirely.
     """
     ratio, run_days = drop_ratio(), consecutive_days()
     window_days, min_posts = baseline_days(), min_baseline_posts()
+    min_age_hours = min_post_age_hours()
     reach = _reach_signal(trend, ratio=ratio, run_days=run_days, window_days=window_days,
-                          min_posts=min_posts)
+                          min_posts=min_posts, as_of=as_of or date.today(),
+                          min_age_days=ceil(min_age_hours / 24))
     comments = _comment_signal(comment_quality)
     signals = [reach, comments]
     statuses = {signal["status"] for signal in signals}
@@ -362,5 +397,29 @@ def evaluate_suppression(trend: Optional[Iterable[Mapping[str, Any]]],
         "reason": "; ".join(signal["reason"] for signal in triggers if signal["reason"]),
         "signals": signals,
         "config": {"drop_ratio": ratio, "consecutive_days": run_days,
-                   "baseline_days": window_days, "min_baseline_posts": min_posts},
+                   "baseline_days": window_days, "min_baseline_posts": min_posts,
+                   "min_post_age_hours": min_age_hours},
     }
+
+
+def reading_summary(verdict: Mapping[str, Any]) -> str:
+    """One log line for a verdict: the state, the reach median and recent values, and each signal.
+
+    Args:
+        verdict: `evaluate_suppression` output.
+
+    Returns:
+        e.g. `state=watch reach=watch metric=impressions_per_post median=87 recent=[2026-09-01:90,
+        2026-09-02:25] too_young_days=1 comment_demotion=unknown`.
+    """
+    parts = [f"state={verdict.get('status')}"]
+    for signal in verdict.get("signals") or []:
+        if signal.get("name") == SIGNAL_REACH:
+            recent = ", ".join(f"{day.get('date')}:{day.get('value')}"
+                               for day in signal.get("recent") or [])
+            parts += [f"reach={signal.get('status')}", f"metric={signal.get('metric')}",
+                      f"median={signal.get('baseline')}", f"recent=[{recent}]",
+                      f"too_young_days={signal.get('too_young_days', 0)}"]
+        else:
+            parts.append(f"{signal.get('name')}={signal.get('status')}")
+    return " ".join(parts)

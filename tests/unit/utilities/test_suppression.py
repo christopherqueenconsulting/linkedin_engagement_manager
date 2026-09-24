@@ -42,7 +42,8 @@ def _default_thresholds(monkeypatch):
     for name in ("SUPPRESSION_TRIPWIRE_ENABLED", "SUPPRESSION_DROP_RATIO",
                  "SUPPRESSION_CONSECUTIVE_DAYS", "SUPPRESSION_BASELINE_DAYS",
                  "SUPPRESSION_MIN_BASELINE_POSTS", "SUPPRESSION_PAUSE_SECONDS",
-                 "SUPPRESSION_COMMENT_DAYS", "COMMENT_QUALITY_MIN_SAMPLE"):
+                 "SUPPRESSION_COMMENT_DAYS", "COMMENT_QUALITY_MIN_SAMPLE",
+                 "SUPPRESSION_MIN_POST_AGE_HOURS"):
         monkeypatch.delenv(name, raising=False)
     yield
 
@@ -195,7 +196,8 @@ class TestThresholdConfig:
         verdict = sup.evaluate_suppression(_trend([8000] * 10, [4000, 3900, 3800]))
         assert verdict["tripped"] is True
         assert verdict["config"] == {"drop_ratio": 0.4, "consecutive_days": 2,
-                                     "baseline_days": 14, "min_baseline_posts": 3}
+                                     "baseline_days": 14, "min_baseline_posts": 3,
+                                     "min_post_age_hours": 72}
 
     def test_a_percent_shaped_ratio_cannot_disable_the_tripwire(self, monkeypatch):
         monkeypatch.setenv("SUPPRESSION_DROP_RATIO", "70")  # meant 70%, wrote 70
@@ -221,6 +223,83 @@ class TestThresholdConfig:
     def test_pause_seconds_has_a_floor(self, monkeypatch):
         monkeypatch.setenv("SUPPRESSION_PAUSE_SECONDS", "1")
         assert sup.pause_seconds() == 60
+
+
+class TestPostAge:
+    """#2114: a post still accruing impressions is not compared against a mature baseline."""
+
+    def _series(self, recent):
+        # Ten mature baseline days at the live median (87), then the recent run; the last recent day
+        # is the post read one day after it went up.
+        return _trend([87] * 10, recent)
+
+    def _as_of(self, trend, days_after_last: int) -> date:
+        return date.fromisoformat(trend[-1]["date"]) + timedelta(days=days_after_last)
+
+    def test_a_one_day_old_post_at_14_is_not_counted_as_a_drop(self):
+        trend = self._series([85, 90, 14])
+        verdict = sup.evaluate_suppression(trend, as_of=self._as_of(trend, 1))
+        reach = _reach(verdict)
+        assert 14 not in [day["value"] for day in reach["recent"]]
+        assert all(day["date"] != trend[-1]["date"] for day in reach["recent"])
+        assert reach["status"] != sup.STATUS_WATCH
+        assert reach["too_young_days"] >= 1
+
+    def test_the_same_reading_once_mature_still_counts(self):
+        trend = self._series([85, 90, 14])
+        verdict = sup.evaluate_suppression(trend, as_of=self._as_of(trend, 3))
+        reach = _reach(verdict)
+        assert reach["too_young_days"] == 0
+        assert reach["status"] == sup.STATUS_WATCH
+        assert reach["recent"][-1]["date"] == trend[-1]["date"]
+
+    def test_three_young_readings_never_trip(self):
+        trend = self._series([87, 87, 87, 14, 25, 20])
+        verdict = sup.evaluate_suppression(trend, as_of=self._as_of(trend, 0))
+        assert verdict["tripped"] is False
+        assert _reach(verdict)["status"] == sup.STATUS_OK
+        assert _reach(verdict)["too_young_days"] == 3
+
+    def test_age_gate_can_be_switched_off(self, monkeypatch):
+        monkeypatch.setenv("SUPPRESSION_MIN_POST_AGE_HOURS", "0")
+        trend = self._series([85, 90, 14])
+        verdict = sup.evaluate_suppression(trend, as_of=self._as_of(trend, 0))
+        assert _reach(verdict)["too_young_days"] == 0
+        assert _reach(verdict)["status"] == sup.STATUS_WATCH
+
+    def test_age_is_judged_in_whole_days(self, monkeypatch):
+        assert sup.min_post_age_hours() == 72
+        monkeypatch.setenv("SUPPRESSION_MIN_POST_AGE_HOURS", "-5")
+        assert sup.min_post_age_hours() == 0
+
+    def test_history_window_leaves_room_for_the_young_days(self, monkeypatch):
+        with_gate = sup.history_days()
+        monkeypatch.setenv("SUPPRESSION_MIN_POST_AGE_HOURS", "0")
+        assert with_gate == sup.history_days() + 3
+
+    def test_default_as_of_is_today(self):
+        today = date.today()
+        trend = [_day(-offset, impressions=87, start=today.isoformat()) for offset in range(14, 0, -1)]
+        trend.append(_day(0, impressions=14, start=today.isoformat()))
+        verdict = sup.evaluate_suppression(trend)
+        assert _reach(verdict)["too_young_days"] == 3
+        assert verdict["config"]["min_post_age_hours"] == 72
+
+
+class TestReadingSummary:
+    def test_carries_state_median_and_recent_values(self):
+        trend = _trend([87] * 10, [85, 90, 14])
+        verdict = sup.evaluate_suppression(trend, as_of=date(2026, 8, 1))
+        line = sup.reading_summary(verdict)
+        assert line.startswith("state=watch ")
+        assert "median=87" in line
+        assert "reach=watch" in line
+        assert "recent=[2026-07-11:85.0, 2026-07-12:90.0, 2026-07-13:14.0]" in line
+        assert "comment_demotion=unknown" in line
+
+    def test_an_unmeasured_verdict_still_summarises(self):
+        line = sup.reading_summary(sup.evaluate_suppression([]))
+        assert "state=unknown" in line and "median=None" in line and "recent=[]" in line
 
 
 class TestTripRecord:

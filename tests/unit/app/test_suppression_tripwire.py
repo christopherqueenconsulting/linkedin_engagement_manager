@@ -60,6 +60,7 @@ class _Harness:
         self.track = es.enter_context(
             patch("cqc_lem.utilities.observability.track_suppression_check"))
         self.critical = es.enter_context(patch("cqc_lem.utilities.logger.log_critical"))
+        self.info = es.enter_context(patch("cqc_lem.utilities.logger.log_info"))
 
     def run(self):
         from cqc_lem.app.run_scheduler import auto_suppression_tripwire
@@ -108,6 +109,21 @@ class TestTrip:
             h = _Harness(es, _rows(8500, 340, baseline_days=1))
             result = h.run()
         assert "0 newly tripped" in result and not h.pause.called
+
+
+class TestReadingLog:
+    """#2114: every daily reading lands in the prod log, not PostHog alone."""
+
+    def test_each_user_logs_median_recent_values_and_state(self):
+        with ExitStack() as es:
+            h = _Harness(es, _rows(8500, 8400), users=(1, 2))
+            h.run()
+        lines = [c.args[0] for c in h.info.call_args_list if "Suppression reading" in c.args[0]]
+        assert len(lines) == 2
+        assert "state=ok" in lines[0]
+        assert "median=8500" in lines[0]
+        assert "recent=[" in lines[0] and ":8400" in lines[0]
+        assert h.info.call_args_list[0].kwargs["task_name"] == "auto_suppression_tripwire"
 
 
 class TestStandingTrip:
