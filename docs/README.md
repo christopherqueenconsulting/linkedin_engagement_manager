@@ -55,6 +55,7 @@ index and the `CLAUDE.md` row that points at it, or the pointer becomes a dead e
 - [Event-driven reply notifications](REPLY_NOTIFICATIONS.md) — the forwarded-email reply path and its modes
 - [LinkedIn re-index playbook](linkedin-reindex-playbook.md) — what to do when LinkedIn stops surfacing the account's posts
 - [Engagement growth analysis — July 2026](engagement-growth-analysis-2026-07.md) — the low-engagement audit that produced issues #616-630
+- [LEM system audit — 2026-09-10 → 09-24](audits/lem-system-audit-2026-09.md) — full two-week evidence-verified audit, gauntlet-reviewed; produced Milestones 30-31 (#2092-#2117 plus 7 reopened regressions)
 - [Settings & configuration — research + IA proposal](SETTINGS_IA_RESEARCH.md) — how the engagement-preferences surface should be organised
 
 ## LinkedIn session, anti-bot & Selenium
