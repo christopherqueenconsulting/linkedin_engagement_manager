@@ -711,6 +711,17 @@ a comment landed there, so an empty feed still moves to the back of the line. A 
 causes the walk to SKIP is left untouched, so it sorts to the front next run instead of being
 skipped again.
 
+**The run is sized to its budget (issue #2134).** Rotation made the skipping fair but not rare: 25
+enabled groups against a ~50-minute budget reached 4-5 per run, so "ran out of time" still fired in
+11 of 14 runs (audit 2026-09-10 → 09-24, A-11) — a planned outcome reported as an anomaly.
+`_plan_group_walk` now sets out only for the rotation's head the budget fits at
+`GROUP_WALK_SECONDS_PER_GROUP` (5 min) apiece, always at least one; the rest are deferred at DEBUG
+and lead the next run. `_group_share_deadline` hands each group an even share of what is LEFT as
+its `deadline_ts`, so a stalling feed cannot spend the later groups' time and a fast one donates
+its surplus. Fewer navigations per Chrome session also means less renderer memory, the cause of
+the walk's "Browser tab crashed" stops. The "ran out of time" warning survives only as the signal
+that a group overran its share by more than the reserve — a real defect when it repeats.
+
 ## Weekly group post — draft, preview, publish (issue #932)
 
 A group post used to be written and published inside ONE Selenium run, so the only thing the user
