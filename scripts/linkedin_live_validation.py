@@ -3071,6 +3071,30 @@ def mention_cards_read() -> tuple:
     return (_mention_cards, "image")
 
 
+# `_MENTION_STAMP_RE`, carried for the same reason as the climb above: the running image dates a
+# mention off the WHOLE card, so grading this branch's stamp-only read (#2142) before it ships needs
+# the pattern here. Byte-identical to the shipped one, or it grounds a read nothing ships.
+FALLBACK_MENTION_STAMP_PATTERN = (
+    r"(?:^|[•·|])[ \t]*(\d{1,3}[ \t]*"
+    r"(?:mo(?:nths?)?|min(?:utes?)?|h(?:ours?)?|d(?:ays?)?|w(?:eeks?)?|y(?:ears?)?|m))\s*\Z")
+FALLBACK_MENTION_STAMP_FLAGS = re.IGNORECASE | re.MULTILINE
+
+
+def _carried_mention_stamp(text: str) -> str:
+    """`_mention_stamp`'s answer without the image: the card's own stamp, or '' to skip it."""
+    match = re.search(FALLBACK_MENTION_STAMP_PATTERN, text or "", FALLBACK_MENTION_STAMP_FLAGS)
+    return match.group(1) if match else ""
+
+
+def mention_stamp_read() -> tuple:
+    """(the mention stamp read to drive, where it came from)."""
+    try:
+        from cqc_lem.app.engagement.outreach import _mention_stamp
+    except ImportError:
+        return (_carried_mention_stamp, "script")
+    return (_mention_stamp, "image")
+
+
 def mentions_page_read() -> tuple:
     """(the mentions cross-check to drive, where it came from)."""
     try:
@@ -3097,7 +3121,8 @@ def appreciation_verdict(reading: dict) -> str:
     # THIS BRANCH's read against the live DOM (which is the point of running it before the merge),
     # not the reader currently deployed.
     note = (" [read carried by this script — the running image predates it]"
-            if "script" in (reading.get("read_source"), reading.get("card_source")) else "")
+            if "script" in (reading.get("read_source"), reading.get("card_source"),
+                            reading.get("stamp_source")) else "")
     if not cards and reading.get("page_dated"):
         return (f"ZERO cards resolved on a page that renders dated recommendations "
                 f"({reading.get('profile_anchors') or 0} profile link(s) on it) — the card read has "
@@ -3172,7 +3197,6 @@ def probe_appreciation_sources(driver, user_id: int, profile_url: str = "",
         _MENTION_ACTOR_LOCATORS,
         _MENTION_TEXT_RE,
         _MENTIONS_URL,
-        _RELATIVE_AGE_RE,
         _card_person,
         _card_text,
         _mention_actor_name,
@@ -3186,19 +3210,11 @@ def probe_appreciation_sources(driver, user_id: int, profile_url: str = "",
     from cqc_lem.utilities.linkedin.helper import clean_person_name
 
     lookback = appreciation_lookback_days()
-
-    def _age_evidence(text: str) -> str:
-        """The exact token the age was read from.
-
-        It is what tells a card's own notification timestamp apart from a number in the post it
-        quotes.
-
-        A mention card carries the whole quoted comment, so "2h" (the stamp) and "5m" (somebody's
-        ARR) are both in scope for the same regex, and an age read off the wrong one is how a
-        two-year-old mention gets DMed as today's.
-        """
-        match = _RELATIVE_AGE_RE.search(text or "")
-        return match.group(0).strip() if match else ""
+    # A mention card carries the whole quoted comment, so "2h" (the stamp) and "5m" (somebody's ARR)
+    # are both in it, and an age read off the wrong one is how a two-year-old mention gets DMed as
+    # today's. Production reads only the stamp (#2142); the probe drives that same read and reports
+    # the exact token it returned as `age_read_from` — '' means the card was skipped as undated.
+    mention_stamp, stamp_source = mention_stamp_read()
 
     def _read(url: str, read_cards, person_locators, age_of, event_type: str,
               require=None, name_of=None, page_native=None) -> dict:
@@ -3221,7 +3237,7 @@ def probe_appreciation_sources(driver, user_id: int, profile_url: str = "",
                 name = name_of(text)
             rows.append({"profile_url": person_url, "name": name,
                          "age_days": None if age_days is None else round(age_days, 2),
-                         "age_read_from": _age_evidence(text),
+                         "age_read_from": mention_stamp(text),
                          "in_window": age_days is not None and age_days <= lookback,
                          # Already thanked = production skips it even when everything else resolves.
                          "already_thanked": bool(person_url) and has_appreciation_touch(
@@ -3233,6 +3249,7 @@ def probe_appreciation_sources(driver, user_id: int, profile_url: str = "",
                    # names its own read: a green pass driven by the carried copy grounds THIS
                    # BRANCH, not the reader currently deployed.
                    "card_source": card_source,
+                   "stamp_source": stamp_source,
                    "people": [r for r in rows if r["in_window"] and r["profile_url"]
                               and not r["already_thanked"]],
                    "rows": rows[:10]}
@@ -3303,7 +3320,7 @@ def probe_appreciation_sources(driver, user_id: int, profile_url: str = "",
             "state": STATE_UNKNOWN,
             "verdict": "own profile URL unresolved — production skips the recommendations scan"}
     report["mentions"] = _read(_MENTIONS_URL, mention_cards_read(), _MENTION_ACTOR_LOCATORS,
-                               _parse_relative_age_days, "collaboration",
+                               lambda t: _parse_relative_age_days(mention_stamp(t)), "collaboration",
                                require=lambda t: bool(_MENTION_TEXT_RE.search(t or "")),
                                name_of=_mention_actor_name, page_native=mentions_page_read())
     # Taken while the driver is still ON the mentions page, and only when the walk came back empty:

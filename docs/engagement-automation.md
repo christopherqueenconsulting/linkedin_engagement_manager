@@ -945,8 +945,10 @@ empty-dict stubs, so only new connections ever produced a DM and the
   its own timestamp, and `$5m ARR` clears a `\b` just like `2h` does — so a word-boundary match
   would read a two-year-old mention as posted minutes ago and thank the person for it.
   `_RELATIVE_AGE_RE` requires start-of-text or a whitespace/bullet/bracket before the digits.
-  Prose that still parses ("10 years of experience") can only push the age OUT of the window, and
-  out of the window means skip — the safe direction on a surface that DMs real people.
+  Standalone is still not enough on a mention card, whose text is the WHOLE quoted comment ("we hit
+  5m ARR" is a standalone `5m`), so since #2142 a mention is dated only by `_mention_stamp`: the
+  age token that ends the card on its own line or after a bullet, which is where the live stamp
+  sits (`docs/sdui-selenium-notes.md`). No stamp there means skip — never a whole-card fallback.
 - **The stock `collaboration` template says what fired it.** A mention, not a project: *"thanks for
   the mention — genuinely appreciated. What are you working on at the moment?"*. It is the code
   DEFAULT only — a user who customized the template in `dm_templates` keeps theirs.

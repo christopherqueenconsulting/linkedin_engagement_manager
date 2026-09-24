@@ -740,6 +740,16 @@ _RELATIVE_AGE_RE = re.compile(
     r"(?:^|(?<=[\s•·|(\[]))(\d{1,3})\s*"
     r"(mo(?:nths?)?|min(?:utes?)?|h(?:ours?)?|d(?:ays?)?|w(?:eeks?)?|y(?:ears?)?|m)\b",
     re.IGNORECASE)
+# The mention card's OWN stamp, never a token from the comment it quotes (#2142). The live card
+# (2026-09-24) is ~1.5k chars: "<Actor> mentioned you…", the whole quoted comment, "2 reactions •
+# 4 comments", and only then the stamp, alone on the LAST line in an unnamed <span> — no <time>, no
+# attribute to key on. So the age is read only where the stamp sits: the end of the card, opening
+# its own line or following a bullet. A card that ends any other way has no readable stamp and is
+# SKIPPED; it is never dated from the quoted text, where "5m ARR" would read as minutes ago.
+_MENTION_STAMP_RE = re.compile(
+    r"(?:^|[•·|])[ \t]*(\d{1,3}[ \t]*"
+    r"(?:mo(?:nths?)?|min(?:utes?)?|h(?:ours?)?|d(?:ays?)?|w(?:eeks?)?|y(?:ears?)?|m))\s*\Z",
+    re.IGNORECASE | re.MULTILINE)
 # Anything under a day is "today" for a lookback measured in days.
 _RELATIVE_AGE_UNIT_DAYS = (("mo", 30.0), ("min", 0.0), ("h", 0.0), ("d", 1.0), ("w", 7.0),
                            ("y", 365.0), ("m", 0.0))
@@ -786,6 +796,16 @@ def _parse_relative_age_days(text: str) -> "float | None":
         if unit.startswith(prefix):
             return float(amount) * days
     return None
+
+
+def _mention_stamp(text: str) -> str:
+    """The mention card's own age stamp ('9h'), or '' when the card does not end in one.
+
+    Read ONLY off the end of the card, so a number in the quoted comment can never date it. ''
+    means SKIP, exactly like an unreadable age.
+    """
+    match = _MENTION_STAMP_RE.search(text or "")
+    return match.group(1) if match else ""
 
 
 def _card_person(card: WebElement, locators: list) -> tuple:
@@ -999,7 +1019,7 @@ def get_recent_collaborators(driver, wait, user_id: int = None) -> dict[str, str
         text = _card_text(card)
         if not _MENTION_TEXT_RE.search(text):
             continue
-        age_days = _parse_relative_age_days(text)
+        age_days = _parse_relative_age_days(_mention_stamp(text))
         if age_days is None or age_days > lookback:
             continue
         url, name = _card_person(card, _MENTION_ACTOR_LOCATORS)
