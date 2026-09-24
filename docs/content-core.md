@@ -231,12 +231,27 @@ Two more things the allow-list honours so a real figure is never held as invente
 last grade named as unbacked and the author left in place stays held (`_recorded_unbacked_specifics`);
 only the numbers they changed or added are credited to them.
 
-### Occasion / milestone archetypes (issue #1074)
+### Occasion / milestone archetypes (issues #1074, #2140)
 
-Two more archetypes live in the same `POST_FORMATS` menu — `project_launch` and
-`educational_milestone` — and they are the only ones nothing may pick automatically. LinkedIn's
-native "Celebrate an occasion" composer (Start a post → More → Celebrate an occasion) creates an
-entity the REST API has no equivalent for, so these drafts are written by LEM and published BY HAND.
+Five more archetypes live in the same `POST_FORMATS` menu — `project_launch`,
+`educational_milestone`, `new_certification`, `new_position` and `work_anniversary` — and they are
+the only ones nothing may pick automatically. LinkedIn's native "Celebrate an occasion" composer
+(Start a post → More → Celebrate an occasion) creates an entity the REST API has no equivalent for,
+so these drafts are written by LEM and published BY HAND.
+
+**One archetype per picker row (#2140).** #1074 shipped two; LinkedIn's "Select occasion" picker
+offers five (`Project launch / Work anniversary / New position / New educational milestone / New
+certification`, live 2026-09-14). All three missing rows were ADDED rather than skipped, per
+archetype:
+
+- `new_certification` — added, and `educational_milestone` narrowed to degrees, courses and
+  programmes. Before this, a certification was drafted as an `educational_milestone` and published
+  under LinkedIn's *educational milestone* occasion: the wrong row for a real credential. It is the
+  row the #1012 hazard is about, so its label is the two-word `new certification` — the bare word
+  is what the neighbours' descriptions carry.
+- `new_position` and `work_anniversary` — added. Both are real, dated, author-named events with the
+  same fact-anchored contract (the writer may state only the title, organisation and span the author
+  gave), so leaving them out only sent the author to write those by hand.
 
 - **Off the automatic menu.** `_rotatable()` drops anything marked `occasion` from the three places
   a shape is chosen without a human: `select_blueprint`'s rotation, `enforce_variety`'s repair, and
@@ -287,8 +302,10 @@ the group composer opens the same control and a second copy is drift waiting to 
   excludes `manual_publish` rows (re-queueing one would publish through the API the very post that
   exists because the API cannot carry it).
 - **The occasion TYPE is an exact allow-list.** `OCCASION_TYPE_LABELS` maps each archetype to its
-  own label and nothing near it: "Certification" sits next to "Educational milestone" in LinkedIn's
-  menu, and clicking it publishes a claim the author never made (#1012). A type that does not
+  own label and nothing near it: "New certification" sits next to "New educational milestone" in
+  LinkedIn's menu, and clicking the wrong one publishes a claim the author never made (#1012). Each
+  label is a phrase in its OWN row's title and in no neighbour's title or description, and the unit
+  tests pick every archetype off the live five-row picker in every rotation of its order. A type that does not
   resolve aborts the run; it never settles for the neighbour, and never falls through to publish the
   body as an ordinary update — which is the post #1074 exists to avoid.
 

@@ -45,14 +45,15 @@ class TestTheArchetypeMap:
     def test_no_label_names_a_neighbouring_occasion(self):
         """The allow-list is exact on purpose (#1012).
 
-        'Certification' and 'New position' are other people's announcements; matching one of them
-        publishes it.
+        An occasion the picker offers but LEM does not map is somebody else's announcement; matching
+        one of them publishes it.
         """
-        forbidden = ("certification", "new position", "work anniversary", "new skill",
-                     "welcome to the team", "job search")
+        forbidden = ("new skill", "welcome to the team", "job search")
         for labels in sc.OCCASION_TYPE_LABELS.values():
             for label in labels:
                 assert not any(bad in label for bad in forbidden)
+                # A bare word is what a neighbour's description carries (#2140).
+                assert len(label.split()) >= 2
 
     def test_an_unmapped_archetype_resolves_nothing(self):
         assert sc.occasion_type_labels(()) == []
@@ -526,15 +527,57 @@ class TestTheSeptember2026Reground:
         assert launch is options[2]
         assert milestone is options[3]
 
-    def test_an_archetype_with_no_row_resolves_nothing_on_that_screen(self):
-        """The picker offers five occasions and this map maps two — the other three stay unclickable.
+    # The live "Select occasion" picker as the 2026-09-14 probe read it (#2067): title and
+    # description in ONE node, so every pick goes through the word-bounded fallback.
+    _LIVE_PICKER = {
+        "project_launch": "Project launch Share a new project milestone.",
+        "work_anniversary": "Work anniversary Work anniversary",
+        "new_position": "New position Share a job update.",
+        "educational_milestone": "New educational milestone Share an educational milestone.",
+        "new_certification": "New certification Celebrate a new certification.",
+    }
+
+    @pytest.mark.parametrize("closer", ["Next", "Done"])
+    def test_the_template_chooser_is_passed_on_either_live_closer(self, closer):
+        """#2140: "Project launch" ends the chooser with Next, the other four with Done.
+
+        Matched exactly, so Dismiss and Back — the controls beside it — are never the pick.
+        """
+        closing = self._control("button", closer)
+        container = self._container([self._control("button", "Dismiss"),
+                                     self._control("button", "Add a photo"),
+                                     self._control("button", "Back"), closing])
+
+        assert sc.TEMPLATE_CHOOSER_NEXT_LABELS[0] == "next"
+        assert sc.find_composer_control(container, sc.TEMPLATE_CHOOSER_NEXT_LABELS,
+                                        exact=True) is closing
+
+    def test_the_map_covers_every_row_of_the_picker(self):
+        assert set(sc.OCCASION_TYPE_LABELS) == set(self._LIVE_PICKER)
+
+    @pytest.mark.parametrize("archetype", sorted(_LIVE_PICKER))
+    @pytest.mark.parametrize("rotation", range(5))
+    def test_each_archetype_resolves_to_exactly_its_own_row(self, archetype, rotation):
+        """#2140/#1012: every row resolves to itself in any document order, never one row over."""
+        keys = sorted(self._LIVE_PICKER)
+        keys = keys[rotation:] + keys[:rotation]
+        rows = {key: self._control("div", self._LIVE_PICKER[key]) for key in keys}
+        container = self._container([rows[key] for key in keys])
+
+        picked = sc.find_composer_control(
+            container, sc.occasion_type_labels(sc.OCCASION_TYPE_LABELS[archetype]))
+
+        assert picked is rows[archetype]
+
+    @pytest.mark.parametrize("archetype", sorted(_LIVE_PICKER))
+    def test_an_archetype_whose_row_is_gone_resolves_nothing(self, archetype):
+        """With its own row missing, the four neighbours must all stay unclickable.
 
         A walk that settled for one would publish a claim about the author nobody made.
         """
-        container = self._container([
-            self._control("div", "Work anniversary Work anniversary"),
-            self._control("div", "New position Share a job update.")])
+        container = self._container([self._control("div", text)
+                                     for key, text in self._LIVE_PICKER.items()
+                                     if key != archetype])
 
-        assert sc.find_composer_control(container,
-                                        sc.occasion_type_labels(
-                                            sc.OCCASION_TYPE_LABELS["project_launch"])) is None
+        assert sc.find_composer_control(
+            container, sc.occasion_type_labels(sc.OCCASION_TYPE_LABELS[archetype])) is None

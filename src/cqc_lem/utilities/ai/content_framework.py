@@ -494,10 +494,11 @@ POST_FORMATS: dict = {
     },
     "educational_milestone": {
         "label": "Educational Milestone",
-        "guidance": ("Mark a credential, certification, course or programme the author actually "
-                     "completed — and make the POST about what it changed in their work, not about "
-                     "the certificate. The milestone earns the reader's attention; the transferable "
-                     "lesson is what earns the read."),
+        "guidance": ("Mark a degree, course or programme the author actually completed — and make "
+                     "the POST about what it changed in their work, not about the diploma. The "
+                     "milestone earns the reader's attention; the transferable lesson is what earns "
+                     "the read. A certification is `new_certification`: LinkedIn files the two "
+                     "under different occasions (#2140)."),
         "structure": [
             "Hook in the assigned hook style — name the milestone plainly, no fanfare",
             "What it took, in one or two honest lines (the real hours, the hard part)",
@@ -510,13 +511,69 @@ POST_FORMATS: dict = {
         "stage": "awareness",
         "fact_anchored": True,
     },
+    # #2140: the other three rows of LinkedIn's "Select occasion" picker. Same contract as the two
+    # above — author-seeded, fact-anchored, never on the rotation menu — because each one is a
+    # public claim about the author's life.
+    "new_certification": {
+        "label": "New Certification",
+        "guidance": ("Mark a certification or licence the author actually EARNED — named exactly "
+                     "as the issuer names it. Make the POST about the one skill it proved or "
+                     "changed in their work, not about the badge. Never imply a credential the "
+                     "author did not state."),
+        "structure": [
+            "Hook in the assigned hook style — name the certification and its issuer plainly",
+            "What it took, in one or two honest lines (the real prep, the part that was hard)",
+            "The ONE thing it changed about how the author works, stated specifically",
+            "Who else it is worth it for — and who can skip it",
+            "CTA in the assigned CTA style",
+        ],
+        "occasion": True,
+        "stage": "awareness",
+        "fact_anchored": True,
+    },
+    "new_position": {
+        "label": "New Position",
+        "guidance": ("Announce a role the author ACTUALLY started — title and organisation exactly "
+                     "as given. Lead with the work they will be doing and for whom, not with how "
+                     "thrilled they are. Never invent a title, an employer, a team or a start "
+                     "date."),
+        "structure": [
+            "Hook in the assigned hook style — the new role and where, in plain words",
+            "What the role is actually for: the problem the author is there to work on",
+            "Why this move, in one honest line — what drew them to it",
+            "What the people they serve can now come to them for",
+            "Who to thank, named, when there is genuinely someone",
+            "CTA in the assigned CTA style",
+        ],
+        "occasion": True,
+        "stage": "awareness",
+        "fact_anchored": True,
+    },
+    "work_anniversary": {
+        "label": "Work Anniversary",
+        "guidance": ("Mark a real anniversary — the exact span the author gave, at the organisation "
+                     "they named. The span earns the attention; what the years TAUGHT is the post. "
+                     "No generic gratitude montage, and never a number of years, clients or "
+                     "projects the author did not state."),
+        "structure": [
+            "Hook in the assigned hook style — the span and the place, plainly",
+            "The one thing that is different now from day one, stated specifically",
+            "One lesson the time earned that the reader can use without having been there",
+            "Who made it possible, named, when there is genuinely someone",
+            "CTA in the assigned CTA style",
+        ],
+        "occasion": True,
+        "stage": "awareness",
+        "fact_anchored": True,
+    },
 }
 
 # The `occasion_milestone` family (issue #1074). These archetypes are OFF the automatic menu: they
 # announce a real, dated event (~1/month by design), so a rotation that could pick one would invent
 # a launch nobody shipped. They are reachable only when a caller NAMES one —
 # `preferred_formats=[...]` or an explicit guidance hint.
-OCCASION_FORMAT_KEYS: tuple = ("project_launch", "educational_milestone")
+OCCASION_FORMAT_KEYS: tuple = ("project_launch", "educational_milestone", "new_certification",
+                               "new_position", "work_anniversary")
 
 # Post CTAs: the conversation-driving newsletter CTA styles apply verbatim to posts (shared object
 # references — ONE definition), minus the subscribe-focused ones, plus a save-focused close that

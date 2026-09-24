@@ -28,7 +28,9 @@ pytestmark = pytest.mark.unit
 class TestOccasionFamily:
     def test_both_archetypes_are_registered(self):
         assert occasion_formats("post") == list(OCCASION_FORMAT_KEYS)
-        assert set(OCCASION_FORMAT_KEYS) == {"project_launch", "educational_milestone"}
+        assert set(OCCASION_FORMAT_KEYS) == {"project_launch", "educational_milestone",
+                                             "new_certification", "new_position",
+                                             "work_anniversary"}
 
     @pytest.mark.parametrize("key", OCCASION_FORMAT_KEYS)
     def test_each_carries_a_structure_and_the_occasion_flag(self, key):
@@ -47,6 +49,8 @@ class TestOccasionFamily:
     def test_stage_differs_by_archetype(self):
         assert occasion_stage("post", "project_launch") == "decision"
         assert occasion_stage("post", "educational_milestone") == "awareness"
+        for key in ("new_certification", "new_position", "work_anniversary"):
+            assert occasion_stage("post", key) == "awareness"
         # An unknown key falls back rather than raising — stage never blocks a draft.
         assert occasion_stage("post", "not_a_format") == "awareness"
 

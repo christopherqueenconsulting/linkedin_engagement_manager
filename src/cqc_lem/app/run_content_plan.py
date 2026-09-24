@@ -2471,6 +2471,9 @@ def regenerate_post_task(post_id: int, guidance: str = None):
 _OCCASION_STORY_KINDS: dict = {
     "project_launch": "artifact",
     "educational_milestone": "anecdote",
+    "new_certification": "anecdote",
+    "new_position": "anecdote",
+    "work_anniversary": "anecdote",
 }
 
 

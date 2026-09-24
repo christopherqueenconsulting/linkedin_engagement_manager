@@ -4257,8 +4257,11 @@ _CARRIED_OCCASION_ENTRY_LABELS = ("celebrate an occasion", "celebration", "celeb
 _CARRIED_OCCASION_MORE_LABELS = ("more", "expand content types")
 _CARRIED_POST_BUTTON_LABELS = ("post",)
 _CARRIED_OCCASION_TYPE_LABELS = {"project_launch": ("project launch",),
-                                 "educational_milestone": ("educational milestone",)}
-_CARRIED_TEMPLATE_CHOOSER_NEXT_LABELS = ("next",)
+                                 "educational_milestone": ("educational milestone",),
+                                 "new_certification": ("new certification",),
+                                 "new_position": ("new position",),
+                                 "work_anniversary": ("work anniversary",)}
+_CARRIED_TEMPLATE_CHOOSER_NEXT_LABELS = ("next", "done")
 
 
 # Containers a LinkedIn overlay is PLAUSIBLY mounted in, none of them `role='dialog'`. The point is
@@ -4887,7 +4890,15 @@ def _occasion_composer_chains() -> tuple:
         post = chain(sc.POST_BUTTON_LABELS, _CARRIED_POST_BUTTON_LABELS)
         template_next = chain(sc.TEMPLATE_CHOOSER_NEXT_LABELS,
                               _CARRIED_TEMPLATE_CHOOSER_NEXT_LABELS)
-        return (entry, more, post, dict(sc.OCCASION_TYPE_LABELS),
+        # The type map is unioned PER ARCHETYPE, never per label: an archetype this branch adds
+        # (#2140) has to reach `type_hits` before it ships, but a carried label is never appended to
+        # a row the image already maps — that would widen a shipped row to a neighbour (#1012).
+        types = dict(sc.OCCASION_TYPE_LABELS)
+        for key, labels in _CARRIED_OCCASION_TYPE_LABELS.items():
+            if key not in types:
+                types[key] = labels
+                added.append(key)
+        return (entry, more, post, types,
                 sc.COMPOSER_AFFORDANCE_CSS, sc.COMPOSER_EDITOR_CSS,
                 template_next, "image+script" if added else "image")
     except Exception:

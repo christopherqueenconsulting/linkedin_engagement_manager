@@ -2460,6 +2460,27 @@ class TestOccasionComposerProbe:
         assert "celebration" in entry
         assert "expand content types" in more
 
+    def test_a_carried_archetype_reaches_the_type_map_without_widening_a_shipped_row(
+            self, monkeypatch):
+        """#2140: an archetype this branch adds is asked about pre-merge; a shipped row is never
+        extended with a carried label, because that is how a row reaches its neighbour (#1012).
+        """
+        _fake_share_composer(monkeypatch,
+                             OCCASION_ENTRY_LABELS=llv._CARRIED_OCCASION_ENTRY_LABELS,
+                             OCCASION_MORE_LABELS=llv._CARRIED_OCCASION_MORE_LABELS,
+                             POST_BUTTON_LABELS=llv._CARRIED_POST_BUTTON_LABELS,
+                             OCCASION_TYPE_LABELS={"project_launch": ("launch of a project",)},
+                             COMPOSER_AFFORDANCE_CSS="button",
+                             COMPOSER_EDITOR_CSS="[role='textbox']",
+                             TEMPLATE_CHOOSER_NEXT_LABELS=llv._CARRIED_TEMPLATE_CHOOSER_NEXT_LABELS)
+
+        _entry, _more, _post, types, _css, _editor, _next, source = llv._occasion_composer_chains()
+
+        assert source == "image+script"
+        assert types["project_launch"] == ("launch of a project",)
+        assert types["new_certification"] == ("new certification",)
+        assert set(types) == set(llv._CARRIED_OCCASION_TYPE_LABELS)
+
     def test_an_image_that_already_has_every_label_still_reads_as_the_image(self, monkeypatch):
         _fake_share_composer(
             monkeypatch,

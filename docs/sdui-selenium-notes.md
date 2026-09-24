@@ -887,13 +887,17 @@ New educational milestone Share an educational milestone.
 New certification         Celebrate a new certification.
 ```
 
-`OCCASION_TYPE_LABELS` maps two of those five and is never widened to a third: `New certification`
-sits one row from `New educational milestone`, and clicking it publishes a claim about the author
-nobody made (#1012). The word-bounded match reaches `project launch` and `educational milestone`
-inside the longer strings without touching either neighbour.
+`OCCASION_TYPE_LABELS` maps all five since #2140, each on a two-word phrase from its own row's title
+(`project launch`, `work anniversary`, `new position`, `educational milestone`, `new certification`)
+that no neighbour's title or description contains. `New certification` sits one row from `New
+educational milestone`, and clicking the wrong one publishes a claim about the author nobody made
+(#1012) — so a label is never shortened to a bare word (`certification`, `milestone`), which is
+exactly what a neighbour's description carries.
 
-Past the picker the 2026-08-24 template chooser is unchanged (`Dismiss / Add a photo / Back /
-Next`), so the guard boundary in the section above still applies: `ok` here means the route resolved
+Past the picker the 2026-08-24 template chooser is unchanged for `Project launch` (`Dismiss / Add a
+photo / Back / Next`); the other four occasions (re-read 2026-09-24, #2140) end the same screen with
+`Done` instead of `Next`, which is why `TEMPLATE_CHOOSER_NEXT_LABELS` is the chain `next`, `done`.
+The guard boundary in the section above still applies to both: `ok` here means the route resolved
 as far as that chooser.
 
 ## The comment composer has no `<form>`

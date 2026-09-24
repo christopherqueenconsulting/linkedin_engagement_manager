@@ -12,8 +12,9 @@ import { maskProps } from '../../utils/analytics'
 const POST_TYPES = ['TEXT', 'VIDEO', 'CAROUSEL'] as const
 type PostType = typeof POST_TYPES[number]
 
-// The occasion archetypes LEM can draft (issue #1074) — mirrors content_framework's occasion
-// family. Both publish through LinkedIn's native composer, which is why they are not post types.
+// The occasion archetypes LEM can draft (issues #1074, #2140) — mirrors content_framework's
+// occasion family. All publish through LinkedIn's native composer, which is why they are not post
+// types.
 const OCCASION_TYPES = [
   {
     value: 'project_launch',
@@ -23,9 +24,27 @@ const OCCASION_TYPES = [
   },
   {
     value: 'educational_milestone',
-    label: 'Certification / course completed',
-    hint: 'A credential you actually earned — and the one thing it changed about your work.',
+    label: 'Degree / course completed',
+    hint: 'A degree, course or programme you actually finished — and what it changed in your work.',
     placeholder: 'What you completed, what it took, and the one thing it changed in your work…',
+  },
+  {
+    value: 'new_certification',
+    label: 'Certification earned',
+    hint: 'A certification or licence you actually earned — named exactly as the issuer names it.',
+    placeholder: 'The certification and issuer, what the prep took, and what it changed…',
+  },
+  {
+    value: 'new_position',
+    label: 'New position',
+    hint: 'A role you actually started — title and organisation exactly as they are.',
+    placeholder: 'Your new title and organisation, what the role is for, and why you took it…',
+  },
+  {
+    value: 'work_anniversary',
+    label: 'Work anniversary',
+    hint: 'A real anniversary — the exact span, and what the time taught you.',
+    placeholder: 'How long, where, and the one thing that is different now from day one…',
   },
 ] as const
 type OccasionType = typeof OCCASION_TYPES[number]['value']
