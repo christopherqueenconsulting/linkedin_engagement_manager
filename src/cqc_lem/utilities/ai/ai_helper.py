@@ -395,7 +395,8 @@ def get_or_create_profile_synthesis(user_id: int, profile: "LinkedInProfile" = N
     return text
 
 
-def lint_repaired(draft: "str | None", content_type: str, redraft, **log_ctx) -> "str | None":
+def lint_repaired(draft: "str | None", content_type: str, redraft, prefs: dict = None,
+                  **log_ctx) -> "str | None":
     """Deterministic slop lint + bounded regeneration for the short-form surfaces (issue #625 / D1).
 
     `redraft(directive)` produces a fresh draft with the lint's constraints appended to the writer's
@@ -404,6 +405,9 @@ def lint_repaired(draft: "str | None", content_type: str, redraft, **log_ctx) ->
     hold a draft in, so a still-slopped one ships with a structured warning rather than nothing at
     all. The feed comment path and the post gate are the two that actually block; see
     `generate_ai_response` and `evaluate_post_gates`.
+
+    `prefs` carries the author's `comment_style`, whose phrases banned BY NAME are HARD on the
+    comment surfaces (issue #2113) — so they steer the regeneration here like any other HARD check.
 
     The budget is resolved for THIS surface, not globally (issue #1434): these are `lem-medium`
     calls at volume, so `SLOP_LINT_MAX_ATTEMPTS_COMMENT` has to be able to say something different
@@ -425,12 +429,12 @@ def lint_repaired(draft: "str | None", content_type: str, redraft, **log_ctx) ->
         return current
     user_id = log_ctx.get("user_id")
     max_attempts = _slop.slop_max_attempts(content_type)
-    report = _slop.lint_report(current, content_type)
+    report = _slop.lint_report(current, content_type, prefs=prefs)
     attempt = 1
     while not report["passes"] and attempt < max_attempts:
         attempt += 1
         nxt = redraft(_slop.slop_retry_directive(report["hard"]))
-        nxt_report = _slop.lint_report(nxt, content_type) if nxt else None
+        nxt_report = _slop.lint_report(nxt, content_type, prefs=prefs) if nxt else None
         kept = bool(nxt) and _slop.keep_retry(report, nxt_report)
         track_slop_retry(content_type, _slop.retry_outcome(report, nxt_report),
                          before=report, after=nxt_report, attempt=attempt,
@@ -657,7 +661,7 @@ def generate_ai_response(post_content: Any, profile: LinkedInProfile,
                               profile_synthesis=profile_synthesis, prefs=prefs)
 
     if post_comment is not None:
-        return lint_repaired(_draft(), "comment", _draft,
+        return lint_repaired(_draft(), "comment", _draft, prefs=prefs,
                              user_id=user_id, action_type="comment")
 
     return _gated_comment(_draft, post_content, recent_comments=recent_comments, user_id=user_id,
@@ -836,7 +840,7 @@ def _gated_comment(draft, post_content, recent_comments: list = None,
         # commenting on their OWN post, and `own_post_comment` is where `second_person_author`
         # is HARD. Grading it as an ordinary comment let "Your tip … hit home" ship on a post
         # we wrote ourselves.
-        slop = _slop.lint_report(candidate, surface)
+        slop = _slop.lint_report(candidate, surface, prefs=prefs)
         invented = (_ungrounded_first_person_metrics(candidate, post_content, research_findings,
                                                      user_id=user_id)
                     if checking_specifics else [])
@@ -1425,7 +1429,7 @@ def generate_seed_comment(post_content, profile: "LinkedInProfile", prefs: dict 
         return _humanize_text(content.strip(), content_type="comment",
                               profile_synthesis=profile_synthesis, prefs=prefs)
 
-    return lint_repaired(_draft(), _OWN_POST_COMMENT, _draft, user_id=user_id,
+    return lint_repaired(_draft(), _OWN_POST_COMMENT, _draft, prefs=prefs, user_id=user_id,
                          action_type="comment")
 
 
@@ -1530,7 +1534,8 @@ def generate_thread_reply(post_content: str, comment_text: str, profile: "Linked
         return _humanize_text(content.strip(), content_type="comment",
                               profile_synthesis=profile_synthesis, prefs=prefs)
 
-    return lint_repaired(_draft(), "comment", _draft, user_id=user_id, action_type="comment")
+    return lint_repaired(_draft(), "comment", _draft, prefs=prefs, user_id=user_id,
+                         action_type="comment")
 
 
 def generate_comment_reply_followup(their_reply: str, profile: "LinkedInProfile",
@@ -1572,7 +1577,8 @@ def generate_comment_reply_followup(their_reply: str, profile: "LinkedInProfile"
         return _humanize_text(content.strip(), content_type="comment",
                               profile_synthesis=profile_synthesis, prefs=prefs)
 
-    return lint_repaired(_draft(), "comment", _draft, user_id=user_id, action_type="comment")
+    return lint_repaired(_draft(), "comment", _draft, prefs=prefs, user_id=user_id,
+                         action_type="comment")
 
 
 def generate_lead_response(their_message: str, profile: "LinkedInProfile", channel: str = "reply",
@@ -1617,7 +1623,8 @@ def generate_lead_response(their_message: str, profile: "LinkedInProfile", chann
         return _humanize_text(content.strip(), content_type=surface,
                               profile_synthesis=profile_synthesis, prefs=prefs, max_chars=limit)
 
-    return lint_repaired(_draft(), surface, _draft, action_type="dm" if is_dm else "comment")
+    return lint_repaired(_draft(), surface, _draft, prefs=prefs,
+                         action_type="dm" if is_dm else "comment")
 
 
 def generate_nurture_dm(their_message: str, intent: str, profile: "LinkedInProfile",

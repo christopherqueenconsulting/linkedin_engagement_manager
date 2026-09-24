@@ -55,6 +55,7 @@ CHECK_RHETORICAL_HOOK = "rhetorical_hook"
 CHECK_SCAFFOLD = "canned_scaffold"
 CHECK_BLOG_ALIGNMENT = "blog_alignment"
 CHECK_SECOND_PERSON_AUTHOR = "second_person_author"
+CHECK_PREFERENCE_BANNED = "preference_banned_phrase"
 
 # Default severities. HARD violations are regenerated and then block; WARN ones are recorded and
 # reported but never hold a draft.
@@ -83,6 +84,10 @@ DEFAULT_SEVERITIES: dict = {
     # post' is correct and normal on every OTHER surface — it is only a defect on a comment
     # we are leaving on a post we wrote ourselves.
     CHECK_SECOND_PERSON_AUTHOR: SEVERITY_OFF,
+    # OFF by default and HARD on both comment surfaces below (issue #2113): the phrases come from
+    # `comment_style`, which is the user's guidance for COMMENTS, so no other surface is graded
+    # against it.
+    CHECK_PREFERENCE_BANNED: SEVERITY_OFF,
 }
 
 # Per-SURFACE severity, applied on top of DEFAULT_SEVERITIES (issue #1285). A check's false-positive
@@ -100,7 +105,12 @@ SURFACE_SEVERITIES: dict = {
     # it is factually wrong about who wrote the post, it lands in the first-comment slot —
     # the most-read position under the post — and it reads as an obvious bot. Production
     # shipped "Your tip to health-check each LiteLLM alias hit home…" on our own post.
-    OWN_POST_COMMENT: {CHECK_SECOND_PERSON_AUTHOR: SEVERITY_HARD},
+    OWN_POST_COMMENT: {CHECK_SECOND_PERSON_AUTHOR: SEVERITY_HARD,
+                       CHECK_PREFERENCE_BANNED: SEVERITY_HARD},
+    # A phrase the user banned BY NAME is not a statistical tell with false positives — they told
+    # us not to say it. Production shipped "hits home" in 13 of 102 comments while the owner's
+    # `comment_style` banned it explicitly (issue #2113), because only the prompt carried the ban.
+    "comment": {CHECK_PREFERENCE_BANNED: SEVERITY_HARD},
 }
 
 # How many DISTINCT tier-1 tell words a draft may carry before the lexicon check fires. Not zero on
@@ -137,6 +147,28 @@ SLOP_PHRASES: tuple = (
     "game changer", "the fact of the matter is", "the harsh truth is",
     "look no further", "the possibilities are endless",
 )
+
+# Buzzwords banned on the comment surfaces for every user, alongside whatever their own
+# `comment_style` bans by name (issue #2113). Both were sampled from shipped comments: 13 of 102
+# carried one of them. Matched through `_phrase_re`, so "hit home" and "game-changer" count too.
+COMMENT_BANNED_PHRASES: tuple = ("hits home", "game changer")
+
+# A quoted span in `comment_style` is a BANNED phrase only when a ban cue precedes it in the same
+# clause — `Open with "what I'd add"` quotes a phrase the user WANTS. The owner's own wording is
+# `No buzzwords (i.e "hits home")`, so the cue may sit a few words before the quote.
+_BAN_CUE_RE = re.compile(r"\b(?:no|never|avoid|avoiding|don't|dont|do not|not|without|ban|banned|"
+                         r"skip|stop|forbid|forbidden)\b", re.IGNORECASE)
+# Matched after smart punctuation is folded to ASCII. A single quote opens only after a space or
+# bracket and closes only before a non-letter, so the apostrophe in "don't" is never a quote.
+_QUOTED_RE = re.compile(r'"([^"\n]{2,60})"|'
+                        r"(?:(?<=^)|(?<=[\s(\[:,]))'([^'\n]{2,60})'(?![A-Za-z])")
+# A clause ends at a sentence stop followed by whitespace and a capital, or at ; / newline — never
+# at the dot inside "i.e" or "e.g.", which the owner's wording carries. A comma ends one too, so
+# `no emojis, and open with "what I'd add"` does not ban the phrase the user asked for — except
+# before a quote (`No "x", "y"`) or an example lead-in (`No buzzwords, e.g. "x"`).
+_CLAUSE_BREAK_RE = re.compile(
+    r"[.!?]\s+(?=[A-Z])|[;\n]|"
+    r",(?!\s*(?:$|[\"']|(?i:e\.?g|i\.?e|like|such as|including|for example|especially)\b))")
 
 # The "ta-da" transition: a manufactured beat that promises a payoff the next sentence rarely earns.
 TADA_TRANSITIONS: tuple = (
@@ -369,6 +401,54 @@ def banned_scaffolds() -> tuple:
     base = POST_BANNED_SCAFFOLDS + NEWSLETTER_BANNED_SCAFFOLDS
     return base + tuple(p for p in dict.fromkeys(extra)
                         if p and p not in base)
+
+
+def preference_banned_phrases(prefs: Optional[dict]) -> list:
+    """The phrases this user's `comment_style` bans by name, plus `COMMENT_BANNED_PHRASES`.
+
+    Args:
+        prefs: The user's engagement preferences, as `get_engagement_preferences` returns them.
+            `None`, no `comment_style`, or a non-string one bans only the built-in list.
+
+    Returns:
+        Lower-cased phrases, user's first, deduped. A quoted span counts only when a ban cue ("no",
+        "never", "avoid", "don't" …) precedes it in the same clause.
+    """
+    style = prefs.get("comment_style") if isinstance(prefs, dict) else None
+    found = []
+    if isinstance(style, str) and style.strip():
+        style = style.translate(_SMART_PUNCTUATION)
+        for match in _QUOTED_RE.finditer(style):
+            clause = _CLAUSE_BREAK_RE.split(style[:match.start()])[-1]
+            if not _BAN_CUE_RE.search(clause):
+                continue
+            phrase = next(g for g in match.groups() if g is not None)
+            phrase = re.sub(r"\s+", " ", phrase).strip(" .,!?").lower()
+            if phrase:
+                found.append(phrase)
+    return list(dict.fromkeys(found + list(COMMENT_BANNED_PHRASES)))
+
+
+@functools.lru_cache(maxsize=256)
+def _phrase_re(phrase: str) -> "Optional[re.Pattern]":
+    """`phrase` as a whole-word pattern tolerant of hyphens and a plural/3rd-person -s.
+
+    So a ban on "hits home" also catches "hit home" and "game changer" catches "game-changers".
+    None for a phrase with no word in it, which would otherwise match every draft.
+    """
+    parts = []
+    for word in re.findall(r"[a-z0-9']+", phrase.lower()):
+        stem = word[:-1] if len(word) > 3 and word.endswith("s") and not word.endswith("ss") else word
+        parts.append(re.escape(stem) + r"(?:s|es)?")
+    if not parts:
+        return None
+    return re.compile(r"\b" + r"[\s-]+".join(parts) + r"\b")
+
+
+def find_preference_banned(text: Optional[str], phrases: Optional[list]) -> list:
+    """Each of `phrases` that `text` uses, in the order given, as spelled in `phrases`."""
+    plain = _plain(text)
+    return [p for p in (phrases or []) if p and (pattern := _phrase_re(p)) and pattern.search(plain)]
 
 
 # ---------------------------------------------------------------------------
@@ -646,6 +726,16 @@ def _check_second_person_author(text: str, sents: list, ctx: dict) -> Optional[d
             "evidence": hits[:5], "score": float(len(hits)), "threshold": 0.0}
 
 
+def _check_preference_banned(text: str, sents: list, ctx: dict) -> Optional[dict]:
+    hits = find_preference_banned(text, ctx.get("preference_banned"))
+    if not hits:
+        return None
+    return {"detail": ("uses a phrase banned on comments (the author's comment style or the "
+                       "built-in buzzword list): "
+                       + ", ".join(f'"{h}"' for h in hits[:5])),
+            "evidence": hits[:5], "score": float(len(hits)), "threshold": 0.0}
+
+
 _CHECKS: tuple = (
     (CHECK_LEXICON, _check_lexicon),
     (CHECK_CONTRASTIVE, _check_contrastive),
@@ -659,12 +749,14 @@ _CHECKS: tuple = (
     (CHECK_SCAFFOLD, _check_scaffold),
     (CHECK_BLOG_ALIGNMENT, _check_blog_alignment),
     (CHECK_SECOND_PERSON_AUTHOR, _check_second_person_author),
+    (CHECK_PREFERENCE_BANNED, _check_preference_banned),
 )
 
 
 def lint_report(text: Optional[str], content_type: str = "post",
                 exempt_keyword: Optional[str] = None,
-                blog_content: Optional[str] = None) -> dict:
+                blog_content: Optional[str] = None,
+                prefs: Optional[dict] = None) -> dict:
     """Grade one finished draft against every slop check. Deterministic, no LLM, no I/O — the same
     draft always gets the same verdict.
 
@@ -678,6 +770,8 @@ def lint_report(text: Optional[str], content_type: str = "post",
     `exempt_keyword` is the user's lead-magnet trigger word: a "Comment YES" CTA is sanctioned, not
     bait, exactly as `strip_engagement_bait` treats it. `blog_content` is the newsletter source
     material for the optional blog-alignment fidelity gate (newsletter-only, skipped when absent).
+    `prefs` are the author's engagement preferences; the phrases their `comment_style` bans by name
+    are graded on the comment surfaces (`preference_banned_phrases`).
     """
     empty = {"passes": True, "violations": [], "hard": [], "warnings": [], "reasons": [],
              "checked": False}
@@ -689,7 +783,7 @@ def lint_report(text: Optional[str], content_type: str = "post",
     body = str(text)
     sents = sentences(body)
     ctx = {"exempt_keyword": exempt_keyword, "content_type": content_type,
-           "blog_content": blog_content}
+           "blog_content": blog_content, "preference_banned": preference_banned_phrases(prefs)}
     violations = []
     for name, fn in _CHECKS:
         severity = check_severity(name, content_type)
