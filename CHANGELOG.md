@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.177.2](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.177.1...v0.177.2) (2026-09-24)
+
+
+### Bug Fixes
+
+* **celery:** a failed lane run ends in Celery FAILURE, not SUCCESS with a string (closes [#2097](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2097)) ([#2155](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2155)) ([6615dc5](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/6615dc5002d4351a6644a1a5f031b2799a4c8aec))
+
 ## [0.177.1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.177.0...v0.177.1) (2026-09-24)
 
 
