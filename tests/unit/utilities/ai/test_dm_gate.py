@@ -45,6 +45,26 @@ class TestMeetingAsk:
     def test_narrative_is_not_an_ask(self, text):
         assert meeting_ask_excerpts(text) == []
 
+    @pytest.mark.parametrize("text", [
+        "Would a short call be useful, or shall I send the one thing that helps most?",
+        "Open to a quick chat Thursday?",
+        "Can we find 15 minutes this week?",
+        "Would a 20-minute call next week work?",
+        "Worth a quick call?",
+    ])
+    def test_a_cold_thread_blocks_the_dm_question_forms(self, text):
+        assert any(r.startswith("meeting_ask:") for r in dm_gate_reasons(text))
+        # The same ask is allowed once they replied — and its "15"/"20" is not a claim.
+        assert dm_gate_reasons(text, thread_replied=True) == []
+
+    @pytest.mark.parametrize("text", [
+        "I was open to a call but they went quiet.",
+        "Would a team of 3 catch that? Probably.",
+        "Thanks for connecting, what are you working on?",
+    ])
+    def test_a_statement_or_unrelated_question_is_not_an_ask(self, text):
+        assert not any(r.startswith("meeting_ask:") for r in dm_gate_reasons(text, anchors=[text]))
+
     def test_the_ask_length_is_not_graded_as_a_claim(self):
         assert "15" not in without_meeting_asks("Do you have 15 minutes for a quick call?")
         assert dm_gate_reasons("Do you have 15 minutes for a quick call?", thread_replied=True) == []

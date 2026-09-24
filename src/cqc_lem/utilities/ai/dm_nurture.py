@@ -322,6 +322,28 @@ DM_GATE_MEETING_ASK = "meeting_ask"
 DM_GATE_UNSOURCED_CLAIM = "unsourced_claim"
 DM_GATE_SLOP = "slop"
 
+# Call asks only a 1:1 message makes: a QUESTION proposing a call ("Would a short call be useful?",
+# "Open to a quick chat Thursday?", "Can we find 15 minutes this week?"). The shared post patterns
+# miss them, and they stay out of there on purpose — in a post the same question is often rhetorical
+# ("Could a 10-minute call have prevented it?"), and the post repair DELETES what matches. In a DM
+# nobody asks rhetorically. The trailing "?" in the same sentence is what makes each one an ask.
+_CALL = r"(?:(?:quick|short|brief|\d{1,2}[- ]?min(?:ute)?)\s+)*(?:call|chat|zoom|meeting|coffee)\b"
+_DM_CALL_ASK_RE = re.compile(
+    r"(?:\b(?:would|could|does|how\s+about|what\s+about|worth)\s+(?:a|an)\s+" + _CALL
+    + r"|\b(?:open|up)\s+(?:to|for)\s+(?:a|an)\s+" + _CALL
+    + r"|\b(?:find|grab|have|spare)\s+(?:\d{1,2}|ten|fifteen|twenty|thirty)[- ]?min(?:ute)?s?\b)"
+    r"[^.?!\n]{0,60}\?",
+    re.IGNORECASE)
+
+
+def _call_asks(text: "str | None") -> "list[str]":
+    """Every call ask in a DM: the shared post patterns plus the DM question forms."""
+    return meeting_ask_excerpts(text) + [m.group(0).strip() for m in _DM_CALL_ASK_RE.finditer(text or "")]
+
+
+def _without_call_asks(text: "str | None") -> str:
+    return _DM_CALL_ASK_RE.sub(" ", without_meeting_asks(text))
+
 
 def dm_gate_reasons(text: "str | None", anchors: "list | None" = None,
                     thread_replied: bool = False) -> "list[str]":
@@ -342,12 +364,12 @@ def dm_gate_reasons(text: "str | None", anchors: "list | None" = None,
     """
     reasons = []
     if not thread_replied:
-        asks = meeting_ask_excerpts(text)
+        asks = list(dict.fromkeys(_call_asks(text)))
         if asks:
             reasons.append(f"{DM_GATE_MEETING_ASK}: {'; '.join(asks)}")
     if fact_grounding_severity("dm") == SEVERITY_HARD:
         # Graded with the ask blanked out: its "15 minutes" is the ask's length, not a claim.
-        unverified = fact_grounding_report(without_meeting_asks(text), anchors)["unverified_values"]
+        unverified = fact_grounding_report(_without_call_asks(text), anchors)["unverified_values"]
         if unverified:
             reasons.append(f"{DM_GATE_UNSOURCED_CLAIM}: {', '.join(unverified)}")
     report = lint_report(text, "dm")

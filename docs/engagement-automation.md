@@ -335,7 +335,7 @@ the ONE gate, run on every DM both writers produce (`_nurture_after_reply` and
 
 | Check | Blocks when | Source |
 |---|---|---|
-| `meeting_ask` | a call/meeting ask (`content_alignment.meeting_ask_excerpts`) in a thread the contact has **not** replied in. A nurture thread is replied by definition, so there it is allowed | the posts' `meeting_cta` patterns |
+| `meeting_ask` | a call/meeting ask (`content_alignment.meeting_ask_excerpts`, plus the DM-only question forms in `dm_nurture._DM_CALL_ASK_RE` — "Would a short call be useful?", "Open to a quick chat?", "Can we find 15 minutes?"; kept out of the post patterns because there the same question is often rhetorical and the repair deletes it) in a thread the contact has **not** replied in. A nurture thread is replied by definition, so there it is allowed | the posts' `meeting_cta` patterns |
 | `unsourced_claim` | a number no anchor backs (`content_framework.fact_grounding_report`). Anchors: the story bank, the user's own template, the contact's own reply — **never our earlier DMs**, so an invented figure cannot vouch for itself. The ask's own "15 minutes" is blanked out first | `FACT_GROUNDING_SEVERITIES["dm"]` = HARD; `FACT_GROUNDING_SEVERITY_DM=warn` turns it off without a deploy |
 | `slop` | any HARD `slop_lint` check on the `dm` surface | `lint_report(text, "dm")` |
 
