@@ -37,10 +37,12 @@ _DEV_VENV_PY="/home/lem/linkedin_engagement_manager/.venv/bin/python"
 if [ -x "$_DEV_VENV_PY" ]; then PY=("$_DEV_VENV_PY"); else PY=(poetry run python); fi
 
 log(){ echo "[$(date -u +%FT%TZ)] $*" | tee -a "$LOG" >&2; }
+. "$(dirname "${BASH_SOURCE[0]}")/lib/app_container.sh"
+APP_CONTAINER="${APP_CONTAINER:-$(active_api_container)}"  # never web_app — the nginx edge (#2160)
 
 alert(){  # log + best-effort email to the admin; never fails the run
   log "ALERT: $1"
-  sudo -n docker exec -i web_app python - "$1" <<'PY' >>"$LOG" 2>&1 || true
+  sudo -n docker exec -i "$APP_CONTAINER" python - "$1" <<'PY' >>"$LOG" 2>&1 || true
 import os, sys
 msg = sys.argv[1]
 try:
@@ -59,7 +61,7 @@ restart_litellm(){ log "restarting litellm"; $COMPOSE restart litellm >>"$LOG" 2
 tier_ok(){  # $1=tier -> 0 if a completion succeeds within 3 tries
   local t="$1" i
   for i in 1 2 3; do
-    if sudo -n docker exec web_app python -c "
+    if sudo -n docker exec "$APP_CONTAINER" python -c "
 from cqc_lem.utilities.ai.client import client
 client.chat.completions.create(model='$t', messages=[{'role':'user','content':'ok'}], max_tokens=3)
 " >/dev/null 2>&1; then return 0; fi

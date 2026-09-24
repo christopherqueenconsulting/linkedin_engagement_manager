@@ -17,10 +17,12 @@ DIR="${TRIAGE_DIR:-/home/lem/triage}"
 LOG="$DIR/triage.log"
 mkdir -p "$DIR"
 log(){ echo "[$(date -u +%FT%TZ)] $*" | tee -a "$LOG" >&2; }
+. "$(dirname "${BASH_SOURCE[0]}")/lib/app_container.sh"
+APP_CONTAINER="${APP_CONTAINER:-$(active_api_container)}"  # never web_app — the nginx edge (#2160)
 
 alert(){  # log + best-effort email to the admin; never fails the run
   log "ALERT: $1"
-  sudo -n docker exec -i web_app python - "$1" <<'PY' >>"$LOG" 2>&1 || true
+  sudo -n docker exec -i "$APP_CONTAINER" python - "$1" <<'PY' >>"$LOG" 2>&1 || true
 import os, sys
 msg = sys.argv[1]
 try:
