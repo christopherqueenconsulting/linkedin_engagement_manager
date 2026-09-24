@@ -17,6 +17,10 @@ import os
 import re
 from enum import StrEnum
 
+from cqc_lem.utilities.ai.content_alignment import meeting_ask_excerpts, without_meeting_asks
+from cqc_lem.utilities.ai.content_framework import fact_grounding_report
+from cqc_lem.utilities.ai.slop_lint import SEVERITY_HARD, lint_report
+from cqc_lem.utilities.ai.story_bank import fact_grounding_severity
 from cqc_lem.utilities.logger import log_debug, log_warning
 
 
@@ -310,3 +314,73 @@ def format_recipient_context(context: dict = None) -> str:
             "specific and relevant. Do NOT recite it back to them, and do NOT infer anything from "
             "it (team size, budget, tools, goals, or what they need):\n"
             + "\n".join(lines) + "\n\n")
+
+
+# The DM content gate (issue #2099). Every other gated surface has one; the DM had none, so a sent
+# nurture DM carried a meeting ask to someone who never replied to us AND an invented claim.
+DM_GATE_MEETING_ASK = "meeting_ask"
+DM_GATE_UNSOURCED_CLAIM = "unsourced_claim"
+DM_GATE_SLOP = "slop"
+
+# Call asks only a 1:1 message makes: a QUESTION proposing a call ("Would a short call be useful?",
+# "Open to a quick chat Thursday?", "Can we find 15 minutes this week?"). The shared post patterns
+# miss them, and they stay out of there on purpose — in a post the same question is often rhetorical
+# ("Could a 10-minute call have prevented it?"), and the post repair DELETES what matches. In a DM
+# nobody asks rhetorically. The trailing "?" in the same sentence is what makes each one an ask.
+_CALL = r"(?:(?:quick|short|brief|\d{1,2}[- ]?min(?:ute)?)\s+)*(?:call|chat|zoom|meeting|coffee)\b"
+_DM_CALL_ASK_RE = re.compile(
+    r"(?:\b(?:would|could|does|how\s+about|what\s+about|worth)\s+(?:a|an)\s+" + _CALL
+    + r"|\b(?:open|up)\s+(?:to|for)\s+(?:a|an)\s+" + _CALL
+    + r"|\b(?:find|grab|have|spare)\s+(?:\d{1,2}|ten|fifteen|twenty|thirty)[- ]?min(?:ute)?s?\b)"
+    r"[^.?!\n]{0,60}\?",
+    re.IGNORECASE)
+
+
+def _call_asks(text: "str | None") -> "list[str]":
+    """Every call ask in a DM: the shared post patterns plus the DM question forms."""
+    return meeting_ask_excerpts(text) + [m.group(0).strip() for m in _DM_CALL_ASK_RE.finditer(text or "")]
+
+
+def _without_call_asks(text: "str | None") -> str:
+    return _DM_CALL_ASK_RE.sub(" ", without_meeting_asks(text))
+
+
+def dm_gate_reasons(text: "str | None", anchors: "list | None" = None,
+                    thread_replied: bool = False) -> "list[str]":
+    """Why this DM must not be sent — empty when it may. Deterministic, no LLM, no I/O.
+
+    Three checks, in the owner's words: a call ask only where the contact has already replied in
+    the thread; the fact gate and the slop lint on every DM.
+
+    Args:
+        text: The DM exactly as it would be sent.
+        anchors: The material a specific may come from — the story bank, the user's own template,
+            the contact's own reply. Never our earlier DMs: a number we invented once must not
+            vouch for itself the second time.
+        thread_replied: True only when the contact has written back in this thread.
+
+    Returns:
+        One `<check>: <detail>` string per failed check.
+    """
+    reasons = []
+    if not thread_replied:
+        asks = list(dict.fromkeys(_call_asks(text)))
+        if asks:
+            reasons.append(f"{DM_GATE_MEETING_ASK}: {'; '.join(asks)}")
+    if fact_grounding_severity("dm") == SEVERITY_HARD:
+        # Graded with the ask blanked out: its "15 minutes" is the ask's length, not a claim.
+        unverified = fact_grounding_report(_without_call_asks(text), anchors)["unverified_values"]
+        if unverified:
+            reasons.append(f"{DM_GATE_UNSOURCED_CLAIM}: {', '.join(unverified)}")
+    report = lint_report(text, "dm")
+    if not report["passes"]:
+        checks = [str(v.get("check")) for v in report.get("hard") or [] if isinstance(v, dict)]
+        reasons.append(f"{DM_GATE_SLOP}: {', '.join(dict.fromkeys(checks))}")
+    return reasons
+
+
+def dm_gate_directive(reasons: "list[str]") -> str:
+    """The rewrite steer after a blocked draft: name what was refused so the retry drops it."""
+    return ("\n\nTHE PREVIOUS DRAFT WAS REFUSED — fix exactly this: " + " | ".join(reasons)
+            + ". Ask for no call or meeting unless they asked for one. State no number, name or "
+              "outcome that is not in the template or in what they wrote.")

@@ -32,6 +32,7 @@ def _nurture_patches(**overrides):
         "insert_scheduled_dm": 99,
         "get_dm_history_for_profile": [],
         "recipient_context": {"first_name": "Jane", "job_title": "VP Engineering"},
+        "get_story_bank_entries": [],
     }
     defaults.update(overrides)
     return {name: patch(f"{_OUT}.{name}", return_value=val) for name, val in defaults.items()}
@@ -293,3 +294,43 @@ class TestProcessUserFollowupsNurture:
         mocks["send_private_dm"].apply_async.assert_not_called()
         mocks["mark_followup"].assert_called_once_with(3, "stopped")
         assert "Sent 0" in result
+
+
+# DM 37 as it was SENT on 2026-09-16 (audit B-2/B-4): an invented claim AND a meeting ask.
+_DM_37 = ("Your cybernetic AI work brings to mind a DoD LLM rollout that cut false positives 30%. "
+          "Do you've 15 minutes for a quick call to swap ideas?")
+
+
+class TestNurtureContentGate:
+    """#2099: a nurture draft that fails the DM content gate stays PENDING and is never sent."""
+
+    def test_the_dm_37_draft_is_held_pending_even_under_auto_approve(self, monkeypatch):
+        monkeypatch.setenv("DM_NURTURE_AUTO_APPROVE", "true")
+        with patch(f"{_OUT}.send_private_dm") as send:
+            got, mocks, _enq = _run_nurture(generate_nurture_dm=_DM_37)
+        assert got == 99
+        assert mocks["insert_scheduled_dm"].call_args.kwargs["status"] == "pending"
+        send.apply_async.assert_not_called()
+
+    def test_a_call_ask_is_allowed_once_the_contact_replied(self, monkeypatch):
+        monkeypatch.setenv("DM_NURTURE_AUTO_APPROVE", "true")
+        _got, mocks, _enq = _run_nurture(
+            generate_nurture_dm="Glad it landed. Do you have 15 minutes for a quick call?")
+        assert mocks["insert_scheduled_dm"].call_args.kwargs["status"] == "approved"
+
+    def test_a_number_the_contact_wrote_is_not_an_invention(self, monkeypatch):
+        monkeypatch.setenv("DM_NURTURE_AUTO_APPROVE", "true")
+        from cqc_lem.app.engagement.outreach import _nurture_after_reply
+        patches = _nurture_patches(generate_nurture_dm="A 40% drop is a big deal. What changed first?")
+        started = {name: p.start() for name, p in patches.items()}
+        patch(f"{_OUT}.enqueue_followup").start()
+        try:
+            _nurture_after_reply(1, _followup(), "We cut our backlog 40% last quarter",
+                                 MagicMock(), prefs={}, profile_synthesis="voice")
+        finally:
+            patch.stopall()
+        assert started["insert_scheduled_dm"].call_args.kwargs["status"] == "approved"
+
+    def test_the_template_fallback_is_told_the_thread_is_warm(self):
+        _got, mocks, _enq = _run_nurture(generate_nurture_dm=None)
+        assert mocks["build_dm_from_template"].call_args.kwargs["thread_replied"] is True

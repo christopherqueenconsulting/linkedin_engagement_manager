@@ -323,11 +323,16 @@ def strip_unsourced_sentences(content: Optional[str], tokens: Optional[list]) ->
 # whole verified material (story bank, profile, the research actually supplied), repaired once by
 # the editor, and then HELD at PENDING with the offending numbers named — never published.
 #
+# DMs are HARD (issue #2099). Sent nurture DMs claimed "a DoD LLM rollout that cut false positives
+# 30%" and "cut iteration time about 30%" — neither in the user's material — to a named person, in
+# the user's voice. Graded by `dm_nurture.dm_gate_reasons`; a blocked DM is never sent.
+#
 # Everything else stays WARN. `FACT_GROUNDING_SEVERITY_POST=warn` restores the pre-#1971 posture
 # without a deploy.
 FACT_GROUNDING_SEVERITIES: dict = {
     "comment": SEVERITY_HARD,
     "post": SEVERITY_HARD,
+    "dm": SEVERITY_HARD,
 }
 FACT_GROUNDING_SEVERITY_DEFAULT = SEVERITY_WARN
 

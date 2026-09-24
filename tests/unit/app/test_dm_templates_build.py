@@ -159,3 +159,61 @@ class TestLinkPlaceholderNeverLeaves:
              patch(f"{_OUT}.log_warning") as warn:
             assert build_dm_from_template(1, "connection_accepted", "Jane", MagicMock(), step=1) is None
         warn.assert_not_called()
+
+
+_DM_37 = ("Your cybernetic AI work brings to mind a DoD LLM rollout that cut false positives 30%. "
+          "Do you've 15 minutes for a quick call to swap ideas?")
+
+
+class TestDmContentGate:
+    """#2099: every templated DM passes the content gate or is not sent."""
+
+    @staticmethod
+    def _build(template: str, rewrites: list, **kwargs):
+        from cqc_lem.app.engagement.outreach import build_dm_from_template
+        with patch(f"{_OUT}.get_dm_template", return_value={"template_text": template}), \
+             patch(f"{_OUT}.get_story_bank_entries", return_value=[]), \
+             patch(f"{_OUT}.get_ai_message_refinement", side_effect=rewrites) as refine, \
+             patch(f"{_OUT}.humanize_text", side_effect=lambda t, **k: t):
+            return build_dm_from_template(1, "connection_accepted", "Jane", MagicMock(), **kwargs), refine
+
+    def test_a_blocked_rewrite_gets_one_steered_retry(self):
+        msg, refine = self._build("Hi {first_name}", [_DM_37, "Good to connect, Jane."])
+        assert msg == "Good to connect, Jane."
+        directive = refine.call_args_list[1].kwargs["extra_directive"]
+        assert "meeting_ask" in directive and "30%" in directive
+
+    def test_a_still_blocked_rewrite_falls_back_to_the_rendered_template(self):
+        msg, _ = self._build("Hi {first_name}", [_DM_37, _DM_37])
+        assert msg == "Hi Jane"
+
+    def test_a_cold_call_ask_in_the_template_itself_is_never_sent(self):
+        msg, _ = self._build("Hi {first_name}, got 20 minutes for a call?", [_DM_37, _DM_37])
+        assert msg is None
+
+    def test_the_same_template_may_ask_once_the_contact_replied(self):
+        tmpl = "Hi {first_name}, got 20 minutes for a call?"
+        msg, _ = self._build(tmpl, ["Hi Jane, got 20 minutes for a call?"], thread_replied=True)
+        assert msg == "Hi Jane, got 20 minutes for a call?"
+
+    def test_a_number_from_the_story_bank_passes(self):
+        from cqc_lem.app.engagement.outreach import build_dm_from_template
+        entry = {"title": "Triage", "body": "We cut false positives 30% at a client."}
+        with patch(f"{_OUT}.get_dm_template", return_value={"template_text": "Hi {first_name}"}), \
+             patch(f"{_OUT}.get_story_bank_entries", return_value=[entry]), \
+             patch(f"{_OUT}.get_ai_message_refinement",
+                   return_value="Hi Jane, we cut false positives 30% on triage."), \
+             patch(f"{_OUT}.humanize_text", side_effect=lambda t, **k: t):
+            msg = build_dm_from_template(1, "connection_accepted", "Jane", MagicMock())
+        assert msg == "Hi Jane, we cut false positives 30% on triage."
+
+    def test_an_unreadable_story_bank_grades_strictly(self):
+        from cqc_lem.app.engagement.outreach import build_dm_from_template
+        with patch(f"{_OUT}.get_dm_template", return_value={"template_text": "Hi {first_name}"}), \
+             patch(f"{_OUT}.get_story_bank_entries", side_effect=RuntimeError("down")), \
+             patch(f"{_OUT}.get_ai_message_refinement", return_value="We cut costs 30%."), \
+             patch(f"{_OUT}.humanize_text", side_effect=lambda t, **k: t), \
+             patch(f"{_OUT}.log_warning") as warn:
+            msg = build_dm_from_template(1, "connection_accepted", "Jane", MagicMock())
+        assert msg == "Hi Jane"
+        assert "Story bank unreadable" in warn.call_args.args[0]

@@ -77,6 +77,7 @@ from cqc_lem.app.engagement.invites import invite_to_connect
 from cqc_lem.app.my_celery import app as shared_task
 from cqc_lem.app.queue_once import QueueOnce
 from cqc_lem.app.task_outcome import TaskOutcome, lane_result
+from cqc_lem.utilities.ai import story_bank as _story_bank
 from cqc_lem.utilities.ai.ai_helper import (
     ai_check_message_history,
     generate_ai_response,
@@ -92,6 +93,8 @@ from cqc_lem.utilities.ai.content_alignment import (
 )
 from cqc_lem.utilities.ai.dm_nurture import (
     classify_reply_intent,
+    dm_gate_directive,
+    dm_gate_reasons,
     is_stop_intent,
     nurture_delay_hours,
     recipient_context,
@@ -151,6 +154,7 @@ from cqc_lem.utilities.db import (
     get_profile_facts,
     get_recent_comment_texts,
     get_requested_person_keys,
+    get_story_bank_entries,
     get_user_blog_url,
     get_user_id,
     get_user_password_pair_by_id,
@@ -1031,15 +1035,35 @@ def _own_profile_url(driver, user_id: "int | None") -> str:
     return resolved if "/in/" in resolved else ""
 
 
+def _dm_fact_anchors(user_id: int, *extra: "str | None") -> list:
+    """What a DM's specifics may come from (#2099).
+
+    The story bank plus `extra` (the user's own template, the contact's own words). An unreadable
+    bank leaves only `extra` — the strict side, because a wrongly blocked DM costs one message and
+    a wrong pass sends an invented claim.
+    """
+    try:
+        entries = get_story_bank_entries(user_id, active_only=True) or []
+    except Exception as e:
+        log_warning("Story bank unreadable — grading the DM with no verified anchors", exc=e,
+                    user_id=user_id, action_type="dm")
+        entries = []
+    return ([source for entry in entries for source in _story_bank.fact_sources(entry)]
+            + [str(x) for x in extra if x])
+
+
 @attribute_llm_cost(FEATURE_DM)
 def build_dm_from_template(user_id: int, event_type: str, first_name: str,
                            my_profile: LinkedInProfile, step: int = 0, blog_url: str = "",
-                           event_detail: str = "") -> "str | None":
+                           event_detail: str = "", thread_replied: bool = False) -> "str | None":
     """Render the user's DM template for an event (filling {first_name}/{headline}/{blog_url}/
     {event_detail}) and LLM-refine it to their voice (<=300 chars). Falls back to the code-default
     template, and to the rendered template whenever the refined body is one `send_dm_now` would
-    refuse. Returns None when no template exists for that (event, step), or when the template was
-    only a link clause and no blog URL resolved.
+    refuse or the DM content gate blocks (#2099). Returns None when no template exists for that
+    (event, step), when the template was only a link clause and no blog URL resolved, or when
+    neither the rewrite nor the rendered template passes the content gate — a blocked DM is never
+    sent. `thread_replied` is True only when the contact has written back: the one case a call ask
+    is allowed.
     """
     tmpl = get_dm_template(user_id, event_type, step)
     if not tmpl:
@@ -1074,14 +1098,22 @@ def build_dm_from_template(user_id: int, event_type: str, first_name: str,
         # the pre-humanize text if a rewrite would exceed the 300-char DM budget.
         return humanize_text((refined or rendered).strip(), content_type="dm", max_chars=300)
 
+    anchors = _dm_fact_anchors(user_id, rendered, event_detail)
+
+    def _blocked(body: "str | None") -> list:
+        return dm_gate_reasons(body, anchors, thread_replied=thread_replied)
+
     try:
-        # Deterministic slop lint + bounded re-refine (issue #625 / D1). A DM has no review queue,
-        # so a still-slopped one is sent with the patterns named in the log rather than dropped —
-        # dropping it would silently break the outreach sequence.
+        # Deterministic slop lint + bounded re-refine (issue #625 / D1), then the DM content gate
+        # (#2099) with ONE steered rewrite. What still fails falls back to the rendered template
+        # below, and past that is not sent at all.
         final = lint_repaired(_refine(), "dm", _refine, user_id=user_id, action_type="dm")
+        reasons = _blocked(final)
+        if reasons:
+            final = _refine(dm_gate_directive(reasons))
     except Exception as e:
         log_warning("DM refinement failed; sending rendered template", exc=e, action_type="dm", user_id=user_id)
-        return rendered
+        final = rendered
 
     # A rewrite may only polish what the template said. Refine, humanize and the lint repair are
     # three separate models' chances to put a slot name where the template had a real value, and
@@ -1093,11 +1125,18 @@ def build_dm_from_template(user_id: int, event_type: str, first_name: str,
     # (`outbound_qa` names it `empty_body`), and short-circuiting it here would return "" — falsy,
     # so every caller marks the follow-up `stopped` and the sequence dies on a step whose rendered
     # template was fine to send.
-    rewrite_refusal = outbound_refusal_reason(final, surface=OUTBOUND_SURFACE_DM)
-    if rewrite_refusal and not outbound_refusal_reason(rendered, surface=OUTBOUND_SURFACE_DM):
+    reasons = _blocked(final)
+    rewrite_refusal = outbound_refusal_reason(final, surface=OUTBOUND_SURFACE_DM) or "; ".join(reasons)
+    if (rewrite_refusal and not outbound_refusal_reason(rendered, surface=OUTBOUND_SURFACE_DM)
+            and not _blocked(rendered)):
         log_info(f"DM rewrite was unsendable ({rewrite_refusal}); sending the rendered template "
                  f"instead", user_id=user_id, action_type="dm")
         return rendered
+    if reasons:
+        # INFO: the gate doing its job on one draft is not a defect, and the reasons name it.
+        log_info(f"DM for '{event_type}' step {step} blocked by the content gate "
+                 f"({'; '.join(reasons)}); nothing will be sent", user_id=user_id, action_type="dm")
+        return None
     return final
 
 
@@ -1358,8 +1397,16 @@ def _nurture_after_reply(user_id: int, followup: dict, their_message: str,
         except Exception as e:
             log_warning("Nurture draft failed; falling back to the template", exc=e,
                         user_id=user_id, action_type="dm")
+        blocked = []
+        if message:
+            # The contact replied — that is what put this thread here — so a call ask is allowed;
+            # the fact gate and the slop lint are not (#2099).
+            blocked = dm_gate_reasons(message, _dm_fact_anchors(user_id, (tmpl or {}).get("template_text"),
+                                                                their_message),
+                                      thread_replied=True)
         if not message:
-            message = build_dm_from_template(user_id, NURTURE_EVENT_TYPE, first_name, my_profile, step=step)
+            message = build_dm_from_template(user_id, NURTURE_EVENT_TYPE, first_name, my_profile,
+                                             step=step, thread_replied=True)
             if message:
                 # The template answers nobody's reply — it is the least relevant thing this queue can
                 # hold, so how often it fires is worth reading. INFO, not WARNING: it is a designed
@@ -1375,7 +1422,14 @@ def _nurture_after_reply(user_id: int, followup: dict, their_message: str,
             return None
 
         due = datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(hours=nurture_delay_hours(intent))
-        status = ScheduledDmStatus.APPROVED if _nurture_auto_approve() else ScheduledDmStatus.PENDING
+        # A blocked draft is filed PENDING even under auto-approve: it waits for the operator's edit
+        # and is never sent on its own.
+        status = (ScheduledDmStatus.APPROVED if _nurture_auto_approve() and not blocked
+                  else ScheduledDmStatus.PENDING)
+        if blocked:
+            log_info(f"DM nurture: the draft for {first_name or profile_url} failed the content gate "
+                     f"({'; '.join(blocked)}); held PENDING for review", user_id=user_id,
+                     action_type="dm")
         dm_id = insert_scheduled_dm(user_id, profile_url, message, due,
                                     recipient_name=first_name or None, status=status,
                                     source=SCHEDULED_DM_SOURCE_NURTURE)
