@@ -716,7 +716,7 @@ def forget_supplied_material(post_id: "int | None") -> None:
         _SUPPLIED_MATERIAL.pop(int(post_id), None)
 
 
-def _story_bank_sources(user_id: "int | None") -> list:
+def _story_bank_sources(user_id: "int | None", action_type: str = "comment") -> list:
     """Read the user's story bank as an allow-list of specifics they really have (issue #620).
 
     Consulted only once a draft has already claimed something the cheap sources do not cover, so
@@ -724,11 +724,12 @@ def _story_bank_sources(user_id: "int | None") -> list:
 
     Args:
         user_id: Whose bank to read. None (an unattributed draft) has no bank and returns [].
+        action_type: The surface being graded, for the log line.
 
     Returns:
         Source strings for `story_bank.unsourced_specifics`. Empty on any read failure, which
-        leaves the check running against the post and the research findings alone — strictly the
-        behaviour before the bank existed, never a free pass.
+        leaves the check running against the other sources alone — strictly the behaviour before
+        the bank existed, never a free pass.
     """
     if not user_id:
         return []
@@ -736,8 +737,8 @@ def _story_bank_sources(user_id: "int | None") -> list:
         from cqc_lem.utilities.db import get_story_bank_entries
         entries = get_story_bank_entries(user_id, active_only=True)
     except Exception as exc:
-        log_warning("Story bank unreadable — grading this comment's specifics against the post and "
-                    "research only", exc=exc, user_id=user_id, action_type="comment")
+        log_warning("Story bank unreadable — grading this draft's specifics without it", exc=exc,
+                    user_id=user_id, action_type=action_type)
         return []
     return [source for entry in (entries or []) for source in _story_bank.fact_sources(entry)]
 
@@ -777,6 +778,34 @@ def _ungrounded_first_person_metrics(candidate: "str | None", post_content: Any,
     if not _story_bank.unsourced_specifics(candidate, sources):
         return []
     return _story_bank.unsourced_specifics(candidate, sources + _story_bank_sources(user_id))
+
+
+def unattended_fact_hold(content: "str | None", surface: str, user_id: "int | None",
+               *material: "str | None") -> list:
+    """First-person specifics that hold an unattended draft for the owner (issue #2098).
+
+    Newsletters and group posts publish without anyone reading them first, so a number the author
+    never gave us must stop the draft rather than ship under their name. The allow-list is the
+    author's OWN material — the story bank, the profile brief, their blog, their guidance. Research
+    findings are deliberately NOT in it: a researched statistic restated as "I've seen a 40% drop"
+    is still a claim about the author that they never made (issue #2136's rule for comments).
+
+    The bank costs a query, so it is read only when the cheap sources already failed a token.
+
+    Args:
+        content: The finished draft, exactly as it would ship.
+        surface: 'newsletter' or 'group_post' — whose severity decides whether this holds.
+        user_id: Whose story bank backs the author's own numbers.
+        *material: The author's own text the writer was handed.
+
+    Returns:
+        The offending specifics in the order they appear, or [] when the draft may ship.
+    """
+    sources = [str(m) for m in material if m and str(m).strip()]
+    if not _story_bank.fact_hold_specifics(content, sources, surface):
+        return []
+    return _story_bank.fact_hold_specifics(
+        content, sources + _story_bank_sources(user_id, action_type=surface), surface)
 
 
 # The skip-line's stable prefix (issue #1995), pinned in `log_escalation.BUILTIN_EXCLUDED_PREFIXES`.
@@ -1140,7 +1169,8 @@ def generate_newsletter_edition(profile: "LinkedInProfile", topic: str = None,
     from the durable `profile_synthesis` (falls back to the guarded full profile JSON only when none
     supplied). `guidance` is optional free-text steering for a regeneration (edit the same subject or
     take a completely different direction). Returns {'title','subtitle','subject','body',
-    'format','hook_style','cta_style','opening_line'} or None.
+    'format','hook_style','cta_style','opening_line','fact_hold'} or None — `fact_hold` lists the
+    first-person specifics that must hold the edition for approval, empty when it may publish.
     """
     import json as _json
     src = (f"\n\nSOURCE MATERIAL — repurpose this author's blog content. The edition must TRACK its "
@@ -1373,6 +1403,14 @@ def generate_newsletter_edition(profile: "LinkedInProfile", topic: str = None,
         log_info("Newsletter edition kept below the structural floor for review: "
                  + "; ".join(_framework.newsletter_structure_reasons(structure["failures"])),
                  task_name="generate_newsletter_edition")
+    # Graded LAST, on the body that will be stored. The caller persists a non-empty hold, which keeps
+    # the edition out of `auto_publish_newsletters` until the owner approves it (issue #2098).
+    edition["fact_hold"] = unattended_fact_hold(edition["body"], "newsletter", user_id,
+                                      profile_synthesis, blog_content, topic, guidance)
+    if edition["fact_hold"]:
+        log_info("Newsletter edition held for approval — first-person specifics nothing we "
+                 "supplied backs: " + ", ".join(edition["fact_hold"]),
+                 user_id=user_id, task_name="generate_newsletter_edition")
     return edition
 
 

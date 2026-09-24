@@ -74,6 +74,7 @@ from cqc_lem.utilities.ai.ai_helper import (
     generate_seed_comment,
     get_or_create_profile_synthesis,
     post_is_relevant,
+    unattended_fact_hold,
 )
 from cqc_lem.utilities.ai.content_alignment import (
     append_link_to_comment,
@@ -4109,18 +4110,29 @@ def auto_draft_group_post(self, user_id: int, group_id: str, group_name: str = N
                   task_name="auto_draft_group_post")
         return "No cached profile to draft from"
     with llm_attribution(user_id=user_id, feature=FEATURE_CONTENT):
+        synthesis = get_or_create_profile_synthesis(user_id, my_profile)
         # The user owns ready/skipped on this draft, never its text, so the draft is what publishes
         # — normalize a stray non-USD symbol here, the way every other generated post does
         # (issue #1529). `strip_non_bmp` is the shared Selenium-typing helper and stays currency-
         # blind: it also runs over comments and invite notes written about someone ELSE's content.
         text = strip_non_bmp(normalize_currency_symbols(generate_group_post(
             my_profile, group_name=group_name, prefs=get_engagement_preferences(user_id),
-            profile_synthesis=get_or_create_profile_synthesis(user_id, my_profile)) or ""))
+            profile_synthesis=synthesis) or ""))
     if not text.strip():
         return "No group post generated"
-    draft_id = create_group_post_draft(user_id, group_id, text, group_name=group_name)
+    # Silence ships a READY draft, so a draft stating a first-person number the author never gave
+    # us is stored SKIPPED instead (issue #2098). The studio's "undo skip" is the approval: it puts
+    # this same row back in the queue until the slot passes, and nothing ships without it.
+    held = unattended_fact_hold(text, "group_post", user_id, synthesis)
+    status = GroupPostDraftStatus.SKIPPED if held else GroupPostDraftStatus.READY
+    draft_id = create_group_post_draft(user_id, group_id, text, group_name=group_name,
+                                       status=status)
     if not draft_id:
         return "Could not store the group post draft"
+    if held:
+        log_info("Group post held for approval — first-person specifics nothing we supplied "
+                 "backs: " + ", ".join(held), user_id=user_id, task_name="auto_draft_group_post")
+        return f"Held group post {draft_id} for approval"
     log_info("Group post drafted for review", user_id=user_id, task_name="auto_draft_group_post")
     return f"Drafted group post {draft_id}"
 

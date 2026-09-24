@@ -131,7 +131,9 @@ class GroupPostDraftStatus(StrEnum):
     state is READY rather than a pending-approval one.
     """
     READY = 'ready'          # drafted (and editable) — publishes at the weekly slot unless skipped
-    SKIPPED = 'skipped'      # the user cancelled this week's post, or its group stopped taking posts
+    # the user cancelled this week's post, its group stopped taking posts, or the draft stated an
+    # ungrounded first-person claim and waits for the owner to restore it (issue #2098)
+    SKIPPED = 'skipped'
     PUBLISHED = 'published'  # it shipped into the group
     FAILED = 'failed'        # the run reached the group and the group would not take a member post
 

@@ -1173,7 +1173,8 @@ def _topup_newsletter_drafts_for_user(user_id: int, now: datetime,
             edition_format=edition.get("format"),
             hook_style=edition.get("hook_style"),
             opening_line=edition.get("opening_line"),
-            blueprint=compact_blueprint(plan) if plan else None)
+            blueprint=compact_blueprint(plan) if plan else None,
+            fact_hold=edition.get("fact_hold"))
         if not new_edition_id:
             break  # duplicate slot / db error → stop this user's run
         # Opt-in only (issue #893): generation costs money per edition, so a cover is queued for a
@@ -1186,9 +1187,11 @@ def _topup_newsletter_drafts_for_user(user_id: int, now: datetime,
         if edition.get("opening_line"):
             recent_openers.insert(0, edition["opening_line"])  # later slots avoid this opener too
         # The slot means different things per account since #1135, and this email is the only
-        # place an opted-out author learns their draft is waiting on THEM.
+        # place an opted-out author learns their draft is waiting on THEM. A held edition
+        # (issue #2098) waits on them too, whatever the setting says.
         notify_newsletter_draft_ready(user_id, edition["title"], slot,
-                                      auto_publish=bool(settings.get("auto_publish_newsletters")))
+                                      auto_publish=bool(settings.get("auto_publish_newsletters"))
+                                      and not edition.get("fact_hold"))
         generated += 1
     return generated
 
@@ -1381,6 +1384,7 @@ def regenerate_newsletter_edition(edition_id: int, guidance: str = None):
         get_pending_newsletter_editions,
         get_recent_newsletter_blueprint_history,
         get_recent_newsletter_subjects,
+        set_edition_fact_hold,
         update_newsletter_edition,
     )
     from cqc_lem.utilities.linkedin.helper import load_profile_for_user
@@ -1432,6 +1436,9 @@ def regenerate_newsletter_edition(edition_id: int, guidance: str = None):
         return f"Regeneration failed for edition {edition_id}"
     if not new_ed:
         return f"Regeneration produced nothing for edition {edition_id}"
+    # The new body's grade replaces the old one BEFORE the body lands (issue #2098), so the rewrite
+    # is never auto-publishable under a hold that was cleared late or not at all.
+    set_edition_fact_hold(edition_id, user_id, new_ed.get("fact_hold"))
     update_newsletter_edition(edition_id, user_id, title=new_ed["title"],
                               subtitle=new_ed.get("subtitle"), body=new_ed["body"],
                               subject=new_ed.get("subject") or subject, status="draft",
@@ -1488,10 +1495,12 @@ def _publish_next_due_edition_for_user(user_id: int, now: datetime, dispatch) ->
     if not due:
         return 0
     auto_publish = bool(get_newsletter_settings(user_id).get("auto_publish_newsletters"))
-    publishable = [e for e in due if e.get("status") == "approved" or auto_publish]
+    # A draft carrying a `fact_hold` (issue #2098) needs the approval whatever the setting says.
+    publishable = [e for e in due if e.get("status") == "approved"
+                   or (auto_publish and not e.get("fact_hold"))]
     if len(publishable) < len(due):
         log_debug(f"Holding {len(due) - len(publishable)} due newsletter draft(s) for approval "
-                  f"(auto_publish_newsletters off)",
+                  f"(auto_publish_newsletters off, or a fact hold)",
                   user_id=user_id, task_name="auto_publish_scheduled_editions")
     if not publishable:
         return 0

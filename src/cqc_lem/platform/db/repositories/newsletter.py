@@ -167,23 +167,47 @@ def get_enabled_newsletter_user_ids() -> list:
     except mysql.connector.Error as err:
         log_error("Could not get enabled newsletter users", exc=err)
         return []
+def _fact_hold_value(specifics: "list | None") -> "str | None":
+    """The `fact_hold` column value: the held specifics comma-joined, or NULL when nothing holds."""
+    joined = ", ".join(str(s) for s in (specifics or []) if str(s).strip())
+    return joined[:500] or None
+
+
+def set_edition_fact_hold(edition_id: int, user_id: int, specifics: "list | None") -> bool:
+    """Hold an edition for approval, or release it, scoped to its owner (issue #2098).
+
+    A regeneration writes a new body, so its grade replaces the old one either way — an empty
+    `specifics` clears the hold rather than leaving a stale one on text that no longer carries it.
+    """
+    try:
+        with db_cursor(commit=True) as cursor:
+            cursor.execute("UPDATE newsletter_editions SET fact_hold=%s WHERE id=%s AND user_id=%s",
+                           (_fact_hold_value(specifics), edition_id, user_id))
+            return True
+    except mysql.connector.Error as err:
+        log_error(f"Could not set the fact hold on edition {edition_id}", exc=err, user_id=user_id)
+        return False
+
+
 def create_newsletter_edition(user_id: int, title: str, subtitle: str, body: str,
                               scheduled_for, subject: str = None, edition_format: str = None,
                               hook_style: str = None, opening_line: str = None,
-                              blueprint: dict = None) -> int:
+                              blueprint: dict = None, fact_hold: list = None) -> int:
     """Insert a draft newsletter edition (status defaults to 'draft'). Returns its id. `subject` is
     the planned topic/angle; `edition_format`/`hook_style`/`opening_line`/`blueprint` record the
     edition's assigned SHAPE, so the planner can rotate formats/hooks/openers (not just subjects)
-    against prior editions across runs.
+    against prior editions across runs. A non-empty `fact_hold` (issue #2098) is stored in the same
+    INSERT, so the edition is never auto-publishable for even a moment before it is held.
     """
     try:
         with db_cursor(commit=True) as cursor:
             cursor.execute(
                 "INSERT INTO newsletter_editions (user_id, title, subtitle, subject, `format`, "
-                "hook_style, opening_line, blueprint, body, scheduled_for) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                "hook_style, opening_line, blueprint, body, scheduled_for, fact_hold) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
                 (user_id, title, subtitle, subject, edition_format, hook_style, opening_line,
-                 json.dumps(blueprint) if blueprint else None, body, to_naive_utc(scheduled_for)))
+                 json.dumps(blueprint) if blueprint else None, body, to_naive_utc(scheduled_for),
+                 _fact_hold_value(fact_hold)))
             return cursor.lastrowid
     except mysql.connector.IntegrityError as err:
         # errno 1062 = ER_DUP_ENTRY: uq_user_slot already covers this user+slot — expected, not an
@@ -225,7 +249,7 @@ def get_pending_newsletter_editions(user_id: int) -> list:
         with db_cursor(dictionary=True) as cursor:
             cursor.execute(
                 "SELECT id, title, subtitle, subject, `format`, hook_style, body, status, scheduled_for, "
-                "cover_image_path, cover_image_source, cover_image_status "
+                "cover_image_path, cover_image_source, cover_image_status, fact_hold "
                 "FROM newsletter_editions "
                 "WHERE user_id = %s AND status IN ('draft', 'approved') "
                 "ORDER BY scheduled_for ASC", (user_id,))
@@ -396,7 +420,8 @@ def get_editions_due_to_publish(now) -> list:
     """Editions whose scheduled slot has arrived and may actually publish (issue #1135).
 
     'approved' is always publishable — the author said so. 'draft' is the resting status a generated
-    edition sits in, so it ships only for a user who opted into `auto_publish_newsletters`; for
+    edition sits in, so it ships only for a user who opted into `auto_publish_newsletters`, and
+    never while a `fact_hold` names an ungrounded first-person claim in it (issue #2098); for
     everyone else an overdue draft simply waits in the review queue. The join is LEFT so a user with
     no settings row is read as opted OUT rather than dropping their approved editions, and the
     status literals stay literals here for the same reason as `get_editions_with_pending_cover`.
@@ -408,7 +433,8 @@ def get_editions_due_to_publish(now) -> list:
                 "LEFT JOIN newsletter_settings s ON s.user_id = e.user_id "
                 "WHERE e.scheduled_for <= %s AND ("
                 "e.status = 'approved' OR "
-                "(e.status = 'draft' AND COALESCE(s.auto_publish_newsletters, 0) = 1))", (now,))
+                "(e.status = 'draft' AND e.fact_hold IS NULL "
+                "AND COALESCE(s.auto_publish_newsletters, 0) = 1))", (now,))
             return cursor.fetchall()
     except mysql.connector.Error as err:
         log_error("Could not get editions due to publish", exc=err)
@@ -443,7 +469,7 @@ def get_newsletter_edition(edition_id: int) -> "dict | None":
             cursor.execute(
                 "SELECT id, user_id, title, subtitle, subject, `format`, hook_style, opening_line, "
                 "body, status, scheduled_for, published_url, "
-                "cover_image_path, cover_image_source, cover_image_status "
+                "cover_image_path, cover_image_source, cover_image_status, fact_hold "
                 "FROM newsletter_editions WHERE id = %s", (edition_id,))
             return cursor.fetchone()
     except mysql.connector.Error as err:

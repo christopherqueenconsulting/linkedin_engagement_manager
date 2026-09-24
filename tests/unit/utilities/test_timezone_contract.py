@@ -202,7 +202,7 @@ class TestSchedulingWritesNormalizeToUtc:
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import create_newsletter_edition
             create_newsletter_edition(1, "T", "S", "B", self.AWARE)
-        stored = cur.execute.call_args[0][1][-1]
+        stored = cur.execute.call_args[0][1][-2]  # the last value is the #2098 fact hold
         assert stored == self.EXPECTED and stored.tzinfo is None
 
     def test_update_newsletter_edition_keeps_none_as_leave_alone(self, fake_cursor):
