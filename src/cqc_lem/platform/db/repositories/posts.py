@@ -460,6 +460,34 @@ def get_post_content_mix(post_id: int) -> Optional[str]:
         log_error("Could not get content_mix", exc=err, post_id=post_id)
         row = None
     return row['content_mix'] if row else None
+def get_recent_content_mix_sequence(user_id: int, limit: int = 30) -> Optional[list]:
+    """The 70/20/10 classes of the user's latest `limit` posts, oldest first, by `scheduled_time`.
+
+    The governor reads it (issue #2107) to decide each new slot's class from what the plan already
+    holds. Future planned rows count, because they are the posts the new slots follow. Rejected and
+    unclassified posts are left out, as `get_content_mix_counts` leaves them out of the ratio.
+    Returns None when the read fails, so the caller can tell a failed read from an empty history.
+    """
+    try:
+        with db_cursor() as cursor:
+            cursor.execute(
+                "SELECT content_mix FROM posts "
+                "WHERE user_id = %s AND status <> 'rejected' AND content_mix IS NOT NULL "
+                "ORDER BY scheduled_time DESC, id DESC LIMIT %s", (user_id, int(limit)))
+            rows = cursor.fetchall() or []
+    except mysql.connector.Error as err:
+        log_error("Could not get the content mix sequence", exc=err, user_id=user_id)
+        return None
+    return [row[0] for row in reversed(rows)]
+def update_post_content_mix(post_id: int, content_mix: Optional[str]) -> bool:
+    """Re-class a post, when generation could not honor the class the plan gave it (issue #2107)."""
+    try:
+        with db_cursor(commit=True) as cursor:
+            cursor.execute("UPDATE posts SET content_mix = %s WHERE id = %s", (content_mix, post_id))
+            return cursor.rowcount > 0
+    except mysql.connector.Error as err:
+        log_error("Could not update content_mix", exc=err, post_id=post_id)
+        return False
 def get_content_mix_counts(user_id: int, days: Optional[int] = None) -> dict:
     """Planned/published post counts per 70/20/10 mix class for the analytics dashboard's mix-
     compliance ratio (issue #618). Rejected posts are excluded (they were never part of the mix the

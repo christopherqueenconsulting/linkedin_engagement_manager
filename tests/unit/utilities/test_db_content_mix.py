@@ -96,3 +96,43 @@ class TestGetContentMixCounts:
         cur.execute.side_effect = mysql.connector.Error("boom")
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             assert get_content_mix_counts(1) == {"unclassified": 0}
+
+
+class TestGetRecentContentMixSequence:
+    def test_returns_the_latest_classes_oldest_first(self, fake_cursor):
+        from cqc_lem.utilities.db import get_recent_content_mix_sequence
+        conn, cur = fake_cursor(fetch_all=[("promo",), ("value",), ("authority",)])
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+            assert get_recent_content_mix_sequence(1, limit=3) == ["authority", "value", "promo"]
+        sql, params = cur.execute.call_args[0]
+        assert "status <> 'rejected'" in sql and "content_mix IS NOT NULL" in sql
+        assert "ORDER BY scheduled_time DESC" in sql and params == (1, 3)
+
+    def test_none_on_db_error(self, fake_cursor):
+        """A failed read must not look like an empty history: that would read as 'promo due'."""
+        import mysql.connector
+
+        from cqc_lem.utilities.db import get_recent_content_mix_sequence
+        conn, cur = fake_cursor()
+        cur.execute.side_effect = mysql.connector.Error("boom")
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+            assert get_recent_content_mix_sequence(1) is None
+
+
+class TestUpdatePostContentMix:
+    def test_writes_the_class(self, fake_cursor):
+        from cqc_lem.utilities.db import update_post_content_mix
+        conn, cur = fake_cursor()
+        cur.rowcount = 1
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+            assert update_post_content_mix(7, "value") is True
+        assert cur.execute.call_args[0][1] == ("value", 7)
+
+    def test_false_on_db_error(self, fake_cursor):
+        import mysql.connector
+
+        from cqc_lem.utilities.db import update_post_content_mix
+        conn, cur = fake_cursor()
+        cur.execute.side_effect = mysql.connector.Error("boom")
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+            assert update_post_content_mix(7, "value") is False

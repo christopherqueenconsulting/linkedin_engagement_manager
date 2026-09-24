@@ -27,7 +27,10 @@ _DISABLED_LM = {"enabled": False, "keyword": None, "message": None}
 _NO_NEWSLETTER = {"enabled": False, "title": None}
 
 
-def _plan(user_id=1, counts=None, mixes=None):
+_NO_HISTORY = object()
+
+
+def _plan(user_id=1, counts=None, mixes=None, history=_NO_HISTORY):
     """Run plan_content_for_user and return the saved daily plan. The plan's LENGTH depends on the
     days left in the real current month, so tests that need a specific class in a specific slot pass
     `mixes` (a long-enough class list) instead of assuming a 30-entry plan.
@@ -39,6 +42,8 @@ def _plan(user_id=1, counts=None, mixes=None):
         patch(f"{_RCP}.get_last_planned_post_date_for_user", return_value=None),
         patch(f"{_RCP}.get_post_type_counts",
               return_value=counts or {"carousel": 0, "text": 0, "video": 0, "document": 0}),
+        patch(f"{_RCP}.get_recent_content_mix_sequence",
+              return_value=[] if history is _NO_HISTORY else history),
     ]
     if mixes is not None:
         patches.append(patch(f"{_RCP}.assign_content_mix", return_value=mixes))
@@ -90,11 +95,99 @@ class TestPlanGovernor:
         assert _take_planned_post_type(["text", "carousel"], "value") == "carousel"
 
     @freeze_time(_PLAN_WINDOW_CLOCK)
-    def test_existing_posts_offset_the_cadence(self):
-        counts = {"carousel": 2, "text": 2, "video": 1, "document": 0}
+    def test_the_governor_reads_the_stored_mix(self):
+        """#2107: classes come from what the plan already holds.
+
+        Not from a post count, which the cadence reconcile rewinds by deleting planned rows.
+        """
+        history = ["value"] * 3 + ["promo"]
         with patch(f"{_RCP}.assign_content_mix", return_value=["value"] * 40) as assign:
-            _plan(counts=counts)
-        assert assign.call_args.kwargs["offset"] == 5
+            _plan(history=history)
+        assert assign.call_args.kwargs["history"] == history
+
+    @freeze_time(_PLAN_WINDOW_CLOCK)
+    def test_an_unreadable_history_lays_no_promo(self):
+        plan = _plan(history=None)
+        assert plan and "promo" not in [p["content_mix"] for p in plan]
+
+    @freeze_time(_PLAN_WINDOW_CLOCK)
+    def test_a_due_promo_lands_on_the_case_study_day(self):
+        """The promo is forced into case_snapshot, so it goes on the day type that draws one.
+
+        That is Tuesday's build receipt, so the promo's archetype matches its day.
+        """
+        from cqc_lem.utilities.ai.content_framework import day_type_formats
+        plan = _plan(history=["value"] * 9)
+        promo = [p for p in plan if p["content_mix"] == "promo"]
+        assert len(promo) == 1
+        assert "case_snapshot" in day_type_formats(promo[0]["scheduled_datetime"].weekday())
+
+    def test_promo_slots_follow_the_day_type_calendar(self):
+        from datetime import date
+
+        from cqc_lem.app.run_content_plan import _promo_slots
+        timed = [(date(2026, 7, 14), None), (date(2026, 7, 15), None), (date(2026, 7, 16), None)]
+        assert _promo_slots(timed, {1, 2, 3}) == [True, False, False]
+        # No case-study day in the calendar: the promo may land anywhere.
+        assert _promo_slots(timed, {2, 3}) is None
+
+
+class TestPromoArtifactGate:
+    """Acceptance (#2107): a promo without an artifact CTA HOLDs."""
+
+    _LM = {"enabled": True, "keyword": "AUDIT", "message": "the churn audit checklist"}
+
+    def _findings(self, content, content_mix="promo", lead_magnet=None, newsletter=None,
+                  user_id=1):
+        from cqc_lem.app.run_content_plan import evaluate_post_gates
+        with patch(f"{_RCP}._post_missing_required_asset", return_value=False), \
+             patch(f"{_RCP}.get_lead_magnet_settings", return_value=lead_magnet or _DISABLED_LM), \
+             patch(f"{_RCP}.get_newsletter_settings", return_value=newsletter or _NO_NEWSLETTER):
+            return evaluate_post_gates(5, content, "text", fact_anchors=[content],
+                                       user_id=user_id, content_mix=content_mix)
+
+    def test_promo_with_no_artifact_is_held(self):
+        from cqc_lem.utilities.quality_gates import GATE_PROMO_ARTIFACT_CTA, demoting_findings
+        findings = self._findings(_CLEAN + "\n\nSave this checklist.", lead_magnet=self._LM)
+        assert [f["gate"] for f in demoting_findings(findings)] == [GATE_PROMO_ARTIFACT_CTA]
+
+    def test_promo_for_a_user_with_no_artifact_is_held(self):
+        from cqc_lem.utilities.quality_gates import GATE_PROMO_ARTIFACT_CTA
+        assert GATE_PROMO_ARTIFACT_CTA in [f["gate"] for f in self._findings(_CLEAN)]
+
+    def test_promo_with_an_artifact_passes(self):
+        from cqc_lem.utilities.quality_gates import GATE_PROMO_ARTIFACT_CTA
+        content = _CLEAN + "\n\nComment AUDIT and I'll DM you the checklist."
+        findings = self._findings(content, lead_magnet=self._LM)
+        assert GATE_PROMO_ARTIFACT_CTA not in [f["gate"] for f in findings]
+
+    def test_non_promo_is_not_checked(self):
+        from cqc_lem.utilities.quality_gates import GATE_PROMO_ARTIFACT_CTA
+        for mix in ("value", "authority", None):
+            assert GATE_PROMO_ARTIFACT_CTA not in [f["gate"] for f in self._findings(_CLEAN, mix)]
+
+    def test_no_author_skips_the_gate(self):
+        from cqc_lem.utilities.quality_gates import GATE_PROMO_ARTIFACT_CTA
+        findings = self._findings(_CLEAN, user_id=None)
+        assert GATE_PROMO_ARTIFACT_CTA not in [f["gate"] for f in findings]
+
+    def test_unreadable_settings_skip_the_gate(self):
+        from cqc_lem.app.run_content_plan import _promo_artifact_finding
+        with patch(f"{_RCP}.get_lead_magnet_settings", side_effect=RuntimeError("db down")):
+            assert _promo_artifact_finding(1, 5, _CLEAN, "promo") is None
+
+    def test_generation_pass_passes_the_post_class(self):
+        from cqc_lem.app.run_content_plan import _gate_findings_for_post
+        with patch(f"{_RCP}.get_post_authenticity_score", return_value=None), \
+             patch(f"{_RCP}._post_archetype_or_none", return_value=None), \
+             patch(f"{_RCP}._recorded_similarity_finding", return_value=[]), \
+             patch(f"{_RCP}._engagement_prefs_for_gates", return_value=({}, True)), \
+             patch(f"{_RCP}._cta_keyword_for", return_value=None), \
+             patch(f"{_RCP}.get_post_content_mix", return_value="promo"), \
+             patch(f"{_RCP}.evaluate_post_gates", return_value=[]) as gates:
+            _gate_findings_for_post(1, 5, _CLEAN, "text")
+        assert gates.call_args.kwargs["content_mix"] == "promo"
+        assert gates.call_args.kwargs["user_id"] == 1
 
 
 class TestSaveContentPlan:
@@ -166,6 +259,7 @@ def _run_text_post(generated, content_mix=None, lead_magnet=None, newsletter=Non
         patch(f"{_RCP}.sanitize_for_linkedin", side_effect=lambda c, **kw: c),
         patch(f"{_RCP}.strip_engagement_bait", side_effect=lambda c, **kw: c),
         patch(f"{_RCP}._score_and_persist_authenticity"),
+        patch(f"{_RCP}.update_post_content_mix"),
     ]
     for p in patches:
         p.start()
@@ -211,6 +305,29 @@ class TestCreateTextPostMixHandling:
         _, gen, selector = _run_text_post(_CLEAN, content_mix="promo")
         assert selector.call_args.kwargs["guidance"] is None
         assert gen.call_args.kwargs["content_mix"] == "value"
+
+    def test_demoted_promo_is_reclassed_on_the_row(self):
+        """#2107: a promo written as value is re-classed on the row.
+
+        Otherwise the promo gate would hold it, and the next plan would count a promo that never ran.
+        """
+        with patch(f"{_RCP}.update_post_content_mix") as reclass:
+            from cqc_lem.app.run_content_plan import _resolve_story_anchor
+            with patch(f"{_RCP}._select_story_for_post", return_value=None):
+                _, _, mix = _resolve_story_anchor(1, 77, {}, None, None, "promo")
+        assert mix == "value"
+        reclass.assert_called_once_with(77, "value")
+
+    def test_promo_draft_with_no_artifact_is_closed_on_the_users_artifact(self):
+        lm = {"enabled": True, "keyword": "AUDIT", "message": "the churn audit checklist"}
+        out, _, _ = _run_text_post(_CLEAN, content_mix="promo", lead_magnet=lm,
+                                   stories=[self._PROMO_STORY])
+        assert out.startswith(_CLEAN)
+        assert "AUDIT" in out
+
+    def test_promo_draft_is_left_alone_when_the_user_has_no_artifact(self):
+        out, _, _ = _run_text_post(_CLEAN, content_mix="promo", stories=[self._PROMO_STORY])
+        assert out == _CLEAN
 
     def test_unclassified_post_keeps_pure_shape_rotation(self):
         _, gen, selector = _run_text_post(_CLEAN)
@@ -260,3 +377,42 @@ class TestReviewGateLint:
         from cqc_lem.utilities.quality_gates import GATE_MEETING_CTA
         findings = self._findings("Slide deck caption. Let's set up a call to walk through it.")
         assert GATE_MEETING_CTA in [f["gate"] for f in findings]
+
+
+class TestDayTypeArchetype:
+    """Acceptance (#2107): the archetype comes from `POST_DAY_TYPES`. The audit matched 1 of 7."""
+
+    @pytest.mark.parametrize("weekday", range(7))
+    def test_text_post_archetype_is_the_days_family(self, weekday):
+        from cqc_lem.app.run_content_plan import _resolve_blueprint
+        from cqc_lem.utilities.ai.content_framework import POST_DAY_TYPES
+        with patch(f"{_RCP}.get_recent_post_shape_history", return_value=[]), \
+             patch(f"{_RCP}.get_shape_performance", return_value=None):
+            picks = {_resolve_blueprint(1, None, "value", weekday, None, False)["format"]
+                     for _ in range(50)}
+        assert picks <= set(POST_DAY_TYPES[weekday]["formats"])
+
+    @pytest.mark.parametrize("weekday", range(7))
+    def test_carousel_archetype_is_the_days_family(self, weekday):
+        """Promo 110 was a carousel drawn from the whole menu: carousels never saw the day type."""
+        from cqc_lem.app.run_content_plan import _select_carousel_blueprint
+        from cqc_lem.utilities.ai.content_framework import POST_DAY_TYPES
+        story = ["We cut a client's churn from 9% to 4% in one quarter."]
+        with patch(f"{_RCP}.get_recent_post_shape_history", return_value=[]), \
+             patch(f"{_RCP}.get_shape_performance", return_value=None):
+            picks = {_select_carousel_blueprint(1, story, weekday)["format"] for _ in range(50)}
+        assert picks <= set(POST_DAY_TYPES[weekday]["formats"])
+
+    def test_promo_on_its_day_matches_the_day_type(self):
+        from cqc_lem.app.run_content_plan import _resolve_blueprint
+        from cqc_lem.utilities.ai.content_framework import POST_DAY_TYPES
+        with patch(f"{_RCP}.get_recent_post_shape_history", return_value=[]), \
+             patch(f"{_RCP}.get_shape_performance", return_value=None):
+            fmt = _resolve_blueprint(1, None, "promo", 1, None, False)["format"]
+        assert fmt == "case_snapshot" and fmt in POST_DAY_TYPES[1]["formats"]
+
+    def test_create_content_forwards_the_weekday_to_the_carousel(self):
+        from cqc_lem.app.run_content_plan import create_content
+        with patch(f"{_RCP}.create_carousel_content", return_value="deck") as deck:
+            create_content(1, "carousel", "awareness", post_id=5, day_weekday=3)
+        assert deck.call_args.kwargs["day_weekday"] == 3

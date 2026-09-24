@@ -55,12 +55,15 @@ from cqc_lem.utilities.ai.ai_helper import (
     supplied_material_for,
 )
 from cqc_lem.utilities.ai.content_alignment import (
+    PROMO_ARCHETYPE,
     ContentMix,
+    artifact_cta_line,
     assign_content_mix,
     authenticity_gate_enabled,
     authenticity_score_min,
     contains_meeting_ask,
     ensure_lead_magnet_cta,
+    has_artifact_cta,
     humanize_text,
     lead_magnet_cta_directive,
     meeting_ask_excerpts,
@@ -128,6 +131,7 @@ from cqc_lem.utilities.db import (
     get_post_gate_reason,
     get_post_type_counts,
     get_profile_synthesis,
+    get_recent_content_mix_sequence,
     get_recent_post_shape_history,
     get_recent_post_texts,
     get_shape_performance,
@@ -150,6 +154,7 @@ from cqc_lem.utilities.db import (
     update_db_post_shape,
     update_db_post_status,
     update_db_post_video_url,
+    update_post_content_mix,
 )
 from cqc_lem.utilities.env_constants import (
     AI_DISCLOSURE_ENABLED,
@@ -203,6 +208,7 @@ from cqc_lem.utilities.quality_gates import (
     meeting_cta_finding,
     missing_asset_finding,
     parse_gate_findings,
+    promo_artifact_cta_finding,
     proof_finding,
     similarity_finding,
     slide_slop_finding,
@@ -544,10 +550,6 @@ def plan_content_for_user(self, user_id: int):
 
     # Calculate the total posts and percentages of each type
     total_posts = sum(current_counts.values())
-    # The 70/20/10 governor's rotation offset: continuing from how many posts this user already has
-    # stops a new plan from restarting the promo cadence (which could place two promo posts back to
-    # back across the plan boundary).
-    existing_post_count = total_posts
     if total_posts == 0:
         # New user with no posts — treat all types as equally unrepresented
         percentages = {post_type: 0.0 for post_type in current_counts}
@@ -657,7 +659,15 @@ def plan_content_for_user(self, user_id: int):
     # 70/20/10 content-mix governor (issue #618): classify every planned post BEFORE post types are
     # handed out, so the one-in-ten promo slot can claim a text post (its case-study/no-pressure
     # shape is steered in the text-post prompt) and the rest stay audience-value/authority content.
-    mix_classes = assign_content_mix(target_posts, offset=existing_post_count)
+    # Classed against the posts the user already has (issue #2107), and the promo waits for a day
+    # whose type draws a case study.
+    history = get_recent_content_mix_sequence(user_id)
+    promo_slots = _promo_slots(timed, weekdays)
+    if history is None:
+        # The read already logged its error. Without the history the governor cannot tell whether
+        # a promo is due, so this plan lays none: the ceiling is the harder bound.
+        promo_slots = [False] * target_posts
+    mix_classes = assign_content_mix(target_posts, history=history, promo_slots=promo_slots)
 
     for day, (post_date, scheduled_datetime) in enumerate(timed):
         content_mix = mix_classes[day]
@@ -683,6 +693,18 @@ def plan_content_for_user(self, user_id: int):
 
     # 4. Save the daily plan to the database for tracking and scheduling
     save_content_plan(user_id, daily_plan)
+
+
+def _promo_slots(timed: list, weekdays: set) -> Optional[list]:
+    """Which planned slots may carry the promo post (issue #2107).
+
+    Those on a weekday whose day type draws a case study, since the promo is forced into one. None
+    when the user's calendar owns no such day, so the promo still lands somewhere.
+    """
+    fits = {wd for wd in (weekdays or ()) if PROMO_ARCHETYPE in day_type_formats(wd)}
+    if not fits:
+        return None
+    return [post_date.weekday() in fits for post_date, _ in timed]
 
 
 def _take_planned_post_type(post_types: list, content_mix: str = None) -> str:
@@ -726,8 +748,9 @@ def create_content(user_id: int, post_type: str, stage: str, post_id: int = None
     text-post prompt.
 
     `day_weekday` is the slot's LOCAL weekday (Mon=0 … Sun=6); it selects the day-type calendar's
-    archetype family for text posts (issue #621) so a Wednesday reads as a story and a Thursday as
-    a spiky POV. Carousels and videos carry their own template menus and are unaffected.
+    archetype family (issue #621) so a Wednesday reads as a story and a Thursday as a spiky POV.
+    Text posts and carousels draw from the same post menu, so both honor it (issue #2107). Videos
+    carry their own template menus and are unaffected.
 
     `brief_info` is the VIDEO path's out-param only (issue #1377): a text post's image is stored by
     `generate_image_for_post`, which records its own brief, but a video's file is downloaded and
@@ -742,7 +765,7 @@ def create_content(user_id: int, post_type: str, stage: str, post_id: int = None
     elif post_type in (PostType.CAROUSEL.value, PostType.DOCUMENT.value):
         # A document post IS a carousel deck — same generated slides, published as a
         # native PDF instead of a multi-image share (see share_document_on_linkedin).
-        content = create_carousel_content(user_id, stage, post_id)
+        content = create_carousel_content(user_id, stage, post_id, day_weekday=day_weekday)
     else:
         # Affiliate promotion (issue #770) CLAIMS this promo slot rather than adding a post beside
         # it, which is what keeps LEM promotion inside the same 10% ceiling the author's own case
@@ -955,7 +978,8 @@ def _select_post_blueprint(user_id: int, prefer_save_targeted: bool = False,
         guidance=guidance)
 
 
-def _select_carousel_blueprint(user_id: int, fact_anchors: Optional[list] = None) -> Optional[dict]:
+def _select_carousel_blueprint(user_id: int, fact_anchors: Optional[list] = None,
+                               day_weekday: Optional[int] = None) -> Optional[dict]:
     """The carousel's shape — the same post menu, biased toward the save-targeted archetypes since a
     document post is where a saved reference actually lives. Both halves of that hang on having
     verified facts: with none, the fact-anchored archetypes are taken OFF the carousel menu entirely
@@ -964,14 +988,16 @@ def _select_carousel_blueprint(user_id: int, fact_anchors: Optional[list] = None
     re-score can ever fix. The caller passes the WRITER's anchors (the one selected story's facts,
     issue #728) — that, not the size of the whole bank, is what this deck can actually write from;
     the None fallback reads the bank only because a caller with no story selected has nothing
-    narrower to offer. Never raises — a carousel that loses its archetype still generates from the
-    generic slide guidance.
+    narrower to offer. `day_weekday` narrows the menu to that day type's family, as it does for a
+    text post (issue #2107). Never raises — a carousel that loses its archetype still generates from
+    the generic slide guidance.
     """
     try:
         anchors = _fact_anchors(user_id) if fact_anchors is None else fact_anchors
         return _select_post_blueprint(
             user_id, prefer_save_targeted=bool(anchors),
-            exclude_formats=None if anchors else fact_anchored_formats("post"))
+            exclude_formats=None if anchors else fact_anchored_formats("post"),
+            preferred_formats=day_type_formats(day_weekday) if day_weekday is not None else None)
     except Exception as e:
         log_warning("Could not select a carousel archetype — using generic slide guidance", exc=e,
                     user_id=user_id, task_name="create_carousel_content")
@@ -1110,11 +1136,13 @@ def _score_carousel_caption_authenticity(user_id: int, post_id: Optional[int], c
 @attribute_llm_cost(FEATURE_CONTENT)
 def create_carousel_content(user_id: int, stage: str, post_id: int = None,
                             template: Optional[str] = None,
-                            guidance: Optional[str] = None) -> str:
+                            guidance: Optional[str] = None,
+                            day_weekday: Optional[int] = None) -> str:
     """Generate AI carousel content, render slide images, update DB, and return the post text.
 
     `guidance` is the user's free-text revision request from the regenerate flow (issue #794) — it
-    steers the CAPTION AND the slides, since on a deck the slides are the post.
+    steers the CAPTION AND the slides, since on a deck the slides are the post. `day_weekday` is the
+    slot's local weekday, which picks the deck's archetype family from the day-type calendar.
     """
     from cqc_lem.utilities.ai.ai_helper import generate_carousel_content
     from cqc_lem.utilities.carousel_creator import (
@@ -1153,7 +1181,7 @@ def create_carousel_content(user_id: int, stage: str, post_id: int = None,
     # Carousels draw their SHAPE from the same shared post menu as text posts (issue #619 / G4) and
     # rotate against the same V51 shape history, so a build receipt can land as a document post —
     # and so a carousel archetype counts against the next text post's rotation.
-    blueprint = _select_carousel_blueprint(user_id, writer_anchors)
+    blueprint = _select_carousel_blueprint(user_id, writer_anchors, day_weekday)
     post_text, carousel_dict = generate_carousel_content(user_id, stage, prefs=prefs,
                                                          profile_synthesis=profile_synthesis,
                                                          blueprint=blueprint,
@@ -2585,7 +2613,9 @@ def evaluate_post_gates(post_id: int, content: str, post_type: Union[PostType, s
                         author_edited: bool = False,
                         cta_keyword: Optional[str] = None,
                         extra_fact_sources: Optional[list] = None,
-                        previously_unverified: Optional[list] = None) -> list[dict]:
+                        previously_unverified: Optional[list] = None,
+                        user_id: Optional[int] = None,
+                        content_mix: Optional[str] = None) -> list[dict]:
     """Run the quality gates over a FINISHED post and return their structured findings (issue #421).
 
     One evaluator for both callers: the content-plan status-setter (which knows the freshly persisted
@@ -2613,6 +2643,13 @@ def evaluate_post_gates(post_id: int, content: str, post_type: Union[PostType, s
     # create_text_post only covers text posts, and a user can edit a meeting ask back in.
     if content and contains_meeting_ask(content):
         findings.append(meeting_cta_finding(meeting_ask_excerpts(content)))
+
+    # The promo slot must offer an artifact (issue #2107). Needs the post's class and its author,
+    # so a caller that passes neither skips it.
+    if content:
+        promo_finding = _promo_artifact_finding(user_id, post_id, content, content_mix)
+        if promo_finding:
+            findings.append(promo_finding)
 
     # Affiliate promotion (issue #770): a paid endorsement under the author's name is never
     # auto-scheduled, however well it scores. Derived from the CONTENT (the referral link), not from
@@ -2729,7 +2766,8 @@ def _gate_findings_for_post(user_id: int, post_id: int, content: str,
             # The writer's own material widens the allow-list (issue #1971); read here rather
             # than in `evaluate_post_gates` so the re-score endpoint stays free of the registry.
             extra_fact_sources=_post_material_sources(user_id, post_id)
-            if _grades_fact_grounding(archetype) else None) + similarity
+            if _grades_fact_grounding(archetype) else None,
+            user_id=user_id, content_mix=_post_content_mix(post_id)) + similarity
         # An unreadable list must not release a hold it produced (issue #2047).
         return findings if prefs_readable else _carry_forbidden_claim_hold(post_id, findings)
     except Exception as e:
@@ -2929,7 +2967,8 @@ def rescore_post(post_id: int) -> dict:
         archetype=archetype, fact_anchors=_fact_anchors_for(user_id, archetype),
         author_edited=True, cta_keyword=_cta_keyword_for(user_id, post_id),
         extra_fact_sources=_post_material_sources(user_id, post_id, profile_synthesis),
-        previously_unverified=_recorded_unbacked_specifics(post_id))
+        previously_unverified=_recorded_unbacked_specifics(post_id),
+        user_id=user_id, content_mix=_post_content_mix(post_id))
     # A re-score that could not read the user's forbidden-claim list graded against the global
     # floor only (issue #2047): the hold that list produced is carried forward, never cleared by a
     # pass that could not see it — persisting an empty verdict here would auto-approve the post.
@@ -3456,8 +3495,8 @@ def _resolve_story_anchor(user_id: int, post_id: Optional[int], prefs: dict,
         could not ground a case study. Integration seam (#618 x #620): the promo slot demands a
         case study built on ONE real outcome number, but without an anchor the fabrication detector
         has no allow-list and is skipped entirely, so the one post most likely to invent a client
-        figure would ship unchecked. The plan row keeps its 'promo' class, which only makes the
-        dashboard's mix-compliance ratio conservative.
+        figure would ship unchecked. The row is re-classed 'value' too (issue #2107), so the
+        governor's next plan and the promo gate both see the post that was actually written.
     """
     if story_directive is not None:
         return None, story_directive, content_mix
@@ -3478,6 +3517,8 @@ def _resolve_story_anchor(user_id: int, post_id: Optional[int], prefs: dict,
                     "case study cannot be invented", user_id=user_id, post_id=post_id,
                     task_name="create_text_post")
         content_mix = ContentMix.VALUE.value
+        if post_id:
+            update_post_content_mix(post_id, content_mix)
     return story, story_directive, content_mix
 
 
@@ -3511,7 +3552,7 @@ def _resolve_blueprint(user_id: int, blueprint: Optional[dict], content_mix: Opt
         day_type = day_type_for_weekday(day_weekday) if day_weekday is not None else None
         blueprint = _select_post_blueprint(
             user_id,
-            guidance="case_snapshot" if content_mix == ContentMix.PROMO.value else None,
+            guidance=PROMO_ARCHETYPE if content_mix == ContentMix.PROMO.value else None,
             preferred_formats=day_type_formats(day_weekday) if day_type else None)
         if day_type:
             log_info(f"Day type for weekday {day_weekday}: {day_type['label']}")
@@ -3770,7 +3811,53 @@ def _repair_post_ctas(ctx: PostDraftContext, content: str, lead_magnet: Optional
             log_info("Lead-magnet CTA lost in refinement - repaired deterministically",
                      post_id=post_id, user_id=user_id, task_name="create_text_post")
             content = repaired
+
+    if content and normalize_content_mix(ctx.content_mix) == ContentMix.PROMO.value:
+        content = _repair_promo_artifact_cta(user_id, post_id, content,
+                                             bool((prefs or {}).get("use_emojis")))
     return content
+
+
+def _artifact_settings(user_id: int, post_id: Optional[int]) -> Optional[tuple]:
+    """`(lead_magnet, newsletter)` for the promo artifact check, or None when a read failed."""
+    try:
+        return get_lead_magnet_settings(user_id), get_newsletter_settings(user_id)
+    except Exception as e:
+        log_warning("Could not read the lead-magnet or newsletter settings — the promo post's "
+                    "artifact CTA is not checked", exc=e, user_id=user_id, post_id=post_id,
+                    task_name="create_content")
+        return None
+
+
+def _repair_promo_artifact_cta(user_id: int, post_id: Optional[int], content: str,
+                               use_emojis: bool) -> str:
+    """Close a promo post on the user's artifact when the draft offers none (issue #2107).
+
+    Leaves the draft alone when the user has no artifact to offer: `evaluate_post_gates` holds it.
+    """
+    settings = _artifact_settings(user_id, post_id)
+    if settings is None or has_artifact_cta(content, *settings):
+        return content
+    line = artifact_cta_line(*settings, post_id=post_id, use_emojis=use_emojis)
+    if not line:
+        return content
+    log_info("Promo post offered no artifact — appended the user's artifact CTA",
+             user_id=user_id, post_id=post_id, task_name="create_text_post")
+    return content.rstrip() + "\n\n" + line
+
+
+def _promo_artifact_finding(user_id: Optional[int], post_id: int, content: str,
+                            content_mix: Optional[str]) -> Optional[dict]:
+    """The hold for a promo post that offers no artifact (issue #2107), else None.
+
+    Skipped when the settings cannot be read: a gate whose inputs are absent is not guessed.
+    """
+    if not user_id or normalize_content_mix(content_mix) != ContentMix.PROMO.value:
+        return None
+    settings = _artifact_settings(user_id, post_id)
+    if settings is None or has_artifact_cta(content, *settings):
+        return None
+    return promo_artifact_cta_finding()
 
 
 def _persist_draft_outcome(ctx: PostDraftContext, content: Optional[str],

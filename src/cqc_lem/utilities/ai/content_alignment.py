@@ -133,6 +133,9 @@ CONTENT_MIX_TARGET: dict = {
     ContentMix.PROMO.value: 0.10,
 }
 
+# The archetype the promo slot is written as: a case study, with the client as the hero.
+PROMO_ARCHETYPE = "case_snapshot"
+
 # The ceiling compliance is measured against — a plan is out of policy the moment promo posts pass it.
 PROMO_MAX_RATIO = 0.10
 
@@ -143,10 +146,9 @@ PROMO_EVERY_N_POSTS_DEFAULT = 10
 PROMO_EVERY_N_POSTS_MIN = 10
 PROMO_EVERY_N_POSTS_MAX = 30
 
-# Authority education lands on 1-in-5 posts (20%), phased so it can never collide with the 1-in-10
-# promo slot (promo indices are ≡9 mod 10, authority ≡2 and ≡7) — leaving 70% value by construction.
+# Authority education lands on 1-in-5 posts (20%): a post is authority when none of the four
+# before it was, leaving 70% value once promo has taken its 1-in-10.
 _AUTHORITY_EVERY_N = 5
-_AUTHORITY_PHASE = 2
 
 
 def promo_every_n(every_n: Optional[int] = None) -> int:
@@ -170,23 +172,46 @@ def normalize_content_mix(value) -> Optional[str]:
     return key if key in CONTENT_MIX_TARGET else None
 
 
-def assign_content_mix(count: int, offset: int = 0, every_n: Optional[int] = None) -> list:
-    """The GOVERNOR: deterministic 70/20/10 class for each of `count` consecutively planned posts.
-    `offset` continues the rotation across plans (pass the user's existing post count) so a new plan
-    can't restart the cadence and land two promo posts back to back. Promo wins any collision, so the
-    promo cadence is exact and authority absorbs the rounding.
+def assign_content_mix(count: int, history: Optional[list] = None, every_n: Optional[int] = None,
+                       promo_slots: Optional[list] = None) -> list:
+    """The GOVERNOR: the 70/20/10 class for each of `count` consecutively planned posts.
+
+    Decided against what the user's plan ALREADY holds (issue #2107), never a position counter.
+    `history` is the classes of their latest posts, oldest first. A position counter was keyed on
+    the user's post count, and the cadence reconcile DELETES planned rows, so the count rewound and
+    the same promo/authority positions were handed out again. Production ran 35/41/24.
+
+    A promo lands only after `every_n - 1` non-promo posts, and an authority post only after four
+    non-authority posts. Both rules read the history, so a plan that is already over on promo or
+    authority is filled with value until the ratio comes back. Neither class can pass its target.
+
+    `promo_slots`, when given, marks which of the slots may carry the promo post. The planner sets it
+    to the weekdays whose day type draws a case study, so the promo's case-study shape matches its
+    day (issue #621). A due promo waits for the next such slot. That only makes promo rarer.
     """
     n = promo_every_n(every_n)
+    seq = [m for m in (normalize_content_mix(h) for h in (history or [])) if m]
     out = []
     for i in range(max(0, int(count or 0))):
-        seq = int(offset or 0) + i
-        if seq % n == n - 1:
-            out.append(ContentMix.PROMO.value)
-        elif seq % _AUTHORITY_EVERY_N == _AUTHORITY_PHASE:
-            out.append(ContentMix.AUTHORITY.value)
+        since_promo = _posts_since(seq, ContentMix.PROMO.value)
+        promo_ok = promo_slots is None or (i < len(promo_slots) and bool(promo_slots[i]))
+        if since_promo >= n - 1 and promo_ok:
+            mix = ContentMix.PROMO.value
+        elif _posts_since(seq, ContentMix.AUTHORITY.value) >= _AUTHORITY_EVERY_N - 1:
+            mix = ContentMix.AUTHORITY.value
         else:
-            out.append(ContentMix.VALUE.value)
+            mix = ContentMix.VALUE.value
+        seq.append(mix)
+        out.append(mix)
     return out
+
+
+def _posts_since(seq: list, mix: str) -> int:
+    """How many posts follow the latest `mix` post in `seq` — all of them when there is none."""
+    for back, value in enumerate(reversed(seq)):
+        if value == mix:
+            return back
+    return len(seq)
 
 
 _CONTENT_MIX_GUIDANCE: dict = {
@@ -389,6 +414,28 @@ def artifact_cta_line(lead_magnet: Optional[dict] = None, newsletter: Optional[d
                              campaign_for_post(post_id), content=PLACEMENT_POST_BODY)
         return f"{line} {url}" if url else ""
     return ""
+
+
+_NEWSLETTER_ASK_RE = re.compile(
+    r"\bsubscribe\b[^.?!\n]{0,80}\bnewsletter\b|\bnewsletter\b[^.?!\n]{0,80}\bsubscribe\b",
+    re.IGNORECASE)
+
+
+def has_artifact_cta(content: Optional[str], lead_magnet: Optional[dict] = None,
+                     newsletter: Optional[dict] = None) -> bool:
+    """True when the content offers an artifact the user really has (issue #2107): the lead-magnet
+    comment mechanic, or an ask to subscribe to their newsletter. A promo post must carry one.
+    """
+    if not content:
+        return False
+    if lead_magnet_enabled(lead_magnet) and has_lead_magnet_cta_mechanic(
+            content, lead_magnet.get("keyword")):
+        return True
+    if newsletter and newsletter.get("enabled"):
+        url = str(newsletter.get("newsletter_url") or "").strip()
+        if (url and url in content) or _NEWSLETTER_ASK_RE.search(content):
+            return True
+    return False
 
 
 def replace_meeting_ask_cta(content: Optional[str], lead_magnet: Optional[dict] = None,

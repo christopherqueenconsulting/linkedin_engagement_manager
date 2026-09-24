@@ -530,13 +530,30 @@ Every planned post carries a mix class in `posts.content_mix`:
 
 Classes are assigned deterministically in `content_alignment.assign_content_mix` (promo cadence
 `PROMO_EVERY_N_POSTS`, clamped to 10–30 so promo can never exceed 10%). The promo slot claims a
-TEXT post and is forced into the `case_snapshot` blueprint, and the class rides into the prompt
-via `alignment_directive(..., content_mix=)`.
+TEXT post and is forced into the `case_snapshot` blueprint (`PROMO_ARCHETYPE`), and the class
+rides into the prompt via `alignment_directive(..., content_mix=)`.
+
+**The governor reads the stored mix, never a counter (issue #2107).** Each new slot is classed
+against the user's latest 30 classified posts (`get_recent_content_mix_sequence`, oldest first,
+future planned rows included). A promo needs `PROMO_EVERY_N_POSTS - 1` non-promo posts before it,
+and an authority post needs four non-authority posts before it. The old rotation was keyed on the
+user's post COUNT, and the cadence reconcile (#2021) deletes planned rows, so the count rewound and
+the same promo positions were handed out again. Production ran 35/41/24. Other rules:
+
+| Rule | Why |
+|---|---|
+| An unreadable history plans NO promo | A failed read must not look like "promo due" |
+| A due promo waits for a slot whose day type draws `case_snapshot` (Tuesday) | The promo's forced shape then matches its day. Waiting only makes promo rarer. With no such day in the calendar it may land anywhere |
+| A promo demoted for want of a story anchor is re-classed `value` on the ROW | The governor and the promo gate then see the post that was actually written |
+| Carousels draw their archetype from the day type's family too | Before this they drew from the whole menu. Only videos keep their own template menus |
 
 **Promo CTAs are always an ARTIFACT** (lead magnet / newsletter) — a meeting ask is banned in the
 prompts (`ARTIFACT_CTA_POLICY`, injected by `cta_policy_directive`), repaired deterministically
 by `replace_meeting_ask_cta`, and any that survives HOLDS the post at PENDING via the
-`meeting_cta` quality gate. Compliance is reported on `/user/engagement-analytics`
+`meeting_cta` quality gate. A promo with NO artifact (`has_artifact_cta`: the lead-magnet comment
+mechanic, or a subscribe ask for the user's newsletter) is closed on the user's artifact by
+`_repair_promo_artifact_cta`. If the user has none, or an edit removes it, the post HOLDS on the
+`promo_artifact_cta` gate. The gate is skipped when the settings cannot be read. Compliance is reported on `/user/engagement-analytics`
 (`content_mix`) and rendered on the Dashboard.
 
 ## Newsletter blog alignment (issue #967, `utilities/blog_source.py`)

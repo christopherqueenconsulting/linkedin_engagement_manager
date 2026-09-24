@@ -24,6 +24,7 @@ GATE_SLOP = "ai_slop"
 GATE_SLIDE_SLOP = "slide_ai_slop"
 GATE_AFFILIATE_PROMO = "affiliate_promo"
 GATE_FORBIDDEN_CLAIM = "forbidden_claim"
+GATE_PROMO_ARTIFACT_CTA = "promo_artifact_cta"
 # The two review-gate checks that had no finding shape until the repair pass needed one (issue
 # #1134). Both are built ONLY by `_review_generated_post`, never by `evaluate_post_gates` — they
 # describe why a draft was sent to the editor for repair, so nothing holds a post on them, and both
@@ -44,6 +45,7 @@ GATE_LABELS = {
     GATE_SLIDE_SLOP: "AI-slop patterns on the slides",
     GATE_AFFILIATE_PROMO: "Affiliate promotion",
     GATE_FORBIDDEN_CLAIM: "Forbidden claim",
+    GATE_PROMO_ARTIFACT_CTA: "Promo without an artifact",
     GATE_PERSONAL_PROOF: "Missing personal proof",
     GATE_FABRICATION: "Unsourced personal specifics",
 }
@@ -202,6 +204,22 @@ def meeting_cta_finding(phrases: Optional[list] = None) -> dict:
                      "— your lead-magnet resource (comment your trigger word) or your newsletter — or "
                      "close on a specific question instead."),
         score=None, threshold=None, details=phrases)
+
+
+def promo_artifact_cta_finding() -> dict:
+    """The promo slot's post offers no artifact (issue #2107).
+
+    The one post in ten that may sell has to point at something the reader gets without talking to
+    anyone, so it is held.
+    """
+    return build_finding(
+        GATE_PROMO_ARTIFACT_CTA,
+        explanation=("This is your promo post, and it offers the reader nothing to take away. A "
+                     "promo has to point at an artifact, so it is held instead of auto-scheduled."),
+        remediation=("Close on your lead-magnet resource (ask readers to comment your trigger word) "
+                     "or on your newsletter. If you have neither, set one up in Engagement "
+                     "settings, or reject this post."),
+        score=None, threshold=None)
 
 
 def fact_grounding_finding(unverified: Optional[list] = None,
