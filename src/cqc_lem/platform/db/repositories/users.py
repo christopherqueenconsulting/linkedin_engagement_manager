@@ -1870,6 +1870,9 @@ def get_profile_facts(profile_urls: list) -> dict:
     """ICP facts (title / company / industry) for the profiles we HAVE scraped, keyed by the
     profile URL as stored in `profiles` (callers match on the /in/ slug, not the raw string).
     People we never scraped simply aren't in the result — the scorer treats them as neutral.
+
+    `full_name` is the name the profile HEADER rendered at scrape time — the one name source a DM
+    greeting may trust (#2132), since notification text can put "to" or someone else's name there.
     """
     urls = list(dict.fromkeys(v for u in (profile_urls or []) if u
                               for v in _profile_url_variants(u)))
@@ -1882,7 +1885,8 @@ def get_profile_facts(profile_urls: list) -> dict:
                 "SELECT profile_url, "
                 "JSON_UNQUOTE(JSON_EXTRACT(data, '$.job_title')) AS job_title, "
                 "JSON_UNQUOTE(JSON_EXTRACT(data, '$.company_name')) AS company_name, "
-                "JSON_UNQUOTE(JSON_EXTRACT(data, '$.industry')) AS industry "
+                "JSON_UNQUOTE(JSON_EXTRACT(data, '$.industry')) AS industry, "
+                "JSON_UNQUOTE(JSON_EXTRACT(data, '$.full_name')) AS full_name "
                 f"FROM profiles WHERE profile_url IN ({placeholders})", tuple(urls))
             return {r["profile_url"]: r for r in cursor.fetchall() if r.get("profile_url")}
     except mysql.connector.Error as err:

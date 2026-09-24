@@ -1407,6 +1407,10 @@ def _nurture_after_reply(user_id: int, followup: dict, their_message: str,
         # that IS the sequence, so it contributes no origin line rather than inventing one.
         who = recipient_context(profile_url=profile_url, first_name=first_name,
                                 event_type=followup.get("event_type"), user_id=user_id)
+        # The greeting name is the profile header's, never the stored row's (#2132): that row may
+        # carry notification text ("to", "liked") or somebody else's name. "" greets generically,
+        # and it is what the re-check row below carries forward, so the bad name dies here.
+        first_name = str(who.get("first_name") or "")
         message = None
         try:
             message = generate_nurture_dm(

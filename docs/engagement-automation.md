@@ -367,7 +367,7 @@ people we have never scraped.
 
 | Field | Source | When it is missing |
 |---|---|---|
-| `first_name` | the `dm_followups` row the caller already has | omitted from the prompt |
+| `first_name` | `recipient_first_name` (#2132): the profile HEADER name (`full_name` in the `profiles` cache) first; else the `dm_followups` row's name only when the profile URL's slug spells it | omitted from the prompt, and the draft, template fallback, `scheduled_dms.recipient_name` and the re-check row all greet nobody |
 | `job_title` / `company_name` / `industry` | `db.get_profile_facts` — the by-URL `profiles` scrape cache, the same reader the nightly lead scorer uses for ICP fit | omitted; someone we never scraped is simply absent from that table |
 | `thread_origin` | the follow-up row's `event_type`, mapped through `_THREAD_ORIGINS` | omitted — including on a `nurture` row, where the event type IS the sequence and the original trigger is not on the row |
 
@@ -390,6 +390,10 @@ not return through the prompt.
   stays approval-gated either way.
 - `JSON_UNQUOTE(JSON_EXTRACT(...))` hands back the four-character string `'null'` for a JSON null,
   so `_UNKNOWN_FACTS` filters it — otherwise the prompt reads "their title is null".
+- **The stored name is never trusted on its own (#2132).** `dm_followups.first_name` is written by
+  whichever lane opened the thread, and some read it from notification text: drafts went out
+  addressed to "to", "on" and "liked", and one said "Hi Giri" to Saikumar. The URL is the
+  recipient's identity, so a name it does not vouch for is dropped — "Hi there" beats the wrong name.
 - When the LLM produces nothing the lane still falls back to `build_dm_from_template`, which
   ignores their reply entirely. That fallback is unchanged but now logs at INFO, so how often the
   least-relevant draft in the queue fires is readable.
