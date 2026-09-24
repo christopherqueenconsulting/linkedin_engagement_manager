@@ -223,6 +223,25 @@ class TestNurtureRecipientContext:
         assert got == 99
         assert mocks["generate_nurture_dm"].call_args.kwargs["recipient_context"] == {}
 
+    def test_the_greeting_name_is_the_resolved_one_never_the_stored_row(self):
+        # #2132: the row said "to" (notification text); the resolver vouched for nobody, so the
+        # draft, the queued DM and the re-check row all greet nobody rather than "To".
+        got, mocks, enq = _run_nurture(followup=_followup(first_name="to"), recipient_context={})
+        assert got == 99
+        assert mocks["generate_nurture_dm"].call_args.kwargs["first_name"] == ""
+        assert mocks["insert_scheduled_dm"].call_args.kwargs["recipient_name"] is None
+        assert enq.call_args[0][2] == ""
+
+    def test_the_header_name_replaces_the_wrong_person_on_the_row(self):
+        got, mocks, enq = _run_nurture(followup=_followup(first_name="Giri"),
+                                       recipient_context={"first_name": "Saikumar"},
+                                       generate_nurture_dm=None)
+        assert got == 99
+        assert mocks["generate_nurture_dm"].call_args.kwargs["first_name"] == "Saikumar"
+        assert mocks["build_dm_from_template"].call_args[0][2] == "Saikumar"
+        assert mocks["insert_scheduled_dm"].call_args.kwargs["recipient_name"] == "Saikumar"
+        assert enq.call_args[0][2] == "Saikumar"
+
     def test_the_template_fallback_is_still_the_last_resort(self):
         # It answers nobody's reply, so it is logged — but a draft beats no draft.
         got, mocks, _enq = _run_nurture(generate_nurture_dm=None)

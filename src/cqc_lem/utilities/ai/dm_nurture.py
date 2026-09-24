@@ -253,6 +253,39 @@ def thread_origin(event_type: str = None) -> "str | None":
     return _THREAD_ORIGINS.get(str(event_type or "").strip().lower())
 
 
+# A real first name is letters (any script), optionally joined by an apostrophe or hyphen.
+_FIRST_NAME_RE = re.compile(r"^[^\W\d_]{2,}(?:['’-][^\W\d_]+)*$")
+
+
+def recipient_first_name(profile_url: str = None, stored_name: str = None,
+                         header_name: str = None) -> str:
+    """The first name a nurture draft may greet this person by, or "" to greet nobody (#2132).
+
+    `dm_followups.first_name` was written by whichever lane opened the thread, and some of them read
+    it out of NOTIFICATION text — which produced recipients named "to", "on" and "liked", and a
+    "Hi Giri" draft addressed to Saikumar. So the stored name is never trusted on its own:
+
+    1. `header_name` — the name the profile HEADER rendered when we scraped it — always wins.
+    2. Else the stored name, only when the profile URL's own slug carries it as a whole word — the
+       URL is the recipient's identity, so a name it spells is theirs, not notification chrome.
+    3. Else "" — the draft says "Hi" / "there". A generic greeting beats the wrong name.
+    """
+    from cqc_lem.utilities.linkedin.helper import clean_person_name
+    from cqc_lem.utilities.linkedin.message_thread import name_from_profile_url, name_matches
+
+    header = clean_person_name(header_name or "")
+    if header.lower() not in _UNKNOWN_FACTS:
+        first = header.split()[0]
+        if _FIRST_NAME_RE.match(first):
+            return first
+
+    stored = clean_person_name(stored_name or "").split()
+    first = stored[0] if stored else ""
+    if first and _FIRST_NAME_RE.match(first) and name_matches(first, name_from_profile_url(profile_url or "")):
+        return first
+    return ""
+
+
 def recipient_context(profile_url: str = None, first_name: str = None, event_type: str = None,
                       user_id: int = None) -> dict:
     """What we know about the person we are drafting to, from stored data only (issue #1625).
@@ -261,14 +294,14 @@ def recipient_context(profile_url: str = None, first_name: str = None, event_typ
     `company_name`, `industry`, `thread_origin` — and `{}` when we know nothing about them, which
     is the pre-#1625 behaviour and still drafts a message.
 
+    `first_name` here is the CALLER's stored name; the one returned is `recipient_first_name`'s
+    answer — the profile header's, never notification text (#2132) — and is absent when neither
+    source can vouch for one.
+
     Never raises and never navigates: a profile we have not scraped is a quieter draft, not a
     dropped one.
     """
     context: dict = {}
-    name = str(first_name or "").strip()
-    if name:
-        context["first_name"] = name
-
     facts: dict = {}
     if profile_url:
         try:
@@ -279,6 +312,10 @@ def recipient_context(profile_url: str = None, first_name: str = None, event_typ
             # A read fault, not an absent profile — the latter is an empty dict from a clean read.
             log_warning("Could not read stored profile facts for a nurture draft", exc=e,
                         user_id=user_id, action_type="dm")
+
+    name = recipient_first_name(profile_url, first_name, facts.get("full_name"))
+    if name:
+        context["first_name"] = name
 
     for field in ("job_title", "company_name", "industry"):
         value = str(facts.get(field) or "").strip()
