@@ -6,8 +6,9 @@ import type { GateFinding } from '../utils/gateFindings'
 // score against the threshold it failed, and the two things the user can actually do: fix the draft
 // and re-score it, or loosen the threshold in Account settings.
 
-// Similarity/focus scores are 0-1 overlap fractions; authenticity is already a 0-100 score.
-const isFraction = (gate: string) => gate === 'similarity' || gate === 'focus_alignment'
+// Similarity/focus/deck-topic scores are 0-1 overlap fractions; authenticity is already 0-100.
+const FRACTION_GATES = new Set(['similarity', 'focus_alignment', 'deck_off_topic'])
+const isFraction = (gate: string) => FRACTION_GATES.has(gate)
 const fmtScore = (gate: string, value: number | null) =>
   value === null || value === undefined
     ? null

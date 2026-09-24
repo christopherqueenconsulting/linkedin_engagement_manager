@@ -355,6 +355,20 @@ retry) and then ships with a logged reason — rendered images have no review qu
 front. Tool/model version numbers ("GPT-4o", "Postgres 16") are NOT graded as claims — the
 receipt's structure asks for the exact stack by name.
 
+**Deck vs caption (issue #2106) — these two HOLD.** A deck can pass the reference gate and still
+contradict the post it ships under. `_report_carousel_deck_consistency` measures two deterministic
+checks at generation and records them on `posts.gate_reason` (`demoted=True`), where
+`_recorded_deck_notes` re-reads them at every gate pass, so the post is held at PENDING:
+
+| Gate | Check | Released by |
+|---|---|---|
+| `deck_count` | `deck_count_report`: an "N <items>" count in the caption ("the exact 5 checks", "five key trends"; 2–12, explicit noun lexicon, never across a preposition) matches NONE of the deck's readings — its body-slide count, or its bulleted/numbered lines | An edited caption: the finding carries `deck_counts`, and the re-read re-checks the CURRENT caption against them |
+| `deck_off_topic` | `deck_topic_report`: `topic_authority_score` with the caption as the topic, below `topic_authority_min()` | Regenerating the carousel (or approving it) — slide text is baked into images |
+
+Both fail OPEN on an empty side (no count claimed, no body slide, empty caption). The slide slop
+note (#1512) stays advisory; these differ because a count or topic the post contradicts is a broken
+post, not a style reading.
+
 Both deck graders read the generated JSON, never the PNG that ships — which is the gap the audit
 below measures: the prompt allows a 200-char slide body, the schema 500, and the layouts the plan
 selects draw 99–193 before `_draw_block` silently stops.

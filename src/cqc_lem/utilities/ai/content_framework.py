@@ -3031,6 +3031,89 @@ def deck_promises(post_text: Optional[str]) -> list:
             for pattern, label, kinds in _DECK_PROMISES if pattern.search(body)]
 
 
+_DECK_COUNT_WORDS = {"two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7,
+                     "eight": 8, "nine": 9, "ten": 10, "eleven": 11, "twelve": 12}
+# The nouns a caption counts DECK ITEMS with ("the 5 checks", "five key trends"). A short, explicit
+# lexicon on purpose: "10 years", "3 clients" or "40% of teams" are claims about the world, not a
+# promise about how many slides follow, and must never be read as one.
+_DECK_ITEM_NOUNS = (
+    "checks", "steps", "tips", "trends", "lessons", "mistakes", "ways", "rules", "questions",
+    "signs", "reasons", "principles", "habits", "tools", "insights", "strategies", "takeaways",
+    "ideas", "patterns", "moves", "pillars", "myths", "practices", "levers", "factors", "truths",
+    "shifts", "controls", "fixes", "traps", "pitfalls", "flags", "metrics", "things",
+)
+# Up to two modifiers between the number and the noun: "5 key trends", "five red flags". Never a
+# preposition, so "10 years of lessons" is not read as ten lessons.
+_DECK_COUNT_CLAIM_RE = re.compile(
+    r"\b(\d{1,2}|" + "|".join(_DECK_COUNT_WORDS) + r")\s+"
+    r"(?:(?!(?:of|in|on|at|for|to|from|with|by|and|or|per)\b)[a-z][a-z'-]*\s+){0,2}?("
+    + "|".join(_DECK_ITEM_NOUNS) + r")\b", re.IGNORECASE)
+# A bulleted or numbered line inside a slide body — a deck may carry its items as one list slide.
+_DECK_LIST_ITEM_RE = re.compile(r"^\s*(?:[-•*▪✓✔]|\d{1,2}[.)])\s+\S", re.MULTILINE)
+
+
+def deck_count_claims(post_text: Optional[str]) -> list:
+    """Every "N <items>" count the CAPTION makes about the deck, as {count, phrase} entries.
+
+    Only counts from 2 to 12 — "one tip" is not a list, and nothing past a dozen fits a deck.
+    """
+    claims = []
+    for match in _DECK_COUNT_CLAIM_RE.finditer(str(post_text or "")):
+        raw = match.group(1).lower()
+        count = int(raw) if raw.isdigit() else _DECK_COUNT_WORDS[raw]
+        if 2 <= count <= 12:
+            claims.append({"count": count, "phrase": match.group(0)})
+    return claims
+
+
+def deck_count_report(carousel: Optional[dict], post_text: Optional[str] = None) -> dict:
+    """Does the caption's "N checks" match what the deck actually holds (issue #2106)? Deterministic.
+
+    The deck's items are its body slides (cover and CTA excluded — `deck_slides`' `graded` flag),
+    or, for a deck that lists its items on one slide, its bulleted/numbered lines. It passes when
+    ANY count the caption claims matches either reading: a caption that also says "3 mistakes"
+    about the author's past must not hold a 5-check deck. `checked` is False — and the report
+    passes — when the caption counts nothing or the deck has no body slide.
+
+    Returns {checked, passes, items, readings, claimed, reasons} — `readings` is every item count
+    the deck supports, which is what a later re-check of an edited caption compares against.
+    """
+    graded = [s for s in deck_slides(carousel) if s["graded"]]
+    claims = deck_count_claims(post_text)
+    if not graded or not claims:
+        return {"checked": False, "passes": True, "items": len(graded), "readings": [],
+                "claimed": [], "reasons": []}
+    listed = sum(len(_DECK_LIST_ITEM_RE.findall(s["content"])) for s in graded)
+    readings = {len(graded)} | ({listed} if listed else set())
+    passes = any(c["count"] in readings for c in claims)
+    reasons = [] if passes else [
+        f"the post text promises “{c['phrase']}” but the deck carries {len(graded)} item slide(s)"
+        for c in claims]
+    return {"checked": True, "passes": passes, "items": len(graded), "readings": sorted(readings),
+            "claimed": [c["phrase"] for c in claims], "reasons": reasons}
+
+
+def deck_topic_report(carousel: Optional[dict], post_text: Optional[str] = None) -> dict:
+    """Is the deck about what its own caption is about (issue #2106)? Deterministic, no LLM.
+
+    Reuses the Topic DNA scorer from `content_alignment` with the CAPTION as the topic: a deck that
+    shares almost no vocabulary with the post it ships under (an e-commerce trends deck on a
+    governance post) scores near zero. The threshold is the same `topic_authority_min()` the
+    off-niche governor uses. `checked` is False — and the report passes — when either side is empty.
+
+    Returns {checked, passes, score, threshold}.
+    """
+    from cqc_lem.utilities.ai.content_alignment import topic_authority_min, topic_authority_score
+    deck = "\n".join(f"{s['title']} {s['content']}" for s in deck_slides(carousel)).strip()
+    caption = str(post_text or "").strip()
+    if not deck or not caption or not content_tokens(deck) or not content_tokens(caption):
+        return {"checked": False, "passes": True, "score": None, "threshold": None}
+    threshold = topic_authority_min()
+    score = topic_authority_score(deck, [caption])
+    return {"checked": True, "passes": score >= threshold, "score": round(score, 4),
+            "threshold": threshold}
+
+
 def deck_reference_report(carousel: Optional[dict], post_text: Optional[str] = None,
                           save_targeted: bool = False) -> dict:
     """Grade a generated deck for REFERENCE VALUE and PROMISE CONSISTENCY. Deterministic — the same

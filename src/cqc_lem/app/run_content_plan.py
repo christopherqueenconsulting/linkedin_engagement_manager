@@ -76,7 +76,10 @@ from cqc_lem.utilities.ai.content_framework import (
     day_type_for_weekday,
     day_type_formats,
     day_type_stage,
+    deck_count_claims,
+    deck_count_report,
     deck_slides,
+    deck_topic_report,
     dwell_report,
     dwell_score_min,
     fact_anchored_formats,
@@ -187,6 +190,8 @@ from cqc_lem.utilities.observability import (
     track_video_asset_probe,
 )
 from cqc_lem.utilities.quality_gates import (
+    GATE_DECK_COUNT,
+    GATE_DECK_TOPIC,
     GATE_FACT_GROUNDING,
     GATE_FORBIDDEN_CLAIM,
     GATE_MALFORMED_ASSET,
@@ -194,6 +199,8 @@ from cqc_lem.utilities.quality_gates import (
     GATE_SLIDE_SLOP,
     affiliate_promo_finding,
     authenticity_finding,
+    deck_count_finding,
+    deck_topic_finding,
     demoting_findings,
     fabrication_finding,
     fact_grounding_finding,
@@ -1085,6 +1092,44 @@ def _report_carousel_slide_slop(user_id: int, post_id: Optional[int],
                     post_id=post_id, task_name="create_carousel_content")
 
 
+def _report_carousel_deck_consistency(user_id: int, post_id: Optional[int],
+                                      carousel: Optional[dict], caption: Optional[str]) -> None:
+    """Record — or clear — the two HOLDING checks of a deck against its own caption (issue #2106).
+
+    `deck_count_report`: the caption promises "the exact 5 checks" and the deck carries 4.
+    `deck_topic_report`: the slides share almost no vocabulary with the caption (an e-commerce
+    trends deck on a governance post). Both are measured HERE because the slide text exists only
+    inside `create_carousel_content`; `_recorded_deck_notes` re-reads them at every gate pass, where
+    a failing one holds the post at PENDING. Unlike the slide slop note these DEMOTE: they are not a
+    style reading but a post that contradicts itself.
+
+    Best-effort — an unreadable/unwritable reason only logs, and never costs the deck.
+    """
+    if post_id is None or not carousel:
+        return
+    try:
+        count = deck_count_report(carousel, caption)
+        topic = deck_topic_report(carousel, caption)
+        fresh = []
+        if not count["passes"]:
+            fresh.append(deck_count_finding(count["items"], count["claimed"], count["readings"]))
+        if not topic["passes"]:
+            fresh.append(deck_topic_finding(topic["score"], topic["threshold"]))
+        existing = get_post_gate_reason(post_id)
+        kept = [f for f in existing if f.get("gate") not in (GATE_DECK_COUNT, GATE_DECK_TOPIC)]
+        if not fresh and len(kept) == len(existing):
+            return
+        update_db_post_gate_reason(post_id, kept + fresh)
+        if fresh:
+            # INFO: a held draft is the gate doing its job; the finding on the post is the record.
+            log_info("Carousel deck contradicts its caption — holding for review: "
+                     + "; ".join(f["gate"] for f in fresh),
+                     user_id=user_id, post_id=post_id, task_name="create_carousel_content")
+    except Exception as e:
+        log_warning("Could not check the carousel's deck against its caption", exc=e,
+                    user_id=user_id, post_id=post_id, task_name="create_carousel_content")
+
+
 def _score_carousel_caption_authenticity(user_id: int, post_id: Optional[int], caption: str,
                                          profile_synthesis: Optional[str] = None,
                                          prefs: Optional[dict] = None) -> None:
@@ -1179,6 +1224,10 @@ def create_carousel_content(user_id: int, stage: str, post_id: int = None,
     # the concatenated slides. Recorded on the post, advisory — it holds nothing, and it leaves
     # `_report_carousel_fact_grounding`'s advisory-only posture (ring-fenced by #1139) untouched.
     _report_carousel_slide_slop(user_id, post_id, carousel_dict)
+
+    # The deck against its own caption (issue #2106): a count the slides do not hold, or slides on
+    # a different topic, HOLDS the post — read against the finished caption, like the slop note.
+    _report_carousel_deck_consistency(user_id, post_id, carousel_dict, post_text)
 
     # The caption's authenticity judge (issue #1512, owner decision 2A on PR #1554): a carousel
     # caption is a post like any other, and until now it was the one generated post type that
@@ -1847,22 +1896,40 @@ def _carry_forbidden_claim_hold(post_id: int, findings: list[dict]) -> list[dict
     return findings
 
 
-def _recorded_slide_slop_notes(post_id: int) -> list[dict]:
-    """The slide-level slop note `_report_carousel_slide_slop` recorded on this deck (issue #1512).
+def _recorded_deck_notes(post_id: int, content: Optional[str] = None) -> list[dict]:
+    """The deck findings recorded at generation, re-read for a gate pass.
 
-    A gate pass cannot re-derive this one either: the deck is persisted as rendered slide IMAGES, so
-    by the time the findings are assembled the slide text is gone. Re-read here so the note survives
-    both the generation-time gate pass (which writes the post's findings after generation returns)
-    and every later re-score — a re-scored caption does not change what the images say.
-    Never raises — an unreadable note only costs the record.
+    That is the slide-level slop note (issue #1512) and the deck-vs-caption holds (issue #2106).
+    A gate pass cannot re-derive these: the deck is persisted as rendered slide IMAGES, so by the
+    time the findings are assembled the slide text is gone. Re-read here so they survive both the
+    generation-time gate pass (which writes the post's findings after generation returns) and every
+    later re-score — a re-scored caption does not change what the images say.
+
+    The one exception is the COUNT hold, whose other half is the caption: it is re-checked against
+    `content` and the deck counts it recorded, so an author who edits the caption to match the
+    slides releases it. Never raises — an unreadable note only costs the record.
     """
     try:
-        return [f for f in get_post_gate_reason(post_id) if f.get("gate") == GATE_SLIDE_SLOP]
+        recorded = get_post_gate_reason(post_id)
     except Exception as e:
-        log_warning("Could not read the recorded slide-level slop lint — this deck's findings will "
-                    "not name the patterns its slides carry", exc=e, post_id=post_id,
-                    task_name="create_content")
+        log_warning("Could not read the recorded slide-level findings — this deck's review entry "
+                    "will not carry them", exc=e, post_id=post_id, task_name="create_content")
         return []
+    notes = []
+    for finding in recorded:
+        gate = finding.get("gate")
+        if gate in (GATE_SLIDE_SLOP, GATE_DECK_TOPIC):
+            notes.append(finding)
+        elif gate == GATE_DECK_COUNT:
+            counts = finding.get("deck_counts")
+            if not counts:
+                notes.append(finding)
+                continue
+            claims = deck_count_claims(content)
+            if claims and not any(c["count"] in counts for c in claims):
+                notes.append(deck_count_finding(finding.get("deck_items") or min(counts),
+                                                [c["phrase"] for c in claims], counts))
+    return notes
 
 
 def _accept_probed_video(post_id: int, video_file_path: str, video_src_url: str,
@@ -2630,10 +2697,11 @@ def evaluate_post_gates(post_id: int, content: str, post_type: Union[PostType, s
             findings.append(slop_finding(violation_reasons(slop["hard"]),
                                          violation_reasons(slop["warnings"])))
 
-    # Slide-level AI-slop note for a deck (issue #1512), measured at generation and re-read here —
-    # the slide text no longer exists by this point. Advisory as recorded, so it never demotes.
+    # A deck's slide-level findings, measured at generation and re-read here — the slide text no
+    # longer exists by this point. The slop note (issue #1512) is advisory; the deck-vs-caption
+    # count and topic checks (issue #2106) hold, and the count one is re-checked against `content`.
     if str(post_type).lower() in (PostType.CAROUSEL.value, PostType.DOCUMENT.value):
-        findings.extend(_recorded_slide_slop_notes(post_id))
+        findings.extend(_recorded_deck_notes(post_id, content))
 
     if content and recent_texts:
         # Embedding-first (issue #1265) — the finding carries the measure that fired, because a
@@ -2700,8 +2768,8 @@ def _gate_findings_for_post(user_id: int, post_id: int, content: str,
     re-running the gate here would be a second `lem-embedding` call and a second history read for
     one draft. `evaluate_post_gates` is therefore still handed no `recent_texts` from this caller.
 
-    Both recorded verdicts — the similarity one and a deck's slide-level slop note (issue #1512) —
-    are carried on the FAILURE path too. The caller persists whatever comes back, overwriting
+    Both recorded verdicts — the similarity one and a deck's slide-level findings (issues #1512,
+    #2106) — are carried on the FAILURE path too. The caller persists whatever comes back, overwriting
     `posts.gate_reason`, and neither verdict can be re-derived later: a re-score would pay a second
     embedding call, and the slide text is gone the moment the deck is rendered to images. Dropping
     them here would erase them for good.
@@ -2735,7 +2803,7 @@ def _gate_findings_for_post(user_id: int, post_id: int, content: str,
     except Exception as e:
         log_warning("Could not evaluate the quality gates for this post", exc=e,
                     user_id=user_id, post_id=post_id, task_name="create_content")
-        return similarity + _recorded_slide_slop_notes(post_id)
+        return similarity + _recorded_deck_notes(post_id, content)
 
 
 def _cta_keyword_for(user_id: int, post_id: int) -> Optional[str]:

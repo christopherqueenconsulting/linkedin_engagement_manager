@@ -22,6 +22,11 @@ GATE_MEETING_CTA = "meeting_cta"
 GATE_FACT_GROUNDING = "fact_grounding"
 GATE_SLOP = "ai_slop"
 GATE_SLIDE_SLOP = "slide_ai_slop"
+# A deck that contradicts its own caption (issue #2106): the caption counts items the slides do not
+# hold, or the slides are about a different topic. Measured where the slide text exists and re-read
+# at every gate pass, like the slide slop note — but these HOLD.
+GATE_DECK_COUNT = "deck_count"
+GATE_DECK_TOPIC = "deck_off_topic"
 GATE_AFFILIATE_PROMO = "affiliate_promo"
 GATE_FORBIDDEN_CLAIM = "forbidden_claim"
 # The two review-gate checks that had no finding shape until the repair pass needed one (issue
@@ -42,6 +47,8 @@ GATE_LABELS = {
     GATE_FACT_GROUNDING: "Unverified specifics",
     GATE_SLOP: "AI-slop patterns",
     GATE_SLIDE_SLOP: "AI-slop patterns on the slides",
+    GATE_DECK_COUNT: "Caption count ≠ slides",
+    GATE_DECK_TOPIC: "Slides off the post's topic",
     GATE_AFFILIATE_PROMO: "Affiliate promotion",
     GATE_FORBIDDEN_CLAIM: "Forbidden claim",
     GATE_PERSONAL_PROOF: "Missing personal proof",
@@ -307,6 +314,42 @@ def slide_slop_finding(hard_reasons: Optional[list] = None,
                      "regenerate the carousel if the flagged constructions matter to you."),
         score=None, threshold=None, demoted=demoted,
         details=hard[:10] + [f"(advisory) {w}" for w in warn[:5]])
+
+
+def deck_count_finding(items: int, claimed: Optional[list] = None,
+                       counts: Optional[list] = None) -> dict:
+    """The caption promises N items and the deck holds a different number (issue #2106).
+
+    `deck_counts` (every item count the deck supports — its body slides, and its listed lines when
+    it has any) rides on the finding because the deck cannot be re-read later — it is persisted as
+    images — while the caption CAN be edited, so a re-score re-checks the edited caption against
+    these recorded counts and releases the hold once they agree.
+    """
+    phrases = [str(p).strip() for p in (claimed or []) if str(p).strip()]
+    quoted = ", ".join(f"“{p}”" for p in phrases) or "a number of items"
+    finding = build_finding(
+        GATE_DECK_COUNT,
+        explanation=(f"The post text promises {quoted}, but the deck carries {int(items)} item "
+                     f"slide(s). A reader who counts the slides sees a promise the post did not "
+                     f"keep, so it is held for your review."),
+        remediation=(f"Edit the post text so its count matches the {int(items)} slide(s) the deck "
+                     f"holds, or regenerate the carousel."),
+        details=phrases)
+    finding["deck_items"] = int(items)
+    finding["deck_counts"] = sorted({int(c) for c in (counts or [items])})
+    return finding
+
+
+def deck_topic_finding(score: float, threshold: float) -> dict:
+    """The slides are about something other than the caption they ship under (issue #2106)."""
+    return build_finding(
+        GATE_DECK_TOPIC,
+        explanation=(f"The slides share {round(score * 100)}% of their topic vocabulary with the "
+                     f"post text (minimum {round(threshold * 100)}%) — the deck reads as a "
+                     f"different post from the caption, so it is held for your review."),
+        remediation=("Slide text is rendered into images, so it cannot be edited: regenerate the "
+                     "carousel, or approve it as-is if the pairing is deliberate."),
+        score=round(float(score), 4), threshold=round(float(threshold), 4))
 
 
 def affiliate_promo_finding(disclosure: Optional[str] = None) -> dict:

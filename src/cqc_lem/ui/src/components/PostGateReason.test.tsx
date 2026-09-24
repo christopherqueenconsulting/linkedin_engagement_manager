@@ -61,3 +61,24 @@ describe('PostGateReason — malformed media (issue #1402)', () => {
     expect(container.textContent).not.toContain('advisory')
   })
 })
+
+// A deck's off-topic hold (issue #2106) carries a 0-1 overlap score. Rounded as a 0-100 score it
+// rendered "score 0 · your limit 0" — a hold that reads as passing.
+describe('PostGateReason — deck off-topic hold (issue #2106)', () => {
+  it('renders the topic overlap as a percentage, not a rounded-to-zero score', () => {
+    const { container } = harness([
+      {
+        gate: 'deck_off_topic',
+        label: "Slides off the post's topic",
+        score: 0.0175,
+        threshold: 0.15,
+        demoted: true,
+        explanation: 'The slides share 2% of their topic vocabulary with the post text.',
+        remediation: 'Regenerate the carousel.',
+        details: [],
+      },
+    ])
+    expect(container.textContent).toContain('score 2%')
+    expect(container.textContent).toContain('your limit 15%')
+  })
+})
