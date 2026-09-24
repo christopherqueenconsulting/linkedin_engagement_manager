@@ -259,7 +259,8 @@ class TestRegenerateVideoForPost:
         c2pa.assert_called_once_with(str(video_file))
         upd.assert_called_once_with(9, url)
 
-    def test_heals_planning_post_to_approved_on_success(self, tmp_path):
+    def test_planning_post_is_not_promoted_on_success(self, tmp_path):
+        # Only 'error' is healed (issue #2100) — any other status is left for its owner.
         from cqc_lem.app.run_content_plan import regenerate_video_for_post
         from cqc_lem.utilities.db import PostStatus
         video_file = _valid_mp4(tmp_path, "new.mp4")
@@ -274,7 +275,7 @@ class TestRegenerateVideoForPost:
              patch(f"{_RCP}.update_db_post_status") as mock_status, \
              patch(f"{_RCP}.update_db_post_video_url"):
             regenerate_video_for_post(9)
-        assert PostStatus.APPROVED in [c.args[1] for c in mock_status.call_args_list]
+        mock_status.assert_not_called()
 
     def test_does_not_reheal_posted_video(self, tmp_path):
         from cqc_lem.app.run_content_plan import regenerate_video_for_post
@@ -315,21 +316,20 @@ class TestRegenerateCarouselTask:
         with patch("cqc_lem.utilities.db.get_post_user_id", return_value=None):
             assert regenerate_post_carousel_task(9) is None
 
-    def test_heals_errored_post_back_to_approved(self):
+    def test_errored_post_is_handed_to_the_gated_heal(self):
         from cqc_lem.app.run_content_plan import regenerate_post_carousel_task
-        from cqc_lem.utilities.db import PostStatus
         with patch("cqc_lem.utilities.db.get_post_user_id", return_value=1), \
              patch("cqc_lem.utilities.db.get_post_buyer_stage", return_value=None), \
              patch(f"{_RCP}.create_carousel_content", return_value="caption") as gen, \
+             patch(f"{_RCP}._score_and_persist_dwell"), \
              patch("cqc_lem.utilities.db.update_db_post_content") as upd_content, \
              patch("cqc_lem.utilities.db.get_post_carousel_slides",
                    return_value='["https://x/s1.png"]'), \
-             patch("cqc_lem.utilities.db.get_post_status", return_value="error"), \
-             patch("cqc_lem.utilities.db.update_db_post_status") as upd_status:
+             patch(f"{_RCP}._heal_errored_post") as heal:
             assert regenerate_post_carousel_task(9) == "caption"
         gen.assert_called_once_with(1, "awareness", 9)  # None stage defaults to awareness
         upd_content.assert_called_once_with(9, "caption")
-        upd_status.assert_called_once_with(9, PostStatus.APPROVED)
+        heal.assert_called_once_with(1, 9, "caption", task_name="regenerate_post_carousel_task")
 
     def test_posted_post_is_not_reapproved(self):
         from cqc_lem.app.run_content_plan import regenerate_post_carousel_task
