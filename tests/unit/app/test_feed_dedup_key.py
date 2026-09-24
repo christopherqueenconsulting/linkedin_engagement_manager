@@ -216,9 +216,10 @@ class TestTruncationProofFallbackKey:
 
 
 # What `_URN_SCAN_JS` returned on live group-feed cards (read-only probe, 2026-09-24, groups
-# 892487 / 115435 / 56495 / 7037632 — `group_feed_composer.urn_evidence`). Every card carried its
-# own `data-urn` on a single-post ancestor; on 5 of 26 a `/feed/update/` anchor INSIDE the card
-# named a different activity, and the old permalink-first order keyed the post on that one.
+# 892487 / 115435 / 3063585 / 56495 / 7037632 / 128789 / 14153749 — `group_feed_composer.urn_evidence`).
+# Every card carried its own `data-urn` on a single-post ancestor; on 15 of 47 a `/feed/update/`
+# anchor INSIDE the card named a different activity (the original of a group share), and the old
+# permalink-first order keyed the post on that one.
 _LIVE_CONTAINER = "urn:li:activity:7508799179968671745"
 _LIVE_INNER_ANCHOR = "https://www.linkedin.com/feed/update/urn:li:activity:7508175572926189568/"
 

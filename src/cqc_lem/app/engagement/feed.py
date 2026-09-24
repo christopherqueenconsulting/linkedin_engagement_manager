@@ -616,8 +616,8 @@ def _feed_post_identity(card, author: str, content: str, driver=None) -> "tuple[
     Rungs, exhausted in order (#2151, grounded on five live group feeds): the card's own or a
     single-post ancestor's URN attribute ('card') → its `/feed/update/` anchor ('permalink') → a URN
     anywhere inside the card ('card') → the content hash. The container outranks the anchor because
-    on 5 of 26 live group cards the anchor named a DIFFERENT post than the container (an embedded or
-    reshared one), and one post keyed two ways is a second comment.
+    on 15 of 47 live group cards the anchor named a DIFFERENT post (the original a group share
+    shared), and one post keyed two ways is a second comment.
     """
     container_urn = _feed_post_container_urn(card, driver=driver)
     if container_urn:
