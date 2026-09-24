@@ -176,3 +176,47 @@ class TestServingModelCapture:
         # intentionally passes the requested alias as the model argument so cost attribution
         # falls back to the tier rate.
         assert kwargs.get("serving_model", kwargs["model"]) == "lem-complex"
+
+
+class TestProxyResponseCost:
+    """Issue #2131: the proxy's own price reaches the tracker.
+
+    So the ledger books what `$ai_generation` reports instead of the tier alias's list rate.
+    """
+
+    def test_hidden_params_response_cost_is_passed_to_tracker(self):
+        resp = _response()
+        resp._hidden_params = {"response_cost": "0.0"}
+        _, track = _call(model="lem-medium", messages=[], _response=resp)
+        assert track.call_args[1]["response_cost"] == 0.0
+
+    def test_no_proxy_price_passes_none_so_the_estimate_applies(self):
+        _, track = _call(model="lem-medium", messages=[])
+        assert track.call_args[1]["response_cost"] is None
+
+    def test_the_header_reaches_the_tracker_through_the_real_client(self):
+        """End to end through a REAL `AttributedOpenAI`.
+
+        An SDK upgrade that stops routing responses through `_process_response` would silently
+        revert the ledger to alias pricing.
+        """
+        import httpx
+
+        from cqc_lem.utilities.ai.ai_helper import _call_llm
+        from cqc_lem.utilities.ai.client import AttributedOpenAI
+
+        body = {"id": "x", "object": "chat.completion", "created": 0, "model": "lem-medium",
+                "usage": {"prompt_tokens": 1000, "completion_tokens": 1000, "total_tokens": 2000},
+                "choices": [{"index": 0, "message": {"role": "assistant", "content": "hi"},
+                             "finish_reason": "stop"}]}
+        transport = httpx.MockTransport(lambda request: httpx.Response(
+            200, json=body, headers={"x-litellm-response-cost": "0.0"}))
+        real = AttributedOpenAI(api_key="k", base_url="http://litellm:4000", max_retries=0,
+                                http_client=httpx.Client(transport=transport))
+        with patch(f"{_AI}.client", real), patch(f"{_OBS}.track_llm_call") as track, \
+                patch(f"{_OBS}.posthog"):
+            _call_llm(model="lem-medium", messages=[{"role": "user", "content": "hi"}])
+
+        kwargs = track.call_args[1]
+        assert kwargs["response_cost"] == 0.0
+        assert kwargs["model_tier"] == "lem-medium"

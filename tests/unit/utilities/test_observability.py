@@ -568,8 +568,9 @@ class TestCostAttributionDimensions:
         # Cost priced by serving model, not the lem-simple fallback.
         assert props["cost_usd"] == pytest.approx(0.00075)
         # Accrual is keyed by the tier alias (model_tier) and passes only cost_usd.
-        usd, tokens, user_id, feature, model_tier = accrue.call_args[0]
+        usd, tokens, user_id, feature, model_tier, task_name = accrue.call_args[0]
         assert model_tier == "lem-simple"
+        assert task_name == "off_worker"  # no Celery task in a unit test
         assert usd == pytest.approx(0.00075)
 
     def test_down_routed_call_to_metered_provider_changes_cost(self):
@@ -622,6 +623,62 @@ class TestCostAttributionDimensions:
         assert props["cost_usd"] == 0.0
         assert "shadow_cost_usd" not in props
         assert accrue.call_args[0][0] == 0.0
+
+    def test_proxy_response_cost_is_the_booked_cost(self):
+        """Issue #2131: the proxy's own price wins over the alias-rate estimate.
+
+        So the ledger books what `$ai_generation` reports — $0 for a subscription-served Ollama call.
+        """
+        with patch(f"{_MOD}.posthog") as mock_ph, patch(f"{_MOD}._accrue_llm_cost") as accrue:
+            from cqc_lem.utilities.observability import track_llm_call
+            track_llm_call(model="lem-medium", serving_model="lem-medium", prompt_tokens=1000,
+                           completion_tokens=1000, latency_ms=10, response_cost=0.0)
+
+        assert mock_ph.capture.call_args[1]["properties"]["cost_usd"] == 0.0
+        assert accrue.call_args[0][0] == 0.0
+
+    def test_metered_proxy_response_cost_is_booked_verbatim(self):
+        with patch(f"{_MOD}.posthog") as mock_ph, patch(f"{_MOD}._accrue_llm_cost") as accrue:
+            from cqc_lem.utilities.observability import track_llm_call
+            track_llm_call(model="lem-medium", prompt_tokens=1000, completion_tokens=1000,
+                           latency_ms=10, response_cost=0.00123)
+
+        assert mock_ph.capture.call_args[1]["properties"]["cost_usd"] == pytest.approx(0.00123)
+        assert accrue.call_args[0][0] == pytest.approx(0.00123)
+
+    def test_cache_hit_beats_a_reported_response_cost(self):
+        with patch(f"{_MOD}.posthog") as mock_ph, patch(f"{_MOD}._accrue_llm_cost"):
+            from cqc_lem.utilities.observability import track_llm_call
+            track_llm_call(model="lem-medium", prompt_tokens=10, completion_tokens=10,
+                           latency_ms=10, cached=True, response_cost=0.5)
+
+        assert mock_ph.capture.call_args[1]["properties"]["cost_usd"] == 0.0
+
+    def test_accrual_carries_the_running_celery_task(self):
+        with patch(f"{_MOD}.posthog"), patch(f"{_MOD}._accrue_llm_cost") as accrue, \
+                patch(f"{_MOD}._current_task_context",
+                      return_value=("cqc_lem.app.run_automation.automate_commenting", 3)):
+            from cqc_lem.utilities.observability import track_llm_call
+            track_llm_call(model="lem-medium", prompt_tokens=10, completion_tokens=10,
+                           latency_ms=10, response_cost=0.01)
+
+        assert accrue.call_args[0][5] == "cqc_lem.app.run_automation.automate_commenting"
+
+    @pytest.mark.parametrize("hidden,expected", [
+        ({"response_cost": "0.0"}, 0.0),
+        ({"response_cost": "0.00042"}, 0.00042),
+        ({"response_cost": 0.5}, 0.5),
+        ({"response_cost": "not-a-number"}, None),
+        ({"response_cost": "nan"}, None),
+        ({"response_cost": "-1"}, None),
+        ({"response_cost": None}, None),
+        ({}, None),
+        (None, None),
+    ])
+    def test_llm_response_cost_reads_the_proxy_price(self, hidden, expected):
+        from cqc_lem.utilities.observability import llm_response_cost
+        result = SimpleNamespace(_hidden_params=hidden) if hidden is not None else SimpleNamespace()
+        assert llm_response_cost(result) == (pytest.approx(expected) if expected else expected)
 
     def test_no_serving_model_uses_requested_alias(self):
         with patch(f"{_MOD}.posthog") as mock_ph:

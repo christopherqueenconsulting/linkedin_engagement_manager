@@ -180,7 +180,8 @@ def _call_llm(**kwargs):
     both are popped before the LiteLLM call. Omitted values fall back to the ambient
     `llm_attribution()` scope, then to the running Celery task's name. The serving model (what
     LiteLLM actually ran) is captured from the response and passed to `track_llm_call` separately
-    from the requested tier alias, so fallback/down-routed calls price by the real model.
+    from the requested tier alias, and the proxy's own price for the call is booked when it reports
+    one, so the ledger agrees with `$ai_generation` (issue #2131).
     """
     track_user_id = kwargs.pop("_track_user_id", None)
     track_feature = kwargs.pop("_track_feature", None)
@@ -215,7 +216,7 @@ def _call_llm(**kwargs):
             duration_ms=duration_ms,
         )
         try:
-            from cqc_lem.utilities.observability import llm_cache_hit, track_llm_call
+            from cqc_lem.utilities.observability import llm_cache_hit, llm_response_cost, track_llm_call
             user_id, feature = _attribution()
             track_llm_call(
                 model=model,
@@ -228,6 +229,7 @@ def _call_llm(**kwargs):
                 user_id=user_id,
                 feature=feature,
                 cached=llm_cache_hit(response),
+                response_cost=llm_response_cost(response),
             )
         except Exception:
             pass

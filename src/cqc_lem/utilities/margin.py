@@ -63,6 +63,24 @@ def tier_mrr_usd(tier: Optional[str]) -> float:
     return float(TIER_MRR_USD.get((tier or "").strip().lower(), 0.0))
 
 
+def user_mrr_usd(user: Mapping) -> float:
+    """THE MRR of one margin user — the one MRR source (issue #2131).
+
+    The daily block, the weekly report and the cost alerts all read it; before #2131 the alerts and
+    `--daily-json` disagreed on MRR. Takes a `get_margin_users` row (`subscription_tier`) or a report entry (`tier`). A `trial`
+    subscription earns nothing yet whatever tier it is trialling, so it is $0 rather than the price
+    of a plan nobody has paid for.
+    """
+    if str(user.get("subscription_status") or user.get("status") or "").strip().lower() == "trial":
+        return 0.0
+    return tier_mrr_usd(user.get("subscription_tier") or user.get("tier"))
+
+
+def total_mrr_usd(users: Iterable[Mapping]) -> float:
+    """Σ `user_mrr_usd` — the system MRR run rate."""
+    return sum(user_mrr_usd(user) for user in users or [])
+
+
 def split_cost_by_kind(by_category: Optional[Mapping[str, float]]) -> dict:
     """Bucket a `{category: usd}` rollup into the §C.1 kinds:
     `{"variable", "semi_variable", "fixed"}`. Proxy is semi-variable (linear-ish in users), infra is
@@ -231,7 +249,8 @@ def build_margin_report(period_start: date, period_end: date, users: Sequence[Ma
     Every cost figure is put on a MONTHLY RUN-RATE basis (`period spend × 30.4375 / period_days`) so
     it is comparable with monthly MRR and the §C.1 formulas apply unchanged; the raw window spend
     rides along as `period_cost_usd`. Each `users` entry is
-    `{"user_id", "tier", "cohort", "cost_by_category", "engagement"}`.
+    `{"user_id", "tier", "status", "cohort", "cost_by_category", "engagement"}`; its MRR is
+    `user_mrr_usd`.
     """
     days = max((period_end - period_start).days + 1, 1)
     rows, margins, total_mrr, total_variable, total_semi = [], [], 0.0, 0.0, 0.0
@@ -240,7 +259,7 @@ def build_margin_report(period_start: date, period_end: date, users: Sequence[Ma
         kinds = split_cost_by_kind(user.get("cost_by_category"))
         variable = monthly_run_rate(kinds["variable"], days)
         semi = monthly_run_rate(kinds["semi_variable"], days)
-        mrr = tier_mrr_usd(user.get("tier"))
+        mrr = user_mrr_usd(user)
         cm = contribution_margin(mrr, variable, semi)
         engagement = dict(user.get("engagement") or {})
         attributed += kinds["variable"] + kinds["semi_variable"] + kinds["fixed"]
@@ -414,12 +433,11 @@ def collect_daily_margin_block(day: Optional[date] = None) -> dict:
 
     day = day or _today()
     users = get_margin_users()
-    total_mrr = sum(tier_mrr_usd(u.get("subscription_tier")) for u in users)
     return build_daily_margin_block(
         day,
         get_cost_rollup(day, day, group_by="feature"),
         get_cost_rollup(day.replace(day=1), day, group_by="category"),
-        total_mrr,
+        total_mrr_usd(users),
         infra_monthly_usd=INFRA_FIXED_MONTHLY,
         ledger_available=cost_ledger_available(),
     )
@@ -437,6 +455,7 @@ def collect_margin_report(end: Optional[date] = None, days: int = 7) -> dict:
         users.append({
             "user_id": user_id,
             "tier": row.get("subscription_tier"),
+            "status": row.get("subscription_status"),
             "cohort": row.get("cohort"),
             "cost_by_category": get_cost_rollup(start, end, group_by="category", user_id=user_id),
             "engagement": engagement_lift(get_post_engagement_rows(user_id), start),

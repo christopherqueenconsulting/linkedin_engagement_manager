@@ -191,10 +191,18 @@ Three streams fire around every call. **Never sum spend or token counts across t
 
 | | `llm_call` (app, `observability.track_llm_call`) | `$ai_generation` (proxy) |
 |---|---|---|
-| Cost | LEM's *estimate* from `estimate_llm_cost_usd`, zeroed on a cache hit | the provider's own `response_cost` |
+| Cost | the proxy's `response_cost` read off the `x-litellm-response-cost` response header (#2131) — the SAME number `$ai_generation` carries; LEM's *estimate* from `estimate_llm_cost_usd` only when the proxy reported none. Zeroed on a cache hit | the provider's own `response_cost` |
 | Model | the **serving model** LiteLLM actually ran (`model`), with the requested tier alias preserved as `model_tier` | the provider model that served it |
 | Feeds | `cost_ledger` rollups, the margin report, budget alerts (§C/§E of the margin plan) | PostHog's LLM-analytics product: generations, traces, per-model/user breakdowns, evals |
 | Use for | anything a dollar figure is reported from | latency, error rate, model mix, per-user/feature volume |
+
+Why the header and not the body (#2131): behind the proxy the response body's `model` echoes the
+requested tier alias, so "price by the serving model" silently priced every call at the alias's
+list rate — the ledger booked ~13× what `$ai_generation` reported, because `lem-medium` is served by
+a $0 Ollama Cloud model. `AttributedOpenAI._process_response` copies the proxy's
+`x-litellm-response-cost` / `x-litellm-model-id` / `x-litellm-model-api-base` headers onto the parsed
+response as `_hidden_params`, and `observability.llm_response_cost` reads the cost from there. The
+two streams should then agree for any day; a gap means calls fell back to the estimate (no header).
 
 Rule of thumb: **money questions use `llm_call`** (it is the ledger's source and joins to Stripe);
 **everything else uses `$ai_generation`** (it is the truth about what ran). An insight must pick one

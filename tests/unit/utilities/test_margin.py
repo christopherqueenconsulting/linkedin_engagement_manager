@@ -33,6 +33,25 @@ class TestTierMrr:
         assert m.tier_mrr_usd("legacy_plan") == 0.0
 
 
+class TestUserMrr:
+    """Issue #2131: ONE function is the MRR of a margin user, whichever shape the row arrives in."""
+
+    def test_reads_a_db_row_and_a_report_entry_alike(self):
+        assert m.user_mrr_usd({"subscription_tier": "enterprise", "subscription_status": "active"}) \
+            == m.TIER_MRR_ENTERPRISE
+        assert m.user_mrr_usd({"tier": "professional", "status": "past_due"}) == m.TIER_MRR_PROFESSIONAL
+
+    def test_a_trial_earns_nothing_whatever_tier_it_trials(self):
+        assert m.user_mrr_usd({"subscription_tier": "enterprise", "subscription_status": "trial"}) == 0.0
+        assert m.user_mrr_usd({"tier": "professional", "status": " Trial "}) == 0.0
+
+    def test_total_is_the_sum(self):
+        users = [{"subscription_tier": "professional"}, {"subscription_tier": "starter"},
+                 {"subscription_tier": "enterprise", "subscription_status": "trial"}]
+        assert m.total_mrr_usd(users) == pytest.approx(m.TIER_MRR_PROFESSIONAL + m.TIER_MRR_STARTER)
+        assert m.total_mrr_usd([]) == 0.0
+
+
 class TestSplitCostByKind:
     def test_buckets_by_category(self):
         split = m.split_cost_by_kind({"llm": 1.5, "media": 2.0, "proxy": 3.0, "infra": 10.0})
@@ -305,6 +324,24 @@ class TestCollectors:
         assert row["variable_cost_usd"] == pytest.approx(7.0 * m.DAYS_PER_MONTH / 7, abs=1e-3)
         assert row["engagement_metric"] == m.METRIC_RATE
         assert report["system"]["unattributed_cost_usd"] == pytest.approx(2.0)
+
+
+    def test_daily_block_and_weekly_report_read_the_same_mrr(self):
+        """Issue #2131: the daily block and the weekly report agree on MRR.
+
+        The alerts (built on the weekly report) and `--daily-json` disagreed; given the same users,
+        the two now report one number.
+        """
+        users = [{"id": 1, "subscription_tier": "professional", "subscription_status": "active"},
+                 {"id": 2, "subscription_tier": "enterprise", "subscription_status": "trial"},
+                 {"id": 3, "subscription_tier": "starter", "subscription_status": "past_due"}]
+        with self._patch_db(users=users)[0]:
+            block = m.collect_daily_margin_block(date(2026, 7, 25))
+            report = m.collect_margin_report(end=date(2026, 7, 25), days=7)
+        expected = m.TIER_MRR_PROFESSIONAL + m.TIER_MRR_STARTER
+        assert block["mrr_usd"] == pytest.approx(expected)
+        assert report["system"]["mrr_usd"] == pytest.approx(expected)
+        assert {r["user_id"]: r["mrr_usd"] for r in report["users"]}[2] == 0.0
 
 
 class TestDelivery:

@@ -8,9 +8,11 @@ proxy activity read as ONE person — `str(user_id)`, falling back to a shared `
 count. A capture written anywhere else is invisible to the dashboards those events feed
 (`docs/observability-map.md`).
 
-Two money signals live here and are NEVER summed: `llm_call` carries LEM's OWN token-price estimate
-(`estimate_llm_cost_usd`), `$ai_generation` carries the provider's price for the same call. They
-answer different questions, and adding them double-counts every request.
+Two money signals live here and are NEVER summed: `llm_call` carries LEM's booked price and
+`$ai_generation` the proxy's price for the same call. Since #2131 the booked price IS the proxy's
+(`llm_response_cost`) whenever the proxy reports one, falling back to LEM's own token-price estimate
+(`estimate_llm_cost_usd`) only when it does not — so the two agree, and adding them double-counts
+every request.
 
 With no `POSTHOG_API_KEY` the SDK is disabled at import, so every function here is a no-op in local
 dev — a call site should never guard itself on the key. Under pytest it is disabled REGARDLESS of the
@@ -25,6 +27,7 @@ import contextvars
 import hashlib
 import inspect
 import json
+import math
 import os
 import re
 import sys
@@ -708,6 +711,24 @@ def llm_cache_hit(result) -> bool:
     return bool(hidden.get("cache_hit")) if isinstance(hidden, dict) else False
 
 
+def llm_response_cost(result) -> Optional[float]:
+    """The USD the LiteLLM proxy priced this call at, or None when it did not say (issue #2131).
+
+    It is the same `response_cost` the proxy publishes on `$ai_generation`, so booking it keeps the
+    ledger and that stream on one price: $0 for a subscription-served Ollama call, the provider's
+    rate for a metered one. None — never 0 — for a missing or unreadable value, so the caller falls
+    back to the estimate instead of booking a call as free.
+    """
+    hidden = getattr(result, "_hidden_params", None)
+    if not isinstance(hidden, dict):
+        return None
+    try:
+        cost = float(hidden.get("response_cost"))
+    except (TypeError, ValueError):
+        return None
+    return cost if math.isfinite(cost) and cost >= 0 else None
+
+
 # Feature buckets used for per-feature cost/margin attribution. Keep this vocabulary stable —
 # PostHog breakdowns and the cost plan (docs/cost-performance-margin-plan.md) key off these values.
 FEATURE_CONTENT = "content"
@@ -754,6 +775,11 @@ def feature_from_task_name(task_name: Optional[str]) -> Optional[str]:
         if needle in name:
             return feature
     return None
+
+
+# The `cost_ledger.task_name` of spend no Celery task incurred (an API request, a CLI script), so an
+# LLM ledger row always names its origin and NULL keeps meaning "written before #2131".
+TASK_OFF_WORKER = "off_worker"
 
 
 def _current_task_context() -> Tuple[Optional[str], Optional[int]]:
@@ -1071,20 +1097,29 @@ def track_llm_call(
     model_tier: Optional[str] = None,
     cached: bool = False,
     serving_model: Optional[str] = None,
+    response_cost: Optional[float] = None,
 ) -> None:
     """Emit one `llm_call` event and accrue spend to the daily cost rollup.
 
     `model` is the requested tier alias (or raw model) for backward compatibility.
     `serving_model`, when provided, is the model LiteLLM actually ran — including after fallback
-    or cost-aware down-routing. Spend is priced by the SERVING model so a fallback to a paid
-    provider is visible in the ledger. The requested alias is preserved as `model_tier` so
-    per-tier reporting survives.
+    or cost-aware down-routing. The requested alias is preserved as `model_tier` so per-tier
+    reporting survives.
+
+    `response_cost` is the proxy's own price for the call (`llm_response_cost`). When present it IS
+    the booked cost, so `cost_usd` and the ledger agree with `$ai_generation` (issue #2131); the
+    per-1K estimate on the serving model is only the fallback for a call the proxy did not price.
     """
     resolved_model = serving_model or model
     tier = model_tier or _model_tier(model)
     # A cache hit never reached the provider, so it cost nothing — keeping it at the estimated rate
     # would inflate summed spend on every repeated prompt.
-    cost_usd = 0.0 if cached else estimate_llm_cost_usd(resolved_model, prompt_tokens, completion_tokens)
+    if cached:
+        cost_usd = 0.0
+    elif response_cost is not None:
+        cost_usd = float(response_cost)
+    else:
+        cost_usd = estimate_llm_cost_usd(resolved_model, prompt_tokens, completion_tokens)
     shadow_cost_usd = None if cached else estimate_shadow_cost_usd(resolved_model, prompt_tokens, completion_tokens)
     _emit(EVENTS["llm_call"], {
         "model": resolved_model, "prompt_tokens": prompt_tokens,
@@ -1100,7 +1135,7 @@ def track_llm_call(
     # One ledger row per call would grow unbounded at LEM's call volume, so spend accumulates in a
     # per-day Redis bucket that the daily rollup task collapses into cost_ledger rows.
     _accrue_llm_cost(cost_usd, (prompt_tokens or 0) + (completion_tokens or 0),
-                     user_id, feature, tier or model)
+                     user_id, feature, tier or model, _current_task_context()[0] or TASK_OFF_WORKER)
 
 
 # --- Durable cost ledger (issue #490) ------------------------------------------------------
@@ -1255,13 +1290,18 @@ def track_avatar_likeness_probe(
            "used_avatar": used_avatar}, extra)
 
 
-def _rollup_field(user_id: Optional[int], feature: Optional[str], model_tier: Optional[str]) -> str:
-    return f"{user_id if user_id is not None else ''}|{feature or FEATURE_SYSTEM}|{model_tier or ''}"
+def _rollup_field(user_id: Optional[int], feature: Optional[str], model_tier: Optional[str],
+                  task_name: Optional[str] = None) -> str:
+    return (f"{user_id if user_id is not None else ''}|{feature or FEATURE_SYSTEM}|{model_tier or ''}"
+            f"|{task_name or ''}")
 
 
 def _accrue_llm_cost(usd: float, tokens: int, user_id: Optional[int], feature: Optional[str],
-                     model_tier: Optional[str]) -> None:
+                     model_tier: Optional[str], task_name: Optional[str] = None) -> None:
     """Add one call's spend to today's Redis rollup bucket (flushed to cost_ledger daily).
+
+    `task_name` is part of the bucket field, so each ledger row names the task that spent it
+    (issue #2131) — before it, every LLM row landed with a NULL `task_name`.
 
     Silent no-op without Redis — PostHog still has the per-call event, and the ledger keeps only
     the durable daily aggregate, so a missing bucket costs precision, never correctness elsewhere.
@@ -1276,7 +1316,7 @@ def _accrue_llm_cost(usd: float, tokens: int, user_id: Optional[int], feature: O
         return
     day = datetime.now(timezone.utc).date().isoformat()
     key = f"{_LLM_ROLLUP_PREFIX}{day}"
-    field = _rollup_field(user_id, feature, model_tier)
+    field = _rollup_field(user_id, feature, model_tier, task_name)
     try:
         client.hincrbyfloat(key, field, usd)
         client.expire(key, _LLM_ROLLUP_TTL_SECONDS)
@@ -1333,8 +1373,9 @@ def flush_llm_cost_rollup(today: Optional[str] = None) -> int:
                 usd = float(_as_text(raw_usd))
             except ValueError:
                 continue
-            user_part, _, rest = field.partition("|")
-            feature, _, model_tier = rest.partition("|")
+            # A bucket written before task_name joined the field has three parts; its rows keep
+            # a NULL task_name rather than being dropped.
+            user_part, feature, model_tier, task_name = (field.split("|", 3) + ["", "", ""])[:4]
             tokens = quantities.get(raw_field)
             _write_cost_ledger(
                 feature=feature or FEATURE_SYSTEM,
@@ -1344,6 +1385,7 @@ def flush_llm_cost_rollup(today: Optional[str] = None) -> int:
                 provider="litellm",
                 model_tier=model_tier or None,
                 qty=float(_as_text(tokens)) if tokens is not None else None,
+                task_name=(task_name or None) and task_name[:128],
                 incurred_on=incurred_on,
             )
             written += 1
@@ -2302,6 +2344,7 @@ def llm_tracked(model_alias: str):
                     user_id=user_id,
                     feature=feature or FEATURE_SYSTEM,
                     cached=llm_cache_hit(result),
+                    response_cost=llm_response_cost(result),
                 )
                 return result
             except Exception:
