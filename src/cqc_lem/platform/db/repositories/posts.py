@@ -1356,9 +1356,10 @@ def get_shipped_content_for_quality(user_id: int, days: int = 1) -> list:
     newsletter editions as one stream of writing, and three separate readers would let a surface drift
     out of the window silently. Each row is
     ``{surface, ref_id, text, shipped_on, format_key, post_type, video_url, video_model,
-    carousel_slides, authenticity_score, reactions, comments, reposts, impressions}`` — the
-    engagement fields are None for a surface that has no per-item stats (comments, newsletters) and
-    for a post whose stats have not been captured yet, which is the normal case the night it ships.
+    carousel_slides, authenticity_score, reactions, comments, own_comments, reposts, impressions}``
+    — the engagement fields are None for a surface that has no per-item stats (comments,
+    newsletters) and for a post whose stats have not been captured yet, which is the normal case
+    the night it ships. `own_comments` is None too on a capture that could not count ours (#2023).
     `post_type`, `video_url`, `video_model` and `carousel_slides` are present only for posts; they are
     None/[] for comments and newsletters. `video_model` is the model the render actually used (issue
     #1410), and is None for every post that shipped before it was recorded — the scorer falls back to
@@ -1374,7 +1375,7 @@ def get_shipped_content_for_quality(user_id: int, days: int = 1) -> list:
         cursor.execute(
             "SELECT p.id, p.content, p.archetype, p.post_type, p.video_url, p.video_model, "
             "  p.carousel_slides, p.authenticity_score, DATE(p.scheduled_time) AS shipped_on, "
-            "  s.reactions, s.comments, s.reposts, s.impressions "
+            "  s.reactions, s.comments, s.own_comments, s.reposts, s.impressions "
             "FROM posts p LEFT JOIN post_stats s "
             "  ON s.post_id=p.id AND s.user_id=p.user_id "
             "  AND s.id IN (SELECT MAX(id) FROM post_stats WHERE user_id=%s GROUP BY post_id) "
@@ -1391,6 +1392,7 @@ def get_shipped_content_for_quality(user_id: int, days: int = 1) -> list:
                 "carousel_slides": parse_carousel_slides(r.get("carousel_slides")),
                 "authenticity_score": r.get("authenticity_score"),
                 "reactions": r.get("reactions"), "comments": r.get("comments"),
+                "own_comments": r.get("own_comments"),
                 "reposts": r.get("reposts"), "impressions": r.get("impressions"),
             })
 

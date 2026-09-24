@@ -46,6 +46,32 @@ def engagement_rate(reactions: Optional[int], comments: Optional[int], reposts: 
     return engagement_score(reactions, comments, reposts) / views
 
 
+def third_party_comments(comments: Optional[int], own_comments: Optional[int]) -> Optional[int]:
+    """The page's comment count minus our own (seed #344 + second wave #622), issue #2023.
+
+    None when either half is unknown — an unknown own-comment count must not silently book our own
+    comments as the audience's. Floored at 0 because the two numbers are read at different moments:
+    a stats capture that ran between our seed and the page updating its count can legitimately show
+    fewer comments than we have logged (production post 81 computes to -1 that way).
+    """
+    if comments is None or own_comments is None:
+        return None
+    return max(0, int(comments) - int(own_comments))
+
+
+def third_party_engagement_rate(reactions: Optional[int], comments: Optional[int],
+                                own_comments: Optional[int], reposts: Optional[int] = 0,
+                                impressions: Optional[int] = None) -> Optional[float]:
+    """`engagement_rate` with our own comments taken out — the honest audience read.
+
+    None when the own-comment count or impressions are unknown; never the unadjusted rate.
+    """
+    third_party = third_party_comments(comments, own_comments)
+    if third_party is None:
+        return None
+    return engagement_rate(reactions, third_party, reposts, impressions)
+
+
 def recency_weight(scheduled_time: Optional[datetime], now: Optional[datetime] = None,
                    half_life_days: float = RECENCY_HALF_LIFE_DAYS) -> float:
     """Exponential half-life decay on a post's age. Missing/future timestamps and mixed timezone
