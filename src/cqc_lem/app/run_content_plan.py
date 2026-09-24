@@ -496,8 +496,6 @@ def _forward_slots(user_id: int, last_planned_date: Optional[datetime]) -> list:
         # further once instead of skipping, so the plan always advances.
         next_window_end = _plan_window_end(end_of_month + timedelta(days=1))
         slots = _cadence_slots(user_id, start_date, next_window_end)
-        if slots:
-            end_of_month = next_window_end
     if not slots:
         log_info(f"Content Plan | No cadence slots left this month after {start_date} | Skipped")
     return slots
