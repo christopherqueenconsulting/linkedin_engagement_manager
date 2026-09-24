@@ -337,6 +337,14 @@ Scope / Files / Acceptance), with a link to the PostHog issue for the stack trac
   run searches for that literal string across open AND closed issues — in bodies **and comments**.
   Closed counts — a fixed exception that trickles in for one more day must not reopen the backlog
   item.
+- **A regression is refiled** (issue #2110): when EVERY issue carrying the marker is closed and the
+  window's `last_seen` is more than `REGRESSION_GRACE_HOURS` (24) after the LATEST `closedAt`, the
+  fix did not hold, so a new issue is filed with `[regression of #N]` in the title and a
+  "Regression of #N" line in its Why (GitHub cross-links it onto #N's timeline). It carries the same
+  marker, so while it is open the id layer skips the row as usual. The grace exists because a closing
+  PR merges hours before it deploys; an unreadable `closedAt`/`last_seen` is never a regression.
+  Measured cost of not having it: mention-card drift recurred 09-14 and 09-22 after #1985 closed, and
+  group timeouts after #1719, and neither was refiled.
 - **Second layer, for the trackers this script did not write** (issue #1083): the marker is invisible
   to a human who filed an issue for the same defect first, so an ESCALATED warning also dedups on its
   text. `RecurringWarning` is the only exception type with a usable one — `log_escalation` masks the

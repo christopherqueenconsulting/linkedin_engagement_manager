@@ -471,6 +471,8 @@ class TestGitHubIssues:
                 '[{"number": 4, "body": "posthog-issue-someone-else"}]')):
             assert gh.is_filed("posthog-issue-a") is False
 
+        # A fresh client: one run caches each marker's search for the regression check (#2110).
+        gh = mod.GitHubIssues("owner/repo")
         with patch.object(gh, "_run", return_value=self._completed(
                 '[{"number": 4, "body": "marker: posthog-issue-a here"}]')):
             assert gh.is_filed("posthog-issue-a") is True
@@ -728,3 +730,123 @@ class TestMain:
              patch.object(mod.GitHubIssues, "create") as create:
             assert mod.main(["--apply"]) == 1
         create.assert_not_called()
+
+
+class TestRegressions:
+    """Issue #2110: a CLOSED fingerprint that recurs after the close is filed again as a regression.
+
+    #1985 (mention-card drift) and #1719 (group timeouts) both came back after closing and were
+    never refiled.
+    """
+
+    _CLOSED = {"number": 1985, "state": "CLOSED", "closedAt": "2026-09-10T12:00:00Z"}
+
+    def test_a_recurrence_past_the_grace_is_a_regression(self, mod):
+        row = _row(mod, last_seen="2026-09-14T08:00:00Z")
+        assert mod.regression_of(row, [self._CLOSED]) == {
+            "number": 1985, "closedAt": "2026-09-10T12:00:00Z"}
+
+    def test_stragglers_inside_the_grace_are_not(self, mod):
+        # The fix merged but had not deployed yet — old code still throwing is not a regression.
+        row = _row(mod, last_seen="2026-09-11T06:00:00Z")
+        assert mod.regression_of(row, [self._CLOSED]) is None
+
+    def test_an_open_carrier_is_the_live_tracker(self, mod):
+        row = _row(mod, last_seen="2026-09-20T00:00:00Z")
+        carriers = [self._CLOSED, {"number": 2200, "state": "OPEN", "closedAt": None}]
+        assert mod.regression_of(row, carriers) is None
+
+    def test_the_latest_close_is_the_fix_that_did_not_hold(self, mod):
+        row = _row(mod, last_seen="2026-09-22T00:00:00Z")
+        later = {"number": 2150, "state": "CLOSED", "closedAt": "2026-09-18T00:00:00Z"}
+        assert mod.regression_of(row, [self._CLOSED, later])["number"] == 2150
+        # ...and a recurrence inside the LATER close's grace is not one, whatever the earlier did.
+        row = _row(mod, last_seen="2026-09-18T10:00:00Z")
+        assert mod.regression_of(row, [self._CLOSED, later]) is None
+
+    @pytest.mark.parametrize("closed_at,last_seen", [
+        (None, "2026-09-20T00:00:00Z"), ("garbage", "2026-09-20T00:00:00Z"),
+        ("2026-09-10T12:00:00Z", None), ("2026-09-10T12:00:00Z", "t1")])
+    def test_an_unreadable_timestamp_is_never_a_regression(self, mod, closed_at, last_seen):
+        row = _row(mod, last_seen=last_seen)
+        carriers = [{"number": 1985, "state": "CLOSED", "closedAt": closed_at}]
+        assert mod.regression_of(row, carriers) is None
+
+    def test_no_carriers_is_not_a_regression(self, mod):
+        assert mod.regression_of(_row(mod, last_seen="2026-09-20T00:00:00Z"), []) is None
+
+    def test_a_carrier_without_a_number_is_not_linked(self, mod):
+        row = _row(mod, last_seen="2026-09-20T00:00:00Z")
+        assert mod.regression_of(row, [{**self._CLOSED, "number": None}]) is None
+
+    def test_hogql_timestamp_shapes_parse(self, mod):
+        # HogQL may hand back a space separator, fractional seconds and no zone — all UTC.
+        assert mod.parse_timestamp("2026-09-14 08:00:00.123") == mod.parse_timestamp(
+            "2026-09-14T08:00:00.123+00:00")
+        assert mod.parse_timestamp("2026-09-14T10:00:00+02:00") == mod.parse_timestamp(
+            "2026-09-14T08:00:00Z")
+
+    def test_plan_files_a_regression_despite_the_marker(self, mod):
+        rows = [_row(mod, issue_id="a")]
+        regression = {"number": 1985, "closedAt": "2026-09-10T12:00:00Z"}
+        actions = mod.plan_actions(rows, filed_markers={mod.marker("a")},
+                                   regressions={mod.marker("a"): regression})
+        assert actions[0]["action"] == "create"
+        assert actions[0]["regression_of"] == regression
+
+    def test_body_names_the_issue_it_regresses_and_keeps_the_marker(self, mod):
+        body = mod.build_body(_row(mod, issue_id="a"),
+                              regression={"number": 1985, "closedAt": "2026-09-10T12:00:00Z"})
+        assert "Regression of #1985" in body
+        assert "2026-09-10T12:00:00Z" in body
+        assert mod.marker("a") in body
+        assert "Regression" not in mod.build_body(_row(mod, issue_id="a"))
+
+    def test_closed_regressions_reuses_the_filed_search(self, mod):
+        gh = mod.GitHubIssues("owner/repo")
+        payload = ('[{"number": 1985, "state": "CLOSED", "closedAt": "2026-09-10T12:00:00Z", '
+                   '"body": "x posthog-issue-a", "comments": []}]')
+        rows = [_row(mod, issue_id="a", last_seen="2026-09-14T08:00:00Z")]
+        with patch.object(gh, "_run", return_value=SimpleNamespace(
+                returncode=0, stdout=payload, stderr="")) as run:
+            already = mod.filed_markers(gh, rows)
+            found = mod.closed_regressions(gh, rows, already)
+        assert run.call_count == 1
+        assert found == {mod.marker("a"): {"number": 1985, "closedAt": "2026-09-10T12:00:00Z"}}
+        assert "state,closedAt" in run.call_args[0][0][-1]
+
+    def test_closed_regressions_skips_unfiled_and_resolved_rows(self, mod):
+        gh = MagicMock()
+        rows = [_row(mod, issue_id="a"), _row(mod, issue_id="b", status="resolved")]
+        assert mod.closed_regressions(gh, rows, {mod.marker("b")}) == {}
+        gh.carriers.assert_not_called()
+
+    _ROW = [["a", "RuntimeError", "mention card drift", "active", "2026-09-01T00:00:00Z",
+             "2026-09-22T09:00:00Z", 3, 1, "posthog-python", "automate_commenting", None]]
+
+    def test_main_files_the_regression_linked_to_the_closed_issue(self, mod, monkeypatch):
+        monkeypatch.setenv("POSTHOG_PERSONAL_API_KEY", "phx_test")
+        with patch.object(mod.PostHogQueryClient, "query", return_value=self._ROW), \
+             patch.object(mod.GitHubIssues, "carriers", return_value=[self._CLOSED]), \
+             patch.object(mod.GitHubIssues, "create",
+                          return_value="https://github.com/o/r/issues/2300") as create:
+            assert mod.main(["--apply"]) == 0
+        title, body = create.call_args[0]
+        assert "[regression of #1985]" in title
+        assert "Regression of #1985" in body and mod.marker("a") in body
+
+    def test_main_leaves_a_closed_issue_alone_without_a_recurrence(self, mod, monkeypatch):
+        monkeypatch.setenv("POSTHOG_PERSONAL_API_KEY", "phx_test")
+        row = [self._ROW[0][:5] + ["2026-09-10T20:00:00Z"] + self._ROW[0][6:]]
+        with patch.object(mod.PostHogQueryClient, "query", return_value=row), \
+             patch.object(mod.GitHubIssues, "carriers", return_value=[self._CLOSED]), \
+             patch.object(mod.GitHubIssues, "create") as create:
+            assert mod.main([]) == 0
+        create.assert_not_called()
+
+    def test_dry_run_reports_the_regression(self, mod, capsys):
+        actions = mod.plan_actions([_row(mod, issue_id="a")], {mod.marker("a")},
+                                   regressions={mod.marker("a"): {"number": 1985}})
+        actions[0]["body"] = "b"
+        mod.apply_actions(MagicMock(), actions, dry_run=True)
+        assert "[regression of #1985]" in capsys.readouterr().out
