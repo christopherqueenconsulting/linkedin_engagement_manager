@@ -386,7 +386,7 @@ to meet the mandate. This was measured on 10 fixed comment drafts, rewritten by 
 production temperature. With the old rule, 18 of 160 rewrites added a new <=6-word declarative
 sentence ("I hear you.", "The model is usually quick."). Without the rule, 0 of 80 did. With the
 comment rule, 0 of 80 did. The audit's production rate was 33 of 102 (§F29), so the writer prompt
-may add filler too. The 14-day post-deploy re-measure on #2123 is what shows how much of that rate
+may add filler too. The 14-day post-deploy re-measure (#2174) is what shows how much of that rate
 this change removes.
 
 ## Mechanical editor pass (issue #1079, `content_alignment.mechanical_edit_text`)
