@@ -514,6 +514,7 @@ _PROBE_CAPABILITY_SYMBOLS = {
     "connect_dialog.restriction": "invite_limit_signal",
     "comment_list.dom_evidence": "comment_list_dom_evidence",
     "comment_list.ladder": "comment_ladder_reading",
+    "appreciation_sources.mention_dom": "mention_card_dom_evidence",
     "feed_sort.selector_evidence": "_feed_sort_evidence_scan",
     "composer.share_box_dom": "share_box_dom_evidence",
     "composer.share_box_activation": "share_box_activation_ladder",
@@ -639,7 +640,7 @@ SURFACES = (
      "arg": "<profile-url>", "sweep": True,
      "resolver": "_resolve_roster_target (engagement_targets, active)"},
     {"key": "appreciation_sources", "surface": "Recommendations received + mentions feed",
-     "code": "engagement.outreach._RECOMMENDATION_CARD_LOCATORS / _MENTION_CARD_LOCATORS",
+     "code": "engagement.outreach._recommendation_reading / _mention_cards",
      "flag": "--appreciation-sources", "sweep": True},
     {"key": "article_editor", "surface": "Newsletter/article editor publish steps",
      "code": "article_editor.find_article_editor_elements", "flag": "--article-editor-url",
@@ -2901,6 +2902,172 @@ def _carried_mentions_page_native_count(driver) -> Optional[int]:
     return None
 
 
+# Bounded on purpose — a handful of rows is enough to rewrite a locator, and this ships inside a
+# report a human reads.
+_MENTION_DOM_SCAN_CAP = 6
+
+# What a mention notification CARD looks like without naming any of the anchors under suspicion.
+# `_MENTION_CARD_LOCATORS` is the thing that has stopped matching, so a scan written in terms of it
+# could only report that it does not match — which is already known. The one thing the page still
+# provably renders is the sentence production requires of a card ("X mentioned you in …"), counted
+# by `_mentions_page_native_count` through no part of the card chain, so that sentence is the
+# anchor: find the deepest element carrying it and describe what it is nested in.
+_MENTION_CARD_DOM_SCAN_JS = r"""
+const CAP = arguments[0];
+const SENTENCE = /\b(mentioned|tagged)\s+you\b/i;
+const own = (el) => {
+  let s = '';
+  for (const n of el.childNodes) if (n.nodeType === 3) s += n.textContent;
+  return s.trim();
+};
+const describe = (el) => ({
+  tag: el.tagName.toLowerCase(),
+  viewname: el.getAttribute('data-view-name') || '',
+  testid: el.getAttribute('data-testid') || '',
+  role: el.getAttribute('role') || '',
+  aria: (el.getAttribute('aria-label') || '').slice(0, 60),
+  componentkey: el.getAttribute('componentkey') ? 'yes' : '',
+});
+const out = {locator_hits: {}, view_names: [], testids: [], candidates: []};
+
+// What the shipped rungs — and the obvious neighbours a rewrite would reach for — see right now.
+const probes = {
+  "main article[data-view-name='notification-card']": "main article[data-view-name='notification-card']",
+  "main div[data-view-name='notification-card']": "main div[data-view-name='notification-card']",
+  "body article[data-view-name='notification-card']": "body article[data-view-name='notification-card']",
+  "body div[data-view-name='notification-card']": "body div[data-view-name='notification-card']",
+  "main article": "main article",
+  "main li": "main li",
+  "main [data-view-name]": "main [data-view-name]",
+  "body [data-view-name]": "body [data-view-name]",
+  "main [data-testid]": "main [data-testid]",
+  "main a[href*='/in/']": "main a[href*='/in/']",
+  "body a[href*='/in/']": "body a[href*='/in/']",
+  "main (landmark)": "main",
+};
+for (const [name, sel] of Object.entries(probes)) {
+  try { out.locator_hits[name] = document.querySelectorAll(sel).length; }
+  catch (e) { out.locator_hits[name] = 'selector error'; }
+}
+
+// The page's own vocabulary — the attribute values a new rung can be written from.
+const tallyOf = (attr) => {
+  const tally = {};
+  for (const el of document.querySelectorAll('[' + attr + ']')) {
+    const value = el.getAttribute(attr);
+    if (!value) continue;
+    tally[value] = (tally[value] || 0) + 1;
+  }
+  return Object.entries(tally).sort((a, b) => b[1] - a[1]).slice(0, 30)
+    .map(([value, n]) => value + ' x' + n);
+};
+out.view_names = tallyOf('data-view-name');
+out.testids = tallyOf('data-testid');
+
+// The CONTAINER, anchored on the sentence rather than on the chain being graded: the deepest
+// element whose own text says it, then every ancestor a rewritten rung could name.
+const hosts = [];
+for (const el of document.querySelectorAll('body *')) {
+  if (hosts.length >= CAP) break;
+  if (!SENTENCE.test(own(el))) continue;
+  if (el.querySelector && [...el.querySelectorAll('*')].some(child => SENTENCE.test(own(child)))) continue;
+  hosts.push(el);
+}
+for (const host of hosts) {
+  const chain = [];
+  let up = host;
+  for (let d = 0; up && d < 10; d++, up = up.parentElement) {
+    chain.push({
+      depth: d,
+      ...describe(up),
+      profile_links: up.querySelectorAll("a[href*='/in/']").length,
+      inner_len: (up.innerText || '').trim().length,
+    });
+  }
+  out.candidates.push({sentence: own(host).slice(0, 120), chain: chain});
+}
+return out;
+"""
+
+
+def mention_card_dom_evidence(driver) -> dict:
+    """A bounded description of what the mentions feed renders where the card chain looks (#2065).
+
+    The weekly sweep graded this surface `drift` twice from the same reading — zero cards resolved
+    while the page itself rendered mention sentences — and #1985's body fallback did not move it,
+    so the chain has to be rewritten from the markup rather than guessed at again.
+
+    Same posture as the comment-list and sort-control scans: read-only, bounded, and it swallows its
+    own failure so a diagnostic can never cost the reading it rode in on.
+    """
+    try:
+        return driver.execute_script(_MENTION_CARD_DOM_SCAN_JS, _MENTION_DOM_SCAN_CAP) or {}
+    except Exception as e:  # noqa: BLE001 - a diagnostic must never break the run it rode in on
+        return {"error": f"{type(e).__name__}: {e}"}
+
+
+# `_mention_cards`' climb, carried so this branch's rebuilt card read can be graded against the live
+# DOM BEFORE it merges — the running image predates it, and a reader that can only be grounded after
+# it ships is exactly how the ladder it replaces shipped dead (#1007, now #2065).
+FALLBACK_MENTION_CARDS_JS = r"""
+const SENTENCE = /\b(mentioned|tagged)\s+you\b/i;
+const MAX_CLIMB = 15;
+const root = document.querySelector('main') || document.body;
+if (!root) return [];
+const slug = (a) => {
+  const m = ((a.getAttribute('href') || '') || (a.href || '')).match(/\/in\/[^/?#]+/);
+  return m ? decodeURIComponent(m[0]).toLowerCase() : '';
+};
+const cards = [];
+const seen = new Set();
+for (const anchor of root.querySelectorAll('a[href*="/in/"]')) {
+  if (!slug(anchor)) continue;
+  let block = anchor, hops = 0;
+  while (block.parentElement && hops < MAX_CLIMB) {
+    const parent = block.parentElement;
+    if (parent === root || parent.tagName === 'BODY') break;
+    const people = new Set([...parent.querySelectorAll('a[href*="/in/"]')].map(slug).filter(Boolean));
+    if (people.size > 1) break;
+    block = parent; hops++;
+  }
+  if (seen.has(block)) continue;
+  seen.add(block);
+  if (!SENTENCE.test(block.innerText || '')) continue;
+  cards.push(block);
+}
+return cards;
+"""
+
+
+def _carried_mention_cards(driver) -> list:
+    """`_mention_cards`' answer without the image.
+
+    The shipped locator chain first, the carried climb after it, and a read that blows up is an
+    EMPTY read rather than a crashed probe.
+    """
+    from cqc_lem.app.engagement.outreach import _MENTION_CARD_LOCATORS
+    from cqc_lem.utilities.selenium_util import find_all_first
+
+    cards = find_all_first(driver, _MENTION_CARD_LOCATORS)
+    if cards:
+        return cards
+    try:
+        found = driver.execute_script(FALLBACK_MENTION_CARDS_JS)
+    except Exception:
+        return []
+    # `execute_script` answers whatever the page handed back; only a list of elements is a reading.
+    return [card for card in found if card is not None] if isinstance(found, list) else []
+
+
+def mention_cards_read() -> tuple:
+    """(the card read to drive, where it came from)."""
+    try:
+        from cqc_lem.app.engagement.outreach import _mention_cards
+    except ImportError:
+        return (_carried_mention_cards, "script")
+    return (_mention_cards, "image")
+
+
 def mentions_page_read() -> tuple:
     """(the mentions cross-check to drive, where it came from)."""
     try:
@@ -2926,8 +3093,8 @@ def appreciation_verdict(reading: dict) -> str:
     # Which code answered is part of the finding: a green pass driven by the carried copy grounds
     # THIS BRANCH's read against the live DOM (which is the point of running it before the merge),
     # not the reader currently deployed.
-    note = (" [read carried by this script — the running image predates #1007]"
-            if reading.get("read_source") == "script" else "")
+    note = (" [read carried by this script — the running image predates it]"
+            if "script" in (reading.get("read_source"), reading.get("card_source")) else "")
     if not cards and reading.get("page_dated"):
         return (f"ZERO cards resolved on a page that renders dated recommendations "
                 f"({reading.get('profile_anchors') or 0} profile link(s) on it) — the card read has "
@@ -2994,15 +3161,15 @@ def probe_appreciation_sources(driver, user_id: int, profile_url: str = "",
 
     STRICTLY read-only, and it deliberately does NOT call the production scrapers — those are gated
     OFF by `APPRECIATION_SOURCES_ENABLED` precisely until this probe has grounded them, so the probe
-    drives the same card reads (`_recommendation_reading` for recommendations since #1007, the
-    mention locator chain for the other) and the same date parsers directly. Nothing is messaged:
+    drives the same card reads (`_recommendation_reading` since #1007, `_mention_cards` since #2065
+    — image copy when the running one has it, carried copy otherwise) and the same date parsers. Nothing is messaged:
     the ledger is only READ (`has_appreciation_touch`), never claimed.
     """
     from cqc_lem.app.engagement.outreach import (
         _MENTION_ACTOR_LOCATORS,
-        _MENTION_CARD_LOCATORS,
         _MENTION_TEXT_RE,
         _MENTIONS_URL,
+        _RELATIVE_AGE_RE,
         _card_person,
         _card_text,
         _mention_actor_name,
@@ -3014,15 +3181,28 @@ def probe_appreciation_sources(driver, user_id: int, profile_url: str = "",
     )
     from cqc_lem.utilities.db import has_appreciation_touch
     from cqc_lem.utilities.linkedin.helper import clean_person_name
-    from cqc_lem.utilities.selenium_util import find_all_first
 
     lookback = appreciation_lookback_days()
 
-    def _read(url: str, card_locators, person_locators, age_of, event_type: str,
+    def _age_evidence(text: str) -> str:
+        """The exact token the age was read from.
+
+        It is what tells a card's own notification timestamp apart from a number in the post it
+        quotes.
+
+        A mention card carries the whole quoted comment, so "2h" (the stamp) and "5m" (somebody's
+        ARR) are both in scope for the same regex, and an age read off the wrong one is how a
+        two-year-old mention gets DMed as today's.
+        """
+        match = _RELATIVE_AGE_RE.search(text or "")
+        return match.group(0).strip() if match else ""
+
+    def _read(url: str, read_cards, person_locators, age_of, event_type: str,
               require=None, name_of=None, page_native=None) -> dict:
         driver.get(url)
         sleep(5)
-        cards = find_all_first(driver, card_locators)
+        read, card_source = read_cards
+        cards = read(driver)
         rows, dated = [], 0
         for card in cards:
             text = _card_text(card)
@@ -3038,6 +3218,7 @@ def probe_appreciation_sources(driver, user_id: int, profile_url: str = "",
                 name = name_of(text)
             rows.append({"profile_url": person_url, "name": name,
                          "age_days": None if age_days is None else round(age_days, 2),
+                         "age_read_from": _age_evidence(text),
                          "in_window": age_days is not None and age_days <= lookback,
                          # Already thanked = production skips it even when everything else resolves.
                          "already_thanked": bool(person_url) and has_appreciation_touch(
@@ -3045,6 +3226,10 @@ def probe_appreciation_sources(driver, user_id: int, profile_url: str = "",
                          "text": (text or "")[:160]})
         reading = {"url": url, "current_url": getattr(driver, "current_url", url),
                    "lookback_days": lookback, "cards": len(rows), "dated": dated,
+                   # Which code resolved the cards, for the same reason the recommendations half
+                   # names its own read: a green pass driven by the carried copy grounds THIS
+                   # BRANCH, not the reader currently deployed.
+                   "card_source": card_source,
                    "people": [r for r in rows if r["in_window"] and r["profile_url"]
                               and not r["already_thanked"]],
                    "rows": rows[:10]}
@@ -3114,10 +3299,15 @@ def probe_appreciation_sources(driver, user_id: int, profile_url: str = "",
         report["recommendations_received"] = {
             "state": STATE_UNKNOWN,
             "verdict": "own profile URL unresolved — production skips the recommendations scan"}
-    report["mentions"] = _read(_MENTIONS_URL, _MENTION_CARD_LOCATORS, _MENTION_ACTOR_LOCATORS,
+    report["mentions"] = _read(_MENTIONS_URL, mention_cards_read(), _MENTION_ACTOR_LOCATORS,
                                _parse_relative_age_days, "collaboration",
                                require=lambda t: bool(_MENTION_TEXT_RE.search(t or "")),
                                name_of=_mention_actor_name, page_native=mentions_page_read())
+    # Taken while the driver is still ON the mentions page, and only when the walk came back empty:
+    # a chain that resolved needs no rewriting, and the scan is the only thing in this report a
+    # rewrite can be written FROM (#2065).
+    if not report["mentions"].get("cards"):
+        report["mentions"]["dom_evidence"] = mention_card_dom_evidence(driver)
     # Two INDEPENDENT surfaces, one report (#1980): a dead recommendations trigger is never hidden
     # by a healthy mentions feed (drift still wins), but a mentions feed that is legitimately empty
     # forever must not pin the whole probe to `unknown` when recommendations just proved itself ok.

@@ -655,6 +655,53 @@ _MENTION_CARD_LOCATORS = [
     (By.CSS_SELECTOR, "body article[data-view-name='notification-card']"),
     (By.CSS_SELECTOR, "body div[data-view-name='notification-card']"),
 ]
+# Live-grounded 2026-09-14 (#2065): the notifications feed is the same full-SDUI generation as the
+# recommendations page (#1007) and the profile-views list (#1009). Hit counts on the live page:
+# `[data-view-name]` **0** anywhere in the document, `main article` **0**, `main [data-testid]` 3
+# (`lazy-column` / `interop-shadowdom` / `interop-iframe`, none of them a card), `main li` 6 (nav
+# chrome), `main a[href*='/in/']` 11. So every rung above is unmatchable on this DOM and the walk
+# read zero forever while the page rendered two "mentioned you" lines. They stay as the head of the
+# chain — LinkedIn serves different DOMs per viewer and route (#2020), and only an EXHAUSTED chain
+# means "not found" — but the climb below is what actually resolves a card today.
+#
+# What the page does render is one `/in/` anchor per notification inside an unnamed `<div>` that
+# carries the whole card, sitting under `div[data-testid='lazy-column']` (8 profile links, i.e. every
+# card on the page). So a card is found the way the recommendations rebuild finds one: climb from
+# each profile anchor to the OUTERMOST ancestor still about that ONE person — stop the moment a
+# second profile joins — and keep the block only when its own text SAYS it was a mention. Returning
+# the ELEMENTS keeps `_card_text` and `_card_person` reading a real card, scoped to it, unchanged.
+#
+# One JS call returns every card at once, so nothing goes stale while the feed re-renders under the
+# walk. `<main>` first with a `<body>` fallback, mirroring `_mentions_page_native_count` — the
+# cross-check this walk is graded against — because that asymmetry alone read as drift in #1985.
+_MENTION_CARDS_JS = r"""
+const SENTENCE = /\b(mentioned|tagged)\s+you\b/i;
+const MAX_CLIMB = 15;
+const root = document.querySelector('main') || document.body;
+if (!root) return [];
+const slug = (a) => {
+  const m = ((a.getAttribute('href') || '') || (a.href || '')).match(/\/in\/[^/?#]+/);
+  return m ? decodeURIComponent(m[0]).toLowerCase() : '';
+};
+const cards = [];
+const seen = new Set();
+for (const anchor of root.querySelectorAll('a[href*="/in/"]')) {
+  if (!slug(anchor)) continue;
+  let block = anchor, hops = 0;
+  while (block.parentElement && hops < MAX_CLIMB) {
+    const parent = block.parentElement;
+    if (parent === root || parent.tagName === 'BODY') break;
+    const people = new Set([...parent.querySelectorAll('a[href*="/in/"]')].map(slug).filter(Boolean));
+    if (people.size > 1) break;
+    block = parent; hops++;
+  }
+  if (seen.has(block)) continue;
+  seen.add(block);
+  if (!SENTENCE.test(block.innerText || '')) continue;
+  cards.push(block);
+}
+return cards;
+"""
 _MENTION_ACTOR_LOCATORS = [
     (By.CSS_SELECTOR, "a[data-view-name='notification-actor']"),
     (By.CSS_SELECTOR, "a[href*='/in/']"),
@@ -766,8 +813,8 @@ def _card_text(card: WebElement) -> str:
 def _mentions_page_native_count(driver, user_id: int = None) -> "int | None":
     """How many mention sentences the mentions page renders ITSELF, counted without the card chain.
 
-    Every rung of `_MENTION_CARD_LOCATORS` is about the card CONTAINER, so a single SDUI wrapper
-    rename answers zero to all four and reads exactly like a month with no mentions (#1374). The
+    Every rung of the card chain is about the card CONTAINER, so a single SDUI wrapper rename
+    answers zero to the whole chain and reads exactly like a month with no mentions (#1374). The
     page's own text depends on none of them, and it is the same sentence production requires of a
     card, so a non-zero count here is cards the walk should have seen.
 
@@ -792,6 +839,31 @@ def _mentions_page_native_count(driver, user_id: int = None) -> "int | None":
                   action_type="scrape")
         return None
     return len(_MENTION_TEXT_RE.findall(text)) if isinstance(text, str) else None
+
+
+def _mention_cards(driver, user_id: int = None) -> list:
+    """Every mention notification card the page renders, as an ordered CHAIN (#2020).
+
+    The named rungs of `_MENTION_CARD_LOCATORS` first — LinkedIn keeps several DOM generations alive
+    at once, so a rung that matches nothing today is not a rung to delete — then the live-grounded
+    climb, which is what resolves a card on the SDUI generation shipping now. Only an exhausted
+    chain means "no cards", and that answer is still graded against the page's own sentences by the
+    caller rather than believed.
+
+    A read that blows up is an EMPTY read at DEBUG, never a warning: a miss re-queues every ~60s and
+    a repeated warning files a defect for a no-op.
+    """
+    cards = find_all_first(driver, _MENTION_CARD_LOCATORS)
+    if cards:
+        return cards
+    try:
+        found = driver.execute_script(_MENTION_CARDS_JS)
+    except WebDriverException as e:
+        log_debug(f"Could not walk the mentions page for cards: {e}", user_id=user_id,
+                  action_type="scrape")
+        return []
+    # `execute_script` answers whatever the page handed back; only a list of elements is a reading.
+    return [card for card in found if card is not None] if isinstance(found, list) else []
 
 
 def _recommendation_reading(driver, user_id: int = None) -> dict:
@@ -901,10 +973,10 @@ def get_recent_collaborators(driver, wait, user_id: int = None) -> dict[str, str
     wait_for_ajax(driver)
     time.sleep(random.uniform(2, 4))
 
-    cards = find_all_first(driver, _MENTION_CARD_LOCATORS)
+    cards = _mention_cards(driver, user_id)
     if not cards:
         # #1374: zero cards is not "no mentions" until the page agrees. Grade it against the page's
-        # own sentences — evidence the four card locators do not depend on — so a rotated wrapper
+        # own sentences — evidence no rung of the card chain depends on — so a rotated wrapper
         # reads as drift (WARNING) instead of another quiet day, and a genuinely empty feed still
         # logs DEBUG. Unreadable grounds nothing either way.
         _grade_zero_walk(_mentions_page_native_count(driver, user_id), "Mention card walk",
