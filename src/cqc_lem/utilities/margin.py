@@ -67,9 +67,9 @@ def user_mrr_usd(user: Mapping) -> float:
     """THE MRR of one margin user — the one MRR source (issue #2131).
 
     The daily block, the weekly report and the cost alerts all read it; before #2131 the alerts and
-    `--daily-json` disagreed on MRR. Takes a `get_margin_users` row (`subscription_tier`) or a report entry (`tier`). A `trial`
-    subscription earns nothing yet whatever tier it is trialling, so it is $0 rather than the price
-    of a plan nobody has paid for.
+    `--daily-json` disagreed on MRR. Takes a `get_margin_users` row (`subscription_tier`) or a
+    report entry (`tier`). A `trial` subscription earns nothing yet whatever tier it is trialling,
+    so it is $0 rather than the price of a plan nobody has paid for.
     """
     if str(user.get("subscription_status") or user.get("status") or "").strip().lower() == "trial":
         return 0.0
