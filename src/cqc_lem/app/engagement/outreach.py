@@ -1682,7 +1682,8 @@ def _dispatch_appreciation_dms(user_id: int, my_profile: LinkedInProfile, event_
 @shared_task.task(name='cqc_lem.app.run_automation.automate_appreciation_dms_for_user',
                   bind=True, base=QueueOnce, once={'graceful': True, 'unlock_before_run': True, 'keys': ['user_id']},
                   reject_on_worker_lost=True, rate_limit='2/m', queue='se_outreach')
-def automate_appreciation_dms_for_user(self, user_id: int, loop_for_duration: int = None, future_forward: int = 60):
+def automate_appreciation_dms_for_user(self, user_id: int, loop_for_duration: int = None,
+                                       future_forward: int = 60) -> dict:
     """Thank whoever just did something for this account: accepted an invite, recommended, collaborated.
 
     ONE shared budget spans all three sources (issue #968). The two standing-list sources can each
@@ -1692,12 +1693,22 @@ def automate_appreciation_dms_for_user(self, user_id: int, loop_for_duration: in
 
     `loop_for_duration` makes the task re-queue ITSELF `future_forward` seconds out with the
     remaining time, until that runs out — so one dispatch covers a window rather than an instant.
-    Every failure is caught and returned as a message string: this beat never fails the worker, and
+    Every failure is caught and returned in the result: this beat never fails the worker, and
     `appreciation_touches` is what stops the ~60s re-queue thanking the same person twice.
+
+    Returns `{"status", "found", "sent", "message"}` (issue #2096). `status` is `sent` only when a
+    DM was actually dispatched and `no_op` when none was — the lane used to answer "Appreciation DMs
+    Sent" on every pass, including the 44 of 44 that found and sent nothing, so Flower could not
+    tell a working lane from a dead one. `found` counts recipients the sources handed back; a source
+    skipped for budget contributes nothing to it.
     """
     user_email, user_password = get_user_password_pair_by_id(user_id)
 
-    driver, wait = get_driver_wait_pair(session_name='Appreciation DMs', user_id=user_id)
+    # needs_images=True (#2096, the #1774/#1778 bug): the recommendation and mention readers walk
+    # LinkedIn's SDUI profile/notifications surfaces, and a blocked-images session never mounts them.
+    driver, wait = get_driver_wait_pair(session_name='Appreciation DMs', user_id=user_id, needs_images=True)
+    found = 0
+    sent = 0
 
     try:
         login_to_linkedin(driver, wait, user_email, user_password)
@@ -1706,7 +1717,6 @@ def automate_appreciation_dms_for_user(self, user_id: int, loop_for_duration: in
 
         log_info("Sending Appreciations here...")
 
-        result = "Appreciation DMs Sent"
 
         my_profile = load_profile_for_user(user_id)  # cached DB read — only supplies {headline}
 
@@ -1716,9 +1726,12 @@ def automate_appreciation_dms_for_user(self, user_id: int, loop_for_duration: in
         budget = _appreciation_dm_budget(user_id)
 
         # After Accepting a Connection Request:
-        invitations_accepted = accept_connection_request(user_id)
-        budget -= _dispatch_appreciation_dms(user_id, my_profile, "connection_accepted",
-                                             invitations_accepted, budget)
+        invitations_accepted = accept_connection_request(user_id) or {}
+        found += len(invitations_accepted)
+        dispatched = _dispatch_appreciation_dms(user_id, my_profile, "connection_accepted",
+                                                invitations_accepted, budget)
+        sent += dispatched
+        budget -= dispatched
 
         if budget <= 0:
             # Scraping a standing list we cannot act on is two page loads for nothing.
@@ -1727,15 +1740,31 @@ def automate_appreciation_dms_for_user(self, user_id: int, loop_for_duration: in
         else:
             # After Receiving a Recommendation — thank the recommender
             own_profile_url = str(getattr(my_profile, "profile_url", "") or "")
-            budget -= _dispatch_appreciation_dms(
-                user_id, my_profile, "recommendation_received",
-                get_recent_recommendations(driver, wait, user_id, own_profile_url), budget)
+            recommenders = get_recent_recommendations(driver, wait, user_id, own_profile_url) or {}
+            found += len(recommenders)
+            dispatched = _dispatch_appreciation_dms(user_id, my_profile, "recommendation_received",
+                                                    recommenders, budget)
+            sent += dispatched
+            budget -= dispatched
 
         if budget > 0:
             # After a Successful Collaboration — express gratitude and offer to connect further
-            budget -= _dispatch_appreciation_dms(
-                user_id, my_profile, "collaboration",
-                get_recent_collaborators(driver, wait, user_id), budget)
+            collaborators = get_recent_collaborators(driver, wait, user_id) or {}
+            found += len(collaborators)
+            dispatched = _dispatch_appreciation_dms(user_id, my_profile, "collaboration",
+                                                    collaborators, budget)
+            sent += dispatched
+            budget -= dispatched
+
+        if sent:
+            result = {"status": "sent", "found": found, "sent": sent,
+                      "message": f"Appreciation DMs: dispatched {sent} of {found} found"}
+        else:
+            # The steady state on a quiet day, not a fault — DEBUG, per the warn-once contract.
+            log_debug(f"Appreciation pass dispatched nothing ({found} found)",
+                      user_id=user_id, action_type="dm")
+            result = {"status": "no_op", "found": found, "sent": 0,
+                      "message": f"No appreciation DMs dispatched ({found} found)"}
 
         # Re-schedule the task in the queue for the future
         if loop_for_duration:
@@ -1770,10 +1799,12 @@ def automate_appreciation_dms_for_user(self, user_id: int, loop_for_duration: in
         # sweep filed an error-tracking occurrence instead of being recognized as an expected skip.
         log_warning("Appreciation DMs skipped — LinkedIn rate-limited or cooling down", exc=e,
                     user_id=user_id, task_name="automate_appreciation_dms_for_user", action_type="dm")
-        result = f"Skipped — rate limited: {e}"
+        result = {"status": "rate_limited", "found": found, "sent": sent,
+                  "message": f"Skipped — rate limited: {e}"}
     except Exception as e:
         log_error("Error while sending appreciation DMs", exc=e, user_id=user_id, task_name="automate_appreciation_dms_for_user", action_type="dm")
-        result = f"Error while sending appreciation DMs: {e}"
+        result = {"status": "error", "found": found, "sent": sent,
+                  "message": f"Error while sending appreciation DMs: {e}"}
     finally:
         quit_gracefully(driver)
 
