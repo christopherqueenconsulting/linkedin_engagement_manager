@@ -6281,8 +6281,8 @@ def company_invite_verdict(reading: Optional[dict]) -> str:
     if reading.get("total_credits") in (None, 0):
         if not panel_names_the_invite(reading.get("panel_text")):
             return ("the page's own copy says invitations remain, but the invite PANEL never "
-                    "rendered on this navigation — production reads 0 credits here and stands "
-                    "down as `credits_exhausted` with credits left; re-ground how the panel opens")
+                    "rendered on this navigation — production reads 0/0 here and stands down as "
+                    "`credits_unknown` (#2095) with credits left; re-ground how the panel opens")
         return ("the panel says credits are available but get_available_credits parsed nothing — "
                 "re-ground its '<span>N/M</span>' locator from `panel_text`/`page_text`")
     return (f"credits remain ({reading.get('credits_remaining')}) but the invitee-row locator "
