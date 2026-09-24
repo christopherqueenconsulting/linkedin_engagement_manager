@@ -1466,6 +1466,21 @@ def humanize_enabled(content_type: Optional[str] = None) -> bool:
     return True
 
 
+_BURSTINESS_RULE = (
+    "- Restore burstiness: mix at least one very short sentence (<=6 words) with a long one (25+ "
+    "words); let paragraphs be uneven; you may start a sentence with And, But, or Because.\n"
+)
+
+# A comment is only a few sentences, so the mandatory <=6-word sentence has nothing of the draft's to
+# shorten and the model invents one: "It works.", "That hurts." (issue #2123: 18 of 160 comment
+# rewrites added a new short sentence with the rule, 0 of 80 without it, 0 of 80 with this one).
+# Length may still vary, but every sentence has to carry a point.
+_COMMENT_RHYTHM_RULE = (
+    "- Vary sentence length naturally, but NEVER add a sentence just for rhythm: every sentence must "
+    "carry a point the draft makes. No standalone filler like 'It works.', 'That hurts.', or 'I hear "
+    "you.'; you may start a sentence with And, But, or Because.\n"
+)
+
 _HUMANIZE_SYSTEM = (
     "You rewrite AI-drafted text so no human reader can tell a machine wrote it, WITHOUT changing its "
     "meaning, its facts, its format, or the author's intent. This is a final polish before the text is "
@@ -1486,8 +1501,7 @@ _HUMANIZE_SYSTEM = (
     "no rule-of-three lists built for rhythm, no rhetorical 'The result? ...', no 'serves as / stands "
     "as' (use 'is'), no hedge stacks ('it's important to note'), no 'In conclusion / In summary', no "
     "'Here's the kicker / the thing'.\n"
-    "- Restore burstiness: mix at least one very short sentence (<=6 words) with a long one (25+ "
-    "words); let paragraphs be uneven; you may start a sentence with And, But, or Because.\n"
+    + _BURSTINESS_RULE +
     "- Turn expanded forms into contractions (it's, don't, we're, you're).\n"
     "- At most ONE em-dash in the whole piece; prefer a comma or a period.\n"
     "- Strip emoji bullets, bold-first bullets, and Title-Case headings; end on a concrete point, "
@@ -1496,6 +1510,12 @@ _HUMANIZE_SYSTEM = (
     "into something tell-free but flat and personality-free.\n\n"
     "Output ONLY the rewritten text — no preface, no notes, no explanation, no quotes around it."
 )
+
+# Per content type, the system prompt with its rhythm rule swapped in; a type not listed gets the
+# default burstiness rule.
+_HUMANIZE_SYSTEM_BY_TYPE = {
+    "comment": _HUMANIZE_SYSTEM.replace(_BURSTINESS_RULE, _COMMENT_RHYTHM_RULE),
+}
 
 _HUMANIZE_TYPE_NOTE = {
     "comment": "\n\nThis is a short LinkedIn comment: keep it to a few sentences and stay conversational.",
@@ -1539,7 +1559,8 @@ def humanize_text(content: Optional[str], content_type: str = "post",
         resp = _call_llm(
             model="lem-medium",
             messages=[
-                {"role": "system", "content": _HUMANIZE_SYSTEM + extra},
+                {"role": "system",
+                 "content": _HUMANIZE_SYSTEM_BY_TYPE.get(content_type, _HUMANIZE_SYSTEM) + extra},
                 {"role": "user", "content": str(content)},
             ],
             temperature=0.4,

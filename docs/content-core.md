@@ -374,6 +374,21 @@ below measures: the prompt allows a 200-char slide body, the schema 500, and the
 selects draw 99–193 before `_draw_block` silently stops.
 Full audit: `docs/content-quality-audits/carousel.md`.
 
+## Humanization rhythm rule on comments (issue #2123, `content_alignment._HUMANIZE_SYSTEM_BY_TYPE`)
+
+`humanize_text` asks posts, DMs and newsletters to "mix at least one very short sentence (<=6
+words) with a long one". A **comment** does not get that rule. It gets `_COMMENT_RHYTHM_RULE`
+instead: length may vary, but every sentence must carry a point the draft makes, and standalone
+filler ("It works.", "That hurts.") is named as banned.
+
+A comment is only a few sentences, so there is nothing to shorten, and the model invents a sentence
+to meet the mandate. This was measured on 10 fixed comment drafts, rewritten by `lem-medium` at the
+production temperature. With the old rule, 18 of 160 rewrites added a new <=6-word declarative
+sentence ("I hear you.", "The model is usually quick."). Without the rule, 0 of 80 did. With the
+comment rule, 0 of 80 did. The audit's production rate was 33 of 102 (§F29), so the writer prompt
+may add filler too. The 14-day post-deploy re-measure (#2174) is what shows how much of that rate
+this change removes.
+
 ## Mechanical editor pass (issue #1079, `content_alignment.mechanical_edit_text`)
 
 An opt-in `lem-medium` copy edit on a newsletter draft — capitalization, grammar, punctuation,
