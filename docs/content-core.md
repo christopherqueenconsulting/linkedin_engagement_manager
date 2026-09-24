@@ -138,7 +138,9 @@ Load-bearing details:
   queue passes no actor, so whoever approved it stays recorded. `test_post_approval_actor.py`
   fails the build on an approval call site that names no actor. Pre-#2116 rows are NULL — never
   back-filled, since the actor was never known. Audit query:
-  `SELECT id, approved_by, approved_at FROM posts WHERE status IN ('approved','scheduled','posted') AND approved_by IS NULL AND created_at > '<deploy time>'` should be empty.
+  `SELECT id, approved_by, approved_at FROM posts WHERE status IN ('approved','scheduled','posted') AND approved_by IS NULL AND NOT (manual_publish = 1 AND status = 'posted') AND created_at > '<deploy time>'` should be empty.
+  The `manual_publish` exclusion is deliberate: `/user/post/mark-posted` records an occasion draft
+  the author published BY HAND, which may go straight from pending to posted and was never approved.
 - **One measure vocabulary.** `SIMILARITY_MEASURE_{EMBEDDING,LEXICAL,NONE}` in `content_framework.py`
   is what the gate, the comment gate and the nightly telemetry (`content_quality.MEASURE_*`, which
   aliases them) all name a measure by — so the trend line in `docs/content-quality-telemetry.md` and
