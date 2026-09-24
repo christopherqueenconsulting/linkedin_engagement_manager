@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.177.1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.177.0...v0.177.1) (2026-09-24)
+
+
+### Bug Fixes
+
+* **ci:** nightly slow lane reads a missing ruff as 0 findings ([#2111](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2111)) ([#2129](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2129)) ([066f6e3](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/066f6e33ae293533570a1693e0aaf484be9a2063))
+* **comments:** never ground a first-person number on our own prior comment ([#2136](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2136)) ([7520e0e](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/7520e0e23f8adf2eaeb401db40a4ce603fa200cd))
+* **comments:** never ground a first-person number on our own prior comment (closes [#2136](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2136)) ([#2150](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2150)) ([7520e0e](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/7520e0e23f8adf2eaeb401db40a4ce603fa200cd))
+* **content-plan:** refill the thinned tail so a cadence change reaches posts_per_week (closes [#2137](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2137)) ([#2146](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2146)) ([6cb6e31](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/6cb6e31da3b848dc9cbf061924231985898a5991))
+* **content:** gate the carousel and video asset heals instead of auto-approving ([bb48243](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/bb482437a08b90e23d8e1be26648ce598acd908d))
+* **content:** gate the carousel and video asset heals instead of auto-approving (closes [#2100](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2100)) ([#2148](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2148)) ([bb48243](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/bb482437a08b90e23d8e1be26648ce598acd908d))
+* **engagement:** one pre-post pass per lane per post; viewer touched once a day ([be9c56b](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/be9c56b801abf8a5cef6dd59f065cd823fd56d5d))
+* **engagement:** one pre-post pass per lane per post; viewer touched once a day (closes [#2093](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2093)) ([#2145](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2145)) ([be9c56b](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/be9c56b801abf8a5cef6dd59f065cd823fd56d5d))
+
 ## [0.177.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.176.5...v0.177.0) (2026-09-24)
 
 
