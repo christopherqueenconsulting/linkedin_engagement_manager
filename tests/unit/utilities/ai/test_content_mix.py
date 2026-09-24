@@ -16,8 +16,15 @@ _NEWSLETTER = {"enabled": True, "title": "The Retention Brief",
 
 class TestAssignContentMix:
     def test_thirty_day_plan_is_seventy_twenty_ten(self):
+        """Acceptance (#2107): a 30-day plan is laid within 10 points of 70/20/10."""
+        from cqc_lem.utilities.ai.content_alignment import CONTENT_MIX_TARGET, assign_content_mix
+        mixes = assign_content_mix(30)
+        for mix, target in CONTENT_MIX_TARGET.items():
+            assert abs(mixes.count(mix) / 30 - target) <= 0.10, mix
+
+    def test_steady_state_is_exactly_seventy_twenty_ten(self):
         from cqc_lem.utilities.ai.content_alignment import assign_content_mix
-        counts = Counter(assign_content_mix(30))
+        counts = Counter(assign_content_mix(40)[10:])
         assert counts == {"value": 21, "authority": 6, "promo": 3}
 
     def test_thirty_day_plan_promo_within_ten_percent(self):
@@ -38,16 +45,59 @@ class TestAssignContentMix:
         idx = [i for i, m in enumerate(assign_content_mix(60)) if m == "promo"]
         assert all(b - a >= 10 for a, b in zip(idx, idx[1:]))
 
-    def test_offset_continues_the_cadence_across_plans(self):
+    def test_history_continues_the_cadence_across_plans(self):
         """A second plan must not restart the rotation — that could place two promo posts back to
         back across the plan boundary.
         """
         from cqc_lem.utilities.ai.content_alignment import assign_content_mix
         first = assign_content_mix(12)
-        second = assign_content_mix(12, offset=12)
-        combined = first + second
+        combined = first + assign_content_mix(12, history=first)
         idx = [i for i, m in enumerate(combined) if m == "promo"]
         assert all(b - a >= 10 for a, b in zip(idx, idx[1:]))
+
+    def test_replanning_the_same_slots_does_not_repeat_promo(self):
+        """#2107: a refill right after a promo lays none.
+
+        The old counter was keyed on the post COUNT, which the reconcile rewinds by deleting planned
+        rows, so the same promo positions were handed out again. The history carries the promo.
+        """
+        from cqc_lem.utilities.ai.content_alignment import assign_content_mix
+        history = ["value"] * 9 + ["promo"]
+        assert "promo" not in assign_content_mix(8, history=history)
+
+    def test_an_over_promoted_history_is_brought_back_toward_target(self):
+        """Production's window ran 35/41/24 value/authority/promo.
+
+        The next plan is filled with value until the mix is back inside 10 points of 70/20/10.
+        """
+        from cqc_lem.utilities.ai.content_alignment import CONTENT_MIX_TARGET, assign_content_mix
+        history = ["value", "authority", "promo", "authority", "value", "authority", "promo",
+                   "value", "authority", "value", "authority", "promo", "value", "authority",
+                   "value", "authority", "promo"]
+        planned = assign_content_mix(30, history=history)
+        assert planned[:8].count("promo") == 0
+        for mix, target in CONTENT_MIX_TARGET.items():
+            assert abs(planned.count(mix) / 30 - target) <= 0.10, mix
+
+    def test_unclassified_history_is_ignored(self):
+        from cqc_lem.utilities.ai.content_alignment import assign_content_mix
+        assert assign_content_mix(5, history=[None, "", "PROMO"]) == \
+            assign_content_mix(5, history=["promo"])
+
+    def test_due_promo_waits_for_an_allowed_slot(self):
+        from cqc_lem.utilities.ai.content_alignment import assign_content_mix
+        history = ["value"] * 9
+        mixes = assign_content_mix(3, history=history, promo_slots=[False, False, True])
+        assert "promo" not in mixes[:2]
+        assert mixes[2] == "promo"
+
+    def test_no_allowed_slot_lays_no_promo(self):
+        from cqc_lem.utilities.ai.content_alignment import assign_content_mix
+        assert "promo" not in assign_content_mix(30, promo_slots=[False] * 30)
+
+    def test_short_promo_slots_list_disallows_the_rest(self):
+        from cqc_lem.utilities.ai.content_alignment import assign_content_mix
+        assert "promo" not in assign_content_mix(3, history=["value"] * 9, promo_slots=[False])
 
     def test_empty_plan(self):
         from cqc_lem.utilities.ai.content_alignment import assign_content_mix
@@ -56,6 +106,33 @@ class TestAssignContentMix:
     def test_deterministic(self):
         from cqc_lem.utilities.ai.content_alignment import assign_content_mix
         assert assign_content_mix(30) == assign_content_mix(30)
+
+
+class TestHasArtifactCta:
+    def test_lead_magnet_mechanic_counts(self):
+        from cqc_lem.utilities.ai.content_alignment import has_artifact_cta
+        assert has_artifact_cta("Comment AUDIT and I'll send you the checklist.", _LM, None)
+
+    def test_newsletter_subscribe_ask_counts(self):
+        from cqc_lem.utilities.ai.content_alignment import has_artifact_cta
+        assert has_artifact_cta("Subscribe to my newsletter for the full breakdown.", None,
+                                _NEWSLETTER)
+
+    def test_newsletter_url_counts(self):
+        from cqc_lem.utilities.ai.content_alignment import has_artifact_cta
+        assert has_artifact_cta("More here: https://li/newsletter/retention", None, _NEWSLETTER)
+
+    def test_save_this_checklist_is_not_an_artifact(self):
+        """Promo 110's close, the audit's example of a promo with no artifact CTA."""
+        from cqc_lem.utilities.ai.content_alignment import has_artifact_cta
+        assert not has_artifact_cta("Save this checklist for your next release.", _LM, _NEWSLETTER)
+
+    def test_an_artifact_the_user_does_not_have_does_not_count(self):
+        from cqc_lem.utilities.ai.content_alignment import has_artifact_cta
+        text = "Comment AUDIT below. Subscribe to my newsletter too."
+        assert not has_artifact_cta(text, {"enabled": False, "keyword": "AUDIT"},
+                                    {"enabled": False})
+        assert not has_artifact_cta("", _LM, _NEWSLETTER)
 
 
 class TestPromoEveryN:
