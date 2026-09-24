@@ -149,6 +149,7 @@ from cqc_lem.utilities.db import (
     update_scheduled_dm,
     update_scheduled_dm_status,
     update_user_linkedin_token,
+    user_approver,
     user_owns_posts,
 )
 from cqc_lem.utilities.env_constants import (
@@ -2210,7 +2211,8 @@ def schedule_post(post: PostRequest) -> ResponseModel[str]:
                    video_url=post.video_url, carousel_slides=post.carousel_slides,
                    video_quality=post.video_quality or "standard",
                    status=post.status or PostStatus.PENDING,
-                   use_avatar=post.use_avatar, image_url=image_url):
+                   use_avatar=post.use_avatar, image_url=image_url,
+                   approved_by=user_approver(user_id)):
         return ResponseModel(status_code=200, detail="Post scheduled successfully")
     else:
         raise HTTPException(status_code=404, detail="Could not schedule post")
@@ -2416,7 +2418,8 @@ def bulk_update_posts_endpoint(request: BulkUpdateRequest) -> ResponseModel[str]
     # `user_id=` scopes the WHERE clause as well as the check in front of it — the check is the
     # gate, the scope is what makes forgetting it harmless (issue #914).
     if bulk_update_posts(request.post_ids, status=request.status,
-                         scheduled_time=request.scheduled_datetime, user_id=user_id):
+                         scheduled_time=request.scheduled_datetime, user_id=user_id,
+                         approved_by=user_approver(user_id)):
         return ResponseModel(status_code=200, detail="Posts updated successfully")
     else:
         raise HTTPException(status_code=405, detail="Posts could not be updated")
@@ -2482,7 +2485,7 @@ def update_post(post_id: int, post: PostRequest) -> ResponseModel[str]:
                             user_id=user_id)
 
     if update_db_post(post.content, post.video_url, post.scheduled_datetime, post.post_type, post_id,
-                      post.status, user_id=user_id):
+                      post.status, user_id=user_id, approved_by=user_approver(user_id)):
         reason = (post.rejection_reason or "").strip() or None
         if reason:
             update_db_post_rejection_reason(post_id, reason, user_id=user_id)

@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 import pytest
 
-from cqc_lem.utilities.db import PostStatus, PostType
+from cqc_lem.utilities.db import PostApprover, PostStatus, PostType
 from cqc_lem.utilities.quality_gates import slop_finding
 
 pytestmark = pytest.mark.unit
@@ -36,7 +36,8 @@ def _heal(status: str, findings: list, *, auto_schedule: bool = True, may_approv
                return_value={"auto_schedule_posts": auto_schedule}), \
          approve, \
          patch(f"{_RCP}.update_db_post_status") as set_status:
-        result = _heal_errored_post(user_id, 7, "new caption", task_name="heal_test")
+        result = _heal_errored_post(user_id, 7, "new caption", task_name="heal_test",
+                                    approved_by=PostApprover.CAROUSEL_HEAL)
     return result, gates, gate_reason, set_status
 
 
@@ -58,7 +59,8 @@ class TestHealErroredPost:
     def test_an_error_post_whose_new_content_fails_a_gate_goes_to_pending(self):
         result, gates, _, set_status = _heal(PostStatus.ERROR.value, _FAILING)
         assert result is PostStatus.PENDING
-        set_status.assert_called_once_with(7, PostStatus.PENDING)
+        set_status.assert_called_once_with(7, PostStatus.PENDING,
+                                           approved_by=PostApprover.CAROUSEL_HEAL)
         # The gates are graded on the NEW content, with the post's own type.
         gates.assert_called_once_with(1, 7, "new caption", PostType.CAROUSEL.value, None)
 
@@ -69,13 +71,15 @@ class TestHealErroredPost:
     def test_an_error_post_that_passes_every_gate_is_approved_and_its_reason_cleared(self):
         result, _, gate_reason, set_status = _heal(PostStatus.ERROR.value, [])
         assert result is PostStatus.APPROVED
-        set_status.assert_called_once_with(7, PostStatus.APPROVED)
+        set_status.assert_called_once_with(7, PostStatus.APPROVED,
+                                           approved_by=PostApprover.CAROUSEL_HEAL)
         gate_reason.assert_called_once_with(7, [])
 
     def test_a_passing_post_waits_for_its_author_when_auto_scheduling_is_off(self):
         result, _, _, set_status = _heal(PostStatus.ERROR.value, [], auto_schedule=False)
         assert result is PostStatus.PENDING
-        set_status.assert_called_once_with(7, PostStatus.PENDING)
+        set_status.assert_called_once_with(7, PostStatus.PENDING,
+                                           approved_by=PostApprover.CAROUSEL_HEAL)
 
     def test_a_repaired_post_held_by_the_shared_approve_decision_goes_to_pending(self):
         result, _, _, _ = _heal(PostStatus.ERROR.value, [], may_approve=False)
@@ -116,7 +120,8 @@ class TestBothHealsAreGated:
              patch(f"{_RCP}._heal_errored_post") as heal:
             regenerate_post_carousel_task(7)
         heal.assert_called_once_with(1, 7, "stored caption",
-                                     task_name="regenerate_post_carousel_task")
+                                     task_name="regenerate_post_carousel_task",
+                                     approved_by=PostApprover.CAROUSEL_HEAL)
 
     def test_video_heal_regates_an_error_post_instead_of_approving_it(self):
         from cqc_lem.app.run_content_plan import regenerate_video_for_post
@@ -127,7 +132,8 @@ class TestBothHealsAreGated:
              patch(f"{_RCP}._store_video_asset", return_value="https://x/v.mp4"), \
              patch(f"{_RCP}._heal_errored_post") as heal:
             assert regenerate_video_for_post(7) == "https://x/v.mp4"
-        heal.assert_called_once_with(1, 7, "text", task_name="regenerate_post_video_task")
+        heal.assert_called_once_with(1, 7, "text", task_name="regenerate_post_video_task",
+                                     approved_by=PostApprover.VIDEO_HEAL)
 
     def test_video_heal_leaves_a_pending_post_pending(self):
         from cqc_lem.app.run_content_plan import regenerate_video_for_post

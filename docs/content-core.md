@@ -130,6 +130,15 @@ Load-bearing details:
   `rescore_post` never reads the recorded verdict — it hands `evaluate_post_gates` a live
   `recent_texts` instead, since grading the text the author just edited is the entire point of a
   re-score.
+- **Every approval names its actor** (#2116). A move INTO `approved` writes `posts.approved_by` +
+  `approved_at`: `user:<id>` for an author action through the API (`user_approver`), or a
+  `PostApprover` source — `system:auto_schedule` (generation), `system:rescore`,
+  `system:carousel_heal`, `system:video_heal`. Only the TRANSITION records it: re-saving an approved
+  post keeps the first approver, and the native occasion publish handing a claimed post back to the
+  queue passes no actor, so whoever approved it stays recorded. `test_post_approval_actor.py`
+  fails the build on an approval call site that names no actor. Pre-#2116 rows are NULL — never
+  back-filled, since the actor was never known. Audit query:
+  `SELECT id, approved_by, approved_at FROM posts WHERE status IN ('approved','scheduled','posted') AND approved_by IS NULL AND created_at > '<deploy time>'` should be empty.
 - **One measure vocabulary.** `SIMILARITY_MEASURE_{EMBEDDING,LEXICAL,NONE}` in `content_framework.py`
   is what the gate, the comment gate and the nightly telemetry (`content_quality.MEASURE_*`, which
   aliases them) all name a measure by — so the trend line in `docs/content-quality-telemetry.md` and
