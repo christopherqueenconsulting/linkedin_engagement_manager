@@ -333,3 +333,37 @@ class TestPersonalProofDirective:
     def test_directive_is_not_self_promo(self):
         # Proof of experience, never a plug — stays inside NO_SELF_PROMO_GUARDRAIL.
         assert "not self-promotion" in ca.personal_proof_directive()
+
+
+class TestApplyContractionsGrammar:
+    """#2104: a contraction the sentence cannot carry is left expanded."""
+
+    @pytest.mark.parametrize("text", [
+        "Do you have 15 minutes?",   # possessive "have" — "Do you've 15 minutes?" shipped in DMs
+        "Do you have 15 minutes",
+        "you have to be there",      # obligation "have to"
+        "I have a question",
+        "we have two options",
+        "you have red hair",         # "-ed" word that is not a participle
+        "you have just 15 minutes",  # adverb, then a noun phrase
+        "what it is.",               # clause-final auxiliary
+        "Here is.",
+        "That is, we ship.",
+        "I am",
+        "This is who we are!",
+    ])
+    def test_ungrammatical_contraction_is_not_applied(self, text):
+        assert ca.apply_contractions(text) == text
+
+    @pytest.mark.parametrize("expanded,contracted", [
+        ("you have seen it", "you've seen it"),
+        ("I have been there", "I've been there"),
+        ("we have worked hard", "we've worked hard"),
+        ("You have never tried it", "You've never tried it"),
+        ("Here is the thing", "Here's the thing"),
+        ("it is what it is.", "it's what it is."),
+        ("I have not", "I haven't"),
+        ("Do not.", "Don't."),
+    ])
+    def test_grammatical_contraction_is_applied(self, expanded, contracted):
+        assert ca.apply_contractions(expanded) == contracted
