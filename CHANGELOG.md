@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.178.1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.178.0...v0.178.1) (2026-09-24)
+
+
+### Bug Fixes
+
+* **appreciation:** date a mention card by its own stamp, never the quoted comment ([84005a0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/84005a013e8ed728caa0cd047274d1cc182aaa63)), closes [#2142](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2142)
+* **appreciation:** date a mention card by its own stamp, not the quoted comment (closes [#2142](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2142)) ([#2179](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2179)) ([84005a0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/84005a013e8ed728caa0cd047274d1cc182aaa63))
+* **dm:** greet a nurture recipient by the profile header name, never notification text (closes [#2132](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2132)) ([72dac61](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/72dac61d2ba9ee8e1cb1e3ca661a79c081f31732))
+* **dm:** nurture greeting name comes from the profile header, never notification text (closes [#2132](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2132)) ([#2178](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2178)) ([72dac61](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/72dac61d2ba9ee8e1cb1e3ca661a79c081f31732))
+* **dm:** space catch-up touches within a dispatch run (closes [#2141](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2141)) ([#2181](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2181)) ([ef93431](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/ef93431403fd2a40e4ef0ca33d4072092653486f))
+* **engagement:** size each group-commenting run to its budget (closes [#2134](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2134)) ([#2177](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2177)) ([eb456bd](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/eb456bdc977bcc39b039fef6c89a3fb6046c697f))
+* **feed:** key a feed post on its container URN before an inner permalink ([#2151](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2151)) ([#2183](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2183)) ([77561d2](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/77561d2233b33d08c5b01d5581b9fa61bdca517a))
+* **ops:** host-cron alerts exec python into the active web_api container (closes [#2160](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2160)) ([#2185](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2185)) ([34c74a4](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/34c74a42902bfd45c17a8011ab44e8bc192a683d))
+
 ## [0.178.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.177.2...v0.178.0) (2026-09-24)
 
 
