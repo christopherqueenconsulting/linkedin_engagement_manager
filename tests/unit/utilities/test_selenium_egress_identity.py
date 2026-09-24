@@ -144,6 +144,8 @@ class TestNeedsImagesExemptionIsScoped:
     _ALLOWED = {
         ("app/engagement/outreach.py", "send_dm_now"),
         ("app/engagement/outreach.py", "process_user_followups"),
+        # #2096 — recommendation/mention readers on SDUI profile + notifications surfaces.
+        ("app/engagement/outreach.py", "automate_appreciation_dms_for_user"),
         ("app/engagement/feed.py", "auto_sync_user_groups"),
         ("app/engagement/feed.py", "auto_comment_in_groups"),
         ("app/engagement/feed.py", "auto_post_to_group"),

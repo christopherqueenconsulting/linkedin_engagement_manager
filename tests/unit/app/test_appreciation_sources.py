@@ -707,4 +707,63 @@ class TestRateLimitedLoginIsDeferredNotErrored:
 
         error.assert_not_called()
         warning.assert_called_once()
-        assert "rate limited" in result.lower()
+        assert result["status"] == "rate_limited"
+        assert "rate limited" in result["message"].lower()
+
+
+class TestTheResultReportsWhatWasSent:
+    """Issue #2096: the lane answered "Appreciation DMs Sent" 44 of 44 times while
+    `appreciation_touches` held 0 rows. The result carries counts, and a pass that sent nothing
+    says so.
+    """
+
+    def _run(self, accepted=None, recommenders=None, collaborators=None, dispatched=0):
+        from cqc_lem.app.engagement.outreach import automate_appreciation_dms_for_user
+        with patch(f"{_OUT}.get_user_password_pair_by_id", return_value=("a@b.c", "pw")), \
+             patch(f"{_OUT}.get_driver_wait_pair", return_value=(MagicMock(), MagicMock())) as pair, \
+             patch(f"{_OUT}.login_to_linkedin"), \
+             patch(f"{_OUT}.quit_gracefully"), \
+             patch(f"{_OUT}.load_profile_for_user", return_value=MagicMock(profile_url="")), \
+             patch(f"{_OUT}.accept_connection_request", return_value=accepted or {}), \
+             patch(f"{_OUT}._appreciation_dm_budget", return_value=20), \
+             patch(f"{_OUT}._dispatch_appreciation_dms", return_value=dispatched), \
+             patch(f"{_OUT}.get_recent_recommendations", return_value=recommenders), \
+             patch(f"{_OUT}.get_recent_collaborators", return_value=collaborators):
+            result = automate_appreciation_dms_for_user.run(user_id=1)
+        return result, pair
+
+    def test_zero_found_is_a_no_op_that_never_says_sent(self):
+        result, _ = self._run()
+        assert result["status"] == "no_op"
+        assert result["sent"] == 0
+        assert result["found"] == 0
+        assert "Sent" not in str(result)
+
+    def test_found_but_nothing_dispatched_is_still_a_no_op(self):
+        result, _ = self._run(recommenders={"https://li/in/a": "Ann"})
+        assert result["status"] == "no_op"
+        assert result["found"] == 1
+        assert result["sent"] == 0
+
+    def test_dispatches_are_counted_across_sources(self):
+        result, _ = self._run(accepted={"https://li/in/a": "Ann"},
+                              recommenders={"https://li/in/b": "Bo"},
+                              collaborators={"https://li/in/c": "Cy"}, dispatched=1)
+        assert result["status"] == "sent"
+        assert result["found"] == 3
+        assert result["sent"] == 3
+
+    def test_the_session_requests_images(self):
+        _, pair = self._run()
+        assert pair.call_args.kwargs["needs_images"] is True
+
+    def test_an_unexpected_failure_is_an_error_result(self):
+        from cqc_lem.app.engagement.outreach import automate_appreciation_dms_for_user
+        with patch(f"{_OUT}.get_user_password_pair_by_id", return_value=("a@b.c", "pw")), \
+             patch(f"{_OUT}.get_driver_wait_pair", return_value=(MagicMock(), MagicMock())), \
+             patch(f"{_OUT}.login_to_linkedin", side_effect=RuntimeError("boom")), \
+             patch(f"{_OUT}.quit_gracefully"), \
+             patch(f"{_OUT}.log_error"):
+            result = automate_appreciation_dms_for_user.run(user_id=1)
+        assert result["status"] == "error"
+        assert result["sent"] == 0

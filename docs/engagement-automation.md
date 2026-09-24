@@ -930,6 +930,13 @@ empty-dict stubs, so only new connections ever produced a DM and the
   cards DMs real people, so the flip belongs to the owner after a live run of
   `python -m scripts.linkedin_live_validation --appreciation-sources` — read-only, messages
   nobody, claims no ledger row, and reports per card what production would do with it.
+- **The result is counts, never a claim (#2096).** The task returned the string "Appreciation DMs
+  Sent" on every pass — 44 of 44 in the September audit while `appreciation_touches` held 0 rows.
+  It now returns `{"status", "found", "sent", "message"}`: `status` is `sent` only when a DM was
+  dispatched, `no_op` when none was (logged DEBUG — a quiet day is not a fault), and
+  `rate_limited` / `error` on the two catch paths. The session opens with `needs_images=True`: the
+  recommendation and mention readers walk SDUI surfaces that a blocked-images session never mounts
+  (the #1774/#1778 bug).
 
 ## Stale-invite withdrawal (`utilities/linkedin/stale_invites.py`, issue #969)
 
