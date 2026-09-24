@@ -24,6 +24,7 @@ index and the `CLAUDE.md` row that points at it, or the pointer becomes a dead e
 - [Testing LinkedIn engagement via the API](TESTING_ENGAGEMENT_API.md) — hitting comment / reply / DM by hand
 - [Postman collection](postman/README.md) — the LEM engagement request collection and its environments
 - [Owner action tracker](OWNER_ACTION_TRACKER.md) — everything waiting on a human, not on code
+- [Host crons](host-crons.md) — inventory of every host cron (both users); each runs the DEPLOYED tag via `run_at_deployed_tag.sh`
 - [VPS go-live checklist](SETUP_CHECKLIST.md) — the manual actions a fresh box still needs
 
 ## Content generation, scheduling & quality

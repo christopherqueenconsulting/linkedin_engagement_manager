@@ -248,13 +248,14 @@ Daily engagement + cost/margin snapshot (issue #491) — runs as `lem`, appends 
 to `/home/lem/perf-tracking/metrics.jsonl`:
 
 ```cron
-30 23 * * * /home/lem/<repo-clone>/scripts/perf_snapshot.sh
+30 23 * * * /home/lem/cron-runner/repo/scripts/run_at_deployed_tag.sh scripts/perf_snapshot.sh
 ```
 
-The script reads MySQL directly and shells into `web_app` for the `margin` block
+Like every host cron it runs at the deployed tag (`docs/host-crons.md`, #2109). The script reads
+MySQL directly and shells into the active `web_api_<color>` (from `/opt/lem/.active_color`) for the `margin` block
 (`python -m cqc_lem.utilities.margin --daily-json`), so it needs `sudo -n docker` and a deployed
 image that contains `cqc_lem.utilities.margin`. Overridable: `PERF_DIR`, `LEM_ENV_FILE`,
-`MARGIN_CONTAINER`. `"margin": {"ledger_available": false}` means `cost_ledger` isn't capturing yet.
+`LEM_ROOT`, `MARGIN_CONTAINER`. `"margin": {"ledger_available": false}` means `cost_ledger` isn't capturing yet.
 ## Daily issue triage
 
 Organizes uncategorized open issues into milestones with an impact-first rubric (issue #748).
