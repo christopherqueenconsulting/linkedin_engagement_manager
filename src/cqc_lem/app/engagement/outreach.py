@@ -2793,12 +2793,34 @@ def send_private_dm(self, user_id: int, profile_url: str, message: str):
     return result
 
 
+# An approved DM this far past its slot goes back to 'pending' for a fresh approval instead of
+# sending (issue #2103). The approval was for a message at a time; five drafts approved for
+# 09-07..09-13 left together on 09-16, and "thanks for your reply" three days on reads as a bot.
+SCHEDULED_DM_STALE_DAYS = float(os.getenv("SCHEDULED_DM_STALE_DAYS", "2"))
+
+
+def scheduled_dm_is_stale(scheduled_time: Optional[datetime], now: Optional[datetime] = None) -> bool:
+    """True when an approved DM is more than `SCHEDULED_DM_STALE_DAYS` past its scheduled slot.
+
+    A naive `scheduled_time` is UTC (the scheduling columns are written in UTC). A row with no
+    slot is never stale — there is nothing to be late against.
+    """
+    if scheduled_time is None:
+        return False
+    if scheduled_time.tzinfo is None:
+        scheduled_time = scheduled_time.replace(tzinfo=timezone.utc)
+    now = now or datetime.now(timezone.utc)
+    return now - scheduled_time > timedelta(days=SCHEDULED_DM_STALE_DAYS)
+
+
 @shared_task.task(name='cqc_lem.app.run_automation.send_scheduled_dm',
                   bind=True, base=QueueOnce, once={'graceful': True, 'keys': ['dm_id']},
                   reject_on_worker_lost=True, rate_limit='2/m', queue='se_outreach')
 def send_scheduled_dm(self, dm_id: int):
     """Send a scheduled 1:1 DM (issue #306). Enforces the per-day DM cap at send time (defers back
     to 'approved' for the next scan when the cap is hit) and updates the scheduled_dms status.
+
+    A DM more than `SCHEDULED_DM_STALE_DAYS` past its slot is returned to 'pending' unsent (#2103).
     """
     from cqc_lem.utilities.db import (
         ScheduledDmStatus,
@@ -2812,6 +2834,13 @@ def send_scheduled_dm(self, dm_id: int):
                            f"Scheduled DM {dm_id} not sendable (status={dm['status'] if dm else 'missing'})")
 
     user_id = dm["user_id"]
+    if scheduled_dm_is_stale(dm.get("scheduled_time")):
+        log_info(f"send_scheduled_dm: DM {dm_id} is over {SCHEDULED_DM_STALE_DAYS:g} day(s) past its "
+                 f"slot; returning it to pending for re-approval",
+                 user_id=user_id, action_type="dm", task_name="send_scheduled_dm")
+        update_scheduled_dm_status(dm_id, ScheduledDmStatus.PENDING)
+        return f"Scheduled DM {dm_id} stale; returned to pending"
+
     prefs = get_engagement_preferences(user_id)
     if remaining_actions(user_id, ACTION_DM, int(prefs.get("max_dms_per_day") or 0),
                          count_dms_sent_today(user_id),

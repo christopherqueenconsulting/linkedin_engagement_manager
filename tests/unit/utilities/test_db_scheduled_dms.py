@@ -68,6 +68,21 @@ class TestScheduledDmDb:
             from cqc_lem.utilities.db import get_orphaned_scheduled_dms
             assert get_orphaned_scheduled_dms() == []
 
+    def test_get_user_ids_with_dms_in_flight(self, fake_cursor):
+        conn, cur = fake_cursor(fetch_all=[(1,), (5,)], lastrowid=7)
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import get_user_ids_with_dms_in_flight
+            assert get_user_ids_with_dms_in_flight() == {1, 5}
+        assert "status = 'scheduled'" in cur.execute.call_args[0][0]
+
+    def test_get_user_ids_with_dms_in_flight_error_fails_open(self, fake_cursor):
+        import mysql.connector
+        conn, cur = fake_cursor(lastrowid=7)
+        cur.execute.side_effect = mysql.connector.Error(msg="db down")
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import get_user_ids_with_dms_in_flight
+            assert get_user_ids_with_dms_in_flight() == set()
+
     def test_list_returns_pagination_shape(self, fake_cursor):
         conn, cur = fake_cursor(lastrowid=7, fetch_one={"c": 3})
         cur.fetchall.return_value = [{"id": 1, "scheduled_time": None, "status": "pending"}]

@@ -399,6 +399,20 @@ def get_orphaned_scheduled_dms(lookback_hours: int = 2) -> list:
     except mysql.connector.Error as err:
         log_error("Could not get orphaned scheduled DMs", exc=err)
         return []
+def get_user_ids_with_dms_in_flight() -> set:
+    """Users with a DM already dispatched and not yet resolved (status 'scheduled').
+
+    The scanner staggers one user's due DMs across its own run (issue #2103); a second run must
+    not start a fresh stagger beside a batch that is still waiting on its etas, or the two land
+    together. A failed read returns an empty set — pacing fails OPEN, never blocks a send.
+    """
+    try:
+        with db_cursor() as cursor:
+            cursor.execute("SELECT DISTINCT user_id FROM scheduled_dms WHERE status = 'scheduled'")
+            return {row[0] for row in cursor.fetchall()}
+    except mysql.connector.Error as err:
+        log_error("Could not read users with DMs in flight", exc=err)
+        return set()
 # The audit readers (issue #1968) are the ONE cross-user, unpaged read of an outbound body. Every
 # other reader here is scoped to a user or a status because it serves a queue; these serve
 # `scripts/audit_outbound_drafts.py`, which grades every stored body against the send-path gate.

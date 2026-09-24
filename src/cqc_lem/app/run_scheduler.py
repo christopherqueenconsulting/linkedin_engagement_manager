@@ -38,6 +38,7 @@ from cqc_lem.app.engagement.outreach import (
     automate_appreciation_dms_for_user,
     automate_profile_viewer_engagement,
     report_catchup_run,
+    scheduled_dm_is_stale,
     send_catchup_touch,
     send_scheduled_dm,
 )
@@ -76,6 +77,7 @@ from cqc_lem.utilities.db import (
     get_posts_missing_their_seed_comment,
     get_ready_occasion_posts,
     get_ready_to_post_posts,
+    get_user_ids_with_dms_in_flight,
     get_user_timezone,
     get_users_with_reply_mode,
     get_users_with_stripe_subscriptions,
@@ -351,16 +353,30 @@ def auto_check_scheduled_posts(self):
                 f"{len(stranded)} abandoned native-publish claim(s)")
 
 
+# The orphan reaper re-queues a 'scheduled' DM 2h after its status write, so a staggered eta must
+# land well inside that window or the reaper would send it early and break the spacing (#2103).
+_DM_ORPHAN_LOOKBACK_HOURS = 2
+_MAX_DM_STAGGER_SECONDS = _DM_ORPHAN_LOOKBACK_HOURS * 3600 - 15 * 60
+
+
 @shared_task.task(bind=True, base=QueueOnce, once={'graceful': True, }, reject_on_worker_lost=True)
 def auto_check_scheduled_dms(self):
     """Scan for approved scheduled DMs that are due and dispatch the send task at their eta
     (issue #306, mirrors auto_check_scheduled_posts). Only dispatches for active/connected users;
     the per-day DM cap is enforced at send time in send_scheduled_dm.
+
+    Issue #2103: a DM too far past its slot goes back to 'pending' rather than sending, and one
+    user's DMs are staggered by a `dm_send_gap_seconds` draw so a backlog never leaves in a burst.
+    A DM whose staggered eta would cross `_MAX_DM_STAGGER_SECONDS` stays 'approved' for a later
+    scan, and a user with a batch still in flight gets no new one until it drains.
     """
     dms = get_due_scheduled_dms(post_time_delta_minutes=CQC_LEM_POST_TIME_DELTA_MINUTES)
     active_user_ids = set(get_active_user_ids()) if dms else set()
+    in_flight_user_ids = get_user_ids_with_dms_in_flight() if dms else set()
+    now = datetime.now(timezone.utc)
+    next_slot: dict = {}  # user_id -> earliest eta for that user's next DM in this run
 
-    dispatched = 0
+    dispatched = stale = 0
     for dm_id, scheduled_time, user_id in dms:
         if scheduled_time.tzinfo is None:
             scheduled_time = scheduled_time.replace(tzinfo=timezone.utc)
@@ -368,10 +384,26 @@ def auto_check_scheduled_dms(self):
             log_warning("Skipping scheduled DM — user not active/connected",
                         user_id=user_id, task_name="auto_check_scheduled_dms")
             continue
+        if scheduled_dm_is_stale(scheduled_time, now=now):
+            update_scheduled_dm_status(dm_id, ScheduledDmStatus.PENDING)
+            log_info(f"Scheduled DM {dm_id} is stale (slot {scheduled_time}); returned to pending",
+                     user_id=user_id, task_name="auto_check_scheduled_dms")
+            stale += 1
+            continue
+        if user_id in in_flight_user_ids:
+            log_debug(f"Scheduled DM {dm_id} held — an earlier batch is still in flight",
+                      user_id=user_id, task_name="auto_check_scheduled_dms")
+            continue
+        eta = max(scheduled_time, next_slot.get(user_id, scheduled_time))
+        if (eta - now).total_seconds() > _MAX_DM_STAGGER_SECONDS:
+            log_debug(f"Scheduled DM {dm_id} left approved — this run's spacing window is full",
+                      user_id=user_id, task_name="auto_check_scheduled_dms")
+            continue
+        next_slot[user_id] = max(eta, now) + timedelta(seconds=dm_send_gap_seconds(user_id, dm_id))
         # Mark 'scheduled' so it isn't re-dispatched on the next scan, then send at its eta.
         update_scheduled_dm_status(dm_id, ScheduledDmStatus.SCHEDULED)
-        send_scheduled_dm.apply_async(kwargs={'dm_id': dm_id}, eta=scheduled_time)
-        log_info(f"Scheduled DM {dm_id} queued for {scheduled_time}",
+        send_scheduled_dm.apply_async(kwargs={'dm_id': dm_id}, eta=eta)
+        log_info(f"Scheduled DM {dm_id} queued for {eta}",
                  user_id=user_id, task_name="auto_check_scheduled_dms")
         dispatched += 1
 
@@ -379,7 +411,7 @@ def auto_check_scheduled_dms(self):
     # mirrors the orphaned-post recovery above. The 2-hour gap is measured from the status write,
     # not from `scheduled_time` (#2078), so a DM the daily cap has deferred past its slot for days
     # is never mistaken for an orphan by the same beat that just dispatched it.
-    orphaned = get_orphaned_scheduled_dms(lookback_hours=2)
+    orphaned = get_orphaned_scheduled_dms(lookback_hours=_DM_ORPHAN_LOOKBACK_HOURS)
     for dm_id, scheduled_time, user_id in orphaned:
         log_warning(
             f"Re-queueing orphaned scheduled DM {dm_id}",
@@ -387,9 +419,10 @@ def auto_check_scheduled_dms(self):
         )
         send_scheduled_dm.apply_async(kwargs={'dm_id': dm_id})
 
-    if dispatched == 0 and len(orphaned) == 0:
+    if dispatched == 0 and len(orphaned) == 0 and stale == 0:
         return "No DMs to Schedule"
-    return f"Scheduled {dispatched} DM(s); re-queued {len(orphaned)} orphaned DM(s)"
+    return (f"Scheduled {dispatched} DM(s); re-queued {len(orphaned)} orphaned DM(s); "
+            f"returned {stale} stale DM(s) to pending")
 
 
 # How long a request may sit in 'sending' before the reaper below assumes its send task was lost.

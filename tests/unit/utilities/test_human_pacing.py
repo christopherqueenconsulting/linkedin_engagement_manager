@@ -168,6 +168,31 @@ class TestDispatchJitter:
         assert dispatch_jitter_seconds() == 0
 
 
+
+class TestDmSendGap:
+    """Issue #2103: the gap a scanner run holds between one user's scheduled DMs."""
+
+    def test_gap_lands_in_the_default_band_and_varies(self):
+        from cqc_lem.utilities.human_pacing import dm_send_gap_seconds
+        values = [dm_send_gap_seconds(1, dm_id) for dm_id in range(200)]
+        assert all(8 * 60 <= v <= 20 * 60 for v in values)
+        assert len(set(values)) > 50
+
+    def test_gap_is_stable_for_the_same_dm(self):
+        from cqc_lem.utilities.human_pacing import dm_send_gap_seconds
+        assert dm_send_gap_seconds(1, 42) == dm_send_gap_seconds(1, 42)  # a re-run never re-rolls
+
+    def test_band_is_env_tunable(self, monkeypatch):
+        from cqc_lem.utilities.human_pacing import dm_send_gap_seconds
+        monkeypatch.setenv("PACING_DM_GAP_MIN_MINUTES", "1")
+        monkeypatch.setenv("PACING_DM_GAP_MAX_MINUTES", "2")
+        assert all(60 <= dm_send_gap_seconds(3, i) <= 120 for i in range(50))
+
+    def test_disabled_is_no_gap(self, monkeypatch):
+        from cqc_lem.utilities.human_pacing import dm_send_gap_seconds
+        monkeypatch.setenv("HUMAN_PACING_ENABLED", "false")
+        assert dm_send_gap_seconds(1, 1) == 0
+
 # --- 3. variable daily volume ------------------------------------------------------------------
 
 class TestDailyBudget:
