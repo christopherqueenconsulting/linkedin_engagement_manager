@@ -188,6 +188,45 @@ class TestHumanizeText:
         assert "leverage" in system and "tapestry" in system
 
 
+class TestHumanizeRhythmRule:
+    """Issue #2123: the <=6-word sentence mandate made the model invent filler on comments."""
+
+    @staticmethod
+    def _system_for(content_type: str, monkeypatch) -> str:
+        monkeypatch.setenv("HUMANIZE_ENABLED", "on")
+        captured = {}
+
+        def _fake(**kwargs):
+            captured["messages"] = kwargs["messages"]
+            return _llm_reply("A clean, humanized version of the draft that stands on its own.")
+
+        with patch("cqc_lem.utilities.ai.ai_helper._call_llm", side_effect=_fake):
+            ca.humanize_text("A draft long enough to be rewritten by the humanizer.", content_type)
+        return captured["messages"][0]["content"]
+
+    def test_comment_prompt_drops_the_short_sentence_mandate(self, monkeypatch):
+        system = self._system_for("comment", monkeypatch)
+        assert "<=6 words" not in system
+        assert ca._BURSTINESS_RULE not in system
+        assert ca._COMMENT_RHYTHM_RULE in system
+        assert "NEVER add a sentence just for rhythm" in system
+        # Everything else in the shared prompt still applies to comments.
+        assert "NEVER invent" in system
+        assert "contractions" in system
+
+    @pytest.mark.parametrize("content_type", ["post", "dm", "newsletter", "unknown"])
+    def test_other_types_keep_the_burstiness_rule(self, content_type, monkeypatch):
+        system = self._system_for(content_type, monkeypatch)
+        assert ca._BURSTINESS_RULE in system
+        assert ca._COMMENT_RHYTHM_RULE not in system
+
+    def test_comment_prompt_is_the_shared_prompt_with_only_the_rule_swapped(self):
+        comment = ca._HUMANIZE_SYSTEM_BY_TYPE["comment"]
+        assert ca._BURSTINESS_RULE in ca._HUMANIZE_SYSTEM
+        assert comment != ca._HUMANIZE_SYSTEM
+        assert comment.replace(ca._COMMENT_RHYTHM_RULE, ca._BURSTINESS_RULE) == ca._HUMANIZE_SYSTEM
+
+
 class TestMechanicalEditText:
     def test_disabled_returns_content_unchanged(self):
         original = "hook line.\n\nsection one\n\na paragraph."
