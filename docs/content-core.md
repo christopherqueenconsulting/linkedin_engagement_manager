@@ -411,6 +411,14 @@ its rejections in the log, not in `slop_retry` — so a `surface="comment"` brea
 - "Here's the kicker" ta-da transitions
 - Bait/reflex closers
 - Emoji-bullet listicles
+- Owner-banned phrases (`preference_banned_phrase`, issue #2113) — COMMENT surfaces only
+  (`comment` + `own_post_comment`; OFF elsewhere). The list is every quoted phrase a ban cue
+  ("no", "never", "avoid", "don't" …) introduces in the same clause of the user's `comment_style`,
+  plus the built-in `COMMENT_BANNED_PHRASES` ("hits home", "game changer"). A quote WITHOUT a cue
+  (`Open with "what I'd add"`) is guidance, not a ban. Matching tolerates hyphens and a trailing
+  -s, so "hit home" and "game-changers" count. Before this, the ban lived only in the prompt and
+  13 of 102 comments shipped it. It grades the prefs the caller already holds (`_gated_comment`,
+  `lint_repaired`), so it adds no DB read
 
 A failing surface: post is held at PENDING behind the `ai_slop` quality gate with the exact
 constructions named; a feed comment is SKIPPED (shares the comment gate's retry budget); a DM /
