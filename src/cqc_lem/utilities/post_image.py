@@ -334,7 +334,7 @@ def generate_image_for_post(user_id: int, text: str, post_id: Optional[int] = No
                  user_id=user_id, post_id=post_id, action_type="post_image")
         return None, "The generated image did not pass the quality check — try again"
 
-    stored =store_rendered_post_image(user_id, rendered, post_id=post_id)
+    stored = store_rendered_post_image(user_id, rendered, post_id=post_id)
     if not stored:
         return None, "Could not store the generated image"
     # Recorded against the STORED url, not the temp render: the receipt is keyed by the value that
