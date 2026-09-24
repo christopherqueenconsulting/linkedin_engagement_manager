@@ -180,6 +180,7 @@ from cqc_lem.utilities.linkedin.cards import (
     _X_LOWER_ARIA,
     _X_LOWER_TEXT,
     _card_for_textbox,
+    _feed_post_container_urn,
     _feed_post_urn_from_card,
     _norm_prefix,
     _normalize_post_text,
@@ -607,11 +608,20 @@ def _start_author_cooldown(user_id: int, author: str) -> None:
 
 
 def _feed_post_identity(card, author: str, content: str, driver=None) -> "tuple[str, str]":
-    """(dedup key, key SOURCE) for a feed post.
+    """(dedup key, key SOURCE) for a feed post, resolved through an ordered locator chain.
 
     Source is 'permalink' | 'card' | 'hash' — recorded on the run so we can confirm live that feed
     comments key on the stable activity URN and not on the volatile content hash (issue #580).
+
+    Rungs, exhausted in order (#2151, grounded on five live group feeds): the card's own or a
+    single-post ancestor's URN attribute ('card') → its `/feed/update/` anchor ('permalink') → a URN
+    anywhere inside the card ('card') → the content hash. The container outranks the anchor because
+    on 5 of 26 live group cards the anchor named a DIFFERENT post than the container (an embedded or
+    reshared one), and one post keyed two ways is a second comment.
     """
+    container_urn = _feed_post_container_urn(card, driver=driver)
+    if container_urn:
+        return f"feedurn://{container_urn}", "card"
     permalink = _post_permalink_from_card(card)
     if permalink:
         m = _URN_RE.search(permalink)

@@ -156,7 +156,7 @@ const attrHit = (el) => {
 };
 const el = arguments[0];
 let hit = attrHit(el);
-if (hit) return hit;
+if (hit) return 'container|' + hit;
 let p = el.parentElement, depth = 0;
 while (p && depth < 12) {
   // Stop before an ancestor that spans TWO posts. Counting comment actions is the boundary test,
@@ -165,14 +165,45 @@ while (p && depth < 12) {
   // returning a neighbouring post's URN.
   if (p.querySelectorAll && countCommentActions(p) > 1) break;
   hit = attrHit(p);
-  if (hit) return hit;
+  if (hit) return 'container|' + hit;
   p = p.parentElement; depth++;
 }
 if (el.querySelectorAll) {
-  for (const d of el.querySelectorAll('*')) { hit = attrHit(d); if (hit) return hit; }
+  for (const d of el.querySelectorAll('*')) { hit = attrHit(d); if (hit) return 'descendant|' + hit; }
 }
 return null;
 """
+
+
+def _urn_scan(card, driver=None) -> "tuple[str | None, str]":
+    """(URN, rung) from `_URN_SCAN_JS`: rung is 'container' (the card or a single-post ancestor),
+    'descendant' (an element inside the card), or '' when the scan found nothing or could not run.
+    """
+    runner = driver if driver is not None else getattr(card, "parent", None)
+    if runner is None:
+        return None, ""
+    try:
+        found = runner.execute_script(_URN_SCAN_JS, card)
+    except Exception:
+        return None, ""
+    if not isinstance(found, str):
+        return None, ""
+    m = _URN_RE.search(found)
+    if not m:
+        return None, ""
+    rung, sep, _rest = found.partition("|")
+    return m.group(0).lower(), (rung if sep and rung in ("container", "descendant") else "")
+
+
+def _feed_post_container_urn(card, driver=None) -> "str | None":
+    """The URN on the card itself or a single-post ancestor — the post's OWN identity.
+
+    First rung of the feed identity chain (#2151): the live group feed carries it as `data-urn` on
+    the feed-update container on every card, while a `/feed/update/` anchor inside the card can
+    point at a DIFFERENT post (an embedded or reshared one), so the container must outrank it.
+    """
+    urn, rung = _urn_scan(card, driver=driver)
+    return urn if rung == "container" else None
 
 
 def _feed_post_urn_from_card(card, driver=None) -> "str | None":
@@ -180,16 +211,9 @@ def _feed_post_urn_from_card(card, driver=None) -> "str | None":
     on the card, on its ancestors (never past an element that spans more than one post) and on its
     descendants, then falls back to a regex over the card's own HTML. Lowercased URN or None.
     """
-    runner = driver if driver is not None else getattr(card, "parent", None)
-    if runner is not None:
-        try:
-            found = runner.execute_script(_URN_SCAN_JS, card)
-        except Exception:
-            found = None
-        if isinstance(found, str):
-            m = _URN_RE.search(found)
-            if m:
-                return m.group(0).lower()
+    urn, _rung = _urn_scan(card, driver=driver)
+    if urn:
+        return urn
     try:
         html = card.get_attribute("outerHTML")
     except Exception:
@@ -350,6 +374,7 @@ __all__ = [
     "_X_LOWER_ARIA",
     "_X_LOWER_TEXT",
     "_card_for_textbox",
+    "_feed_post_container_urn",
     "_feed_post_urn_from_card",
     "_norm_prefix",
     "_normalize_post_text",
@@ -357,5 +382,6 @@ __all__ = [
     "_post_permalink_from_card",
     "_post_social_counts",
     "_stacked_counts",
+    "_urn_scan",
     "_x_lower",
 ]

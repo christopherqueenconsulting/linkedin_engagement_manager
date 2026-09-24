@@ -213,3 +213,88 @@ class TestTruncationProofFallbackKey:
         assert _norm_prefix("alpha beta gamma delta", 12) == "alpha beta"
         assert _norm_prefix("alpha beta", 50) == "alpha beta"
         assert _norm_prefix("supercalifragilistic", 5) == "super"  # no boundary to cut on
+
+
+# What `_URN_SCAN_JS` returned on live group-feed cards (read-only probe, 2026-09-24, groups
+# 892487 / 115435 / 56495 / 7037632 — `group_feed_composer.urn_evidence`). Every card carried its
+# own `data-urn` on a single-post ancestor; on 5 of 26 a `/feed/update/` anchor INSIDE the card
+# named a different activity, and the old permalink-first order keyed the post on that one.
+_LIVE_CONTAINER = "urn:li:activity:7508799179968671745"
+_LIVE_INNER_ANCHOR = "https://www.linkedin.com/feed/update/urn:li:activity:7508175572926189568/"
+
+
+class TestUrnScanRungs:
+    def _scan(self):
+        from cqc_lem.utilities.linkedin.cards import _feed_post_container_urn, _urn_scan
+        return _urn_scan, _feed_post_container_urn
+
+    @pytest.mark.parametrize("raw,expected", [
+        (f"container|{_LIVE_CONTAINER}", (_LIVE_CONTAINER, "container")),
+        ("descendant|urn:li:ugcPost:7508599933273415680", ("urn:li:ugcpost:7508599933273415680",
+                                                           "descendant")),
+        # An unprefixed string names no rung, so it can never outrank the permalink.
+        ("urn:li:activity:12", ("urn:li:activity:12", "")),
+        ("elsewhere|urn:li:activity:12", ("urn:li:activity:12", "")),
+        ("container|no urn in here", (None, "")),
+        (None, (None, "")),
+    ])
+    def test_scan_result_is_split_into_urn_and_rung(self, raw, expected):
+        urn_scan, _ = self._scan()
+        assert urn_scan(_card(scan_result=raw) if raw is not None else _card()) == expected
+
+    def test_a_scan_that_raises_is_no_rung(self):
+        urn_scan, container = self._scan()
+        card = _card(scan_raises=True)
+        assert urn_scan(card) == (None, "")
+        assert container(card) is None
+
+    def test_no_runner_is_no_rung(self):
+        urn_scan, _ = self._scan()
+        card = MagicMock(spec=["get_attribute", "find_elements"])
+        assert urn_scan(card) == (None, "")
+
+    def test_container_rung_only_answers_for_the_card_or_an_ancestor(self):
+        _, container = self._scan()
+        assert container(_card(scan_result=f"container|{_LIVE_CONTAINER}")) == _LIVE_CONTAINER
+        assert container(_card(scan_result="descendant|urn:li:activity:5")) is None
+
+    def test_the_scan_labels_containers_before_it_reads_descendants(self):
+        from cqc_lem.utilities.linkedin.cards import _URN_SCAN_JS
+        assert _URN_SCAN_JS.count("'container|'") == 2  # the card itself, then each ancestor
+        assert _URN_SCAN_JS.index("'container|'") < _URN_SCAN_JS.index("'descendant|'")
+
+
+class TestFeedIdentityChain:
+    def _identity(self):
+        from cqc_lem.app.engagement.feed import _feed_post_identity
+        return _feed_post_identity
+
+    def test_rung1_container_outranks_an_inner_permalink(self):
+        # The live group-feed shape: container data-urn and an anchor to ANOTHER activity.
+        card = _card(scan_result=f"container|{_LIVE_CONTAINER}", permalink_href=_LIVE_INNER_ANCHOR)
+        assert self._identity()(card, "A", "x") == (f"feedurn://{_LIVE_CONTAINER}", "card")
+
+    def test_rung2_permalink_when_no_container_urn(self):
+        card = _card(scan_result="descendant|urn:li:activity:99", permalink_href=_LIVE_INNER_ANCHOR)
+        assert self._identity()(card, "A", "x") == \
+            ("feedurn://urn:li:activity:7508175572926189568", "permalink")
+
+    def test_rung3_descendant_urn_when_no_container_or_permalink(self):
+        card = _card(scan_result="descendant|urn:li:activity:99")
+        assert self._identity()(card, "A", "x") == ("feedurn://urn:li:activity:99", "card")
+
+    def test_rung3_card_html_when_the_scan_cannot_run(self):
+        card = _card(outer_html='<div data-urn="urn:li:activity:77">x</div>', scan_raises=True)
+        assert self._identity()(card, "A", "x") == ("feedurn://urn:li:activity:77", "card")
+
+    def test_rung4_hash_only_when_every_urn_rung_is_exhausted(self):
+        key, source = self._identity()(_card(outer_html="<div>none</div>"), "A", "a post body")
+        assert source == "hash" and key.startswith("feedpost://")
+
+    def test_one_post_keys_the_same_with_or_without_its_inner_anchor(self):
+        # The double-comment shape: the anchor renders on one read and not the next.
+        identity = self._identity()
+        with_anchor = _card(scan_result=f"container|{_LIVE_CONTAINER}",
+                            permalink_href=_LIVE_INNER_ANCHOR)
+        without = _card(scan_result=f"container|{_LIVE_CONTAINER}")
+        assert identity(with_anchor, "A", "x")[0] == identity(without, "A", "x")[0]

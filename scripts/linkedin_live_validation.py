@@ -516,6 +516,7 @@ _PROBE_CAPABILITY_SYMBOLS = {
     "comment_list.ladder": "comment_ladder_reading",
     "appreciation_sources.mention_dom": "mention_card_dom_evidence",
     "feed_sort.selector_evidence": "_feed_sort_evidence_scan",
+    "group_feed_composer.urn_evidence": "card_urn_evidence",
     "composer.share_box_dom": "share_box_dom_evidence",
     "composer.share_box_activation": "share_box_activation_ladder",
     "composer.drift_verdict": "composer_drift_verdict",
@@ -5960,6 +5961,78 @@ def merge_locator_hits(per_card) -> dict:
     return totals
 
 
+# Every URN-shaped string near ONE card, and where it sits — the evidence the #2151 key chain is
+# grounded from. Deliberately BROADER than production's `_URN_RE`: a group card that keys on the
+# content hash may still carry its identity under an entity type or an encoding production does not
+# read (a groupPost URN, a percent-encoded href, a tracking blob), and "the card carries no URN" is
+# only a finding once every attribute on the card, its single-post ancestors and its descendants
+# has been read. Values are truncated; nothing is clicked.
+_CARD_URN_EVIDENCE_JS = r"""
+const card = arguments[0];
+const cap = arguments[1] || 40;
+const RE = /urn(?::|%3A)li(?::|%3A)[A-Za-z_]+(?::|%3A)[^\s"'&,)<>]{1,80}/ig;
+const out = [];
+const seen = new Set();
+const read = (el, rel) => {
+  if (!el || !el.attributes) return;
+  for (const a of el.attributes) {
+    const v = a.value || '';
+    RE.lastIndex = 0;
+    let m;
+    while ((m = RE.exec(v)) && out.length < cap) {
+      const key = rel + '|' + a.name + '|' + m[0];
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push({rel: rel, tag: el.tagName.toLowerCase(), attr: a.name, urn: m[0].slice(0, 120)});
+    }
+  }
+};
+read(card, 'self');
+let p = card.parentElement, depth = 0;
+while (p && depth < 12) {
+  read(p, 'ancestor:' + (depth + 1));
+  p = p.parentElement; depth++;
+}
+if (card.querySelectorAll) {
+  for (const d of card.querySelectorAll('*')) { if (out.length >= cap) break; read(d, 'descendant'); }
+}
+const hrefs = [];
+if (card.querySelectorAll) {
+  for (const a of card.querySelectorAll('a[href]')) {
+    const h = a.getAttribute('href') || '';
+    if (/\/feed\/update\/|\/posts\/|\/groups\/|activity|ugcPost|groupPost/i.test(h)) {
+      hrefs.push(h.split('?')[0].slice(0, 160));
+      if (hrefs.length >= 12) break;
+    }
+  }
+}
+return {hits: out, post_hrefs: hrefs};
+"""
+
+
+def card_urn_evidence(driver, card) -> dict:
+    """#2151: what the shipped key chain reads off ONE card, beside every URN the card carries.
+
+    `key_source` is production's own answer (`_feed_post_identity`); `hits` is the broad scan it is
+    graded against. A `hash` key beside a non-empty `hits` is the drift this capture exists for.
+    """
+    from cqc_lem.app.engagement.feed import _feed_post_identity
+
+    reading: dict = {}
+    try:
+        key, source = _feed_post_identity(card, "", "", driver=driver)
+        reading["key_source"] = source
+        reading["key"] = key if source != "hash" else None
+    except Exception as e:
+        reading["key_source"] = f"<{type(e).__name__}>"
+    try:
+        found = driver.execute_script(_CARD_URN_EVIDENCE_JS, card, 40) or {}
+    except Exception as e:
+        found = {"error": f"{type(e).__name__}: {e}"[:200]}
+    reading.update(found if isinstance(found, dict) else {})
+    return reading
+
+
 def _walk_feed_composers(driver, feed: str, url: str, max_cards: int = 3,
                          sleep: Callable[[float], None] = time.sleep) -> dict:
     """Walk ONE feed and report, per card, whether a comment composer resolves — and from WHERE.
@@ -6032,6 +6105,8 @@ def _walk_feed_composers(driver, feed: str, url: str, max_cards: int = 3,
 
     for index, card in enumerate(cards):
         entry: dict = {"index": index, "locator_hits": _locator_hits(card, _COMMENT_ACTION_LOCATORS)}
+        # Read BEFORE the Comment click: an open composer re-renders the card.
+        entry["urn_evidence"] = card_urn_evidence(driver, card)
         action = find_first(driver, wait, _COMMENT_ACTION_LOCATORS, "Comment action",
                             parent_element=card, required=False, visible_only=True, max_try=1,
                             warn_on_miss=False)
