@@ -176,8 +176,10 @@ return null;
 
 
 def _urn_scan(card, driver=None) -> "tuple[str | None, str]":
-    """(URN, rung) from `_URN_SCAN_JS`: rung is 'container' (the card or a single-post ancestor),
-    'descendant' (an element inside the card), or '' when the scan found nothing or could not run.
+    """(URN, rung) from `_URN_SCAN_JS`.
+
+    The rung is 'container' (the card or a single-post ancestor), 'descendant' (an element inside
+    the card), or '' when the scan found nothing or could not run.
     """
     runner = driver if driver is not None else getattr(card, "parent", None)
     if runner is None:

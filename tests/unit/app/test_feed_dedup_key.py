@@ -30,8 +30,10 @@ def _fns():
 
 
 def _card(outer_html=None, permalink_href=None, scan_result=None, scan_raises=False):
-    """A feed card. `scan_result` is what the ancestor/attribute URN scan (a JS call through the
-    driver) returns — MagicMock's default is a non-str sentinel, i.e. 'scan found nothing'.
+    """A feed card.
+
+    `scan_result` is what the ancestor/attribute URN scan (a JS call through the driver) returns —
+    MagicMock's default is a non-str sentinel, i.e. 'scan found nothing'.
     """
     card = MagicMock()
     card.get_attribute.return_value = outer_html or ""
