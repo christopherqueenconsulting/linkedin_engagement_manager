@@ -27,7 +27,8 @@ def _no_pending_backlog():
     """The send drip counts the drafted-but-unapproved backlog on every beat (issue #792). Default it
     to an empty queue so only the tests that care about it have to say so.
     """
-    with patch(f"{_RS}.count_pending_catchup_touches", return_value=0):
+    with patch(f"{_RS}.count_pending_catchup_touches", return_value=0), \
+         patch(f"{_RS}.get_user_ids_with_catchup_touches_in_flight", return_value=set()):
         yield
 
 
@@ -1104,6 +1105,115 @@ class TestCatchupDispatchers:
              patch(f"{_RS}.send_catchup_touch") as task:
             assert auto_check_catchup_touches() == "Automation throttled"
         task.apply_async.assert_not_called()
+
+
+class TestCatchupSpacing:
+    """Issue #2141: one user's approved touches leave staggered, never as one burst."""
+
+    def _run(self, approved, gap=600, in_flight=frozenset(), orphaned=(), sent_today=0):
+        from cqc_lem.app.run_scheduler import auto_check_catchup_touches
+        with patch(f"{_RS}._skip_if_throttled", return_value=False), \
+             patch(f"{_RS}.get_approved_catchup_touches", return_value=list(approved)), \
+             patch(f"{_RS}.get_active_user_ids", return_value=[7, 8]), \
+             patch(f"{_RS}.get_engagement_preferences",
+                   return_value=_prefs(max_catchup_touches_per_day=20)), \
+             patch(f"{_RS}.max_catchup_touches_allowed", return_value=20), \
+             patch(f"{_RS}.count_catchup_touches_sent_today", return_value=sent_today), \
+             patch(f"{_RS}.get_user_ids_with_catchup_touches_in_flight", return_value=set(in_flight)), \
+             patch(f"{_RS}.get_orphaned_catchup_touches", return_value=list(orphaned)), \
+             patch(f"{_RS}.dm_send_gap_seconds", return_value=gap) as gap_draw, \
+             patch(f"{_RS}.update_catchup_touch_status") as upd, \
+             patch(f"{_RS}.log_warning"), \
+             patch(f"{_RS}.send_catchup_touch") as task, \
+             patch(f"{_OUT}.track_catchup_run") as track:
+            out = auto_check_catchup_touches()
+        return out, task, upd, track.call_args.args[1], gap_draw
+
+    @staticmethod
+    def _etas(task, touch_ids):
+        return [c.kwargs["eta"] for c in task.apply_async.call_args_list
+                if c.kwargs["kwargs"]["touch_id"] in touch_ids]
+
+    def test_consecutive_touches_for_one_user_are_separated_by_at_least_the_drawn_gap(self):
+        _, task, _, _, gap_draw = self._run([(1, 7), (2, 7), (3, 7)], gap=600)
+        etas = self._etas(task, {1, 2, 3})
+        assert len(etas) == 3
+        assert all((b - a).total_seconds() >= 600 for a, b in zip(etas, etas[1:]))
+        # The draw is seeded on (user, touch), so a re-run re-derives the same gap.
+        assert [c.args for c in gap_draw.call_args_list] == [(7, 1), (7, 2), (7, 3)]
+
+    def test_the_first_touch_leaves_now(self):
+        before = datetime.now(timezone.utc)
+        _, task, _, _, _ = self._run([(1, 7)])
+        eta = task.apply_async.call_args.kwargs["eta"]
+        assert before <= eta <= datetime.now(timezone.utc)
+
+    def test_each_user_gets_their_own_stagger(self):
+        _, task, _, _, _ = self._run([(1, 7), (2, 8)], gap=600)
+        first, other = self._etas(task, {1}), self._etas(task, {2})
+        assert abs((other[0] - first[0]).total_seconds()) < 5
+
+    def test_a_touch_whose_eta_would_cross_the_orphan_window_stays_approved(self):
+        from cqc_lem.app.run_scheduler import _MAX_CATCHUP_STAGGER_SECONDS
+        from cqc_lem.utilities.db import CatchupTouchStatus
+        gap = _MAX_CATCHUP_STAGGER_SECONDS // 2  # the fourth touch would land past the window
+        assert 3 * gap > _MAX_CATCHUP_STAGGER_SECONDS >= 2 * gap
+        out, task, upd, report, _ = self._run([(1, 7), (2, 7), (3, 7), (4, 7)], gap=gap)
+        sent = [c.kwargs["kwargs"]["touch_id"] for c in task.apply_async.call_args_list]
+        assert sent == [1, 2, 3]
+        claimed = [c.args[0] for c in upd.call_args_list if c.args[1] == CatchupTouchStatus.SENDING]
+        assert 4 not in claimed  # never claimed, so it is still 'approved' for a later beat
+        assert report["spaced"] == 1
+        assert "Dispatched 3" in out
+
+    def test_every_eta_stays_inside_the_orphan_window(self):
+        from cqc_lem.app.run_scheduler import _CATCHUP_ORPHAN_LOOKBACK_HOURS
+        start = datetime.now(timezone.utc)
+        _, task, _, _, _ = self._run([(i, 7) for i in range(1, 15)], gap=20 * 60)
+        etas = self._etas(task, set(range(1, 15)))
+        assert etas and max(etas) - start < timedelta(hours=_CATCHUP_ORPHAN_LOOKBACK_HOURS)
+
+    def test_the_stagger_window_stays_inside_the_broker_visibility_timeout(self):
+        """The stagger ends before the broker would re-deliver a still-waiting eta task.
+
+        An eta task is unacked for its whole wait (task_acks_late); Redis hands one waiting past
+        visibility_timeout to a second worker, so the 2h orphan reaper is not the only bound.
+        """
+        from cqc_lem.app.celeryconfig import visibility_timeout
+        from cqc_lem.app.run_scheduler import _MAX_CATCHUP_STAGGER_SECONDS
+        assert 0 <= _MAX_CATCHUP_STAGGER_SECONDS < visibility_timeout
+
+    def test_a_held_touch_does_not_spend_the_daily_budget(self):
+        """3 left today, the window fits 2: the other two are spaced, not capped — a held touch that
+        spent budget would push the fourth into `capped` and strand it until tomorrow.
+        """
+        from cqc_lem.app.run_scheduler import _MAX_CATCHUP_STAGGER_SECONDS
+        gap = _MAX_CATCHUP_STAGGER_SECONDS  # the window fits the touch leaving now and one more
+        _, _, _, report, _ = self._run([(1, 7), (2, 7), (3, 7), (4, 7)], gap=gap, sent_today=17)
+        assert report["dispatched"] == 2
+        assert report["spaced"] == 2
+        assert report["capped"] == 0
+
+    def test_a_user_with_a_batch_still_sending_gets_no_new_batch(self):
+        out, task, upd, report, _ = self._run([(1, 7), (2, 7), (3, 8)], in_flight={7})
+        sent = [c.kwargs["kwargs"]["touch_id"] for c in task.apply_async.call_args_list]
+        assert sent == [3]
+        assert [c.args[0] for c in upd.call_args_list] == [3]
+        assert report["spaced"] == 2
+
+    def test_a_beat_that_only_held_touches_reports_spaced(self):
+        out, task, _, report, _ = self._run([(1, 7)], in_flight={7})
+        task.apply_async.assert_not_called()
+        assert report["status"] == "spaced"
+        assert out == "No Catch-up Touches to Send"
+
+    def test_orphans_are_requeued_one_per_user_per_beat(self):
+        """A restart loses a user's whole staggered batch; re-queueing all of it is the burst."""
+        out, task, upd, report, _ = self._run([], orphaned=[(9, 7), (10, 7), (11, 8)])
+        sent = [c.kwargs["kwargs"]["touch_id"] for c in task.apply_async.call_args_list]
+        assert sent == [9, 11]
+        assert report["requeued"] == 2
+        assert "2 orphaned" in out
 
 
 class TestCatchupRunReport:

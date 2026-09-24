@@ -1023,6 +1023,20 @@ def get_orphaned_catchup_touches(lookback_hours: int = 2) -> list:
     except mysql.connector.Error as err:
         log_error("Could not get orphaned catchup touches", exc=err)
         return []
+def get_user_ids_with_catchup_touches_in_flight() -> set:
+    """Users with a catch-up touch already dispatched and not yet resolved (status 'sending').
+
+    The drip staggers one user's approved touches across its own run (issue #2141); a later beat
+    must not start a fresh stagger beside a batch still waiting on its etas, or the two land
+    together. A failed read returns an empty set — pacing fails OPEN, never blocks a send.
+    """
+    try:
+        with db_cursor() as cursor:
+            cursor.execute("SELECT DISTINCT user_id FROM catchup_touches WHERE status = 'sending'")
+            return {row[0] for row in cursor.fetchall()}
+    except mysql.connector.Error as err:
+        log_error("Could not read users with catch-up touches in flight", exc=err)
+        return set()
 def count_catchup_touches_sent_today(user_id: int) -> int:
     """Catch-up DMs sent today (UTC) — the per-day cap is on top of the overall DM cap."""
     try:

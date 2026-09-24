@@ -17,7 +17,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Tuple
 
 from cqc_lem import assets_dir
-from cqc_lem.app.celeryconfig import SE_PREPOST_QUEUE
+from cqc_lem.app.celeryconfig import SE_PREPOST_QUEUE, visibility_timeout
 from cqc_lem.app.engagement.feed import auto_seed_comment_on_post, automate_commenting
 from cqc_lem.app.engagement.invites import (
     automate_invites_to_company_page_for_user,
@@ -33,6 +33,7 @@ from cqc_lem.app.engagement.outreach import (
     CATCHUP_STATUS_DISPATCHED,
     CATCHUP_STATUS_INACTIVE,
     CATCHUP_STATUS_NOTHING_TO_SEND,
+    CATCHUP_STATUS_SPACED,
     CATCHUP_STATUS_THROTTLED,
     automate_appreciation_dms_for_user,
     automate_profile_viewer_engagement,
@@ -67,6 +68,7 @@ from cqc_lem.utilities.db import (
     get_due_scheduled_dms,
     get_engagement_preferences,
     get_orphaned_catchup_touches,
+    get_user_ids_with_catchup_touches_in_flight,
     get_orphaned_connection_requests,
     get_orphaned_occasion_claims,
     get_orphaned_scheduled_dms,
@@ -114,6 +116,7 @@ from cqc_lem.utilities.human_pacing import (
     ACTION_INVITE,
     PACE_RESPONSIVE,
     dispatch_jitter_seconds,
+    dm_send_gap_seconds,
     engagement_caps_from_prefs,
     remaining_actions,
 )
@@ -1840,12 +1843,25 @@ def auto_scan_catchup_moments():
     return f"Dispatched catch-up scan for {dispatched} user(s)"
 
 
+# The orphan reaper re-queues a 'sending' touch 2h after its claim write, so a staggered eta must
+# land well inside that window or the reaper would send it early and break the spacing (#2141).
+# The broker's visibility_timeout is the tighter bound: with task_acks_late an eta task is unacked
+# for its whole wait, and Redis hands one still waiting past that timeout to a second worker.
+_CATCHUP_ORPHAN_LOOKBACK_HOURS = 2
+_MAX_CATCHUP_STAGGER_SECONDS = max(0, min(_CATCHUP_ORPHAN_LOOKBACK_HOURS * 3600, visibility_timeout) - 15 * 60)
+
+
 @shared_task.task
 def auto_check_catchup_touches():
     """Send APPROVED catch-up congratulations on a slow, per-user-capped drip (issue #482). Mirrors
     auto_check_connection_requests: approval happens upstream (rows only reach 'approved' via the API
     or the user's auto_approve mode), the whole scan short-circuits while the kill-switch / 429 breaker
     is open, and the send task re-checks both caps and the throttle.
+
+    Issue #2141: one user's touches are staggered by a `dm_send_gap_seconds` draw so a backlog never
+    leaves in one burst. A touch whose staggered eta would cross `_MAX_CATCHUP_STAGGER_SECONDS` stays
+    'approved' for a later beat, and a user with a batch still in 'sending' gets no new one until it
+    drains. Both count as `spaced` on the run report.
     """
     task_name = "auto_check_catchup_touches"
     if _skip_if_throttled(task_name):
@@ -1855,10 +1871,15 @@ def auto_check_catchup_touches():
 
     approved = get_approved_catchup_touches()
     active_user_ids = set(get_active_user_ids()) if approved else set()
+    # Read BEFORE this run claims anything, so the touches it dispatches don't hold their own user.
+    in_flight_user_ids = get_user_ids_with_catchup_touches_in_flight() if approved else set()
+    now = datetime.now(timezone.utc)
+    next_slot: dict = {}  # user_id -> earliest eta for that user's next touch in this run
 
     dispatched = 0
     capped = 0
     inactive = 0
+    spaced = 0
     budgets: dict = {}  # user_id -> remaining catch-up touches allowed today
     for touch_id, user_id in approved:
         if user_id not in active_user_ids:
@@ -1877,19 +1898,40 @@ def auto_check_catchup_touches():
         if budgets[user_id] <= 0:
             capped += 1
             continue  # cap met for today — the rest stay 'approved' for tomorrow
+        if user_id in in_flight_user_ids:
+            spaced += 1
+            log_debug(f"Catch-up touch {touch_id} held — an earlier batch is still sending",
+                      user_id=user_id, task_name=task_name)
+            continue
+        eta = next_slot.get(user_id, now)
+        if (eta - now).total_seconds() > _MAX_CATCHUP_STAGGER_SECONDS:
+            spaced += 1
+            log_debug(f"Catch-up touch {touch_id} left approved — this run's spacing window is full",
+                      user_id=user_id, task_name=task_name)
+            continue
         # Durable send claim: once we dispatch a touch, mark it `sending` so a lost worker can't
         # send it again without passing the `catchup_send_attempts` guard inside send_catchup_touch.
         if not update_catchup_touch_status(touch_id, CatchupTouchStatus.SENDING):
             continue
         budgets[user_id] -= 1
-        send_catchup_touch.apply_async(kwargs={'touch_id': touch_id})
+        next_slot[user_id] = eta + timedelta(seconds=dm_send_gap_seconds(user_id, touch_id))
+        send_catchup_touch.apply_async(kwargs={'touch_id': touch_id}, eta=eta)
         dispatched += 1
 
     # Re-queue touches stuck in 'sending' whose send task was lost (container restart) — mirrors the
     # orphaned connection-request recovery. The 2-hour gap avoids racing an in-flight task. A claim row
     # in catchup_send_attempts will stop the second send if the first one actually landed.
-    orphaned = get_orphaned_catchup_touches(lookback_hours=2)
+    # A restart loses a user's whole staggered batch at once, so re-queueing every orphan here would
+    # send that batch as the burst the stagger exists to prevent (#2141). ONE per user per beat: the
+    # rest stay 'sending' and the next beat takes the next oldest.
+    orphaned = get_orphaned_catchup_touches(lookback_hours=_CATCHUP_ORPHAN_LOOKBACK_HOURS)
+    requeued_users: set = set()
     for touch_id, user_id in orphaned:
+        if user_id in requeued_users:
+            log_debug(f"Orphaned catch-up touch {touch_id} held for a later beat — one re-queue per user per run",
+                      user_id=user_id, task_name=task_name)
+            continue
+        requeued_users.add(user_id)
         log_warning(f"Re-queueing orphaned catch-up touch {touch_id}",
                     user_id=user_id, task_name=task_name)
         if update_catchup_touch_status(touch_id, CatchupTouchStatus.SENDING):
@@ -1900,10 +1942,12 @@ def auto_check_catchup_touches():
     # looked like `nothing_to_send` — which is the reported symptom ("not sending, not in any queue").
     pending = count_pending_catchup_touches()
 
-    if dispatched or orphaned:
+    if dispatched or requeued_users:
         status = CATCHUP_STATUS_DISPATCHED
     elif capped:
         status = CATCHUP_STATUS_CAPPED
+    elif spaced:
+        status = CATCHUP_STATUS_SPACED  # approved touches exist, waiting on this user's spacing
     elif inactive:
         status = CATCHUP_STATUS_INACTIVE  # a queue that exists but whose owners can't be sent for
     elif pending:
@@ -1912,10 +1956,11 @@ def auto_check_catchup_touches():
         status = CATCHUP_STATUS_NOTHING_TO_SEND
     report_catchup_run(None, {"phase": CATCHUP_PHASE_SEND, "status": status,
                               "dispatched": dispatched, "capped": capped, "inactive": inactive,
-                              "pending": pending, "requeued": len(orphaned)}, task_name)
-    if dispatched == 0 and len(orphaned) == 0:
+                              "pending": pending, "requeued": len(requeued_users),
+                              "spaced": spaced}, task_name)
+    if dispatched == 0 and len(requeued_users) == 0:
         return "No Catch-up Touches to Send"
-    return f"Dispatched {dispatched} catch-up touch(es); re-queued {len(orphaned)} orphaned"
+    return f"Dispatched {dispatched} catch-up touch(es); re-queued {len(requeued_users)} orphaned"
 
 
 @shared_task.task

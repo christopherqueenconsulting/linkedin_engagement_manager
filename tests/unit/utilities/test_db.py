@@ -1491,6 +1491,25 @@ class TestCatchupContactFrequency:
             mock_database_connection["cursor"].execute.side_effect = mysql.connector.Error("err")
             assert last_catchup_sent_at(1, "https://www.linkedin.com/in/jane") is None
 
+    def test_catchup_touches_in_flight_are_the_users_with_a_sending_row(self, mock_database_connection):
+        from cqc_lem.utilities.db import get_user_ids_with_catchup_touches_in_flight
+
+        with patch(_GET_CONN, return_value=mock_database_connection["connection"]):
+            mock_database_connection["cursor"].fetchall.return_value = [(7,), (9,)]
+            result = get_user_ids_with_catchup_touches_in_flight()
+        assert result == {7, 9}
+        assert "status = 'sending'" in mock_database_connection["cursor"].execute.call_args.args[0]
+
+    def test_catchup_touches_in_flight_fails_open_on_db_error(self, mock_database_connection):
+        import mysql.connector
+
+        from cqc_lem.utilities.db import get_user_ids_with_catchup_touches_in_flight
+
+        with patch(_GET_CONN, return_value=mock_database_connection["connection"]), \
+             patch("cqc_lem.platform.db.repositories.outreach.log_error"):
+            mock_database_connection["cursor"].execute.side_effect = mysql.connector.Error("err")
+            assert get_user_ids_with_catchup_touches_in_flight() == set()
+
     def test_count_catchup_touches_for_contact_in_window_counts_sent_rows(self, mock_database_connection):
         from cqc_lem.utilities.db import count_catchup_touches_for_contact_in_window
 
