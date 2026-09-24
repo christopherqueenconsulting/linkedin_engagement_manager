@@ -420,8 +420,9 @@ class AttributedOpenAI(OpenAI):
         result = super()._process_response(*args, **kwargs)
         try:
             _attach_proxy_response_params(result, kwargs.get("response"))
-        except Exception:
-            pass
+        except Exception as exc:
+            log_debug("Could not keep the proxy's response headers; the call is still returned",
+                      exc=exc, api_provider="litellm")
         return result
 
     def post(self, *args: Any, **kwargs: Any) -> Any:
