@@ -1733,6 +1733,20 @@ def reset_unreadable_reads(followup_id: int) -> bool:
     except mysql.connector.Error as err:
         log_error(f"Could not reset unreadable reads for followup {followup_id}", exc=err)
         return False
+def defer_followup(followup_id: int, due_at: datetime) -> bool:
+    """Push a still-pending follow-up's `due_at` out without touching anything else (issue #2115).
+
+    `due_at` goes through `to_naive_utc`, the same conversion `enqueue_followup` and
+    `get_due_followups` use. True only when a pending row actually moved.
+    """
+    try:
+        with db_cursor(commit=True) as cursor:
+            cursor.execute("UPDATE dm_followups SET due_at = %s WHERE id = %s AND status = %s",
+                           (to_naive_utc(due_at), followup_id, str(FollowupStatus.PENDING)))
+            return cursor.rowcount > 0
+    except mysql.connector.Error as err:
+        log_error(f"Could not defer followup {followup_id}", exc=err)
+        return False
 def stop_followups_for_profile(user_id: int, profile_url: str) -> int:
     """Stop all pending follow-ups to a profile (e.g. once they've replied). Returns count."""
     try:

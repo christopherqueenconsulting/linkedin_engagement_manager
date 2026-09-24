@@ -223,6 +223,7 @@ from cqc_lem.platform.db.repositories.engagement import (
     record_comment_followup,
     record_comment_outcome,
     release_post_claim,
+    seconds_since_last_dm_touch,
     update_commented_post_key,
 )
 from cqc_lem.platform.db.repositories.feedback import (
@@ -373,6 +374,7 @@ from cqc_lem.platform.db.repositories.outreach import (
     count_open_outreach_targets,
     count_pending_catchup_touches,
     count_scheduled_dms_created_today,
+    defer_followup,
     delete_engagement_target,
     engagement_week_start,
     enqueue_followup,
@@ -995,6 +997,7 @@ __all__ = [
     "db_cursor",
     "deduct_avatar_credit",
     "deduct_video_credits",
+    "defer_followup",
     "delete_auth_factor",
     "delete_engagement_target",
     "delete_pin_for_email",
@@ -1336,6 +1339,7 @@ __all__ = [
     "revoke_affiliate_enrollment_bonus",
     "revoke_other_sessions",
     "revoke_session",
+    "seconds_since_last_dm_touch",
     "set_active_avatar",
     "set_affiliate_promo_opt_in",
     "set_affiliate_status",

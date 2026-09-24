@@ -685,3 +685,27 @@ def has_user_commented_on_post_url(user_id: int, post_url: str):
 def count_dms_sent_today(user_id: int) -> int:
     """DMs logged as SUCCESS since the database's own midnight — the counterpart cap to `count_comments_today`."""
     return _count_actions_today(user_id, LogActionType.DM)
+
+
+def seconds_since_last_dm_touch(user_id: int, profile_url: str, window_hours: int) -> Optional[int]:
+    """Seconds since the last successful DM or follow-up to `profile_url` within `window_hours`.
+
+    None when there was none in the window (issue #2115). Measured on the database's own clock
+    (`TIMESTAMPDIFF` against `NOW()`), the clock `created_at` was written on, so the answer
+    cannot straddle two time zones. A failed read returns 0 — "just
+    touched" — because the caller is deciding whether to send a DM, and a read we could not do
+    must defer that send rather than risk a second message on the same day.
+    """
+    try:
+        with db_cursor() as cursor:
+            cursor.execute(
+                "SELECT TIMESTAMPDIFF(SECOND, MAX(created_at), NOW()) FROM logs "
+                "WHERE user_id = %s AND post_url = %s AND result = %s AND action_type IN (%s, %s) "
+                "AND created_at >= DATE_SUB(NOW(), INTERVAL %s HOUR)",
+                (user_id, profile_url, str(LogResultType.SUCCESS), str(LogActionType.DM),
+                 str(LogActionType.FOLLOWUP), int(window_hours)))
+            r = cursor.fetchone()
+            return max(0, int(r[0])) if r and r[0] is not None else None
+    except mysql.connector.Error as err:
+        log_error("Could not read the last DM touch to a recipient", exc=err, user_id=user_id)
+        return 0
