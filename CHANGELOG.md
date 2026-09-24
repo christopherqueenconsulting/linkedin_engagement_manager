@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.177.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.176.5...v0.177.0) (2026-09-24)
+
+
+### Features
+
+* **db:** give invites, follows and group comments their own logs.action_type (closes [#2117](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2117)) ([#2120](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2120)) ([77ec1e9](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/77ec1e9574d5e56c1f80a043cc8429691e4bfb69))
+
+
+### Bug Fixes
+
+* **comments:** make phrases banned in comment_style HARD on comment surfaces (closes [#2113](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2113)) ([#2124](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2124)) ([011138c](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/011138c5e151bc6538f2382b845df94ad4c3a709))
+* **dm:** follow-up ledger records refused DMs as failures; 48h spacing per recipient (closes [#2115](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2115)) ([#2119](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2119)) ([b8d4de7](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/b8d4de74e50cb05cccf062ecc0cb4a2b91cef791))
+* **dm:** follow-up ledger records refused sends as failures and spaces steps 48h per recipient ([b8d4de7](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/b8d4de74e50cb05cccf062ecc0cb4a2b91cef791)), closes [#2115](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2115)
+* **linkedin:** re-ground the occasion composer on the /sharing/compose route (closes [#2067](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2067)) ([#2070](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2070)) ([e1d0521](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/e1d052194715500f8d81e6ffcfbe1e0caec4c16b))
+* **post-stats:** recycle the Chrome session and resume after a crashed tab ([#2112](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2112)) ([168f7fd](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/168f7fd80d296877dff27794d50a50f18a7c48a4))
+* **post-stats:** recycle the Chrome session and resume after a crashed tab (closes [#2112](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2112)) ([#2127](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2127)) ([168f7fd](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/168f7fd80d296877dff27794d50a50f18a7c48a4))
+* **sdui:** re-ground the mentions card chain on the live notifications DOM (closes [#2065](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2065)) ([#2074](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2074)) ([8ba3df7](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/8ba3df775902adc1ae2770978ccdd76b9574cf7d))
+* **suppression:** drop posts younger than 72h from the reach comparison and log each reading ([dcc6896](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/dcc6896df26c2e934c7571066e43674b6ca705a6))
+* **suppression:** drop posts younger than 72h from the reach comparison and log each reading (closes [#2114](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2114)) ([#2122](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2122)) ([dcc6896](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/dcc6896df26c2e934c7571066e43674b6ca705a6))
+
 ## [0.176.5](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.176.4...v0.176.5) (2026-09-21)
 
 
