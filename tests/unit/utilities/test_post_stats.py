@@ -41,6 +41,30 @@ class TestEngagementRate:
         assert engagement_rate(30, 0, 0, 300) > engagement_rate(100, 0, 0, 100_000)
 
 
+class TestThirdPartyEngagementRate:
+    """Issue #2108: our own seed + second wave are in the page's comment count, so drop them."""
+
+    def test_own_comments_are_excluded(self):
+        from cqc_lem.utilities.post_stats import third_party_engagement_rate
+        # 3 reactions + 2*(2-2) comments over 9 impressions — post 108's shape, not 0.444.
+        assert third_party_engagement_rate(3, 2, 2, 0, 9) == pytest.approx(3 / 9)
+
+    def test_unknown_own_count_is_unmeasured_not_the_raw_rate(self):
+        from cqc_lem.utilities.post_stats import third_party_engagement_rate
+        assert third_party_engagement_rate(3, 2, None, 0, 9) is None
+        assert third_party_engagement_rate(3, None, 2, 0, 9) is None
+
+    def test_none_without_impressions(self):
+        from cqc_lem.utilities.post_stats import third_party_engagement_rate
+        assert third_party_engagement_rate(3, 2, 0, 0, None) is None
+
+    def test_third_party_comments_floor_at_zero(self):
+        from cqc_lem.utilities.post_stats import third_party_comments
+        assert third_party_comments(1, 2) == 0
+        assert third_party_comments(5, 2) == 3
+        assert third_party_comments(None, 2) is None
+
+
 class TestRecencyWeight:
     def test_halves_every_half_life(self):
         from cqc_lem.utilities.post_stats import recency_weight

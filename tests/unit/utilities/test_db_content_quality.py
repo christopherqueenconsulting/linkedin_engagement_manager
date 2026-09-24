@@ -17,7 +17,7 @@ class TestGetShippedContentForQuality:
             [{"id": 5, "content": "Post body", "archetype": "build_receipt",
               "post_type": "text", "video_url": None, "video_model": None,
               "authenticity_score": 91, "shipped_on": date(2026, 7, 26), "reactions": 12,
-              "comments": 3, "reposts": 1, "impressions": 2200}],
+              "comments": 3, "own_comments": 2, "reposts": 1, "impressions": 2200}],
             [{"id": 71, "message": "Comment body", "shipped_on": date(2026, 7, 26)}],
             [{"id": 9, "body": "Edition body", "format": "deep_dive",
               "shipped_on": date(2026, 7, 25)}],
@@ -42,6 +42,7 @@ class TestGetShippedContentForQuality:
         assert post["video_url"] is None
         assert post["authenticity_score"] == 91
         assert post["impressions"] == 2200
+        assert post["own_comments"] == 2
 
     def test_a_carousel_post_carries_its_stored_slides(self, fake_cursor):
         # Issue #1513: the deck reading is located from the post's OWN stored slide URLs, so the

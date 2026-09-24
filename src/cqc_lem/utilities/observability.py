@@ -1379,15 +1379,13 @@ def track_post_outcome(
     combo this post shipped, when the caller knows it) becomes the media experiment's arm the same
     way.
     """
-    from cqc_lem.utilities.post_stats import engagement_rate, engagement_score
+    from cqc_lem.utilities.post_stats import (
+        engagement_rate,
+        engagement_score,
+        third_party_comments,
+        third_party_engagement_rate,
+    )
     shipped = extra.pop("variant_key", None)
-    # Third-party comments are DERIVED, never stored twice, and stay None when either half is
-    # unknown — an unknown own-comment count must not silently book our own comments as the
-    # audience's. Floored at 0 because the two numbers are read at different moments: a stats
-    # capture that ran between our seed and the page updating its count can legitimately show
-    # fewer comments than we have logged (production post 81 computes to -1 that way).
-    third_party = (None if comments is None or own_comments is None
-                   else max(0, int(comments) - int(own_comments)))
     # The `$feature/*` keys can never collide with a declared property, so riding in `extra` puts
     # them on the event exactly as spreading them first did.
     _emit(EVENTS["post_outcome"], {
@@ -1396,10 +1394,10 @@ def track_post_outcome(
         "user_id": user_id,
         "engagement": engagement_score(reactions, comments, reposts),
         "engagement_rate": engagement_rate(reactions, comments, reposts, impressions),
-        "own_comments": own_comments, "third_party_comments": third_party,
-        "third_party_engagement_rate": (
-            None if third_party is None
-            else engagement_rate(reactions, third_party, reposts, impressions)),
+        "own_comments": own_comments,
+        "third_party_comments": third_party_comments(comments, own_comments),
+        "third_party_engagement_rate": third_party_engagement_rate(
+            reactions, comments, own_comments, reposts, impressions),
     }, {**experiment_props(user_id, keys=(COST_ROUTING_ARM,),
                            shipped={POST_MEDIA_VARIANT: shipped} if shipped else None), **extra})
 

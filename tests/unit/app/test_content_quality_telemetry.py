@@ -23,7 +23,7 @@ def _post(ref_id="1", text="A plain first line.\nAnd a second sentence for the b
     row = {"surface": "post", "ref_id": ref_id, "text": text, "shipped_on": "2026-07-26",
            "format_key": None, "post_type": "text", "video_url": None,
            "authenticity_score": 88, "reactions": 10, "comments": 4,
-           "reposts": 1, "impressions": 1000}
+           "own_comments": 0, "reposts": 1, "impressions": 1000}
     row.update(kw)
     return row
 
@@ -34,7 +34,7 @@ def _video_post(ref_id="1", text="A plain first line.\nAnd a second sentence for
            "video_url": f"/api/assets?file_name=videos/runwayml/{ref_id}.mp4",
            "video_model": "veo3.1_fast",
            "authenticity_score": 88, "reactions": 10, "comments": 4,
-           "reposts": 1, "impressions": 1000}
+           "own_comments": 0, "reposts": 1, "impressions": 1000}
     row.update(kw)
     return row
 
@@ -44,7 +44,7 @@ def _carousel_post(ref_id="7", text="A caption for the deck.", **kw):
            "format_key": None, "post_type": "carousel", "video_url": None,
            "carousel_slides": [f"/api/assets?file_name=images/carousel/{ref_id}/slide_01.png"],
            "authenticity_score": None, "reactions": 5, "comments": 2,
-           "reposts": 0, "impressions": 400}
+           "own_comments": 0, "reposts": 0, "impressions": 400}
     row.update(kw)
     return row
 
@@ -99,6 +99,19 @@ class TestNightlyContentQuality:
         assert score["engagement_rate"] == pytest.approx(0.02)
         assert score["impressions"] == 1000
         assert score["authenticity_score"] == 88
+
+    def test_engagement_rate_excludes_our_own_comments(self):
+        # Issue #2108: both comments are our seed + second wave, so they are not the audience's.
+        with ExitStack() as es:
+            _result, record, _track = self._run(
+                es, [_post(reactions=3, comments=2, own_comments=2, reposts=0, impressions=9)])
+        assert record.call_args.args[1]["engagement_rate"] == pytest.approx(3 / 9)
+
+    def test_an_unknown_own_comment_count_reports_an_unmeasured_rate(self):
+        # Never the raw rate: that would book our own comments as the audience's.
+        with ExitStack() as es:
+            _result, record, _track = self._run(es, [_post(own_comments=None)])
+        assert record.call_args.args[1]["engagement_rate"] is None
 
     def test_a_post_with_no_stats_yet_reports_an_unmeasured_rate(self):
         with ExitStack() as es:

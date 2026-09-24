@@ -112,6 +112,13 @@ carousel trend line its own count; the deck dimensions themselves live on the Po
 `engagement_rate` is impression-**WEIGHTED** (total engagement / total impressions), not a mean of
 per-post rates: a post seen by 50 people must not count the same as one seen by 5,000.
 
+Each post's rate is the **third-party** rate (`post_stats.third_party_engagement_rate`, issue #2108):
+our own seed comment (#344) and second wave (#622) sit in the page's comment count on every post we
+publish, so the raw count booked them as audience engagement (post 108 read 0.444 with zero
+third-party engagement). It is the same number `post_outcome.third_party_engagement_rate` carries.
+A capture whose own-comment count is unknown (`post_stats.own_comments` NULL) is **unmeasured**, never
+the raw rate. Rollups spanning the switch step DOWN once — that is the correction, not a regression.
+
 ## Similarity: dominant measure only
 
 Cosine and token-overlap scores are **not the same scale** (ceilings ~0.82 vs ~0.55). Each surface

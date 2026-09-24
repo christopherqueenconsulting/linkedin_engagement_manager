@@ -859,7 +859,7 @@ def auto_nightly_content_quality(self, days: int = None):
         record_content_quality_score,
     )
     from cqc_lem.utilities.observability import track_content_quality
-    from cqc_lem.utilities.post_stats import engagement_rate
+    from cqc_lem.utilities.post_stats import third_party_engagement_rate
 
     if not content_quality_enabled():
         return "Content quality telemetry disabled"
@@ -926,8 +926,11 @@ def auto_nightly_content_quality(self, days: int = None):
                 shipped_on=item.get("shipped_on"), format_key=item.get("format_key"),
                 authenticity=item.get("authenticity_score"),
                 similarity=similarity.get((surface, item.get("ref_id"))),
-                engagement_rate=engagement_rate(item.get("reactions"), item.get("comments"),
-                                                item.get("reposts"), item.get("impressions")),
+                # Our own seed + second wave are in the page's comment count on every post we
+                # publish, so the raw rate books them as audience engagement (issue #2108).
+                engagement_rate=third_party_engagement_rate(
+                    item.get("reactions"), item.get("comments"), item.get("own_comments"),
+                    item.get("reposts"), item.get("impressions")),
                 impressions=item.get("impressions"), exempt_keyword=keyword, detector=detector,
                 video=video)
             record_content_quality_score(user_id, score)
