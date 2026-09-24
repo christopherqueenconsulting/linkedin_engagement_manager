@@ -134,8 +134,25 @@ Reasons: `own_comment`, `author_cooldown`, `already_commented`, `excluded`, `too
 `no_comment_affordance` and `seen_this_run`). Counts only — they change no gate; the topic-gate
 threshold and the fallback are an owner decision taken from these numbers.
 
-Remaining (phase 2, `risk:live-linkedin`): ground activity-URN extraction on group-feed cards so
-≥ 80% of comments are URN-keyed. Verify with V-PAIRS over 7 days of `/opt/lem/logs` (target 0).
+### The key itself is a chain (issue #2151)
+
+`_feed_post_identity` exhausts four rungs in order: the URN attribute on the card or a single-post
+ancestor (`_feed_post_container_urn`, source `card`) → the card's `/feed/update/` anchor
+(`permalink`) → a URN anywhere inside the card or its HTML (`card`) → the content hash (`hash`).
+`_URN_SCAN_JS` labels each hit `container|` or `descendant|`, and only a container hit takes rung 1.
+
+Grounded 2026-09-24 with `--group-feed-composer` on seven groups (`urn_evidence` per card): all 47
+group cards carried their own `data-urn` two or three ancestors up, so every one was already
+URN-keyed. The defect was the ORDER. On 15 of the 47, a `/feed/update/` anchor inside the card named
+a different activity than the container. These were group shares of an existing post: the container
+is the share, which is the thread our Comment lands in, and the anchor is the original. The old
+permalink-first chain keyed the post on the original. When the anchor renders on one read and not
+on the next, the same post gets two keys.
+
+The same session's home-feed control keyed 3 of 6 cards on the hash, and those cards had no
+URN-shaped attribute to read at all. So the hash-keyed share on the `Engagement scan:` line most
+likely comes from the home feed, and possibly the roster pages (this probe did not read those). It
+does not come from group-feed post cards. Read the ≥ 80% target from group runs only.
 
 ## Replies on our own posts, and the seed comment (`sweep_reply_comments`, `auto_seed_comment_on_post`)
 

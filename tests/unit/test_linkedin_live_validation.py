@@ -4931,3 +4931,47 @@ def _texty(text):
     element = MagicMock()
     element.text = text
     return element
+
+
+class TestCardUrnEvidence:
+    """#2151: the group-feed walk reports what production keyed each card on, beside every URN."""
+
+    _HITS = {"hits": [{"rel": "ancestor:3", "tag": "div", "attr": "data-urn",
+                       "urn": "urn:li:activity:7508799179968671745"}],
+             "post_hrefs": ["/feed/update/urn:li:activity:7508175572926189568/"]}
+
+    def test_reports_the_shipped_key_and_the_broad_scan(self, monkeypatch):
+        monkeypatch.setattr("cqc_lem.app.engagement.feed._feed_post_identity",
+                            lambda card, a, c, driver=None:
+                            ("feedurn://urn:li:activity:7508799179968671745", "card"))
+        driver = MagicMock()
+        driver.execute_script.return_value = self._HITS
+        reading = llv.card_urn_evidence(driver, MagicMock())
+        assert reading["key_source"] == "card"
+        assert reading["key"] == "feedurn://urn:li:activity:7508799179968671745"
+        assert reading["hits"] == self._HITS["hits"]
+        assert reading["post_hrefs"] == self._HITS["post_hrefs"]
+        assert driver.execute_script.call_args.args[0] is llv._CARD_URN_EVIDENCE_JS
+
+    def test_a_hash_key_is_named_but_never_echoed(self, monkeypatch):
+        monkeypatch.setattr("cqc_lem.app.engagement.feed._feed_post_identity",
+                            lambda card, a, c, driver=None: ("feedpost://abc", "hash"))
+        driver = MagicMock()
+        driver.execute_script.return_value = {"hits": [], "post_hrefs": []}
+        reading = llv.card_urn_evidence(driver, MagicMock())
+        assert reading["key_source"] == "hash" and reading["key"] is None
+
+    def test_failures_are_reported_not_raised(self, monkeypatch):
+        def _boom(*_a, **_k):
+            raise RuntimeError("stale")
+        monkeypatch.setattr("cqc_lem.app.engagement.feed._feed_post_identity", _boom)
+        driver = MagicMock()
+        driver.execute_script.side_effect = RuntimeError("stale element")
+        reading = llv.card_urn_evidence(driver, MagicMock())
+        assert reading["key_source"] == "<RuntimeError>"
+        assert reading["error"].startswith("RuntimeError")
+
+    def test_the_capture_is_declared_so_a_stale_pipe_is_detectable(self):
+        assert llv._PROBE_CAPABILITY_SYMBOLS["group_feed_composer.urn_evidence"] == \
+            "card_urn_evidence"
+        assert "group_feed_composer.urn_evidence" in llv.probe_script_reading()["capabilities"]
