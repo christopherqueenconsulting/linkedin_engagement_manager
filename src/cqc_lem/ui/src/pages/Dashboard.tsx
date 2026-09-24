@@ -249,6 +249,9 @@ const ACTION_ICONS: Record<string, string> = {
   reply: '↩️',
   dm: '✉️',
   engaged: '👍',
+  invite: '🤝',
+  follow: '➕',
+  group_comment: '👥',
 }
 
 const KIND_ICONS: Record<string, string> = {

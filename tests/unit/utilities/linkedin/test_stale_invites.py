@@ -784,7 +784,9 @@ class TestDailySpendLedger:
         # No result filter: the row is written on DISPATCH, and an unverified withdrawal still cost
         # LinkedIn an action, so it still spends the day's budget.
         assert "result" not in sql
-        assert params == (1, LogActionType.ENGAGED.value, STALE_INVITE_WITHDRAWN_MESSAGE)
+        # INVITE since #2117; ENGAGED still counts, because that is how older rows were written.
+        assert params == (1, LogActionType.INVITE.value, LogActionType.ENGAGED.value,
+                          STALE_INVITE_WITHDRAWN_MESSAGE)
 
     def test_no_rows_today_is_zero(self, fake_cursor):
         from cqc_lem.utilities.db import count_invite_withdrawals_today

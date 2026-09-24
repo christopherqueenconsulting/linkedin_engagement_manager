@@ -978,6 +978,41 @@ class TestEngageCardReactionLogging:
         debug.assert_not_called()
 
 
+class TestEngageCardLogsTheCommentByFeed:
+    """A landed comment is logged as GROUP_COMMENT on a group feed and COMMENT elsewhere (#2117).
+
+    That tells a group comment apart without taking it out of the shared comment readers.
+    """
+
+    @staticmethod
+    def _landed_log_type(is_group_feed):
+        from cqc_lem.app.engagement import feed as ra
+        with patch(f"{_FEED}.claim_post_for_comment", return_value=True), \
+             patch(f"{_FEED}.click_first", return_value=MagicMock()), \
+             patch(f"{_FEED}._post_composer_for_card", return_value=MagicMock()), \
+             patch(f"{_FEED}.select_blueprint", return_value={"format": "expander"}), \
+             patch(f"{_FEED}.record_comment_shape"), \
+             patch(f"{_FEED}.generate_ai_response", return_value="A real comment."), \
+             patch(f"{_FEED}.INLINE_REACTIONS_ENABLED", False), \
+             patch(f"{_FEED}.post_comment_inline", return_value=True), \
+             patch(f"{_FEED}.mark_post_commented"), \
+             patch(f"{_FEED}.insert_new_log") as log, \
+             patch(f"{_FEED}.record_action"), \
+             patch(f"{_FEED}.pace_read", return_value=0.0):
+            assert ra._engage_card(_ctx(), MagicMock(), "feedurn://x", "a post body", "Jane",
+                                   is_group_feed=is_group_feed) is True
+        log.assert_called_once()
+        return log.call_args.kwargs["action_type"]
+
+    def test_a_group_feed_comment_is_a_group_comment(self):
+        from cqc_lem.utilities.db import LogActionType
+        assert self._landed_log_type(True) == LogActionType.GROUP_COMMENT
+
+    def test_a_home_feed_comment_is_still_a_comment(self):
+        from cqc_lem.utilities.db import LogActionType
+        assert self._landed_log_type(False) == LogActionType.COMMENT
+
+
 class TestEngageCardGroupFeedComposerOpen:
     """Issue #1994: the group-feed composer-reachability click (issue #1084) is best-effort.
 

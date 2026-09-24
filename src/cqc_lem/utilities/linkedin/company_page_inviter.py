@@ -514,7 +514,7 @@ def automate_invitations(driver, wait, user_id: int, plan: Optional[dict] = None
 
     invite_outcome = invite_selected_connections(driver, wait)
     if invite_outcome == INVITE_CLICK_NOT_CLICKED:
-        insert_new_log(user_id, LogActionType.ENGAGED, LogResultType.FAILURE,
+        insert_new_log(user_id, LogActionType.INVITE, LogResultType.FAILURE,
                        post_url=li_company_page_url,
                        message="Failed to invite to company page: invite button not found")
         log_info("No invite button found, stopping automate_invitations.")
@@ -523,7 +523,7 @@ def automate_invitations(driver, wait, user_id: int, plan: Optional[dict] = None
     if invite_outcome == INVITE_CLICK_UNCONFIRMED:
         # The click reached LinkedIn but we cannot prove the batch landed. Do NOT spend tomorrow's
         # budget on it; keep the outcome visible as its own status (#1102).
-        insert_new_log(user_id, LogActionType.ENGAGED, LogResultType.FAILURE,
+        insert_new_log(user_id, LogActionType.INVITE, LogResultType.FAILURE,
                        post_url=li_company_page_url,
                        message=(f"Company page invite click unconfirmed: "
                                 f"{selected_count} invitees selected"))
@@ -532,7 +532,7 @@ def automate_invitations(driver, wait, user_id: int, plan: Optional[dict] = None
 
     # The "<message>: <n>" shape is load-bearing — count_company_page_invites_sent_today SUMS that
     # number, and it is what makes a second run today idempotent.
-    insert_new_log(user_id, LogActionType.ENGAGED, LogResultType.SUCCESS,
+    insert_new_log(user_id, LogActionType.INVITE, LogResultType.SUCCESS,
                    post_url=li_company_page_url,
                    message=f"{COMPANY_PAGE_INVITE_SENT_MESSAGE}: {selected_count}")
     # Recorded under ACTION_INVITE on purpose: the lane draws its own budget (ACTION_COMPANY_INVITE)

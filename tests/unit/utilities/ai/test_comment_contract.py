@@ -408,7 +408,9 @@ class TestRecentCommentHistoryQuery:
         assert out == ["newest comment", "older comment"]
         sql, params = cursor.execute.call_args.args
         assert "FROM logs" in sql and "ORDER BY id DESC" in sql
-        assert params == (7, LogActionType.COMMENT.value, LogResultType.SUCCESS.value, 25)
+        # A group comment is the user's comment voice too, so the similarity gate dedups against it.
+        assert params == (7, LogActionType.COMMENT.value, LogActionType.GROUP_COMMENT.value,
+                          LogResultType.SUCCESS.value, 25)
 
 
 class TestPromptExperiment:

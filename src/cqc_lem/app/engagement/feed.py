@@ -1796,7 +1796,11 @@ def auto_follow_roster_target(driver: WebDriver, user_id: int, target: dict,
     # Recorded on DISPATCH, before the verdict is known: the click has already gone to LinkedIn, so
     # it costs the daily allowance whatever we read next.
     record_action(user_id, ACTION_FOLLOW)
-    if _await_follow_flip(driver, profile_url, name, sleep=sleep) != FollowStatus.FOLLOWING:
+    followed = _await_follow_flip(driver, profile_url, name, sleep=sleep) == FollowStatus.FOLLOWING
+    insert_new_log(user_id=user_id, action_type=LogActionType.FOLLOW,
+                   result=LogResultType.SUCCESS if followed else LogResultType.FAILURE,
+                   post_url=profile_url, message=name or None)
+    if not followed:
         # The click landed somewhere but the button never flipped. Recording 'following' here is the
         # one failure that never self-corrects, so an unverified flip counts as a failed attempt —
         # and `reconcile_roster_follow_state` is what lets a later visit take it back.
@@ -2456,7 +2460,9 @@ def _engage_card(ctx: FeedRunContext, card, key: str, content: str, author: str,
         release_post_claim(user_id, key)  # posting failed — let a later run retry
         return False
     mark_post_commented(user_id, key)
-    insert_new_log(user_id=user_id, action_type=LogActionType.COMMENT,
+    insert_new_log(user_id=user_id,
+                   action_type=(LogActionType.GROUP_COMMENT if is_group_feed
+                                else LogActionType.COMMENT),
                    result=LogResultType.SUCCESS, post_url=key, message=comment_text)
     record_action(user_id, ACTION_COMMENT)  # account-level governor (issue #626)
     ctx.recent_comments.insert(0, comment_text)

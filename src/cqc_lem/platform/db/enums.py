@@ -298,6 +298,10 @@ class LogActionType(StrEnum):
     (`count_comments_today`, `count_invites_sent_today`, `has_engaged_url_with_x_days`), so an action
     whose log row never landed is budget the account spent and will spend again. Extending this needs a
     Flyway migration on the ENUM column (V16 and V37 are what that looks like).
+
+    `ENGAGED` is a reaction or a profile-viewer touch. Before #2117 it also carried connection
+    invites, invite withdrawals and company-page invites, so rows older than that migration still
+    do — which is why `INVITE_LOG_ACTION_TYPES` reads both.
     """
     COMMENT = 'comment'
     DM = 'dm'
@@ -305,6 +309,20 @@ class LogActionType(StrEnum):
     POST = 'post'
     ENGAGED = 'engaged'
     FOLLOWUP = 'followup'
+    INVITE = 'invite'
+    FOLLOW = 'follow'
+    GROUP_COMMENT = 'group_comment'
+
+
+# A group comment is still a comment: it shares the per-day comment cap, the similarity-gate
+# history and the per-URL dedup, so every comment READER counts both types (#2117).
+# Raw `.value` strings, because they go straight into SQL parameters and the connector will not
+# convert an enum member.
+COMMENT_LOG_ACTION_TYPES: tuple[str, ...] = (LogActionType.COMMENT.value,
+                                             LogActionType.GROUP_COMMENT.value)
+# Invite rows written before #2117 are ENGAGED. The invite caps are counted per day off these
+# rows, so dropping the legacy type would hand the account a second day's budget on deploy day.
+INVITE_LOG_ACTION_TYPES: tuple[str, ...] = (LogActionType.INVITE.value, LogActionType.ENGAGED.value)
 
 
 class LogResultType(StrEnum):
