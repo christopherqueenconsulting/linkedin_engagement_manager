@@ -163,8 +163,12 @@ _BAN_CUE_RE = re.compile(r"\b(?:no|never|avoid|avoiding|don't|dont|do not|not|wi
 _QUOTED_RE = re.compile(r'"([^"\n]{2,60})"|'
                         r"(?:(?<=^)|(?<=[\s(\[:,]))'([^'\n]{2,60})'(?![A-Za-z])")
 # A clause ends at a sentence stop followed by whitespace and a capital, or at ; / newline — never
-# at the dot inside "i.e" or "e.g.", which the owner's wording carries.
-_CLAUSE_BREAK_RE = re.compile(r"[.!?]\s+(?=[A-Z])|[;\n]")
+# at the dot inside "i.e" or "e.g.", which the owner's wording carries. A comma ends one too, so
+# `no emojis, and open with "what I'd add"` does not ban the phrase the user asked for — except
+# before a quote (`No "x", "y"`) or an example lead-in (`No buzzwords, e.g. "x"`).
+_CLAUSE_BREAK_RE = re.compile(
+    r"[.!?]\s+(?=[A-Z])|[;\n]|"
+    r",(?!\s*(?:$|[\"']|(?i:e\.?g|i\.?e|like|such as|including|for example|especially)\b))")
 
 # The "ta-da" transition: a manufactured beat that promises a payoff the next sentence rarely earns.
 TADA_TRANSITIONS: tuple = (

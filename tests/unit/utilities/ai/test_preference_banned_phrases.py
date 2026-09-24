@@ -53,6 +53,24 @@ class TestPreferenceBannedPhrases:
         prefs = {"comment_style": 'Never pitch. Open with "here is what I saw".'}
         assert "here is what i saw" not in sl.preference_banned_phrases(prefs)
 
+    @pytest.mark.parametrize("style, wanted", [
+        ('Keep it short, no emojis, and open with "what I would add".', "what i would add"),
+        ('Never pitch, always ask "what did you try?"', "what did you try"),
+    ])
+    def test_a_ban_cue_before_a_comma_does_not_carry_over(self, style, wanted):
+        assert wanted not in sl.preference_banned_phrases({"comment_style": style})
+
+    @pytest.mark.parametrize("style, banned", [
+        ('No buzzwords, e.g. "hits home" or "synergy".', ["hits home", "synergy"]),
+        ('Avoid "circle back", "deep dive", "move the needle".',
+         ["circle back", "deep dive", "move the needle"]),
+        ('Sound like a peer, not "a fan".', ["a fan"]),
+        ('Skip clichés like "at the end of the day".', ["at the end of the day"]),
+    ])
+    def test_a_comma_before_a_quote_or_example_keeps_the_ban(self, style, banned):
+        phrases = sl.preference_banned_phrases({"comment_style": style})
+        assert all(b in phrases for b in banned)
+
     def test_smart_and_single_quotes_are_read(self):
         prefs = {"comment_style": "Don’t say “deep dive” or 'low-hanging fruit'; don't gush."}
         phrases = sl.preference_banned_phrases(prefs)
