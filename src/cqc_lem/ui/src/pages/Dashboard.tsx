@@ -893,7 +893,7 @@ export default function Dashboard() {
                           >
                             {entry.post_url}
                           </a>
-                        ) : commentsUrl && (entry.action_type === 'comment' || entry.action_type === 'reply') ? (
+                        ) : commentsUrl && (entry.action_type === 'comment' || entry.action_type === 'group_comment' || entry.action_type === 'reply') ? (
                           // Feed comments/replies have no permalink (post_url is blanked server-side) —
                           // link to the user's own LinkedIn "recent activity → comments" page instead.
                           <a

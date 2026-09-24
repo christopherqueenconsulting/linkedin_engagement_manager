@@ -180,6 +180,14 @@ class TestActivitySeries:
         assert series[0] == {"date": "2026-07-20", "posts": 1, "comments": 5, "replies": 0, "dms": 0}
         assert series[1]["dms"] == 2
 
+    def test_group_comments_count_as_comments(self):
+        """#2117 logs group-feed comments as `group_comment`; the chart must not drop them."""
+        rows = [
+            {"date": datetime(2026, 7, 20).date(), "action_type": "comment", "count": 2},
+            {"date": datetime(2026, 7, 20).date(), "action_type": "group_comment", "count": 3},
+        ]
+        assert build_activity_series(rows)[0]["comments"] == 5
+
     def test_ignores_unknown_action_types_and_bad_rows(self):
         rows = [None, {"date": None, "action_type": "post", "count": 3},
                 {"date": datetime(2026, 7, 20).date(), "action_type": "engaged", "count": 9}]

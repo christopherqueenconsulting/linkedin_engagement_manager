@@ -261,7 +261,9 @@ def build_activity_series(rows: Iterable[Mapping]) -> list:
             continue
         bucket = buckets.setdefault(day, {"date": day.isoformat(), "posts": 0, "comments": 0,
                                           "replies": 0, "dms": 0})
-        key = {"post": "posts", "comment": "comments", "reply": "replies", "dm": "dms"}.get(
+        # A group comment is still a comment on the chart (#2117 split it into its own log type).
+        key = {"post": "posts", "comment": "comments", "group_comment": "comments",
+               "reply": "replies", "dm": "dms"}.get(
             str(row.get("action_type") or "").lower())
         if key:
             bucket[key] += int(row.get("count") or 0)
