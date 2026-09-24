@@ -2,6 +2,7 @@
 
 import importlib.util
 import json
+import re
 import sys
 import types
 from pathlib import Path
@@ -1193,6 +1194,81 @@ class TestMentionCardReadCopy:
             driver.execute_script.side_effect = None
             driver.execute_script.return_value = "not a reading"
             assert llv._carried_mention_cards(driver) == []
+
+
+@pytest.mark.unit
+class TestMentionStampReadCopy:
+    """#2142 dates a mention off its own stamp only; the image the probe runs in predates that.
+
+    Image first, carried copy otherwise, named in `stamp_source` — and a carried copy that drifts
+    grounds a read nothing ships.
+    """
+
+    def test_carried_pattern_is_identical_to_the_one_outreach_uses(self):
+        from cqc_lem.app.engagement import outreach as ra
+
+        assert llv.FALLBACK_MENTION_STAMP_PATTERN == ra._MENTION_STAMP_RE.pattern
+        assert llv.FALLBACK_MENTION_STAMP_FLAGS == ra._MENTION_STAMP_RE.flags & ~re.UNICODE
+
+    def test_the_running_image_wins_when_it_has_the_read(self):
+        from cqc_lem.app.engagement import outreach as ra
+
+        assert llv.mention_stamp_read() == (ra._mention_stamp, "image")
+
+    def test_falls_back_to_the_carried_copy_on_an_image_that_predates_2142(self, monkeypatch):
+        import builtins
+        real_import = builtins.__import__
+
+        def _no_read(name, *a, **k):
+            if name == "cqc_lem.app.engagement.outreach" and "_mention_stamp" in (a[2] or ()):
+                raise ImportError("cannot import name '_mention_stamp'")
+            return real_import(name, *a, **k)
+
+        monkeypatch.setattr(builtins, "__import__", _no_read)
+        assert llv.mention_stamp_read() == (llv._carried_mention_stamp, "script")
+
+    @pytest.mark.parametrize("text", [
+        "Jane mentioned you.\nWe hit 5m ARR\n2 reactions • 4 comments\n9h",
+        "Jane mentioned you.\nWe hit 5m ARR",
+        "Jane mentioned you in a post • 3d",
+        "",
+    ])
+    def test_the_carried_read_answers_what_production_does(self, text):
+        from cqc_lem.app.engagement.outreach import _mention_stamp
+
+        assert llv._carried_mention_stamp(text) == _mention_stamp(text)
+
+    def test_age_read_from_is_the_stamp_never_the_quoted_token(self):
+        """The acceptance reading: the token reported is the one production dated the card by."""
+        from unittest.mock import patch
+
+        def _card(text, slug):
+            link = MagicMock()
+            link.get_attribute.return_value = f"https://www.linkedin.com/in/{slug}"
+            link.text = slug
+            card = MagicMock()
+            card.text = text
+            card.find_elements.return_value = [link]
+            return card
+
+        stamped = _card("Jane mentioned you in a comment.\nWe hit 5m ARR\n"
+                        "2 reactions • 4 comments\n2y", "jane")
+        unstamped = _card("Amit mentioned you in a comment.\n3d printing, 5m ARR", "amit")
+        driver = _fake_driver(current_url="https://www.linkedin.com/notifications/")
+        with patch("cqc_lem.app.engagement.outreach.find_all_first",
+                   return_value=[stamped, unstamped]), \
+             patch("cqc_lem.utilities.db.has_appreciation_touch", return_value=False), \
+             patch("cqc_lem.app.engagement.outreach.getText", side_effect=lambda el: el.text):
+            report = llv.probe_appreciation_sources(driver, 1, "https://www.linkedin.com/in/me/",
+                                                    sleep=lambda s: None)
+
+        mentions = report["mentions"]
+        rows = {r["profile_url"].rsplit("/", 1)[-1]: r for r in mentions["rows"]}
+        assert rows["jane"]["age_read_from"] == "2y" and rows["jane"]["age_days"] == 730.0
+        assert rows["jane"]["in_window"] is False
+        assert rows["amit"]["age_read_from"] == "" and rows["amit"]["age_days"] is None
+        assert mentions["people"] == [] and mentions["dated"] == 1
+        assert mentions["stamp_source"] == "image"
 
 
 class TestMentionDomEvidence:

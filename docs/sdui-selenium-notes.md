@@ -324,8 +324,20 @@ The probe is piped into a worker running the DEPLOYED image, so — as with the 
 — it drives `_mention_cards` when the running image has it and an identical carried copy when it
 does not, naming which in `card_source`. Each mention row also reports `age_read_from`, the exact
 token the age was parsed out of: a card carries the whole quoted comment, so the notification stamp
-("2h") and a number in the quoted text ("5m ARR") are both in scope for the same regex, and an age
-read off the wrong one is how a two-year-old mention would be DMed as today's. A zero reading
+("2h") and a number in the quoted text ("5m ARR") are both in the card's text, and an age read off
+the wrong one is how a two-year-old mention would be DMed as today's.
+
+**The age read is bounded to the stamp (#2142).** Grounded live 2026-09-24: the card's innerText is
+`<Actor> mentioned you in a comment in <group>.` / the quoted comment (one or more lines) /
+`2 reactions • 4 comments` / `9h` — the stamp is the LAST line, alone, in an unnamed
+`<span>` inside a `<p>`. The card has no `<time>` and nothing on the stamp to key on (the only
+`aria-label`s are `View profile` and `More options`), so the read is textual: `_mention_stamp`
+(`_MENTION_STAMP_RE`) takes an age token only where it ENDS the card, opening its own line or
+following a `•`/`·`/`|` separator. A card that ends any other way reads `''` and is SKIPPED as
+undated — it is never dated from the quoted text, and there is no whole-card fallback. The probe
+drives the same read (`stamp_source`: `image`, or `script` for its byte-identical carried
+`FALLBACK_MENTION_STAMP_PATTERN`), and `age_read_from` is the token it returned — `''` on a
+skipped card. A zero reading
 carries `dom_evidence` — locator hit counts, the page's `data-view-name`/`data-testid` vocabulary,
 and the ancestor chain above each mention sentence — which is what the next re-grounding is written
 from. Re-ground with `scripts/linkedin_live_validation.py --appreciation-sources`.
