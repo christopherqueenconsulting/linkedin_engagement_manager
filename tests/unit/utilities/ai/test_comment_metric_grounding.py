@@ -104,8 +104,12 @@ class TestSeverityPerSurface:
         monkeypatch.setenv("FACT_GROUNDING_SEVERITY_POST", "warn")
         assert sb.fact_grounding_severity("post") == sb.SEVERITY_WARN
 
+    def test_a_dm_is_hard(self):
+        # #2099: sent DMs carried invented figures to named people.
+        assert sb.fact_grounding_severity("dm") == sb.SEVERITY_HARD
+
     def test_unknown_and_missing_surfaces_take_the_default(self):
-        assert sb.fact_grounding_severity("dm") == sb.SEVERITY_WARN
+        assert sb.fact_grounding_severity("newsletter") == sb.SEVERITY_WARN
         assert sb.fact_grounding_severity(None) == sb.SEVERITY_WARN
 
     def test_ops_can_overrule_a_surface_without_a_deploy(self, monkeypatch):

@@ -289,7 +289,14 @@ _READER_ADDRESSED = r"(?:" + _SENTENCE_START + r"|\byou(?:'re|\s+are)?\s+)"
 _MEETING_ASK_PATTERNS: tuple = (
     r"\bbook(?:ing)?\s+(?:a|an|your|some|my)\s+(?:call|time|slot|demo|meeting|chat|consult\w*|session|intro\w*)",
     r"\bschedul(?:e|ing)\s+(?:a|an|your|some|our)\s+(?:call|time|demo|meeting|chat|consult\w*|session|intro\w*)",
-    r"\b(?:hop|jump|get)\s+on\s+a\s+(?:quick\s+)?(?:call|zoom|chat|huddle)",
+    r"\b(?:hop|jump|get)\s+on\s+a\s+(?:(?:quick|brief|short)\s+)?(?:call|zoom|chat|huddle)",
+    # A time-boxed ask ("Do you have 15 minutes for a quick call?") — the shape a DM reaches for
+    # (#2099). The possession verb is required, so narrative ("the call ran 15 minutes") never
+    # matches. "you've" is listed too: the contraction pass turns "you have" into it.
+    r"(?:\b(?:have|got|spare|grab|find)|\byou'?ve)\s+(?:(?:a|an|some)\s+)?"
+    r"(?:\d{1,2}|ten|fifteen|twenty|thirty)[- ]?min(?:ute)?s?\s+"
+    r"(?:for\s+(?:a\s+)?(?:(?:quick|brief|short)\s+)?(?:call|chat|zoom|meeting)|"
+    r"to\s+(?:chat|talk|connect|meet))\b",
     r"\bset\s+up\s+(?:a|some)\s+(?:call|time|meeting|chat|demo|consult\w*)",
     r"\blet'?s\s+(?:set\s+up|schedule|book|find|grab)\s+(?:a|some)?\s*(?:call|time|chat|coffee|meeting)",
     # Offer-verb context is REQUIRED: a bare "discovery call" / "strategy session" noun phrase also
@@ -326,6 +333,15 @@ _MEETING_ASK_PATTERNS: tuple = (
     r"\bslots?\s+(?:open|available)\s+(?:this|next)\s+\w+",
 )
 _MEETING_ASK_RE = re.compile("|".join(_MEETING_ASK_PATTERNS), re.IGNORECASE)
+
+
+def without_meeting_asks(content: Optional[str]) -> str:
+    """The text with every meeting-ask phrase blanked out.
+
+    The fact gate reads what is left: the "15" in "15 minutes for a call" is the ask's own length,
+    not a claim the author has to stand behind.
+    """
+    return _MEETING_ASK_RE.sub(" ", content or "")
 
 
 def meeting_ask_excerpts(content: Optional[str]) -> list:

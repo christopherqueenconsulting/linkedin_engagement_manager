@@ -564,7 +564,8 @@ the same promo positions were handed out again. Production ran 35/41/24. Other r
 **Promo CTAs are always an ARTIFACT** (lead magnet / newsletter) — a meeting ask is banned in the
 prompts (`ARTIFACT_CTA_POLICY`, injected by `cta_policy_directive`), repaired deterministically
 by `replace_meeting_ask_cta`, and any that survives HOLDS the post at PENDING via the
-`meeting_cta` quality gate. A promo with NO artifact (`has_artifact_cta`: the lead-magnet comment
+`meeting_cta` quality gate. DMs share the same patterns through the DM content gate (#2099), where
+a call ask is allowed only once the contact has replied (`docs/engagement-automation.md`). A promo with NO artifact (`has_artifact_cta`: the lead-magnet comment
 mechanic, or a subscribe ask for the user's newsletter) is closed on the user's artifact by
 `_repair_promo_artifact_cta`. If the user has none, or an edit removes it, the post HOLDS on the
 `promo_artifact_cta` gate. The gate is skipped when the settings cannot be read. Compliance is reported on `/user/engagement-analytics`

@@ -326,6 +326,25 @@ disinterest / neutral) and becomes an **approval-gated** context-aware next mess
 `pending` row in `scheduled_dms` (`source='nurture'`), one open draft per thread, per-day draft
 cap, explicit disinterest stops the thread for good.
 
+### The DM content gate (issue #2099)
+
+Sent nurture DMs asked a contact for "15 minutes for a quick call" and claimed "a DoD LLM rollout
+that cut false positives 30%" — neither in the user's material. `dm_nurture.dm_gate_reasons()` is
+the ONE gate, run on every DM both writers produce (`_nurture_after_reply` and
+`build_dm_from_template`). Owner decision on #2099:
+
+| Check | Blocks when | Source |
+|---|---|---|
+| `meeting_ask` | a call/meeting ask (`content_alignment.meeting_ask_excerpts`) in a thread the contact has **not** replied in. A nurture thread is replied by definition, so there it is allowed | the posts' `meeting_cta` patterns |
+| `unsourced_claim` | a number no anchor backs (`content_framework.fact_grounding_report`). Anchors: the story bank, the user's own template, the contact's own reply — **never our earlier DMs**, so an invented figure cannot vouch for itself. The ask's own "15 minutes" is blanked out first | `FACT_GROUNDING_SEVERITIES["dm"]` = HARD; `FACT_GROUNDING_SEVERITY_DM=warn` turns it off without a deploy |
+| `slop` | any HARD `slop_lint` check on the `dm` surface | `lint_report(text, "dm")` |
+
+A blocked DM is **never sent**. `build_dm_from_template` gives it ONE steered rewrite
+(`dm_gate_directive`), then falls back to the rendered template if that passes, and otherwise returns
+`None` — the callers' existing "nothing to send" answer. A blocked nurture draft is still filed, but
+always `pending`, even under `DM_NURTURE_AUTO_APPROVE`, so it waits for the operator's edit. An
+unreadable story bank grades with no bank anchors (strict).
+
 ### Who the recipient is comes from stored data, never a page visit (issue #1625)
 
 The draft used to know their first name and nothing else, so a short or neutral reply left it with

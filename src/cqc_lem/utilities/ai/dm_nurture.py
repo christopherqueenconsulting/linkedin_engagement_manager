@@ -17,6 +17,10 @@ import os
 import re
 from enum import StrEnum
 
+from cqc_lem.utilities.ai.content_alignment import meeting_ask_excerpts, without_meeting_asks
+from cqc_lem.utilities.ai.content_framework import fact_grounding_report
+from cqc_lem.utilities.ai.slop_lint import SEVERITY_HARD, lint_report
+from cqc_lem.utilities.ai.story_bank import fact_grounding_severity
 from cqc_lem.utilities.logger import log_debug, log_warning
 
 
@@ -310,3 +314,51 @@ def format_recipient_context(context: dict = None) -> str:
             "specific and relevant. Do NOT recite it back to them, and do NOT infer anything from "
             "it (team size, budget, tools, goals, or what they need):\n"
             + "\n".join(lines) + "\n\n")
+
+
+# The DM content gate (issue #2099). Every other gated surface has one; the DM had none, so a sent
+# nurture DM carried a meeting ask to someone who never replied to us AND an invented claim.
+DM_GATE_MEETING_ASK = "meeting_ask"
+DM_GATE_UNSOURCED_CLAIM = "unsourced_claim"
+DM_GATE_SLOP = "slop"
+
+
+def dm_gate_reasons(text: "str | None", anchors: "list | None" = None,
+                    thread_replied: bool = False) -> "list[str]":
+    """Why this DM must not be sent — empty when it may. Deterministic, no LLM, no I/O.
+
+    Three checks, in the owner's words: a call ask only where the contact has already replied in
+    the thread; the fact gate and the slop lint on every DM.
+
+    Args:
+        text: The DM exactly as it would be sent.
+        anchors: The material a specific may come from — the story bank, the user's own template,
+            the contact's own reply. Never our earlier DMs: a number we invented once must not
+            vouch for itself the second time.
+        thread_replied: True only when the contact has written back in this thread.
+
+    Returns:
+        One `<check>: <detail>` string per failed check.
+    """
+    reasons = []
+    if not thread_replied:
+        asks = meeting_ask_excerpts(text)
+        if asks:
+            reasons.append(f"{DM_GATE_MEETING_ASK}: {'; '.join(asks)}")
+    if fact_grounding_severity("dm") == SEVERITY_HARD:
+        # Graded with the ask blanked out: its "15 minutes" is the ask's length, not a claim.
+        unverified = fact_grounding_report(without_meeting_asks(text), anchors)["unverified_values"]
+        if unverified:
+            reasons.append(f"{DM_GATE_UNSOURCED_CLAIM}: {', '.join(unverified)}")
+    report = lint_report(text, "dm")
+    if not report["passes"]:
+        checks = [str(v.get("check")) for v in report.get("hard") or [] if isinstance(v, dict)]
+        reasons.append(f"{DM_GATE_SLOP}: {', '.join(dict.fromkeys(checks))}")
+    return reasons
+
+
+def dm_gate_directive(reasons: "list[str]") -> str:
+    """The rewrite steer after a blocked draft: name what was refused so the retry drops it."""
+    return ("\n\nTHE PREVIOUS DRAFT WAS REFUSED — fix exactly this: " + " | ".join(reasons)
+            + ". Ask for no call or meeting unless they asked for one. State no number, name or "
+              "outcome that is not in the template or in what they wrote.")

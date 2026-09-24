@@ -808,16 +808,28 @@ class TestDmWiring:
             out = rau.build_dm_from_template(1, "connection", "Ana", _profile())
         assert out == "Nice to meet you."
 
-    def test_a_still_slopped_dm_is_sent_rather_than_dropped(self):
+    def test_a_still_slopped_dm_falls_back_to_the_rendered_template(self):
+        # #2099: the slop lint applies to every DM, so a rewrite that stays slopped is never sent.
         from cqc_lem.app.engagement import outreach as rau
         slopped = "It's not just a tool, it's a mindset. Thoughts?"
         with patch(f"{_OUT}.get_dm_template", return_value={"template_text": "Hi {first_name}"}), \
+             patch(f"{_OUT}.get_story_bank_entries", return_value=[]), \
              patch(f"{_OUT}.get_ai_message_refinement", return_value=slopped), \
              patch(f"{_OUT}.humanize_text", side_effect=lambda t, **k: t), \
              patch(f"{_AI}.log_warning"):
             out = rau.build_dm_from_template(1, "connection", "Ana", _profile())
-        # Dropping it would silently break the outreach sequence.
-        assert out == slopped
+        assert out == "Hi Ana"
+
+    def test_a_slopped_dm_with_a_slopped_template_is_not_sent(self):
+        from cqc_lem.app.engagement import outreach as rau
+        slopped = "It's not just a tool, it's a mindset. Thoughts?"
+        with patch(f"{_OUT}.get_dm_template", return_value={"template_text": slopped}), \
+             patch(f"{_OUT}.get_story_bank_entries", return_value=[]), \
+             patch(f"{_OUT}.get_ai_message_refinement", return_value=slopped), \
+             patch(f"{_OUT}.humanize_text", side_effect=lambda t, **k: t), \
+             patch(f"{_AI}.log_warning"):
+            out = rau.build_dm_from_template(1, "connection", "Ana", _profile())
+        assert out is None
 
 
 class TestGroupPostWiring:

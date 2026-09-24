@@ -598,10 +598,13 @@ class TestGeneratorsRouteThroughHumanize:
                    return_value={"template_text": "Hi {first_name}"}), \
              patch("cqc_lem.app.engagement.outreach.get_ai_message_refinement", return_value="Hi Sam, welcome."), \
              patch("cqc_lem.app.engagement.outreach.humanize_text",
-                   side_effect=lambda t, content_type="post", **kw: f"DM[{content_type},{kw.get('max_chars')}]") as h:
+                   return_value="Humanized DM") as h, \
+             patch("cqc_lem.app.engagement.outreach.get_story_bank_entries", return_value=[]):
             out = outreach.build_dm_from_template(1, "connection", "Sam", MagicMock())
-        assert out == "DM[dm,300]"
+        assert out == "Humanized DM"
         h.assert_called_once()
+        assert h.call_args.kwargs["content_type"] == "dm"
+        assert h.call_args.kwargs["max_chars"] == 300
 
     def test_post_path_imports_the_real_pass(self):
         # create_text_post humanizes just before the A1 gate (verified in the module); assert the post
