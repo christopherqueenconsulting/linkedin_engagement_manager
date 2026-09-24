@@ -178,6 +178,11 @@ from cqc_lem.utilities.db import (
     update_outreach_target_status,
 )
 from cqc_lem.utilities.dm_templates import _draft_connect_note, render_dm_placeholders
+from cqc_lem.utilities.engagement_window import (
+    PRE_POST_TASK_VIEWER,
+    claim_pre_post_lane,
+    claim_profile_viewer_touch,
+)
 from cqc_lem.utilities.human_pacing import (
     ACTION_COMMENT,
     ACTION_DM,
@@ -1873,12 +1878,21 @@ def _viewer_within_lookback(viewed_on: str, lookback_days: int) -> Optional[bool
                   bind=True, base=QueueOnce, once={'graceful': True, 'unlock_before_run': True, 'keys': ['user_id']},
                   queue='se_outreach')
 def automate_profile_viewer_engagement(self, user_id: int, loop_for_duration: int = None, future_forward: int = 60,
-                                       lookback_days: int = 1):
+                                       lookback_days: int = 1, post_id: int = None):
     """Walk the profile-views analytics list and queue engagement for each viewer inside
     `lookback_days`. The default matches the daily cadence; a catch-up run passes a larger
     window once, then the cadence sticks to the delta.
+
+    `post_id` is set by the pre-post dispatch (`auto_check_scheduled_posts`): the walk then claims
+    its lane for that post and runs ONCE, never self-requeueing, so a second dispatch for the same
+    post is a no-op that opens no session (issue #2093).
     """
     log_info("Starting Profile Viewer DMs")
+
+    if post_id and not claim_pre_post_lane(user_id, post_id, PRE_POST_TASK_VIEWER):
+        log_debug("Pre-post profile viewer walk already ran for this post — no-op", post_id=post_id,
+                  user_id=user_id, task_name="automate_profile_viewer_engagement")
+        return f"no_op: pre-post profile viewer walk already ran for post {post_id}"
 
     try:
         driver, wait, user_email, my_profile = get_current_profile(user_id=user_id, session_name="Profile Viewer DMs")
@@ -1987,7 +2001,15 @@ def automate_profile_viewer_engagement(self, user_id: int, loop_for_duration: in
         # engage_with_profile_viewer opens its own session and navigates to the profile itself —
         # visiting each viewer here too doubled the profile visits and held this session open
         # for nothing, so the walk just dispatches.
+        dispatched = 0
         for viewer_url, viewer_name in viewer_data.items():
+            # One touch per viewer per day, claimed HERE so a viewer already dispatched today —
+            # still in flight, or failed (which writes no SUCCESS row for the task's own check) —
+            # opens no second session (issue #2093).
+            if not claim_profile_viewer_touch(user_id, viewer_url):
+                log_debug("Profile viewer already touched today — skipping", user_id=user_id,
+                          task_name="automate_profile_viewer_engagement")
+                continue
             log_info(f"Viewer Name: {viewer_name}")
             log_info(f"Viewer URL: {viewer_url}")
 
@@ -1995,11 +2017,13 @@ def automate_profile_viewer_engagement(self, user_id: int, loop_for_duration: in
                       'viewer_url': viewer_url,
                       'viewer_name': viewer_name}
             engage_with_profile_viewer.apply_async(kwargs=kwargs)
+            dispatched += 1
 
-        result = f"Profile Viewer DMs Completed. Engaged with {len(viewer_data)} viewers"
+        result = f"Profile Viewer DMs Completed. Engaged with {dispatched} viewers"
 
-        # Re-schedule the task in the queue for the future
-        if loop_for_duration:
+        # Re-schedule the task in the queue for the future — never for a pre-post window run,
+        # which is one pass per post (issue #2093).
+        if loop_for_duration and not post_id:
             elapsed_time = datetime.now() - start_time
             new_loop_for_duration = round(loop_for_duration - elapsed_time.total_seconds() - future_forward)
             frame = inspect.currentframe()

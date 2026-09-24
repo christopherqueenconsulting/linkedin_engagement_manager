@@ -8,10 +8,9 @@ with none of them, and nothing re-adds them — the orphan re-queue re-runs `pos
 returns early on the POSTED guard. The post is published, visible, and permanently without a first
 comment.
 
-And the pre-post warm-up is dispatched with `queue=se_prepost` explicitly, because on `se_engage` an
-eta-bound run waits behind whatever 15-minute golden-hour loop is already going and starts after its
-own window has closed (#553). Its self-requeue passed no queue, so every pass after the first went
-straight back to the lane the dispatch had paid to escape.
+The pre-post warm-up is dispatched with `queue=se_prepost` explicitly (#553). Its self-requeue
+used to hand every pass after the first back to `se_engage`; since #2093 a window run is ONE pass
+and never requeues at all, so there is no second pass to mis-route.
 """
 
 from unittest.mock import MagicMock, patch
@@ -81,19 +80,18 @@ class TestThePrePostWarmUpKeepsItsLane:
              patch(f"{_FEED}.navigate_to_feed"), \
              patch(f"{_FEED}.comment_on_feed_inline", return_value=0), \
              patch(f"{_FEED}.record_pre_post_run"), \
+             patch(f"{_FEED}.claim_pre_post_lane", return_value=True), \
              patch(f"{_FEED}.quit_gracefully"), \
              patch.object(mod.automate_commenting, "apply_async") as requeue:
             mod.automate_commenting.run(user_id=1, loop_for_duration=900, future_forward=60,
                                         post_id=post_id)
         return requeue
 
-    def test_a_window_pass_re_queues_onto_se_prepost(self):
-        from cqc_lem.app.celeryconfig import SE_PREPOST_QUEUE
-
+    def test_a_window_pass_never_re_queues(self):
+        """One pass per post (issue #2093): each re-queued pass opened a fresh LinkedIn session."""
         requeue = self._requeue(post_id=42)
 
-        requeue.assert_called_once()
-        assert requeue.call_args.kwargs["queue"] == SE_PREPOST_QUEUE
+        requeue.assert_not_called()
 
     def test_an_ordinary_run_keeps_the_default_lane(self):
         """An ordinary run keeps the default lane.
@@ -106,8 +104,8 @@ class TestThePrePostWarmUpKeepsItsLane:
         requeue.assert_called_once()
         assert "queue" not in requeue.call_args.kwargs
 
-    def test_the_window_still_shortens_each_pass(self):
-        """The lane is the only thing that changed — the loop still ends when its window does."""
-        requeue = self._requeue(post_id=42)
+    def test_an_ordinary_loop_still_shortens_each_pass(self):
+        """The golden-hour loop keeps looping, and still ends when its duration does."""
+        requeue = self._requeue(post_id=None)
 
         assert requeue.call_args.kwargs["kwargs"]["loop_for_duration"] < 900

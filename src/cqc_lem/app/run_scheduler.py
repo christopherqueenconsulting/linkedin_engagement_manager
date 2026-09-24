@@ -268,7 +268,8 @@ def auto_check_scheduled_posts(self):
                                         task_name=PRE_POST_TASK_VIEWER)
             else:
                 automate_profile_viewer_engagement.apply_async(
-                    kwargs={'user_id': user_id, 'loop_for_duration': viewer_window.duration_seconds},
+                    kwargs={'user_id': user_id, 'loop_for_duration': viewer_window.duration_seconds,
+                            'post_id': post_id},
                     eta=viewer_window.eta,
                 )
                 record_pre_post_scheduled(post_id, user_id, viewer_window,

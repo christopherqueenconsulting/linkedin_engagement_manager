@@ -463,6 +463,7 @@ class TestAutoCheckScheduledPosts:
         viewer_call = mock_profile_task.apply_async.call_args[1]
         assert viewer_call["eta"] == scheduled_dt - timedelta(minutes=10)
         assert viewer_call["kwargs"]["loop_for_duration"] == 10 * 60
+        assert viewer_call["kwargs"]["post_id"] == 42  # the lane claim's key (issue #2093)
 
     def test_pre_post_commenting_is_dispatched_to_its_own_lane(self):
         """Issue #553: the eta-bound warm-up must land on se_prepost, not se_engage, or it waits

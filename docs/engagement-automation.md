@@ -37,6 +37,27 @@ composer lookup is scoped to its OWN post (`_post_composer_for_card` / `_reply_c
 — a miss is a DEBUG no-op, never a warning). Targeting, per-day caps and voice/tone come from
 `engagement_preferences`. Runs pre-post (~15 min before a scheduled post) and daily at a golden hour.
 
+### The pre-post window is ONE pass per lane per post (issue #2093)
+
+Both pre-post lanes — feed commenting and the profile-viewer walk — used to self-requeue every
+`future_forward` seconds across their window, and each pass opened a fresh LinkedIn session: a new
+session every ~85 s, with a peak of 41 in one 30-minute bucket against 9-15 on ordinary days.
+Now each lane takes `claim_pre_post_lane(user_id, post_id, lane)` (`utilities/engagement_window.py`,
+Redis `SET NX`, 24h TTL) before its session opens. A second dispatch for the same post returns
+`no_op: …` and opens nothing, and a window run never requeues. The golden-hour loop, which has no
+`post_id`, is unchanged. The commenting claim is taken AFTER the per-user run lock, so a run that
+loses the lock to a golden-hour loop does not use up the post's one pass. With no Redis the claim
+fails OPEN.
+
+The walk also claims each viewer once per UTC day (`claim_profile_viewer_touch`) before it dispatches
+`engage_with_profile_viewer`. That task's own `has_engaged_url_with_x_days` check counts only a
+SUCCESS row, which is written after the attempt finishes. An in-flight or failed engagement therefore
+never read as touched, and viewers were revisited 5-9 times in one window.
+
+When the comment budget is spent, the log line names the limiter that applied: `cap` only when
+today's comments reached `max_comments_per_day`, and otherwise `pacing` (the paced draw or the
+account envelope).
+
 ### The scoring matrix is recency-DOMINANT
 
 `_score_feed_post` ranks candidates on four weighted terms — recency (dominant), relevance,

@@ -19,6 +19,7 @@ def commenting_env():
          patch(f"{_MOD}.navigate_to_feed"), \
          patch(f"{_MOD}.quit_gracefully"), \
          patch(f"{_MOD}.comment_on_feed_inline", return_value=3) as feed, \
+         patch(f"{_MOD}.claim_pre_post_lane", return_value=True), \
          patch(f"{_MOD}.record_pre_post_run") as record:
         yield feed, record
 
@@ -41,20 +42,16 @@ class TestPrePostEngagementMarker:
 
         record.assert_not_called()
 
-    def test_post_id_rides_the_self_requeue(self, commenting_env):
-        """The window is walked by a self-requeueing loop, so post_id must survive each hop or
-        only the first pass would be recorded.
-        """
+    def test_a_window_run_is_one_pass(self, commenting_env):
+        """A window run records its one pass and never self-requeues (issue #2093)."""
+        _, record = commenting_env
         from cqc_lem.app.engagement.feed import automate_commenting
 
         with patch.object(automate_commenting, "apply_async") as requeue:
             automate_commenting.run(user_id=7, loop_for_duration=900, post_id=42)
 
-        requeue.assert_called_once()
-        kwargs = requeue.call_args[1]["kwargs"]
-        assert kwargs["post_id"] == 42
-        assert kwargs["user_id"] == 7
-        assert kwargs["loop_for_duration"] < 900
+        requeue.assert_not_called()
+        record.assert_called_once_with(42, 7, 3)
 
     def test_marker_not_written_when_another_run_holds_the_lock(self, commenting_env):
         _, record = commenting_env

@@ -57,8 +57,6 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.remote.webdriver import WebDriver
 from selenium.webdriver.remote.webelement import WebElement
 
-from cqc_lem.app.celeryconfig import SE_PREPOST_QUEUE
-
 # `queue_roster_connect_invite` dispatches the connect rail's task (#1154); the rail moved to
 # `app.engagement.invites` first and imports nothing from here, so the edge runs one way.
 from cqc_lem.app.engagement.invites import send_roster_connect_invite
@@ -145,7 +143,11 @@ from cqc_lem.utilities.db import (
     upsert_user_group,
 )
 from cqc_lem.utilities.dm_templates import _draft_connect_note
-from cqc_lem.utilities.engagement_window import record_pre_post_run
+from cqc_lem.utilities.engagement_window import (
+    PRE_POST_TASK_COMMENTING,
+    claim_pre_post_lane,
+    record_pre_post_run,
+)
 from cqc_lem.utilities.env_constants import INLINE_REACTIONS_ENABLED, MAX_WAIT_RETRY
 from cqc_lem.utilities.golden_hour import _record_golden_hour_report, _reply_outcome
 from cqc_lem.utilities.human_pacing import (
@@ -2726,11 +2728,17 @@ def comment_on_feed_inline(driver, wait, my_profile: LinkedInProfile, user_id: i
     # weekend asymmetry and occasional rest days), and the account-level governor also caps the
     # COMBINED comment/DM/invite traffic — so a flat "cap comments every day" volume signature
     # never shows up, and the lanes can't each spend a full cap on the same day.
-    remaining_today = remaining_actions(user_id, ACTION_COMMENT, daily_cap,
-                                        count_comments_today(user_id),
+    comments_today = count_comments_today(user_id)
+    remaining_today = remaining_actions(user_id, ACTION_COMMENT, daily_cap, comments_today,
                                         caps=engagement_caps_from_prefs(prefs))
     if remaining_today <= 0:
-        log_info(f"Daily comment budget spent (cap {daily_cap}) — skipping")
+        # Name the limiter that actually bit (issue #2093): the user's cap only when today's
+        # comments reached it — otherwise it was the pacing draw or the account envelope, and
+        # "cap 20" read as a cap problem while 3 comments had landed.
+        limiter = "cap" if comments_today >= daily_cap else "pacing"
+        log_info(f"Daily comment budget spent — limited by {limiter} "
+                 f"({comments_today} today, cap {daily_cap}) — skipping",
+                 user_id=user_id, action_type="comment")
         return 0
     max_posts = min(max_posts, remaining_today)
     max_age_min = (prefs.get("max_post_age_hours") or 24) * 60
@@ -4309,8 +4317,8 @@ def automate_commenting(self, user_id: int, loop_for_duration: int = None, futur
 
     `post_id` is set only by the pre-post warm-up dispatch (`auto_check_scheduled_posts`) — it makes
     each pass record a per-post engagement-window marker so a report can confirm the warm-up before
-    that post actually happened (issue #547). It rides the self-requeue kwargs, so every pass in the
-    window accumulates onto the same marker.
+    that post actually happened (issue #547). A window run is ONE pass: it claims its lane for the
+    post and never self-requeues, so a second dispatch for the same post is a no-op (issue #2093).
     """
     log_info("Starting Automate Commenting Thread...")
 
@@ -4336,6 +4344,15 @@ def automate_commenting(self, user_id: int, loop_for_duration: int = None, futur
         return "Skipped: another commenting run already in progress for this user."
 
     if post_id:
+        # One pass per post (issue #2093). Taken AFTER the run lock so a run that loses the lock
+        # to a golden-hour loop doesn't burn the post's only pass, and BEFORE the session opens so a
+        # second dispatch — a stale self-requeue from before this fix, a broker redelivery of the
+        # eta task — costs no LinkedIn session.
+        if not claim_pre_post_lane(user_id, post_id, PRE_POST_TASK_COMMENTING):
+            release_run_lock(lock_name, lock_token)
+            log_debug("Pre-post commenting already ran for this post — no-op", post_id=post_id,
+                      user_id=user_id, task_name="automate_commenting")
+            return f"no_op: pre-post commenting already ran for post {post_id}"
         log_info("Pre-post engagement window opened", post_id=post_id, user_id=user_id,
                  task_name="automate_commenting")
 
@@ -4383,8 +4400,10 @@ def automate_commenting(self, user_id: int, loop_for_duration: int = None, futur
         if post_id:
             record_pre_post_run(post_id, user_id, post_commented_count)
 
-        # Re-schedule the task in the queue for the future
-        if loop_for_duration:
+        # Re-schedule the task in the queue for the future. Never for a pre-post window run: each
+        # pass opened a fresh session, so the loop was a new LinkedIn session every ~85 s across
+        # the window, and the lane claim above holds that window to one pass (issue #2093).
+        if loop_for_duration and not post_id:
             elapsed_time = datetime.now() - start_time
             new_loop_for_duration = round(loop_for_duration - elapsed_time.total_seconds() - future_forward)
             frame = inspect.currentframe()
@@ -4405,17 +4424,8 @@ def automate_commenting(self, user_id: int, loop_for_duration: int = None, futur
                 # Remove 'self' from kwargs if it exists
                 if 'self' in kwargs:
                     del kwargs['self']
-                # Call self again in the future — on the SAME lane this pass ran on (issue #2032).
-                # The pre-post warm-up is dispatched with `queue=se_prepost` explicitly, because on
-                # `se_engage` an eta-bound run waits behind whatever 15-minute golden-hour loop is
-                # already going and starts after its own window has closed (#553). The re-queue
-                # passed no queue at all, so `task_routes` sent every pass after the first back to
-                # `se_engage` — the exact lane the dispatch had paid to escape. `post_id` is set
-                # only by that dispatch, so it is what identifies a window run.
-                requeue = {"kwargs": kwargs, "countdown": future_forward}
-                if post_id:
-                    requeue["queue"] = SE_PREPOST_QUEUE
-                globals()[current_function_name].apply_async(**requeue)
+                # Call self again in the future
+                globals()[current_function_name].apply_async(kwargs=kwargs, countdown=future_forward)
 
     except Exception as e:
         log_error("Error while automating commenting", exc=e, user_id=user_id, task_name="automate_commenting")
