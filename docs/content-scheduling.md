@@ -42,6 +42,24 @@ was reported as a hard limit that could not be raised. Both halves of the plan n
 - `_cadence_slots` logs the same fact at DEBUG. It is the ordinary case at the shipped default, so
   it is never a warning.
 
+### A cadence change takes effect on the next plan run (issues #2021, #2137)
+
+The forward plan only ever extends past the LAST laid row, and skips when that is 30+ days out, so
+a laid tail used to hold the old cadence until it drained. Every `plan_content_for_user` run now:
+
+1. **Reconciles** the future `planning` rows (`planned_slots_to_drop`): a row on a day outside
+   `posting_days`, or past `posts_per_week` in its ISO week, is deleted. Rows past `planning` are
+   never dropped, but they count toward their week first.
+2. **Refills** the holes inside the tail, tomorrow through at most 30 days out (`cadence_holes`):
+   a cadence day with no post, in a week under `posts_per_week` counting every stored post.
+   Trimming without this left production at 2/week — the Mon–Fri tail lost Mon/Wed/Fri, and the
+   Saturday the new `[1,3,5]` owns was never laid.
+3. Extends past the tail as before.
+
+Every weekday and week is judged in the **user's zone**, never on the stored UTC instant. A slot the
+24h floor pushes onto a switched-off day, or that lands inside 24h of a stored post, is not laid.
+Both steps fail CLOSED: an unreadable tail, or a delete that did not land in full, refills nothing.
+
 ## Source rotation (issue #1526)
 
 The archetype a text post is written FROM — `thought_leadership`, `blog_summary`,
