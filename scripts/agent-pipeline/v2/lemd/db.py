@@ -19,11 +19,12 @@ a PR parked at 2 attempts and another retried forever.
 
 from __future__ import annotations
 
+import json
 import sqlite3
 import time
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Iterator, Sequence
+from typing import Any, Iterable, Iterator, Sequence
 
 SCHEMA_VERSION = 3
 
@@ -240,6 +241,37 @@ def kv_set(conn: sqlite3.Connection, key: str, value: str) -> None:
     )
 
 
+#: `priority:*` label to the `items.priority` the scheduler sorts on (lower dispatches first).
+PRIORITY_BY_LABEL = {
+    "priority:critical": 0,
+    "priority:high": 1,
+    "priority:medium": 2,
+    "priority:low": 3,
+}
+#: No `priority:*` label — the schema default, so an unlabelled item sorts as it always has.
+DEFAULT_PRIORITY = 2
+
+
+def priority_from_labels(labels: Iterable[str]) -> int:
+    """The most urgent `priority:*` label's rank, or `DEFAULT_PRIORITY` when there is none.
+
+    Some issues carry both `priority:critical` and `priority:high`; the most urgent wins.
+    """
+    return min((PRIORITY_BY_LABEL[lb] for lb in labels if lb in PRIORITY_BY_LABEL),
+               default=DEFAULT_PRIORITY)
+
+
+def priority_from_labels_json(labels_json: str | None) -> int:
+    """`priority_from_labels` over a stored `labels_json` value; unreadable reads as unlabelled."""
+    try:
+        labels = json.loads(labels_json) if labels_json else []
+    except (TypeError, ValueError):
+        return DEFAULT_PRIORITY
+    if not isinstance(labels, list):
+        return DEFAULT_PRIORITY
+    return priority_from_labels(lb for lb in labels if isinstance(lb, str))
+
+
 def upsert_item(
     conn: sqlite3.Connection,
     *,
@@ -264,6 +296,12 @@ def upsert_item(
     """
     now = int(now if now is not None else time.time())
     cols = {k: v for k, v in fields.items() if k in _ITEM_COLUMNS}
+    if "labels_json" in cols and "priority" not in cols:
+        # Derived HERE, at the one write every label set passes through, so a relabel re-sorts the
+        # item on the same write that records it (#2128). Nothing else sets `priority`, and the
+        # schema default left every item at 2 — a `priority:critical` issue queued behind six
+        # medium/low ones stamped with the same `ready_since`.
+        cols["priority"] = priority_from_labels_json(cols["labels_json"])
     row = conn.execute(
         "SELECT id, state FROM items WHERE kind=? AND number=?", (kind, number)
     ).fetchone()
