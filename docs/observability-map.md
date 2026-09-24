@@ -93,6 +93,22 @@ measured while the render happens. `deck_probe` is `ok`/`missing`/`unreadable`, 
 carries NULL dimensions. `post_outcome` carries `post_type` as a `label()`, which is what makes
 "do carousels out-reach text posts?" answerable next to `saves`.
 
+## Comment gate verdicts — `utilities/ai/ai_helper.py`
+One `comment_gate` event per comment that enters the gate (`_gated_comment`, plus the #1833
+no-body refusal in `generate_ai_response`). The nightly `content_quality` reading cannot carry
+these verdicts: it scores SHIPPED comments only and never sees the target post. All four
+filtered properties are `label()`:
+- `outcome`: `shipped`, `stripped` (shipped after the #2136 rewrite dropped the invented claim),
+  `skipped_gate`, `skipped_no_post_body`, or `no_draft` (the model answered nothing).
+- `post_body`: `readable` / `unreadable` on the feed path, `unchecked` on the second wave.
+- `grounding`: the #1834 verdict on the LAST graded draft — `grounded`, `ungrounded`, `stripped`,
+  or `unchecked` (severity `off`, the second wave, or no draft graded). `ungrounded` on a
+  `shipped` row is the WARN-severity case.
+`ungrounded_count` is None when unchecked, never 0. `ungrounded_attempts` counts the drafts that
+invented a number, including drafts a later retry replaced. `failed_checks` holds check NAMES
+only (`contract`, `grounding`, `forbidden_claim`, `similarity`, `slop`). No post or draft text is
+sent, so this needs no `LLM_PROMPT_LOGGING_FEATURES` sign-off.
+
 ## Image generation telemetry (issue #1291)
 Every AI still image carries its surface on the `media_cost` event: `meta.surface` is threaded
 from the caller (`post_image` / `carousel` / `newsletter` / `video` / `thumbnail`), so per-surface

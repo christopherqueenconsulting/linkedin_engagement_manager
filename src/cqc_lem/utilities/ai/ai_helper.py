@@ -92,6 +92,7 @@ from cqc_lem.utilities.observability import (
     current_llm_attribution,
     llm_pipeline,
     llm_step,
+    track_comment_gate,
     track_motion_prompt_check,
     track_slop_retry,
 )
@@ -549,6 +550,10 @@ def generate_ai_response(post_content: Any, profile: LinkedInProfile,
         log_warning("Target post has no readable body (empty or URL-only) — skipping rather than "
                     "commenting ungrounded", user_id=user_id, post_id=post_id,
                     action_type="comment")
+        track_comment_gate(user_id, {
+            "surface": "comment", "outcome": GATE_SKIPPED_NO_POST_BODY,
+            "post_body": POST_BODY_UNREADABLE, "grounding": GROUNDING_UNCHECKED, "attempts": 0,
+            "max_attempts": _framework.comment_gate_max_attempts()})
         return None
 
     image_attached = "(image attached)" if post_img_url else ""
@@ -667,7 +672,7 @@ def generate_ai_response(post_content: Any, profile: LinkedInProfile,
                              user_id=user_id, action_type="comment")
 
     return _gated_comment(_draft, post_content, recent_comments=recent_comments, user_id=user_id,
-                          ground_specifics=True, prefs=prefs)
+                          ground_specifics=True, prefs=prefs, post_body=POST_BODY_READABLE)
 
 
 # Research material ACTUALLY handed to a post's writer, keyed by post id (issue #1971). The post
@@ -787,10 +792,27 @@ def _ungrounded_first_person_metrics(candidate: "str | None", post_content: Any,
 # post; escalating it filed a GitHub issue against a safety gate working exactly as designed.
 COMMENT_QUALITY_SKIP_LOG_PREFIX = "Comment failed the quality contract after "
 
+# The `comment_gate` event's vocabulary. `outcome` says what happened to the draft, `post_body`
+# whether the #1833 body check ran and what it found, `grounding` the #1834 verdict on the LAST
+# graded draft — "ungrounded" on a shipped draft is the WARN-severity case.
+GATE_SHIPPED = "shipped"
+GATE_STRIPPED = "stripped"
+GATE_SKIPPED_GATE = "skipped_gate"
+GATE_SKIPPED_NO_POST_BODY = "skipped_no_post_body"
+GATE_NO_DRAFT = "no_draft"
+POST_BODY_READABLE = "readable"
+POST_BODY_UNREADABLE = "unreadable"
+POST_BODY_UNCHECKED = "unchecked"
+GROUNDING_GROUNDED = "grounded"
+GROUNDING_UNGROUNDED = "ungrounded"
+GROUNDING_STRIPPED = "stripped"
+GROUNDING_UNCHECKED = "unchecked"
+
 
 def _gated_comment(draft, post_content, recent_comments: list = None,
                    user_id: int = None, ground_specifics: bool = False,
-                   surface: str = "comment", prefs: dict = None) -> "str | None":
+                   surface: str = "comment", prefs: dict = None,
+                   post_body: str = POST_BODY_UNCHECKED) -> "str | None":
     """Run a comment `draft(fix_directive)` callable through the quality contract, the similarity
     gate, the slop lint and (opt-in) the fact-grounding check until it passes, and return None when
     it never does.
@@ -827,6 +849,7 @@ def _gated_comment(draft, post_content, recent_comments: list = None,
         ground_specifics: Run the #1834 grounding check on this surface.
         surface: The slop-lint surface to grade against — `own_post_comment` for the
             author's own seed/second-wave comments, `comment` for everything else.
+        post_body: The caller's #1833 body-check verdict, carried onto the `comment_gate` event.
 
     Returns:
         The first candidate that clears every gate, or None when none of them does.
@@ -841,7 +864,7 @@ def _gated_comment(draft, post_content, recent_comments: list = None,
     forbidden_terms = _story_bank.effective_forbidden_claim_terms(prefs)
 
     def _grade(candidate: str) -> tuple:
-        """Grade one candidate: (failures, blocking specifics, similarity report)."""
+        """Grade one candidate: (failures, blocking, similarity, check names, ungrounded)."""
         report = _framework.comment_contract_report(candidate, str(post_content or ""))
         similar = _framework.comment_similarity_report(candidate, recent_comments)
         # The SURFACE, not the literal "comment" (issue #2020): the second wave is the author
@@ -863,30 +886,53 @@ def _gated_comment(draft, post_content, recent_comments: list = None,
                       f"({', '.join(invented)}) — recorded, not blocking at severity {severity}",
                       user_id=user_id, action_type="comment")
         found = list(report["failures"])
+        checks = ["contract"] if found else []
         if blocking:
+            checks.append("grounding")
             found.append(
                 "states first-person specifics that appear in neither the post nor the author's "
                 f"own material ({', '.join(blocking)}) — drop the invented numbers rather than "
                 "rephrasing them")
         if forbidden:
+            checks.append("forbidden_claim")
             found.append(
                 "attaches a figure to a subject the author has forbidden any number for "
                 f"({', '.join(forbidden)}) — remove the number from every sentence naming it")
         if similar["too_similar"]:
+            checks.append("similarity")
             found.append(f"near-duplicate of a recent comment ({similar['measure']} similarity "
                          f"{similar['score']:.2f} > max {similar['threshold']:.2f})")
         # Slop violations join the SAME retry budget as the contract failures: a comment that keeps
         # tripping either one is skipped rather than posted (issue #625).
         if not slop["passes"]:
+            checks.append("slop")
             found += _slop.violation_reasons(slop["hard"])
-        return found, blocking, similar
+        return found, blocking, similar, checks, invented
+
+    ungrounded_attempts = 0
+    last = {"checks": [], "invented": None}
+
+    def _track(outcome: str, attempt: int, grounding: "str | None" = None) -> None:
+        invented = last["invented"]
+        if grounding is None:
+            grounding = (GROUNDING_UNCHECKED if invented is None else
+                         GROUNDING_UNGROUNDED if invented else GROUNDING_GROUNDED)
+        track_comment_gate(user_id, {
+            "surface": surface, "outcome": outcome, "post_body": post_body,
+            "grounding": grounding, "ungrounded_count": None if invented is None else len(invented),
+            "ungrounded_attempts": ungrounded_attempts, "attempts": attempt,
+            "max_attempts": attempts, "failed_checks": last["checks"]})
 
     for attempt in range(1, attempts + 1):
         candidate = draft(fix_directive)
         if candidate is None:
+            _track(GATE_NO_DRAFT, attempt)
             return None
-        failures, blocking, similar = _grade(candidate)
+        failures, blocking, similar, checks, invented = _grade(candidate)
+        ungrounded_attempts += bool(invented)
+        last.update(checks=checks, invented=invented if checking_specifics else None)
         if not failures:
+            _track(GATE_SHIPPED, attempt)
             return candidate
         # Rewrite without the claim (issue #2136): drop the sentences carrying the invented
         # numbers and post the rest, when the rest clears every gate on its own.
@@ -894,6 +940,7 @@ def _gated_comment(draft, post_content, recent_comments: list = None,
         if stripped is not None and not _grade(stripped)[0]:
             log_debug(f"Comment draft shipped without its invented specifics "
                       f"({', '.join(blocking)})", user_id=user_id, action_type="comment")
+            _track(GATE_STRIPPED, attempt, grounding=GROUNDING_STRIPPED)
             return stripped
         log_debug(f"Comment draft rejected (attempt {attempt}/{attempts}): {'; '.join(failures)}",
                   user_id=user_id, action_type="comment")
@@ -902,6 +949,7 @@ def _gated_comment(draft, post_content, recent_comments: list = None,
                 failures, offending_comment=similar["match"] if similar["too_similar"] else None)
     log_warning(f"{COMMENT_QUALITY_SKIP_LOG_PREFIX}{attempts} attempt(s) — skipping this "
                 f"post: {'; '.join(failures)}", user_id=user_id, action_type="comment")
+    _track(GATE_SKIPPED_GATE, attempts)
     return None
 
 

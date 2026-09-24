@@ -367,6 +367,15 @@ EVENTS = {spec.event: spec for spec in (
         prop("visibility_sample"), prop("unreadable_readings"),
         label("verdict", "verdict.status"), text("verdict_reason", "verdict.reason"),
     )),
+    # The comment gate's own verdicts, ONE per drafted comment (`ai_helper._gated_comment`). The
+    # nightly `content_quality` reading cannot carry them: it scores SHIPPED comments only and never
+    # sees the target post, so a refused draft and its post body are invisible to it. Verdicts and
+    # check NAMES only — no post or draft text leaves the stack.
+    EventSpec("comment_gate", (
+        prop("user_id"), label("surface"), label("outcome"), label("post_body"),
+        label("grounding"), reading("ungrounded_count"), count("ungrounded_attempts"),
+        prop("attempts"), prop("max_attempts"), items("failed_checks"),
+    )),
     EventSpec("content_quality", (
         prop("user_id"), label("surface"), prop("ref_id"), text("shipped_on"), prop("chars"),
         prop("slop_checked"), prop("slop_hard"), prop("slop_warn"), prop("slop_score"),
@@ -1543,6 +1552,22 @@ def track_comment_quality(user_id: Optional[int], report: Optional[dict] = None,
     report = dict(report or {})
     _emit(EVENTS["comment_quality"], {**report, "user_id": user_id,
                                       "verdict": dict(report.get("verdict") or {})}, extra)
+
+
+def track_comment_gate(user_id: Optional[int], verdict: Optional[dict] = None) -> None:
+    """Emit ONE `comment_gate` event with what the comment gate decided about a draft.
+
+    Production logs at INFO, so the DEBUG lines that used to hold these verdicts never left the
+    worker, and the online evals that grade the same questions from trace text score NA because the
+    proxy keeps prompt text out of PostHog. This event is the app-side reading that needs no text.
+
+    Args:
+        user_id: Whose comment it was.
+        verdict: `surface`, `outcome`, `post_body`, `grounding`, `ungrounded_count`,
+            `ungrounded_attempts`, `attempts`, `max_attempts` and `failed_checks`, as
+            `ai_helper._gated_comment` builds them.
+    """
+    _emit(EVENTS["comment_gate"], {**dict(verdict or {}), "user_id": user_id})
 
 
 def track_content_quality(user_id: Optional[int], score: Optional[dict] = None, **extra) -> None:

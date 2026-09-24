@@ -129,6 +129,11 @@ comment scores a constant. The failure modes a hand audit of `comment_generation
 inventing first-person metrics (#1834), commenting on a post whose body never arrived (#1833) —
 are invisible in tokens, cost, latency and model, and both publish under the user's name.
 
+Both are answered app-side without any text leaving the stack: the comment gate emits ONE
+`comment_gate` event per feed-comment draft with its `post_body` and `grounding` verdicts
+(`docs/observability-map.md`). That restores the measurement, not the trace text, so the online
+evals stay NA until a feature is allowlisted below.
+
 So the un-redaction is scoped to one feature at a time rather than switched on globally. LiteLLM
 resolves redaction **per request** (`should_redact_message_logging`): a request carrying
 `LiteLLM-Disable-Message-Redaction: true` logs its messages in full, and everything else stays
