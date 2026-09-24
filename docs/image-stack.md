@@ -132,6 +132,11 @@ grades the rendered file against the brief's `focal_concept` — with bounded re
   never take a cover or post image down with it — and for newsletter covers the human
   `pending_review` gate still sits behind this one. Unchanged by #1376, which made the gate part of
   the mark control: it detects more, it still blocks nothing.
+- **A final `rejected` verdict never reaches `posts.image_url` (#2105).** Fail-open is for a gate
+  that could not run, not one that looked and said no. The renderers still return the last
+  candidate (covers keep their human review queue), but `post_image.generate_image_for_post` — the
+  ONE place a post's render is stored — drops a `rejected` final, and the post ships with no image
+  on its normal schedule. `unchecked` still renders.
 - **It reads at `detail="high"`** (`_VISION_GATE_DETAIL`). The gate is asked whether the render
   carries marks, so it has to be able to READ one: at `low` the image is downsampled to ~512px on
   the long edge, where logo tiles on a laptop screen in a 1536×1024 cover do not survive — which is
