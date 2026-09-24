@@ -1310,19 +1310,74 @@ def cap_em_dashes(text: str, max_dashes: int = 1) -> str:
 
 # Conservative, unambiguous "X is/are/not" -> contraction map (the wordbank's top human marker).
 # Replacement stored lowercase; _apply_contractions restores a leading capital from the match.
+# Each entry names its guard: None (negations, always safe), _END (an auxiliary that cannot contract
+# at a clause end: "what it is." never "what it's."), or _PERFECT (a "have" that contracts only as
+# the perfect auxiliary: "you've seen", never "Do you've 15 minutes" or "you've to be").
+_END = "end"
+_PERFECT = "perfect"
 _CONTRACTIONS = (
-    (r"it is", "it's"), (r"that is", "that's"), (r"there is", "there's"), (r"here is", "here's"),
-    (r"what is", "what's"), (r"who is", "who's"), (r"he is", "he's"), (r"she is", "she's"),
-    (r"we are", "we're"), (r"you are", "you're"), (r"they are", "they're"),
-    (r"we will", "we'll"), (r"you will", "you'll"), (r"I am", "i'm"), (r"I will", "i'll"),
-    (r"I have", "i've"), (r"we have", "we've"), (r"you have", "you've"),
-    (r"do not", "don't"), (r"does not", "doesn't"), (r"did not", "didn't"), (r"is not", "isn't"),
-    (r"are not", "aren't"), (r"was not", "wasn't"), (r"were not", "weren't"), (r"will not", "won't"),
-    (r"cannot", "can't"), (r"can not", "can't"), (r"would not", "wouldn't"),
-    (r"could not", "couldn't"), (r"should not", "shouldn't"), (r"have not", "haven't"),
-    (r"has not", "hasn't"),
+    (r"it is", "it's", _END), (r"that is", "that's", _END), (r"there is", "there's", _END),
+    (r"here is", "here's", _END), (r"what is", "what's", _END), (r"who is", "who's", _END),
+    (r"he is", "he's", _END), (r"she is", "she's", _END),
+    (r"we are", "we're", _END), (r"you are", "you're", _END), (r"they are", "they're", _END),
+    (r"we will", "we'll", _END), (r"you will", "you'll", _END), (r"I am", "i'm", _END),
+    (r"I will", "i'll", _END),
+    (r"I have", "i've", _PERFECT), (r"we have", "we've", _PERFECT), (r"you have", "you've", _PERFECT),
+    (r"do not", "don't", None), (r"does not", "doesn't", None), (r"did not", "didn't", None),
+    (r"is not", "isn't", None), (r"are not", "aren't", None), (r"was not", "wasn't", None),
+    (r"were not", "weren't", None), (r"will not", "won't", None),
+    (r"cannot", "can't", None), (r"can not", "can't", None), (r"would not", "wouldn't", None),
+    (r"could not", "couldn't", None), (r"should not", "shouldn't", None), (r"have not", "haven't", None),
+    (r"has not", "hasn't", None),
 )
-_CONTRACTION_RES = tuple((re.compile(rf"\b{p}\b", re.IGNORECASE), r) for p, r in _CONTRACTIONS)
+# A clause end: end of text or closing punctuation next (a comma too: "that is, ..." stays). Quotes
+# are not in the set: they open a phrase as often as they close one ('it is "ready"' -> "it's").
+_NOT_AT_END = r"(?!\s*(?:$|[.,;:!?)\]\u2014\u2013-]))"
+# Adverbs that may sit between the auxiliary and its participle ("you have never seen").
+_PERFECT_ADVERBS = (
+    "never", "always", "already", "just", "also", "ever", "finally", "recently", "probably",
+    "likely", "clearly", "really", "definitely", "certainly", "all", "both",
+)
+# Irregular past participles that are only ever verbs here, so they contract on sight.
+_VERBAL_PARTICIPLES = (
+    "been", "seen", "done", "gone", "got", "gotten", "had", "made", "said", "found", "heard", "met",
+    "put", "run", "sent", "spent", "told", "thought", "taught", "brought", "bought", "come", "taken",
+    "become", "begun", "kept", "felt", "won", "held", "shown", "flown", "eaten", "risen", "woken",
+    "let", "stood", "understood", "sat", "slept", "struck", "fought", "caught", "sought", "meant",
+    "dealt", "learnt", "dreamt", "lent", "swum", "sung",
+)
+# Participles that also work as adjectives ("you have hidden costs", "we have proven results"), plus
+# every regular "-ed" word ("Do you have limited time?"): these contract only when a function word
+# or a clause end follows, never a bare noun. A regular "-ed" must be 4+ letters and not
+# "-eed"/"hundred", so "you have red hair" and "you have a need" stay expanded.
+_ADJECTIVAL_PARTICIPLES = (
+    "known", "left", "lost", "paid", "read", "set", "given", "written", "spoken", "built", "led",
+    "grown", "drawn", "thrown", "chosen", "driven", "fallen", "forgotten", "hidden", "broken",
+    "proven", "stolen", "beaten", "worn", "torn", "sworn", "hit", "cut", "shut", "sold", "stuck",
+    "hung", "burnt", "bent", "drunk",
+)
+_PARTICIPLE_FOLLOWERS = (
+    "the", "a", "an", "my", "your", "our", "their", "his", "her", "its", "this", "that", "these",
+    "those", "it", "them", "him", "us", "me", "you", "to", "with", "for", "on", "in", "at", "about",
+    "of", "into", "from", "by", "over", "up", "out", "down", "off", "back", "so", "as", "through",
+    "every", "some", "any", "each", "here", "there", "hard", "well", "together", "before", "since",
+    "yet", "too", "again",
+)
+_FOLLOWED_BY_FUNCTION_WORD = (
+    r"(?=\s*(?:$|[.,;:!?)\]—–-])|\s+(?:" + "|".join(_PARTICIPLE_FOLLOWERS) + r")\b)"
+)
+# Next word a participle, optionally after one adverb.
+_PERFECT_RE = (
+    r"(?=\s+(?:(?:" + "|".join(_PERFECT_ADVERBS) + r")\s+)?"
+    r"(?:(?:" + "|".join(_VERBAL_PARTICIPLES) + r")\b"
+    r"|(?:(?:" + "|".join(_ADJECTIVAL_PARTICIPLES) + r")\b|(?!hundred\b|\w*eed\b)\w{2,}ed\b)"
+    + _FOLLOWED_BY_FUNCTION_WORD + r"))"
+)
+_GUARDS = {None: "", _END: _NOT_AT_END, _PERFECT: _PERFECT_RE}
+# MULTILINE so a line break is a clause end too ("what it is\n" never becomes "what it's\n").
+_CONTRACTION_RES = tuple(
+    (re.compile(rf"\b{p}\b{_GUARDS[g]}", re.IGNORECASE | re.MULTILINE), r) for p, r, g in _CONTRACTIONS
+)
 
 
 def apply_contractions(text: str) -> str:
