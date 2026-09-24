@@ -2841,8 +2841,15 @@ def comment_on_feed_inline(driver, wait, my_profile: LinkedInProfile, user_id: i
         recent_comments = []
     # Every comment of the last day, for the own-comment guard (issue #2130) — by window, not by
     # the similarity gate's count, so a busy day cannot push a fresh comment out of view.
-    own_recent_comments: list = list(get_recent_comment_texts(
-        user_id, limit=_OWN_COMMENT_HISTORY_LIMIT, hours=_OWN_COMMENT_WINDOW_HOURS))
+    # Fails open like the read above: a non-MySQL fault must not abort the whole walk, and this
+    # run's own comments (ctx.recent_comments) still feed the guard.
+    try:
+        own_recent_comments: list = list(get_recent_comment_texts(
+            user_id, limit=_OWN_COMMENT_HISTORY_LIMIT, hours=_OWN_COMMENT_WINDOW_HOURS))
+    except Exception as e:
+        log_warning("Could not load the last day's comments; own-comment guard sees this run only",
+                    exc=e, user_id=user_id, action_type="comment")
+        own_recent_comments = []
 
     posted, seen, scrolls = 0, set(), 0
     # ONE context for the whole run (issue #1220): the roster pass and the feed walk below both read

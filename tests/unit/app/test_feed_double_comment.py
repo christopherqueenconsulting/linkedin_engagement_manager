@@ -10,8 +10,12 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from tests.unit.app.test_comment_dedup import _FEED, _box, _run_feed
-from tests.unit.app.test_comment_dedup import _no_sleep  # noqa: F401 — autouse: the walk's pacing sleeps
+from tests.unit.app.test_comment_dedup import (
+    _FEED,
+    _box,
+    _no_sleep,  # noqa: F401 — autouse: the walk's pacing sleeps
+    _run_feed,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -62,6 +66,13 @@ class TestOwnCommentReRead:
                 ra.comment_on_feed_inline(driver, MagicMock(), MagicMock(), user_id=1,
                                           max_posts=1, deadline_ts=0.0001)
         assert any(c.kwargs.get("hours") == 24 for c in history.call_args_list)
+
+    def test_a_faulted_history_read_fails_open_instead_of_aborting_the_walk(self):
+        # A non-MySQL fault (e.g. an unset DB_PORT's TypeError) escapes the repository's own
+        # except; the walk must still run, guarded by this run's comments alone.
+        r = _run_feed([_box("A founder on why the first sales hire should be a generalist.")],
+                      own_history=TypeError("int() argument must be ... not 'NoneType'"))
+        assert r["posted"] == 1
 
     def test_an_unrelated_post_is_not_mistaken_for_ours(self):
         r = _run_feed([_box("A founder on why the first sales hire should be a generalist.")],

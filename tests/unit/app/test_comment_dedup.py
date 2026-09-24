@@ -67,8 +67,9 @@ def _run_feed(boxes, *, claim_side_effect=None, has_commented=False, max_posts=1
     default to a truthy mock so the probe succeeds unless the caller overrides one to None.
     `deadline_ts` and `roster_posted` reproduce the two ways the feed loop never reads the page at
     all — the run was already out of time, or the roster pass spent the whole budget (issue #1081).
-    `own_history` is the user's logged comment history and `on_post(card, text)` runs when a
-    comment lands, so a test can re-render the feed with that comment in it (issue #2130).
+    `own_history` is the user's logged comment history (an exception faults its 24 h read), and
+    `on_post(card, text)` runs when a comment lands, so a test can re-render the feed with that
+    comment in it (issue #2130).
     """
     from cqc_lem.app.engagement import feed as ra
 
@@ -118,7 +119,15 @@ def _run_feed(boxes, *, claim_side_effect=None, has_commented=False, max_posts=1
         p("INLINE_REACTIONS_ENABLED", new=True)
         p("get_engagement_preferences", return_value=prefs or {"max_comments_per_day": 20})
         p("get_recent_engagers", return_value=set())
-        p("get_recent_comment_texts", return_value=list(own_history or []))
+        def _history(uid, limit=50, hours=None):
+            # An exception as `own_history` faults only the 24 h own-comment read (issue #2130).
+            if isinstance(own_history, BaseException):
+                if hours is not None:
+                    raise own_history
+                return []
+            return list(own_history or [])
+
+        p("get_recent_comment_texts", side_effect=_history)
         p("count_comments_today", return_value=0)
         p("_switch_feed_to_recent")
         p("_card_for_textbox", side_effect=lambda d, b: _card_for(b))
