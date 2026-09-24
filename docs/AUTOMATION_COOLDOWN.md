@@ -21,6 +21,14 @@ var by design, and a safety control that fails open on an unresolvable flag look
 control. If the breaker needs to be lifted, that is `clear_rate_limit()` after a successful login,
 or the operator kill-switch below — both of which are observable actions, not a config read.
 
+**Host scripts must never call `clear_rate_limit()`** (#2092). A host cron (`recovery-probe/probe.sh`)
+cleared the breaker every day before its own API call, which then 401'd, so it never retired itself —
+63 silent clears of a safety control. The function now takes a **required `reason`** (no reason →
+`TypeError`) and logs every clear at INFO with `reason=`, `caller=` (module + function) and
+`keys_cleared=`, so a clear from anywhere other than `login_to_linkedin` stands out in the log. The
+only callers are inside `src/`; an operator who genuinely needs to lift it by hand does so once,
+with a reason, from inside a container (`docs/DEPLOYMENT.md`) — never on a schedule.
+
 Note that both mechanisms **no-op when Redis is unavailable** — the breaker's state lives in Redis
 and an unavailable Redis returns no handle. That is a deliberate fail-open (an outage of our own
 infrastructure must not become a permanent halt), and it is the one condition under which "the
@@ -35,7 +43,7 @@ LinkedIn less and less often instead of re-tripping every 30 min.
 
 - `LINKEDIN_RATE_LIMIT_COOLDOWN_SECONDS` — base cooldown (default 1800 = 30 min).
 - `LINKEDIN_RATE_LIMIT_MAX_COOLDOWN_SECONDS` — escalation cap (default 21600 = 6 h).
-- A successful login calls `clear_rate_limit()` which resets both the breaker and the trip counter.
+- A successful login calls `clear_rate_limit(reason=...)` which resets both the breaker and the trip counter.
 
 ## 2. Manual global pause (operator kill-switch)
 

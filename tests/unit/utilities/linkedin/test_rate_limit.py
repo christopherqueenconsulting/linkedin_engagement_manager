@@ -176,18 +176,39 @@ class TestCooldownRemaining:
 class TestClearRateLimit:
     def test_deletes_cooldown_and_trip_counter(self, fake_redis):
         from cqc_lem.utilities.linkedin.rate_limit import clear_rate_limit
-        clear_rate_limit()
+        clear_rate_limit(reason="login_success")
         fake_redis.delete.assert_called_once_with("linkedin:429_cooldown", "linkedin:429_trip_count")
+
+    def test_reason_is_required(self, fake_redis):
+        """#2092: a clear that cannot say why is refused outright, before touching Redis."""
+        from cqc_lem.utilities.linkedin.rate_limit import clear_rate_limit
+        with pytest.raises(TypeError):
+            clear_rate_limit()  # type: ignore[call-arg]
+        fake_redis.delete.assert_not_called()
+
+    def test_logs_reason_and_caller_at_info(self, fake_redis):
+        fake_redis.delete.return_value = 2
+        from cqc_lem.utilities.linkedin.rate_limit import clear_rate_limit
+        with patch(f"{_MOD}.log_info") as mock_info:
+            clear_rate_limit(reason="login_success")
+        mock_info.assert_called_once()
+        kwargs = mock_info.call_args.kwargs
+        assert kwargs["reason"] == "login_success"
+        assert kwargs["caller"] == f"{__name__}.test_logs_reason_and_caller_at_info"
+        assert kwargs["keys_cleared"] == 2
 
     def test_no_redis_is_noop(self):
         with patch(f"{_MOD}._redis_client", return_value=None):
             from cqc_lem.utilities.linkedin.rate_limit import clear_rate_limit
-            clear_rate_limit()  # must not raise
+            clear_rate_limit(reason="login_success")  # must not raise
 
-    def test_error_swallowed(self, fake_redis):
+    def test_error_swallowed_and_logged_with_reason(self, fake_redis):
         fake_redis.delete.side_effect = RuntimeError("down")
         from cqc_lem.utilities.linkedin.rate_limit import clear_rate_limit
-        clear_rate_limit()  # must not raise
+        with patch(f"{_MOD}.log_warning") as mock_warn, patch(f"{_MOD}.log_info") as mock_info:
+            clear_rate_limit(reason="login_success")  # must not raise
+        assert mock_warn.call_args.kwargs["reason"] == "login_success"
+        mock_info.assert_not_called()
 
 
 class TestRedisClientSelection:

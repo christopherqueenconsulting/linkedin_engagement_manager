@@ -339,6 +339,9 @@ docker exec celery_worker_selenium python -c \
   "from cqc_lem.utilities.linkedin.rate_limit import clear_rate_limit, pause_automation; ..."
 ```
 
+`clear_rate_limit` requires a `reason` and logs it at INFO with the caller — a one-off, reasoned
+operator repair, never a scheduled host script (`docs/AUTOMATION_COOLDOWN.md`, #2092).
+
 ## Local hotfix deploy (fallback when CI/release is too slow or blocked)
 
 Build a thin overlay image `FROM` the currently running release tag that only `COPY`s the changed

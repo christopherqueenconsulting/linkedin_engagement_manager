@@ -786,7 +786,7 @@ def login_to_linkedin(driver: WebDriver, wait: WebDriverWait, user_email: str, u
 
     if _is_logged_in(driver.current_url):
         log_info(f"Already logged in! (current URL: {driver.current_url})")
-        clear_rate_limit()
+        clear_rate_limit(reason="login_session_reused")
         _persist_session_cookies(driver, user_email)
         return True
 
@@ -882,7 +882,7 @@ def login_to_linkedin(driver: WebDriver, wait: WebDriverWait, user_email: str, u
 
     if _is_logged_in(driver.current_url):
         log_info("Login successful!")
-        clear_rate_limit()
+        clear_rate_limit(reason="login_success")
         _persist_session_cookies(driver, user_email)
         return True
 

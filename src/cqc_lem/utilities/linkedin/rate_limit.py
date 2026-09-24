@@ -11,6 +11,7 @@ behave as before.
 
 import json
 import os
+import sys
 from datetime import datetime, timezone
 
 from cqc_lem.utilities.logger import log_info, log_warning
@@ -183,17 +184,29 @@ def rate_limit_cooldown_remaining() -> int:
     return ttl if ttl and ttl > 0 else 0
 
 
-def clear_rate_limit() -> None:
-    """Close the breaker AND reset the consecutive-trip counter — called on a successful login, so
-    the next 429 (if any) starts the escalation from the base cooldown again.
+def clear_rate_limit(reason: str) -> None:
+    """Close the breaker AND reset the consecutive-trip counter.
+
+    Called on a successful login, so the next 429 (if any) starts the escalation from the base
+    cooldown again. ``reason`` is required and every clear is logged at INFO with its caller
+    (#2092): a host cron cleared the breaker daily for 63 days with nothing on record, so a clear
+    that cannot say why — or from where — is not allowed to happen silently.
+
+    Args:
+        reason: Why the breaker is being lifted, e.g. ``"login_success"``.
     """
+    frame = sys._getframe(1)
+    caller = f"{frame.f_globals.get('__name__', '?')}.{frame.f_code.co_name}"
     client = _redis_client()
     if client is None:
         return
     try:
-        client.delete(_COOLDOWN_KEY, _TRIP_COUNT_KEY)
+        keys_cleared = client.delete(_COOLDOWN_KEY, _TRIP_COUNT_KEY)
     except Exception as e:
-        log_warning("Could not clear rate-limit keys", exc=e)
+        log_warning("Could not clear rate-limit keys", exc=e, reason=reason, caller=caller)
+        return
+    log_info("LinkedIn rate-limit breaker cleared", reason=reason, caller=caller,
+             keys_cleared=keys_cleared)
 
 
 # --- Manual global automation pause -------------------------------------------------
