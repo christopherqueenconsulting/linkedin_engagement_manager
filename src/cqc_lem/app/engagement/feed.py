@@ -179,6 +179,7 @@ from cqc_lem.utilities.linkedin.cards import (
     _card_for_textbox,
     _feed_post_urn_from_card,
     _norm_prefix,
+    _normalize_post_text,
     _post_permalink_from_card,
     _post_social_counts,
     _x_lower,
@@ -525,6 +526,81 @@ def _feed_content_fingerprints(author: str, content: str) -> "set[str]":
     pass and not the next) a re-render can't re-key the post and earn it a second comment.
     """
     return {f"fp{n}:{_content_digest(author, content, n)}" for n in _FEED_FP_PREFIX_CHARS}
+
+
+# Issue #2130: the audit found 22 same-post pairs 74-98 s apart, the second comment grounded on OUR
+# first one — a re-rendered card whose text node was the comment we had just posted, so it minted a
+# fresh key and cleared every dedup keyed on the post. Two guards that do not depend on the key:
+# text that reads as one of our own recent comments is never a post, and one author earns at most
+# one comment per walk and per 30 minutes across walks (a group walk runs once per group).
+_OWN_COMMENT_WINDOW_HOURS = 24
+_OWN_COMMENT_HISTORY_LIMIT = 500
+_OWN_COMMENT_MATCH_CHARS = 60
+_OWN_COMMENT_MIN_CHARS = 20
+_AUTHOR_COOLDOWN_KEY = "linkedin:feed_author_cooldown:{user_id}:{digest}"
+_AUTHOR_COOLDOWN_SECONDS = 30 * 60
+
+
+def _is_own_comment_text(content: str, own_comments: list) -> bool:
+    """Does a card's text read as one of our own comments?
+
+    Compared on a normalized prefix, either way round, because the card may be the collapsed render
+    of our comment (shorter than what we logged) or carry trailing chrome after it.
+    """
+    body = _normalize_post_text(content)
+    if len(body) < _OWN_COMMENT_MIN_CHARS:
+        return False
+    for comment in own_comments:
+        mine = _normalize_post_text(comment)
+        if len(mine) < _OWN_COMMENT_MIN_CHARS:
+            continue
+        n = min(_OWN_COMMENT_MATCH_CHARS, len(body), len(mine))
+        if n >= _OWN_COMMENT_MIN_CHARS and (body[:n] == mine[:n] or mine[:n] in body):
+            return True
+    return False
+
+
+def _author_norm(author: str) -> str:
+    """Author name folded for the per-author guard; empty when the card named nobody."""
+    return (author or "").strip().lower()
+
+
+def _author_cooldown_key(user_id: int, author: str) -> str:
+    digest = hashlib.sha1(_author_norm(author).encode("utf-8", "ignore")).hexdigest()[:20]
+    return _AUTHOR_COOLDOWN_KEY.format(user_id=user_id, digest=digest)
+
+
+def _author_on_cooldown(user_id: int, author: str) -> bool:
+    """Did we comment on this author in the last 30 minutes, in any walk?
+
+    Fails OPEN (False) without Redis or on an unnamed author: the in-walk author set still holds
+    inside one walk, and the post-keyed ledger is the harder guard.
+    """
+    if not _author_norm(author):
+        return False
+    client = _redis_client()
+    if client is None:
+        return False
+    try:
+        return bool(client.exists(_author_cooldown_key(user_id, author)))
+    except Exception as e:
+        log_warning("Could not read feed author cooldown", exc=e, user_id=user_id,
+                    action_type="comment")
+        return False
+
+
+def _start_author_cooldown(user_id: int, author: str) -> None:
+    """Record a landed comment on `author` for the cross-walk 30-minute guard. Best-effort."""
+    if not _author_norm(author):
+        return
+    client = _redis_client()
+    if client is None:
+        return
+    try:
+        client.set(_author_cooldown_key(user_id, author), "1", ex=_AUTHOR_COOLDOWN_SECONDS)
+    except Exception as e:
+        log_warning("Could not store feed author cooldown", exc=e, user_id=user_id,
+                    action_type="comment")
 
 
 def _feed_post_identity(card, author: str, content: str, driver=None) -> "tuple[str, str]":
@@ -2460,6 +2536,7 @@ def _engage_card(ctx: FeedRunContext, card, key: str, content: str, author: str,
         release_post_claim(user_id, key)  # posting failed — let a later run retry
         return False
     mark_post_commented(user_id, key)
+    _start_author_cooldown(user_id, author)
     insert_new_log(user_id=user_id,
                    action_type=(LogActionType.GROUP_COMMENT if is_group_feed
                                 else LogActionType.COMMENT),
@@ -2762,6 +2839,10 @@ def comment_on_feed_inline(driver, wait, my_profile: LinkedInProfile, user_id: i
         log_warning("Could not load recent comment history; similarity gate degrades to none",
                     exc=e, user_id=user_id, action_type="comment")
         recent_comments = []
+    # Every comment of the last day, for the own-comment guard (issue #2130) — by window, not by
+    # the similarity gate's count, so a busy day cannot push a fresh comment out of view.
+    own_recent_comments: list = list(get_recent_comment_texts(
+        user_id, limit=_OWN_COMMENT_HISTORY_LIMIT, hours=_OWN_COMMENT_WINDOW_HOURS))
 
     posted, seen, scrolls = 0, set(), 0
     # ONE context for the whole run (issue #1220): the roster pass and the feed walk below both read
@@ -2816,6 +2897,9 @@ def comment_on_feed_inline(driver, wait, my_profile: LinkedInProfile, user_id: i
     # every counter at zero while the page still renders cards, which the tripwire used to grade as
     # selector drift. "We never looked" is not evidence about the page (#1081).
     walk_ran = False
+    # Authors this walk has commented on (issue #2130): at most one comment per author per walk.
+    commented_authors: set = set()
+    own_comment_skipped = 0
     _incl = [f for f in ((prefs.get("include_keywords") or []) + (prefs.get("include_authors") or [])
                          + (prefs.get("include_topics") or [])) if f]
     fallback_enabled = bool(prefs.get("feed_fallback_when_empty", True)) and bool(_incl)
@@ -2839,6 +2923,18 @@ def comment_on_feed_inline(driver, wait, my_profile: LinkedInProfile, user_id: i
             if card is None:
                 continue
             author = _post_author_from_card(card)
+            # A card whose text is one of OUR comments is our own comment re-read off a re-rendered
+            # card, never a post to answer (issue #2130). ctx.recent_comments carries this run's.
+            if (_is_own_comment_text(content, ctx.recent_comments)
+                    or _is_own_comment_text(content, own_recent_comments)):
+                fps = _feed_content_fingerprints(author, content)
+                if not fps & seen:
+                    own_comment_skipped += 1
+                    log_debug(f"Skipped feed card by {author or 'unknown author'}: its text is one "
+                              f"of our own recent comments", user_id=user_id,
+                              action_type="comment", task_name="comment_on_feed_inline")
+                seen.update(fps)
+                continue
             # Canonical URN-based key (stable across re-renders); normalized content hash only
             # when no URN exists. `fps` are render-stable fingerprints at several prefix lengths, so
             # even the URN-less fallback path can't slip a second comment through when a re-render
@@ -2846,6 +2942,15 @@ def comment_on_feed_inline(driver, wait, my_profile: LinkedInProfile, user_id: i
             key, key_source = _feed_post_identity(card, author, content, driver=driver)
             fps = _feed_content_fingerprints(author, content)
             if key in seen or (fps & seen):
+                continue
+            # One comment per author per walk, and per 30 minutes across walks (issue #2130).
+            if (_author_norm(author) in commented_authors
+                    or _author_on_cooldown(user_id, author)):
+                seen.add(key)
+                seen.update(fps)
+                log_debug(f"Skipped feed post by {author}: already commented on this author "
+                          f"recently", user_id=user_id, action_type="comment",
+                          task_name="comment_on_feed_inline")
                 continue
             key_source_by_key[key] = key_source
             examined_keys.add(key)
@@ -2915,6 +3020,8 @@ def comment_on_feed_inline(driver, wait, my_profile: LinkedInProfile, user_id: i
             engaged = _engage_card(ctx, card, key, content, author,
                                    is_group_feed=ctx.is_group_feed)
             if engaged:
+                if _author_norm(author):
+                    commented_authors.add(_author_norm(author))
                 posted_key_sources[key_source] = posted_key_sources.get(key_source, 0) + 1
                 log_info(f"Feed comment keyed by {key_source} ({key})", user_id=user_id,
                          action_type="comment", task_name="comment_on_feed_inline")
@@ -3006,6 +3113,8 @@ def comment_on_feed_inline(driver, wait, my_profile: LinkedInProfile, user_id: i
         # Group-feed lane only (issue #1084): posts whose composer could not be reached BEFORE the
         # LLM generation was spent. This makes the cost saving measurable on `feed_scan`.
         "skipped_no_composer": skipped_no_composer,
+        # Cards whose text was one of our own recent comments (issue #2130) — never commented on.
+        "own_comment_skipped": own_comment_skipped,
         "key_sources": examined_key_sources,           # every post we looked at
         "commented_key_sources": posted_key_sources,   # only the ones we commented on
         "max_post_age_hours": prefs.get("max_post_age_hours") or 24,

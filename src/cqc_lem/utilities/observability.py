@@ -449,6 +449,9 @@ EVENTS = {spec.event: spec for spec in (
         # Group-feed lane only (issue #1084): posts whose composer was not reachable before the LLM
         # generation was spent. Counted on `feed_scan` so the cost saving is measurable.
         count("skipped_no_composer"),
+        # Cards whose text was one of our own recent comments (issue #2130) — the re-read that
+        # used to earn one post a second comment. Never commented on.
+        count("own_comment_skipped"),
     )),
     EventSpec("pre_post_engagement", (prop("post_id"), prop("user_id"), label("status"))),
     # ONE proactive connection-request dispatch, whatever it did (issue #1813). `result` says

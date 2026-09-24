@@ -51,10 +51,11 @@ _UNSET = object()
 
 
 def _run_feed(boxes, *, claim_side_effect=None, has_commented=False, max_posts=10,
-              author="Jane Author", is_me=False, react_returns=True, post_returns=True,
+              author=None, is_me=False, react_returns=True, post_returns=True,
               prefs=None, matches=True, real_key=False, urn_scan=None, find_elements=None,
               urn_by_text=None, is_group_feed=False, click_first_return=_UNSET,
-              post_composer_return=_UNSET, deadline_ts=None, roster_posted=None):
+              post_composer_return=_UNSET, deadline_ts=None, roster_posted=None,
+              comment_text="A thoughtful comment.", own_history=None, on_post=None):
     """Drive `comment_on_feed_inline` with all the SDUI/DB collaborators mocked.
 
     Returns a dict of the key mocks so assertions can inspect calls. `find_elements` overrides the
@@ -66,6 +67,8 @@ def _run_feed(boxes, *, claim_side_effect=None, has_commented=False, max_posts=1
     default to a truthy mock so the probe succeeds unless the caller overrides one to None.
     `deadline_ts` and `roster_posted` reproduce the two ways the feed loop never reads the page at
     all — the run was already out of time, or the roster pass spent the whole budget (issue #1081).
+    `own_history` is the user's logged comment history and `on_post(card, text)` runs when a
+    comment lands, so a test can re-render the feed with that comment in it (issue #2130).
     """
     from cqc_lem.app.engagement import feed as ra
 
@@ -84,12 +87,17 @@ def _run_feed(boxes, *, claim_side_effect=None, has_commented=False, max_posts=1
 
     claim = MagicMock(side_effect=claim_side_effect) if claim_side_effect is not None \
         else MagicMock(return_value=True)
-    post_inline = MagicMock(return_value=post_returns)
+    def _post(d, w, card, text, **kw):
+        if on_post is not None:
+            on_post(card, text)
+        return post_returns
+
+    post_inline = MagicMock(side_effect=_post)
     mark = MagicMock(return_value=True)
     mark_reacted = MagicMock(return_value=True)
     release = MagicMock(return_value=True)
     react = MagicMock(return_value=react_returns)
-    gen = MagicMock(return_value="A thoughtful comment.")
+    gen = MagicMock(return_value=comment_text)
 
     # Group-feed probe collaborators. Defaults are truthy so the "hit" path works unless a test
     # explicitly passes None to simulate a miss.
@@ -110,11 +118,17 @@ def _run_feed(boxes, *, claim_side_effect=None, has_commented=False, max_posts=1
         p("INLINE_REACTIONS_ENABLED", new=True)
         p("get_engagement_preferences", return_value=prefs or {"max_comments_per_day": 20})
         p("get_recent_engagers", return_value=set())
-        p("get_recent_comment_texts", return_value=[])
+        p("get_recent_comment_texts", return_value=list(own_history or []))
         p("count_comments_today", return_value=0)
         p("_switch_feed_to_recent")
         p("_card_for_textbox", side_effect=lambda d, b: _card_for(b))
-        p("_post_author_from_card", return_value=author)
+        # One author per distinct post by default: the per-walk author guard (issue #2130) would
+        # otherwise fold every multi-post scan down to one comment.
+        if author is None:
+            p("_post_author_from_card",
+              side_effect=lambda card: f"Author {hash(getattr(card, 'box_text', '')) & 0xffff}")
+        else:
+            p("_post_author_from_card", return_value=author)
         p("_post_permalink_from_card", return_value=None)
         if urn_by_text is not None:
             p("_feed_post_urn_from_card",
@@ -188,7 +202,7 @@ class TestFeedDedup:
                 "dashboards, three revenue numbers, and nobody willing to own the discrepancy in "
                 "the weekly review where the very same question gets asked all over again.")
         truncated = full[:160].rsplit(" ", 1)[0] + "…see more"
-        r = _run_feed([_box(truncated), _box(full)], real_key=True)
+        r = _run_feed([_box(truncated), _box(full)], real_key=True, author="Jane Author")
         assert r["posted"] == 1
         assert r["post_inline"].call_count == 1
 

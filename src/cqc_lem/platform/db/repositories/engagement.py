@@ -622,20 +622,29 @@ def get_duplicate_comment_posts(user_id: int, hours: int = 24):
     except mysql.connector.Error as err:
         log_error("Could not get duplicate comment posts", exc=err, user_id=user_id)
         return []
-def get_recent_comment_texts(user_id: int, limit: int = 50) -> list:
+def get_recent_comment_texts(user_id: int, limit: int = 50, hours: Optional[int] = None) -> list:
     """The bodies of the user's most recently POSTED comments, newest first — the history the
     comment-side similarity gate dedups a fresh draft against (issue #617). No new column and no
     stored embeddings: `logs.message` already holds the exact text of every successful comment, so
     the gate recomputes from the log.
+
+    `hours` bounds the read to a trailing window instead of a count — the feed walk's own-comment
+    guard (issue #2130) must see EVERY comment of the last day, however many the lanes landed.
     """
+    window_sql, window_params = "", ()
+    if hours is not None:
+        window_sql = "AND created_at >= (NOW() - INTERVAL %s HOUR) "
+        window_params = (int(hours),)
     try:
         with db_cursor() as cursor:
             cursor.execute(
                 "SELECT message FROM logs "
                 "WHERE user_id=%s AND action_type IN (%s, %s) AND result=%s "
                 "AND message IS NOT NULL AND message <> '' "
+                f"{window_sql}"
                 "ORDER BY id DESC LIMIT %s",
-                (user_id, *COMMENT_LOG_ACTION_TYPES, LogResultType.SUCCESS.value, int(limit)))
+                (user_id, *COMMENT_LOG_ACTION_TYPES, LogResultType.SUCCESS.value, *window_params,
+                 int(limit)))
             return [r[0] for r in cursor.fetchall()]
     except mysql.connector.Error as err:
         log_error("Could not get recent comment texts", exc=err, user_id=user_id)
