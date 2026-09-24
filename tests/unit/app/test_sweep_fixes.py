@@ -380,6 +380,26 @@ class TestScrapeResumesAfterCrashedTab:
         assert rec.call_count == 2
         assert result == "FAILURE: Scraped stats for 2 post(s) before the session could not be reopened"
 
+    def test_a_rate_limited_recycle_is_a_designed_stop_not_a_failure(self):
+        """A 429 back-off on the reopen ends the sweep on what shipped, in SUCCESS (#2097)."""
+        from cqc_lem.utilities.linkedin.rate_limit import LinkedInRateLimited
+        first = MagicMock()
+        result, rec, _, _, _ = self._run(
+            [], [1, 2, 3], env={"POST_STATS_RECYCLE_EVERY": "2"},
+            profile_side_effect=[(first, MagicMock(), "e", MagicMock()), LinkedInRateLimited("cooldown")])
+        assert rec.call_count == 2
+        assert result == "Scraped stats for 2 post(s) before the session could not be reopened"
+
+    def test_a_rate_limited_reopen_after_a_crash_is_a_designed_stop(self):
+        from cqc_lem.utilities.linkedin.rate_limit import LinkedInRateLimited
+        first = MagicMock()
+        first.get.side_effect = [None, _crash()]
+        result, rec, _, _, _ = self._run(
+            [], [9, 10], profile_side_effect=[(first, MagicMock(), "e", MagicMock()),
+                                              LinkedInRateLimited("cooldown")])
+        assert rec.call_count == 1
+        assert result == "Scraped stats for 1 post(s) before the browser tab crashed"
+
     def test_recycle_every_env_parsing(self):
         from cqc_lem.app.engagement.posting import _post_stats_recycle_every
         for value, expected in (("", 3), ("5", 5), ("0", 0), ("-4", 0), ("abc", 3)):

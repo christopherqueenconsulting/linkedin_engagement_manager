@@ -397,23 +397,27 @@ def _post_stats_recycle_every() -> int:
         return 3
 
 
-def _swap_post_stats_session(user_id: int, old_driver):
-    """Give the sweep's current session back and open a fresh one; None when none can be had.
+def _swap_post_stats_session(user_id: int, old_driver) -> Tuple[Optional[object], bool]:
+    """Give the sweep's current session back and open a fresh one.
 
     Used for the MID-sweep swap only: the posts already recorded stand, so a reopen that fails
-    ends the sweep on them rather than failing the task. `get_current_profile` has already logged
-    why at its own level, so this line is INFO — a second warning would double-count one fault.
+    ends the sweep on them. `get_current_profile` has already logged why at its own level, so this
+    line is INFO — a second warning would double-count one fault.
+
+    Returns:
+        `(driver, rate_limited)`. `driver` is None when no session could be had; `rate_limited` is
+        True when that was the 429 back-off, a designed stop rather than a fault (#2097).
     """
     quit_gracefully(old_driver)
     try:
         # needs_images=True — the fastboot exemption noted at the top of this module (#2020).
         driver, _wait, _email, _profile = get_current_profile(user_id=user_id, session_name="Post Stats",
                                                               measurement_only=True, needs_images=True)
-        return driver
+        return driver, False
     except Exception as e:
         log_info(f"Could not reopen the post-stats session ({type(e).__name__}) — stopping the sweep",
                  user_id=user_id, task_name="auto_scrape_post_stats")
-        return None
+        return None, isinstance(e, LinkedInRateLimited)
 
 
 def _scrape_one_post_stats(driver, user_id: int, pid: int, url: str, post_types: dict,
@@ -544,10 +548,11 @@ def auto_scrape_post_stats(self, user_id: int):
                 i += 1
                 continue
             if recycle_every and read_on_session >= recycle_every:
-                driver = _swap_post_stats_session(user_id, driver)
+                driver, rate_limited = _swap_post_stats_session(user_id, driver)
                 if driver is None:
-                    return lane_result(TaskOutcome.FAILED, f"Scraped stats for {scraped} post(s) before "
-                                                           f"the session could not be reopened")
+                    return lane_result(landed_or_no_op(scraped) if rate_limited else TaskOutcome.FAILED,
+                                       f"Scraped stats for {scraped} post(s) before the session could "
+                                       f"not be reopened")
                 read_on_session = 0
             try:
                 recorded = _scrape_one_post_stats(driver, user_id, pid, url, post_types, shipped_variants)
@@ -567,10 +572,11 @@ def auto_scrape_post_stats(self, user_id: int):
                 log_info(f"Browser tab crashed after {scraped} of {len(post_ids)} post(s) — reopening "
                          f"the session to resume", user_id=user_id, post_id=pid,
                          task_name="auto_scrape_post_stats")
-                driver = _swap_post_stats_session(user_id, driver)
+                driver, rate_limited = _swap_post_stats_session(user_id, driver)
                 if driver is None:
-                    return lane_result(TaskOutcome.FAILED, f"Scraped stats for {scraped} post(s) before "
-                                                           f"the browser tab crashed", cause=e)
+                    return lane_result(landed_or_no_op(scraped) if rate_limited else TaskOutcome.FAILED,
+                                       f"Scraped stats for {scraped} post(s) before the browser tab "
+                                       f"crashed", cause=e)
                 read_on_session = 0
                 continue
             read_on_session += 1
