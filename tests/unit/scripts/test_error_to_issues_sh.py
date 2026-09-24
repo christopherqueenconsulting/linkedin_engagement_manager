@@ -7,10 +7,10 @@ that it only skips the run when neither exists.
 
 Failure alerting (2026-08-31 08:30 UTC outage): a transient PostHog 503 killed a whole day's run
 with nothing but a line in a log file nobody reads. `alert()` is best-effort — it shells out to
-`sudo -n docker exec ... web_app` (unavailable in this test sandbox), so what these tests can prove
+`sudo -n docker exec ... web_api_<color>` (unavailable in this test sandbox), so what these tests can prove
 without a live stack is the SHAPE of the decision: `alert()` (and therefore its "ALERT:" log line)
 fires exactly when the Python script exits non-zero, never on a clean rc=0 run — not whether the
-email itself was delivered, which needs a running `web_app` container this suite does not have.
+email itself was delivered, which needs a running app container this suite does not have.
 """
 
 import os

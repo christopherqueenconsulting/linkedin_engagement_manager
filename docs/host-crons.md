@@ -100,3 +100,12 @@ error-issues-cron}` clones can be removed once a week of runs shows up in the lo
   line. It was null on 48 of 63 lines because the block exec'd into `web_app`, the nginx front door
   with no python; it now targets the active `web_api_<color>` from `/opt/lem/.active_color`, and a
   null line records the container's last stderr line in `snapshot.log`.
+- Alert emails (`weekly_sdui_drift_check.sh`, `weekly_model_check.sh`,
+  `weekly_linkedin_version_check.sh`, `error_to_issues.sh`, `triage_issues.sh`) had the same defect:
+  each `alert()` exec'd python into `web_app` and swallowed the failure, so none ever sent (#2160).
+  Every host cron that execs python now resolves its container through ONE helper,
+  `active_api_container` in `scripts/lib/app_container.sh` (overridable per run with
+  `APP_CONTAINER=`). A sent alert logs `alert emailed to <addr>` in that job's log; a line reading
+  `No such container` or `executable file not found` means the resolution is wrong again.
+  `weekly_linkedin_version_check.sh` also recreates that container, not `web_app`, on a version
+  bump — its smoke test reads `LI_API_VERSION` off it, and the nginx edge has no `env_file`.
