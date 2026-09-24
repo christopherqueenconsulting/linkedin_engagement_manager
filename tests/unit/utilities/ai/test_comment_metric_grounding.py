@@ -6,9 +6,14 @@ ticket age from 12 days to 3 days". None of it traced to the story bank, and a c
 under the user's name with no review step between the draft and the feed.
 
 These tests pin both halves of that, because a check that blocks everything numeric is as wrong as
-one that blocks nothing: an invented first-person metric is regenerated on the #617 budget and then
-SKIPS the post, while a number the target post, the supplied research, or the user's own story bank
-actually contains still ships on the first attempt.
+one that blocks nothing: an invented first-person metric is stripped out of the draft (issue #2136),
+regenerated on the #617 budget when the rest cannot stand alone, and then SKIPS the post, while a
+number the third-party post or the user's own story bank actually contains still ships on the first
+attempt.
+
+Issue #2136 narrowed the allow-list to exactly those two sources. Our OWN earlier comments never
+ground a claim, even when a scraped card carries one inside the post text, and neither do research
+findings.
 """
 
 from unittest.mock import MagicMock, patch
@@ -37,6 +42,17 @@ _QUOTES_THE_POST = (
 _INVENTED = (
     "The second tier being the thing that slowed it down is the part most queue posts miss. "
     "We logged 1,200 tickets a week before triage and 300 after, a 75% drop. "
+    "What finally made you unwind it?")
+
+# What the gate ships for `_INVENTED`: the same draft with the invented sentence dropped.
+_INVENTED_STRIPPED = (
+    "The second tier being the thing that slowed it down is the part most queue posts miss. "
+    "What finally made you unwind it?")
+
+# Un-grounded, and nothing is left to post without the claim: the stripped remainder is a lone
+# question, which fails the contract, so the rewrite cannot ship and the draft is regenerated.
+_INVENTED_ONLY_CLAIM = (
+    "We logged 1,200 tickets a week after the second triage tier and 300 before it, a 75% rise. "
     "What finally made you unwind it?")
 
 # Grounded because it carries no checkable specific at all — the common case at comment volume.
@@ -107,14 +123,21 @@ class TestSeverityPerSurface:
 
 
 class TestUngroundedMetricDoesNotShip:
-    def test_an_invented_first_person_metric_is_never_posted(self):
+    def test_an_invented_first_person_metric_is_rewritten_without_the_claim(self):
+        """The owner's rule (issue #2136): strip the claim and post the rest."""
         out, llm, _ = _generate(_INVENTED)
+        assert out == _INVENTED_STRIPPED
+        assert "1,200" not in out and "75%" not in out
+        assert llm.call_count == 1                           # the strip cost no regeneration
+
+    def test_a_draft_that_cannot_stand_without_the_claim_is_never_posted(self):
+        out, llm, _ = _generate(_INVENTED_ONLY_CLAIM)
         assert out is None                                   # the post is skipped, not commented on
         assert llm.call_count > 1                            # it spent the #617 regeneration budget
 
     def test_the_retry_names_the_numbers_the_rewrite_must_drop(self):
         from cqc_lem.utilities.ai import ai_helper
-        drafts = [_resp(_INVENTED), _resp(_QUOTES_THE_POST)]
+        drafts = [_resp(_INVENTED_ONLY_CLAIM), _resp(_QUOTES_THE_POST)]
         with patch(f"{_AI}._call_llm", side_effect=drafts) as llm, \
              patch(_DB_BANK, return_value=[]):
             out = ai_helper.generate_ai_response(_POST, _profile(), user_id=7)
@@ -125,7 +148,7 @@ class TestUngroundedMetricDoesNotShip:
 
     def test_the_skip_is_logged_with_the_reason(self):
         from cqc_lem.utilities.ai import ai_helper
-        with patch(f"{_AI}._call_llm", return_value=_resp(_INVENTED)), \
+        with patch(f"{_AI}._call_llm", return_value=_resp(_INVENTED_ONLY_CLAIM)), \
              patch(_DB_BANK, return_value=[]), \
              patch(f"{_AI}.log_warning") as warn:
             assert ai_helper.generate_ai_response(_POST, _profile(), user_id=7) is None
@@ -133,13 +156,84 @@ class TestUngroundedMetricDoesNotShip:
         assert "first-person specifics" in warn.call_args.args[0]
 
     def test_an_unreadable_story_bank_does_not_wave_the_metric_through(self):
-        """Fail CLOSED on the number: with no bank we still hold the post and the research."""
+        """Fail CLOSED on the number: with no bank we still hold the post."""
         from cqc_lem.utilities.ai import ai_helper
-        with patch(f"{_AI}._call_llm", return_value=_resp(_INVENTED)), \
+        with patch(f"{_AI}._call_llm", return_value=_resp(_INVENTED_ONLY_CLAIM)), \
              patch(_DB_BANK, side_effect=RuntimeError("bank down")), \
              patch(f"{_AI}.log_warning") as warn:
             assert ai_helper.generate_ai_response(_POST, _profile(), user_id=7) is None
         assert any("Story bank unreadable" in c.args[0] for c in warn.call_args_list)
+
+
+class TestOurOwnCommentsNeverGround:
+    """Issue #2136: 6 of 25 sampled comments answered our OWN first comment on the same post.
+
+    The walk re-read the card with our comment in it as "the post", so the number comment 1 had
+    invented became the grounding comment 2 quoted. Our own words are never source text.
+    """
+
+    _OUR_FIRST_COMMENT = ("Routing is where it bit us too. We saw retries fall from 18% to 6% "
+                          "once we dropped the second tier. Did you try that?")
+    _SECOND = ("Retries are the quiet cost of a second tier. "
+               "We saw retries fall from 18% to 6% once we dropped it. "
+               "What finally made you unwind it?")
+
+    def _card(self):
+        return _POST + "\n\nJane Doe\n" + self._OUR_FIRST_COMMENT
+
+    _ONLY_CLAIM = ("The second tier being the thing that slowed it down is the part most queue "
+                   "posts miss. We saw retries fall from 18% to 6% once we dropped it.")
+
+    def test_a_comment_grounded_only_on_our_own_prior_comment_fails_the_gate(self):
+        from cqc_lem.utilities.ai import ai_helper
+        with patch(f"{_AI}._call_llm", return_value=_resp(self._ONLY_CLAIM)) as llm, \
+             patch(_DB_BANK, return_value=[]), \
+             patch(f"{_AI}.log_warning") as warn:
+            out = ai_helper.generate_ai_response(self._card(), _profile(), user_id=7,
+                                                 recent_comments=[self._OUR_FIRST_COMMENT])
+        assert out is None
+        assert llm.call_count > 1
+        reason = warn.call_args.args[0]
+        assert "first-person specifics" in reason and "18" in reason
+
+    def test_the_same_draft_passes_when_the_card_text_is_a_third_party_post(self):
+        """The contrast that proves the gate, not the contract, refused the draft above."""
+        post = self._card().replace("Jane Doe\n", "Sam Author\n")
+        out, llm, _ = _generate_on(post, self._ONLY_CLAIM, recent_comments=[])
+        assert out == self._ONLY_CLAIM
+        assert llm.call_count == 1
+
+    def test_the_laundered_claim_is_stripped_rather_than_shipped(self):
+        out, _, _ = _generate_on(self._card(), self._SECOND,
+                                 recent_comments=[self._OUR_FIRST_COMMENT])
+        assert out is not None and "18%" not in out and "6%" not in out
+
+    def test_the_helper_refuses_our_comment_as_grounding(self):
+        from cqc_lem.utilities.ai import ai_helper
+        with patch(_DB_BANK, return_value=[]):
+            laundered = ai_helper._ungrounded_first_person_metrics(
+                self._SECOND, self._card(), own_comments=[self._OUR_FIRST_COMMENT], user_id=7)
+            # Without the own-comment list the card's text would have passed the claim — the
+            # exact mechanism the audit found.
+            passed = ai_helper._ungrounded_first_person_metrics(
+                self._SECOND, self._card(), own_comments=None, user_id=7)
+        assert laundered == ["18", "6"]
+        assert passed == []
+
+    def test_the_third_party_post_still_grounds_when_our_comment_is_on_the_card(self):
+        out, llm, _ = _generate_on(self._card(), _QUOTES_THE_POST,
+                                   recent_comments=[self._OUR_FIRST_COMMENT])
+        assert out == _QUOTES_THE_POST
+        assert llm.call_count == 1
+
+
+def _generate_on(post, draft, **kwargs):
+    """`_generate` against a caller-chosen target post."""
+    from cqc_lem.utilities.ai import ai_helper
+    with patch(f"{_AI}._call_llm", return_value=_resp(draft)) as llm, \
+         patch(_DB_BANK, return_value=[]) as read_bank:
+        out = ai_helper.generate_ai_response(post, _profile(), user_id=7, **kwargs)
+    return out, llm, read_bank
 
 
 class TestGroundedMetricStillShips:
@@ -150,23 +244,15 @@ class TestGroundedMetricStillShips:
         assert out == _QUOTES_THE_POST
         assert llm.call_count == 1                           # no regeneration was burned
 
-    def test_a_number_from_the_supplied_research_findings_is_quotable(self):
+    def test_research_findings_never_ground_a_first_person_claim(self):
+        """Issue #2136: a researched statistic restated as "we measured" is still invented."""
         draft = ("The second tier being the thing that slowed it down is the part most queue posts "
                  "miss. We measured the same 40% drift on our own queue the month after routing "
                  "landed. What finally made you unwind it?")
         research = {"findings": "Teams adding a routing tier see median ticket age rise 40%.",
                     "sources": []}
-        out, llm, _ = _generate(draft, research=research)
-        assert out == draft
-        assert llm.call_count == 1
-
-    def test_research_that_was_never_supplied_sanctions_nothing(self):
-        """Only the findings block actually handed to the writer counts as grounding."""
-        draft = ("The second tier being the thing that slowed it down is the part most queue posts "
-                 "miss. We measured the same 40% drift on our own queue the month after routing "
-                 "landed. What finally made you unwind it?")
-        out, _, _ = _generate(draft, research={"findings": "", "sources": []})
-        assert out is None
+        out, _, _ = _generate(draft, research=research)
+        assert out == _INVENTED_STRIPPED
 
     def test_a_number_from_the_users_own_story_bank_is_quotable(self):
         draft = ("The second tier being the thing that slowed it down is the part most queue posts "
@@ -241,3 +327,34 @@ class TestScopeIsTheFeedComment:
                                                  post_comment="their comment")
         assert out == reply and llm.call_count == 1
         read_bank.assert_not_called()
+
+
+class TestWithoutOwnText:
+    def test_drops_a_sentence_we_wrote_and_keeps_the_rest(self):
+        card = "Queues got worse. Median age went from 3 days to 12.\nWe cut retries 18% to 6%."
+        out = sb.without_own_text(card, ["Honestly, we cut retries 18% to 6%. Try it."])
+        assert "18" not in out and "3 days to 12" in out
+
+    def test_matches_whole_words_only(self):
+        # "ask" sits inside "task" as letters, but it is not a sentence we wrote.
+        assert sb.without_own_text("Ask 3 people.", ["Every task took 3 hours."]) == "Ask 3 people."
+
+    def test_nothing_of_ours_returns_the_source_unchanged(self):
+        assert sb.without_own_text("Up 40% in May.", None) == "Up 40% in May."
+        assert sb.without_own_text("Up 40% in May.", ["", "   "]) == "Up 40% in May."
+        assert sb.without_own_text(None, ["x"]) == ""
+
+
+class TestStripUnsourcedSentences:
+    def test_keeps_spacing_of_the_sentences_that_remain(self):
+        draft = "Good point on routing.\nWe cut it 40% last year. What changed for you?"
+        assert sb.strip_unsourced_sentences(draft, ["40"]) == \
+            "Good point on routing.\nWhat changed for you?"
+
+    def test_a_third_person_sentence_with_the_number_is_not_ours_to_strip(self):
+        assert sb.strip_unsourced_sentences("Surveys say 40%. Agreed.", ["40"]) is None
+
+    def test_none_when_nothing_is_left_or_nothing_to_do(self):
+        assert sb.strip_unsourced_sentences("We cut it 40%.", ["40"]) is None
+        assert sb.strip_unsourced_sentences("We cut it 40%.", []) is None
+        assert sb.strip_unsourced_sentences(None, ["40"]) is None

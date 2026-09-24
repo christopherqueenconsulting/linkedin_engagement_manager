@@ -224,6 +224,79 @@ def has_unsourced_specifics(content: Optional[str], sources: Optional[list]) -> 
     return bool(unsourced_specifics(content, sources))
 
 
+# Sentence boundaries, with the separator CAPTURED so a stripped draft keeps its own spacing and
+# line breaks. The same boundaries `first_person_proof_sentences` splits on.
+_SENTENCE_SPLIT_KEEP = re.compile(r"((?<=[.!?])\s+|\n+)")
+_FOLD_RE = re.compile(r"[^a-z0-9]+")
+
+
+def _fold(text: str) -> str:
+    return " " + _FOLD_RE.sub(" ", (text or "").lower()).strip() + " "
+
+
+def without_own_text(source: Optional[str], own_texts: Optional[list]) -> str:
+    """The source with every sentence the author already wrote removed (issue #2136).
+
+    A scraped card can carry our OWN earlier comment beside the post, and the feed walk then reads
+    it as part of "the post". Left in, the number comment 1 invented becomes the grounding comment
+    2 quotes, which is how 24 of 102 shipped comments carried a first-person metric the gate had
+    passed. A sentence is ours when its folded words appear, whole, inside one of `own_texts`.
+
+    A post sentence our comment happened to quote verbatim is dropped too. That costs one strip or
+    regeneration, and a wrong pass would publish the invented claim, so the check fails closed.
+
+    Args:
+        source: The text a draft is being graded against, e.g. the target post.
+        own_texts: Everything the author has already written that must never ground a claim.
+
+    Returns:
+        The source's remaining sentences, newline-joined, or the source unchanged when there is
+        nothing of ours to remove.
+    """
+    owned = [_fold(t) for t in (own_texts or []) if _fold(t).strip()]
+    if not owned or not source:
+        return str(source or "")
+    kept = []
+    for sentence in _SENTENCE_SPLIT_KEEP.split(str(source))[::2]:
+        folded = _fold(sentence)
+        if folded.strip() and any(folded in own for own in owned):
+            continue
+        kept.append(sentence)
+    return "\n".join(s for s in kept if s.strip())
+
+
+def strip_unsourced_sentences(content: Optional[str], tokens: Optional[list]) -> Optional[str]:
+    """The draft with every first-person sentence stating one of `tokens` removed (issue #2136).
+
+    The owner's rule for an ungrounded first-person number is "rewrite without the claim": drop
+    the sentence and keep the rest, rather than spend a whole regeneration on one clause. The
+    caller still grades what is left, because the stripped sentence may have been the one that
+    engaged the post.
+
+    Args:
+        content: The draft as it would ship.
+        tokens: The unsourced specifics `unsourced_specifics` found in it.
+
+    Returns:
+        The draft without those sentences, or None when nothing was removed or nothing is left.
+    """
+    bad = set(tokens or [])
+    if not content or not bad:
+        return None
+    parts = _SENTENCE_SPLIT_KEEP.split(content)
+    out, removed = [], False
+    for i in range(0, len(parts), 2):
+        sentence = parts[i]
+        if first_person_proof_sentences(sentence) and specific_tokens(sentence) & bad:
+            removed = True
+            continue
+        out.append(sentence)
+        if i + 1 < len(parts):
+            out.append(parts[i + 1])
+    stripped = "".join(out).strip()
+    return stripped if removed and stripped else None
+
+
 # Severity of the unsourced-specific check, PER SURFACE — the `slop_lint.SURFACE_SEVERITIES`
 # pattern, and the same vocabulary, because the question is the same one: how often is this check
 # WRONG about a good draft, and what does a wrong verdict cost on THIS surface?
