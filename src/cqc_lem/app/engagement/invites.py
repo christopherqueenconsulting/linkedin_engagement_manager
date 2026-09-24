@@ -41,6 +41,7 @@ from cqc_lem.utilities.ai.outbound_qa import (
     SURFACE_INVITE_NOTE as OUTBOUND_SURFACE_INVITE_NOTE,
     refusal_reason as outbound_refusal_reason,
 )
+from cqc_lem.utilities.connection_targeting import SOURCE_ROSTER
 from cqc_lem.utilities.db import (
     ACCOUNT_RESTRICTED_MESSAGE,
     ALREADY_CONNECTED_MESSAGE,
@@ -54,12 +55,14 @@ from cqc_lem.utilities.db import (
     INVITE_NOT_SENT_MESSAGE,
     INVITE_UNCONFIRMED_MESSAGE,
     NO_CONNECT_BUTTON_MESSAGE,
+    ConnectionRequestStatus,
     ConnectStatus,
     InviteOutcome,
     LogActionType,
     LogResultType,
     get_engagement_preferences,
     get_user_password_pair_by_id,
+    insert_connection_request,
     insert_new_log,
     set_target_connect_status,
 )
@@ -1708,12 +1711,36 @@ def invite_to_connect_now(user_id: int, profile_url: str, message: str = None,
     return invite_sent, result
 
 
+def record_direct_invite(user_id: int, profile_url: str, message: "str | None",
+                         source: "str | None") -> "int | None":
+    """Write the `connection_requests` row for an invite that went out WITHOUT one (issue #2101).
+
+    `send_connection_request` sends an existing row, but the direct rails — `invite_to_connect`
+    (profile viewer on auto-send, the outreach funnel's connect stage) and the roster ladder —
+    never had one, so a confirmed invite was invisible to the ledger and to
+    `get_requested_person_keys`, the dedup that keeps the sourcing scan from re-filing that person.
+    Filed straight at SENT: it does not touch the daily cap, which is counted from `logs`.
+    """
+    request_id = insert_connection_request(user_id, profile_url, message=message,
+                                           status=ConnectionRequestStatus.SENT, source=source)
+    if not request_id:
+        log_warning("A sent invite has no connection_requests row: the ledger insert failed",
+                    user_id=user_id, action_type="invite_connect", source=source)
+    return request_id
+
+
 @shared_task.task(name='cqc_lem.app.run_automation.invite_to_connect',
                   bind=True, base=QueueOnce, once={'graceful': True, 'keys': ['user_id', 'profile_url']},
                   reject_on_worker_lost=True, rate_limit='1/m', queue='se_outreach')
-def invite_to_connect(self, user_id: int, profile_url: str, message: str = None):
-    """Send a LinkedIn connection request (reactive profile-viewer flow). Thin wrapper over
-    invite_to_connect_now; a throttle / kill-switch defers silently.
+def invite_to_connect(self, user_id: int, profile_url: str, message: str = None,
+                      source: str = None):
+    """Send a LinkedIn connection request on a direct (unqueued) rail.
+
+    Used by the profile viewer on auto-send and the outreach funnel's connect stage. Thin wrapper
+    over invite_to_connect_now; a throttle / kill-switch defers silently.
+
+    `source` is the `connection_requests.source` of the ledger row a confirmed send writes. It is
+    optional so a message queued before it existed still runs.
     """
     try:
         sent, reason = invite_to_connect_now(user_id, profile_url, message)
@@ -1724,6 +1751,7 @@ def invite_to_connect(self, user_id: int, profile_url: str, message: str = None)
                   action_type="invite_connect", task_name="invite_to_connect")
         return "Invitation deferred (LinkedIn throttled)"
     if sent:
+        record_direct_invite(user_id, profile_url, message, source)
         return CONNECTION_REQUEST_SENT_MESSAGE
     # DEBUG, not a warning: every reason invite_to_connect_now returns has ALREADY been logged by
     # the step that owns it — at ERROR with exc= for a dialog with no Send button, WARNING for no
@@ -1760,6 +1788,7 @@ def send_roster_connect_invite(self, user_id: int, profile_url: str, message: st
         set_target_connect_status(user_id, profile_url, ConnectStatus.NEEDS_CONNECTION)
         return "Roster connection request deferred (LinkedIn throttled)"
     if sent:
+        record_direct_invite(user_id, profile_url, message, SOURCE_ROSTER)
         return CONNECTION_REQUEST_SENT_MESSAGE
     if reason == ALREADY_CONNECTED_MESSAGE:
         # Not a failure — the ladder's goal was already met, so record the truth rather than badging

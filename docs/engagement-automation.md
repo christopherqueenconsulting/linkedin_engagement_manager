@@ -1218,6 +1218,24 @@ Three separate books, and #1867 is what stopped them being one:
   reasons — values on the existing event, never a new capture. A breakdown on `reason` is now also
   the measure of how much of the backlog is waiting on #1836.
 
+### Every rail writes a ledger row, and the scan reports its funnel (issue #2101)
+
+- **A direct send files its own `connection_requests` row.** `send_connection_request` sends a row
+  that already exists; the direct rails never had one — `invite_to_connect` (the profile viewer with
+  `profile_viewer_dm_auto_send` ON, and the outreach funnel's connect stage) and
+  `send_roster_connect_invite`. A confirmed invite on 2026-09-22 was therefore missing from the
+  Connections view AND from `get_requested_person_keys`, the dedup that stops the sourcing scan
+  re-filing that person. `record_direct_invite` now writes the row at **`sent`**, only when the rail
+  returns sent, with `source` = `profile_viewer` / `outreach_funnel` / `roster`. It spends no cap:
+  `count_invites_sent_today` counts `logs`, and `sent` is not an OPEN status. A failed insert
+  warns and still reports the send; the invitation is out either way.
+- **`scan_connection_candidates` logs ONE funnel line per scan at INFO** —
+  `Connection candidate funnel: budget= own_post= adjacent= ranked= filed=` — on every exit past
+  the mode check. The empty exits stay DEBUG (#985), and DEBUG is not written in production, so
+  before this line the log could only say *that* a scan found nothing, never *which* stage emptied
+  it. `own_post` is `post_engagers` in the 30-day lookback; `adjacent` is commenters harvested from
+  `connection_target_authors`; `ranked` is what survived dedup, first-degree and the ICP floor.
+
 ## A lane run ends in the Celery state its outcome earned (`app/task_outcome.py`, issue #2097)
 
 The 2026-09 audit counted 0 FAILURE and 0 RETRY across 20,841 task runs. In the same window the

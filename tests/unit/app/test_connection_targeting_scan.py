@@ -312,3 +312,42 @@ class TestSchedulerDispatch:
     def test_scan_runs_on_the_outreach_lane(self):
         from cqc_lem.app.engagement import outreach as ra
         assert ra.scan_connection_candidates.queue == "se_outreach"
+
+
+class TestCandidateFunnelLine:
+    """Every scan past the mode check logs ONE per-stage funnel line at INFO (issue #2101), so the
+    stage that empties the set is readable off the production log, where DEBUG is not written.
+    """
+
+    def _funnel(self, **scan_kwargs):
+        with patch(f"{_OUT}.log_info") as info:
+            _scan(**scan_kwargs)
+        lines = [c for c in info.call_args_list
+                 if str(c.args[0]).startswith("Connection candidate funnel")]
+        assert len(lines) == 1
+        return lines[0].kwargs
+
+    def test_no_budget_reports_the_budget_stage(self):
+        stages = self._funnel(sent_today=10)
+        assert (stages["budget"], stages["own_post"], stages["filed"]) == (0, 0, 0)
+
+    def test_no_signals_reports_empty_sources(self):
+        stages = self._funnel(engagers=[])
+        assert stages["budget"] > 0
+        assert (stages["own_post"], stages["adjacent"], stages["ranked"]) == (0, 0, 0)
+
+    def test_deduped_candidates_report_signals_but_no_ranked(self):
+        stages = self._funnel(requested={"in:jane-doe"})
+        assert (stages["own_post"], stages["ranked"], stages["filed"]) == (1, 0, 0)
+
+    def test_a_filed_candidate_reports_every_stage(self):
+        stages = self._funnel(facts={"https://www.linkedin.com/in/jane-doe":
+                                     {"headline": "VP revenue operations"}})
+        assert stages["own_post"] == 1
+        assert stages["ranked"] >= stages["filed"]
+
+    def test_mode_off_logs_no_funnel(self):
+        with patch(f"{_OUT}.log_info") as info:
+            _scan(prefs=_prefs(connection_targeting_mode="off"))
+        assert not any(str(c.args[0]).startswith("Connection candidate funnel")
+                       for c in info.call_args_list)
