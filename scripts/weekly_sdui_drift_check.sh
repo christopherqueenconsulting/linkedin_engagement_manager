@@ -17,7 +17,7 @@
 #
 # Install (VPS, as `lem`) — Mondays 06:40 UTC, before the 11:00 release window and outside the
 # golden-hour engagement beats that need the Chrome slots:
-#   40 6 * * 1 /home/lem/<repo-clone>/scripts/weekly_sdui_drift_check.sh
+#   40 6 * * 1 /home/lem/cron-runner/repo/scripts/run_at_deployed_tag.sh scripts/weekly_sdui_drift_check.sh
 set -uo pipefail
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/home/lem/.local/bin"
 
@@ -51,7 +51,9 @@ log(){ echo "[$(date -u +%FT%TZ)] $*" | tee -a "$LOG" >&2; }
 # Resolving each script from a ref is READ-ONLY: the checkout is never reset, pulled or
 # checked out, and only its remote-tracking ref moves. It fails OPEN to the working copy with a
 # loud log line, because a sweep on a stale probe still measures more than no sweep at all.
-PROBE_REF="${SDUI_PROBE_REF:-origin/main}"
+# Run through scripts/run_at_deployed_tag.sh (#2109) the default is the DEPLOYED tag, so the probe
+# matches the image it is piped into; run by hand it is still `origin/main`.
+PROBE_REF="${SDUI_PROBE_REF:-${LEM_DEPLOYED_TAG:-origin/main}}"
 # Made here, not inside `pin_script`: every call site captures the function's stdout, so anything
 # the function assigns dies with its subshell and the trap would never reach this shell.
 PINNED_DIR="$(mktemp -d 2>/dev/null)" && trap 'rm -rf "$PINNED_DIR"' EXIT

@@ -94,6 +94,13 @@ on-box `snapshot.sh` had **zero** `margin` references against the successor's 12
 cost/unit-economics block (#491) had never been captured. Crontab backup at
 `/tmp/lem-gh/crontab.bak-20260807`.
 
+### 2.3a Repoint every host cron at the deployed tag (#2109) — ⚠️ OWED
+
+Two crons still run the unpulled dev checkout (31 commits behind on 2026-09-24), and `perf_snapshot`
+logged `"margin": null` on 48 of 63 days. After the release carrying `scripts/run_at_deployed_tag.sh`
+deploys: clone `/home/lem/cron-runner/repo` and swap the crontab lines exactly as
+`docs/host-crons.md` § Install lists. Verify with that doc's § Verify (7 non-null `margin` lines).
+
 ### 2.4 YouTube OAuth token is dead · issue #1094
 
 `invalid_grant: Token has been expired or revoked`. Runbook: `docs/youtube-publishing.md:79-98`.

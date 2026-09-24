@@ -359,7 +359,7 @@ the §C.1 formulas (pure, unit-tested) plus the DB-fed collectors and delivery:
 
 | Piece | How it runs |
 |---|---|
-| Daily cost/margin block | `scripts/perf_snapshot.sh` (host cron; the repo-versioned successor to the on-box `snapshot.sh`) calls `python -m cqc_lem.utilities.margin --daily-json` inside `web_app` and appends it to `metrics.jsonl` as `margin` |
+| Daily cost/margin block | `scripts/perf_snapshot.sh` (host cron; the repo-versioned successor to the on-box `snapshot.sh`) calls `python -m cqc_lem.utilities.margin --daily-json` inside the active `web_api_<color>` (never `web_app`, the nginx front door — #2109) and appends it to `metrics.jsonl` as `margin` |
 | Weekly owner report | Celery beat `weekly-margin-report` → `run_scheduler.auto_weekly_margin_report` (Mon 12:00 UTC) → email + PostHog `margin_report` event; also `python -m cqc_lem.utilities.margin --weekly-report [--email]` |
 | Spend source | `cost_ledger` via read-only `db.get_cost_rollup` / `get_user_cost`; `db.cost_ledger_available()` drives the `ledger_available` flag, so a $0 spend reads as "not capturing yet" rather than "nothing spent" |
 | Inputs | `TIER_MRR_*`, `INFRA_FIXED_MONTHLY`, `CAC_USD`, `EXPECTED_LIFETIME_MONTHS`, `MARGIN_REPORT_EMAIL` (env, see `.env.example`) |

@@ -9,17 +9,33 @@
 #                   spend_usd, cost_by_feature, est. mrr, contribution_margin, gross_margin_pct.
 #                   Produced by `python -m cqc_lem.utilities.margin --daily-json` INSIDE the app
 #                   container so it uses the deployed margin math and the container's DB creds.
+#                   The app container is the ACTIVE `web_api_<color>` — never `web_app`, which is
+#                   the nginx front door and has no python, so the block was null (#2109).
 #                   `ledger_available: false` means cost_ledger isn't capturing yet, so the $0 spend
 #                   is "not measured", not "nothing spent".
 #
 # This lives in the repo (not only on the box) so the snapshot is reviewable and versioned; point
-# the host cron at this file. Overridable: PERF_DIR, LEM_ENV_FILE, MARGIN_CONTAINER.
+# the host cron at this file through scripts/run_at_deployed_tag.sh (docs/host-crons.md).
+# Overridable: PERF_DIR, LEM_ENV_FILE, LEM_ROOT, MARGIN_CONTAINER.
 set -uo pipefail
 DIR="${PERF_DIR:-/home/lem/perf-tracking}"
 LOG="$DIR/metrics.jsonl"
 ENVF="${LEM_ENV_FILE:-/opt/lem/.env}"
-MARGIN_CONTAINER="${MARGIN_CONTAINER:-web_app}"
+LEM_ROOT="${LEM_ROOT:-/opt/lem}"
 mkdir -p "$DIR"
+
+# deploy.sh records the colour the tunnel is routed to in .active_color; that container is the one
+# guaranteed to be up. An unreadable or unexpected value falls back to blue rather than skipping
+# the block — a wrong guess costs one null `margin`, the same as not trying.
+active_api_container(){
+  local color
+  color="$(tr -d '[:space:]' < "$LEM_ROOT/.active_color" 2>/dev/null || true)"
+  case "$color" in
+    blue|green) echo "web_api_$color" ;;
+    *) echo "web_api_blue" ;;
+  esac
+}
+MARGIN_CONTAINER="${MARGIN_CONTAINER:-$(active_api_container)}"
 DBU=$(sudo -n grep -E "^MYSQL_USER=" "$ENVF"|cut -d= -f2)
 DBP=$(sudo -n grep -E "^MYSQL_PASSWORD=" "$ENVF"|cut -d= -f2)
 DBN=$(sudo -n grep -E "^MYSQL_DATABASE=" "$ENVF"|cut -d= -f2)
@@ -45,9 +61,12 @@ IFS=',' read -r pt reac comm impr <<< "${ps:-0,0,0,0}"
 
 # Cost/margin block. Never fatal: an unreachable container or a broken block leaves the engagement
 # line intact (with "margin": null) rather than losing the whole day's snapshot.
-margin=$(sudo -n docker exec "$MARGIN_CONTAINER" python -m cqc_lem.utilities.margin --daily-json 2>/dev/null | tail -1)
+# stderr is kept (last line only) so a null block says WHY — 48 nulls went unexplained under #2109.
+ERRF=$(mktemp)
+trap 'rm -f "$PWF" "$ERRF"' EXIT
+margin=$(sudo -n docker exec "$MARGIN_CONTAINER" python -m cqc_lem.utilities.margin --daily-json 2>"$ERRF" | tail -1)
 if ! printf '%s' "${margin:-}" | python3 -c "import json,sys; json.loads(sys.stdin.read())" 2>/dev/null; then
-  echo "[$(date -u +%FT%TZ)] margin block unavailable" >> "$DIR/snapshot.log"
+  echo "[$(date -u +%FT%TZ)] margin block unavailable from $MARGIN_CONTAINER: $(tail -1 "$ERRF")" >> "$DIR/snapshot.log"
   margin=null
 fi
 
