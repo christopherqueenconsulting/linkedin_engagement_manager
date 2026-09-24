@@ -271,36 +271,116 @@ class TestOwnVersusThirdPartyEngagement:
         assert rec.call_args.kwargs["saves"] is None
 
 
-class TestScrapeStopsOnCrashedTab:
-    """Issue #1751: a WebDriverException('tab crashed') mid-sweep was propagating out of
-    `auto_scrape_post_stats` unhandled and filing a grouped PostHog `$exception`. The session is
-    still valid on a tab crash, but no further navigation on it will succeed either, so the sweep
-    is genuinely over the same way #1746 ends a group-comment walk on the same fault.
+def _crash() -> WebDriverException:
+    return WebDriverException("Message: tab crashed\n  (Session info: chrome=151.0.7922.108)")
+
+
+class TestScrapeResumesAfterCrashedTab:
+    """Issue #2112 (was #1751): a crashed tab resumes the sweep instead of ending it.
+
+    The node memcg OOM-killed the tab after 4-7 posts, and the sweep stopped there, so rows per
+    night fell from 14 to 4-7. A crashed tab now reopens the session and
+    resumes AT the post it crashed on; the session is also recycled every K posts so the crash
+    rarely happens at all. Bounded, so a tab that crashes on every fresh session still ends the run
+    as a warning, never an unhandled `$exception`.
     """
 
-    def test_stops_gracefully_and_keeps_what_already_scraped(self):
-        driver = MagicMock()
-        driver.get.side_effect = [None, WebDriverException("Message: tab crashed\n  (Session info: "
-                                                             "chrome=151.0.7922.108)")]
-        counts = {"reactions": 5, "comments": 2, "reposts": 0, "impressions": 100, "saves": 0}
+    counts = {"reactions": 5, "comments": 2, "reposts": 0, "impressions": 100, "saves": 0}
+
+    def _run(self, drivers, post_ids, env=None, profile_side_effect=None):
+        opened = [(d, MagicMock(), "e", MagicMock()) for d in drivers]
         with patch(f"{_POST}.time.sleep"), \
-             patch(f"{_POST}.get_recent_posted_post_ids", return_value=[9, 10]), \
+             patch.dict("os.environ", env or {}, clear=False), \
+             patch(f"{_POST}.get_recent_posted_post_ids", return_value=list(post_ids)), \
              patch(f"{_POST}.get_uncaptured_posted_post_ids", return_value=[]), \
-             patch(f"{_POST}.get_current_profile", return_value=(driver, MagicMock(), "e", MagicMock())), \
-             patch(f"{_POST}.get_post_url_from_log_for_user", return_value="https://x/urn"), \
-             patch(f"{_POST}._post_social_counts", return_value=counts), \
+             patch(f"{_POST}.get_current_profile",
+                   side_effect=profile_side_effect or opened) as profile, \
+             patch(f"{_POST}.get_post_url_from_log_for_user", side_effect=lambda _u, pid: f"https://x/{pid}"), \
+             patch(f"{_POST}._post_social_counts", return_value=self.counts), \
              patch(f"{_POST}._post_analytics_counts", return_value={}), \
              patch(f"{_POST}.get_shipped_variant_keys", return_value={}), \
              patch(f"{_POST}.record_post_stats") as rec, \
              patch(f"{_POST}.track_post_outcome"), \
+             patch(f"{_POST}.log_warning") as warn, \
              patch(f"{_POST}.quit_gracefully") as quit_mock:
             from cqc_lem.app.engagement.posting import auto_scrape_post_stats
             result = auto_scrape_post_stats.run(user_id=1)
-        # Only the first post (before the crash) was recorded — the second was never reached.
+        return result, rec, profile, quit_mock, warn
+
+    def test_resumes_at_the_crashed_post_on_a_fresh_session(self):
+        first, second = MagicMock(), MagicMock()
+        first.get.side_effect = [None, _crash()]
+        result, rec, profile, quit_mock, warn = self._run([first, second], [9, 10, 11])
+        # Post 9 on the first session; 10 crashed and was READ AGAIN on the second, then 11.
+        assert [c.args[1] for c in rec.call_args_list] == [9, 10, 11]
+        assert [c.args[0] for c in second.get.call_args_list] == ["https://x/10", "https://x/11"]
+        assert result == "Scraped stats for 3 post(s)"
+        assert profile.call_count == 2
+        # Both sessions are given back; a recovered crash is not a warning.
+        assert [c.args[0] for c in quit_mock.call_args_list] == [first, second]
+        warn.assert_not_called()
+
+    def test_a_crash_on_the_analytics_page_also_resumes(self):
+        """A crash on the analytics navigation reaches the sweep too.
+
+        Swallowed as "analytics unavailable", it would leave a detail-only row.
+        """
+        from cqc_lem.app.engagement.posting import _post_analytics_counts
+        driver = MagicMock()
+        driver.current_url = "https://www.linkedin.com/feed/update/urn:li:activity:123/"
+        driver.get.side_effect = _crash()
+        with pytest.raises(WebDriverException):
+            _post_analytics_counts(driver, "https://www.linkedin.com/feed/update/urn:li:share:123/")
+
+    def test_recycles_the_session_every_k_posts(self):
+        drivers = [MagicMock() for _ in range(3)]
+        result, rec, profile, quit_mock, _ = self._run(drivers, [1, 2, 3, 4, 5],
+                                                       env={"POST_STATS_RECYCLE_EVERY": "2"})
+        assert rec.call_count == 5 and result == "Scraped stats for 5 post(s)"
+        assert [len(d.get.call_args_list) for d in drivers] == [2, 2, 1]
+        assert [c.args[0] for c in quit_mock.call_args_list] == drivers
+
+    def test_recycle_zero_keeps_one_session(self):
+        driver = MagicMock()
+        _, rec, profile, _, _ = self._run([driver], [1, 2, 3, 4, 5], env={"POST_STATS_RECYCLE_EVERY": "0"})
+        assert rec.call_count == 5 and profile.call_count == 1
+
+    def test_stops_with_a_warning_when_every_fresh_session_crashes(self):
+        drivers = [MagicMock() for _ in range(3)]
+        drivers[0].get.side_effect = [None, _crash()]
+        drivers[1].get.side_effect = _crash()
+        drivers[2].get.side_effect = _crash()
+        result, rec, profile, quit_mock, warn = self._run(drivers, [9, 10, 11])
+        # Only post 9 landed; two reopens were spent on post 10, then the sweep ended.
         assert rec.call_count == 1
-        assert "1 post(s)" in result and "tab crashed" in result
-        # The session is still torn down even though the sweep ended early.
-        quit_mock.assert_called_once_with(driver)
+        assert result == "Scraped stats for 1 post(s) before the browser tab crashed"
+        assert profile.call_count == 3
+        warn.assert_called_once()
+        assert [c.args[0] for c in quit_mock.call_args_list] == drivers
+
+    def test_a_failed_reopen_keeps_what_already_scraped(self):
+        first = MagicMock()
+        first.get.side_effect = [None, _crash()]
+        result, rec, profile, quit_mock, _ = self._run(
+            [], [9, 10], profile_side_effect=[(first, MagicMock(), "e", MagicMock()), RuntimeError("login")])
+        assert rec.call_count == 1
+        assert result == "Scraped stats for 1 post(s) before the browser tab crashed"
+        # The dead session is quit once, and nothing is quit for the reopen that never opened.
+        assert [c.args[0] for c in quit_mock.call_args_list] == [first]
+
+    def test_a_failed_recycle_ends_the_sweep_on_what_shipped(self):
+        first = MagicMock()
+        result, rec, _, _, _ = self._run(
+            [], [1, 2, 3], env={"POST_STATS_RECYCLE_EVERY": "2"},
+            profile_side_effect=[(first, MagicMock(), "e", MagicMock()), RuntimeError("login")])
+        assert rec.call_count == 2
+        assert result == "Scraped stats for 2 post(s) before the session could not be reopened"
+
+    def test_recycle_every_env_parsing(self):
+        from cqc_lem.app.engagement.posting import _post_stats_recycle_every
+        for value, expected in (("", 3), ("5", 5), ("0", 0), ("-4", 0), ("abc", 3)):
+            with patch.dict("os.environ", {"POST_STATS_RECYCLE_EVERY": value}):
+                assert _post_stats_recycle_every() == expected
 
     def test_a_non_crash_exception_still_propagates(self):
         driver = MagicMock()

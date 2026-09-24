@@ -85,6 +85,12 @@ Three properties of that page, all from the 2026-07-23 owner grab and already en
   "Save this checklist" out of the numbers.
 - **Merge by max, never overwrite.** `auto_scrape_post_stats` takes `max(detail, analytics)` per signal
   so a view that does not render a signal cannot zero out one the other view did.
+- **One session reads at most `POST_STATS_RECYCLE_EVERY` posts (default 3, #2112).** Each post is two
+  navigations in one renderer, and the 1.5 GiB node memcg OOM-killed it after 4-7 posts (2026-09-21..23),
+  which ended the sweep there. The sweep now swaps sessions every K posts, and a `tab crashed` on either
+  navigation reopens the session and re-reads **the post it crashed on** — at most
+  `_POST_STATS_MAX_TAB_RECOVERIES` (2) times per run. Only a crash after those reopens is a warning; a
+  recovered one is INFO. A reopen that fails ends the run on the rows already recorded.
 
 **Access limits worth knowing:** the analytics page exists only for the **author's own** posts, so
 saves/impressions are unavailable for third-party feed posts (`_post_social_counts` returns 0 there —

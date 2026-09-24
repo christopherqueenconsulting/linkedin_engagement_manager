@@ -150,6 +150,7 @@ class TestNeedsImagesExemptionIsScoped:
         ("app/engagement/feed.py", "automate_commenting"),
         # #2020 — post permalink (`/feed/update/*`) readers.
         ("app/engagement/posting.py", "auto_scrape_post_stats"),
+        ("app/engagement/posting.py", "_swap_post_stats_session"),  # #2112 — the same sweep's reopen.
         ("app/engagement/posting.py", "sweep_reply_comments"),
         ("app/engagement/posting.py", "_run_comment_followups_sweep"),
         ("app/engagement/posting.py", "_run_single_post_followup"),

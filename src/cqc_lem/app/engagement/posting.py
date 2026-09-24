@@ -358,6 +358,10 @@ def _post_analytics_counts(driver, post_url: str) -> dict:
         container = driver.find_element(By.TAG_NAME, "main")
         return {k: v for k, v in _post_social_counts(container).items() if v}
     except Exception as e:
+        if is_tab_crashed(e):
+            # Not "the page was unavailable": the renderer died, so the sweep has to reopen the
+            # session and read this post again (#2112) instead of recording detail-only counts.
+            raise
         log_warning("Post analytics page unavailable", exc=e, task_name="auto_scrape_post_stats")
         return {}
 
@@ -372,6 +376,113 @@ def _post_stats_backfill_bounds() -> Tuple[int, int]:
         except ValueError:
             return default
     return _read("POST_STATS_BACKFILL_DAYS", 90), _read("POST_STATS_BACKFILL_MAX", 5)
+
+
+# Tab-crash reopens one sweep may spend (#2112). Each costs a fresh login, and a crash that follows
+# every reopen is not memory pressure the recycle can outrun, so the sweep stops rather than loop.
+_POST_STATS_MAX_TAB_RECOVERIES = 2
+
+
+def _post_stats_recycle_every() -> int:
+    """Posts one Chrome session reads before the sweep swaps it for a fresh one (#2112).
+
+    Every post is two navigations (detail + analytics) in one renderer, and the 1.5 GiB node memcg
+    OOM-killed it after 4-7 posts on 2026-09-21..23. 0 disables recycling; a typo'd value falls back
+    to the default.
+    """
+    try:
+        return max(0, int((os.environ.get("POST_STATS_RECYCLE_EVERY") or "").strip() or 3))
+    except ValueError:
+        return 3
+
+
+def _swap_post_stats_session(user_id: int, old_driver):
+    """Give the sweep's current session back and open a fresh one; None when none can be had.
+
+    Used for the MID-sweep swap only: the posts already recorded stand, so a reopen that fails
+    ends the sweep on them rather than failing the task. `get_current_profile` has already logged
+    why at its own level, so this line is INFO — a second warning would double-count one fault.
+    """
+    quit_gracefully(old_driver)
+    try:
+        # needs_images=True — the fastboot exemption noted at the top of this module (#2020).
+        driver, _wait, _email, _profile = get_current_profile(user_id=user_id, session_name="Post Stats",
+                                                              measurement_only=True, needs_images=True)
+        return driver
+    except Exception as e:
+        log_info(f"Could not reopen the post-stats session ({type(e).__name__}) — stopping the sweep",
+                 user_id=user_id, task_name="auto_scrape_post_stats")
+        return None
+
+
+def _scrape_one_post_stats(driver, user_id: int, pid: int, url: str, post_types: dict,
+                           shipped_variants: dict) -> bool:
+    """Read one post's detail + analytics pages and record its stats. True when a row was written.
+
+    A crashed tab raises out of here (from either navigation) so the sweep can reopen the session
+    and read this same post again (#2112).
+    """
+    driver.get(url)
+    time.sleep(random.uniform(4, 6))
+    try:
+        container = driver.find_element(By.TAG_NAME, "main")
+    except Exception:
+        container = None
+    detail_text = _main_text(driver) if container is not None else None
+    counts = _post_social_counts(container) if container is not None else {}
+    # The detail page's social bar carries reactions/comments/reposts; saves and a reliable
+    # impression count exist ONLY on the author's analytics page — merge by max so a signal
+    # the analytics view doesn't render can't zero out one the detail page did.
+    for key, val in _post_analytics_counts(driver, url).items():
+        counts[key] = max(counts.get(key) or 0, val)
+    # WHICH signals the two pages put a number against, as opposed to what those numbers
+    # were (issue #2023). `_post_social_counts` flattens a label it never found to 0, which
+    # is right for scoring and wrong for a stored reading: "the analytics page rendered no
+    # Saves row" and "the page said 0 saves" become the same row and the claim stops being
+    # falsifiable. `_post_analytics_counts` leaves the driver ON the analytics page, so its
+    # text is readable here without navigating again — the same thing the zero-walk
+    # cross-check below already relies on.
+    seen = (_rendered_signal_labels(detail_text)
+            | _rendered_signal_labels(_main_text(driver)))
+    # NOTHING parsed (a readable page always yields the full zero-filled dict) means the page
+    # never rendered — auth wall, 429, dead permalink — not that the post earned nothing.
+    # Recording those zeros publishes a fabricated row to the analytics panel, and for a
+    # backfilled post it is permanent: one bad read retires it from the never-captured queue
+    # and the dashboard measures a lie instead of a gap (#809).
+    if not counts:
+        log_debug("Post page unreadable — leaving it uncaptured", user_id=user_id,
+                  post_id=pid, task_name="auto_scrape_post_stats")
+        return False
+    # An all-zero read is the OTHER fabricated row (#1021): a quiet post and a rotated
+    # layout score identically. Ask the page — the analytics view is the one on screen now,
+    # so both texts are cross-checked — and leave a drifted read uncaptured for the same
+    # reason an unreadable one is left: a written zero is permanent for a backfilled post.
+    if not any(counts.values()):
+        texts = [text for text in (detail_text, _main_text(driver)) if text is not None]
+        native = sum(_rendered_count_signals(text) for text in texts) if texts else None
+        if _grade_zero_walk(native, "Post social-count parse", user_id=user_id,
+                            post_id=pid, task_name="auto_scrape_post_stats") == "drift":
+            return False
+    # How many of `comments` are OURS — the #344 seed and the #622 second wave are in that
+    # total on every post we publish (issue #2023). Measured 2026-09-10 across the last 20
+    # published posts: 19 carry exactly 2 comments and both are ours, so the unadjusted
+    # number is structurally >= 2 and almost entirely us. `own_comment_count_or_none`
+    # rather than the capped reader: a failed read must not claim we left none, which would
+    # book our own comments as audience engagement.
+    own_comments = own_comment_count_or_none(user_id, url)
+    record_post_stats(user_id, pid, counts.get("reactions", 0), counts.get("comments", 0),
+                      reposts=counts.get("reposts") or 0,
+                      impressions=counts.get("impressions") or None,
+                      saves=counts.get("saves") if "saves" in seen else None,
+                      own_comments=own_comments)
+    track_post_outcome(post_id=pid, reactions=counts.get("reactions", 0),
+                       comments=counts.get("comments", 0), reposts=counts.get("reposts") or 0,
+                       impressions=counts.get("impressions") or None,
+                       saves=counts.get("saves") if "saves" in seen else None,
+                       own_comments=own_comments, user_id=user_id,
+                       post_type=post_types.get(pid),
+                       variant_key=shipped_variants.get(pid))
+    return True
 
 
 @shared_task.task(name='cqc_lem.app.run_automation.auto_scrape_post_stats',
@@ -418,91 +529,53 @@ def auto_scrape_post_stats(self, user_id: int):
     except Exception as e:
         log_error("Error getting profile for post stats", exc=e, user_id=user_id, task_name="auto_scrape_post_stats")
         return f"Failed: {e}"
-    scraped = 0
+    # One renderer reading post after post is what the node memcg OOM-kills (#2112, same fault as
+    # #1746): recycle the session every `recycle_every` posts, and when a tab still crashes, reopen
+    # and resume AT the post it crashed on — the ones already recorded stand either way.
+    recycle_every = _post_stats_recycle_every()
+    scraped = read_on_session = recoveries = 0
+    i = 0
     try:
-        for pid in post_ids:
+        while i < len(post_ids):
+            pid = post_ids[i]
             url = get_post_url_from_log_for_user(user_id, pid)
             if not url:
+                i += 1
                 continue
+            if recycle_every and read_on_session >= recycle_every:
+                driver = _swap_post_stats_session(user_id, driver)
+                if driver is None:
+                    return f"Scraped stats for {scraped} post(s) before the session could not be reopened"
+                read_on_session = 0
             try:
-                driver.get(url)
+                recorded = _scrape_one_post_stats(driver, user_id, pid, url, post_types, shipped_variants)
             except Exception as e:
-                if is_tab_crashed(e):
-                    # The renderer behind the tab died (usually an OOM kill after many post
-                    # navigations in one session, same fault as #1746) — the session is still
-                    # valid, but no further navigation on it will succeed either, so the sweep is
-                    # over the same way a lost session ends one. This IS an anomaly worth
-                    # surfacing, so it stays a warning (escalates if it starts recurring) rather
-                    # than crashing the task into an unhandled $exception the sweep cannot recover
-                    # from mid-run.
-                    log_warning(f"Browser tab crashed after {scraped} of {len(post_ids)} post(s) — "
-                                f"stopping post-stats scrape", exc=e, user_id=user_id,
-                                task_name="auto_scrape_post_stats")
+                if not is_tab_crashed(e):
+                    raise
+                if recoveries >= _POST_STATS_MAX_TAB_RECOVERIES:
+                    # Crashing again straight after fresh sessions is not the memory growth the
+                    # recycle answers, so this one IS the anomaly — a warning that escalates if it
+                    # recurs, never an unhandled $exception (#1751).
+                    log_warning(f"Browser tab crashed after {scraped} of {len(post_ids)} post(s) and "
+                                f"{recoveries} reopen(s) — stopping post-stats scrape", exc=e,
+                                user_id=user_id, task_name="auto_scrape_post_stats")
                     return f"Scraped stats for {scraped} post(s) before the browser tab crashed"
-                raise
-            time.sleep(random.uniform(4, 6))
-            try:
-                container = driver.find_element(By.TAG_NAME, "main")
-            except Exception:
-                container = None
-            detail_text = _main_text(driver) if container is not None else None
-            counts = _post_social_counts(container) if container is not None else {}
-            # The detail page's social bar carries reactions/comments/reposts; saves and a reliable
-            # impression count exist ONLY on the author's analytics page — merge by max so a signal
-            # the analytics view doesn't render can't zero out one the detail page did.
-            for key, val in _post_analytics_counts(driver, url).items():
-                counts[key] = max(counts.get(key) or 0, val)
-            # WHICH signals the two pages put a number against, as opposed to what those numbers
-            # were (issue #2023). `_post_social_counts` flattens a label it never found to 0, which
-            # is right for scoring and wrong for a stored reading: "the analytics page rendered no
-            # Saves row" and "the page said 0 saves" become the same row and the claim stops being
-            # falsifiable. `_post_analytics_counts` leaves the driver ON the analytics page, so its
-            # text is readable here without navigating again — the same thing the zero-walk
-            # cross-check below already relies on.
-            seen = (_rendered_signal_labels(detail_text)
-                    | _rendered_signal_labels(_main_text(driver)))
-            # NOTHING parsed (a readable page always yields the full zero-filled dict) means the page
-            # never rendered — auth wall, 429, dead permalink — not that the post earned nothing.
-            # Recording those zeros publishes a fabricated row to the analytics panel, and for a
-            # backfilled post it is permanent: one bad read retires it from the never-captured queue
-            # and the dashboard measures a lie instead of a gap (#809).
-            if not counts:
-                log_debug("Post page unreadable — leaving it uncaptured", user_id=user_id,
-                          post_id=pid, task_name="auto_scrape_post_stats")
+                recoveries += 1
+                log_info(f"Browser tab crashed after {scraped} of {len(post_ids)} post(s) — reopening "
+                         f"the session to resume", user_id=user_id, post_id=pid,
+                         task_name="auto_scrape_post_stats")
+                driver = _swap_post_stats_session(user_id, driver)
+                if driver is None:
+                    return f"Scraped stats for {scraped} post(s) before the browser tab crashed"
+                read_on_session = 0
                 continue
-            # An all-zero read is the OTHER fabricated row (#1021): a quiet post and a rotated
-            # layout score identically. Ask the page — the analytics view is the one on screen now,
-            # so both texts are cross-checked — and leave a drifted read uncaptured for the same
-            # reason an unreadable one is left: a written zero is permanent for a backfilled post.
-            if not any(counts.values()):
-                texts = [text for text in (detail_text, _main_text(driver)) if text is not None]
-                native = sum(_rendered_count_signals(text) for text in texts) if texts else None
-                if _grade_zero_walk(native, "Post social-count parse", user_id=user_id,
-                                    post_id=pid, task_name="auto_scrape_post_stats") == "drift":
-                    continue
-            # How many of `comments` are OURS — the #344 seed and the #622 second wave are in that
-            # total on every post we publish (issue #2023). Measured 2026-09-10 across the last 20
-            # published posts: 19 carry exactly 2 comments and both are ours, so the unadjusted
-            # number is structurally >= 2 and almost entirely us. `own_comment_count_or_none`
-            # rather than the capped reader: a failed read must not claim we left none, which would
-            # book our own comments as audience engagement.
-            own_comments = own_comment_count_or_none(user_id, url)
-            record_post_stats(user_id, pid, counts.get("reactions", 0), counts.get("comments", 0),
-                              reposts=counts.get("reposts") or 0,
-                              impressions=counts.get("impressions") or None,
-                              saves=counts.get("saves") if "saves" in seen else None,
-                              own_comments=own_comments)
-            track_post_outcome(post_id=pid, reactions=counts.get("reactions", 0),
-                               comments=counts.get("comments", 0), reposts=counts.get("reposts") or 0,
-                               impressions=counts.get("impressions") or None,
-                               saves=counts.get("saves") if "saves" in seen else None,
-                               own_comments=own_comments, user_id=user_id,
-                               post_type=post_types.get(pid),
-                               variant_key=shipped_variants.get(pid))
-            scraped += 1
+            read_on_session += 1
+            scraped += int(recorded)
+            i += 1
         return f"Scraped stats for {scraped} post(s)"
     finally:
-        quit_gracefully(driver)
+        if driver is not None:
+            quit_gracefully(driver)
 
 
 # The author's OWN analytics surface. Profile views and search appearances are rendered as summary
