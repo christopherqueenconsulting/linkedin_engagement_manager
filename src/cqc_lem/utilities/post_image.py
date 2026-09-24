@@ -263,12 +263,14 @@ def claim_manual_generation(user_id: int) -> bool:
 
 def generate_image_for_post(user_id: int, text: str, post_id: Optional[int] = None
                             ) -> "tuple[Optional[str], Optional[str]]":
-    """Render the image a text post publishes with. Returns ``(public_url, None)`` or
-    ``(None, reason)``.
+    """Render the image a text post publishes with.
+
+    Returns ``(public_url, None)`` or ``(None, reason)``.
 
     Never raises: an image is enhancement, and a failed render must never take a post — or the
     author's edit — down with it. The avatar rides the EXISTING ``post_image`` surface and is
     resolved BEFORE the brief is authored, so the declared subject clause leads the prompt (#744).
+    A final ``rejected`` gate verdict is never stored (#2105); an ``unchecked`` one fails open.
     """
     if not text or not text.strip():
         return None, "Write the post content first — the image is drawn from it"
@@ -324,6 +326,13 @@ def generate_image_for_post(user_id: int, text: str, post_id: Optional[int] = No
         log_warning("Post image generation returned no image", user_id=user_id, post_id=post_id,
                     action_type="post_image")
         return None, "Image generation returned nothing"
+
+    if render_info.get("gate_verdict") == "rejected":
+        # The gate LOOKED and said no on the final candidate (issue #2105). Failing open is for a
+        # gate that could not run (`unchecked`); a rejection means the post ships with no image.
+        log_info("Post image rejected by the quality gate — the post ships without one",
+                 user_id=user_id, post_id=post_id, action_type="post_image")
+        return None, "The generated image did not pass the quality check — try again"
 
     stored = store_rendered_post_image(user_id, rendered, post_id=post_id)
     if not stored:

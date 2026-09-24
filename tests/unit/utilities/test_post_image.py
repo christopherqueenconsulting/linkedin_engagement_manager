@@ -259,7 +259,7 @@ class TestGenerateImageForPost:
                            style_preset="post_image", focal_concept="the idea")
 
         def _render(*_args, render_info=None, **_kwargs):
-            render_info["gate_verdict"] = "rejected"
+            render_info["gate_verdict"] = "unchecked"
             return rendered_path
 
         with patch(f"{_PI}.assets_dir", str(assets)), \
@@ -269,7 +269,48 @@ class TestGenerateImageForPost:
              patch("cqc_lem.utilities.ai.image_brief.build_image_brief", return_value=brief), \
              patch("cqc_lem.utilities.ai.image_gen.render_image_gated", side_effect=_render):
             url, _reason = generate_image_for_post(9, "Post text", post_id=42)
-            assert read_brief_receipt(url)["gate_verdict"] == "rejected"
+            assert read_brief_receipt(url)["gate_verdict"] == "unchecked"
+
+    def _generate_with_verdict(self, tmp_path, verdict, *, avatar=None):
+        from cqc_lem.utilities.ai.image_brief import ImageBrief
+        from cqc_lem.utilities.post_image import generate_image_for_post
+        rendered_path = str(tmp_path / "render.png")
+        with open(rendered_path, "wb") as fh:
+            fh.write(b"png")
+        assets = tmp_path / "assets"
+        assets.mkdir(exist_ok=True)
+        brief = ImageBrief(prompt="a prompt", ratio="1:1", surface="post_image",
+                           style_preset="post_image", focal_concept="the idea")
+
+        def _render(*_args, render_info=None, **_kwargs):
+            render_info["gate_verdict"] = verdict
+            return rendered_path
+
+        with patch(f"{_PI}.assets_dir", str(assets)), \
+             patch("cqc_lem.assets_dir", str(assets)), \
+             patch("cqc_lem.utilities.linkedin.helper.load_profile_for_user", return_value=None), \
+             patch("cqc_lem.utilities.avatar.guardrails.resolve_avatar_for", return_value=avatar), \
+             patch("cqc_lem.utilities.ai.image_brief.build_image_brief", return_value=brief), \
+             patch("cqc_lem.utilities.ai.image_gen.render_image_gated", side_effect=_render), \
+             patch("cqc_lem.utilities.ai.image_gen.render_avatar_image_gated", side_effect=_render):
+            return generate_image_for_post(9, "Post text", post_id=42), assets
+
+    @pytest.mark.parametrize("avatar", [None, {"model_ref": "owner/lora:v1", "trigger_word": "TOK"}])
+    def test_a_final_rejected_verdict_never_reaches_the_post(self, tmp_path, avatar):
+        """Issue #2105: the gate LOOKED and said no, so the post ships with no image.
+
+        The avatar path is where post 100 shipped the last rejected candidate; the base path is
+        held to the same rule because both return the final render regardless of its verdict.
+        """
+        (url, reason), assets = self._generate_with_verdict(tmp_path, "rejected", avatar=avatar)
+        assert url is None and "quality check" in reason
+        assert not (assets / "images" / "posts" / "42").exists()
+
+    @pytest.mark.parametrize("verdict", ["unchecked", "accepted"])
+    def test_an_unavailable_or_passing_gate_still_renders(self, tmp_path, verdict):
+        """Failing open is for a gate that could not run — that render still ships."""
+        (url, reason), _assets = self._generate_with_verdict(tmp_path, verdict)
+        assert reason is None and "file_name=images/posts/42/" in url
 
     def test_an_uploaded_image_gets_no_receipt(self, tmp_path):
         """A receipt is a RECORD, never a default — there is no brief behind the author's own file."""
