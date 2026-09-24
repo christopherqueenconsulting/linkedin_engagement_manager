@@ -134,6 +134,7 @@ from cqc_lem.utilities.db import (
     count_open_connection_requests,
     count_open_outreach_targets,
     count_scheduled_dms_created_today,
+    defer_followup,
     enqueue_followup,
     get_approved_outreach_targets,
     get_catchup_touch,
@@ -169,6 +170,7 @@ from cqc_lem.utilities.db import (
     record_unreadable_read,
     release_catchup_send_attempt,
     reset_unreadable_reads,
+    seconds_since_last_dm_touch,
     stop_followups_for_profile,
     update_catchup_touch_status,
     update_lead_signal,
@@ -1027,6 +1029,12 @@ def build_dm_from_template(user_id: int, event_type: str, first_name: str,
 _REPLY_CHECK_DEFAULT_DELAY_HOURS = 48
 
 
+# The least time between two DMs to the same person from the follow-up ladder (issue #2115). A
+# step template's own `delay_hours` defaults to 24, which let two near-identical messages land on
+# consecutive days.
+FOLLOWUP_MIN_SPACING_HOURS = 48
+
+
 def _reply_check_delay_hours() -> int:
     try:
         return max(1, int(os.environ.get("DM_REPLY_CHECK_DELAY_HOURS")
@@ -1389,6 +1397,8 @@ def process_user_followups(self, user_id: int, max_per_run: int = 20):
     sent = 0
     nurtured = 0
     skipped = 0
+    refused = 0
+    deferred = 0
     lead_ctx: dict = {}  # voice context for lead drafts — fetched lazily, only if someone replies
     # Resolved ONCE per run: the saved display name (Settings, required) with the scraped profile as
     # the fallback. Empty means every thread reads UNKNOWN and nothing is sent — which is the point.
@@ -1487,9 +1497,40 @@ def process_user_followups(self, user_id: int, max_per_run: int = 20):
                 # operator's to approve, and nurture NEVER auto-sends a template.
                 mark_followup(f["id"], FollowupStatus.STOPPED)
                 continue
+            # Issue #2115: two ladder steps a day apart put two near-identical DMs in the same inbox
+            # on consecutive days. Deferred, not stopped — the step still goes out once the window
+            # since the last touch has passed.
+            since_last = seconds_since_last_dm_touch(user_id, f["profile_url"],
+                                                     FOLLOWUP_MIN_SPACING_HOURS)
+            if since_last is not None:
+                wait_s = max(0, FOLLOWUP_MIN_SPACING_HOURS * 3600 - since_last)
+                defer_followup(f["id"], datetime.now(timezone.utc) + timedelta(seconds=wait_s))
+                deferred += 1
+                log_info(f"Follow-up to {f.get('first_name') or f['profile_url']} deferred: the last "
+                         f"DM to them was under {FOLLOWUP_MIN_SPACING_HOURS}h ago",
+                         user_id=user_id, action_type=LogActionType.FOLLOWUP,
+                         task_name="process_user_followups")
+                continue
             msg = build_dm_from_template(user_id, f["event_type"], f["first_name"], my_profile, step=f["next_step"])
             if not msg:
                 mark_followup(f["id"], FollowupStatus.STOPPED)
+                continue
+            # The same last look `send_dm_now` takes, taken HERE so the ledger row and the returned
+            # count are written from it (#2115): dispatching a body `send_dm_now` will refuse used
+            # to record SUCCESS and count as sent for a DM that never left.
+            refusal = outbound_refusal_reason(msg, surface=OUTBOUND_SURFACE_DM)
+            if refusal:
+                refused += 1
+                log_warning(f"Refusing to send an unsendable follow-up to {f['profile_url']}: "
+                            f"{refusal}", user_id=user_id, action_type=LogActionType.FOLLOWUP,
+                            task_name="process_user_followups")
+                insert_new_log(user_id=user_id, action_type=LogActionType.FOLLOWUP,
+                               result=LogResultType.FAILURE, post_url=f["profile_url"],
+                               message=f"Refused: {refusal}")
+                mark_followup(f["id"], FollowupStatus.FAILED)
+                # Nothing was sent, so the next step (or the reply check) is still owed.
+                enqueue_next_followup(user_id, f["profile_url"], f["first_name"], f["event_type"],
+                                      f["next_step"])
                 continue
             send_private_dm.apply_async(kwargs={"user_id": user_id, "profile_url": f["profile_url"], "message": msg})
             insert_new_log(user_id=user_id, action_type=LogActionType.FOLLOWUP, result=LogResultType.SUCCESS,
@@ -1501,7 +1542,7 @@ def process_user_followups(self, user_id: int, max_per_run: int = 20):
     finally:
         quit_gracefully(driver)
     return (f"Sent {sent} follow-up(s); drafted {nurtured} nurture reply(ies); "
-            f"skipped {skipped} unreadable thread(s)")
+            f"skipped {skipped} unreadable thread(s); refused {refused}; deferred {deferred}")
 
 
 def _appreciation_dm_budget(user_id: int) -> int:

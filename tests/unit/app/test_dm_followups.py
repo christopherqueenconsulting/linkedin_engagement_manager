@@ -105,6 +105,12 @@ def _unreadable_hours(reads):
 
 
 class TestProcessUserFollowups:
+    @pytest.fixture(autouse=True)
+    def _no_recent_touch(self):
+        # Issue #2115's spacing read is a DB call; these tests are about everything else.
+        with patch(f"{_OUT}.seconds_since_last_dm_touch", return_value=None):
+            yield
+
     def _common(self):
         return {
             f"{_OUT}.get_current_profile": patch(f"{_OUT}.get_current_profile",
@@ -566,3 +572,74 @@ class TestAutoSendDueFollowups:
             result = auto_send_due_followups()
         assert proc.apply_async.call_count == 2  # users 1 and 2 (deduped)
         assert "2 user" in result
+
+
+class TestFollowupLedgerTruth:
+    """Issue #2115: the ledger row, the returned count and the recipient spacing tell the truth."""
+
+    def _run(self, due, msgs, since_last=None):
+        from cqc_lem.app.engagement.outreach import process_user_followups
+        with patch(f"{_OUT}.get_due_followups", return_value=due), \
+             patch(f"{_OUT}.get_current_profile", return_value=(MagicMock(), MagicMock(), "e", MagicMock())), \
+             patch(f"{_OUT}.quit_gracefully"), patch(f"{_OUT}.time.sleep"), \
+             patch(f"{_OUT}.insert_new_log") as log_row, \
+             patch(f"{_OUT}.resolve_self_name", return_value="Christopher Queen"), \
+             patch(f"{_OUT}.check_dm_replied", return_value=ThreadState.NOT_REPLIED), \
+             patch(f"{_OUT}.build_dm_from_template", side_effect=msgs), \
+             patch(f"{_OUT}.seconds_since_last_dm_touch", return_value=since_last), \
+             patch(f"{_OUT}.defer_followup") as defer, \
+             patch(f"{_OUT}.send_private_dm") as dm, \
+             patch(f"{_OUT}.mark_followup") as mark, \
+             patch(f"{_OUT}.enqueue_next_followup") as enq:
+            result = process_user_followups.run(user_id=1)
+        return result, log_row, defer, dm, mark, enq
+
+    def test_a_refused_send_writes_failure_with_its_reason(self):
+        from cqc_lem.utilities.db import LogResultType
+        result, log_row, _defer, dm, mark, enq = self._run(
+            [_due()], ["Hi {first_name}, following up on {blog_url}"])
+        dm.apply_async.assert_not_called()
+        kwargs = log_row.call_args.kwargs
+        assert kwargs["result"] is LogResultType.FAILURE
+        assert kwargs["message"].startswith("Refused: ")
+        assert len(kwargs["message"]) > len("Refused: ")
+        mark.assert_called_once_with(1, "failed")
+        enq.assert_called_once()  # nothing was sent, so the next step is still owed
+        assert "Sent 0" in result
+        assert "refused 1" in result
+
+    def test_the_returned_count_equals_the_landed_sends(self):
+        from cqc_lem.utilities.db import LogResultType
+        due = [_due(id=1, profile_url="https://x/in/a"), _due(id=2, profile_url="https://x/in/b"),
+               _due(id=3, profile_url="https://x/in/c")]
+        msgs = ["Thanks again for connecting, Jane. Curious what you are working on this quarter.",
+                "Hi {first_name}, following up on {blog_url}",
+                "Good to be connected, Jane. Happy to swap notes on scaling ops teams any time."]
+        result, log_row, _defer, dm, _mark, _enq = self._run(due, msgs)
+        assert dm.apply_async.call_count == 2
+        successes = [c for c in log_row.call_args_list if c.kwargs["result"] is LogResultType.SUCCESS]
+        assert len(successes) == dm.apply_async.call_count
+        assert f"Sent {dm.apply_async.call_count} " in result
+
+    def test_a_second_step_within_48h_of_a_prior_touch_is_skipped(self):
+        from cqc_lem.app.engagement.outreach import FOLLOWUP_MIN_SPACING_HOURS
+        assert FOLLOWUP_MIN_SPACING_HOURS == 48
+        with patch(f"{_OUT}.datetime") as dt:
+            import datetime as real
+            now = real.datetime(2026, 9, 24, 12, 0, tzinfo=real.timezone.utc)
+            dt.now.return_value = now
+            result, log_row, defer, dm, mark, enq = self._run(
+                [_due()], ["unused"], since_last=24 * 3600)
+        dm.apply_async.assert_not_called()
+        log_row.assert_not_called()
+        mark.assert_not_called()  # stays pending — deferred, not dropped
+        enq.assert_not_called()
+        defer.assert_called_once_with(1, now + real.timedelta(hours=24))
+        assert "deferred 1" in result
+
+    def test_a_touch_outside_the_window_sends(self):
+        _result, _log_row, defer, dm, _mark, _enq = self._run(
+            [_due()], ["Thanks again for connecting, Jane. Curious what you are working on."],
+            since_last=None)
+        defer.assert_not_called()
+        dm.apply_async.assert_called_once()

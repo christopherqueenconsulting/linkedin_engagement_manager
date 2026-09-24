@@ -154,3 +154,60 @@ class TestFollowupQueue:
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_most_recent_dm_thread_target
             assert get_most_recent_dm_thread_target(1) is None
+
+
+class TestFollowupSpacingHelpers:
+    """Issue #2115: the recipient-spacing read and the in-place deferral it drives."""
+
+    def test_last_touch_is_read_on_the_database_clock(self, fake_cursor):
+        conn, cursor = fake_cursor(fetch_one=(3600,))
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import seconds_since_last_dm_touch
+            assert seconds_since_last_dm_touch(1, "https://x/in/jane", 48) == 3600
+        sql = cursor.execute.call_args[0][0]
+        assert "TIMESTAMPDIFF(SECOND, MAX(created_at), NOW())" in sql
+        assert cursor.execute.call_args[0][1] == (1, "https://x/in/jane", "success", "dm",
+                                                  "followup", 48)
+
+    def test_no_touch_in_the_window_is_none(self, fake_cursor):
+        conn, _cursor = fake_cursor(fetch_one=(None,))
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import seconds_since_last_dm_touch
+            assert seconds_since_last_dm_touch(1, "https://x/in/jane", 48) is None
+
+    def test_an_unreadable_log_reads_as_just_touched(self, fake_cursor):
+        import mysql.connector
+
+        conn, _cursor = fake_cursor(execute_error=mysql.connector.Error("boom"))
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import seconds_since_last_dm_touch
+            assert seconds_since_last_dm_touch(1, "https://x/in/jane", 48) == 0
+
+    def test_defer_moves_only_a_pending_row(self, fake_cursor):
+        import datetime
+
+        conn, cursor = fake_cursor(rowcount=1)
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import defer_followup
+            assert defer_followup(7, datetime.datetime(2026, 9, 26, 8, 0,
+                                                       tzinfo=datetime.timezone.utc)) is True
+        assert "SET due_at = %s" in cursor.execute.call_args[0][0]
+        assert cursor.execute.call_args[0][1] == (datetime.datetime(2026, 9, 26, 8, 0), 7, "pending")
+
+    def test_defer_reports_a_row_that_moved_on(self, fake_cursor):
+        import datetime
+
+        conn, _cursor = fake_cursor(rowcount=0)
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import defer_followup
+            assert defer_followup(7, datetime.datetime(2026, 9, 26, 8, 0)) is False
+
+    def test_defer_db_error_is_false(self, fake_cursor):
+        import datetime
+
+        import mysql.connector
+
+        conn, _cursor = fake_cursor(execute_error=mysql.connector.Error("boom"))
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import defer_followup
+            assert defer_followup(7, datetime.datetime(2026, 9, 26, 8, 0)) is False
