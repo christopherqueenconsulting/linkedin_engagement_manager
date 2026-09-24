@@ -660,7 +660,7 @@ class TestRateLimitCircuitBreaker:
                    for c in driver.execute_cdp_cmd.call_args_list), \
             "stale cookies must be dropped profile-wide"
         mock_mark.assert_not_called()                     # self-healed — breaker NOT opened
-        mock_clear.assert_called()                        # fresh login cleared stale breaker state
+        mock_clear.assert_called_with(reason="login_success")  # fresh login cleared stale breaker
         mock_store.assert_called()                        # fresh proxy-native cookies stored
 
     def test_successful_login_clears_breaker(self):
@@ -676,7 +676,7 @@ class TestRateLimitCircuitBreaker:
             from cqc_lem.utilities.linkedin.helper import login_to_linkedin
             login_to_linkedin(driver, wait, "u@e.com", "pw")
 
-        mock_clear.assert_called_once()
+        mock_clear.assert_called_once_with(reason="login_session_reused")
 
 
 class TestChallengeCooldownBreaker:
