@@ -333,3 +333,19 @@ class TestTheTimingBounds:
             assert _time_slots([date(2026, 9, 19)], 1, {SAT, SUN}, pytz.utc, stored) == []
             laid = _time_slots([date(2026, 9, 19)], 1, {SAT, SUN}, pytz.utc, [])
         assert [d for d, _ in laid] == [date(2026, 9, 19)]
+
+    def test_east_of_utc_the_first_forward_slot_never_shares_the_last_posts_day(self):
+        """Sat 08:00 Tokyo is Fri 23:00 UTC, so the forward plan starts on (UTC) Saturday.
+
+        Until #2137 the floor was seeded with that last post and pushed the slot off; the floor now
+        only sees earlier LOCAL days, so the stored-post check has to look both ways.
+        """
+        from freezegun import freeze_time
+
+        with freeze_time("2026-09-13 12:00:00"):
+            rows = [(1, datetime(2026, 9, 18, 23, 0), "planning")]  # Sat 08:00 Asia/Tokyo
+            plan, _delete = _run_plan(rows, last_planned=rows[0][1], posting_days=[SAT, SUN],
+                                      posts_per_week=2, tz="Asia/Tokyo", post_hour=20)
+        laid = _local_dates([p["scheduled_datetime"] for p in plan], "Asia/Tokyo")
+        assert datetime(2026, 9, 19).date() not in laid
+        assert laid, "the rest of the forward plan still lays"

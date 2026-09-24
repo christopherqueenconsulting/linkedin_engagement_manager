@@ -506,7 +506,10 @@ def _time_slots(slots: list, user_id: int, weekdays: set, tz, occupied: list) ->
 
     Each slot is held 24h after the latest post before it — laid or already stored — and a slot is
     NOT laid (issue #2137) when that hold pushes it onto a weekday outside `posting_days`, or when it
-    lands inside 24h of a stored post after it. The second can only happen to a refilled hole.
+    lands inside 24h of any stored post. The floor only sees posts on EARLIER local days, so that
+    check is both ways: a refilled hole can sit just before a stored post, and east of UTC the
+    forward plan's first slot can share a local day with the tail's last post — which the floor,
+    seeded with that post until #2137, used to push off.
     """
     stored = sorted(o for o in occupied if o is not None)
     laid: list = []
@@ -519,7 +522,7 @@ def _time_slots(slots: list, user_id: int, weekdays: set, tz, occupied: list) ->
             log_debug(f"Content Plan | {post_date} slot pushed off the posting days by the 24h "
                       f"floor — not laid", user_id=user_id)
             continue
-        if any(timedelta(0) <= o - scheduled < MIN_POST_INTERVAL for o in stored):
+        if any(abs(o - scheduled) < MIN_POST_INTERVAL for o in stored):
             log_debug(f"Content Plan | {post_date} slot sits inside 24h of a stored post — not laid",
                       user_id=user_id)
             continue
