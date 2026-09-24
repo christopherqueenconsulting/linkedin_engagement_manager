@@ -94,7 +94,7 @@ on-box `snapshot.sh` had **zero** `margin` references against the successor's 12
 cost/unit-economics block (#491) had never been captured. Crontab backup at
 `/tmp/lem-gh/crontab.bak-20260807`.
 
-### 2.3a Repoint every host cron at the deployed tag (#2109) — ⚠️ OWED
+### 2.3a Repoint every host cron at the deployed tag (#2109, tracked on #2165) — ⚠️ OWED
 
 Two crons still run the unpulled dev checkout (31 commits behind on 2026-09-24), and `perf_snapshot`
 logged `"margin": null` on 48 of 63 days. After the release carrying `scripts/run_at_deployed_tag.sh`
