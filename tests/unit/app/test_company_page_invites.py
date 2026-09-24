@@ -224,9 +224,10 @@ class TestAutomateInvitations:
         rec.assert_not_called()
 
     def test_a_zero_total_reads_as_unknown_never_exhausted(self):
-        """0/0 is a counter that never rendered, not an empty pool (#2095): the lane read it 15 of
-        15 times while the probe read 50/50 the same days. Skipped, WARNed with the reading, and
-        reported apart from `credits_exhausted`.
+        """0/0 is a counter that never rendered, not an empty pool (#2095).
+
+        The lane read it 15 of 15 times while the probe read 50/50 the same days. Skipped, WARNed
+        with the reading, and reported apart from `credits_exhausted`.
         """
         from cqc_lem.utilities.linkedin.company_page_inviter import (
             INVITE_STATUS_CREDITS_EXHAUSTED,
