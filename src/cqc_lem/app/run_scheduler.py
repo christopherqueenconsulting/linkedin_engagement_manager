@@ -741,7 +741,7 @@ def auto_suppression_tripwire(self):
         suppression_pause_reason,
         suppression_trip_state,
     )
-    from cqc_lem.utilities.logger import log_critical
+    from cqc_lem.utilities.logger import log_critical, log_info
     from cqc_lem.utilities.notifications import notify_suppression_tripwire
     from cqc_lem.utilities.observability import track_suppression_check
     from cqc_lem.utilities.post_stats import build_engagement_trend
@@ -751,6 +751,7 @@ def auto_suppression_tripwire(self):
         evaluate_suppression,
         history_days,
         pause_seconds,
+        reading_summary,
         tripwire_enabled,
     )
 
@@ -771,6 +772,10 @@ def auto_suppression_tripwire(self):
                                          days=comment_window, min_sample=comment_floor)
         verdict = evaluate_suppression(trend, comment_quality=quality)
         checked += 1
+        # PostHog alone was the only record of a reading (#2114), so a long `watch` could not be
+        # checked against the numbers behind it from the prod log.
+        log_info(f"Suppression reading for user {user_id}: {reading_summary(verdict)}",
+                 user_id=user_id, task_name="auto_suppression_tripwire")
         already = suppression_trip_state(user_id)
         if not verdict.get("tripped"):
             # A recovered reading is REPORTED, never auto-cleared: the whole point is that only a

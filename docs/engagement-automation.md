@@ -538,6 +538,12 @@ thread replies, likes, whether we replied, `visible_most_relevant`.
   day switches the whole comparison, never mixes scales) against their OWN trailing 14-day median.
 - Days with no posts dropped BEFORE measurement — `SUPPRESSION_CONSECUTIVE_DAYS` means consecutive
   **posting** days, a weekend off is never a collapse.
+- Posting days younger than `SUPPRESSION_MIN_POST_AGE_HOURS` (72, judged in whole days) are
+  dropped too (#2114): a post still accruing impressions read against a MATURE median is an age
+  artifact (live: 14 and 25 at ~1.5 days vs a median of 87 read as a 75–91% "drop"). `0` turns
+  the gate off. The history window widens by the same days so the baseline stays full.
+- Every daily reading logs at INFO (`Suppression reading for user N: state=… median=… recent=[…]`),
+  so a long `watch` can be checked from `/opt/lem/logs`, not PostHog alone.
 - ≥`SUPPRESSION_DROP_RATIO` drop sustained, or #628's demotion verdict, `pause_automation()`s
   **engagement only** (posting is API-driven and never gated); read-only stat-capture lanes
   exempted via `is_measurement_paused` (freeze them and a recovered account can never be seen to
