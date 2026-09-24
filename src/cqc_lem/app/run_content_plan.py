@@ -114,7 +114,7 @@ from cqc_lem.utilities.db import (
     delete_planned_posts,
     get_active_user_ids,
     get_engagement_preferences,
-    get_future_planned_posts,
+    get_future_post_slots,
     get_last_planned_post_date_for_user,
     get_lead_magnet_settings,
     get_newsletter_settings,
@@ -328,7 +328,26 @@ def _schedule_slot_utc(post_date, user_id: int, previous_utc: Optional[datetime]
     return scheduled_datetime
 
 
-def planned_slots_to_drop(rows: list, weekdays: set, posts_per_week: int) -> list:
+def _user_zone(user_id: int):
+    """The user's tz, or UTC when it cannot be resolved — the same fallback `_schedule_slot_utc` has."""
+    try:
+        return pytz.timezone(get_user_timezone(user_id))
+    except Exception:
+        return pytz.utc
+
+
+def _local(when: datetime, tz) -> datetime:
+    """A stored naive-UTC instant as the user's wall clock. `tz=None` reads it as already local.
+
+    The cadence is a LOCAL calendar — a Saturday slot is Saturday where the user lives — so every
+    weekday and ISO-week judgement is made on this, never on the stored UTC instant (issue #2137).
+    """
+    if tz is None:
+        return when
+    return pytz.utc.localize(when).astimezone(tz).replace(tzinfo=None)
+
+
+def planned_slots_to_drop(rows: list, weekdays: set, posts_per_week: int, tz=None) -> list:
     """Which future PLANNING post ids the current cadence would not have laid (issue #2021).
 
     Pure, so the rule is testable without a database. Two reasons a slot goes:
@@ -339,36 +358,177 @@ def planned_slots_to_drop(rows: list, weekdays: set, posts_per_week: int) -> lis
       lowering a cadence trims from the end of each week rather than reshuffling what is already
       laid — the same "adding days never moves the ones in use" property `weekly_post_slots` has.
 
+    A row is `(id, scheduled_time)` or `(id, scheduled_time, status)`. A row past `planning` is a
+    commitment: it is never dropped, but it does fill its week first (issue #2137), so an approved
+    post leaves one fewer planning slot in that week rather than one more post than the cadence.
+
     Returns ids only. Deciding is separate from deleting on purpose: this function cannot touch a
     row that somebody approved, because it never touches a row at all.
     """
+    cap = max(0, int(posts_per_week))
     per_week: dict = {}
-    drop = []
+    planned = []
     for row in rows or []:
-        post_id, when = row[0], row[1]
+        when = row[1]
         if when is None:
             continue
-        if weekdays and when.weekday() not in weekdays:
+        local = _local(when, tz)
+        if len(row) > 2 and row[2] != PostStatus.PLANNING.value:
+            key = local.isocalendar()[:2]
+            per_week[key] = per_week.get(key, 0) + 1
+        else:
+            planned.append((row[0], local))
+    drop = []
+    for post_id, local in planned:
+        if weekdays and local.weekday() not in weekdays:
             drop.append(post_id)
             continue
-        key = when.isocalendar()[:2]
+        key = local.isocalendar()[:2]
         per_week[key] = per_week.get(key, 0) + 1
-        if per_week[key] > max(0, int(posts_per_week)):
+        if per_week[key] > cap:
             drop.append(post_id)
     return drop
 
 
-def reconcile_planned_cadence(user_id: int, weekdays: set, posts_per_week: int) -> int:
+def reconcile_planned_cadence(user_id: int, weekdays: set, posts_per_week: int,
+                              tz=None) -> Optional[list]:
     """Drop the future planning slots the user's CURRENT cadence would not have laid.
 
     Only `planning`, only the future, and the repository re-asserts both in its own WHERE clause —
     an approved, scheduled or published post is a commitment and is never in scope. A planning row
     is a slot reservation carrying a placeholder body, so dropping one costs the slot and nothing
     else.
+
+    Returns the future rows that survive, for the refill to read — or `None` when the tail could not
+    be read or not every drop landed. The refill fails CLOSED on `None`: a slot it cannot see is not
+    a hole, and treating it as one would put two posts on one day.
     """
-    rows = get_future_planned_posts(user_id)
-    drop = planned_slots_to_drop(rows, weekdays, posts_per_week)
-    return delete_planned_posts(user_id, drop) if drop else 0
+    rows = get_future_post_slots(user_id)
+    if rows is None:
+        return None
+    drop = planned_slots_to_drop(rows, weekdays, posts_per_week, tz)
+    if not drop:
+        return rows
+    dropped = delete_planned_posts(user_id, drop)
+    log_info(f"Content Plan | dropped {dropped} planned slot(s) the current cadence would not "
+             f"have laid", user_id=user_id, task_name="auto_create_content_plan")
+    if dropped != len(drop):
+        return None
+    gone = set(drop)
+    return [row for row in rows if row[0] not in gone]
+
+
+def cadence_holes(candidates: list, occupied: list, posts_per_week: int) -> list:
+    """The cadence dates a laid tail is missing, week by week (issue #2137).
+
+    Pure. `candidates` are the local dates the cadence calendar owns (already inside
+    `posting_days`); `occupied` the local dates already carrying a future post of any status. A
+    candidate is a hole when its date is free and its ISO week holds fewer than `posts_per_week`
+    posts — counting the committed ones, so a refill tops a week UP to the cadence and never past it.
+
+    Without this the reconcile could only take slots away: it trimmed the production tail to two a
+    week, and the planner — which only ever extends the plan past its LAST row — was held off by that
+    same tail reaching 30+ days out, so the weeks it thinned were never topped up.
+    """
+    taken = set(occupied or [])
+    per_week: dict = {}
+    for day in taken:
+        key = day.isocalendar()[:2]
+        per_week[key] = per_week.get(key, 0) + 1
+    holes = []
+    for day in sorted(set(candidates or [])):
+        key = day.isocalendar()[:2]
+        if day in taken or per_week.get(key, 0) >= posts_per_week:
+            continue
+        per_week[key] = per_week.get(key, 0) + 1
+        holes.append(day)
+    return holes
+
+
+def _refill_slots(user_id: int, weekdays: set, posts_per_week: int, tz, rows: Optional[list],
+                  last_planned_date: Optional[datetime]) -> list:
+    """The holes in the laid tail between tomorrow and the tail's end, at most 30 days out.
+
+    Bounded by the tail's last row on purpose: past it, the forward plan lays the calendar as it
+    always has, and two passes over the same dates would double-book them.
+    """
+    if rows is None or not last_planned_date or last_planned_date <= datetime.now():
+        return []
+    today = datetime.now(tz).date()
+    last = min(_local(last_planned_date, tz).date(), today + timedelta(days=30))
+    candidates = []
+    day = today + timedelta(days=1)
+    while day <= last:
+        if day.weekday() in weekdays:
+            candidates.append(day)
+        day += timedelta(days=1)
+    occupied = [_local(row[1], tz).date() for row in rows if row[1] is not None]
+    holes = cadence_holes(candidates, occupied, posts_per_week)
+    if holes:
+        log_info(f"Content Plan | refilling {len(holes)} cadence slot(s) inside the laid tail",
+                 user_id=user_id, task_name="auto_create_content_plan")
+    return holes
+
+
+def _forward_slots(user_id: int, last_planned_date: Optional[datetime]) -> list:
+    """The slots past the laid tail: the day after its last row through the end of that month."""
+    # Use the last planned date if it exists and it is after today
+    if last_planned_date and last_planned_date.date() > datetime.now().date():
+        start_date = last_planned_date + timedelta(days=1)  # Start with the next day
+
+        # If the start date is greate than 30 days from today just skip the process
+        if start_date > datetime.now() + timedelta(days=30):
+            log_info(f"Content Plan | Start Date: {start_date} | >30 days out | Skipped")
+            return []
+    else:
+        start_date = datetime.now() + timedelta(days=1)  # Start with the next day
+    log_info(f"Content Plan | Start Date: {start_date}")
+
+    # The plan still runs to the end of the month, but the SLOTS in that window come from the
+    # user's day-type calendar (issue #621) instead of one post on every remaining day.
+    end_of_month = _plan_window_end(start_date)
+    slots = _cadence_slots(user_id, start_date, end_of_month)
+    if not slots:
+        # The tail of a month can land on no cadence weekday at all (e.g. a Tue/Wed/Thu calendar
+        # starting the last Friday) — stopping here stalled the plan at the boundary until a LATER
+        # day's run happened to compute a start date already inside next month, silently starving
+        # the buffer for days around every month-end (issue #1725). Roll the window one month
+        # further once instead of skipping, so the plan always advances.
+        next_window_end = _plan_window_end(end_of_month + timedelta(days=1))
+        slots = _cadence_slots(user_id, start_date, next_window_end)
+    if not slots:
+        log_info(f"Content Plan | No cadence slots left this month after {start_date} | Skipped")
+    return slots
+
+
+def _time_slots(slots: list, user_id: int, weekdays: set, tz, occupied: list) -> list:
+    """`[(post_date, scheduled_utc)]` for the slots that can be laid without breaking the cadence.
+
+    Each slot is held 24h after the latest post before it — laid or already stored — and a slot is
+    NOT laid (issue #2137) when that hold pushes it onto a weekday outside `posting_days`, or when it
+    lands inside 24h of any stored post. The floor only sees posts on EARLIER local days, so that
+    check is both ways: a refilled hole can sit just before a stored post, and east of UTC the
+    forward plan's first slot can share a local day with the tail's last post — which the floor,
+    seeded with that post until #2137, used to push off.
+    """
+    stored = sorted(o for o in occupied if o is not None)
+    laid: list = []
+    timed = []
+    for post_date in sorted(slots):
+        before = [o for o in stored if _local(o, tz).date() < post_date] + laid
+        previous_utc = max(before) if before else None
+        scheduled = _schedule_slot_utc(post_date, user_id, previous_utc)
+        if weekdays and _local(scheduled, tz).weekday() not in weekdays:
+            log_debug(f"Content Plan | {post_date} slot pushed off the posting days by the 24h "
+                      f"floor — not laid", user_id=user_id)
+            continue
+        if any(abs(o - scheduled) < MIN_POST_INTERVAL for o in stored):
+            log_debug(f"Content Plan | {post_date} slot sits inside 24h of a stored post — not laid",
+                      user_id=user_id)
+            continue
+        laid.append(scheduled)
+        timed.append((post_date, scheduled))
+    return timed
 
 
 @shared_task.task(bind=True, reject_on_worker_lost=True, rate_limit='1/m')
@@ -412,52 +572,43 @@ def plan_content_for_user(self, user_id: int):
     # a change made in September would first apply in November, and the account kept publishing
     # 5/week against a setting of 3 for seven weeks. A setting that takes seven weeks to do anything
     # reads to the user as a setting that does nothing.
-    _weekdays, _per_week = _resolve_cadence(user_id)
-    dropped = reconcile_planned_cadence(user_id, _weekdays, _per_week)
-    if dropped:
-        log_info(f"Content Plan | dropped {dropped} planned slot(s) the current cadence would not "
-                 f"have laid", user_id=user_id, task_name="auto_create_content_plan")
+    weekdays, per_week = _resolve_cadence(user_id)
+    user_tz = _user_zone(user_id)
+    rows = reconcile_planned_cadence(user_id, weekdays, per_week, user_tz)
 
     # Determine the start date as the day after the last scheduled post in planning status
     last_planned_date = get_last_planned_post_date_for_user(user_id)
 
-    # myprint(f"Last Planned Date: {last_planned_date}")
-
-    # Use the last planned date if it exists and it is after today
-    if last_planned_date and last_planned_date.date() > datetime.now().date():
-        start_date = last_planned_date + timedelta(days=1)  # Start with the next day
-
-        # If the start date is greate than 30 days from today just skip the process
-        if start_date > datetime.now() + timedelta(days=30):
-            log_info(f"Content Plan | Start Date: {start_date} | >30 days out | Skipped")
-            return
-    else:
-        start_date = datetime.now() + timedelta(days=1)  # Start with the next day
-    log_info(f"Content Plan | Start Date: {start_date}")
-
-
-
-    # The plan still runs to the end of the month, but the SLOTS in that window come from the
-    # user's day-type calendar (issue #621) instead of one post on every remaining day.
-    end_of_month = _plan_window_end(start_date)
-    slots = _cadence_slots(user_id, start_date, end_of_month)
+    # Trimming alone left production at 2/week for a fortnight (issue #2137): the reconcile dropped
+    # Mon/Wed/Fri off a Mon-Fri tail, and the forward plan never runs while that tail reaches 30+
+    # days out, so the Saturday the new `posting_days` owns was never laid. Refill the holes inside
+    # the tail too.
+    slots = sorted(set(_refill_slots(user_id, weekdays, per_week, user_tz, rows, last_planned_date))
+                   | set(_forward_slots(user_id, last_planned_date)))
     if not slots:
-        # The tail of a month can land on no cadence weekday at all (e.g. a Tue/Wed/Thu calendar
-        # starting the last Friday) — stopping here stalled the plan at the boundary until a LATER
-        # day's run happened to compute a start date already inside next month, silently starving
-        # the buffer for days around every month-end (issue #1725). Roll the window one month
-        # further once instead of skipping, so the plan always advances.
-        next_window_end = _plan_window_end(end_of_month + timedelta(days=1))
-        slots = _cadence_slots(user_id, start_date, next_window_end)
-        if slots:
-            end_of_month = next_window_end
-    if not slots:
-        log_info(f"Content Plan | No cadence slots left this month after {start_date} | Skipped")
         return
 
-    target_posts = len(slots)
-    log_info(f"Content Plan | {target_posts} slot(s) through {end_of_month.date()} "
-            f"on weekdays {sorted({s.weekday() for s in slots})}")
+    # The 24h floor also has to hold ACROSS planning runs. `slots` only knows about this run, so a
+    # plan that starts the day after the previous plan's last post — a 7/week calendar rolling into
+    # a new month, or a user raising their cadence mid-month — would otherwise stack two posts
+    # inside one 24h window. Seed the floor with every post already stored ahead of us; when that
+    # read failed, with the user's last one, which is the stored naive-UTC instant the floor is
+    # measured on.
+    if rows is not None:
+        occupied = [row[1] for row in rows]
+    elif isinstance(last_planned_date, datetime) and last_planned_date > datetime.now():
+        occupied = [last_planned_date]
+    else:
+        occupied = []
+    timed = _time_slots(slots, user_id, weekdays, user_tz, occupied)
+    if not timed:
+        log_info("Content Plan | No slot survived the posting-day and 24h bounds | Skipped",
+                 user_id=user_id, task_name="auto_create_content_plan")
+        return
+
+    target_posts = len(timed)
+    log_info(f"Content Plan | {target_posts} slot(s) through {timed[-1][0]} "
+             f"on weekdays {sorted({d.weekday() for d, _ in timed})}")
 
     needed_posts = {post_type: target_posts // len(PLANNED_POST_TYPES) for post_type in PLANNED_POST_TYPES}
 
@@ -508,28 +659,13 @@ def plan_content_for_user(self, user_id: int):
     # shape is steered in the text-post prompt) and the rest stay audience-value/authority content.
     mix_classes = assign_content_mix(target_posts, offset=existing_post_count)
 
-    # The 24h floor also has to hold ACROSS planning runs. `slots` only knows about this run, so a
-    # plan that starts the day after the previous plan's last post — a 7/week calendar rolling into
-    # a new month, or a user raising their cadence mid-month — would otherwise stack two posts
-    # inside one 24h window. Seed the floor with the user's last already-scheduled post while it is
-    # still ahead of us; get_last_planned_post_date_for_user returns the stored naive-UTC instant,
-    # which is exactly the clock the floor is measured on.
-    previous_utc = None
-    try:
-        if last_planned_date is not None and last_planned_date > datetime.now():
-            previous_utc = last_planned_date
-    except TypeError:  # a date (not a datetime) row — fall back to spacing within this run only
-        previous_utc = None
-    for day, post_date in enumerate(slots):
+    for day, (post_date, scheduled_datetime) in enumerate(timed):
         content_mix = mix_classes[day]
 
         # Choose a post type from the shuffled list
         post_type = _take_planned_post_type(post_types, content_mix)
 
         stage = day_type_stage(post_date.weekday())
-
-        scheduled_datetime = _schedule_slot_utc(post_date, user_id, previous_utc)
-        previous_utc = scheduled_datetime
 
         daily_plan.append({
             "scheduled_datetime": scheduled_datetime,

@@ -1161,23 +1161,25 @@ def get_next_planned_post_date(user_id: int) -> Optional[datetime]:
     except mysql.connector.Error as err:
         log_error("Could not get next planned post date", exc=err, user_id=user_id)
         return None
-def get_future_planned_posts(user_id: int) -> list:
-    """`[(id, scheduled_time)]` for every FUTURE status=planning row, soonest first (issue #2021).
+def get_future_post_slots(user_id: int) -> Optional[list]:
+    """`[(id, scheduled_time, status)]` for every FUTURE non-rejected post, soonest first.
 
-    The cadence reconcile reads this. Scoped to `planning` and to the future on purpose: a row that
-    has been approved, scheduled or posted is a commitment, and a row in the past is history.
+    The cadence reconcile and refill read this (issues #2021, #2137). Every status is returned, not
+    just `planning`: an approved or scheduled post still fills its week, so the refill must count it,
+    while only a `planning` row may ever be dropped. `None` — never `[]` — when the read fails,
+    because an empty answer would read as "every slot is a hole" and the refill would double-book.
     """
     try:
         with db_cursor() as cursor:
             cursor.execute(
-                "SELECT id, scheduled_time FROM posts"
-                " WHERE status = 'planning' AND user_id = %s AND scheduled_time > NOW()"
+                "SELECT id, scheduled_time, status FROM posts"
+                " WHERE status != 'rejected' AND user_id = %s AND scheduled_time > NOW()"
                 " ORDER BY scheduled_time",
                 (user_id,))
             return list(cursor.fetchall() or [])
     except mysql.connector.Error as err:
         log_error("Could not read the planned tail", exc=err, user_id=user_id)
-        return []
+        return None
 
 
 def delete_planned_posts(user_id: int, post_ids: list) -> int:
