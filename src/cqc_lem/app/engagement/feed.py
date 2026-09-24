@@ -613,7 +613,7 @@ def _feed_post_identity(card, author: str, content: str, driver=None) -> "tuple[
     Source is 'permalink' | 'card' | 'hash' — recorded on the run so we can confirm live that feed
     comments key on the stable activity URN and not on the volatile content hash (issue #580).
 
-    Rungs, exhausted in order (#2151, grounded on five live group feeds): the card's own or a
+    Rungs, exhausted in order (#2151, grounded on seven live group feeds): the card's own or a
     single-post ancestor's URN attribute ('card') → its `/feed/update/` anchor ('permalink') → a URN
     anywhere inside the card ('card') → the content hash. The container outranks the anchor because
     on 15 of 47 live group cards the anchor named a DIFFERENT post (the original a group share
