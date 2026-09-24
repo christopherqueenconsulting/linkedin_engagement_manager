@@ -459,3 +459,82 @@ class TestTheShareBoxChainIsShared:
 
         assert feed._GROUP_SHARE_BOX_LOCATORS is sc.SHARE_BOX_LOCATORS
         assert feed._GROUP_SHARE_BOX_TEXT_SIGNALS is sc.SHARE_BOX_TEXT_SIGNALS
+
+
+class TestTheSeptember2026Reground:
+    """What the live DOM became on 2026-09-14 (#2067), one assertion per thing that moved.
+
+    The share box stopped opening an overlay on the feed and started NAVIGATING to
+    `linkedin.com/sharing/compose`, which mounts the composer — and the occasion picker behind it —
+    in a native `<dialog data-testid="dialog">` with neither `role` nor `aria-modal`; the occasion
+    entry became an `<a href>` labelled "Celebration"; and the composer's overflow was renamed
+    "Expand content types". Every label below is quoted from the probe reading in
+    `docs/sdui-selenium-notes.md`.
+    """
+
+    @staticmethod
+    def _control(tag: str, label: str, aria: str = None):
+        control = MagicMock()
+        control.tag_name = tag
+        control.text = label
+        control.is_displayed.return_value = True
+        control.get_attribute.side_effect = lambda name: {"aria-label": aria}.get(name)
+        return control
+
+    @staticmethod
+    def _container(controls):
+        container = MagicMock()
+        container.find_elements.return_value = list(controls)
+        return container
+
+    def test_the_native_dialog_element_is_a_container_rung(self):
+        """The picker carries no `role` and no `aria-modal` — only the tag says what it is."""
+        assert "dialog" in [part.strip() for part in sc.COMPOSER_CONTAINER_CSS.split(",")]
+
+    def test_the_entry_is_reached_as_a_link_labelled_celebration(self):
+        """The real matcher, not a stubbed one: "celebrate" is word-bounded and cannot reach it."""
+        link = self._control("a", "Celebration")
+        container = self._container([self._control("button", "Post"), link])
+
+        assert sc.find_composer_control(container, sc.OCCASION_ENTRY_LABELS,
+                                        css=sc.OCCASION_ENTRY_CSS) is link
+
+    def test_the_entry_css_is_the_only_lookup_that_admits_a_link(self):
+        """Widening the SHARED set is how a walk reaches a control it was never meant to see."""
+        assert "a[href]" in sc.OCCASION_ENTRY_CSS
+        assert "a[href]" not in sc.COMPOSER_AFFORDANCE_CSS
+
+    def test_the_renamed_overflow_is_a_rung_not_a_replacement(self):
+        assert sc.OCCASION_MORE_LABELS[0] == "more"
+        assert "expand content types" in sc.OCCASION_MORE_LABELS
+
+    def test_the_picker_still_never_settles_for_a_neighbouring_occasion(self):
+        """#1012 on the re-grounded screen: "New certification" sits one row from the target."""
+        options = [self._control("div", "Work anniversary Work anniversary"),
+                   self._control("div", "New certification Celebrate a new certification."),
+                   self._control("div", "Project launch Share a new project milestone."),
+                   self._control("div", "New educational milestone Share an educational "
+                                        "milestone.")]
+        container = self._container(options)
+
+        launch = sc.find_composer_control(container,
+                                          sc.occasion_type_labels(
+                                              sc.OCCASION_TYPE_LABELS["project_launch"]))
+        milestone = sc.find_composer_control(
+            container, sc.occasion_type_labels(sc.OCCASION_TYPE_LABELS["educational_milestone"]))
+
+        assert launch is options[2]
+        assert milestone is options[3]
+
+    def test_an_archetype_with_no_row_resolves_nothing_on_that_screen(self):
+        """The picker offers five occasions and this map maps two — the other three stay unclickable.
+
+        A walk that settled for one would publish a claim about the author nobody made.
+        """
+        container = self._container([
+            self._control("div", "Work anniversary Work anniversary"),
+            self._control("div", "New position Share a job update.")])
+
+        assert sc.find_composer_control(container,
+                                        sc.occasion_type_labels(
+                                            sc.OCCASION_TYPE_LABELS["project_launch"])) is None

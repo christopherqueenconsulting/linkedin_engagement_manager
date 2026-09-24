@@ -837,6 +837,65 @@ happened. If this ever needs deeper verification (e.g. confirming the editor rea
 Next), that has to happen the way #1621's original chain was grounded: interactively, by a human
 driving `selenium-lem` or the noVNC debug node — not through this guarded probe.
 
+## The share box NAVIGATES now, and the composer is a native `<dialog>` (#2067)
+
+Live-grounded 2026-09-14 (`/feed/`, user 1, debug node, `project_launch`). The 2026-08-17 shape
+above is gone on this account's variant, and three separate things moved at once — which is why the
+weekly sweep graded it `drift` while the trigger itself was working the whole time.
+
+**1. The share box is a route, not an overlay.** Clicking `Start a post` leaves `/feed/` and loads
+`https://www.linkedin.com/sharing/compose`. `deep_overlay` on that page reports
+`shadow_hosts: 1, shadow_overlays: []` — nothing composer-shaped is shadow-mounted any more, so the
+#1621 `#interop-outlet` reading no longer describes this surface.
+
+**2. The composer's container is a native `<dialog data-testid="dialog">`** carrying **neither**
+`role='dialog'` **nor** `aria-modal`. `div[role='dialog'], [aria-modal='true']` therefore matched
+nothing while the composer was plainly on screen, and every step under it inherited the miss — the
+same failure shape as #1621, in a new place. `COMPOSER_CONTAINER_CSS` grew a bare `dialog` rung; the
+two older rungs stay, because the group page still serves the old modal. The four `role='dialog'`
+elements `deep_overlay` DOES count on that page are video.js leftovers
+(`Modal Window` / `Caption Settings Dialog`, `displayed: false`, 0×0) — a hit count alone is not
+evidence a composer opened.
+
+**3. "Celebrate an occasion" is now an `<a href="https://www.linkedin.com/sharing/compose">`
+labelled `Celebration`.** Two consequences, and both need their own rung:
+
+* `find_labelled` matches on WORD boundaries, so `celebrate` cannot reach `celebration` —
+  `OCCASION_ENTRY_LABELS` carries the new label explicitly, most exact intent first.
+* It is a link, and `COMPOSER_AFFORDANCE_CSS` admits no anchors. The entry gets its own candidate
+  set, `OCCASION_ENTRY_CSS`; the shared set stays narrow on purpose, because every OTHER lookup on
+  this composer commits something (the occasion type, `Next`, `Post`).
+
+Because the entry is a link, clicking it **navigates** — the container resolved before the click
+goes stale, which read as `<enumeration stopped: StaleElementReferenceException>` in the first pass.
+`publish_occasion_natively` waits longer there than at any other step and re-reads the container
+after it.
+
+The composer's own overflow was renamed too: `More` → `Expand content types` (`Collapse content
+types` once open). Expanding it offers `Media / Event / Job` and **no occasion** — on this variant
+the occasion entry is on the first row and the overflow is a dead end, so the renamed label is a
+fallback rung, not the route. `OCCASION_MORE_LABELS` keeps `more` first.
+
+The picker screen behind the entry is headed `Select occasion` and its five options render title
+and description in one node, exactly as #1621 documented:
+
+```
+Project launch            Share a new project milestone.
+Work anniversary          Work anniversary
+New position              Share a job update.
+New educational milestone Share an educational milestone.
+New certification         Celebrate a new certification.
+```
+
+`OCCASION_TYPE_LABELS` maps two of those five and is never widened to a third: `New certification`
+sits one row from `New educational milestone`, and clicking it publishes a claim about the author
+nobody made (#1012). The word-bounded match reaches `project launch` and `educational milestone`
+inside the longer strings without touching either neighbour.
+
+Past the picker the 2026-08-24 template chooser is unchanged (`Dismiss / Add a photo / Back /
+Next`), so the guard boundary in the section above still applies: `ok` here means the route resolved
+as far as that chooser.
+
 ## The comment composer has no `<form>`
 
 "Submit" means clicking the Comment/Post button next to the composer (`_composer_submitted`).
