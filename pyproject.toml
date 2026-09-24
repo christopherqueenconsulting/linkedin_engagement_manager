@@ -129,6 +129,10 @@ pytest-xdist = "^3.6"
 # structured Phase field is declared in. Only the `dev` group carried it transitively, and the unit
 # lane installs `--with test` only.
 pyyaml = "^6.0"
+# `test_baseline_matches_the_real_count` (nightly `-m slow`) runs ruff, and that lane installs
+# `--with test` only, so without it here `poetry run ruff` is "Command not found" (#2111). Same
+# pin as the `lint` group — keep the two in step.
+ruff = ">=0.1.5,<0.17.0"
 
 
 [tool.coverage.run]
