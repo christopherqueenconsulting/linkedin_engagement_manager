@@ -50,6 +50,7 @@ from cqc_lem.app.engagement.posting import (
 )
 from cqc_lem.app.my_celery import app as shared_task
 from cqc_lem.app.queue_once import QueueOnce
+from cqc_lem.app.task_outcome import TaskOutcome, lane_result
 from cqc_lem.utilities import golden_hour as _golden
 from cqc_lem.utilities.db import (
     CatchupTouchStatus,
@@ -2651,11 +2652,19 @@ def auto_weekly_youtube_token_check(self):
     disuse expiry, which is why it must keep running while the tutorial feature is off. Alerts the
     owner only when the grant is provably gone; an unreachable token endpoint stays `unknown`.
     """
-    from cqc_lem.utilities.marketing.youtube_auth import run_health_probe
+    from cqc_lem.utilities.marketing.youtube_auth import (
+        STATUS_NEEDS_REAUTH,
+        STATUS_OK,
+        run_health_probe,
+    )
 
     state = run_health_probe()
-    return (f"YouTube token {state.get('status')} at {state.get('checked_at')} "
-            f"({state.get('reason')}, emailed={state.get('emailed')})")
+    status = state.get("status")
+    # Only a PROVED dead grant fails the run (#2097); `unknown` could not decide, so it is no verdict.
+    outcome = {STATUS_OK: TaskOutcome.LANDED,
+               STATUS_NEEDS_REAUTH: TaskOutcome.FAILED}.get(status, TaskOutcome.NO_OP)
+    return lane_result(outcome, f"YouTube token {status} at {state.get('checked_at')} "
+                                f"({state.get('reason')}, emailed={state.get('emailed')})")
 
 
 if __name__ == "__main__":

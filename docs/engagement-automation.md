@@ -1167,3 +1167,31 @@ Three separate books, and #1867 is what stopped them being one:
 - **Observability:** `email_challenge`, `unconfirmed` and `already_pending` are `invite_outcome`
   reasons — values on the existing event, never a new capture. A breakdown on `reason` is now also
   the measure of how much of the backlog is waiting on #1836.
+
+## A lane run ends in the Celery state its outcome earned (`app/task_outcome.py`, issue #2097)
+
+The 2026-09 audit counted 0 FAILURE and 0 RETRY across 20,841 task runs. In the same window the
+newsletter, the profile-viewer lane and the scheduled DMs delivered nothing. Each task caught its
+own failure and returned a string, and a returned string is Celery SUCCESS. So the `celery_task`
+failure tile had nothing it could fire on.
+
+- **One vocabulary.** `TaskOutcome` has three values: `landed`, `no_op` and `failed`.
+  `lane_result(outcome, message)` returns the message for the first two. For `failed` it raises
+  `LaneTaskFailed`. Only a raise makes Celery record FAILURE and emit the `task-failed` event that
+  Flower counts.
+- **What `failed` means.** A fault stopped the run. Examples: a session that would not open, a
+  raise, a crashed tab, a dropped Grid relay, a publish flow that did not complete, a DM that did not
+  land, or a YouTube grant Google proved dead.
+- **What is not a failure.** A designed stop is `no_op`, or `landed` if anything landed. Designed
+  stops are the 429 back-off, a dedup skip, a daily cap, a walk's own time budget, a deploy ending
+  the session, and an `unknown` token probe.
+- **No second `$exception`.** `on_task_failure` does not file a `LaneTaskFailed`. The lane already
+  logged the failure at its own level; a crashed tab, for example, is a warning that escalates on
+  repeat (#1746). The FAILURE state is the count, and the log line owns the issue.
+- **Where it applies.** It covers the six tasks the audit named: `auto_publish_edition`,
+  `engage_with_profile_viewer`, `send_scheduled_dm`, `auto_scrape_post_stats`,
+  `auto_comment_in_groups` and `auto_weekly_youtube_token_check`.
+- **The ratchet.** `TestSwallowedFailureRatchet` in `test_selenium_lane_event_ratchet.py` extends
+  the #1816 ratchet. It scans every `se_*` task for a broad `except` that returns a string. The
+  known offenders are listed in `selenium_lane_swallow_baseline.json`. A new offender fails the
+  build, and a fixed one must leave the list.

@@ -6,6 +6,8 @@ import pytest
 from celery.exceptions import SoftTimeLimitExceeded
 from selenium.common.exceptions import WebDriverException
 
+from cqc_lem.app.task_outcome import LaneTaskFailed
+
 pytestmark = pytest.mark.unit
 
 _FEED = "cqc_lem.app.engagement.feed"
@@ -832,7 +834,7 @@ class TestCommentInGroups:
         # stays least-recently-walked and is next in line rather than skipped again.
         recorded.assert_called_once_with(1, "1")
 
-    def test_a_crashed_tab_ends_the_run_on_what_shipped_without_raising(self):
+    def test_a_crashed_tab_ends_the_run_in_failure_on_what_shipped(self):
         """Issue #1746: Chrome can kill the renderer behind a tab (usually an OOM after many group
         navigations in one session) without invalidating the session itself. No further navigation
         on that tab will succeed either, so the walk ends the same way a lost session does — keep
@@ -855,9 +857,10 @@ class TestCommentInGroups:
              patch(f"{_FEED}.record_group_comment_run") as recorded, \
              patch(f"{_FEED}.log_warning") as warned, \
              patch(f"{_FEED}.log_error") as err, \
-             patch(f"{_FEED}.quit_gracefully") as quit_driver:
-            result = auto_comment_in_groups.run(user_id=1)
-        assert result == "Commented 2 time(s) before the browser tab crashed"
+             patch(f"{_FEED}.quit_gracefully") as quit_driver, \
+             pytest.raises(LaneTaskFailed, match="Commented 2 time\\(s\\) before the browser tab crashed"):
+            # Ends the run in Celery FAILURE (#2097) — a raise the lane owns, filed by its warning.
+            auto_comment_in_groups.run(user_id=1)
         assert cfi.call_count == 1  # the second group is unreachable on the crashed tab
         assert warned.called and not err.called
         quit_driver.assert_called_once_with(driver)
@@ -932,7 +935,7 @@ class TestCommentInGroups:
         assert warned.called and not err.called
         quit_driver.assert_called_once_with(driver)
 
-    def test_a_grid_relay_error_ends_the_run_on_what_shipped_without_raising(self):
+    def test_a_grid_relay_error_ends_the_run_in_failure_on_what_shipped(self):
         """Issue #1784: the Grid hub's relay to the node can drop a single command mid-walk.
 
         (`java.io.UncheckedIOException: Failed to execute request (POST .../execute/sync)`). That
@@ -959,9 +962,9 @@ class TestCommentInGroups:
              patch(f"{_FEED}.record_group_comment_run") as recorded, \
              patch(f"{_FEED}.log_warning") as warned, \
              patch(f"{_FEED}.log_error") as err, \
-             patch(f"{_FEED}.quit_gracefully") as quit_driver:
-            result = auto_comment_in_groups.run(user_id=1)
-        assert result == "Commented 2 time(s) before the Grid relay failed"
+             patch(f"{_FEED}.quit_gracefully") as quit_driver, \
+             pytest.raises(LaneTaskFailed, match="Commented 2 time\\(s\\) before the Grid relay failed"):
+            auto_comment_in_groups.run(user_id=1)
         assert cfi.call_count == 1  # the second group is unreachable once the relay dropped
         assert warned.called and not err.called
         quit_driver.assert_called_once_with(driver)

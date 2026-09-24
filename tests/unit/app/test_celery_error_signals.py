@@ -54,6 +54,16 @@ class TestTaskFailure:
 
         assert mock_capture.call_args[1]["user_id"] == 9
 
+    def test_a_lane_failure_is_not_filed_again(self):
+        """#2097: the lane logged its own failure; its FAILURE state is the count, not a new issue."""
+        from cqc_lem.app.task_outcome import LaneTaskFailed
+        with patch(f"{_MOD}.capture_exception") as mock_capture:
+            from cqc_lem.app.my_celery import on_task_failure
+            on_task_failure(task_id="abc", exception=LaneTaskFailed("DM failed"),
+                            sender=_sender("cqc_lem.app.run_automation.send_scheduled_dm"), kwargs={})
+
+        mock_capture.assert_not_called()
+
 
 class TestTaskRetry:
     def test_captures_the_reason_when_it_is_an_exception(self):

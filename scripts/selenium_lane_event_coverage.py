@@ -12,6 +12,11 @@ never call `track_feed_scan` / `track_catchup_run` directly, they call a shared 
 (`comment_on_feed_inline`, `report_catchup_run`) that does — a text search of the task body alone
 would flag both as silent when they are not.
 
+The same module computes the second half of the silent-success ratchet (issue #2097): which `se_*`
+tasks catch a broad `Exception` and hand back a string. A returned string ends the task in Celery
+SUCCESS whatever happened, so a lane shaped like that can never show up as a FAILURE. A lane names
+its outcome through `cqc_lem.app.task_outcome.lane_result` instead.
+
 Run directly to see the current no-emit list:
 
     poetry run python scripts/selenium_lane_event_coverage.py
@@ -89,6 +94,55 @@ def tasks_with_no_outcome_event() -> Set[str]:
         if fn.__name__ not in funcs or not _calls_a_tracker(fn.__name__, funcs, set()):
             no_emit.add(wire_name)
     return no_emit
+
+
+_BROAD_EXCEPTIONS = {"Exception", "BaseException"}
+
+
+def _is_broad_handler(handler: ast.ExceptHandler) -> bool:
+    """True for a bare `except:`, `except Exception` / `BaseException`, or a tuple naming one."""
+    if handler.type is None:
+        return True
+    names = handler.type.elts if isinstance(handler.type, ast.Tuple) else [handler.type]
+    return any(isinstance(n, ast.Name) and n.id in _BROAD_EXCEPTIONS for n in names)
+
+
+def _returns_a_string(nodes: list) -> bool:
+    """True if these statements `return` a string literal or f-string, not counting nested defs."""
+    stack = list(nodes)
+    while stack:
+        node = stack.pop()
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)):
+            continue
+        if isinstance(node, ast.Return) and (
+                isinstance(node.value, ast.JoinedStr)
+                or (isinstance(node.value, ast.Constant) and isinstance(node.value.value, str))):
+            return True
+        stack.extend(ast.iter_child_nodes(node))
+    return False
+
+
+def swallows_failure(func_source: str) -> bool:
+    """True if a broad `except` handler in `func_source` returns a string literal or f-string."""
+    tree = ast.parse(func_source)
+    return any(isinstance(node, ast.ExceptHandler) and _is_broad_handler(node)
+               and _returns_a_string(node.body)
+               for node in ast.walk(tree))
+
+
+def tasks_that_swallow_failure() -> Set[str]:
+    """Wire names of every `se_*` task whose own body catches `Exception` and returns a string."""
+    import cqc_lem.app  # noqa: F401
+    from cqc_lem.app.my_celery import app
+
+    swallowing: Set[str] = set()
+    for wire_name in selenium_lane_wire_names():
+        task = app.tasks[wire_name]
+        fn = getattr(task, "__wrapped__", None) or task.run
+        funcs = _module_func_sources(inspect.getsourcefile(fn))
+        if fn.__name__ in funcs and swallows_failure(funcs[fn.__name__]):
+            swallowing.add(wire_name)
+    return swallowing
 
 
 if __name__ == "__main__":

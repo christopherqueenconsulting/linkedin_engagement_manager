@@ -76,6 +76,7 @@ from cqc_lem.app.engagement.feed import comment_on_post
 from cqc_lem.app.engagement.invites import invite_to_connect
 from cqc_lem.app.my_celery import app as shared_task
 from cqc_lem.app.queue_once import QueueOnce
+from cqc_lem.app.task_outcome import TaskOutcome, lane_result
 from cqc_lem.utilities.ai.ai_helper import (
     ai_check_message_history,
     generate_ai_response,
@@ -2268,6 +2269,9 @@ def engage_with_profile_viewer(self, user_id: int, viewer_url, viewer_name):
 
     result = "Profile Viewer Engagement Started"
     engagement_successful = False
+    # A branch that files nothing is a dedup skip (NO_OP); only a fault below sets FAILED (#2097).
+    failed = False
+    failure_cause = None
 
     # Check if we already engaged with this viewer today
     if has_engaged_url_with_x_days(user_id, viewer_url, 1):
@@ -2281,9 +2285,15 @@ def engage_with_profile_viewer(self, user_id: int, viewer_url, viewer_name):
         try:
             driver, wait, user_email, my_profile = get_current_profile(user_id=user_id,
                                                                        session_name="Profile Viewer Engagement")
+        except LinkedInRateLimited as e:
+            # `get_current_profile` already warned (429 breaker, manual pause or this account's own
+            # cooldown) — a self-clearing back-off, so the run is a NO_OP, not a fresh ERROR.
+            log_debug(f"Profile viewer engagement skipped — LinkedIn rate-limited: {e}",
+                      user_id=user_id, task_name="engage_with_profile_viewer")
+            return lane_result(TaskOutcome.NO_OP, f"Skipped profile viewer engagement — rate limited: {e}")
         except Exception as e:
             log_error("Error while getting profile for profile viewer engagement", exc=e, user_id=user_id, task_name="engage_with_profile_viewer")
-            return f"Failed to start profile viewer engagement: {e}"
+            return lane_result(TaskOutcome.FAILED, f"Failed to start profile viewer engagement: {e}", cause=e)
 
         try:
 
@@ -2445,10 +2455,13 @@ def engage_with_profile_viewer(self, user_id: int, viewer_url, viewer_name):
                             user_id=user_id, action_type="scrape",
                             task_name="engage_with_profile_viewer")
                 result = f"Failed to get profile data for {viewer_name}"
+                failed = True
 
         except Exception as e:
             log_error("Error while engaging with profile viewer", exc=e, user_id=user_id, action_type="profile_engagement")
             result = f"Error while engaging with profile viewer: {e}"
+            failed = True
+            failure_cause = e
         finally:
             # Log engagement efforts to the log
             insert_new_log(user_id=user_id, action_type=LogActionType.ENGAGED,
@@ -2458,7 +2471,9 @@ def engage_with_profile_viewer(self, user_id: int, viewer_url, viewer_name):
 
             quit_gracefully(driver)
 
-    return result
+    if failed:
+        return lane_result(TaskOutcome.FAILED, result, cause=failure_cause)
+    return lane_result(TaskOutcome.LANDED if engagement_successful else TaskOutcome.NO_OP, result)
 
 
 DM_SEND_CONFIRM_SECONDS = float(os.getenv("DM_SEND_CONFIRM_SECONDS", "6"))
@@ -2659,7 +2674,8 @@ def send_scheduled_dm(self, dm_id: int):
     )
     dm = get_scheduled_dm(dm_id)
     if not dm or dm["status"] not in (ScheduledDmStatus.APPROVED, ScheduledDmStatus.SCHEDULED):
-        return f"Scheduled DM {dm_id} not sendable (status={dm['status'] if dm else 'missing'})"
+        return lane_result(TaskOutcome.NO_OP,
+                           f"Scheduled DM {dm_id} not sendable (status={dm['status'] if dm else 'missing'})")
 
     user_id = dm["user_id"]
     prefs = get_engagement_preferences(user_id)
@@ -2668,7 +2684,7 @@ def send_scheduled_dm(self, dm_id: int):
                          caps=engagement_caps_from_prefs(prefs)) <= 0:
         log_info(f"send_scheduled_dm: daily DM budget spent for user {user_id}; deferring DM {dm_id}")
         update_scheduled_dm_status(dm_id, ScheduledDmStatus.APPROVED)  # retry on the next scan
-        return f"Scheduled DM {dm_id} deferred (daily DM cap reached)"
+        return lane_result(TaskOutcome.NO_OP, f"Scheduled DM {dm_id} deferred (daily DM cap reached)")
 
     dm_sent = send_dm_now(user_id, dm["recipient_profile_url"], dm["message"])
     update_scheduled_dm_status(dm_id, ScheduledDmStatus.SENT if dm_sent else ScheduledDmStatus.FAILED)
@@ -2680,7 +2696,8 @@ def send_scheduled_dm(self, dm_id: int):
         # queue follow-ups for a conversation that never began.
         enqueue_next_followup(user_id, dm["recipient_profile_url"],
                               dm.get("recipient_name") or "", "profile_viewer", 0)
-    return f"Scheduled DM {dm_id} -> {'sent' if dm_sent else 'failed'}"
+    return lane_result(TaskOutcome.LANDED if dm_sent else TaskOutcome.FAILED,
+                       f"Scheduled DM {dm_id} -> {'sent' if dm_sent else 'failed'}")
 
 
 def _reply_to_person_on_post(driver, wait, post_url: str, person_profile_url: str, text: str,

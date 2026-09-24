@@ -10,6 +10,8 @@ from unittest.mock import MagicMock, patch
 import pytest
 from selenium.common.exceptions import TimeoutException
 
+from cqc_lem.app.task_outcome import LaneTaskFailed
+
 pytestmark = pytest.mark.unit
 
 # This file drives FIVE tasks that no longer share a module (#1154), so three spellings are live
@@ -300,28 +302,28 @@ class TestEngageWithProfileViewerLoginError:
         """engage_with_profile_viewer returns error string when login challenge occurs."""
         with patch(f"{_OUT}.has_engaged_url_with_x_days", return_value=False), \
              patch(_PATCH_GET_PROFILE, side_effect=_linkedin_challenge_error()), \
-             patch(_PATCH_LOG_ERROR) as mock_log:
+             patch(_PATCH_LOG_ERROR) as mock_log, \
+             pytest.raises(LaneTaskFailed, match="Failed to start profile viewer engagement"):
             from cqc_lem.app.engagement.outreach import engage_with_profile_viewer
 
-            result = engage_with_profile_viewer.run(
+            engage_with_profile_viewer.run(
                 user_id=1, viewer_url="https://linkedin.com/in/test", viewer_name="Test User"
             )
 
-        assert "Failed to start profile viewer engagement" in result
         mock_log.assert_called_once()
 
     def test_returns_error_string_on_timeout_exception(self):
         """engage_with_profile_viewer returns error string on TimeoutException."""
         with patch(f"{_OUT}.has_engaged_url_with_x_days", return_value=False), \
              patch(_PATCH_GET_PROFILE, side_effect=_timeout_error()), \
-             patch(_PATCH_LOG_ERROR) as mock_log:
+             patch(_PATCH_LOG_ERROR) as mock_log, \
+             pytest.raises(LaneTaskFailed, match="Failed to start profile viewer engagement"):
             from cqc_lem.app.engagement.outreach import engage_with_profile_viewer
 
-            result = engage_with_profile_viewer.run(
+            engage_with_profile_viewer.run(
                 user_id=1, viewer_url="https://linkedin.com/in/test", viewer_name="Test User"
             )
 
-        assert "Failed to start profile viewer engagement" in result
         mock_log.assert_called_once()
 
     def test_skips_login_when_already_engaged_today(self):
