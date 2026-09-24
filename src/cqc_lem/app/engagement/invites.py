@@ -1978,7 +1978,10 @@ def automate_invites_to_company_page_for_user(self, user_id: int):
     # one failure mode `company_page_invite_run` exists to make visible, and letting the exception
     # escape here would emit nothing at all — indistinguishable from a day paced down to zero.
     try:
-        driver, wait = get_driver_wait_pair(session_name='Company Page Invites', user_id=user_id)
+        # needs_images=True (#2095): images-blocked, the invite modal never rendered its credit
+        # counter — the lane read 0/0 on 15 of 15 runs while the probe read 50/50 the same days.
+        driver, wait = get_driver_wait_pair(session_name='Company Page Invites', user_id=user_id,
+                                            needs_images=True)
     except Exception as e:
         log_error("Could not start a browser session for company page invites", exc=e,
                   user_id=user_id, task_name=task_name, action_type="company_invite")

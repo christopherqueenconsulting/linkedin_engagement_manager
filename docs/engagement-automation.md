@@ -587,6 +587,10 @@ A paced DAILY drip, not the once-a-month blast it used to be.
   `max_invites_per_day` and run through `human_pacing`; **credit spread**
   `credits_remaining / days_left_in_month` (renews on the 1st, REFUNDED on accept); live credit
   count (hard stop at 0).
+- A `0/0` counter is `credits_unknown`, never `credits_exhausted` (#2095): no pool at all means
+  the counter never rendered. Skipped with a WARNING naming the reading; `0/N` stays exhausted.
+  The session runs with `needs_images=True` — images-blocked, the lane read 0/0 on 15 of 15
+  runs while the probe read 50/50 the same days.
 - `plan_daily_invites` decides all of that BEFORE a Chrome session opens — most days the
   allowance is zero.
 - Idempotency is durable, not Redis: today's spend SUMMED out of `logs` rows

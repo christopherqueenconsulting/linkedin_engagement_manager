@@ -57,7 +57,7 @@ from cqc_lem.utilities.human_pacing import (
 )
 from cqc_lem.utilities.linkedin.helper import login_to_linkedin
 from cqc_lem.utilities.linkedin.zero_walk import report_zero_walk
-from cqc_lem.utilities.logger import log_debug, log_info
+from cqc_lem.utilities.logger import log_debug, log_info, log_warning
 from cqc_lem.utilities.selenium_util import (
     click_element_wait_retry,
     get_element_wait_retry,
@@ -72,6 +72,10 @@ INVITE_STATUS_SENT = "sent"
 INVITE_STATUS_BUDGET_REACHED = "budget_reached"
 INVITE_STATUS_DISABLED = "disabled"           # the user's cap (or max_invites_per_day) is 0
 INVITE_STATUS_CREDITS_EXHAUSTED = "credits_exhausted"
+# A `0/0` counter: a page with no pool at all is not a real month, it is a page that never
+# rendered the counter — 15 of 15 lane reads in an images-blocked session while the probe read 50/50
+# the same days (#2095). Skipped like `credits_exhausted`, but reported apart so it is visible.
+INVITE_STATUS_CREDITS_UNKNOWN = "credits_unknown"
 INVITE_STATUS_NO_CANDIDATES = "no_candidates"
 # Zero invitees while the modal still renders invitee rows — the row/checkbox XPaths rotated. Kept
 # apart from `no_candidates` for the reason `session_failed` is kept apart from `failed`: "everyone
@@ -163,10 +167,10 @@ def plan_daily_invites(user_id: int, prefs: Optional[dict] = None) -> dict:
 def get_available_credits(driver, wait):
     """Read the page's live "<current>/<total> credits available" counter — ceiling number 3.
 
-    Returns `(0, 0)` when that element never resolves, which is the fail-CLOSED reading the caller
-    depends on: it treats 0 as `credits_exhausted` and sends nothing. An unreadable counter and a
-    genuinely empty pool therefore both stop the run, because spending an invite we cannot account
-    for is the one outcome worse than skipping a day.
+    Returns `(0, 0)` when that element never resolves. The caller reads a zero TOTAL as
+    `credits_unknown` (#2095) and a zero CURRENT against a real total as `credits_exhausted`; both
+    send nothing, because spending an invite we cannot account for is the one outcome worse than
+    skipping a day.
     """
     # myprint("Entering get_available_credits function.")
     current_credits = 0
@@ -178,9 +182,9 @@ def get_available_credits(driver, wait):
         credit_text = getText(credit_text_element)
         current_credits, total_credits = map(int, credit_text.split('/'))
     except TimeoutException:
-        # DEBUG: the unconditional line below reports the same 0/0 either way, and an empty credit
-        # pool is the expected state for most of the month. ONE condition, ONE record.
-        log_debug("No remaining invite credits")
+        # DEBUG: the caller WARNs on the resulting 0/0 as `credits_unknown` (#2095). ONE
+        # condition, ONE record.
+        log_debug("Invite credit counter not found")
 
     log_info(f"Credits available: {current_credits}/{total_credits}")
     return current_credits, total_credits
@@ -489,6 +493,11 @@ def automate_invitations(driver, wait, user_id: int, plan: Optional[dict] = None
         driver.get(invite_page_url)
 
     current_credits, total_credits = get_available_credits(driver, wait)
+    if total_credits <= 0:
+        log_warning(f"Company page invites: credit counter read {current_credits}/{total_credits} — "
+                    "treating as unknown, not exhausted", user_id=user_id,
+                    action_type="company_invite")
+        return _report(INVITE_STATUS_CREDITS_UNKNOWN, **base)
     if current_credits <= 0:
         log_info("Company page invites: no credits left this month", user_id=user_id,
                  action_type="company_invite")
