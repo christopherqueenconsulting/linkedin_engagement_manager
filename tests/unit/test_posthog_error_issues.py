@@ -739,7 +739,8 @@ class TestRegressions:
     never refiled.
     """
 
-    _CLOSED = {"number": 1985, "state": "CLOSED", "closedAt": "2026-09-10T12:00:00Z"}
+    _CLOSED = {"number": 1985, "state": "CLOSED", "stateReason": "COMPLETED",
+               "closedAt": "2026-09-10T12:00:00Z"}
 
     def test_a_recurrence_past_the_grace_is_a_regression(self, mod):
         row = _row(mod, last_seen="2026-09-14T08:00:00Z")
@@ -758,7 +759,8 @@ class TestRegressions:
 
     def test_the_latest_close_is_the_fix_that_did_not_hold(self, mod):
         row = _row(mod, last_seen="2026-09-22T00:00:00Z")
-        later = {"number": 2150, "state": "CLOSED", "closedAt": "2026-09-18T00:00:00Z"}
+        later = {"number": 2150, "state": "CLOSED", "stateReason": "COMPLETED",
+                 "closedAt": "2026-09-18T00:00:00Z"}
         assert mod.regression_of(row, [self._CLOSED, later])["number"] == 2150
         # ...and a recurrence inside the LATER close's grace is not one, whatever the earlier did.
         row = _row(mod, last_seen="2026-09-18T10:00:00Z")
@@ -769,8 +771,21 @@ class TestRegressions:
         ("2026-09-10T12:00:00Z", None), ("2026-09-10T12:00:00Z", "t1")])
     def test_an_unreadable_timestamp_is_never_a_regression(self, mod, closed_at, last_seen):
         row = _row(mod, last_seen=last_seen)
-        carriers = [{"number": 1985, "state": "CLOSED", "closedAt": closed_at}]
+        carriers = [{**self._CLOSED, "closedAt": closed_at}]
         assert mod.regression_of(row, carriers) is None
+
+    @pytest.mark.parametrize("reason", ["NOT_PLANNED", "DUPLICATE", None, ""])
+    def test_only_a_completed_close_can_regress(self, mod, reason):
+        # 11 of the first 60 closed auto-filed issues were NOT_PLANNED: a human silenced them, and
+        # refiling each one as a "regression" would undo that on every recurrence.
+        row = _row(mod, last_seen="2026-09-20T00:00:00Z")
+        assert mod.regression_of(row, [{**self._CLOSED, "stateReason": reason}]) is None
+
+    def test_a_not_planned_latest_close_wins_over_an_earlier_fix(self, mod):
+        row = _row(mod, last_seen="2026-09-22T00:00:00Z")
+        silenced = {"number": 2150, "state": "CLOSED", "stateReason": "NOT_PLANNED",
+                    "closedAt": "2026-09-18T00:00:00Z"}
+        assert mod.regression_of(row, [self._CLOSED, silenced]) is None
 
     def test_no_carriers_is_not_a_regression(self, mod):
         assert mod.regression_of(_row(mod, last_seen="2026-09-20T00:00:00Z"), []) is None
@@ -804,7 +819,8 @@ class TestRegressions:
 
     def test_closed_regressions_reuses_the_filed_search(self, mod):
         gh = mod.GitHubIssues("owner/repo")
-        payload = ('[{"number": 1985, "state": "CLOSED", "closedAt": "2026-09-10T12:00:00Z", '
+        payload = ('[{"number": 1985, "state": "CLOSED", "stateReason": "COMPLETED", '
+                   '"closedAt": "2026-09-10T12:00:00Z", '
                    '"body": "x posthog-issue-a", "comments": []}]')
         rows = [_row(mod, issue_id="a", last_seen="2026-09-14T08:00:00Z")]
         with patch.object(gh, "_run", return_value=SimpleNamespace(
@@ -813,7 +829,7 @@ class TestRegressions:
             found = mod.closed_regressions(gh, rows, already)
         assert run.call_count == 1
         assert found == {mod.marker("a"): {"number": 1985, "closedAt": "2026-09-10T12:00:00Z"}}
-        assert "state,closedAt" in run.call_args[0][0][-1]
+        assert "state,stateReason,closedAt" in run.call_args[0][0][-1]
 
     def test_closed_regressions_skips_unfiled_and_resolved_rows(self, mod):
         gh = MagicMock()

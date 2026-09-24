@@ -338,8 +338,9 @@ Scope / Files / Acceptance), with a link to the PostHog issue for the stack trac
   Closed counts — a fixed exception that trickles in for one more day must not reopen the backlog
   item.
 - **A regression is refiled** (issue #2110): when EVERY issue carrying the marker is closed and the
-  window's `last_seen` is more than `REGRESSION_GRACE_HOURS` (24) after the LATEST `closedAt`, the
-  fix did not hold, so a new issue is filed with `[regression of #N]` in the title and a
+  window's `last_seen` is more than `REGRESSION_GRACE_HOURS` (24) after the LATEST `closedAt`, and
+  that close is `COMPLETED` (a `NOT_PLANNED`/`DUPLICATE` close is a human silencing it, never a
+  regression), the fix did not hold, so a new issue is filed with `[regression of #N]` in the title and a
   "Regression of #N" line in its Why (GitHub cross-links it onto #N's timeline). It carries the same
   marker, so while it is open the id layer skips the row as usual. The grace exists because a closing
   PR merges hours before it deploys; an unreadable `closedAt`/`last_seen` is never a regression.

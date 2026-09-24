@@ -300,8 +300,10 @@ def regression_of(row: dict, carriers: Optional[list],
 
     A regression needs EVERY carrier of the marker closed (an open one is the live tracker) and the
     last occurrence more than `grace_hours` after the LATEST close — the most recent fix is the one
-    that did not hold. An unreadable timestamp is not a regression: that is today's "already filed",
-    and a false regression would file a duplicate on every run.
+    that did not hold. That close must also be COMPLETED: `NOT_PLANNED`/`DUPLICATE` is a human saying
+    stop (an expected no-op, a won't-fix, a dup of a hand-filed tracker), not a fix that failed. An
+    unreadable timestamp or state reason is not a regression: that is today's "already filed", and a
+    false regression would file a duplicate on every run.
     """
     issues = [c for c in carriers or [] if isinstance(c, dict)]
     if not issues or any(_text(c.get("state")).upper() != "CLOSED" for c in issues):
@@ -310,6 +312,8 @@ def regression_of(row: dict, carriers: Optional[list],
     if any(closed_at is None for closed_at, _ in closes):
         return None
     closed_at, latest = max(closes, key=lambda pair: pair[0])
+    if _text(latest.get("stateReason")).upper() != "COMPLETED":
+        return None
     last_seen = parse_timestamp(row.get("last_seen"))
     if last_seen is None or last_seen <= closed_at + timedelta(hours=max(0, int(grace_hours))):
         return None
@@ -550,14 +554,14 @@ class GitHubIssues:
         return [item for item in found if isinstance(item, dict)]
 
     def carriers(self, issue_marker: str) -> list:
-        """Every issue — open or closed — carrying this marker, with its `state` and `closedAt`.
+        """Every issue — open or closed — carrying this marker, with `state`, `stateReason`, `closedAt`.
 
         Comments count as well as bodies: when the marker landed on a hand-filed tracker as a comment
         (issue #1083), that thread IS this exception's GitHub issue and must not also get one of its
         own. GitHub's search tokenizes on hyphens, so a UUID marker can match a NEIGHBOURING issue;
         the returned text is re-checked for the literal marker so dedup stays exact."""
         if issue_marker not in self._carriers:
-            found = self._search("all", issue_marker, "number,body,comments,state,closedAt",
+            found = self._search("all", issue_marker, "number,body,comments,state,stateReason,closedAt",
                                  MATCH_SEARCH_LIMIT)
             self._carriers[issue_marker] = [
                 item for item in found
