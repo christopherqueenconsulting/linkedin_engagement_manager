@@ -168,6 +168,63 @@ def record_pre_post_run(post_id: int, user_id: int, comments: Optional[int],
                               ran_at=ran_at.isoformat())
 
 
+_LANE_CLAIM_PREFIX = "engagement:prepost:claim:"
+# Garbage collection only: a post id is never scheduled twice, so the claim just has to outlive the
+# window (at most PRE_POST_COMMENT_LEAD_MINUTES) plus any late redelivery of its dispatch.
+_LANE_CLAIM_TTL_SECONDS = 24 * 60 * 60
+
+_VIEWER_TOUCH_PREFIX = "engagement:viewer_touch:"
+_VIEWER_TOUCH_TTL_SECONDS = 26 * 60 * 60
+
+
+def claim_pre_post_lane(user_id: int, post_id: int, lane: str,
+                        ttl_seconds: int = _LANE_CLAIM_TTL_SECONDS) -> bool:
+    """Claim one pre-post lane for one post, so the window runs each lane at most once (issue #2093).
+
+    True when this caller may run the lane, False when a run of it already happened for this post.
+    Each lane used to self-requeue every `future_forward` seconds across its window, and every pass
+    opened a fresh LinkedIn session — a new session every ~85 s, 41 in one 30-minute bucket. The
+    window now runs each lane at most ONCE per post, and this claim is what makes a second dispatch
+    (a stale requeue, a broker redelivery of the eta task) a no-op before any session opens.
+
+    Fails OPEN like every other marker here: with no Redis the dispatch runs, as before.
+    """
+    client = shared_redis_client()
+    if client is None:
+        return True
+    try:
+        return bool(client.set(f"{_LANE_CLAIM_PREFIX}{int(user_id)}:{int(post_id)}:{lane}", "1",
+                               nx=True, ex=int(ttl_seconds)))
+    except Exception as e:
+        log_warning("Could not claim pre-post engagement lane", exc=e, user_id=user_id,
+                    post_id=post_id, task_name=lane)
+        return True
+
+
+def claim_profile_viewer_touch(user_id: int, viewer_url: str, day: Optional[str] = None,
+                               ttl_seconds: int = _VIEWER_TOUCH_TTL_SECONDS) -> bool:
+    """Claim today's one touch of a profile viewer, before any session opens (issue #2093).
+
+    True when this caller may dispatch the engagement, False when the viewer was already dispatched
+    today. `has_engaged_url_with_x_days` only counts a SUCCESS row, written after the attempt finishes, so
+    an in-flight or failed engagement never read as "touched" — viewers were revisited 5-9 times in
+    one window. The claim is taken at dispatch, before `engage_with_profile_viewer` opens a session.
+
+    Fails OPEN: with no Redis the dispatch goes ahead and the task's own DB check still applies.
+    """
+    client = shared_redis_client()
+    if client is None:
+        return True
+    day = day or datetime.now(timezone.utc).date().isoformat()
+    digest = hashlib.sha256(viewer_url.strip().rstrip("/").encode("utf-8")).hexdigest()[:24]
+    try:
+        return bool(client.set(f"{_VIEWER_TOUCH_PREFIX}{int(user_id)}:{day}:{digest}", "1",
+                               nx=True, ex=int(ttl_seconds)))
+    except Exception as e:
+        log_warning("Could not claim profile viewer touch", exc=e, user_id=user_id)
+        return True
+
+
 def get_pre_post_window_stat(post_id: int, task_name: str = PRE_POST_TASK_COMMENTING) -> dict:
     """Read back a post's engagement-window marker for one pre-post task (defaults to feed
     commenting; empty dict when unknown / Redis unavailable).
