@@ -79,6 +79,18 @@ _ALLOWLISTS_ANNOUNCED: set[str] = set()
 #: Request hooks already reported as failing, so a broken hook says so once instead of per call.
 _HOOK_FAILURES_WARNED: set[str] = set()
 
+# What the proxy says about the call it just served, as response headers (issue #2131). Behind the
+# proxy `response.model` echoes the requested tier alias, so the body alone cannot say which
+# deployment ran or what it cost; `x-litellm-response-cost` is the same `response_cost` LiteLLM's
+# PostHog callback publishes on `$ai_generation`, so booking it keeps the ledger and that stream on
+# ONE price. Each is copied onto the parsed response as `_hidden_params`, the shape LiteLLM's own SDK
+# uses and the one `observability.llm_response_cost` / `llm_cache_hit` already read.
+_RESPONSE_HEADER_PARAMS = (
+    ("x-litellm-response-cost", "response_cost"),
+    ("x-litellm-model-id", "model_id"),
+    ("x-litellm-model-api-base", "api_base"),
+)
+
 #: Latch for the "a call site tried to opt itself out" warning, same reason as the two above.
 _HEADER_STRIPPED_WARNED: set[str] = set()
 
@@ -342,6 +354,24 @@ def _attach_prompt_logging(options: Any) -> None:
              user_id=(_request_metadata(options) or {}).get("user_id"), api_provider="litellm")
 
 
+def _attach_proxy_response_params(result: Any, response: Any) -> None:
+    """Copy the proxy's per-call response headers onto the parsed `result` as `_hidden_params`.
+
+    A header that is absent is simply not copied, and a result that already carries
+    `_hidden_params`, or cannot take an attribute (a stream, raw bytes), is left alone.
+    """
+    headers = getattr(response, "headers", None)
+    if headers is None or result is None or getattr(result, "_hidden_params", None) is not None:
+        return
+    params = {}
+    for header, key in _RESPONSE_HEADER_PARAMS:
+        value = headers.get(header)
+        if value:
+            params[key] = value
+    if params:
+        object.__setattr__(result, "_hidden_params", params)
+
+
 class AttributedOpenAI(OpenAI):
     """The OpenAI client with LEM's who/what — and which pipeline — stamped onto every proxied request.
 
@@ -379,6 +409,21 @@ class AttributedOpenAI(OpenAI):
                                 "but what it stamps is missing until this is fixed",
                                 exc=exc, api_provider="litellm")
         return super()._build_request(options, **kwargs)
+
+    def _process_response(self, *args: Any, **kwargs: Any) -> Any:
+        """Parse as the SDK does, then keep what the proxy said about the call (issue #2131).
+
+        The SDK funnels every non-streamed endpoint through here and drops the headers once parsed.
+        Never raises on the header copy: losing the booked price costs precision, losing the
+        generation costs the work.
+        """
+        result = super()._process_response(*args, **kwargs)
+        try:
+            _attach_proxy_response_params(result, kwargs.get("response"))
+        except Exception as exc:
+            log_debug("Could not keep the proxy's response headers; the call is still returned",
+                      exc=exc, api_provider="litellm")
+        return result
 
     def post(self, *args: Any, **kwargs: Any) -> Any:
         """Ride out a proxy that is not accepting connections (issue #986).

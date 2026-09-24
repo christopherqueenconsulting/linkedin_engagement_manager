@@ -137,7 +137,7 @@ class TestLlmRollupAccrual:
 
         key, field, usd = client.hincrbyfloat.call_args_list[0][0]
         assert key.startswith("lem:cost:llm:")
-        assert field == "4|content|lem-complex"
+        assert field == "4|content|lem-complex|off_worker"
         assert usd == pytest.approx(0.003 + 0.0075)
         # tokens accrue to the parallel qty bucket
         qty_call = client.hincrbyfloat.call_args_list[1][0]
@@ -190,6 +190,28 @@ class TestFlushLlmCostRollup:
         # a system-wide call has no user and no token bucket entry
         assert rows["lem-simple"]["user_id"] is None and rows["lem-simple"]["qty"] is None
         client.delete.assert_called_once_with("lem:cost:llm:2026-07-24", "lem:cost:llm:2026-07-24:qty")
+
+    def test_task_name_in_the_field_lands_on_the_ledger_row(self):
+        """Issue #2131: every LLM ledger row names its task.
+
+        A bucket written before the task joined the field (three parts) still flushes, with a NULL
+        task_name.
+        """
+        client = self._client(
+            [b"lem:cost:llm:2026-07-24"],
+            {b"4|comment|lem-medium|cqc_lem.app.run_automation.automate_commenting": b"0.01",
+             b"4|dm|lem-simple": b"0.02"},
+            {},
+        )
+        with patch(_REDIS, return_value=client), patch(f"{_MOD}._write_cost_ledger") as ledger:
+            from cqc_lem.utilities.observability import flush_llm_cost_rollup
+            assert flush_llm_cost_rollup(today="2026-07-25") == 2
+
+        rows = {c[1]["model_tier"]: c[1] for c in ledger.call_args_list}
+        assert rows["lem-medium"]["task_name"] == "cqc_lem.app.run_automation.automate_commenting"
+        assert rows["lem-medium"]["feature"] == "comment"
+        assert rows["lem-simple"]["task_name"] is None
+        assert rows["lem-simple"]["feature"] == "dm"
 
     def test_todays_bucket_is_left_alone(self):
         client = self._client([b"lem:cost:llm:2026-07-25"], {b"1|dm|lem-medium": b"0.01"}, {})

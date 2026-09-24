@@ -47,7 +47,7 @@ Every recurring cost, how it is incurred, and how we capture it:
 
 | # | Cost driver | Unit | Variable/Fixed | Scales with | Capture mechanism |
 |---|---|---|---|---|---|
-| 1 | **LLM inference** (OpenAI / Claude / Ollama Cloud / OpenRouter via LiteLLM) | per call (tokens) | Variable | usage volume × tier | `track_llm_call` `cost_usd`, keyed by the **serving model** with the tier alias preserved as `model_tier`; plus `shadow_cost_usd` for subscription-priced models |
+| 1 | **LLM inference** (OpenAI / Claude / Ollama Cloud / OpenRouter via LiteLLM) | per call (tokens) | Variable | usage volume × tier | `track_llm_call` `cost_usd` — the proxy's own `response_cost` (#2131; the per-1K estimate on the **serving model** only when the proxy reports none), with the tier alias preserved as `model_tier`; plus `shadow_cost_usd` for subscription-priced models |
 | 2 | **Research** (Perplexity Sonar `lem-research`) | per edition/call | Variable | newsletters; comments OFF by default (`COMMENT_RESEARCH_ENABLED`) | Same `llm_call` path, `feature="research"` |
 | 3 | **Media — video** (RunwayML gen4/gen4.5/premium) | per render (sec × rate) | Variable, spiky | video posts | **New** `track_media_cost` using existing `estimate_video_cost` |
 | 3a | **Media — local render** (ffmpeg: tutorial assembly, muted-autoplay caption burn-in) | per render minute | Variable, small | tutorials; video posts when `video-captions-enabled` is ON | `track_media_cost("video", "local-ffmpeg", …)` at `TUTORIAL_RENDER_COST_PER_MINUTE` / `VIDEO_CAPTION_RENDER_COST_PER_MINUTE`. No provider bill — this is our own CPU, priced so a render's true cost is answerable |
@@ -138,7 +138,10 @@ CREATE TABLE IF NOT EXISTS cost_ledger (
 PostHog is the fast analytics plane; `cost_ledger` is the durable, joinable-to-Stripe source of
 truth for the margin report (PostHog data can be sampled/retention-limited; margin math must be
 exact). High-volume LLM cost can be **rolled up daily** into `cost_ledger` (one row per
-`user×feature×tier×day`) rather than one row per call, keeping the table small.
+`user×feature×tier×task×day`) rather than one row per call, keeping the table small. The task is
+part of the rollup key since #2131 — before it every LLM row carried a NULL `task_name`; spend no
+Celery task incurred (an API request, a CLI script) is booked as `off_worker`, so NULL now only
+means a row written before that change.
 
 DB helpers (all DB access stays in `db.py` per `CLAUDE.md`):
 `insert_cost_ledger_entry(...)`, `get_user_cost(user_id, start, end)`,
@@ -213,7 +216,9 @@ instead of degrade.
 ### C.1 Core formulas
 
 ```
-MRR(user)                  = monthly price of the user's active Stripe tier (starter/professional/enterprise)
+MRR(user)                  = monthly price of the user's active Stripe tier (starter/professional/enterprise);
+                             $0 on a `trial` subscription. ONE function, `margin.user_mrr_usd`, is
+                             the only MRR source — the daily block, weekly report and cost alerts (#2131)
 variable_cost(user, month) = Σ cost_ledger[user, category ∈ {llm, media, email, geocoding}]   (attributed)
 semi_var_cost(user, month) = proxy_cost(user, month)                                            (linear-ish)
 allocated_fixed(user)      = INFRA_FIXED_MONTHLY / active_users(month)                          (amortized)
