@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.179.1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.179.0...v0.179.1) (2026-09-25)
+
+
+### Bug Fixes
+
+* **litellm:** drop vanished qwen3.5:397b from lem-complex (closes [#2196](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2196)) ([#2199](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2199)) ([f208619](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/f208619648ce337f8591e13b223ed6616bd2e0b5))
+* **ui:** stop a swallowed Vite preload error reaching React.lazy as undefined (closes [#2201](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2201)) ([#2202](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2202)) ([878cd08](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/878cd08bb84dfbfcdf55ed03e608ed86901caa30))
+
+
+### Documentation
+
+* **model-benchmarks:** decline deepseek-v4.1-flash for lem-simple/medium, hand lem-complex to [#2196](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2196) (closes [#2063](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2063)) ([d60880e](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/d60880e8aba301b862b1b354803e88858b386c7e))
+* **model-benchmarks:** decline deepseek-v4.1-flash for lem-simple/medium, lem-complex to [#2196](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2196) (closes [#2063](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2063)) ([#2197](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2197)) ([d60880e](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/d60880e8aba301b862b1b354803e88858b386c7e))
+
 ## [0.179.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.178.1...v0.179.0) (2026-09-25)
 
 
