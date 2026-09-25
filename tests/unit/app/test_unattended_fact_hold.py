@@ -121,14 +121,22 @@ class TestNewsletterGeneration:
         out = self._generate(NL14, blog_content="Last quarter 80% of tokens hit a frontier model.")
         assert out["fact_hold"] == []
 
+    def test_the_profile_json_grounds_it_when_no_synthesis_exists(self):
+        """With no synthesis the writer is shown the full profile, so its numbers are the author's."""
+        with patch(f"{_AI}._voice_reference", return_value="80% of tokens went to a frontier model"):
+            out = self._generate(NL14)
+        assert out["fact_hold"] == []
+
 
 class TestGroupPostDraft:
-    def _draft(self, text):
+    def _draft(self, text, synthesis="brief", profile_json="{}"):
         from cqc_lem.app.engagement.feed import auto_draft_group_post
+        profile = MagicMock()
+        profile.model_dump_json.return_value = profile_json
         with patch(f"{_FEED}.get_open_group_post_draft", return_value=None), \
-             patch(f"{_FEED}.load_profile_for_user", return_value=MagicMock()), \
+             patch(f"{_FEED}.load_profile_for_user", return_value=profile), \
              patch(f"{_FEED}.get_engagement_preferences", return_value={}), \
-             patch(f"{_FEED}.get_or_create_profile_synthesis", return_value="brief"), \
+             patch(f"{_FEED}.get_or_create_profile_synthesis", return_value=synthesis), \
              patch(f"{_FEED}.generate_group_post", return_value=text), \
              patch(f"{_DB}.get_story_bank_entries", return_value=[BANK_ENTRY]), \
              patch(f"{_FEED}.create_group_post_draft", return_value=6) as create:
@@ -139,6 +147,13 @@ class TestGroupPostDraft:
         result, create = self._draft(GROUP_POST_6)
         assert result == "Held group post 6 for approval"
         assert create.call_args.kwargs["status"] == GroupPostDraftStatus.SKIPPED
+
+    def test_the_profile_json_grounds_it_when_no_synthesis_exists(self):
+        result, create = self._draft(
+            GROUP_POST_6, synthesis=None,
+            profile_json='{"summary": "a 40% drop in per-call cost routing 80% of queries"}')
+        assert result == "Drafted group post 6"
+        assert create.call_args.kwargs["status"] == GroupPostDraftStatus.READY
 
     def test_a_grounded_draft_stays_ready(self):
         result, create = self._draft("What is the one pipeline check you never skip?")
@@ -247,3 +262,23 @@ class TestSchedulerPersistsTheHold:
             new_ed={"title": "T", "subtitle": "S", "subject": "Tokens", "body": "B",
                     "fact_hold": []})
         captured["hold"].assert_called_once_with(14, 1, [])
+
+    def test_regenerate_refuses_to_land_a_held_body_it_could_not_hold(self):
+        from tests.unit.app.test_newsletter_publish import _run_regenerate
+        result, upd, _ = _run_regenerate(
+            edition={"id": 14, "user_id": 1, "status": "draft", "subject": "Tokens"},
+            new_ed={"title": "T", "subtitle": "S", "subject": "Tokens", "body": NL14,
+                    "fact_hold": ["80"]},
+            hold_stored=False)
+        assert "not saved" in result
+        upd.assert_not_called()
+
+    def test_regenerate_proceeds_past_a_failed_release(self):
+        from tests.unit.app.test_newsletter_publish import _run_regenerate
+        result, upd, _ = _run_regenerate(
+            edition={"id": 14, "user_id": 1, "status": "draft", "subject": "Tokens"},
+            new_ed={"title": "T", "subtitle": "S", "subject": "Tokens", "body": "B",
+                    "fact_hold": []},
+            hold_stored=False)
+        assert "Regenerated" in result
+        upd.assert_called_once()

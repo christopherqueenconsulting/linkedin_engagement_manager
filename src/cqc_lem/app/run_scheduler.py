@@ -1438,7 +1438,10 @@ def regenerate_newsletter_edition(edition_id: int, guidance: str = None):
         return f"Regeneration produced nothing for edition {edition_id}"
     # The new body's grade replaces the old one BEFORE the body lands (issue #2098), so the rewrite
     # is never auto-publishable under a hold that was cleared late or not at all.
-    set_edition_fact_hold(edition_id, user_id, new_ed.get("fact_hold"))
+    if not set_edition_fact_hold(edition_id, user_id, new_ed.get("fact_hold")) and new_ed.get("fact_hold"):
+        # The hold could not be written, so the held body must not land unheld. A failed RELEASE
+        # is safe to proceed past: the old hold stays and the new body waits for approval.
+        return f"Regeneration not saved for edition {edition_id} — its fact hold could not be stored"
     update_newsletter_edition(edition_id, user_id, title=new_ed["title"],
                               subtitle=new_ed.get("subtitle"), body=new_ed["body"],
                               subject=new_ed.get("subject") or subject, status="draft",

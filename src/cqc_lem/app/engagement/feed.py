@@ -78,6 +78,7 @@ from cqc_lem.utilities.ai.ai_helper import (
 )
 from cqc_lem.utilities.ai.content_alignment import (
     append_link_to_comment,
+    voice_reference,
 )
 from cqc_lem.utilities.ai.content_framework import fact_anchored_formats, select_blueprint
 from cqc_lem.utilities.ai.outbound_qa import (
@@ -4123,7 +4124,7 @@ def auto_draft_group_post(self, user_id: int, group_id: str, group_name: str = N
     # Silence ships a READY draft, so a draft stating a first-person number the author never gave
     # us is stored SKIPPED instead (issue #2098). The studio's "undo skip" is the approval: it puts
     # this same row back in the queue until the slot passes, and nothing ships without it.
-    held = unattended_fact_hold(text, "group_post", user_id, synthesis)
+    held = unattended_fact_hold(text, "group_post", user_id, voice_reference(my_profile, synthesis))
     status = GroupPostDraftStatus.SKIPPED if held else GroupPostDraftStatus.READY
     draft_id = create_group_post_draft(user_id, group_id, text, group_name=group_name,
                                        status=status)

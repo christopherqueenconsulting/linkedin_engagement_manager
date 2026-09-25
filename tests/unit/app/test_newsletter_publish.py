@@ -546,7 +546,8 @@ class TestTopupPlansDistinctSubjects:
 
 
 def _run_regenerate(*, edition, guidance=None, others=None, recent=None, new_ed=None,
-                    shape_history=None, research=None, settings=None, blog_content=None):
+                    shape_history=None, research=None, settings=None, blog_content=None,
+                    hold_stored=True):
     from contextlib import ExitStack
 
     from cqc_lem.app.run_scheduler import regenerate_newsletter_edition
@@ -583,7 +584,7 @@ def _run_regenerate(*, edition, guidance=None, others=None, recent=None, new_ed=
         research_mock = p(patch("cqc_lem.utilities.ai.content_research.research_topic",
                                 return_value=research or {"findings": "", "sources": []}))
         upd = p(patch("cqc_lem.utilities.db.update_newsletter_edition", return_value=True))
-        hold = p(patch("cqc_lem.utilities.db.set_edition_fact_hold", return_value=True))
+        hold = p(patch("cqc_lem.utilities.db.set_edition_fact_hold", return_value=hold_stored))
         result = regenerate_newsletter_edition.run(edition_id=edition["id"], guidance=guidance)
     captured["hold"] = hold
     captured["research_calls"] = research_mock.call_count

@@ -781,7 +781,7 @@ def _ungrounded_first_person_metrics(candidate: "str | None", post_content: Any,
 
 
 def unattended_fact_hold(content: "str | None", surface: str, user_id: "int | None",
-               *material: "str | None") -> list:
+                         *material: "str | None") -> list:
     """First-person specifics that hold an unattended draft for the owner (issue #2098).
 
     Newsletters and group posts publish without anyone reading them first, so a number the author
@@ -1405,8 +1405,11 @@ def generate_newsletter_edition(profile: "LinkedInProfile", topic: str = None,
                  task_name="generate_newsletter_edition")
     # Graded LAST, on the body that will be stored. The caller persists a non-empty hold, which keeps
     # the edition out of `auto_publish_newsletters` until the owner approves it (issue #2098).
+    # The profile source is what the writer was actually shown: the synthesis, or the full profile
+    # JSON when none exists yet — a number from the profile itself is the author's own.
     edition["fact_hold"] = unattended_fact_hold(edition["body"], "newsletter", user_id,
-                                      profile_synthesis, blog_content, topic, guidance)
+                                                _voice_reference(profile, profile_synthesis),
+                                                blog_content, topic, guidance)
     if edition["fact_hold"]:
         log_info("Newsletter edition held for approval — first-person specifics nothing we "
                  "supplied backs: " + ", ".join(edition["fact_hold"]),
