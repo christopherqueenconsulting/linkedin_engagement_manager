@@ -24,7 +24,7 @@ import signal
 import time
 from typing import Any
 
-from . import capacity, db, dispatch, github, observe, policy, spend
+from . import capacity, db, dispatch, github, observe, policy, posthog, spend
 from .config import Config, load
 
 LOG = logging.getLogger("lemd")
@@ -125,6 +125,10 @@ class Daemon:
         #: When the stale-worktree sweep was last SPAWNED (not when it last ran — that is the stamp
         #: file). Bounds the retry when a spawn fails or the action exits before touching the stamp.
         self._last_sweep_spawn = 0.0
+        #: PostHog PR numbers a delivery or the reconcile safety net says may need taking over
+        #: (docs/posthog-pr-takeover.md). In memory on purpose: a restart loses at most what the
+        #: next reconcile re-lists, and the action itself is idempotent.
+        self._takeover_pending: set[int] = set()
 
     # ---------------------------------------------------------------- lifecycle
 
@@ -161,6 +165,10 @@ class Daemon:
         seen: set[tuple[str, int]] = set()
         for row in rows:
             number = row["number"]
+            if posthog.is_takeover_trigger(row["event"], row["action"], number, row["payload"]):
+                # A PostHog PR is never a queue item (it carries no `agent:*` label), so this is the
+                # only place its delivery is noticed. Still only a prompt — see `takeover_posthog`.
+                self._takeover_pending.add(int(number))
             target = None
             if number:
                 target = self._event_target(row["event"], int(number))
@@ -294,12 +302,56 @@ class Daemon:
         except github.GitHubUnavailable as exc:
             # A failed reconcile is not a reason to act on stale state; try again next pass.
             LOG.warning("reconcile incomplete: %s", exc)
+        self._relist_posthog_prs()
         self._last_reconcile = time.time()
         self._reconcile_drift = drift
         if drift:
             db.kv_set(self.conn, "last_drift_at", str(int(self._last_reconcile)))
         db.kv_set(self.conn, "last_reconcile_at", str(int(self._last_reconcile)))
         return found
+
+    def _relist_posthog_prs(self) -> None:
+        """The takeover's safety net: one list call riding the reconcile the daemon already runs.
+
+        The event path is the fast one; this catches what it cannot — a delivery lost while the
+        receiver was down, or a pending number a daemon restart forgot. One `gh pr list` per
+        reconcile, never a timer of its own. A failure costs only this pass's net.
+        """
+        try:
+            numbers = github.open_pr_numbers_by_author(self.cfg.slug, posthog.POSTHOG_GH_AUTHOR)
+        except github.GitHubUnavailable as exc:
+            LOG.warning("PostHog PR relist skipped: %s", exc)
+            return
+        self._takeover_pending.update(numbers)
+
+    def takeover_posthog(self) -> int:
+        """Spawn `actions/posthog_takeover.sh` for each PostHog PR a delivery or the relist named.
+
+        The daemon decides only WHEN; the action decides WHETHER, against GitHub, exactly as the
+        other v2 actions do — the webhook payload is never an authority. A number is dropped once
+        spawned (or when one is already running for it); a failed run is re-found by the next
+        reconcile if the PR is still open, so there is no retry loop here. A full gh pool keeps
+        the number for the next pass.
+
+        Returns:
+            How many takeovers were spawned this pass.
+        """
+        if self.cfg.shadow or not self._takeover_pending:
+            return 0
+        spawned = 0
+        for number in sorted(self._takeover_pending):
+            if self.sup.takeover_in_flight(number):
+                self._takeover_pending.discard(number)
+                continue
+            if self.sup.free("gh") <= 0:
+                break
+            if self.sup.dispatch_takeover(number) is None:
+                LOG.warning("PostHog takeover for PR #%s could not be spawned; retrying", number)
+                break
+            self._takeover_pending.discard(number)
+            LOG.info("PostHog takeover spawned for PR #%s", number)
+            spawned += 1
+        return spawned
 
     # ---------------------------------------------------------------- decisions
 
@@ -910,6 +962,7 @@ class Daemon:
         self.drain_events()
         if time.time() - self._last_reconcile >= self.reconcile_interval():
             self.reconcile()
+        self.takeover_posthog()
         self.refresh_usage()
         self.observe_dirty()
         self.sweep_ttls()

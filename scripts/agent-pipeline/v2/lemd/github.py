@@ -502,6 +502,22 @@ def list_by_label(slug: str, label: str, kind: str = "pr", *, limit: int = 100,
     ) or []
 
 
+def open_pr_numbers_by_author(slug: str, author: str, *, limit: int = 50,
+                              timeout: int = 30) -> list[int]:
+    """Numbers of open PRs by one author (`app/<slug>` for a GitHub App).
+
+    The PostHog takeover's reconcile safety net (docs/posthog-pr-takeover.md). Raises
+    `GitHubUnavailable` like every read here.
+    """
+    rows = gh_json(
+        ["pr", "list", "--repo", slug, "--state", "open", "--author", author,
+         "--limit", str(limit), "--json", "number"],
+        timeout=timeout,
+    ) or []
+    return [r["number"] for r in rows
+            if isinstance(r, dict) and isinstance(r.get("number"), int) and r["number"] > 0]
+
+
 def label_names(obj: dict[str, Any]) -> set[str]:
     """Label names from a `gh --json labels` payload."""
     return {ll.get("name", "") for ll in (obj.get("labels") or [])}

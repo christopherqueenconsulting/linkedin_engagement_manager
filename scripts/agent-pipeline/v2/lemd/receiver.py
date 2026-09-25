@@ -166,6 +166,12 @@ def trim_payload(event: str, payload: dict[str, Any]) -> str:
         keep["label"] = (payload.get("label") or {}).get("name")
         keep["draft"] = (payload.get("pull_request") or {}).get("draft")
         keep["merged"] = (payload.get("pull_request") or {}).get("merged")
+    if event == "pull_request":
+        # The PostHog takeover's PRE-filter (`lemd/posthog.py`). A trigger only: the action re-reads
+        # the PR and re-checks its identity from the API before acting on anything.
+        pr = payload.get("pull_request") or {}
+        keep["author"] = (pr.get("user") or {}).get("login")
+        keep["head_ref"] = (pr.get("head") or {}).get("ref")
     if event == "issue_comment":
         comment = payload.get("comment") or {}
         keep["comment_id"] = comment.get("id")
