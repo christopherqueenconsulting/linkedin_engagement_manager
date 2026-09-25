@@ -387,8 +387,9 @@ as a burst (five drafts approved for 09-07..09-13 went out 3-9 days late within 
   now, or the scanner would return it to `pending` again on the next scan.
 - **Spacing.** One user's due DMs are staggered: each eta is at least `dm_send_gap_seconds`
   (`human_pacing`, `PACING_DM_GAP_MIN/MAX_MINUTES`, default 8-20, seeded on user + DM) after
-  the previous one in that run. A stagger stops short of the orphan reaper's 2h window
-  (`_MAX_DM_STAGGER_SECONDS`), and the rest stay `approved` for a later scan. A user with a DM
+  the previous one in that run. A stagger stops 15 min short of the smaller of the orphan
+  reaper's 2h window and the broker `visibility_timeout` (`_MAX_DM_STAGGER_SECONDS`, same bound
+  as catch-up touches), and the rest stay `approved` for a later scan. A user with a DM
   still in `scheduled` gets no new batch until it drains (`get_user_ids_with_dms_in_flight`,
   fails open). The orphan reaper re-queues at most ONE lost DM per user per beat, so a restart
   that drops a staggered batch does not re-send it as a burst. With `HUMAN_PACING_ENABLED=false`

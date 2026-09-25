@@ -355,8 +355,9 @@ def auto_check_scheduled_posts(self):
 
 # The orphan reaper re-queues a 'scheduled' DM 2h after its status write, so a staggered eta must
 # land well inside that window or the reaper would send it early and break the spacing (#2103).
+# The broker's visibility_timeout is the tighter bound, as for catch-up touches (#2141).
 _DM_ORPHAN_LOOKBACK_HOURS = 2
-_MAX_DM_STAGGER_SECONDS = _DM_ORPHAN_LOOKBACK_HOURS * 3600 - 15 * 60
+_MAX_DM_STAGGER_SECONDS = max(0, min(_DM_ORPHAN_LOOKBACK_HOURS * 3600, visibility_timeout) - 15 * 60)
 
 
 @shared_task.task(bind=True, base=QueueOnce, once={'graceful': True, }, reject_on_worker_lost=True)
