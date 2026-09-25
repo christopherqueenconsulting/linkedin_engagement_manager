@@ -1474,8 +1474,10 @@ class TestChampions:
         assert champions == {"lem-simple": "gpt-oss:20b", "lem-medium": "gpt-oss:120b"}
 
     def test_the_live_config_still_names_a_champion_for_every_tier(self):
-        """lem-complex is the one exception: its only Ollama deployment, qwen3.5:397b, left the
-        catalog (#2196), so a run there is `no-baseline` until a replacement is benchmarked (#2198).
+        """lem-complex is the one exception.
+
+        Its only Ollama deployment, qwen3.5:397b, left the catalog (#2196), so a run there is
+        `no-baseline` until a replacement is benchmarked (#2198).
         """
         text = (_ROOT / ".litellm" / "config.yaml").read_text()
         champions = bm.champions_from_config(text, list(bm.TIERS))

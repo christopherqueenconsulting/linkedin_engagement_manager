@@ -159,9 +159,10 @@ class TestRoster:
         assert len(_ollama_models("lem-medium")) >= 2
 
     def test_lem_complex_restores_no_vanished_qwen_id(self):
-        """#2196: `qwen3.5:397b` left ollama.com/api/tags with no tag left in its family. A bare
-        `qwen3.5` follows the vendor's moving tag onto a build nobody benchmarked for this tier,
-        so neither the vanished id nor the family name may come back without a benchmark run.
+        """#2196: `qwen3.5:397b` left ollama.com/api/tags with no tag left in its family.
+
+        A bare `qwen3.5` follows the vendor's moving tag onto a build nobody benchmarked for this
+        tier, so neither the vanished id nor the family name may come back without a benchmark run.
         """
         assert not [m for m in _ollama_models("lem-complex") if m.startswith("qwen3.5")]
 
