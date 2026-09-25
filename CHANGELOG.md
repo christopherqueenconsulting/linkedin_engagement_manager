@@ -1,5 +1,31 @@
 # Changelog
 
+## [0.179.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.178.1...v0.179.0) (2026-09-25)
+
+
+### Features
+
+* **agent-pipeline:** take over PostHog self-driving PRs so lem-agentd finishes them ([#2189](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2189)) ([18d0bec](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/18d0bec1f901cb749f491f3e89f106fd7a54637a))
+* **deploy:** auto-deploy additive migrations, make a held deploy loud ([#2194](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2194)) ([5e2108d](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/5e2108dc9f4ade5ee7949ac4e839b8b780db457e))
+* **observability:** emit comment gate verdicts as a comment_gate event ([d6cf440](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/d6cf440496a90ac1782064a1de36b86ce0fb35a1))
+* **observability:** emit comment gate verdicts as a comment_gate event (closes [#2190](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2190)) ([#2191](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2191)) ([d6cf440](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/d6cf440496a90ac1782064a1de36b86ce0fb35a1))
+* **occasions:** add new_certification / new_position / work_anniversary archetypes (closes [#2140](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2140)) ([#2182](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2182)) ([a04baed](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/a04baedc50aec95c7c9bf6be548468c13d4e4042))
+
+
+### Bug Fixes
+
+* **agent-pipeline:** derive items.priority from priority:* labels ([da416ca](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/da416ca5cc5226fae60fcf417646b984f012a2dd))
+* **agent-pipeline:** derive items.priority from priority:* labels (closes [#2128](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2128)) ([#2176](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2176)) ([da416ca](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/da416ca5cc5226fae60fcf417646b984f012a2dd))
+* **content:** hold newsletters and group posts on ungrounded first-person claims (closes [#2098](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2098)) ([#2172](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2172)) ([12612be](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/12612bedcbbc2b31387d2cdd35296b73d1f2775e))
+* **content:** record the approval actor on every post approval (closes [#2116](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2116)) ([#2121](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2121)) ([38e17eb](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/38e17eb4a36c15317ae6951dac584eec4e9b6d02))
+* **dm:** return stale scheduled DMs to pending and space sends within a run (closes [#2103](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2103)) ([#2143](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2143)) ([a1a7d75](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/a1a7d75018bdb0577c7ba2fc33381dfb14a58549))
+* **invites:** treat an unsolvable login checkpoint as rate-limit-class, not a per-target failure (closes [#2192](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2192)) ([#2193](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2193)) ([995ba05](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/995ba05f156cd8b379f27f34700a26961e9fae52))
+
+
+### Documentation
+
+* **audit:** LEM system audit 2026-09-10 → 09-24 ([#2118](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2118)) ([1aef7cc](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/1aef7cc5ad698ca5fa5b528895b760b5f4ed6d7c))
+
 ## [0.178.1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.178.0...v0.178.1) (2026-09-24)
 
 
