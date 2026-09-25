@@ -141,7 +141,7 @@ class TestFailureAlert:
             "ERROR_ISSUES_DIR": str(tmp_path / "state"),
             "ERROR_ISSUES_PY": str(_stub_python_exit(tmp_path, 0)),
             "LEM_ENV_FILE": str(env_file),
-        "ERROR_ISSUES_ALERT_DRY_RUN": "1",
+            "ERROR_ISSUES_ALERT_DRY_RUN": "1",
             "POSTHOG_QUERY_API_KEY": "phx_query",
         })
         result = subprocess.run(["bash", str(_SH)], capture_output=True, text=True, env=env)
