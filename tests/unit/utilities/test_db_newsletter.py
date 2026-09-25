@@ -491,7 +491,9 @@ class TestEditions:
             get_editions_due_to_publish(datetime.datetime(2026, 7, 7, 13))
         sql = " ".join(cur.execute.call_args[0][0].split())
         assert "e.status = 'approved'" in sql
-        assert "e.status = 'draft' AND COALESCE(s.auto_publish_newsletters, 0) = 1" in sql
+        # Issue #2098: a draft carrying a fact hold never auto-publishes.
+        assert ("e.status = 'draft' AND e.fact_hold IS NULL "
+                "AND COALESCE(s.auto_publish_newsletters, 0) = 1") in sql
         # LEFT, so a user with no settings row is read as opted OUT rather than losing their
         # APPROVED editions to an inner join.
         assert "LEFT JOIN newsletter_settings s ON s.user_id = e.user_id" in sql

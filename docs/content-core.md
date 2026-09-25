@@ -232,8 +232,39 @@ read strict (`raise_on_error=True`), and on a fault `rescore_post` / `_gate_find
 the recorded `forbidden_claim` finding forward (`_carry_forbidden_claim_hold`) instead of
 persisting the global-only verdict that would auto-approve the post. **Gated surfaces today: posts
 (`evaluate_post_gates`) and feed/second-wave comments (`_gated_comment`, skipped on the #617
-budget).** The newsletter, weekly group post and DM writers go through the slop lint only — not
-yet covered.
+budget).** The newsletter and weekly group post writers carry the first-person grounding hold
+below but not the forbidden-claim list; DMs go through the slop lint only — not yet covered.
+
+### Newsletters and group posts (issue #2098)
+
+Both publish UNATTENDED — `auto_publish_newsletters` ships a `draft` edition at its slot, and
+silence ships a `ready` group draft — and both shipped invented client work in the 2026-09 audit
+(edition 14: "I audited a pipeline last quarter where 80% of tokens went to a frontier model.
+That's a real number from a real client."; group post 6: "I've seen a 40% drop in per-call cost").
+`fact_grounding_severity` is therefore **HARD on `newsletter` and `group_post`** (the owner's
+decision), and a first-person specific no source backs **holds the draft for the owner's
+approval** — no repair pass, because an edition is a `lem-complex` call and stripping the sentence
+leaves its follow-up ("That's a real number…") asserting nothing.
+
+- **Detector:** `ai_helper.unattended_fact_hold` → `story_bank.fact_hold_specifics` →
+  `unsourced_specifics` (first-person sentences only). The allow-list is the author's OWN material:
+  story bank, profile brief, and for a newsletter the blog source, the newsletter topic and the
+  regeneration guidance. **Research findings are not in it** — a researched statistic restated as
+  "I've seen…" is still a claim the author never made (#2136's comment rule).
+- **Newsletter hold:** `generate_newsletter_edition` returns `fact_hold`; the top-up stores it in
+  the same INSERT (`newsletter_editions.fact_hold`, NULL = not held) and the draft-ready email tells
+  the author the draft waits on them. A regeneration re-grades and replaces the hold
+  (`set_edition_fact_hold`) BEFORE the new body lands. A held `draft` is excluded at all three
+  publish points — `get_editions_due_to_publish`, `_publish_next_due_edition_for_user`, and the
+  `auto_publish_edition` worker — and the legacy generate-and-publish task refuses it outright.
+  **Approving the edition is the release**: `approved` always publishes. The review-queue payload
+  carries `fact_hold` so the SPA can say why a draft is waiting. Editions queued before #2098 read
+  NULL and are not re-graded.
+- **Group-post hold:** `auto_draft_group_post` stores a held draft `skipped` instead of `ready`, so
+  the publish run never takes it and the studio's **undo skip** (bounded by the slot, #1415) is the
+  approval. No new status: the existing restore control is the one the owner already has.
+- `FACT_GROUNDING_SEVERITY_NEWSLETTER=warn` / `FACT_GROUNDING_SEVERITY_GROUP_POST=warn` turn a
+  surface's hold off without a deploy.
 
 Two more things the allow-list honours so a real figure is never held as invented: the user's own
 **source text** (`_draft_from_source` records the blog post / sitemap page a `blog_summary` /

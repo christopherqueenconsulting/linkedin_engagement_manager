@@ -169,6 +169,12 @@ def auto_publish_newsletter_edition(self, user_id: int):
                                               blog_content=resolve_blog_source(user_id, settings))
         if not edition:
             return "No newsletter edition generated"
+        if edition.get("fact_hold"):
+            # This path publishes with no review queue at all, so a hold (issue #2098) is a refusal.
+            log_info("Newsletter edition not published — first-person specifics nothing we "
+                     "supplied backs: " + ", ".join(edition["fact_hold"]),
+                     user_id=user_id, task_name="auto_publish_newsletter_edition")
+            return "Newsletter edition held — ungrounded specifics"
         driver.get("https://www.linkedin.com/article/new/")
         time.sleep(random.uniform(6, 9))
         url, failed_step = _fill_and_publish_article(driver, wait, edition["title"],
@@ -212,6 +218,11 @@ def auto_publish_edition(self, edition_id: int):
         log_debug(f"Newsletter edition {edition_id} is unapproved and auto-publish is off — holding",
                   user_id=user_id, task_name="auto_publish_edition", edition_id=edition_id)
         return lane_result(TaskOutcome.NO_OP, f"Edition {edition_id} awaiting approval")
+    if edition.get("status") == "draft" and edition.get("fact_hold"):
+        # Held for an ungrounded first-person claim (issue #2098) — only an approval ships it.
+        log_debug(f"Newsletter edition {edition_id} is held for approval — ungrounded specifics",
+                  user_id=user_id, task_name="auto_publish_edition", edition_id=edition_id)
+        return lane_result(TaskOutcome.NO_OP, f"Edition {edition_id} held for approval")
     try:
         driver, wait, user_email, my_profile = get_current_profile(user_id=user_id, session_name="Newsletter")
     except LinkedInRateLimited as e:

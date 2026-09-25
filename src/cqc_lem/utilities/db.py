@@ -322,6 +322,7 @@ from cqc_lem.platform.db.repositories.newsletter import (
     record_shipped_notice_recipient,
     set_edition_cover_image,
     set_edition_cover_status,
+    set_edition_fact_hold,
     update_newsletter_edition,
     update_newsletter_settings,
 )
@@ -1356,6 +1357,7 @@ __all__ = [
     "set_default_video_quality",
     "set_edition_cover_image",
     "set_edition_cover_status",
+    "set_edition_fact_hold",
     "set_groups_enabled",
     "set_last_recorded_skills",
     "set_linkedin_session_email_sent_at",

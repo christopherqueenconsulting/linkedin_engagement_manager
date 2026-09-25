@@ -3677,6 +3677,17 @@
             ],
             "title": "Cover Image Url"
           },
+          "fact_hold": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fact Hold"
+          },
           "format": {
             "anyOf": [
               {
@@ -3764,7 +3775,8 @@
           "scheduled_for",
           "cover_image_url",
           "cover_image_source",
-          "cover_image_status"
+          "cover_image_status",
+          "fact_hold"
         ],
         "title": "NewsletterEdition",
         "type": "object"

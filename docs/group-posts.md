@@ -37,6 +37,11 @@ is in `docs/engagement-automation.md`. This is the *draft's* posture.
                  └──▶ failed      (the group would not take a member post)
 ```
 
+A draft that states a first-person number the author never gave us is born `skipped`, not `ready`
+(issue #2098 — `fact_grounding_severity("group_post")` is HARD): the publish run never takes it, and
+**Undo skip is the owner's approval**, bounded by the same slot. Detector and allow-list:
+`docs/content-core.md` → "Newsletters and group posts".
+
 Two rules decide everything here:
 
 - **The user owns `ready` ⟷ `skipped`, and nothing else.** `published` and `failed` are the publish

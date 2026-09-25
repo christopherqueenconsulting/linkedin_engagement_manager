@@ -4975,6 +4975,8 @@ export interface components {
             cover_image_status: ("pending_review" | "approved") | null;
             /** Cover Image Url */
             cover_image_url: string | null;
+            /** Fact Hold */
+            fact_hold: string | null;
             /** Format */
             format: string | null;
             /** Hook Style */

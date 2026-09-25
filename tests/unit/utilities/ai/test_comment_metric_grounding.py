@@ -109,7 +109,7 @@ class TestSeverityPerSurface:
         assert sb.fact_grounding_severity("dm") == sb.SEVERITY_HARD
 
     def test_unknown_and_missing_surfaces_take_the_default(self):
-        assert sb.fact_grounding_severity("newsletter") == sb.SEVERITY_WARN
+        assert sb.fact_grounding_severity("carousel_caption") == sb.SEVERITY_WARN
         assert sb.fact_grounding_severity(None) == sb.SEVERITY_WARN
 
     def test_ops_can_overrule_a_surface_without_a_deploy(self, monkeypatch):

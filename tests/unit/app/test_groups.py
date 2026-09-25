@@ -7,6 +7,7 @@ from celery.exceptions import SoftTimeLimitExceeded
 from selenium.common.exceptions import WebDriverException
 
 from cqc_lem.app.task_outcome import LaneTaskFailed
+from cqc_lem.platform.db.enums import GroupPostDraftStatus
 
 pytestmark = pytest.mark.unit
 
@@ -360,7 +361,8 @@ class TestDraftGroupPost:
         assert result == "Drafted group post 11"
         gcp.assert_not_called()
         assert gen.call_args.kwargs["group_name"] == "AI Leaders"
-        create.assert_called_once_with(1, "g1", "A useful insight.", group_name="AI Leaders")
+        create.assert_called_once_with(1, "g1", "A useful insight.", group_name="AI Leaders",
+                                       status=GroupPostDraftStatus.READY)
 
     def test_an_unpublished_draft_is_never_replaced(self):
         """The waiting draft may already carry the user's edits — a second generation would bin them."""

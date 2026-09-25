@@ -327,12 +327,24 @@ def strip_unsourced_sentences(content: Optional[str], tokens: Optional[list]) ->
 # 30%" and "cut iteration time about 30%" — neither in the user's material — to a named person, in
 # the user's voice. Graded by `dm_nurture.dm_gate_reasons`; a blocked DM is never sent.
 #
-# Everything else stays WARN. `FACT_GROUNDING_SEVERITY_POST=warn` restores the pre-#1971 posture
-# without a deploy.
+# NEWSLETTERS and GROUP POSTS are HARD too (issue #2098, the owner's decision). Neither had a fact
+# gate, and both shipped invented client work: a newsletter edition said "I audited a pipeline last
+# quarter where 80% of tokens went to a frontier model. That's a real number from a real client."
+# (the bank holds no client work at all), and a published group post said "I've seen a 40% drop in
+# per-call cost". Both surfaces publish unattended — `auto_publish_newsletters` ships a draft
+# edition, and silence ships a READY group draft — so a review queue is no defence. An ungrounded
+# first-person specific HOLDS the draft for the owner's approval rather than repairing it: an
+# edition is a `lem-complex` call, and stripping the sentence leaves its follow-up ("That's a real
+# number…") asserting nothing.
+#
+# Everything else stays WARN. `FACT_GROUNDING_SEVERITY_<SURFACE>=warn` restores the earlier posture
+# on that surface without a deploy.
 FACT_GROUNDING_SEVERITIES: dict = {
     "comment": SEVERITY_HARD,
     "post": SEVERITY_HARD,
     "dm": SEVERITY_HARD,
+    "newsletter": SEVERITY_HARD,
+    "group_post": SEVERITY_HARD,
 }
 FACT_GROUNDING_SEVERITY_DEFAULT = SEVERITY_WARN
 
@@ -520,6 +532,28 @@ def fact_grounding_severity(content_type: Optional[str] = None) -> str:
         if raw in (SEVERITY_HARD, SEVERITY_WARN, SEVERITY_OFF):
             return raw
     return FACT_GROUNDING_SEVERITIES.get(surface, FACT_GROUNDING_SEVERITY_DEFAULT)
+
+
+def fact_hold_specifics(content: Optional[str], sources: Optional[list],
+                        content_type: str) -> list:
+    """The first-person specifics that HOLD this draft on `content_type`, or [] when none do.
+
+    The unattended surfaces' gate (issue #2098): a draft that states a first-person number no
+    source backs waits for the owner instead of publishing. Only a HARD surface holds; WARN and OFF
+    let the draft through.
+
+    Args:
+        content: The draft exactly as it would ship.
+        sources: Everything the writer was legitimately given — the story bank's `fact_sources`,
+            the profile brief, and any text the author supplied.
+        content_type: The surface, as `fact_grounding_severity` names it ('newsletter', ...).
+
+    Returns:
+        The offending specifics in the order they appear, empty unless the surface is HARD.
+    """
+    if fact_grounding_severity(content_type) != SEVERITY_HARD:
+        return []
+    return unsourced_specifics(content, sources)
 
 
 def fabrication_repair_directive(tokens: Optional[list]) -> str:

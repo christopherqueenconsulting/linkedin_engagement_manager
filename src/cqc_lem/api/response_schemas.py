@@ -360,6 +360,8 @@ class NewsletterEdition(BaseModel):
     cover_image_url: Optional[str]
     cover_image_source: Optional[Literal["upload", "ai"]]
     cover_image_status: Optional[Literal["pending_review", "approved"]]
+    # The first-person specifics holding this draft for approval (#2098); None when not held.
+    fact_hold: Optional[str]
 
 
 class NewsletterDraftDetail(BaseModel):

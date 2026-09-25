@@ -222,8 +222,13 @@ def get_post_enabled_group_ids(user_id: int) -> Optional[list]:
         log_error("Could not list post-enabled groups", exc=err, user_id=user_id)
         return None
 def create_group_post_draft(user_id: int, group_id: str, content: str,
-                            group_name: str = None) -> Optional[int]:
-    """Store the coming week's group post for review (issue #932). Returns the new draft id."""
+                            group_name: str = None,
+                            status: GroupPostDraftStatus = GroupPostDraftStatus.READY) -> Optional[int]:
+    """Store the coming week's group post for review (issue #932). Returns the new draft id.
+
+    `status` is READY unless the draft is held for the owner (issue #2098), which stores it SKIPPED:
+    restorable from the studio until its slot, and never picked up by the publish run.
+    """
     if not group_id or not (content or "").strip():
         return None
     try:
@@ -231,7 +236,7 @@ def create_group_post_draft(user_id: int, group_id: str, content: str,
             cursor.execute(
                 "INSERT INTO group_post_drafts (user_id, group_id, group_name, content, status) "
                 "VALUES (%s,%s,%s,%s,%s)",
-                (user_id, str(group_id), group_name, content.strip(), str(GroupPostDraftStatus.READY)))
+                (user_id, str(group_id), group_name, content.strip(), str(status)))
             return cursor.lastrowid
     except mysql.connector.Error as err:
         log_error("Could not create group post draft", exc=err, user_id=user_id)
