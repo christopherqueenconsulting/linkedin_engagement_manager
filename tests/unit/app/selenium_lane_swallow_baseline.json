@@ -1,6 +1,5 @@
 [
   "cqc_lem.app.run_automation.auto_post_to_group",
-  "cqc_lem.app.run_automation.auto_publish_newsletter_edition",
   "cqc_lem.app.run_automation.auto_publish_occasion_post",
   "cqc_lem.app.run_automation.auto_seed_comment_on_post",
   "cqc_lem.app.run_automation.auto_sync_user_groups",
