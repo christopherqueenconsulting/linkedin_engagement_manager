@@ -448,6 +448,16 @@ comment rule, 0 of 80 did. The audit's production rate was 33 of 102 (§F29), so
 may add filler too. The 14-day post-deploy re-measure (#2174) is what shows how much of that rate
 this change removes.
 
+## Comment scrub (issue #2204, `content_alignment.scrub_comment_text`)
+
+Every comment and reply surface (feed comment, reply to a comment, seed, second wave, thread reply,
+reply follow-up) finishes in `ai_helper._humanize_comment`: humanize, then a deterministic scrub.
+`humanize_text` keeps up to ONE em dash and returns the draft untouched whenever it fails open, and
+comments have no review queue, so the dash tell reached LinkedIn. The scrub turns every em dash,
+`--` and spaced dash between words into a comma, strips markdown, and folds typography to ASCII
+(`sanitize_for_linkedin`). A numeric range ("10 - 20", "$5 - $8") and a hyphenated word survive. It
+runs before the gates, so what they grade is what is stored and posted.
+
 ## Mechanical editor pass (issue #1079, `content_alignment.mechanical_edit_text`)
 
 An opt-in `lem-medium` copy edit on a newsletter draft — capitalization, grammar, punctuation,

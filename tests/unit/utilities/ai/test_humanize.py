@@ -42,6 +42,39 @@ class TestEmDashCap:
         assert ca.cap_em_dashes("", 1) == ""
 
 
+class TestScrubCommentText:
+    """The final deterministic comment scrub (issue #2204): no dash tell or AI typography ships."""
+
+    def test_every_em_dash_variant_becomes_a_comma(self):
+        out = ca.scrub_comment_text("It works -- until it doesn't — right?")
+        assert out == "It works, until it doesn't, right?"
+        assert ca.count_em_dashes(out) == 0
+
+    def test_unspaced_em_dash_becomes_a_comma(self):
+        assert ca.scrub_comment_text("Great point—it holds.") == "Great point, it holds."
+
+    def test_spaced_en_dash_and_hyphen_become_commas(self):
+        assert ca.scrub_comment_text("Fair – but it breaks - at scale.") == \
+            "Fair, but it breaks, at scale."
+
+    def test_numeric_ranges_and_hyphenated_words_survive(self):
+        text = "A 10 - 20 range, $5 - $8 each, and a well-known trade-off."
+        assert ca.scrub_comment_text(text) == text
+
+    def test_typography_and_markdown_are_stripped(self):
+        out = ca.scrub_comment_text("**Bold** “quotes” and… more")
+        assert out == 'Bold "quotes" and... more'
+
+    def test_no_dangling_comma_at_the_edges_or_before_punctuation(self):
+        assert ca.scrub_comment_text("— leading") == "leading"
+        assert ca.scrub_comment_text("trailing —") == "trailing"
+        assert ca.scrub_comment_text("x — . y") == "x. y"
+
+    @pytest.mark.parametrize("empty", ["", None])
+    def test_empty_passes_through(self, empty):
+        assert ca.scrub_comment_text(empty) == empty
+
+
 class TestContractions:
     @pytest.mark.parametrize("expanded,contracted", [
         ("it is great", "it's great"),

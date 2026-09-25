@@ -49,6 +49,7 @@ from cqc_lem.utilities.ai.content_alignment import (
     lead_magnet_preserve_note as _lead_magnet_preserve_note,
     mechanical_edit_text as _mechanical_edit_text,
     repair_directive as _repair_directive,
+    scrub_comment_text as _scrub_comment_text,
     select_focus_topic as _select_focus_topic,
     style_directive as _style_directive,
     voice_reference as _voice_reference,
@@ -398,6 +399,16 @@ def get_or_create_profile_synthesis(user_id: int, profile: "LinkedInProfile" = N
     return text
 
 
+def _humanize_comment(text: str, profile_synthesis: "str | None", prefs: "dict | None") -> str:
+    """Humanize a comment or reply (issue #416 — A5), then scrub what the humanizer lets through.
+
+    Every comment surface finishes here so the scrub cannot be skipped by one of them: the text the
+    gates grade is the text that is stored and posted.
+    """
+    return _scrub_comment_text(_humanize_text(text, content_type="comment",
+                                              profile_synthesis=profile_synthesis, prefs=prefs))
+
+
 def lint_repaired(draft: "str | None", content_type: str, redraft, prefs: dict = None,
                   **log_ctx) -> "str | None":
     """Deterministic slop lint + bounded regeneration for the short-form surfaces (issue #625 / D1).
@@ -664,8 +675,7 @@ def generate_ai_response(post_content: Any, profile: LinkedInProfile,
         if text is None:
             return None
         # Humanization pass (issue #416 — A5): de-slop the comment before it's posted.
-        return _humanize_text(text.strip(), content_type="comment",
-                              profile_synthesis=profile_synthesis, prefs=prefs)
+        return _humanize_comment(text.strip(), profile_synthesis, prefs)
 
     if post_comment is not None:
         return lint_repaired(_draft(), "comment", _draft, prefs=prefs,
@@ -1538,8 +1548,7 @@ def generate_seed_comment(post_content, profile: "LinkedInProfile", prefs: dict 
         if content is None:
             return None
         # Humanization pass (issue #416 — A5): de-slop the seed comment before it's posted.
-        return _humanize_text(content.strip(), content_type="comment",
-                              profile_synthesis=profile_synthesis, prefs=prefs)
+        return _humanize_comment(content.strip(), profile_synthesis, prefs)
 
     return lint_repaired(_draft(), _OWN_POST_COMMENT, _draft, prefs=prefs, user_id=user_id,
                          action_type="comment")
@@ -1606,8 +1615,7 @@ def generate_second_wave_comment(post_content, profile: "LinkedInProfile", prefs
         if content is None:
             return None
         # Humanization pass (issue #416 — A5) before the gate, so the contract grades what ships.
-        return _humanize_text(content.strip(), content_type="comment",
-                              profile_synthesis=profile_synthesis, prefs=prefs)
+        return _humanize_comment(content.strip(), profile_synthesis, prefs)
 
     return _gated_comment(_draft, post_content, recent_comments=recent_comments,
                           user_id=user_id, surface=_OWN_POST_COMMENT, prefs=prefs)
@@ -1643,8 +1651,7 @@ def generate_thread_reply(post_content: str, comment_text: str, profile: "Linked
         if content is None:
             return None
         # Humanization pass (issue #416 — A5): de-slop the reply before it's posted.
-        return _humanize_text(content.strip(), content_type="comment",
-                              profile_synthesis=profile_synthesis, prefs=prefs)
+        return _humanize_comment(content.strip(), profile_synthesis, prefs)
 
     return lint_repaired(_draft(), "comment", _draft, prefs=prefs, user_id=user_id,
                          action_type="comment")
@@ -1686,8 +1693,7 @@ def generate_comment_reply_followup(their_reply: str, profile: "LinkedInProfile"
         content = response.choices[0].message.content
         if content is None:
             return None
-        return _humanize_text(content.strip(), content_type="comment",
-                              profile_synthesis=profile_synthesis, prefs=prefs)
+        return _humanize_comment(content.strip(), profile_synthesis, prefs)
 
     return lint_repaired(_draft(), "comment", _draft, prefs=prefs, user_id=user_id,
                          action_type="comment")

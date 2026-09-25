@@ -14,7 +14,7 @@ import re
 from enum import StrEnum
 from typing import TYPE_CHECKING, Optional
 
-from cqc_lem.utilities.linkedin_formatter import normalize_public_text
+from cqc_lem.utilities.linkedin_formatter import normalize_public_text, sanitize_for_linkedin
 from cqc_lem.utilities.logger import log_debug
 from cqc_lem.utilities.marketing.attribution import (
     MEDIUM_SOCIAL,
@@ -1369,6 +1369,35 @@ def cap_em_dashes(text: str, max_dashes: int = 1) -> str:
         return m.group(0) if state["n"] <= max_dashes else ", "
 
     return _EM_DASH_TOKEN_RE.sub(_repl, text)
+
+
+# A spaced hyphen standing in for a dash between words ("works - until it doesn't") is the same
+# pivot tell as an em dash, and is exactly what `normalize_public_text` turns one into. Digits and
+# `$` on either side are left alone so a range like "10 - 20" or "$5 - $8" survives.
+_SPACED_DASH_RE = re.compile(r"(?<![\d\s])[ \t]+-[ \t]+(?![\s\d$])")
+# A comma the dash replacement left beside other punctuation, or at the very start.
+_STRAY_COMMA_RE = re.compile(r",\s*(?=[.,;:!?])")
+
+
+def scrub_comment_text(text: Optional[str]) -> Optional[str]:
+    """The last deterministic pass over a comment or reply before it is graded and posted.
+
+    A comment has no review queue, and the humanization pass keeps up to ONE em dash (and returns
+    the draft untouched whenever it fails open), so the dash tell reached LinkedIn. Here every em
+    dash, `--` and spaced dash becomes a comma, markdown is stripped, and typography is folded to
+    plain ASCII via `sanitize_for_linkedin`. NO LLM call.
+
+    Args:
+        text: The comment as the writer (and humanizer) returned it.
+
+    Returns:
+        The scrubbed comment, or `text` unchanged when it is empty.
+    """
+    if not text:
+        return text
+    text = sanitize_for_linkedin(cap_em_dashes(text, 0))
+    text = _STRAY_COMMA_RE.sub("", _SPACED_DASH_RE.sub(", ", text))
+    return re.sub(r"[ \t]{2,}", " ", text).strip().strip(",").strip()
 
 
 # Conservative, unambiguous "X is/are/not" -> contraction map (the wordbank's top human marker).
