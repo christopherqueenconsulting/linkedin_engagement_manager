@@ -1,13 +1,15 @@
-"""Tests for scripts/posthog_pr_takeover.py — PostHog self-driving PRs handed to lem-agentd.
+"""PostHog self-driving PRs handed to lem-agentd (docs/posthog-pr-takeover.md).
 
-The script mutates GitHub on a five-minute timer, so what has to be pinned is:
+Two halves, both pinned here:
 
-* **identity** — only a PR the PostHog App opened, on a ``posthog-self-driving/`` branch in THIS
-  repo, is ever touched; every field that says "PostHog" is checked, and a missing one refuses;
-* **idempotency** — a rerun after a crash at any step resumes rather than filing a second issue or
-  opening a second PR, and a marker quoted inside PostHog's own prose can never count;
-* **order** — the PostHog PR is closed only after our PR exists, and its branch is deleted only when
-  our copy provably holds its head.
+* **the trigger** — the receiver keeps the PR author/head from a `pull_request` delivery,
+  `lemd/posthog.py` pre-filters it, the daemon's event drain (and the reconcile relist, its
+  safety net) queues the number, and `takeover_posthog` spawns `actions/posthog_takeover.sh` in
+  the gh pool. No timer, no process of its own;
+* **the action** — `v2/posthog_takeover.py --pr N` re-reads the PR (the payload is never an
+  authority) and: only a PR the PostHog App opened, on a ``posthog-self-driving/`` branch in THIS
+  repo, is touched; a rerun after a crash resumes rather than filing a second issue or PR; the
+  PostHog PR is closed only after our PR exists, and its branch deleted only when ours holds it.
 
 A fake ``gh`` stands in for the CLI: it keeps a tiny in-memory GitHub and records every call.
 """
@@ -25,10 +27,13 @@ import pytest
 
 pytestmark = pytest.mark.unit
 
-_ROOT = Path(__file__).resolve().parents[3]
-sys.path.insert(0, str(_ROOT / "scripts"))
+_ROOT = Path(__file__).resolve().parents[2]
+_V2 = _ROOT / "scripts" / "agent-pipeline" / "v2"
+sys.path.insert(0, str(_V2))
 
-import posthog_pr_takeover as t  # noqa: E402
+import posthog_takeover as t  # noqa: E402
+from lemd import daemon, db, dispatch, posthog, receiver  # noqa: E402
+from lemd.config import load  # noqa: E402
 
 REPO = "christopherqueenconsulting/linkedin_engagement_manager"
 
@@ -101,6 +106,12 @@ class FakeGitHub:
     def _api(self, method: str, path: str, fields: dict[str, str]) -> Any:
         if method == "GET" and path.startswith("pulls?state=open"):
             return self.pulls if "page=1" in path else []
+        if method == "GET" and re.match(r"pulls/\d+$", path):
+            n = int(path.split("/")[1])
+            for p in self.pulls:
+                if p["number"] == n:
+                    return {"state": "open", **p}
+            raise _Http("gh: Not Found (HTTP 404)")
         if method == "GET" and re.match(r"pulls/\d+/files", path):
             n = int(path.split("/")[1])
             return [{"filename": f} for f in self.files.get(n, ["src/x.py"])] if "page=1" in path else []
@@ -512,9 +523,288 @@ def test_gh_error_names_404_as_absent():
     assert not t.GhError(["api"], 1, "HTTP 500").not_found
 
 
-def test_the_timer_is_gated_and_runs_apply():
-    unit = (_ROOT / "scripts/agent-pipeline/systemd/lem-posthog-takeover.service").read_text()
-    assert 'POSTHOG_TAKEOVER_ENABLED:-0}" = "1"' in unit
-    assert "scripts/posthog_pr_takeover.py --apply" in unit
-    timer = (_ROOT / "scripts/agent-pipeline/systemd/lem-posthog-takeover.timer").read_text()
-    assert "Unit=lem-posthog-takeover.service" in timer
+# ---------------------------------------------------------------- --pr N re-reads the PR
+
+
+def test_fetch_admits_an_open_posthog_pr():
+    fake = FakeGitHub()
+    pr = t.fetch_posthog_pr(t.Gh(REPO, runner=fake), 2187)
+    assert pr is not None and pr.number == 2187 and pr.files == ("src/x.py",)
+
+
+@pytest.mark.parametrize("setup", [
+    lambda f: f.pulls[0].update(state="closed"),
+    lambda f: f.pulls[0].update(user={"login": "gitchrisqueen", "id": 1, "type": "User"}),
+    lambda f: f.pulls.clear(),
+])
+def test_fetch_refuses_closed_foreign_or_missing_prs(setup):
+    fake = FakeGitHub()
+    setup(fake)
+    assert t.fetch_posthog_pr(t.Gh(REPO, runner=fake), 2187) is None
+    assert fake.mutations() == []
+
+
+def test_fetch_refuses_an_impostor_even_when_named_by_the_trigger(caplog):
+    fake = FakeGitHub()
+    fake.pulls[0]["user"]["id"] = 1
+    with caplog.at_level("WARNING"):
+        assert t.fetch_posthog_pr(t.Gh(REPO, runner=fake), 2187) is None
+    assert "reason=author_id" in caplog.text
+
+
+def test_fetch_raises_when_github_is_unreadable():
+    fake = FakeGitHub()
+    fake.fail["pulls/2187"] = "HTTP 502"
+    with pytest.raises(t.GhError):
+        t.fetch_posthog_pr(t.Gh(REPO, runner=fake), 2187)
+
+
+def test_a_late_trigger_for_an_already_taken_over_pr_is_a_no_op():
+    fake = FakeGitHub()
+    assert t.main(["--apply", "--pr", "2187"], runner=fake) == 0
+    before = len(fake.mutations())
+    assert t.main(["--apply", "--pr", "2187", "--pr", "2187"], runner=fake) == 0
+    assert len(fake.mutations()) == before
+
+
+# ---------------------------------------------------------------- the trigger (pure)
+
+
+def _stored(**kw: Any) -> str:
+    return json.dumps(kw)
+
+
+@pytest.mark.parametrize("payload", [
+    _stored(author="posthog[bot]"),
+    _stored(sender="posthog[bot]"),  # rows stored before the receiver kept `author`
+    _stored(author="someone", head_ref="posthog-self-driving/fix-x"),
+    {"author": "posthog[bot]"},
+])
+@pytest.mark.parametrize("action", sorted(posthog.TRIGGER_ACTIONS))
+def test_a_posthog_pull_request_delivery_is_a_trigger(payload, action):
+    assert posthog.is_takeover_trigger("pull_request", action, 2187, payload)
+
+
+@pytest.mark.parametrize("event,action,number,payload", [
+    ("pull_request", "closed", 5, _stored(author="posthog[bot]")),
+    ("pull_request", "labeled", 5, _stored(author="posthog[bot]")),
+    ("issues", "opened", 5, _stored(author="posthog[bot]")),
+    ("pull_request", "opened", None, _stored(author="posthog[bot]")),
+    ("pull_request", "opened", 0, _stored(author="posthog[bot]")),
+    ("pull_request", "opened", 5, _stored(author="gitchrisqueen", head_ref="feature/claude-issue-5")),
+    ("pull_request", "opened", 5, "not json"),
+    ("pull_request", "opened", 5, "[1, 2]"),
+    ("pull_request", "opened", 5, None),
+])
+def test_everything_else_is_not_a_trigger(event, action, number, payload):
+    assert not posthog.is_takeover_trigger(event, action, number, payload)
+
+
+def test_the_action_module_and_the_trigger_share_one_identity():
+    assert (t.POSTHOG_BOT_LOGIN, t.POSTHOG_BOT_ID, t.POSTHOG_BRANCH_PREFIX) == (
+        posthog.POSTHOG_BOT_LOGIN, posthog.POSTHOG_BOT_ID, posthog.POSTHOG_BRANCH_PREFIX)
+
+
+def test_the_receiver_keeps_author_and_head_for_pull_request_deliveries():
+    payload = {"action": "opened", "sender": {"login": "posthog[bot]"},
+               "pull_request": {"number": 7, "user": {"login": "posthog[bot]"},
+                                "head": {"ref": "posthog-self-driving/x", "sha": "a"}}}
+    kept = json.loads(receiver.trim_payload("pull_request", payload))
+    assert kept["author"] == "posthog[bot]" and kept["head_ref"] == "posthog-self-driving/x"
+    assert "author" not in json.loads(receiver.trim_payload("issues", {"issue": {"number": 1}}))
+
+
+# ---------------------------------------------------------------- the daemon half
+
+
+def _cfg(tmp_path: Path, shadow: str = "0"):
+    (tmp_path / "config.env").write_text(
+        f"LEMD_DB={tmp_path}/queue.db\nLEMD_SHADOW={shadow}\nSLUG={REPO}\n")
+    return load(tmp_path)
+
+
+class _Spawns:
+    """Stands in for `Supervisor.dispatch_takeover`."""
+
+    def __init__(self, answer: Any = True) -> None:
+        self.numbers: list[int] = []
+        self.answer = answer
+
+    def __call__(self, number: int) -> Any:
+        self.numbers.append(number)
+        return self.answer
+
+
+def _record(dm: daemon.Daemon, delivery: str, event: str, action: str, number: int, payload: dict) -> None:
+    db.record_event(dm.conn, delivery_id=delivery, event=event, action=action, number=number,
+                    head_sha=None, payload=json.dumps(payload))
+
+
+def test_a_posthog_delivery_spawns_exactly_one_takeover(tmp_path, monkeypatch):
+    dm = daemon.Daemon(_cfg(tmp_path))
+    spawns = _Spawns()
+    monkeypatch.setattr(dm.sup, "dispatch_takeover", spawns)
+    _record(dm, "d1", "pull_request", "opened", 2187, {"author": "posthog[bot]"})
+    _record(dm, "d2", "pull_request", "synchronize", 2187, {"sender": "posthog[bot]"})
+    _record(dm, "d3", "pull_request", "opened", 2200, {"author": "gitchrisqueen"})
+    _record(dm, "d4", "issues", "opened", 2201, {"sender": "posthog[bot]"})
+    dm.drain_events()
+    assert db.unprocessed_events(dm.conn) == []
+    assert dm.takeover_posthog() == 1
+    assert spawns.numbers == [2187]
+    assert dm.takeover_posthog() == 0, "a spawned number is not spawned again"
+
+
+def test_the_reconcile_relist_is_the_safety_net(tmp_path, monkeypatch):
+    dm = daemon.Daemon(_cfg(tmp_path))
+    monkeypatch.setattr(daemon.github, "list_by_label", lambda *a, **k: [])
+    asked: list[tuple[str, str]] = []
+
+    def relist(slug, author, **_):
+        asked.append((slug, author))
+        return [1916, 2187]
+
+    monkeypatch.setattr(daemon.github, "open_pr_numbers_by_author", relist)
+    spawns = _Spawns()
+    monkeypatch.setattr(dm.sup, "dispatch_takeover", spawns)
+    dm.reconcile()
+    assert asked == [(REPO, "app/posthog")]
+    assert dm.takeover_posthog() == 2 and spawns.numbers == [1916, 2187]
+
+
+def test_an_unreadable_relist_costs_only_the_net(tmp_path, monkeypatch, caplog):
+    dm = daemon.Daemon(_cfg(tmp_path))
+    monkeypatch.setattr(daemon.github, "list_by_label", lambda *a, **k: [])
+
+    def boom(*_a, **_k):
+        raise daemon.github.GitHubUnavailable("rc=1")
+
+    monkeypatch.setattr(daemon.github, "open_pr_numbers_by_author", boom)
+    with caplog.at_level("WARNING"):
+        dm.reconcile()
+    assert "PostHog PR relist skipped" in caplog.text
+    assert dm._takeover_pending == set()
+
+
+def test_github_relist_helper_filters_to_real_numbers(monkeypatch):
+    seen: list[list[str]] = []
+
+    def fake_json(args, **_):
+        seen.append(args)
+        return [{"number": 5}, {"number": 0}, {"number": "x"}, "junk"]
+
+    monkeypatch.setattr(daemon.github, "gh_json", fake_json)
+    assert daemon.github.open_pr_numbers_by_author(REPO, "app/posthog") == [5]
+    assert "--author" in seen[0] and "app/posthog" in seen[0]
+
+
+def test_a_full_gh_pool_keeps_the_number_for_the_next_pass(tmp_path, monkeypatch):
+    dm = daemon.Daemon(_cfg(tmp_path))
+    dm._takeover_pending = {2187}
+    monkeypatch.setattr(dm.sup, "free", lambda pool: 0)
+    spawns = _Spawns()
+    monkeypatch.setattr(dm.sup, "dispatch_takeover", spawns)
+    assert dm.takeover_posthog() == 0 and spawns.numbers == []
+    assert dm._takeover_pending == {2187}
+
+
+def test_a_failed_spawn_keeps_the_number(tmp_path, monkeypatch):
+    dm = daemon.Daemon(_cfg(tmp_path))
+    dm._takeover_pending = {2187}
+    monkeypatch.setattr(dm.sup, "dispatch_takeover", _Spawns(answer=None))
+    assert dm.takeover_posthog() == 0
+    assert dm._takeover_pending == {2187}
+
+
+def test_one_already_in_flight_is_dropped_not_doubled(tmp_path, monkeypatch):
+    dm = daemon.Daemon(_cfg(tmp_path))
+    dm._takeover_pending = {2187}
+    monkeypatch.setattr(dm.sup, "takeover_in_flight", lambda n: True)
+    spawns = _Spawns()
+    monkeypatch.setattr(dm.sup, "dispatch_takeover", spawns)
+    assert dm.takeover_posthog() == 0 and spawns.numbers == []
+    assert dm._takeover_pending == set()
+
+
+def test_shadow_mode_spawns_no_takeover(tmp_path, monkeypatch):
+    dm = daemon.Daemon(_cfg(tmp_path, shadow="1"))
+    dm._takeover_pending = {2187}
+    spawns = _Spawns()
+    monkeypatch.setattr(dm.sup, "dispatch_takeover", spawns)
+    assert dm.takeover_posthog() == 0 and spawns.numbers == []
+
+
+def test_tick_runs_the_takeover_after_draining_and_not_while_paused(tmp_path, monkeypatch):
+    dm = daemon.Daemon(_cfg(tmp_path))
+    calls: list[str] = []
+    for name in ("collect", "sweep_worktrees", "drain_events", "reconcile", "refresh_usage",
+                 "observe_dirty", "sweep_ttls", "act", "takeover_posthog"):
+        monkeypatch.setattr(dm, name, lambda *a, _n=name, **k: calls.append(_n))
+    dm.tick()
+    assert calls.index("drain_events") < calls.index("takeover_posthog") < calls.index("act")
+    calls.clear()
+    (tmp_path / "PAUSED").write_text("")
+    dm.tick()
+    assert "takeover_posthog" not in calls
+
+
+def test_the_supervisor_spawns_the_action_in_the_gh_pool(tmp_path, monkeypatch):
+    dm = daemon.Daemon(_cfg(tmp_path))
+    spawned: list[dict[str, Any]] = []
+
+    def fake_spawn(argv, **kw):
+        spawned.append({"argv": argv, **kw})
+        return dispatch.Child(proc=None, pool=kw["pool"], mode=kw["mode"], kind=kw["kind"],
+                              number=kw["number"], item_id=None, run_id=None, deadline=0.0,
+                              started=0.0)
+
+    monkeypatch.setattr(dm.sup, "_spawn", fake_spawn)
+    child = dm.sup.dispatch_takeover(2187)
+    assert child is not None
+    call = spawned[0]
+    assert call["argv"][0].endswith("actions/posthog_takeover.sh") and call["argv"][1] == "2187"
+    assert (call["pool"], call["mode"], call["kind"], call["item_id"]) == (
+        "gh", posthog.TAKEOVER_MODE, posthog.TAKEOVER_KIND, None)
+    dm.sup.children.append(child)
+    assert dm.sup.takeover_in_flight(2187) and not dm.sup.takeover_in_flight(1916)
+    assert dm.sup.dispatch_takeover(2187) is None, "never two runs for one PR"
+
+
+def test_a_finished_takeover_touches_no_queue_row(tmp_path, monkeypatch):
+    """`collect()` looks the child up by (kind, number); the placeholder kind matches nothing."""
+    dm = daemon.Daemon(_cfg(tmp_path))
+    db.upsert_item(dm.conn, kind="pr", number=2187, state=db.STATE_READY)
+    before = dict(db.get_item(dm.conn, "pr", 2187))
+    child = dispatch.Child(proc=None, pool="gh", mode=posthog.TAKEOVER_MODE,
+                           kind=posthog.TAKEOVER_KIND, number=2187, item_id=None, run_id=None,
+                           deadline=0.0, started=0.0)
+    monkeypatch.setattr(dm.sup, "reap", lambda: [(child, 0)])
+    assert dm.collect() == 1
+    assert dict(db.get_item(dm.conn, "pr", 2187)) == before
+
+
+# ---------------------------------------------------------------- the action script
+
+
+_ACTION = _V2 / "actions" / "posthog_takeover.sh"
+
+
+def test_the_action_is_executable_and_parses():
+    assert _ACTION.stat().st_mode & 0o111
+    assert subprocess.run(["bash", "-n", str(_ACTION)], check=False).returncode == 0
+    assert (_V2 / "posthog_takeover.py").stat().st_mode & 0o111
+
+
+def test_the_action_uses_the_pipeline_identity_honours_pause_and_re_reads_by_number():
+    src = _ACTION.read_text()
+    assert '. "$(dirname "$0")/common.sh"' in src, "App identity + no silent owner fallback"
+    assert "v2_paused" in src
+    assert "posthog_takeover.py\" $MODE_FLAG --pr \"$PR\"" in src
+    assert 'MODE_FLAG="--apply"' in src and 'if [ "$DRY_RUN" = "1" ]; then MODE_FLAG=""' in src
+
+
+def test_no_timer_ships_for_the_takeover():
+    """Owner decision on #2189: event-driven, never a polling unit of its own."""
+    units = [p.name for p in (_ROOT / "scripts" / "agent-pipeline" / "systemd").iterdir()]
+    units += [p.name for p in (_V2 / "systemd").iterdir()]
+    assert not [u for u in units if "posthog" in u]

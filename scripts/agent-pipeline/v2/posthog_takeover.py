@@ -25,12 +25,21 @@ logged and left alone. A PR touching the pipeline's own trust boundary (``.githu
 ``scripts/agent-pipeline/``) is skipped with a warning: copying it needs the ``workflows``
 permission this credential does not have, and the owner decides those by hand.
 
-Stdlib only — the systemd unit runs it with the host's ``python3``, not the project venv.
+WHEN it runs is event-driven: the ``lem-agentd`` daemon sees the App webhook's ``pull_request``
+delivery for a PostHog PR (pre-filtered by ``lemd/posthog.py``) and spawns
+``actions/posthog_takeover.sh <N>``, which runs this with ``--apply --pr N`` under the pipeline's
+App identity. The payload is only the prompt — ``--pr N`` re-reads the PR from the REST API and
+applies the identity check itself. The daemon's reconcile pass lists open PostHog PRs as a safety
+net for a lost delivery. By hand, it is the backfill/inspection tool.
+
+Stdlib only — shipped to the box by ``install.sh`` with the rest of ``v2/``, run with the host's
+``python3``, not the project venv.
 
 CLI:
   (no flag)          Dry run: list what would be taken over, change nothing.
   --apply            Perform the takeover.
-  --pr N             Restrict to one PostHog PR number (repeatable).
+  --pr N             Only this PostHog PR, re-read by number (repeatable). Without it: every open
+                     PostHog PR (backfill).
   --repo OWNER/NAME  Override the repository.
 
 Exit: 0 success (including nothing to do), 1 at least one takeover failed.
@@ -42,20 +51,26 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import re
 import subprocess
 import sys
 from dataclasses import dataclass, field
 from typing import Any, Callable, Sequence
 
-DEFAULT_REPO = "christopherqueenconsulting/linkedin_engagement_manager"
+# Run as `python3 v2/posthog_takeover.py`, so `v2/` is already sys.path[0]; imported by tests from
+# elsewhere, so it is added explicitly too. `lemd/posthog.py` is stdlib-only.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-#: The PostHog App's bot account. The login alone is not spoofable (only an App gets a ``[bot]``
-#: login), but the numeric id is pinned as well so a renamed or reinstalled App is a visible refusal
-#: rather than a silent match.
-POSTHOG_BOT_LOGIN = "posthog[bot]"
-POSTHOG_BOT_ID = 206114724
-POSTHOG_BRANCH_PREFIX = "posthog-self-driving/"
+# The login alone is not spoofable (only an App gets a ``[bot]`` login), but the numeric id is
+# pinned as well so a renamed or reinstalled App is a visible refusal rather than a silent match.
+from lemd.posthog import (  # noqa: E402
+    POSTHOG_BOT_ID,
+    POSTHOG_BOT_LOGIN,
+    POSTHOG_BRANCH_PREFIX,
+)
+
+DEFAULT_REPO = os.environ.get("SLUG") or "christopherqueenconsulting/linkedin_engagement_manager"
 
 #: Paths whose change needs a permission this credential does not hold (``workflows``) or that the
 #: pipeline must never merge unattended (`scripts/pipeline_selfmod_gate.py`).
@@ -240,23 +255,59 @@ def list_posthog_prs(gh: Gh, only: set[int] | None = None) -> list[PosthogPr]:
                 continue
             if (raw.get("user") or {}).get("login") != POSTHOG_BOT_LOGIN:
                 continue  # not PostHog at all — nothing to say about it
-            refusal = identity_refusal(raw, gh.repo)
-            if refusal:
-                LOG.warning("refusing PR — identity check failed pr=%s reason=%s", number, refusal)
-                continue
-            files = _pr_files(gh, number)
-            found.append(PosthogPr(
-                number=number,
-                title=str(raw.get("title") or f"PostHog PR #{number}"),
-                body=str(raw.get("body") or ""),
-                url=str(raw.get("html_url") or ""),
-                head_ref=raw["head"]["ref"],
-                head_sha=raw["head"]["sha"],
-                files=tuple(files),
-            ))
+            pr = _admit(gh, raw)
+            if pr is not None:
+                found.append(pr)
         if len(batch) < 100:
             return found
         page += 1
+
+
+def fetch_posthog_pr(gh: Gh, number: int) -> PosthogPr | None:
+    """Re-read ONE PR by number and admit it only if it is an open PostHog self-driving PR.
+
+    This is the event path's authority: the webhook that prompted it is never consulted. A closed
+    or merged PR (a late delivery for one already taken over) is simply not ours any more.
+
+    Args:
+        gh: GitHub client.
+        number: The PR number the trigger named.
+
+    Returns:
+        The admitted PR, or ``None`` when it is closed, not PostHog's, or fails identity.
+    """
+    try:
+        raw = gh.api(f"pulls/{number}") or {}
+    except GhError as exc:
+        if exc.not_found:
+            LOG.info("no such PR pr=%s", number)
+            return None
+        raise
+    if raw.get("state") != "open":
+        LOG.info("PR is not open — nothing to take over pr=%s state=%s", number, raw.get("state"))
+        return None
+    if (raw.get("user") or {}).get("login") != POSTHOG_BOT_LOGIN:
+        LOG.info("PR is not PostHog's — ignoring pr=%s", number)
+        return None
+    return _admit(gh, raw)
+
+
+def _admit(gh: Gh, raw: dict[str, Any]) -> PosthogPr | None:
+    """Apply the identity check to one PR payload and build the takeover input."""
+    number = int(raw.get("number") or 0)
+    refusal = identity_refusal(raw, gh.repo)
+    if refusal:
+        LOG.warning("refusing PR — identity check failed pr=%s reason=%s", number, refusal)
+        return None
+    return PosthogPr(
+        number=number,
+        title=str(raw.get("title") or f"PostHog PR #{number}"),
+        body=str(raw.get("body") or ""),
+        url=str(raw.get("html_url") or ""),
+        head_ref=raw["head"]["ref"],
+        head_sha=raw["head"]["sha"],
+        files=tuple(_pr_files(gh, number)),
+    )
 
 
 def _pr_files(gh: Gh, number: int) -> list[str]:
@@ -619,7 +670,10 @@ def main(argv: Sequence[str] | None = None, runner: Runner = subprocess.run) -> 
 
     gh = Gh(args.repo, runner=runner)
     try:
-        prs = list_posthog_prs(gh, set(args.pr) if args.pr else None)
+        if args.pr:
+            prs = [p for p in (fetch_posthog_pr(gh, n) for n in dict.fromkeys(args.pr)) if p is not None]
+        else:
+            prs = list_posthog_prs(gh)
     except GhError as exc:
         LOG.error("cannot list PostHog PRs err=%s", exc)
         return 1

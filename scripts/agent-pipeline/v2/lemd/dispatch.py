@@ -31,7 +31,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import db, policy
+from . import db, policy, posthog
 
 LOG = logging.getLogger("lemd.dispatch")
 
@@ -270,6 +270,24 @@ class Supervisor:
                            kind=SWEEP_MODE, number=0, item_id=None, timeout_s=600,
                            log_name="v2-sweep.log",
                            extra_env={"WORKTREE_SWEEP_INTERVAL": str(interval_s)})
+
+    def takeover_in_flight(self, number: int) -> bool:
+        """True while a PostHog takeover for this PR number is still running."""
+        return any(c.mode == posthog.TAKEOVER_MODE and c.number == number for c in self.children)
+
+    def dispatch_takeover(self, number: int) -> Child | None:
+        """Launch `actions/posthog_takeover.sh <number>` (docs/posthog-pr-takeover.md).
+
+        A gh-pool action — a handful of REST calls, no model — so it never waits behind an agent
+        run. Not an item: `item_id=None` opens no `runs` row, and its placeholder kind
+        (`posthog.TAKEOVER_KIND`) matches no queue row, so `collect()` leaves the queue untouched.
+        The one log file is shared across spawns because takeovers are rare and read together.
+        """
+        if self.takeover_in_flight(number) or self.free("gh") <= 0:
+            return None
+        return self._spawn([str(self.actions / "posthog_takeover.sh"), str(number)], pool="gh",
+                           mode=posthog.TAKEOVER_MODE, kind=posthog.TAKEOVER_KIND, number=number,
+                           item_id=None, timeout_s=180, log_name="v2-posthog-takeover.log")
 
     # ------------------------------------------------------------------ reaping
 

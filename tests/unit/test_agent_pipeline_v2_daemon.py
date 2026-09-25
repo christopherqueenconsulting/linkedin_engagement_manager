@@ -110,6 +110,8 @@ def test_reconcile_ingests_working_issues_not_only_working_prs(tmp_path, monkeyp
         return []
 
     monkeypatch.setattr(daemon.github, "list_by_label", fake_list)
+    # The PostHog takeover's relist rides the same reconcile; keep it off the network here.
+    monkeypatch.setattr(daemon.github, "open_pr_numbers_by_author", lambda *a, **k: [])
     assert dm.reconcile() == 1
     assert ("agent:working", "issue") in asked
     assert ("agent:working", "pr") in asked, "the PR half must not be traded away for the issue half"

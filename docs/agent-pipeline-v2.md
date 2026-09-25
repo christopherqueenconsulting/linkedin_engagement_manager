@@ -54,6 +54,8 @@ sweep_worktrees  spawn actions/sweep.sh             ← also while PAUSED; at mo
 ── if PAUSED: stop here ──
 drain_events     webhook rows  → items.dirty=1      (≤200 per pass)
 reconcile        GitHub labels → the queue          (600s; 120s only if silent AND drifting)
+takeover_posthog spawn actions/posthog_takeover.sh  (PostHog PRs a delivery or the reconcile relist
+                                                      named — not items; docs/posthog-pr-takeover.md)
 refresh_usage    subscription meter → state/usage.json
 observe_dirty    changed items → decide()           (≤25 per pass)
 sweep_ttls       expired waits → decide()           (≤25 per pass)
