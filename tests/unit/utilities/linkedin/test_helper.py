@@ -114,11 +114,11 @@ class TestLoginToLinkedinCookiePath:
         )
 
     def test_challenge_url_after_cookies_raises(self):
-        """An unclearable checkpoint is rate-limit-class and trips the breaker (not silent fail).
+        """An unclearable checkpoint is rate-limit-class and scoped to the ACCOUNT (not silent fail).
 
-        A plain RuntimeError fell through to the per-target attempt ledger and retired reachable
-        targets at the ceiling; LinkedInChallengeUnsolved makes every caller defer and charge no
-        attempt, and mark_rate_limited stops the lanes re-submitting a live checkpoint page.
+        LinkedInChallengeUnsolved makes every caller defer and charge no attempt. The account's own
+        cooldown stops the next run re-submitting the checkpoint; the IP-wide breaker stays shut so
+        one account's checkpoint never pauses every other user (#1920).
         """
         from cqc_lem.utilities.linkedin.rate_limit import LinkedInChallengeUnsolved
 
@@ -128,12 +128,35 @@ class TestLoginToLinkedinCookiePath:
         with patch(f"{_MODULE}.get_cookies", return_value=[{"name": "x"}]), \
              patch(f"{_MODULE}.load_cookies"), \
              patch(f"{_MODULE}.store_cookies"), \
-             patch(f"{_MODULE}.mark_rate_limited") as mark, \
+             patch(f"{_MODULE}._user_id_for_email", return_value=7), \
+             patch(f"{_MODULE}.challenge_cooldown_remaining", return_value=0), \
+             patch(f"{_MODULE}.mark_challenge_unsolvable") as mark_account, \
+             patch(f"{_MODULE}.mark_rate_limited") as mark_breaker, \
              pytest.raises(LinkedInChallengeUnsolved, match="Unsolvable LinkedIn challenge"):
             from cqc_lem.utilities.linkedin.helper import login_to_linkedin
             login_to_linkedin(driver, wait, "user@e.com", "pw")
-        mark.assert_called_once()
-        assert "unsolvable login challenge" in mark.call_args.args[0]
+        mark_account.assert_called_once_with(7)
+        mark_breaker.assert_not_called()
+
+    def test_challenge_for_an_unresolvable_account_trips_the_ip_breaker(self):
+        """With no user id to scope a cooldown to, the IP-wide breaker is the only brake left."""
+        from cqc_lem.utilities.linkedin.rate_limit import LinkedInChallengeUnsolved
+
+        driver = _make_driver("https://www.linkedin.com/checkpoint/challenge")
+        wait = _make_wait()
+
+        with patch(f"{_MODULE}.get_cookies", return_value=[{"name": "x"}]), \
+             patch(f"{_MODULE}.load_cookies"), \
+             patch(f"{_MODULE}.store_cookies"), \
+             patch(f"{_MODULE}._user_id_for_email", return_value=None), \
+             patch(f"{_MODULE}.mark_challenge_unsolvable") as mark_account, \
+             patch(f"{_MODULE}.mark_rate_limited") as mark_breaker, \
+             pytest.raises(LinkedInChallengeUnsolved, match="Unsolvable LinkedIn challenge"):
+            from cqc_lem.utilities.linkedin.helper import login_to_linkedin
+            login_to_linkedin(driver, wait, "user@e.com", "pw")
+        mark_account.assert_not_called()
+        mark_breaker.assert_called_once()
+        assert "unsolvable login challenge" in mark_breaker.call_args.args[0]
 
     def test_no_cookies_goes_to_login_flow(self):
         """No stored cookies → must do credential login (navigate to /login)."""
@@ -701,12 +724,12 @@ class TestChallengeCooldownBreaker:
         """When this account's cooldown is active, login must raise before touching LinkedIn."""
         driver = _make_driver("https://www.linkedin.com/feed/")
         wait = _make_wait()
-        from cqc_lem.utilities.linkedin.rate_limit import LinkedInRateLimited
+        from cqc_lem.utilities.linkedin.rate_limit import LinkedInChallengeUnsolved
 
         with patch(f"{_MODULE}._user_id_for_email", return_value=7), \
              patch(f"{_MODULE}.challenge_cooldown_remaining", return_value=300), \
              patch(f"{_MODULE}.get_cookies") as mock_cookies, \
-             pytest.raises(LinkedInRateLimited, match="cooling down"):
+             pytest.raises(LinkedInChallengeUnsolved, match="cooling down"):
             from cqc_lem.utilities.linkedin.helper import login_to_linkedin
             login_to_linkedin(driver, wait, "u@e.com", "pw")
 
@@ -775,6 +798,7 @@ class TestChallengeCooldownBreaker:
         with patch(f"{_MODULE}._user_id_for_email", return_value=7), \
              patch(f"{_MODULE}.challenge_cooldown_remaining", return_value=0), \
              patch(f"{_MODULE}.mark_challenge_unsolvable") as mock_mark, \
+             patch(f"{_MODULE}.mark_rate_limited") as mock_breaker, \
              patch(f"{_MODULE}.get_cookies", return_value=None), \
              patch(f"{_MODULE}.load_cookies"), \
              patch(f"{_MODULE}.store_cookies"), \
@@ -785,6 +809,7 @@ class TestChallengeCooldownBreaker:
                 login_to_linkedin(driver, wait, "u@e.com", "pw")
 
         mock_mark.assert_called_once_with(7)
+        mock_breaker.assert_not_called()  # account-scoped: never pauses every other user
 
 
 @pytest.mark.unit

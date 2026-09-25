@@ -1567,6 +1567,11 @@ def invite_to_connect_now(user_id: int, profile_url: str, message: str = None,
             # reached (#1924). Defer like a 429 instead — nothing was learned about this target.
             raise LinkedInRateLimited(
                 f"LinkedIn login failed before inviting to connect: {e}") from e
+        except LinkedInRateLimited:
+            # Already rate-limit-class (breaker, pause, or `LinkedInChallengeUnsolved`) — pass it
+            # through as-is. `LinkedInRateLimited` IS a RuntimeError, so the re-wrap below would
+            # otherwise erase the subclass `send_connection_request` reads its outcome word from.
+            raise
         except RuntimeError as e:
             # `login_to_linkedin` raises a plain RuntimeError when every automated way to clear a
             # login challenge (Arkose, email PIN, manual approval) failed

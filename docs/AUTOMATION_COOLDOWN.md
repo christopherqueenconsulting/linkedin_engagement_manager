@@ -44,10 +44,12 @@ LinkedIn less and less often instead of re-tripping every 30 min.
 - `LINKEDIN_RATE_LIMIT_COOLDOWN_SECONDS` — base cooldown (default 1800 = 30 min).
 - `LINKEDIN_RATE_LIMIT_MAX_COOLDOWN_SECONDS` — escalation cap (default 21600 = 6 h).
 - A successful login calls `clear_rate_limit(reason=...)` which resets both the breaker and the trip counter.
-- A **login checkpoint the ladder cannot clear** trips the breaker too (`LinkedInChallengeUnsolved`,
-  rate-limit-class): re-submitting a live checkpoint page is how a temporary challenge hardens into a
-  durable restriction, so the account backs off exactly as it does for a 429.
-  It ALSO records this account's own challenge cooldown (`mark_challenge_unsolvable`, #1920).
+- A **login checkpoint the ladder cannot clear** raises `LinkedInChallengeUnsolved` (rate-limit-class,
+  so every caller defers and charges no attempt) and records this ACCOUNT's own challenge cooldown
+  (`mark_challenge_unsolvable`, #1920): re-submitting a live checkpoint page is how a temporary
+  challenge hardens into a durable restriction. It does NOT trip this IP-wide breaker — one account's
+  checkpoint must not pause every other user — except when the account cannot be resolved, where
+  there is no key to scope a cooldown to.
 
 ## 2. Manual global pause (operator kill-switch)
 

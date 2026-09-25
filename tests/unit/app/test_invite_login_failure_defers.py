@@ -162,3 +162,33 @@ class TestUnsolvableChallengeDuringInvite:
         log_warning.assert_not_called()  # never reaches the "exhausted its attempts" escalation
         log_error.assert_not_called()  # no fresh $exception for a failure that already backed off
         assert "throttled" in out.lower()
+
+    def test_checkpoint_subclass_survives_to_the_outcome_word(self):
+        # `LinkedInChallengeUnsolved` IS a RuntimeError; re-wrapping it as a plain
+        # LinkedInRateLimited would erase the class `send_connection_request` maps to `challenge`.
+        from cqc_lem.app.engagement import invites as ra
+        from cqc_lem.utilities.db import ConnectionRequestStatus
+        from cqc_lem.utilities.linkedin.rate_limit import LinkedInChallengeUnsolved
+
+        req = {"id": 3, "user_id": 1, "recipient_profile_url": "https://x/in/jane",
+               "message": "hi jane", "status": "approved", "recipient_email": None}
+
+        with patch("cqc_lem.utilities.db.get_connection_request", return_value=req), \
+             patch("cqc_lem.utilities.db.count_invites_sent_today", return_value=0), \
+             patch(f"{_INV}.get_engagement_preferences", return_value={"max_invites_per_day": 10}), \
+             patch(f"{_INV}.get_user_password_pair_by_id", return_value=("e@x", "pw")), \
+             patch(f"{_INV}.get_driver_wait_pair", return_value=(MagicMock(), MagicMock())), \
+             patch(f"{_INV}.login_to_linkedin",
+                   side_effect=LinkedInChallengeUnsolved("Unsolvable LinkedIn challenge at x")), \
+             patch(f"{_INV}.quit_gracefully"), \
+             patch(f"{_INV}.insert_new_log"), \
+             patch("cqc_lem.utilities.db.update_connection_request_status") as upd, \
+             patch("cqc_lem.utilities.db.record_connection_request_attempt") as rec, \
+             patch(f"{_INV}.track_invite_outcome") as track:
+            out = ra.send_connection_request(3)
+
+        upd.assert_called_once_with(3, ConnectionRequestStatus.APPROVED)
+        rec.assert_not_called()
+        assert track.call_args.args[1:3] == (ra.INVITE_RESULT_DEFERRED, ra.INVITE_OUTCOME_CHALLENGE)
+        assert "challenge" in out.lower()
+
