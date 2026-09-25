@@ -79,6 +79,7 @@ from cqc_lem.utilities.linkedin.company_page_inviter import (
 from cqc_lem.utilities.linkedin.helper import is_first_degree, login_to_linkedin
 from cqc_lem.utilities.linkedin.rate_limit import (
     INVITE_HOLD_DEFAULT_SECONDS,
+    LinkedInChallengeUnsolved,
     LinkedInRateLimited,
     clear_invite_dialog_misses,
     hold_invites,
@@ -1566,6 +1567,11 @@ def invite_to_connect_now(user_id: int, profile_url: str, message: str = None,
             # reached (#1924). Defer like a 429 instead — nothing was learned about this target.
             raise LinkedInRateLimited(
                 f"LinkedIn login failed before inviting to connect: {e}") from e
+        except LinkedInRateLimited:
+            # Already rate-limit-class (breaker, pause, or `LinkedInChallengeUnsolved`) — pass it
+            # through as-is. `LinkedInRateLimited` IS a RuntimeError, so the re-wrap below would
+            # otherwise erase the subclass `send_connection_request` reads its outcome word from.
+            raise
         except RuntimeError as e:
             # `login_to_linkedin` raises a plain RuntimeError when every automated way to clear a
             # login challenge (Arkose, email PIN, manual approval) failed
@@ -1833,6 +1839,10 @@ INVITE_RESULT_DEFERRED = "deferred"
 # stay put. Anything unmapped is `error`: the only reasons that reach here without a constant are
 # the formatted exception strings `invite_to_connect_now` returns.
 INVITE_REASON_UNMAPPED = "error"
+# The defer word for an unsolvable login checkpoint. A named constant, not a bare literal, because
+# the reason is asserted verbatim in the invite_outcome test and PostHog matches it on the exact
+# ingested string — one edit that drifted the two apart would silently empty the tile.
+INVITE_OUTCOME_CHALLENGE = "challenge"
 _INVITE_OUTCOME_REASONS = {
     CONNECTION_REQUEST_SENT_MESSAGE: "sent",
     ALREADY_CONNECTED_MESSAGE: "already_connected",
@@ -1915,8 +1925,12 @@ def send_connection_request(self, request_id: int):
                   user_id=user_id, action_type="invite_connect",
                   task_name="send_connection_request")
         update_connection_request_status(request_id, ConnectionRequestStatus.APPROVED)  # retry on next scan
-        track_invite_outcome(user_id, INVITE_RESULT_DEFERRED, "throttled", attempts_before)
-        return f"Connection request {request_id} deferred (LinkedIn throttled)"
+        # An unsolvable login checkpoint defers exactly like a 429 — no attempt charged — but it is
+        # a distinct wall word so a breakdown separates "the account could not sign in" from a
+        # genuine throttle, instead of the account-level outage landing in the `error` bucket.
+        reason = INVITE_OUTCOME_CHALLENGE if isinstance(e, LinkedInChallengeUnsolved) else "throttled"
+        track_invite_outcome(user_id, INVITE_RESULT_DEFERRED, reason, attempts_before)
+        return f"Connection request {request_id} deferred (LinkedIn {reason})"
     if sent:
         update_connection_request_status(request_id, ConnectionRequestStatus.SENT)
         track_invite_outcome(user_id, INVITE_RESULT_SENT, _invite_outcome_reason(reason),

@@ -43,6 +43,7 @@ from cqc_lem.utilities.linkedin.login_status import (
 )
 from cqc_lem.utilities.linkedin.profile import LinkedInProfile
 from cqc_lem.utilities.linkedin.rate_limit import (
+    LinkedInChallengeUnsolved,
     LinkedInRateLimited,
     automation_pause_remaining,
     clear_rate_limit,
@@ -519,8 +520,10 @@ def login_to_linkedin(driver: WebDriver, wait: WebDriverWait, user_email: str, u
         LinkedInRateLimited: automation paused, breaker open, a genuine 429, a transient
             proxy/network failure that must NOT trip the breaker, or this account's own
             challenge-unsolvable cooldown is still active.
-        RuntimeError: a challenge that neither the CAPTCHA solver, the email PIN flow nor a manual
-            mobile approval could clear.
+        LinkedInChallengeUnsolved: a challenge that neither the CAPTCHA solver, the email PIN flow
+            nor a manual mobile approval could clear, or this account's cooldown from one that
+            could not. Rate-limit-class (callers defer) because it is an account-level wall, not
+            the fault of whatever the run was for.
     """
     linked_url = "https://www.linkedin.com"
     feed_url = "https://www.linkedin.com/feed/"
@@ -680,13 +683,20 @@ def login_to_linkedin(driver: WebDriver, wait: WebDriverWait, user_email: str, u
                 return
         if _wait_for_manual_approval():
             return
-        # Every automated path failed. Record it so the NEXT call backs off instead of repeating
-        # this identical ~2min dance (and filing its own error-tracking occurrence) on the very
-        # next scheduled run — issue #1920 saw 19 of these in under 5h for one account.
+        # The ladder is spent and the checkpoint is still up — an ACCOUNT-level wall, never the
+        # target's fault. Record the per-account cooldown so the NEXT call backs off without
+        # navigating instead of re-submitting a live checkpoint page (issue #1920 saw 19 of these
+        # in under 5h for one account), and raise rate-limit-class so every caller defers and
+        # charges no attempt. The IP-wide 429 breaker is tripped ONLY when the account cannot be
+        # resolved: with no key to scope a cooldown to, backing everyone off beats a retry storm,
+        # but one account's checkpoint must never pause every OTHER user's automation.
         uid = _user_id_for_email(user_email)
         if uid:
             mark_challenge_unsolvable(uid)
-        raise RuntimeError(f"Unsolvable LinkedIn challenge at {label}: {driver.current_url}")
+        else:
+            mark_rate_limited(f"unsolvable login challenge at {label} (account unresolved)")
+        raise LinkedInChallengeUnsolved(
+            f"Unsolvable LinkedIn challenge at {label}: {driver.current_url}")
 
     # Manual global pause: a kill-switch to let a rate-limited account recover. Central gate —
     # every Selenium task logs in through here, so a pause halts all of them without navigating.
@@ -708,13 +718,13 @@ def login_to_linkedin(driver: WebDriver, wait: WebDriverWait, user_email: str, u
     # login challenge (Arkose, email PIN, manual approval) for this specific account. Unlike the
     # 429 breaker above this is account-scoped, not IP-wide, so it must not pause every OTHER
     # user's automation — only this one keeps skipping until the cooldown clears. Raised as
-    # `LinkedInRateLimited` (not the plain `RuntimeError` `_handle_challenge` raises) so it reaches
-    # every caller that already treats that as an expected back-off instead of a fresh failure.
+    # `LinkedInChallengeUnsolved`, the same rate-limit-class wall `_handle_challenge` raises, so
+    # every caller defers it and the invite outcome keeps its `challenge` word for the whole window.
     challenge_uid = _user_id_for_email(user_email)
     if challenge_uid:
         challenge_cooldown = challenge_cooldown_remaining(challenge_uid)
         if challenge_cooldown > 0:
-            raise LinkedInRateLimited(
+            raise LinkedInChallengeUnsolved(
                 f"LinkedIn login challenge for this account was unsolvable and is cooling down "
                 f"for ~{challenge_cooldown}s before the next attempt.")
 
