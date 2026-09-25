@@ -135,6 +135,76 @@ def test_dispatchable_orders_by_priority_then_age(conn):
     assert [r["number"] for r in db.dispatchable(conn)] == [31, 32, 30]
 
 
+def _labels(*names: str) -> str:
+    return json.dumps(sorted(names))
+
+
+def test_critical_label_dispatches_before_older_medium_item(conn):
+    """#2128: nothing wrote `priority`, so a critical issue sorted by age behind medium ones."""
+    db.upsert_item(conn, kind="issue", number=50, state=db.STATE_READY, ready_since=100,
+                   pending_mode="start", labels_json=_labels("agent:ready", "priority:medium"))
+    db.upsert_item(conn, kind="issue", number=51, state=db.STATE_READY, ready_since=500,
+                   pending_mode="start", labels_json=_labels("agent:ready", "priority:critical"))
+    assert [r["number"] for r in db.dispatchable(conn)] == [51, 50]
+
+
+def test_most_urgent_priority_label_wins():
+    assert db.priority_from_labels(["priority:high", "priority:critical"]) == 0
+    assert db.priority_from_labels(["priority:low", "priority:medium"]) == 2
+    assert db.priority_from_labels(["agent:ready", "bug"]) == db.DEFAULT_PRIORITY
+
+
+def test_critical_and_high_labels_store_priority_zero(conn):
+    db.upsert_item(conn, kind="issue", number=52, state=db.STATE_READY,
+                   labels_json=_labels("priority:critical", "priority:high"))
+    assert db.get_item(conn, "issue", 52)["priority"] == 0
+
+
+def test_relabel_updates_stored_priority(conn):
+    db.upsert_item(conn, kind="issue", number=53, state=db.STATE_READY,
+                   labels_json=_labels("priority:low"))
+    assert db.get_item(conn, "issue", 53)["priority"] == 3
+    db.upsert_item(conn, kind="issue", number=53, state=db.STATE_READY,
+                   labels_json=_labels("priority:high"))
+    assert db.get_item(conn, "issue", 53)["priority"] == 1
+    db.upsert_item(conn, kind="issue", number=53, state=db.STATE_READY, labels_json=_labels())
+    assert db.get_item(conn, "issue", 53)["priority"] == db.DEFAULT_PRIORITY
+
+
+def test_relabel_updates_priority_while_item_is_running(conn):
+    """The active-state guard defers the STATE change only; the re-sort must still land."""
+    item = db.upsert_item(conn, kind="issue", number=54, state=db.STATE_READY,
+                          labels_json=_labels("priority:low"))
+    db.force_state(conn, item, db.STATE_RUNNING)
+    db.upsert_item(conn, kind="issue", number=54, state=db.STATE_READY,
+                   labels_json=_labels("priority:critical"))
+    row = db.get_item(conn, "issue", 54)
+    assert (row["state"], row["priority"]) == (db.STATE_RUNNING, 0)
+
+
+def test_upsert_without_labels_leaves_priority_alone(conn):
+    """A write carrying no label set (a webhook head-SHA update) must not reset the priority."""
+    db.upsert_item(conn, kind="pr", number=55, state=db.STATE_READY,
+                   labels_json=_labels("priority:critical"))
+    db.upsert_item(conn, kind="pr", number=55, state=db.STATE_READY, head_sha="abc")
+    assert db.get_item(conn, "pr", 55)["priority"] == 0
+
+
+def test_unreadable_labels_json_reads_as_unlabelled():
+    assert db.priority_from_labels_json(None) == db.DEFAULT_PRIORITY
+    assert db.priority_from_labels_json("not json") == db.DEFAULT_PRIORITY
+    assert db.priority_from_labels_json('{"priority:critical": 1}') == db.DEFAULT_PRIORITY
+
+
+def test_finish_before_start_outranks_priority(conn):
+    """A critical `start` still waits behind a low-priority PR that only needs finishing."""
+    db.upsert_item(conn, kind="issue", number=56, state=db.STATE_READY, ready_since=50,
+                   pending_mode="start", labels_json=_labels("priority:critical"))
+    db.upsert_item(conn, kind="pr", number=57, state=db.STATE_READY, ready_since=900,
+                   pending_mode="fix", labels_json=_labels("priority:low"))
+    assert [r["number"] for r in db.dispatchable(conn)] == [57, 56]
+
+
 def test_due_items_returns_only_expired_ttls(conn):
     db.upsert_item(conn, kind="pr", number=40, state=db.STATE_WAIT_CI, wake_at=100)
     db.upsert_item(conn, kind="pr", number=41, state=db.STATE_WAIT_QUEUE, wake_at=9_999_999_999)
