@@ -104,9 +104,10 @@ class TestAutoCreateWeeklyContent:
         self, mock_planned, mock_ready, mock_create, mock_update_content, mock_update_status
     ):
         from cqc_lem.app.run_content_plan import auto_create_weekly_content
-        from cqc_lem.utilities.db import PostStatus
+        from cqc_lem.utilities.db import PostApprover, PostStatus
         auto_create_weekly_content(user_id=1)
-        mock_update_status.assert_called_once_with(55, PostStatus.PENDING)
+        mock_update_status.assert_called_once_with(
+            55, PostStatus.PENDING, approved_by=PostApprover.AUTO_SCHEDULE)
 
     @patch(f"{_RCP}.get_post_authenticity_score", return_value=None)
     @patch(f"{_RCP}.update_db_post_status")
@@ -120,10 +121,11 @@ class TestAutoCreateWeeklyContent:
         mock_auth_score, default_prefs
     ):
         from cqc_lem.app.run_content_plan import auto_create_weekly_content
-        from cqc_lem.utilities.db import PostStatus
+        from cqc_lem.utilities.db import PostApprover, PostStatus
         default_prefs.return_value = {"auto_schedule_posts": 1}
         auto_create_weekly_content(user_id=2)
-        mock_update_status.assert_called_once_with(77, PostStatus.APPROVED)
+        mock_update_status.assert_called_once_with(
+            77, PostStatus.APPROVED, approved_by=PostApprover.AUTO_SCHEDULE)
 
 
 class TestRollingBufferBounds:

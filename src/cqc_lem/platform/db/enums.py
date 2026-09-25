@@ -35,6 +35,18 @@ class PostStatus(StrEnum):
     ERROR = 'error'  # generation/posting failed (e.g. no real carousel images) — needs manual/dev fix
 
 
+class PostApprover(StrEnum):
+    """The automatic paths that move a post to APPROVED, as stored in `posts.approved_by` (#2116).
+
+    An author action is stored as 'user:<id>' (`user_approver`) instead — these are the approvals
+    no human made. A plain VARCHAR column, not an ENUM, so a new member needs no migration.
+    """
+    AUTO_SCHEDULE = 'system:auto_schedule'  # generation passed every gate under auto_schedule_posts
+    RESCORE = 'system:rescore'              # an edit re-scored clean and was auto-approved
+    CAROUSEL_HEAL = 'system:carousel_heal'  # real slide images appeared after a failed render
+    VIDEO_HEAL = 'system:video_heal'        # a regenerated video landed
+
+
 class ScheduledDmStatus(StrEnum):
     """Status for a scheduled 1:1 DM (issue #306), mirroring PostStatus."""
     PENDING = 'pending'      # draft awaiting approval

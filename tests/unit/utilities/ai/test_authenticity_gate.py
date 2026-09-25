@@ -188,7 +188,7 @@ class TestStatusDemotion:
         planned = [{"user_id": 1, "id": 42, "post_type": "text", "buyer_stage": "awareness"}]
         captured = {}
 
-        def _capture_status(post_id, status):
+        def _capture_status(post_id, status, approved_by=None):
             captured["status"] = status
             return True
 

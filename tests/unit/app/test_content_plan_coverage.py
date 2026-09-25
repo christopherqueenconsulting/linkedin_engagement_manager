@@ -318,6 +318,7 @@ class TestRegenerateCarouselTask:
 
     def test_errored_post_is_handed_to_the_gated_heal(self):
         from cqc_lem.app.run_content_plan import regenerate_post_carousel_task
+        from cqc_lem.utilities.db import PostApprover
         with patch("cqc_lem.utilities.db.get_post_user_id", return_value=1), \
              patch("cqc_lem.utilities.db.get_post_buyer_stage", return_value=None), \
              patch(f"{_RCP}.create_carousel_content", return_value="caption") as gen, \
@@ -329,7 +330,8 @@ class TestRegenerateCarouselTask:
             assert regenerate_post_carousel_task(9) == "caption"
         gen.assert_called_once_with(1, "awareness", 9)  # None stage defaults to awareness
         upd_content.assert_called_once_with(9, "caption")
-        heal.assert_called_once_with(1, 9, "caption", task_name="regenerate_post_carousel_task")
+        heal.assert_called_once_with(1, 9, "caption", task_name="regenerate_post_carousel_task",
+                                     approved_by=PostApprover.CAROUSEL_HEAL)
 
     def test_posted_post_is_not_reapproved(self):
         from cqc_lem.app.run_content_plan import regenerate_post_carousel_task

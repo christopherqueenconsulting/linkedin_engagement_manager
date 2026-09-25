@@ -113,9 +113,40 @@ def get_post_manual_publish(post_id: int) -> bool:
         cursor.close()
         connection.close()
     return bool(row[0]) if row else False
+def user_approver(user_id: int) -> str:
+    """The `posts.approved_by` value for an author's own approval (issue #2116)."""
+    return f"user:{user_id}"
+
+
+# Assigned BEFORE `status` in the same SET: MySQL evaluates single-table assignments left to right,
+# so `status` here is still the OLD value. Only a transition INTO 'approved' records an actor — a
+# re-save of a post that is already approved keeps whoever approved it.
+_APPROVAL_CLAUSE = ("approved_by = IF(status = 'approved' AND approved_by IS NOT NULL, approved_by, %s), "
+                    "approved_at = IF(status = 'approved' AND approved_at IS NOT NULL, approved_at, %s)")
+
+
+def _approval_assignment(post_status: Optional[PostStatus], approved_by: Optional[str],
+                         post_ids: list[int]) -> tuple[Optional[str], list]:
+    """The SET clause + params that record the approval actor, or (None, []) when not approving.
+
+    An API write that approves without an actor is a caller bug — every one names the author — so it
+    warns and writes the status anyway: refusing would lose the author's approval over bookkeeping.
+    """
+    if post_status != PostStatus.APPROVED:
+        return None, []
+    if not approved_by:
+        log_warning("Post approved with no recorded actor", post_ids=post_ids)
+        return None, []
+    return _APPROVAL_CLAUSE, [str(approved_by), to_naive_utc(datetime.now(timezone.utc))]
+
+
 def update_db_post(content: str, video_url: str, scheduled_time: datetime, post_type: PostType, post_id: int,
-                   post_status: PostStatus, user_id: Optional[int] = None) -> bool:
-    """`user_id` scopes the write to one account's row — same reason as `bulk_update_posts`."""
+                   post_status: PostStatus, user_id: Optional[int] = None,
+                   approved_by: Optional[str] = None) -> bool:
+    """`user_id` scopes the write to one account's row — same reason as `bulk_update_posts`.
+
+    `approved_by` is recorded when this write moves the post INTO APPROVED (issue #2116).
+    """
     connection = _connection.get_db_connection()
     cursor = connection.cursor()
 
@@ -125,7 +156,10 @@ def update_db_post(content: str, video_url: str, scheduled_time: datetime, post_
 
         scheduled_time = to_naive_utc(scheduled_time)
 
-        params: list = [content, video_url, scheduled_time, post_type.value, post_status.value, post_id]
+        approval_clause, approval_params = _approval_assignment(post_status, approved_by, [post_id])
+        approval_sql = f"{approval_clause}, " if approval_clause else ""
+        params: list = [content, video_url, scheduled_time, post_type.value, *approval_params,
+                        post_status.value, post_id]
         owner_clause = ""
         if user_id is not None:
             owner_clause = " AND user_id = %s"
@@ -133,7 +167,7 @@ def update_db_post(content: str, video_url: str, scheduled_time: datetime, post_
 
         cursor.execute(
             "UPDATE posts SET content = %s, video_url = %s, scheduled_time =%s, post_type = %s, "
-            f"status = %s WHERE id = %s{owner_clause}",
+            f"{approval_sql}status = %s WHERE id = %s{owner_clause}",
             params
         )
 
@@ -262,8 +296,14 @@ def get_post_captions(post_id: int) -> dict:
     return {"caption_text": row.get("caption_text"), "caption_srt_url": row.get("caption_srt_url")}
 
 
-def update_db_post_status(post_id: int, post_status: PostStatus) -> bool:
+def update_db_post_status(post_id: int, post_status: PostStatus,
+                          approved_by: Optional[str] = None) -> bool:
     """Move a post to `post_status`.
+
+    A move INTO APPROVED records `approved_by` and the time (issue #2116). APPROVED with no actor is
+    the publish path RE-QUEUEING a post it had claimed: that is not an approval, so whoever approved
+    the post stays recorded. Every real approval names its actor — `PostApprover` or
+    `user_approver()`; `test_post_approval_actor.py` holds the call sites to that.
 
     The MySQL connector cannot bind a StrEnum, so the `.value` is read first — and that read is wrapped:
     anything without a `.value` (a bare string, say) leaves the fallback in place and the post is written
@@ -287,10 +327,15 @@ def update_db_post_status(post_id: int, post_status: PostStatus) -> bool:
         log_warning("post_status was not a PostStatus — defaulting the row to 'posted'",
                     exc=e, post_id=post_id)
 
+    approval_sql, params = "", []
+    if status_str == PostStatus.APPROVED.value and approved_by:
+        approval_sql = f"{_APPROVAL_CLAUSE}, "
+        params = [str(approved_by), to_naive_utc(datetime.now(timezone.utc))]
+
     try:
         cursor.execute(
-            """UPDATE posts SET status = %s WHERE id = %s""",
-            (status_str, post_id)
+            f"UPDATE posts SET {approval_sql}status = %s WHERE id = %s",
+            (*params, status_str, post_id)
         )
 
         connection.commit()
@@ -560,12 +605,16 @@ def get_carousel_slides(post_id: int) -> list[str]:
         row = None
 
     return parse_carousel_slides(row['carousel_slides'] if row else None)
-_ALLOWED_POST_CLAUSES = frozenset({"status = %s", "scheduled_time = %s", "rejection_reason = %s"})
+_ALLOWED_POST_CLAUSES = frozenset({"status = %s", "scheduled_time = %s", "rejection_reason = %s",
+                                   _APPROVAL_CLAUSE})
 def bulk_update_posts(post_ids: list[int], status: Optional[PostStatus] = None,
                       scheduled_time: Optional[datetime] = None,
                       rejection_reason: Optional[str] = None,
-                      user_id: Optional[int] = None) -> bool:
+                      user_id: Optional[int] = None,
+                      approved_by: Optional[str] = None) -> bool:
     """`user_id` scopes the WHERE clause to one account's rows (issue #914).
+
+    `approved_by` is recorded on every row this write moves INTO APPROVED (issue #2116).
 
     The API checks ownership before it calls this, so the scope is redundant today — that is the
     point. It closes the window between the check and the write, and it means a future caller that
@@ -583,6 +632,10 @@ def bulk_update_posts(post_ids: list[int], status: Optional[PostStatus] = None,
         params: list = []
 
         if status is not None:
+            approval_clause, approval_params = _approval_assignment(status, approved_by, post_ids)
+            if approval_clause:
+                sets.append(approval_clause)
+                params.extend(approval_params)
             sets.append("status = %s")
             params.append(status.value)
         if scheduled_time is not None:
@@ -2110,8 +2163,11 @@ def has_post_with_status(user_id: int, statuses: tuple) -> bool:
 def insert_post(email: str, content: str, scheduled_time: datetime, post_type: PostType,
                 video_url: Optional[str] = None, carousel_slides: Optional[list[str]] = None,
                 video_quality: str = "standard", status: PostStatus = PostStatus.PENDING,
-                use_avatar: Optional[bool] = None, image_url: Optional[str] = None) -> bool:
+                use_avatar: Optional[bool] = None, image_url: Optional[str] = None,
+                approved_by: Optional[str] = None) -> bool:
     """Insert a fully-formed post for the account behind `email`.
+
+    A post inserted APPROVED records `approved_by` and the time (issue #2116).
 
     `use_avatar` is deliberately three-valued: NULL means the composer expressed no preference for this
     post, so the per-user opt-ins decide (issue #744); 0/1 is an explicit compose-time choice. An unknown
@@ -2133,14 +2189,22 @@ def insert_post(email: str, content: str, scheduled_time: datetime, post_type: P
 
             slides_json = json.dumps(carousel_slides) if carousel_slides else None
 
+            approver, approved_at = None, None
+            if status == PostStatus.APPROVED:
+                if approved_by:
+                    approver, approved_at = str(approved_by), to_naive_utc(datetime.now(timezone.utc))
+                else:
+                    log_warning("Post inserted approved with no recorded actor", user_id=user_id)
+
             # use_avatar is deliberately three-valued: NULL = the user expressed no preference for this
             # post, so the per-user opt-ins decide (issue #744). 0/1 is an explicit compose-time choice.
             cursor.execute("""
-                INSERT INTO posts (content, scheduled_time, post_type, user_id, video_url, carousel_slides, video_quality, status, use_avatar, image_url)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                INSERT INTO posts (content, scheduled_time, post_type, user_id, video_url, carousel_slides, video_quality, status, use_avatar, image_url, approved_by, approved_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """, (content, scheduled_time, post_type.value, user_id, video_url, slides_json,
                   video_quality or "standard", status.value,
-                  None if use_avatar is None else int(bool(use_avatar)), image_url))
+                  None if use_avatar is None else int(bool(use_avatar)), image_url,
+                  approver, approved_at))
 
             success = cursor.rowcount == 1
     except mysql.connector.Error as e:

@@ -124,36 +124,40 @@ class TestStatusSetterRecordsTheReason:
         return status, reason
 
     def test_a_passing_post_is_approved_with_no_reason(self):
-        from cqc_lem.utilities.db import PostStatus
+        from cqc_lem.utilities.db import PostApprover, PostStatus
         status, reason = self._run(authenticity_score=95)
-        status.assert_called_once_with(42, PostStatus.APPROVED)
+        status.assert_called_once_with(42, PostStatus.APPROVED,
+                                       approved_by=PostApprover.AUTO_SCHEDULE)
         reason.assert_called_once_with(42, [])
 
     def test_low_authenticity_demotes_and_explains(self, monkeypatch):
-        from cqc_lem.utilities.db import PostStatus
+        from cqc_lem.utilities.db import PostApprover, PostStatus
         monkeypatch.setenv("AUTHENTICITY_SCORE_MIN", "60")
         status, reason = self._run(authenticity_score=30)
-        status.assert_called_once_with(42, PostStatus.PENDING)
+        status.assert_called_once_with(42, PostStatus.PENDING,
+                                       approved_by=PostApprover.AUTO_SCHEDULE)
         findings = reason.call_args[0][1]
         assert findings[0]["gate"] == "authenticity" and findings[0]["score"] == 30
         assert findings[0]["remediation"]
 
     def test_missing_media_demotes_and_explains(self):
-        from cqc_lem.utilities.db import PostStatus
+        from cqc_lem.utilities.db import PostApprover, PostStatus
         status, reason = self._run(missing_asset=True)
-        status.assert_called_once_with(42, PostStatus.PENDING)
+        status.assert_called_once_with(42, PostStatus.PENDING,
+                                       approved_by=PostApprover.AUTO_SCHEDULE)
         assert reason.call_args[0][1][0]["gate"] == "missing_asset"
 
     def test_manual_review_users_still_get_the_reason(self):
-        from cqc_lem.utilities.db import PostStatus
+        from cqc_lem.utilities.db import PostApprover, PostStatus
         status, reason = self._run(authenticity_score=30, auto_schedule=False)
-        status.assert_called_once_with(42, PostStatus.PENDING)
+        status.assert_called_once_with(42, PostStatus.PENDING,
+                                       approved_by=PostApprover.AUTO_SCHEDULE)
         assert reason.call_args[0][1][0]["gate"] == "authenticity"
 
     def test_an_unreadable_score_still_leaves_the_media_gate_holding(self):
         # A DB hiccup on the score read must not let an assetless video post auto-approve.
         from cqc_lem.app import run_content_plan as rcp
-        from cqc_lem.utilities.db import PostStatus
+        from cqc_lem.utilities.db import PostApprover, PostStatus
         post = [{"user_id": 1, "id": 42, "post_type": "video", "buyer_stage": "awareness"}]
         with patch(f"{_RCP}.get_planned_posts_within_buffer", return_value=post), \
              patch(f"{_RCP}.count_ready_posts_within_buffer", return_value=0), \
@@ -167,7 +171,8 @@ class TestStatusSetterRecordsTheReason:
              patch(f"{_RCP}._post_missing_required_asset", return_value=True), \
              patch(f"{_RCP}.get_post_authenticity_score", side_effect=RuntimeError("db down")):
             rcp.auto_create_weekly_content(user_id=1)
-        status.assert_called_once_with(42, PostStatus.PENDING)
+        status.assert_called_once_with(42, PostStatus.PENDING,
+                                       approved_by=PostApprover.AUTO_SCHEDULE)
         assert reason.call_args[0][1][0]["gate"] == "missing_asset"
 
     def test_generation_never_holds_on_similarity_however_duplicated_the_draft(self):
@@ -177,7 +182,7 @@ class TestStatusSetterRecordsTheReason:
         # demoted here. Whether it should be is issue #1452; this test is what makes that a
         # deliberate change rather than a silent one.
         from cqc_lem.app import run_content_plan as rcp
-        from cqc_lem.utilities.db import PostStatus
+        from cqc_lem.utilities.db import PostApprover, PostStatus
         post = [{"user_id": 1, "id": 42, "post_type": "text", "buyer_stage": "awareness"}]
         with patch(f"{_RCP}.get_planned_posts_within_buffer", return_value=post), \
              patch(f"{_RCP}.count_ready_posts_within_buffer", return_value=0), \
@@ -194,7 +199,8 @@ class TestStatusSetterRecordsTheReason:
              patch(f"{_RCP}._post_material_sources", return_value=[]), \
              patch(f"{_RCP}.get_post_authenticity_score", return_value=95):
             rcp.auto_create_weekly_content(user_id=1)
-        status.assert_called_once_with(42, PostStatus.APPROVED)
+        status.assert_called_once_with(42, PostStatus.APPROVED,
+                                       approved_by=PostApprover.AUTO_SCHEDULE)
         assert reason.call_args[0][1] == []
 
     def test_a_failed_reason_write_never_fails_the_post(self):
@@ -239,10 +245,11 @@ class TestRescorePost:
         return result, new_status, reason, judge, history
 
     def test_a_fixed_post_is_promoted_without_a_regenerate(self):
-        from cqc_lem.utilities.db import PostStatus
+        from cqc_lem.utilities.db import PostApprover, PostStatus
         result, status, reason, judge, _ = self._rescore(score=88)
         assert result["passed"] is True and result["status"] == PostStatus.APPROVED.value
-        status.assert_called_once_with(42, PostStatus.APPROVED)
+        status.assert_called_once_with(42, PostStatus.APPROVED,
+                                       approved_by=PostApprover.RESCORE)
         reason.assert_called_once_with(42, [])
         # The edited text is re-judged — a stale score would survive a genuine rewrite.
         assert judge.called

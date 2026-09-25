@@ -4,6 +4,8 @@ from unittest.mock import patch
 
 import pytest
 
+from cqc_lem.utilities.db import PostApprover
+
 pytestmark = pytest.mark.unit
 
 _RCP = "cqc_lem.app.run_content_plan"
@@ -58,7 +60,8 @@ class TestRegeneratePostCarouselTask:
              patch(f"{_RCP}._heal_errored_post") as heal, \
              patch(f"{_RCP}.create_carousel_content", return_value="post text"):
             regenerate_post_carousel_task(5)
-        heal.assert_called_once_with(1, 5, "post text", task_name="regenerate_post_carousel_task")
+        heal.assert_called_once_with(1, 5, "post text", task_name="regenerate_post_carousel_task",
+                                     approved_by=PostApprover.CAROUSEL_HEAL)
 
     def test_does_not_approve_when_still_text(self):
         from cqc_lem.app.run_content_plan import regenerate_post_carousel_task
