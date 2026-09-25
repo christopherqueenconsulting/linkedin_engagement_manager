@@ -17,9 +17,11 @@ DIR="${ERROR_ISSUES_DIR:-/home/lem/error-to-issues}"
 LOG="$DIR/error-to-issues.log"
 mkdir -p "$DIR"
 log(){ echo "[$(date -u +%FT%TZ)] $*" | tee -a "$LOG" >&2; }
+. "$(dirname "${BASH_SOURCE[0]}")/lib/app_container.sh"
+APP_CONTAINER="${APP_CONTAINER:-$(active_api_container)}"  # never web_app — the nginx edge (#2160)
 
 # Best-effort email to the admin on a hard failure — mirrors weekly_sdui_drift_check.sh's `alert()`.
-# Reuses `_dispatch_email` inside the running `web_app` container rather than importing `cqc_lem`
+# Reuses `_dispatch_email` inside the running app container (`$APP_CONTAINER`) rather than importing `cqc_lem`
 # here: this script is designed to run from a dedicated cron clone whose python may not have the
 # app's dependencies installed reliably (see the header above), so alerting itself must not become a
 # new way for the cron to fail harder. `docker exec` needs no local cqc_lem env at all, so it works
@@ -27,7 +29,7 @@ log(){ echo "[$(date -u +%FT%TZ)] $*" | tee -a "$LOG" >&2; }
 # (host down, compose stopped) the alert is skipped with a logged reason — never fails the run.
 alert(){
   log "ALERT: $1"
-  sudo -n docker exec -i web_app python - "$1" <<'PY' >>"$LOG" 2>&1 || log "alert email skipped (web_app unreachable) — see reason above"
+  sudo -n docker exec -i "$APP_CONTAINER" python - "$1" <<'PY' >>"$LOG" 2>&1 || log "alert email skipped ($APP_CONTAINER unreachable) — see reason above"
 import os, sys
 msg = sys.argv[1]
 try:

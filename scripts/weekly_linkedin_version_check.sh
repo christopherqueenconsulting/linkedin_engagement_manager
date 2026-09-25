@@ -5,7 +5,8 @@
 # A retired LI_API_VERSION makes every /rest/* call answer 426 NONEXISTENT_VERSION, which
 # silently demotes native document posts to the legacy path. This keeps the pin alive.
 #
-# Flow: plan (scripts/linkedin_version_check.py, probing LinkedIn from inside web_app) -> if the
+# Flow: plan (scripts/linkedin_version_check.py, probing LinkedIn from inside the
+# active web_api_<color> app container) -> if the
 # pin is retired or near the retirement edge, GATE on the unit suite, back up + bump
 # /opt/lem/.env, recreate the app services, smoke-test the deployed version against the live API,
 # and ROLL BACK on any failure; on success open a PR so the repo defaults follow, and alert.
@@ -23,7 +24,7 @@ ENV_FILE="/opt/lem/.env"
 DIR="/home/lem/li-version-check"
 LOG="$DIR/li_version_check.log"
 COMPOSE="sudo -n docker compose -f /opt/lem/docker-compose.yml -f /opt/lem/docker-compose.prod.yml"
-APP_SERVICES="web_app celery_worker celery_worker_selenium celery_worker_selenium_prepost celery_worker_selenium_outreach celery_worker_selenium_content celery_beat flower"
+APP_SERVICES_BASE="celery_worker celery_worker_selenium celery_worker_selenium_prepost celery_worker_selenium_outreach celery_worker_selenium_content celery_beat flower"
 MIN_HEADROOM="${MIN_HEADROOM:-2}"
 # DRY_RUN=1 plans and runs the unit gate, but never writes .env, recreates containers, opens a
 # PR or emails — so the bump path can be rehearsed against prod safely.
@@ -35,11 +36,16 @@ _DEV_VENV_PY="/home/lem/linkedin_engagement_manager/.venv/bin/python"
 if [ -x "$_DEV_VENV_PY" ]; then PY=("$_DEV_VENV_PY"); else PY=(poetry run python); fi
 
 log(){ echo "[$(date -u +%FT%TZ)] $*" | tee -a "$LOG" >&2; }
+. "$(dirname "${BASH_SOURCE[0]}")/lib/app_container.sh"
+APP_CONTAINER="${APP_CONTAINER:-$(active_api_container)}"  # never web_app — the nginx edge (#2160)
+# The serving API container must be RECREATED with the new .env for smoke() to read the bump off it.
+# `web_app` is left out: it is nginx with no env_file, so recreating it re-read nothing.
+APP_SERVICES="$APP_CONTAINER $APP_SERVICES_BASE"
 
 alert(){  # log + best-effort email to the admin; never fails the run
   log "ALERT: $1"
   [ "$DRY_RUN" = "1" ] && { log "DRY_RUN: skipping alert email"; return 0; }
-  sudo -n docker exec -i web_app python - "$1" <<'PY' >>"$LOG" 2>&1 || true
+  sudo -n docker exec -i "$APP_CONTAINER" python - "$1" <<'PY' >>"$LOG" 2>&1 || true
 import os, sys
 msg = sys.argv[1]
 try:
@@ -53,8 +59,8 @@ except Exception as e:
 PY
 }
 
-plan_json(){  # probe LinkedIn from inside web_app (it has the DB token); $1=current version
-  sudo -n docker exec -i web_app python - --plan-json --current "$1" --min-headroom "$MIN_HEADROOM" \
+plan_json(){  # probe LinkedIn from inside the app container (it has the DB token); $1=current version
+  sudo -n docker exec -i "$APP_CONTAINER" python - --plan-json --current "$1" --min-headroom "$MIN_HEADROOM" \
     < "$REPO/scripts/linkedin_version_check.py" 2>>"$LOG"
 }
 
@@ -88,7 +94,7 @@ smoke(){  # $1=expected version — the DEPLOYED containers must carry it AND Li
   local want="$1" got service
   # An exec failure is reported as such, but still fails the smoke test — the safe direction,
   # since the caller rolls back rather than trusting an unverifiable container.
-  for service in web_app celery_worker; do
+  for service in "$APP_CONTAINER" celery_worker; do
     if ! got="$(sudo -n docker exec "$service" printenv LI_API_VERSION 2>/dev/null)"; then
       log "smoke: could not read LI_API_VERSION from $service (exec failed)"; return 1
     fi
@@ -97,7 +103,7 @@ smoke(){  # $1=expected version — the DEPLOYED containers must carry it AND Li
     fi
   done
   # A live versioned call with the deployed pin — this is the failure the whole job exists to catch.
-  if ! sudo -n docker exec -i web_app python - <<'PY' >>"$LOG" 2>&1
+  if ! sudo -n docker exec -i "$APP_CONTAINER" python - <<'PY' >>"$LOG" 2>&1
 import sys, requests
 from cqc_lem.utilities.db import get_user_access_token
 from cqc_lem.utilities.env_constants import LI_API_VERSION
@@ -107,7 +113,7 @@ print(f"probe {LI_API_VERSION} -> {r.status_code}")
 sys.exit(1 if r.status_code == 426 else 0)
 PY
   then log "smoke: LinkedIn rejected the deployed version"; return 1; fi
-  log "smoke: OK ($want live in web_app + celery_worker)"
+  log "smoke: OK ($want live in $APP_CONTAINER + celery_worker)"
   return 0
 }
 

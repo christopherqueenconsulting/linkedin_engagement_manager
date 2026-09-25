@@ -112,6 +112,48 @@ class TestDateParsers:
         assert _parse_relative_age_days("3d") == 3.0
 
 
+class TestMentionStamp:
+    """#2142: a mention card is dated by the notification's own stamp, never by the quoted comment.
+
+    Live 2026-09-24: the stamp is the card's LAST line, after "N reactions • M comments".
+    """
+
+    _LIVE = ("Harold S. mentioned you in a comment in Atlanta Business.\n"
+             "Hi Christopher! Thanks for the intro.\n2 reactions • 4 comments\n9h")
+
+    def test_the_live_card_reads_its_stamp(self):
+        from cqc_lem.app.engagement.outreach import _mention_stamp
+        assert _mention_stamp(self._LIVE) == "9h"
+
+    @pytest.mark.parametrize("quoted", ["We hit 5m ARR", "3d printing is back", "v2h shipped",
+                                        "5m", "raised 5m"])
+    def test_a_quoted_age_before_the_real_stamp_is_never_read(self, quoted):
+        from cqc_lem.app.engagement.outreach import _mention_stamp, _parse_relative_age_days
+        text = f"Jane mentioned you in a comment.\n{quoted}\n2 reactions • 4 comments\n2y"
+        assert _mention_stamp(text) == "2y"
+        assert _parse_relative_age_days(_mention_stamp(text)) == 730.0
+
+    @pytest.mark.parametrize("text", [
+        "Jane mentioned you in a comment.\nWe hit 5m ARR",
+        "Jane mentioned you in a comment.\nwe raised 5m\n",
+        "Jane mentioned you in a comment.\n3d printing\n2 reactions • 4 comments",
+        "Jane mentioned you in a comment.\n5m ARR\n2h ago",
+        "",
+    ])
+    def test_no_stamp_reads_empty_never_the_quoted_token(self, text):
+        from cqc_lem.app.engagement.outreach import _mention_stamp, _parse_relative_age_days
+        assert _mention_stamp(text) == ""
+        assert _parse_relative_age_days(_mention_stamp(text)) is None
+
+    @pytest.mark.parametrize("text,stamp", [("Jane mentioned you in a post • 3d", "3d"),
+                                            ("Jane mentioned you\n3 days\n\n", "3 days"),
+                                            ("Jane mentioned you\n45 min", "45 min"),
+                                            ("Jane mentioned you\n2mo", "2mo")])
+    def test_a_stamp_on_its_own_line_or_after_a_bullet_reads(self, text, stamp):
+        from cqc_lem.app.engagement.outreach import _mention_stamp
+        assert _mention_stamp(text) == stamp
+
+
 def _rec_row(text: str, href: str = "https://www.linkedin.com/in/jane?trk=x",
              name: str = "Jane Doe\n· 1st\nHead of Ops") -> dict:
     """One row as `_RECOMMENDATION_ROWS_JS` returns it: the card block's text plus the `/in/`
@@ -267,7 +309,7 @@ class TestCollaborators:
         return got, driver
 
     def test_recent_mention_becomes_a_collaborator(self):
-        got, driver = self._run([_card("Jane Doe mentioned you in a post 3d")])
+        got, driver = self._run([_card("Jane Doe mentioned you in a post\n3d")])
         assert got == {"https://www.linkedin.com/in/jane": "Jane Doe"}
         assert "filter=mentions" in driver.get.call_args[0][0]
 
@@ -277,7 +319,7 @@ class TestCollaborators:
         assert got == {}
 
     def test_mention_older_than_the_window_is_skipped(self):
-        got, _ = self._run([_card("Jane Doe tagged you in a post 6mo")])
+        got, _ = self._run([_card("Jane Doe tagged you in a post\n6mo")])
         assert got == {}
 
     def test_undated_mention_is_skipped(self):
@@ -285,7 +327,7 @@ class TestCollaborators:
         assert got == {}
 
     def test_company_actor_is_skipped(self):
-        got, _ = self._run([_card("Acme mentioned you in a post 2d",
+        got, _ = self._run([_card("Acme mentioned you in a post\n2d",
                                   href="https://www.linkedin.com/company/acme")])
         assert got == {}
 
@@ -298,7 +340,7 @@ class TestCollaborators:
         the card's own sentence. Read it from there rather than DM a real person as "there".
         """
         got, _ = self._run([_card("Status is online\nUnread notification.\n"
-                                  "Utkarsh Tiwari mentioned you in a comment in a group 2h",
+                                  "Utkarsh Tiwari mentioned you in a comment in a group\n2h",
                                   href="https://www.linkedin.com/in/utkarsh%2Dtiwari%2D98164814b",
                                   name="")])
         assert got == {"https://www.linkedin.com/in/utkarsh-tiwari-98164814b": "Utkarsh Tiwari"}
@@ -311,8 +353,19 @@ class TestCollaborators:
         assert _mention_actor_name("") == ""
 
     def test_link_text_still_wins_over_the_sentence(self):
-        got, _ = self._run([_card("Someone Else mentioned you in a post 1d", name="Jane Doe")])
+        got, _ = self._run([_card("Someone Else mentioned you in a post\n1d", name="Jane Doe")])
         assert got == {"https://www.linkedin.com/in/jane": "Jane Doe"}
+
+    def test_the_card_is_dated_by_its_own_stamp_not_the_quoted_comment(self):
+        """#2142: the live card quotes the whole comment, and only its LAST line is the stamp."""
+        got, _ = self._run([_card("Jane Doe mentioned you in a comment.\nWe hit 5m ARR last week\n"
+                                  "2 reactions • 4 comments\n2y")])
+        assert got == {}
+
+    def test_a_card_without_a_stamp_is_skipped_not_dated_from_the_quote(self):
+        got, _ = self._run([_card("Jane Doe mentioned you in a comment.\n3d printing, 5m ARR\n"
+                                  "2 reactions • 4 comments")])
+        assert got == {}
 
     def test_percent_encoded_slug_is_one_person_not_two(self):
         """SDUI escapes the hyphens in a vanity slug. Encoded and decoded must key the ledger the
@@ -517,7 +570,7 @@ class TestMentionCardChainIsExhaustedBeforeZero:
         """
         from cqc_lem.app.engagement.outreach import get_recent_collaborators
         driver = MagicMock()
-        driver.execute_script.return_value = [_card("Jane Doe mentioned you in a post 2h")]
+        driver.execute_script.return_value = [_card("Jane Doe mentioned you in a post\n2h")]
         with patch(f"{_OUT}.find_all_first", return_value=[]), \
              patch(f"{_OUT}.wait_for_ajax"), \
              patch(f"{_OUT}.getText", side_effect=lambda el: el.text), \

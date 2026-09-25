@@ -114,6 +114,7 @@ from cqc_lem.utilities.db import (
     MAX_CONTENT_BUFFER_POSTS,
     POSTS_PER_WEEK_MAX,
     POSTS_PER_WEEK_MIN,
+    PostApprover,
     PostStatus,
     PostType,
     count_ready_posts_within_buffer,
@@ -2203,7 +2204,8 @@ def regenerate_video_for_post(post_id: int) -> Optional[str]:
     # Symmetric with regenerate_post_carousel_task: a real video now exists, so an ERROR post is
     # re-gated and healed — never straight to 'approved' (issue #2100).
     if api_video_url:
-        _heal_errored_post(user_id, post_id, text_content, task_name="regenerate_post_video_task")
+        _heal_errored_post(user_id, post_id, text_content, task_name="regenerate_post_video_task",
+                           approved_by=PostApprover.VIDEO_HEAL)
     log_info(f"regenerate_video_for_post: post_id={post_id} -> {api_video_url}")
     return api_video_url
 
@@ -2248,12 +2250,13 @@ def regenerate_post_carousel_task(post_id: int):
 
     if _carousel_slides_are_real_images(get_post_carousel_slides(post_id)):
         _heal_errored_post(user_id, post_id, content or get_post_content(post_id),
-                           task_name="regenerate_post_carousel_task")
+                           task_name="regenerate_post_carousel_task",
+                           approved_by=PostApprover.CAROUSEL_HEAL)
     return content
 
 
 def _heal_errored_post(user_id: Optional[int], post_id: int, content: Optional[str],
-                       task_name: str) -> Optional[PostStatus]:
+                       task_name: str, approved_by: PostApprover) -> Optional[PostStatus]:
     """Heal an ERROR post whose media was just regenerated — through the gates, never around them.
 
     The asset heal used to promote any non-POSTED post straight to APPROVED, so a post the gates
@@ -2268,6 +2271,7 @@ def _heal_errored_post(user_id: Optional[int], post_id: int, content: Optional[s
         post_id: the healed post.
         content: the post's text as it now stands.
         task_name: the calling heal, for log context.
+        approved_by: the heal recorded as the approver when the gates let the post through (#2116).
 
     Returns:
         The status the post was moved to, or None when it was left alone.
@@ -2294,7 +2298,7 @@ def _heal_errored_post(user_id: Optional[int], post_id: int, content: Optional[s
     new_status = (PostStatus.APPROVED
                   if _may_auto_approve(user_id, post_id, auto_schedule, findings)
                   else PostStatus.PENDING)
-    update_db_post_status(post_id, new_status)
+    update_db_post_status(post_id, new_status, approved_by=approved_by)
     log_info(f"{task_name}: post {post_id} healed → {new_status.value}", user_id=user_id,
              post_id=post_id, task_name=task_name)
     return new_status
@@ -3057,7 +3061,7 @@ def rescore_post(post_id: int) -> dict:
         # above is a PRE-EXISTING caller and stays at `mark_repaired=False`: re-scoring grades the
         # text, it does not repair it.
         if _may_auto_approve(user_id, post_id, auto_schedule, findings):
-            update_db_post_status(post_id, PostStatus.APPROVED)
+            update_db_post_status(post_id, PostStatus.APPROVED, approved_by=PostApprover.RESCORE)
             status = PostStatus.APPROVED.value
             detail = "Passed every quality gate — approved and queued"
         elif auto_schedule:
@@ -4788,7 +4792,7 @@ def _create_content_for_planned_post(post: dict, prefs: dict) -> bool:
         _persist_gate_findings(user_id, post_id, gate_findings)
 
         log_info(f"Updating post_id: {post_id} Status={new_status}")
-        update_db_post_status(post_id, new_status)
+        update_db_post_status(post_id, new_status, approved_by=PostApprover.AUTO_SCHEDULE)
     except Exception as e:
         log_error(f"Skipping post_id {post_id}: storing generated content failed", exc=e,
                   user_id=user_id, post_id=post_id, task_name="auto_create_weekly_content")

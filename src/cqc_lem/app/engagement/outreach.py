@@ -283,7 +283,7 @@ __all__ = [
     "send_lead_response",
     "send_private_dm",
     "send_scheduled_dm",
-    # The catch-up vocabulary. `run_scheduler` reads eight of these to label its scan/send reports;
+    # The catch-up vocabulary. `run_scheduler` reads nine of these to label its scan/send reports;
     # `zero_walk_verdict` is the catch-up walk's alias of the ONE grader. Nothing INSIDE this module
     # reads the four below, so CodeQL reports them as unused globals unless the public surface is
     # declared (a `# lgtm[...]` comment is the retired syntax and no longer counts).
@@ -740,6 +740,16 @@ _RELATIVE_AGE_RE = re.compile(
     r"(?:^|(?<=[\s•·|(\[]))(\d{1,3})\s*"
     r"(mo(?:nths?)?|min(?:utes?)?|h(?:ours?)?|d(?:ays?)?|w(?:eeks?)?|y(?:ears?)?|m)\b",
     re.IGNORECASE)
+# The mention card's OWN stamp, never a token from the comment it quotes (#2142). The live card
+# (2026-09-24) is ~1.5k chars: "<Actor> mentioned you…", the whole quoted comment, "2 reactions •
+# 4 comments", and only then the stamp, alone on the LAST line in an unnamed <span> — no <time>, no
+# attribute to key on. So the age is read only where the stamp sits: the end of the card, opening
+# its own line or following a bullet. A card that ends any other way has no readable stamp and is
+# SKIPPED; it is never dated from the quoted text, where "5m ARR" would read as minutes ago.
+_MENTION_STAMP_RE = re.compile(
+    r"(?:^|[•·|])[ \t]*(\d{1,3}[ \t]*"
+    r"(?:mo(?:nths?)?|min(?:utes?)?|h(?:ours?)?|d(?:ays?)?|w(?:eeks?)?|y(?:ears?)?|m))\s*\Z",
+    re.IGNORECASE | re.MULTILINE)
 # Anything under a day is "today" for a lookback measured in days.
 _RELATIVE_AGE_UNIT_DAYS = (("mo", 30.0), ("min", 0.0), ("h", 0.0), ("d", 1.0), ("w", 7.0),
                            ("y", 365.0), ("m", 0.0))
@@ -786,6 +796,16 @@ def _parse_relative_age_days(text: str) -> "float | None":
         if unit.startswith(prefix):
             return float(amount) * days
     return None
+
+
+def _mention_stamp(text: str) -> str:
+    """The mention card's own age stamp ('9h'), or '' when the card does not end in one.
+
+    Read ONLY off the end of the card, so a number in the quoted comment can never date it. ''
+    means SKIP, exactly like an unreadable age.
+    """
+    match = _MENTION_STAMP_RE.search(text or "")
+    return match.group(1) if match else ""
 
 
 def _card_person(card: WebElement, locators: list) -> tuple:
@@ -999,7 +1019,7 @@ def get_recent_collaborators(driver, wait, user_id: int = None) -> dict[str, str
         text = _card_text(card)
         if not _MENTION_TEXT_RE.search(text):
             continue
-        age_days = _parse_relative_age_days(text)
+        age_days = _parse_relative_age_days(_mention_stamp(text))
         if age_days is None or age_days > lookback:
             continue
         url, name = _card_person(card, _MENTION_ACTOR_LOCATORS)
@@ -1387,6 +1407,10 @@ def _nurture_after_reply(user_id: int, followup: dict, their_message: str,
         # that IS the sequence, so it contributes no origin line rather than inventing one.
         who = recipient_context(profile_url=profile_url, first_name=first_name,
                                 event_type=followup.get("event_type"), user_id=user_id)
+        # The greeting name is the profile header's, never the stored row's (#2132): that row may
+        # carry notification text ("to", "liked") or somebody else's name. "" greets generically,
+        # and it is what the re-check row below carries forward, so the bad name dies here.
+        first_name = str(who.get("first_name") or "")
         message = None
         try:
             message = generate_nurture_dm(
@@ -3527,6 +3551,7 @@ CATCHUP_STATUS_NONE_QUALIFIED = "none_qualified"    # moments read, none survive
 CATCHUP_STATUS_DISPATCHED = "dispatched"
 CATCHUP_STATUS_NOTHING_TO_SEND = "nothing_to_send"
 CATCHUP_STATUS_CAPPED = "capped"                    # approved touches exist, today's cap is spent
+CATCHUP_STATUS_SPACED = "spaced"                    # approved touches exist, held by per-user spacing (#2141)
 CATCHUP_STATUS_INACTIVE = "inactive_users"          # queue exists but its owners aren't connected
 CATCHUP_STATUS_AWAITING_APPROVAL = "awaiting_approval"  # drafts exist, none approved yet
 # Terminal (deliver) outcomes. `dispatched` is NOT delivery: a touch the DM cap or the breaker defers
@@ -4019,7 +4044,7 @@ def _draft_catchup_message(user_id: int, moment: dict, my_profile: LinkedInProfi
 # state of a healthy account, not events. They log DEBUG (an expected no-op logged INFO is noise, and
 # the throttle already logs its own reason in _skip_if_throttled) — the PostHog series is what
 # carries them, and that's the series a "catch-up never sends" report has to be answered from.
-_CATCHUP_QUIET_STATUSES = frozenset({CATCHUP_STATUS_NOTHING_TO_SEND, CATCHUP_STATUS_CAPPED,
+_CATCHUP_QUIET_STATUSES = frozenset({CATCHUP_STATUS_NOTHING_TO_SEND, CATCHUP_STATUS_CAPPED, CATCHUP_STATUS_SPACED,
                                      CATCHUP_STATUS_THROTTLED, CATCHUP_STATUS_DISABLED,
                                      CATCHUP_STATUS_DM_CAPPED, CATCHUP_STATUS_NOT_SENDABLE,
                                      CATCHUP_STATUS_AWAITING_APPROVAL, CATCHUP_STATUS_CONTACT_COOLDOWN,
@@ -4034,7 +4059,7 @@ def report_catchup_run(user_id: Optional[int], report: dict, task_name: str) -> 
     summary = ", ".join(f"{k}={report[k]}" for k in
                         ("moments", "classified", "enabled_type", "excluded", "duplicate",
                          "below_bar", "drafted", "dispatched", "capped", "inactive", "pending",
-                         "requeued", "touch_id")
+                         "requeued", "spaced", "touch_id")
                         if k in report)
     status = report.get("status")
     emit = log_debug if status in _CATCHUP_QUIET_STATUSES else log_info

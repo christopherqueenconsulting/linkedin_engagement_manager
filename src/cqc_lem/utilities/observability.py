@@ -494,7 +494,7 @@ EVENTS = {spec.event: spec for spec in (
         count("enabled_type"), count("excluded"), count("duplicate"), count("below_bar"),
         count("drafted"), flag("auto_approve"), label("message_source"), count("dispatched"),
         count("capped"), count("inactive"), count("pending"), count("requeued"),
-        prop("touch_id"),
+        count("spaced"), prop("touch_id"),
     )),
     EventSpec("suppression_check", (
         prop("user_id"), label("status"), flag("tripped"), label("reason"), flag("paused"),

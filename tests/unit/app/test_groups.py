@@ -912,6 +912,47 @@ class TestCommentInGroups:
         # untouched — issue #1719's rotation puts them first next run instead of skipping them again.
         recorded.assert_called_once_with(1, "1")
 
+    def test_a_run_sets_out_only_for_the_groups_its_budget_fits(self):
+        """Issue #2134: 25 groups against a ~50-minute budget reached 4-5 and warned every run.
+
+        The run plans the rotation's head instead — the rest are deferred at DEBUG, never skipped
+        with a warning, and are left unstamped so they lead the next run.
+        """
+        from cqc_lem.app.engagement.feed import GROUP_WALK_SECONDS_PER_GROUP, auto_comment_in_groups
+        enabled = [str(i) for i in range(25)]
+        with patch(f"{_FEED}.get_enabled_group_ids", return_value=enabled), \
+             patch(f"{_FEED}.get_current_profile", return_value=(MagicMock(), MagicMock(), "e", MagicMock())), \
+             patch(f"{_FEED}.get_engagement_preferences", return_value={}), \
+             patch(f"{_FEED}.get_recent_engagers", return_value=set()), \
+             patch(f"{_FEED}._group_walk_deadline", return_value=1000.0 + 3 * GROUP_WALK_SECONDS_PER_GROUP), \
+             patch(f"{_FEED}.time.time", return_value=1000.0), \
+             patch(f"{_FEED}.comment_on_feed_inline", return_value=1) as cfi, \
+             patch(f"{_FEED}.record_group_comment_run") as recorded, \
+             patch(f"{_FEED}.log_debug") as debugged, \
+             patch(f"{_FEED}.log_warning") as warned, \
+             patch(f"{_FEED}.quit_gracefully"):
+            result = auto_comment_in_groups.run(user_id=1)
+        assert cfi.call_count == 3 and result == "Commented 3 time(s) across 3 group(s)"
+        assert recorded.call_args_list == [call(1, "0"), call(1, "1"), call(1, "2")]
+        assert not warned.called
+        assert any("planned 3 of 25" in c.args[0] for c in debugged.call_args_list)
+
+    def test_each_group_gets_an_even_share_of_what_is_left(self):
+        """Issue #2134: one slow group must not spend the budget the groups after it were planned on."""
+        from cqc_lem.app.engagement.feed import auto_comment_in_groups
+        with patch(f"{_FEED}.get_enabled_group_ids", return_value=["1", "2", "3"]), \
+             patch(f"{_FEED}.get_current_profile", return_value=(MagicMock(), MagicMock(), "e", MagicMock())), \
+             patch(f"{_FEED}.get_engagement_preferences", return_value={}), \
+             patch(f"{_FEED}.get_recent_engagers", return_value=set()), \
+             patch(f"{_FEED}._group_walk_deadline", return_value=1900.0), \
+             patch(f"{_FEED}.time.time", side_effect=_clock(1000.0, 1000.0, 1500.0, 1700.0)), \
+             patch(f"{_FEED}.comment_on_feed_inline", return_value=0) as cfi, \
+             patch(f"{_FEED}.record_group_comment_run"), \
+             patch(f"{_FEED}.quit_gracefully"):
+            auto_comment_in_groups.run(user_id=1)
+        # 900s over 3 groups, then the 400s left over 2 (group one overran its 300s), then all 200s.
+        assert [c.kwargs["deadline_ts"] for c in cfi.call_args_list] == [1300.0, 1700.0, 1900.0]
+
     def test_the_soft_time_limit_itself_is_absorbed_not_crashed(self):
         """Issue #1198: the backstop for a run whose reserve was not enough.
 
@@ -1015,6 +1056,19 @@ class TestGroupWalkDeadline:
         """
         from cqc_lem.app.engagement.feed import GROUP_WALK_MIN_BUDGET_SECONDS, _group_walk_deadline
         assert _group_walk_deadline(self._task((120, 60)), 1000.0) == 1000.0 + GROUP_WALK_MIN_BUDGET_SECONDS
+
+    def test_the_plan_takes_the_head_that_fits_and_never_less_than_one(self):
+        from cqc_lem.app.engagement.feed import GROUP_WALK_SECONDS_PER_GROUP, _plan_group_walk
+        groups = ["a", "b", "c", "d"]
+        assert _plan_group_walk(groups, 0.0, 2.5 * GROUP_WALK_SECONDS_PER_GROUP) == ["a", "b"]
+        assert _plan_group_walk(groups, 0.0, 10.0) == ["a"]
+        assert _plan_group_walk(groups, 0.0, None) == groups
+
+    def test_an_unbounded_walk_has_no_share_deadline(self):
+        from cqc_lem.app.engagement.feed import _group_share_deadline
+        assert _group_share_deadline(1000.0, None, 3) is None
+        # A walk already past its deadline hands the group nothing, never a deadline in the past-past.
+        assert _group_share_deadline(1000.0, 900.0, 3) == 1000.0
 
     def test_no_limit_anywhere_leaves_the_walk_unbounded(self):
         from cqc_lem.app.engagement.feed import _group_walk_deadline

@@ -134,8 +134,25 @@ Reasons: `own_comment`, `author_cooldown`, `already_commented`, `excluded`, `too
 `no_comment_affordance` and `seen_this_run`). Counts only — they change no gate; the topic-gate
 threshold and the fallback are an owner decision taken from these numbers.
 
-Remaining (phase 2, `risk:live-linkedin`): ground activity-URN extraction on group-feed cards so
-≥ 80% of comments are URN-keyed. Verify with V-PAIRS over 7 days of `/opt/lem/logs` (target 0).
+### The key itself is a chain (issue #2151)
+
+`_feed_post_identity` exhausts four rungs in order: the URN attribute on the card or a single-post
+ancestor (`_feed_post_container_urn`, source `card`) → the card's `/feed/update/` anchor
+(`permalink`) → a URN anywhere inside the card or its HTML (`card`) → the content hash (`hash`).
+`_URN_SCAN_JS` labels each hit `container|` or `descendant|`, and only a container hit takes rung 1.
+
+Grounded 2026-09-24 with `--group-feed-composer` on seven groups (`urn_evidence` per card): all 47
+group cards carried their own `data-urn` two or three ancestors up, so every one was already
+URN-keyed. The defect was the ORDER. On 15 of the 47, a `/feed/update/` anchor inside the card named
+a different activity than the container. These were group shares of an existing post: the container
+is the share, which is the thread our Comment lands in, and the anchor is the original. The old
+permalink-first chain keyed the post on the original. When the anchor renders on one read and not
+on the next, the same post gets two keys.
+
+The same session's home-feed control keyed 3 of 6 cards on the hash, and those cards had no
+URN-shaped attribute to read at all. So the hash-keyed share on the `Engagement scan:` line most
+likely comes from the home feed, and possibly the roster pages (this probe did not read those). It
+does not come from group-feed post cards. Read the ≥ 80% target from group runs only.
 
 ## Replies on our own posts, and the seed comment (`sweep_reply_comments`, `auto_seed_comment_on_post`)
 
@@ -367,7 +384,7 @@ people we have never scraped.
 
 | Field | Source | When it is missing |
 |---|---|---|
-| `first_name` | the `dm_followups` row the caller already has | omitted from the prompt |
+| `first_name` | `recipient_first_name` (#2132): the profile HEADER name (`full_name` in the `profiles` cache) first; else the `dm_followups` row's name only when the profile URL's slug spells it | omitted from the prompt, and the draft, template fallback, `scheduled_dms.recipient_name` and the re-check row all greet nobody |
 | `job_title` / `company_name` / `industry` | `db.get_profile_facts` — the by-URL `profiles` scrape cache, the same reader the nightly lead scorer uses for ICP fit | omitted; someone we never scraped is simply absent from that table |
 | `thread_origin` | the follow-up row's `event_type`, mapped through `_THREAD_ORIGINS` | omitted — including on a `nurture` row, where the event type IS the sequence and the original trigger is not on the row |
 
@@ -390,6 +407,10 @@ not return through the prompt.
   stays approval-gated either way.
 - `JSON_UNQUOTE(JSON_EXTRACT(...))` hands back the four-character string `'null'` for a JSON null,
   so `_UNKNOWN_FACTS` filters it — otherwise the prompt reads "their title is null".
+- **The stored name is never trusted on its own (#2132).** `dm_followups.first_name` is written by
+  whichever lane opened the thread, and some read it from notification text: drafts went out
+  addressed to "to", "on" and "liked", and one said "Hi Giri" to Saikumar. The URL is the
+  recipient's identity, so a name it does not vouch for is dropped — "Hi there" beats the wrong name.
 - When the LLM produces nothing the lane still falls back to `build_dm_from_template`, which
   ignores their reply entirely. That fallback is unchanged but now logs at INFO, so how often the
   least-relevant draft in the queue fires is readable.
@@ -577,6 +598,27 @@ The ONE place cadence is decided.
 - Fails open — no Redis, or `HUMAN_PACING_ENABLED=false`, restores pre-#626 behaviour.
 - Pacing only slows us down; the 429 breaker in `rate_limit.py` is the separate, harder gate.
 
+### Catch-up touches leave one at a time (`auto_check_catchup_touches`, issue #2141)
+
+The catch-up drip used to dispatch every approved touch inside the daily budget in the same beat,
+with no eta — seven catch-up DMs went out in 4m50s on 09-21. It now spaces them the way
+`auto_check_scheduled_dms` spaces scheduled DMs (#2103):
+
+- **Stagger.** One user's touches get etas at least `dm_send_gap_seconds` apart (seeded on user +
+  touch, so a re-run beat re-derives the same gap). The first leaves now.
+- **Orphan window.** An eta never lands past `_MAX_CATCHUP_STAGGER_SECONDS` — the smaller of the
+  reaper's 2h lookback and the broker `visibility_timeout` (~80 min by default), minus 15 min,
+  measured from the `sending` claim. Past `visibility_timeout` Redis re-delivers a still-waiting eta
+  task to a second worker (`task_acks_late`). A touch that would cross it is never claimed
+  — it stays `approved`, does not spend the daily budget, and a later beat takes it.
+- **No stacking.** A user with any touch still in `sending` gets no new batch that beat
+  (`get_user_ids_with_catchup_touches_in_flight`, read before the run claims anything; fails open).
+- **Orphans.** The reaper re-queues at most ONE lost touch per user per beat, so a restart that drops
+  a staggered batch does not re-send it as a burst.
+
+Touches held by either rule count as `spaced` on the `catchup_run` report, and a beat that only held
+touches reports status `spaced` (DEBUG — it is the design working, every 20 minutes).
+
 ## Comment outcome tracking (`sweep_comment_outcomes` + `utilities/comment_outcomes.py`, issue #628)
 
 Commenting used to be write-only. Read-only T+24h sweep revisits each un-checked `logs` comment
@@ -706,6 +748,17 @@ and `record_group_comment_run` stamps it for every group the walk REACHES this r
 a comment landed there, so an empty feed still moves to the back of the line. A group the deadline
 causes the walk to SKIP is left untouched, so it sorts to the front next run instead of being
 skipped again.
+
+**The run is sized to its budget (issue #2134).** Rotation made the skipping fair but not rare: 25
+enabled groups against a ~50-minute budget reached 4-5 per run, so "ran out of time" still fired in
+11 of 14 runs (audit 2026-09-10 → 09-24, A-11) — a planned outcome reported as an anomaly.
+`_plan_group_walk` now sets out only for the rotation's head the budget fits at
+`GROUP_WALK_SECONDS_PER_GROUP` (5 min) apiece, always at least one; the rest are deferred at DEBUG
+and lead the next run. `_group_share_deadline` hands each group an even share of what is LEFT as
+its `deadline_ts`, so a stalling feed cannot spend the later groups' time and a fast one donates
+its surplus. Fewer navigations per Chrome session also means less renderer memory, the cause of
+the walk's "Browser tab crashed" stops. The "ran out of time" warning survives only as the signal
+that a group overran its share by more than the reserve — a real defect when it repeats.
 
 ## Weekly group post — draft, preview, publish (issue #932)
 
@@ -945,8 +998,10 @@ empty-dict stubs, so only new connections ever produced a DM and the
   its own timestamp, and `$5m ARR` clears a `\b` just like `2h` does — so a word-boundary match
   would read a two-year-old mention as posted minutes ago and thank the person for it.
   `_RELATIVE_AGE_RE` requires start-of-text or a whitespace/bullet/bracket before the digits.
-  Prose that still parses ("10 years of experience") can only push the age OUT of the window, and
-  out of the window means skip — the safe direction on a surface that DMs real people.
+  Standalone is still not enough on a mention card, whose text is the WHOLE quoted comment ("we hit
+  5m ARR" is a standalone `5m`), so since #2142 a mention is dated only by `_mention_stamp`: the
+  age token that ends the card on its own line or after a bullet, which is where the live stamp
+  sits (`docs/sdui-selenium-notes.md`). No stamp there means skip — never a whole-card fallback.
 - **The stock `collaboration` template says what fired it.** A mention, not a project: *"thanks for
   the mention — genuinely appreciated. What are you working on at the moment?"*. It is the code
   DEFAULT only — a user who customized the template in `dm_templates` keeps theirs.

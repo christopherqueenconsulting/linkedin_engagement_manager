@@ -70,6 +70,7 @@ from cqc_lem.platform.db.enums import (
     OnboardingStep,
     OutreachStage,
     OutreachStatus,
+    PostApprover,
     PostStatus,
     PostType,
     ReferralStatus,
@@ -411,6 +412,7 @@ from cqc_lem.platform.db.repositories.outreach import (
     get_scheduled_dm,
     get_scheduled_dm_user_id,
     get_scheduled_dms,
+    get_user_ids_with_catchup_touches_in_flight,
     get_users_with_approved_outreach,
     has_appreciation_touch,
     has_catchup_touch,
@@ -558,6 +560,7 @@ from cqc_lem.platform.db.repositories.posts import (
     update_post_use_avatar,
     update_post_video_quality,
     upsert_engager,
+    user_approver,
     user_owns_posts,
 )
 from cqc_lem.platform.db.repositories.users import (
@@ -841,6 +844,7 @@ __all__ = [
     "POSTS_PER_WEEK_MAX",
     "POSTS_PER_WEEK_MIN",
     "PREMIUM_SUBSCRIPTION_TIERS",
+    "PostApprover",
     "PostStatus",
     "PostType",
     "READY_POST_STATUSES",
@@ -1115,6 +1119,7 @@ __all__ = [
     "get_open_group_post_draft",
     "get_or_create_reply_inbound_token",
     "get_orphaned_catchup_touches",
+    "get_user_ids_with_catchup_touches_in_flight",
     "get_orphaned_connection_requests",
     "get_orphaned_occasion_claims",
     "get_orphaned_scheduled_dms",
@@ -1427,6 +1432,7 @@ __all__ = [
     "upsert_story_bank_entries",
     "upsert_totp_factor",
     "upsert_user_group",
+    "user_approver",
     "user_owns_posts",
     "verify_pin_for_email",
 ]

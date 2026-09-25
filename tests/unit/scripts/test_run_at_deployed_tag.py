@@ -165,9 +165,10 @@ def test_stale_wrapper_warns(env: dict) -> None:
 
 
 def _active_api_container() -> str:
-    """The shipped `active_api_container` function, lifted from perf_snapshot.sh."""
-    block = re.search(r"\nactive_api_container\(\)\{.*?\n\}\n", PERF_SH.read_text(), re.S)
-    assert block, "active_api_container not found in perf_snapshot.sh"
+    """The shipped `active_api_container` function, lifted from the lib perf_snapshot.sh sources (#2160)."""
+    lib = PERF_SH.parent / "lib" / "app_container.sh"
+    block = re.search(r"\nactive_api_container\(\)\{.*?\n\}\n", lib.read_text(), re.S)
+    assert block, "active_api_container not found in scripts/lib/app_container.sh"
     return block.group(0)
 
 

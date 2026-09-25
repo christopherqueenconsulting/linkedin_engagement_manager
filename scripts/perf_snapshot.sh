@@ -24,17 +24,7 @@ ENVF="${LEM_ENV_FILE:-/opt/lem/.env}"
 LEM_ROOT="${LEM_ROOT:-/opt/lem}"
 mkdir -p "$DIR"
 
-# deploy.sh records the colour the tunnel is routed to in .active_color; that container is the one
-# guaranteed to be up. An unreadable or unexpected value falls back to blue rather than skipping
-# the block — a wrong guess costs one null `margin`, the same as not trying.
-active_api_container(){
-  local color
-  color="$(tr -d '[:space:]' < "$LEM_ROOT/.active_color" 2>/dev/null || true)"
-  case "$color" in
-    blue|green) echo "web_api_$color" ;;
-    *) echo "web_api_blue" ;;
-  esac
-}
+. "$(dirname "${BASH_SOURCE[0]}")/lib/app_container.sh"
 MARGIN_CONTAINER="${MARGIN_CONTAINER:-$(active_api_container)}"
 DBU=$(sudo -n grep -E "^MYSQL_USER=" "$ENVF"|cut -d= -f2)
 DBP=$(sudo -n grep -E "^MYSQL_PASSWORD=" "$ENVF"|cut -d= -f2)

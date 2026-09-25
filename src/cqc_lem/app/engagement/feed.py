@@ -180,6 +180,7 @@ from cqc_lem.utilities.linkedin.cards import (
     _X_LOWER_ARIA,
     _X_LOWER_TEXT,
     _card_for_textbox,
+    _feed_post_container_urn,
     _feed_post_urn_from_card,
     _norm_prefix,
     _normalize_post_text,
@@ -607,11 +608,20 @@ def _start_author_cooldown(user_id: int, author: str) -> None:
 
 
 def _feed_post_identity(card, author: str, content: str, driver=None) -> "tuple[str, str]":
-    """(dedup key, key SOURCE) for a feed post.
+    """(dedup key, key SOURCE) for a feed post, resolved through an ordered locator chain.
 
     Source is 'permalink' | 'card' | 'hash' — recorded on the run so we can confirm live that feed
     comments key on the stable activity URN and not on the volatile content hash (issue #580).
+
+    Rungs, exhausted in order (#2151, grounded on seven live group feeds): the card's own or a
+    single-post ancestor's URN attribute ('card') → its `/feed/update/` anchor ('permalink') → a URN
+    anywhere inside the card ('card') → the content hash. The container outranks the anchor because
+    on 15 of 47 live group cards the anchor named a DIFFERENT post (the original a group share
+    shared), and one post keyed two ways is a second comment.
     """
+    container_urn = _feed_post_container_urn(card, driver=driver)
+    if container_urn:
+        return f"feedurn://{container_urn}", "card"
     permalink = _post_permalink_from_card(card)
     if permalink:
         m = _URN_RE.search(permalink)
@@ -3882,6 +3892,40 @@ GROUP_WALK_RESERVE_SECONDS = 10 * 60
 # A limit configured tighter than the reserve must still leave a walk something to spend, or the
 # deadline check would refuse the first group and the task would never comment at all.
 GROUP_WALK_MIN_BUDGET_SECONDS = 5 * 60
+# What one group is PLANNED to cost (issue #2134). The walk used to set out for every enabled group
+# and let the deadline cut it off: with 25 groups and a ~50-minute budget it reached 4-5 of them and
+# warned "ran out of time" in 11 of 14 runs — a planned outcome reported as an anomaly, every day.
+# The run now takes only as many groups as its budget fits at this share; the #1719 rotation carries
+# the rest to the next run, so each group still gets its turn.
+GROUP_WALK_SECONDS_PER_GROUP = 5 * 60
+
+
+def _plan_group_walk(enabled: list, started_ts: float, deadline_ts: Optional[float]) -> list:
+    """The head of the rotation this run's budget fits, at `GROUP_WALK_SECONDS_PER_GROUP` apiece.
+
+    Always at least one group, so a tight budget still comments somewhere.
+
+    Returns:
+        `enabled` unchanged when nothing bounds the walk; otherwise its least-recently-walked head.
+    """
+    if deadline_ts is None:
+        return enabled
+    fits = max(1, int((deadline_ts - started_ts) // GROUP_WALK_SECONDS_PER_GROUP))
+    return enabled[:fits]
+
+
+def _group_share_deadline(now: float, deadline_ts: Optional[float], groups_left: int) -> Optional[float]:
+    """When the group about to be walked must hand over, so no one group eats the others' budget.
+
+    An even split of what is LEFT, so a group that finishes early donates its time to the ones after
+    it rather than leaving it unspent.
+
+    Returns:
+        None when the walk itself is unbounded.
+    """
+    if deadline_ts is None:
+        return None
+    return now + max(deadline_ts - now, 0.0) / max(groups_left, 1)
 
 
 def _group_walk_deadline(task: Task, started_ts: float) -> Optional[float]:
@@ -3913,13 +3957,20 @@ def auto_comment_in_groups(self, user_id: int, max_per_group: int = 2):
     it already posted, rather than being cut down mid-comment by the soft time limit. `get_enabled_
     group_ids` orders least-recently-walked first (issue #1719), so an out-of-time run does not
     starve the SAME tail groups forever — each reached group is stamped via `record_group_comment_
-    run`, moving it to the back of the line for next time.
+    run`, moving it to the back of the line for next time. A run only sets out for the groups its
+    budget fits (`_plan_group_walk`, issue #2134), and each gets an even share of what is left.
     """
     started_ts = time.time()
     enabled = get_enabled_group_ids(user_id)
     if not enabled:
         return lane_result(TaskOutcome.NO_OP, "No enabled groups")
     deadline_ts = _group_walk_deadline(self, started_ts)
+    planned = _plan_group_walk(enabled, started_ts, deadline_ts)
+    if len(planned) < len(enabled):
+        # Expected whenever a user has more groups than one run fits — the rotation is how the rest
+        # get their turn — so DEBUG, never a warning.
+        log_debug(f"Group commenting planned {len(planned)} of {len(enabled)} group(s) this run — "
+                  f"the rest rotate to the next run", user_id=user_id, task_name="auto_comment_in_groups")
     try:
         # needs_images=True (issue #1778): same fastboot dependency as #1774's messaging fix —
         # /groups/<id>/ never mounts <main> with images blocked.
@@ -3946,13 +3997,15 @@ def auto_comment_in_groups(self, user_id: int, max_per_group: int = 2):
     total = 0
     walked = 0
     try:
-        for gid in enabled:
-            if deadline_ts is not None and time.time() >= deadline_ts:
-                # WARNING, not DEBUG: the groups after this one got nothing this run. Once is the
-                # walk being longer than its budget; repeatedly is a defect (too many groups, or a
-                # group feed that stalls), and the escalation contract is what says so.
-                log_warning(f"Group commenting ran out of time after {walked} of {len(enabled)} "
-                            f"group(s) — remaining groups skipped this run", user_id=user_id,
+        for gid in planned:
+            now = time.time()
+            if deadline_ts is not None and now >= deadline_ts:
+                # WARNING, not DEBUG: the run was planned to fit, so reaching the deadline means a
+                # group overran its share by more than the reserve. Once is a slow page; repeatedly
+                # is a defect (a feed that stalls past its own deadline), and the escalation
+                # contract is what says so.
+                log_warning(f"Group commenting ran out of time after {walked} of {len(planned)} "
+                            f"planned group(s) — remaining groups skipped this run", user_id=user_id,
                             action_type="comment", task_name="auto_comment_in_groups")
                 return lane_result(landed_or_no_op(total), f"Commented {total} time(s) across {walked} group(s) "
                                                       f"before running out of time")
@@ -3960,8 +4013,9 @@ def auto_comment_in_groups(self, user_id: int, max_per_group: int = 2):
                 driver.get(f"https://www.linkedin.com/groups/{gid}/")
                 time.sleep(random.uniform(4, 7))
                 if driver.find_elements(By.CSS_SELECTOR, _PAGE_SHELL_CROSSCHECK_SEL):
+                    group_deadline = _group_share_deadline(now, deadline_ts, len(planned) - walked)
                     total += comment_on_feed_inline(driver, wait, my_profile, user_id,
-                                                    max_posts=max_per_group, deadline_ts=deadline_ts,
+                                                    max_posts=max_per_group, deadline_ts=group_deadline,
                                                     prefs=prefs, engagers=engagers, is_group_feed=True)
                 else:
                     # The page never rendered a `<main>` — a login wall, an interstitial, or a
@@ -4000,7 +4054,7 @@ def auto_comment_in_groups(self, user_id: int, max_per_group: int = 2):
                     # surfacing, so it stays a warning (escalates if it starts recurring) rather than
                     # crashing the task into an unhandled $exception for a fault the walk cannot
                     # recover from mid-run.
-                    log_warning(f"Browser tab crashed after {walked} of {len(enabled)} group(s) — "
+                    log_warning(f"Browser tab crashed after {walked} of {len(planned)} group(s) — "
                                 f"stopping group commenting", exc=e, user_id=user_id,
                                 action_type="comment", task_name="auto_comment_in_groups")
                     return lane_result(TaskOutcome.FAILED, f"Commented {total} time(s) before the browser "
@@ -4012,13 +4066,13 @@ def auto_comment_in_groups(self, user_id: int, max_per_group: int = 2):
                     # a crashed tab: stop and keep what already shipped, WARNING (not INFO) because
                     # a live Grid relay fault, unlike a routine deploy, is worth surfacing if it
                     # recurs.
-                    log_warning(f"Grid relay error after {walked} of {len(enabled)} group(s) — "
+                    log_warning(f"Grid relay error after {walked} of {len(planned)} group(s) — "
                                 f"stopping group commenting", exc=e, user_id=user_id,
                                 action_type="comment", task_name="auto_comment_in_groups")
                     return lane_result(TaskOutcome.FAILED, f"Commented {total} time(s) before the Grid "
                                                            f"relay failed", cause=e)
                 raise
-        return lane_result(landed_or_no_op(total), f"Commented {total} time(s) across {len(enabled)} group(s)")
+        return lane_result(landed_or_no_op(total), f"Commented {total} time(s) across {walked} group(s)")
     except SoftTimeLimitExceeded:
         # The deadline above is the intended stop; this is the backstop for a run whose reserve was
         # not enough (issue #1198). It arrives here rather than in the loop's own handler because
@@ -4026,7 +4080,7 @@ def auto_comment_in_groups(self, user_id: int, max_per_group: int = 2):
         # already landed and letting `finally` quit Chrome is the whole point of the SOFT limit —
         # crashing the task instead only files a grouped $exception for a run we deliberately capped.
         log_warning(f"Group commenting hit the Celery soft time limit after {walked} of "
-                    f"{len(enabled)} group(s)", user_id=user_id, action_type="comment",
+                    f"{len(planned)} group(s)", user_id=user_id, action_type="comment",
                     task_name="auto_comment_in_groups")
         return lane_result(landed_or_no_op(total), f"Commented {total} time(s) before the task time limit")
     finally:

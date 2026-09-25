@@ -176,19 +176,23 @@ class TestRecipientContext:
     def test_an_unscraped_profile_degrades_instead_of_failing(self):
         from cqc_lem.utilities.ai.dm_nurture import recipient_context
         with patch("cqc_lem.utilities.db.get_profile_facts", return_value={}):
-            got = recipient_context(profile_url="https://x/in/nobody", first_name="Sam")
+            got = recipient_context(profile_url="https://x/in/sam-lee-1a2b3c", first_name="Sam")
         assert got == {"first_name": "Sam"}
 
-    def test_nothing_known_at_all_is_an_empty_context_not_an_error(self):
+    def test_an_uncorroborated_stored_name_is_dropped_not_greeted(self):
+        # #2132: nothing vouches for "Sam" — no scraped header, and the URL does not spell it.
         from cqc_lem.utilities.ai.dm_nurture import recipient_context
         with patch("cqc_lem.utilities.db.get_profile_facts", return_value={}):
-            assert recipient_context() == {}
+            got = recipient_context(profile_url="https://x/in/nobody", first_name="Sam")
+        assert got == {}
 
-    def test_a_failed_read_is_swallowed(self):
+    def test_the_profile_header_name_replaces_the_stored_one(self):
         from cqc_lem.utilities.ai.dm_nurture import recipient_context
-        with patch("cqc_lem.utilities.db.get_profile_facts", side_effect=RuntimeError("db down")):
-            got = recipient_context(profile_url="https://x/in/jane", first_name="Jane")
-        assert got == {"first_name": "Jane"}
+        with patch("cqc_lem.utilities.db.get_profile_facts",
+                   return_value=self._facts(full_name="Saikumar Reddy")):
+            got = recipient_context(profile_url="https://x/in/sk-9f8e7d", first_name="Giri")
+        assert got["first_name"] == "Saikumar"
+
 
     def test_the_json_null_string_is_not_a_fact(self):
         # JSON_UNQUOTE(JSON_EXTRACT(data, '$.company_name')) returns the STRING 'null' for a JSON
@@ -258,3 +262,58 @@ class TestFormatRecipientContext:
     def test_no_context_renders_no_block(self, context):
         from cqc_lem.utilities.ai.dm_nurture import format_recipient_context
         assert format_recipient_context(context) == ""
+
+
+class TestRecipientFirstName:
+    """Issue #2132 — the greeting name comes from the profile header, never notification text."""
+
+    @pytest.mark.parametrize("stored", ["to", "on", "liked", "Giri"])
+    def test_the_header_name_wins_over_whatever_the_row_stored(self, stored):
+        from cqc_lem.utilities.ai.dm_nurture import recipient_first_name
+        assert recipient_first_name("https://x/in/saikumar-r-12ab34", stored,
+                                    "Saikumar Reddy") == "Saikumar"
+
+    @pytest.mark.parametrize("stored", ["to", "on", "liked"])
+    def test_notification_words_are_never_a_name(self, stored):
+        # DMs 30, 34 and 39: no header scraped, and the row carried a word of notification text.
+        from cqc_lem.utilities.ai.dm_nurture import recipient_first_name
+        assert recipient_first_name("https://x/in/jane-doe-8a4b21", stored, None) == ""
+
+    def test_someone_elses_name_is_never_greeted(self):
+        # The "Hi Giri" draft to Saikumar (lead 6): the URL is Saikumar's, so "Giri" is not theirs.
+        from cqc_lem.utilities.ai.dm_nurture import recipient_first_name
+        assert recipient_first_name("https://x/in/saikumar-r-12ab34", "Giri", None) == ""
+
+    def test_a_stored_name_the_url_spells_is_kept(self):
+        from cqc_lem.utilities.ai.dm_nurture import recipient_first_name
+        assert recipient_first_name("https://www.linkedin.com/in/jane-doe-8a4b21/", "Jane Doe",
+                                    None) == "Jane"
+
+    @pytest.mark.parametrize("header", ["", None, "null", "None"])
+    def test_an_unknown_header_falls_through_to_the_slug_check(self, header):
+        from cqc_lem.utilities.ai.dm_nurture import recipient_first_name
+        assert recipient_first_name("https://x/in/jane-doe", "Jane", header) == "Jane"
+        assert recipient_first_name("https://x/in/jane-doe", "to", header) == ""
+
+    def test_header_badge_text_is_stripped(self):
+        from cqc_lem.utilities.ai.dm_nurture import recipient_first_name
+        assert recipient_first_name("https://x/in/x", None, "Asbjørn Hansen • 1st") == "Asbjørn"
+
+    def test_a_non_name_header_token_greets_nobody(self):
+        from cqc_lem.utilities.ai.dm_nurture import recipient_first_name
+        assert recipient_first_name("https://x/in/x", None, "J. Smith") == ""
+
+    def test_nothing_known_is_an_empty_name(self):
+        from cqc_lem.utilities.ai.dm_nurture import recipient_first_name
+        assert recipient_first_name() == ""
+
+    def test_nothing_known_at_all_is_an_empty_context_not_an_error(self):
+        from cqc_lem.utilities.ai.dm_nurture import recipient_context
+        with patch("cqc_lem.utilities.db.get_profile_facts", return_value={}):
+            assert recipient_context() == {}
+
+    def test_a_failed_read_is_swallowed(self):
+        from cqc_lem.utilities.ai.dm_nurture import recipient_context
+        with patch("cqc_lem.utilities.db.get_profile_facts", side_effect=RuntimeError("db down")):
+            got = recipient_context(profile_url="https://x/in/jane", first_name="Jane")
+        assert got == {"first_name": "Jane"}

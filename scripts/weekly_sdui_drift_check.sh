@@ -42,6 +42,8 @@ _DEV_VENV_PY="/home/lem/linkedin_engagement_manager/.venv/bin/python"
 if [ -x "$_DEV_VENV_PY" ]; then PY=("$_DEV_VENV_PY"); else PY=(python3); fi
 
 log(){ echo "[$(date -u +%FT%TZ)] $*" | tee -a "$LOG" >&2; }
+. "$(dirname "${BASH_SOURCE[0]}")/lib/app_container.sh"
+APP_CONTAINER="${APP_CONTAINER:-$(active_api_container)}"  # never web_app — the nginx edge (#2160)
 
 # The sweep must measure with the probe that is on `main`, never with whatever the checkout it was
 # installed from happens to hold (issue #2085). `scripts/` is not in the image, so both scripts are
@@ -72,7 +74,7 @@ pin_script(){  # $1 = repo-relative path; echoes the path to run. Never fails th
 alert(){  # log + best-effort email to the admin; never fails the run
   log "ALERT: $1"
   [ "$DRY_RUN" = "1" ] && { log "DRY_RUN: skipping alert email"; return 0; }
-  sudo -n docker exec -i web_app python - "$1" <<'PY' >>"$LOG" 2>&1 || true
+  sudo -n docker exec -i "$APP_CONTAINER" python - "$1" <<'PY' >>"$LOG" 2>&1 || true
 import os, sys
 msg = sys.argv[1]
 try:

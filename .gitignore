@@ -20,6 +20,7 @@ lib/
 # silently stayed out of the repo while the tick.sh beside it was tracked. Every other match is
 # under .venv/, which is ignored on its own line, so this negation loosens nothing else.
 !scripts/agent-pipeline/lib/
+!scripts/lib/
 lib64/
 parts/
 sdist/
