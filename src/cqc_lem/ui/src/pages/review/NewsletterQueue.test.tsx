@@ -312,3 +312,26 @@ describe('NewsletterQueue slot copy', () => {
     await waitFor(() => expect(screen.getByText(/Auto-publishes/)).toBeTruthy())
   })
 })
+
+// Audits and decision comments name an edition by its database id ("hold editions 14-16"), so the
+// owner has to be able to find that id on screen (#2206).
+describe('NewsletterQueue edition id', () => {
+  const inHeader = (id: number) =>
+    screen.getAllByText(`#${id}`).some((el) => el.closest('h3')?.textContent?.includes('Review draft'))
+
+  it('shows #<id> on every queue row and in the open edition header', async () => {
+    serveQueue([edition(4, 'First up'), edition(7, 'Later')])
+    harness(queue())
+    await waitFor(() => expect(titleBox().value).toBe('First up'))
+
+    // Edition 4 is open: its id is on its row AND in the editor header; 7 only on its row.
+    expect(screen.getAllByText('#4')).toHaveLength(2)
+    expect(inHeader(4)).toBe(true)
+    expect(screen.getAllByText('#7')).toHaveLength(1)
+    expect(inHeader(7)).toBe(false)
+
+    fireEvent.click(screen.getByText('Later'))
+    await waitFor(() => expect(inHeader(7)).toBe(true))
+    expect(inHeader(4)).toBe(false)
+  })
+})

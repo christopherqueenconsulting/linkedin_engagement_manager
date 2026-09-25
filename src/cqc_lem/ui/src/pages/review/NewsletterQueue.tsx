@@ -303,7 +303,11 @@ export default function NewsletterQueue(
             }`}
           >
             <div className="flex items-center justify-between mb-1 gap-2">
+              {/* The id is how audits, PRs and decision comments name an edition ("edition 14"),
+                  so it has to be readable here or those instructions cannot be acted on (#2206). */}
               <span className="text-xs text-gray-400 truncate">
+                <span className="font-mono text-gray-500" title="Edition id">#{e.id}</span>
+                {' · '}
                 {e.scheduled_for ? formatInTimezone(e.scheduled_for, userTimezone) : 'Unscheduled'}
               </span>
               <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${STATUS_COLORS[e.status] ?? 'bg-gray-100 text-gray-600'}`}>
@@ -348,7 +352,10 @@ export default function NewsletterQueue(
         <div className="sticky top-4 self-start space-y-4 max-h-[calc(100vh-2rem)] overflow-y-auto">
           <div className="bg-white rounded-lg border border-gray-200 shadow-sm p-5 space-y-3">
             <div>
-              <h3 className="text-sm font-semibold text-gray-700">Review draft</h3>
+              <h3 className="text-sm font-semibold text-gray-700">
+                Review draft{' '}
+                <span className="font-mono font-normal text-gray-500" title="Edition id">#{draftEdit.id}</span>
+              </h3>
               {/* What happens at the slot depends on the account's own setting (issue #1135), so
                   this reports it rather than asserting one universal truth. An APPROVED edition
                   publishes either way — the toggle only decides whether an untouched draft does. */}
