@@ -2538,8 +2538,10 @@ class TestOccasionComposerProbe:
 
     def test_a_carried_archetype_reaches_the_type_map_without_widening_a_shipped_row(
             self, monkeypatch):
-        """#2140: an archetype this branch adds is asked about pre-merge; a shipped row is never
-        extended with a carried label, because that is how a row reaches its neighbour (#1012).
+        """#2140: a carried archetype is asked about pre-merge; a shipped row never widens.
+
+        A shipped row is never extended with a carried label, because that is how a row reaches
+        its neighbour (#1012).
         """
         _fake_share_composer(monkeypatch,
                              OCCASION_ENTRY_LABELS=llv._CARRIED_OCCASION_ENTRY_LABELS,
