@@ -18,12 +18,36 @@ import sys
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 _ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(_ROOT / "scripts"))
 
 import release_risk_check as rrc  # noqa: E402
 
 REPO = "christopherqueenconsulting/linkedin_engagement_manager"
+
+
+@pytest.fixture(autouse=True)
+def _every_migration_is_non_additive(monkeypatch):
+    """Pin the classifier to HOLD so these tests keep grading what they were written for.
+
+    Every test in this file is about WHICH migrations the gate finds and which base it diffs against
+    (#1133/#1859/#1893/#1896). Some fixtures name real migration files that the additive classifier
+    would let through, which would make these tests depend on the SQL in the repo today. The
+    classification itself, and main()'s additive auto-deploy path, are graded in
+    `test_release_risk_check_additive.py` and `test_migration_classifier.py`. The hold issue/email
+    is stubbed for the same reason — `test_deploy_hold_notify.py` owns it.
+    """
+
+    def _hold(migration_files, repo_root):
+        return [
+            rrc.migration_classifier.MigrationVerdict(path=p, error="pinned non-additive by this test module")
+            for p in migration_files
+        ]
+
+    monkeypatch.setattr(rrc, "classify_migrations", _hold)
+    monkeypatch.setattr(rrc, "report_hold", lambda *a, **kw: None)
 
 
 def _completed(returncode=0, stdout="", stderr=""):

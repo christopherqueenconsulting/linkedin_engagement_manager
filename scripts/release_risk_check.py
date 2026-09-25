@@ -40,13 +40,21 @@ tag-to-tag diff shows. Every log line and the Decision Comment name which of the
 produced the verdict (`describe_comparison_base`, #1896) — a degraded run usually agrees with a
 working `/api/app-info` read, which is exactly how a silently-broken primary path can hide.
 
-On a flag, the workflow skips the automatic `deploy` job (this script only writes the `flagged`
+Additive-only auto-deploy: a migration found in the range is then CLASSIFIED
+(`scripts/migration_classifier.py`). When every one of them is provably additive — a new table, a
+NULLable/DEFAULTed column, a non-unique index, an ENUM that only appends, a seed INSERT — the release
+deploys automatically, with a `::notice` naming each migration and why it passed. Anything else, and
+anything the classifier cannot read or parse, HOLDS: the gate fails CLOSED on classification, where
+it fails open on GitHub API reads. Holding the first two purely additive migrations parked production
+on v0.176.5 for ~24h with nobody told, which is what this narrowing and the hold issue answer.
+
+On a hold, the workflow skips the automatic `deploy` job (this script only writes the `flagged`
 GitHub Actions output the job's `if:` reads — it never exits non-zero for a flag, since that would
-turn the *workflow run* red for working exactly as designed) and this script posts a Decision Comment
-on the release PR naming the migration file(s). That comment is AUDIT / NOTIFICATION ONLY: nothing in
-this repo watches replies on a release-please PR (it carries no `agent:ready`/`needs-human` flow
-label, and `tick.sh` never reads it) — the comment says so plainly rather than implying an automated
-unblock exists. The unblock is the owner running the existing manual entrypoint:
+turn the *workflow run* red for working exactly as designed), posts a Decision Comment on the release
+PR naming the migration file(s) and why each held, and opens (or updates) ONE `needs-human` issue and
+emails the owner (`scripts/deploy_hold_notify.py`). The comment itself is AUDIT only: nothing in this
+repo watches replies on a release-please PR. The issue is the actionable surface — it closes itself
+once production reaches the held tag. The unblock is the owner running the existing manual entrypoint:
 
     gh workflow run deploy-vps.yml -f tag=vX.Y.Z
 
@@ -63,8 +71,9 @@ CLI:
   --release-limit N      `gh release list --limit` (default 20, per the acceptance criteria).
   --app-url URL          Base URL to read `/api/app-info` from. Defaults to $PUBLIC_BASE_URL. Empty
                           = skip straight to the tag-to-tag fallback.
-  --no-comment           Skip posting the Decision Comment even when flagged (used by tests / a
-                          dry run); the `flagged` output is still written.
+  --no-comment           Dry run: skip the Decision Comment, the hold issue and the email even when
+                          flagged (used by tests); the `flagged` output is still written.
+  --repo-root PATH       Checkout root holding the migrations (default: this script's repo).
 
 Env:
   GH_TOKEN / GITHUB_TOKEN  Read by the `gh` CLI itself. Missing = fail open with a loud warning.
@@ -85,6 +94,9 @@ import sys
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
+from pathlib import Path
+
+import migration_classifier
 
 DEFAULT_REPO = "christopherqueenconsulting/linkedin_engagement_manager"
 
@@ -94,6 +106,10 @@ DEFAULT_REPO = "christopherqueenconsulting/linkedin_engagement_manager"
 APP_INFO_TIMEOUT_SECONDS = 15
 
 MIGRATIONS_PREFIX = "compose/local/database/migrations/"
+
+#: The checkout root. The workflow checks out THIS release's tag, so the migration files and the
+#: prior history the classifier reads are exactly what `flyway migrate` would see.
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 #: The head branch release-please always uses for its standing accumulator PR.
 RELEASE_PR_HEAD_REF = "release-please--branches--main"
@@ -290,7 +306,12 @@ def describe_comparison_base(base_tag: str, *, primary_path_used: bool) -> str:
 
 
 def format_decision_comment(
-    tag: str, base_tag: str, verdict: Verdict, *, primary_path_used: bool = True
+    tag: str,
+    base_tag: str,
+    verdict: Verdict,
+    *,
+    primary_path_used: bool = True,
+    held: list[tuple[str, list[str]]] | None = None,
 ) -> str:
     """Build the markdown body posted to the release PR when `verdict.flagged`.
 
@@ -305,6 +326,8 @@ def format_decision_comment(
             reader to infer, since the two paths otherwise read identically. Always `False` when
             `verdict.carried_migration_files` is non-empty: that branch is only ever reached on the
             fallback path.
+        held: `(path, reasons)` for each migration the classifier judged NOT provably additive —
+            listed under the files so the owner sees why this release did not auto-deploy.
 
     Returns:
         Markdown naming the specific migration file(s) and the release each one entered in when
@@ -344,10 +367,17 @@ def format_decision_comment(
         )
     lines.extend(["", f"**Migration file(s) still pending ({len(verdict.migration_files)}):**"])
     lines.extend(f"- `{path}`" for path in verdict.migration_files)
+    if held:
+        lines.extend(["", "**Not provably additive** (so not auto-deployed):"])
+        for path, reasons in held:
+            lines.append(f"- `{path}`")
+            lines.extend(f"  - {reason}" for reason in reasons)
     audit_only_note = (
         "**This comment is audit / notification only.** Nothing in this repo watches replies on "
         "a release-please PR — it carries no `agent:ready`/`needs-human` flow label, and "
-        "`tick.sh` never reads this thread. There is no automated unblock."
+        "`tick.sh` never reads this thread. There is no automated unblock here. The actionable "
+        "surface is the `needs-human` deploy-hold issue, which closes itself once production reaches "
+        "this tag."
     )
     lines.extend(
         [
@@ -629,6 +659,37 @@ def write_github_outputs(outputs: dict[str, str]) -> None:
         print(f"::warning title=release-risk-check could not write outputs::{exc}")
 
 
+def classify_migrations(
+    migration_files: list[str], repo_root: Path
+) -> list[migration_classifier.MigrationVerdict]:
+    """Classify each migration in the range against the checkout's own earlier migrations.
+
+    Args:
+        migration_files: Repo-relative migration paths the deploy would apply.
+        repo_root: The checkout root (this release's tag).
+
+    Returns:
+        One verdict per file. A file absent from the checkout is unreadable, which HOLDS.
+    """
+    return migration_classifier.classify_new_migrations(
+        list(migration_files), repo_root / MIGRATIONS_PREFIX, repo_root
+    )
+
+
+def report_hold(repo: str, tag: str, deployed: str | None, held: list[tuple[str, list[str]]]) -> None:
+    """File/update the `needs-human` hold issue and email the owner. Never raises.
+
+    Runs AFTER the `flagged` output is written, so nothing here can change the deploy decision — a
+    failure is a `::warning`, not a red run. Imported lazily: `deploy_hold_notify` imports this module.
+    """
+    try:
+        import deploy_hold_notify
+
+        deploy_hold_notify.report_gate_hold(repo, tag, deployed, held)
+    except Exception as exc:  # notification must never fail the gate
+        print(f"::warning title=hold issue/email failed::{type(exc).__name__}: {exc}")
+
+
 # ────────────────────────────────────────────────────────────── CLI
 
 
@@ -642,7 +703,10 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         default=os.getenv("PUBLIC_BASE_URL", ""),
         help="Base URL to read /api/app-info from. Empty skips straight to the tag-to-tag fallback.",
     )
-    ap.add_argument("--no-comment", action="store_true", help="Never post the Decision Comment.")
+    ap.add_argument(
+        "--no-comment", action="store_true", help="Dry run: no Decision Comment, hold issue or email."
+    )
+    ap.add_argument("--repo-root", default=str(REPO_ROOT), help="Checkout root holding the migrations.")
     return ap.parse_args(argv[1:])
 
 
@@ -734,31 +798,50 @@ def main(argv: list[str]) -> int:
     verdict = merge_carried_hold(
         decide(migration_files=migration_files), carried_migration_files, carried_introduced_tag
     )
-    write_github_outputs(
-        {"flagged": "true" if verdict.flagged else "false", "previous_tag": previous_tag}
-    )
-
     path_desc = describe_comparison_base(base_tag, primary_path_used=primary_path_used)
 
     if not verdict.flagged:
+        write_github_outputs({"flagged": "false", "previous_tag": previous_tag})
         print(f"PASS: no migration files added — diffed against {path_desc} (this release: {args.tag}).")
         return 0
 
+    classified = classify_migrations(list(verdict.migration_files), Path(args.repo_root))
+    held = [(c.path, c.reasons) for c in classified if not c.additive]
     reason = summarize(verdict)
+
+    if not held:
+        write_github_outputs({"flagged": "false", "previous_tag": previous_tag})
+        print(
+            f"AUTO-DEPLOY: {reason}, every one provably additive — diffed against {path_desc} "
+            f"(this release: {args.tag})."
+        )
+        for c in classified:
+            why = "; ".join(st.reason for st in c.statements)
+            print(f"::notice title=Additive migration auto-deployed::{c.path}: {why}")
+        return 0
+
+    write_github_outputs({"flagged": "true", "previous_tag": previous_tag})
     if verdict.carried_migration_files:
         print(f"FLAGGED: {reason}. Diffed against {path_desc} (this release: {args.tag}).")
     else:
         print(f"FLAGGED: {reason} — diffed against {path_desc} (this release: {args.tag}).")
+    for path, reasons in held:
+        print(f"  HELD {path}: {' | '.join(reasons)}")
     print(
-        f"::warning title=Release risk flagged::{reason} — automatic deploy of {args.tag} skipped. "
-        f"The owner must run 'gh workflow run deploy-vps.yml -f tag={args.tag}' to ship it manually."
+        f"::warning title=Release risk flagged::{len(held)} of {len(classified)} migration file(s) not "
+        f"provably additive — automatic deploy of {args.tag} skipped. The owner must run "
+        f"'gh workflow run deploy-vps.yml -f tag={args.tag}' to ship it manually."
     )
 
     if args.no_comment:
         return 0
 
+    report_hold(args.repo, args.tag, version_to_tag(deployed_version) if deployed_version else None, held)
+
     pr_number = fetch_release_pr_number(args.repo, args.tag)
-    body = format_decision_comment(args.tag, base_tag, verdict, primary_path_used=primary_path_used)
+    body = format_decision_comment(
+        args.tag, base_tag, verdict, primary_path_used=primary_path_used, held=held
+    )
     if pr_number is None:
         print(
             f"::warning title=Decision Comment not posted::could not resolve the release PR for "

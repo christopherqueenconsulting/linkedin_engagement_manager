@@ -106,3 +106,5 @@ one.
 - `.github/workflows/release-auto-merge.yml` — the implementation
 - Redeploying or rolling back an existing tag is a different operation:
   `gh workflow run deploy-vps.yml -f tag=vX.Y.Z`
+- A fast-laned release is still subject to the migration gate: a non-additive migration holds its
+  deploy on a `needs-human` issue + owner email — `docs/DEPLOYMENT.md` § "Deploy hold & drift alerts"

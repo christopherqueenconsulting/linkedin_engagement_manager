@@ -105,7 +105,7 @@ index and the `CLAUDE.md` row that points at it, or the pointer becomes a dead e
 
 ## Infrastructure, deploy & scaling
 
-- ★ [VPS deployment runbook](DEPLOYMENT.md) — compose layering, image refs, and the local-hotfix fallback
+- ★ [VPS deployment runbook](DEPLOYMENT.md) — compose layering, image refs, the local-hotfix fallback, and the deploy-hold / drift alerts (additive migrations auto-deploy)
 - ★ [Zero-downtime deploys & batched releases](zero-downtime-deploys.md) — the blue/green colour flip and the 4×-daily release windows
 - ★ [The `release:now` fast lane](release-fast-lane.md) — shipping a PR at merge instead of the next window
 - ★ [VPS scaling & concurrency plan](scaling-plan.md) — the browser-slot budget and what scales before it

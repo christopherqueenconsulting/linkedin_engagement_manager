@@ -33,6 +33,15 @@ safe because migrations are independent additive DDL — do **not** author a mig
 on a later-timestamped one having already run. Duplicate *versions* are still rejected (and caught
 pre-merge by the **Migration Versions** check); only out-of-order *application* is allowed.
 
+### Additive migrations deploy on their own; everything else waits for a human
+
+A release carrying a migration is classified by `scripts/migration_classifier.py` before it deploys.
+If every statement is provably additive — new table, NULLable/DEFAULTed column, non-unique index,
+ENUM that only appends (checked against this directory's earlier definitions), seed `INSERT` — the
+release auto-deploys. Anything else holds the deploy, opens a `needs-human` issue and emails the
+owner. Full table and failure modes: `docs/DEPLOYMENT.md` § "Deploy hold & drift alerts". Keeping a
+migration additive is therefore also what keeps it off the owner's desk.
+
 ### Widening an ENUM: restate the UNION, not "the values plus mine"
 
 MySQL has no "add one value" DDL — `ALTER TABLE … MODIFY … ENUM(…)` restates the whole list, so an
