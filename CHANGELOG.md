@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.180.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.179.1...v0.180.0) (2026-09-25)
+
+
+### Features
+
+* **ui:** show the newsletter edition id in the Newsletters review queue ([cc64a19](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/cc64a19cc5d82453e16f9557229583c73a5bfb75))
+* **ui:** show the newsletter edition id in the Newsletters review queue (closes [#2206](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2206)) ([#2207](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2207)) ([cc64a19](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/cc64a19cc5d82453e16f9557229583c73a5bfb75))
+
+
+### Bug Fixes
+
+* **content-generation:** scrub em dashes and AI typography from comments and replies (closes [#2204](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2204)) ([#2205](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2205)) ([24f76ec](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/24f76ec4f258283251593feee873689182fe8dd5))
+
 ## [0.179.1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.179.0...v0.179.1) (2026-09-25)
 
 
