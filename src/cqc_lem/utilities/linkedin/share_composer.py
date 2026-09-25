@@ -120,14 +120,19 @@ OCCASION_MORE_LABELS = ("more", "expand content types")
 # the one beside it that publishes on someone else's timetable (#1012's rule applied to a commit).
 POST_BUTTON_LABELS = ("post",)
 
-# The occasion TYPE, per `content_framework` occasion archetype. Exact labels only, and never a
-# near neighbour: LinkedIn's menu carries "Certification" and "New position" alongside these two,
-# and clicking one of those publishes a claim about the author's life that nobody made (#1012).
-# `tests/unit/utilities/test_occasion_composer.py` fails the build when an archetype in
-# `OCCASION_FORMAT_KEYS` has no row here, so a third archetype cannot ship without its label.
+# The occasion TYPE, per `content_framework` occasion archetype — one row per option of LinkedIn's
+# five-row "Select occasion" picker (#2140). Each label is a phrase that appears in its OWN row's
+# title and in no neighbour's title or description, so the word-bounded fallback cannot land one row
+# over: clicking the wrong occasion publishes a claim about the author's life nobody made (#1012).
+# Never shorten one to a bare word ("certification", "milestone", "position") — those are exactly
+# what a neighbour's description can carry. `tests/unit/utilities/test_occasion_composer.py` fails
+# the build when an archetype in `OCCASION_FORMAT_KEYS` has no row here, or a row reaches a neighbour.
 OCCASION_TYPE_LABELS: dict = {
     "project_launch": ("project launch",),
     "educational_milestone": ("educational milestone",),
+    "new_certification": ("new certification",),
+    "new_position": ("new position",),
+    "work_anniversary": ("work anniversary",),
 }
 
 # Picking an occasion type does not open the editor directly — live grounding from #1621
@@ -138,7 +143,11 @@ OCCASION_TYPE_LABELS: dict = {
 # optional — a variant that skips straight to the editor must not be treated as a miss; the editor
 # lookup right below is what actually decides NO_EDITOR. Matched through `find_composer_control`
 # like every other in-composer step, so it walks the shadow root the same way (#1621).
-TEMPLATE_CHOOSER_NEXT_LABELS = ("next",)
+# An ordered CHAIN: the 2026-09-24 probe (#2140) found only "Project launch" still says "Next" — the
+# other four occasions end the same chooser (`Dismiss / Add a photo / Back / …`) with "Done". Both
+# are matched EXACTLY inside the resolved form, and neither can publish: nothing has been typed yet,
+# and only the editor's own "Post" commits.
+TEMPLATE_CHOOSER_NEXT_LABELS = ("next", "done")
 
 
 # The page-native anchors the zero-walk cross-checks read. Each is INDEPENDENT of the chain it
