@@ -7,10 +7,11 @@ that it only skips the run when neither exists.
 
 Failure alerting (2026-08-31 08:30 UTC outage): a transient PostHog 503 killed a whole day's run
 with nothing but a line in a log file nobody reads. `alert()` is best-effort — it shells out to
-`sudo -n docker exec ... web_api_<color>` (unavailable in this test sandbox), so what these tests can prove
+`sudo -n docker exec ... web_api_<color>` (reachable on the VPS, so suppressed here), so what these tests can prove
 without a live stack is the SHAPE of the decision: `alert()` (and therefore its "ALERT:" log line)
 fires exactly when the Python script exits non-zero, never on a clean rc=0 run — not whether the
-email itself was delivered, which needs a running app container this suite does not have.
+email itself was delivered. Every run sets `ERROR_ISSUES_ALERT_DRY_RUN`: the suite also runs ON the
+VPS, where the app container IS reachable, and without it each run emailed the admin a fake failure.
 """
 
 import os
@@ -49,6 +50,7 @@ def _run(tmp_path: Path, **env_overrides) -> subprocess.CompletedProcess:
         "ERROR_ISSUES_DIR": str(tmp_path / "state"),
         "ERROR_ISSUES_PY": str(_stub_python(tmp_path)),
         "LEM_ENV_FILE": str(env_file),
+        "ERROR_ISSUES_ALERT_DRY_RUN": "1",
     })
     env.update(env_overrides)
     return subprocess.run(["bash", str(_SH)], capture_output=True, text=True, env=env)
@@ -107,6 +109,7 @@ def _run_with_rc(tmp_path: Path, rc: int, stdout: str = "") -> subprocess.Comple
         "ERROR_ISSUES_DIR": str(tmp_path / "state"),
         "ERROR_ISSUES_PY": str(_stub_python_exit(tmp_path, rc, stdout)),
         "LEM_ENV_FILE": str(env_file),
+        "ERROR_ISSUES_ALERT_DRY_RUN": "1",
         "POSTHOG_QUERY_API_KEY": "phx_query",
     })
     return subprocess.run(["bash", str(_SH)], capture_output=True, text=True, env=env)
@@ -124,6 +127,7 @@ class TestFailureAlert:
         output = result.stdout + result.stderr
         assert "ALERT:" in output
         assert "exit 1" in output
+        assert "alert email skipped (ERROR_ISSUES_ALERT_DRY_RUN)" in output
 
     def test_a_repo_not_found_still_alerts(self, tmp_path):
         env_file = tmp_path / "env"
@@ -137,8 +141,11 @@ class TestFailureAlert:
             "ERROR_ISSUES_DIR": str(tmp_path / "state"),
             "ERROR_ISSUES_PY": str(_stub_python_exit(tmp_path, 0)),
             "LEM_ENV_FILE": str(env_file),
+            "ERROR_ISSUES_ALERT_DRY_RUN": "1",
             "POSTHOG_QUERY_API_KEY": "phx_query",
         })
         result = subprocess.run(["bash", str(_SH)], capture_output=True, text=True, env=env)
         assert result.returncode == 1
-        assert "ALERT:" in result.stdout + result.stderr
+        output = result.stdout + result.stderr
+        assert "ALERT:" in output
+        assert "alert email skipped (ERROR_ISSUES_ALERT_DRY_RUN)" in output

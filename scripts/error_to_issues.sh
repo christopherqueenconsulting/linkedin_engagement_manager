@@ -27,8 +27,12 @@ APP_CONTAINER="${APP_CONTAINER:-$(active_api_container)}"  # never web_app — t
 # new way for the cron to fail harder. `docker exec` needs no local cqc_lem env at all, so it works
 # from that bare clone the same as it does from the dev checkout. If the container is unreachable
 # (host down, compose stopped) the alert is skipped with a logged reason — never fails the run.
+# ERROR_ISSUES_ALERT_DRY_RUN=1 logs the ALERT line but sends nothing: the unit suite runs on the
+# VPS itself, where the app container IS reachable, so without it every test run emailed the admin a fake
+# failure (2026-09-24, pytest tmp paths in the subject).
 alert(){
   log "ALERT: $1"
+  if [ -n "${ERROR_ISSUES_ALERT_DRY_RUN:-}" ]; then log "alert email skipped (ERROR_ISSUES_ALERT_DRY_RUN)"; return 0; fi
   sudo -n docker exec -i "$APP_CONTAINER" python - "$1" <<'PY' >>"$LOG" 2>&1 || log "alert email skipped ($APP_CONTAINER unreachable) — see reason above"
 import os, sys
 msg = sys.argv[1]
