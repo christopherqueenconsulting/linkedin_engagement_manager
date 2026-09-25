@@ -493,6 +493,21 @@ Two things worth reading beyond the verdict:
   a statement that the tier doesn't need a win; the next monthly catalog scan is where a fresh
   candidate gets evaluated.
 
+### What the 2026-09-25 tag scan settled (#2196) — `qwen3.5:397b` vanished, no sibling
+
+| Tag | What happened | Decision |
+|---|---|---|
+| `qwen3.5:397b` (`lem-complex`'s only Ollama deployment, champion since kimi-k2:1t retired) | Left `ollama.com/api/tags` entirely by 2026-09-25 — last recorded build digest `b909ca2f1b7f`, 397GB, published 2026-02-16. `ollama.com/library/qwen3.5:397b-cloud` is a 404 and the library page carries only local tags up to `122b`. The live catalog lists NO tag in the qwen3.5 family, so there is no build to compare digests against and nothing to re-point at | **Removed.** A bare `qwen3.5` would follow the vendor's moving tag onto a build nobody benchmarked for this tier, so nothing is restored under it. A vanished deployment in a latency-routed group fails fastest and wins the pick, so keeping it only put a retry in front of every call `gpt-4o` answered anyway. |
+
+`lem-complex` now has **no Ollama Cloud deployment** and serves long-form on the paid `openai/gpt-4o`
+fallback — the same place its traffic already landed once the qwen id stopped answering, so the spend
+does not move in this change; it just stops paying a retry for it. `mistral-large-3:675b` is not a
+stopgap: it is the only measured candidate left and missed the judge floor (`bm-20260830-1e6b4e`).
+The lead candidate is `deepseek-v4.1-flash` (#2063); benchmarking it needs the metered key, so it is
+the owner-run follow-up #2198. With no champion, that run's verdict is `no-baseline` by design — the
+adopt call reads off the absolute-floor lines, and on per-token pricing (ollama.com dropped usage
+levels) `quota_policy` will `hold`, making adoption a spend decision.
+
 ### What the 2026-08-30 family-version scan settled (#1756) — one tag, adopted, unbenchmarked on purpose
 
 | Family | What it is | Decision |
