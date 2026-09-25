@@ -117,7 +117,8 @@ class TestUngroundedCommentGuard:
         with patch(f"{_AI}._call_llm", return_value=_resp("Appreciate that — here is why.")) as llm:
             out = ai_helper.generate_ai_response("https://lnkd.in/gKabw7UJ", _profile(),
                                                  post_comment="What did you change first?")
-        assert out == "Appreciate that — here is why."
+        # The em dash is scrubbed on every comment surface, replies included (issue #2204).
+        assert out == "Appreciate that, here is why."
         assert llm.call_count == 1
 
     def test_a_real_body_that_contains_a_url_still_generates(self):

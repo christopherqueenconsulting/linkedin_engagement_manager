@@ -330,8 +330,9 @@ class TestGenerationGate:
         from cqc_lem.utilities.ai import ai_helper
         with patch(f"{_AI}._call_llm", return_value=_resp("Thanks — glad it helped.")) as m:
             out = ai_helper.generate_ai_response(_POST, _profile(), post_comment="their comment")
-        # Replies have their own acknowledge-and-answer contract; one call, no gate, no rewrite.
-        assert out == "Thanks — glad it helped." and m.call_count == 1
+        # Replies have their own acknowledge-and-answer contract; one call, no gate, no LLM rewrite.
+        # Only the deterministic scrub touches it, turning the em dash into a comma (issue #2204).
+        assert out == "Thanks, glad it helped." and m.call_count == 1
         assert "COMMENT QUALITY CONTRACT" not in m.call_args.kwargs["messages"][0]["content"]
 
 

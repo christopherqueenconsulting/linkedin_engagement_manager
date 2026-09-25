@@ -241,7 +241,9 @@ class TestTheWiring:
              patch(f"{_AI}._humanize_text", side_effect=lambda text, **kw: text), \
              patch(f"{_AI}.log_warning") as warn:
             out = ai_helper.generate_seed_comment("my post body", self._profile(), PREFS)
-        assert out == SHIPPED, "the seed ships its best draft; it has no review queue"
+        # Shipped with its em dash scrubbed to a comma (issue #2204).
+        assert out == SHIPPED.replace("home—I", "home, I"), \
+            "the seed ships its best draft; it has no review queue"
         assert warn.called, "and it must say so loudly enough to escalate"
         assert "second_person_author" in warn.call_args.args[0]
 

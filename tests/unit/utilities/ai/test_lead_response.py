@@ -26,6 +26,13 @@ class TestGenerateLeadResponse:
         from cqc_lem.utilities.ai import ai_helper
         with patch(f"{_AI}._call_llm", return_value=_resp("  Depends on scope — what's your timeline?  ")):
             out = ai_helper.generate_lead_response("How much?", _profile())
+        assert out == "Depends on scope, what's your timeline?"
+
+    def test_dm_channel_is_not_comment_scrubbed(self):
+        from cqc_lem.utilities.ai import ai_helper
+        with patch(f"{_AI}._call_llm", return_value=_resp("Depends on scope — what's your timeline?")), \
+             patch(f"{_AI}._humanize_text", side_effect=lambda c, **kw: c):
+            out = ai_helper.generate_lead_response("How much?", _profile(), channel="dm")
         assert out == "Depends on scope — what's your timeline?"
 
     def test_none_when_the_model_returns_nothing(self):
