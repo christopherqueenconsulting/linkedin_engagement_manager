@@ -452,6 +452,7 @@ this change removes.
 
 Every comment and reply surface (feed comment, reply to a comment, seed, second wave, thread reply,
 reply follow-up) finishes in `ai_helper._humanize_comment`: humanize, then a deterministic scrub.
+The hot-lead draft (`generate_lead_response`) is scrubbed too when its channel is a public reply.
 `humanize_text` keeps up to ONE em dash and returns the draft untouched whenever it fails open, and
 comments have no review queue, so the dash tell reached LinkedIn. The scrub turns every em dash,
 `--` and spaced dash between words into a comma, strips markdown, and folds typography to ASCII

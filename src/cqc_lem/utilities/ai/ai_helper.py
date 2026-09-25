@@ -1738,8 +1738,10 @@ def generate_lead_response(their_message: str, profile: "LinkedInProfile", chann
         content = response.choices[0].message.content
         if content is None:
             return None
-        return _humanize_text(content.strip(), content_type=surface,
+        text = _humanize_text(content.strip(), content_type=surface,
                               profile_synthesis=profile_synthesis, prefs=prefs, max_chars=limit)
+        # A public reply is a comment surface (issue #2204); a DM keeps the humanizer's output.
+        return text if is_dm else _scrub_comment_text(text)
 
     return lint_repaired(_draft(), surface, _draft, prefs=prefs,
                          action_type="dm" if is_dm else "comment")
