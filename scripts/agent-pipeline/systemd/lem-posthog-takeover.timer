@@ -1,0 +1,14 @@
+[Unit]
+Description=Take over open PostHog self-driving PRs every few minutes
+
+[Timer]
+OnBootSec=3min
+# PostHog's agent re-checks CI on a ~15-minute timer and answers review comments as they land, and
+# every one of those iterations is billed. Five minutes lands the takeover before its first one.
+OnUnitActiveSec=5min
+RandomizedDelaySec=60
+AccuracySec=30s
+Unit=lem-posthog-takeover.service
+
+[Install]
+WantedBy=timers.target
