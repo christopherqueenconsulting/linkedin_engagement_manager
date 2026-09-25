@@ -119,15 +119,21 @@ model_list:
   # Re-open if qwen3.5:397b is ever re-measured below 100% judge on lem-complex.
   # NOTE: openai/kimi-k2:1t was RETIRED 2026-06-16 (returns 410) and was removed — it was
   # the primary here, so content generation fell through to the OpenAI/Anthropic fallbacks,
-  # which fail when those keys aren't set. qwen3.5:397b (OLLAMA) is now primary.
-  - model_name: lem-complex
-    litellm_params:
-      model: openai/qwen3.5:397b
-      api_base: os.environ/OLLAMA_CLOUD_URL
-      api_key: os.environ/OLLAMA_CLOUD_API_KEY
-      max_parallel_requests: 3
-      request_timeout: 240
-      rpm: 30
+  # which fail when those keys aren't set. qwen3.5:397b (OLLAMA) was primary after it.
+  # NOTE: openai/qwen3.5:397b is GONE as of #2196 and was removed: it left `ollama.com/api/tags`
+  # entirely by 2026-09-25 (last build digest `b909ca2f1b7f`, 397GB, published 2026-02-16), the
+  # library page `qwen3.5:397b-cloud` is a 404, and the catalog lists NO tag in the qwen3.5 family,
+  # so there is no sibling to re-point at. Nothing is restored under a bare id either — whatever a
+  # bare name resolves to next is a build nobody benchmarked for this tier. A vanished deployment
+  # does not sit idle in a latency-routed group, it fails fastest and wins the pick (the
+  # claude-sonnet-4-6 NOTE below), so leaving it configured only adds a retry to every call that
+  # gpt-4o ends up answering anyway.
+  #
+  # This tier therefore has NO Ollama Cloud deployment until a replacement is promoted off
+  # scripts/benchmark_models.py (lead candidate `deepseek-v4.1-flash`, #2063; the run needs the
+  # metered OLLAMA_CLOUD_API_KEY) — tracked on #2198. `mistral-large-3:675b` is not
+  # a stopgap: it is the only measured candidate left and missed the judge floor (40% vs 80%,
+  # bm-20260830-1e6b4e).
 
   # deepseek-v4-flash:preview served this tier (AHEAD of the paid OpenAI/Anthropic fallbacks)
   # since #1200, but it is GONE as of #1758: the id left `ollama.com/api/tags` entirely and its
@@ -136,8 +142,8 @@ model_list:
   # below the 90% contract floor on this tier (80%). Restoring the bare `deepseek-v4-flash` id
   # would just follow the vendor's moving tag onto that same declined build (#1201).
   #
-  # This tier now runs on ONE free Ollama deployment (qwen3.5:397b, still champion) plus the paid
-  # fallbacks below until #1758's follow-up benchmarks a real replacement — deliberately not
+  # This tier then ran on ONE free Ollama deployment (qwen3.5:397b, gone since #2196 above) plus
+  # the paid fallbacks below until #1758's follow-up benchmarks a real replacement — deliberately not
   # `gemma4:31b` or the HIGH usage-level minimax-m3 / glm-5.2, all three already declined here on
   # #921/#842 (see docs/model-benchmarks/README.md). No candidate gets promoted onto this tier off
   # a spec sheet, only off scripts/benchmark_models.py.

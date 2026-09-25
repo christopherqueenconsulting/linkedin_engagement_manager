@@ -151,13 +151,20 @@ class TestRoster:
         """A single-deployment tier falls straight onto a paid OpenAI/Anthropic key — or onto
         nothing — the moment that one model has a bad day.
 
-        `lem-complex` is a documented exception since #1758: `deepseek-v4-flash:preview` left the
-        catalog and its only sibling was already declined (#921), so nothing free is left to pair
-        with qwen3.5:397b here until a fresh candidate is benchmarked (tracked on #1758's
-        follow-up). `lem-medium` still keeps its pair (gpt-oss:120b + gemma4:31b).
+        `lem-complex` is a documented exception: #1758 took it down to qwen3.5:397b alone, and
+        #2196 removed that too when the tag left the catalog with no sibling to re-point at. It
+        runs on the paid fallback until a replacement is benchmarked (#2198). `lem-medium` still
+        keeps its pair (gpt-oss:120b + gemma4:31b).
         """
         assert len(_ollama_models("lem-medium")) >= 2
-        assert len(_ollama_models("lem-complex")) >= 1
+
+    def test_lem_complex_restores_no_vanished_qwen_id(self):
+        """#2196: `qwen3.5:397b` left ollama.com/api/tags with no tag left in its family.
+
+        A bare `qwen3.5` follows the vendor's moving tag onto a build nobody benchmarked for this
+        tier, so neither the vanished id nor the family name may come back without a benchmark run.
+        """
+        assert not [m for m in _ollama_models("lem-complex") if m.startswith("qwen3.5")]
 
     def test_no_ollama_deployment_carries_a_tag_the_catalog_never_lists(self):
         """Companion to the catalog assertion above, for its ERROR MESSAGE. `glm-5.2:cloud` fails
@@ -232,8 +239,9 @@ class TestBenchmarkChampions:
         bm = _load("benchmark_models")
         champions = bm.champions_from_config(CONFIG_TEXT,
                                              ["lem-simple", "lem-medium", "lem-complex"])
-        assert champions == {"lem-simple": "gpt-oss:20b", "lem-medium": "gpt-oss:120b",
-                             "lem-complex": "qwen3.5:397b"}
+        # lem-complex has no Ollama champion since #2196 — a benchmark there reports no-baseline
+        # and is judged on the tier's absolute floors (#2198).
+        assert champions == {"lem-simple": "gpt-oss:20b", "lem-medium": "gpt-oss:120b"}
 
 
 class TestOllamaCompatLimits:

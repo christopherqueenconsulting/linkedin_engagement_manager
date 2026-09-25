@@ -94,6 +94,7 @@ Migration can run once all prior dependent code is merged to main first. _Will c
 - The `.env` changes are needed before running `docker compose up` locally with LiteLLM.
 - Existing secrets (`OPENAI_API_KEY`, `AWS_*`, etc.) are unchanged.
 - No repository **secret** is outstanding: `ANTHROPIC_API_KEY` was the last one and is closed by #2059 —
-  `lem-complex` serves from `qwen3.5:397b` with an `openai/gpt-4o` fallback, and no deployment reads that key.
+  `lem-complex` serves from `openai/gpt-4o` (its Ollama deployment `qwen3.5:397b` left the catalog, #2196;
+  a replacement is benchmark-gated on #2198), and no deployment reads that key.
 - The three unticked boxes under *PostHog Error Tracking* above are a separate list, and their current
   status lives in `docs/OWNER_ACTION_TRACKER.md` §5 — not in this file.
