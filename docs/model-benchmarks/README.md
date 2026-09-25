@@ -507,6 +507,32 @@ flat quota, and the swap is a same-cost quality question, not a spend one. `.lit
 and `.litellm/model_prices_snapshot.json` / `.litellm/ollama_catalog_snapshot.json` carry the usual
 roster bookkeeping for the new tag.
 
+### What the 2026-09-13 tag scan settled (#2063) — declined for two tiers, the third handed to #2196
+
+**Ollama Cloud no longer publishes usage levels.** Every model page now renders `-` in its
+Size / Usage column, and https://ollama.com/pricing bills cloud models **per million tokens**
+against monthly usage credits. `model_health_check.parse_usage_level` reads `None` for every model
+(the incumbents as well as this candidate), so the Low/Medium/High scale the #842 policy was written
+against is gone. This evaluation reads the per-token price as the cost comparison instead, because
+it is the same spend question on the new meter. The prices below were read 2026-09-25, at peak
+rates; off-peak is half:
+
+| Model | Input / 1M | Output / 1M |
+|---|---|---|
+| `gpt-oss:20b` (`lem-simple`) | $0.07 | $0.30 |
+| `gemma4` (`lem-medium`) | $0.14 | $0.40 |
+| `gpt-oss:120b` (`lem-medium` champion) | $0.15 | $0.60 |
+| **`deepseek-v4.1-flash`** | **$0.30** | **$1.20** |
+| `qwen3.5:397b` (`lem-complex` champion) | not listed | not listed |
+
+| Tier | Decision |
+|---|---|
+| `lem-simple` | **Decline, unbenchmarked.** About 4x `gpt-oss:20b`'s per-token price, for a tier whose outputs are ≤300 chars. The #842 policy accepts a cost increase only on `lem-complex`. |
+| `lem-medium` | **Decline, unbenchmarked.** 2x the champion `gpt-oss:120b` on both input and output, and the same #842 rule applies: this tier does not take a cost increase for quality. |
+| `lem-complex` | **Not adopted here. It is the lead candidate on #2196.** While evaluating this tag, `qwen3.5:397b` (this tier's only Ollama deployment) turned out to have left `ollama.com/api/tags`, and its library page now lists only local tags up to `122b`. This tier is promoted only off `scripts/benchmark_models.py`, and a real run needs the metered `OLLAMA_CLOUD_API_KEY`. So the adoption call moves to #2196 along with the benchmark. With no champion left, the run is judged against the tier's absolute floors. The vendor's claims make it a plausible fit: 1M context, text + image input, and a MoE with 16B active parameters at decode. |
+
+`.litellm/config.yaml` is unchanged. The catalog snapshot already carries the tag (#2084).
+
 ## Running it
 
 ```bash
