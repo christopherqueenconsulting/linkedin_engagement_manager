@@ -1,17 +1,18 @@
 version: 2
 
-# Grouping strategy: batch each ecosystem's minor+patch bumps into ONE PR per week so a
+# Grouping strategy: batch each ecosystem's minor+patch bumps into ONE PR per run so a
 # single lockfile change carries them all — this eliminates the poetry.lock/package-lock
 # race where N separate PRs each rewrite the lockfile and mutually conflict. MAJOR bumps are
 # intentionally left OUT of the version groups so they arrive as individual PRs for manual
 # review (they can break APIs / test collection). github-actions & docker are grouped wholesale.
+# pip and npm run twice a week (Mon + Thu, UTC): the PostHog SDKs ship patches faster than
+# weekly, so a Monday-only run left prod up to a week behind. Still ONE group PR per run.
 updates:
   - package-ecosystem: "pip"
     directory: "/"
     schedule:
-      interval: "weekly"
-      day: "monday"
-      time: "09:00"
+      interval: "cron"
+      cronjob: "0 9 * * 1,4"
     open-pull-requests-limit: 10
     labels:
       - "dependencies"
@@ -67,9 +68,8 @@ updates:
   - package-ecosystem: "npm"
     directory: "/src/cqc_lem/ui"
     schedule:
-      interval: "weekly"
-      day: "monday"
-      time: "09:00"
+      interval: "cron"
+      cronjob: "0 9 * * 1,4"
     open-pull-requests-limit: 5
     labels:
       - "dependencies"
