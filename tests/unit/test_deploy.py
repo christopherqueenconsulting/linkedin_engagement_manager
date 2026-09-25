@@ -397,7 +397,9 @@ class TestColorHealthy:
                 "DOCKER_FAKE_EXEC_COUNT": str(calls),
                 "API_PORT": "8000",
             },
-            "color_healthy blue 1",
+            # 2s, not 1: `deadline` is whole-second `date +%s`, so a 1s budget never enters the loop
+            # when the clock ticks between computing it and the first check (a CI flake).
+            "color_healthy blue 2",
         )
         assert result.returncode == 1, result.stdout + result.stderr
         assert int(calls.read_text(encoding="utf-8")) >= 1

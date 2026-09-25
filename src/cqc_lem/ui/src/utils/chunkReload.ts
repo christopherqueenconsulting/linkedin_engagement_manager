@@ -34,6 +34,7 @@ const CHUNK_ERROR_PATTERNS = [
 export type ChunkRecovery = 'reloaded' | 'blocked' | 'ignored'
 
 let lastAttemptAt: number | null = null
+let lastOutcome: ChunkRecovery | null = null
 let armed = false
 
 function messageOf(reason: unknown): string {
@@ -106,12 +107,12 @@ export function recoverFromChunkError(
 
   const now = options.now ?? Date.now()
   const previous = lastAttemptAt ?? readMarker()
-  if (previous !== null && now - previous < RELOAD_COOLDOWN_MS) return announceBlocked()
-  if (!writeMarker(now)) return announceBlocked()
+  if (previous !== null && now - previous < RELOAD_COOLDOWN_MS) return (lastOutcome = announceBlocked())
+  if (!writeMarker(now)) return (lastOutcome = announceBlocked())
 
   lastAttemptAt = now
   window.location.reload()
-  return 'reloaded'
+  return (lastOutcome = 'reloaded')
 }
 
 /**
@@ -120,13 +121,22 @@ export function recoverFromChunkError(
  * than surfacing the browser's module-loader wording.
  */
 export async function importWithChunkRecovery<T>(load: () => Promise<T>): Promise<T> {
+  let loaded: T
   try {
-    return await load()
+    loaded = await load()
   } catch (err) {
     const outcome = recoverFromChunkError(err)
     if (outcome === 'ignored') throw err
     throw new Error(outcome === 'reloaded' ? RELOADING_MESSAGE : NEW_VERSION_MESSAGE, { cause: err })
   }
+  // A real import() never resolves nullish. Vite's preload helper does, once the
+  // `vite:preloadError` listener below has preventDefault()-ed the failure: its catch handler then
+  // returns undefined instead of rethrowing, and React.lazy dies reading `.default` off it (#2201).
+  // That listener already ran the recovery, so report ITS outcome rather than recovering twice.
+  if (loaded == null) {
+    throw new Error(lastOutcome === 'reloaded' ? RELOADING_MESSAGE : NEW_VERSION_MESSAGE)
+  }
+  return loaded
 }
 
 /**
@@ -164,5 +174,6 @@ export function initChunkReload(): void {
 /** Test seam — clears the in-process half of the guard. */
 export function resetChunkReloadState(): void {
   lastAttemptAt = null
+  lastOutcome = null
   armed = false
 }

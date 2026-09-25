@@ -1,5 +1,5 @@
-import { Suspense } from 'react'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { Component, Suspense, type ReactNode } from 'react'
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 import { act, cleanup, render, screen, waitFor } from '@testing-library/react'
 import NewVersionNotice from '../components/NewVersionNotice'
 import {
@@ -44,6 +44,29 @@ afterEach(() => {
   cleanup()
   vi.restoreAllMocks()
 })
+
+// What Vite's `__vitePreload` does with a failed import: dispatch `vite:preloadError`, and rethrow
+// ONLY if no listener preventDefault()-ed it — otherwise its catch handler resolves undefined.
+function vitePreload<T>(load: () => Promise<T>): () => Promise<T> {
+  return () =>
+    load().catch((err: unknown) => {
+      const event = new Event('vite:preloadError', { cancelable: true })
+      Object.assign(event, { payload: err })
+      window.dispatchEvent(event)
+      if (!event.defaultPrevented) throw err
+      return undefined as T
+    })
+}
+
+// `initChunkReload` for one test only: its window listeners outlive `resetChunkReloadState`, and a
+// second armed listener would re-run the recovery against the first one's marker.
+function armChunkReloadForTest(): void {
+  const add = vi.spyOn(window, 'addEventListener')
+  initChunkReload()
+  const added = add.mock.calls.slice()
+  add.mockRestore()
+  onTestFinished(() => added.forEach(([type, listener]) => window.removeEventListener(type, listener)))
+}
 
 describe('isChunkLoadError', () => {
   it('recognises the message every browser spells differently', () => {
@@ -143,6 +166,23 @@ describe('importWithChunkRecovery', () => {
     expect(reload).not.toHaveBeenCalled()
   })
 
+  it('reports the recovery Vite\'s preloadError already ran instead of resolving undefined (#2201)', async () => {
+    armChunkReloadForTest()
+    await expect(
+      importWithChunkRecovery(vitePreload(() => Promise.reject(CHUNK_ERROR))),
+    ).rejects.toThrow(RELOADING_MESSAGE)
+    expect(reload).toHaveBeenCalledTimes(1)
+  })
+
+  it('asks for a refresh when Vite\'s preloadError was blocked by the guard', async () => {
+    armChunkReloadForTest()
+    recoverFromChunkError(CHUNK_ERROR)
+    await expect(
+      importWithChunkRecovery(vitePreload(() => Promise.reject(CHUNK_ERROR))),
+    ).rejects.toThrow(NEW_VERSION_MESSAGE)
+    expect(reload).toHaveBeenCalledTimes(1)
+  })
+
   it('rethrows a non-chunk failure untouched', async () => {
     const err = new Error('413 Payload Too Large')
     await expect(importWithChunkRecovery(() => Promise.reject(err))).rejects.toBe(err)
@@ -164,6 +204,37 @@ describe('lazyWithChunkRecovery', () => {
     vi.spyOn(console, 'error').mockImplementation(() => {})
     render(<Suspense fallback={<p>loading</p>}><Stale /></Suspense>)
     await waitFor(() => expect(reload).toHaveBeenCalledTimes(1))
+  })
+
+  it("never hands React an undefined module when Vite's preloadError swallowed the failure", async () => {
+    armChunkReloadForTest()
+    const Stale = lazyWithChunkRecovery(
+      vitePreload(() => Promise.reject(CHUNK_ERROR)) as () => Promise<{ default: () => null }>,
+    )
+    const caught: unknown[] = []
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    class Boundary extends Component<{ children: ReactNode }, { failed: boolean }> {
+      state = { failed: false }
+      static getDerivedStateFromError(): { failed: boolean } {
+        return { failed: true }
+      }
+      componentDidCatch(error: unknown): void {
+        caught.push(error)
+      }
+      render(): ReactNode {
+        return this.state.failed ? <p>boundary</p> : this.props.children
+      }
+    }
+    render(
+      <Boundary>
+        <Suspense fallback={<p>loading</p>}><Stale /></Suspense>
+      </Boundary>,
+    )
+    expect(await screen.findByText('boundary')).toBeTruthy()
+    expect(caught).toHaveLength(1)
+    expect(caught[0]).not.toBeInstanceOf(TypeError)
+    expect((caught[0] as Error).message).toBe(RELOADING_MESSAGE)
+    expect(reload).toHaveBeenCalledTimes(1)
   })
 })
 
