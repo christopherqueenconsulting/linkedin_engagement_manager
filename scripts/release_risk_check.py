@@ -677,17 +677,27 @@ def classify_migrations(
 
 
 def report_hold(repo: str, tag: str, deployed: str | None, held: list[tuple[str, list[str]]]) -> None:
-    """File/update the `needs-human` hold issue and email the owner. Never raises.
+    """Hand a hold to the workflow's notify step as JSON at `$DEPLOY_HOLD_REPORT`. Never raises.
 
-    Runs AFTER the `flagged` output is written, so nothing here can change the deploy decision — a
-    failure is a `::warning`, not a red run. Imported lazily: `deploy_hold_notify` imports this module.
+    The gate only DECIDES; `deploy_hold_notify.py gate` (the next workflow step) files the
+    `needs-human` issue and emails the owner from this file. Keeping the two in separate processes
+    means a notification failure can never change the deploy decision, and the notifier (which
+    reuses this module's `gh` helpers) is never imported back into the gate. Unset path = no report.
+
+    Args:
+        repo: `owner/name`.
+        tag: The release the gate held.
+        deployed: Production's version tag when readable.
+        held: `(path, reasons)` for every non-additive migration.
     """
+    path = os.getenv("DEPLOY_HOLD_REPORT", "")
+    if not path:
+        return
+    payload = {"repo": repo, "tag": tag, "deployed": deployed, "held": [[p, list(r)] for p, r in held]}
     try:
-        import deploy_hold_notify
-
-        deploy_hold_notify.report_gate_hold(repo, tag, deployed, held)
-    except Exception as exc:  # notification must never fail the gate
-        print(f"::warning title=hold issue/email failed::{type(exc).__name__}: {exc}")
+        Path(path).write_text(json.dumps(payload), encoding="utf-8")
+    except OSError as exc:  # notification must never fail the gate
+        print(f"::warning title=hold report not written::{type(exc).__name__}: {exc}")
 
 
 # ────────────────────────────────────────────────────────────── CLI

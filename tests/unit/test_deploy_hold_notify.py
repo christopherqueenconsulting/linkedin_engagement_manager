@@ -397,3 +397,34 @@ def test_main_runs_the_drift_check_with_env_defaults(monkeypatch):
     monkeypatch.setattr(dhn, "run_drift_check", lambda repo, url, hours: seen.update(r=repo, u=url, h=hours) or 0)
     assert dhn.main(["deploy_hold_notify.py", "drift"]) == 0
     assert seen == {"r": "a/b", "u": "https://app", "h": 5.0}
+
+
+def test_gate_command_reports_the_hand_off(monkeypatch, tmp_path):
+    report = tmp_path / "hold.json"
+    report.write_text(json.dumps({"repo": "o/r", "tag": "v1", "deployed": "v0", "held": [["p", ["why"]]]}))
+    seen = []
+    monkeypatch.setattr(dhn, "report_gate_hold", lambda *a: seen.append(a))
+    assert dhn.main(["x", "gate", "--report", str(report)]) == 0
+    assert seen == [("o/r", "v1", "v0", [("p", ["why"])])]
+
+
+@pytest.mark.parametrize("content", [None, "not json", json.dumps({"tag": "v1"})])
+def test_gate_command_warns_and_exits_zero_on_a_bad_report(monkeypatch, tmp_path, capsys, content):
+    report = tmp_path / "hold.json"
+    if content is not None:
+        report.write_text(content)
+    monkeypatch.setattr(dhn, "report_gate_hold", lambda *a: pytest.fail("reported from a bad file"))
+    assert dhn.main(["x", "gate", "--report", str(report)]) == 0
+    assert "hold issue/email failed::" in capsys.readouterr().out
+
+
+def test_gate_command_never_raises_when_reporting_fails(monkeypatch, tmp_path, capsys):
+    report = tmp_path / "hold.json"
+    report.write_text(json.dumps({"repo": "o/r", "tag": "v1", "held": []}))
+
+    def boom(*a):
+        raise RuntimeError("gh exploded")
+
+    monkeypatch.setattr(dhn, "report_gate_hold", boom)
+    assert dhn.main(["x", "gate", "--report", str(report)]) == 0
+    assert "hold issue/email failed::RuntimeError: gh exploded" in capsys.readouterr().out

@@ -496,7 +496,9 @@ def classify_new_migrations(new_paths: list[str], migrations_dir: Path, repo_roo
     try:
         prior[BASELINE_SCHEMA] = (migrations_dir.parent / BASELINE_SCHEMA).read_text(encoding="utf-8")
     except OSError:
-        pass
+        # No baseline schema on disk: a column only it defined has no prior definition, so any
+        # ENUM change to it classifies as unknown and HOLDS — the fail-closed outcome.
+        prior.pop(BASELINE_SCHEMA, None)
     history = column_history(prior)
     verdicts: list[MigrationVerdict] = []
     for rel in new_paths:

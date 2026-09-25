@@ -127,13 +127,26 @@ jobs:
           # /api/app-info this var points at — not just the previous release tag. Empty (unset var)
           # degrades to the old tag-to-tag comparison inside the script.
           PUBLIC_BASE_URL: ${{ vars.PUBLIC_BASE_URL }}
+          # On a hold the gate writes its verdict here for the notify step below — deciding and
+          # notifying stay in separate processes so a notification can never change the decision.
+          DEPLOY_HOLD_REPORT: ${{ runner.temp }}/deploy-hold.json
+        run: |
+          python3 scripts/release_risk_check.py --tag "$RELEASE_TAG"
+
+      - name: Report a held deploy (issue + owner email)
+        if: steps.check.outputs.flagged == 'true'
+        # A failed issue/email is a ::warning inside the script; never let it turn the run red.
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DEPLOY_HOLD_REPORT: ${{ runner.temp }}/deploy-hold.json
           # Owner email on a hold — the same SendGrid account the app and the host watchdog use.
           # Any of the three unset = no email (a ::warning), the needs-human issue is still filed.
           SENDGRID_API_KEY: ${{ secrets.SENDGRID_API_KEY }}
           SENDGRID_FROM_EMAIL: ${{ vars.SENDGRID_FROM_EMAIL }}
           DEPLOY_ALERT_EMAIL: ${{ secrets.DEPLOY_ALERT_EMAIL }}
         run: |
-          python3 scripts/release_risk_check.py --tag "$RELEASE_TAG"
+          python3 scripts/deploy_hold_notify.py gate
 
   deploy:
     name: Deploy to Hostinger VPS

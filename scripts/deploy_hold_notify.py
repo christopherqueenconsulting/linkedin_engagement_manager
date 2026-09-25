@@ -47,6 +47,7 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from pathlib import Path
 
 import release_risk_check as rrc
 
@@ -131,16 +132,20 @@ def render_body(state: HoldState, previous_body: str, section: str, section_mark
             render_marker(state),
             f"## Production is not running `{target}`",
             "",
-            "A release is not deploying on its own. To ship it (and every release before it — a deploy "
-            "applies all pending migrations and code at once), run:",
+            (
+                "A release is not deploying on its own. To ship it (and every release before it — a "
+                "deploy applies all pending migrations and code at once), run:"
+            ),
             "",
             "```",
             f"gh workflow run deploy-vps.yml -f tag={target}",
             "```",
             "",
-            "This issue closes itself once production's `/api/app-info` reports this tag or later "
-            "(checked hourly by `deploy-drift-check.yml`). Why it exists: `docs/DEPLOYMENT.md` "
-            "§ Deploy hold & drift alerts.",
+            (
+                "This issue closes itself once production's `/api/app-info` reports this tag or "
+                "later (checked hourly by `deploy-drift-check.yml`). Why it exists: "
+                "`docs/DEPLOYMENT.md` § Deploy hold & drift alerts."
+            ),
         ]
     )
     sections = previous_body.split("<!-- section:", 1)
@@ -479,14 +484,35 @@ def _max_hours(raw: str | None) -> float:
     return value if value > 0 else DEFAULT_DRIFT_MAX_HOURS
 
 
+def run_gate_report(report_path: str) -> int:
+    """File/update the hold issue from the gate's JSON hand-off. Missing/unreadable = warn, exit 0.
+
+    Args:
+        report_path: The file `release_risk_check.report_hold` wrote.
+
+    Returns:
+        Always 0 — a notification failure must never turn the release run red.
+    """
+    try:
+        payload = json.loads(Path(report_path).read_text(encoding="utf-8"))
+        held = [(str(path), [str(r) for r in reasons]) for path, reasons in payload["held"]]
+        report_gate_hold(payload["repo"], payload["tag"], payload.get("deployed"), held)
+    except Exception as exc:  # a bad hand-off or a gh/SendGrid fault must never fail the release run
+        print(f"::warning title=hold issue/email failed::{type(exc).__name__}: {exc}")
+    return 0
+
+
 def main(argv: list[str]) -> int:
-    """CLI: `drift` runs the scheduled check (the gate calls `report_gate_hold` directly)."""
+    """CLI: `drift` runs the scheduled check; `gate --report FILE` reports a held release."""
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("command", choices=["drift"])
+    ap.add_argument("command", choices=["drift", "gate"])
     ap.add_argument("--repo", default=os.getenv("GITHUB_REPOSITORY", rrc.DEFAULT_REPO))
     ap.add_argument("--app-url", default=os.getenv("PUBLIC_BASE_URL", ""))
     ap.add_argument("--max-hours", default=os.getenv("DEPLOY_DRIFT_MAX_HOURS", ""))
+    ap.add_argument("--report", default=os.getenv("DEPLOY_HOLD_REPORT", ""))
     args = ap.parse_args(argv[1:])
+    if args.command == "gate":
+        return run_gate_report(args.report)
     return run_drift_check(args.repo, args.app_url, _max_hours(args.max_hours))
 
 

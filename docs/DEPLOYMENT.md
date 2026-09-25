@@ -193,6 +193,10 @@ in a `::notice` on the run.
    migration joins an open hold — never on a re-flag of files it already lists, never on a drift
    refresh.
 
+Steps 2–3 run in their OWN workflow step (`deploy_hold_notify.py gate`), fed a JSON hand-off the gate
+writes to `$DEPLOY_HOLD_REPORT`. The gate never imports the notifier, so a failed issue or email
+(a `::warning`, `continue-on-error`) can never change the deploy decision.
+
 **Drift backstop.** `.github/workflows/deploy-drift-check.yml` runs hourly (`scripts/deploy_hold_notify.py
 drift`) and does not depend on the gate at all:
 

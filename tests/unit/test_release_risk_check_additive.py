@@ -121,21 +121,26 @@ def test_a_migration_missing_from_the_checkout_holds(monkeypatch, tmp_path):
     assert "flagged=true" in out.read_text()
 
 
-def test_report_hold_never_raises(monkeypatch, capsys):
-    import deploy_hold_notify
-
-    def boom(*a):
-        raise RuntimeError("gh exploded")
-
-    monkeypatch.setattr(deploy_hold_notify, "report_gate_hold", boom)
-    rrc.report_hold("o/r", "v1", None, [])
-    assert "hold issue/email failed::RuntimeError: gh exploded" in capsys.readouterr().out
-
-
-def test_report_hold_delegates_to_the_notifier(monkeypatch):
-    import deploy_hold_notify
-
-    seen = []
-    monkeypatch.setattr(deploy_hold_notify, "report_gate_hold", lambda *a: seen.append(a))
+def test_report_hold_writes_the_hand_off_file(monkeypatch, tmp_path):
+    report = tmp_path / "hold.json"
+    monkeypatch.setenv("DEPLOY_HOLD_REPORT", str(report))
     rrc.report_hold("o/r", "v1", "v0", [("p", ["why"])])
-    assert seen == [("o/r", "v1", "v0", [("p", ["why"])])]
+    assert json.loads(report.read_text()) == {"repo": "o/r", "tag": "v1", "deployed": "v0", "held": [["p", ["why"]]]}
+
+
+def test_report_hold_without_a_path_writes_nothing(monkeypatch, tmp_path):
+    monkeypatch.delenv("DEPLOY_HOLD_REPORT", raising=False)
+    monkeypatch.chdir(tmp_path)
+    rrc.report_hold("o/r", "v1", None, [])
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_report_hold_never_raises_on_an_unwritable_path(monkeypatch, tmp_path, capsys):
+    monkeypatch.setenv("DEPLOY_HOLD_REPORT", str(tmp_path / "missing-dir" / "hold.json"))
+    rrc.report_hold("o/r", "v1", None, [])
+    assert "hold report not written::" in capsys.readouterr().out
+
+
+def test_the_gate_never_imports_the_notifier():
+    source = Path(rrc.__file__).read_text()
+    assert "import deploy_hold_notify" not in source
