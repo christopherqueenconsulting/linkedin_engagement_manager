@@ -1,0 +1,45 @@
+name: Deploy Drift Check
+
+# The backstop that does not depend on the release gate: production sat on v0.176.5 for ~24h while
+# v0.177.0..v0.178.1 were tagged, and the only trace was a ::warning inside a GREEN run. Hourly, this
+# compares production's public /api/app-info version with the published releases and
+#   1. closes the `needs-human` deploy-hold issue once production reaches (or passes) its target tag;
+#   2. opens/updates that same ONE issue — and emails the owner the first time — when the oldest
+#      release production does not have has waited longer than DEPLOY_DRIFT_MAX_HOURS (default 3;
+#      releases batch 4x/day, docs/zero-downtime-deploys.md).
+# It catches every way a deploy silently does not happen (gate hold, SSH retries exhausted, a red
+# build), not just the gate. Logic + tests: scripts/deploy_hold_notify.py,
+# tests/unit/test_deploy_hold_notify.py. Posture: docs/DEPLOYMENT.md § "Deploy hold & drift alerts".
+# Read-only against production; it never deploys anything.
+
+on:
+  schedule:
+    - cron: "23 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: deploy-drift-check
+  cancel-in-progress: false
+
+jobs:
+  drift:
+    name: Compare production with the latest release
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Close a resolved hold, alert on drift
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PUBLIC_BASE_URL: ${{ vars.PUBLIC_BASE_URL }}
+          DEPLOY_DRIFT_MAX_HOURS: ${{ vars.DEPLOY_DRIFT_MAX_HOURS }}
+          SENDGRID_API_KEY: ${{ secrets.SENDGRID_API_KEY }}
+          SENDGRID_FROM_EMAIL: ${{ vars.SENDGRID_FROM_EMAIL }}
+          DEPLOY_ALERT_EMAIL: ${{ secrets.DEPLOY_ALERT_EMAIL }}
+        run: python3 scripts/deploy_hold_notify.py drift

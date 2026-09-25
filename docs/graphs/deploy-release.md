@@ -343,6 +343,15 @@ range that no human re-reads at merge time AND that rolling the image back to `.
 undo. Owner decision on PR #1590; the `risk:*` half is not deferred work, it is deliberately not
 built.
 
+**Narrowed again: additive migrations auto-deploy, a hold is loud.** Holding on ANY migration parked
+production on v0.176.5 for ~24h behind two purely additive migrations (an ENUM append and two
+NULLable columns), and nobody was told — the `::warning` sat in a green run and the Decision Comment
+on a merged PR. The gate now classifies each migration (`scripts/migration_classifier.py`, fail
+closed) and holds only a non-additive one; a hold opens/updates ONE `needs-human` issue and emails
+the owner, and the hourly `deploy-drift-check.yml` closes it once production catches up and files it
+on its own when production lags the latest release by more than `DEPLOY_DRIFT_MAX_HOURS`. Posture:
+`docs/DEPLOYMENT.md` § "Deploy hold & drift alerts".
+
 **What did not change:** the 4×/day batching cadence, `release:now`, `TRUSTED_LABELLERS`, and
 everything downstream of "deploy job fires" (`scripts/deploy.sh`, `/health`, blue/green flip,
 auto-rollback, drain) — all untouched. No new agent, no new comment-watching workflow.

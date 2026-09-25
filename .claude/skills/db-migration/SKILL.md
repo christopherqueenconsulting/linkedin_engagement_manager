@@ -11,6 +11,7 @@ description: Use when adding, altering, or dropping anything in the MySQL schema
 4. All runtime access goes through functions in `src/cqc_lem/utilities/db.py` — no raw SQL anywhere else. Add the accessor there.
 5. Label the PR's issue `risk:migration` — the agent still builds, but a human signs off before merge (park with `needs-human` + a Decision Comment).
 6. The **Migration Versions** CI check enforces unique timestamp versions pre-merge.
+7. At release, `scripts/migration_classifier.py` decides deploy: all-additive (new table, NULLable/DEFAULTed column, non-unique index, ENUM append, seed INSERT) auto-deploys; anything else holds on a `needs-human` issue + owner email. Append ENUM values at the END and keep `NOT NULL`/`DEFAULT` unchanged, or it holds. `docs/DEPLOYMENT.md` § "Deploy hold & drift alerts".
 
 Scheduling/time columns: store naive UTC via `to_naive_utc()` — see `docs/timezone-contract.md`.
 Full rationale (why timestamps, why outOfOrder): `compose/local/database/migrations/README.md`.

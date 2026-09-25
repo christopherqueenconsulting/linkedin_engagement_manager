@@ -84,6 +84,13 @@ jobs:
   # `flagged`, which `deploy`'s own `if:` reads. Logic lives in scripts/release_risk_check.py
   # (tested; stdlib + `gh` CLI only) so it can be unit-tested instead of debugged as inline YAML.
   # Full design + the 3 gauntlet-loop rounds that shaped it: docs/graphs/deploy-release.md.
+  #
+  # Narrowed further after prod sat on v0.176.5 for ~24h behind two purely additive migrations with
+  # nobody told: each migration is now CLASSIFIED (scripts/migration_classifier.py) and a release
+  # whose migrations are ALL provably additive deploys automatically. Anything else — or anything
+  # unparseable — still holds (fail closed), and a hold now opens/updates ONE `needs-human` issue and
+  # emails the owner (scripts/deploy_hold_notify.py); deploy-drift-check.yml closes it once prod
+  # catches up. docs/DEPLOYMENT.md § "Deploy hold & drift alerts".
   release-risk-check:
     name: Release risk check
     # Deliberately NOT `needs: build-and-push` — this job only reads the GitHub API, so running it
@@ -94,13 +101,19 @@ jobs:
     permissions:
       contents: read
       # `pull-requests: write` is only for the audit Decision Comment on the flagged release's own
-      # PR. No `issues: read` — nothing here reads a label any more.
+      # PR. `issues: write` opens/updates the ONE `needs-human` deploy-hold issue on a hold.
       pull-requests: write
+      issues: write
     outputs:
       flagged: ${{ steps.check.outputs.flagged }}
     steps:
+      # THIS release's tag, not the default ref: the classifier reads the migration files and every
+      # earlier migration (the prior ENUM definitions) off disk, and a workflow_dispatch run's
+      # default ref is whatever branch it was dispatched from. A `with:` value is not a shell line.
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.release.tag_name || github.event.inputs.tag || github.ref_name }}
 
       - name: Flag a migration-bearing release
         id: check
@@ -114,8 +127,26 @@ jobs:
           # /api/app-info this var points at — not just the previous release tag. Empty (unset var)
           # degrades to the old tag-to-tag comparison inside the script.
           PUBLIC_BASE_URL: ${{ vars.PUBLIC_BASE_URL }}
+          # On a hold the gate writes its verdict here for the notify step below — deciding and
+          # notifying stay in separate processes so a notification can never change the decision.
+          DEPLOY_HOLD_REPORT: ${{ runner.temp }}/deploy-hold.json
         run: |
           python3 scripts/release_risk_check.py --tag "$RELEASE_TAG"
+
+      - name: Report a held deploy (issue + owner email)
+        if: steps.check.outputs.flagged == 'true'
+        # A failed issue/email is a ::warning inside the script; never let it turn the run red.
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DEPLOY_HOLD_REPORT: ${{ runner.temp }}/deploy-hold.json
+          # Owner email on a hold — the same SendGrid account the app and the host watchdog use.
+          # Any of the three unset = no email (a ::warning), the needs-human issue is still filed.
+          SENDGRID_API_KEY: ${{ secrets.SENDGRID_API_KEY }}
+          SENDGRID_FROM_EMAIL: ${{ vars.SENDGRID_FROM_EMAIL }}
+          DEPLOY_ALERT_EMAIL: ${{ secrets.DEPLOY_ALERT_EMAIL }}
+        run: |
+          python3 scripts/deploy_hold_notify.py gate
 
   deploy:
     name: Deploy to Hostinger VPS
@@ -125,9 +156,9 @@ jobs:
     # releases auto-deploy; re-add reviewers in repo settings to restore it.
     #
     # `release-risk-check` above is the narrower gate that replaces it for the risky subset only
-    # (#1133): a newly added Flyway migration in this release skips this job entirely and
-    # parks the release on a Decision Comment for the owner's manual
-    # `gh workflow run deploy-vps.yml -f tag=vX.Y.Z`. Everything else deploys exactly as before,
+    # (#1133): a newly added Flyway migration that is NOT provably additive skips this job entirely
+    # and parks the release on a `needs-human` issue (plus an owner email) for the manual
+    # `gh workflow run deploy-vps.yml -f tag=vX.Y.Z`. Additive-only migrations deploy here as usual. Everything else deploys exactly as before,
     # with no added latency — the check runs CONCURRENTLY with the image build, so it has long
     # finished by the time this job would have started.
     #

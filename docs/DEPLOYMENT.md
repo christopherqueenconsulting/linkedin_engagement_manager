@@ -144,6 +144,84 @@ approval) SSHes in and runs `scripts/deploy.sh vX.Y.Z`, which:
 7. waits for `/health`, **auto-rolls-back** to `.last_good_tag` on failure,
 8. **leaves maintenance mode** — restores consumers and resumes dispatch (on the rollback path too).
 
+The automatic SSH deploy only fires when the **Release risk check** job lets it — see the next
+section.
+
+## Deploy hold & drift alerts
+
+The one automatic deploy that does NOT happen on its own is a release carrying a migration that is
+not provably additive, because an image rollback cannot undo applied DDL. Before this section
+existed, ANY new migration held the release, and the only signal was a `::warning` inside a green
+run plus a comment on the already-merged release PR — production sat on v0.176.5 for ~24h behind
+two purely additive migrations (an ENUM append and two NULLable columns) with nobody told.
+
+**What holds.** `release-risk-check` (`scripts/release_risk_check.py`) diffs the release against
+what production actually runs (`GET /api/app-info`) and classifies every migration in that range
+with `scripts/migration_classifier.py`, reading the SQL off the release tag's own checkout. A release
+auto-deploys when EVERY statement in EVERY such migration is one of:
+
+| Additive shape | Why it is safe to ship unattended |
+|---|---|
+| `CREATE TABLE [IF NOT EXISTS] t (…)` (never `AS SELECT` / `LIKE`) | A new table touches no existing row |
+| `ALTER TABLE … ADD [COLUMN]` that is NULLable or has a `DEFAULT` (never `UNIQUE` / `PRIMARY KEY` / `AUTO_INCREMENT` / `REFERENCES`) | Existing rows get NULL / the default |
+| `CREATE INDEX` / `ADD INDEX\|KEY\|FULLTEXT\|SPATIAL` (never UNIQUE) | Cannot reject existing rows |
+| `MODIFY` / same-name `CHANGE` of an ENUM that only APPENDS values | Checked against the column's prior definition in the earlier migrations and `setup.sql`: the old list must be an exact prefix, every value any earlier migration declared must survive (the #1566 out-of-order hazard), and `NOT NULL`/`DEFAULT` must be unchanged |
+| `INSERT [IGNORE] INTO …` (never `ON DUPLICATE KEY UPDATE`) | Seed rows |
+
+Everything else HOLDS: `DROP`, `RENAME`, `TRUNCATE`, `UPDATE`, `DELETE`, `REPLACE`, a `MODIFY` that
+changes a type or nullability, an ENUM reorder/removal/modifier change, a UNIQUE index or constraint
+(it can reject existing rows mid-migration), `SET`/`PREPARE`/`DELIMITER`, and any shape not listed.
+**It fails CLOSED**: a file it cannot read, a statement it cannot parse, or an ENUM with no prior
+definition on record holds. (Its GitHub API reads still fail OPEN, as before — an unreadable API
+must not become a single point of failure for routine releases.) An auto-deployed migration is named
+in a `::notice` on the run.
+
+**What a hold does.**
+
+1. The automatic `deploy` job is skipped (as before) and a Decision Comment lands on the release PR,
+   now listing why each migration is not additive.
+2. ONE `needs-human` issue — "Production is not on vX.Y.Z: deploy needs a human" — is opened, or the
+   open one is UPDATED. It is identified by a `<!-- lem-deploy-hold … -->` marker in its body, never
+   by title. A later release re-flagging the same held state moves the target tag forward and adds
+   any new files; the body always shows the one command to run, for the NEWEST held tag (a deploy
+   applies every earlier pending migration with it):
+
+   ```bash
+   gh workflow run deploy-vps.yml -f tag=vX.Y.Z
+   ```
+3. The owner is **emailed** when the issue is created, and again only when a NEW non-additive
+   migration joins an open hold — never on a re-flag of files it already lists, never on a drift
+   refresh.
+
+Steps 2–3 run in their OWN workflow step (`deploy_hold_notify.py gate`), fed a JSON hand-off the gate
+writes to `$DEPLOY_HOLD_REPORT`. The gate never imports the notifier, so a failed issue or email
+(a `::warning`, `continue-on-error`) can never change the deploy decision.
+
+**Drift backstop.** `.github/workflows/deploy-drift-check.yml` runs hourly (`scripts/deploy_hold_notify.py
+drift`) and does not depend on the gate at all:
+
+- it **closes** the open hold issue once `/api/app-info` reports the issue's target tag or later;
+- if the oldest published release production does not have is older than `DEPLOY_DRIFT_MAX_HOURS`
+  (default **3** — releases batch 4×/day, `docs/zero-downtime-deploys.md`), it opens/updates the same
+  issue (its own `drift` section, so it never overwrites the gate's reasons) and emails on creation.
+  That catches every other silent non-deploy: SSH retries exhausted, a red build, a skipped job.
+- `/api/app-info` unreadable = a `::warning` and nothing compared (uptime is UptimeRobot's job,
+  `docs/stack-watchdog.md`); an unreadable issue list is retried next hour rather than filing a
+  duplicate.
+
+**Configuration** (repo Settings → Secrets and variables → Actions). Email reuses the SendGrid
+account the app (`utilities/email.py`) and the host watchdog (`scripts/stack_watchdog.sh`) already
+send through; no new provider. Missing any of the three = no email (a `::warning` names what is
+missing); the issue is still filed.
+
+| Name | Kind | Value |
+|---|---|---|
+| `SENDGRID_API_KEY` | secret | The same key as `SENDGRID_API_KEY` in `/opt/lem/.env` (needs Mail Send) |
+| `DEPLOY_ALERT_EMAIL` | secret | The owner's inbox — never committed |
+| `SENDGRID_FROM_EMAIL` | variable | The authenticated sender, as in `.env.example` |
+| `DEPLOY_DRIFT_MAX_HOURS` | variable (optional) | Drift threshold in hours; default 3 |
+| `PUBLIC_BASE_URL` | variable (existing) | Where `/api/app-info` is read from |
+
 ## Version milestones and owner-triggered major releases
 
 LEM's version number signals product stage, not just changelog mechanics:
