@@ -677,6 +677,10 @@ thread replies, likes, whether we replied, `visible_most_relevant`.
   the gate off. The history window widens by the same days so the baseline stays full.
 - Every daily reading logs at INFO (`Suppression reading for user N: state=… median=… recent=[…]`),
   so a long `watch` can be checked from `/opt/lem/logs`, not PostHog alone.
+- The `suppression_check` event carries the same per-day reading: `reach_recent` (one
+  `{date, value, drop, posts}` row per scored posting day) and `too_young_days`. `watch` needs
+  only ONE of those days over the ratio, so `reach_max_drop` alone cannot tell one flat post from
+  a real collapse.
 - ≥`SUPPRESSION_DROP_RATIO` drop sustained, or #628's demotion verdict, `pause_automation()`s
   **engagement only** (posting is API-driven and never gated); read-only stat-capture lanes
   exempted via `is_measurement_paused` (freeze them and a recovered account can never be seen to

@@ -268,6 +268,37 @@ class TestLabelledEventsEndToEnd:
         assert mock_ph.capture.call_args.kwargs["properties"]["feed_sort"] == "False"
 
 
+class TestSuppressionCheckPerDayReading:
+    """A `watch` has to say WHICH posting day drives it, not only the worst drop."""
+
+    def test_the_per_day_reach_rows_and_too_young_count_reach_the_event(self):
+        recent = [{"date": "2026-09-22", "value": 90.0, "drop": -0.03, "posts": 1},
+                  {"date": "2026-09-23", "value": 15.0, "drop": 0.8276, "posts": 1}]
+        verdict = {"status": "watch", "tripped": False, "reason": "r", "signals": [
+            {"name": "reach_collapse", "status": "watch", "max_drop": 0.8276,
+             "recent": recent, "too_young_days": 2},
+            {"name": "comment_demotion", "status": "unknown"}]}
+        with patch(f"{_MOD}.posthog") as mock_ph:
+            observability.track_suppression_check(1, verdict)
+        props = mock_ph.capture.call_args.kwargs["properties"]
+        assert props["reach_recent"] == recent
+        assert props["too_young_days"] == 2
+        assert props["reach_max_drop"] == 0.8276
+
+    def test_a_verdict_without_a_reach_signal_emits_empty_rows_and_no_count(self):
+        with patch(f"{_MOD}.posthog") as mock_ph:
+            observability.track_suppression_check(1, None)
+        props = mock_ph.capture.call_args.kwargs["properties"]
+        assert props["reach_recent"] == []
+        assert props["too_young_days"] is None
+
+    def test_zero_too_young_days_is_a_real_zero(self):
+        verdict = {"signals": [{"name": "reach_collapse", "recent": [], "too_young_days": 0}]}
+        with patch(f"{_MOD}.posthog") as mock_ph:
+            observability.track_suppression_check(1, verdict)
+        assert mock_ph.capture.call_args.kwargs["properties"]["too_young_days"] == 0
+
+
 class TestAvatarLikenessProbeCause:
     """The unchecked CAUSE has to be countable, not free text (issue #1598).
 

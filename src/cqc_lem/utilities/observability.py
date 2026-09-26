@@ -510,6 +510,11 @@ EVENTS = {spec.event: spec for spec in (
         label("reach_status", "reach.status"), prop("reach_metric", "reach.metric"),
         prop("reach_baseline", "reach.baseline"), prop("reach_max_drop", "reach.max_drop"),
         prop("baseline_posts", "reach.baseline_posts"), prop("posting_days", "reach.posting_days"),
+        # `reach_max_drop` alone cannot say WHICH posting day drives a `watch`: any one of the last
+        # run of days crossing the ratio is enough, so one flat post reads the same as a real
+        # collapse. The per-day {date, value, drop, posts} rows and the too-young count say which.
+        items("reach_recent", "reach.recent"),
+        reading("too_young_days", "reach.too_young_days"),
         label("comment_status", "comments.status"),
         prop("comment_demotion_rate", "comments.demotion_rate"),
     )),
