@@ -161,6 +161,9 @@ class TestNeedsImagesExemptionIsScoped:
         ("app/engagement/posting.py", "automate_reply_commenting"),
         # #2095 — the company-page invite modal renders its credit counter only with images on.
         ("app/engagement/invites.py", "automate_invites_to_company_page_for_user"),
+        # #2094 — `/article/new/` rendered zero buttons images-blocked, every route resolved with them.
+        ("app/engagement/newsletter.py", "auto_publish_newsletter_edition"),
+        ("app/engagement/newsletter.py", "auto_publish_edition"),
     }
 
     def test_only_the_grounded_fastboot_call_sites_request_images(self):
