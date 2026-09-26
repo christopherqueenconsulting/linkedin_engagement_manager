@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.181.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.180.0...v0.181.0) (2026-09-26)
+
+
+### Features
+
+* **suppression:** send per-day reach readings on suppression_check ([ed96e05](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/ed96e0562d9d22e9936203c37b025c5d8ec77656))
+* **suppression:** send per-day reach readings on suppression_check (closes [#2210](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2210)) ([#2211](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2211)) ([ed96e05](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/ed96e0562d9d22e9936203c37b025c5d8ec77656))
+
 ## [0.180.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.179.1...v0.180.0) (2026-09-25)
 
 
