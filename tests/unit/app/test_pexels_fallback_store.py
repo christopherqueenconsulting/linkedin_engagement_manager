@@ -34,6 +34,7 @@ class TestRegeneratePathStoresTheStockClip:
     def test_the_local_clip_is_stored_under_its_pexels_name(self, tmp_path, monkeypatch):
         import cqc_lem.app.run_content_plan as rcp
         monkeypatch.setattr(rcp, "assets_dir", str(tmp_path))
+        monkeypatch.setattr("cqc_lem.assets_dir", str(tmp_path))
         clip = _stock_clip(tmp_path)
         with patch(f"{_RCP}._accept_probed_video", return_value=True) as accept, \
              patch(f"{_RCP}._caption_video_asset"), \
@@ -57,6 +58,7 @@ class TestBirthPathStoresTheStockClip:
     def test_the_planned_post_keeps_its_stock_video(self, tmp_path, monkeypatch):
         import cqc_lem.app.run_content_plan as rcp
         monkeypatch.setattr(rcp, "assets_dir", str(tmp_path))
+        monkeypatch.setattr("cqc_lem.assets_dir", str(tmp_path))
         monkeypatch.setattr(f"{_RCP}.datetime", _MondayDatetime)
         clip = _stock_clip(tmp_path)
         with patch(f"{_RCP}.get_planned_posts_within_buffer",
