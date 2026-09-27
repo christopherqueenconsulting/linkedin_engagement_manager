@@ -7,6 +7,7 @@ different side effect.
 """
 
 import json
+import os
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -132,6 +133,71 @@ class TestSaveVideoUrlToDir:
             with pytest.raises(type(exc)):
                 save_video_url_to_dir("https://cdn.example.com/clip.mp4", str(tmp_path))
         assert list(tmp_path.iterdir()) == []
+
+    def test_a_local_stock_clip_is_moved_not_downloaded(self, tmp_path, monkeypatch):
+        """The Pexels fallback hands back a path on disk; `requests.get` on it raises MissingSchema."""
+        from cqc_lem.utilities.utils import save_video_url_to_dir
+        monkeypatch.setattr("cqc_lem.assets_dir", str(tmp_path))
+        stock_dir, store_dir = tmp_path / "pexels", tmp_path / "runwayml"
+        stock_dir.mkdir()
+        store_dir.mkdir()
+        clip = stock_dir / "pexels_123.mp4"
+        clip.write_bytes(b"stock-bytes")
+        with patch(f"{_U}.requests.get") as rget:
+            path = save_video_url_to_dir(str(clip), str(store_dir))
+        rget.assert_not_called()
+        # The name is kept: `pexels_*` is what marks a stored clip as stock in content_quality.
+        assert path == str(store_dir / "pexels_123.mp4")
+        assert (store_dir / "pexels_123.mp4").read_bytes() == b"stock-bytes"
+        assert not clip.exists()
+
+    def test_a_local_clip_already_in_place_is_left_alone(self, tmp_path, monkeypatch):
+        from cqc_lem.utilities.utils import save_video_url_to_dir
+        monkeypatch.setattr("cqc_lem.assets_dir", str(tmp_path))
+        clip = tmp_path / "pexels_123.mp4"
+        clip.write_bytes(b"stock-bytes")
+        assert save_video_url_to_dir(str(clip), str(tmp_path)) == str(clip)
+        assert clip.read_bytes() == b"stock-bytes"
+
+    def test_a_missing_local_clip_raises(self, tmp_path, monkeypatch):
+        from cqc_lem.utilities.utils import save_video_url_to_dir
+        monkeypatch.setattr("cqc_lem.assets_dir", str(tmp_path))
+        with patch(f"{_U}.requests.get") as rget:
+            with pytest.raises(FileNotFoundError):
+                save_video_url_to_dir(str(tmp_path / "pexels_404.mp4"), str(tmp_path))
+        rget.assert_not_called()
+        assert list(tmp_path.iterdir()) == []
+
+    def test_a_local_file_outside_assets_is_never_moved(self, tmp_path, monkeypatch):
+        """Providers' responses pass through here too: a bare path from one must not relocate a file."""
+        from cqc_lem.utilities.utils import save_video_url_to_dir
+        assets, outside = tmp_path / "assets", tmp_path / "outside"
+        assets.mkdir()
+        outside.mkdir()
+        monkeypatch.setattr("cqc_lem.assets_dir", str(assets))
+        secret = outside / "secret.env"
+        secret.write_bytes(b"KEY=1")
+        with pytest.raises(ValueError):
+            save_video_url_to_dir(str(secret), str(assets))
+        assert secret.read_bytes() == b"KEY=1"
+        assert list(assets.iterdir()) == []
+
+    def test_a_stock_clip_whose_name_is_taken_gets_a_unique_name(self, tmp_path, monkeypatch):
+        """Two posts drawing the same clip must not share one file — the first publish purges it."""
+        from cqc_lem.utilities.utils import save_video_url_to_dir
+        monkeypatch.setattr("cqc_lem.assets_dir", str(tmp_path))
+        stock_dir, store_dir = tmp_path / "pexels", tmp_path / "runwayml"
+        stock_dir.mkdir()
+        store_dir.mkdir()
+        (store_dir / "pexels_123.mp4").write_bytes(b"first-post")
+        clip = stock_dir / "pexels_123.mp4"
+        clip.write_bytes(b"second-post")
+        path = save_video_url_to_dir(str(clip), str(store_dir))
+        assert path != str(store_dir / "pexels_123.mp4")
+        assert os.path.basename(path).startswith("pexels_123_")
+        assert path.endswith(".mp4")
+        assert (store_dir / "pexels_123.mp4").read_bytes() == b"first-post"
+        assert open(path, "rb").read() == b"second-post"
 
 
 class TestFileExtension:
