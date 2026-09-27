@@ -2105,7 +2105,10 @@ def _fetch_video_src(video_src: str, videos_dir: str) -> str:
     That result is a remote URL for a Runway render but a LOCAL path for the Pexels fallback, which
     `download_pexels_video` has already written to disk. Handing the path to the HTTP downloader
     raised `MissingSchema` (issue #2217), so every stock fallback lost its video. A local file is
-    moved instead — same name, so `pexels_*` still marks it as stock (`content_quality`).
+    moved instead, keeping its `pexels_*` prefix so `content_quality` still classifies it as stock.
+    The stored name gets a unique suffix: two posts can draw the same Pexels clip, and captioning
+    rewrites the stored MP4 (and names its `.srt`) in place, so a shared name would burn one post's
+    caption over the other's video.
 
     Raises:
         OSError: The local file is missing or cannot be moved.
@@ -2114,9 +2117,12 @@ def _fetch_video_src(video_src: str, videos_dir: str) -> str:
     if urlparse(str(video_src)).scheme in ("http", "https"):
         return save_video_url_to_dir(video_src, videos_dir)
     import shutil
-    dest_path = os.path.join(videos_dir, os.path.basename(video_src))
-    if os.path.abspath(video_src) != os.path.abspath(dest_path):
-        shutil.move(video_src, dest_path)
+    import uuid
+    if os.path.abspath(os.path.dirname(video_src)) == os.path.abspath(videos_dir):
+        return video_src
+    stem, ext = os.path.splitext(os.path.basename(video_src))
+    dest_path = os.path.join(videos_dir, f"{stem}_{uuid.uuid4().hex[:8]}{ext}")
+    shutil.move(video_src, dest_path)
     return dest_path
 
 

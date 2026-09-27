@@ -1,5 +1,6 @@
 """Unit tests for the asset-backfill safety net + missing-asset guard."""
 
+import os
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
@@ -188,9 +189,25 @@ class TestFetchVideoSrc:
         with patch("cqc_lem.app.run_content_plan.save_video_url_to_dir") as download:
             path = _fetch_video_src(str(stock), str(dest_dir))
         download.assert_not_called()
-        assert path == str(dest_dir / "pexels_1.mp4")
-        assert (dest_dir / "pexels_1.mp4").read_bytes() == b"data"
+        assert os.path.dirname(path) == str(dest_dir)
+        assert os.path.basename(path).startswith("pexels_1_") and path.endswith(".mp4")
+        assert open(path, "rb").read() == b"data"
         assert not stock.exists()
+
+    def test_same_stock_clip_for_two_posts_gets_two_files(self, tmp_path):
+        """Captions rewrite the stored file in place, so a shared name would cross two posts."""
+        from cqc_lem.app.run_content_plan import _fetch_video_src
+        src_dir, dest_dir = tmp_path / "pexels", tmp_path / "runwayml"
+        src_dir.mkdir()
+        dest_dir.mkdir()
+        stock = src_dir / "pexels_1.mp4"
+        stock.write_bytes(b"first")
+        first = _fetch_video_src(str(stock), str(dest_dir))
+        stock.write_bytes(b"second")
+        second = _fetch_video_src(str(stock), str(dest_dir))
+        assert first != second
+        assert open(first, "rb").read() == b"first"
+        assert open(second, "rb").read() == b"second"
 
     def test_local_path_already_in_place_is_left_alone(self, tmp_path):
         from cqc_lem.app.run_content_plan import _fetch_video_src
@@ -218,7 +235,7 @@ class TestFetchVideoSrc:
              patch("cqc_lem.app.run_content_plan.write_brief_receipt"):
             url = _store_video_asset(9, str(stock))
         download.assert_not_called()
-        assert url.endswith("videos/runwayml/pexels_7.mp4")
+        assert "videos/runwayml/pexels_7_" in url and url.endswith(".mp4")
         upd.assert_called_once()
 
 
@@ -267,8 +284,9 @@ class TestCreatePathVideoProbe:
         assert r["ok"] is True
         r["download"].assert_not_called()
         r["upd"].assert_called_once()
-        assert r["upd"].call_args[0][1].endswith("videos/runwayml/pexels_5211962.mp4")
-        assert (tmp_path / "videos" / "runwayml" / "pexels_5211962.mp4").exists()
+        stored_url = r["upd"].call_args[0][1]
+        assert "videos/runwayml/pexels_5211962_" in stored_url and stored_url.endswith(".mp4")
+        assert len(list((tmp_path / "videos" / "runwayml").glob("pexels_5211962_*.mp4"))) == 1
         # Stock footage is never disclosed as AI visuals.
         assert "Visuals created with AI" not in r["store"].call_args[0][1]
 
