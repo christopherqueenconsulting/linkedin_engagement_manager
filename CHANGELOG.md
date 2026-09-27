@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.181.1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.181.0...v0.181.1) (2026-09-27)
+
+
+### Bug Fixes
+
+* **content-plan:** store the local Pexels clip instead of downloading its path (closes [#2214](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2214)) ([#2215](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2215)) ([bd80a43](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/bd80a43c49d65b6f429f06061dbdcad545c85216))
+
 ## [0.181.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.180.0...v0.181.0) (2026-09-26)
 
 
