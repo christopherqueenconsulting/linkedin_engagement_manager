@@ -181,13 +181,16 @@ class TestAutoCreateWeeklyContentVideoPath:
     def test_stock_video_skips_c2pa_and_disclosure(self, monkeypatch, tmp_path):
         monkeypatch.setattr(f"{_RCP}.datetime", _MondayDatetime)
         import cqc_lem.app.run_content_plan as rcp
-        video_file = tmp_path / "stock.mp4"
+        # A real local file: the Pexels fallback hands back a path, never a URL (#2217).
+        (tmp_path / "videos" / "runwayml").mkdir(parents=True)
+        video_file = tmp_path / "pexels_1.mp4"
         video_file.write_bytes(b"v")
         with patch(f"{_RCP}.get_planned_posts_within_buffer", return_value=self._post()), \
              patch(f"{_RCP}.count_ready_posts_within_buffer", return_value=0), \
-             patch(f"{_RCP}.create_content", return_value=("Post text", "/local/pexels/stock.mp4")), \
+             patch(f"{_RCP}.create_content", return_value=("Post text", str(video_file))), \
+             patch(f"{_RCP}.assets_dir", str(tmp_path)), \
              patch(f"{_RCP}.create_folder_if_not_exists"), \
-             patch(f"{_RCP}.save_video_url_to_dir", return_value=str(video_file)), \
+             patch(f"{_RCP}.save_video_url_to_dir") as download, \
              patch("cqc_lem.utilities.c2pa_helper.add_ai_content_credentials") as c2pa, \
              patch(f"{_RCP}.update_db_post_video_url"), \
              patch(f"{_RCP}.update_db_post_content") as upd_content, \
@@ -198,6 +201,7 @@ class TestAutoCreateWeeklyContentVideoPath:
              patch.object(rcp, "AI_DISCLOSURE_ENABLED", True), \
              patch.object(rcp, "AI_DISCLOSURE_TEXT", "\n\nAI visuals."):
             rcp.auto_create_weekly_content(user_id=1)
+        download.assert_not_called()
         c2pa.assert_not_called()
         assert upd_content.call_args[0] == (42, "Post text")
 
@@ -301,7 +305,7 @@ class TestRegenerateVideoForPost:
              patch("cqc_lem.utilities.db.get_post_user_id", side_effect=RuntimeError("db")), \
              patch(f"{_RCP}._generate_video_src", return_value="/local/pexels/new.mp4"), \
              patch(f"{_RCP}.create_folder_if_not_exists"), \
-             patch(f"{_RCP}.save_video_url_to_dir", return_value=str(video_file)), \
+             patch(f"{_RCP}._fetch_video_src", return_value=str(video_file)), \
              patch("cqc_lem.utilities.c2pa_helper.add_ai_content_credentials") as c2pa, \
              patch("cqc_lem.utilities.db.get_post_status", return_value="planning"), \
              patch(f"{_RCP}.update_db_post_status"), \

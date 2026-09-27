@@ -55,8 +55,8 @@ class TestStorePathRecordsTheBrief:
         import cqc_lem.app.run_content_plan as rcp
         monkeypatch.setattr(rcp, "assets_dir", str(tmp_path))
         monkeypatch.setattr("cqc_lem.assets_dir", str(tmp_path))
-        with patch(f"{_RCP}.save_video_url_to_dir",
-                   side_effect=lambda url, directory: _valid_mp4(directory)), \
+        with patch(f"{_RCP}._fetch_video_src",
+                   side_effect=lambda src, directory: _valid_mp4(directory)), \
              patch(f"{_RCP}._accept_probed_video", return_value=True), \
              patch(f"{_RCP}._caption_video_asset"), \
              patch(f"{_RCP}._record_video_asset_measures"), \
