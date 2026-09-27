@@ -10,6 +10,7 @@ import functools
 import json
 import os
 import random
+import shutil
 from datetime import date, time
 from enum import Enum
 from urllib.parse import urlparse
@@ -241,12 +242,25 @@ def save_video_url_to_dir(video_url: str, dir_path):
 
     The timeout is not optional: a render host that accepts the connection and then stalls would
     otherwise hold a Celery slot forever, since no task in this tree sets a time limit.
+
+    A source that is not an http(s) URL is a file already on disk — the Pexels stock fallback
+    downloads its own clip. That file is MOVED into `dir_path` under the same name, because callers
+    build the asset URL from `dir_path` and `content_quality` reads a `pexels_*` name as stock.
+    A missing file raises `FileNotFoundError`, the same as a failed download.
     """
     # Extract the original file name from the URL
     parsed_url = urlparse(video_url)
     file_name = os.path.basename(parsed_url.path)
 
     video_path = os.path.join(dir_path, file_name)
+
+    if parsed_url.scheme not in ('http', 'https'):
+        if not os.path.isfile(video_url):
+            raise FileNotFoundError(video_url)
+        if os.path.abspath(video_url) != os.path.abspath(video_path):
+            shutil.move(video_url, video_path)
+        return video_path
+
     partial_path = video_path + '.part'
 
     # Fetch the content from the URL. Streamed rather than buffered because these assets run to tens

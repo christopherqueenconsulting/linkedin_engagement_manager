@@ -133,6 +133,37 @@ class TestSaveVideoUrlToDir:
                 save_video_url_to_dir("https://cdn.example.com/clip.mp4", str(tmp_path))
         assert list(tmp_path.iterdir()) == []
 
+    def test_a_local_stock_clip_is_moved_not_downloaded(self, tmp_path):
+        """The Pexels fallback hands back a path on disk; `requests.get` on it raises MissingSchema."""
+        from cqc_lem.utilities.utils import save_video_url_to_dir
+        stock_dir, store_dir = tmp_path / "pexels", tmp_path / "runwayml"
+        stock_dir.mkdir()
+        store_dir.mkdir()
+        clip = stock_dir / "pexels_123.mp4"
+        clip.write_bytes(b"stock-bytes")
+        with patch(f"{_U}.requests.get") as rget:
+            path = save_video_url_to_dir(str(clip), str(store_dir))
+        rget.assert_not_called()
+        # The name is kept: `pexels_*` is what marks a stored clip as stock in content_quality.
+        assert path == str(store_dir / "pexels_123.mp4")
+        assert (store_dir / "pexels_123.mp4").read_bytes() == b"stock-bytes"
+        assert not clip.exists()
+
+    def test_a_local_clip_already_in_place_is_left_alone(self, tmp_path):
+        from cqc_lem.utilities.utils import save_video_url_to_dir
+        clip = tmp_path / "pexels_123.mp4"
+        clip.write_bytes(b"stock-bytes")
+        assert save_video_url_to_dir(str(clip), str(tmp_path)) == str(clip)
+        assert clip.read_bytes() == b"stock-bytes"
+
+    def test_a_missing_local_clip_raises(self, tmp_path):
+        from cqc_lem.utilities.utils import save_video_url_to_dir
+        with patch(f"{_U}.requests.get") as rget:
+            with pytest.raises(FileNotFoundError):
+                save_video_url_to_dir(str(tmp_path / "pexels_404.mp4"), str(tmp_path))
+        rget.assert_not_called()
+        assert list(tmp_path.iterdir()) == []
+
 
 class TestFileExtension:
     # (case id, path, kwargs, extension) — always lower-cased, so a .MP4 upload and a .mp4 one
