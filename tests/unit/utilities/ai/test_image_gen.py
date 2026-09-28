@@ -3,6 +3,7 @@ import json
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import httpx
 import pytest
 
 from cqc_lem.utilities.ai import image_gen
@@ -69,6 +70,44 @@ class TestRunReplicateBounded:
             with pytest.raises(RuntimeError, match="boom"):
                 run_replicate_bounded("m/ref", {"prompt": "p"}, attempts=2)
         assert run.call_count == 2
+
+    def test_waits_by_polling_not_on_the_create_request(self):
+        with patch("replicate.run", return_value=["url"]) as run:
+            run_replicate_bounded("m/ref", {"prompt": "p"})
+        assert run.call_args.kwargs["wait"] is False
+
+    def test_create_read_timeout_is_retried(self):
+        with patch("replicate.run", side_effect=[httpx.ReadTimeout("create"), ["url"]]) as run, \
+             patch("time.sleep"):
+            assert run_replicate_bounded("m/ref", {"prompt": "p"}, attempts=2) == ["url"]
+        assert run.call_count == 2
+
+    def test_iterator_output_is_drained_inside_the_bound(self):
+        with patch("replicate.run", return_value=(u for u in ["a", "b"])):
+            assert run_replicate_bounded("m/ref", {"prompt": "p"}) == ["a", "b"]
+
+    def test_sdk_create_request_is_not_held_open(self):
+        """Against the real SDK: create carries no ``Prefer: wait``, and a GET poll resolves it."""
+        import replicate
+
+        requests: list[httpx.Request] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            requests.append(request)
+            body = {"id": "p1", "model": "m/ref", "version": "v", "input": {},
+                    "status": "starting", "urls": {"get": "https://api.replicate.com/v1/predictions/p1"}}
+            if request.method == "GET":
+                body.update(status="succeeded", output=["https://x/folder/img.webp"])
+            return httpx.Response(201 if request.method == "POST" else 200, json=body)
+
+        sdk = replicate.Client(api_token="t", transport=httpx.MockTransport(handler))
+        sdk.poll_interval = 0
+        with patch("replicate.run", sdk.run):
+            out = run_replicate_bounded("m/ref", {"prompt": "p"})
+        assert str(out[0]) == "https://x/folder/img.webp"
+        create = requests[0]
+        assert create.method == "POST" and "prefer" not in create.headers
+        assert [r.method for r in requests[1:]] == ["GET"]
 
 
 class TestVisionGate:
