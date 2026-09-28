@@ -21,9 +21,10 @@ import os
 import re
 import secrets
 import time
+from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Any, Optional
 
 from cqc_lem import assets_dir
 from cqc_lem.utilities.ai.client import client
@@ -238,6 +239,22 @@ def _render_via_gpt_image(prompt: str, *, ratio: str, quality: Optional[str],
     return path
 
 
+def _run_replicate_polled(ref: str, input_params: dict) -> Any:
+    """Run one prediction, waiting on it by polling rather than on the create request.
+
+    The SDK default (``wait=True``) sends ``Prefer: wait`` and holds the create POST open for up
+    to 60s with a 60.5s read timeout. A slow start (a cold avatar LoRA) overruns that read, so
+    ``httpx.ReadTimeout`` fires inside ``create()``, long before the outer bound — and the SDK
+    never retries a POST. With ``wait=False`` create returns at once and the wait moves to GET
+    polls, which ``timeout_s`` bounds. An iterator output is drained here, so that its lazy polls
+    also stay inside the bound.
+    """
+    import replicate
+
+    output = replicate.run(ref, input=input_params, wait=False)
+    return list(output) if isinstance(output, Iterator) else output
+
+
 def run_replicate_bounded(ref: str, input_params: dict,
                           timeout_s: int = _REPLICATE_TIMEOUT_SECONDS,
                           attempts: int = _REPLICATE_ATTEMPTS):
@@ -246,13 +263,11 @@ def run_replicate_bounded(ref: str, input_params: dict,
     The bare call blocks until the prediction resolves — a stuck one used to hold a worker
     slot indefinitely, and any transient 5xx was terminal.
     """
-    import replicate
-
     last_error: Exception = RuntimeError("replicate.run was never attempted")
     for attempt in range(1, max(1, attempts) + 1):
         executor = ThreadPoolExecutor(max_workers=1)
         try:
-            future = executor.submit(replicate.run, ref, input=input_params)
+            future = executor.submit(_run_replicate_polled, ref, input_params)
             return future.result(timeout=timeout_s)
         except FutureTimeout as e:
             last_error = TimeoutError(f"Replicate render exceeded {timeout_s}s")

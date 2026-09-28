@@ -103,7 +103,9 @@ cover rendered a man at a laptop.
 
 Ratios map to the three sizes gpt-image accepts (`1:1`, `16:9`, `9:16`); anything else falls back to
 square. Replicate renders are bounded (`REPLICATE_TIMEOUT_SECONDS`, 300s, 2 attempts) so a hung
-prediction can't stall a Celery worker forever. Cost is attributed via `track_media_cost`, with the
+prediction can't stall a Celery worker forever. The run uses `wait=False`, so the create request
+returns at once and GET polls do the waiting inside that bound — the SDK's held-open create (60.5s
+read, never retried) timed out a slow avatar LoRA start before the bound applied. Cost is attributed via `track_media_cost`, with the
 caller's `surface` (post_image / carousel / newsletter / video / thumbnail) threaded into
 `meta.surface` so per-surface spend is queryable.
 
