@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.181.2](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.181.1...v0.181.2) (2026-09-28)
+
+
+### Bug Fixes
+
+* **image-gen:** wait on Replicate predictions by polling, not on the create request ([0c4090c](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/0c4090c620bdab2417db1aadabcdd580c3eb3783))
+* **image-gen:** wait on Replicate predictions by polling, not on the create request (closes [#2221](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2221)) ([#2222](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2222)) ([0c4090c](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/0c4090c620bdab2417db1aadabcdd580c3eb3783))
+
 ## [0.181.1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.181.0...v0.181.1) (2026-09-27)
 
 
