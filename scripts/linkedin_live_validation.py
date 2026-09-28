@@ -7347,9 +7347,13 @@ def main(argv: Optional[list] = None) -> int:
     # `--company-invite` run came back with an EMPTY `page_text` where the (always-images) sweep
     # read 1,200 chars of it — the same empty-render misread, and it grades the surface `unknown`
     # without ever reaching the panel.
+    # #2094 adds the article editor, which is what the newsletter publish session now opens: read
+    # images-blocked, `/article/new/` rendered ZERO buttons and graded every editor route MISSING
+    # (live 2026-09-25) — the same unmounted page, never selector rot.
     needs_images = bool(args.group_composer or args.group_membership is not None
                         or args.group_feed_composer is not None or args.sweep
-                        or args.roster_follow or args.roster_connect or args.company_invite)
+                        or args.roster_follow or args.roster_connect or args.company_invite
+                        or args.article_editor_url)
     try:
         driver, profile, session_reading = open_probe_session(
             get_current_profile, args.user_id, require_debug_node=args.require_debug_node,

@@ -197,7 +197,7 @@ class TestAutoPublishEdition:
         assert "rate limited" in result
 
     def test_logs_error_when_flow_incomplete_for_generated_edition(self):
-        from cqc_lem.app.engagement.newsletter import auto_publish_newsletter_edition
+        from cqc_lem.app.engagement.newsletter import NewsletterPublishIncomplete, auto_publish_newsletter_edition
         edition = {"title": "5 Levers", "subtitle": "S", "body": "B"}
         with patch(f"{_NL}.get_newsletter_settings", return_value={"enabled": True, "topic": "reach"}), \
              patch(f"{_NL}.get_current_profile", return_value=(MagicMock(), MagicMock(), "e", MagicMock())), \
@@ -205,14 +205,89 @@ class TestAutoPublishEdition:
              patch(f"{_NL}._fill_and_publish_article", return_value=(None, "article_title")), \
              patch(f"{_NL}.mark_newsletter_published") as mark, \
              patch(f"{_NL}.log_error") as log_err, \
-             patch(f"{_NL}.quit_gracefully"):
-            result = auto_publish_newsletter_edition.run(user_id=1)
+             patch(f"{_NL}.quit_gracefully"), \
+             pytest.raises(LaneTaskFailed, match="did not complete") as info:
+            auto_publish_newsletter_edition.run(user_id=1)
         mark.assert_not_called()
         log_err.assert_called_once()
         assert log_err.call_args.kwargs.get("user_id") == 1
         assert log_err.call_args.kwargs.get("task_name") == "auto_publish_newsletter_edition"
         assert log_err.call_args.kwargs.get("failed_step") == "article_title"
-        assert "did not complete" in result
+        exc = log_err.call_args.kwargs.get("exc")
+        assert isinstance(exc, NewsletterPublishIncomplete)
+        assert info.value.__cause__ is exc
+
+
+class TestPublishSessionOpensWithImages:
+    """#2094: `/article/new/` is fastboot, so an images-blocked session never mounts the editor."""
+
+    def test_auto_publish_edition_requests_images(self):
+        from cqc_lem.app.engagement.newsletter import auto_publish_edition
+        edition = {"id": 9, "user_id": 1, "status": "approved", "title": "T", "subtitle": None, "body": "B"}
+        with patch(f"{_NL}.get_newsletter_edition", return_value=edition), \
+             patch(f"{_NL}.get_current_profile",
+                   return_value=(MagicMock(), MagicMock(), "e", MagicMock())) as gp, \
+             patch(f"{_NL}._fill_and_publish_article", return_value=("https://x/pulse/t", None)), \
+             patch(f"{_NL}.mark_edition_published"), \
+             patch(f"{_NL}.quit_gracefully"):
+            auto_publish_edition.run(edition_id=9)
+        assert gp.call_args.kwargs.get("needs_images") is True
+
+    def test_auto_publish_newsletter_edition_requests_images(self):
+        from cqc_lem.app.engagement.newsletter import auto_publish_newsletter_edition
+        with patch(f"{_NL}.get_newsletter_settings", return_value={"enabled": True, "topic": "reach"}), \
+             patch(f"{_NL}.get_current_profile",
+                   return_value=(MagicMock(), MagicMock(), "e", MagicMock())) as gp, \
+             patch(f"{_NL}.generate_newsletter_edition", return_value={"title": "T", "body": "B"}), \
+             patch(f"{_NL}._fill_and_publish_article", return_value=("https://x/pulse/t", None)), \
+             patch(f"{_NL}.mark_newsletter_published"), \
+             patch(f"{_NL}.quit_gracefully"):
+            auto_publish_newsletter_edition.run(user_id=1)
+        assert gp.call_args.kwargs.get("needs_images") is True
+
+
+class TestSelectorMissFilesAnException:
+    """#2094: a selector miss is an exception that is logged AND chained to the task's FAILURE.
+
+    Before, it raised nothing, so `log_error` filed no `$exception` and the task ended in SUCCESS.
+    """
+
+    def test_selector_miss_logs_an_exception_and_fails_the_task(self):
+        from cqc_lem.app.engagement.newsletter import NewsletterPublishIncomplete, auto_publish_edition
+        edition = {"id": 9, "user_id": 1, "status": "approved", "title": "T", "subtitle": None, "body": "B"}
+        with patch(f"{_NL}.get_newsletter_edition", return_value=edition), \
+             patch(f"{_NL}.get_current_profile", return_value=(MagicMock(), MagicMock(), "e", MagicMock())), \
+             patch(f"{_NL}._fill_and_publish_article", return_value=(None, "article_title")), \
+             patch(f"{_NL}.mark_edition_failed"), \
+             patch(f"{_NL}.log_error") as log_err, \
+             patch(f"{_NL}.quit_gracefully"), \
+             pytest.raises(LaneTaskFailed) as info:
+            auto_publish_edition.run(edition_id=9)
+        exc = log_err.call_args.kwargs.get("exc")
+        assert isinstance(exc, NewsletterPublishIncomplete)
+        assert exc.failed_step == "article_title"
+        assert "article_title" in str(exc)
+        assert info.value.__cause__ is exc
+
+    def test_the_logged_exception_reaches_posthog(self):
+        """The real `log_error`, not a mock: `exc=` is what routes it to `capture_exception`."""
+        from cqc_lem.app.engagement.newsletter import NewsletterPublishIncomplete, auto_publish_edition
+        edition = {"id": 9, "user_id": 1, "status": "approved", "title": "T", "subtitle": None, "body": "B"}
+        with patch(f"{_NL}.get_newsletter_edition", return_value=edition), \
+             patch(f"{_NL}.get_current_profile", return_value=(MagicMock(), MagicMock(), "e", MagicMock())), \
+             patch(f"{_NL}._fill_and_publish_article", return_value=(None, "article_next")), \
+             patch(f"{_NL}.mark_edition_failed"), \
+             patch(f"{_NL}.quit_gracefully"), \
+             patch("cqc_lem.utilities.logger._CAPTURE_EXCEPTIONS", True), \
+             patch("cqc_lem.utilities.observability.capture_exception") as capture, \
+             pytest.raises(LaneTaskFailed):
+            auto_publish_edition.run(edition_id=9)
+        capture.assert_called_once()
+        assert isinstance(capture.call_args.args[0], NewsletterPublishIncomplete)
+
+    def test_unknown_step_still_names_itself(self):
+        from cqc_lem.app.engagement.newsletter import NewsletterPublishIncomplete
+        assert "unknown step" in str(NewsletterPublishIncomplete(None))
 
 
 def _run_generate(*, settings, pending, latest=None, gen_now=True,

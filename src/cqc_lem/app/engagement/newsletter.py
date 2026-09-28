@@ -56,6 +56,19 @@ from cqc_lem.utilities.selenium_util import (
 )
 
 
+class NewsletterPublishIncomplete(RuntimeError):
+    """The article editor flow stopped at `failed_step` without publishing (#2094).
+
+    Nothing raises on a selector miss — the ladder returns the step it stopped at — so this is
+    what `log_error` files as the `$exception` and what the task's FAILURE state chains to.
+    """
+
+    def __init__(self, failed_step: "str | None") -> None:
+        """Name the editor step the flow stopped at in the exception message."""
+        self.failed_step = failed_step
+        super().__init__(f"Article editor stopped at {failed_step or 'an unknown step'}")
+
+
 def _fill_edition_description(driver, wait, subtitle: str) -> bool:
     """Best-effort: fill the newsletter edition-description field in the publish dialog. LinkedIn
     surfaces a 'what this edition is about' textarea/contenteditable whose placeholder/aria mentions
@@ -158,23 +171,28 @@ def auto_publish_newsletter_edition(self, user_id: int):
     """
     settings = get_newsletter_settings(user_id)
     if not settings.get("enabled"):
-        return "Newsletter not enabled"
+        return lane_result(TaskOutcome.NO_OP, "Newsletter not enabled")
     try:
-        driver, wait, user_email, my_profile = get_current_profile(user_id=user_id, session_name="Newsletter")
+        # needs_images=True (#2094, the #1774/#1778 bug): `/article/new/` is fastboot, so with the
+        # bandwidth saver's image block on the editor never mounts and every route misses —
+        # editions 11 and 13 failed at `article_title` that way.
+        driver, wait, user_email, my_profile = get_current_profile(
+            user_id=user_id, session_name="Newsletter", needs_images=True)
     except Exception as e:
         log_error("Error getting profile for newsletter", exc=e, user_id=user_id, task_name="auto_publish_newsletter_edition")
-        return f"Failed to start newsletter: {e}"
+        return lane_result(TaskOutcome.FAILED, f"Failed to start newsletter: {e}", cause=e)
+    failure = None
     try:
         edition = generate_newsletter_edition(my_profile, topic=settings.get("topic"),
                                               blog_content=resolve_blog_source(user_id, settings))
         if not edition:
-            return "No newsletter edition generated"
+            return lane_result(TaskOutcome.NO_OP, "No newsletter edition generated")
         if edition.get("fact_hold"):
             # This path publishes with no review queue at all, so a hold (issue #2098) is a refusal.
             log_info("Newsletter edition not published — first-person specifics nothing we "
                      "supplied backs: " + ", ".join(edition["fact_hold"]),
                      user_id=user_id, task_name="auto_publish_newsletter_edition")
-            return "Newsletter edition held — ungrounded specifics"
+            return lane_result(TaskOutcome.NO_OP, "Newsletter edition held — ungrounded specifics")
         driver.get("https://www.linkedin.com/article/new/")
         time.sleep(random.uniform(6, 9))
         url, failed_step = _fill_and_publish_article(driver, wait, edition["title"],
@@ -184,15 +202,17 @@ def auto_publish_newsletter_edition(self, user_id: int):
         if url:
             mark_newsletter_published(user_id, url)
             log_info(f"Published newsletter edition for user {user_id}: {edition['title']}")
-            return f"Published newsletter: {edition['title']}"
-        log_error("Newsletter publish flow did not complete",
+            return lane_result(TaskOutcome.LANDED, f"Published newsletter: {edition['title']}")
+        failure = NewsletterPublishIncomplete(failed_step)
+        log_error("Newsletter publish flow did not complete", exc=failure,
                   user_id=user_id, task_name="auto_publish_newsletter_edition", failed_step=failed_step)
-        return "Newsletter publish flow did not complete"
     except Exception as e:
         log_error("Newsletter publish error", exc=e, user_id=user_id, task_name="auto_publish_newsletter_edition")
-        return f"Newsletter error: {e}"
+        return lane_result(TaskOutcome.FAILED, f"Newsletter error: {e}", cause=e)
     finally:
         quit_gracefully(driver)
+    # Raised OUTSIDE the try, for the same reason as `auto_publish_edition` below.
+    return lane_result(TaskOutcome.FAILED, "Newsletter publish flow did not complete", cause=failure)
 
 
 @shared_task.task(name='cqc_lem.app.run_automation.auto_publish_edition',
@@ -224,7 +244,9 @@ def auto_publish_edition(self, edition_id: int):
                   user_id=user_id, task_name="auto_publish_edition", edition_id=edition_id)
         return lane_result(TaskOutcome.NO_OP, f"Edition {edition_id} held for approval")
     try:
-        driver, wait, user_email, my_profile = get_current_profile(user_id=user_id, session_name="Newsletter")
+        # needs_images=True (#2094) — the same fastboot editor as `auto_publish_newsletter_edition`.
+        driver, wait, user_email, my_profile = get_current_profile(
+            user_id=user_id, session_name="Newsletter", needs_images=True)
     except LinkedInRateLimited as e:
         # `get_current_profile` already downgraded this to a WARNING (429 breaker, manual pause, or
         # this account's own challenge-unsolvable cooldown, issue #1920) before re-raising — a known,
@@ -238,6 +260,7 @@ def auto_publish_edition(self, edition_id: int):
     except Exception as e:
         log_error("Error getting profile for newsletter edition", exc=e, user_id=user_id, task_name="auto_publish_edition")
         return lane_result(TaskOutcome.FAILED, f"Failed to start newsletter edition: {e}", cause=e)
+    failure = None
     try:
         driver.get("https://www.linkedin.com/article/new/")
         time.sleep(random.uniform(6, 9))
@@ -250,7 +273,8 @@ def auto_publish_edition(self, edition_id: int):
             mark_edition_published(edition_id, url)
             log_info(f"Published newsletter edition {edition_id} for user {user_id}: {edition['title']}")
             return lane_result(TaskOutcome.LANDED, f"Published newsletter edition: {edition['title']}")
-        log_error("Newsletter edition publish flow did not complete",
+        failure = NewsletterPublishIncomplete(failed_step)
+        log_error("Newsletter edition publish flow did not complete", exc=failure,
                   user_id=user_id, task_name="auto_publish_edition", edition_id=edition_id, failed_step=failed_step)
         mark_edition_failed(edition_id)
     except Exception as e:
@@ -261,7 +285,7 @@ def auto_publish_edition(self, edition_id: int):
         quit_gracefully(driver)
     # Raised OUTSIDE the try: inside it, the `except Exception` above would catch the failure and
     # mark + log the edition a second time.
-    return lane_result(TaskOutcome.FAILED, "Newsletter edition publish flow did not complete")
+    return lane_result(TaskOutcome.FAILED, "Newsletter edition publish flow did not complete", cause=failure)
 
 
 def _parse_subscriber_count(text: "str | None") -> "int | None":

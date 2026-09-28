@@ -3486,6 +3486,25 @@ class TestGroupFeedComposerProbe:
         assert llv.main(["--company-invite"]) == 0
         assert captured["needs_images"] is True
 
+    def test_an_article_editor_flag_requests_needs_images(self, monkeypatch):
+        """Issue #2094: `/article/new/` is fastboot too.
+
+        Live 2026-09-25: images-blocked, the editor rendered zero buttons and graded every route
+        MISSING; images-on, title/body/Next all resolved on their first route.
+        """
+        captured = {}
+
+        def _open(fn, uid, require_debug_node=False, needs_images=False):
+            captured["needs_images"] = needs_images
+            return MagicMock(), MagicMock(), {"state": "signed_in"}
+
+        monkeypatch.setattr(llv, "open_probe_session", _open)
+        monkeypatch.setattr(llv, "install_read_only_guard", lambda: None)
+        monkeypatch.setattr(llv, "probe_article_editor", lambda d, url: {"verdict": "ok"})
+        clear_the_breaker(monkeypatch)
+        assert llv.main(["--article-editor-url"]) == 0
+        assert captured["needs_images"] is True
+
 
 @pytest.mark.unit
 class TestCompanyInviteProbe:
