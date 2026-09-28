@@ -2099,6 +2099,33 @@ def _record_video_asset_measures(post_id: int, video_file_path: str,
         return None
 
 
+def _fetch_video_src(video_src: str, videos_dir: str) -> str:
+    """Bring `_generate_video_src`'s result into `videos_dir` and return the local file path.
+
+    That result is a remote URL for a Runway render but a LOCAL path for the Pexels fallback, which
+    `download_pexels_video` has already written to disk. Handing the path to the HTTP downloader
+    raised `MissingSchema` (issue #2217), so every stock fallback lost its video. A local file is
+    moved instead, keeping its `pexels_*` prefix so `content_quality` still classifies it as stock.
+    The stored name gets a unique suffix: two posts can draw the same Pexels clip, and captioning
+    rewrites the stored MP4 (and names its `.srt`) in place, so a shared name would burn one post's
+    caption over the other's video.
+
+    Raises:
+        OSError: The local file is missing or cannot be moved.
+        requests.RequestException: The remote download failed (`save_video_url_to_dir`).
+    """
+    if urlparse(str(video_src)).scheme in ("http", "https"):
+        return save_video_url_to_dir(video_src, videos_dir)
+    import shutil
+    import uuid
+    if os.path.abspath(os.path.dirname(video_src)) == os.path.abspath(videos_dir):
+        return video_src
+    stem, ext = os.path.splitext(os.path.basename(video_src))
+    dest_path = os.path.join(videos_dir, f"{stem}_{uuid.uuid4().hex[:8]}{ext}")
+    shutil.move(video_src, dest_path)
+    return dest_path
+
+
 def _store_video_asset(post_id: int, video_src_url: str, content: Optional[str] = None,
                        user_id: Optional[int] = None, brief=None,
                        gate_verdict: Optional[str] = None) -> Optional[str]:
@@ -2116,7 +2143,7 @@ def _store_video_asset(post_id: int, video_src_url: str, content: Optional[str] 
     videos_dir = os.path.join(assets_dir, 'videos', 'runwayml')
     create_folder_if_not_exists(videos_dir)
     try:
-        video_file_path = save_video_url_to_dir(video_src_url, videos_dir)
+        video_file_path = _fetch_video_src(video_src_url, videos_dir)
     except Exception:
         # Same clear as a rejected probe (issue #1410), for the exit that never reaches one:
         # `save_video_url_to_dir` RAISES on a non-2xx or a dropped connection, so the render this
@@ -4687,7 +4714,7 @@ def _create_content_for_planned_post(post: dict, prefs: dict) -> bool:
             videos_dir = os.path.join(assets_dir, 'videos', 'runwayml')
             create_folder_if_not_exists(videos_dir)
             try:
-                video_file_path = save_video_url_to_dir(video_url, videos_dir)
+                video_file_path = _fetch_video_src(video_url, videos_dir)
             except Exception:
                 # The download raises on a non-2xx / dropped connection, so this post never got the
                 # file the recorded render model names — clear it (issue #1410) before the outer

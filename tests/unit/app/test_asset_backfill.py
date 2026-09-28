@@ -1,5 +1,6 @@
 """Unit tests for the asset-backfill safety net + missing-asset guard."""
 
+import os
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
@@ -168,6 +169,76 @@ class TestVideoAssetProbe:
         assert any(call.kwargs.get("probe_ok") is True for call in track.call_args_list)
 
 
+class TestFetchVideoSrc:
+    """`_generate_video_src` returns a URL for a render but a local path for Pexels (#2217)."""
+
+    def test_remote_url_is_downloaded(self, tmp_path):
+        from cqc_lem.app.run_content_plan import _fetch_video_src
+        with patch("cqc_lem.app.run_content_plan.save_video_url_to_dir",
+                   return_value="/x/clip.mp4") as download:
+            assert _fetch_video_src("https://runway/clip.mp4", str(tmp_path)) == "/x/clip.mp4"
+        download.assert_called_once_with("https://runway/clip.mp4", str(tmp_path))
+
+    def test_local_path_is_moved_into_the_videos_dir(self, tmp_path):
+        from cqc_lem.app.run_content_plan import _fetch_video_src
+        src_dir, dest_dir = tmp_path / "pexels", tmp_path / "runwayml"
+        src_dir.mkdir()
+        dest_dir.mkdir()
+        stock = src_dir / "pexels_1.mp4"
+        stock.write_bytes(b"data")
+        with patch("cqc_lem.app.run_content_plan.save_video_url_to_dir") as download:
+            path = _fetch_video_src(str(stock), str(dest_dir))
+        download.assert_not_called()
+        assert os.path.dirname(path) == str(dest_dir)
+        assert os.path.basename(path).startswith("pexels_1_") and path.endswith(".mp4")
+        assert open(path, "rb").read() == b"data"
+        assert not stock.exists()
+
+    def test_same_stock_clip_for_two_posts_gets_two_files(self, tmp_path):
+        """Captions rewrite the stored file in place, so a shared name would cross two posts."""
+        from cqc_lem.app.run_content_plan import _fetch_video_src
+        src_dir, dest_dir = tmp_path / "pexels", tmp_path / "runwayml"
+        src_dir.mkdir()
+        dest_dir.mkdir()
+        stock = src_dir / "pexels_1.mp4"
+        stock.write_bytes(b"first")
+        first = _fetch_video_src(str(stock), str(dest_dir))
+        stock.write_bytes(b"second")
+        second = _fetch_video_src(str(stock), str(dest_dir))
+        assert first != second
+        assert open(first, "rb").read() == b"first"
+        assert open(second, "rb").read() == b"second"
+
+    def test_local_path_already_in_place_is_left_alone(self, tmp_path):
+        from cqc_lem.app.run_content_plan import _fetch_video_src
+        stock = tmp_path / "pexels_1.mp4"
+        stock.write_bytes(b"data")
+        assert _fetch_video_src(str(stock), str(tmp_path)) == str(stock)
+        assert stock.exists()
+
+    def test_missing_local_file_raises(self, tmp_path):
+        from cqc_lem.app.run_content_plan import _fetch_video_src
+        with pytest.raises(OSError):
+            _fetch_video_src(str(tmp_path / "gone.mp4"), str(tmp_path / "out"))
+
+    def test_store_video_asset_accepts_a_pexels_path(self, tmp_path):
+        from cqc_lem.app.run_content_plan import _store_video_asset
+        (tmp_path / "videos" / "runwayml").mkdir(parents=True)
+        stock = tmp_path / "pexels_7.mp4"
+        stock.write_bytes(b'\x00\x00\x00 ftypisom' + b'\x00' * 96)
+        with patch("cqc_lem.app.run_content_plan.assets_dir", str(tmp_path)), \
+             patch("cqc_lem.app.run_content_plan.save_video_url_to_dir") as download, \
+             patch("cqc_lem.app.run_content_plan.update_db_post_video_url") as upd, \
+             patch("cqc_lem.app.run_content_plan.track_video_asset_probe"), \
+             patch("cqc_lem.app.run_content_plan._caption_video_asset"), \
+             patch("cqc_lem.app.run_content_plan._record_video_asset_measures"), \
+             patch("cqc_lem.app.run_content_plan.write_brief_receipt"):
+            url = _store_video_asset(9, str(stock))
+        download.assert_not_called()
+        assert "videos/runwayml/pexels_7_" in url and url.endswith(".mp4")
+        upd.assert_called_once()
+
+
 class TestCreatePathVideoProbe:
     """The probe has to guard the path where a video post is BORN, not only the healers (#1280).
 
@@ -176,15 +247,17 @@ class TestCreatePathVideoProbe:
     file — the one that actually publishes.
     """
 
-    def _run(self, video_path: str, flag: bool = False):
+    def _run(self, video_path: str, flag: bool = False, src: str = "http://runway/clip.mp4",
+             assets: str = "/nonexistent"):
         from cqc_lem.app.run_content_plan import _create_content_for_planned_post
         rcp = "cqc_lem.app.run_content_plan"
         post = {"id": 9, "user_id": 7, "post_type": "video", "buyer_stage": "awareness",
                 "content_mix": "value", "scheduled_time": None}
-        with patch(f"{rcp}.create_content", return_value=("caption body", "http://runway/clip.mp4")), \
+        with patch(f"{rcp}.create_content", return_value=("caption body", src)), \
              patch(f"{rcp}.VIDEO_PROBE_ENABLED", flag), \
+             patch(f"{rcp}.assets_dir", assets), \
              patch(f"{rcp}.create_folder_if_not_exists"), \
-             patch(f"{rcp}.save_video_url_to_dir", return_value=video_path), \
+             patch(f"{rcp}.save_video_url_to_dir", return_value=video_path) as download, \
              patch(f"{rcp}.track_video_asset_probe") as track, \
              patch(f"{rcp}._post_used_avatar_media", return_value=False), \
              patch(f"{rcp}._score_and_persist_dwell"), \
@@ -198,7 +271,24 @@ class TestCreatePathVideoProbe:
              patch(f"{rcp}.update_db_post_content") as store:
             ok = _create_content_for_planned_post(post, {"auto_schedule_posts": True})
         return {"ok": ok, "upd": upd, "gate": gate, "store": store, "failed": failed,
-                "track": track}
+                "track": track, "download": download}
+
+    def test_pexels_fallback_path_is_moved_not_downloaded(self, tmp_path):
+        """The stock fallback hands back a LOCAL path; fetching it over HTTP raised (#2217)."""
+        (tmp_path / "videos" / "runwayml").mkdir(parents=True)
+        pexels_dir = tmp_path / "videos" / "pexels"
+        pexels_dir.mkdir()
+        stock = pexels_dir / "pexels_5211962.mp4"
+        stock.write_bytes(b'\x00\x00\x00 ftypisom' + b'\x00' * 96)
+        r = self._run("unused", src=str(stock), assets=str(tmp_path))
+        assert r["ok"] is True
+        r["download"].assert_not_called()
+        r["upd"].assert_called_once()
+        stored_url = r["upd"].call_args[0][1]
+        assert "videos/runwayml/pexels_5211962_" in stored_url and stored_url.endswith(".mp4")
+        assert len(list((tmp_path / "videos" / "runwayml").glob("pexels_5211962_*.mp4"))) == 1
+        # Stock footage is never disclosed as AI visuals.
+        assert "Visuals created with AI" not in r["store"].call_args[0][1]
 
     def test_zero_byte_download_never_becomes_the_posts_video_url(self, tmp_path):
         p = tmp_path / "empty.mp4"

@@ -369,7 +369,7 @@ class TestPersistedRenderModel:
         from unittest.mock import MagicMock
         writer = MagicMock(return_value=True)
         with patch("cqc_lem.app.run_content_plan.create_folder_if_not_exists"), \
-             patch("cqc_lem.app.run_content_plan.save_video_url_to_dir", return_value="/tmp/v.mp4"), \
+             patch("cqc_lem.app.run_content_plan._fetch_video_src", return_value="/tmp/v.mp4"), \
              patch("cqc_lem.app.run_content_plan._accept_probed_video", return_value=True), \
              patch("cqc_lem.app.run_content_plan._caption_video_asset"), \
              patch("cqc_lem.app.run_content_plan.update_db_post_video_url", return_value=True), \
