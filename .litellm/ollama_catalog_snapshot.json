@@ -1,14 +1,7 @@
 {
   "_comment": "Committed snapshot of ollama.com/api/tags, refreshed by scripts/model_health_check.py --catalog-apply. New tags here vs the live catalog become ONE agent:ready evaluation issue; do not hand-edit.",
-  "updated": "2026-09-20",
+  "updated": "2026-09-27",
   "models": {
-    "deepseek-v4-flash:0731": {
-      "modified_at": "2026-07-31T08:00:00-07:00",
-      "size": 166878536440,
-      "parameter_size": "",
-      "family": "",
-      "digest": "4de9bf66c0eb"
-    },
     "deepseek-v4-pro:0813": {
       "modified_at": "2026-08-13T08:00:00-07:00",
       "size": 892744322880,
@@ -29,13 +22,6 @@
       "parameter_size": "",
       "family": "",
       "digest": "221b330d11a8"
-    },
-    "glm-5.1": {
-      "modified_at": "2026-04-07T08:00:00-07:00",
-      "size": 1507728316928,
-      "parameter_size": "",
-      "family": "",
-      "digest": "882e35812821"
     },
     "glm-5.2": {
       "modified_at": "2026-06-16T08:00:00-07:00",
@@ -134,13 +120,6 @@
       "parameter_size": "",
       "family": "",
       "digest": "4eecabff7a75"
-    },
-    "qwen3.5:397b": {
-      "modified_at": "2026-02-16T00:00:00Z",
-      "size": 397000000000,
-      "parameter_size": "",
-      "family": "",
-      "digest": "b909ca2f1b7f"
     }
   }
 }
