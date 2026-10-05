@@ -35,6 +35,7 @@ from cqc_lem.app.task_outcome import TaskOutcome, lane_result
 from cqc_lem.utilities.ai.ai_helper import generate_newsletter_edition
 from cqc_lem.utilities.blog_source import resolve_blog_source
 from cqc_lem.utilities.db import (
+    get_latest_published_newsletter_edition_url,
     get_newsletter_edition,
     get_newsletter_settings,
     mark_edition_failed,
@@ -360,7 +361,9 @@ def track_newsletter_subscribers(self, user_id: int):
     settings = get_newsletter_settings(user_id)
     if not settings.get("enabled"):
         return "Newsletter not enabled"
-    newsletter_url = settings.get("newsletter_url")
+    # Fallback for rows the scheduled publish path left blank before #2228: an edition page carries
+    # the same "N subscribers" header the reader scans.
+    newsletter_url = settings.get("newsletter_url") or get_latest_published_newsletter_edition_url(user_id)
     if not newsletter_url:
         return "No newsletter URL yet"
     try:

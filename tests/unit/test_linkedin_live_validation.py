@@ -2015,9 +2015,25 @@ class TestSweepTargetResolution:
 
     def test_newsletter_page_target_is_none_with_no_url_on_file(self, monkeypatch):
         monkeypatch.setattr("cqc_lem.utilities.db.get_newsletter_settings", lambda uid: {})
+        monkeypatch.setattr("cqc_lem.utilities.db.get_latest_published_newsletter_edition_url",
+                           lambda uid: None)
         target, reason = llv._resolve_newsletter_page_target(1)
         assert target is None
         assert "no newsletter URL" in reason
+
+    def test_newsletter_page_target_falls_back_to_the_freshest_published_edition(self, monkeypatch):
+        """#2228: with no `newsletter_url` on file, the sweep grades the freshest edition's page.
+
+        Three sweeps graded `unknown` while a published edition, whose page carries the
+        "N subscribers" header, existed.
+        """
+        monkeypatch.setattr("cqc_lem.utilities.db.get_newsletter_settings",
+                           lambda uid: {"newsletter_url": None})
+        monkeypatch.setattr("cqc_lem.utilities.db.get_latest_published_newsletter_edition_url",
+                           lambda uid: "https://www.linkedin.com/pulse/an-edition/")
+        target, source = llv._resolve_newsletter_page_target(1)
+        assert target == "https://www.linkedin.com/pulse/an-edition/"
+        assert "newsletter_editions" in source
 
     def test_newsletter_edition_target_reads_the_freshest_published_edition(self, monkeypatch):
         monkeypatch.setattr("cqc_lem.utilities.db.get_latest_published_newsletter_edition_url",

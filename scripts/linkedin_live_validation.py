@@ -6884,14 +6884,22 @@ def _resolve_own_post_target(user_id: int) -> tuple:
 
 
 def _resolve_newsletter_page_target(user_id: int) -> tuple:
-    """The account's own newsletter page, from the publish run that last recorded one."""
+    """The account's own newsletter page, from the publish run that last recorded one.
+
+    Falls back to the freshest published edition, the same fallback `track_newsletter_subscribers`
+    reads: an edition page carries the newsletter's "N subscribers" header, and the scheduled publish
+    path left `newsletter_url` blank until #2228, so this surface graded `unknown` every sweep.
+    """
     try:
         from cqc_lem.utilities.db import get_newsletter_settings
         url = str((get_newsletter_settings(user_id) or {}).get("newsletter_url") or "").strip()
     except Exception:
         url = ""
-    return (url, "newsletter_settings.newsletter_url") if url \
-        else (None, "no newsletter URL on file (never published, or the settings row has none)")
+    if url:
+        return url, "newsletter_settings.newsletter_url"
+    edition_url, _ = _resolve_newsletter_edition_target(user_id)
+    return (edition_url, "newsletter_editions (freshest published, no newsletter_url on file)") \
+        if edition_url else (None, "no newsletter URL on file and no published edition to read it from")
 
 
 def _resolve_newsletter_edition_target(user_id: int) -> tuple:

@@ -476,15 +476,23 @@ def get_newsletter_edition(edition_id: int) -> "dict | None":
         log_error(f"Could not get newsletter edition {edition_id}", exc=err)
         return None
 def mark_edition_published(edition_id: int, url: str) -> bool:
-    """Mark an edition published and roll the user's newsletter cadence forward."""
+    """Mark an edition published and roll the user's newsletter cadence forward.
+
+    The edition's URL is also recorded as the settings row's `newsletter_url`, exactly as
+    `mark_newsletter_published` does for the one-shot path: an edition page carries the
+    newsletter's own "N subscribers" header, and the scheduled path is the one that actually
+    publishes, so without this the subscriber scrape, the CTA loop and the SDUI sweep never had a
+    URL to read (issue #2228). `COALESCE` keeps the stored link when no URL was read.
+    """
     try:
         with db_cursor(commit=True) as cursor:
             cursor.execute(
                 "UPDATE newsletter_editions SET status='published', published_at=NOW(), published_url=%s "
                 "WHERE id=%s", (url, edition_id))
             cursor.execute(
-                "UPDATE newsletter_settings SET last_published_at=NOW() "
-                "WHERE user_id = (SELECT user_id FROM newsletter_editions WHERE id=%s)", (edition_id,))
+                "UPDATE newsletter_settings SET last_published_at=NOW(), "
+                "newsletter_url=COALESCE(NULLIF(%s, ''), newsletter_url) "
+                "WHERE user_id = (SELECT user_id FROM newsletter_editions WHERE id=%s)", (url, edition_id))
             return cursor.rowcount >= 0
     except mysql.connector.Error as err:
         log_error(f"Could not mark edition {edition_id} published", exc=err)
