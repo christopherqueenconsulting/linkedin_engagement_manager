@@ -1,17 +1,6 @@
 {
   "models": [
     {
-      "name": "deepseek-v4-flash:0731",
-      "model": "deepseek-v4-flash:0731",
-      "modified_at": "2026-07-31T08:00:00-07:00",
-      "size": 166878536440,
-      "details": {
-        "family": "",
-        "parameter_size": ""
-      },
-      "digest": "4de9bf66c0eb"
-    },
-    {
       "name": "deepseek-v4-pro:0813",
       "model": "deepseek-v4-pro:0813",
       "modified_at": "2026-08-13T08:00:00-07:00",
@@ -43,17 +32,6 @@
         "parameter_size": ""
       },
       "digest": "221b330d11a8"
-    },
-    {
-      "name": "glm-5.1",
-      "model": "glm-5.1",
-      "modified_at": "2026-04-07T08:00:00-07:00",
-      "size": 1507728316928,
-      "details": {
-        "family": "",
-        "parameter_size": ""
-      },
-      "digest": "882e35812821"
     },
     {
       "name": "glm-5.2",
@@ -208,17 +186,6 @@
         "parameter_size": ""
       },
       "digest": "4eecabff7a75"
-    },
-    {
-      "name": "qwen3.5:397b",
-      "model": "qwen3.5:397b",
-      "modified_at": "2026-02-16T00:00:00Z",
-      "size": 397000000000,
-      "details": {
-        "family": "",
-        "parameter_size": ""
-      },
-      "digest": "b909ca2f1b7f"
     }
   ]
 }

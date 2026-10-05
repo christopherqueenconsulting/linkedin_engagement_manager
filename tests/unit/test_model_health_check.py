@@ -4,6 +4,7 @@ import importlib.util
 import io
 import json
 import pathlib
+import shutil
 import sys
 
 import pytest
@@ -1368,6 +1369,20 @@ class TestCatalogScanCLI:
         unreported.
         """
         args = self._workspace(tmp_path, model="deepseek-v4-flash", drop=())
+        # The re-point candidate this test pins (`:0731`) has itself left the live catalog since, so
+        # pin it in a private copy of the fixture rather than read a moving id (see FROZEN_TAGS).
+        fixture = tmp_path / "catalog-fixture"
+        shutil.copytree(FIXTURES, fixture)
+        tags = _tags()
+        if not any(m["name"] == "deepseek-v4-flash:0731" for m in tags["models"]):
+            tags["models"].append({"name": "deepseek-v4-flash:0731",
+                                   "model": "deepseek-v4-flash:0731",
+                                   "modified_at": "2026-07-31T08:00:00-07:00",
+                                   "size": 166_878_536_440, "digest": "4de9bf66c0eb",
+                                   "details": {"family": "", "parameter_size": ""}})
+        (fixture / "tags.json").write_text(json.dumps(tags))
+        args = [f"--catalog-fixture={fixture}" if a.startswith("--catalog-fixture=") else a
+                for a in args]
         snapshot = mhc.parse_catalog(_tags())
         snapshot["deepseek-v4-flash"] = {"modified_at": "2026-04-24T00:00:00Z",
                                          "size": 140_000_000_000, "parameter_size": "",
