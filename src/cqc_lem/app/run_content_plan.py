@@ -81,7 +81,7 @@ from cqc_lem.utilities.ai.content_framework import (
     day_type_stage,
     deck_count_claims,
     deck_count_report,
-    deck_slides,
+    deck_text,
     deck_topic_report,
     dwell_report,
     dwell_score_min,
@@ -1046,8 +1046,7 @@ def _deck_text(carousel: Optional[dict]) -> str:
     opener is exactly what a text-quality check exists to catch, and those live on the very slides
     the reference gate skips.
     """
-    return "\n".join(f"{s['title']} {s['content']}".strip()
-                     for s in deck_slides(carousel)).strip()
+    return deck_text(carousel)
 
 
 def _record_slide_slop_finding(user_id: int, post_id: int, report: dict) -> None:
@@ -1233,7 +1232,8 @@ def create_carousel_content(user_id: int, stage: str, post_id: int = None,
                                                          blueprint=blueprint,
                                                          fact_anchors=writer_anchors,
                                                          story_directive=story_directive,
-                                                         guidance=guidance)
+                                                         guidance=guidance,
+                                                         grounding_anchors=_fact_anchors(user_id))
     log_info(f"Carousel AI content generated for user_id={user_id} stage={stage} "
             f"archetype={(blueprint or {}).get('format')}")
     # A deck's caption is the one generated post text that never reaches `sanitize_for_linkedin`

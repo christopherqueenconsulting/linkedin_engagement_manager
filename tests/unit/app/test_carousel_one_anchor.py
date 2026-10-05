@@ -44,6 +44,12 @@ class TestOneAnchorPerDeck:
         matched = [e for e in _ENTRIES if any(e["body"] in a for a in anchors)]
         assert len(matched) == 1
 
+    def test_the_deck_repair_grades_against_every_active_entry(self):
+        # Issue #2231: the generator's fact repair must read what the slide checker reads, or a
+        # number from another entry would cost a regeneration the checker never asked for.
+        grounding = _create(_ENTRIES).call_args[1]["grounding_anchors"]
+        assert all(any(e["body"] in a for a in grounding) for e in _ENTRIES)
+
     def test_the_rotation_picks_the_least_used_entry(self):
         anchors = _create(_ENTRIES).call_args[1]["fact_anchors"]
         assert any("40 slides" in a for a in anchors)

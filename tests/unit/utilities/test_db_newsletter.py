@@ -525,6 +525,19 @@ class TestEditions:
         sqls = " ".join(c.args[0] for c in cur.execute.call_args_list)
         assert "status='published'" in sqls and "last_published_at=NOW()" in sqls
 
+    def test_mark_published_records_the_newsletter_url(self, fake_cursor):
+        """Issue #2228: the scheduled publish path records `newsletter_url`, never blanking it.
+
+        It is the path that actually publishes, and the subscriber scrape and SDUI sweep read it.
+        """
+        conn, cur = fake_cursor(rowcount=1)
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import mark_edition_published
+            assert mark_edition_published(3, "https://x/pulse/y") is True
+        sql, params = cur.execute.call_args_list[-1].args
+        assert "newsletter_url=COALESCE(NULLIF(%s, ''), newsletter_url)" in sql
+        assert params == ("https://x/pulse/y", 3)
+
     def test_mark_failed(self, fake_cursor):
         conn, cur = fake_cursor(rowcount=1)
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):

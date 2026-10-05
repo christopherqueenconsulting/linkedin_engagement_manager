@@ -2793,6 +2793,24 @@ def fact_retry_directive(report: dict) -> str:
     return "\n".join(lines) + "\n"
 
 
+def deck_fact_retry_directive(report: dict) -> str:
+    """The regeneration steer after a fact-anchored DECK stated specifics no verified fact backs.
+
+    Unlike `fact_retry_directive`, it asks for the number to be DROPPED rather than deferred to a
+    placeholder: slide text is rendered into images, so a `[[…]]` on a slide ships as literal
+    brackets nobody can fill in. Returns '' when the report names nothing.
+    """
+    offenders = [str(c.get("raw")) for c in (report or {}).get("unverified", []) if c.get("raw")]
+    if not offenders:
+        return ""
+    return ("\n\nYOUR PREVIOUS DECK INVENTED SPECIFICS AND WAS REJECTED. Rewrite it so no slide "
+            "states any of these numbers, which no verified fact backs: "
+            + ", ".join(dict.fromkeys(offenders)) + "\n"
+            "- Slide text is rendered into images, so do NOT replace them with [[…]] placeholders on "
+            "a slide: rewrite each sentence so it makes its point without the number.\n"
+            "- Keep every verified fact you were given, exactly as written.\n")
+
+
 def carousel_blueprint_directive(blueprint: dict, fact_anchors: Optional[list] = None) -> str:
     """The post archetype's shape mapped onto a CAROUSEL/document (issue #619 / G4). A build receipt
     renders naturally as a document post — the highest-engagement LinkedIn format there is — so the
@@ -2817,6 +2835,10 @@ def carousel_blueprint_directive(blueprint: dict, fact_anchors: Optional[list] =
         lines.append(hook_constraint_directive())
     if meta.get("save_targeted"):
         lines.append(reference_slide_directive())
+        # "One slide per middle beat" and "an artifact on every body slide" contradict each other
+        # for a context beat ("Why this was compiled", "What it actually is"): mapped to its own
+        # slide it is narrative by construction, so the gate rejected it on every attempt (#2232).
+        lines.append(CONTEXT_BEAT_DIRECTIVE)
     if meta.get("fact_anchored"):
         lines.append(fact_anchor_directive(fact_anchors))
     return "\n".join(lines) + "\n"
@@ -2973,6 +2995,12 @@ REFERENCE_SLIDE_SHAPES: tuple = (
 )
 
 
+CONTEXT_BEAT_DIRECTIVE = (
+    "- A beat that is context only (why the list was compiled, what the thing is, who it is for) "
+    "has nothing to act on, so it NEVER gets a body slide of its own: put it in the post_text or "
+    "fold it onto the cover, and give that slot to another entry that carries an artifact.")
+
+
 def deck_reference_enabled() -> bool:
     """Read at call time (the POST_SIMILARITY_MAX live-env pattern) so ops can stand the gate down
     without a restart. Fails OPEN when disabled: an ungraded deck ships exactly as it did before.
@@ -3062,6 +3090,15 @@ def deck_slides(carousel: Optional[dict]) -> list:
         else:
             _add(key, value)
     return slides
+
+
+def deck_text(carousel: Optional[dict]) -> str:
+    """Every slide's title + body, in schema order, as ONE block of text.
+
+    This is what a slide-level TEXT check (fact grounding, slop lint) grades. Cover and CTA are
+    included: the `graded` exemption is the reference gate's, not a text check's.
+    """
+    return "\n".join(f"{s['title']} {s['content']}".strip() for s in deck_slides(carousel)).strip()
 
 
 def _slide_label(slide: dict) -> str:
@@ -3231,6 +3268,7 @@ def deck_retry_directive(report: Optional[dict]) -> str:
     lines = ["\n\nYOUR PREVIOUS DECK WAS REJECTED — its slides carried nothing worth saving. "
              "Rewrite it so none of these remain:"]
     lines += [f"- {r[0].upper()}{r[1:]}." for r in reasons]
+    lines.append(CONTEXT_BEAT_DIRECTIVE)
     lines.append("- Give every body slide ONE concrete reusable artifact and say it in full: the "
                  "actual step, the actual command or setting, the actual number, the actual "
                  "threshold, or the actual if/when rule.")

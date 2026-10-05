@@ -109,10 +109,32 @@ class TestTrackNewsletterSubscribers:
         from cqc_lem.app.engagement.newsletter import track_newsletter_subscribers
         with patch(f"{_NL}.get_newsletter_settings",
                    return_value={"enabled": True, "newsletter_url": None}), \
+             patch(f"{_NL}.get_latest_published_newsletter_edition_url", return_value=None), \
              patch(f"{_NL}.get_current_profile") as gp:
             result = track_newsletter_subscribers.run(user_id=1)
         assert "No newsletter URL" in result
         gp.assert_not_called()
+
+    def test_falls_back_to_freshest_published_edition_without_a_url(self):
+        """#2228: with no `newsletter_url` on file, the tracker reads the freshest edition's page.
+
+        An edition page carries the same "N subscribers" header the reader scans.
+        """
+        from cqc_lem.app.engagement.newsletter import track_newsletter_subscribers
+        settings = {"enabled": True, "newsletter_url": None,
+                    "invite_connections_enabled": False, "max_invites_per_run": 50}
+        with patch(f"{_NL}.get_newsletter_settings", return_value=settings), \
+             patch(f"{_NL}.get_latest_published_newsletter_edition_url",
+                   return_value="https://li/pulse/ed") as latest, \
+             patch(f"{_NL}.get_current_profile", return_value=(MagicMock(), MagicMock(), "e", MagicMock())), \
+             patch(f"{_NL}._read_newsletter_subscriber_count", return_value=503) as read, \
+             patch(f"{_NL}.record_newsletter_subscriber_stat") as rec, \
+             patch(f"{_NL}.quit_gracefully"):
+            result = track_newsletter_subscribers.run(user_id=1)
+        latest.assert_called_once_with(1)
+        assert read.call_args[0][2] == "https://li/pulse/ed"
+        rec.assert_called_once_with(1, subscriber_count=503, invites_sent=0)
+        assert "Subscribers: 503" in result
 
     def test_captures_count_without_inviting_when_opted_out(self):
         from cqc_lem.app.engagement.newsletter import track_newsletter_subscribers

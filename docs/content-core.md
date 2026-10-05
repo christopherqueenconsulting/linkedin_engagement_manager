@@ -375,6 +375,14 @@ grades the finished SLIDES against every active entry. The carousel used to pass
 `_fact_anchors(user_id)` — the whole bank — straight to the writer, which is how one deck spent
 six of the account's receipts at once.
 
+Before that report runs, `generate_carousel_content` gives a fact-anchored deck whose slides state
+an unbacked number ONE regeneration (`_repair_carousel_fact_grounding`, issue #2231), graded
+against the same whole bank (`grounding_anchors`). Its directive (`deck_fact_retry_directive`)
+asks for the number to be DROPPED, never deferred to a `[[…]]` placeholder, because slide text
+is rendered into images. The retry is kept only when it is buildable, no worse on the reference
+gate, and states strictly fewer unbacked numbers. Whatever survives is still logged by the
+report, which stays advisory (#1139).
+
 ### Anchor-driven carousel menu
 
 Whether a fact-anchored archetype is on the carousel menu at all now follows the WRITER's
@@ -411,7 +419,10 @@ and a promise the slides never deliver fails the deck on its own. A failure rege
 the exact slides named (`deck_retry_directive`, `DECK_REFERENCE_MAX_ATTEMPTS`, default one
 retry) and then ships with a logged reason — rendered images have no review queue.
 `reference_slide_directive` gives the writer the shapes that ARE inherently save-worthy up
-front. Tool/model version numbers ("GPT-4o", "Postgres 16") are NOT graded as claims — the
+front. A **context beat** of a save-targeted archetype ("Why this was compiled", "What it actually
+is") is narrative by construction, so `CONTEXT_BEAT_DIRECTIVE` sends it to the caption or the
+cover, never its own body slide — mapped one-beat-per-slide it failed the gate on every attempt
+and shipped a "Why This List Matters" slide with a `RecurringWarning` (#2232). Tool/model version numbers ("GPT-4o", "Postgres 16") are NOT graded as claims — the
 receipt's structure asks for the exact stack by name.
 
 **Deck vs caption (issue #2106) — these two HOLD.** A deck can pass the reference gate and still
