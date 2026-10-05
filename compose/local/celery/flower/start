@@ -24,7 +24,6 @@ esac
 celery --app cqc_lem.app.my_celery \
   --broker="${CELERY_BROKER_URL}" \
   flower \
-  --broker-api="${CELERY_BROKER_URL}" \
   --logging="DEBUG" \
   --logfile="/app/logs/flower.log" \
   --debug=True \
