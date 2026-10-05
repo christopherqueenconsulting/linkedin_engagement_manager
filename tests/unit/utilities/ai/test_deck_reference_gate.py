@@ -199,6 +199,18 @@ class TestDeckRetryDirective:
         # And it hands back the shapes that ARE inherently save-worthy.
         assert "Numbered step" in directive and "Command / config block" in directive
 
+    def test_it_tells_the_retry_to_move_a_context_slide_into_the_caption(self):
+        deck = {"cover": {"title": "The 7 tools I reach for", "content": ""},
+                "contents": [{"title": "Why This List Matters",
+                              "content": "Most teams pick tools by hype, not by the job."},
+                             {"title": "Start here", "content": "1. Pin the model version"}],
+                "call_to_action": {"title": "Save this", "content": "Save it for later."}}
+        report = fw.deck_reference_report(deck, "", save_targeted=True)
+        assert report["empty_slides"] == ["Why This List Matters"]
+        directive = fw.deck_retry_directive(report)
+        assert fw.CONTEXT_BEAT_DIRECTIVE in directive
+        assert "put it in the post_text" in directive
+
     def test_it_forbids_inventing_material_to_fill_a_slide(self):
         directive = fw.deck_retry_directive(
             fw.deck_reference_report(_NARRATIVE_DECK, _STACK_CAPTION, save_targeted=True))
@@ -219,6 +231,19 @@ class TestReferenceSlideDirective:
     def test_an_ordinary_archetype_does_not(self):
         text = fw.carousel_blueprint_directive({"format": "personal_lesson"})
         assert "EVERY BODY SLIDE MUST CARRY SOMETHING REUSABLE" not in text
+
+    @pytest.mark.parametrize("fmt", ["build_receipt", "resource_compendium"])
+    def test_a_context_beat_is_kept_off_its_own_body_slide(self, fmt):
+        # Issue #2232: "one slide per middle beat" turned the compendium's "Why this was compiled"
+        # beat into a "Why This List Matters" slide — narrative by construction, so the reference
+        # gate rejected it on every attempt and the deck shipped with a RecurringWarning.
+        text = fw.carousel_blueprint_directive({"format": fmt})
+        assert fw.CONTEXT_BEAT_DIRECTIVE in text
+        assert text.index(fw.CONTEXT_BEAT_DIRECTIVE) > text.index("Map these beats ONTO THE SLIDES")
+
+    def test_an_ordinary_archetype_keeps_one_slide_per_beat(self):
+        text = fw.carousel_blueprint_directive({"format": "personal_lesson"})
+        assert fw.CONTEXT_BEAT_DIRECTIVE not in text
 
 
 class TestEnglishVerbsAreNotCommands:

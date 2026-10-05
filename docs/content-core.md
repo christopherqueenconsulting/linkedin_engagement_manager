@@ -411,7 +411,10 @@ and a promise the slides never deliver fails the deck on its own. A failure rege
 the exact slides named (`deck_retry_directive`, `DECK_REFERENCE_MAX_ATTEMPTS`, default one
 retry) and then ships with a logged reason — rendered images have no review queue.
 `reference_slide_directive` gives the writer the shapes that ARE inherently save-worthy up
-front. Tool/model version numbers ("GPT-4o", "Postgres 16") are NOT graded as claims — the
+front. A **context beat** of a save-targeted archetype ("Why this was compiled", "What it actually
+is") is narrative by construction, so `CONTEXT_BEAT_DIRECTIVE` sends it to the caption or the
+cover, never its own body slide — mapped one-beat-per-slide it failed the gate on every attempt
+and shipped a "Why This List Matters" slide with a `RecurringWarning` (#2232). Tool/model version numbers ("GPT-4o", "Postgres 16") are NOT graded as claims — the
 receipt's structure asks for the exact stack by name.
 
 **Deck vs caption (issue #2106) — these two HOLD.** A deck can pass the reference gate and still
