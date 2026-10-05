@@ -118,7 +118,7 @@ class TestBestEffortEnrichmentWarns:
 
     def test_a_carousel_fact_grounding_failure_warns(self):
         from cqc_lem.app.run_content_plan import _report_carousel_fact_grounding
-        with _Levels(_RCP) as lv, patch(f"{_RCP}.deck_slides", side_effect=_boom):
+        with _Levels(_RCP) as lv, patch(f"{_RCP}.deck_text", side_effect=_boom):
             _report_carousel_fact_grounding(7, 42, {"format": "build_receipt"}, {"slides": []})
             lv.only("warning")
 

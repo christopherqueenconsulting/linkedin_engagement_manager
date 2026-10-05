@@ -375,6 +375,14 @@ grades the finished SLIDES against every active entry. The carousel used to pass
 `_fact_anchors(user_id)` — the whole bank — straight to the writer, which is how one deck spent
 six of the account's receipts at once.
 
+Before that report runs, `generate_carousel_content` gives a fact-anchored deck whose slides state
+an unbacked number ONE regeneration (`_repair_carousel_fact_grounding`, issue #2231), graded
+against the same whole bank (`grounding_anchors`). Its directive (`deck_fact_retry_directive`)
+asks for the number to be DROPPED, never deferred to a `[[…]]` placeholder, because slide text
+is rendered into images. The retry is kept only when it is buildable, no worse on the reference
+gate, and states strictly fewer unbacked numbers. Whatever survives is still logged by the
+report, which stays advisory (#1139).
+
 ### Anchor-driven carousel menu
 
 Whether a fact-anchored archetype is on the carousel menu at all now follows the WRITER's
