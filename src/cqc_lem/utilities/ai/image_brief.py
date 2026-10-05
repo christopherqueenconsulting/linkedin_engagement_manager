@@ -24,12 +24,12 @@ _STYLE_PRESETS: dict[str, str] = {
         "product-photography framing, readable at thumbnail size, with environmental depth. "
         "People and screens stay out of the frame unless the author's own likeness belongs in "
         "this image. For an abstract, financial or software idea, reach for its physical "
-        "metaphor, and pick from a DIFFERENT family each time — plumbing (a drip, a leak, a "
-        "valve, a funnel), measuring (a balance scale, a pressure gauge, a caliper, an "
-        "hourglass, a tally counter), mechanical (a cracked gear, a blown fuse, a snapped chain "
-        "link, a fallen domino), routing (a track switch, a fork in a road, a signal lever, a "
-        "junction box), or tools and containers (a sledgehammer beside a thumbtack, a sieve, a "
-        "ledger, a stack of weights). Cost, waste and routing ideas all reach for plumbing by "
+        "metaphor, and pick from a DIFFERENT family each time — measuring (a balance scale, a "
+        "pressure gauge, a caliper, an hourglass, a tally counter), mechanical (a cracked gear, "
+        "a blown fuse, a snapped chain link, a fallen domino), routing (a track switch, a fork "
+        "in a road, a signal lever, a junction box), tools and containers (a sledgehammer "
+        "beside a thumbtack, a sieve, a ledger, a stack of weights), or plumbing (a drip, a "
+        "leak, a valve, a funnel). Cost, waste and routing ideas all reach for plumbing by "
         "default, so when the already-used list names one family, pick from another."),
     "post_image": (
         "A scroll-stopping single-subject photograph for a LinkedIn feed post. One person or "
@@ -161,22 +161,36 @@ _STOCK_OFFICE_PATTERN = re.compile(
 # live sample covers for issue #1992.
 _NEWSLETTER_FALLBACK_SCENE = (
     "A wide editorial still-life photograph of one tangible object alone on a worn workshop "
-    "surface — a brass valve, a mechanical gauge, a balance scale, a single gear or a hand tool — "
+    "surface — a mechanical gauge, a balance scale, a single gear, an hourglass or a hand tool — "
     "filling the frame as the entire subject, an empty workshop wall behind it.")
 
-# The metaphor objects the newsletter preset offers, as a lookup. `newsletter_cover` reads it to
-# pull the OBJECT out of a prior cover's `focal_concept` — "Budget leak depicted as a dripping
-# valve spilling money" has to become `leak, valve` before it can steer the next brief, because a
-# whole sentence never matches the next one and so never suppressed anything (issue #2000).
+# The metaphor objects the newsletter preset offers, by FAMILY. `newsletter_cover` reads the
+# objects to pull the OBJECT out of a prior cover's `focal_concept` — "Budget leak depicted as a
+# dripping valve spilling money" has to become `leak, valve` before it can steer the next brief,
+# because a whole sentence never matches the next one and so never suppressed anything (issue
+# #2000). The variety gate reads the FAMILIES (issue #2241): steering off one object steered
+# nothing when the author swapped a valve for a pipe or a faucet, so "all newsletter images have
+# pipes in them" — the plumbing family renders pipes whichever of its objects is named.
 # Kept here, beside the preset that names them: this is the vocabulary the author draws from.
-METAPHOR_OBJECTS: frozenset[str] = frozenset({
-    "drip", "leak", "valve", "funnel", "pipe", "faucet", "tap", "stopcock", "manifold",
-    "scale", "gauge", "caliper", "hourglass", "tally", "counter", "meter", "dial", "ruler",
-    "gear", "fuse", "chain", "link", "domino", "spring", "bolt", "cog", "bearing",
-    "switch", "fork", "lever", "junction", "track", "signal", "points",
-    "sledgehammer", "thumbtack", "sieve", "ledger", "weight", "wrench", "magnifier",
-    "hammer", "anchor", "key", "lock", "compass", "thermostat", "bucket", "tank", "jar",
-})
+METAPHOR_FAMILIES: dict[str, frozenset[str]] = {
+    "plumbing": frozenset({"drip", "leak", "valve", "funnel", "pipe", "faucet", "tap", "stopcock",
+                           "manifold", "hose", "spigot", "plumbing", "pipework"}),
+    "measuring": frozenset({"scale", "gauge", "caliper", "hourglass", "tally", "counter", "meter",
+                            "dial", "ruler", "thermostat", "compass"}),
+    "mechanical": frozenset({"gear", "fuse", "chain", "link", "domino", "spring", "bolt", "cog",
+                             "bearing"}),
+    "routing": frozenset({"switch", "fork", "lever", "junction", "track", "signal", "points"}),
+    "tools": frozenset({"sledgehammer", "thumbtack", "sieve", "ledger", "weight", "wrench",
+                        "magnifier", "hammer", "anchor", "key", "lock", "bucket", "tank", "jar"}),
+}
+METAPHOR_OBJECTS: frozenset[str] = frozenset().union(*METAPHOR_FAMILIES.values())
+_OBJECT_FAMILY: dict[str, str] = {obj: family for family, objects in METAPHOR_FAMILIES.items()
+                                  for obj in objects}
+
+# What a plumbing object drags into the frame whichever one is named: a valve render came back
+# with "a background of dim industrial piping" (issue #2241). Once plumbing is on the avoid list
+# these are graded against the WHOLE prompt, not just the focal concept.
+_PLUMBING_SCENERY = ("pipe", "pipework", "plumbing")
 
 # A capped avoid list, so a long history can never starve the author into the fallback on every
 # run: past this many terms the oldest steering is dropped rather than the newest.
@@ -218,12 +232,66 @@ class ImageBrief:
     fallback: bool = False
 
 
+def metaphor_family(word: str) -> Optional[str]:
+    """The preset family a metaphor object belongs to, plural-tolerant; None for any other word."""
+    lowered = (word or "").strip().lower()
+    for candidate in (lowered, lowered[:-2] if lowered.endswith("es") else lowered,
+                      lowered[:-1] if lowered.endswith("s") else lowered):
+        if candidate in _OBJECT_FAMILY:
+            return _OBJECT_FAMILY[candidate]
+    return None
+
+
+def _family_of_form(form: str) -> Optional[str]:
+    """The family an inflected form (`dripping`, `piping`) came from, for the retry reason."""
+    lowered = form.lower()
+    return next((_OBJECT_FAMILY[obj] for obj in _OBJECT_FAMILY if lowered in _inflections(obj)),
+                None)
+
+
+def _inflections(term: str) -> set[str]:
+    """`pipe` must also catch `pipes` and `piping`, `drip` must catch `dripping` (issue #2241)."""
+    forms = {term, f"{term}s", f"{term}es", f"{term}ing", f"{term}y"}
+    if term.endswith("e"):
+        forms.add(f"{term[:-1]}ing")
+    if len(term) >= 3 and term[-1] not in "aeiouwy" and term[-2] in "aeiou":
+        forms.update({f"{term}{term[-1]}ing", f"{term}{term[-1]}y"})
+    return forms
+
+
+def _avoided_families(avoid_terms: Optional[list[str]]) -> set[str]:
+    terms = [t.strip() for t in (avoid_terms or []) if t and t.strip()][:_MAX_AVOID_TERMS]
+    return {f for f in (metaphor_family(t) for t in terms) if f}
+
+
+def _alternation(forms: set[str]) -> "re.Pattern[str]":
+    # Longest first, so `pipes` is never cut short at `pipe` by the alternation order.
+    ordered = sorted(forms, key=len, reverse=True)
+    return re.compile(r"\b(?:" + "|".join(re.escape(f) for f in ordered) + r")\b", re.IGNORECASE)
+
+
 def _avoid_pattern(avoid_terms: Optional[list[str]]) -> Optional["re.Pattern[str]"]:
-    """Whole-word matcher for the caller's avoid terms, or None when there is nothing to match."""
+    """Whole-word matcher for the caller's avoid terms, or None when there is nothing to match.
+
+    A term that names a preset object stands for its whole FAMILY, in any inflection (issue
+    #2241): with `valve` avoided, a "dripping copper pipe" is the same picture, not a new one.
+    """
     terms = [t.strip() for t in (avoid_terms or []) if t and t.strip()][:_MAX_AVOID_TERMS]
     if not terms:
         return None
-    return re.compile(r"\b(?:" + "|".join(re.escape(t) for t in terms) + r")\b", re.IGNORECASE)
+    forms: set[str] = set()
+    for term in terms:
+        family = metaphor_family(term)
+        for word in (METAPHOR_FAMILIES[family] if family else {term.lower()}):
+            forms |= _inflections(word) if family else {word}
+    return _alternation(forms)
+
+
+def _scenery_pattern(avoid_terms: Optional[list[str]]) -> Optional["re.Pattern[str]"]:
+    """Pipes anywhere in the prompt, once plumbing is avoided — they are what the reader sees."""
+    if "plumbing" not in _avoided_families(avoid_terms):
+        return None
+    return _alternation(set().union(*(_inflections(w) for w in _PLUMBING_SCENERY)))
 
 
 def _valid(parsed: dict[str, Any], *, surface: Optional[str] = None,
@@ -253,6 +321,12 @@ def _valid(parsed: dict[str, Any], *, surface: Optional[str] = None,
         if repeat:
             log_debug("Newsletter brief rejected — object already used by a recent cover",
                       noun=repeat.group(0))
+            return False
+        scenery = _scenery_pattern(avoid_terms)
+        piped = scenery.search(prompt) if scenery else None
+        if piped:
+            log_debug("Newsletter brief rejected — plumbing scenery after a recent plumbing cover",
+                      noun=piped.group(0))
             return False
     return True
 
@@ -319,6 +393,9 @@ def build_image_brief(content: str, *, surface: str, ratio: str = "1:1",
     # The likeness directive leads the context on purpose (issue #744): with nothing stating who
     # a depicted person is, the model invents one and the LoRA renders the invention.
     context = _profile_visual_context(profile, subject_directive(avatar))
+    # Named to the author as well as gated (issue #2241): the object list alone let it swap a
+    # valve for a pipe and call that a different family.
+    families = _avoided_families(avoid_terms) if surface == "newsletter" and not avatar else set()
 
     user_prompt = (
         f"{context}{_STYLE_PRESETS[preset]}\n\n"
@@ -328,6 +405,9 @@ def build_image_brief(content: str, *, surface: str, ratio: str = "1:1",
         + (f"Recent covers already used these objects, so this one must NOT be built on any of "
            f"them — pick an object from a different family: "
            f"{'; '.join(avoid_terms[:_MAX_AVOID_TERMS])}\n" if avoid_terms else "")
+        + (f"Families already used, so no object from them: {', '.join(sorted(families))}"
+           + ("; no pipes or piping anywhere in the frame either" if "plumbing" in families
+              else "") + "\n" if families else "")
         + (f"Additional direction: {extra_direction}\n" if extra_direction else "")
         + f"\nHere is the content the image must represent:\n<content>{content}</content>")
 
@@ -395,11 +475,19 @@ def build_image_brief(content: str, *, surface: str, ratio: str = "1:1",
             avoid_pattern = _avoid_pattern(avoid_terms) if newsletter_gate else None
             repeat = (avoid_pattern.search(str(parsed.get("focal_concept") or ""))
                       if avoid_pattern else None)
+            scenery = _scenery_pattern(avoid_terms) if newsletter_gate else None
+            piped = scenery.search(str(parsed.get("prompt") or "")) if scenery else None
             if hit:
                 reason = f"the prompt named the stock-office object {hit.group(0)!r}"
             elif repeat:
+                family = _family_of_form(repeat.group(0))
                 reason = (f"the focal concept was built on {repeat.group(0)!r}, which a recent "
-                          f"cover already used — pick an object from a different family")
+                          f"cover already used"
+                          + (f" (the {family} family)" if family else "")
+                          + " — pick an object from a different family")
+            elif piped:
+                reason = (f"the prompt put {piped.group(0)!r} in the frame, and a recent cover was "
+                          f"already plumbing — no pipes anywhere, pick a different family")
             else:
                 reason = "failed validation (length bounds or refusal phrasing)"
             log_debug("Image brief failed validation — retrying", surface=surface,

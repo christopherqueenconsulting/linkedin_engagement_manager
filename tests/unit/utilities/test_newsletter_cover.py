@@ -818,3 +818,36 @@ class TestSingularPluralTopicWords:
 
     def test_short_words_are_left_alone(self):
         assert nc._singular("gas") == "gas"
+
+
+class TestPluralAndFamilySteering:
+    """Issue #2241: a plural object steered nothing, and relevance holds at the family level."""
+
+    def test_a_plural_object_is_named_in_its_singular(self):
+        assert nc._focal_objects("AI budget leaks shown by dripping copper pipes") == \
+            ["leak", "pipe"]
+
+    def test_a_prior_plumbing_cover_is_dropped_for_an_edition_about_a_leak(self):
+        with patch.object(nc, "_extract_cover_concept", return_value={
+                "core_mechanism": "a slow leak draining the budget",
+                "tangible_metaphor_candidates": ["a dripping faucet"], "avoid": []}):
+            _content, avoid = nc._cover_concept_text("Audit your AI spend", None, "body",
+                                                     variety_avoid=["valve", "gear"])
+        assert avoid == ["gear"], "banning the plumbing family would ban this edition's subject"
+
+    def test_a_prior_plumbing_cover_still_steers_an_unrelated_edition(self):
+        with patch.object(nc, "_extract_cover_concept", return_value={
+                "core_mechanism": "a track switch diverting requests",
+                "tangible_metaphor_candidates": ["a track switch"], "avoid": []}):
+            _content, avoid = nc._cover_concept_text("Route requests cheaply", None, "body",
+                                                     variety_avoid=["valve"])
+        assert avoid == ["valve"]
+
+    def test_an_idiom_in_the_mechanism_never_reopens_a_family(self):
+        """"Keep track of spend" is not a track switch; only candidate OBJECTS relax a family."""
+        with patch.object(nc, "_extract_cover_concept", return_value={
+                "core_mechanism": "keep track of every tap into the budget",
+                "tangible_metaphor_candidates": ["a balance scale"], "avoid": []}):
+            _content, avoid = nc._cover_concept_text("Audit your AI spend", None, "body",
+                                                     variety_avoid=["valve", "switch"])
+        assert avoid == ["valve", "switch"]

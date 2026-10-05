@@ -303,6 +303,8 @@ def _cover_concept_text(title: Optional[str], subtitle: Optional[str], body: Opt
     not as a prohibition. That is how a fallback cover for the leak edition came back as a laptop
     on a desk (issue #1992's live sample run).
     """
+    from cqc_lem.utilities.ai.image_brief import metaphor_family
+
     concept = _extract_cover_concept(title, subtitle, body)
     parts = [p for p in (title, subtitle) if p]
     if concept.get("core_mechanism") or concept.get("tangible_metaphor_candidates"):
@@ -324,7 +326,14 @@ def _cover_concept_text(title: Optional[str], subtitle: Optional[str], body: Opt
     # article, it produces a picture of a DIFFERENT article. That is how "Spot the Leak in Your
     # LinkedIn AI Budget" ended up with a railway track switch — the neighbouring edition's idea.
     own = _concept_words(concept)
-    kept_variety = [t for t in (variety_avoid or []) if t.lower() not in own]
+    # Family-level too, but from the candidate OBJECTS only (issue #2241): the gate bans a term's
+    # whole family, so a prior `valve` would ban the faucet a leak edition is built on. Never from
+    # the mechanism sentence or the title, where "keep track", "tap into" or "sales funnel" are
+    # idioms, not objects, and would re-open a family for an edition that is not about it.
+    own_families = {metaphor_family(w) for w in _concept_words(
+        {"tangible_metaphor_candidates": concept.get("tangible_metaphor_candidates")})} - {None}
+    kept_variety = [t for t in (variety_avoid or [])
+                    if t.lower() not in own and metaphor_family(t) not in own_families]
     # `_drop_topic_words` covers the EXTRACTOR's avoid list too, not just the variety terms. It
     # returns the generic nouns the hook repeats, and for an edition titled "Audit AI LinkedIn
     # engagement to cut costs" that was `cost` and `engagement` — so the gate rejected the one
@@ -350,7 +359,10 @@ def _focal_objects(concept: Optional[str]) -> list[str]:
     from cqc_lem.utilities.ai.image_brief import METAPHOR_OBJECTS
 
     tokens = [t for t in re.split(r"[^a-z0-9-]+", (concept or "").lower()) if t]
-    named = [t for t in tokens if t in METAPHOR_OBJECTS]
+    # Singular first: "a dripping copper PIPES" named no object at all, so a plumbing cover
+    # steered nothing and the next one could be plumbing again (issue #2241).
+    named = [w for w in (t if t in METAPHOR_OBJECTS else _singular(t) for t in tokens)
+             if w in METAPHOR_OBJECTS]
     if named:
         # dict.fromkeys, not set(): the object named FIRST is the one the cover was built on.
         return list(dict.fromkeys(named))[:_MAX_OBJECTS_PER_CONCEPT]
