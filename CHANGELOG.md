@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.181.3](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.181.2...v0.181.3) (2026-10-05)
+
+
+### Bug Fixes
+
+* **carousel:** keep a save-targeted deck's context beat off its own body slide (closes [#2232](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2232)) ([#2233](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2233)) ([29a0744](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/29a0744d19b305c59159979bec65cb71335cb9ad))
+* **content:** regenerate a fact-anchored carousel once when its slides invent a number (closes [#2231](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2231)) ([#2234](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2234)) ([8102e95](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/8102e9597d73aa78426f245459944407d5a06417))
+* **newsletter:** record newsletter_url on scheduled publish so the SDUI sweep can measure it (closes [#2228](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2228)) ([#2229](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2229)) ([25a8f2c](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/25a8f2cfaa70dead0ce6ddc904177f714577f96f))
+
 ## [0.181.2](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.181.1...v0.181.2) (2026-09-28)
 
 
