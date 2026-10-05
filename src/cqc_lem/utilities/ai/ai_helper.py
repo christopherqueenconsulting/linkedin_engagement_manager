@@ -4203,7 +4203,10 @@ def _repair_carousel_fact_grounding(draft, post_text: str, carousel_dict: dict,
         return post_text, carousel_dict
     reference_held = (not reference_report["required"] or not reference_report["passes"]
                       or retry_reference["passes"])
-    if reference_held and len(retry_report["unverified"]) < len(report["unverified"]):
+    # A `[[…]]` swapped in for the number renders as literal brackets, so it is no improvement.
+    placeholders_held = len(retry_report["placeholders"]) <= len(report["placeholders"])
+    if (reference_held and placeholders_held
+            and len(retry_report["unverified"]) < len(report["unverified"])):
         return retry_text, retry_deck
     return post_text, carousel_dict
 

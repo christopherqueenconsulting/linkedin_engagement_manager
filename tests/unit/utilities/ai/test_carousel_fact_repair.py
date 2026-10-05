@@ -85,6 +85,17 @@ class TestCarouselFactRepair:
         assert call.call_count == 2
         assert deck == _INVENTED
 
+    def test_a_retry_that_defers_the_number_to_a_placeholder_keeps_the_first_deck(self):
+        # A `[[…]]` on a slide renders as literal brackets, so trading the number for one is no fix.
+        deferred = {**_CLEAN, "contents": [
+            {"title": "1. Pin the tag",
+             "content": "Set IMAGE_TAG to the release tag. It cut rollbacks by [[METRIC: rollback cut]]."},
+            _CLEAN["contents"][1],
+        ]}
+        _, deck, call = _generate([_response(_INVENTED), _response(deferred)])
+        assert call.call_count == 2
+        assert deck == _INVENTED
+
     def test_a_retry_missing_a_slide_keeps_the_first_deck(self):
         no_cover = {k: v for k, v in _CLEAN.items() if k != "cover"}
         _, deck, _ = _generate([_response(_INVENTED), _response(no_cover)])
