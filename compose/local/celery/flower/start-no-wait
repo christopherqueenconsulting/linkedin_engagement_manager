@@ -28,12 +28,14 @@ printf '%s - flower.persistence - INFO - resolved --db path: %s (FLOWER_PERSISTE
   "${FLOWER_PERSISTENT:-False}" \
   >> /app/logs/flower.log
 
+# No --broker-api: it is the RabbitMQ management-API URL, meaningless on Redis, and flower >= 2.2
+# exits 1 on any non-http(s) value — passing the redis:// broker URL crash-looped Flower on 0.181.x.
+# --broker is a CELERY option, so it goes before `flower`, never after it.
 celery --app cqc_lem.app.my_celery \
+  --broker="${CELERY_BROKER_URL}" \
   flower \
   --port="${CELERY_FLOWER_PORT}" \
   --address=0.0.0.0 \
-  --broker="${CELERY_BROKER_URL}" \
-  --broker-api="${CELERY_BROKER_URL}" \
   --logging="INFO" \
   --logfile="/app/logs/flower.log" \
   --state_save_interval="${CELERY_FLOWER_STATE_SAVE_INTERVAL}"
