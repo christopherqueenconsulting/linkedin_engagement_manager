@@ -2817,6 +2817,10 @@ def carousel_blueprint_directive(blueprint: dict, fact_anchors: Optional[list] =
         lines.append(hook_constraint_directive())
     if meta.get("save_targeted"):
         lines.append(reference_slide_directive())
+        # "One slide per middle beat" and "an artifact on every body slide" contradict each other
+        # for a context beat ("Why this was compiled", "What it actually is"): mapped to its own
+        # slide it is narrative by construction, so the gate rejected it on every attempt (#2232).
+        lines.append(CONTEXT_BEAT_DIRECTIVE)
     if meta.get("fact_anchored"):
         lines.append(fact_anchor_directive(fact_anchors))
     return "\n".join(lines) + "\n"
@@ -2971,6 +2975,12 @@ REFERENCE_SLIDE_SHAPES: tuple = (
     ("Before / after", "the state before and the state after, with the number that changed"),
     ("Decision rule", "the explicit if/when → do-this rule, including when NOT to"),
 )
+
+
+CONTEXT_BEAT_DIRECTIVE = (
+    "- A beat that is context only (why the list was compiled, what the thing is, who it is for) "
+    "has nothing to act on, so it NEVER gets a body slide of its own: put it in the post_text or "
+    "fold it onto the cover, and give that slot to another entry that carries an artifact.")
 
 
 def deck_reference_enabled() -> bool:
@@ -3231,6 +3241,7 @@ def deck_retry_directive(report: Optional[dict]) -> str:
     lines = ["\n\nYOUR PREVIOUS DECK WAS REJECTED — its slides carried nothing worth saving. "
              "Rewrite it so none of these remain:"]
     lines += [f"- {r[0].upper()}{r[1:]}." for r in reasons]
+    lines.append(CONTEXT_BEAT_DIRECTIVE)
     lines.append("- Give every body slide ONE concrete reusable artifact and say it in full: the "
                  "actual step, the actual command or setting, the actual number, the actual "
                  "threshold, or the actual if/when rule.")
