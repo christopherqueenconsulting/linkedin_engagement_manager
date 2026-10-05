@@ -2793,6 +2793,24 @@ def fact_retry_directive(report: dict) -> str:
     return "\n".join(lines) + "\n"
 
 
+def deck_fact_retry_directive(report: dict) -> str:
+    """The regeneration steer after a fact-anchored DECK stated specifics no verified fact backs.
+
+    Unlike `fact_retry_directive`, it asks for the number to be DROPPED rather than deferred to a
+    placeholder: slide text is rendered into images, so a `[[…]]` on a slide ships as literal
+    brackets nobody can fill in. Returns '' when the report names nothing.
+    """
+    offenders = [str(c.get("raw")) for c in (report or {}).get("unverified", []) if c.get("raw")]
+    if not offenders:
+        return ""
+    return ("\n\nYOUR PREVIOUS DECK INVENTED SPECIFICS AND WAS REJECTED. Rewrite it so no slide "
+            "states any of these numbers, which no verified fact backs: "
+            + ", ".join(dict.fromkeys(offenders)) + "\n"
+            "- Slide text is rendered into images, so do NOT replace them with [[…]] placeholders on "
+            "a slide: rewrite each sentence so it makes its point without the number.\n"
+            "- Keep every verified fact you were given, exactly as written.\n")
+
+
 def carousel_blueprint_directive(blueprint: dict, fact_anchors: Optional[list] = None) -> str:
     """The post archetype's shape mapped onto a CAROUSEL/document (issue #619 / G4). A build receipt
     renders naturally as a document post — the highest-engagement LinkedIn format there is — so the
@@ -3072,6 +3090,15 @@ def deck_slides(carousel: Optional[dict]) -> list:
         else:
             _add(key, value)
     return slides
+
+
+def deck_text(carousel: Optional[dict]) -> str:
+    """Every slide's title + body, in schema order, as ONE block of text.
+
+    This is what a slide-level TEXT check (fact grounding, slop lint) grades. Cover and CTA are
+    included: the `graded` exemption is the reference gate's, not a text check's.
+    """
+    return "\n".join(f"{s['title']} {s['content']}".strip() for s in deck_slides(carousel)).strip()
 
 
 def _slide_label(slide: dict) -> str:

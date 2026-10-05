@@ -18,7 +18,7 @@ pytestmark = pytest.mark.unit
 _AI = "cqc_lem.utilities.ai.ai_helper"
 
 _GOOD_DECK = {
-    "cover": {"title": "The 3 checks I run", "content": "The exact stack."},
+    "cover": {"title": "The checks I run", "content": "The exact stack."},
     "contents": [
         {"title": "1. Pin the tag", "content": "Set IMAGE_TAG to the release tag, never latest."},
         {"title": "2. Migrate first", "content": "Run `flyway migrate` before the app flips."},

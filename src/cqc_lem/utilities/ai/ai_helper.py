@@ -3936,7 +3936,8 @@ def generate_carousel_content(user_id: int, stage: str, prefs: dict = None,
                               profile_synthesis: str = None, blueprint: dict = None,
                               fact_anchors: list = None,
                               story_directive: str = None,
-                              guidance: str = None) -> tuple[str, dict]:
+                              guidance: str = None,
+                              grounding_anchors: list = None) -> tuple[str, dict]:
     """Generate structured carousel content using AI and return (post_text, carousel_dict).
 
     An assigned `blueprint` (issue #619 / G4) maps a SHORT-FORM POST ARCHETYPE onto the slides — a
@@ -3945,7 +3946,8 @@ def generate_carousel_content(user_id: int, stage: str, prefs: dict = None,
 
     `fact_anchors` is the WRITER's allow-list — the ONE story-bank entry this deck is anchored to
     (issue #728), never the whole bank; `story_directive` carries that same entry's material. The
-    full bank stays with the CHECKERS in `run_content_plan`.
+    full bank stays with the CHECKERS in `run_content_plan`, which hands it in as
+    `grounding_anchors` so the deck's fact repair grades against what the checker will.
 
     The carousel_dict matches the schema of one of the carousel models in carousel_creator.py.
     The carousel type comes from `carousel_model_for_stage` — the ONE stage map, shared with the
@@ -4144,6 +4146,10 @@ Return ONLY valid JSON. No explanation, no markdown fences."""
                     + "; ".join(report["reasons"]),
                     user_id=user_id, task_name="create_carousel_content")
 
+    post_text, carousel_dict = _repair_carousel_fact_grounding(
+        _draft, post_text, carousel_dict, blueprint, grounding_anchors or fact_anchors,
+        model_cls, report, save_targeted, user_id)
+
     # Deck-shape residual check (issue #1666), read against the deck actually being RETURNED —
     # never right after the shape gate's own repair. The reference-value loop above can hand back
     # a fresh reply that happens to carry the field the shape gate could not get (a retry there is
@@ -4157,6 +4163,51 @@ Return ONLY valid JSON. No explanation, no markdown fences."""
                   else "deck is missing required slide field(s): " + ", ".join(final_missing))
         log_error(f"generate_carousel_content: {reason}",
                   user_id=user_id, task_name="create_carousel_content")
+    return post_text, carousel_dict
+
+
+def _repair_carousel_fact_grounding(draft, post_text: str, carousel_dict: dict,
+                                    blueprint: Optional[dict], anchors: Optional[list],
+                                    model_cls, reference_report: dict, save_targeted: bool,
+                                    user_id: int) -> tuple[str, dict]:
+    """Give a fact-anchored deck ONE regeneration when its slides state an unbacked number.
+
+    Issue #2231: slides are rendered into images, so this is the last point an invented number can
+    still be removed. A retry replaces the deck only when it is buildable, is
+    no worse on the reference gate, and states strictly fewer unbacked numbers; anything else keeps
+    the deck in hand. Whatever survives is still reported by `_report_carousel_fact_grounding`.
+    """
+    if not carousel_dict or not _framework.requires_fact_anchor("post", (blueprint or {}).get("format")):
+        return post_text, carousel_dict
+    from cqc_lem.utilities.carousel_creator import missing_carousel_fields
+    try:
+        report = _framework.fact_grounding_report(_framework.deck_text(carousel_dict), anchors)
+    except Exception as exc:
+        log_warning("Could not grade the carousel deck's fact grounding before render", exc=exc,
+                    user_id=user_id, task_name="create_carousel_content")
+        return post_text, carousel_dict
+    if report["passes"]:
+        return post_text, carousel_dict
+    log_info("Carousel deck states specifics no verified fact backs — regenerating once",
+             user_id=user_id, task_name="create_carousel_content")
+    try:
+        retry_text, retry_deck, _ = draft(_framework.deck_fact_retry_directive(report))
+        if missing_carousel_fields(model_cls, retry_deck):
+            return post_text, carousel_dict
+        retry_reference = _framework.deck_reference_report(retry_deck, retry_text,
+                                                           save_targeted=save_targeted)
+        retry_report = _framework.fact_grounding_report(_framework.deck_text(retry_deck), anchors)
+    except Exception as exc:
+        log_warning("Carousel fact-grounding retry failed — keeping the previous deck", exc=exc,
+                    user_id=user_id, task_name="create_carousel_content")
+        return post_text, carousel_dict
+    reference_held = (not reference_report["required"] or not reference_report["passes"]
+                      or retry_reference["passes"])
+    # A `[[…]]` swapped in for the number renders as literal brackets, so it is no improvement.
+    placeholders_held = len(retry_report["placeholders"]) <= len(report["placeholders"])
+    if (reference_held and placeholders_held
+            and len(retry_report["unverified"]) < len(report["unverified"])):
+        return retry_text, retry_deck
     return post_text, carousel_dict
 
 
