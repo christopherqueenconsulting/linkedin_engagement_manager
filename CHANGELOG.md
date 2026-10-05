@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.181.4](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.181.3...v0.181.4) (2026-10-05)
+
+
+### Bug Fixes
+
+* **flower:** drop the redis --broker-api that flower 2.2 rejects ([#2239](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2239)) ([ba7f0ea](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/ba7f0eaae610275a50efdec38084e727e41f61bd))
+
 ## [0.181.3](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.181.2...v0.181.3) (2026-10-05)
 
 
