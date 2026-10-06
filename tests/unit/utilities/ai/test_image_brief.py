@@ -5,7 +5,21 @@ from unittest.mock import patch
 
 import pytest
 
-from cqc_lem.utilities.ai.image_brief import _STYLE_PRESETS, ImageBrief, build_image_brief
+from cqc_lem.utilities.ai.image_brief import (
+    _BRIEF_ATTEMPTS,
+    _STYLE_PRESETS,
+    _TREATMENT_TEMPLATES,
+    CLICHE_OBJECTS,
+    DEAD_QUALITY_TAGS,
+    DEAD_STYLE_WORDS,
+    NEGATION_MARKERS,
+    ImageBrief,
+    _fallback_brief,
+    build_image_brief,
+    check_prompt_against_concept,
+    cliche_hit,
+)
+from cqc_lem.utilities.ai.image_concept import ImageConcept
 
 _GOOD = {"focal_concept": "a founder reviewing a growth chart",
          "prompt": ("A confident founder stands beside a floor-to-ceiling window in a sunlit "
@@ -37,8 +51,9 @@ class TestBuildImageBrief:
         assert "My post about growth" in user_msg
 
     def test_no_text_constraint_is_always_in_the_system_prompt(self):
-        """The author must never NAME text/logos in a render prompt (FLUX summons what is
-        named) — the system prompt instructs positive phrasing instead.
+        """The author must never NAME text/logos in a render prompt.
+
+        FLUX summons what is named, so the system prompt instructs positive phrasing instead.
         """
         with patch("cqc_lem.utilities.ai.ai_helper._call_llm", return_value=_resp(_GOOD)) as llm:
             build_image_brief("content", surface="post_image")
@@ -67,7 +82,7 @@ class TestBuildImageBrief:
                    return_value=_resp("not json at all")) as llm:
             brief = build_image_brief("Quarterly revenue lessons", surface="post_image")
 
-        assert llm.call_count == 2
+        assert llm.call_count == _BRIEF_ATTEMPTS == 3, "the first try plus two retries"
         assert "Quarterly revenue lessons" in brief.prompt
         # Positive phrasing only — FLUX ignores negation, so the fallback never says "No text".
         assert "plain unbranded" in brief.prompt
@@ -102,8 +117,9 @@ class TestBuildImageBrief:
 
 @pytest.mark.unit
 class TestRefusalFilterIsAnchoredToRefusals:
-    """Regression: a bare "language model" ban rejected every legitimate brief an AI-focused
-    author writes, so their briefs silently fell back to the deterministic template.
+    """Regression: a bare "language model" ban rejected legitimate AI-topic briefs.
+
+    Every brief an AI-focused author writes silently fell back to the deterministic template.
     """
 
     @pytest.mark.parametrize("prompt_text", [
@@ -132,9 +148,10 @@ class TestRefusalFilterIsAnchoredToRefusals:
 
 @pytest.mark.unit
 class TestReasoningTokenBudget:
-    """Regression: lem-medium is a REASONING model. At max_tokens=600 the whole budget went to
-    thinking tokens, the response came back EMPTY with finish_reason='length', and every image
-    silently rendered from the deterministic template.
+    """Regression: lem-medium is a REASONING model.
+
+    At max_tokens=600 the whole budget went to thinking tokens, the response came back EMPTY with
+    finish_reason='length', and every image silently rendered from the deterministic template.
     """
 
     def test_budget_leaves_room_for_reasoning_plus_json(self):
@@ -169,15 +186,20 @@ class TestReasoningTokenBudget:
 
 @pytest.mark.unit
 class TestAnonymousPersonSteer:
-    """A stranger's face on a PERSONAL-brand newsletter is the stock-photo look the engine
-    exists to replace; with the author's own likeness, a person IS the point.
-    """
+    """A POSED stranger is the stock-photo look; with the author's own likeness, a person IS the point."""
 
-    def test_no_avatar_steers_away_from_an_anonymous_face(self):
+    def test_no_avatar_allows_candid_people_but_never_a_posed_model(self):
+        """Issue #2241: forbidding every identifiable person left only an object still-life.
+
+        So every cover became a valve. Real people beat symbols; what reads as stock is the POSED
+        model.
+        """
         with patch("cqc_lem.utilities.ai.ai_helper._call_llm", return_value=_resp(_GOOD)) as llm:
             build_image_brief("content", surface="newsletter", avatar=None)
         user_msg = llm.call_args[1]["messages"][1]["content"]
-        assert "do NOT make an anonymous person the focal subject" in user_msg
+        assert "People may appear as real participants caught mid-task" in user_msg
+        assert "never as a posed model smiling at the camera" in user_msg
+        assert "do NOT make an anonymous person" not in user_msg
 
     def test_with_an_avatar_the_person_is_still_the_point(self):
         avatar = {"gender_presentation": "man", "age_band": "40s", "trigger_word": "TOK"}
@@ -191,6 +213,7 @@ class TestAnonymousPersonSteer:
 @pytest.mark.unit
 class TestHandsGuidance:
     """Owner verdict after the Aug 2026 bake-off: FLUX.1 stays; its one quality gap is hands.
+
     The brief must steer toward low-risk hand positions and never complex gestures.
     """
 
@@ -203,462 +226,441 @@ class TestHandsGuidance:
         assert "interlocked" in sys_msg  # the banned gesture class is named
 
 
-_BANNED_NOUNS = ("laptop", "notebook", "coffee", "desk", "office", "typing", "keyboard",
-                 "screen", "monitor", "phone")
+_LLM = "cqc_lem.utilities.ai.ai_helper._call_llm"
+_JUDGE = "cqc_lem.utilities.ai.client.client.chat.completions.create"
 
-# Five fixture editions drawn from issue #1992's golden set — the same five real covers that
-# collapsed to "person at laptop with notebook and coffee mug". Each fixture's "golden" LLM
-# response is what a WORKING brief author returns for it: object-first, no stock-office nouns.
-_FIVE_FIXTURE_EDITIONS = (
+
+def _concept(**overrides) -> ImageConcept:
+    fields = {"thesis": "Late invoices quietly starve a small agency's payroll",
+              "audience": "agency owners",
+              "specific_entities": ("unpaid invoices", "payroll run", "agency owner"),
+              "emotional_beat": "quiet dread", "hook_phrase": "", "treatment": "concrete_scene",
+              "treatment_rationale": "a tangible situation"}
+    fields.update(overrides)
+    return ImageConcept(**fields)
+
+
+_GROUNDED = {"focal_concept": "an agency owner facing unpaid invoices before payroll",
+             "prompt": ("A candid editorial photograph of an agency owner at a kitchen table "
+                        "late at night, a stack of unpaid invoices fanned beside a printed "
+                        "payroll run, soft lamp light from camera left, shot on a 35mm lens at "
+                        "f/2, Kodak Portra 400 tones, subtle film grain."),
+             "required_entities": ["unpaid invoices", "payroll run", "agency owner"],
+             "hook_text": None}
+
+_HOOK = "Payroll eats first"
+_GRAPHIC = {"focal_concept": "the hook beside a stack of unpaid invoices",
+            "prompt": (f'A designed editorial graphic for a LinkedIn newsletter cover: bold '
+                       f'sans-serif type reading "{_HOOK}" set large in the left third, beside '
+                       f'a photographic cutout of unpaid invoices clipped to a payroll run '
+                       f'printout, on a flat navy color field with generous negative space.'),
+            "required_entities": ["unpaid invoices", "payroll run"], "hook_text": _HOOK}
+
+
+@pytest.mark.unit
+class TestClicheList:
+    """The ONE stock-symbol list (issue #2241), matched with inflections and article gaps."""
+
+    @pytest.mark.parametrize("text", [
+        "a dripping copper pipe", "industrial piping on the wall", "a brass valve",
+        "a leaky faucet", "a cracked gear", "two gears meshing", "a glowing light bulb",
+        "a single lightbulb", "a missing puzzle piece", "a chess board", "a robot arm",
+        "a rocket launch", "an archery target", "a mountain summit at dawn", "an hourglass",
+        "a row of dominoes", "a lock and key", "a crystal ball", "a magnifying glass",
+        "a person at a laptop", "typing hands", "hands on a keyboard",
+        "a coffee mug beside an open notebook",
+    ])
+    def test_stock_symbols_are_caught(self, text):
+        assert cliche_hit(text), f"{text!r} names a stock symbol"
+
+    @pytest.mark.parametrize("text", [
+        "a data pipeline review", "their target audience list", "a brass saxophone",
+        "a compassionate manager", "an amazed founder", "unpaid invoices on a desk",
+        "a cognitive load chart", "a laptop on the table", "a notebook full of plans",
+    ])
+    def test_lookalikes_and_bare_office_nouns_are_not(self, text):
+        assert cliche_hit(text) is None
+
+    def test_every_cliche_is_named_to_the_author(self):
+        from cqc_lem.utilities.ai.image_brief import _SYSTEM_PROMPT
+        for term in CLICHE_OBJECTS:
+            assert term in _SYSTEM_PROMPT
+
+    @pytest.mark.parametrize("name,text", sorted(
+        [(f"preset:{k}", v) for k, v in _STYLE_PRESETS.items()]
+        + [(f"treatment:{k}", v) for k, v in _TREATMENT_TEMPLATES.items()]))
+    def test_no_preset_or_treatment_offers_a_cliche_or_a_metaphor_menu(self, name, text):
+        assert cliche_hit(text) is None, f"{name} names a stock symbol"
+        assert "physical metaphor" not in text.lower()
+
+    def test_presets_state_a_use_case_not_a_subject_menu(self):
+        newsletter = _STYLE_PRESETS["newsletter"]
+        assert "16:9" in newsletter and "400x225" in newsletter and "central 60%" in newsletter
+
+
+# Issue #1992's five editions, re-briefed under the staged engine: each now has a grounded
+# concept, and its golden brief is built from the entities the edition itself names.
+_FIVE_EDITIONS = (
     ("The Routing Switch That Reduced Outreach Costs by 42%",
-     {"focal_concept": "an industrial rotary switch routing power down the cheap path",
-      "prompt": ("A heavy industrial rotary selector switch mounted on a steel panel, one "
-                "contact glowing warm and lit, the other dark and unused, macro close-up, "
-                "dramatic raking side light, shot on a 100mm macro lens at f/4, brushed metal "
-                "texture, subtle film grain, editorial product photograph.")}),
+     _concept(thesis="Routing outreach by intent cut its cost 42% with the same replies",
+              specific_entities=("outreach team", "routing rules", "42% cost drop"),
+              treatment="editorial_graphic", hook_phrase="42% cheaper, same replies"),
+     {"focal_concept": "the 42% hook beside an outreach team",
+      "prompt": ('A designed editorial graphic for a LinkedIn newsletter cover: bold sans-serif '
+                 'type reading "42% cheaper, same replies" set large in the left third, beside '
+                 'a photographic cutout of an outreach team reviewing printed routing rules, on '
+                 'a flat navy color field with generous negative space, high contrast.')}),
     ("My Multi-Agent Content System Broke Quietly",
-     {"focal_concept": "a row of dominoes with the middle piece fallen but the last still standing",
-      "prompt": ("A row of wooden dominoes on a dark table, the middle piece toppled while the "
-                "final domino still stands untouched, muted low-key lighting from camera left, "
-                "shallow depth of field, shot on an 85mm lens at f/2, quiet desaturated color "
-                "grade, editorial still life photograph.")}),
+     _concept(thesis="An automated content system failed silently for weeks",
+              specific_entities=("content calendar", "draft queue", "editor")),
+     {"focal_concept": "an editor finding blank weeks in the content calendar",
+      "prompt": ("A candid editorial photograph of an editor frowning at a wall-sized printed "
+                 "content calendar with whole weeks left blank, an empty draft queue tray "
+                 "beside her, overcast window light, shot on a 35mm lens at f/2.8, muted color "
+                 "grade, subtle film grain.")}),
     ("Audit AI LinkedIn Engagement to Cut Costs",
-     {"focal_concept": "a brass balance scale weighing coins against a single feather",
-      "prompt": ("An antique brass balance scale on a wooden table, a stack of coins on one pan "
-                "and a single feather on the other, warm directional light from camera right, "
-                "shallow depth of field, shot on a 100mm macro lens at f/2.8, tactile aged "
-                "metal texture, editorial still life photograph.")}),
+     _concept(thesis="Auditing engagement spend line by line finds the waste",
+              specific_entities=("marketing lead", "monthly spend report", "comment replies"),
+              treatment="people_scene"),
+     {"focal_concept": "a marketing lead auditing the monthly spend report",
+      "prompt": ("A candid documentary photograph of a marketing lead and her analyst leaning "
+                 "over a printed monthly spend report on a meeting-room table, circling line "
+                 "items, a stack of printed comment replies beside them, soft window light from "
+                 "camera left, eye-level medium shot, 35mm f/2, natural skin texture.")}),
     ("The Overlooked Costs of Your AI LinkedIn Strategy",
-     {"focal_concept": "a sledgehammer resting beside a single thumbtack on a workbench",
-      "prompt": ("A heavy sledgehammer resting on a worn wooden workbench beside one tiny "
-                "thumbtack, dramatic side light emphasizing the size contrast, shallow depth "
-                "of field, shot on an 85mm lens at f/2, subtle film grain, tactile workshop "
-                "textures, editorial product photograph.")}),
+     _concept(thesis="The API bill is not the real cost of an AI LinkedIn strategy",
+              specific_entities=("API bill", "founder", "credit card statement")),
+     {"focal_concept": "a founder comparing the API bill with the card statement",
+      "prompt": ("A candid editorial photograph of a founder at a cluttered table holding a "
+                 "credit card statement next to a printed API bill marked in red pen, warm "
+                 "evening lamp light, shot on a 50mm lens at f/2, tactile paper texture, subtle "
+                 "film grain.")}),
     ("Spot the Leak in Your LinkedIn AI Budget",
-     {"focal_concept": "a single water droplet falling from a copper pipe joint into a puddle",
-      "prompt": ("A single water droplet caught mid-fall from a corroded copper pipe joint into "
+     _concept(thesis="Unused seats are where an AI budget quietly goes",
+              specific_entities=("budget spreadsheet", "finance manager", "unused seats")),
+     {"focal_concept": "a finance manager highlighting unused seats",
+      "prompt": ("A candid editorial photograph of a finance manager highlighting rows of "
+                 "unused seats on a printed budget spreadsheet pinned to a corkboard, a "
+                 "colleague looking over her shoulder, crisp morning window light, shot on a "
+                 "35mm lens at f/2.8, natural skin texture, subtle film grain.")}),
+)
+
+# What the OLD engine shipped for the same five — the metaphor still-lifes of issue #2241.
+_OLD_METAPHOR_BRIEFS = (
+    {"focal_concept": "an industrial rotary switch",
+     "prompt": ("A heavy industrial rotary selector switch mounted on a steel panel, one contact "
+                "glowing warm, macro close-up, dramatic raking side light, shot on a 100mm "
+                "macro lens at f/4, brushed metal texture, subtle film grain.")},
+    {"focal_concept": "a row of dominoes",
+     "prompt": ("A row of wooden dominoes on a dark table, the middle piece toppled while the "
+                "final domino still stands, muted low-key lighting from camera left, shallow "
+                "depth of field, shot on an 85mm lens at f/2.")},
+    {"focal_concept": "a brass balance scale",
+     "prompt": ("An antique brass balance scale on a wooden table, a stack of coins on one pan "
+                "and a single feather on the other, warm directional light, shot on a 100mm "
+                "macro lens at f/2.8, tactile aged metal texture.")},
+    {"focal_concept": "a droplet from a copper pipe",
+     "prompt": ("A single water droplet caught mid-fall from a corroded copper pipe joint into "
                 "a growing puddle below, macro close-up, high-contrast floor-level spotlight, "
-                "shot on a 100mm macro lens at f/2.8, crisp water texture, dramatic editorial "
-                "photograph.")}),
+                "shot on a 100mm macro lens at f/2.8, crisp water texture.")},
 )
 
 
 @pytest.mark.unit
-class TestNewsletterPreset:
-    """Issue #1992: five straight covers converged on one "person at laptop" scene.
-
-    These pin the fix at the brief layer — the stock-office gate, the metaphor-vocabulary
-    preset, and the format/hook_style shape hint.
-    """
-
-    @pytest.mark.parametrize("title,payload", _FIVE_FIXTURE_EDITIONS)
-    def test_object_first_response_passes_through_unmodified(self, title, payload):
-        with patch("cqc_lem.utilities.ai.ai_helper._call_llm",
-                   return_value=_resp(payload)) as llm:
-            brief = build_image_brief(f"{title}\n\nSubtitle\n\nBody", surface="newsletter",
-                                      ratio="16:9")
-        assert llm.call_count == 1, "a valid object-first brief must not retry or fall back"
+class TestFiveEditions:
+    @pytest.mark.parametrize("title,concept,payload", _FIVE_EDITIONS)
+    def test_a_grounded_brief_passes_first_time(self, title, concept, payload):
+        with patch(_LLM, return_value=_resp(payload)) as llm:
+            brief = build_image_brief(f"{title}\n\nBody", surface="newsletter", ratio="16:9",
+                                      concept=concept)
+        assert llm.call_count == 1, "a grounded brief must not retry or fall back"
         assert not brief.fallback
-        lowered = brief.prompt.lower()
-        for noun in _BANNED_NOUNS:
-            assert noun not in lowered, f"{title!r}: prompt still names {noun!r}"
-        assert brief.focal_concept == payload["focal_concept"]
+        assert brief.prompt == payload["prompt"]
+        assert cliche_hit(brief.prompt) is None
+        assert len(brief.required_entities) >= 2
+        assert brief.treatment == concept.treatment
 
-    def test_the_five_golden_concepts_are_mutually_distinct(self):
-        concepts = {payload["focal_concept"] for _title, payload in _FIVE_FIXTURE_EDITIONS}
-        assert len(concepts) == len(_FIVE_FIXTURE_EDITIONS)
-
-    def test_stock_office_response_is_rejected_and_retried(self):
-        stock = {"focal_concept": "a person at a laptop",
-                 "prompt": ("A confident professional sits at a laptop on a wooden desk with a "
-                           "notebook and coffee mug beside them, soft window light, shallow "
-                           "depth of field, editorial photograph.")}
-        good = _FIVE_FIXTURE_EDITIONS[0][1]
-        with patch("cqc_lem.utilities.ai.ai_helper._call_llm",
-                   side_effect=[_resp(stock), _resp(good)]) as llm:
-            brief = build_image_brief("content", surface="newsletter")
-        assert llm.call_count == 2
-        assert not brief.fallback
-        assert "laptop" not in brief.prompt.lower()
-        assert brief.prompt == good["prompt"]
-
-    def test_stock_office_response_exhausts_retries_and_falls_back(self):
-        stock = {"focal_concept": "a person at a laptop",
-                 "prompt": ("A confident professional types on a laptop at a desk with a "
-                           "notebook and coffee mug, soft window light, editorial photograph.")}
-        with patch("cqc_lem.utilities.ai.ai_helper._call_llm",
-                   return_value=_resp(stock)) as llm, \
-             patch("cqc_lem.utilities.ai.image_brief.log_warning") as warn:
-            brief = build_image_brief("a newsletter about routing costs", surface="newsletter")
-        assert llm.call_count == 2
+    @pytest.mark.parametrize("old", _OLD_METAPHOR_BRIEFS)
+    def test_the_old_metaphor_still_life_is_now_rejected(self, old):
+        concept = _FIVE_EDITIONS[4][1]
+        with patch(_LLM, return_value=_resp(old)) as llm:
+            brief = build_image_brief("Spot the Leak", surface="newsletter", ratio="16:9",
+                                      concept=concept)
+        assert llm.call_count == _BRIEF_ATTEMPTS
         assert brief.fallback
-        assert warn.called
+        assert cliche_hit(brief.prompt) is None
 
-    def test_the_gate_only_applies_to_the_newsletter_surface(self):
-        stock = {"focal_concept": "a person at a laptop",
-                 "prompt": ("A confident professional sits at a laptop on a desk with a "
-                           "notebook, soft window light, editorial photograph.")}
-        with patch("cqc_lem.utilities.ai.ai_helper._call_llm", return_value=_resp(stock)) as llm:
-            brief = build_image_brief("content", surface="post_image")
-        assert llm.call_count == 1, "post_image is not gated on stock-office nouns"
-        assert not brief.fallback
-        assert brief.prompt == stock["prompt"]
 
-    def test_the_gate_never_applies_when_the_avatar_is_in_frame(self):
-        stock = {"focal_concept": "the author at a laptop",
-                 "prompt": ("The author sits at a laptop on a desk with a notebook and coffee "
-                           "mug, soft window light, editorial photograph.")}
+@pytest.mark.unit
+class TestStage2Contract:
+    def test_the_author_sees_use_case_treatment_analysis_and_an_excerpt(self):
+        content = "Body sentence. " * 400  # ~6000 chars
+        with patch(_LLM, return_value=_resp(_GROUNDED)) as llm:
+            build_image_brief(content, surface="newsletter", ratio="16:9", concept=_concept(),
+                              brand_kit="Palette: forest green and cream; type: Inter Bold")
+        user_msg = llm.call_args[1]["messages"][1]["content"]
+        assert f"USE CASE: {_STYLE_PRESETS['newsletter']}" in user_msg
+        assert _TREATMENT_TEMPLATES["concrete_scene"] in user_msg
+        assert "Late invoices quietly starve" in user_msg and "unpaid invoices" in user_msg
+        assert "Brand: Palette: forest green and cream" in user_msg
+        excerpt = user_msg.split("<content>")[1].split("</content>")[0]
+        assert len(excerpt) == 3000, "the excerpt is capped, never the whole piece"
+
+    def test_stage_one_runs_when_no_concept_is_passed(self):
+        with patch("cqc_lem.utilities.ai.image_brief.analyze_content_for_image",
+                   return_value=_concept()) as stage1, \
+             patch(_LLM, return_value=_resp(_GROUNDED)):
+            brief = build_image_brief("the piece", surface="post_image")
+        assert stage1.call_args[0][0] == "the piece"
+        assert stage1.call_args[1]["surface"] == "post_image"
+        assert brief.concept == _concept()
+
+    def test_a_raising_stage_one_still_briefs(self):
+        with patch("cqc_lem.utilities.ai.image_brief.analyze_content_for_image",
+                   side_effect=RuntimeError("boom")), \
+             patch(_LLM, return_value=_resp(_GOOD)):
+            brief = build_image_brief("the piece", surface="post_image")
+        assert not brief.fallback and brief.concept is None
+
+    def test_an_avatar_always_takes_people_scene(self):
         avatar = {"gender_presentation": "man", "age_band": "40s", "trigger_word": "TOK"}
-        with patch("cqc_lem.utilities.ai.ai_helper._call_llm", return_value=_resp(stock)) as llm:
-            brief = build_image_brief("content", surface="newsletter", avatar=avatar)
-        assert llm.call_count == 1, "a real person IS the point once the avatar is in frame"
-        assert not brief.fallback
-        assert brief.prompt == stock["prompt"]
+        concept = _concept(treatment="editorial_graphic", hook_phrase=_HOOK)
+        with patch(_LLM, return_value=_resp(_GROUNDED)) as llm:
+            brief = build_image_brief("c", surface="newsletter", avatar=avatar, concept=concept)
+        assert brief.treatment == "people_scene" and brief.hook_text is None
+        assert _TREATMENT_TEMPLATES["people_scene"] in llm.call_args[1]["messages"][1]["content"]
 
-    def test_content_shape_reaches_the_user_message(self):
-        with patch("cqc_lem.utilities.ai.ai_helper._call_llm", return_value=_resp(_GOOD)) as llm:
-            build_image_brief("content", surface="newsletter",
-                              content_shape="format=case_study, hook_style=personal_story")
-        user_msg = llm.call_args[1]["messages"][1]["content"]
-        assert "case_study" in user_msg and "personal_story" in user_msg
-
-    def test_no_content_shape_adds_nothing(self):
-        with patch("cqc_lem.utilities.ai.ai_helper._call_llm", return_value=_resp(_GOOD)) as llm:
-            build_image_brief("content", surface="newsletter")
-        user_msg = llm.call_args[1]["messages"][1]["content"]
-        assert "Content shape:" not in user_msg
-
-    def test_preset_offers_a_metaphor_vocabulary_for_abstract_topics(self):
-        preset = _STYLE_PRESETS["newsletter"]
-        for word in ("switch", "valve", "leak", "scale", "gear", "domino"):
-            assert word in preset.lower()
-
-    def test_word_boundary_gate_does_not_reject_substring_lookalikes(self):
-        # A bare substring match on "phone" also flags saxophone/microphone/telephone; "screen"
-        # also flags "screening"/"green screen". The gate must reject only the whole-word noun.
-        clean = {"focal_concept": "a brass saxophone on a stage",
-                 "prompt": ("A weathered brass saxophone rests on a velvet-lined stand under a "
-                           "warm stage spotlight, soft window light from camera left, shot on "
-                           "an 85mm lens at f/1.8, subtle film grain, editorial photograph.")}
-        with patch("cqc_lem.utilities.ai.ai_helper._call_llm", return_value=_resp(clean)) as llm:
-            brief = build_image_brief("content", surface="newsletter")
-        assert llm.call_count == 1, "saxophone must not be rejected as a 'phone' cliché"
-        assert not brief.fallback
-        assert brief.prompt == clean["prompt"]
-
-
-@pytest.mark.unit
-class TestLiveSampleRegressions:
-    """Regressions from issue #1992's five-edition live sample run.
-
-    Four of five covers shipped from the deterministic fallback, and the fallback drew the exact
-    "man at a laptop" scene the issue was filed about.
-    """
-
-    _STOCK = {"focal_concept": "a person at a laptop",
-              "prompt": ("A confident professional sits at a laptop on a wooden desk with a "
-                        "notebook and coffee mug beside them, soft window light, editorial "
-                        "photograph.")}
-
-    def test_newsletter_fallback_never_asks_for_people_screens_or_clothing(self):
-        """The fallback template is a RENDER prompt: every noun in it is a request.
-
-        The generic one pasted the surface preset's "People and screens stay out of the frame"
-        into it and then asked for "blank screens" and "plain unbranded clothing" — which is how
-        a fallback cover came back as a man at a laptop.
-        """
-        with patch("cqc_lem.utilities.ai.ai_helper._call_llm", return_value=_resp(self._STOCK)):
-            brief = build_image_brief("Spot the leak in your AI budget", surface="newsletter",
-                                      ratio="16:9")
-        assert brief.fallback
-        lowered = brief.prompt.lower()
-        for noun in ("people", "person", "clothing", "screen", "laptop", "desk", "notebook"):
-            assert noun not in lowered, f"the newsletter fallback prompt still names {noun!r}"
-
-    def test_the_editions_own_stock_nouns_are_stripped_from_the_fallback_summary(self):
-        with patch("cqc_lem.utilities.ai.ai_helper._call_llm", return_value=_resp(self._STOCK)):
-            brief = build_image_brief("How much did your last laptop draft cost on screen?",
-                                      surface="newsletter", ratio="16:9")
-        assert brief.fallback
-        assert "laptop" not in brief.prompt.lower()
-        assert "screen" not in brief.prompt.lower()
-
-    def test_an_avatar_newsletter_fallback_keeps_the_generic_template(self):
-        """A person and a desk genuinely belong once the author's own likeness is the subject."""
-        avatar = {"status": "succeeded", "model_ref": "owner/lora:v1", "trigger_word": "TOK"}
-        with patch("cqc_lem.utilities.ai.ai_helper._call_llm", side_effect=RuntimeError("down")):
-            brief = build_image_brief("content", surface="newsletter", ratio="16:9",
-                                      avatar=avatar)
-        assert brief.fallback
-        assert "A single professional photograph representing:" in brief.prompt
-
-    def test_avoid_terms_reach_the_author_but_never_the_fallback_prompt(self):
-        with patch("cqc_lem.utilities.ai.ai_helper._call_llm",
-                   return_value=_resp(self._STOCK)) as llm:
-            brief = build_image_brief("an edition about token spend", surface="newsletter",
-                                      ratio="16:9", avoid_terms=["laptop", "a prior gear"])
-        user_msg = llm.call_args[1]["messages"][1]["content"]
-        assert "must NOT be built on any of them" in user_msg
-        assert "a prior gear" in user_msg
-        assert brief.fallback
-        assert "a prior gear" not in brief.prompt
-
-    def test_the_retry_is_told_which_noun_was_rejected(self):
-        """Re-sending the identical prompt just re-drew the rejected scene."""
-        good = {"focal_concept": "a cracked brass gear",
-                "prompt": ("A cracked brass gear resting on a worn workbench, dramatic raking "
-                          "side light, macro still life, shot on a 100mm lens at f/2.8, subtle "
-                          "film grain, editorial photograph.")}
-        with patch("cqc_lem.utilities.ai.ai_helper._call_llm",
-                   side_effect=[_resp(self._STOCK), _resp(good)]) as llm:
-            brief = build_image_brief("content", surface="newsletter", ratio="16:9")
-        assert not brief.fallback
-        first = llm.call_args_list[0][1]["messages"][1]["content"]
-        second = llm.call_args_list[1][1]["messages"][1]["content"]
-        assert "REJECTED" not in first
-        assert "Your previous attempt was REJECTED" in second
-        assert "'laptop'" in second, "the retry must name the offending noun"
-
-
-@pytest.mark.unit
-class TestAvoidTermGate:
-    """Issue #2000: `avoid_terms` as a prompt line alone had no teeth.
-
-    Four consecutive live newsletter covers all chose a valve while every prior valve sat in the
-    avoid list. It now gates the returned FOCAL CONCEPT and drives the same retry-with-reason the
-    stock-office noun does.
-    """
-
-    _VALVE = {"focal_concept": "Budget leak shown as a dripping valve",
-              "prompt": ("A brass valve dripping onto a worn workbench, dramatic raking side "
-                        "light, macro still life, shot on a 100mm lens at f/2.8, subtle film "
-                        "grain, editorial photograph.")}
-    _GEAR = {"focal_concept": "A cracked gear stopped mid-turn",
-             "prompt": ("A cracked cast-iron gear resting on a stone slab, low-key light from "
-                       "camera left, macro still life, shot on a 100mm lens at f/2.8, subtle "
-                       "film grain, editorial photograph.")}
-
-    def test_a_repeated_object_is_rejected_and_retried(self):
-        with patch("cqc_lem.utilities.ai.ai_helper._call_llm",
-                   side_effect=[_resp(self._VALVE), _resp(self._GEAR)]) as llm:
-            brief = build_image_brief("content", surface="newsletter", ratio="16:9",
-                                      avoid_terms=["valve"])
+    @pytest.mark.parametrize("surface", ["post_image", "carousel", "newsletter"])
+    def test_a_cliche_is_rejected_on_every_surface(self, surface):
+        piped = dict(_GROUNDED, prompt=_GROUNDED["prompt"] + " Copper pipes run along the wall.")
+        with patch(_LLM, side_effect=[_resp(piped), _resp(_GROUNDED)]) as llm:
+            brief = build_image_brief("c", surface=surface, concept=_concept())
         assert llm.call_count == 2
-        assert not brief.fallback
-        assert brief.focal_concept == self._GEAR["focal_concept"]
+        assert brief.prompt == _GROUNDED["prompt"]
+        retry = llm.call_args_list[1][1]["messages"][1]["content"]
+        assert "REJECTED" in retry and "'pipes'" in retry
 
-    def test_the_retry_names_the_repeated_object(self):
-        with patch("cqc_lem.utilities.ai.ai_helper._call_llm",
-                   side_effect=[_resp(self._VALVE), _resp(self._GEAR)]) as llm:
-            build_image_brief("content", surface="newsletter", ratio="16:9",
-                              avoid_terms=["valve"])
-        second = llm.call_args_list[1][1]["messages"][1]["content"]
-        # The first family word in "Budget leak shown as a dripping valve" is `leak` (#2241).
-        assert "'leak'" in second
-        assert "plumbing family" in second
-        assert "different family" in second
+    def test_a_cliche_is_rejected_on_the_avatar_path_too(self):
+        avatar = {"gender_presentation": "man", "age_band": "40s", "trigger_word": "TOK"}
+        bulb = dict(_GROUNDED, prompt=_GROUNDED["prompt"] + " A glowing light bulb overhead.")
+        with patch(_LLM, side_effect=[_resp(bulb), _resp(_GROUNDED)]) as llm:
+            brief = build_image_brief("c", surface="newsletter", avatar=avatar,
+                                      concept=_concept())
+        assert llm.call_count == 2 and brief.prompt == _GROUNDED["prompt"]
 
-    def test_a_distinct_object_passes_first_time(self):
-        with patch("cqc_lem.utilities.ai.ai_helper._call_llm",
-                   return_value=_resp(self._GEAR)) as llm:
-            brief = build_image_brief("content", surface="newsletter", ratio="16:9",
-                                      avoid_terms=["valve", "leak"])
+    def test_fewer_than_two_entities_is_rejected_with_the_entities_named(self):
+        generic = {"focal_concept": "a founder thinking",
+                   "prompt": ("A candid editorial photograph of a founder looking out of a "
+                              "rain-streaked window in a quiet loft, soft overcast light, shot "
+                              "on a 35mm lens at f/2, subtle film grain, muted tones.")}
+        with patch(_LLM, side_effect=[_resp(generic), _resp(_GROUNDED)]) as llm:
+            brief = build_image_brief("c", surface="post_image", concept=_concept())
+        retry = llm.call_args_list[1][1]["messages"][1]["content"]
+        assert "unpaid invoices; payroll run; agency owner" in retry
+        assert set(brief.required_entities) == {"unpaid invoices", "payroll run", "agency owner"}
+
+    def test_a_weak_concept_skips_entity_coverage(self):
+        weak = _concept(specific_entities=("payroll run",), weak=True)
+        with patch(_LLM, return_value=_resp(_GOOD)) as llm:
+            brief = build_image_brief("c", surface="post_image", concept=weak)
+        assert llm.call_count == 1 and not brief.fallback
+
+    def test_quoted_text_is_rejected_off_the_graphic_treatment(self):
+        quoted = dict(_GROUNDED, prompt=_GROUNDED["prompt"] + ' A sticky note reads "PAY ME".')
+        with patch(_LLM, side_effect=[_resp(quoted), _resp(_GROUNDED)]) as llm:
+            brief = build_image_brief("c", surface="post_image", concept=_concept())
+        assert llm.call_count == 2 and brief.hook_text is None
+        assert "'PAY ME'" in llm.call_args_list[1][1]["messages"][1]["content"]
+
+    def test_a_declared_hook_is_rejected_off_the_graphic_treatment(self):
+        hooked = dict(_GROUNDED, hook_text="Payroll eats first")
+        with patch(_LLM, side_effect=[_resp(hooked), _resp(_GROUNDED)]) as llm:
+            build_image_brief("c", surface="post_image", concept=_concept())
+        assert "only the editorial_graphic treatment has a hook" in \
+            llm.call_args_list[1][1]["messages"][1]["content"]
+
+    def test_the_graphic_treatment_carries_its_hook(self):
+        concept = _concept(treatment="editorial_graphic", hook_phrase=_HOOK)
+        with patch(_LLM, return_value=_resp(_GRAPHIC)) as llm:
+            brief = build_image_brief("c", surface="newsletter", concept=concept)
         assert llm.call_count == 1
-        assert not brief.fallback
+        assert brief.hook_text == _HOOK and brief.treatment == "editorial_graphic"
+        assert f'"{_HOOK}"' in llm.call_args[1]["messages"][1]["content"]
 
-    def test_the_gate_reads_the_focal_concept_not_the_whole_prompt(self):
-        """A valve in the background of an otherwise distinct scene is not a repeat."""
-        background = {"focal_concept": "A cracked gear stopped mid-turn",
-                      "prompt": ("A cracked cast-iron gear on a stone slab with a brass valve "
-                                "far behind it out of focus, low-key light, macro still life, "
-                                "shot on a 100mm lens at f/2.8, editorial photograph.")}
-        with patch("cqc_lem.utilities.ai.ai_helper._call_llm",
-                   return_value=_resp(background)) as llm:
-            brief = build_image_brief("content", surface="newsletter", ratio="16:9",
-                                      avoid_terms=["valve"])
-        assert llm.call_count == 1
-        assert not brief.fallback
+    def test_a_graphic_missing_or_misspelling_its_hook_is_rejected(self):
+        concept = _concept(treatment="editorial_graphic", hook_phrase=_HOOK)
+        wrong = dict(_GRAPHIC, prompt=_GRAPHIC["prompt"].replace(_HOOK, "Payrol eats first"))
+        with patch(_LLM, side_effect=[_resp(wrong), _resp(_GRAPHIC)]) as llm:
+            brief = build_image_brief("c", surface="newsletter", concept=concept)
+        assert llm.call_count == 2 and brief.prompt == _GRAPHIC["prompt"]
+        assert "exactly as" in llm.call_args_list[1][1]["messages"][1]["content"]
 
-    def test_a_long_avoid_list_cannot_starve_the_author(self):
-        from cqc_lem.utilities.ai.image_brief import _MAX_AVOID_TERMS
+    def test_a_graphic_quoting_a_second_string_is_rejected(self):
+        concept = _concept(treatment="editorial_graphic", hook_phrase=_HOOK)
+        extra = dict(_GRAPHIC, prompt=_GRAPHIC["prompt"] + ' A caption reads "Q3".')
+        with patch(_LLM, side_effect=[_resp(extra), _resp(_GRAPHIC)]) as llm:
+            build_image_brief("c", surface="newsletter", concept=concept)
+        assert "other than the hook" in llm.call_args_list[1][1]["messages"][1]["content"]
 
-        avoid = [f"object{i}" for i in range(40)] + ["gear"]
-        with patch("cqc_lem.utilities.ai.ai_helper._call_llm",
-                   return_value=_resp(self._GEAR)) as llm:
-            brief = build_image_brief("content", surface="newsletter", ratio="16:9",
-                                      avoid_terms=avoid)
-        assert llm.call_count == 1, "the capped list drops the oldest steering, never the author"
-        assert not brief.fallback
+    def test_avoid_terms_are_a_soft_steer_never_a_gate(self):
+        with patch(_LLM, return_value=_resp(_GROUNDED)) as llm:
+            brief = build_image_brief("c", surface="newsletter", concept=_concept(),
+                                      avoid_terms=["concrete_scene: unpaid invoices on a table"])
         user_msg = llm.call_args[1]["messages"][1]["content"]
-        assert f"object{_MAX_AVOID_TERMS}" not in user_msg
+        assert "visibly different in setting and composition" in user_msg
+        assert llm.call_count == 1 and not brief.fallback
 
-    def test_the_gate_is_off_for_other_surfaces(self):
-        with patch("cqc_lem.utilities.ai.ai_helper._call_llm",
-                   return_value=_resp(self._VALVE)) as llm:
-            brief = build_image_brief("content", surface="post_image", avoid_terms=["valve"])
-        assert llm.call_count == 1
-        assert not brief.fallback
-
-    def test_the_gate_is_off_when_an_avatar_is_in_frame(self):
-        avatar = {"status": "succeeded", "model_ref": "owner/lora:v1", "trigger_word": "TOK"}
-        with patch("cqc_lem.utilities.ai.ai_helper._call_llm",
-                   return_value=_resp(self._VALVE)) as llm:
-            brief = build_image_brief("content", surface="newsletter", ratio="16:9",
-                                      avatar=avatar, avoid_terms=["valve"])
-        assert llm.call_count == 1
-        assert not brief.fallback
+    def test_avoid_terms_never_reach_the_fallback(self):
+        with patch(_LLM, side_effect=RuntimeError("down")):
+            brief = build_image_brief("c", surface="newsletter", concept=_concept(),
+                                      avoid_terms=["a prior gear"])
+        assert brief.fallback and "a prior gear" not in brief.prompt
 
 
 @pytest.mark.unit
-class TestNewsletterPresetFamilies:
-    def test_the_preset_offers_more_than_plumbing(self):
-        """Cost and routing ideas both reach for plumbing; one family is not a vocabulary."""
-        preset = _STYLE_PRESETS["newsletter"].lower()
-        for family_word in ("scale", "gear", "domino", "caliper", "sieve"):
-            assert family_word in preset
-        assert "different family" in preset
+class TestFallbackIsBuiltFromThePiece:
+    _TREATMENTS = ("people_scene", "editorial_graphic", "concrete_scene", "metaphor_last_resort")
+
+    def test_the_workshop_still_life_is_gone(self):
+        from cqc_lem.utilities.ai import image_brief
+        assert not hasattr(image_brief, "_NEWSLETTER_FALLBACK_SCENE")
+        assert not hasattr(image_brief, "METAPHOR_FAMILIES")
+        prompt = _fallback_brief("Spot the leak in your AI budget", surface="newsletter",
+                                 ratio="16:9", context="").prompt.lower()
+        for word in ("workshop", "still-life", "still life", "brass", "valve", "leak"):
+            assert word not in prompt
+
+    def test_a_concrete_fallback_names_the_entities(self):
+        brief = _fallback_brief("c", surface="newsletter", ratio="16:9", context="",
+                                concept=_concept())
+        assert brief.prompt.startswith("A candid editorial photograph for a LinkedIn newsletter "
+                                       "cover of unpaid invoices and payroll run")
+        assert "agency owner in the frame" in brief.prompt
+        assert brief.fallback and brief.treatment == "concrete_scene"
+        assert len(brief.required_entities) == 3
+
+    def test_a_graphic_fallback_quotes_the_hook_in_the_brand_palette(self):
+        concept = _concept(treatment="editorial_graphic", hook_phrase=_HOOK)
+        brief = _fallback_brief("c", surface="newsletter", ratio="16:9", context="",
+                                concept=concept, brand_kit="forest green and cream")
+        assert f'reading "{_HOOK}"' in brief.prompt and "forest green and cream" in brief.prompt
+        assert brief.hook_text == _HOOK
+
+    def test_a_people_fallback_uses_the_audience(self):
+        brief = _fallback_brief("c", surface="post_image", ratio="1:1", context="",
+                                concept=_concept(treatment="people_scene"))
+        assert "agency owners caught mid-conversation around unpaid invoices" in brief.prompt
+
+    def test_a_cliche_entity_is_never_interpolated(self):
+        concept = _concept(specific_entities=("leaking pipes", "plumbing invoice", "van"),
+                           thesis="Our plumbing firm lost money on leak callouts")
+        prompt = _fallback_brief("c", surface="newsletter", ratio="16:9", context="",
+                                 concept=concept).prompt
+        assert cliche_hit(prompt) is None
+
+    @pytest.mark.parametrize("treatment", _TREATMENTS)
+    def test_every_fallback_obeys_the_shared_rules(self, treatment):
+        concept = _concept(treatment=treatment, hook_phrase=_HOOK)
+        prompt = _fallback_brief("a post about pipes, gears and valves", surface="newsletter",
+                                 ratio="16:9", context="", concept=concept,
+                                 treatment=treatment).prompt
+        lowered = prompt.lower()
+        assert cliche_hit(prompt) is None
+        for marker in NEGATION_MARKERS:
+            assert marker not in lowered
+        for word in DEAD_STYLE_WORDS + DEAD_QUALITY_TAGS:
+            assert word.lower() not in lowered
+        quoted = '"' in prompt
+        assert quoted == (treatment == "editorial_graphic"), "only the graphic carries text"
+
+    def test_no_concept_scrubs_cliches_from_the_excerpt(self):
+        prompt = _fallback_brief("Fix the leaking valve in your sales pipeline", surface="post_image",
+                                 ratio="1:1", context="").prompt
+        assert cliche_hit(prompt) is None and "sales pipeline" in prompt
 
 
 @pytest.mark.unit
-class TestVarietyGateCannotStarve:
-    """Issue #2005: the variety gate pushed all four live editions onto the fallback at once.
+class TestPromptCheck:
+    """Stage 3: deterministic first, then ONE lem-simple judge that fails open."""
 
-    A brief that is wrong only because it reuses an object is still a real brief, and a real
-    brief beats the deterministic template every time.
-    """
+    def test_deterministic_failures_never_reach_the_judge(self):
+        with patch(_JUDGE) as judge:
+            ok, why = check_prompt_against_concept("a valve in a factory " * 5, _concept(), None)
+        assert not ok and "'valve'" in why
+        judge.assert_not_called()
 
-    _VALVE = {"focal_concept": "Budget leak shown as a dripping valve",
-              "prompt": ("A brass valve dripping onto a worn workbench, dramatic raking side "
-                        "light, macro still life, shot on a 100mm lens at f/2.8, subtle film "
-                        "grain, editorial photograph.")}
+    def test_no_concept_runs_the_deterministic_half_only(self):
+        with patch(_JUDGE) as judge:
+            ok, _ = check_prompt_against_concept(_GROUNDED["prompt"], None, None)
+        assert ok
+        judge.assert_not_called()
 
-    def test_a_repeat_on_both_attempts_ships_the_repeat_not_the_fallback(self):
-        with patch("cqc_lem.utilities.ai.ai_helper._call_llm",
-                   return_value=_resp(self._VALVE)) as llm:
-            brief = build_image_brief("content", surface="newsletter", ratio="16:9",
-                                      avoid_terms=["valve"])
-        assert llm.call_count == 2, "it must still try for something distinct first"
-        assert not brief.fallback, "a repeated object beats the deterministic template"
-        assert brief.prompt == self._VALVE["prompt"]
+    def test_the_judge_is_lem_simple_and_sees_the_thesis_and_prompt(self):
+        reply = _resp({"guessable": True, "depicted_entities": ["unpaid invoices"]})
+        with patch(_JUDGE, return_value=reply) as judge:
+            ok, why = check_prompt_against_concept(_GROUNDED["prompt"], _concept(), None)
+        assert ok and why == "judge passed"
+        kwargs = judge.call_args[1]
+        assert kwargs["model"] == "lem-simple"
+        text = kwargs["messages"][0]["content"]
+        assert "Late invoices quietly starve" in text and _GROUNDED["prompt"] in text
 
-    def test_a_repeat_does_not_file_the_fallback_warning(self):
-        """A reused object is expected, not a defect — a repeated warning re-emits at ERROR."""
-        with patch("cqc_lem.utilities.ai.ai_helper._call_llm",
-                   return_value=_resp(self._VALVE)), \
+    def test_an_unguessable_prompt_fails_with_the_thesis_as_the_repair(self):
+        reply = _resp({"guessable": False, "reason": "it reads as a generic late night"})
+        with patch(_JUDGE, return_value=reply):
+            ok, why = check_prompt_against_concept(_GROUNDED["prompt"], _concept(), None)
+        assert not ok
+        assert "generic late night" in why and "Late invoices quietly starve" in why
+
+    @pytest.mark.parametrize("effect", [RuntimeError("proxy down"), None])
+    def test_an_unreachable_or_unusable_judge_fails_open(self, effect):
+        kwargs = ({"side_effect": effect} if effect else {"return_value": _resp("not json")})
+        with patch(_JUDGE, **kwargs):
+            ok, _ = check_prompt_against_concept(_GROUNDED["prompt"], _concept(), None)
+        assert ok
+
+    def test_a_failed_check_gets_one_repair_pass_through_the_author(self):
+        repaired = dict(_GROUNDED, prompt=_GROUNDED["prompt"].replace("kitchen", "office"))
+        verdict = _resp({"guessable": False, "reason": "too generic"})
+        with patch(_JUDGE, return_value=verdict) as judge, \
+             patch(_LLM, side_effect=[_resp(_GROUNDED), _resp(repaired)]) as llm:
+            brief = build_image_brief("c", surface="post_image", concept=_concept())
+        assert judge.call_count == 1, "the repaired brief is not judged again"
+        assert llm.call_count == 2
+        assert brief.prompt == repaired["prompt"]
+        assert brief.prompt_check.startswith("repaired after: a stranger could not guess")
+        assert "too generic" in llm.call_args_list[1][1]["messages"][1]["content"]
+
+    def test_a_repair_that_falls_short_ships_the_judged_brief_not_the_fallback(self):
+        verdict = _resp({"guessable": False, "reason": "too generic"})
+        with patch(_JUDGE, return_value=verdict), \
+             patch(_LLM, side_effect=[_resp(_GROUNDED), _resp("nope"), _resp("nope")]), \
              patch("cqc_lem.utilities.ai.image_brief.log_warning") as warn:
-            build_image_brief("content", surface="newsletter", ratio="16:9",
-                              avoid_terms=["valve"])
-        assert not warn.called
+            brief = build_image_brief("c", surface="post_image", concept=_concept())
+        assert not brief.fallback and brief.prompt == _GROUNDED["prompt"]
+        warn.assert_not_called()
 
-    def test_a_genuinely_unusable_brief_still_falls_back(self):
-        stock = {"focal_concept": "a person at a laptop",
-                 "prompt": ("A confident professional sits at a laptop on a wooden desk with a "
-                           "notebook and coffee mug, soft window light, editorial photograph.")}
-        with patch("cqc_lem.utilities.ai.ai_helper._call_llm", return_value=_resp(stock)), \
-             patch("cqc_lem.utilities.ai.image_brief.log_warning") as warn:
-            brief = build_image_brief("content", surface="newsletter", ratio="16:9",
-                                      avoid_terms=["valve"])
-        assert brief.fallback
-        assert warn.called
+    def test_a_passing_check_is_recorded_on_the_brief(self):
+        with patch(_JUDGE, return_value=_resp({"guessable": True})), \
+             patch(_LLM, return_value=_resp(_GROUNDED)):
+            brief = build_image_brief("c", surface="post_image", concept=_concept())
+        assert brief.prompt_check == "judge passed"
 
 
 @pytest.mark.unit
-class TestFamilyAwareVarietyGate:
-    """Issue #2241: "all newsletter images have pipes in them".
-
-    The gate steered off one OBJECT, so with `valve` avoided the author drew a dripping copper
-    pipe and passed; and a valve cover came back with "a background of dim industrial piping".
-    An avoided object now stands for its whole family, in any inflection, and once plumbing is
-    avoided pipes are graded against the whole prompt.
-    """
-
-    _PIPE = {"focal_concept": "AI budget leak illustrated by dripping copper pipes",
-             "prompt": ("A copper pipe rests on a matte black tabletop, a single steady drip "
-                        "falling into a steel tin, window light from the left, shot on a 50mm "
-                        "lens at f/2.2, subtle film grain, editorial photograph.")}
-    _GEAR_PIPED = {"focal_concept": "A cracked gear stopped mid-turn",
-                   "prompt": ("A cracked cast-iron gear on a stone slab, a background of dim "
-                              "industrial piping receding into soft focus, low-key light, shot "
-                              "on a 100mm lens at f/2.8, editorial photograph.")}
-    _GEAR = TestAvoidTermGate._GEAR
-
-    def test_a_sibling_object_from_the_same_family_is_a_repeat(self):
-        with patch("cqc_lem.utilities.ai.ai_helper._call_llm",
-                   side_effect=[_resp(self._PIPE), _resp(self._GEAR)]) as llm:
-            brief = build_image_brief("content", surface="newsletter", ratio="16:9",
-                                      avoid_terms=["valve"])
-        assert llm.call_count == 2
-        assert brief.focal_concept == self._GEAR["focal_concept"]
-
-    def test_pipe_scenery_is_rejected_once_plumbing_is_avoided(self):
-        with patch("cqc_lem.utilities.ai.ai_helper._call_llm",
-                   side_effect=[_resp(self._GEAR_PIPED), _resp(self._GEAR)]) as llm:
-            brief = build_image_brief("content", surface="newsletter", ratio="16:9",
-                                      avoid_terms=["valve"])
-        assert llm.call_count == 2
-        assert brief.prompt == self._GEAR["prompt"]
-        second = llm.call_args_list[1][1]["messages"][1]["content"]
-        assert "'piping'" in second and "no pipes anywhere" in second
-
-    def test_pipe_scenery_is_fine_when_plumbing_was_not_used(self):
-        with patch("cqc_lem.utilities.ai.ai_helper._call_llm",
-                   return_value=_resp(self._GEAR_PIPED)) as llm:
-            brief = build_image_brief("content", surface="newsletter", ratio="16:9",
-                                      avoid_terms=["scale"])
-        assert llm.call_count == 1
-        assert not brief.fallback
-
-    def test_the_author_is_told_which_families_are_used(self):
-        with patch("cqc_lem.utilities.ai.ai_helper._call_llm",
-                   return_value=_resp(self._GEAR)) as llm:
-            build_image_brief("content", surface="newsletter", ratio="16:9",
-                              avoid_terms=["pipes", "domino", "laptop"])
-        first = llm.call_args[1]["messages"][1]["content"]
-        assert "Families already used, so no object from them: mechanical, plumbing" in first
-        assert "no pipes or piping anywhere" in first
-
-    def test_no_family_line_without_a_family_term(self):
-        with patch("cqc_lem.utilities.ai.ai_helper._call_llm",
-                   return_value=_resp(self._GEAR)) as llm:
-            build_image_brief("content", surface="newsletter", ratio="16:9",
-                              avoid_terms=["laptop"])
-        assert "Families already used" not in llm.call_args[1]["messages"][1]["content"]
-
-    def test_a_pipe_repeat_on_both_attempts_still_ships_the_brief(self):
-        """The #2005 floor holds: a repeated family never pushes a cover onto the fallback."""
-        with patch("cqc_lem.utilities.ai.ai_helper._call_llm",
-                   return_value=_resp(self._PIPE)):
-            brief = build_image_brief("content", surface="newsletter", ratio="16:9",
-                                      avoid_terms=["valve"])
-        assert not brief.fallback
-
-    @pytest.mark.parametrize("word,family", [
-        ("valve", "plumbing"), ("Pipes", "plumbing"), ("faucets", "plumbing"),
-        ("gear", "mechanical"), ("scales", "measuring"), ("laptop", None), ("", None)])
-    def test_metaphor_family(self, word, family):
-        from cqc_lem.utilities.ai.image_brief import metaphor_family
-
-        assert metaphor_family(word) == family
-
-    @pytest.mark.parametrize("text", [
-        "a dripping faucet", "rusty pipes", "industrial piping", "a leaky tap", "a hose"])
-    def test_every_plumbing_inflection_matches_a_valve_avoid(self, text):
-        from cqc_lem.utilities.ai.image_brief import _avoid_pattern
-
-        assert _avoid_pattern(["valve"]).search(text)
-
-    @pytest.mark.parametrize("text", ["LinkedIn growth", "a taper candle", "a pipeline review"])
-    def test_lookalikes_do_not_match(self, text):
-        from cqc_lem.utilities.ai.image_brief import _avoid_pattern
-
-        assert not _avoid_pattern(["valve"]).search(text)
-
-    def test_the_newsletter_fallback_scene_names_no_plumbing(self):
-        from cqc_lem.utilities.ai.image_brief import _NEWSLETTER_FALLBACK_SCENE, _avoid_pattern
-
-        assert not _avoid_pattern(["valve"]).search(_NEWSLETTER_FALLBACK_SCENE)
-
-    def test_every_preset_object_has_exactly_one_family(self):
-        from cqc_lem.utilities.ai.image_brief import METAPHOR_FAMILIES, METAPHOR_OBJECTS
-
-        assert sum(len(v) for v in METAPHOR_FAMILIES.values()) == len(METAPHOR_OBJECTS)
+class TestBriefReceiptCarriesTheConcept:
+    def test_the_receipt_records_concept_treatment_entities_and_hook(self, tmp_path):
+        from cqc_lem.utilities import media_provenance as mp
+        concept = _concept(treatment="editorial_graphic", hook_phrase=_HOOK)
+        brief = ImageBrief(prompt="p", ratio="16:9", surface="newsletter",
+                           style_preset="newsletter", focal_concept="f", concept=concept,
+                           treatment="editorial_graphic", required_entities=("payroll run",),
+                           hook_text=_HOOK, prompt_check="judge passed")
+        with patch.object(mp, "_assets_root", return_value=str(tmp_path)):
+            url = "https://x/api/assets?file_name=images/a.png"
+            assert mp.write_brief_receipt(url, brief) is not None
+            receipt = mp.read_brief_receipt(url)
+        assert receipt["concept"]["hook_phrase"] == _HOOK
+        assert receipt["treatment"] == "editorial_graphic"
+        assert receipt["required_entities"] == ["payroll run"]
+        assert receipt["hook_text"] == _HOOK and receipt["prompt_check"] == "judge passed"

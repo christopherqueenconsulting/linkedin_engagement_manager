@@ -118,164 +118,82 @@ filesystem path.
 
 ## Generation
 
-`generate_cover_for_edition` reuses the SHARED image path (`utilities/ai/image_brief.py` +
-`utilities/ai/image_gen.py`) rather than adding a parallel per-content-type helper:
+`generate_cover_for_edition` runs the SHARED staged image engine (`docs/image-stack.md` → "The
+staged engine") rather than any parallel per-content-type helper:
 
-- prompt: `build_image_brief(..., surface="newsletter", ratio=COVER_IMAGE_RATIO, avatar=...)`
-  (already encodes the engagement best practices a cover needs — one focal subject, strong
-  foreground separation, **no text/logos/charts**, which is exactly what makes generated covers
-  look machine-made when it is missing)
-- render: `render_avatar_image_gated` when an avatar is resolved, else `render_image_gated`, at
-  `COVER_IMAGE_RATIO` — the bounded `lem-vision` quality check, failing OPEN
+1. **Stage 1 — read the whole edition.** `image_concept.analyze_content_for_image` gets the
+   subtitle + the FULL body, with the title passed separately (so a hook that only restates it is
+   refused). It returns the edition's thesis, its grounded entities, a hook, and the treatment:
+   `people_scene`, `editorial_graphic`, `concrete_scene`, or — only when nothing concrete exists —
+   `metaphor_last_resort`.
+2. **Stage 2/3 — the brief.** `build_image_brief(title + subtitle + body, surface="newsletter",
+   ratio=COVER_IMAGE_RATIO, avatar=..., concept=..., content_shape=..., extra_direction=guidance,
+   avoid_terms=_recent_cover_signals(user_id))`. The author sees the use case (a 16:9 cover that
+   must read at 400×225, key content in the central 60%), the treatment template, the concept and a
+   3000-char excerpt; stock symbols (`CLICHE_OBJECTS`) are refused, at least two of the edition's
+   entities must be depicted, and only an `editorial_graphic` may carry text — its hook, exactly.
+3. **Stage 4 — the blind judge.** `render_avatar_image_gated` when an avatar is resolved, else
+   `render_image_gated`, both with `concept=brief.concept, hook_text=brief.hook_text`. **The avatar
+   path gets every stage too** — it used to skip the newsletter gates entirely
+   (`newsletter_gate = surface == "newsletter" and not avatar`). An avatar always takes
+   `people_scene`.
 
-### Concept-first briefs, not the hook (issue #1992)
+### Why the metaphor extractor is gone (issue #2241)
 
-Five straight covers in the same queue all rendered the same "person at laptop with notebook and
-coffee mug on a wooden desk" scene — none of them encoded the edition's actual idea. Root cause:
-`_edition_text` fed the brief author title + subtitle + the **first 1500 chars of body**, which for
-a hook-first newsletter is the FRUSTRATION, never the PAYOFF (a routing switch, a silent failure, a
-budget leak). The only concrete nouns in a hook about AI costs are laptop/screen/LinkedIn, so the
-brief converged on stock office imagery every time.
+User 1's covers were pipes, valves, gears and gauges whatever the edition said. The cover path
+REQUESTED that: `_extract_cover_concept` asked `lem-simple` for "the title's promise reduced to a
+PHYSICAL METAPHOR — a switch, a leak, a scale, a chain, a valve"; the `newsletter` preset offered a
+closed menu of plumbing / measuring / mechanical / routing / tool objects; the fallback was a brass
+valve on a workshop surface; and `_NO_ANONYMOUS_PERSON` plus the stock-office gate forbade the one
+thing LinkedIn guidance says outperforms symbols — real people. The brief author then saw only the
+title, three candidate objects and one mechanism sentence, and the vision gate graded the render
+against the brief's own focal concept, so a valve scored 5/5 against "a valve symbolising leaks".
 
-`generate_cover_for_edition` no longer sends that excerpt. `_cover_concept_text` builds the brief's
-content from:
+Deleted with it: `_extract_cover_concept`, `_cover_concept_text`, `_focal_objects`,
+`_recent_focal_objects`, `_drop_topic_words`, the dead `build_cover_prompt`, and in `image_brief`
+the `METAPHOR_FAMILIES` / `METAPHOR_OBJECTS` vocabulary, the family-aware repeat gate (#2000/#2241's
+first fix), `_NEWSLETTER_FALLBACK_SCENE` and `_NO_ANONYMOUS_PERSON`. The object/family repeat gate
+could only push the author from one metaphor to the next; with every stock symbol refused outright
+and the brief grounded in the article, variety comes from the articles themselves.
 
-1. **`_extract_cover_concept`** — a cheap `lem-simple` call over the edition's **full** body (not
-   the first 1500 chars), returning `{core_mechanism, tangible_metaphor_candidates[≤3], avoid[]}`.
-   **The title and subtitle are sent as their own sections and named as the governing promise**
-   (#2008). A newsletter series overlaps: these editions are all about AI cost and several bodies
-   discuss routing, which is the most mechanism-shaped idea in the text — so an unanchored "name
-   its core mechanism" returned edition 14's routing idea for "Spot the Leak in Your LinkedIn AI
-   Budget". The mechanism must be the one the TITLE promises; the body is supporting detail.
-   The candidate OBJECTS lead the brief content and `core_mechanism` follows as labelled context,
-   because the two can disagree — edition 15 came back as "intelligent model routing" while its
-   objects were correctly a dripping faucet and a leaky pipe.
-   `core_mechanism` and the candidates are folded into the brief content as "Core mechanism to
-   depict" / "Candidate physical metaphors"; `avoid` names the generic nouns the edition's own hook
-   keeps repeating. Fails closed to the old title/subtitle + 1500-char excerpt on any error or an
-   empty response — a dead LLM degrades the steering, never the image. **Its `max_tokens` is
-   `_CONCEPT_MAX_TOKENS` (2000), not a tight budget:** `lem-simple` is a reasoning model, and at
-   300 the entire budget went to reasoning tokens — every one of the five live editions came back
-   EMPTY with `finish_reason='length'`, silently, at DEBUG. A real extraction costs 540-1020
-   completion tokens. This is the same trap `_BRIEF_MAX_TOKENS` documents; treat any new call on a
-   `lem-*` tier the same way.
-2. **Cross-edition variety** (`_recent_focal_concepts`) — the `focal_concept` of the user's last
-   `_VARIETY_WINDOW` (5) cover receipts, most-recent first, read straight off the `.brief.json`
-   sidecars already on the assets volume (no new DB column, mirrors `enforce_variety`'s approach for
-   posts).
+What survives from #1992/#2008: the edition's PAYOFF is what the image is built from (now by
+reading the whole body rather than extracting a metaphor), a **retry carries its rejection
+reason**, `content_shape` distinguishes a listicle cover from a personal-story one, and the person
+at a laptop with a coffee and notebook is still refused — now as entries in `CLICHE_OBJECTS`, on
+every surface. A bare `laptop` or `desk` is no longer refused: a concrete scene may genuinely
+contain one.
 
-   `_recent_focal_objects` is what the brief actually gets: `_focal_objects` pulls the OBJECT out
-   of each prior `focal_concept` first (`image_brief.METAPHOR_OBJECTS` for precision, a filler-strip
-   token pass otherwise). **Passing the whole sentence steers nothing** — a focal concept is prose
-   ("Budget leak depicted as a dripping valve spilling money") and the next one never matches it, so
-   four consecutive live covers all chose a valve while every prior valve sat in the avoid list
-   (issue #2000). A receipt written by the deterministic fallback is skipped: its focal concept is
-   the edition's title text, not an object.
+### Cross-edition variety
 
-   The window only ever sees receipts for covers still on disk (issue #2010): `remove_cover_file`
-   deletes a cover's `.brief.json` sidecar in the same call that deletes the cover image, so a
-   regenerated or replaced cover stops steering variety the moment its file is gone rather than
-   surviving as an orphan nothing references. Deliberate, not an accident of cleanup order — a
-   superseded regeneration is not "an object this account already used," it is an object this
-   account tried and moved away from, so it should not keep pushing later editions off it either.
+`_recent_cover_signals` reads the user's last `_VARIETY_WINDOW` (5) cover receipts, most-recent
+first, straight off the `.brief.json` sidecars (no DB column), skipping fallback receipts, and
+renders each as `"<treatment>: <focal concept>"`. It reaches `build_image_brief`'s `avoid_terms`,
+which is now a SOFT steer to the author only — "make this one visibly different in setting and
+composition". It never changes the treatment Stage 1 chose, never bans the edition's own entities,
+and so can never force a metaphor. It never reaches the deterministic fallback, whose template is a
+render prompt.
 
-   `_cover_concept_text` returns **`(content, avoid_terms)`** — the avoid nouns come back separately
-   and reach `build_image_brief`'s `avoid_terms` param, which puts them in the AUTHOR's user message
-   only. They must never be folded into the content: the content is what the deterministic fallback
-   turns into a RENDER prompt, and a renderer reads "laptop; screen; desk" as a request. That is
-   exactly how a fallback cover for the leak edition came back as a laptop on a desk.
-3. **`edition_format` / `hook_style`** — threaded from the edition row into `build_image_brief`'s
-   `content_shape` param, so a listicle cover and a personal-story cover read differently.
+The window only ever sees receipts for covers still on disk (issue #2010): `remove_cover_file`
+deletes a cover's `.brief.json` sidecar in the same call that deletes the cover image, so a
+regenerated or replaced cover stops steering variety the moment its file is gone. Deliberate — a
+superseded regeneration is something this account tried and moved away from.
 
-The `newsletter` preset in `image_brief.py` was rewritten from a bare "no generic office stock"
-negation (which the renderer, and apparently the brief LLM, both ignore) to a POSITIVE
-object-first instruction with a metaphor vocabulary for abstract/financial/software topics (cost →
-drip/leak/meter/scale, routing → switch/valve/fork, failure → cracked gear/fallen domino, audit →
-magnifier/caliper/tally). `_NO_ANONYMOUS_PERSON` no longer invites "a close-up of hands mid-action"
-— hands are the renderer's weakest anatomy regardless of what they're near.
+### Rejections land for review, with their reason
 
-**An edition is never steered off its own subject (#2008).** `_drop_topic_words` filters the
-EXTRACTOR's avoid list as well as the variety terms, with singular/plural tolerance. It returns the
-generic nouns the hook repeats, and for "Audit AI LinkedIn engagement to cut costs" that was `cost`
-and `engagement` — so the gate rejected "Balance scale weighing cost against engagement", the one
-correct concept it had, and the retry drifted onto a ledger on a desk. For the same reason a variety
-term naming this edition's own mechanism or candidate objects is dropped: **relevance outranks
-variety**, because banning the right object does not produce a different picture of THIS article, it
-produces a picture of a DIFFERENT one.
-
-**The repeat-object gate (#2000).** `avoid_terms` is not only a prompt line — `_valid()` rejects a
-`newsletter` brief whose **`focal_concept`** names one of them, and the retry-with-reason above
-names the repeated object. Graded on the focal concept, never the whole prompt: a valve in the
-background of an otherwise distinct scene is not a repeat and must not cost a retry. The list is
-capped at `_MAX_AVOID_TERMS` (8) so a long history can never starve the author into the fallback on
-every run.
-
-**The gate steers off a FAMILY, not a word (#2241).** "All newsletter images have pipes in them":
-of 19 live cover briefs, nine were plumbing — and a valve, a drip, a faucet and a pipe all render
-as pipes. Steering off one object did nothing, because with `valve` avoided the author drew "a
-dripping copper pipe" (and `pipes`, plural, matched no object at all), while a valve cover came back
-with "a background of dim industrial piping". So:
-
-- `image_brief.METAPHOR_FAMILIES` groups the preset's objects (`plumbing`, `measuring`,
-  `mechanical`, `routing`, `tools`); `METAPHOR_OBJECTS` is their union. An avoid term naming one
-  object bans its **whole family, in any inflection** (`pipes`, `piping`, `dripping`, `leaky`) in
-  the focal-concept gate, and the author's prompt names the used families outright.
-- Once plumbing is avoided, `pipe`/`piping`/`pipework`/`plumbing` are graded against the **whole
-  prompt** — the one family whose scenery is the complaint. Every other background stays free.
-- `_focal_objects` singularizes before matching, so a plural object still steers the next cover.
-- Relevance still outranks variety, at the family level: `_cover_concept_text` drops a variety
-  term whose FAMILY the extractor's candidate OBJECTS use. "Spot the Leak" (candidates: a dripping
-  faucet) after a valve cover keeps plumbing; a routing edition after a valve cover does not get
-  it. Only the candidate objects relax a family — never the title or the mechanism sentence, where
-  "keep track", "tap into" and "sales funnel" are idioms, not objects. If the extractor is down,
-  the #2005 floor below still ships the leak brief rather than the fallback.
-- The newsletter fallback scene no longer offers a brass valve, and the preset lists plumbing last.
-
-**The variety gate can never force the fallback (#2005).** A brief rejected ONLY for reusing an
-object is held and returned if the retry cannot do better — a real brief beats the deterministic
-template every time, and this is a DEBUG line, not the fallback warning. Two more guards on the
-same failure: `_recent_focal_objects` contributes the PRIMARY object of each prior cover only (the
-second is usually the topic's own noun), and `_drop_topic_words` removes any term the edition's own
-title or subtitle uses. "Spot the Leak in Your LinkedIn AI Budget" cannot be steered away from a
-leak; asking for it rejected both attempts and shipped the template. All four live editions fell
-back at once that way.
-
-**The stock-office gate.** Even with a better preset, `build_image_brief` rejects and retries (then
-falls back to the deterministic template) a `newsletter`-surface brief whose prompt names one of
-`laptop, notebook, coffee, desk, office, typing, keyboard, screen, monitor, phone` — unless an
-avatar is in frame, where a person at a desk is a legitimate scene. `ImageBrief.fallback` records
-whether the deterministic template shipped. The **retry carries the rejection reason** ("your
-previous attempt was REJECTED: the prompt named the stock-office object 'laptop'") — re-sending the
-identical prompt just re-drew the same rejected scene, which is what pushed four of five live
-editions onto the fallback.
-
-**The newsletter fallback is its own scene.** `_fallback_brief` for `surface="newsletter"` with no
-avatar uses `_NEWSLETTER_FALLBACK_SCENE` (one tangible object on a workshop surface) instead of the
-generic template, and strips the stock-office nouns out of the content summary first. The generic
-template pasted the surface's INSTRUCTION preset into a RENDER prompt — including "People and
-screens stay out of the frame" — and then asked for "blank screens" and "plain unbranded clothing".
-A render prompt has no negation: every noun in it is a request, and the renderer duly produced a man
-at a laptop. An avatar cover keeps the generic template, where a person genuinely belongs.
-
-**The vision gate.** `inspect_render_quality(..., surface="newsletter")` adds a rejection bullet for
-the literal "person at laptop/desk/keyboard with notebook or coffee mug" scene and raises the
-relevance floor to 4 (`_STRICT_MIN_RELEVANCE`) — a render merely IN THE SAME DOMAIN as the
-edition (a laptop for an AI-cost topic) used to clear a bare "it relates" relevance-3 bar every
-time. Still fails OPEN on a vision outage. `post_image` gets the same raised floor (issue #2015) —
-only the stock-office cliché bullet stays newsletter-only, since a `post_image` preset legitimately
-wants a person as the subject.
+A definite judge failure on `no_cliche` or `specificity` after the attempt budget returns verdict
+`rejected` — and the cover still lands `pending_review`, since the author is the publish gate. The
+reason travels: `render_info` carries `gate_rubric`, `gate_failing`, `gate_issues` and
+`gate_blind_description` (what a viewer who knew nothing saw), and `generate_cover_for_edition`
+copies them onto the cover's receipt (`_GATE_RECEIPT_KEYS`) and logs the rejection at INFO.
 
 **Receipts (issue #1377's pattern, extended).** `generate_cover_for_edition` writes a
 `<stem>.brief.json` sidecar beside every STORED cover — real brief and deterministic fallback
 alike — via `media_provenance.write_brief_receipt(cover_public_url(relative), brief, ...,
-extra={"edition_id": ..., "edition_format": ..., "hook_style": ...})`. `write_brief_receipt`'s
-`extra` param merges surface-specific fields on top of the generic `ImageBrief` fields, so the one
-receipt shape stays generic rather than growing a per-surface schema. Nothing is written for a
-render that never gets stored (a failed generation, a rejected gate verdict). `remove_cover_file`
-is the matching teardown: it deletes the receipt alongside the cover it describes, so
-`images/newsletter_covers/<user_id>/` never accumulates a receipt with no cover left to reference
-it (issue #2010) — see the variety-window note above for why that pairing is deliberate rather
-than incidental.
+extra={"edition_id", "edition_format", "hook_style", + the gate fields above})`. From the brief
+itself it records the prompt, `focal_concept`, `fallback`, and the staged fields: the Stage 1
+`concept` (as its fields), `treatment`, `required_entities`, `hook_text` and `prompt_check`.
+Nothing is written for a render that never gets stored (a failed generation). `remove_cover_file`
+is the matching teardown, deleting the receipt alongside the cover it describes.
 
 **Image guidance (issue #1890):** the cover editor's "Image guidance" field is free-text direction
 for THIS render only — separate from the edition's "Added Guidance" field, which steers the article
@@ -304,12 +222,13 @@ render still lands `pending_review` — the hard-approval gate is unchanged.
 
 The golden set behind Box 1-4's acceptance criteria — the five real editions from issue #1992
 (routing switch, silent multi-agent failure, cost audit, overlooked costs, budget leak) — lives as
-fixtures in `tests/unit/utilities/ai/test_image_brief.py::_FIVE_FIXTURE_EDITIONS` (mocked LLM
-responses; no spend). To regenerate real sample covers for a human quality check against those same
-five editions (real spend against `lem-simple`/`lem-medium`/`lem-image`/`lem-vision`): call
+fixtures in `tests/unit/utilities/ai/test_image_brief.py::_FIVE_EDITIONS` (a grounded concept and
+an entity-built brief per edition; `_OLD_METAPHOR_BRIEFS` pins that the old still-lifes are now
+refused — mocked LLM responses, no spend). To regenerate real sample covers for a human quality check against those same
+five editions (real spend against `lem-medium`/`lem-simple`/`lem-image`/`lem-vision`): call
 `generate_cover_for_edition` once per edition with that edition's real title/subtitle/body (or the
-fixtures' text), inspect the `.brief.json` written beside each render for `focal_concept` and
-`fallback`, and do **not** call `set_edition_cover_image` against a live edition row — the author
+fixtures' text), inspect the `.brief.json` written beside each render for `fallback`, `treatment`,
+`concept`, `required_entities` and the judge's `gate_rubric` / `gate_blind_description`, and do **not** call `set_edition_cover_image` against a live edition row — the author
 approves covers from the review queue, and this path is for a sample review only.
 
 Point `cqc_lem.assets_dir` (and `newsletter_cover.assets_dir`, which binds it at import) at a

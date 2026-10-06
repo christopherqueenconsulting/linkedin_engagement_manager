@@ -157,23 +157,6 @@ def _brief(prompt="a prompt", focal="a focal concept", fallback=False):
                       style_preset="newsletter", focal_concept=focal, fallback=fallback)
 
 
-class TestBuildCoverPrompt:
-    def test_frames_the_edition_and_the_cover_ratio(self):
-        with patch("cqc_lem.utilities.ai.image_brief.build_image_brief",
-                   return_value=_brief()) as writer:
-            assert nc.build_cover_prompt("Title", "Subtitle", "Body text") == "a prompt"
-        content, kwargs = writer.call_args[0][0], writer.call_args[1]
-        assert "Title" in content and "Subtitle" in content and "Body text" in content
-        assert kwargs["ratio"] == nc.COVER_IMAGE_RATIO
-        assert kwargs["surface"] == "newsletter"
-
-    def test_truncates_a_long_body(self):
-        with patch("cqc_lem.utilities.ai.image_brief.build_image_brief",
-                   return_value=_brief()) as writer:
-            nc.build_cover_prompt("T", None, "x" * 5000)
-        assert len(writer.call_args[0][0]) < 2000
-
-
 class TestAvatarRelevanceClassifier:
     def _classify(self, payload):
         from types import SimpleNamespace
@@ -200,111 +183,6 @@ class TestAvatarRelevanceClassifier:
         with patch("cqc_lem.utilities.ai.client.client") as mock_client:
             assert nc.classify_avatar_relevance(None, None, None) is False
         mock_client.chat.completions.create.assert_not_called()
-
-
-def _concept_resp(payload):
-    import json as _json
-    from types import SimpleNamespace
-    content = payload if isinstance(payload, str) else _json.dumps(payload)
-    return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=content))])
-
-
-class TestExtractCoverConcept:
-    """Issue #1992: the concept-extraction call reads the FULL body, never the hook excerpt.
-
-    `_edition_text` sends the brief author the hook; this degrades to `{}` on anything but a
-    usable reply.
-    """
-
-    def test_a_usable_response_is_parsed(self):
-        payload = {"core_mechanism": "a switch routes cheap traffic down the cheap path",
-                  "tangible_metaphor_candidates": ["a rotary switch", "a rail track fork"],
-                  "avoid": ["laptop", "screen"]}
-        with patch("cqc_lem.utilities.ai.client.client") as mock_client:
-            mock_client.chat.completions.create.return_value = _concept_resp(payload)
-            concept = nc._extract_cover_concept("T", "S", "B")
-        assert concept["core_mechanism"] == payload["core_mechanism"]
-        assert concept["tangible_metaphor_candidates"] == payload["tangible_metaphor_candidates"]
-        assert concept["avoid"] == ["laptop", "screen"]
-
-    def test_the_token_budget_leaves_room_for_reasoning_tokens(self):
-        """`lem-simple` is a reasoning model, so the budget covers thinking tokens too.
-
-        At 300 the whole budget went to reasoning and every one of the five live editions came
-        back EMPTY with finish_reason='length'.
-        """
-        with patch("cqc_lem.utilities.ai.client.client") as mock_client:
-            mock_client.chat.completions.create.return_value = _concept_resp(
-                {"core_mechanism": "m", "tangible_metaphor_candidates": ["o"], "avoid": []})
-            nc._extract_cover_concept("T", "S", "B")
-        kwargs = mock_client.chat.completions.create.call_args[1]
-        assert kwargs["max_tokens"] >= 1200, (
-            "a real extraction costs 540-1020 completion tokens including reasoning")
-
-    def test_the_full_body_reaches_the_prompt_not_a_1500_char_excerpt(self):
-        long_body = "x" * 5000
-        with patch("cqc_lem.utilities.ai.client.client") as mock_client:
-            mock_client.chat.completions.create.return_value = _concept_resp(
-                {"core_mechanism": "m", "tangible_metaphor_candidates": [], "avoid": []})
-            nc._extract_cover_concept("T", "S", long_body)
-        sent = mock_client.chat.completions.create.call_args[1]["messages"][0]["content"]
-        assert "x" * 4000 in sent, "the concept extractor must see well past the 1500-char hook"
-
-    def test_empty_edition_never_calls_the_llm(self):
-        with patch("cqc_lem.utilities.ai.client.client") as mock_client:
-            assert nc._extract_cover_concept(None, None, None) == {}
-        mock_client.chat.completions.create.assert_not_called()
-
-    def test_llm_outage_degrades_to_empty(self):
-        with patch("cqc_lem.utilities.ai.client.client") as mock_client:
-            mock_client.chat.completions.create.side_effect = RuntimeError("down")
-            assert nc._extract_cover_concept("T", "S", "B") == {}
-
-    def test_unparseable_response_degrades_to_empty(self):
-        with patch("cqc_lem.utilities.ai.client.client") as mock_client:
-            mock_client.chat.completions.create.return_value = _concept_resp("not json")
-            assert nc._extract_cover_concept("T", "S", "B") == {}
-
-    def test_a_response_with_neither_mechanism_nor_candidates_is_empty(self):
-        with patch("cqc_lem.utilities.ai.client.client") as mock_client:
-            mock_client.chat.completions.create.return_value = _concept_resp(
-                {"core_mechanism": "", "tangible_metaphor_candidates": [], "avoid": ["laptop"]})
-            assert nc._extract_cover_concept("T", "S", "B") == {}
-
-
-class TestCoverConceptText:
-    def test_uses_the_extracted_concept_when_available(self):
-        with patch.object(nc, "_extract_cover_concept", return_value={
-                "core_mechanism": "a leak drips from a pipe",
-                "tangible_metaphor_candidates": ["a copper pipe joint"], "avoid": []}):
-            content, avoid = nc._cover_concept_text("T", "S", "RAW-HOOK-EXCERPT")
-        assert avoid == []
-        # Objects lead, mechanism follows as context — they must not pull toward two pictures.
-        assert content.index("a copper pipe joint") < content.index("a leak drips from a pipe")
-        assert "Build the cover on one of these objects: a copper pipe joint" in content
-        assert "the picture is the object above" in content
-        assert "RAW-HOOK-EXCERPT" not in content, \
-            "the raw hook excerpt is dropped once a concept exists"
-
-    def test_falls_back_to_the_excerpt_when_extraction_is_empty(self):
-        with patch.object(nc, "_extract_cover_concept", return_value={}):
-            content, _avoid = nc._cover_concept_text("T", "S", "the raw body text")
-        assert "the raw body text" in content
-
-    def test_variety_avoid_comes_back_separately_never_in_the_content(self):
-        """The content reaches a RENDERER on the fallback path, so an avoid noun in it is drawn."""
-        with patch.object(nc, "_extract_cover_concept",
-                          return_value={"core_mechanism": "m", "avoid": ["laptop"]}):
-            content, avoid = nc._cover_concept_text("T", "S", "B",
-                                                    variety_avoid=["prior concept one"])
-        assert avoid == ["laptop", "prior concept one"]
-        assert "prior concept one" not in content
-        assert "laptop" not in content
-
-    def test_no_avoid_at_all_returns_an_empty_list(self):
-        with patch.object(nc, "_extract_cover_concept", return_value={}):
-            _content, avoid = nc._cover_concept_text("T", "S", "B")
-        assert avoid == []
 
 
 _USABLE_AVATAR = {"status": "succeeded", "model_ref": "owner/lora:v1", "trigger_word": "TOK",
@@ -674,199 +552,191 @@ class TestContentShape:
         assert brief.call_args[1]["content_shape"] is None
 
 
-class TestFocalObjects:
-    """Issue #2000: a focal concept is a SENTENCE, and a sentence never matches the next one.
-
-    Four consecutive live covers all chose a valve while every one of those sentences sat in the
-    "already used" context doing nothing.
-    """
-
-    def test_the_preset_vocabulary_wins_over_the_generic_pass(self):
-        assert nc._focal_objects(
-            "Budget leak depicted as a dripping valve spilling money") == ["leak", "valve"]
-
-    def test_abstract_wrapping_is_stripped(self):
-        assert nc._focal_objects(
-            "A valve symbolizing efficiency in AI auditing for e-commerce") == ["valve"]
-
-    def test_the_first_named_object_leads(self):
-        """dict.fromkeys, not set(): the object named FIRST is the one the cover was built on."""
-        assert nc._focal_objects("A cracked gear beside a small valve")[0] == "gear"
-
-    def test_a_concept_naming_no_known_object_falls_back_to_tokens(self):
-        assert nc._focal_objects("A weathered anvil in an empty forge") == ["anvil", "forge"]
-
-    def test_empty_or_unusable_input_steers_nothing(self):
-        assert nc._focal_objects("") == []
-        assert nc._focal_objects(None) == []
-        assert nc._focal_objects("the a of in") == []
-
-    def test_never_more_than_the_cap_from_one_concept(self):
-        objects = nc._focal_objects("a valve a gear a scale a domino a fuse")
-        assert len(objects) <= nc._MAX_OBJECTS_PER_CONCEPT
+def _concept(**overrides):
+    from cqc_lem.utilities.ai.image_concept import ImageConcept
+    fields = {"thesis": "Late invoices quietly starve a small agency's payroll",
+              "audience": "agency owners", "specific_entities": ("unpaid invoices", "payroll run",
+                                                                 "agency owner"),
+              "emotional_beat": "dread", "hook_phrase": "", "treatment": "concrete_scene",
+              "treatment_rationale": "a tangible situation"}
+    fields.update(overrides)
+    return ImageConcept(**fields)
 
 
-class TestRecentFocalObjects:
-    @staticmethod
-    def _receipt(directory, name, concept, mtime, fallback=False):
+class TestStagedCoverEngine:
+    """Issue #2241: covers are built from the WHOLE edition, judged blind, and recorded."""
+
+    def _generated(self, tmp_path):
+        path = tmp_path / "gen.png"
+        path.write_bytes(_image_bytes())
+        return str(path)
+
+    def test_stage_one_reads_the_full_body_with_the_title(self, tmp_path):
+        body = "intro " * 50 + "THE PAYOFF SITS HERE " + "tail " * 2000
+        with patch.object(nc, "assets_dir", str(tmp_path / "assets")), \
+             patch.object(nc, "_resolve_cover_avatar", return_value=None), \
+             patch("cqc_lem.utilities.ai.image_concept.analyze_content_for_image",
+                   return_value=_concept()) as stage1, \
+             patch("cqc_lem.utilities.ai.image_brief.build_image_brief",
+                   return_value=_brief()) as writer, \
+             patch("cqc_lem.utilities.ai.image_gen.render_image_gated", return_value=None):
+            nc.generate_cover_for_edition(3, 9, "The Title", "The Sub", body)
+        text, kwargs = stage1.call_args[0][0], stage1.call_args[1]
+        assert "THE PAYOFF SITS HERE" in text, "the payoff sits past the old 1500-char excerpt"
+        assert text.startswith("The Sub") and text.rstrip().endswith("tail")
+        assert kwargs["title"] == "The Title" and kwargs["surface"] == "newsletter"
+        assert kwargs["user_id"] == 3
+        assert writer.call_args[1]["concept"] == _concept()
+
+    def test_concept_and_hook_reach_the_base_render_gate(self, tmp_path):
+        from cqc_lem.utilities.ai.image_brief import ImageBrief
+        concept = _concept(treatment="editorial_graphic", hook_phrase="Payroll eats first")
+        brief = ImageBrief(prompt="p", ratio=nc.COVER_IMAGE_RATIO, surface="newsletter",
+                           style_preset="newsletter", focal_concept="f", concept=concept,
+                           treatment="editorial_graphic", hook_text="Payroll eats first")
+        with patch.object(nc, "assets_dir", str(tmp_path / "assets")), \
+             patch.object(nc, "_resolve_cover_avatar", return_value=None), \
+             patch("cqc_lem.utilities.ai.image_concept.analyze_content_for_image",
+                   return_value=concept), \
+             patch("cqc_lem.utilities.ai.image_brief.build_image_brief", return_value=brief), \
+             patch("cqc_lem.utilities.ai.image_gen.render_image_gated",
+                   return_value=None) as gen:
+            nc.generate_cover_for_edition(3, 9, "T", "S", "B")
+        assert gen.call_args[1]["concept"] is concept
+        assert gen.call_args[1]["hook_text"] == "Payroll eats first"
+
+    def test_the_avatar_path_gets_the_staged_judge_too(self, tmp_path):
+        """It used to skip every newsletter gate (`newsletter_gate = ... and not avatar`)."""
+        from cqc_lem.utilities.ai.image_brief import ImageBrief
+        avatar = {"status": "succeeded", "model_ref": "owner/lora:v1", "trigger_word": "TOK"}
+        concept = _concept(treatment="people_scene")
+        brief = ImageBrief(prompt="p", ratio=nc.COVER_IMAGE_RATIO, surface="newsletter",
+                           style_preset="newsletter", focal_concept="f", concept=concept,
+                           treatment="people_scene")
+        with patch.object(nc, "assets_dir", str(tmp_path / "assets")), \
+             patch.object(nc, "_resolve_cover_avatar", return_value=avatar), \
+             patch("cqc_lem.utilities.ai.image_concept.analyze_content_for_image",
+                   return_value=concept), \
+             patch("cqc_lem.utilities.ai.image_brief.build_image_brief",
+                   return_value=brief) as writer, \
+             patch("cqc_lem.utilities.ai.image_gen.render_avatar_image_gated",
+                   return_value=None) as gen:
+            nc.generate_cover_for_edition(3, 9, "T", "S", "B")
+        assert writer.call_args[1]["avatar"] is avatar
+        assert gen.call_args[1]["concept"] is concept
+        assert gen.call_args[1]["hook_text"] is None
+
+    def test_a_rejected_render_records_the_rubric_on_the_receipt(self, tmp_path):
+        from cqc_lem.utilities.media_provenance import read_brief_receipt
+
+        generated = self._generated(tmp_path)
+        assets = tmp_path / "assets"
+        assets.mkdir()
+        rubric = {"specificity": 2, "no_cliche": 1, "craft": 5}
+
+        def fake_gate(*_args, **kwargs):
+            kwargs["render_info"].update({
+                "gate_verdict": "rejected", "gate_rubric": rubric,
+                "gate_failing": ["specificity", "no_cliche"],
+                "gate_issues": ["no_cliche 1/5", "a brass valve"],
+                "gate_blind_description": "A brass valve on a workbench."})
+            return generated
+
+        with patch.object(nc, "assets_dir", str(assets)), \
+             patch("cqc_lem.assets_dir", str(assets)), \
+             patch.object(nc, "_resolve_cover_avatar", return_value=None), \
+             patch("cqc_lem.utilities.ai.image_concept.analyze_content_for_image",
+                   return_value=None), \
+             patch("cqc_lem.utilities.ai.image_brief.build_image_brief", return_value=_brief()), \
+             patch("cqc_lem.utilities.ai.image_gen.render_image_gated", side_effect=fake_gate), \
+             patch.object(nc, "log_info") as info:
+            rel, reason = nc.generate_cover_for_edition(3, 9, "T", "S", "B")
+            receipt = read_brief_receipt(nc.cover_public_url(rel))
+        assert reason is None, "a rejected cover still lands for the author's review"
+        assert receipt["gate_verdict"] == "rejected"
+        assert receipt["gate_rubric"] == rubric
+        assert receipt["gate_failing"] == ["specificity", "no_cliche"]
+        assert receipt["gate_issues"] == ["no_cliche 1/5", "a brass valve"]
+        assert receipt["gate_blind_description"] == "A brass valve on a workbench."
+        assert any("failed the image judge" in c[0][0] for c in info.call_args_list)
+
+    def test_an_accepted_render_logs_no_rejection(self, tmp_path):
+        generated = self._generated(tmp_path)
+        assets = tmp_path / "assets"
+        assets.mkdir()
+
+        def fake_gate(*_args, **kwargs):
+            kwargs["render_info"]["gate_verdict"] = "accepted"
+            return generated
+
+        with patch.object(nc, "assets_dir", str(assets)), \
+             patch.object(nc, "_resolve_cover_avatar", return_value=None), \
+             patch("cqc_lem.utilities.ai.image_concept.analyze_content_for_image",
+                   return_value=None), \
+             patch("cqc_lem.utilities.ai.image_brief.build_image_brief", return_value=_brief()), \
+             patch("cqc_lem.utilities.ai.image_gen.render_image_gated", side_effect=fake_gate), \
+             patch.object(nc, "log_info") as info:
+            nc.generate_cover_for_edition(3, 9, "T", "S", "B")
+        assert not any("failed the image judge" in c[0][0] for c in info.call_args_list)
+
+    def test_the_receipt_records_the_concept_and_treatment(self, tmp_path):
+        from cqc_lem.utilities.ai.image_brief import ImageBrief
+        from cqc_lem.utilities.media_provenance import read_brief_receipt
+
+        generated = self._generated(tmp_path)
+        assets = tmp_path / "assets"
+        assets.mkdir()
+        concept = _concept()
+        brief = ImageBrief(prompt="p", ratio=nc.COVER_IMAGE_RATIO, surface="newsletter",
+                           style_preset="newsletter", focal_concept="unpaid invoices",
+                           concept=concept, treatment="concrete_scene",
+                           required_entities=("unpaid invoices", "payroll run"),
+                           prompt_check="judge passed")
+        with patch.object(nc, "assets_dir", str(assets)), \
+             patch("cqc_lem.assets_dir", str(assets)), \
+             patch.object(nc, "_resolve_cover_avatar", return_value=None), \
+             patch("cqc_lem.utilities.ai.image_concept.analyze_content_for_image",
+                   return_value=concept), \
+             patch("cqc_lem.utilities.ai.image_brief.build_image_brief", return_value=brief), \
+             patch("cqc_lem.utilities.ai.image_gen.render_image_gated", return_value=generated):
+            rel, _ = nc.generate_cover_for_edition(3, 9, "T", "S", "B")
+            receipt = read_brief_receipt(nc.cover_public_url(rel))
+        assert receipt["treatment"] == "concrete_scene"
+        assert receipt["concept"]["thesis"] == concept.thesis
+        assert receipt["concept"]["specific_entities"] == list(concept.specific_entities)
+        assert receipt["required_entities"] == ["unpaid invoices", "payroll run"]
+        assert receipt["prompt_check"] == "judge passed"
+
+    def test_the_dead_metaphor_helpers_are_gone(self):
+        for name in ("build_cover_prompt", "_extract_cover_concept", "_cover_concept_text",
+                     "_focal_objects", "_recent_focal_objects", "_drop_topic_words"):
+            assert not hasattr(nc, name), f"{name} should have been removed with the extractor"
+
+
+class TestRecentCoverSignals:
+    """The variety steer is soft: treatment + focal concept, real briefs only (issue #2241)."""
+
+    def _write(self, directory, name, payload, mtime):
         os.makedirs(directory, exist_ok=True)
         path = os.path.join(directory, name)
         with open(path, "w", encoding="utf-8") as fh:
-            json.dump({"focal_concept": concept, "fallback": fallback}, fh)
+            json.dump(payload, fh)
         os.utime(path, (mtime, mtime))
 
-    def test_objects_come_back_deduped_most_recent_first(self, tmp_path):
-        assets = tmp_path / "assets"
-        with patch.object(nc, "assets_dir", str(assets)):
-            directory = nc._cover_dir(7)
-            self._receipt(directory, "a.brief.json", "A cracked gear in a still machine", 1000)
-            self._receipt(directory, "b.brief.json", "A dripping valve over a puddle", 2000)
-            self._receipt(directory, "c.brief.json", "A leaking valve on a bench", 3000)
-            objects = nc._recent_focal_objects(7)
-        assert objects[0] == "valve", "most recent first"
-        assert objects.count("valve") == 1, "deduped"
-        assert "gear" in objects
-
-    def test_a_fallback_receipt_contributes_nothing(self, tmp_path):
-        """Its focal concept is the edition's own title text, not an object."""
-        assets = tmp_path / "assets"
-        with patch.object(nc, "assets_dir", str(assets)):
-            directory = nc._cover_dir(7)
-            self._receipt(directory, "a.brief.json",
-                          "The Overlooked Costs of Your AI LinkedIn Strategy", 1000,
-                          fallback=True)
-            objects = nc._recent_focal_objects(7)
-        assert objects == []
-
-    def test_the_variety_avoid_list_carries_objects_not_sentences(self, tmp_path):
-        assets = tmp_path / "assets"
-        with patch.object(nc, "assets_dir", str(assets)):
+    def test_signals_name_treatment_and_focal_most_recent_first(self, tmp_path):
+        with patch.object(nc, "assets_dir", str(tmp_path / "assets")):
             directory = nc._cover_dir(3)
-            self._receipt(directory, "a.brief.json",
-                          "Budget leak depicted as a dripping valve spilling money", 1000)
-            with patch.object(nc, "_resolve_cover_avatar", return_value=None), \
-                 patch.object(nc, "_extract_cover_concept", return_value={}), \
-                 patch("cqc_lem.utilities.ai.image_brief.build_image_brief",
-                       return_value=_brief()) as brief, \
-                 patch("cqc_lem.utilities.ai.image_gen.render_image_gated", return_value=None):
-                nc.generate_cover_for_edition(3, 9, "T", "S", "B")
-        avoid = brief.call_args[1]["avoid_terms"]
-        # The PRIMARY object of that concept, never the whole sentence (#2000), and one per
-        # cover so the topic's own noun is not banned alongside it (#2005).
-        assert avoid == ["leak"]
-        assert not any(" " in term for term in avoid), "sentences steer nothing"
+            self._write(directory, "a.brief.json",
+                        {"focal_concept": "an agency owner at payroll",
+                         "treatment": "people_scene"}, 1000)
+            self._write(directory, "b.brief.json", {"focal_concept": "a stack of invoices"}, 1001)
+            self._write(directory, "c.brief.json",
+                        {"focal_concept": "template text", "fallback": True}, 1002)
+            signals = nc._recent_cover_signals(3)
+        assert signals == ["a stack of invoices", "people_scene: an agency owner at payroll"]
 
-
-class TestTopicWordsAreNeverBanned:
-    """Issue #2005: an edition about a leak cannot be steered away from a leak."""
-
-    def test_a_term_the_title_uses_is_dropped(self):
-        assert nc._drop_topic_words(["valve", "leak"],
-                                    "Spot the Leak in Your LinkedIn AI Budget", None) == ["valve"]
-
-    def test_a_term_the_subtitle_uses_is_dropped(self):
-        assert nc._drop_topic_words(["gear"], "T", "A cracked gear in the chain") == []
-
-    def test_unrelated_terms_survive(self):
-        assert nc._drop_topic_words(["valve", "gear"], "Audit your AI spend", "") == \
-            ["valve", "gear"]
-
-    def test_no_title_or_subtitle_bans_nothing(self):
-        assert nc._drop_topic_words(["valve"], None, None) == ["valve"]
-
-
-class TestOnlyThePrimaryObjectSteers:
-    def test_the_second_object_in_a_concept_is_the_topics_own_noun(self, tmp_path):
-        assets = tmp_path / "assets"
-        with patch.object(nc, "assets_dir", str(assets)):
-            directory = nc._cover_dir(5)
-            os.makedirs(directory, exist_ok=True)
-            with open(os.path.join(directory, "a.brief.json"), "w", encoding="utf-8") as fh:
-                json.dump({"focal_concept": "Budget leak depicted as a dripping valve",
-                           "fallback": False}, fh)
-            objects = nc._recent_focal_objects(5)
-        assert objects == ["leak"], "one object per prior cover, the primary one"
-
-
-class TestTheExtractorsAvoidListIsFilteredToo:
-    """The extractor returns the hook's generic nouns, which can be the title's own words.
-
-    "Audit AI LinkedIn engagement to cut costs" came back with `avoid=['cost', 'engagement']`,
-    so the gate rejected "Balance scale weighing cost against engagement" — the one correct
-    concept it had — and the retry drifted onto a ledger on a desk.
-    """
-
-    def test_a_concept_avoid_term_from_the_title_is_dropped(self):
-        with patch.object(nc, "_extract_cover_concept", return_value={
-                "core_mechanism": "a balance scale", "tangible_metaphor_candidates": ["a scale"],
-                "avoid": ["cost", "engagement", "laptop"]}):
-            _content, avoid = nc._cover_concept_text(
-                "Audit AI LinkedIn engagement to cut costs", None, "body")
-        assert "cost" not in avoid and "engagement" not in avoid
-        assert "laptop" in avoid, "the genuinely generic nouns still steer"
-
-
-class TestSingularPluralTopicWords:
-    def test_a_plural_in_the_title_matches_the_singular_term(self):
-        assert nc._drop_topic_words(["cost"], "Audit engagement to cut costs", None) == []
-
-    def test_a_singular_in_the_title_matches_the_plural_term(self):
-        assert nc._drop_topic_words(["leaks"], "Spot the Leak in Your Budget", None) == []
-
-    def test_a_double_s_word_is_not_stripped(self):
-        assert nc._singular("process") == "process"
-
-    def test_short_words_are_left_alone(self):
-        assert nc._singular("gas") == "gas"
-
-
-class TestPluralAndFamilySteering:
-    """Issue #2241: a plural object steered nothing, and relevance holds at the family level."""
-
-    def test_a_plural_object_is_named_in_its_singular(self):
-        assert nc._focal_objects("AI budget leaks shown by dripping copper pipes") == \
-            ["leak", "pipe"]
-
-    def test_a_prior_plumbing_cover_is_dropped_for_an_edition_about_a_leak(self):
-        with patch.object(nc, "_extract_cover_concept", return_value={
-                "core_mechanism": "a slow leak draining the budget",
-                "tangible_metaphor_candidates": ["a dripping faucet"], "avoid": []}):
-            _content, avoid = nc._cover_concept_text("Audit your AI spend", None, "body",
-                                                     variety_avoid=["valve", "gear"])
-        assert avoid == ["gear"], "banning the plumbing family would ban this edition's subject"
-
-    def test_a_prior_plumbing_cover_still_steers_an_unrelated_edition(self):
-        with patch.object(nc, "_extract_cover_concept", return_value={
-                "core_mechanism": "a track switch diverting requests",
-                "tangible_metaphor_candidates": ["a track switch"], "avoid": []}):
-            _content, avoid = nc._cover_concept_text("Route requests cheaply", None, "body",
-                                                     variety_avoid=["valve"])
-        assert avoid == ["valve"]
-
-    def test_an_idiom_in_the_mechanism_never_reopens_a_family(self):
-        """"Keep track of spend" is not a track switch; only candidate OBJECTS relax a family."""
-        with patch.object(nc, "_extract_cover_concept", return_value={
-                "core_mechanism": "keep track of every tap into the budget",
-                "tangible_metaphor_candidates": ["a balance scale"], "avoid": []}):
-            _content, avoid = nc._cover_concept_text("Audit your AI spend", None, "body",
-                                                     variety_avoid=["valve", "switch"])
-        assert avoid == ["valve", "switch"]
-
-    def test_a_family_stays_avoided_while_another_candidate_survives_the_gate(self):
-        """A leak among the candidates must not re-open plumbing when a scale is also offered."""
-        with patch.object(nc, "_extract_cover_concept", return_value={
-                "core_mechanism": "a slow leak draining the budget",
-                "tangible_metaphor_candidates": ["a dripping faucet", "a balance scale"],
-                "avoid": []}):
-            _content, avoid = nc._cover_concept_text("Audit your AI spend", None, "body",
-                                                     variety_avoid=["valve", "gear"])
-        assert avoid == ["valve", "gear"]
-
-    def test_an_unrecognised_candidate_counts_as_surviving_the_gate(self):
-        with patch.object(nc, "_extract_cover_concept", return_value={
-                "core_mechanism": "a slow leak draining the budget",
-                "tangible_metaphor_candidates": ["a dripping faucet", "a cracked piggy bank"],
-                "avoid": []}):
-            _content, avoid = nc._cover_concept_text("Audit your AI spend", None, "body",
-                                                     variety_avoid=["valve"])
-        assert avoid == ["valve"]
+    def test_a_non_dict_receipt_is_skipped(self, tmp_path):
+        with patch.object(nc, "assets_dir", str(tmp_path / "assets")):
+            directory = nc._cover_dir(3)
+            self._write(directory, "a.brief.json", ["not", "a", "dict"], 1000)
+            assert nc._recent_cover_signals(3) == []

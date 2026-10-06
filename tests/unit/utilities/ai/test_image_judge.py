@@ -1,0 +1,319 @@
+"""Stage 4 of the image engine: the blind judge, its rubric, and the hook-text exception (#2241).
+
+The old gate scored a render against the brief's OWN focal concept, so a valve scored 5/5 against
+"a valve symbolising leaks". These pin the replacement: a first look that is shown nothing, then
+targeted questions graded on a rubric that a stock symbol cannot pass.
+"""
+import json
+from types import SimpleNamespace
+from unittest.mock import patch
+
+import pytest
+
+from cqc_lem.utilities.ai import image_gen
+from cqc_lem.utilities.ai.image_concept import ImageConcept
+from cqc_lem.utilities.ai.image_gen import (
+    _NO_MARKS_FLUX,
+    _NO_MARKS_GPT,
+    BLIND_JUDGE_PROMPT,
+    QualityVerdict,
+    inspect_render_quality,
+    render_image_gated,
+    rubric_repair_directive,
+    with_no_marks,
+)
+
+pytestmark = pytest.mark.unit
+
+_CONCEPT = ImageConcept(
+    thesis="Late invoices quietly starve a small agency's payroll", audience="agency owners",
+    specific_entities=("unpaid invoices", "payroll run", "agency owner"),
+    emotional_beat="dread", hook_phrase="", treatment="concrete_scene",
+    treatment_rationale="tangible")
+_HOOK = "Payroll eats first"
+_BLIND = "An agency owner at a kitchen table with a stack of invoices. No visible text."
+_GOOD_RUBRIC = {"specificity": 5, "no_cliche": 5, "thumbnail_read": 4, "text_accuracy": None,
+                "craft": 5, "scroll_stop": 4}
+
+
+def _resp(content) -> SimpleNamespace:
+    text = content if isinstance(content, str) else json.dumps(content)
+    return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=text))])
+
+
+def _answer(rubric=None, **overrides) -> dict:
+    answer = {"entities_depicted": {"unpaid invoices": True, "payroll run": True,
+                                    "agency owner": True},
+              "text_seen": "", "cliches_present": [], "rubric": dict(rubric or _GOOD_RUBRIC),
+              "issues": []}
+    answer.update(overrides)
+    return answer
+
+
+def _judge(tmp_path, *, blind=_BLIND, answer=None, hook_text=None, concept=_CONCEPT):
+    img = tmp_path / "r.png"
+    img.write_bytes(b"png")
+    with patch.object(image_gen, "client") as client:
+        client.chat.completions.create.side_effect = [_resp(blind), _resp(answer or _answer())]
+        verdict = inspect_render_quality(str(img), "a focal concept", surface="newsletter",
+                                         concept=concept, hook_text=hook_text)
+    return verdict, client.chat.completions.create
+
+
+class TestBlindFirst:
+    def test_the_first_vision_call_is_shown_nothing_about_the_brief_or_the_piece(self, tmp_path):
+        verdict, create = _judge(tmp_path)
+        assert verdict.acceptable and verdict.checked
+        assert create.call_count == 2
+        first = create.call_args_list[0][1]
+        assert first["model"] == "lem-vision"
+        text_parts = [p["text"] for p in first["messages"][0]["content"] if p["type"] == "text"]
+        assert text_parts == [BLIND_JUDGE_PROMPT]
+        blob = json.dumps(first["messages"])
+        for leak in ("a focal concept", _CONCEPT.thesis, "unpaid invoices", "payroll"):
+            assert leak not in blob, f"the blind judge was shown {leak!r}"
+
+    def test_the_targeted_call_carries_the_concept_and_the_blind_description(self, tmp_path):
+        _verdict, create = _judge(tmp_path, hook_text=_HOOK)
+        second = create.call_args_list[1][1]
+        text = second["messages"][0]["content"][0]["text"]
+        assert _CONCEPT.thesis in text and _BLIND in text
+        assert "unpaid invoices; payroll run; agency owner" in text
+        assert f'Does it equal exactly "{_HOOK}"?' in text
+        assert "valve" in text, "the stock-symbol list is asked about by name"
+        assert second["response_format"] == {"type": "json_object"}
+
+    def test_the_verdict_carries_rubric_and_blind_description(self, tmp_path):
+        verdict, _ = _judge(tmp_path)
+        assert verdict.rubric["specificity"] == 5 and verdict.relevance == 5
+        assert verdict.blind_description == _BLIND
+        assert verdict.failing == []
+
+
+class TestRubric:
+    @pytest.mark.parametrize("criterion,score", [("specificity", 3), ("no_cliche", 4),
+                                                 ("craft", 3)])
+    def test_each_floor_rejects(self, tmp_path, criterion, score):
+        verdict, _ = _judge(tmp_path, answer=_answer(dict(_GOOD_RUBRIC, **{criterion: score})))
+        assert not verdict.acceptable
+        assert verdict.failing == [criterion]
+        assert f"{criterion} {score}/5" in verdict.issues
+
+    def test_a_cliche_the_blind_judge_names_fails_whatever_the_rubric_says(self, tmp_path):
+        verdict, _ = _judge(tmp_path, blind="A brass valve on a workbench, pipes behind it.")
+        assert not verdict.acceptable and "no_cliche" in verdict.failing
+
+    def test_a_cliche_the_targeted_judge_lists_fails(self, tmp_path):
+        verdict, _ = _judge(tmp_path, answer=_answer(cliches_present=["gear"]))
+        assert not verdict.acceptable and verdict.rubric["no_cliche"] <= 2
+
+    def test_fewer_than_two_entities_seen_caps_specificity(self, tmp_path):
+        seen = {"unpaid invoices": True, "payroll run": False, "agency owner": False}
+        verdict, _ = _judge(tmp_path, answer=_answer(entities_depicted=seen))
+        assert not verdict.acceptable and verdict.rubric["specificity"] == 3
+
+    def test_the_hook_must_be_transcribed_exactly(self, tmp_path):
+        verdict, _ = _judge(tmp_path, hook_text=_HOOK,
+                            answer=_answer(dict(_GOOD_RUBRIC, text_accuracy=5),
+                                           text_seen="Payrol eats frist"))
+        assert not verdict.acceptable and verdict.failing == ["text_accuracy"]
+
+    def test_an_exact_hook_passes(self, tmp_path):
+        verdict, _ = _judge(tmp_path, hook_text=_HOOK,
+                            answer=_answer(dict(_GOOD_RUBRIC, text_accuracy=5),
+                                           text_seen="PAYROLL EATS FIRST."))
+        assert verdict.acceptable
+
+    def test_stray_text_without_a_hook_fails(self, tmp_path):
+        verdict, _ = _judge(tmp_path, answer=_answer(text_seen="Q3 REVENUE"))
+        assert not verdict.acceptable and verdict.rubric["text_accuracy"] == 2
+
+    @pytest.mark.parametrize("seen", ["", "none", "No visible text"])
+    def test_no_text_is_not_applicable(self, tmp_path, seen):
+        verdict, _ = _judge(tmp_path, answer=_answer(text_seen=seen))
+        assert verdict.acceptable and verdict.rubric["text_accuracy"] is None
+
+    @pytest.mark.parametrize("answer", [_answer(rubric={"specificity": 5}),
+                                        _answer(rubric={"specificity": "high", "no_cliche": 5,
+                                                        "craft": 5}),
+                                        "not json"])
+    def test_an_unusable_rubric_fails_open(self, tmp_path, answer):
+        img = tmp_path / "r.png"
+        img.write_bytes(b"png")
+        with patch.object(image_gen, "client") as client:
+            client.chat.completions.create.side_effect = [_resp(_BLIND), _resp(answer)]
+            verdict = inspect_render_quality(str(img), "f", concept=_CONCEPT)
+        assert verdict.acceptable and not verdict.checked
+
+    def test_a_vision_outage_fails_open(self, tmp_path):
+        img = tmp_path / "r.png"
+        img.write_bytes(b"png")
+        with patch.object(image_gen, "client") as client:
+            client.chat.completions.create.side_effect = RuntimeError("down")
+            verdict = inspect_render_quality(str(img), "f", concept=_CONCEPT)
+        assert verdict.acceptable and not verdict.checked
+
+    def test_without_a_concept_the_legacy_single_call_runs(self, tmp_path):
+        img = tmp_path / "r.png"
+        img.write_bytes(b"png")
+        with patch.object(image_gen, "client") as client:
+            client.chat.completions.create.return_value = _resp(
+                {"acceptable": True, "relevance": 5, "issues": []})
+            verdict = inspect_render_quality(str(img), "a focal concept", surface="newsletter")
+        assert client.chat.completions.create.call_count == 1
+        assert verdict.acceptable and verdict.rubric == {}
+
+
+class TestRubricRepair:
+    def _verdict(self, failing, issues=()):
+        return QualityVerdict(acceptable=False, failing=list(failing),
+                              issues=[f"{f} 2/5" for f in failing] + list(issues))
+
+    def test_gpt_repair_names_the_entities_and_the_failing_criteria(self):
+        directive = rubric_repair_directive(self._verdict(["specificity", "no_cliche"],
+                                                          ["a brass valve"]),
+                                            "gpt-image", _CONCEPT, None)
+        assert "specificity, no_cliche" in directive
+        assert "unpaid invoices; payroll run; agency owner" in directive
+        assert "a brass valve" in directive
+
+    def test_flux_repair_never_names_the_defect(self):
+        directive = rubric_repair_directive(self._verdict(["no_cliche"], ["a brass valve"]),
+                                            "flux", _CONCEPT, None)
+        assert directive.startswith("Render this scene again with")
+        assert "valve" not in directive and "unpaid invoices" in directive
+
+    def test_a_hook_failure_names_the_exact_hook(self):
+        directive = rubric_repair_directive(self._verdict(["text_accuracy"]), "gpt-image",
+                                            _CONCEPT, _HOOK)
+        assert f'"{_HOOK}"' in directive
+
+    def test_a_text_failure_without_a_hook_asks_for_blank_surfaces(self):
+        directive = rubric_repair_directive(self._verdict(["text_accuracy"]), "flux",
+                                            _CONCEPT, None)
+        assert "plain and unmarked" in directive
+
+    def test_no_failing_criteria_falls_back_to_the_legacy_directive(self):
+        verdict = QualityVerdict(acceptable=False, issues=["six fingers"])
+        assert rubric_repair_directive(verdict, "flux", _CONCEPT, None) == \
+            image_gen.repair_directive(["six fingers"], "flux", _CONCEPT.thesis)
+
+
+class TestStagedGateLoop:
+    def test_concept_and_hook_reach_the_judge_and_the_renderer(self):
+        with patch.object(image_gen, "_render_with_backend",
+                          return_value=("/tmp/1.png", "gpt-image")) as render, \
+             patch.object(image_gen, "inspect_render_quality",
+                          return_value=QualityVerdict(acceptable=True)) as judge:
+            render_image_gated("p", surface="newsletter", concept=_CONCEPT, hook_text=_HOOK)
+        assert judge.call_args[1]["concept"] is _CONCEPT
+        assert judge.call_args[1]["hook_text"] == _HOOK
+        assert render.call_args[1]["hook_text"] == _HOOK
+
+    def test_without_a_concept_the_judge_is_called_the_legacy_way(self):
+        with patch.object(image_gen, "_render_with_backend",
+                          return_value=("/tmp/1.png", "gpt-image")), \
+             patch.object(image_gen, "inspect_render_quality",
+                          return_value=QualityVerdict(acceptable=True)) as judge:
+            render_image_gated("p", surface="newsletter", focal_concept="f")
+        assert "concept" not in judge.call_args[1]
+
+    def test_a_rubric_rejection_repairs_from_the_failing_criteria_and_records_why(self):
+        bad = QualityVerdict(acceptable=False, failing=["no_cliche"], issues=["no_cliche 1/5"],
+                             rubric={"no_cliche": 1, "specificity": 4, "craft": 5},
+                             blind_description="A brass valve.")
+        info: dict = {}
+        with patch.object(image_gen, "_render_with_backend",
+                          return_value=("/tmp/x.png", "flux")) as render, \
+             patch.object(image_gen, "inspect_render_quality", return_value=bad):
+            render_image_gated("base", surface="newsletter", concept=_CONCEPT, render_info=info)
+        retry = render.call_args_list[1][0][0]
+        assert retry.startswith("base\n\nRender this scene again with the whole frame built on")
+        assert info["gate_verdict"] == "rejected"
+        assert info["gate_rubric"]["no_cliche"] == 1
+        assert info["gate_failing"] == ["no_cliche"]
+        assert info["gate_blind_description"] == "A brass valve."
+
+    def test_two_candidates_per_attempt_keep_the_better(self, monkeypatch):
+        monkeypatch.setenv("IMAGE_GATE_CANDIDATES", "2")
+        worse = QualityVerdict(acceptable=False, failing=["craft"], rubric={"craft": 2})
+        better = QualityVerdict(acceptable=False, failing=["craft"], rubric={"craft": 3})
+        with patch.object(image_gen, "IMAGE_GATE_MAX_ATTEMPTS", 1), \
+             patch.object(image_gen, "_render_with_backend",
+                          side_effect=[("/tmp/a.png", "gpt-image"),
+                                       ("/tmp/b.png", "gpt-image")]) as render, \
+             patch.object(image_gen, "inspect_render_quality", side_effect=[worse, better]):
+            path = render_image_gated("p", surface="newsletter", concept=_CONCEPT)
+        assert render.call_count == 2 and path == "/tmp/b.png"
+
+    def test_an_accepted_first_candidate_skips_the_second(self, monkeypatch):
+        monkeypatch.setenv("IMAGE_GATE_CANDIDATES", "2")
+        with patch.object(image_gen, "_render_with_backend",
+                          return_value=("/tmp/a.png", "gpt-image")) as render, \
+             patch.object(image_gen, "inspect_render_quality",
+                          return_value=QualityVerdict(acceptable=True)):
+            render_image_gated("p", surface="newsletter", concept=_CONCEPT)
+        assert render.call_count == 1
+
+    @pytest.mark.parametrize("value,concept,expected", [("2", _CONCEPT, 2), ("9", _CONCEPT, 2),
+                                                        ("0", _CONCEPT, 1), ("x", _CONCEPT, 1),
+                                                        ("2", None, 1)])
+    def test_candidate_count_is_bounded_and_needs_a_concept(self, monkeypatch, value, concept,
+                                                           expected):
+        monkeypatch.setenv("IMAGE_GATE_CANDIDATES", value)
+        assert image_gen._gate_candidates(concept) == expected
+
+    def test_the_avatar_path_takes_the_concept_and_hook_too(self):
+        avatar = {"model_ref": "owner/lora:v1", "trigger_word": "TOK"}
+        with patch("cqc_lem.utilities.avatar.replicate_avatar.generate_image_with_avatar",
+                   return_value=("/tmp/1.png", True)) as lora, \
+             patch("cqc_lem.utilities.ai.ai_helper._record_avatar_media"), \
+             patch.object(image_gen, "inspect_render_quality",
+                          return_value=QualityVerdict(acceptable=True)) as judge:
+            image_gen.render_avatar_image_gated("p", avatar=avatar, user_id=3,
+                                                surface="newsletter", concept=_CONCEPT)
+        assert judge.call_args[1]["concept"] is _CONCEPT
+        assert lora.call_count == 1
+
+    def test_an_avatar_render_that_produced_nothing_returns_none(self):
+        avatar = {"model_ref": "owner/lora:v1", "trigger_word": "TOK"}
+        info: dict = {}
+        with patch("cqc_lem.utilities.avatar.replicate_avatar.generate_image_with_avatar",
+                   return_value=(None, False)), \
+             patch.object(image_gen, "inspect_render_quality") as judge:
+            assert image_gen.render_avatar_image_gated(
+                "p", avatar=avatar, user_id=3, surface="newsletter", render_info=info) is None
+        judge.assert_not_called()
+        assert info == {"used_avatar": False}
+
+
+class TestHookTextException:
+    """The ONE text exception: an editorial_graphic's declared hook (issue #2241)."""
+
+    def test_gpt_gets_the_hook_only_clause_instead_of_the_blanket_ban(self):
+        marked = with_no_marks("A designed editorial graphic.", "gpt-image", hook_text=_HOOK)
+        assert f'The only text in the image is exactly "{_HOOK}"' in marked
+        assert _NO_MARKS_GPT not in marked
+
+    def test_flux_gets_it_positively(self):
+        marked = with_no_marks("A designed editorial graphic.", "flux", hook_text=_HOOK)
+        assert f'the exact phrase "{_HOOK}"' in marked
+        assert _NO_MARKS_FLUX not in marked and "no other" not in marked
+
+    def test_the_printed_surface_clause_is_skipped_for_a_hook_but_screens_are_not(self):
+        prompt = "Type on a poster beside a laptop."
+        marked = with_no_marks(prompt, "gpt-image", hook_text=_HOOK)
+        assert "printed surface in the frame is bare" not in marked
+        assert "switched off and uniformly dark" in marked
+
+    def test_the_hook_clause_is_added_at_most_once(self):
+        once = with_no_marks("A graphic.", "gpt-image", hook_text=_HOOK)
+        assert with_no_marks(once, "gpt-image", hook_text=_HOOK) == once
+
+    def test_without_a_hook_nothing_changes(self):
+        assert with_no_marks("A desk.", "gpt-image") == "A desk." + _NO_MARKS_GPT
+
+    def test_the_renderer_receives_the_hook_clause(self):
+        with patch.object(image_gen, "_render_via_gpt_image", return_value="/tmp/g.png") as gpt:
+            image_gen._render_with_backend("A graphic.", hook_text=_HOOK)
+        assert f'exactly "{_HOOK}"' in gpt.call_args[0][0]

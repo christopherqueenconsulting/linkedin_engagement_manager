@@ -201,11 +201,23 @@ model_list:
   # ── VISION: render quality gate (image_gen.inspect_render_quality). Cheap look at a
   # generated image — relevance + artifact check before it reaches review. Ollama Cloud's
   # roster has no vision model, so this is OpenAI-only; callers fail OPEN when it errors.
+  # gpt-4.1 leads (issue #2241): the staged judge asks for an exact transcription, per-entity
+  # presence and a rubric, which gpt-4o-mini answered too leniently. `order` is LiteLLM's
+  # deployment priority — order 2 is only routed to when order 1 fails or is cooling down, so
+  # gpt-4o-mini stays the in-group fallback rather than a latency-routing peer.
+  - model_name: lem-vision
+    litellm_params:
+      model: openai/gpt-4.1
+      api_key: os.environ/OPENAI_API_KEY
+      request_timeout: 60
+      order: 1
+
   - model_name: lem-vision
     litellm_params:
       model: openai/gpt-4o-mini
       api_key: os.environ/OPENAI_API_KEY
       request_timeout: 60
+      order: 2
 
   # ── TTS: tutorial voice-over (issue #505). tts-1 is the cheapest useful option
   # ($15 / 1M characters) and streams straight back as mp3 bytes.

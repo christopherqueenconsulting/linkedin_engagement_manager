@@ -1,54 +1,95 @@
 """ONE image-brief author for every surface that renders an AI image.
 
-Replaces the per-surface prompt strings (the lem-simple free paragraph at temperature 1.0, the
-carousel keyword-bag) with a single validated builder: the ACTUAL content in, a structured brief
-out — a render-ready prompt plus the extracted focal concept the vision gate later grades
-against. Written by ``lem-medium``: the brief decides whether the render is relevant at all,
-which is exactly the failure the cheapest tier kept producing.
+Stage 2 of the staged image engine (``docs/image-stack.md``). Stage 1
+(``image_concept.analyze_content_for_image``) reads the whole piece and returns its thesis, the
+concrete entities it names, a hook, and a TREATMENT. This module turns that into one render-ready
+prompt, validated deterministically and — when a concept is in hand — checked once more by a cheap
+judge (Stage 3, ``check_prompt_against_concept``) before a single image is paid for.
+
+The brief no longer asks for a "physical metaphor": that request is what put a valve, a gauge or
+a pipe on every newsletter cover whatever the edition said (issue #2241). Stock symbols are now
+REFUSED outright, through the ONE ``CLICHE_OBJECTS`` list both this author and the vision gate
+read.
 
 Repo doctrine applies: do NOT add a parallel per-content-type prompt helper — add a preset here.
 """
 
+import json
 import re
 from dataclasses import dataclass
 from typing import Any, Optional
 
+from cqc_lem.utilities.ai.image_concept import (
+    TREATMENT_CONCRETE,
+    TREATMENT_GRAPHIC,
+    TREATMENT_METAPHOR,
+    TREATMENT_PEOPLE,
+    WEAK_ENTITY_FLOOR,
+    ImageConcept,
+    analyze_content_for_image,
+    entity_mentioned,
+)
 from cqc_lem.utilities.logger import log_debug, log_warning
+from cqc_lem.utilities.observability import llm_step
 
-# Per-surface art direction. The photographic fundamentals (order, lighting, camera, realism
-# texture) live in the system prompt; a preset only says what THIS surface is for.
+# Per-surface USE CASE: what the image is for and where it has to read. The visual approach is
+# the TREATMENT's job (below) — a surface preset never offers subjects, because a menu of objects
+# is exactly what every cover then picked from (issue #2241).
 _STYLE_PRESETS: dict[str, str] = {
     "newsletter": (
-        "A wide editorial photograph for a LinkedIn newsletter cover. One tangible object or "
-        "physical mechanism stands in for the edition's core idea — object-first, macro or "
-        "product-photography framing, readable at thumbnail size, with environmental depth. "
-        "People and screens stay out of the frame unless the author's own likeness belongs in "
-        "this image. For an abstract, financial or software idea, reach for its physical "
-        "metaphor, and pick from a DIFFERENT family each time — measuring (a balance scale, a "
-        "pressure gauge, a caliper, an hourglass, a tally counter), mechanical (a cracked gear, "
-        "a blown fuse, a snapped chain link, a fallen domino), routing (a track switch, a fork "
-        "in a road, a signal lever, a junction box), tools and containers (a sledgehammer "
-        "beside a thumbtack, a sieve, a ledger, a stack of weights), or plumbing (a drip, a "
-        "leak, a valve, a funnel). Cost, waste and routing ideas all reach for plumbing by "
-        "default, so when the already-used list names one family, pick from another."),
+        "A LinkedIn newsletter cover at 16:9. The subject must still read at a 400x225 "
+        "thumbnail, so keep it large and keep everything that matters inside the central 60% "
+        "of the frame."),
     "post_image": (
-        "A scroll-stopping single-subject photograph for a LinkedIn feed post. One person or "
-        "tangible object central to the post's message, one strong color accent."),
+        "A LinkedIn feed post image that has to stop a scroll at phone width: one strong "
+        "subject, one strong color accent, legible at a glance."),
     "carousel": (
-        "A quiet supporting photograph for ONE carousel slide's single idea. Simple, "
-        "uncluttered background a text panel can sit beside — it reinforces, never competes."),
+        "A quiet supporting image for ONE carousel slide's single idea, on a simple, "
+        "uncluttered background a text panel can sit beside — it reinforces the slide and "
+        "never competes with it."),
     "video": (
-        "An opening frame for a short professional video: a person or subject posed so subtle "
-        "motion can bring the frame alive, with layered foreground and background depth."),
-    # Photography vocabulary, like every other preset: the shared system prompt below bans
-    # "illustration" outright, so a preset asking for one put the two halves of this engine in
-    # direct contradiction (issue #1141). A tutorial thumbnail wants CALM, not a different medium.
+        "The opening frame of a short professional video: a subject posed so subtle motion can "
+        "bring the frame alive, with layered foreground and background depth."),
+    # Photography vocabulary, like every other preset: the shared system prompt bans the
+    # illustration medium outright (issue #1141). A tutorial thumbnail wants CALM, not a
+    # different medium.
     "thumbnail": (
-        "A bold, high-contrast photograph for a product-tutorial video thumbnail, framed to read "
-        "at player-tile size. One tangible object tied to the tutorial's subject, shot close and "
-        "off-center on a real, textured working surface rather than an empty backdrop."),
+        "A bold, high-contrast product-tutorial video thumbnail framed to read at player-tile "
+        "size, its subject large and off-center on a real, textured working surface."),
 }
 _DEFAULT_PRESET = "post_image"
+
+# Short noun for each surface, used by the deterministic fallback's opening clause.
+_USE_LABELS: dict[str, str] = {
+    "newsletter": "LinkedIn newsletter cover",
+    "post_image": "LinkedIn feed post",
+    "carousel": "LinkedIn carousel slide",
+    "video": "short professional video",
+    "thumbnail": "tutorial video thumbnail",
+}
+
+# The visual approach, chosen by Stage 1 from what the piece actually is.
+_TREATMENT_TEMPLATES: dict[str, str] = {
+    TREATMENT_PEOPLE: (
+        "TREATMENT people_scene: a real, candid documentary photograph of the piece's audience "
+        "in the exact situation it describes, built from its specific entities — people caught "
+        "mid-task with natural expressions, available light and imperfect real-world texture. "
+        "When the author's likeness is supplied, the author is the person in the scene."),
+    TREATMENT_GRAPHIC: (
+        "TREATMENT editorial_graphic: a designed editorial graphic. The ONLY words in the image "
+        "are the hook, in double quotes, spelled exactly, set in bold sans-serif type with its "
+        "placement stated (for example large in the left third). One supporting photographic "
+        "element drawn from the specific entities sits beside it on a flat brand-palette color "
+        "field with generous negative space."),
+    TREATMENT_CONCRETE: (
+        "TREATMENT concrete_scene: a photograph of the specific, tangible situation the "
+        "entities describe, shot where it really happens — the actual objects, documents and "
+        "setting the piece names. A screen may appear when it IS the subject."),
+    TREATMENT_METAPHOR: (
+        "TREATMENT metaphor_last_resort: one uncommon visual metaphor specific to this piece's "
+        "thesis, photographed as a real scene — one a reader has never seen on a hundred other "
+        "covers. Stock symbols are refused."),
+}
 
 # The ONE vocabulary ban list, named by the system prompt below AND read by the checking side
 # (`tests/unit/utilities/ai/test_image_preset_drift.py`) — the writer side and the checking side
@@ -64,189 +105,29 @@ DEAD_STYLE_WORDS = ("illustration", "painting", "render", "CGI", "artstation", "
 NEGATION_MARKERS = ("no text", "no logo", "no logos", "without ", "avoid ", "free of ",
                     "don't ", "do not ")
 
-# Encodes the BFL/Replicate/fal prompting research (2026): subject-first ordering, 40-80 word
-# flowing prose, concrete camera/lighting vocabulary instead of generic quality tags, positive
-# phrasing only (FLUX has no negative prompts — naming a thing summons it), and skin texture
-# rules that kill the AI sheen. Written to hold for BOTH FLUX.1 LoRA renders and FLUX.2/gpt-image.
-_SYSTEM_PROMPT_HEAD = """Act as a professional photographer writing the brief for ONE real photograph
-of LinkedIn visual content. You turn written content into a single render-ready prompt.
-
-### Write the prompt in this order (earlier = more weight)
-1. SUBJECT and its action or pose — drawn from the content's actual message, never generic
-   office stock. 2. SETTING. 3. COMPOSITION and framing (rule of thirds, eye-level, medium
-   shot, negative space — phrased to suit the requested aspect ratio). 4. LIGHTING, precisely
-   named — this has the highest impact ("soft window light from camera left with natural
-   fill", "golden hour rim light", "large softbox key 45 degrees camera left"). 5. CAMERA:
-   one body, one focal length, one aperture ("shot on Sony A7R IV, 85mm f/1.8, ISO 200").
-   6. FINISH: film stock or color grade, plus controlled imperfection ("Kodak Portra 400
-   tones, subtle film grain, tactile materials").
-
-### Hard rules
-- ONE flowing natural-language paragraph of 40-80 words. No keyword stacking, no weight
-  syntax, no quotation marks inside the prompt.
-"""
-
-_VOCABULARY_RULES = (
-    "- Specificity IS realism. Never lean on generic tags — "
-    + ", ".join(DEAD_QUALITY_TAGS)
-    + " are dead words; concrete gear, named lighting and tactile texture do that work.\n"
-    "- Photography vocabulary only. A single word like "
-    + ", ".join(DEAD_STYLE_WORDS)
-    + " drags the image away from a photograph.\n")
-
-_SYSTEM_PROMPT_TAIL = """- The renderer ignores negation, so never write "no X" or "without X" — and NEVER mention
-  text, letters, numbers, logos, watermarks, brands, charts, or UI at all: naming them
-  summons them, garbled. Describe surfaces positively instead: plain unbranded clothing,
-  blank screens, clean unmarked walls.
-- A SCREEN is where marks appear even when the brief never asked for them: a described laptop,
-  monitor or phone invites the renderer to fill its glass with plausible UI, tiled app icons
-  and company marks. Build the scene around a tangible object, material or environment rather
-  than a screen; when one genuinely belongs in the frame, state that it is switched off and
-  uniformly dark.
-- One cohesive scene — no collages or split screens.
-- When a person appears: face clearly visible and well-lit; describe wardrobe, expression
-  and pose, never facial features beyond what the context already declares (identity is
-  supplied separately and must not be contradicted). Give them natural skin texture with
-  visible pores and realistic uneven skin tone — never flawless, porcelain, or smooth skin.
-- HANDS are the renderer's weakest anatomy — keep them low-risk or out of frame. Good: arms
-  relaxed at the sides, hands resting flat on a desk, framed above the waist, one hand
-  loosely holding a simple large object (a mug, a notebook). Never: pointing at the camera,
-  open-palm gestures mid-air, interlocked or spread fingers, two hands interacting, or
-  hands as the focal point.
-
-### Output
-Respond with ONLY a JSON object:
-{"focal_concept": "<the one idea the image depicts, under 20 words>",
- "prompt": "<the photograph brief, one 40-80 word paragraph>"}"""
-
-_SYSTEM_PROMPT = _SYSTEM_PROMPT_HEAD + _VOCABULARY_RULES + _SYSTEM_PROMPT_TAIL
-
-# A refusal or meta-answer leaking into a render prompt produces surreal garbage. Anchored to
-# refusal PHRASING on purpose: a bare "language model" entry here rejected every legitimate brief
-# an AI-focused author writes ("a dashboard showing large language model routing costs"), so their
-# briefs fell back to the deterministic template every time — silently, since the fallback is a
-# working code path. Match how a refusal STARTS, never a topic word.
-_BANNED_FRAGMENTS = ("i'm sorry", "i am sorry", "i cannot", "i can't", "i am unable",
-                     "as an ai", "cannot fulfill", "cannot generate", "unable to generate")
-
-# Added only when the author's own likeness is NOT being rendered. Without it the brief asks for
-# "a confident business professional", the renderer supplies an anonymous model, and the result is
-# indistinguishable from the stock photography this engine exists to replace — on a PERSONAL-brand
-# newsletter a stranger's face is worse than no face. With an avatar, a person IS the point.
-_NO_ANONYMOUS_PERSON = (
-    "The author's likeness is NOT available for this image, so do NOT make an anonymous person the "
-    "focal subject — a generic model standing in an office is exactly the stock-photo look to "
-    "avoid. Build the image around a tangible object or a specific environment instead — never a "
-    "close-up of hands, the renderer's weakest anatomy. People may appear incidentally, out of "
-    "focus or from behind, but never as an identifiable face carrying the frame.\n")
-
-# Issue #1992: five straight newsletter covers converged on "person at laptop with notebook and
-# coffee mug on a wooden desk" despite the preset's "no generic office stock" instruction — a
-# negation the brief LLM apparently honors as loosely as the renderer honors negation in the
-# final prompt. A newsletter brief that still names one of these (with no avatar in the frame,
-# where a person and a desk genuinely may belong) is rejected and retried exactly like a refusal,
-# rather than shipped as the same scene the last five editions got.
-_STOCK_OFFICE_NOUNS = ("laptop", "notebook", "coffee", "desk", "office", "typing", "keyboard",
-                       "screen", "monitor", "phone")
-# Word-boundary, not substring: a bare `"phone" in lowered` also rejects "saxophone",
-# "microphone", "telephone" and "screening"/"green screen" rejects legitimate metaphors that
-# merely contain the noun as a substring rather than naming the cliché object itself.
-_STOCK_OFFICE_PATTERN = re.compile(
-    r"\b(?:" + "|".join(re.escape(noun) for noun in _STOCK_OFFICE_NOUNS) + r")\b",
-    re.IGNORECASE)
-
-# The scene `_fallback_brief` renders for a newsletter cover with no avatar. Purely POSITIVE: the
-# generic template's negations ("People and screens stay out of the frame", "blank screens") are
-# read by the renderer as things to draw, which is what put a man at a laptop on four of the five
-# live sample covers for issue #1992.
-_NEWSLETTER_FALLBACK_SCENE = (
-    "A wide editorial still-life photograph of one tangible object alone on a worn workshop "
-    "surface — a mechanical gauge, a balance scale, a single gear, an hourglass or a hand tool — "
-    "filling the frame as the entire subject, an empty workshop wall behind it.")
-
-# The metaphor objects the newsletter preset offers, by FAMILY. `newsletter_cover` reads the
-# objects to pull the OBJECT out of a prior cover's `focal_concept` — "Budget leak depicted as a
-# dripping valve spilling money" has to become `leak, valve` before it can steer the next brief,
-# because a whole sentence never matches the next one and so never suppressed anything (issue
-# #2000). The variety gate reads the FAMILIES (issue #2241): steering off one object steered
-# nothing when the author swapped a valve for a pipe or a faucet, so "all newsletter images have
-# pipes in them" — the plumbing family renders pipes whichever of its objects is named.
-# Kept here, beside the preset that names them: this is the vocabulary the author draws from.
-METAPHOR_FAMILIES: dict[str, frozenset[str]] = {
-    "plumbing": frozenset({"drip", "leak", "valve", "funnel", "pipe", "faucet", "tap", "stopcock",
-                           "manifold", "hose", "spigot", "plumbing", "pipework"}),
-    "measuring": frozenset({"scale", "gauge", "caliper", "hourglass", "tally", "counter", "meter",
-                            "dial", "ruler", "thermostat", "compass"}),
-    "mechanical": frozenset({"gear", "fuse", "chain", "link", "domino", "spring", "bolt", "cog",
-                             "bearing"}),
-    "routing": frozenset({"switch", "fork", "lever", "junction", "track", "signal", "points"}),
-    "tools": frozenset({"sledgehammer", "thumbtack", "sieve", "ledger", "weight", "wrench",
-                        "magnifier", "hammer", "anchor", "key", "lock", "bucket", "tank", "jar"}),
-}
-METAPHOR_OBJECTS: frozenset[str] = frozenset().union(*METAPHOR_FAMILIES.values())
-_OBJECT_FAMILY: dict[str, str] = {obj: family for family, objects in METAPHOR_FAMILIES.items()
-                                  for obj in objects}
-
-# What a plumbing object drags into the frame whichever one is named: a valve render came back
-# with "a background of dim industrial piping" (issue #2241). Once plumbing is on the avoid list
-# these are graded against the WHOLE prompt, not just the focal concept.
-_PLUMBING_SCENERY = ("pipe", "pipework", "plumbing")
-
-# A capped avoid list, so a long history can never starve the author into the fallback on every
-# run: past this many terms the oldest steering is dropped rather than the newest.
-_MAX_AVOID_TERMS = 8
-
-_MIN_PROMPT_CHARS = 60
-_MAX_PROMPT_CHARS = 2400
-
-# Generous on purpose. lem-medium is served by a REASONING model (deepseek-v4-flash), whose
-# thinking tokens are billed against the same budget before a single character of JSON is
-# emitted. At 600 the whole budget went to reasoning and the response came back EMPTY with
-# finish_reason='length' — so the brief failed validation, retried, failed again, and every
-# image silently rendered from the bland deterministic template. A real brief costs ~870
-# completion tokens including reasoning; this leaves headroom for a longer one.
-_BRIEF_MAX_TOKENS = 2500
-
-
-@dataclass
-class ImageBrief:
-    """One authored image prompt plus the facts the renderer and the vision gate need alongside it.
-
-    `focal_concept` is carried separately because it is what `render_image_gated` scores the render
-    AGAINST — a caller that drops it degrades the gate to judging the image against the first 200
-    characters of the prompt, which is a far weaker question.
-
-    `prompt` is the brief as written: the no-marks constraint belongs to the renderer
-    (`image_gen.with_no_marks`), which phrases it per backend, so it is never baked in here.
-    `style_preset` is the preset that was actually applied, which is `surface` only when that
-    surface has one — otherwise it is the default, and the two differ.
-    `fallback` is True only when the deterministic template shipped because the author LLM never
-    produced a usable brief — the field a stored brief receipt needs to be auditable (issue #1992).
-    """
-
-    prompt: str
-    ratio: str
-    surface: str
-    style_preset: str
-    focal_concept: str
-    fallback: bool = False
-
-
-def metaphor_family(word: str) -> Optional[str]:
-    """The preset family a metaphor object belongs to, plural-tolerant; None for any other word."""
-    lowered = (word or "").strip().lower()
-    for candidate in (lowered, lowered[:-2] if lowered.endswith("es") else lowered,
-                      lowered[:-1] if lowered.endswith("s") else lowered):
-        if candidate in _OBJECT_FAMILY:
-            return _OBJECT_FAMILY[candidate]
-    return None
-
-
-def _family_of_form(form: str) -> Optional[str]:
-    """The family an inflected form (`dripping`, `piping`) came from, for the retry reason."""
-    lowered = form.lower()
-    return next((_OBJECT_FAMILY[obj] for obj in _OBJECT_FAMILY if lowered in _inflections(obj)),
-                None)
+# The ONE cliché list (issue #2241). Every stock symbol a LinkedIn image reaches for when it has
+# nothing specific to say — and the stock-office scene issue #1992 was filed about. Read by the
+# author's system prompt, by `_rejection` (whole prompt, every surface, the avatar path too), by
+# the deterministic fallback (scrubbed out of anything it interpolates), and by the vision gate's
+# targeted question. A multi-word entry matches with an optional article between its words, and
+# its LAST word in any inflection ("pipes", "piping", "dripping").
+CLICHE_OBJECTS: tuple[str, ...] = (
+    "pipe", "plumbing", "valve", "faucet", "drip", "leak", "gear", "cog", "gauge",
+    "lightbulb", "light bulb", "puzzle piece", "jigsaw", "handshake", "chess", "chessboard",
+    "chess piece", "robot", "android", "glowing brain", "neural network glow",
+    "glowing neural network", "circuit board", "binary code", "matrix code", "rocket", "target",
+    "dartboard", "bullseye", "mountain summit", "mountain peak", "compass", "hourglass", "domino",
+    "chain link", "maze", "ladder", "key and lock", "lock and key", "padlock", "crystal ball",
+    "magnifying glass",
+    # Stock office (issue #1992).
+    "person at laptop", "man at laptop", "woman at laptop", "professional at laptop",
+    "typing hands", "hands typing", "hands on keyboard", "coffee and notebook",
+)
+# "target audience" is a reader, not a dartboard — the business senses never count as the symbol.
+_TARGET_BUSINESS_SENSE = re.compile(
+    r"\s+(?:audience|market|customer|client|account|reader|buyer|segment|persona|date|number|"
+    r"metric|list|role)s?\b", re.IGNORECASE)
+_PHRASE_GAP = r"\s+(?:(?:a|an|the|their|his|her|its|on|at|and)\s+)?"
 
 
 def _inflections(term: str) -> set[str]:
@@ -259,170 +140,473 @@ def _inflections(term: str) -> set[str]:
     return forms
 
 
-def _avoided_families(avoid_terms: Optional[list[str]]) -> set[str]:
-    terms = [t.strip() for t in (avoid_terms or []) if t and t.strip()][:_MAX_AVOID_TERMS]
-    return {f for f in (metaphor_family(t) for t in terms) if f}
+def _phrase_pattern(phrase: str) -> str:
+    *head, last = phrase.lower().split()
+    tail = "(?:" + "|".join(re.escape(f) for f in sorted(_inflections(last), key=len,
+                                                          reverse=True)) + ")"
+    return _PHRASE_GAP.join([re.escape(w) for w in head] + [tail])
 
 
-def _alternation(forms: set[str]) -> "re.Pattern[str]":
-    # Longest first, so `pipes` is never cut short at `pipe` by the alternation order.
-    ordered = sorted(forms, key=len, reverse=True)
-    return re.compile(r"\b(?:" + "|".join(re.escape(f) for f in ordered) + r")\b", re.IGNORECASE)
+_CLICHE_PATTERN = re.compile(
+    r"\b(?:" + "|".join(_phrase_pattern(p) for p in sorted(CLICHE_OBJECTS, key=len, reverse=True))
+    + r")\b", re.IGNORECASE)
+_COFFEE = re.compile(r"\bcoffee\b", re.IGNORECASE)
+_NOTEBOOK = re.compile(r"\bnotebooks?\b", re.IGNORECASE)
 
 
-def _avoid_pattern(avoid_terms: Optional[list[str]]) -> Optional["re.Pattern[str]"]:
-    """Whole-word matcher for the caller's avoid terms, or None when there is nothing to match.
+def cliche_hit(text: Optional[str]) -> Optional[str]:
+    """The first stock symbol ``text`` names, or None.
 
-    A term that names a preset object stands for its whole FAMILY, in any inflection (issue
-    #2241): with `valve` avoided, a "dripping copper pipe" is the same picture, not a new one.
+    Args:
+        text: A render prompt, an entity, or a vision judge's description.
+
+    Returns:
+        The matched words as written (e.g. ``"dripping"``), or ``"coffee and notebook"`` when both
+        halves of that stock pairing appear anywhere in the text.
     """
-    terms = [t.strip() for t in (avoid_terms or []) if t and t.strip()][:_MAX_AVOID_TERMS]
-    if not terms:
-        return None
-    forms: set[str] = set()
-    for term in terms:
-        family = metaphor_family(term)
-        for word in (METAPHOR_FAMILIES[family] if family else {term.lower()}):
-            forms |= _inflections(word) if family else {word}
-    return _alternation(forms)
+    text = text or ""
+    for match in _CLICHE_PATTERN.finditer(text):
+        word = match.group(0)
+        if word.lower().startswith("target") and _TARGET_BUSINESS_SENSE.match(text, match.end()):
+            continue
+        return word
+    if _COFFEE.search(text) and _NOTEBOOK.search(text):
+        return "coffee and notebook"
+    return None
 
 
-def _scenery_pattern(avoid_terms: Optional[list[str]]) -> Optional["re.Pattern[str]"]:
-    """Pipes anywhere in the prompt, once plumbing is avoided — they are what the reader sees."""
-    if "plumbing" not in _avoided_families(avoid_terms):
-        return None
-    return _alternation(set().union(*(_inflections(w) for w in _PLUMBING_SCENERY)))
+def _scrub_cliches(text: str) -> str:
+    """``text`` with every stock symbol removed — for anything the fallback interpolates."""
+    scrubbed = _CLICHE_PATTERN.sub(" ", text or "")
+    return " ".join(scrubbed.replace('"', "").replace("“", "").replace("”", "").split())
 
 
-def _valid(parsed: dict[str, Any], *, surface: Optional[str] = None,
-          avatar: Optional[dict[str, Any]] = None,
-          avoid_terms: Optional[list[str]] = None) -> bool:
+# Encodes the OpenAI gpt-image and BFL FLUX prompting guides (2026): state the use case, order the
+# prompt scene -> subject -> details -> constraints, quote any text exactly with its placement and
+# type, and get realism from camera language and real texture rather than quality tags. Positive
+# phrasing only (FLUX has no negative prompts — naming a thing summons it).
+_SYSTEM_PROMPT_HEAD = """Act as a photo editor and art director writing the brief for ONE image \
+of LinkedIn visual content. You receive the use case, a TREATMENT, an analysis of the piece \
+(thesis, audience, specific entities, emotional beat, hook) and an excerpt of the piece itself, \
+and you turn them into a single render-ready prompt.
+
+### Write the prompt in this order (earlier = more weight)
+1. SCENE: what this image is for and where it takes place, as the use case asks.
+2. SUBJECT: who or what carries the frame — built from the piece's SPECIFIC ENTITIES, never a
+   generic stand-in or a symbol. 3. DETAILS: composition for the requested aspect ratio;
+   LIGHTING precisely named ("soft window light from camera left with natural fill"); CAMERA,
+   one body, one focal length, one aperture ("shot on Sony A7R IV, 35mm f/2"); FINISH with real
+   texture and controlled imperfection ("Kodak Portra 400 tones, subtle film grain"). For an
+   editorial graphic: the type weight, the color fields and exactly where the hook sits.
+4. CONSTRAINTS last.
+
+### Hard rules
+- ONE flowing natural-language paragraph of 40-90 words. No keyword stacking, no weight syntax.
+- Depict at least two of the specific entities literally, and name the ones you used in
+  required_entities.
+- Stock symbols are REFUSED, whatever the topic: """ + ", ".join(CLICHE_OBJECTS) + """. Find
+  what THIS piece names instead.
+- Quotation marks appear ONLY around the hook on the editorial_graphic treatment, copied exactly.
+  Every other treatment carries no quoted text and no hook.
+"""
+
+_VOCABULARY_RULES = (
+    "- Specificity IS realism. Never lean on generic tags — "
+    + ", ".join(DEAD_QUALITY_TAGS)
+    + " are dead words; concrete gear, named lighting and tactile texture do that work.\n"
+    "- Photography and editorial-design vocabulary only. A single word like "
+    + ", ".join(DEAD_STYLE_WORDS)
+    + " drags the image away from a real photograph or a designed graphic.\n")
+
+_SYSTEM_PROMPT_TAIL = """- The renderer ignores negation, so never write "no X" or "without X" — and NEVER mention
+  text, letters, numbers, logos, watermarks, brands, charts, or UI at all, the editorial_graphic
+  hook being the one exception: naming them summons them, garbled. Describe surfaces positively
+  instead: plain unbranded clothing, clean unmarked walls.
+- A SCREEN is where marks appear even when the brief never asked for them: a described laptop,
+  monitor or phone invites the renderer to fill its glass with plausible UI, tiled app icons and
+  company marks. Use one only when it genuinely IS the subject, and then put the weight on the
+  person's reaction and the room around it rather than on what the glass shows.
+- One cohesive scene — no collages or split screens.
+- When a person appears: face clearly visible and well-lit; describe wardrobe, expression
+  and pose, never facial features beyond what the context already declares (identity is
+  supplied separately and must not be contradicted). Give them natural skin texture with
+  visible pores and realistic uneven skin tone — never flawless, porcelain, or smooth skin.
+- HANDS are the renderer's weakest anatomy — keep them low-risk or out of frame. Good: arms
+  relaxed at the sides, hands resting flat on a desk, framed above the waist, one hand
+  loosely holding a simple large object (a mug, a folder). Never: pointing at the camera,
+  open-palm gestures mid-air, interlocked or spread fingers, two hands interacting, or
+  hands as the focal point.
+
+### Output
+Respond with ONLY a JSON object:
+{"focal_concept": "<the one idea the image depicts, under 20 words>",
+ "prompt": "<the brief, one 40-90 word paragraph>",
+ "required_entities": ["<each specific entity the prompt depicts>"],
+ "hook_text": "<the hook exactly as quoted in the prompt, or null>"}"""
+
+_SYSTEM_PROMPT = _SYSTEM_PROMPT_HEAD + _VOCABULARY_RULES + _SYSTEM_PROMPT_TAIL
+
+# A refusal or meta-answer leaking into a render prompt produces surreal garbage. Anchored to
+# refusal PHRASING on purpose: a bare "language model" entry here rejected every legitimate brief
+# an AI-focused author writes ("a dashboard showing large language model routing costs"), so their
+# briefs fell back to the deterministic template every time — silently, since the fallback is a
+# working code path. Match how a refusal STARTS, never a topic word.
+_BANNED_FRAGMENTS = ("i'm sorry", "i am sorry", "i cannot", "i can't", "i am unable",
+                     "as an ai", "cannot fulfill", "cannot generate", "unable to generate")
+
+# Added only when the author's own likeness is NOT being rendered. The old directive here forbade
+# any identifiable person outright, and together with the stock-office gate it left the author
+# one move — an object still-life — which is how every cover became a valve (issue #2241).
+# LinkedIn's own guidance is that real people beat symbols; what reads as stock is the POSED model.
+_NO_AVATAR_PEOPLE = (
+    "The author's likeness is NOT available for this image. People may appear as real "
+    "participants caught mid-task — candid, partly turned, absorbed in the situation — never "
+    "as a posed model smiling at the camera, which reads as stock photography.\n")
+
+_MIN_PROMPT_CHARS = 60
+_MAX_PROMPT_CHARS = 2400
+_EXCERPT_CHARS = 3000
+# Attempts at a brief: the first, plus up to two retries that carry the rejection reason.
+_BRIEF_ATTEMPTS = 3
+# A capped soft-steer list, so a long history never crowds out the piece itself.
+_MAX_AVOID_TERMS = 8
+
+# Generous on purpose. lem-medium is served by a REASONING model (deepseek-v4-flash), whose
+# thinking tokens are billed against the same budget before a single character of JSON is
+# emitted. At 600 the whole budget went to reasoning and the response came back EMPTY with
+# finish_reason='length' — so the brief failed validation, retried, failed again, and every
+# image silently rendered from the bland deterministic template. A real brief costs ~870
+# completion tokens including reasoning; this leaves headroom for a longer one.
+_BRIEF_MAX_TOKENS = 2500
+# Stage 3's judge is lem-simple, also a reasoning model.
+_CHECK_MAX_TOKENS = 1500
+
+_QUOTED = re.compile(r'"([^"\n]{1,200})"|“([^”\n]{1,200})”')
+
+_PALETTE_DEFAULT = "deep navy and warm off-white"
+
+
+@dataclass
+class ImageBrief:
+    """One authored image prompt plus the facts the renderer and the vision gate need alongside it.
+
+    `focal_concept` is what the legacy vision gate scores against when no concept is in hand.
+    `prompt` is the brief as written: the no-marks constraint belongs to the renderer
+    (`image_gen.with_no_marks`), which phrases it per backend, so it is never baked in here.
+    `style_preset` is the preset that was actually applied, which is `surface` only when that
+    surface has one — otherwise it is the default, and the two differ.
+    `fallback` is True only when the deterministic template shipped because the author LLM never
+    produced a usable brief — the field a stored brief receipt needs to be auditable (issue #1992).
+
+    `concept` is Stage 1's analysis (None when it was unavailable), `treatment` the approach the
+    brief took, `required_entities` the concept entities the prompt actually depicts, `hook_text`
+    the ONE string the render may carry (editorial_graphic only), and `prompt_check` what Stage 3
+    said — all recorded on the brief receipt (issue #2241).
+    """
+
+    prompt: str
+    ratio: str
+    surface: str
+    style_preset: str
+    focal_concept: str
+    fallback: bool = False
+    concept: Optional[ImageConcept] = None
+    treatment: Optional[str] = None
+    required_entities: tuple[str, ...] = ()
+    hook_text: Optional[str] = None
+    prompt_check: Optional[str] = None
+
+
+def usable_entities(concept: Optional[ImageConcept]) -> list[str]:
+    """The concept's entities minus any stock symbol.
+
+    A cliché is refused even when the text names it, so asking a prompt to depict one would make
+    the brief unpassable. Shared with the vision gate, which asks about the same entities.
+
+    Args:
+        concept: Stage 1's analysis, or None.
+
+    Returns:
+        The entities a prompt may be asked to depict; empty without a concept.
+    """
+    if concept is None:
+        return []
+    return [e for e in concept.specific_entities if not cliche_hit(e)]
+
+
+def _treatment_for(concept: Optional[ImageConcept], avatar: Optional[dict[str, Any]]) -> str:
+    """The treatment this brief takes.
+
+    The author's likeness means a person IS the subject, and the LoRA path cannot set type, so an
+    avatar always takes ``people_scene``. With no concept, a concrete scene from the excerpt.
+    """
+    if avatar:
+        return TREATMENT_PEOPLE
+    if concept is None:
+        return TREATMENT_CONCRETE
+    return concept.treatment
+
+
+def _quoted_strings(prompt: str) -> list[str]:
+    return [(a or b).strip() for a, b in _QUOTED.findall(prompt or "")]
+
+
+def _deterministic_failure(prompt: str, *, entities: list[str], weak: bool,
+                           hook_text: Optional[str]) -> Optional[str]:
+    """Why ``prompt`` fails the deterministic checks, or None when it passes them.
+
+    Shared by Stage 2's validation and Stage 3, so the two can never disagree about a cliché,
+    a stray quote or entity coverage.
+    """
+    hit = cliche_hit(prompt)
+    if hit:
+        return (f"the prompt named the stock symbol {hit!r} — build the image on the piece's "
+                f"own entities instead")
+    quoted = _quoted_strings(prompt)
+    if hook_text:
+        if not any(q == hook_text for q in quoted):
+            return f'the hook must appear in double quotes exactly as "{hook_text}"'
+        stray = [q for q in quoted if q != hook_text]
+        if stray:
+            return f"the prompt quotes text other than the hook: {stray[0]!r}"
+    elif quoted:
+        return (f"the prompt quotes text ({quoted[0]!r}) but this treatment carries no words "
+                f"at all")
+    if not weak and len(entities) >= WEAK_ENTITY_FLOOR:
+        depicted = [e for e in entities if entity_mentioned(e, prompt)]
+        if len(depicted) < WEAK_ENTITY_FLOOR:
+            return (f"the prompt depicts {len(depicted)} of the piece's specific entities; show "
+                    f"at least two of: {'; '.join(entities)}")
+    return None
+
+
+def _rejection(parsed: dict[str, Any], *, entities: list[str], weak: bool,
+               hook_text: Optional[str]) -> Optional[str]:
+    """Why an authored brief is unusable, or None. The reason goes back to the author verbatim."""
     prompt = str(parsed.get("prompt") or "").strip()
     focal = str(parsed.get("focal_concept") or "").strip()
     if not (_MIN_PROMPT_CHARS <= len(prompt) <= _MAX_PROMPT_CHARS) or not (3 <= len(focal) <= 300):
-        return False
+        return "failed validation (length bounds)"
     lowered = prompt.lower()
     if any(fragment in lowered for fragment in _BANNED_FRAGMENTS):
-        return False
-    # Newsletter only, and only with no avatar in frame — a person at a desk is a legitimate
-    # scene once the author's own likeness is the point (issue #1992).
-    if surface == "newsletter" and not avatar:
-        hit = _STOCK_OFFICE_PATTERN.search(lowered)
-        if hit:
-            log_debug("Newsletter brief rejected — stock-office noun", noun=hit.group(0))
-            return False
-        # The avoid terms carry the objects the last few covers already used. Graded against the
-        # FOCAL CONCEPT only, never the whole prompt: the focal concept is where the chosen
-        # subject is named, so a valve lying in the background of an otherwise distinct scene is
-        # not a repeat and must not cost a retry (issue #2000). As a line in the user prompt alone
-        # this had no teeth — four consecutive live covers all chose a valve.
-        pattern = _avoid_pattern(avoid_terms)
-        repeat = pattern.search(focal) if pattern else None
-        if repeat:
-            log_debug("Newsletter brief rejected — object already used by a recent cover",
-                      noun=repeat.group(0))
-            return False
-        scenery = _scenery_pattern(avoid_terms)
-        piped = scenery.search(prompt) if scenery else None
-        if piped:
-            log_debug("Newsletter brief rejected — plumbing scenery after a recent plumbing cover",
-                      noun=piped.group(0))
-            return False
-    return True
+        return "failed validation (refusal phrasing)"
+    reply_hook = str(parsed.get("hook_text") or "").strip()
+    if reply_hook.lower() not in ("", "null", "none") and not hook_text:
+        return "the reply declared hook text, but only the editorial_graphic treatment has a hook"
+    return _deterministic_failure(prompt, entities=entities, weak=weak, hook_text=hook_text)
+
+
+_CHECK_PROMPT = """You are checking an image prompt BEFORE it is sent to a renderer.
+
+The piece's thesis: {thesis}
+Its specific entities: {entities}
+
+The prompt:
+<prompt>{prompt}</prompt>
+
+Would an image rendered from this prompt let a stranger guess the piece's thesis? Name which of
+the entities the prompt depicts. Respond with ONLY a JSON object:
+{{"guessable": true|false, "depicted_entities": ["..."], "reason": "<one short sentence>"}}"""
+
+
+@llm_step("image_prompt_check")
+def check_prompt_against_concept(prompt: str, concept: Optional[ImageConcept],
+                                 hook_text: Optional[str]) -> tuple[bool, str]:
+    """Stage 3: is this prompt worth rendering? Deterministic checks first, then ONE judge call.
+
+    The deterministic half (stock symbols, stray quoted text, entity coverage) always applies. The
+    ``lem-simple`` judge then asks whether a stranger could guess the thesis from the image; it
+    fails OPEN — an unreachable judge passes the prompt, since the vision gate still stands behind.
+
+    Args:
+        prompt: The authored render prompt.
+        concept: Stage 1's analysis; without one only the deterministic checks run.
+        hook_text: The one string the image may carry, or None.
+
+    Returns:
+        ``(ok, reason)`` — ``reason`` is the repair directive when ``ok`` is False.
+    """
+    entities = usable_entities(concept)
+    weak = concept is None or concept.weak or len(entities) < WEAK_ENTITY_FLOOR
+    failure = _deterministic_failure(prompt, entities=entities, weak=weak, hook_text=hook_text)
+    if failure:
+        return False, failure
+    if concept is None:
+        return True, "deterministic checks passed (no concept for the judge)"
+
+    from cqc_lem.utilities.ai.ai_helper import _loads_json_object
+    from cqc_lem.utilities.ai.client import client
+
+    try:
+        response = client.chat.completions.create(
+            model="lem-simple",
+            messages=[{"role": "user", "content": _CHECK_PROMPT.format(
+                thesis=concept.thesis, entities="; ".join(entities) or "(none named)",
+                prompt=prompt)}],
+            response_format={"type": "json_object"},
+            temperature=0,
+            max_tokens=_CHECK_MAX_TOKENS,
+        )
+        verdict = _loads_json_object(response.choices[0].message.content or "")
+    except Exception as e:
+        log_debug("Image prompt judge unavailable — passing the prompt", error=str(e),
+                  action_type="image_brief")
+        return True, "judge unavailable"
+    if not isinstance(verdict, dict) or "guessable" not in verdict:
+        return True, "judge reply unusable"
+    if verdict.get("guessable") is False:
+        why = " ".join(str(verdict.get("reason") or "").split())[:200]
+        return False, ("a stranger could not guess the thesis from this prompt"
+                       + (f": {why}" if why else "") + f" — show {concept.thesis}")
+    return True, "judge passed"
+
+
+def _join(items: list[str]) -> str:
+    if len(items) <= 1:
+        return "".join(items)
+    return ", ".join(items[:-1]) + " and " + items[-1]
 
 
 def _fallback_brief(content: str, *, surface: str, ratio: str, context: str,
-                    avatar: Optional[dict[str, Any]] = None) -> ImageBrief:
-    """Deterministic last resort when the brief author is down — bland beats broken.
+                    avatar: Optional[dict[str, Any]] = None,
+                    concept: Optional[ImageConcept] = None,
+                    treatment: Optional[str] = None,
+                    brand_kit: Optional[str] = None) -> ImageBrief:
+    """Deterministic last resort when the brief author is down — built from the piece, not a set.
 
-    The newsletter surface with no avatar gets its OWN scene, because this template is a RENDER
-    prompt and every noun in it is a request: the generic one pasted in the surface's instruction
-    preset ("People and screens stay out of the frame"), then asked for "blank screens" and "plain
-    unbranded clothing", and the renderer duly produced a man at a laptop — the exact scene issue
-    #1992 was filed about, on 4 of 5 live editions.
+    Every noun here is a RENDER request, so it is assembled only from the treatment and the
+    concept's own grounded entities, with every stock symbol scrubbed out of anything
+    interpolated. The old newsletter fallback was a workshop still-life (a brass valve, a gauge, a
+    gear) — the scene issue #2241 was filed about — and it is gone.
     """
-    summary = " ".join((content or "").split())[:300]
-    if surface == "newsletter" and not avatar:
-        # Strip the edition's own stock-office nouns out of the summary too: the hook supplies
-        # them, and the renderer draws whatever the summary names.
-        summary = " ".join(_STOCK_OFFICE_PATTERN.sub(" ", summary).split())
-        prompt = (f"{_NEWSLETTER_FALLBACK_SCENE} The object stands in for this idea: {summary}. "
-                  f"Macro still-life composed for a {ratio} aspect ratio, dramatic raking side "
-                  f"light, shallow depth of field, shot on a 100mm macro lens at f/2.8, tactile "
-                  f"aged metal and worn wood texture, subtle film grain, clean unmarked "
-                  f"surfaces.")
-        return ImageBrief(prompt=prompt, ratio=ratio, surface=surface, style_preset=surface,
-                          focal_concept=summary[:120] or "a single tangible object",
-                          fallback=True)
-    direction = _STYLE_PRESETS.get(surface, _STYLE_PRESETS[_DEFAULT_PRESET])
-    # Positive phrasing throughout — FLUX ignores negation, so "no logos" summons logos.
-    prompt = (f"{context}{direction} A single professional photograph representing: "
-              f"{summary}. One clear focal subject, eye-level medium shot composed for a "
-              f"{ratio} aspect ratio, shallow depth of field, soft window light with natural "
-              f"fill, shot on an 85mm lens at f/1.8, subtle film grain, plain unbranded "
-              f"clothing and surfaces, blank screens, clean unmarked walls.")
+    treatment = treatment or _treatment_for(concept, avatar)
+    entities = [_scrub_cliches(e) for e in usable_entities(concept)]
+    entities = [e for e in entities if e]
+    use = _USE_LABELS.get(surface, _USE_LABELS[_DEFAULT_PRESET])
+    summary = _scrub_cliches(concept.thesis if concept else content)[:240]
+    hook = concept.hook_phrase if concept and treatment == TREATMENT_GRAPHIC else None
+    finish = (f"composed for a {ratio} aspect ratio with the subject large in the central frame, "
+              f"soft window light with natural fill, subtle film grain, tactile real-world "
+              f"texture, plain unbranded surfaces, clean unmarked walls.")
+
+    if treatment == TREATMENT_GRAPHIC and hook:
+        support = entities[0] if entities else summary[:80]
+        palette = brand_kit or _PALETTE_DEFAULT
+        prompt = (f'{context}A designed editorial graphic for a {use}: bold sans-serif type '
+                  f'reading "{hook}" set large in the left third, beside one photographic '
+                  f'cutout of {support} on a flat color field in {palette}, generous negative '
+                  f'space, high contrast, composed for a {ratio} aspect ratio.')
+    elif treatment == TREATMENT_PEOPLE:
+        who = _scrub_cliches(concept.audience) if concept and concept.audience else ""
+        who = who or "a small working team"
+        around = _join(entities[:3]) if entities else f"the situation this describes: {summary}"
+        prompt = (f"{context}A candid documentary photograph for a {use}: {who} caught "
+                  f"mid-conversation around {around}, in a real working setting, eye-level "
+                  f"medium shot, shot on a 35mm lens at f/2, natural skin texture, plain "
+                  f"unbranded clothing, {finish}")
+    elif len(entities) >= 2:
+        extra = f", with {entities[2]} in the frame" if len(entities) > 2 else ""
+        prompt = (f"{context}A candid editorial photograph for a {use} of {entities[0]} and "
+                  f"{entities[1]} in the real place this happens{extra}, shot on a 50mm lens "
+                  f"at f/2.8, {finish}")
+    else:
+        prompt = (f"{context}A candid editorial photograph for a {use} of the real, specific "
+                  f"situation this describes: {summary}. One clear focal subject, shot on a 50mm "
+                  f"lens at f/2.8, {finish}")
     return ImageBrief(prompt=prompt, ratio=ratio, surface=surface,
                       style_preset=surface if surface in _STYLE_PRESETS else _DEFAULT_PRESET,
-                      focal_concept=summary[:120] or "professional LinkedIn visual",
-                      fallback=True)
+                      focal_concept=(summary[:120] or "professional LinkedIn visual"),
+                      fallback=True, concept=concept, treatment=treatment,
+                      required_entities=tuple(e for e in entities if entity_mentioned(e, prompt)),
+                      hook_text=hook)
+
+
+def _analysis_block(concept: Optional[ImageConcept], entities: list[str],
+                    hook: Optional[str]) -> str:
+    if concept is None:
+        return ("Analysis of the piece: unavailable — read the excerpt and build the image on "
+                "the specific things it names.\n")
+    analysis = {"thesis": concept.thesis, "audience": concept.audience,
+                "specific_entities": entities, "emotional_beat": concept.emotional_beat}
+    block = f"Analysis of the piece: {json.dumps(analysis)}\n"
+    if hook:
+        block += f'Hook — the ONLY text in the image, quoted exactly: "{hook}"\n'
+    return block
 
 
 def build_image_brief(content: str, *, surface: str, ratio: str = "1:1",
                       profile=None, avatar: Optional[dict[str, Any]] = None,
                       extra_direction: Optional[str] = None,
                       content_shape: Optional[str] = None,
-                      avoid_terms: Optional[list[str]] = None) -> ImageBrief:
+                      avoid_terms: Optional[list[str]] = None,
+                      concept: Optional[ImageConcept] = None,
+                      brand_kit: Optional[str] = None) -> ImageBrief:
     """Author the brief for one render. Never raises — degrades to a deterministic brief.
 
-    ``content_shape`` (issue #1992) is a short caller-supplied tag — a newsletter edition's
-    format + hook style — folded into the context so the brief distinguishes a listicle cover
-    from a personal-story one; unused by callers that have no equivalent shape.
+    Args:
+        content: The piece the image represents. A ``_EXCERPT_CHARS`` excerpt reaches the author.
+        surface: Which ``_STYLE_PRESETS`` use case applies; unknown surfaces take the default.
+        ratio: The aspect ratio to compose for.
+        profile: The author's LinkedIn profile, for the brand context line.
+        avatar: The resolved avatar when the author's likeness is in frame; forces people_scene.
+        extra_direction: The author's free-text direction for THIS image (issue #1890).
+        content_shape: A short tag such as a newsletter edition's format + hook style (#1992).
+        avoid_terms: What the author's recent images already looked like. A SOFT steer to the
+            author only — never a gate and never in the fallback, because relevance outranks
+            variety and a fallback prompt is read by the renderer as a request.
+        concept: Stage 1's analysis, when the caller already has one; otherwise this runs it.
+        brand_kit: A pre-rendered brand clause (palette, type), folded into the author's context
+            and the graphic fallback's palette.
 
-    ``avoid_terms`` are nouns the caller already knows are wrong for this image — the OBJECTS the
-    last few covers used, the generic nouns the edition's own hook keeps repeating. They reach the
-    AUTHOR only and never the deterministic fallback, because a fallback prompt goes straight to a
-    renderer, which reads every noun in it as a request. They are also a GATE on the returned focal
-    concept (issue #2000): as a prompt line alone they had no teeth, and four consecutive live
-    covers all chose a valve. Capped at ``_MAX_AVOID_TERMS`` so a long history can never starve the
-    author into the fallback on every run.
+    Returns:
+        The brief. ``fallback`` is True when the deterministic template shipped.
     """
     from cqc_lem.utilities.ai.ai_helper import _call_llm, _loads_json_object, _profile_visual_context
     from cqc_lem.utilities.avatar.attributes import subject_directive
 
+    if concept is None:
+        try:
+            concept = analyze_content_for_image(content, surface=surface)
+        except Exception as e:  # analyze never raises, but the brief must not depend on that
+            log_debug("Image concept stage raised — briefing without it", error=str(e),
+                      surface=surface, action_type="image_brief")
+            concept = None
     preset = surface if surface in _STYLE_PRESETS else _DEFAULT_PRESET
+    treatment = _treatment_for(concept, avatar)
+    entities = usable_entities(concept)
+    weak = concept is None or concept.weak or len(entities) < WEAK_ENTITY_FLOOR
+    hook = concept.hook_phrase if concept and treatment == TREATMENT_GRAPHIC else None
     # The likeness directive leads the context on purpose (issue #744): with nothing stating who
     # a depicted person is, the model invents one and the LoRA renders the invention.
     context = _profile_visual_context(profile, subject_directive(avatar))
-    # Named to the author as well as gated (issue #2241): the object list alone let it swap a
-    # valve for a pipe and call that a different family.
-    families = _avoided_families(avoid_terms) if surface == "newsletter" and not avatar else set()
+    avoid = [t.strip() for t in (avoid_terms or []) if t and t.strip()][:_MAX_AVOID_TERMS]
 
     user_prompt = (
-        f"{context}{_STYLE_PRESETS[preset]}\n\n"
+        f"{context}USE CASE: {_STYLE_PRESETS[preset]}\n"
+        f"{_TREATMENT_TEMPLATES[treatment]}\n\n"
         f"Compose for a {ratio} aspect ratio.\n"
-        + ("" if avatar else _NO_ANONYMOUS_PERSON)
+        + _analysis_block(concept, entities, hook)
+        + (f"Brand: {brand_kit}\n" if brand_kit else "")
+        + ("" if avatar else _NO_AVATAR_PEOPLE)
         + (f"Content shape: {content_shape}\n" if content_shape else "")
-        + (f"Recent covers already used these objects, so this one must NOT be built on any of "
-           f"them — pick an object from a different family: "
-           f"{'; '.join(avoid_terms[:_MAX_AVOID_TERMS])}\n" if avoid_terms else "")
-        + (f"Families already used, so no object from them: {', '.join(sorted(families))}"
-           + ("; no pipes or piping anywhere in the frame either" if "plumbing" in families
-              else "") + "\n" if families else "")
+        + (f"This author's recent images already looked like this, so make this one visibly "
+           f"different in setting and composition: {'; '.join(avoid)}\n" if avoid else "")
         + (f"Additional direction: {extra_direction}\n" if extra_direction else "")
-        + f"\nHere is the content the image must represent:\n<content>{content}</content>")
+        + f"\nExcerpt of the piece the image must represent:\n"
+          f"<content>{(content or '')[:_EXCERPT_CHARS]}</content>")
 
     reason = "unknown"
-    # The best brief seen that failed ONLY the variety gate — see the comment at its assignment.
-    repeat_brief: Optional[ImageBrief] = None
-    for attempt in (1, 2):
+    judged = False
+    # A brief that passed every deterministic check but that Stage 3's judge objected to: shipped
+    # if the one repair pass cannot do better, because a real brief beats the template.
+    judged_brief: Optional[ImageBrief] = None
+    for attempt in range(1, _BRIEF_ATTEMPTS + 1):
         try:
             # The retry carries WHY the last attempt was thrown out. Re-sending the identical
-            # prompt just re-drew the same rejected scene: on the five live editions of issue
-            # #1992 the second attempt named a stock-office noun as often as the first, and four
-            # of five covers shipped from the deterministic fallback because of it.
+            # prompt just re-drew the same rejected scene (issue #1992).
             retry_note = ("" if attempt == 1 else
                           f"\n\nYour previous attempt was REJECTED: {reason}. Write a different "
-                          f"scene built on a different object — do not repeat the rejected one.")
+                          f"brief that fixes exactly that.")
             response = _call_llm(
                 model="lem-medium",
                 messages=[{"role": "system", "content": _SYSTEM_PROMPT},
@@ -439,73 +623,52 @@ def build_image_brief(content: str, *, surface: str, ratio: str = "1:1",
                 log_debug("Image brief came back empty", surface=surface, attempt=attempt,
                           ai_model="lem-medium", reason=reason)
                 continue
-            # `response_format={"type": "json_object"}` is a request, not a guarantee — lem-medium
-            # (a reasoning model) sometimes wraps the object in a ```json fence anyway, which a bare
-            # `json.loads` rejects at character 0. That fenced reply is a perfectly good brief, so
-            # parse it the same tolerant way every other JSON-object caller does (issue #1323)
-            # instead of losing the whole attempt to a `JSONDecodeError` (issue #2013).
+            # Tolerant parse: a fenced reply is still a good brief (issues #1323, #2013).
             parsed = _loads_json_object(raw)
             if parsed is None:
                 reason = "unparsable JSON (fenced or malformed reply)"
                 log_debug("Image brief reply was not valid JSON", surface=surface,
                           attempt=attempt, ai_model="lem-medium", reason=reason)
                 continue
-            # Graded WITHOUT the variety gate first: a brief that is wrong only because it
-            # repeats an object is still a real brief, and a real brief beats the deterministic
-            # template every time. Held as `repeat_brief` and returned below if the retry cannot
-            # do better, so the variety gate can never be what pushes a cover onto the fallback
-            # (issue #2005 — it did, on all four live editions at once).
-            if _valid(parsed, surface=surface, avatar=avatar):
-                if repeat_brief is None:
-                    repeat_brief = ImageBrief(
-                        prompt=str(parsed["prompt"]).strip(), ratio=ratio, surface=surface,
-                        style_preset=preset,
-                        focal_concept=str(parsed["focal_concept"]).strip(), fallback=False)
-            if _valid(parsed, surface=surface, avatar=avatar,
-                      avoid_terms=avoid_terms):
-                return ImageBrief(prompt=str(parsed["prompt"]).strip(), ratio=ratio,
-                                  surface=surface, style_preset=preset,
-                                  focal_concept=str(parsed["focal_concept"]).strip(),
-                                  fallback=False)
-            # Name the offending noun when that is what failed: it is what makes the retry note
-            # above actionable rather than a repeat of the same instruction.
-            newsletter_gate = surface == "newsletter" and not avatar
-            hit = (_STOCK_OFFICE_PATTERN.search(str(parsed.get("prompt") or ""))
-                   if newsletter_gate else None)
-            avoid_pattern = _avoid_pattern(avoid_terms) if newsletter_gate else None
-            repeat = (avoid_pattern.search(str(parsed.get("focal_concept") or ""))
-                      if avoid_pattern else None)
-            scenery = _scenery_pattern(avoid_terms) if newsletter_gate else None
-            piped = scenery.search(str(parsed.get("prompt") or "")) if scenery else None
-            if hit:
-                reason = f"the prompt named the stock-office object {hit.group(0)!r}"
-            elif repeat:
-                family = _family_of_form(repeat.group(0))
-                reason = (f"the focal concept was built on {repeat.group(0)!r}, which a recent "
-                          f"cover already used"
-                          + (f" (the {family} family)" if family else "")
-                          + " — pick an object from a different family")
-            elif piped:
-                reason = (f"the prompt put {piped.group(0)!r} in the frame, and a recent cover was "
-                          f"already plumbing — no pipes anywhere, pick a different family")
-            else:
-                reason = "failed validation (length bounds or refusal phrasing)"
-            log_debug("Image brief failed validation — retrying", surface=surface,
-                      attempt=attempt, ai_model="lem-medium", reason=reason)
+            rejection = _rejection(parsed, entities=entities, weak=weak, hook_text=hook)
+            if rejection:
+                reason = rejection
+                log_debug("Image brief failed validation — retrying", surface=surface,
+                          attempt=attempt, ai_model="lem-medium", reason=reason)
+                continue
+            prompt = str(parsed["prompt"]).strip()
+            brief = ImageBrief(
+                prompt=prompt, ratio=ratio, surface=surface, style_preset=preset,
+                focal_concept=str(parsed["focal_concept"]).strip(), fallback=False,
+                concept=concept, treatment=treatment,
+                required_entities=tuple(e for e in entities if entity_mentioned(e, prompt)),
+                hook_text=hook)
+            if concept is None or judged:
+                brief.prompt_check = (f"repaired after: {reason}" if judged
+                                      else "deterministic checks passed")
+                return brief
+            ok, why = check_prompt_against_concept(prompt, concept, hook)
+            brief.prompt_check = why
+            if ok or attempt == _BRIEF_ATTEMPTS:
+                return brief
+            # ONE repair pass through the author with the judge's reason.
+            judged, judged_brief, reason = True, brief, why
+            log_debug("Image prompt check failed — one repair pass", surface=surface,
+                      attempt=attempt, action_type="image_brief", reason=why)
         except Exception as e:
             # One condition, ONE warning: the fallback below carries it — per-attempt noise
             # would double-file the same fault with the escalation cron.
             reason = f"{type(e).__name__}: {e}"[:120]
             log_debug("Image brief attempt failed", error=str(e), ai_model="lem-medium",
                       attempt=attempt)
-    if repeat_brief is not None:
-        # Expected, and not a defect: the author had a usable scene and only reused an object.
-        # DEBUG, not a warning — a repeated warning re-emits at ERROR and files an exception.
-        log_debug("Image brief reused a recent object rather than falling back", surface=surface,
-                  action_type="image_brief", focal_concept=repeat_brief.focal_concept)
-        return repeat_brief
+    if judged_brief is not None:
+        # Expected, not a defect: a valid brief the judge doubted, and the repair fell short.
+        log_debug("Image brief repair fell short — shipping the judged brief", surface=surface,
+                  action_type="image_brief", reason=reason)
+        return judged_brief
     # Carry WHY on the warning: this fell back on every generation for weeks and the message
     # alone gave no way to tell an outage from an empty response from a validation reject.
     log_warning("Image brief fell back to the deterministic template", surface=surface,
                 action_type="image_brief", reason=reason)
-    return _fallback_brief(content, surface=surface, ratio=ratio, context=context, avatar=avatar)
+    return _fallback_brief(content, surface=surface, ratio=ratio, context=context, avatar=avatar,
+                           concept=concept, treatment=treatment, brand_kit=brand_kit)

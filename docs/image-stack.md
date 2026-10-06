@@ -7,90 +7,134 @@ an MP4. Only the weekly group post reads the `*_media_*` union of the two.
 Full posture for LEM's AI still-image generation. CLAUDE.md keeps the one-line invariant + this
 pointer.
 
-Every surface that renders an AI image goes through the same two modules. **Never add a
+Every surface that renders an AI image goes through the same two modules (plus the Stage 1 reader
+they share). **Never add a
 per-content-type prompt helper** — add a preset.
 
 | Module | Owns |
 |---|---|
-| `utilities/ai/image_brief.py` | Authoring the prompt: content in → validated brief out |
+| `utilities/ai/image_concept.py` | Stage 1: reading the WHOLE piece → a grounded `ImageConcept` (#2241) |
+| `utilities/ai/image_brief.py` | Authoring the prompt: content + concept in → validated brief out |
 | `utilities/ai/image_gen.py` | Rendering that brief, plus the vision quality gate |
+
+## The staged engine (issue #2241)
+
+Every newsletter cover came back as pipes, valves, gears or gauges, whatever the edition said. Three
+causes, all fixed here: the cover REQUESTED a physical metaphor (extractor prompt, preset menu,
+workshop fallback); the brief author never saw the article, only a title and a few candidate
+objects; and the vision gate graded the render against the brief's OWN focal concept, so a valve
+scored 5/5 against "a valve symbolising leaks". The engine is now four stages, still two modules:
+
+| Stage | Where | What it does |
+|---|---|---|
+| 1. Concept | `image_concept.analyze_content_for_image` | ONE `lem-medium` JSON call over up to 12k chars of the FULL text → `ImageConcept`: thesis, audience, 3–6 `specific_entities`, emotional beat, a 2–5 word `hook_phrase`, and a `treatment` |
+| 2. Brief | `image_brief.build_image_brief` | Use case + treatment template + concept + brand clause + a ≤3000-char excerpt → `{focal_concept, prompt, required_entities, hook_text}`, validated deterministically, retried up to twice with the reason |
+| 3. Prompt check | `image_brief.check_prompt_against_concept` | Deterministic checks, then ONE `lem-simple` judge: "could a stranger guess the thesis?" A fail buys ONE repair pass through Stage 2 |
+| 4. Blind judge | `image_gen.inspect_render_quality(..., concept=, hook_text=)` | Two `lem-vision` calls: a BLIND description, then targeted questions scored on a rubric |
+
+**Stage 1 grounds its entities.** The prompt forbids inventing one, and `parse_concept` enforces it:
+an entity that does not appear in the source (case-insensitive, loose word stems —
+`entity_mentioned`) is dropped. Fewer than two survivors marks the concept `weak` — still usable for
+treatment and thesis, but the entity-coverage checks downstream stand down. A hook that is not 2–5
+words, runs past 32 chars, or only restates the title is dropped; an `editorial_graphic` left with
+no hook becomes a `concrete_scene`, and a `metaphor_last_resort` with three or more grounded
+entities is overruled to `concrete_scene` ("only when nothing concrete exists"). Any failure
+returns `None`, and every caller has a path without a concept.
+
+**Treatments** (`_TREATMENT_TEMPLATES`; Stage 1 picks, an avatar always forces `people_scene`
+because a person IS the subject and the LoRA cannot set type):
+
+| Treatment | When | The image |
+|---|---|---|
+| `people_scene` | The piece is about people, teams, clients, a decision | A candid documentary photo of the audience in the situation it describes |
+| `editorial_graphic` | The core is a number, contrast or sharp claim | A designed graphic whose ONLY text is the hook, quoted exactly, bold sans, placement stated, beside one element from the entities |
+| `concrete_scene` | A specific tangible situation exists | That situation, photographed — a screen is allowed when it IS the subject |
+| `metaphor_last_resort` | Nothing concrete exists | An uncommon, piece-specific metaphor — never a cliché |
+
+**Per-surface presets** (`_STYLE_PRESETS`) now state only the USE CASE — format and where it has to
+read (`newsletter`: 16:9, must read at a 400×225 thumbnail, key content in the central 60%). They
+never offer a subject: a menu of objects is exactly what every cover picked from.
+
+**`CLICHE_OBJECTS` is the ONE stock-symbol list**: pipe/plumbing/valve/faucet/drip/leak, gear/cog,
+gauge, light bulb, puzzle piece/jigsaw, handshake, chess, robot/android, glowing brain/neural network
+glow, circuit board, binary/matrix code, rocket, target/dartboard/bullseye, mountain summit, compass,
+hourglass, domino, chain link, maze, ladder, lock and key/padlock, crystal ball, magnifying glass —
+plus the stock office (#1992): person at a laptop, typing hands, hands on a keyboard, coffee with a
+notebook. Matched by `cliche_hit` as whole words in any inflection (`pipes`, `piping`, `dripping`),
+multi-word entries with an optional article between words; "target audience" and the other business
+senses of *target* never count. ONE list, read by the author's system prompt, the brief validator
+(**whole prompt, every surface, the avatar path too**), the deterministic fallback (scrubbed out of
+anything it interpolates), and the vision judge's targeted question. A bare `laptop`, `desk` or
+`notebook` is no longer refused — a concrete scene may genuinely contain one.
+
+**What `_rejection` refuses**, each with the reason fed back to the next attempt: length bounds,
+refusal phrasing, any cliché, a declared `hook_text` off the graphic treatment, any quoted text
+other than the hook (and a graphic whose prompt does not quote its hook exactly), and — unless the
+concept is weak — a prompt depicting fewer than two of the concept's entities.
+
+**The deterministic fallback is built from the piece.** `_fallback_brief` assembles the prompt from
+the treatment and the concept's own entities ("A candid editorial photograph for a LinkedIn
+newsletter cover of unpaid invoices and payroll run in the real place this happens…"); with no
+concept, from the excerpt with every cliché scrubbed out. The brass-valve workshop still-life is
+deleted. The fallback template IS a render prompt, so every noun in it is a request: it still never
+carries negation, dead words, or a caller's `avoid_terms`.
+
+**`avoid_terms` is now a soft steer, never a gate.** The old object/family gate (#2000, #2241's
+first fix) could only push the author from one metaphor to the next; with stock symbols refused
+outright and the brief grounded in the article, variety comes from the articles themselves. A
+caller's recent-image signals reach the AUTHOR only, as "make this one visibly different in setting
+and composition", and never change the treatment.
+
+**The receipt carries the stages.** `ImageBrief` adds `concept`, `treatment`, `required_entities`
+(the concept entities the prompt actually depicts, computed, not trusted from the reply),
+`hook_text` and `prompt_check`; `write_brief_receipt` records all of them, the concept as its
+fields.
+
+**`brand_kit`** is a pre-rendered brand clause (palette, type) folded into the author's context and
+the graphic fallback's palette. The brand-kit table that produces it is a separate change.
+
+**Cost.** Stage 1 (`lem-medium`) and Stage 3 (`lem-simple`) add two text calls to every brief —
+including each carousel slide and post image, which call `build_image_brief` without a concept. Both
+fail soft and are text-only, an order of magnitude below the render they steer.
 
 ## `image_brief.py` — the ONE prompt author
 
-`build_image_brief(content, surface=..., ratio=...)` sends the ACTUAL content to `lem-medium` and
-gets back a structured `ImageBrief`: a render-ready **prompt** plus the extracted **`focal_concept`**
-the vision gate later grades the render against. `lem-medium` (not the cheapest tier) because the
-brief decides whether the render is relevant at all — the failure the cheap tier kept producing.
+`build_image_brief(content, surface=..., ratio=..., concept=None, brand_kit=None)` — Stage 2 above,
+running Stage 1 itself when no concept is passed. Written by `lem-medium` (not the cheapest tier)
+because the brief decides whether the render is relevant at all.
 
-**Per-surface presets** (`_STYLE_PRESETS`), keyed by surface, defaulting to `post_image`:
-
-| Preset | What that surface's image is for |
-|---|---|
-| `newsletter` | Wide editorial cover; one tangible object or physical mechanism standing in for the edition's core idea, object-first, readable at thumbnail size; a metaphor vocabulary for abstract/financial/software topics (see below) |
-| `post_image` | Scroll-stopping single subject for a feed post; one strong color accent |
-| `carousel` | Quiet supporting photo for ONE slide; uncluttered background a text panel can sit beside |
-| `video` | Opening frame posed so subtle motion can bring it alive; layered depth |
-| `thumbnail` | Bold, high-contrast product-tutorial thumbnail; one tangible object, framed to read at player-tile size |
-
-A preset only says what THIS surface is for. The photographic fundamentals — subject-first
-ordering, 40–80 words of flowing prose, concrete camera/lighting vocabulary instead of generic
-quality tags, positive phrasing only (FLUX has no negative prompts — naming a thing summons it),
-and the skin-texture rules that kill the AI sheen — live in the shared system prompt, written to
-hold for BOTH FLUX LoRA renders and FLUX.2/gpt-image.
+The system prompt follows the OpenAI gpt-image and BFL FLUX guides: state the use case, order the
+prompt scene → subject → details → constraints, quote any text exactly with its placement and type,
+and get realism from camera language and real texture rather than quality tags. Positive phrasing
+only (FLUX has no negative prompts — naming a thing summons it), and the skin-texture and hands
+rules that kill the AI sheen.
 
 The preset and that system prompt reach the model in the SAME request, so they can contradict each
 other silently: the `thumbnail` preset asked for an "illustration", the word the system prompt
 calls a dead word, and nothing compared the two (#1141). `DEAD_STYLE_WORDS` / `DEAD_QUALITY_TAGS`
-are now ONE list the prompt names and `test_image_preset_drift.py` greps — and that test also fails
-the build on a preset **no caller ever selects**, which is how `thumbnail` stayed wrong: nothing
-passed `surface="thumbnail"` at all until #1141 wired `video_tutorials.generate_thumbnail` up to it.
+are ONE list the prompt names and `test_image_preset_drift.py` greps — over every preset, every
+treatment template and every fallback — and that test also fails the build on a preset **no caller
+ever selects**, which is how `thumbnail` stayed wrong until #1141 wired
+`video_tutorials.generate_thumbnail` up to it.
 
-**NO text, letters, or logos in any render prompt** — enforced in the system prompt, with
-`with_no_marks()` as the render-side belt.
+**NO text, letters, or logos in any render — EXCEPT one declared 2–5 word hook on the
+`editorial_graphic` treatment, verified by the judge.** Enforced in the system prompt and
+`_rejection`, with `with_no_marks()` as the render-side belt: a brief carrying `hook_text` gets
+"The only text in the image is exactly "<hook>" — no other words, letters, numbers, logos,
+watermarks or UI" INSTEAD of the blanket ban (positively phrased for FLUX), and the printed-surface
+blank-state clause is skipped since the hook is set on one. The blind judge then transcribes what
+is actually there and the rubric's `text_accuracy` compares it to the hook.
 
 **A SCREEN is the one surface a blanket constraint does not hold on.** A described laptop or
 monitor invites the renderer to fill its glass with plausible UI, and newsletter cover ed9 came back
-with four logo tiles and the letters "AI" on one while travelling the fully-gated path — belt and
-braces both applied (#1376). So the system prompt steers the brief onto a tangible object rather
-than a screen, and states that a screen which genuinely belongs in the frame is switched off and
-dark; `with_no_marks()` adds the same thing on the render side for any prompt that names one.
+with four logo tiles and the letters "AI" on one while travelling the fully-gated path (#1376). The
+system prompt allows a screen only when it IS the subject, and `with_no_marks()` adds the
+switched-off clause on the render side for any prompt that names one.
 
-An unparseable or invalid model reply falls back to `_fallback_brief` — deterministic, so a bad
-generation never means no image. `ImageBrief.fallback` records which one shipped, for the receipt
-below.
-
-**The newsletter stock-office gate (#1992).** Five straight covers converged on "person at laptop
-with notebook and coffee mug" despite the preset saying "no generic office stock" — a negation the
-renderer, and apparently the brief LLM, both honor loosely. `_valid()` now rejects (and retries,
-then falls back) a `newsletter`-surface prompt naming `laptop, notebook, coffee, desk, office,
-typing, keyboard, screen, monitor, phone`, unless an avatar is in frame — where a person at a desk
-is legitimate. `_NO_ANONYMOUS_PERSON` no longer offers "a close-up of hands mid-action" as an
-alternative — hands stay the renderer's weakest anatomy regardless of what they're near.
-`build_image_brief`'s `content_shape` param (used by newsletter covers for `edition_format` +
-`hook_style`) folds a caller's shape tag into the context so a listicle cover and a personal-story
-cover read differently; full posture in `docs/newsletter-covers.md`.
-
-**A rejection is only useful if the retry hears it.** The second attempt carries the reason the
-first was thrown out, naming the offending noun. Re-sending the identical prompt just re-drew the
-same rejected scene — on the five live editions of #1992 that put four of five covers on the
-deterministic fallback.
-
-**`avoid_terms` is a GATE, not just a hint (#2000).** `_valid()` rejects a `newsletter` brief whose
-focal concept names one, driving the same retry-with-reason the stock-office noun does. As a prompt
-line alone it had no teeth: four consecutive live covers all chose a valve. It grades the focal
-concept only — a repeated object in the background is not a repeat — and is capped at
-`_MAX_AVOID_TERMS`, so a long avoid list can never starve the author into the fallback. The caller
-passes OBJECTS, not sentences (`newsletter_cover._focal_objects`, vocabulary in
-`METAPHOR_OBJECTS`); the newsletter preset lists several object FAMILIES for the same reason, since
-cost and routing ideas both reach for plumbing by default.
-
-**`avoid_terms` never reach a render prompt.** `build_image_brief(..., avoid_terms=[...])` puts a
-caller's "not these" nouns in the AUTHOR's user message only, and `_fallback_brief` never sees them.
-The fallback template IS a render prompt, and a render prompt has no negation: every noun in it is a
-request. Same reason `_fallback_brief` gives `surface="newsletter"` with no avatar its own
-`_NEWSLETTER_FALLBACK_SCENE` rather than pasting the surface preset ("People and screens stay out of
-the frame") plus "blank screens" and "plain unbranded clothing" into one — which is how a fallback
-cover rendered a man at a laptop.
+**A rejection is only useful if the retry hears it.** Each retry carries the reason the last
+attempt was thrown out. Re-sending the identical prompt just re-drew the same rejected scene — on
+the five live editions of #1992 that put four of five covers on the deterministic fallback.
+`ImageBrief.fallback` records whether the template shipped, for the receipt below.
 
 ## `image_gen.py` — the ONE renderer
 
@@ -124,9 +168,39 @@ screenless scene on exactly the retries a mark verdict triggers.
 
 ### The vision quality gate
 
-`render_image_gated(prompt, surface=...)` adds a `lem-vision` check — `inspect_render_quality`
-grades the rendered file against the brief's `focal_concept` — with bounded regenerates
-(`IMAGE_GATE_MAX_ATTEMPTS` total renders).
+`render_image_gated(prompt, surface=..., concept=None, hook_text=None)` adds a `lem-vision`
+check — `inspect_render_quality` — with bounded regenerates (`IMAGE_GATE_MAX_ATTEMPTS` total
+renders). `render_avatar_image_gated` takes the same two kwargs and shares the loop (`_gate_loop`).
+
+**With a Stage 1 concept the judge is staged and BLIND first (#2241).** A VLM judge handed the
+prompt tends to confirm it (FineGRAIN, arXiv 2512.02161) — which is how a valve scored 5/5 against
+"a valve symbolising leaks". So:
+
+1. **Blind** — `BLIND_JUDGE_PROMPT` and the image, nothing else: "describe the main subject,
+   setting, any text (transcribed exactly), any objects." No brief, no thesis, no entities.
+2. **Targeted** — the concept + that blind description + the image: is each entity visibly
+   depicted; transcribe all text, does it equal the hook exactly; is any `CLICHE_OBJECTS` symbol
+   present; legible as a 400×225 thumbnail; AI artifacts (waxy skin, malformed hands, melted
+   objects); would a viewer infer the thesis. Scored 1–5 on `RUBRIC_CRITERIA`: `specificity`,
+   `no_cliche`, `thumbnail_read`, `text_accuracy`, `craft`, `scroll_stop`.
+
+**Acceptable iff** `specificity ≥ 4`, `no_cliche = 5`, `craft ≥ 4`, and `text_accuracy ≥ 4` (or
+n/a — no text expected, none seen). Deterministic overlays the judge cannot talk past: a cliché the
+BLIND description names (or the judge lists) caps `no_cliche` at 2; a transcription that is not the
+hook caps `text_accuracy` at 3, stray text with no hook at 2; fewer than two entities seen caps
+`specificity` at 3. A missing required score is an unusable answer and fails OPEN, like an outage.
+The repair round is built from the FAILING criteria (`rubric_repair_directive`) — the entities and
+thesis named back, the exact hook re-stated, FLUX told only what to show. `IMAGE_GATE_CANDIDATES`
+(read at call time, default 1, max 2, staged judge only) renders that many per attempt and keeps the
+better by rubric. `render_info` gains `gate_rubric`, `gate_failing`, `gate_issues` and
+`gate_blind_description`, which a newsletter cover writes onto its receipt — a definite `rejected`
+on `no_cliche` or `specificity` still lands `pending_review`, now with its reason.
+
+`lem-vision` puts **gpt-4.1 first** (`order: 1` in `.litellm/config.yaml`) with gpt-4o-mini as the
+in-group fallback (`order: 2`): the staged judge needs an exact transcription and an honest rubric.
+
+Without a concept (callers not yet migrated: post images, carousel, video, thumbnail) the legacy
+single call runs unchanged, graded against the brief's `focal_concept`.
 
 - Enforced only for surfaces in `IMAGE_QUALITY_GATE_SURFACES`; others get one advisory pass (verdict
   logged, render kept).
@@ -155,7 +229,9 @@ grades the rendered file against the brief's `focal_concept` — with bounded re
   `unchecked` (the fail-open case), the surface, the issue categories, attempt count, and whether
   the gate actually ran (`checked`). This is the image half of content-quality telemetry; it does not
   change what the gate decides.
-- **The `newsletter` surface adds a stock-office cliché rule and a higher relevance floor (#1992).**
+- **Legacy path: the `newsletter` surface adds a stock-office cliché rule and a higher relevance
+  floor (#1992).** (Covers now always pass a concept when Stage 1 answers; this applies when it did
+  not.)
   `inspect_render_quality(..., surface="newsletter")` appends a rejection bullet naming the literal
   "person at laptop/desk/keyboard with notebook or coffee mug" scene, and overrides the verdict to
   unacceptable when `relevance < 4` even if the model itself said `acceptable=true` — a render merely

@@ -18,6 +18,7 @@ import pytest
 from cqc_lem.utilities.ai.image_brief import (
     _STYLE_PRESETS,
     _SYSTEM_PROMPT,
+    _TREATMENT_TEMPLATES,
     DEAD_QUALITY_TAGS,
     DEAD_STYLE_WORDS,
     NEGATION_MARKERS,
@@ -55,6 +56,19 @@ class TestPresetsObeyTheSharedSystemPrompt:
             assert marker not in lowered, (
                 f"the {surface!r} preset uses {marker!r}; the renderer ignores negation and "
                 f"renders what the prompt names")
+
+    @pytest.mark.parametrize("treatment", sorted(_TREATMENT_TEMPLATES))
+    def test_no_treatment_template_breaks_the_shared_rules(self, treatment):
+        """Issue #2241: a treatment template is pasted into the same request as a preset."""
+        lowered = _TREATMENT_TEMPLATES[treatment].lower()
+        for word in DEAD_STYLE_WORDS + DEAD_QUALITY_TAGS:
+            assert word.lower() not in lowered, f"{treatment!r} asks for {word!r}"
+        for marker in _NEGATION_MARKERS:
+            assert marker not in lowered, f"{treatment!r} uses {marker!r}"
+
+    def test_every_treatment_has_a_template(self):
+        from cqc_lem.utilities.ai.image_concept import TREATMENTS
+        assert set(_TREATMENT_TEMPLATES) == set(TREATMENTS)
 
     def test_the_deterministic_fallback_obeys_the_same_rules(self):
         """The fallback is a working code path — it renders when the author is down."""
