@@ -453,7 +453,9 @@ class TestAvoidTermGate:
             build_image_brief("content", surface="newsletter", ratio="16:9",
                               avoid_terms=["valve"])
         second = llm.call_args_list[1][1]["messages"][1]["content"]
-        assert "'valve'" in second
+        # The first family word in "Budget leak shown as a dripping valve" is `leak` (#2241).
+        assert "'leak'" in second
+        assert "plumbing family" in second
         assert "different family" in second
 
     def test_a_distinct_object_passes_first_time(self):
@@ -558,3 +560,105 @@ class TestVarietyGateCannotStarve:
                                       avoid_terms=["valve"])
         assert brief.fallback
         assert warn.called
+
+
+@pytest.mark.unit
+class TestFamilyAwareVarietyGate:
+    """Issue #2241: "all newsletter images have pipes in them".
+
+    The gate steered off one OBJECT, so with `valve` avoided the author drew a dripping copper
+    pipe and passed; and a valve cover came back with "a background of dim industrial piping".
+    An avoided object now stands for its whole family, in any inflection, and once plumbing is
+    avoided pipes are graded against the whole prompt.
+    """
+
+    _PIPE = {"focal_concept": "AI budget leak illustrated by dripping copper pipes",
+             "prompt": ("A copper pipe rests on a matte black tabletop, a single steady drip "
+                        "falling into a steel tin, window light from the left, shot on a 50mm "
+                        "lens at f/2.2, subtle film grain, editorial photograph.")}
+    _GEAR_PIPED = {"focal_concept": "A cracked gear stopped mid-turn",
+                   "prompt": ("A cracked cast-iron gear on a stone slab, a background of dim "
+                              "industrial piping receding into soft focus, low-key light, shot "
+                              "on a 100mm lens at f/2.8, editorial photograph.")}
+    _GEAR = TestAvoidTermGate._GEAR
+
+    def test_a_sibling_object_from_the_same_family_is_a_repeat(self):
+        with patch("cqc_lem.utilities.ai.ai_helper._call_llm",
+                   side_effect=[_resp(self._PIPE), _resp(self._GEAR)]) as llm:
+            brief = build_image_brief("content", surface="newsletter", ratio="16:9",
+                                      avoid_terms=["valve"])
+        assert llm.call_count == 2
+        assert brief.focal_concept == self._GEAR["focal_concept"]
+
+    def test_pipe_scenery_is_rejected_once_plumbing_is_avoided(self):
+        with patch("cqc_lem.utilities.ai.ai_helper._call_llm",
+                   side_effect=[_resp(self._GEAR_PIPED), _resp(self._GEAR)]) as llm:
+            brief = build_image_brief("content", surface="newsletter", ratio="16:9",
+                                      avoid_terms=["valve"])
+        assert llm.call_count == 2
+        assert brief.prompt == self._GEAR["prompt"]
+        second = llm.call_args_list[1][1]["messages"][1]["content"]
+        assert "'piping'" in second and "no pipes anywhere" in second
+
+    def test_pipe_scenery_is_fine_when_plumbing_was_not_used(self):
+        with patch("cqc_lem.utilities.ai.ai_helper._call_llm",
+                   return_value=_resp(self._GEAR_PIPED)) as llm:
+            brief = build_image_brief("content", surface="newsletter", ratio="16:9",
+                                      avoid_terms=["scale"])
+        assert llm.call_count == 1
+        assert not brief.fallback
+
+    def test_the_author_is_told_which_families_are_used(self):
+        with patch("cqc_lem.utilities.ai.ai_helper._call_llm",
+                   return_value=_resp(self._GEAR)) as llm:
+            build_image_brief("content", surface="newsletter", ratio="16:9",
+                              avoid_terms=["pipes", "domino", "laptop"])
+        first = llm.call_args[1]["messages"][1]["content"]
+        assert "Families already used, so no object from them: mechanical, plumbing" in first
+        assert "no pipes or piping anywhere" in first
+
+    def test_no_family_line_without_a_family_term(self):
+        with patch("cqc_lem.utilities.ai.ai_helper._call_llm",
+                   return_value=_resp(self._GEAR)) as llm:
+            build_image_brief("content", surface="newsletter", ratio="16:9",
+                              avoid_terms=["laptop"])
+        assert "Families already used" not in llm.call_args[1]["messages"][1]["content"]
+
+    def test_a_pipe_repeat_on_both_attempts_still_ships_the_brief(self):
+        """The #2005 floor holds: a repeated family never pushes a cover onto the fallback."""
+        with patch("cqc_lem.utilities.ai.ai_helper._call_llm",
+                   return_value=_resp(self._PIPE)):
+            brief = build_image_brief("content", surface="newsletter", ratio="16:9",
+                                      avoid_terms=["valve"])
+        assert not brief.fallback
+
+    @pytest.mark.parametrize("word,family", [
+        ("valve", "plumbing"), ("Pipes", "plumbing"), ("faucets", "plumbing"),
+        ("gear", "mechanical"), ("scales", "measuring"), ("laptop", None), ("", None)])
+    def test_metaphor_family(self, word, family):
+        from cqc_lem.utilities.ai.image_brief import metaphor_family
+
+        assert metaphor_family(word) == family
+
+    @pytest.mark.parametrize("text", [
+        "a dripping faucet", "rusty pipes", "industrial piping", "a leaky tap", "a hose"])
+    def test_every_plumbing_inflection_matches_a_valve_avoid(self, text):
+        from cqc_lem.utilities.ai.image_brief import _avoid_pattern
+
+        assert _avoid_pattern(["valve"]).search(text)
+
+    @pytest.mark.parametrize("text", ["LinkedIn growth", "a taper candle", "a pipeline review"])
+    def test_lookalikes_do_not_match(self, text):
+        from cqc_lem.utilities.ai.image_brief import _avoid_pattern
+
+        assert not _avoid_pattern(["valve"]).search(text)
+
+    def test_the_newsletter_fallback_scene_names_no_plumbing(self):
+        from cqc_lem.utilities.ai.image_brief import _NEWSLETTER_FALLBACK_SCENE, _avoid_pattern
+
+        assert not _avoid_pattern(["valve"]).search(_NEWSLETTER_FALLBACK_SCENE)
+
+    def test_every_preset_object_has_exactly_one_family(self):
+        from cqc_lem.utilities.ai.image_brief import METAPHOR_FAMILIES, METAPHOR_OBJECTS
+
+        assert sum(len(v) for v in METAPHOR_FAMILIES.values()) == len(METAPHOR_OBJECTS)

@@ -210,6 +210,27 @@ background of an otherwise distinct scene is not a repeat and must not cost a re
 capped at `_MAX_AVOID_TERMS` (8) so a long history can never starve the author into the fallback on
 every run.
 
+**The gate steers off a FAMILY, not a word (#2241).** "All newsletter images have pipes in them":
+of 19 live cover briefs, nine were plumbing — and a valve, a drip, a faucet and a pipe all render
+as pipes. Steering off one object did nothing, because with `valve` avoided the author drew "a
+dripping copper pipe" (and `pipes`, plural, matched no object at all), while a valve cover came back
+with "a background of dim industrial piping". So:
+
+- `image_brief.METAPHOR_FAMILIES` groups the preset's objects (`plumbing`, `measuring`,
+  `mechanical`, `routing`, `tools`); `METAPHOR_OBJECTS` is their union. An avoid term naming one
+  object bans its **whole family, in any inflection** (`pipes`, `piping`, `dripping`, `leaky`) in
+  the focal-concept gate, and the author's prompt names the used families outright.
+- Once plumbing is avoided, `pipe`/`piping`/`pipework`/`plumbing` are graded against the **whole
+  prompt** — the one family whose scenery is the complaint. Every other background stays free.
+- `_focal_objects` singularizes before matching, so a plural object still steers the next cover.
+- Relevance still outranks variety, at the family level: `_cover_concept_text` drops a variety
+  term whose FAMILY the extractor's candidate OBJECTS use. "Spot the Leak" (candidates: a dripping
+  faucet) after a valve cover keeps plumbing; a routing edition after a valve cover does not get
+  it. Only the candidate objects relax a family — never the title or the mechanism sentence, where
+  "keep track", "tap into" and "sales funnel" are idioms, not objects. If the extractor is down,
+  the #2005 floor below still ships the leak brief rather than the fallback.
+- The newsletter fallback scene no longer offers a brass valve, and the preset lists plumbing last.
+
 **The variety gate can never force the fallback (#2005).** A brief rejected ONLY for reusing an
 object is held and returned if the retry cannot do better — a real brief beats the deterministic
 template every time, and this is a DEBUG line, not the fallback warning. Two more guards on the
