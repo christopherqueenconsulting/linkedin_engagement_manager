@@ -29,6 +29,14 @@ def _concept(**overrides) -> ImageConcept:
     return ImageConcept(**fields)
 
 
+def _author_concept(**overrides) -> ImageConcept:
+    """A people_scene about the author's OWN decision — the one case the likeness belongs."""
+    fields = dict(treatment="people_scene", audience="founders like the author",
+                  emotional_beat="the author's relief after finally saying no")
+    fields.update(overrides)
+    return _concept(**fields)
+
+
 def _brief(concept=None, hook_text=None) -> ImageBrief:
     return ImageBrief(prompt="a rendered prompt", ratio="4:5", surface="post_image",
                       style_preset="post_image", focal_concept="the focal idea",
@@ -39,7 +47,7 @@ def _brief(concept=None, hook_text=None) -> ImageBrief:
 
 class TestPostImageStagedEngine:
     def _generate(self, tmp_path, monkeypatch, *, avatar=None, concept="default", env_ratio=None,
-                  render_info_out=None):
+                  render_info_out=None, lora_effect=None):
         from cqc_lem.utilities.post_image import generate_image_for_post
 
         if env_ratio is None:
@@ -70,7 +78,7 @@ class TestPostImageStagedEngine:
              patch("cqc_lem.utilities.ai.image_gen.render_image_gated",
                    side_effect=_render) as render, \
              patch("cqc_lem.utilities.ai.image_gen.render_avatar_image_gated",
-                   side_effect=_render) as lora:
+                   side_effect=lora_effect or _render) as lora:
             result = generate_image_for_post(9, "Post text about invoices", post_id=42)
         return result, stage1, brand, build, render, lora
 
@@ -96,7 +104,7 @@ class TestPostImageStagedEngine:
         assert url
 
     def test_the_avatar_path_is_graded_against_the_concept_too(self, tmp_path, monkeypatch):
-        concept = _concept()
+        concept = _author_concept()
         avatar = {"model_ref": "owner/lora:v1", "trigger_word": "TOK"}
         (url, _), _, _, _, render, lora = self._generate(tmp_path, monkeypatch, avatar=avatar,
                                                          concept=concept)
@@ -113,6 +121,97 @@ class TestPostImageStagedEngine:
         assert build.call_args[1]["ratio"] == expected
         assert render.call_args[1]["ratio"] == expected
 
+    def test_a_post_not_about_the_author_renders_without_the_likeness(self, tmp_path,
+                                                                      monkeypatch):
+        """#2249 gauntlet: six LoRA renders of posts about invoices and servers, six rejections."""
+        avatar = {"model_ref": "owner/lora:v1", "trigger_word": "TOK"}
+        (url, _), _, _, build, render, lora = self._generate(tmp_path, monkeypatch, avatar=avatar,
+                                                             concept=_concept())
+        assert url
+        lora.assert_not_called()
+        render.assert_called_once()
+        assert build.call_args[1]["avatar"] is None
+
+    @pytest.mark.parametrize("failure", ["rejected", "raises", "nothing", "flux_fallback"])
+    def test_an_unusable_avatar_render_gets_one_gpt_image_attempt(self, tmp_path, monkeypatch,
+                                                                  failure):
+        from cqc_lem.utilities.media_provenance import read_brief_receipt
+        avatar = {"model_ref": "owner/lora:v1", "trigger_word": "TOK"}
+        bad = str(tmp_path / "lora.png")
+        with open(bad, "wb") as fh:
+            fh.write(b"png")
+
+        def _lora(*_args, render_info=None, **_kwargs):
+            if failure == "raises":
+                raise RuntimeError("Replicate 500")
+            if failure == "nothing":
+                return None
+            if failure == "flux_fallback":
+                render_info.update({"used_avatar": False, "gate_verdict": "unchecked"})
+            else:
+                render_info.update({"used_avatar": True, "gate_verdict": "rejected"})
+            return bad
+
+        with patch("cqc_lem.utilities.post_image.log_info") as info:
+            (url, reason), _, _, build, render, lora = self._generate(
+                tmp_path, monkeypatch, avatar=avatar, concept=_author_concept(), lora_effect=_lora)
+        assert reason is None and url
+        lora.assert_called_once()
+        render.assert_called_once()
+        concept = build.call_args_list[0][1]["concept"]
+        # Re-briefed WITHOUT the likeness, on the SAME concept — Stage 1 is not re-run.
+        assert build.call_count == 2
+        assert build.call_args_list[0][1]["avatar"] == avatar
+        assert build.call_args_list[1][1]["avatar"] is None
+        assert build.call_args_list[1][1]["concept"] is concept
+        assert render.call_args[1]["concept"] is concept
+        assert any("one gpt-image attempt" in c.args[0] for c in info.call_args_list)
+        with patch("cqc_lem.assets_dir", str(tmp_path / "assets")):
+            receipt = read_brief_receipt(url)
+        assert receipt["render_path"] == "base_after_avatar"
+        assert receipt["avatar_fallback_reason"]
+
+    def test_a_usable_avatar_render_records_its_path(self, tmp_path, monkeypatch):
+        from cqc_lem.utilities.media_provenance import read_brief_receipt
+        avatar = {"model_ref": "owner/lora:v1", "trigger_word": "TOK"}
+        (url, _), _, _, build, render, _ = self._generate(tmp_path, monkeypatch, avatar=avatar,
+                                                          concept=_author_concept())
+        render.assert_not_called()
+        assert build.call_count == 1
+        with patch("cqc_lem.assets_dir", str(tmp_path / "assets")):
+            receipt = read_brief_receipt(url)
+        assert receipt["render_path"] == "avatar" and "avatar_fallback_reason" not in receipt
+
+    def test_the_fallback_that_is_also_rejected_ships_bare(self, tmp_path, monkeypatch):
+        from cqc_lem.utilities.post_image import GATE_REJECTED_REASON
+        avatar = {"model_ref": "owner/lora:v1", "trigger_word": "TOK"}
+        (url, reason), _, _, _, render, _ = self._generate(
+            tmp_path, monkeypatch, avatar=avatar, concept=_author_concept(),
+            render_info_out={"gate_verdict": "rejected"})
+        assert url is None and reason == GATE_REJECTED_REASON
+        render.assert_called_once()
+
+    def test_a_failed_fallback_brief_is_reported(self, tmp_path, monkeypatch):
+        from cqc_lem.utilities.post_image import generate_image_for_post
+        monkeypatch.delenv("POST_IMAGE_RATIO", raising=False)
+        avatar = {"model_ref": "owner/lora:v1", "trigger_word": "TOK"}
+        with patch("cqc_lem.utilities.linkedin.helper.load_profile_for_user", return_value=None), \
+             patch("cqc_lem.utilities.avatar.guardrails.resolve_avatar_for", return_value=avatar), \
+             patch("cqc_lem.utilities.ai.image_concept.analyze_content_for_image",
+                   return_value=_author_concept()), \
+             patch("cqc_lem.utilities.ai.image_brief.build_image_brief",
+                   side_effect=[_brief(), RuntimeError("author down")]), \
+             patch("cqc_lem.utilities.ai.image_gen.render_avatar_image_gated", return_value=None):
+            assert generate_image_for_post(9, "text", post_id=42) == (
+                None, "Could not write an image prompt")
+
+    def test_a_raising_fit_check_renders_without_the_likeness(self, tmp_path, monkeypatch):
+        with patch("cqc_lem.utilities.avatar.guardrails.resolve_avatar_for_concept",
+                   side_effect=RuntimeError("db down")):
+            (url, _), _, _, build, render, lora = self._generate(tmp_path, monkeypatch)
+        assert url and build.call_args[1]["avatar"] is None
+        lora.assert_not_called()
+
     def test_the_judges_rubric_lands_on_the_receipt(self, tmp_path, monkeypatch):
         from cqc_lem.utilities.media_provenance import read_brief_receipt
         out = {"gate_verdict": "accepted", "gate_rubric": {"relevance": 5},
@@ -128,8 +227,8 @@ class TestPostImageStagedEngine:
 # ── Video source frame + motion ───────────────────────────────────────────────
 
 class TestVideoStagedEngine:
-    def _run(self, *, avatar=None, quality="standard"):
-        concept = _concept()
+    def _run(self, *, avatar=None, quality="standard", concept=None):
+        concept = concept or _concept()
 
         def _prompt(*_args, brief_info=None, **_kwargs):
             brief_info["brief"] = _brief(concept, None)
@@ -178,10 +277,18 @@ class TestVideoStagedEngine:
 
     def test_the_avatar_frame_is_graded_against_the_same_concept(self):
         avatar = {"model_ref": "owner/lora:v1", "trigger_word": "TOK"}
-        _, concept, _, _, _, gpi, gated, _, _ = self._run(avatar=avatar)
+        _, concept, _, _, _, gpi, gated, _, _ = self._run(avatar=avatar, concept=_author_concept())
         gated.assert_not_called()
         assert gpi.call_args[1]["concept"] is concept
         assert gpi.call_args[1]["focal_concept"] == "the focal idea"
+
+
+    def test_a_video_not_about_the_author_frames_without_the_likeness(self):
+        avatar = {"model_ref": "owner/lora:v1", "trigger_word": "TOK"}
+        _, _, _, prompt, _, gpi, gated, _, _ = self._run(avatar=avatar)
+        gpi.assert_not_called()
+        gated.assert_called_once()
+        assert prompt.call_args[1]["avatar"] is None
 
 
 class TestMotionPromptCarriesTheConcept:

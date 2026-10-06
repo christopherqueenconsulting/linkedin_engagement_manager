@@ -749,7 +749,7 @@ def _generate_avatar_slide_image(query: str, user_id: int, post_id: Optional[int
     try:
         from cqc_lem.utilities.ai.ai_helper import generate_post_image
         from cqc_lem.utilities.ai.image_brief import build_image_brief
-        from cqc_lem.utilities.avatar.guardrails import AVATAR_SURFACE_CAROUSEL
+        from cqc_lem.utilities.avatar.guardrails import AVATAR_SURFACE_CAROUSEL, avatar_fits_concept
         from cqc_lem.utilities.brand_kit import brand_clause_for_user
         scope = _CAROUSEL_SCOPE.get()
         stage1 = {"concept": scope.concept()} if scope is not None else {}
@@ -759,10 +759,13 @@ def _generate_avatar_slide_image(query: str, user_id: int, post_id: Optional[int
         slide_text = "\n".join(t for t in (title, content) if t) or query
         brief = build_image_brief(slide_text, surface="carousel", ratio="1:1", brand_kit=brand,
                                   **stage1)
+        # The likeness only where the deck is about the author (#2249 gauntlet) — the same rule
+        # post images and the video frame apply; otherwise the gated gpt-image render.
+        fits = avatar_fits_concept(brief.concept, scope.text if scope is not None else slide_text)
         path = generate_post_image(
             brief.prompt, user_id, surface=AVATAR_SURFACE_CAROUSEL,
             post_id=post_id,
-            depicts_person=_query_depicts_person(query, content_type),
+            depicts_person=_query_depicts_person(query, content_type) and fits,
             focal_concept=brief.focal_concept, concept=brief.concept,
             hook_text=brief.hook_text)
         return path or None

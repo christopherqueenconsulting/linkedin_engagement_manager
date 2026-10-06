@@ -1547,7 +1547,7 @@ def _generate_video_src(user_id: int, text_content: str, profile, post_id: int =
     from cqc_lem.utilities.ai.ai_helper import generate_post_image
     from cqc_lem.utilities.ai.image_concept import analyze_content_for_image
     from cqc_lem.utilities.ai.video_models import is_premium, supports_audio
-    from cqc_lem.utilities.avatar.guardrails import AVATAR_SURFACE_VIDEO, resolve_avatar_for
+    from cqc_lem.utilities.avatar.guardrails import AVATAR_SURFACE_VIDEO, resolve_avatar_for_concept
     from cqc_lem.utilities.avatar.likeness_probe import AvatarLikenessHold
     from cqc_lem.utilities.brand_kit import brand_clause_for_user
     from cqc_lem.utilities.db import (
@@ -1578,19 +1578,21 @@ def _generate_video_src(user_id: int, text_content: str, profile, post_id: int =
             log_info(f"Premium video requested but no credits for user {user_id} — using standard")
 
     try:
+        # ONE Stage 1 call per video: the frame brief, the frame's judge and the motion author all
+        # read this same concept, and None (analysis unavailable) is passed on as-is so nothing
+        # downstream pays for a second attempt (issue #2241).
+        concept = analyze_content_for_image(text_content, surface="video", user_id=user_id)
         # The avatar is resolved BEFORE the image prompt is authored: its declared subject clause
         # is what stops the prompt LLM inventing a person of a different gender for the LoRA to
-        # then contradict (issue #744). None here means the guardrails said no.
-        avatar = resolve_avatar_for(user_id, surface=AVATAR_SURFACE_VIDEO, post_id=post_id)
+        # then contradict (issue #744). None here means the guardrails said no — or the post is
+        # not about the author, so the frame renders without the likeness (#2249 gauntlet).
+        avatar = resolve_avatar_for_concept(user_id, surface=AVATAR_SURFACE_VIDEO, concept=concept,
+                                            source_text=text_content, post_id=post_id)
         has_avatar = avatar is not None
         # Brief the ratio this tier will actually RENDER at: the image brief composes framing for
         # the aspect ratio it is handed, so briefing 1:1 and rendering the premium source frame at
         # 9:16 asked for a square composition and cropped it vertical (issue #1141).
         source_frame_ratio = "9:16" if is_premium(model) else DEFAULT_IMAGE_RATIO
-        # ONE Stage 1 call per video: the frame brief, the frame's judge and the motion author all
-        # read this same concept, and None (analysis unavailable) is passed on as-is so nothing
-        # downstream pays for a second attempt (issue #2241).
-        concept = analyze_content_for_image(text_content, surface="video", user_id=user_id)
         # `frame_info` catches the brief object the wrapper otherwise discards — the focal concept
         # this frame is graded on, recorded beside the stored MP4 (issue #1377). The caller's
         # `brief_info` IS that dict when one was passed.

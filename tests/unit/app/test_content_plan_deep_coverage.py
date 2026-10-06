@@ -14,6 +14,16 @@ import pytest
 
 pytestmark = pytest.mark.unit
 
+
+@pytest.fixture(autouse=True)
+def _piece_is_about_the_author():
+    """These tests pin the avatar path itself, so the post counts as being about the author.
+
+    The fit rule (`guardrails.avatar_fits_concept`, #2249) is pinned in test_image_engine_surfaces.
+    """
+    with patch("cqc_lem.utilities.avatar.guardrails.avatar_fits_concept", return_value=True):
+        yield
+
 _RCP = "cqc_lem.app.run_content_plan"
 _BLUEPRINT = {"format": "listicle", "hook_style": "question", "cta_style": "soft"}
 

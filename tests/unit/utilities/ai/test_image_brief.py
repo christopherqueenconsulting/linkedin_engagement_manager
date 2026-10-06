@@ -1050,3 +1050,51 @@ class TestPromptCheckSeesTheHeadline:
         text = judge.call_args[1]["messages"][0]["content"]
         assert f'The image\'s headline: "{_HOOK}"' in text
         assert "Together with its headline" in text
+
+
+@pytest.mark.unit
+class TestPostImageGauntletOn2249:
+    """The avatar brief carries the beat and refuses a posed author; five new clichés."""
+
+    _AVATAR = {"gender_presentation": "man", "age_band": "40s", "trigger_word": "TOK"}
+    _POSED = {**_GROUNDED, "prompt": _GROUNDED["prompt"].replace(
+        "at a kitchen table late at night", "smiling at the camera at a kitchen table")}
+
+    @pytest.mark.parametrize("text", [
+        "rows of server racks", "a long data center aisle", "blinking server lights overhead",
+        "a wall of monitors", "a stock trading chart on screen",
+    ])
+    def test_the_gauntlet_scenes_are_cliches(self, text):
+        assert cliche_hit(text), f"{text!r} came back from a text post's render"
+
+    def test_the_avatar_directive_carries_the_concepts_beat(self):
+        concept = _concept(emotional_beat="relief after finally saying no")
+        with patch(_LLM, return_value=_resp(_GROUNDED)) as llm, patch(_JUDGE):
+            build_image_brief("c", surface="post_image", avatar=self._AVATAR, concept=concept)
+        user_msg = llm.call_args[1]["messages"][1]["content"]
+        assert "show relief after finally saying no" in user_msg
+        assert "never posing" in user_msg and "blank or softly out of focus" in user_msg
+        assert "likeness is NOT available" not in user_msg
+
+    def test_without_a_beat_the_directive_still_asks_for_a_reaction(self):
+        from cqc_lem.utilities.ai.image_brief import avatar_directive
+        assert "a specific, genuine reaction" in avatar_directive(None)
+        assert "a specific, genuine reaction" in avatar_directive(_concept(emotional_beat=" "))
+
+    @pytest.mark.parametrize("pose", [
+        "smiling at the camera", "looking directly into the lens", "making eye contact",
+        "posed by the window", "a coffee mug on the desk", "a headshot of the founder",
+    ])
+    def test_a_posed_author_is_refused_on_the_avatar_path(self, pose):
+        posed = {**_GROUNDED, "prompt": _GROUNDED["prompt"].replace(
+            "at a kitchen table late at night", f"{pose} at a kitchen table")}
+        with patch(_LLM, return_value=_resp(posed)), patch(_JUDGE):
+            brief = build_image_brief("c", surface="post_image", avatar=self._AVATAR,
+                                      concept=_concept())
+        assert brief.fallback is True
+        assert any("the author is posed" in r for r in brief.rejections)
+
+    def test_the_pose_rule_is_avatar_only(self):
+        with patch(_LLM, return_value=_resp(self._POSED)), patch(_JUDGE):
+            brief = build_image_brief("c", surface="post_image", concept=_concept())
+        assert not any("the author is posed" in r for r in brief.rejections)

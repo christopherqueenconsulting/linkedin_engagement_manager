@@ -156,6 +156,10 @@ CLICHE_OBJECTS: tuple[str, ...] = (
     # prop; looking at or typing on one is never the action, and a neutral face is no reaction.
     "neutral expression", "looking at laptop", "typing on laptop", "staring at laptop",
     "focused on laptop", "working on laptop", "person typing", "professional typing",
+    # Post-image gauntlet on #2249: every one of these came back from a text post's render.
+    "server rack", "data center aisle", "datacenter aisle", "data centre aisle",
+    "blinking server lights", "server lights", "wall of monitors", "stock trading chart",
+    "trading chart screen",
 )
 # "target audience" is a reader, not a dartboard — the business senses never count as the symbol.
 _TARGET_BUSINESS_SENSE = re.compile(
@@ -314,6 +318,38 @@ _BANNED_FRAGMENTS = ("i'm sorry", "i am sorry", "i cannot", "i can't", "i am una
 # any identifiable person outright, and together with the stock-office gate it left the author
 # one move — an object still-life — which is how every cover became a valve (issue #2241).
 # LinkedIn's own guidance is that real people beat symbols; what reads as stock is the POSED model.
+# The author's likeness IS in frame (post-image gauntlet on #2249). The LoRA path is FLUX, which
+# follows a prompt loosely and largely ignores negation, so the defaults it drifts to — a posed
+# smile at the lens, a mug on a desk, a busy screen — are steered out POSITIVELY here and refused
+# by `_AVATAR_POSE`. The beat comes from Stage 1, so the expression matches the piece.
+_AVATAR_PEOPLE = (
+    "The author IS in this image, caught mid-action inside the situation, never posing: their "
+    "expression and what their hands are doing show {beat}. Their gaze is on the work or the "
+    "other people in the scene, the camera observing from the side as a documentary photographer "
+    "would. The surfaces around them carry only the props the visual anchors name. Any screen in "
+    "frame is dark, blank or softly out of focus.\n")
+_AVATAR_DEFAULT_BEAT = "a specific, genuine reaction to what is happening"
+# Refused on an avatar brief only: what FLUX turns into a stock headshot.
+_AVATAR_POSE = re.compile(
+    r"\b(?:(?:looking|smiling|staring|gazing)\s+(?:directly\s+)?(?:at|into|toward)\s+(?:the\s+)?"
+    r"(?:camera|lens|viewer)|eye\s+contact|faces?\s+the\s+camera|facing\s+the\s+camera|"
+    r"pos(?:ed|ing|es)\b|headshot|portrait\s+of|coffee\s+mug|mug\s+of\s+coffee|cup\s+of\s+coffee)",
+    re.IGNORECASE)
+
+
+def avatar_directive(concept: Optional[ImageConcept]) -> str:
+    """The author-in-frame directive for an avatar brief, carrying the concept's emotional beat.
+
+    Args:
+        concept: Stage 1's analysis, or None.
+
+    Returns:
+        The directive, its beat taken from the concept (a generic genuine reaction without one).
+    """
+    beat = (concept.emotional_beat.strip() if concept and concept.emotional_beat else "")
+    return _AVATAR_PEOPLE.format(beat=beat or _AVATAR_DEFAULT_BEAT)
+
+
 _NO_AVATAR_PEOPLE = (
     "The author's likeness is NOT available for this image. People may appear as real "
     "participants caught mid-task — candid, partly turned, absorbed in the situation — never "
@@ -553,9 +589,15 @@ def _deterministic_failure(prompt: str, *, anchors: list[str], weak: bool,
 
 def _rejection(parsed: dict[str, Any], *, anchors: list[str], weak: bool,
                hook_text: Optional[str], names: Optional[set[str]] = None,
-               colors: Optional[frozenset[str]] = None) -> Optional[str]:
+               colors: Optional[frozenset[str]] = None,
+               avatar: bool = False) -> Optional[str]:
     """Why an authored brief is unusable, or None. The reason goes back to the author verbatim."""
     prompt = str(parsed.get("prompt") or "").strip()
+    pose = _AVATAR_POSE.search(prompt) if avatar else None
+    if pose:
+        return (f"the author is posed ({pose.group(0)!r}) — show them mid-action with the "
+                f"emotional beat in their expression and hands, gaze on the work, no mug or desk "
+                f"props the anchors do not name")
     focal = str(parsed.get("focal_concept") or "").strip()
     if not (_MIN_PROMPT_CHARS <= len(prompt) <= _MAX_PROMPT_CHARS) or not (3 <= len(focal) <= 300):
         return "failed validation (length bounds)"
@@ -816,7 +858,7 @@ def build_image_brief(content: str, *, surface: str, ratio: str = "1:1",
         + _analysis_block(concept, anchors, hook, surface)
         + (f"Brand: {brand_kit}\n" if brand_kit else "")
         + BRAND_ACCENT_DIRECTIVE.format(colors=", ".join(sorted(colors)))
-        + ("" if avatar else _NO_AVATAR_PEOPLE)
+        + (avatar_directive(concept) if avatar else _NO_AVATAR_PEOPLE)
         + (f"Content shape: {content_shape}\n" if content_shape else "")
         + (f"This author's recent images already looked like this, so make this one visibly "
            f"different in setting and composition: {'; '.join(avoid)}\n" if avoid else "")
@@ -868,7 +910,7 @@ def build_image_brief(content: str, *, surface: str, ratio: str = "1:1",
                           attempt=attempt, ai_model="lem-medium", reason=reason)
                 continue
             rejection = _rejection(parsed, anchors=anchors, weak=weak, hook_text=hook,
-                                   names=names, colors=gate_colors)
+                                   names=names, colors=gate_colors, avatar=bool(avatar))
             if rejection:
                 reason = rejection
                 rejections.append(reason)

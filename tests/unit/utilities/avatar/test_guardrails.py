@@ -119,3 +119,94 @@ class TestAvatarAllowedFor:
             assert avatar_allowed_for(7, surface=AVATAR_SURFACE_CAROUSEL) is True
         with patch("cqc_lem.utilities.avatar.guardrails.resolve_avatar_for", return_value=None):
             assert avatar_allowed_for(7, surface=AVATAR_SURFACE_CAROUSEL) is False
+
+
+class TestAvatarFitsTheConcept:
+    """#2249 gauntlet: the likeness only goes in frame when the piece is about the author."""
+
+    @staticmethod
+    def _concept(**overrides):
+        from types import SimpleNamespace
+        fields = dict(treatment="people_scene", audience="agency owners",
+                      emotional_beat="quiet dread", thesis="Late invoices starve cash flow.",
+                      treatment_rationale="a team in a real situation", chosen_idea="")
+        fields.update(overrides)
+        return SimpleNamespace(**fields)
+
+    def test_no_concept_never_fits(self):
+        from cqc_lem.utilities.avatar.guardrails import avatar_fits_concept
+        assert avatar_fits_concept(None, "I did this myself and my team saw me") is False
+
+    @pytest.mark.parametrize("treatment", ["concrete_scene", "editorial_graphic",
+                                           "metaphor_last_resort"])
+    def test_only_a_people_scene_can_fit(self, treatment):
+        from cqc_lem.utilities.avatar.guardrails import avatar_fits_concept
+        concept = self._concept(treatment=treatment, audience="the author")
+        assert avatar_fits_concept(concept) is False
+
+    @pytest.mark.parametrize("field,value", [
+        ("audience", "founders like the author"),
+        ("emotional_beat", "my relief after saying no"),
+        ("thesis", "The writer's own mistake cost a client."),
+        ("treatment_rationale", "a personal story about a hiring decision"),
+        ("chosen_idea", "the author at a whiteboard, mid-explanation"),
+    ])
+    def test_a_concept_about_the_author_fits(self, field, value):
+        from cqc_lem.utilities.avatar.guardrails import avatar_fits_concept
+        assert avatar_fits_concept(self._concept(**{field: value})) is True
+
+    def test_a_people_scene_about_other_people_does_not_fit(self):
+        from cqc_lem.utilities.avatar.guardrails import avatar_fits_concept
+        assert avatar_fits_concept(self._concept(), "Agencies wait 90 days to get paid.") is False
+
+    def test_a_first_person_post_fits(self):
+        from cqc_lem.utilities.avatar.guardrails import avatar_fits_concept
+        text = "Last year I fired my biggest client. I was scared. It was my best decision."
+        assert avatar_fits_concept(self._concept(), text) is True
+
+    def test_one_stray_first_person_word_in_a_long_post_does_not(self):
+        from cqc_lem.utilities.avatar.guardrails import avatar_fits_concept
+        text = "I think " + "agencies wait ninety days for payment " * 30 + "my take."
+        assert avatar_fits_concept(self._concept(), text) is False
+
+
+class TestResolveAvatarForConcept:
+    def _resolve(self, *, avatar, fits, explicit=None, post_id=9):
+        from cqc_lem.utilities.avatar.guardrails import resolve_avatar_for_concept
+        with patch("cqc_lem.utilities.avatar.guardrails.resolve_avatar_for",
+                   return_value=avatar) as policy, \
+             patch("cqc_lem.utilities.avatar.guardrails.avatar_fits_concept", return_value=fits), \
+             patch("cqc_lem.utilities.db.get_post_use_avatar",
+                   side_effect=explicit if isinstance(explicit, Exception) else None,
+                   return_value=explicit) as choice:
+            out = resolve_avatar_for_concept(1, surface=AVATAR_SURFACE_POST_IMAGE,
+                                             concept=object(), source_text="t", post_id=post_id)
+        return out, policy, choice
+
+    def test_policy_says_no_is_no(self):
+        out, _, choice = self._resolve(avatar=None, fits=True)
+        assert out is None
+        choice.assert_not_called()
+
+    def test_policy_yes_and_fit_is_the_avatar(self):
+        out, policy, choice = self._resolve(avatar=_APPROVED, fits=True)
+        assert out == _APPROVED
+        assert policy.call_args.kwargs == {"surface": AVATAR_SURFACE_POST_IMAGE, "post_id": 9}
+        choice.assert_not_called()
+
+    def test_no_fit_is_none(self):
+        out, _, _ = self._resolve(avatar=_APPROVED, fits=False, explicit=None)
+        assert out is None
+
+    def test_an_explicit_compose_time_opt_in_still_wins(self):
+        out, _, _ = self._resolve(avatar=_APPROVED, fits=False, explicit=True)
+        assert out == _APPROVED
+
+    def test_an_unreadable_choice_fails_closed(self):
+        out, _, _ = self._resolve(avatar=_APPROVED, fits=False, explicit=RuntimeError("db"))
+        assert out is None
+
+    def test_no_post_means_no_explicit_choice(self):
+        out, _, choice = self._resolve(avatar=_APPROVED, fits=False, post_id=None)
+        assert out is None
+        choice.assert_not_called()
