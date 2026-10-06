@@ -340,6 +340,28 @@ Three rules:
 `edition_id` / `edition_format` / `hook_style` this way, and `fallback` (from `ImageBrief.fallback`)
 records whether the deterministic template shipped instead of a real brief.
 
+## Brand kit — the per-user palette and mood
+
+`utilities/brand_kit.py` (pure, no I/O) is the ONE place a brand kit is validated and turned into
+prompt text. It is stored in `engagement_preferences.brand_kit` (JSON, NULL = no kit), edited in the
+SPA's **Content & Publishing → Brand kit** card, and read with `db.get_brand_kit(user_id)`.
+
+| Field | Shape |
+|---|---|
+| `primary_hex`, `secondary_hex`, `accent_hex`, `neutral_dark_hex`, `neutral_light_hex` | Optional `#rrggbb` |
+| `font_vibe` | ≤80 chars, e.g. "geometric sans, heavy weight" |
+| `visual_mood` | ≤160 chars |
+| `avoid` | ≤12 motifs, each ≤40 chars |
+
+- **Tolerant, never raising.** `parse_brand_kit` drops an invalid field rather than refusing the
+  kit, at the API, in the upsert, and on read. A kit with nothing valid left is stored as NULL.
+- **Names over hex.** `describe_for_prompt` names each colour off a small nearest-named-colour table
+  ("light gold (#e9d437)") because image models follow names better than codes; the hex rides along.
+- **Empty kit = neutral grading.** No row, a NULL column, an unreadable read, or an all-invalid kit
+  all describe as `""`, and the engine renders exactly as it did before brand kits existed.
+- Owner seed: `V20261006201705__seed_brand_kit_user_1.sql` fills user 1's kit only where it is still
+  NULL, so a saved kit is never overwritten.
+
 ## Environment
 
 | Var | Meaning |

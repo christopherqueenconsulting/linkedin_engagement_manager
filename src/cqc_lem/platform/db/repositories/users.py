@@ -32,6 +32,7 @@ from cqc_lem.platform.db.shared import (
     ONBOARDING_STEPS,
     VALID_VIDEO_QUALITIES,
 )
+from cqc_lem.utilities.brand_kit import parse_brand_kit
 from cqc_lem.utilities.crypto import (
     decrypt_secret,
     encrypt_secret,
@@ -2017,6 +2018,47 @@ def set_default_video_quality(user_id: int, quality: str) -> bool:
     if quality not in VALID_VIDEO_QUALITIES:
         quality = "standard"
     return update_engagement_preferences(user_id, {"default_video_quality": quality})
+def get_brand_kit(user_id: int) -> Optional[dict]:
+    """The user's saved brand kit (`engagement_preferences.brand_kit`), validated.
+
+    The one-column read the image engine uses — it needs the kit, not the whole preferences row.
+    Shape: `cqc_lem.utilities.brand_kit`.
+
+    Args:
+        user_id: Whose kit.
+
+    Returns:
+        The kit as a dict of its valid fields, or None when there is no row, no kit, nothing
+        valid in it, or the read failed — every case the image engine treats as neutral grading.
+    """
+    try:
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute("SELECT brand_kit FROM engagement_preferences WHERE user_id = %s",
+                           (user_id,))
+            row = cursor.fetchone()
+    except mysql.connector.Error as err:
+        log_warning("Could not read brand kit — rendering without it", exc=err, user_id=user_id)
+        return None
+    raw = row.get("brand_kit") if row else None
+    if raw is None:
+        log_debug("No brand kit saved", user_id=user_id)
+        return None
+    return _decode_brand_kit(raw, user_id)
+def set_brand_kit(user_id: int, kit: Optional[dict]) -> bool:
+    """Save the user's brand kit (upserts the engagement_preferences row).
+
+    Same path as `set_default_video_quality`: the upsert merges over the user's saved row, so no
+    other preference moves, and it re-validates the kit — invalid fields are dropped, and an
+    empty or None kit stores NULL.
+
+    Args:
+        user_id: Whose kit.
+        kit: The kit as a dict, or None/`{}` to clear it.
+
+    Returns:
+        True when stored, False when the row could not be read or written.
+    """
+    return update_engagement_preferences(user_id, {"brand_kit": kit or None})
 def get_active_user_password_pairs():
     """`[email, password]` for every active user that has BOTH.
 
@@ -2195,6 +2237,10 @@ _ENGAGEMENT_DEFAULTS: dict = {
     # both branches of engage_with_profile_viewer file an approval-gated row instead of sending,
     # which is the only lane where a stranger hears from us with nobody having looked first.
     "profile_viewer_dm_auto_send": False,
+    # The brand kit image generation reads (utilities/brand_kit.py). None = no kit, which the image
+    # engine reads as neutral grading. Stored as a JSON object, never a list, so it is decoded by
+    # `_decode_brand_kit` rather than through `_ENGAGEMENT_JSON_FIELDS`.
+    "brand_kit": None,
 }
 _ENGAGEMENT_JSON_FIELDS = ("include_topics", "exclude_topics", "include_keywords",
                            "exclude_keywords", "include_authors", "exclude_authors", "post_types",
@@ -2223,7 +2269,7 @@ _ENGAGEMENT_COLS = ("tone", "comment_length", "comment_style", "use_emojis", "us
                     "max_catchup_touches_per_contact_days", "posts_per_week", "posting_days",
                     "text_post_images", "roster_auto_follow", "max_follows_per_day",
                     "roster_auto_connect", "hold_repaired_posts_for_review",
-                    "profile_viewer_dm_auto_send", "forbidden_claim_terms")
+                    "profile_viewer_dm_auto_send", "forbidden_claim_terms", "brand_kit")
 VALID_REPLY_MODES = ("event", "scheduled", "off")
 # Approval posture for the proactive connect flow (issue #398 owner review).
 VALID_CONNECTION_REQUEST_MODES = ("auto_approve", "pre_review")
@@ -2244,6 +2290,28 @@ def _coerce_json_list(value) -> list:
         return parsed if isinstance(parsed, list) else []
     except (ValueError, TypeError):
         return []
+def _decode_brand_kit(raw, user_id: int) -> Optional[dict]:
+    """A stored `brand_kit` value as a dict of its VALID fields, or None for no usable kit.
+
+    Args:
+        raw: The column value — a JSON string or bytes off the driver, or an already-decoded dict.
+        user_id: Whose row, for the log line.
+
+    Returns:
+        The validated kit, or None when NULL, unparseable, or empty once invalid fields are dropped.
+    """
+    if raw is None:
+        return None
+    if isinstance(raw, (bytes, bytearray)):
+        raw = raw.decode("utf-8", errors="replace")
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except ValueError as err:
+            log_warning("Stored brand kit is not valid JSON — ignoring it", exc=err, user_id=user_id)
+            return None
+    kit = parse_brand_kit(raw)
+    return None if kit is None or kit.is_empty() else kit.to_dict()
 def _select_engagement_row(user_id: int) -> Optional[dict]:
     """The user's SAVED engagement row, decoded — or None when they have never saved one.
 
@@ -2290,6 +2358,7 @@ def _select_engagement_row(user_id: int) -> Optional[dict]:
         row["posting_days"] = normalize_posting_days(row.get("posting_days"))
         for f in _ENGAGEMENT_BOOL_FIELDS:
             row[f] = bool(row.get(f))
+        row["brand_kit"] = _decode_brand_kit(row.get("brand_kit"), user_id)
         return row
     finally:
         cursor.close()
@@ -2415,6 +2484,10 @@ def update_engagement_preferences(user_id: int, prefs: dict) -> bool:
     from cqc_lem.utilities.ai.story_bank import normalize_forbidden_claim_terms
     merged["forbidden_claim_terms"] = normalize_forbidden_claim_terms(
         merged.get("forbidden_claim_terms"))
+    # The brand kit is re-validated here too, for the same reason: no caller can store an invalid
+    # field, and an empty kit is stored as NULL — "no kit", the same as never having saved one.
+    _kit = parse_brand_kit(merged.get("brand_kit"))
+    merged["brand_kit"] = None if _kit is None or _kit.is_empty() else _kit.to_dict()
     if merged.get("catchup_touch_mode") not in VALID_CATCHUP_TOUCH_MODES:
         merged["catchup_touch_mode"] = "pre_review"
     if merged.get("catchup_message_source") not in VALID_CATCHUP_MESSAGE_SOURCES:
@@ -2454,6 +2527,8 @@ def update_engagement_preferences(user_id: int, prefs: dict) -> bool:
 
     def _val(col):
         v = merged[col]
+        if col == "brand_kit":
+            return None if v is None else json.dumps(v)
         if col in _ENGAGEMENT_JSON_FIELDS:
             return json.dumps(v or [])
         if col in _ENGAGEMENT_BOOL_FIELDS:
