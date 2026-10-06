@@ -21,6 +21,7 @@ from typing import Any, Optional
 
 from cqc_lem.utilities.ai.image_concept import (
     GENERIC_ACRONYMS,
+    REASONING_EFFORT,
     TREATMENT_CONCRETE,
     TREATMENT_GRAPHIC,
     TREATMENT_METAPHOR,
@@ -262,7 +263,9 @@ itself, and you turn them into a single render-ready prompt.
 - Nothing in the scene carries words: never "displaying the X dashboard", "titled", "labelled",
   "a sign reading", or a report, magazine or screen "with text". Screens and documents may
   appear, blank or abstract; documents and checklists are blank or unreadable — no numerals, no
-  list markers, never "a three-step checklist".
+  list markers, never "a three-step checklist". Any paper, chart, report, invoice, dashboard or
+  screen you name is described as blank, seen at a steep angle so no writing is legible, or out of
+  focus.
 - Stock symbols are REFUSED, whatever the topic: """ + ", ".join(CLICHE_OBJECTS) + """. Find
   what THIS piece shows instead.
 - Quotation marks appear ONLY around the hook, copied exactly, when a hook is given (every
@@ -369,8 +372,97 @@ _WORDS_ON_SURFACE = re.compile(
     r"(?:text|words|writing|headline|title|caption)s?\b"
     # Round 3: "a printed three-step checklist" came back reading "1, 2, 8".
     r"|\bnumbered\b|\bbullet(?:ed)?\s+(?:points?|list)\b|\blist\s+of\s+numbers\b"
-    r"|\b(?:\w+|\d+)[\s\-‑]step\s+(?:checklist|list|guide|plan|process)s?\b",
+    r"|\b(?:\w+|\d+)[\s\-‑]step\s+(?:checklist|list|guide|plan|process)s?\b"
+    # Round 4: the fallback asked for "a handwritten note urging personal storytelling".
+    r"|\bhandwritten\s+(?:note|message|sign|list)s?\b"
+    r"|\b(?:note|sign|card|whiteboard|board)s?\s+(?:urging|asking|telling|announcing)\b",
     re.IGNORECASE)
+
+# Round 4 (#2241): ed16 asked for "a printed billing dashboard screen" and "a paper check" and the
+# chart paper came back reading "MEITE TCHIREUM". Any paper or screen the brief names must say
+# HOW it stays unreadable; these name the document, the qualifiers name the how.
+_LEGIBLE_DOCUMENT = re.compile(
+    r"\bprinted\s+(?:[\w\-]+\s+){0,2}dashboards?\b"
+    r"|\bcharts?\s+with\s+(?:[\w\-]+\s+)?(?:labels?|numbers|figures|axes|values)\b"
+    r"|\b(?:paper|bank|signed|printed|personal)\s+(?:check|cheque)s?\b|\bcheques?\b"
+    r"|\binvoices?\s+(?:showing|displaying|listing|itemi[sz]ing|reading|with)\b",
+    re.IGNORECASE)
+_DOCUMENT_NOUNS = re.compile(
+    r"\b(?:paper|papers|chart|charts|report|reports|invoice|invoices|dashboard|dashboards|"
+    r"screen|screens|monitor|monitors|printout|printouts|document|documents|draft|drafts|"
+    r"spreadsheet|spreadsheets|statement|statements|receipt|receipts|page|pages|checklist|"
+    r"checklists|flip[\s\-]chart|whiteboard|slide|slides)\b", re.IGNORECASE)
+_UNREADABLE_QUALIFIERS = re.compile(
+    r"\bblank\b|\bsteep\s+angle\b|\bno\s+writing\s+is\s+legible\b|\bout\s+of\s+focus\b|"
+    r"\billegible\b|\bunreadable\b|\bface[\s\-]down\b|\bturned\s+away\b|\bsoft[\s\-]focus\b",
+    re.IGNORECASE)
+DOCUMENT_BLANKING = ("every paper and screen in the frame is blank, seen at a steep angle so no "
+                     "writing is legible, or out of focus")
+
+
+def words_on_surface(text: Optional[str]) -> Optional[str]:
+    """The first phrase in ``text`` that puts words on a surface, or None.
+
+    Args:
+        text: A prompt or a visual idea.
+
+    Returns:
+        The matched phrase.
+    """
+    match = _WORDS_ON_SURFACE.search(text or "")
+    return match.group(0).strip() if match else None
+
+
+def legible_document(text: Optional[str]) -> Optional[str]:
+    """The first phrase in ``text`` that asks for a document or screen with readable content.
+
+    Args:
+        text: A prompt or a visual idea.
+
+    Returns:
+        The matched phrase ("a printed billing dashboard", "a paper check"), or None.
+    """
+    match = _LEGIBLE_DOCUMENT.search(text or "")
+    return match.group(0).strip() if match else None
+
+
+def unblanked_document(text: Optional[str]) -> Optional[str]:
+    """A paper or screen ``text`` names without ever saying how it stays unreadable, or None.
+
+    Args:
+        text: A render prompt.
+
+    Returns:
+        The first document noun when no blank / steep-angle / out-of-focus qualifier is present.
+    """
+    text = text or ""
+    match = _DOCUMENT_NOUNS.search(text)
+    if match and not _UNREADABLE_QUALIFIERS.search(text):
+        return match.group(0)
+    return None
+
+
+# Sentences that are AUTHOR context, never render content (round 4: the fallback shipped "The
+# author is in the Artificial Intelligence, E-commerce industry. Make the visual feel on-brand…"
+# as the first words of a render prompt).
+_AUTHOR_CONTEXT_SENTENCES = re.compile(
+    r"(?:The author is\b|Make the visual feel\b|When a person appears in the image it IS the "
+    r"author\b|Describe that person consistently\b)[^.\n]*\.?\s*", re.IGNORECASE)
+
+
+def strip_author_context(prompt: str, context: str = "") -> str:
+    """``prompt`` with every author-context sentence removed — profile text never renders.
+
+    Args:
+        prompt: An authored or fallback render prompt.
+        context: The exact context block the author was given, removed verbatim first.
+
+    Returns:
+        The prompt, trimmed.
+    """
+    if context:
+        prompt = prompt.replace(context.strip(), " ")
+    return " ".join(_AUTHOR_CONTEXT_SENTENCES.sub(" ", prompt or "").split())
 
 # Round 3 (#2241): people and concrete scenes lost the palette entirely. A cover brief must name
 # one deliberate brand-color element; these are the color words it may name it by.
@@ -388,8 +480,39 @@ BRAND_ACCENT_DIRECTIVE = (
 # the visual carries emotion and specificity — the YouTube-thumbnail / editorial-cover pattern.
 COVER_HOOK_LAYOUT = (
     'COVER LAYOUT: the headline "{hook}" sits in one third of the frame — left or right, opposite '
-    "the subject — in bold geometric sans, brand light gold or off-white on a dark area, five "
-    "words at most. The visual subject fills the other two thirds.\n")
+    "the subject — {type_spec}, five words at most. The visual subject fills the other two "
+    "thirds.\n")
+# The hook's typography is a FIXED brand spec, never the model's choice (round 4: ed16's hook came
+# back in a serif face). The brand kit's font vibe replaces the default typeface when present.
+_DEFAULT_TYPEFACE = "a heavy geometric sans-serif (Montserrat ExtraBold style)"
+_DEFAULT_HOOK_COLOR = "light gold"
+HOOK_TYPE_SPEC = ("set in {typeface}, sentence case, {color} on a dark area, large enough to read "
+                  "at 400x225")
+_FONT_VIBE = re.compile(r"(?:font[_\s]?vibe|typography(?:\s+feel)?|typeface|font)\s*:\s*([^;\n]+)",
+                        re.IGNORECASE)
+_SHADED_COLOR = re.compile(
+    r"\b((?:light|dark|deep|warm|pale|bright|soft|muted)\s+)?(" + "|".join(
+        sorted(_COLOR_WORDS, key=len, reverse=True)) + r")\b", re.IGNORECASE)
+
+
+def hook_type_spec(brand_kit: Optional[str]) -> str:
+    """The fixed typography clause every hook carries.
+
+    Args:
+        brand_kit: The pre-rendered brand clause, or None.
+
+    Returns:
+        "set in <typeface>, sentence case, <primary color> on a dark area, large enough to read at
+        400x225" — the brand kit's font vibe and first named color when present, else a heavy
+        geometric sans-serif in light gold. A sans-serif is always stated.
+    """
+    font = _FONT_VIBE.search(brand_kit or "")
+    typeface = font.group(1).strip().rstrip(".,") if font else ""
+    if typeface and "sans" not in typeface.lower():
+        typeface = f"{typeface}, a heavy geometric sans-serif"
+    color = _SHADED_COLOR.search(brand_kit or "")
+    return HOOK_TYPE_SPEC.format(typeface=typeface or _DEFAULT_TYPEFACE,
+                                 color=color.group(0).lower() if color else _DEFAULT_HOOK_COLOR)
 
 
 def brand_colors(brand_kit: Optional[str]) -> frozenset[str]:
@@ -432,9 +555,9 @@ _MAX_AVOID_TERMS = 8
 # finish_reason='length' — so the brief failed validation, retried, failed again, and every
 # image silently rendered from the bland deterministic template. A real brief costs ~870
 # completion tokens including reasoning; this leaves headroom for a longer one.
-_BRIEF_MAX_TOKENS = 2500
+_BRIEF_MAX_TOKENS = 6000
 # Stage 3's judge is lem-simple, also a reasoning model.
-_CHECK_MAX_TOKENS = 1500
+_CHECK_MAX_TOKENS = 6000
 
 _QUOTED = re.compile(r'"([^"\n]{1,200})"|“([^”\n]{1,200})”')
 
@@ -572,10 +695,23 @@ def _deterministic_failure(prompt: str, *, anchors: list[str], weak: bool,
     if named:
         return (f"the prompt names {named!r}, a fact the image cannot draw — show the visual "
                 f"anchors, never a name or a number")
-    words = _WORDS_ON_SURFACE.search(unhooked)
+    words = words_on_surface(unhooked)
     if words:
-        return (f"the prompt puts words on a surface ({words.group(0).strip()!r}) — screens and "
-                f"documents stay blank or abstract")
+        return (f"the prompt puts words on a surface ({words!r}) — screens and documents stay "
+                f"blank or abstract")
+    legible = legible_document(unhooked)
+    if legible:
+        return (f"the prompt asks for a readable document ({legible!r}) — describe every paper "
+                f"and screen as blank, seen at a steep angle so no writing is legible, or out of "
+                f"focus")
+    unblanked = unblanked_document(unhooked)
+    if unblanked:
+        return (f"the prompt names a {unblanked} without saying how it stays unreadable — "
+                f"describe it as blank, seen at a steep angle so no writing is legible, or out "
+                f"of focus")
+    if hook_text and "sans" not in unhooked.lower():
+        return ("the hook's typeface is not stated — set it in a heavy geometric sans-serif, "
+                "sentence case")
     # Advisory since round 3: the hook carries the thesis, so ONE anchor in frame is enough — two
     # pushed ed16 onto the fallback twice for "depicts 1 of the anchors".
     if not weak and anchors and not any(entity_mentioned(a, prompt) for a in anchors):
@@ -620,8 +756,9 @@ The image's headline: {hook}
 The prompt:
 <prompt>{prompt}</prompt>
 
-Together with its headline, would an image rendered from this prompt let a stranger guess the
-piece's thesis? Name which of the things above the prompt depicts. Respond with ONLY a JSON object:
+Reading the headline together with an image rendered from this prompt, would a viewer get the
+GIST of the claim? Not every detail or benefit — just the gist. Name which of the things above
+the prompt depicts. Respond with ONLY a JSON object:
 {{"guessable": true|false, "depicted_entities": ["..."], "reason": "<one short sentence>"}}"""
 
 
@@ -668,6 +805,7 @@ def check_prompt_against_concept(prompt: str, concept: Optional[ImageConcept],
             response_format={"type": "json_object"},
             temperature=0,
             max_tokens=_CHECK_MAX_TOKENS,
+            reasoning_effort=REASONING_EFFORT,
         )
         verdict = _loads_json_object(response.choices[0].message.content or "")
     except Exception as e:
@@ -743,9 +881,11 @@ def _fallback_brief(content: str, *, surface: str, ratio: str, context: str,
     finish = (f"composed for a {ratio} aspect ratio with the subject large in the frame, soft "
               f"window light with natural fill and one deliberate {accent[0]} accent, subtle film "
               f"grain, real texture with fabric wear and everyday imperfections, plain unbranded "
-              f"surfaces, clean unmarked walls.")
-    layout = (f' The headline "{hook}" sits in the left third in bold geometric sans, light gold '
-              f"on a dark area; the subject fills the other two thirds." if hook else "")
+              f"surfaces, clean unmarked walls; {DOCUMENT_BLANKING}.")
+    layout = (f' The headline "{hook}" sits in the left third, {hook_type_spec(brand_kit)}; '
+              f"the subject fills the other two thirds." if hook else "")
+    # Profile context is AUTHOR context: a fallback is a render prompt, so it never carries it.
+    context = ""
     idea = _plain_words(concept.chosen_idea) if concept and concept.chosen_idea else ""
 
     if idea:
@@ -769,6 +909,7 @@ def _fallback_brief(content: str, *, surface: str, ratio: str, context: str,
         prompt = (f"{context}A photorealistic candid editorial photograph for a {use} of "
                   f"{subject}. One clear focal subject, shot on a 50mm lens at f/2.8, "
                   f"{finish}{layout}")
+    prompt = strip_author_context(prompt)
     return ImageBrief(prompt=prompt, ratio=ratio, surface=surface,
                       style_preset=surface if surface in _STYLE_PRESETS else _DEFAULT_PRESET,
                       focal_concept=(summary[:120] or "professional LinkedIn visual"),
@@ -778,7 +919,8 @@ def _fallback_brief(content: str, *, surface: str, ratio: str, context: str,
 
 
 def _analysis_block(concept: Optional[ImageConcept], anchors: list[str],
-                    hook: Optional[str], surface: str = "post_image") -> str:
+                    hook: Optional[str], surface: str = "post_image",
+                    brand_kit: Optional[str] = None) -> str:
     if concept is None:
         return ("Analysis of the piece: unavailable — read the excerpt and build the image on "
                 "the specific, depictable things it describes.\n")
@@ -790,9 +932,11 @@ def _analysis_block(concept: Optional[ImageConcept], anchors: list[str],
     if concept.chosen_idea:
         block += f"CHOSEN VISUAL IDEA — build the image on this: {concept.chosen_idea}\n"
     if hook:
-        block += f'Hook — the ONLY text in the image, quoted exactly: "{hook}"\n'
+        type_spec = hook_type_spec(brand_kit)
+        block += (f'Hook — the ONLY text in the image, quoted exactly: "{hook}", {type_spec} — '
+                  f"state that typography in the prompt.\n")
         if surface == "newsletter" and concept.treatment != TREATMENT_GRAPHIC:
-            block += COVER_HOOK_LAYOUT.format(hook=hook)
+            block += COVER_HOOK_LAYOUT.format(hook=hook, type_spec=type_spec)
     return block
 
 
@@ -855,7 +999,7 @@ def build_image_brief(content: str, *, surface: str, ratio: str = "1:1",
         f"{context}USE CASE: {_STYLE_PRESETS[preset]}\n"
         f"{_TREATMENT_TEMPLATES[treatment]}\n\n"
         f"Compose for a {ratio} aspect ratio.\n"
-        + _analysis_block(concept, anchors, hook, surface)
+        + _analysis_block(concept, anchors, hook, surface, brand_kit)
         + (f"Brand: {brand_kit}\n" if brand_kit else "")
         + BRAND_ACCENT_DIRECTIVE.format(colors=", ".join(sorted(colors)))
         + (avatar_directive(concept) if avatar else _NO_AVATAR_PEOPLE)
@@ -875,7 +1019,11 @@ def build_image_brief(content: str, *, surface: str, ratio: str = "1:1",
     # A brief that passed every deterministic check but that Stage 3's judge objected to: shipped
     # if the one repair pass cannot do better, because a real brief beats the template.
     judged_brief: Optional[ImageBrief] = None
-    for attempt in range(1, _BRIEF_ATTEMPTS + 1):
+    attempts = _BRIEF_ATTEMPTS
+    length_retry_used = False
+    attempt = 0
+    while attempt < attempts:
+        attempt += 1
         try:
             # The retry carries WHY the last attempt was thrown out. Re-sending the identical
             # prompt just re-drew the same rejected scene (issue #1992).
@@ -889,14 +1037,19 @@ def build_image_brief(content: str, *, surface: str, ratio: str = "1:1",
                 temperature=0.6,
                 max_tokens=_BRIEF_MAX_TOKENS,
                 response_format={"type": "json_object"},
+                reasoning_effort=REASONING_EFFORT,
             )
             choice = response.choices[0]
             raw = choice.message.content or ""
             if not raw.strip():
                 # The shape an exhausted token budget takes: finish_reason='length', no content.
-                reason = f"empty response (finish_reason={getattr(choice, 'finish_reason', None)})"
+                finish_reason = getattr(choice, "finish_reason", None)
+                reason = f"empty response (finish_reason={finish_reason})"
                 rejections.append(reason)
                 outages += 1
+                if finish_reason == "length" and not length_retry_used:
+                    # The budget ended the reply, not the model: ONE extra attempt (round 4).
+                    length_retry_used, attempts = True, attempts + 1
                 log_debug("Image brief came back empty", surface=surface, attempt=attempt,
                           ai_model="lem-medium", reason=reason)
                 continue
@@ -909,6 +1062,8 @@ def build_image_brief(content: str, *, surface: str, ratio: str = "1:1",
                 log_debug("Image brief reply was not valid JSON", surface=surface,
                           attempt=attempt, ai_model="lem-medium", reason=reason)
                 continue
+            if isinstance(parsed.get("prompt"), str):
+                parsed["prompt"] = strip_author_context(parsed["prompt"], context)
             rejection = _rejection(parsed, anchors=anchors, weak=weak, hook_text=hook,
                                    names=names, colors=gate_colors, avatar=bool(avatar))
             if rejection:
@@ -930,7 +1085,7 @@ def build_image_brief(content: str, *, surface: str, ratio: str = "1:1",
                 return brief
             ok, why = check_prompt_against_concept(prompt, concept, hook)
             brief.prompt_check = why
-            if ok or attempt == _BRIEF_ATTEMPTS:
+            if ok or attempt == attempts:
                 return brief
             # ONE repair pass through the author with the judge's reason.
             judged, judged_brief, reason = True, brief, why
@@ -956,7 +1111,7 @@ def build_image_brief(content: str, *, surface: str, ratio: str = "1:1",
     # exception, an empty reply or unparsable JSON — is an outage, and that alone is a warning.
     log_info("Image brief fell back to the deterministic template", surface=surface,
              action_type="image_brief", reason=reason, rejections=" | ".join(rejections))
-    if outages == _BRIEF_ATTEMPTS:
+    if outages == attempt:
         log_warning("Image brief author unavailable — deterministic template shipped",
                     surface=surface, action_type="image_brief", reason=reason)
     return _fallback_brief(content, surface=surface, ratio=ratio, context=context, avatar=avatar,

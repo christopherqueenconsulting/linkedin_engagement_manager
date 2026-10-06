@@ -78,10 +78,12 @@ _NO_MARKS_FLUX = (" Every garment and surface is plain and unbranded, screens ar
 # hook, and the blanket constraint above would forbid the very words the graphic exists to show.
 # So a hook-carrying render gets this INSTEAD — the hook named exactly, everything else still
 # refused. FLUX gets it positively, for the same reason as `_NO_MARKS_FLUX`.
-_HOOK_ONLY_GPT = (' The only text in the image is exactly "{hook}" — no other words, letters, '
-                  'numbers, logos, watermarks or UI.')
-_HOOK_ONLY_FLUX = (' The only lettering in the image is the exact phrase "{hook}"; every other '
-                   'garment and surface is plain and unbranded.')
+_HOOK_ONLY_GPT = (' The only text in the image is exactly "{hook}", set in a heavy geometric '
+                  'sans-serif in sentence case — no other words, letters, numbers, logos, '
+                  'watermarks or UI.')
+_HOOK_ONLY_FLUX = (' The only lettering in the image is the exact phrase "{hook}", set in a heavy '
+                   'geometric sans-serif in sentence case; every other garment and surface is '
+                   'plain and unbranded.')
 
 # The blanket constraint above is not enough when the scene NAMES a surface whose whole purpose is
 # carrying marks (issue #1376). Newsletter cover ed9 went through this exact path — brief authored
@@ -535,9 +537,13 @@ Look at the image itself and answer:
 3. Is any of these stock symbols present: {cliches}?
 4. Does the main subject still read as a 400x225 thumbnail?
 5. Any AI artifacts — waxy skin, malformed hands, melted or fused objects, garbled lettering?
-6. Together with its headline, would a viewer correctly guess what the article argues?
+6. Reading the headline together with the image, would a viewer get the GIST of the claim
+   above? Not every detail or benefit — just the gist.
 7. Does a face show a clear, specific emotion readable at 400x225?
-8. Does a gold accent or the charcoal / off-white brand palette read in the image?
+8. Does the visible emotion match "{emotional_beat}"?
+9. Does a gold accent or the charcoal / off-white brand palette read in the image?
+10. Is the headline set in a sans-serif typeface? (true when there is no headline)
+11. Could this exact image be reused unchanged on an unrelated business article?
 
 Score each criterion 1-5, 5 best: specificity (image AND headline together convey THIS piece's
 argument, with at least one of its things visible — not a generic scene), no_cliche (5 = no stock
@@ -547,6 +553,7 @@ brand_fit (the brand palette reads).
 Respond with ONLY a JSON object:
 {{"entities_depicted": {{"<thing>": true}}, "text_seen": "<exact transcription, or empty>",
  "cliches_present": ["..."], "thesis_inferable": true, "face_emotion": true,
+ "emotion_matches": true, "headline_sans_serif": true, "reusable_elsewhere": false,
  "rubric": {{"specificity": 1, "no_cliche": 1, "thumbnail_read": 1, "text_accuracy": null,
             "craft": 1, "scroll_stop": 1, "brand_fit": 1}},
  "issues": ["<short actionable phrase>"]}}"""
@@ -654,6 +661,16 @@ def _apply_overlays(rubric: dict, *, blind: str, answer: dict, entities: list,
         rubric["specificity"] = min(rubric.get("specificity") or 3, 3)
     if face_expected and answer.get("face_emotion") is False:
         rubric["scroll_stop"] = min(rubric.get("scroll_stop") or 3, 3)
+    # Round 4 (#2241): ed16's broad smile only loosely matched "relief"; a mismatch is a fail.
+    if answer.get("emotion_matches") is False:
+        rubric["scroll_stop"] = min(rubric.get("scroll_stop") or 3, 3)
+    # ed16's hook rendered in a serif face — off brand.
+    if hook_text and answer.get("headline_sans_serif") is False:
+        rubric["brand_fit"] = min(rubric.get("brand_fit") or 3, 3)
+    # ed18's generic flip-chart presentation scored specificity 5: an image that would fit any
+    # business article is not specific to this one, whatever else the judge says.
+    if answer.get("reusable_elsewhere") is True:
+        rubric["specificity"] = min(rubric.get("specificity") or 3, 3)
     return rubric
 
 
@@ -682,6 +699,7 @@ def _staged_inspect(image_path: str, concept: Any, hook_text: Optional[str],
                 {"type": "text", "text": _TARGETED_JUDGE_PROMPT.format(
                     surface=surface or "post", blind=blind or "(no description)",
                     thesis=concept.thesis, headline=headline,
+                    emotional_beat=getattr(concept, "emotional_beat", "") or "the piece's mood",
                     entities="; ".join(entities) or "(none named)",
                     hook_question=hook_question, cliches=", ".join(CLICHE_OBJECTS))},
                 image_part]}],
@@ -792,6 +810,10 @@ def rubric_repair_directive(verdict: QualityVerdict, backend: str, concept: Any,
                     f'make the only text exactly "{hook_text}", spelled correctly')
     else:
         text_fix = "every garment and surface plain and unmarked, screens blank, walls clean"
+    if backend != "flux":
+        # Round 4: name the fix for stray marks outright — papers and screens are where they live.
+        text_fix = ("remove every legible mark from papers and screens; the only text is the "
+                    "hook" + (f' "{hook_text}", spelled exactly' if hook_text else " (there is none)"))
     cliches = ", ".join(i for i in verdict.issues if "/5" not in i)[:120] or "generic symbols"
     table = _RUBRIC_REPAIRS_FLUX if backend == "flux" else _RUBRIC_REPAIRS_GPT
     emotion = getattr(concept, "emotional_beat", "") or "the piece's emotion"
@@ -806,18 +828,25 @@ def rubric_repair_directive(verdict: QualityVerdict, backend: str, concept: Any,
             + ". Fix it: " + "; ".join(parts) + ".")
 
 
-def _gate_candidates(concept: Any) -> int:
+# Covers are weekly, so two candidates per attempt is affordable there (round 4); every other
+# surface defaults to one.
+_DEFAULT_CANDIDATES = {"newsletter": 2}
+
+
+def _gate_candidates(concept: Any, surface: Optional[str] = None) -> int:
     """How many renders per attempt.
 
-    ``IMAGE_GATE_CANDIDATES`` (read at call time), at most 2, and only for the staged judge — the
-    legacy gate has no rubric to rank candidates by.
+    ``IMAGE_GATE_CANDIDATES`` (read at call time) when set; otherwise 2 for ``newsletter`` and 1
+    everywhere else. At most 2, and only for the staged judge — the legacy gate has no rubric to
+    rank candidates by. The better rubric total wins.
     """
     if concept is None:
         return 1
+    default = _DEFAULT_CANDIDATES.get(surface or "", 1)
     try:
-        return max(1, min(2, int(os.getenv("IMAGE_GATE_CANDIDATES", "1"))))
+        return max(1, min(2, int(os.getenv("IMAGE_GATE_CANDIDATES", str(default)))))
     except ValueError:
-        return 1
+        return default
 
 
 def _verdict_rank(verdict: QualityVerdict) -> tuple:
@@ -839,7 +868,7 @@ def _gate_loop(render_once, *, prompt: str, surface: str, focal_concept: Optiona
 
     enforced = surface in IMAGE_QUALITY_GATE_SURFACES
     attempts = max(1, IMAGE_GATE_MAX_ATTEMPTS) if enforced else 1
-    candidates = _gate_candidates(concept)
+    candidates = _gate_candidates(concept, surface)
     current_prompt = prompt
     path: Optional[str] = None
     last_verdict: Optional[QualityVerdict] = None

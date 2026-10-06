@@ -43,8 +43,20 @@ _MAX_ANCHORS = 5
 # there.
 WEAK_ENTITY_FLOOR = 2
 _HOOK_MIN_WORDS, _HOOK_MAX_WORDS, _HOOK_MAX_CHARS = 2, 5, 32
-# lem-medium is a reasoning model: thinking tokens bill against this budget before any JSON.
-_CONCEPT_MAX_TOKENS = 2500
+# lem-medium is a reasoning model: thinking tokens bill against this budget before any JSON. 2500
+# still ran out on real editions (gauntlet round 3: finish_reason=length, empty content), so every
+# JSON call in the engine now gets a budget a reasoning model finishes inside, asks for LOW
+# reasoning effort (the proxy drops the param for a model that has none — `drop_params: true`),
+# and retries ONCE on a length cut before giving up.
+_CONCEPT_MAX_TOKENS = 6000
+REASONING_EFFORT = "low"
+# The thesis is ONE gist-level claim (round 3: a thesis listing three benefits made every judge
+# say "it does not convey the compliance and lead-quality benefits").
+THESIS_MAX_WORDS = 20
+# A hook sharing this much of its vocabulary with the title is the title again.
+_HOOK_TITLE_OVERLAP = 0.6
+# Title Case is a headline style the brand does not use; three capitalised words is Title Case.
+_TITLE_CASE_WORDS = 3
 # At most ONE editorial_graphic in any GRAPHIC_WINDOW consecutive covers (gauntlet round 1: every
 # edition chose a graphic, so the series had no variety at all).
 GRAPHIC_WINDOW = 3
@@ -71,7 +83,7 @@ and decide what its single image must show so a stranger scrolling past could gu
 piece argues.
 
 Respond with ONLY a JSON object:
-{{"thesis": "<the piece's actual argument, one sentence>",
+{{"thesis": "<the piece's ONE central claim, at most 20 words — never a list of benefits>",
  "audience": "<who it is written for, a few words>",
  "specific_entities": ["<3-6 facts the text names: companies, products, reports, numbers, roles>"],
  "visual_anchors": ["<3-5 DEPICTABLE things from the piece: roles, places, physical artifacts, \
@@ -93,8 +105,10 @@ draw "GPT-5.2" or "a 2025 report", it writes the words as garbled text. Write th
 
 Rules for hook_phrase and hook_alternatives: a curiosity gap a reader would want closed, or a \
 concrete contrast drawn from the thesis. Never an exclamation, never an order to the reader \
-("Stop…", "Start…", "Don't…"), never a restatement of the title, never a full sentence. The hook \
-carries the THESIS; the image carries emotion and specificity.
+("Stop…", "Start…", "Don't…"), never a restatement of the title, never a full sentence. Sentence \
+case, never Title Case. Numbers and facts from the article BELONG in the hook ("53.7% miss the \
+mark") — it is the one place a fact may be written. The hook carries the THESIS; the image \
+carries emotion and specificity.
 
 Rules for visual_ideas: exactly 3 one-sentence ideas, each combining the hook with a concrete \
 scene or juxtaposition built from the visual anchors and the emotional beat — for an article \
@@ -130,7 +144,7 @@ _PEOPLE_WORDS = re.compile(
     r"\b(?:face|faces|her|his|their|she|he|person|people|man|woman|men|women|team|colleague|"
     r"founder|owner|lead|manager|editor|analyst|marketer|consultant|client|buyer|officer|"
     r"executive|expression|smile|frown|wince|laugh|eyebrow)s?\b", re.IGNORECASE)
-_IDEA_PICK_MAX_TOKENS = 1500
+_IDEA_PICK_MAX_TOKENS = 6000
 _IDEA_PICK_PROMPT = """You are picking ONE image idea for a LinkedIn {surface}.
 
 The piece argues: {thesis}
@@ -277,11 +291,43 @@ def _valid_hook(hook: str, title: Optional[str]) -> str:
         return ""
     if "!" in hook or words[0].lower().strip(",.:;") in _IMPERATIVE_OPENERS:
         return ""  # an order or a shout is an ad, not a curiosity gap
+    if is_title_case(hook):
+        return ""  # the brand sets headlines in sentence case
     hook_tokens = set(_content_tokens(hook))
     title_tokens = set(_content_tokens(title or ""))
-    if hook_tokens and title_tokens and hook_tokens <= title_tokens:
-        return ""  # a restatement of the title closes no gap
+    if hook_tokens and title_tokens and (
+            len(hook_tokens & title_tokens) / len(hook_tokens) >= _HOOK_TITLE_OVERLAP):
+        return ""  # a near-restatement of the title closes no gap
     return hook
+
+
+def is_title_case(text: str) -> bool:
+    """True when ``text`` capitalises ``_TITLE_CASE_WORDS`` or more words (acronyms excepted).
+
+    Args:
+        text: A hook.
+
+    Returns:
+        Whether it reads as Title Case — "When AI Misses the Mark" does, "53.7% miss the mark"
+        and "Web search isn't enough" do not.
+    """
+    capitalised = [w for w in (text or "").split()
+                   if w[:1].isupper() and not (len(w) >= 2 and w.strip(".,:;?'’").isupper())]
+    return len(capitalised) >= _TITLE_CASE_WORDS
+
+
+def gist_thesis(thesis: str) -> str:
+    """ONE claim of at most ``THESIS_MAX_WORDS`` words: the first clause, never a benefit list.
+
+    Args:
+        thesis: Stage 1's thesis as written.
+
+    Returns:
+        The text up to the first ``;``, cut to ``THESIS_MAX_WORDS`` words.
+    """
+    first = re.split(r";|—| - ", thesis or "", maxsplit=1)[0].strip().rstrip(",")
+    words = first.split()
+    return " ".join(words[:THESIS_MAX_WORDS]).rstrip(",;:") if words else ""
 
 
 def _common_casing(entity: str, source: str) -> str:
@@ -369,7 +415,7 @@ def idea_rejection(idea: str, facts: Sequence[str]) -> str:
     Returns:
         A short reason, or ``''``.
     """
-    from cqc_lem.utilities.ai.image_brief import cliche_hit
+    from cqc_lem.utilities.ai.image_brief import cliche_hit, legible_document, words_on_surface
 
     hit = cliche_hit(idea)
     if hit:
@@ -377,6 +423,9 @@ def idea_rejection(idea: str, facts: Sequence[str]) -> str:
     names = name_tokens(idea)
     if names:
         return f"names or numbers {names}"
+    words = words_on_surface(idea) or legible_document(idea)
+    if words:
+        return f"legible words on a surface ({words!r})"
     lowered = {t.lower() for t in re.findall(r"[A-Za-z0-9]+", idea)}
     for fact in facts:
         if is_fact_only(fact):
@@ -441,7 +490,7 @@ def parse_concept(payload: Optional[dict[str, Any]], source: str,
     """
     if not isinstance(payload, dict):
         return None
-    thesis = _clean(payload.get("thesis"))
+    thesis = gist_thesis(_clean(payload.get("thesis")))
     if not thesis:
         return None
     entities = _ground_entities(payload.get("specific_entities"), source)
@@ -526,6 +575,7 @@ def pick_visual_idea(concept: ImageConcept, surface: str = "post_image") -> Imag
                 response_format={"type": "json_object"},
                 temperature=0,
                 max_tokens=_IDEA_PICK_MAX_TOKENS,
+                reasoning_effort=REASONING_EFFORT,
             )
             verdict = _loads_json_object(response.choices[0].message.content or "") or {}
             ranking = [int(n) for n in (verdict.get("ranking") or [])
@@ -578,18 +628,28 @@ def analyze_content_for_image(text: str, *, title: Optional[str] = None,
         f"Recent images by this author used, most recent first: {', '.join(recent)}. Prefer a "
         f"different treatment than {recent[0]} when the piece allows.\n" if recent else "")
     try:
-        response = client.chat.completions.create(
-            model="lem-medium",
-            messages=[{"role": "system", "content": _SYSTEM_PROMPT},
-                      {"role": "user", "content": (
-                          f"Surface: {surface}\n{guidance}"
-                          f"<title>{title or ''}</title>\n<content>{source}</content>")}],
-            response_format={"type": "json_object"},
-            temperature=0.3,
-            max_tokens=_CONCEPT_MAX_TOKENS,
-        )
-        raw = response.choices[0].message.content or ""
-        payload = _loads_json_object(raw)
+        payload = None
+        for _attempt in (1, 2):
+            response = client.chat.completions.create(
+                model="lem-medium",
+                messages=[{"role": "system", "content": _SYSTEM_PROMPT},
+                          {"role": "user", "content": (
+                              f"Surface: {surface}\n{guidance}"
+                              f"<title>{title or ''}</title>\n<content>{source}</content>")}],
+                response_format={"type": "json_object"},
+                temperature=0.3,
+                max_tokens=_CONCEPT_MAX_TOKENS,
+                reasoning_effort=REASONING_EFFORT,
+            )
+            choice = response.choices[0]
+            raw = choice.message.content or ""
+            # ONE more try when the budget, not the model, ended the reply.
+            if not raw.strip() and getattr(choice, "finish_reason", None) == "length":
+                log_debug("Image concept cut off at the token budget — retrying once",
+                          user_id=user_id, surface=surface, action_type="image_concept")
+                continue
+            payload = _loads_json_object(raw)
+            break
     except Exception as e:
         # Expected degradation, not a defect: the brief author has a path without a concept.
         log_debug("Image concept analysis unavailable", error=str(e), user_id=user_id,
