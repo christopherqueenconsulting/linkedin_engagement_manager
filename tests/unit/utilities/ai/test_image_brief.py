@@ -417,6 +417,25 @@ class TestStage2Contract:
         assert stage1.call_args[1]["surface"] == "post_image"
         assert brief.concept == _concept()
 
+    def test_a_caller_whose_stage_one_came_back_none_is_never_charged_twice(self):
+        """Cost guard (issue #2241): None means "ran, nothing usable" — only NOT_ANALYZED runs it."""
+        with patch("cqc_lem.utilities.ai.image_brief.analyze_content_for_image") as stage1, \
+             patch(_LLM, return_value=_resp(_GOOD)):
+            brief = build_image_brief("the piece", surface="post_image", concept=None)
+        stage1.assert_not_called()
+        assert brief.concept is None
+
+    def test_a_caller_concept_is_used_as_is(self):
+        with patch("cqc_lem.utilities.ai.image_brief.analyze_content_for_image") as stage1, \
+             patch(_LLM, return_value=_resp(_GROUNDED)):
+            brief = build_image_brief("the piece", surface="post_image", concept=_concept())
+        stage1.assert_not_called()
+        assert brief.concept == _concept()
+
+    def test_the_sentinel_names_itself(self):
+        from cqc_lem.utilities.ai.image_brief import NOT_ANALYZED
+        assert repr(NOT_ANALYZED) == "NOT_ANALYZED"
+
     def test_a_raising_stage_one_still_briefs(self):
         with patch("cqc_lem.utilities.ai.image_brief.analyze_content_for_image",
                    side_effect=RuntimeError("boom")), \

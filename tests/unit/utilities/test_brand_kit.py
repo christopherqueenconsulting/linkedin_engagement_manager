@@ -120,3 +120,40 @@ class TestDescribeForPrompt:
 
     def test_no_colors_capitalizes_first_clause(self):
         assert describe_for_prompt(BrandKit(visual_mood="calm")) == "Mood: calm."
+
+
+class TestBrandClauseForUser:
+    """The ONE resolver every image brief call site uses. Never raises; `""` means neutral."""
+
+    def test_a_saved_kit_becomes_the_prompt_clause(self):
+        from unittest.mock import patch
+
+        from cqc_lem.utilities.brand_kit import brand_clause_for_user
+        with patch("cqc_lem.utilities.db.get_brand_kit", return_value=_OWNER_KIT) as read:
+            clause = brand_clause_for_user(1)
+        read.assert_called_once_with(1)
+        assert clause == describe_for_prompt(parse_brand_kit(_OWNER_KIT))
+        assert clause.startswith("Brand palette: light gold (#e9d437)")
+
+    def test_no_kit_is_the_empty_clause(self):
+        from unittest.mock import patch
+
+        from cqc_lem.utilities.brand_kit import brand_clause_for_user
+        with patch("cqc_lem.utilities.db.get_brand_kit", return_value=None):
+            assert brand_clause_for_user(1) == ""
+
+    def test_a_read_that_raises_is_the_empty_clause(self):
+        from unittest.mock import patch
+
+        from cqc_lem.utilities.brand_kit import brand_clause_for_user
+        with patch("cqc_lem.utilities.db.get_brand_kit", side_effect=TypeError("int(None)")):
+            assert brand_clause_for_user(1) == ""
+
+    @pytest.mark.parametrize("user_id", [None, 0])
+    def test_no_user_never_touches_the_db(self, user_id):
+        from unittest.mock import patch
+
+        from cqc_lem.utilities.brand_kit import brand_clause_for_user
+        with patch("cqc_lem.utilities.db.get_brand_kit") as read:
+            assert brand_clause_for_user(user_id) == ""
+        read.assert_not_called()

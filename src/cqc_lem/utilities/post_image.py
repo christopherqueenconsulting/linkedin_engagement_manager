@@ -42,6 +42,12 @@ from cqc_lem.utilities.media_provenance import write_brief_receipt
 POST_IMAGE_SUBDIR = "images/posts"
 POST_IMAGE_PREVIEW_SUBDIR = "images/post_previews"
 
+# 4:5 portrait by default (`post_image_ratio`); the others are what the renderers support.
+DEFAULT_POST_IMAGE_RATIO = "4:5"
+POST_IMAGE_RATIOS = ("4:5", "1:1", "16:9", "9:16")
+# The staged judge's WHY, recorded on the receipt beside the stored render (issue #2241).
+GATE_RECEIPT_KEYS = ("gate_rubric", "gate_failing", "gate_issues", "gate_blind_description")
+
 MAX_POST_IMAGE_BYTES = 8 * 1024 * 1024
 # Below this a LinkedIn image share renders as a blurry thumbnail rather than media.
 MIN_POST_IMAGE_WIDTH = 400
@@ -264,6 +270,19 @@ def claim_manual_generation(user_id: int) -> bool:
         return True
 
 
+def post_image_ratio() -> str:
+    """The ratio a post image renders at — ``POST_IMAGE_RATIO``, read at call time, default 4:5.
+
+    4:5 portrait takes more of the LinkedIn feed than a square does. An unsupported value falls
+    back to the default rather than reaching a renderer that would quietly square it.
+
+    Returns:
+        One of ``POST_IMAGE_RATIOS``.
+    """
+    ratio = (os.getenv("POST_IMAGE_RATIO") or DEFAULT_POST_IMAGE_RATIO).strip()
+    return ratio if ratio in POST_IMAGE_RATIOS else DEFAULT_POST_IMAGE_RATIO
+
+
 def generate_image_for_post(user_id: int, text: str, post_id: Optional[int] = None
                             ) -> "tuple[Optional[str], Optional[str]]":
     """Render the image a text post publishes with.
@@ -274,14 +293,21 @@ def generate_image_for_post(user_id: int, text: str, post_id: Optional[int] = No
     author's edit — down with it. The avatar rides the EXISTING ``post_image`` surface and is
     resolved BEFORE the brief is authored, so the declared subject clause leads the prompt (#744).
     A final ``rejected`` gate verdict is never stored (#2105); an ``unchecked`` one fails open.
+
+    The staged engine (issue #2241), as for newsletter covers: Stage 1 reads the post ONCE, the
+    brief is authored from that concept plus the user's brand clause, and the render is graded by
+    the blind judge against the same concept on both the base and avatar paths. The judge's rubric
+    rides into the brief receipt.
     """
     if not text or not text.strip():
         return None, "Write the post content first — the image is drawn from it"
 
     from cqc_lem.utilities.ai.image_brief import build_image_brief
+    from cqc_lem.utilities.ai.image_concept import analyze_content_for_image
     from cqc_lem.utilities.avatar.guardrails import AVATAR_SURFACE_POST_IMAGE, resolve_avatar_for
-    from cqc_lem.utilities.env_constants import DEFAULT_IMAGE_RATIO
+    from cqc_lem.utilities.brand_kit import brand_clause_for_user
 
+    ratio = post_image_ratio()
     profile = None
     try:
         from cqc_lem.utilities.linkedin.helper import load_profile_for_user
@@ -298,8 +324,10 @@ def generate_image_for_post(user_id: int, text: str, post_id: Optional[int] = No
         avatar = None
 
     try:
-        brief = build_image_brief(text, surface="post_image", ratio=DEFAULT_IMAGE_RATIO,
-                                  profile=profile, avatar=avatar)
+        concept = analyze_content_for_image(text, surface="post_image", user_id=user_id)
+        brief = build_image_brief(text, surface="post_image", ratio=ratio,
+                                  profile=profile, avatar=avatar, concept=concept,
+                                  brand_kit=brand_clause_for_user(user_id))
     except Exception as e:
         log_warning("Post image prompt failed", exc=e, user_id=user_id, post_id=post_id,
                     action_type="post_image")
@@ -311,15 +339,16 @@ def generate_image_for_post(user_id: int, text: str, post_id: Optional[int] = No
             from cqc_lem.utilities.ai.image_gen import render_avatar_image_gated
             rendered = render_avatar_image_gated(
                 brief.prompt, avatar=avatar, user_id=user_id, surface="post_image",
-                ratio=DEFAULT_IMAGE_RATIO, focal_concept=brief.focal_concept, post_id=post_id,
-                render_info=render_info)
+                ratio=ratio, focal_concept=brief.focal_concept, post_id=post_id,
+                render_info=render_info, concept=brief.concept, hook_text=brief.hook_text)
         else:
             from cqc_lem.utilities.ai.image_gen import render_image_gated
             rendered = render_image_gated(brief.prompt, surface="post_image",
-                                          ratio=DEFAULT_IMAGE_RATIO,
+                                          ratio=ratio,
                                           focal_concept=brief.focal_concept,
                                           user_id=user_id, post_id=post_id,
-                                          render_info=render_info)
+                                          render_info=render_info, concept=brief.concept,
+                                          hook_text=brief.hook_text)
     except Exception as e:
         log_warning("Post image generation failed", exc=e, user_id=user_id, post_id=post_id,
                     action_type="post_image")
@@ -342,7 +371,8 @@ def generate_image_for_post(user_id: int, text: str, post_id: Optional[int] = No
         return None, "Could not store the generated image"
     # Recorded against the STORED url, not the temp render: the receipt is keyed by the value that
     # lands on `posts.image_url`, which is the only handle a later audit has (issue #1377).
+    gate_detail = {key: render_info[key] for key in GATE_RECEIPT_KEYS if key in render_info}
     write_brief_receipt(stored, brief, post_id=post_id, user_id=user_id,
-                        gate_verdict=render_info.get("gate_verdict"))
+                        gate_verdict=render_info.get("gate_verdict"), extra=gate_detail or None)
     log_info("Generated post image", user_id=user_id, post_id=post_id, action_type="post_image")
     return stored, None

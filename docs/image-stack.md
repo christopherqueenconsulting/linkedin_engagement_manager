@@ -104,6 +104,23 @@ when a single number or contrast IS the thesis. Then `enforce_graphic_cap` makes
 ONE graphic in any `GRAPHIC_WINDOW` (3) consecutive covers — a graphic within two of the last one
 becomes a `people_scene`, noted in `treatment_rationale`.
 
+**Every surface with a user runs all four stages**, Stage 1 ONCE per artifact, and briefs with the
+user's brand clause (`brand_kit.brand_clause_for_user`):
+
+| Surface | Stage 1 reads | Brand | Judge sees the concept | Ratio |
+|---|---|---|---|---|
+| Newsletter cover (`newsletter_cover.generate_cover_for_edition`) | title + subtitle + full body | yes | base + avatar | 16:9 |
+| Post image (`post_image.generate_image_for_post`) | the post text | yes | base + avatar; rubric on the receipt | `POST_IMAGE_RATIO`, default **4:5** |
+| Carousel slide (`carousel_creator`, avatar slides) | the WHOLE carousel, once per deck, lazily — only if a slide wants an image | yes | avatar slides | 1:1 |
+| Carousel stock query (`derive_image_query`) | the same per-deck concept: its visual anchors (never its facts — a name or number is not a stock photo) ARE the Pexels query, so no per-slide `lem-simple` call | — | — | — |
+| Video source frame (`run_content_plan._generate_video_src`) | the post text | yes | every frame, incl. the standard-tier no-avatar frame (was ungated) | tier's ratio |
+| Video motion prompt (`get_runway_ml_video_prompt_from_ai`) | the same concept: thesis + emotional beat reach the motion author | — | — | — |
+| Admin variants (`generate_variants`) | the source text, once per batch | yes | per variant | per combo |
+| Tutorial thumbnail (`video_tutorials`) | the title (no user, so no brand) | — | yes | 16:9 |
+
+The `video` surface is not in `IMAGE_QUALITY_GATE_SURFACES` by default, so a frame gets ONE
+advisory look: the verdict is recorded on the MP4's receipt, the frame is kept.
+
 **Treatments** (`_TREATMENT_TEMPLATES`; Stage 1 picks, an avatar always forces `people_scene`
 because a person IS the subject and the LoRA cannot set type):
 
@@ -170,11 +187,14 @@ and composition", and never change the treatment.
 fields.
 
 **`brand_kit`** is a pre-rendered brand clause (palette, type) folded into the AUTHOR's context
-only — never into the fallback. The brand-kit table that produces it is a separate change.
+only — never into the fallback. `brand_kit.brand_clause_for_user(user_id)` is the ONE resolver every
+call site uses: it never raises, and no user, no kit or an unreadable read are all `""`.
 
-**Cost.** Stage 1 (`lem-medium`) and Stage 3 (`lem-simple`) add two text calls to every brief —
-including each carousel slide and post image, which call `build_image_brief` without a concept. Both
-fail soft and are text-only, an order of magnitude below the render they steer.
+**Cost.** Stage 1 (`lem-medium`) and Stage 3 (`lem-simple`) add two text calls per brief; both fail
+soft and are text-only, an order of magnitude below the render they steer. **Stage 1 never runs
+twice per artifact:** a caller that ran it passes the result as `concept=` — None included, which
+means "ran, nothing usable" — and `build_image_brief` analyses only when left at its
+`NOT_ANALYZED` default.
 
 ## `image_brief.py` — the ONE prompt author
 
@@ -229,7 +249,10 @@ the five live editions of #1992 that put four of five covers on the deterministi
 - **`gpt-image`** / **`flux`**: force one backend, no cross-fallback.
 
 Ratios map to the three sizes gpt-image accepts (`1:1`, `16:9`, `9:16`); anything else falls back to
-square. Replicate renders are bounded (`REPLICATE_TIMEOUT_SECONDS`, 300s, 2 attempts) so a hung
+square. **4:5** (post images) is the exception: gpt-image renders it at 1024x1536 and
+`conform_to_ratio` centre-crops the file to exactly 1024x1280 — deterministic, before the judge sees
+it, on the gpt-image, FLUX and avatar paths alike. FLUX/Replicate is asked for `aspect_ratio="4:5"`
+natively, and a render already at the aspect is left alone. Replicate renders are bounded (`REPLICATE_TIMEOUT_SECONDS`, 300s, 2 attempts) so a hung
 prediction can't stall a Celery worker forever. The run uses `wait=False`, so the create request
 returns at once and GET polls do the waiting inside that bound — the SDK's held-open create (60.5s
 read, never retried) timed out a slow avatar LoRA start before the bound applied. Cost is attributed via `track_media_cost`, with the
@@ -463,6 +486,7 @@ SPA's **Content & Publishing → Brand kit** card, and read with `db.get_brand_k
 |---|---|
 | `IMAGE_BACKEND` | `auto` (default) / `gpt-image` / `flux` |
 | `POST_IMAGE_GENERATE_MAX_PER_HOUR` | Manual post-image generations per user per hour (20) |
+| `POST_IMAGE_RATIO` | Post-image ratio, read at call time: `4:5` (default), `1:1`, `16:9`, `9:16` |
 | `DEFAULT_IMAGE_MODEL` | Model handed to the `lem-image` group |
 | `IMAGE_QUALITY` | gpt-image quality tier |
 | `IMAGE_QUALITY_GATE_SURFACES` | Surfaces where the vision gate is enforced, not advisory |

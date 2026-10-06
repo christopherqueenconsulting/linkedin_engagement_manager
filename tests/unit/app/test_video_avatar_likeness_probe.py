@@ -53,7 +53,7 @@ class TestAvatarLikenessProbeInVideoGeneration:
              patch("cqc_lem.utilities.db.get_default_video_quality", return_value="standard"), \
              patch(f"{_RCP}.get_flux_image_prompt_from_ai", return_value="image prompt"), \
              patch(f"{_RCP}.get_runway_ml_video_prompt_from_ai", return_value="motion"), \
-             patch("cqc_lem.utilities.ai.image_gen.render_image_from_prompt",
+             patch("cqc_lem.utilities.ai.image_gen.render_image_gated",
                    return_value="/tmp/base_frame.webp"), \
              patch(f"{_RCP}.create_runway_video", return_value="https://runway.video/base.mp4"), \
              patch(f"{_LIKENESS}.probe_avatar_likeness") as probe, \

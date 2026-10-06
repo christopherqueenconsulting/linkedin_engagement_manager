@@ -9,6 +9,18 @@ from cqc_lem.utilities.ai.image_brief import ImageBrief
 pytestmark = pytest.mark.unit
 
 
+@pytest.fixture(autouse=True)
+def _no_stage_one_or_brand_reads():
+    """Stub Stage 1 (an LLM call) and the brand kit (a DB read) to their neutral answers.
+
+    Both are wired into every image surface since issue #2241; these tests pin other behaviour.
+    Tests that care patch them again on top.
+    """
+    with patch("cqc_lem.utilities.ai.image_concept.analyze_content_for_image", return_value=None), \
+         patch("cqc_lem.utilities.brand_kit.brand_clause_for_user", return_value=""):
+        yield
+
+
 def _brief(prompt="a rendered prompt", focal="the focal idea"):
     return ImageBrief(prompt=prompt, ratio="1:1", surface="post_image",
                       style_preset="post_image", focal_concept=focal)

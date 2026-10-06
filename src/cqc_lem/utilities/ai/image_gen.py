@@ -37,12 +37,20 @@ from cqc_lem.utilities.env_constants import (
 )
 from cqc_lem.utilities.logger import log_debug, log_info, log_warning
 
-# gpt-image accepts exactly these; anything else falls back to square.
+# gpt-image accepts exactly these; anything else falls back to square. 4:5 is NOT a gpt-image size
+# (gpt-image-2 may take other multiples of 16, but nothing here relies on that): it renders at the
+# portrait size and `conform_to_ratio` centre-crops the result before the judge ever sees it.
 _SIZE_BY_RATIO = {
     "1:1": "1024x1024",
     "16:9": "1536x1024",
     "9:16": "1024x1536",
+    "4:5": "1024x1536",
 }
+
+# Ratios a render is cropped to after it lands, as (width, height) parts. 1024x1536 -> 1024x1280.
+_CROP_RATIOS = {"4:5": (4, 5)}
+# A render already within this of the target aspect is left alone (FLUX takes "4:5" natively).
+_CROP_TOLERANCE = 0.01
 
 # Replicate renders are bounded so a hung prediction can't stall a Celery worker forever.
 _REPLICATE_TIMEOUT_SECONDS = int(os.getenv("REPLICATE_TIMEOUT_SECONDS", "300"))
@@ -211,10 +219,53 @@ class QualityVerdict:
 def size_for_ratio(ratio: str) -> str:
     """The gpt-image `size` for an aspect ratio; anything unrecognised falls back to square.
 
-    Only the three ratios the surfaces render at map to a size the API accepts, so an unknown ratio
+    Only the ratios the surfaces render at map to a size the API accepts, so an unknown ratio
     degrades to 1024x1024 rather than being passed through as a size the request would fail on.
+    4:5 maps to the portrait size; ``conform_to_ratio`` crops it afterwards.
     """
     return _SIZE_BY_RATIO.get(ratio, "1024x1024")
+
+
+def conform_to_ratio(path: Optional[str], ratio: str) -> Optional[str]:
+    """Centre-crop a render in place to ``ratio`` when that ratio is one no backend renders natively.
+
+    Deterministic: the largest centred box of the target aspect, so a 1024x1536 gpt-image render
+    becomes exactly 1024x1280 for 4:5. Only ratios in ``_CROP_RATIOS`` are touched, and a render
+    already at the aspect (FLUX/Replicate takes ``aspect_ratio="4:5"``) is left as it is. Runs
+    before the vision judge, so the judge grades what will ship.
+
+    Never raises: an unreadable file is returned unchanged and the gate decides what it is worth.
+
+    Args:
+        path: The rendered file, or None when nothing rendered.
+        ratio: The ratio the caller asked for, e.g. ``"4:5"``.
+
+    Returns:
+        ``path`` (the same file, possibly cropped), or None when ``path`` was None.
+    """
+    parts = _CROP_RATIOS.get(ratio)
+    if not path or not parts:
+        return path
+    try:
+        from PIL import Image
+        with Image.open(path) as img:
+            width, height = img.size
+            target = parts[0] / parts[1]
+            if abs(width / height - target) <= _CROP_TOLERANCE:
+                return path
+            if width / height > target:
+                new_w, new_h = int(round(height * target)), height
+            else:
+                new_w, new_h = width, int(round(width / target))
+            left, top = (width - new_w) // 2, (height - new_h) // 2
+            image_format = img.format
+            cropped = img.crop((left, top, left + new_w, top + new_h))
+            cropped.load()
+        cropped.save(path, format=image_format)
+        log_debug("Render cropped to ratio", ratio=ratio, size=f"{new_w}x{new_h}")
+    except Exception as e:
+        log_warning("Could not crop render to ratio — keeping it uncropped", exc=e, ratio=ratio)
+    return path
 
 
 def _save_image_bytes(data: bytes, user_id: Optional[int], extension: str = ".png") -> str:
@@ -339,18 +390,20 @@ def _render_with_backend(prompt: str, *, ratio: str = "1:1",
 
     if backend in ("auto", "gpt-image"):
         try:
-            return _render_via_gpt_image(with_no_marks(prompt, "gpt-image", scene=scene,
+            path = _render_via_gpt_image(with_no_marks(prompt, "gpt-image", scene=scene,
                                                        hook_text=hook_text),
                                          ratio=ratio, quality=quality, user_id=user_id,
-                                         post_id=post_id, surface=surface), "gpt-image"
+                                         post_id=post_id, surface=surface)
+            return conform_to_ratio(path, ratio), "gpt-image"
         except Exception as e:
             if backend == "gpt-image":
                 raise
             log_warning("gpt-image render failed — falling back to FLUX", exc=e,
                         user_id=user_id, post_id=post_id, api_provider="openai", surface=surface)
-    return _render_via_flux(with_no_marks(prompt, "flux", scene=scene, hook_text=hook_text),
+    path = _render_via_flux(with_no_marks(prompt, "flux", scene=scene, hook_text=hook_text),
                             ratio=ratio,
-                            image_model=image_model, user_id=user_id, surface=surface), "flux"
+                            image_model=image_model, user_id=user_id, surface=surface)
+    return conform_to_ratio(path, ratio), "flux"
 
 
 def render_image_from_prompt(prompt: str, *, ratio: str = "1:1",
@@ -882,6 +935,7 @@ def render_avatar_image_gated(prompt: str, *, avatar: dict, user_id: Optional[in
         path, used_avatar = generate_image_with_avatar(
             apply_subject_clause(marked, avatar), avatar["model_ref"],
             ratio=ratio, fallback_prompt=marked, surface=surface)
+        path = conform_to_ratio(path, ratio)
         if used_avatar and path:
             # Provenance for a synthetic likeness of a real person.
             _record_avatar_media(path, post_id, user_id)

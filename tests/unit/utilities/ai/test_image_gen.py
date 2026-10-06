@@ -21,7 +21,8 @@ pytestmark = pytest.mark.unit
 class TestSizeForRatio:
     @pytest.mark.parametrize("ratio,size", [
         ("1:1", "1024x1024"), ("16:9", "1536x1024"), ("9:16", "1024x1536"),
-        ("4:5", "1024x1024"),  # unknown ratios fall back to square
+        ("4:5", "1024x1536"),  # rendered portrait, then centre-cropped by conform_to_ratio
+        ("3:2", "1024x1024"),  # unknown ratios fall back to square
     ])
     def test_mapping(self, ratio, size):
         assert size_for_ratio(ratio) == size
@@ -378,3 +379,104 @@ class TestNoBrandMarksConstraint:
         assert image_gen.with_no_marks(once_gpt, "flux") == once_gpt
         once_flux = image_gen.with_no_marks("scene", "flux")
         assert image_gen.with_no_marks(once_flux, "gpt-image") == once_flux
+
+
+def _png(path, size, fmt="PNG"):
+    from PIL import Image
+    Image.new("RGB", size, (40, 90, 160)).save(path, format=fmt)
+    return str(path)
+
+
+class TestConformToRatio:
+    """4:5 portrait (issue #2241): render 1024x1536, centre-crop to 1024x1280 before the judge.
+
+    gpt-image has no 4:5 size; the crop is deterministic.
+    """
+
+    def test_a_portrait_gpt_image_render_crops_to_exactly_1024x1280(self, tmp_path):
+        from PIL import Image
+        path = _png(tmp_path / "r.png", (1024, 1536))
+        assert image_gen.conform_to_ratio(path, "4:5") == path
+        with Image.open(path) as img:
+            assert img.size == (1024, 1280) and img.format == "PNG"
+
+    def test_the_crop_is_centred(self, tmp_path):
+        from PIL import Image
+        img = Image.new("RGB", (1024, 1536), (0, 0, 0))
+        img.paste((255, 0, 0), (0, 0, 1024, 128))       # top band: cropped away
+        img.paste((0, 255, 0), (0, 128, 1024, 1408))    # the kept middle
+        img.paste((0, 0, 255), (0, 1408, 1024, 1536))   # bottom band: cropped away
+        path = str(tmp_path / "c.png")
+        img.save(path)
+        image_gen.conform_to_ratio(path, "4:5")
+        with Image.open(path) as out:
+            assert out.getpixel((10, 0)) == (0, 255, 0)
+            assert out.getpixel((10, 1279)) == (0, 255, 0)
+
+    def test_a_too_wide_render_crops_its_width(self, tmp_path):
+        from PIL import Image
+        path = _png(tmp_path / "w.png", (1024, 1024))
+        image_gen.conform_to_ratio(path, "4:5")
+        with Image.open(path) as img:
+            assert img.size == (819, 1024)
+
+    def test_a_native_4_5_render_is_left_alone(self, tmp_path):
+        path = _png(tmp_path / "f.webp", (896, 1120), fmt="WEBP")
+        before = (tmp_path / "f.webp").read_bytes()
+        image_gen.conform_to_ratio(path, "4:5")
+        assert (tmp_path / "f.webp").read_bytes() == before
+
+    @pytest.mark.parametrize("ratio", ["1:1", "16:9", "9:16"])
+    def test_native_ratios_are_never_touched(self, tmp_path, ratio):
+        path = _png(tmp_path / "n.png", (1024, 1536))
+        before = (tmp_path / "n.png").read_bytes()
+        image_gen.conform_to_ratio(path, ratio)
+        assert (tmp_path / "n.png").read_bytes() == before
+
+    def test_nothing_rendered_is_passed_through(self):
+        assert image_gen.conform_to_ratio(None, "4:5") is None
+
+    def test_an_unreadable_file_is_kept_never_raised(self, tmp_path):
+        path = tmp_path / "bad.png"
+        path.write_bytes(b"not an image")
+        assert image_gen.conform_to_ratio(str(path), "4:5") == str(path)
+        assert path.read_bytes() == b"not an image"
+
+    def test_the_gpt_image_path_crops_before_returning(self, tmp_path):
+        from PIL import Image
+        path = _png(tmp_path / "g.png", (1024, 1536))
+        with patch.object(image_gen, "IMAGE_BACKEND", "gpt-image"), \
+             patch.object(image_gen, "_render_via_gpt_image", return_value=path) as gpt:
+            out, backend = image_gen._render_with_backend("p", ratio="4:5")
+        assert backend == "gpt-image" and gpt.call_args[1]["ratio"] == "4:5"
+        with Image.open(out) as img:
+            assert img.size == (1024, 1280)
+
+    def test_the_flux_path_asks_for_4_5_and_conforms_whatever_comes_back(self, tmp_path):
+        from PIL import Image
+        path = _png(tmp_path / "f.png", (1024, 1024))
+        with patch.object(image_gen, "IMAGE_BACKEND", "flux"), \
+             patch.object(image_gen, "_render_via_flux", return_value=path) as flux:
+            out, backend = image_gen._render_with_backend("p", ratio="4:5")
+        assert backend == "flux" and flux.call_args[1]["ratio"] == "4:5"
+        with Image.open(out) as img:
+            assert img.size == (819, 1024)
+
+    def test_the_avatar_path_crops_before_the_judge_looks(self, tmp_path):
+        from PIL import Image
+        path = _png(tmp_path / "a.png", (1024, 1536))
+        seen = {}
+
+        def _judge(image_path, *_a, **_k):
+            with Image.open(image_path) as img:
+                seen["size"] = img.size
+            return QualityVerdict(acceptable=True)
+
+        with patch("cqc_lem.utilities.avatar.replicate_avatar.generate_image_with_avatar",
+                   return_value=(path, False)) as lora, \
+             patch.object(image_gen, "inspect_render_quality", side_effect=_judge):
+            image_gen.render_avatar_image_gated(
+                "p", avatar={"model_ref": "o/l:v", "trigger_word": "TOK"}, user_id=3,
+                surface="post_image", ratio="4:5")
+        assert lora.call_args[1]["ratio"] == "4:5"
+        assert seen["size"] == (1024, 1280)

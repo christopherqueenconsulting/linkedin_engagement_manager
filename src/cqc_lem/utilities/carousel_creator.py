@@ -25,8 +25,11 @@ import os
 import random
 import tempfile
 import urllib.request
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import datetime
-from typing import Callable, Optional, Union
+from typing import Any, Callable, Optional, Union
 
 from lxml.etree import tostring
 from pptx import Presentation
@@ -416,24 +419,27 @@ def create_ppt(ppt_name, carousel_data: Union[
     design_path = os.path.join(current_dir, f"carousel_designs/Design-{design_number}.pptx")
     prs = Presentation(design_path)
 
-    if isinstance(carousel_data, EducationalContentCarousel):
-        # Handle EducationalContentCarousel
-        prs = create_ppt_educational_content_carousel(prs, carousel_data, post_id=post_id, user_id=user_id)
-        pass
-    elif isinstance(carousel_data, CaseStudyCarousel):
-        # Handle CaseStudyCarousel
-        prs = create_ppt_case_study_carousel(prs, carousel_data, post_id=post_id, user_id=user_id)
-        pass
-    elif isinstance(carousel_data, PersonalStoryCarousel):
-        prs = create_ppt_personal_story_carousel(prs, carousel_data, post_id=post_id, user_id=user_id)
-    elif isinstance(carousel_data, IndustryInsightsCarousel):
-        prs = create_ppt_industry_insights_carousel(prs, carousel_data, post_id=post_id, user_id=user_id)
-    elif isinstance(carousel_data, EventRecapCarousel):
-        prs = create_ppt_event_recap_carousel(prs, carousel_data, post_id=post_id, user_id=user_id)
-    elif isinstance(carousel_data, TestimonialCarousel):
-        prs = create_ppt_testimonial_carousel(prs, carousel_data)
-    elif isinstance(carousel_data, ProductDemoCarousel):
-        prs = create_ppt_product_demo_carousel(prs, carousel_data, post_id=post_id, user_id=user_id)
+    # One concept + brand clause for the whole deck, shared by every slide (issue #2241).
+    with carousel_image_scope(carousel_data, user_id):
+        if isinstance(carousel_data, EducationalContentCarousel):
+            prs = create_ppt_educational_content_carousel(prs, carousel_data, post_id=post_id,
+                                                          user_id=user_id)
+        elif isinstance(carousel_data, CaseStudyCarousel):
+            prs = create_ppt_case_study_carousel(prs, carousel_data, post_id=post_id, user_id=user_id)
+        elif isinstance(carousel_data, PersonalStoryCarousel):
+            prs = create_ppt_personal_story_carousel(prs, carousel_data, post_id=post_id,
+                                                     user_id=user_id)
+        elif isinstance(carousel_data, IndustryInsightsCarousel):
+            prs = create_ppt_industry_insights_carousel(prs, carousel_data, post_id=post_id,
+                                                        user_id=user_id)
+        elif isinstance(carousel_data, EventRecapCarousel):
+            prs = create_ppt_event_recap_carousel(prs, carousel_data, post_id=post_id,
+                                                  user_id=user_id)
+        elif isinstance(carousel_data, TestimonialCarousel):
+            prs = create_ppt_testimonial_carousel(prs, carousel_data)
+        elif isinstance(carousel_data, ProductDemoCarousel):
+            prs = create_ppt_product_demo_carousel(prs, carousel_data, post_id=post_id,
+                                                   user_id=user_id)
 
     file_path = os.path.join(generated_dir, f"{ppt_name}.pptx")
     prs.save(file_path)
@@ -502,15 +508,143 @@ def _heuristic_image_query(title: Optional[str], content: Optional[str],
     return " ".join(keywords[:3])
 
 
+class _CarouselImageScope:
+    """One carousel's shared image inputs, each resolved at most ONCE and only when first needed.
+
+    Stage 1 is a ``lem-medium`` call over the whole carousel, so it is paid once per carousel —
+    never per slide — and not at all when no slide ends up wanting an image (issue #2241). The
+    brand clause is a DB read, held the same way.
+    """
+
+    def __init__(self, text: str, user_id: Optional[int]) -> None:
+        self.text = text
+        self.user_id = user_id
+        self._concept: Any = None
+        self._concept_done = False
+        self._brand: Optional[str] = None
+
+    def concept(self) -> Any:
+        """The carousel's ``ImageConcept`` (None when Stage 1 had nothing usable). Never raises."""
+        if not self._concept_done:
+            self._concept_done = True
+            from cqc_lem.utilities.ai.image_concept import analyze_content_for_image
+            self._concept = analyze_content_for_image(self.text, surface="carousel",
+                                                      user_id=self.user_id)
+        return self._concept
+
+    def brand(self) -> str:
+        """The user's brand clause, ``""`` without one. Never raises."""
+        if self._brand is None:
+            from cqc_lem.utilities.brand_kit import brand_clause_for_user
+            self._brand = brand_clause_for_user(self.user_id)
+        return self._brand
+
+
+_CAROUSEL_SCOPE: ContextVar[Optional[_CarouselImageScope]] = ContextVar(
+    "carousel_image_scope", default=None)
+
+
+def _carousel_full_text(carousel_data: Any) -> str:
+    """Every text field of a carousel model, in order — what Stage 1 reads for the whole deck."""
+    parts: list[str] = []
+
+    def _walk(value: Any) -> None:
+        if isinstance(value, str):
+            if value.strip() and not value.startswith(("http://", "https://", "/")):
+                parts.append(value.strip())
+        elif isinstance(value, dict):
+            for key, item in value.items():
+                if key not in ("image_path", "image_url"):
+                    _walk(item)
+        elif isinstance(value, (list, tuple)):
+            for item in value:
+                _walk(item)
+
+    try:
+        _walk(carousel_data.model_dump() if hasattr(carousel_data, "model_dump") else carousel_data)
+    except Exception:  # a malformed model only costs the concept, never the deck
+        return ""
+    return "\n".join(parts)
+
+
+@contextmanager
+def carousel_image_scope_token(scope: _CarouselImageScope) -> Iterator[None]:
+    """Install an already-built scope for the duration of the block.
+
+    Args:
+        scope: The carousel's scope, built once and reused across every slide.
+
+    Yields:
+        Nothing.
+    """
+    token = _CAROUSEL_SCOPE.set(scope)
+    try:
+        yield
+    finally:
+        _CAROUSEL_SCOPE.reset(token)
+
+
+@contextmanager
+def carousel_image_scope(carousel_data: Any, user_id: Optional[int]) -> Iterator[None]:
+    """Make one carousel's concept and brand clause available to every ``select_slide_image`` call.
+
+    Args:
+        carousel_data: The carousel model; its whole text is what Stage 1 reads, once.
+        user_id: The author, for the brand kit.
+
+    Yields:
+        Nothing — slide selection inside the block reads the scope.
+    """
+    with carousel_image_scope_token(_CarouselImageScope(_carousel_full_text(carousel_data),
+                                                        user_id)):
+        yield
+
+
+def _concept_image_query(title: Optional[str], content: Optional[str], concept: Any) -> str:
+    """Stock-search keywords from the carousel concept's visual anchors, or ``""``.
+
+    Anchors, never facts: a company name or a percentage is not something a stock library can
+    show. Anchors this slide itself names lead, so slides of one carousel still search for
+    different pictures; stock symbols never reach the query (``image_brief.usable_anchors``).
+    """
+    from cqc_lem.utilities.ai.image_brief import usable_anchors
+    from cqc_lem.utilities.ai.image_concept import entity_mentioned
+
+    anchors = usable_anchors(concept)
+    if not anchors:
+        return ""
+    slide_text = " ".join(t for t in (title, content) if t)
+    ordered = ([a for a in anchors if entity_mentioned(a, slide_text)]
+               + [a for a in anchors if not entity_mentioned(a, slide_text)])
+    return " ".join(ordered[:2])[:80].strip()
+
+
 def derive_image_query(title: Optional[str], content: Optional[str],
-                       content_type: Optional[str]) -> str:
-    """Derive visual search keywords that capture the slide's MEANING (not its raw
-    title). Uses an ``lem-simple`` LLM call when enabled; falls back to a local
-    keyword heuristic on failure or when disabled.
+                       content_type: Optional[str], concept: Any = None) -> str:
+    """Derive visual search keywords that capture the slide's MEANING (not its raw title).
+
+    With the carousel's Stage 1 ``concept`` its visual anchors ARE the query — no extra call.
+    Otherwise an ``lem-simple`` LLM call when enabled, falling back to a local keyword heuristic
+    on failure or when disabled.
+
+    Args:
+        title: The slide title.
+        content: The slide body.
+        content_type: The carousel's content type, for the heuristic's last resort.
+        concept: The carousel's ``ImageConcept``, computed once per carousel, or None.
+
+    Returns:
+        Space-separated keywords, at most 80 characters.
     """
     from cqc_lem.utilities.env_constants import CAROUSEL_IMAGE_QUERY_LLM
     from cqc_lem.utilities.logger import log_debug, log_warning
 
+    if concept is not None:
+        query = _concept_image_query(title, content, concept)
+        if query:
+            log_debug("Derived carousel image query from the carousel concept",
+                      action_type="carousel_image")
+            return query
     if not CAROUSEL_IMAGE_QUERY_LLM:
         return _heuristic_image_query(title, content, content_type)
     try:
@@ -602,20 +736,35 @@ def _generate_avatar_slide_image(query: str, user_id: int, post_id: Optional[int
                                  content_type: Optional[str] = None,
                                  title: Optional[str] = None,
                                  content: Optional[str] = None) -> Optional[str]:
+    """Render one avatar-eligible slide image through the brief engine and the gated renderer.
+
+    Inside a ``carousel_image_scope`` the carousel's ONE concept and brand clause are reused —
+    the concept passed even when it is None, so Stage 1 never re-runs per slide. Outside one, the
+    brief engine runs Stage 1 for this slide itself.
+
+    Returns:
+        The rendered image path, or None on any failure (the caller falls back to Pexels).
+    """
     from cqc_lem.utilities.logger import log_warning
     try:
         from cqc_lem.utilities.ai.ai_helper import generate_post_image
         from cqc_lem.utilities.ai.image_brief import build_image_brief
         from cqc_lem.utilities.avatar.guardrails import AVATAR_SURFACE_CAROUSEL
+        from cqc_lem.utilities.brand_kit import brand_clause_for_user
+        scope = _CAROUSEL_SCOPE.get()
+        stage1 = {"concept": scope.concept()} if scope is not None else {}
+        brand = scope.brand() if scope is not None else brand_clause_for_user(user_id)
         # Brief off the slide's ACTUAL text — the old keyword-bag prompt ("query, professional,
         # clean minimal background...") is exactly the generic filler this engine replaces.
         slide_text = "\n".join(t for t in (title, content) if t) or query
-        brief = build_image_brief(slide_text, surface="carousel", ratio="1:1")
+        brief = build_image_brief(slide_text, surface="carousel", ratio="1:1", brand_kit=brand,
+                                  **stage1)
         path = generate_post_image(
             brief.prompt, user_id, surface=AVATAR_SURFACE_CAROUSEL,
             post_id=post_id,
             depicts_person=_query_depicts_person(query, content_type),
-            focal_concept=brief.focal_concept)
+            focal_concept=brief.focal_concept, concept=brief.concept,
+            hook_text=brief.hook_text)
         return path or None
     except Exception as e:
         log_warning("Carousel avatar image generation failed, falling back to Pexels",
@@ -645,9 +794,14 @@ def select_slide_image(
     if not _should_include_slide_image(post_id, slide_index):
         return default_path
 
-    query = derive_image_query(title, content, content_type)
+    from cqc_lem.utilities.env_constants import CAROUSEL_IMAGE_QUERY_LLM
+    generate = _should_generate_with_replicate(post_id, slide_index, user_id, content_type)
+    scope = _CAROUSEL_SCOPE.get()
+    # The concept is only worth its call when it replaces a per-slide LLM call or briefs a render.
+    concept = scope.concept() if scope is not None and (CAROUSEL_IMAGE_QUERY_LLM or generate) else None
+    query = derive_image_query(title, content, content_type, concept=concept)
 
-    if _should_generate_with_replicate(post_id, slide_index, user_id, content_type):
+    if generate:
         generated = _generate_avatar_slide_image(query, user_id, post_id, content_type,
                                                  title=title, content=content)
         if generated:
@@ -2893,6 +3047,9 @@ def create_carousel_slide_images(
 
     # ── Render ────────────────────────────────────────────────────────────────
     content_type = _carousel_content_type(carousel_data)
+    # One concept + brand clause for the whole deck, shared by every slide (issue #2241).
+    scope = _CarouselImageScope(
+        "\n".join(t for pair in slides_data for t in pair if t and t.strip()), user_id)
     total = len(slides_data)
     image_paths = []
     slide_receipts: list[dict] = []
@@ -2909,10 +3066,11 @@ def create_carousel_slide_images(
             bc = badge_colors[(idx - 2) % len(badge_colors)]
             # Shared deterministic engine; default_path=None so a miss => text-only
             # (never a placeholder image).
-            slide_image = select_slide_image(
-                title=title, content=body, content_type=content_type,
-                post_id=post_id, slide_index=idx, user_id=user_id, default_path=None,
-            )
+            with carousel_image_scope_token(scope):
+                slide_image = select_slide_image(
+                    title=title, content=body, content_type=content_type,
+                    post_id=post_id, slide_index=idx, user_id=user_id, default_path=None,
+                )
             path = render_content(idx, total, title, body, bc, slide_image)
         image_paths.append(path)
         # `body` is what the WRITER wrote; `chars_dropped` is what the layout refused to draw. The

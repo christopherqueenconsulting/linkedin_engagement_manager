@@ -383,6 +383,7 @@ def generate_cover_for_edition(user_id: int, edition_id: int, title: Optional[st
     from cqc_lem.utilities.ai.image_brief import build_image_brief
     from cqc_lem.utilities.ai.image_concept import analyze_content_for_image
     from cqc_lem.utilities.ai.image_gen import render_avatar_image_gated, render_image_gated
+    from cqc_lem.utilities.brand_kit import brand_clause_for_user
     from cqc_lem.utilities.media_provenance import write_brief_receipt
 
     avatar = _resolve_cover_avatar(user_id, use_avatar, title, subtitle, body)
@@ -400,7 +401,8 @@ def generate_cover_for_edition(user_id: int, edition_id: int, title: Optional[st
         brief = build_image_brief("\n\n".join(p for p in (title, subtitle, body) if p),
                                   surface="newsletter", ratio=COVER_IMAGE_RATIO, profile=profile,
                                   avatar=avatar, extra_direction=guidance, content_shape=shape,
-                                  avoid_terms=_recent_cover_signals(user_id), concept=concept)
+                                  avoid_terms=_recent_cover_signals(user_id), concept=concept,
+                                  brand_kit=brand_clause_for_user(user_id))
     except Exception as e:
         log_warning("Newsletter cover prompt failed", exc=e, user_id=user_id,
                     action_type="newsletter_cover")

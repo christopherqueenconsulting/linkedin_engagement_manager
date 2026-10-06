@@ -1538,11 +1538,18 @@ def _generate_video_src(user_id: int, text_content: str, profile, post_id: int =
     the stored MP4 (issue #1377). BOTH keys are CLEARED on the Pexels fallback: that clip is stock
     footage this brief never described, and filing the brief (or a verdict passed on a frame that
     never shipped) under it would be a fabricated provenance claim.
+
+    The staged image engine (issue #2241): Stage 1 reads the post ONCE. That one concept briefs the
+    source frame (with the user's brand clause), grades it — the standard-tier no-avatar frame
+    included, which used to render ungated — and hands its thesis and emotional beat to the motion
+    author, so the clip moves like the post rather than like any stock clip.
     """
     from cqc_lem.utilities.ai.ai_helper import generate_post_image
+    from cqc_lem.utilities.ai.image_concept import analyze_content_for_image
     from cqc_lem.utilities.ai.video_models import is_premium, supports_audio
     from cqc_lem.utilities.avatar.guardrails import AVATAR_SURFACE_VIDEO, resolve_avatar_for
     from cqc_lem.utilities.avatar.likeness_probe import AvatarLikenessHold
+    from cqc_lem.utilities.brand_kit import brand_clause_for_user
     from cqc_lem.utilities.db import (
         deduct_video_credits,
         get_default_video_quality,
@@ -1580,18 +1587,29 @@ def _generate_video_src(user_id: int, text_content: str, profile, post_id: int =
         # the aspect ratio it is handed, so briefing 1:1 and rendering the premium source frame at
         # 9:16 asked for a square composition and cropped it vertical (issue #1141).
         source_frame_ratio = "9:16" if is_premium(model) else DEFAULT_IMAGE_RATIO
-        # `brief_info` catches the brief object the wrapper otherwise discards — the focal concept
-        # this frame is graded on, recorded beside the stored MP4 (issue #1377).
+        # ONE Stage 1 call per video: the frame brief, the frame's judge and the motion author all
+        # read this same concept, and None (analysis unavailable) is passed on as-is so nothing
+        # downstream pays for a second attempt (issue #2241).
+        concept = analyze_content_for_image(text_content, surface="video", user_id=user_id)
+        # `frame_info` catches the brief object the wrapper otherwise discards — the focal concept
+        # this frame is graded on, recorded beside the stored MP4 (issue #1377). The caller's
+        # `brief_info` IS that dict when one was passed.
+        frame_info: dict = brief_info if brief_info is not None else {}
         image_prompt = get_flux_image_prompt_from_ai(text_content, profile=profile,
                                                     ratio=source_frame_ratio, avatar=avatar,
-                                                    surface="video", brief_info=brief_info)
+                                                    surface="video", brief_info=frame_info,
+                                                    concept=concept,
+                                                    brand_kit=brand_clause_for_user(user_id))
+        frame_brief = frame_info.get("brief")
+        gate_kwargs = {"focal_concept": getattr(frame_brief, "focal_concept", None),
+                       "concept": concept, "hook_text": getattr(frame_brief, "hook_text", None)}
         # Audio-capable (premium/Veo) renders need the user's language in the prompt — Veo has no
         # language parameter and invents a voiceover otherwise (issue #548). Silent models skip
         # the lookup entirely.
         language = get_user_content_language(user_id) if supports_audio(model) else DEFAULT_CONTENT_LANGUAGE
         motion = get_runway_ml_video_prompt_from_ai(text_content, image_prompt, model=model,
                                                     language=language, user_id=user_id,
-                                                    post_id=post_id)[:512]
+                                                    post_id=post_id, concept=concept)[:512]
         # Filled by the renderer with whether THIS frame came out of the LoRA — the sticky
         # posts.avatar_media flag cannot say that for a re-render or a gate retry (issue #1430).
         render_info: dict = {}
@@ -1599,7 +1617,7 @@ def _generate_video_src(user_id: int, text_content: str, profile, post_id: int =
             if has_avatar:
                 image_path = generate_post_image(image_prompt, user_id, ratio=source_frame_ratio,
                                                  surface=AVATAR_SURFACE_VIDEO, post_id=post_id,
-                                                 render_info=render_info)
+                                                 render_info=render_info, **gate_kwargs)
                 _check_avatar_likeness(image_path, avatar, user_id=user_id, post_id=post_id,
                                        used_avatar=render_info.get("used_avatar"))
                 src = create_runway_video(image_path, motion, model=model, ratio="9:16", audio=audio,
@@ -1618,14 +1636,17 @@ def _generate_video_src(user_id: int, text_content: str, profile, post_id: int =
             if has_avatar:
                 image_path = generate_post_image(image_prompt, user_id, ratio=source_frame_ratio,
                                                  surface=AVATAR_SURFACE_VIDEO, post_id=post_id,
-                                                 render_info=render_info)
+                                                 render_info=render_info, **gate_kwargs)
                 _check_avatar_likeness(image_path, avatar, user_id=user_id, post_id=post_id,
                                        used_avatar=render_info.get("used_avatar"))
             else:
-                from cqc_lem.utilities.ai.image_gen import render_image_from_prompt
-                image_path = render_image_from_prompt(image_prompt, ratio=source_frame_ratio,
-                                                      user_id=user_id, post_id=post_id,
-                                                      surface="video")
+                # Gated like every other frame: this was the one source frame rendered with no
+                # judge at all, so a frame the article never described went straight to Runway.
+                from cqc_lem.utilities.ai.image_gen import render_image_gated
+                image_path = render_image_gated(image_prompt, surface="video",
+                                                ratio=source_frame_ratio, user_id=user_id,
+                                                post_id=post_id, render_info=render_info,
+                                                **gate_kwargs)
             src = create_runway_video(image_path, motion, model=model, ratio=DEFAULT_VIDEO_RATIO,
                                       user_id=user_id, post_id=post_id)
         if not src:

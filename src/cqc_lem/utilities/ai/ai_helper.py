@@ -3403,10 +3403,17 @@ def _profile_visual_context(profile: "LinkedInProfile | None",
     )
 
 
+# "No concept was handed in" for the wrapper below, so the brief engine's own NOT_ANALYZED default
+# applies — distinct from None, which means Stage 1 ran and came back empty.
+_CONCEPT_NOT_PASSED = object()
+
+
 def get_flux_image_prompt_from_ai(post_content: str, *, profile: "LinkedInProfile | None" = None,
                                   ratio: str = "1:1", avatar: "dict | None" = None,
                                   surface: str = "post_image",
-                                  brief_info: "dict | None" = None) -> str:
+                                  brief_info: "dict | None" = None,
+                                  concept: Any = _CONCEPT_NOT_PASSED,
+                                  brand_kit: Optional[str] = None) -> str:
     """Compatibility wrapper over the ONE brief engine (utilities/ai/image_brief.py).
 
     Kept because ~4 call sites (and their tests) pass a plain prompt string around; new code
@@ -3417,10 +3424,15 @@ def get_flux_image_prompt_from_ai(post_content: str, *, profile: "LinkedInProfil
     call authored, for a caller that stores the render and has to record what it was asked to
     depict (issue #1377). It is an out-param rather than a changed return type precisely because
     the string return is what those call sites are built on.
+
+    ``concept`` is Stage 1's analysis when the caller already ran it (None included — it is then
+    not run again); left unpassed, the brief engine runs it. ``brand_kit`` is the pre-rendered
+    brand clause (``brand_kit.brand_clause_for_user``).
     """
     from cqc_lem.utilities.ai.image_brief import build_image_brief
+    extra: dict = {} if concept is _CONCEPT_NOT_PASSED else {"concept": concept}
     brief = build_image_brief(post_content, surface=surface, ratio=ratio,
-                              profile=profile, avatar=avatar)
+                              profile=profile, avatar=avatar, brand_kit=brand_kit, **extra)
     if brief_info is not None:
         brief_info["brief"] = brief
     return brief.prompt
@@ -3511,7 +3523,9 @@ def generate_post_image(prompt: str, user_id: int, *, ratio: str = DEFAULT_IMAGE
                         post_id: "int | None" = None,
                         depicts_person: bool = True,
                         focal_concept: Optional[str] = None,
-                        render_info: Optional[dict] = None) -> str:
+                        render_info: Optional[dict] = None,
+                        concept: Any = None,
+                        hook_text: Optional[str] = None) -> str:
     """Generate a LinkedIn post image, using the user's avatar LoRA when the guardrails allow it.
 
     Falls back to the base Flux.1 model whenever ``resolve_avatar_for`` declines (issue #744):
@@ -3539,6 +3553,9 @@ def generate_post_image(prompt: str, user_id: int, *, ratio: str = DEFAULT_IMAGE
     call, and a caller storing a brief receipt beside the file needs it on either branch — an avatar
     render and a base-Flux one are equally gated, so only one of them reporting would make a base
     render read as ungraded.
+
+    ``concept``/``hook_text`` (issue #2241) switch both gated branches onto the staged blind judge,
+    graded against the same Stage 1 concept the brief was authored from.
     """
     from cqc_lem.utilities.ai.image_gen import render_avatar_image_gated, render_image_gated
     from cqc_lem.utilities.avatar.guardrails import resolve_avatar_for
@@ -3548,7 +3565,7 @@ def generate_post_image(prompt: str, user_id: int, *, ratio: str = DEFAULT_IMAGE
         return render_avatar_image_gated(
             prompt, avatar=avatar, user_id=user_id, surface=surface,
             ratio=ratio, focal_concept=focal_concept, post_id=post_id,
-            render_info=render_info)
+            render_info=render_info, concept=concept, hook_text=hook_text)
     if render_info is not None:
         # No avatar resolved, so no likeness renders here at all — never left unset, or the
         # caller cannot tell "base render" from "nobody reported".
@@ -3559,7 +3576,7 @@ def generate_post_image(prompt: str, user_id: int, *, ratio: str = DEFAULT_IMAGE
     return render_image_gated(
         prompt, surface=surface, ratio=ratio, focal_concept=focal_concept,
         user_id=user_id, post_id=post_id, image_model=image_model,
-        render_info=render_info)
+        render_info=render_info, concept=concept, hook_text=hook_text)
 
 
 def _record_avatar_media(image_path: str, post_id: "int | None", user_id: "int | None") -> None:
@@ -3602,8 +3619,32 @@ def _audio_direction(model: str, language: str = DEFAULT_CONTENT_LANGUAGE) -> st
             f"speech must be in {language_name(language)}.")
 
 
+def _motion_concept_block(concept: Any) -> str:
+    """What the post argues and the feeling it carries, for the motion author — or ``""``.
+
+    The motion is the one part of a video the still frame does not already decide, so it is where
+    a clip either moves like the article or like any stock clip (issue #2241).
+
+    Args:
+        concept: The post's Stage 1 ``ImageConcept``, or None.
+
+    Returns:
+        A prompt block naming the thesis and emotional beat, or ``""`` without either.
+    """
+    thesis = str(getattr(concept, "thesis", "") or "").strip()
+    beat = str(getattr(concept, "emotional_beat", "") or "").strip()
+    if not thesis and not beat:
+        return ""
+    lines = ["", "    What the post argues — let the motion serve it:"]
+    if thesis:
+        lines.append(f"    <thesis>{thesis}</thesis>")
+    if beat:
+        lines.append(f"    The feeling the motion should carry: <emotional_beat>{beat}</emotional_beat>")
+    return "\n".join(lines) + "\n"
+
+
 def _draft_motion_prompt(post_content: str, image_prompt: str, *, audio_note: str,
-                         retry_directive: str = "") -> str:
+                         retry_directive: str = "", concept: Any = None) -> str:
     """One `lem-simple` motion-prompt draft, WITHOUT the deterministic audio clause.
 
     Split out of `get_runway_ml_video_prompt_from_ai` so the deterministic lint (#1277) can ask for
@@ -3618,7 +3659,7 @@ def _draft_motion_prompt(post_content: str, image_prompt: str, *, audio_note: st
 
     Image already generated (the scene — do NOT re-describe it):
     <image_prompt>{image_prompt}</image_prompt>
-    """
+    """ + _motion_concept_block(concept)
 
     content = [{"type": "text", "text": prompt}]
 
@@ -3677,7 +3718,8 @@ def get_runway_ml_video_prompt_from_ai(post_content: str, image_prompt: str, *,
                                        model: str = DEFAULT_VIDEO_MODEL,
                                        language: str = DEFAULT_CONTENT_LANGUAGE,
                                        user_id: Optional[int] = None,
-                                       post_id: Optional[int] = None) -> str:
+                                       post_id: Optional[int] = None,
+                                       concept: Any = None) -> str:
     """Generate a motion-first Runway Gen-4 video prompt, graded before a credit is spent.
 
     Gen-4 image-to-video uses the IMAGE to define the scene; the text prompt should
@@ -3694,6 +3736,10 @@ def get_runway_ml_video_prompt_from_ai(post_content: str, image_prompt: str, *,
     model's output — the LLM is told to stay off audio entirely, because the clause it would
     have to write is made of negatives this system prompt otherwise forbids. It is appended AFTER
     grading, so the lint never reads its own "no voiceover" negatives as a violation.
+
+    ``concept`` is the post's Stage 1 analysis (issue #2241): its thesis and emotional beat reach
+    the motion author so the clip moves like the article, not like any stock clip. Optional — the
+    system prompt and the audio clause are unchanged with or without it.
 
     Raises:
         MotionPromptHeld: enforcement is on and the last attempt still violates the contract.
@@ -3716,7 +3762,7 @@ def get_runway_ml_video_prompt_from_ai(post_content: str, image_prompt: str, *,
     verdict = ""
     for attempt in range(1, attempts + 1):
         content = _draft_motion_prompt(post_content, image_prompt, audio_note=audio_note,
-                                       retry_directive=steer)
+                                       retry_directive=steer, concept=concept)
         report = _slop.motion_prompt_report(content, model=model)
         verdict = _slop.motion_prompt_verdict(report, enforced=enforced, attempt=attempt,
                                               max_attempts=attempts)

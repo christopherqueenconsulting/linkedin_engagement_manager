@@ -35,6 +35,19 @@ from cqc_lem.utilities.ai.image_concept import (
 from cqc_lem.utilities.logger import log_debug, log_info, log_warning
 from cqc_lem.utilities.observability import llm_step
 
+
+class _NotAnalyzed:
+    """Type of ``NOT_ANALYZED`` — "the caller never ran Stage 1", as distinct from "it returned None"."""
+
+    def __repr__(self) -> str:
+        return "NOT_ANALYZED"
+
+
+# The default for ``build_image_brief(concept=)``. A caller that ran Stage 1 passes whatever it
+# got, None included, so a failed analysis is never paid for twice on one artifact.
+NOT_ANALYZED = _NotAnalyzed()
+
+
 # Per-surface USE CASE: what the image is for and where it has to read. The visual approach is
 # the TREATMENT's job (below) — a surface preset never offers subjects, because a menu of objects
 # is exactly what every cover then picked from (issue #2241).
@@ -746,7 +759,7 @@ def build_image_brief(content: str, *, surface: str, ratio: str = "1:1",
                       extra_direction: Optional[str] = None,
                       content_shape: Optional[str] = None,
                       avoid_terms: Optional[list[str]] = None,
-                      concept: Optional[ImageConcept] = None,
+                      concept: "Optional[ImageConcept] | _NotAnalyzed" = NOT_ANALYZED,
                       brand_kit: Optional[str] = None) -> ImageBrief:
     """Author the brief for one render. Never raises — degrades to a deterministic brief.
 
@@ -761,7 +774,9 @@ def build_image_brief(content: str, *, surface: str, ratio: str = "1:1",
         avoid_terms: What the author's recent images already looked like. A SOFT steer to the
             author only — never a gate and never in the fallback, because relevance outranks
             variety and a fallback prompt is read by the renderer as a request.
-        concept: Stage 1's analysis, when the caller already has one; otherwise this runs it.
+        concept: Stage 1's analysis when the caller already ran it — None included, which means
+            it ran and came back empty, so it is NOT run again. Left at ``NOT_ANALYZED`` this runs
+            Stage 1 itself.
         brand_kit: A pre-rendered brand clause (palette, type), folded into the AUTHOR's context
             only — never pasted into the fallback, which is a render prompt.
 
@@ -772,7 +787,7 @@ def build_image_brief(content: str, *, surface: str, ratio: str = "1:1",
     from cqc_lem.utilities.ai.ai_helper import _call_llm, _loads_json_object, _profile_visual_context
     from cqc_lem.utilities.avatar.attributes import subject_directive
 
-    if concept is None:
+    if isinstance(concept, _NotAnalyzed):
         try:
             concept = analyze_content_for_image(content, surface=surface)
         except Exception as e:  # analyze never raises, but the brief must not depend on that
