@@ -330,10 +330,18 @@ def _cover_concept_text(title: Optional[str], subtitle: Optional[str], body: Opt
     # whole family, so a prior `valve` would ban the faucet a leak edition is built on. Never from
     # the mechanism sentence or the title, where "keep track", "tap into" or "sales funnel" are
     # idioms, not objects, and would re-open a family for an edition that is not about it.
-    own_families = {metaphor_family(w) for w in _concept_words(
-        {"tangible_metaphor_candidates": concept.get("tangible_metaphor_candidates")})} - {None}
-    kept_variety = [t for t in (variety_avoid or [])
-                    if t.lower() not in own and metaphor_family(t) not in own_families]
+    # And only when NO candidate survives the gate: an extractor offering "a dripping faucet; a
+    # balance scale" already gave this edition a non-plumbing object, so relaxing plumbing there
+    # just hands the author the pipes again — cost editions name a leak among their candidates
+    # almost every time, which would switch the whole fix off for them.
+    kept_variety = [t for t in (variety_avoid or []) if t.lower() not in own]
+    avoided_families = {metaphor_family(t) for t in kept_variety} - {None}
+    candidate_families = [
+        {metaphor_family(w) for w in _concept_words({"tangible_metaphor_candidates": [c]})}
+        - {None} for c in (concept.get("tangible_metaphor_candidates") or [])]
+    if candidate_families and all(f & avoided_families for f in candidate_families):
+        own_families = set().union(*candidate_families)
+        kept_variety = [t for t in kept_variety if metaphor_family(t) not in own_families]
     # `_drop_topic_words` covers the EXTRACTOR's avoid list too, not just the variety terms. It
     # returns the generic nouns the hook repeats, and for an edition titled "Audit AI LinkedIn
     # engagement to cut costs" that was `cost` and `engagement` — so the gate rejected the one

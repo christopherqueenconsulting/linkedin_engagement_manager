@@ -851,3 +851,22 @@ class TestPluralAndFamilySteering:
             _content, avoid = nc._cover_concept_text("Audit your AI spend", None, "body",
                                                      variety_avoid=["valve", "switch"])
         assert avoid == ["valve", "switch"]
+
+    def test_a_family_stays_avoided_while_another_candidate_survives_the_gate(self):
+        """A leak among the candidates must not re-open plumbing when a scale is also offered."""
+        with patch.object(nc, "_extract_cover_concept", return_value={
+                "core_mechanism": "a slow leak draining the budget",
+                "tangible_metaphor_candidates": ["a dripping faucet", "a balance scale"],
+                "avoid": []}):
+            _content, avoid = nc._cover_concept_text("Audit your AI spend", None, "body",
+                                                     variety_avoid=["valve", "gear"])
+        assert avoid == ["valve", "gear"]
+
+    def test_an_unrecognised_candidate_counts_as_surviving_the_gate(self):
+        with patch.object(nc, "_extract_cover_concept", return_value={
+                "core_mechanism": "a slow leak draining the budget",
+                "tangible_metaphor_candidates": ["a dripping faucet", "a cracked piggy bank"],
+                "avoid": []}):
+            _content, avoid = nc._cover_concept_text("Audit your AI spend", None, "body",
+                                                     variety_avoid=["valve"])
+        assert avoid == ["valve"]
