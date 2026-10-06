@@ -170,6 +170,7 @@ from cqc_lem.utilities.linkedin.composer import (
 from cqc_lem.utilities.linkedin.helper import can_open_dm_thread
 from cqc_lem.utilities.linkedin.poster import (
     object_urn_from_post_url,
+    share_animated_image_on_linkedin,
     share_carousel_on_linkedin,
     share_document_on_linkedin,
     share_on_linkedin,
@@ -2184,6 +2185,27 @@ def update_stale_profile(self, user_id: int, force_refresh: bool = False):
     return "Profile Updated Successfully"
 
 
+def _animated_loop_for(user_id: int, post_id: int, image_url: Optional[str]) -> Optional[str]:
+    """The animated loop to publish in place of the still, or None to publish as before.
+
+    Only when `ANIMATED_POST_ENABLED` is on for this user AND a loop is stored beside the post's
+    CURRENT still (docs/animated-posts.md) — the loop is named off the still, so a replaced image
+    has none. Never raises: a loop is an enhancement and must never cost the post.
+    """
+    if not image_url:
+        return None
+    try:
+        from cqc_lem.utilities.animated_loop import animated_post_enabled
+        from cqc_lem.utilities.post_image import post_loop_abs_path
+        if not animated_post_enabled(user_id):
+            return None
+        return post_loop_abs_path(image_url)
+    except Exception as e:
+        log_warning("Could not look up the post's animated loop — publishing the still", exc=e,
+                    user_id=user_id, post_id=post_id, action_type="post")
+        return None
+
+
 def _affiliate_disclosure_gate(user_id: int, post_id: int, content: str,
                                first_comment_links: Optional[list] = None) -> Optional[str]:
     """Refuse to publish affiliate promotion that carries no FTC disclosure (issue #737).
@@ -2325,7 +2347,12 @@ def post_to_linkedin(self, user_id: int, post_id: int):
             log_warning("Could not read the post's image — publishing bare", exc=e,
                         user_id=user_id, post_id=post_id, action_type="post")
             image_url = None
-        if image_url:
+        loop_path = _animated_loop_for(user_id, post_id, image_url)
+        if loop_path:
+            log_info("Adding to Post | animated loop beside the image", user_id=user_id,
+                     post_id=post_id, action_type="post")
+            urn = share_animated_image_on_linkedin(user_id, content, loop_path, image_url)
+        elif image_url:
             log_info(f"Adding to Post | Image URL: {image_url}")
             urn = share_on_linkedin(user_id, content, image_url)
         else:

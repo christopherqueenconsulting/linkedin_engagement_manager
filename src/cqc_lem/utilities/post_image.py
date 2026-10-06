@@ -223,8 +223,72 @@ def store_rendered_post_image(user_id: int, source_path: str,
     return post_image_public_url(f"{relative_dir}/{name}")
 
 
+# An animated loop (docs/animated-posts.md) is stored BESIDE the still it was animated from, named
+# off that still's own file name. No column records it: the name IS the binding, so replacing or
+# removing the still can never leave the publisher holding a loop of a different picture.
+POST_LOOP_SUFFIX = ".loop.gif"
+
+
+def post_loop_relative_path(image_url: Optional[str]) -> Optional[str]:
+    """Assets-relative path the loop for this stored still lives at (whether or not it exists)."""
+    relative = post_image_relative_path(image_url)
+    if not relative:
+        return None
+    return f"{os.path.splitext(relative)[0]}{POST_LOOP_SUFFIX}"
+
+
+def post_loop_abs_path(image_url: Optional[str]) -> Optional[str]:
+    """Absolute path of the stored loop for this still, or None when there is none.
+
+    Resolved the same contained way as the still itself — a hand-edited row cannot point this at a
+    file outside `assets_dir`.
+    """
+    relative = post_loop_relative_path(image_url)
+    if not relative:
+        return None
+    root = os.path.realpath(assets_dir)
+    candidate = os.path.realpath(os.path.join(root, relative))
+    if not candidate.startswith(root + os.sep):
+        return None
+    return candidate if os.path.isfile(candidate) else None
+
+
+def store_post_loop(image_url: Optional[str], gif_path: str) -> Optional[str]:
+    """Copy a produced loop GIF in beside its still. Returns the stored path, or None.
+
+    Only a still that is OURS (a resolvable stored image) can carry a loop, and only a `.gif` is
+    accepted — the publisher routes this file through LinkedIn's image upload, so a non-GIF here
+    would publish as the wrong thing.
+    """
+    if not gif_path or not gif_path.lower().endswith(".gif") or not os.path.isfile(gif_path):
+        return None
+    if not post_image_abs_path(image_url):
+        return None
+    relative = post_loop_relative_path(image_url)
+    if not relative:
+        return None
+    target = os.path.join(assets_dir, *relative.split("/"))
+    try:
+        shutil.copyfile(gif_path, target)
+    except OSError as e:
+        log_warning("Could not store the animated loop beside the post image", exc=e,
+                    action_type="post_image")
+        return None
+    return target
+
+
 def remove_post_image_file(image_url: Optional[str]) -> bool:
-    """Best-effort delete of a stored post image file. Never raises — the row is the truth."""
+    """Best-effort delete of a stored post image file. Never raises — the row is the truth.
+
+    Its animated loop goes with it: a loop of a picture the post no longer carries must never be
+    what the publisher finds.
+    """
+    loop_path = post_loop_abs_path(image_url)
+    if loop_path:
+        try:
+            os.remove(loop_path)
+        except OSError as e:
+            log_debug("Could not delete post loop file", error=str(e), action_type="post_image")
     abs_path = post_image_abs_path(image_url)
     if not abs_path:
         return False

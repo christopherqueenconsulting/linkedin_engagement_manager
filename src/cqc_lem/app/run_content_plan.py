@@ -814,6 +814,10 @@ def _generate_text_post_image(user_id: int, text_content: str, post_id: "int | N
             return None
         update_db_post_image_url(post_id, api_image_url)
         log_info(f"_generate_text_post_image: post_id={post_id} -> {api_image_url}")
+        # Opt-in animated loop of this SAME gated still (ANIMATED_POST_ENABLED, default OFF —
+        # docs/animated-posts.md). Never raises and never touches the still.
+        from cqc_lem.utilities.animated_loop import produce_post_loop
+        produce_post_loop(user_id, post_id, text_content, api_image_url)
         return api_image_url
     except Exception as e:
         log_warning("Could not generate the post image — the post ships without one", exc=e,

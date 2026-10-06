@@ -33,6 +33,7 @@ index and the `CLAUDE.md` row that points at it, or the pointer becomes a dead e
 - ★ [Content plan cadence & posting days](content-scheduling.md) — `POST_DAY_TYPES`, `posts_per_week`, `posting_days`; the plan is not one post a day
 - ★ [Newsletter cover images](newsletter-covers.md) — upload lands `approved`, generated lands `pending_review`; notify-and-publish at the slot
 - ★ [The image stack](image-stack.md) — one engine, two modules; staged concept → brief → prompt check → BLIND judge (#2241); `image_brief.py` authors, `image_gen.py` renders, presets not per-type helpers
+- [Animated loop posts](animated-posts.md) — opt-in GIF cinemagraph of a text post's gated still via the Images API (`ANIMATED_POST_ENABLED`, OFF); needs a live grounding pass first
 - [Weekly group post](group-posts.md) — statuses, media, and what actually works inside a LinkedIn group
 - [Timezone contract](timezone-contract.md) — what is stored in UTC, what is rendered local, and where the boundary is
 - [Authenticity rubric](AUTHENTICITY_RUBRIC.md) — the A1 anti-slop gate and the 360Brew defense it is built against

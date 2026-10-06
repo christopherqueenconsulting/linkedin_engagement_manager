@@ -115,6 +115,7 @@ user's brand clause (`brand_kit.brand_clause_for_user`):
 | Carousel stock query (`derive_image_query`) | the same per-deck concept: its visual anchors (never its facts — a name or number is not a stock photo) ARE the Pexels query, so no per-slide `lem-simple` call | — | — | — |
 | Video source frame (`run_content_plan._generate_video_src`) | the post text | yes | every frame, incl. the standard-tier no-avatar frame (was ungated) | tier's ratio |
 | Video motion prompt (`get_runway_ml_video_prompt_from_ai`) | the same concept: thesis + emotional beat reach the motion author | — | — | — |
+| Animated loop (`animated_loop.produce_post_loop`, flag `ANIMATED_POST_ENABLED`, OFF) | NOTHING new — it animates the post image's STORED, already-gated still and reads that still's brief receipt for the motion author; the GIF is stored beside the still as `<stem>.loop.gif` ([animated-posts.md](animated-posts.md)) | — | the still's verdict | the still's |
 | Admin variants (`generate_variants`) | the source text, once per batch | yes | per variant | per combo |
 | Tutorial thumbnail (`video_tutorials`) | the title (no user, so no brand) | — | yes | 16:9 |
 
