@@ -190,6 +190,7 @@ class TestPartialUpdateKeepsTheRest:
         "hold_repaired_posts_for_review": 1,
         "profile_viewer_dm_auto_send": 1,
         "forbidden_claim_terms": '["complexity router"]',
+        "brand_kit": '{"primary_hex": "#e9d437", "avoid": ["gears"]}',
     }
     # Round-tripped through the upsert, every column persists back exactly as it was stored.
     _EXPECTED = dict(_STORED)
