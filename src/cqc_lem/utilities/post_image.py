@@ -274,6 +274,17 @@ def claim_manual_generation(user_id: int) -> bool:
         return True
 
 
+def _gate_log_fields(render_info: dict) -> dict:
+    """The judge's verdict as log fields: rubric, failing criteria, issues and blind description."""
+    fields = {key: render_info[key] for key in GATE_RECEIPT_KEYS if render_info.get(key)}
+    if "gate_rubric" in fields:
+        fields["gate_rubric"] = ", ".join(f"{k}={v}" for k, v in fields["gate_rubric"].items())
+    for key in ("gate_failing", "gate_issues"):
+        if key in fields:
+            fields[key] = "; ".join(str(i) for i in fields[key])
+    return fields
+
+
 def _render_avatar_post_image(brief, avatar: dict, user_id: int, post_id: Optional[int],
                               ratio: str, render_info: dict) -> "tuple[Optional[str], Optional[str]]":
     """The LoRA render of a post image, and why it is unusable (None when it is usable).
@@ -390,7 +401,7 @@ def generate_image_for_post(user_id: int, text: str, post_id: Optional[int] = No
             # images off posts because the LoRA could not follow a brief (#2249 gauntlet).
             log_info("Avatar post image unusable — one gpt-image attempt without the likeness",
                      user_id=user_id, post_id=post_id, action_type="post_image",
-                     reason=fallback_reason)
+                     reason=fallback_reason, **_gate_log_fields(render_info))
             render_path = RENDER_PATH_BASE_FALLBACK
             render_info = {}
             try:
@@ -423,9 +434,12 @@ def generate_image_for_post(user_id: int, text: str, post_id: Optional[int] = No
     if render_info.get("gate_verdict") == "rejected":
         # The gate LOOKED and said no on the final candidate (issue #2105). Failing open is for a
         # gate that could not run (`unchecked`); a rejection means the post ships with no image.
+        # Nothing is stored, so nothing carries a receipt — the log IS the rejection record, and
+        # it carries the judge's whole WHY so a bare post is diagnosable (#2249 gauntlet).
         log_info("Post image rejected by the quality gate — the post ships without one",
                  user_id=user_id, post_id=post_id, action_type="post_image",
-                 render_path=render_path)
+                 render_path=render_path, avatar_fallback_reason=fallback_reason,
+                 **_gate_log_fields(render_info))
         return None, GATE_REJECTED_REASON
 
     stored = store_rendered_post_image(user_id, rendered, post_id=post_id)
@@ -439,5 +453,9 @@ def generate_image_for_post(user_id: int, text: str, post_id: Optional[int] = No
         gate_detail["avatar_fallback_reason"] = fallback_reason
     write_brief_receipt(stored, brief, post_id=post_id, user_id=user_id,
                         gate_verdict=render_info.get("gate_verdict"), extra=gate_detail)
-    log_info("Generated post image", user_id=user_id, post_id=post_id, action_type="post_image")
+    # The verdict is ON the log line: an `unchecked` image (judge unreachable twice) ships, as it
+    # always has, but is never indistinguishable from a graded one again (#2249 gauntlet).
+    log_info("Generated post image", user_id=user_id, post_id=post_id, action_type="post_image",
+             gate_verdict=render_info.get("gate_verdict"), render_path=render_path,
+             gate_issues="; ".join(str(i) for i in render_info.get("gate_issues") or []))
     return stored, None

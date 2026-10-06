@@ -16,7 +16,6 @@ for covers the human ``pending_review`` gate still sits behind this one.
 """
 
 import base64
-import json
 import os
 import re
 import secrets
@@ -471,6 +470,36 @@ _STRICT_MIN_RELEVANCE = 4
 _VISION_GATE_DETAIL = "high"
 
 
+def _judge_json(response: Any, which: str) -> dict:
+    """The judge's JSON object, tolerant of a fenced reply. Raises when there is none.
+
+    A strict parse turned a fenced reply into an ``unchecked`` pass; an empty one (a spent token
+    budget) now says so in the reason instead of as a bare decode error.
+    """
+    from cqc_lem.utilities.ai.ai_helper import _loads_json_object
+
+    choice = response.choices[0]
+    raw = choice.message.content or ""
+    parsed = _loads_json_object(raw)
+    if not isinstance(parsed, dict):
+        raise ValueError(f"{which} reply was not a JSON object "
+                         f"(finish_reason={getattr(choice, 'finish_reason', None)}, "
+                         f"{len(raw)} chars)")
+    return parsed
+
+
+def _unchecked(e: Exception, surface: Optional[str], which: str) -> QualityVerdict:
+    """The fail-open verdict for a judge that could not run — LOGGED, with its reason.
+
+    WARNING with ``exc=``, never DEBUG: an unchecked render ships ungraded, and a silent one is
+    indistinguishable from a judged pass until someone looks at the image.
+    """
+    reason = f"{which} judge unavailable: {type(e).__name__}: {e}"[:300]
+    log_warning("Image judge could not grade the render — failing open", exc=e,
+                surface=surface, action_type="image_gate", judge=which)
+    return QualityVerdict(acceptable=True, checked=False, issues=[reason])
+
+
 def _legacy_inspect(image_path: str, focal_concept: str,
                     surface: Optional[str]) -> QualityVerdict:
     """The single-call gate, graded against the brief's own focal concept (pre-#2241 callers)."""
@@ -490,7 +519,7 @@ def _legacy_inspect(image_path: str, focal_concept: str,
             temperature=0,
             max_tokens=300,
         )
-        verdict = json.loads(response.choices[0].message.content)
+        verdict = _judge_json(response, "legacy judge")
         acceptable = bool(verdict.get("acceptable"))
         relevance = verdict.get("relevance")
         issues = [str(i) for i in (verdict.get("issues") or [])][:6]
@@ -502,8 +531,7 @@ def _legacy_inspect(image_path: str, focal_concept: str,
                           "actual idea"]
         return QualityVerdict(acceptable=acceptable, relevance=relevance, issues=issues)
     except Exception as e:
-        log_debug("Image quality gate unavailable — passing render through", error=str(e))
-        return QualityVerdict(acceptable=True, checked=False)
+        return _unchecked(e, surface, "legacy")
 
 
 def _image_part(image_path: str) -> dict:
@@ -707,7 +735,7 @@ def _staged_inspect(image_path: str, concept: Any, hook_text: Optional[str],
             temperature=0,
             max_tokens=500,
         )
-        answer = json.loads(targeted.choices[0].message.content)
+        answer = _judge_json(targeted, "targeted judge")
         raw_rubric = answer.get("rubric") or {}
         rubric = {name: _score(raw_rubric.get(name)) for name in RUBRIC_CRITERIA}
         if any(rubric[name] is None for name in _REQUIRED_SCORES):
@@ -716,9 +744,7 @@ def _staged_inspect(image_path: str, concept: Any, hook_text: Optional[str],
                                  hook_text=hook_text,
                                  face_expected=getattr(concept, "treatment", "") == "people_scene")
     except Exception as e:
-        log_debug("Staged image judge unavailable — passing render through", error=str(e),
-                  surface=surface, action_type="image_gate")
-        return QualityVerdict(acceptable=True, checked=False)
+        return _unchecked(e, surface, "staged")
 
     floors = dict(_RUBRIC_FLOORS)
     if surface in _SCROLL_STOP_SURFACES:
@@ -882,6 +908,11 @@ def _gate_loop(render_once, *, prompt: str, surface: str, focal_concept: Optiona
                 return None
             verdict = inspect_render_quality(cand_path, focal_concept or prompt[:200],
                                              surface=surface, **gate_kwargs)
+            if not verdict.checked and enforced:
+                # ONE more look before failing open on a surface the gate is meant to hold: a
+                # judge blip must not wave an ungraded render through (#2249 gauntlet).
+                verdict = inspect_render_quality(cand_path, focal_concept or prompt[:200],
+                                                 surface=surface, **gate_kwargs)
             if best is None or _verdict_rank(verdict) > _verdict_rank(best[2]):
                 best = (cand_path, backend, verdict, info)
             if verdict.acceptable or not verdict.checked:
@@ -906,14 +937,22 @@ def _gate_loop(render_once, *, prompt: str, surface: str, focal_concept: Optiona
             gate_verdict = "accepted" if last_verdict.acceptable else "rejected"
         else:
             gate_verdict = "unchecked"
+        if gate_verdict == "unchecked" and enforced:
+            # Availability over strictness, as before — but never silently. The reason rides on
+            # the receipt so an ungraded render is visible as one.
+            log_info("Render shipped UNCHECKED — the judge could not grade it twice", user_id=user_id,
+                     post_id=post_id, action_type="image_gate", surface=surface,
+                     reason="; ".join(last_verdict.issues))
         if render_info is not None:
             render_info["gate_verdict"] = gate_verdict
             if last_verdict.rubric:
                 # The WHY behind a rejection, for the brief receipt (issue #2241).
                 render_info["gate_rubric"] = dict(last_verdict.rubric)
                 render_info["gate_failing"] = list(last_verdict.failing)
-                render_info["gate_issues"] = list(last_verdict.issues)
                 render_info["gate_blind_description"] = last_verdict.blind_description
+            if last_verdict.issues:
+                # On the legacy path and for an unchecked verdict too — the WHY either way.
+                render_info["gate_issues"] = list(last_verdict.issues)
         track_image_gate_verdict(
             surface=surface,
             verdict=gate_verdict,
