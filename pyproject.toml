@@ -22,7 +22,7 @@ typing-extensions = "^4.12.2"
 
 # --- Task queue ---
 celery = {version = "^5.4.0", extras = ["redis"]}
-redis = ">=5.2,<7.0"
+redis = ">=5.2,<9.0"
 celery-once = {git = "https://github.com/gitchrisqueen/celery-once.git"}
 flower = "^2.0.1"
 
