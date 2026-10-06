@@ -123,15 +123,20 @@ staged engine") rather than any parallel per-content-type helper:
 
 1. **Stage 1 — read the whole edition.** `image_concept.analyze_content_for_image` gets the
    subtitle + the FULL body, with the title passed separately (so a hook that only restates it is
-   refused). It returns the edition's thesis, its grounded entities, a hook, and the treatment:
-   `people_scene`, `editorial_graphic`, `concrete_scene`, or — only when nothing concrete exists —
-   `metaphor_last_resort`.
+   refused). It returns the edition's thesis, its FACTS (`specific_entities` — names, numbers,
+   never drawn), its depictable `visual_anchors`, a hook, and the treatment: `people_scene` (the
+   cover default — real faces beat clipart), `editorial_graphic` (only when one number or contrast
+   IS the thesis), `concrete_scene`, or — only when nothing concrete exists —
+   `metaphor_last_resort`. It also gets `recent_treatments` from the last 3 receipts
+   (`_recent_cover_treatments`, fallbacks included) and prefers a different one; then
+   `enforce_graphic_cap` allows at most ONE `editorial_graphic` in any 3 consecutive covers.
 2. **Stage 2/3 — the brief.** `build_image_brief(title + subtitle + body, surface="newsletter",
    ratio=COVER_IMAGE_RATIO, avatar=..., concept=..., content_shape=..., extra_direction=guidance,
    avoid_terms=_recent_cover_signals(user_id))`. The author sees the use case (a 16:9 cover that
    must read at 400×225, key content in the central 60%), the treatment template, the concept and a
-   3000-char excerpt; stock symbols (`CLICHE_OBJECTS`) are refused, at least two of the edition's
-   entities must be depicted, and only an `editorial_graphic` may carry text — its hook, exactly.
+   3000-char excerpt; stock symbols (`CLICHE_OBJECTS`) are refused, at least two visual anchors
+   must be depicted, no fact's name or number may appear, nothing may be "titled"/"labelled"/
+   "displaying" content, and only an `editorial_graphic` may carry text — its hook, exactly.
 3. **Stage 4 — the blind judge.** `render_avatar_image_gated` when an avatar is resolved, else
    `render_image_gated`, both with `concept=brief.concept, hook_text=brief.hook_text`. **The avatar
    path gets every stage too** — it used to skip the newsletter gates entirely
@@ -178,6 +183,17 @@ deletes a cover's `.brief.json` sidecar in the same call that deletes the cover 
 regenerated or replaced cover stops steering variety the moment its file is gone. Deliberate — a
 superseded regeneration is something this account tried and moved away from.
 
+### Gauntlet round 1 (the four real user-1 covers)
+
+Relevant now, all four still failed: every edition picked `editorial_graphic`; the entities were
+names and numbers, so specificity scored 1 and the renders carried garbled names ('Originality ai',
+'2013 Eletinain Lintedin…') or nonsense props; '$30K' sat beside a hook at text_accuracy 5; a stack
+of $100 bills passed; the hooks shouted ("Stop wasting your budget!"); and ed16 fell back to "a
+photographic cutout of $30K". Each became an engine rule, not a per-edition tweak — facts vs
+anchors, the name and words-on-surface rejections, the blind stray-text cap, the treatment cap and
+cover bias, the money clichés, the hook rules, and a fallback that is always a photograph and
+records every rejection (`docs/image-stack.md`).
+
 ### Rejections land for review, with their reason
 
 A definite judge failure on `no_cliche` or `specificity` after the attempt budget returns verdict
@@ -191,7 +207,8 @@ copies them onto the cover's receipt (`_GATE_RECEIPT_KEYS`) and logs the rejecti
 alike — via `media_provenance.write_brief_receipt(cover_public_url(relative), brief, ...,
 extra={"edition_id", "edition_format", "hook_style", + the gate fields above})`. From the brief
 itself it records the prompt, `focal_concept`, `fallback`, and the staged fields: the Stage 1
-`concept` (as its fields), `treatment`, `required_entities`, `hook_text` and `prompt_check`.
+`concept` (as its fields), `treatment`, `required_entities`, `hook_text`, `prompt_check` and
+`rejections` (every rejected attempt's reason — why a fallback fell back).
 Nothing is written for a render that never gets stored (a failed generation). `remove_cover_file`
 is the matching teardown, deleting the receipt alongside the cover it describes.
 

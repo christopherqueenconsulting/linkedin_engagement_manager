@@ -83,7 +83,8 @@ class TestBuildImageBrief:
             brief = build_image_brief("Quarterly revenue lessons", surface="post_image")
 
         assert llm.call_count == _BRIEF_ATTEMPTS == 3, "the first try plus two retries"
-        assert "Quarterly revenue lessons" in brief.prompt
+        # A capitalised word is scrubbed as a possible name before the summary is interpolated.
+        assert "revenue lessons" in brief.prompt
         # Positive phrasing only — FLUX ignores negation, so the fallback never says "No text".
         assert "plain unbranded" in brief.prompt
         assert brief.focal_concept  # never empty
@@ -329,10 +330,11 @@ _FIVE_EDITIONS = (
                  "camera left, eye-level medium shot, 35mm f/2, natural skin texture.")}),
     ("The Overlooked Costs of Your AI LinkedIn Strategy",
      _concept(thesis="The API bill is not the real cost of an AI LinkedIn strategy",
-              specific_entities=("API bill", "founder", "credit card statement")),
+              specific_entities=("API bill", "founder", "credit card statement"),
+              visual_anchors=("a founder", "a credit card statement", "a printed usage bill")),
      {"focal_concept": "a founder comparing the API bill with the card statement",
       "prompt": ("A candid editorial photograph of a founder at a cluttered table holding a "
-                 "credit card statement next to a printed API bill marked in red pen, warm "
+                 "credit card statement next to a printed usage bill marked in red pen, warm "
                  "evening lamp light, shot on a 50mm lens at f/2, tactile paper texture, subtle "
                  "film grain.")}),
     ("Spot the Leak in Your LinkedIn AI Budget",
@@ -517,6 +519,12 @@ class TestStage2Contract:
         assert brief.fallback and "a prior gear" not in brief.prompt
 
 
+def brief_treatment_is_photographic(treatment: str) -> bool:
+    concept = _concept(treatment=treatment, hook_phrase=_HOOK)
+    return _fallback_brief("c", surface="newsletter", ratio="16:9", context="", concept=concept,
+                           treatment=treatment).treatment in ("people_scene", "concrete_scene")
+
+
 @pytest.mark.unit
 class TestFallbackIsBuiltFromThePiece:
     _TREATMENTS = ("people_scene", "editorial_graphic", "concrete_scene", "metaphor_last_resort")
@@ -533,18 +541,40 @@ class TestFallbackIsBuiltFromThePiece:
     def test_a_concrete_fallback_names_the_entities(self):
         brief = _fallback_brief("c", surface="newsletter", ratio="16:9", context="",
                                 concept=_concept())
-        assert brief.prompt.startswith("A candid editorial photograph for a LinkedIn newsletter "
-                                       "cover of unpaid invoices and payroll run")
+        assert brief.prompt.startswith("A photorealistic candid editorial photograph for a "
+                                       "LinkedIn newsletter cover of unpaid invoices and payroll "
+                                       "run")
         assert "agency owner in the frame" in brief.prompt
         assert brief.fallback and brief.treatment == "concrete_scene"
         assert len(brief.required_entities) == 3
 
-    def test_a_graphic_fallback_quotes_the_hook_in_the_brand_palette(self):
-        concept = _concept(treatment="editorial_graphic", hook_phrase=_HOOK)
+    def test_a_graphic_falls_back_to_a_photograph_never_a_cutout_of_a_number(self):
+        """Gauntlet round 1: the graphic fallback rendered "a photographic cutout of $30K"."""
+        concept = _concept(treatment="editorial_graphic", hook_phrase=_HOOK,
+                           specific_entities=("$30K", "Terralogic", "diagnostic audit"),
+                           visual_anchors=("a consultant", "a printed audit checklist"))
         brief = _fallback_brief("c", surface="newsletter", ratio="16:9", context="",
-                                concept=concept, brand_kit="forest green and cream")
-        assert f'reading "{_HOOK}"' in brief.prompt and "forest green and cream" in brief.prompt
-        assert brief.hook_text == _HOOK
+                                concept=concept)
+        assert brief.treatment == "concrete_scene" and brief.hook_text is None
+        assert '"' not in brief.prompt and "cutout" not in brief.prompt
+        assert "30K" not in brief.prompt and "Terralogic" not in brief.prompt
+        assert "a consultant and a printed audit checklist" in brief.prompt
+
+    def test_a_graphic_with_no_anchors_falls_back_to_people(self):
+        concept = _concept(treatment="editorial_graphic", hook_phrase=_HOOK,
+                           specific_entities=("$30K", "Terralogic"))
+        brief = _fallback_brief("c", surface="newsletter", ratio="16:9", context="",
+                                concept=concept)
+        assert brief.treatment == "people_scene"
+        assert "30K" not in brief.prompt and "Terralogic" not in brief.prompt
+
+    def test_the_thesis_summary_loses_its_names_and_numbers(self):
+        concept = _concept(thesis="Terralogic saved $30K after a 53.7% audit drop at Kanopy Labs",
+                           specific_entities=("Terralogic",))
+        prompt = _fallback_brief("c", surface="post_image", ratio="1:1", context="",
+                                 concept=concept).prompt
+        for name in ("Terralogic", "30K", "53.7", "Kanopy", "Labs"):
+            assert name not in prompt
 
     def test_a_people_fallback_uses_the_audience(self):
         brief = _fallback_brief("c", surface="post_image", ratio="1:1", context="",
@@ -570,8 +600,8 @@ class TestFallbackIsBuiltFromThePiece:
             assert marker not in lowered
         for word in DEAD_STYLE_WORDS + DEAD_QUALITY_TAGS:
             assert word.lower() not in lowered
-        quoted = '"' in prompt
-        assert quoted == (treatment == "editorial_graphic"), "only the graphic carries text"
+        assert '"' not in prompt, "a fallback is a photograph and never carries text"
+        assert brief_treatment_is_photographic(treatment)
 
     def test_no_concept_scrubs_cliches_from_the_excerpt(self):
         prompt = _fallback_brief("Fix the leaking valve in your sales pipeline", surface="post_image",
@@ -664,3 +694,160 @@ class TestBriefReceiptCarriesTheConcept:
         assert receipt["treatment"] == "editorial_graphic"
         assert receipt["required_entities"] == ["payroll run"]
         assert receipt["hook_text"] == _HOOK and receipt["prompt_check"] == "judge passed"
+
+
+# Gauntlet round 1 of #2241: the four real user-1 covers, as Stage 1 actually described them.
+_FACTS_CONCEPT = _concept(
+    thesis="Auditing AI tools reveals wasted spend and compliance risk",
+    specific_entities=("$30K", "Terralogic", "GPT-5.2", "Stanford HAI", "diagnostic audit",
+                       "2025 Edelman-LinkedIn B2B Thought Leadership Impact Report", "53.7%"),
+    visual_anchors=("a marketing lead", "a printed audit checklist", "a cluttered meeting room"))
+_ANCHORED = {"focal_concept": "a marketing lead working through an audit checklist",
+             "prompt": ("A photorealistic candid photograph of a marketing lead in a cluttered "
+                        "meeting room ticking through a printed audit checklist with a pencil, "
+                        "soft window light from camera left, shot on a 35mm lens at f/2, visible "
+                        "skin pores, fabric wear, subtle film grain.")}
+
+
+@pytest.mark.unit
+class TestFactsAreNeverDrawn:
+    @pytest.mark.parametrize("name_phrase", [
+        "beside a box representing GPT-5.2", "a faint Stanford HAI facade",
+        "a tag showing $30K", "the Terralogic team", "a printed 2025 report",
+        "a chart at 53.7% on the wall",
+    ])
+    def test_a_fact_name_or_number_in_the_prompt_is_rejected(self, name_phrase):
+        bad = dict(_ANCHORED, prompt=_ANCHORED["prompt"] + f" Also {name_phrase}.")
+        with patch(_LLM, side_effect=[_resp(bad), _resp(_ANCHORED)]) as llm:
+            brief = build_image_brief("c", surface="newsletter", concept=_FACTS_CONCEPT)
+        assert llm.call_count == 2 and brief.prompt == _ANCHORED["prompt"]
+        retry = llm.call_args_list[1][1]["messages"][1]["content"]
+        assert "a fact the image cannot draw" in retry
+
+    def test_a_number_inside_the_quoted_hook_is_allowed(self):
+        concept = _concept(treatment="editorial_graphic", hook_phrase="53.7% never noticed",
+                           specific_entities=("53.7%", "marketing team"),
+                           visual_anchors=("a marketing team", "a printed survey"))
+        graphic = {"focal_concept": "the hook beside a marketing team",
+                   "prompt": ('A designed editorial graphic: bold sans-serif type reading "53.7% '
+                              'never noticed" set large in the left third, beside a photographic '
+                              'cutout of a marketing team around a printed survey, on a flat '
+                              'navy color field with generous negative space.')}
+        with patch(_LLM, return_value=_resp(graphic)) as llm:
+            brief = build_image_brief("c", surface="newsletter", concept=concept)
+        assert llm.call_count == 1 and not brief.fallback
+
+    def test_the_facts_reach_the_author_as_context_only(self):
+        with patch(_LLM, return_value=_resp(_ANCHORED)) as llm:
+            build_image_brief("c", surface="newsletter", concept=_FACTS_CONCEPT)
+        user_msg = llm.call_args[1]["messages"][1]["content"]
+        assert '"facts_context_only_never_drawn": ["$30K", "Terralogic"' in user_msg
+        assert '"visual_anchors_to_depict": ["a marketing lead"' in user_msg
+        system = llm.call_args[1]["messages"][0]["content"]
+        assert "NEVER put a company, brand, product, model or report name" in system
+
+    def test_anchors_not_facts_drive_coverage(self):
+        with patch(_LLM, return_value=_resp(_ANCHORED)):
+            brief = build_image_brief("c", surface="newsletter", concept=_FACTS_CONCEPT)
+        assert set(brief.required_entities) == {"a marketing lead", "a printed audit checklist",
+                                                "a cluttered meeting room"}
+
+    def test_without_anchors_only_plain_facts_stand_in(self):
+        from cqc_lem.utilities.ai.image_brief import usable_anchors
+        concept = _concept(specific_entities=("Terralogic", "$30K", "diagnostic audit",
+                                              "GPT-5.2", "agency owner"))
+        assert usable_anchors(concept) == ["diagnostic audit", "agency owner"]
+
+
+@pytest.mark.unit
+class TestWordsOnSurfaces:
+    @pytest.mark.parametrize("phrase", [
+        "a tablet displaying the Originality dashboard", "a report titled quarterly review",
+        "a folder labelled urgent", "a sign reading open", "a magazine with text on its cover",
+        "a screen showing the company website",
+    ])
+    def test_phrases_that_put_words_on_a_surface_are_rejected(self, phrase):
+        bad = dict(_ANCHORED, prompt=_ANCHORED["prompt"] + f" Behind her, {phrase}.")
+        with patch(_LLM, side_effect=[_resp(bad), _resp(_ANCHORED)]) as llm:
+            build_image_brief("c", surface="newsletter", concept=_FACTS_CONCEPT)
+        assert "puts words on a surface" in llm.call_args_list[1][1]["messages"][1]["content"]
+
+    @pytest.mark.parametrize("phrase", [
+        "a man reading a printed report", "a blank monitor glowing softly",
+        "a closed laptop with an abstract wallpaper",
+    ])
+    def test_reading_as_an_activity_and_blank_screens_pass(self, phrase):
+        ok = dict(_ANCHORED, prompt=_ANCHORED["prompt"] + f" Nearby, {phrase}.")
+        with patch(_LLM, return_value=_resp(ok)) as llm:
+            brief = build_image_brief("c", surface="newsletter", concept=_FACTS_CONCEPT)
+        assert llm.call_count == 1 and not brief.fallback
+
+
+@pytest.mark.unit
+class TestRoundOneCliches:
+    @pytest.mark.parametrize("text", [
+        "a stack of cash, specifically bundles of hundred-dollar bills", "stacks of cash",
+        "a pile of money", "crisp banknotes", "a pile of coins", "a piggy bank", "a money bag",
+        "a calculator and a few coins", "two executives shaking hands", "a thumbs up",
+        "a data visualization hologram", "a glowing dashboard", "abstract data streams",
+    ])
+    def test_money_and_stock_business_imagery_is_refused(self, text):
+        assert cliche_hit(text)
+
+    @pytest.mark.parametrize("text", ["a cash flow forecast on paper", "a calculator",
+                                      "a single coin on a desk", "a utility bill"])
+    def test_ordinary_neighbours_are_not(self, text):
+        assert cliche_hit(text) is None
+
+
+@pytest.mark.unit
+class TestFallbackTellsWhy:
+    def test_the_receipt_carries_every_attempts_rejection(self):
+        piped = dict(_ANCHORED, prompt=_ANCHORED["prompt"] + " Copper pipes on the wall.")
+        named = dict(_ANCHORED, prompt=_ANCHORED["prompt"] + " The Terralogic logo glows.")
+        with patch(_LLM, side_effect=[_resp(piped), _resp(named), _resp("nope")]), \
+             patch("cqc_lem.utilities.ai.image_brief.log_info") as info, \
+             patch("cqc_lem.utilities.ai.image_brief.log_warning") as warn:
+            brief = build_image_brief("c", surface="newsletter", concept=_FACTS_CONCEPT)
+        assert brief.fallback and len(brief.rejections) == 3
+        assert "'pipes'" in brief.rejections[0] and "'Terralogic'" in brief.rejections[1]
+        assert brief.rejections[2].startswith("unparsable JSON")
+        logged = info.call_args[1]
+        assert "pipes" in logged["rejections"] and "Terralogic" in logged["rejections"]
+        warn.assert_not_called()  # a validation fallback is the engine working, not an outage
+
+    def test_an_all_outage_fallback_still_warns(self):
+        with patch(_LLM, side_effect=RuntimeError("proxy down")), \
+             patch("cqc_lem.utilities.ai.image_brief.log_warning") as warn:
+            brief = build_image_brief("c", surface="newsletter", concept=_FACTS_CONCEPT)
+        assert brief.fallback and warn.called
+
+    def test_a_retry_that_succeeds_still_records_what_was_rejected(self):
+        piped = dict(_ANCHORED, prompt=_ANCHORED["prompt"] + " Copper pipes on the wall.")
+        with patch(_LLM, side_effect=[_resp(piped), _resp(_ANCHORED)]):
+            brief = build_image_brief("c", surface="newsletter", concept=_FACTS_CONCEPT)
+        assert not brief.fallback and len(brief.rejections) == 1
+
+    def test_the_brand_clause_never_reaches_the_fallback(self):
+        brand = "Brand palette: light gold; avoid: pipes, gears, lightbulbs"
+        with patch(_LLM, side_effect=RuntimeError("down")):
+            brief = build_image_brief("c", surface="newsletter", concept=_FACTS_CONCEPT,
+                                      brand_kit=brand)
+        assert "palette" not in brief.prompt.lower() and cliche_hit(brief.prompt) is None
+
+
+@pytest.mark.unit
+class TestPhotographicLanguage:
+    """OpenAI's gpt-image guide recommends "photorealistic" plus real texture, no studio polish.
+
+    https://developers.openai.com/cookbook/examples/multimodal/image-gen-models-prompting-guide
+    """
+
+    def test_photorealistic_is_no_longer_a_dead_word(self):
+        assert "photorealistic" not in DEAD_QUALITY_TAGS
+
+    @pytest.mark.parametrize("treatment", ["people_scene", "concrete_scene"])
+    def test_the_photographic_treatments_ask_for_real_texture(self, treatment):
+        template = _TREATMENT_TEMPLATES[treatment].lower()
+        assert "photorealistic" in template
+        assert "fabric wear" in template and "studio polish" in template

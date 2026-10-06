@@ -464,9 +464,10 @@ def _image_part(image_path: str) -> dict:
 # Stage 4a (issue #2241). Shown NOTHING about what the image is for: a judge handed the prompt
 # tends to confirm it (FineGRAIN, arXiv 2512.02161), which is how a valve scored 5/5 against "a
 # valve symbolising leaks". What a stranger sees is the honest baseline.
-BLIND_JUDGE_PROMPT = ("Describe this image in 2 sentences: the main subject, the setting, any "
-                      "text visible (transcribe it exactly, or say there is none), and any "
-                      "objects.")
+BLIND_JUDGE_PROMPT = ("Describe this image in 2 sentences: the main subject, the setting, and "
+                      "any objects. Then list EVERY piece of visible text verbatim, each in "
+                      "double quotes, including small or garbled text, labels, and text on "
+                      "devices or paper — or say there is no visible text.")
 
 # Stage 4b: the targeted questions, asked only AFTER the blind description exists.
 _TARGETED_JUDGE_PROMPT = """You are grading ONE AI-generated image for a LinkedIn {surface}.
@@ -475,19 +476,20 @@ A viewer who knew nothing about its purpose described it as:
 
 The image was made for a piece arguing: {thesis}
 Look at the image itself and answer:
-1. Is each of these entities visibly depicted? {entities}
+1. Is each of these things visibly depicted? {entities}
 2. Transcribe ALL text visible in the image. {hook_question}
 3. Is any of these stock symbols present: {cliches}?
 4. Does the main subject still read as a 400x225 thumbnail?
 5. Any AI artifacts — waxy skin, malformed hands, melted or fused objects, garbled lettering?
-6. Would a viewer infer the thesis above from the image alone?
+6. Would a stranger, from the blind description and the image alone, infer the thesis above?
 
-Score each criterion 1-5, 5 best: specificity (shows THIS piece's entities, not a generic scene),
+Score each criterion 1-5, 5 best: specificity (shows THIS piece's things AND lets a stranger infer
+the thesis — not a generic scene),
 no_cliche (5 = no stock symbol at all), thumbnail_read, text_accuracy (null when the image should
 carry no text and carries none), craft (no artifacts), scroll_stop.
 Respond with ONLY a JSON object:
-{{"entities_depicted": {{"<entity>": true}}, "text_seen": "<exact transcription, or empty>",
- "cliches_present": ["..."],
+{{"entities_depicted": {{"<thing>": true}}, "text_seen": "<exact transcription, or empty>",
+ "cliches_present": ["..."], "thesis_inferable": true,
  "rubric": {{"specificity": 1, "no_cliche": 1, "thumbnail_read": 1, "text_accuracy": null,
             "craft": 1, "scroll_stop": 1}},
  "issues": ["<short actionable phrase>"]}}"""
@@ -514,13 +516,57 @@ def _no_text_seen(text: str) -> bool:
     return not normal or normal in ("none", "no text", "no visible text", "n a", "na")
 
 
+# Text a blind description reports: every quoted string, plus whatever follows a text verb with
+# no quotes ("a sign reading OPEN LATE."). "reading" alone is NOT a text verb — "a man reading a
+# document" is an activity — so it counts only after a text-bearing noun.
+_BLIND_QUOTED = re.compile(r'"([^"]{1,200})"|“([^”]{1,200})”')
+_BLIND_TEXT_VERB = re.compile(
+    r"(?:\b(?:text|sign|label|tag|caption|words?|title|headline|note|banner)\s+(?:that\s+)?"
+    r"(?:reads|reading|says|saying)\b|\b(?:labell?ed|titled|captioned)\b)[\s:,]*"
+    r"(?![\s\"“])([^\"“”.;\n]{2,80})", re.IGNORECASE)
+
+
+def blind_text_strings(blind: str) -> list[str]:
+    """Every piece of text a BLIND description says the image carries.
+
+    Args:
+        blind: The blind judge's description.
+
+    Returns:
+        The quoted strings, then any unquoted text after a text verb, in order.
+    """
+    found = [(a or b).strip() for a, b in _BLIND_QUOTED.findall(blind or "")]
+    found += [m.strip() for m in _BLIND_TEXT_VERB.findall(blind or "")]
+    return [t for t in found if t and not _no_text_seen(t)]
+
+
+def stray_texts(blind: str, hook_text: Optional[str]) -> list[str]:
+    """Text the blind description saw that is not (part of) the declared hook.
+
+    Gauntlet round 1 of #2241: the blind judge transcribed '$30K' on a tag beside the hook, and a
+    garbled report title, and text_accuracy still scored 5 — the targeted judge reported only the
+    hook. This reads the BLIND transcription deterministically instead.
+
+    Args:
+        blind: The blind judge's description.
+        hook_text: The one string the image may carry, or None.
+
+    Returns:
+        Each stray string; empty when every transcribed string is contained in the hook.
+    """
+    hook = _normalise_text(hook_text or "")
+    return [t for t in blind_text_strings(blind)
+            if not hook or _normalise_text(t) not in hook]
+
+
 def _apply_overlays(rubric: dict, *, blind: str, answer: dict, entities: list,
                     hook_text: Optional[str]) -> dict:
     """Deterministic corrections the judge cannot talk its way past.
 
     A stock symbol the BLIND description names, or the judge itself lists, caps ``no_cliche``; a
-    transcription that is not the hook caps ``text_accuracy``; fewer than two entities seen caps
-    ``specificity``.
+    transcription that is not the hook caps ``text_accuracy``, and ANY text the blind description
+    quotes beyond the hook caps it at 2; fewer than two anchors seen, or a thesis the judge says a
+    stranger cannot infer, caps ``specificity``.
     """
     from cqc_lem.utilities.ai.image_brief import cliche_hit
 
@@ -534,18 +580,22 @@ def _apply_overlays(rubric: dict, *, blind: str, answer: dict, entities: list,
             rubric["text_accuracy"] = min(rubric.get("text_accuracy") or 3, 3)
     elif not _no_text_seen(text_seen):
         rubric["text_accuracy"] = min(rubric.get("text_accuracy") or 2, 2)
+    if stray_texts(blind, hook_text):
+        rubric["text_accuracy"] = min(rubric.get("text_accuracy") or 2, 2)
     seen = answer.get("entities_depicted") or {}
     if len(entities) >= 2 and isinstance(seen, dict):
         depicted = sum(1 for e in entities if seen.get(e) is True)
         if depicted < 2:
             rubric["specificity"] = min(rubric.get("specificity") or 3, 3)
+    if answer.get("thesis_inferable") is False:
+        rubric["specificity"] = min(rubric.get("specificity") or 3, 3)
     return rubric
 
 
 def _staged_inspect(image_path: str, concept: Any, hook_text: Optional[str],
                     surface: Optional[str]) -> QualityVerdict:
     """Stage 4: a BLIND description first, then targeted questions graded on a rubric."""
-    from cqc_lem.utilities.ai.image_brief import CLICHE_OBJECTS, usable_entities
+    from cqc_lem.utilities.ai.image_brief import CLICHE_OBJECTS, usable_anchors
 
     try:
         image_part = _image_part(image_path)
@@ -554,10 +604,10 @@ def _staged_inspect(image_path: str, concept: Any, hook_text: Optional[str],
             messages=[{"role": "user", "content": [
                 {"type": "text", "text": BLIND_JUDGE_PROMPT}, image_part]}],
             temperature=0,
-            max_tokens=200,
+            max_tokens=350,
         )
-        blind = " ".join(str(blind_response.choices[0].message.content or "").split())[:800]
-        entities = usable_entities(concept)
+        blind = " ".join(str(blind_response.choices[0].message.content or "").split())[:1200]
+        entities = usable_anchors(concept)
         hook_question = (f'Does it equal exactly "{hook_text}"?' if hook_text
                          else "This image should carry no text at all.")
         targeted = client.chat.completions.create(
@@ -587,6 +637,7 @@ def _staged_inspect(image_path: str, concept: Any, hook_text: Optional[str],
     failing = [name for name, floor in _RUBRIC_FLOORS.items()
                if rubric.get(name) is not None and rubric[name] < floor]
     issues = [f"{name} {rubric[name]}/5" for name in failing]
+    issues += [f"stray text: {t}" for t in stray_texts(blind, hook_text)][:3]
     issues += [str(i) for i in (answer.get("issues") or []) if str(i).strip()]
     return QualityVerdict(acceptable=not failing, relevance=rubric.get("specificity"),
                           issues=issues[:8], rubric=rubric, blind_description=blind,
@@ -656,9 +707,9 @@ def rubric_repair_directive(verdict: QualityVerdict, backend: str, concept: Any,
     Returns:
         One directive sentence for the next attempt.
     """
-    from cqc_lem.utilities.ai.image_brief import usable_entities
+    from cqc_lem.utilities.ai.image_brief import usable_anchors
 
-    entities = "; ".join(usable_entities(concept)[:3]) or "the piece's own specific subject"
+    entities = "; ".join(usable_anchors(concept)[:3]) or "the piece's own specific subject"
     thesis = getattr(concept, "thesis", "") or "the piece's idea"
     if hook_text:
         text_fix = (f'the only text spelled exactly "{hook_text}"' if backend == "flux" else

@@ -66,6 +66,17 @@ class TestPresetsObeyTheSharedSystemPrompt:
         for marker in _NEGATION_MARKERS:
             assert marker not in lowered, f"{treatment!r} uses {marker!r}"
 
+    def test_photorealistic_is_allowed_again_and_only_that_word(self):
+        """Gauntlet round 1 of #2241 removed ONE word from the dead list, on evidence.
+
+        OpenAI's gpt-image prompting guide recommends "photorealistic" paired with real texture
+        (pores, fabric wear, imperfections) and no studio polish:
+        https://developers.openai.com/cookbook/examples/multimodal/image-gen-models-prompting-guide
+        Every other dead tag stays dead.
+        """
+        assert "photorealistic" not in DEAD_QUALITY_TAGS
+        assert set(DEAD_QUALITY_TAGS) == {"cinematic", "8k", "masterpiece", "ultra-detailed"}
+
     def test_every_treatment_has_a_template(self):
         from cqc_lem.utilities.ai.image_concept import TREATMENTS
         assert set(_TREATMENT_TEMPLATES) == set(TREATMENTS)

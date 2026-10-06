@@ -66,7 +66,8 @@ _PURGED_AT_PUBLISH_STATUSES = (PostStatus.POSTED.value,)
 # The staged engine's fields (issue #2241) ride along when the brief carries them: the Stage 1
 # concept, the treatment, which entities the prompt depicts, the hook, and Stage 3's verdict.
 _BRIEF_FIELDS = ("focal_concept", "prompt", "surface", "style_preset", "ratio", "fallback",
-                 "concept", "treatment", "required_entities", "hook_text", "prompt_check")
+                 "concept", "treatment", "required_entities", "hook_text", "prompt_check",
+                 "rejections")
 
 
 def _assets_root() -> str:
