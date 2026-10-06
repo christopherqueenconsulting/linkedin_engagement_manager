@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.181.5](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.181.4...v0.181.5) (2026-10-06)
+
+
+### Bug Fixes
+
+* **newsletter-covers:** steer variety off a whole metaphor family so covers stop all showing pipes (closes [#2241](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2241)) ([#2242](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2242)) ([7fd5595](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/7fd5595a73acbc055f1482518f3a4aa11769ccd0))
+* **newsletter:** open the article-editor session with images, fail loudly on a selector miss ([#2094](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2094)) ([#2195](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2195)) ([3d87573](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/3d8757362bc5107e530a679126ce4637e901af5d))
+
 ## [0.181.4](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.181.3...v0.181.4) (2026-10-05)
 
 
