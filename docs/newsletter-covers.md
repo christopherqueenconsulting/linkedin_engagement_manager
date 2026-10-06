@@ -203,6 +203,15 @@ emotional beat on a face, Stage 1 proposes three visual ideas that one cheap cal
 grades headline + image together with `scroll_stop ≥ 4` and `brand_fit ≥ 3`, and every cover names
 one brand-color accent (`docs/image-stack.md`).
 
+### Gauntlet round 3
+
+Gold, a hook and visible emotion on all four; ed18 and ed19 accepted. The rest failed on a token
+budget a reasoning model ran out of, profile boilerplate leaking into a fallback render prompt,
+a readable "billing dashboard" and "paper check", a serif hook, a Title Case hook close to the
+title, a broad smile for a "relief" beat, and a generic flip chart the judge scored 5 for
+specificity. Each became an engine rule (`docs/image-stack.md`, "the round-4 rules"); covers now
+also render two candidates per attempt and keep the better.
+
 ### Rejections land for review, with their reason
 
 A definite judge failure on `no_cliche` or `specificity` after the attempt budget returns verdict

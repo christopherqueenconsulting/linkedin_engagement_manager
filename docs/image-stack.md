@@ -89,6 +89,45 @@ YouTube-thumbnail / editorial-cover pattern:
 - **The fallback builds from the top-ranked idea plus the hook**, with the cover layout and a named
   gold accent — never a bare anchor list.
 
+**Gauntlet round 3 → the round-4 rules.** All four covers carried gold, a hook and visible
+emotion; two were accepted. What still failed became engine rules:
+
+- **Token budget.** `lem-medium` (a reasoning model) ran out of `max_tokens` on ed18 —
+  `empty response (finish_reason=length)`, then unparsable JSON, then the fallback. The brief
+  author, Stage 1, the idea ranker and the Stage 3 judge now get 6000 tokens and
+  `reasoning_effort="low"` (`REASONING_EFFORT`; LiteLLM's `drop_params: true` drops it for a model
+  with no such knob), and a length cut buys ONE extra attempt (brief and Stage 1) before giving up.
+- **Profile text never renders.** ed18's fallback opened "The author is in the Artificial
+  Intelligence, E‑commerce industry. Make the visual feel on-brand…". `_profile_visual_context`
+  is AUTHOR context only: the fallback no longer interpolates it, and `strip_author_context`
+  removes it (and any "The author is…", "Make the visual feel…", "When a person appears… IS the
+  author…" sentence an author echoes) from every prompt before validation.
+- **Documents and screens stay unreadable.** ed16 asked for "a printed billing dashboard screen"
+  and "a paper check" and the chart paper read "MEITE TCHIREUM". `legible_document` refuses
+  "printed … dashboard", "chart with labels/figures", a paper/bank/printed check or cheque, and
+  "invoice showing/listing…"; `unblanked_document` refuses any paper, chart, report, invoice,
+  dashboard, screen, draft, statement, checklist or slide named without saying HOW it stays
+  unreadable — "blank", "seen at a steep angle so no writing is legible", or "out of focus".
+  Handwritten notes "urging…" are words on a surface. The same filters run on visual ideas, and the
+  fallback states `DOCUMENT_BLANKING` outright. A `text_accuracy` repair (gpt-image) now reads
+  "remove every legible mark from papers and screens; the only text is the hook".
+- **Hook typography is a fixed brand spec** (`hook_type_spec`): "set in a heavy geometric
+  sans-serif (Montserrat ExtraBold style), sentence case, light gold on a dark area, large enough to
+  read at 400x225" — the brand kit's font vibe and first named color replace the defaults, and a
+  sans-serif is always stated. A hook prompt that never says "sans" is rejected, and the render-side
+  hook clause in `with_no_marks` states the sans-serif too. ed16 rendered in a serif face.
+- **Hook quality.** Sentence case: three or more capitalised words (acronyms excepted) is Title Case
+  and refused ("When AI Misses the Mark"). Numbers and facts are welcome — the hook is where facts
+  belong ("53.7% miss the mark"). A hook sharing ≥60% of its words with the title is refused.
+- **The thesis is one gist claim** of ≤20 words (`gist_thesis` keeps the first clause), and both
+  judges ask whether the headline plus the prompt/image conveys the GIST — not every benefit.
+- **The judge asks three more things:** does the visible emotion match the beat (a mismatch caps
+  `scroll_stop` at 3, a fail); is the headline set in a sans-serif (a serif caps `brand_fit` at 3);
+  and could this exact image be reused unchanged on an unrelated business article (yes caps
+  `specificity` at 3 — ed18's flip chart scored 5).
+- **Covers render two candidates per attempt** (`_gate_candidates`: `IMAGE_GATE_CANDIDATES` when
+  set, else 2 for `newsletter`, 1 elsewhere) and keep the better rubric total.
+
 **Hooks.** 2–5 words, ≤32 chars, a curiosity gap or a concrete contrast from the thesis: no `!`, no
 imperative opener ("Stop…", "Start…", "Don't…", "Cut…" — `_IMPERATIVE_OPENERS`), never a
 restatement of the title. Stated in the prompt and enforced in `_valid_hook`; an

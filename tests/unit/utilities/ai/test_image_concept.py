@@ -394,3 +394,75 @@ class TestVisualIdeas:
         payload = dict(_PAYLOAD, hook_phrase="Stop wasting money!",
                        hook_alternatives=["Fix it now!", "Payroll eats first"])
         assert parse_concept(payload, _SOURCE).hook_phrase == "Payroll eats first"
+
+
+class TestRoundFourStageOne:
+    """Round 4 of #2241: budgets reasoning models finish inside, gist theses, cleaner hooks."""
+
+    def test_the_budget_fits_a_reasoning_model_and_asks_for_low_effort(self):
+        with patch(_CREATE, return_value=_resp(_PAYLOAD)) as create:
+            analyze_content_for_image(_SOURCE)
+        kwargs = create.call_args[1]
+        assert kwargs["max_tokens"] >= 6000 and kwargs["reasoning_effort"] == "low"
+
+    def test_a_length_cut_is_retried_once(self):
+        cut = SimpleNamespace(choices=[SimpleNamespace(
+            message=SimpleNamespace(content=""), finish_reason="length")])
+        with patch(_CREATE, side_effect=[cut, _resp(_PAYLOAD)]) as create:
+            concept = analyze_content_for_image(_SOURCE)
+        assert create.call_count == 2 and concept is not None
+
+    def test_two_length_cuts_give_up(self):
+        cut = SimpleNamespace(choices=[SimpleNamespace(
+            message=SimpleNamespace(content=""), finish_reason="length")])
+        with patch(_CREATE, side_effect=[cut, cut]) as create:
+            assert analyze_content_for_image(_SOURCE) is None
+        assert create.call_count == 2
+
+    def test_the_ranker_also_gets_the_budget_and_low_effort(self):
+        concept = parse_concept(dict(_PAYLOAD, visual_ideas=_IDEAS), _SOURCE)
+        with patch(_CREATE, return_value=_resp({"ranking": [1]})) as create:
+            pick_visual_idea(concept)
+        assert create.call_args[1]["max_tokens"] >= 6000
+        assert create.call_args[1]["reasoning_effort"] == "low"
+
+    @pytest.mark.parametrize("hook", ["When AI Misses the Mark", "Hidden Spend Gets Found"])
+    def test_title_case_hooks_are_refused(self, hook):
+        assert parse_concept(dict(_PAYLOAD, hook_phrase=hook), _SOURCE).hook_phrase == ""
+
+    @pytest.mark.parametrize("hook", ["53.7% miss the mark", "AI posts fall flat",
+                                      "Payroll eats first"])
+    def test_sentence_case_and_numbers_are_welcome(self, hook):
+        assert parse_concept(dict(_PAYLOAD, hook_phrase=hook), _SOURCE).hook_phrase == hook
+
+    def test_a_hook_sharing_most_of_the_title_is_refused(self):
+        title = "When AI posts miss the mark on LinkedIn"
+        assert parse_concept(dict(_PAYLOAD, hook_phrase="Posts miss the mark"), _SOURCE,
+                             title=title).hook_phrase == ""
+        assert parse_concept(dict(_PAYLOAD, hook_phrase="Readers scroll right past"), _SOURCE,
+                             title=title).hook_phrase == "Readers scroll right past"
+
+    def test_the_thesis_is_one_gist_claim(self):
+        from cqc_lem.utilities.ai.image_concept import gist_thesis
+        long = ("Companies waste tens of thousands on redundant AI tools; a quick audit can cut "
+                "costs, improve compliance, and boost lead quality.")
+        assert gist_thesis(long) == "Companies waste tens of thousands on redundant AI tools"
+        assert len(gist_thesis(" ".join(["word"] * 40)).split()) == 20
+        concept = parse_concept(dict(_PAYLOAD, thesis=long), _SOURCE)
+        assert concept.thesis == "Companies waste tens of thousands on redundant AI tools"
+
+    def test_the_prompt_asks_for_one_short_claim_and_sentence_case(self):
+        with patch(_CREATE, return_value=_resp(_PAYLOAD)) as create:
+            analyze_content_for_image(_SOURCE)
+        system = create.call_args[1]["messages"][0]["content"]
+        assert "ONE central claim, at most 20 words" in system
+        assert "Sentence case, never Title Case" in system and "BELONG in the hook" in system
+
+    @pytest.mark.parametrize("idea", [
+        "A colleague points to a handwritten note urging personal storytelling.",
+        "An engineer smiling at a printed billing dashboard on the table.",
+        "A founder signing a paper check with relief.",
+    ])
+    def test_ideas_asking_for_legible_documents_are_filtered(self, idea):
+        from cqc_lem.utilities.ai.image_concept import idea_rejection
+        assert "legible words on a surface" in idea_rejection(idea, ())

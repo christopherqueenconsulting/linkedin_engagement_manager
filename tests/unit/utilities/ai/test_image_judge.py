@@ -234,7 +234,8 @@ class TestStagedGateLoop:
                           return_value=("/tmp/x.png", "flux")) as render, \
              patch.object(image_gen, "inspect_render_quality", return_value=bad):
             render_image_gated("base", surface="newsletter", concept=_CONCEPT, render_info=info)
-        retry = render.call_args_list[1][0][0]
+        # Covers render two candidates per attempt (round 4); the LAST render is the repair.
+        retry = render.call_args_list[-1][0][0]
         assert retry.startswith("base\n\nRender this scene again with the whole frame built on")
         assert info["gate_verdict"] == "rejected"
         assert info["gate_rubric"]["no_cliche"] == 1
@@ -422,7 +423,7 @@ class TestRoundThreeJudge:
         _v, create = _judge_on(tmp_path, "newsletter", _answer(), hook_text="Payroll eats first")
         text = create.call_args_list[1][1]["messages"][0]["content"][0]["text"]
         assert "The cover's headline: \"Payroll eats first\"" in text
-        assert "Together with its headline, would a viewer correctly guess" in text
+        assert "Reading the headline together with the image, would a viewer get the GIST" in text
         assert "Does a face show a clear, specific emotion readable at 400x225?" in text
         assert "brand_fit" in text
 
@@ -462,3 +463,60 @@ class TestRoundThreeJudge:
         directive = rubric_repair_directive(verdict, "flux", _PEOPLE, None)
         assert "a wince of dread shows on the face" in directive
         assert "warm gold accent" in directive
+
+
+class TestRoundFourJudge:
+    """Round 4 of #2241: emotion must match, the headline must be sans, generic images capped."""
+
+    def test_the_new_questions_reach_the_targeted_judge(self, tmp_path):
+        _v, create = _judge_on(tmp_path, "newsletter", _answer(), hook_text="Payroll eats first")
+        text = create.call_args_list[1][1]["messages"][0]["content"][0]["text"]
+        assert 'Does the visible emotion match "a wince of dread"?' in text
+        assert "Is the headline set in a sans-serif typeface?" in text
+        assert "reused unchanged on an unrelated business article" in text
+        assert "GIST of the claim" in text
+
+    def test_a_mismatched_emotion_fails_scroll_stop(self, tmp_path):
+        verdict, _ = _judge_on(tmp_path, "newsletter", _answer(emotion_matches=False))
+        assert verdict.rubric["scroll_stop"] == 3 and "scroll_stop" in verdict.failing
+
+    def test_a_serif_headline_caps_brand_fit(self, tmp_path):
+        verdict, _ = _judge_on(tmp_path, "newsletter",
+                               _answer(dict(_GOOD_RUBRIC, brand_fit=5, text_accuracy=5),
+                                       headline_sans_serif=False, text_seen="Payroll eats first"),
+                               hook_text="Payroll eats first")
+        assert verdict.rubric["brand_fit"] == 3
+
+    def test_no_headline_means_no_typeface_cap(self, tmp_path):
+        verdict, _ = _judge_on(tmp_path, "newsletter",
+                               _answer(dict(_GOOD_RUBRIC, brand_fit=5), headline_sans_serif=False))
+        assert verdict.rubric["brand_fit"] == 5
+
+    def test_an_image_reusable_on_any_business_article_caps_specificity(self, tmp_path):
+        """ed18's generic flip-chart presentation scored specificity 5."""
+        verdict, _ = _judge_on(tmp_path, "newsletter", _answer(reusable_elsewhere=True))
+        assert verdict.rubric["specificity"] == 3 and "specificity" in verdict.failing
+
+    def test_a_text_failure_repair_names_papers_and_screens(self):
+        verdict = QualityVerdict(acceptable=False, failing=["text_accuracy"],
+                                 issues=["text_accuracy 2/5"])
+        directive = rubric_repair_directive(verdict, "gpt-image", _PEOPLE, "Payroll eats first")
+        assert ("remove every legible mark from papers and screens; the only text is the hook "
+                '"Payroll eats first"') in directive
+
+    @pytest.mark.parametrize("surface,env,expected", [
+        ("newsletter", None, 2), ("post_image", None, 1), ("carousel", None, 1),
+        ("newsletter", "1", 1), ("post_image", "2", 2),
+    ])
+    def test_covers_default_to_two_candidates(self, monkeypatch, surface, env, expected):
+        if env is None:
+            monkeypatch.delenv("IMAGE_GATE_CANDIDATES", raising=False)
+        else:
+            monkeypatch.setenv("IMAGE_GATE_CANDIDATES", env)
+        assert image_gen._gate_candidates(_PEOPLE, surface) == expected
+
+    def test_the_render_clause_states_the_sans_serif_too(self):
+        assert "heavy geometric sans-serif in sentence case" in with_no_marks(
+            "A cover.", "gpt-image", hook_text="Payroll eats first")
+        assert "heavy geometric sans-serif in sentence case" in with_no_marks(
+            "A cover.", "flux", hook_text="Payroll eats first")

@@ -126,7 +126,7 @@ class TestRefusalFilterIsAnchoredToRefusals:
     @pytest.mark.parametrize("prompt_text", [
         ("A photorealistic scene of an engineer studying a wall display of large language model "
          "routing costs, shallow depth of field, dramatic rim light, modern office at dusk."),
-        ("A close-up of a founder at a whiteboard mapping an AI language model pipeline, warm "
+        ("A close-up of a founder at a blank whiteboard mapping an AI language model pipeline, warm "
          "window light, one bold orange accent, editorial photograph."),
     ])
     def test_legitimate_ai_subject_matter_is_accepted(self, prompt_text):
@@ -244,8 +244,8 @@ def _concept(**overrides) -> ImageConcept:
 _GROUNDED = {"focal_concept": "an agency owner facing unpaid invoices before payroll",
              "prompt": ("A candid editorial photograph of an agency owner at a kitchen table "
                         "late at night, a stack of unpaid invoices fanned beside a printed "
-                        "payroll run, warm gold lamp light from camera left, shot on a 35mm lens at "
-                        "f/2, Kodak Portra 400 tones, subtle film grain."),
+                        "payroll run, every page out of focus, warm gold lamp light from "
+                        "camera left, shot on a 35mm lens at f/2, Kodak Portra 400 tones, subtle film grain."),
              "required_entities": ["unpaid invoices", "payroll run", "agency owner"],
              "hook_text": None}
 
@@ -254,7 +254,7 @@ _GRAPHIC = {"focal_concept": "the hook beside a stack of unpaid invoices",
             "prompt": (f'A designed editorial graphic for a LinkedIn newsletter cover: bold '
                        f'sans-serif type reading "{_HOOK}" set large in the left third, beside '
                        f'a photographic cutout of unpaid invoices clipped to a payroll run '
-                       f'printout, on a flat charcoal color field with generous negative space.'),
+                       f'printout, the pages blank, on a flat charcoal color field with generous negative space.'),
             "required_entities": ["unpaid invoices", "payroll run"], "hook_text": _HOOK}
 
 
@@ -325,7 +325,7 @@ _FIVE_EDITIONS = (
               treatment="people_scene"),
      {"focal_concept": "a marketing lead auditing the monthly spend report",
       "prompt": ("A candid documentary photograph of a marketing lead and her analyst leaning "
-                 "over a printed monthly spend report on a meeting-room table, circling line "
+                 "over a printed monthly spend report, its pages out of focus, circling line "
                  "items, a stack of printed comment replies beside them, a gold pen, window light from "
                  "camera left, eye-level medium shot, 35mm f/2, natural skin texture.")}),
     ("The Overlooked Costs of Your AI LinkedIn Strategy",
@@ -334,7 +334,7 @@ _FIVE_EDITIONS = (
               visual_anchors=("a founder", "a credit card statement", "a printed usage bill")),
      {"focal_concept": "a founder comparing the API bill with the card statement",
       "prompt": ("A candid editorial photograph of a founder at a cluttered table holding a "
-                 "credit card statement next to a printed usage bill marked in red pen, warm "
+                 "credit card statement next to a printed usage bill, both seen at a steep angle, warm "
                  "evening gold lamp light, shot on a 50mm lens at f/2, tactile paper texture, subtle "
                  "film grain.")}),
     ("Spot the Leak in Your LinkedIn AI Budget",
@@ -342,7 +342,7 @@ _FIVE_EDITIONS = (
               specific_entities=("budget spreadsheet", "finance manager", "unused seats")),
      {"focal_concept": "a finance manager highlighting unused seats",
       "prompt": ("A candid editorial photograph of a finance manager highlighting rows of "
-                 "unused seats on a printed budget spreadsheet pinned to a corkboard, a "
+                 "unused seats on an out of focus budget spreadsheet pinned to a corkboard, a "
                  "colleague looking over her shoulder in a charcoal blazer, morning light, shot on a "
                  "35mm lens at f/2.8, natural skin texture, subtle film grain.")}),
 )
@@ -711,7 +711,7 @@ _FACTS_CONCEPT = _concept(
     visual_anchors=("a marketing lead", "a printed audit checklist", "a cluttered meeting room"))
 _ANCHORED = {"focal_concept": "a marketing lead working through an audit checklist",
              "prompt": ("A photorealistic candid photograph of a marketing lead in a cluttered "
-                        "meeting room ticking through a printed audit checklist with a gold pencil, "
+                        "meeting room ticking through a blank printed audit checklist with a gold pencil, "
                         "soft window light from camera left, shot on a 35mm lens at f/2, visible "
                         "skin pores, fabric wear, subtle film grain.")}
 
@@ -780,7 +780,7 @@ class TestWordsOnSurfaces:
         assert "puts words on a surface" in llm.call_args_list[1][1]["messages"][1]["content"]
 
     @pytest.mark.parametrize("phrase", [
-        "a man reading a printed report", "a blank monitor glowing softly",
+        "a man reading a printed report seen at a steep angle", "a blank monitor glowing softly",
         "a closed laptop with an abstract wallpaper",
     ])
     def test_reading_as_an_activity_and_blank_screens_pass(self, phrase):
@@ -868,8 +868,9 @@ _COVER_CONCEPT = _concept(hook_phrase=_HOOK, treatment="people_scene",
                           rejected_ideas=("A stack of unpaid invoices under a paperweight.",))
 _COVER = {"focal_concept": "an agency owner wincing at payroll",
           "prompt": (f'A photorealistic close medium shot of an agency owner wincing at a payroll '
-                     f'run printout as unpaid invoices spill off the desk, a warm gold lamp the '
-                     f'only light, visible skin pores, 35mm f/2. The headline "{_HOOK}" sits in '
+                     f'run printout as unpaid invoices spill off the desk, every page out of '
+                     f'focus, a warm gold lamp the only light, visible skin pores, 35mm f/2. '
+                     f'The headline "{_HOOK}" sits in '
                      f'the left third in bold geometric sans, light gold on charcoal.')}
 
 
@@ -882,7 +883,9 @@ class TestEveryCoverCarriesAHook:
         assert brief.hook_text == _HOOK and brief.treatment == "people_scene"
         user = llm.call_args[1]["messages"][1]["content"]
         assert f'COVER LAYOUT: the headline "{_HOOK}" sits in one third of the frame' in user
-        assert "opposite the subject" in user and "bold geometric sans" in user
+        assert "opposite the subject" in user
+        assert ("set in a heavy geometric sans-serif (Montserrat ExtraBold style), sentence case, "
+                "light gold on a dark area, large enough to read at 400x225") in user
 
     def test_a_cover_missing_its_hook_is_rejected(self):
         bare = dict(_COVER, prompt=_COVER["prompt"].split(" The headline")[0] + ".")
@@ -1030,4 +1033,107 @@ class TestPromptCheckSeesTheHeadline:
             check_prompt_against_concept(_COVER["prompt"], _COVER_CONCEPT, _HOOK)
         text = judge.call_args[1]["messages"][0]["content"]
         assert f'The image\'s headline: "{_HOOK}"' in text
-        assert "Together with its headline" in text
+        assert "GIST of the claim" in text
+
+
+@pytest.mark.unit
+class TestRoundFourBrief:
+    """Round 4 of #2241: profile text never renders, documents stay unreadable, fixed type."""
+
+    _PROFILE = SimpleNamespace(job_title="founder", industry="Artificial Intelligence, E-commerce",
+                               company_name=None)
+
+    def test_the_brief_author_gets_the_budget_and_low_effort(self):
+        with patch(_LLM, return_value=_resp(_GROUNDED)) as llm:
+            build_image_brief("c", surface="post_image", concept=_concept())
+        assert llm.call_args[1]["max_tokens"] >= 6000
+        assert llm.call_args[1]["reasoning_effort"] == "low"
+
+    def test_a_length_cut_buys_one_extra_attempt(self):
+        cut = SimpleNamespace(choices=[SimpleNamespace(
+            message=SimpleNamespace(content=""), finish_reason="length")])
+        with patch(_LLM, side_effect=[cut, _resp("x"), _resp("x"), _resp(_GROUNDED)]) as llm:
+            brief = build_image_brief("c", surface="post_image", concept=_concept())
+        assert llm.call_count == 4 and not brief.fallback
+
+    def test_only_one_extra_attempt_however_many_cuts(self):
+        cut = SimpleNamespace(choices=[SimpleNamespace(
+            message=SimpleNamespace(content=""), finish_reason="length")])
+        with patch(_LLM, return_value=cut) as llm:
+            brief = build_image_brief("c", surface="post_image", concept=_concept())
+        assert llm.call_count == _BRIEF_ATTEMPTS + 1 and brief.fallback
+
+    def test_profile_text_never_reaches_a_fallback_prompt(self):
+        """ed18: the fallback opened "The author is in the Artificial Intelligence… industry"."""
+        with patch(_LLM, side_effect=RuntimeError("down")) as llm:
+            brief = build_image_brief("c", surface="newsletter", concept=_COVER_CONCEPT,
+                                      profile=self._PROFILE)
+        assert "The author is" in llm.call_args[1]["messages"][1]["content"], "author context"
+        assert brief.fallback
+        assert "The author is" not in brief.prompt and "Make the visual feel" not in brief.prompt
+        assert "Artificial Intelligence" not in brief.prompt
+
+    def test_profile_text_an_author_echoes_is_stripped_from_its_prompt(self):
+        echoed = dict(_GROUNDED, prompt=("The author is a founder in the Artificial Intelligence "
+                                         "industry. Make the visual feel on-brand, credible. "
+                                         + _GROUNDED["prompt"]))
+        with patch(_LLM, return_value=_resp(echoed)):
+            brief = build_image_brief("c", surface="post_image", concept=_concept(),
+                                      profile=self._PROFILE)
+        assert brief.prompt == _GROUNDED["prompt"]
+
+    def test_strip_author_context(self):
+        from cqc_lem.utilities.ai.image_brief import strip_author_context
+        text = ("When a person appears in the image it IS the author — a man in his 40s. Describe "
+                "that person consistently. A candid photo of a blank page.")
+        assert strip_author_context(text) == "A candid photo of a blank page."
+
+    @pytest.mark.parametrize("phrase", [
+        "a printed billing dashboard screen", "a paper check", "a chart with labels",
+        "an invoice showing the totals", "a framed bank cheque",
+    ])
+    def test_readable_documents_are_refused(self, phrase):
+        bad = dict(_GROUNDED, prompt=_GROUNDED["prompt"] + f" Beside it, {phrase}.")
+        with patch(_LLM, side_effect=[_resp(bad), _resp(_GROUNDED)]) as llm:
+            build_image_brief("c", surface="post_image", concept=_concept())
+        assert "asks for a readable document" in llm.call_args_list[1][1]["messages"][1]["content"]
+
+    def test_a_document_with_no_unreadable_qualifier_is_refused(self):
+        bad = dict(_GROUNDED, prompt=_GROUNDED["prompt"].replace(", every page out of focus", ""))
+        with patch(_LLM, side_effect=[_resp(bad), _resp(_GROUNDED)]) as llm:
+            build_image_brief("c", surface="post_image", concept=_concept())
+        assert "without saying how it stays unreadable" in \
+            llm.call_args_list[1][1]["messages"][1]["content"]
+
+    @pytest.mark.parametrize("qualifier", ["blank", "seen at a steep angle so no writing is legible",
+                                           "out of focus"])
+    def test_any_unreadable_qualifier_passes(self, qualifier):
+        ok = dict(_GROUNDED, prompt=_GROUNDED["prompt"].replace("every page out of focus",
+                                                                f"every page {qualifier}"))
+        with patch(_LLM, return_value=_resp(ok)) as llm:
+            build_image_brief("c", surface="post_image", concept=_concept())
+        assert llm.call_count == 1
+
+    def test_a_hook_without_a_stated_sans_serif_is_refused(self):
+        serif = dict(_COVER, prompt=_COVER["prompt"].replace("bold geometric sans", "elegant serif"))
+        with patch(_LLM, side_effect=[_resp(serif), _resp(_COVER)]) as llm:
+            build_image_brief("c", surface="newsletter", concept=_COVER_CONCEPT)
+        assert "set it in a heavy geometric sans-serif" in \
+            llm.call_args_list[1][1]["messages"][1]["content"]
+
+    def test_the_hook_type_spec_follows_the_brand_kit(self):
+        from cqc_lem.utilities.ai.image_brief import hook_type_spec
+        assert hook_type_spec(None) == (
+            "set in a heavy geometric sans-serif (Montserrat ExtraBold style), sentence case, "
+            "light gold on a dark area, large enough to read at 400x225")
+        kit = "Palette: dark gold (#a89816) and charcoal; typography feel: clean geometric sans"
+        assert hook_type_spec(kit) == ("set in clean geometric sans, sentence case, dark gold on "
+                                       "a dark area, large enough to read at 400x225")
+        assert "a heavy geometric sans-serif" in hook_type_spec("font: Playfair Display")
+
+    def test_the_fallback_blanks_documents_and_states_the_type(self):
+        brief = _fallback_brief("c", surface="newsletter", ratio="16:9", context="The author is x.",
+                                concept=_COVER_CONCEPT, treatment="people_scene")
+        assert "every paper and screen in the frame is blank" in brief.prompt
+        assert "heavy geometric sans-serif" in brief.prompt
+        assert "The author is" not in brief.prompt
