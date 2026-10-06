@@ -11096,7 +11096,7 @@ export interface operations {
                 content?: never;
             };
             /** @description Generation failed upstream */
-            502: {
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };

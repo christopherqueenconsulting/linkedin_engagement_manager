@@ -232,6 +232,9 @@ def remove_post_image_file(image_url: Optional[str]) -> bool:
 
 _GENERATE_WINDOW_SECONDS = 3600
 _GENERATE_KEY_PREFIX = "lem:post_image_gen"
+# Returned by `generate_image_for_post` when the gate LOOKED and said no — the one failure that is
+# a verdict on the render rather than an upstream that did not answer, so callers can tell them apart.
+GATE_REJECTED_REASON = "The generated image did not pass the quality check — try again"
 
 
 def claim_manual_generation(user_id: int) -> bool:
@@ -332,7 +335,7 @@ def generate_image_for_post(user_id: int, text: str, post_id: Optional[int] = No
         # gate that could not run (`unchecked`); a rejection means the post ships with no image.
         log_info("Post image rejected by the quality gate — the post ships without one",
                  user_id=user_id, post_id=post_id, action_type="post_image")
-        return None, "The generated image did not pass the quality check — try again"
+        return None, GATE_REJECTED_REASON
 
     stored = store_rendered_post_image(user_id, rendered, post_id=post_id)
     if not stored:

@@ -12755,7 +12755,7 @@
           "429": {
             "description": "Hourly generation limit reached"
           },
-          "502": {
+          "503": {
             "description": "Generation failed upstream"
           }
         },

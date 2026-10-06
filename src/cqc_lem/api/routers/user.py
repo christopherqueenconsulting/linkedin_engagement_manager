@@ -220,6 +220,7 @@ from cqc_lem.utilities.linkedin.login_status import get_login_status
 from cqc_lem.utilities.linkedin.token_refresh import resolve_token_status
 from cqc_lem.utilities.logger import log_debug, log_error, log_info, log_warning
 from cqc_lem.utilities.post_image import (
+    GATE_REJECTED_REASON,
     PostImageRejected,
     claim_manual_generation,
     generate_image_for_post,
@@ -2505,7 +2506,7 @@ async def upload_post_image_endpoint(
     **{k: v for k, v in error_responses.items() if k in [400, 401, 403, 404]},
     409: {"description": "Post is already published"},
     429: {"description": "Hourly generation limit reached"},
-    502: {"description": "Generation failed upstream"},
+    503: {"description": "Generation failed upstream"},
 })
 def generate_post_image_endpoint(request: PostImageGenerateRequest) -> ResponseModel[dict[str, Any]]:
     """Render an image for a post from its text, through the SAME brief + gated renderer the
@@ -2531,9 +2532,12 @@ def generate_post_image_endpoint(request: PostImageGenerateRequest) -> ResponseM
 
     image_url, reason = generate_image_for_post(user_id, text, post_id=request.post_id)
     if not image_url:
-        # 502, not 500: the render is an upstream call, and telling the user "the image service
-        # didn't answer" is both true and actionable (try again) where "server error" is neither.
-        raise HTTPException(status_code=502, detail=reason or "Could not generate an image")
+        # Never 502 (issue #2244): behind the Cloudflare tunnel an ORIGIN 502 reads as a gateway
+        # failure, so the edge served its own "origin returned an invalid response" page and the
+        # actionable reason never reached the author. A gate rejection is a verdict on the render
+        # (422); anything else is the image service not answering (503) — both say "try again".
+        status = 422 if reason == GATE_REJECTED_REASON else 503
+        raise HTTPException(status_code=status, detail=reason or "Could not generate an image")
 
     if request.post_id:
         _attach_post_image(user_id, request.post_id, image_url)
