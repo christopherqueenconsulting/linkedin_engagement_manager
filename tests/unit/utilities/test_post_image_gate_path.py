@@ -177,7 +177,7 @@ def test_a_non_enforced_surface_is_not_retried():
          patch.object(image_gen, "_render_with_backend", return_value=("/tmp/x.png", "gpt-image")), \
          patch.object(image_gen, "_image_part", return_value={"image_url": {"url": "x"}}):
         info: dict = {}
-        image_gen.render_image_gated("p", surface="video", concept=_CONCEPT, render_info=info)
+        image_gen.render_image_gated("p", surface="thumbnail", concept=_CONCEPT, render_info=info)
     assert vision.calls == 1
     assert info["gate_verdict"] == "unchecked"
 

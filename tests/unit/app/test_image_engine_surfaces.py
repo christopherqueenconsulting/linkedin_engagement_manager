@@ -6,6 +6,7 @@ each runs Stage 1 ONCE per artifact, briefs with the user's brand clause, and ha
 concept to the judge. Every LLM, render and DB call is mocked.
 """
 
+import os
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -14,6 +15,12 @@ from cqc_lem.utilities.ai.image_brief import ImageBrief
 from cqc_lem.utilities.ai.image_concept import ImageConcept
 
 pytestmark = pytest.mark.unit
+
+
+@pytest.fixture(autouse=True)
+def _no_clip_check(monkeypatch):
+    """Off unless a test turns it on: the clip check downloads the clip (#2249)."""
+    monkeypatch.setenv("VIDEO_CLIP_CHECK_ENABLED", "false")
 
 _RCP = "cqc_lem.app.run_content_plan"
 _BRAND = "Brand palette: light gold (#e9d437) against charcoal (#1f1f1f)."
@@ -291,6 +298,130 @@ class TestVideoStagedEngine:
         assert prompt.call_args[1]["avatar"] is None
 
 
+class TestVideoFrameGateAndClipCheck:
+    """#2249 video gauntlet: the frame gate is enforced before Runway; the clip is checked after."""
+
+    def _run(self, *, verdict="accepted", runway=("https://r/1.mp4",), checks=(), enabled=False,
+             monkeypatch=None, brief_info=None):
+        from cqc_lem.utilities.video_clip_check import ClipVerdict
+        if enabled:
+            monkeypatch.setenv("VIDEO_CLIP_CHECK_ENABLED", "true")
+
+        def _frame(*_args, render_info=None, **_kwargs):
+            render_info.update({"gate_verdict": verdict, "gate_issues": ["craft 2/5"]})
+            return "/tmp/frame.png"
+
+        with patch("cqc_lem.utilities.db.get_post_video_quality", return_value="standard"), \
+             patch("cqc_lem.utilities.db.get_default_video_quality", return_value="standard"), \
+             patch("cqc_lem.utilities.avatar.guardrails.resolve_avatar_for", return_value=None), \
+             patch(f"{_RCP}._persist_video_model"), \
+             patch(f"{_RCP}.create_folder_if_not_exists"), \
+             patch("cqc_lem.utilities.ai.image_concept.analyze_content_for_image",
+                   return_value=_concept()), \
+             patch("cqc_lem.utilities.brand_kit.brand_clause_for_user", return_value=""), \
+             patch(f"{_RCP}.get_flux_image_prompt_from_ai", return_value="scene"), \
+             patch(f"{_RCP}.get_runway_ml_video_prompt_from_ai", return_value="m" * 500), \
+             patch("cqc_lem.utilities.ai.image_gen.render_image_gated",
+                   side_effect=_frame) as gated, \
+             patch(f"{_RCP}.create_runway_video", side_effect=list(runway)) as rw, \
+             patch("cqc_lem.utilities.video_clip_check.check_clip_url",
+                   side_effect=[ClipVerdict(**c) for c in checks]) as check, \
+             patch("cqc_lem.utilities.pexels_helper.download_pexels_video",
+                   return_value="/tmp/stock.mp4") as pexels, \
+             patch(f"{_RCP}.log_info") as info:
+            from cqc_lem.app.run_content_plan import _generate_video_src
+            src = _generate_video_src(7, "The post", None, post_id=9, brief_info=brief_info)
+        return src, gated, rw, check, pexels, info
+
+    def test_the_frame_gate_is_enforced_whatever_the_env_says(self):
+        _, gated, *_ = self._run()
+        assert gated.call_args.kwargs["enforce"] is True
+
+    def test_a_rejected_frame_is_never_animated(self):
+        brief_info: dict = {}
+        src, _, runway, _, pexels, info = self._run(verdict="rejected", brief_info=brief_info)
+        assert src == "/tmp/stock.mp4"
+        runway.assert_not_called()
+        pexels.assert_called_once()
+        assert any("not animating it" in c.args[0] for c in info.call_args_list)
+        assert "brief" not in brief_info and "gate_verdict" not in brief_info
+
+    def test_the_check_is_off_when_disabled(self):
+        src, _, runway, check, _, _ = self._run()
+        assert src == "https://r/1.mp4"
+        check.assert_not_called()
+        runway.assert_called_once()
+
+    def test_a_clean_clip_ships_after_one_check(self, monkeypatch):
+        brief_info: dict = {}
+        src, _, runway, check, _, _ = self._run(
+            enabled=True, monkeypatch=monkeypatch, brief_info=brief_info,
+            checks=[{"checked": True}])
+        assert src == "https://r/1.mp4"
+        runway.assert_called_once()
+        check.assert_called_once_with("https://r/1.mp4", user_id=7, post_id=9)
+        assert brief_info["clip_check"] == {"first": {"checked": True, "defects": [],
+                                                      "details": "", "reason": ""}}
+
+    def test_a_defect_buys_one_re_render_with_a_repair_clause(self, monkeypatch):
+        brief_info: dict = {}
+        src, _, runway, check, _, _ = self._run(
+            enabled=True, monkeypatch=monkeypatch, brief_info=brief_info,
+            runway=("https://r/1.mp4", "https://r/2.mp4"),
+            checks=[{"checked": True, "defects": ["an object or person appeared"],
+                     "details": "a mug pops in"}, {"checked": True}])
+        assert src == "https://r/2.mp4"
+        assert runway.call_count == 2
+        retry_motion = runway.call_args_list[1].args[1]
+        assert len(retry_motion) <= 512
+        assert "a mug pops in" in retry_motion and retry_motion.startswith("m")
+        assert brief_info["clip_check"]["shipped"] == "retry"
+        assert brief_info["clip_check"]["retry"]["checked"] is True
+        assert check.call_count == 2
+
+    def test_a_re_render_that_returns_nothing_ships_the_first_clip(self, monkeypatch):
+        brief_info: dict = {}
+        src, *_ = self._run(enabled=True, monkeypatch=monkeypatch, brief_info=brief_info,
+                            runway=("https://r/1.mp4", None),
+                            checks=[{"checked": True, "defects": ["a limb or face distorted"]}])
+        assert src == "https://r/1.mp4"
+        assert brief_info["clip_check"]["shipped"] == "first"
+
+    def test_an_unchecked_clip_ships_without_a_re_render(self, monkeypatch):
+        src, _, runway, *_ = self._run(enabled=True, monkeypatch=monkeypatch,
+                                       checks=[{"checked": False, "reason": "no ffmpeg"}])
+        assert src == "https://r/1.mp4"
+        runway.assert_called_once()
+
+    def test_the_clip_record_reaches_the_stored_receipt(self, tmp_path, monkeypatch):
+        import cqc_lem.app.run_content_plan as rcp
+        from cqc_lem.utilities.media_provenance import read_brief_receipt
+        monkeypatch.setattr(rcp, "assets_dir", str(tmp_path))
+        monkeypatch.setattr("cqc_lem.assets_dir", str(tmp_path))
+
+        def _save(url, directory):
+            path = os.path.join(directory, "clip.mp4")
+            with open(path, "wb") as fh:
+                fh.write(b"\x00\x00\x00 ftypisom" + b"\x00" * 56)
+            return path
+
+        record = {"first": {"checked": True, "defects": [], "details": "", "reason": ""}}
+        with patch(f"{_RCP}.save_video_url_to_dir", side_effect=_save), \
+             patch(f"{_RCP}._accept_probed_video", return_value=True), \
+             patch(f"{_RCP}._caption_video_asset"), \
+             patch(f"{_RCP}._record_video_asset_measures"), \
+             patch("cqc_lem.utilities.c2pa_helper.add_ai_content_credentials"), \
+             patch(f"{_RCP}.update_db_post_video_url"):
+            url = rcp._store_video_asset(7, "https://r/1.mp4", user_id=3, brief=_brief(),
+                                         gate_verdict="accepted", clip_check=record)
+        assert read_brief_receipt(url)["clip_check"] == record
+
+    def test_no_clip_record_means_no_extra(self):
+        from cqc_lem.app.run_content_plan import _clip_check_extra
+        assert _clip_check_extra(None) is None and _clip_check_extra({}) is None
+        assert _clip_check_extra({"clip_check": {"a": 1}}) == {"clip_check": {"a": 1}}
+
+
 class TestMotionPromptCarriesTheConcept:
     def _draft(self, concept):
         from cqc_lem.utilities.ai import ai_helper
@@ -307,9 +438,18 @@ class TestMotionPromptCarriesTheConcept:
         assert "<thesis>Late invoices quietly starve" in user_text
         assert "<emotional_beat>quiet dread turning to resolve</emotional_beat>" in user_text
 
-    def test_without_a_concept_the_prompt_is_unchanged(self):
+    def test_without_a_concept_only_the_discipline_rides(self):
         _, user_text = self._draft(None)
         assert "<thesis>" not in user_text and "emotional_beat" not in user_text
+        assert "ONE subtle, continuous action that expresses the post's point" in user_text
+
+    def test_the_motion_discipline_rides_on_every_prompt(self):
+        _, user_text = self._draft(_concept())
+        for rule in ("ONE subtle, continuous action that expresses quiet dread turning to resolve",
+                     "locked off or does a single slow push-in",
+                     "no new objects or people enter the frame",
+                     "Hands and limbs move naturally", "Screens stay dark and unchanged"):
+            assert rule in user_text, rule
 
     def test_the_public_entry_point_threads_the_concept_through(self):
         from cqc_lem.utilities.ai import ai_helper

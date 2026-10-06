@@ -8,6 +8,12 @@ pytestmark = pytest.mark.unit
 
 
 @pytest.fixture(autouse=True)
+def _no_clip_check(monkeypatch):
+    """The post-render clip check (#2249) downloads the clip; these tests pin other behaviour."""
+    monkeypatch.setenv("VIDEO_CLIP_CHECK_ENABLED", "false")
+
+
+@pytest.fixture(autouse=True)
 def _piece_is_about_the_author():
     """These tests pin the avatar path itself, so the post counts as being about the author.
 

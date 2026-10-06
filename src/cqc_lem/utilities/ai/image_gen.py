@@ -883,16 +883,18 @@ def _verdict_rank(verdict: QualityVerdict) -> tuple:
 def _gate_loop(render_once, *, prompt: str, surface: str, focal_concept: Optional[str],
                concept: Any, hook_text: Optional[str], user_id: Optional[int],
                post_id: Optional[int], render_info: Optional[dict],
-               log_message: str) -> Optional[str]:
+               log_message: str, enforce: Optional[bool] = None) -> Optional[str]:
     """The bounded render → judge → repair loop both gated renderers share.
 
     ``render_once(current_prompt)`` returns ``(path, backend, info)`` — ``path`` None means the
     render produced nothing and the loop returns None at once; ``info`` is merged into
-    ``render_info`` for the candidate actually returned.
+    ``render_info`` for the candidate actually returned. ``enforce`` overrides the surface's
+    membership of ``IMAGE_QUALITY_GATE_SURFACES`` — the video frame passes True, because a frame
+    the judge rejects must never be animated whatever the deployment's env says (#2249).
     """
     from cqc_lem.utilities.observability import track_image_gate_verdict
 
-    enforced = surface in IMAGE_QUALITY_GATE_SURFACES
+    enforced = surface in IMAGE_QUALITY_GATE_SURFACES if enforce is None else enforce
     attempts = max(1, IMAGE_GATE_MAX_ATTEMPTS) if enforced else 1
     candidates = _gate_candidates(concept, surface)
     current_prompt = prompt
@@ -972,7 +974,8 @@ def render_avatar_image_gated(prompt: str, *, avatar: dict, user_id: Optional[in
                               post_id: Optional[int] = None,
                               render_info: Optional[dict] = None,
                               concept: Any = None,
-                              hook_text: Optional[str] = None) -> Optional[str]:
+                              hook_text: Optional[str] = None,
+                              enforce: Optional[bool] = None) -> Optional[str]:
     """LoRA render of an image the author appears in, behind the SAME bounded gate as the base.
 
     Likeness never renders through the gpt-image path (``generate_post_image`` owns the avatar
@@ -1013,7 +1016,8 @@ def render_avatar_image_gated(prompt: str, *, avatar: dict, user_id: Optional[in
 
     return _gate_loop(render_once, prompt=prompt, surface=surface, focal_concept=focal_concept,
                       concept=concept, hook_text=hook_text, user_id=user_id, post_id=post_id,
-                      render_info=render_info, log_message="Avatar image failed the quality gate")
+                      render_info=render_info, log_message="Avatar image failed the quality gate",
+                      enforce=enforce)
 
 
 def render_image_gated(prompt: str, *, surface: str, ratio: str = "1:1",
@@ -1024,7 +1028,8 @@ def render_image_gated(prompt: str, *, surface: str, ratio: str = "1:1",
                        image_model: str = DEFAULT_IMAGE_MODEL,
                        render_info: Optional[dict] = None,
                        concept: Any = None,
-                       hook_text: Optional[str] = None) -> str:
+                       hook_text: Optional[str] = None,
+                       enforce: Optional[bool] = None) -> str:
     """Render with the bounded vision gate. Returns the best candidate's path.
 
     Surfaces outside IMAGE_QUALITY_GATE_SURFACES get one advisory-only pass (verdict logged,
@@ -1054,4 +1059,5 @@ def render_image_gated(prompt: str, *, surface: str, ratio: str = "1:1",
 
     return _gate_loop(render_once, prompt=prompt, surface=surface, focal_concept=focal_concept,
                       concept=concept, hook_text=hook_text, user_id=user_id, post_id=post_id,
-                      render_info=render_info, log_message="Image failed the quality gate")
+                      render_info=render_info, log_message="Image failed the quality gate",
+                      enforce=enforce)

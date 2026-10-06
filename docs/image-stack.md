@@ -152,13 +152,27 @@ user's brand clause (`brand_kit.brand_clause_for_user`):
 | Post image (`post_image.generate_image_for_post`) | the post text | yes | base + avatar (avatar only when the post is about the author; one gpt-image retry if the avatar render is unusable); rubric + `render_path` on the receipt | `POST_IMAGE_RATIO`, default **4:5** |
 | Carousel slide (`carousel_creator`, avatar slides) | the WHOLE carousel, once per deck, lazily — only if a slide wants an image | yes | avatar-eligible slides (the likeness only when the deck is about the author) | 1:1 |
 | Carousel stock query (`derive_image_query`) | the same per-deck concept: its visual anchors (never its facts — a name or number is not a stock photo) ARE the Pexels query, so no per-slide `lem-simple` call | — | — | — |
-| Video source frame (`run_content_plan._generate_video_src`) | the post text | yes | every frame, incl. the standard-tier no-avatar frame (was ungated); the likeness only when the post is about the author | tier's ratio |
-| Video motion prompt (`get_runway_ml_video_prompt_from_ai`) | the same concept: thesis + emotional beat reach the motion author | — | — | — |
+| Video source frame (`run_content_plan._generate_video_src`) | the post text | yes | every frame, ENFORCED (incl. the standard-tier no-avatar frame, which was ungated); a rejected frame is never animated; the likeness only when the post is about the author | tier's ratio |
+| Video motion prompt (`get_runway_ml_video_prompt_from_ai`) | the same concept: thesis + emotional beat reach the motion author, plus `MOTION_DISCIPLINE` | — | — | — |
+| Video clip (`utilities/video_clip_check.py`) | — | — | 3 sampled frames, one `lem-vision` call; a defect buys ONE re-render | — |
 | Admin variants (`generate_variants`) | the source text, once per batch | yes | per variant | per combo |
 | Tutorial thumbnail (`video_tutorials`) | the title (no user, so no brand) | — | yes | 16:9 |
 
-The `video` surface is not in `IMAGE_QUALITY_GATE_SURFACES` by default, so a frame gets ONE
-advisory look: the verdict is recorded on the MP4's receipt, the frame is kept.
+**Video (PR #2249 video gauntlet).** Both gauntlet frames failed an advisory gate and were animated
+anyway, so Runway spent a render on a frame the judge disliked. The frame gate is now ENFORCED for
+video — `video` joins the `IMAGE_QUALITY_GATE_SURFACES` default, and the video path passes
+`enforce=True` so a deployment env that predates it cannot turn it back off — with the usual
+`IMAGE_GATE_MAX_ATTEMPTS` (2) and repair round. A frame still `rejected` raises
+`SourceFrameRejected` into the existing Pexels fallback (logged INFO, credits refunded); an
+`unchecked` one still animates. Every motion prompt carries `ai_helper.MOTION_DISCIPLINE`: ONE
+subtle continuous action expressing the beat, camera locked or one slow push-in, nothing new enters
+the frame, natural limbs, screens dark and unchanged — phrased positively in the output. After
+Runway returns, `video_clip_check.check_clip_url` samples frames at 1s, 2.5s and 4.5s (ffmpeg) and
+asks `lem-vision`, in ONE call, whether objects or people appear or disappear, limbs or faces
+distort, or text/UI appears. Any yes buys ONE re-render with `repair_clause` (naming the defect)
+appended within the 512-char cap; the record (`first`, `retry`, `shipped`) rides on the MP4's
+receipt as `clip_check`. Fails open on every error (WARNING with `exc=`); off with
+`VIDEO_CLIP_CHECK_ENABLED=false`, read at call time.
 
 **Treatments** (`_TREATMENT_TEMPLATES`; Stage 1 picks, an avatar always forces `people_scene`
 because a person IS the subject and the LoRA cannot set type):
@@ -551,6 +565,7 @@ SPA's **Content & Publishing → Brand kit** card, and read with `db.get_brand_k
 | `POST_IMAGE_RATIO` | Post-image ratio, read at call time: `4:5` (default), `1:1`, `16:9`, `9:16` |
 | `DEFAULT_IMAGE_MODEL` | Model handed to the `lem-image` group |
 | `IMAGE_QUALITY` | gpt-image quality tier |
-| `IMAGE_QUALITY_GATE_SURFACES` | Surfaces where the vision gate is enforced, not advisory |
+| `IMAGE_QUALITY_GATE_SURFACES` | Surfaces where the vision gate is enforced, not advisory (`newsletter,post_image,video`; the video frame is enforced regardless) |
+| `VIDEO_CLIP_CHECK_ENABLED` | Post-render clip check (default on), read at call time |
 | `IMAGE_GATE_MAX_ATTEMPTS` | Total renders allowed per gated request |
 | `REPLICATE_TIMEOUT_SECONDS` | Bound on a single FLUX/Replicate prediction |

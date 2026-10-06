@@ -90,7 +90,7 @@ POST_IMAGE_GENERATE_MAX_PER_HOUR = int(
 # Surfaces where a gate rejection actually triggers a regenerate (elsewhere it only logs).
 IMAGE_QUALITY_GATE_SURFACES = tuple(
     s.strip() for s in
-    get_constant_from_env('IMAGE_QUALITY_GATE_SURFACES', default_value='newsletter,post_image').split(',')
+    get_constant_from_env('IMAGE_QUALITY_GATE_SURFACES', default_value='newsletter,post_image,video').split(',')
     if s.strip())
 
 # Video quality tiers. STANDARD is free (included in every plan); PREMIUM tiers cost
