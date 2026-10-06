@@ -71,7 +71,7 @@ opentelemetry-exporter-otlp = "^1.28.2"
 # --- AWS / payments ---
 boto3 = "^1.36.7"
 sendgrid = "^6.12.5"
-stripe = "^15.2.1"
+stripe = ">=15.2.1,<17.0.0"
 
 timezonefinder = ">=6.5,<10.0"
 
