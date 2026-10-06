@@ -216,12 +216,27 @@ class TestGenerate:
             assert _generate(api_client, content="   ").status_code == 400
         gen.assert_not_called()
 
-    def test_a_failed_render_is_a_502_carrying_the_reason(self, api_client, store):
+    def test_a_failed_render_is_a_503_carrying_the_reason(self, api_client, store):
+        """Never a 502 (issue #2244) — the edge swaps an origin 502 for its own page.
+
+        Behind the Cloudflare tunnel the reason below never reached the author.
+        """
         with patch("cqc_lem.api.routers.user.generate_image_for_post",
                    return_value=(None, "Image generation failed")):
             resp = _generate(api_client, post_id=_POST)
-        assert resp.status_code == 502
+        assert resp.status_code == 503
         assert resp.json()["detail"] == "Image generation failed"
+        assert store.row["image_url"] is None
+
+    def test_a_gate_rejection_is_a_422_carrying_the_reason(self, api_client, store):
+        """The gate LOOKED and said no — a verdict on the render, not an upstream that failed."""
+        from cqc_lem.utilities.post_image import GATE_REJECTED_REASON
+
+        with patch("cqc_lem.api.routers.user.generate_image_for_post",
+                   return_value=(None, GATE_REJECTED_REASON)):
+            resp = _generate(api_client, post_id=_POST)
+        assert resp.status_code == 422
+        assert resp.json()["detail"] == GATE_REJECTED_REASON
         assert store.row["image_url"] is None
 
     def test_the_hourly_cap_refuses_before_the_render(self, api_client, store):

@@ -302,8 +302,10 @@ class TestGenerateImageForPost:
         The avatar path is where post 100 shipped the last rejected candidate; the base path is
         held to the same rule because both return the final render regardless of its verdict.
         """
+        from cqc_lem.utilities.post_image import GATE_REJECTED_REASON
+
         (url, reason), assets = self._generate_with_verdict(tmp_path, "rejected", avatar=avatar)
-        assert url is None and "quality check" in reason
+        assert url is None and reason == GATE_REJECTED_REASON
         assert not (assets / "images" / "posts" / "42").exists()
 
     @pytest.mark.parametrize("verdict", ["unchecked", "accepted"])
