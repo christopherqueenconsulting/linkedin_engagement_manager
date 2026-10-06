@@ -740,3 +740,41 @@ class TestRecentCoverSignals:
             directory = nc._cover_dir(3)
             self._write(directory, "a.brief.json", ["not", "a", "dict"], 1000)
             assert nc._recent_cover_signals(3) == []
+
+
+class TestRecentCoverTreatments:
+    """Gauntlet round 1 of #2241: every edition chose a graphic — Stage 1 now sees the last 3."""
+
+    def _write(self, directory, name, payload, mtime):
+        os.makedirs(directory, exist_ok=True)
+        path = os.path.join(directory, name)
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(payload, fh)
+        os.utime(path, (mtime, mtime))
+
+    def test_the_last_three_treatments_fallbacks_included_most_recent_first(self, tmp_path):
+        with patch.object(nc, "assets_dir", str(tmp_path / "assets")):
+            directory = nc._cover_dir(3)
+            for i, (treatment, fallback) in enumerate([("people_scene", False),
+                                                       ("concrete_scene", False),
+                                                       ("editorial_graphic", True),
+                                                       ("people_scene", False)]):
+                self._write(directory, f"e{i}.brief.json",
+                            {"focal_concept": f"c{i}", "treatment": treatment,
+                             "fallback": fallback}, 1000 + i)
+            self._write(directory, "old.brief.json", {"focal_concept": "legacy"}, 900)
+            assert nc._recent_cover_treatments(3) == ["people_scene", "editorial_graphic",
+                                                      "concrete_scene"]
+
+    def test_stage_one_receives_them(self, tmp_path):
+        with patch.object(nc, "assets_dir", str(tmp_path / "assets")), \
+             patch.object(nc, "_resolve_cover_avatar", return_value=None), \
+             patch.object(nc, "_recent_cover_treatments",
+                          return_value=["editorial_graphic"]) as recent, \
+             patch("cqc_lem.utilities.ai.image_concept.analyze_content_for_image",
+                   return_value=None) as stage1, \
+             patch("cqc_lem.utilities.ai.image_brief.build_image_brief", return_value=_brief()), \
+             patch("cqc_lem.utilities.ai.image_gen.render_image_gated", return_value=None):
+            nc.generate_cover_for_edition(3, 9, "T", "S", "B")
+        assert recent.call_args[0] == (3, 3)
+        assert stage1.call_args[1]["recent_treatments"] == ["editorial_graphic"]

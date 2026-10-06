@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from typing import Any, Optional
 
 from cqc_lem.utilities.ai.image_concept import (
+    GENERIC_ACRONYMS,
     TREATMENT_CONCRETE,
     TREATMENT_GRAPHIC,
     TREATMENT_METAPHOR,
@@ -28,8 +29,10 @@ from cqc_lem.utilities.ai.image_concept import (
     ImageConcept,
     analyze_content_for_image,
     entity_mentioned,
+    is_fact_only,
+    name_tokens,
 )
-from cqc_lem.utilities.logger import log_debug, log_warning
+from cqc_lem.utilities.logger import log_debug, log_info, log_warning
 from cqc_lem.utilities.observability import llm_step
 
 # Per-surface USE CASE: what the image is for and where it has to read. The visual approach is
@@ -71,20 +74,23 @@ _USE_LABELS: dict[str, str] = {
 # The visual approach, chosen by Stage 1 from what the piece actually is.
 _TREATMENT_TEMPLATES: dict[str, str] = {
     TREATMENT_PEOPLE: (
-        "TREATMENT people_scene: a real, candid documentary photograph of the piece's audience "
-        "in the exact situation it describes, built from its specific entities — people caught "
-        "mid-task with natural expressions, available light and imperfect real-world texture. "
-        "When the author's likeness is supplied, the author is the person in the scene."),
+        "TREATMENT people_scene: a photorealistic, candid documentary photograph of the piece's "
+        "audience in the exact situation it describes, built from its visual anchors — people "
+        "caught mid-task with natural expressions in available light, with real texture: visible "
+        "skin pores, fabric wear and creases, scuffed surfaces and everyday imperfections rather "
+        "than studio polish. When the author's likeness is supplied, the author is the person in "
+        "the scene."),
     TREATMENT_GRAPHIC: (
         "TREATMENT editorial_graphic: a designed editorial graphic. The ONLY words in the image "
         "are the hook, in double quotes, spelled exactly, set in bold sans-serif type with its "
         "placement stated (for example large in the left third). One supporting photographic "
-        "element drawn from the specific entities sits beside it on a flat brand-palette color "
+        "element drawn from the visual anchors sits beside it on a flat brand-palette color "
         "field with generous negative space."),
     TREATMENT_CONCRETE: (
-        "TREATMENT concrete_scene: a photograph of the specific, tangible situation the "
-        "entities describe, shot where it really happens — the actual objects, documents and "
-        "setting the piece names. A screen may appear when it IS the subject."),
+        "TREATMENT concrete_scene: a photorealistic photograph of the specific, tangible "
+        "situation the visual anchors describe, shot where it really happens, with real texture "
+        "— worn edges, fingerprints, fabric wear, dust and everyday imperfections rather than "
+        "studio polish. Screens and documents may appear, blank or abstract."),
     TREATMENT_METAPHOR: (
         "TREATMENT metaphor_last_resort: one uncommon visual metaphor specific to this piece's "
         "thesis, photographed as a real scene — one a reader has never seen on a hundred other "
@@ -95,7 +101,10 @@ _TREATMENT_TEMPLATES: dict[str, str] = {
 # (`tests/unit/utilities/ai/test_image_preset_drift.py`) — the writer side and the checking side
 # cannot drift, which is exactly how the `thumbnail` preset came to ask for the medium the system
 # prompt forbids (issue #1141).
-DEAD_QUALITY_TAGS = ("photorealistic", "cinematic", "8k", "masterpiece", "ultra-detailed")
+# "photorealistic" was on this list until gauntlet round 1 of #2241: OpenAI's gpt-image guide
+# recommends it, paired with real texture (pores, fabric wear, imperfections) and no studio polish —
+# https://developers.openai.com/cookbook/examples/multimodal/image-gen-models-prompting-guide
+DEAD_QUALITY_TAGS = ("cinematic", "8k", "masterpiece", "ultra-detailed")
 DEAD_STYLE_WORDS = ("illustration", "painting", "render", "CGI", "artstation", "stock photo")
 
 # Negation is not a style question: FLUX has no negative prompting and renders what a prompt
@@ -119,9 +128,15 @@ CLICHE_OBJECTS: tuple[str, ...] = (
     "dartboard", "bullseye", "mountain summit", "mountain peak", "compass", "hourglass", "domino",
     "chain link", "maze", "ladder", "key and lock", "lock and key", "padlock", "crystal ball",
     "magnifying glass",
+    # Money and stock business imagery (gauntlet round 1: a stack of $100 bills passed).
+    "stack of cash", "pile of cash", "bundle of cash", "wad of cash", "stack of bills",
+    "pile of money", "stack of money", "dollar bill", "banknote", "pile of coins",
+    "stack of coins", "coin stack", "piggy bank", "money bag", "shaking hands", "thumbs up",
+    "hologram", "data visualization hologram", "glowing dashboard", "data stream",
     # Stock office (issue #1992).
     "person at laptop", "man at laptop", "woman at laptop", "professional at laptop",
     "typing hands", "hands typing", "hands on keyboard", "coffee and notebook",
+    "calculator with coins",
 )
 # "target audience" is a reader, not a dartboard — the business senses never count as the symbol.
 _TARGET_BUSINESS_SENSE = re.compile(
@@ -140,18 +155,25 @@ def _inflections(term: str) -> set[str]:
     return forms
 
 
+def _word_pattern(word: str) -> str:
+    forms = _inflections(word) if len(word) >= 3 else {word}
+    return "(?:" + "|".join(re.escape(f) for f in sorted(forms, key=len, reverse=True)) + ")"
+
+
 def _phrase_pattern(phrase: str) -> str:
-    *head, last = phrase.lower().split()
-    tail = "(?:" + "|".join(re.escape(f) for f in sorted(_inflections(last), key=len,
-                                                          reverse=True)) + ")"
-    return _PHRASE_GAP.join([re.escape(w) for w in head] + [tail])
+    # Every word inflects ("stacks of cash", "piles of coins"), joined by an optional article.
+    return _PHRASE_GAP.join(_word_pattern(w) for w in phrase.lower().split())
 
 
 _CLICHE_PATTERN = re.compile(
     r"\b(?:" + "|".join(_phrase_pattern(p) for p in sorted(CLICHE_OBJECTS, key=len, reverse=True))
     + r")\b", re.IGNORECASE)
-_COFFEE = re.compile(r"\bcoffee\b", re.IGNORECASE)
-_NOTEBOOK = re.compile(r"\bnotebooks?\b", re.IGNORECASE)
+# Stock PAIRINGS: either half alone is an ordinary object; together they are the cliché.
+_PAIRINGS: tuple[tuple[str, "re.Pattern[str]", "re.Pattern[str]"], ...] = (
+    ("coffee and notebook", re.compile(r"\bcoffee\b", re.I), re.compile(r"\bnotebooks?\b", re.I)),
+    ("calculator with coins", re.compile(r"\bcalculators?\b", re.I),
+     re.compile(r"\bcoins?\b", re.I)),
+)
 
 
 def cliche_hit(text: Optional[str]) -> Optional[str]:
@@ -161,8 +183,8 @@ def cliche_hit(text: Optional[str]) -> Optional[str]:
         text: A render prompt, an entity, or a vision judge's description.
 
     Returns:
-        The matched words as written (e.g. ``"dripping"``), or ``"coffee and notebook"`` when both
-        halves of that stock pairing appear anywhere in the text.
+        The matched words as written (e.g. ``"dripping"``), or the pairing's name (``"coffee and
+        notebook"``, ``"calculator with coins"``) when both halves appear anywhere in the text.
     """
     text = text or ""
     for match in _CLICHE_PATTERN.finditer(text):
@@ -170,8 +192,9 @@ def cliche_hit(text: Optional[str]) -> Optional[str]:
         if word.lower().startswith("target") and _TARGET_BUSINESS_SENSE.match(text, match.end()):
             continue
         return word
-    if _COFFEE.search(text) and _NOTEBOOK.search(text):
-        return "coffee and notebook"
+    for name, first, second in _PAIRINGS:
+        if first.search(text) and second.search(text):
+            return name
     return None
 
 
@@ -183,29 +206,37 @@ def _scrub_cliches(text: str) -> str:
 
 # Encodes the OpenAI gpt-image and BFL FLUX prompting guides (2026): state the use case, order the
 # prompt scene -> subject -> details -> constraints, quote any text exactly with its placement and
-# type, and get realism from camera language and real texture rather than quality tags. Positive
-# phrasing only (FLUX has no negative prompts — naming a thing summons it).
+# type, and get realism from "photorealistic", camera language and real texture (pores, fabric
+# wear, imperfections) rather than studio polish. Positive phrasing only (FLUX has no negative
+# prompts — naming a thing summons it).
 _SYSTEM_PROMPT_HEAD = """Act as a photo editor and art director writing the brief for ONE image \
 of LinkedIn visual content. You receive the use case, a TREATMENT, an analysis of the piece \
-(thesis, audience, specific entities, emotional beat, hook) and an excerpt of the piece itself, \
-and you turn them into a single render-ready prompt.
+(thesis, audience, facts, visual anchors, emotional beat, hook) and an excerpt of the piece \
+itself, and you turn them into a single render-ready prompt.
 
 ### Write the prompt in this order (earlier = more weight)
 1. SCENE: what this image is for and where it takes place, as the use case asks.
-2. SUBJECT: who or what carries the frame — built from the piece's SPECIFIC ENTITIES, never a
+2. SUBJECT: who or what carries the frame — built from the piece's VISUAL ANCHORS, never a
    generic stand-in or a symbol. 3. DETAILS: composition for the requested aspect ratio;
    LIGHTING precisely named ("soft window light from camera left with natural fill"); CAMERA,
    one body, one focal length, one aperture ("shot on Sony A7R IV, 35mm f/2"); FINISH with real
-   texture and controlled imperfection ("Kodak Portra 400 tones, subtle film grain"). For an
-   editorial graphic: the type weight, the color fields and exactly where the hook sits.
+   texture and controlled imperfection ("Kodak Portra 400 tones, subtle film grain, visible skin
+   pores, fabric wear"). For an editorial graphic: the type weight, the color fields and exactly
+   where the hook sits.
 4. CONSTRAINTS last.
 
 ### Hard rules
 - ONE flowing natural-language paragraph of 40-90 words. No keyword stacking, no weight syntax.
-- Depict at least two of the specific entities literally, and name the ones you used in
+- Depict at least two of the visual anchors literally, and name the ones you used in
   required_entities.
+- The FACTS are context only. NEVER put a company, brand, product, model or report name, or a
+  number, in the prompt — a renderer cannot draw a name, it writes it as garbled text or invents
+  a prop that "represents" it.
+- Nothing in the scene carries words: never "displaying the X dashboard", "titled", "labelled",
+  "a sign reading", or a report, magazine or screen "with text". Screens and documents may
+  appear, blank or abstract.
 - Stock symbols are REFUSED, whatever the topic: """ + ", ".join(CLICHE_OBJECTS) + """. Find
-  what THIS piece names instead.
+  what THIS piece shows instead.
 - Quotation marks appear ONLY around the hook on the editorial_graphic treatment, copied exactly.
   Every other treatment carries no quoted text and no hook.
 """
@@ -213,7 +244,8 @@ and you turn them into a single render-ready prompt.
 _VOCABULARY_RULES = (
     "- Specificity IS realism. Never lean on generic tags — "
     + ", ".join(DEAD_QUALITY_TAGS)
-    + " are dead words; concrete gear, named lighting and tactile texture do that work.\n"
+    + " are dead words; photorealistic plus concrete gear, named lighting and tactile texture "
+      "do that work.\n"
     "- Photography and editorial-design vocabulary only. A single word like "
     + ", ".join(DEAD_STYLE_WORDS)
     + " drags the image away from a real photograph or a designed graphic.\n")
@@ -224,8 +256,8 @@ _SYSTEM_PROMPT_TAIL = """- The renderer ignores negation, so never write "no X" 
   instead: plain unbranded clothing, clean unmarked walls.
 - A SCREEN is where marks appear even when the brief never asked for them: a described laptop,
   monitor or phone invites the renderer to fill its glass with plausible UI, tiled app icons and
-  company marks. Use one only when it genuinely IS the subject, and then put the weight on the
-  person's reaction and the room around it rather than on what the glass shows.
+  company marks. Use one only when it genuinely belongs, keep its glass blank or abstract, and
+  put the weight on the person's reaction and the room around it.
 - One cohesive scene — no collages or split screens.
 - When a person appears: face clearly visible and well-lit; describe wardrobe, expression
   and pose, never facial features beyond what the context already declares (identity is
@@ -241,7 +273,7 @@ _SYSTEM_PROMPT_TAIL = """- The renderer ignores negation, so never write "no X" 
 Respond with ONLY a JSON object:
 {"focal_concept": "<the one idea the image depicts, under 20 words>",
  "prompt": "<the brief, one 40-90 word paragraph>",
- "required_entities": ["<each specific entity the prompt depicts>"],
+ "required_entities": ["<each visual anchor the prompt depicts>"],
  "hook_text": "<the hook exactly as quoted in the prompt, or null>"}"""
 
 _SYSTEM_PROMPT = _SYSTEM_PROMPT_HEAD + _VOCABULARY_RULES + _SYSTEM_PROMPT_TAIL
@@ -263,6 +295,23 @@ _NO_AVATAR_PEOPLE = (
     "participants caught mid-task — candid, partly turned, absorbed in the situation — never "
     "as a posed model smiling at the camera, which reads as stock photography.\n")
 
+# Phrases that put WORDS on a surface (gauntlet round 1 of #2241: "a tablet displaying the
+# Originality.ai dashboard" came back reading 'Originality ai', a report cover as garbled words).
+# A screen or a document may appear; what it may not do is carry named content.
+_WORDS_ON_SURFACE = re.compile(
+    r"\b(?:titled|entitled|labell?ed|captioned|inscribed|emblazoned)\b"
+    r"|\b(?:sign|label|tag|banner|poster|cover|caption|headline|note|card|screen|page)s?\s+"
+    r"(?:that\s+)?(?:reads|reading|says|saying)\b"
+    r"|\breading\s*[:\"“']"
+    r"|\b(?:display(?:s|ing)?|show(?:s|ing))\s+(?:the|a|an|its|their)?\s*(?:[\w.\-]+\s+){0,3}"
+    r"(?:dashboard|website|homepage|app|interface|logo|text|words|headline|title|report)\b"
+    r"|\b(?:report|magazine|screen|document|page|cover|book|slide)s?\s+with\s+(?:the\s+)?"
+    r"(?:text|words|writing|headline|title|caption)s?\b",
+    re.IGNORECASE)
+
+# Name tokens a prompt may carry anyway: the platform the use case itself names.
+_ALLOWED_NAME_TOKENS = frozenset({"LinkedIn"})
+
 _MIN_PROMPT_CHARS = 60
 _MAX_PROMPT_CHARS = 2400
 _EXCERPT_CHARS = 3000
@@ -283,9 +332,6 @@ _CHECK_MAX_TOKENS = 1500
 
 _QUOTED = re.compile(r'"([^"\n]{1,200})"|“([^”\n]{1,200})”')
 
-_PALETTE_DEFAULT = "deep navy and warm off-white"
-
-
 @dataclass
 class ImageBrief:
     """One authored image prompt plus the facts the renderer and the vision gate need alongside it.
@@ -299,9 +345,10 @@ class ImageBrief:
     produced a usable brief — the field a stored brief receipt needs to be auditable (issue #1992).
 
     `concept` is Stage 1's analysis (None when it was unavailable), `treatment` the approach the
-    brief took, `required_entities` the concept entities the prompt actually depicts, `hook_text`
-    the ONE string the render may carry (editorial_graphic only), and `prompt_check` what Stage 3
-    said — all recorded on the brief receipt (issue #2241).
+    brief took, `required_entities` the visual anchors the prompt actually depicts, `hook_text`
+    the ONE string the render may carry (editorial_graphic only), `prompt_check` what Stage 3
+    said, and `rejections` the reason every rejected attempt was thrown out — all recorded on the
+    brief receipt (issue #2241), so a fallback says WHY it fell back.
     """
 
     prompt: str
@@ -315,23 +362,48 @@ class ImageBrief:
     required_entities: tuple[str, ...] = ()
     hook_text: Optional[str] = None
     prompt_check: Optional[str] = None
+    rejections: tuple[str, ...] = ()
 
 
-def usable_entities(concept: Optional[ImageConcept]) -> list[str]:
-    """The concept's entities minus any stock symbol.
+def usable_anchors(concept: Optional[ImageConcept]) -> list[str]:
+    """The DEPICTABLE things a prompt for this concept must show.
 
-    A cliché is refused even when the text names it, so asking a prompt to depict one would make
-    the brief unpassable. Shared with the vision gate, which asks about the same entities.
+    The concept's ``visual_anchors``; for a concept that has none (an older receipt, or a reply
+    that named no anchors), its plain common-noun ``specific_entities`` instead — never a name or a
+    number. Stock symbols are dropped either way: a cliché is refused even when the text names it,
+    so asking a prompt to depict one would make the brief unpassable. Shared with the vision gate,
+    which asks about the same anchors.
 
     Args:
         concept: Stage 1's analysis, or None.
 
     Returns:
-        The entities a prompt may be asked to depict; empty without a concept.
+        The anchors a prompt may be asked to depict; empty without a concept.
     """
     if concept is None:
         return []
-    return [e for e in concept.specific_entities if not cliche_hit(e)]
+    anchors = concept.visual_anchors or tuple(
+        e for e in concept.specific_entities if not is_fact_only(e))
+    return [a for a in anchors if not cliche_hit(a) and not name_tokens(a)]
+
+
+def fact_name_tokens(concept: Optional[ImageConcept]) -> set[str]:
+    """Every name/number token of the concept's FACTS — what a render prompt must never carry.
+
+    Args:
+        concept: Stage 1's analysis, or None.
+
+    Returns:
+        Tokens as written (case-sensitive), minus ``_ALLOWED_NAME_TOKENS``.
+    """
+    tokens: set[str] = set()
+    for fact in (concept.specific_entities if concept else ()):
+        if is_fact_only(fact):
+            tokens.update(name_tokens(fact))
+            first = fact.split()[0].strip(".,") if fact.split() else ""
+            if first[:1].isupper() and first not in GENERIC_ACRONYMS:
+                tokens.add(first)
+    return {t for t in tokens if len(t) >= 2 and t not in _ALLOWED_NAME_TOKENS}
 
 
 def _treatment_for(concept: Optional[ImageConcept], avatar: Optional[dict[str, Any]]) -> str:
@@ -351,17 +423,33 @@ def _quoted_strings(prompt: str) -> list[str]:
     return [(a or b).strip() for a, b in _QUOTED.findall(prompt or "")]
 
 
-def _deterministic_failure(prompt: str, *, entities: list[str], weak: bool,
-                           hook_text: Optional[str]) -> Optional[str]:
+def _strip_hook(prompt: str, hook_text: Optional[str]) -> str:
+    if not hook_text:
+        return prompt
+    for quote in (f'"{hook_text}"', f"“{hook_text}”"):
+        prompt = prompt.replace(quote, " ")
+    return prompt
+
+
+def _named_fact(prompt: str, names: set[str]) -> Optional[str]:
+    for name in sorted(names, key=len, reverse=True):
+        if re.search(rf"(?<![\w$]){re.escape(name)}(?![\w])", prompt):
+            return name
+    return None
+
+
+def _deterministic_failure(prompt: str, *, anchors: list[str], weak: bool,
+                           hook_text: Optional[str],
+                           names: Optional[set[str]] = None) -> Optional[str]:
     """Why ``prompt`` fails the deterministic checks, or None when it passes them.
 
     Shared by Stage 2's validation and Stage 3, so the two can never disagree about a cliché,
-    a stray quote or entity coverage.
+    a stray quote, a name, words on a surface, or anchor coverage.
     """
     hit = cliche_hit(prompt)
     if hit:
         return (f"the prompt named the stock symbol {hit!r} — build the image on the piece's "
-                f"own entities instead")
+                f"own visual anchors instead")
     quoted = _quoted_strings(prompt)
     if hook_text:
         if not any(q == hook_text for q in quoted):
@@ -372,16 +460,25 @@ def _deterministic_failure(prompt: str, *, entities: list[str], weak: bool,
     elif quoted:
         return (f"the prompt quotes text ({quoted[0]!r}) but this treatment carries no words "
                 f"at all")
-    if not weak and len(entities) >= WEAK_ENTITY_FLOOR:
-        depicted = [e for e in entities if entity_mentioned(e, prompt)]
+    unhooked = _strip_hook(prompt, hook_text)
+    named = _named_fact(unhooked, names or set())
+    if named:
+        return (f"the prompt names {named!r}, a fact the image cannot draw — show the visual "
+                f"anchors, never a name or a number")
+    words = _WORDS_ON_SURFACE.search(unhooked)
+    if words:
+        return (f"the prompt puts words on a surface ({words.group(0).strip()!r}) — screens and "
+                f"documents stay blank or abstract")
+    if not weak and len(anchors) >= WEAK_ENTITY_FLOOR:
+        depicted = [a for a in anchors if entity_mentioned(a, prompt)]
         if len(depicted) < WEAK_ENTITY_FLOOR:
-            return (f"the prompt depicts {len(depicted)} of the piece's specific entities; show "
-                    f"at least two of: {'; '.join(entities)}")
+            return (f"the prompt depicts {len(depicted)} of the piece's visual anchors; show at "
+                    f"least two of: {'; '.join(anchors)}")
     return None
 
 
-def _rejection(parsed: dict[str, Any], *, entities: list[str], weak: bool,
-               hook_text: Optional[str]) -> Optional[str]:
+def _rejection(parsed: dict[str, Any], *, anchors: list[str], weak: bool,
+               hook_text: Optional[str], names: Optional[set[str]] = None) -> Optional[str]:
     """Why an authored brief is unusable, or None. The reason goes back to the author verbatim."""
     prompt = str(parsed.get("prompt") or "").strip()
     focal = str(parsed.get("focal_concept") or "").strip()
@@ -393,20 +490,25 @@ def _rejection(parsed: dict[str, Any], *, entities: list[str], weak: bool,
     reply_hook = str(parsed.get("hook_text") or "").strip()
     if reply_hook.lower() not in ("", "null", "none") and not hook_text:
         return "the reply declared hook text, but only the editorial_graphic treatment has a hook"
-    return _deterministic_failure(prompt, entities=entities, weak=weak, hook_text=hook_text)
+    return _deterministic_failure(prompt, anchors=anchors, weak=weak, hook_text=hook_text,
+                                  names=names)
 
 
 _CHECK_PROMPT = """You are checking an image prompt BEFORE it is sent to a renderer.
 
 The piece's thesis: {thesis}
-Its specific entities: {entities}
+What the image should show: {anchors}
 
 The prompt:
 <prompt>{prompt}</prompt>
 
 Would an image rendered from this prompt let a stranger guess the piece's thesis? Name which of
-the entities the prompt depicts. Respond with ONLY a JSON object:
+the things above the prompt depicts. Respond with ONLY a JSON object:
 {{"guessable": true|false, "depicted_entities": ["..."], "reason": "<one short sentence>"}}"""
+
+
+def _concept_is_weak(concept: Optional[ImageConcept], anchors: list[str]) -> bool:
+    return concept is None or concept.weak or len(anchors) < WEAK_ENTITY_FLOOR
 
 
 @llm_step("image_prompt_check")
@@ -414,9 +516,10 @@ def check_prompt_against_concept(prompt: str, concept: Optional[ImageConcept],
                                  hook_text: Optional[str]) -> tuple[bool, str]:
     """Stage 3: is this prompt worth rendering? Deterministic checks first, then ONE judge call.
 
-    The deterministic half (stock symbols, stray quoted text, entity coverage) always applies. The
-    ``lem-simple`` judge then asks whether a stranger could guess the thesis from the image; it
-    fails OPEN — an unreachable judge passes the prompt, since the vision gate still stands behind.
+    The deterministic half (stock symbols, stray quoted text, fact names, words on a surface,
+    anchor coverage) always applies. The ``lem-simple`` judge then asks whether a stranger could
+    guess the thesis from the image; it fails OPEN — an unreachable judge passes the prompt, since
+    the vision gate still stands behind.
 
     Args:
         prompt: The authored render prompt.
@@ -426,9 +529,10 @@ def check_prompt_against_concept(prompt: str, concept: Optional[ImageConcept],
     Returns:
         ``(ok, reason)`` — ``reason`` is the repair directive when ``ok`` is False.
     """
-    entities = usable_entities(concept)
-    weak = concept is None or concept.weak or len(entities) < WEAK_ENTITY_FLOOR
-    failure = _deterministic_failure(prompt, entities=entities, weak=weak, hook_text=hook_text)
+    anchors = usable_anchors(concept)
+    failure = _deterministic_failure(prompt, anchors=anchors,
+                                     weak=_concept_is_weak(concept, anchors),
+                                     hook_text=hook_text, names=fact_name_tokens(concept))
     if failure:
         return False, failure
     if concept is None:
@@ -441,7 +545,7 @@ def check_prompt_against_concept(prompt: str, concept: Optional[ImageConcept],
         response = client.chat.completions.create(
             model="lem-simple",
             messages=[{"role": "user", "content": _CHECK_PROMPT.format(
-                thesis=concept.thesis, entities="; ".join(entities) or "(none named)",
+                thesis=concept.thesis, anchors="; ".join(anchors) or "(none named)",
                 prompt=prompt)}],
             response_format={"type": "json_object"},
             temperature=0,
@@ -467,67 +571,85 @@ def _join(items: list[str]) -> str:
     return ", ".join(items[:-1]) + " and " + items[-1]
 
 
+def _plain_words(text: str) -> str:
+    """``text`` with stock symbols, quotes, names and numbers removed — safe to interpolate."""
+    words = _scrub_cliches(text).split()
+    # Interpolated mid-sentence, so ANY capitalised word is a name (or a sentence start, which is
+    # cheap to lose) — only the generic acronyms survive.
+    kept = [w for w in words
+            if not name_tokens(w) and not (w[:1].isupper() and w.strip(".,;:") not in
+                                           GENERIC_ACRONYMS)
+            and not any(ch in w for ch in "$%€£")]
+    return " ".join(kept)
+
+
+def _fallback_treatment(treatment: str, anchors: list[str]) -> str:
+    """The fallback's treatment: a photograph, never a graphic.
+
+    The deterministic graphic once rendered "a photographic cutout of $30K" (gauntlet round 1 of
+    #2241). A people_scene stays one; anything else is a concrete scene when there are anchors.
+    """
+    if treatment in (TREATMENT_PEOPLE, TREATMENT_CONCRETE):
+        return treatment
+    return TREATMENT_CONCRETE if anchors else TREATMENT_PEOPLE
+
+
 def _fallback_brief(content: str, *, surface: str, ratio: str, context: str,
                     avatar: Optional[dict[str, Any]] = None,
                     concept: Optional[ImageConcept] = None,
                     treatment: Optional[str] = None,
-                    brand_kit: Optional[str] = None) -> ImageBrief:
+                    rejections: tuple[str, ...] = ()) -> ImageBrief:
     """Deterministic last resort when the brief author is down — built from the piece, not a set.
 
-    Every noun here is a RENDER request, so it is assembled only from the treatment and the
-    concept's own grounded entities, with every stock symbol scrubbed out of anything
-    interpolated. The old newsletter fallback was a workshop still-life (a brass valve, a gauge, a
-    gear) — the scene issue #2241 was filed about — and it is gone.
+    Every noun here is a RENDER request, so it is assembled only from the concept's visual
+    anchors (never its facts), as a people_scene or concrete_scene photograph, with every stock
+    symbol, name and number scrubbed out of anything interpolated. The old newsletter fallback was
+    a workshop still-life (a brass valve, a gauge, a gear) — the scene issue #2241 was filed about
+    — and the old graphic fallback put a number in as its subject; both are gone.
     """
-    treatment = treatment or _treatment_for(concept, avatar)
-    entities = [_scrub_cliches(e) for e in usable_entities(concept)]
-    entities = [e for e in entities if e]
+    treatment = _fallback_treatment(treatment or _treatment_for(concept, avatar),
+                                    usable_anchors(concept))
+    anchors = [_plain_words(a) for a in usable_anchors(concept)]
+    anchors = [a for a in anchors if a]
     use = _USE_LABELS.get(surface, _USE_LABELS[_DEFAULT_PRESET])
-    summary = _scrub_cliches(concept.thesis if concept else content)[:240]
-    hook = concept.hook_phrase if concept and treatment == TREATMENT_GRAPHIC else None
+    summary = _plain_words(concept.thesis if concept else content)[:240]
     finish = (f"composed for a {ratio} aspect ratio with the subject large in the central frame, "
-              f"soft window light with natural fill, subtle film grain, tactile real-world "
-              f"texture, plain unbranded surfaces, clean unmarked walls.")
+              f"soft window light with natural fill, subtle film grain, real texture with fabric "
+              f"wear and everyday imperfections, plain unbranded surfaces, clean unmarked walls.")
 
-    if treatment == TREATMENT_GRAPHIC and hook:
-        support = entities[0] if entities else summary[:80]
-        palette = brand_kit or _PALETTE_DEFAULT
-        prompt = (f'{context}A designed editorial graphic for a {use}: bold sans-serif type '
-                  f'reading "{hook}" set large in the left third, beside one photographic '
-                  f'cutout of {support} on a flat color field in {palette}, generous negative '
-                  f'space, high contrast, composed for a {ratio} aspect ratio.')
-    elif treatment == TREATMENT_PEOPLE:
-        who = _scrub_cliches(concept.audience) if concept and concept.audience else ""
+    if treatment == TREATMENT_PEOPLE:
+        who = _plain_words(concept.audience) if concept and concept.audience else ""
         who = who or "a small working team"
-        around = _join(entities[:3]) if entities else f"the situation this describes: {summary}"
-        prompt = (f"{context}A candid documentary photograph for a {use}: {who} caught "
-                  f"mid-conversation around {around}, in a real working setting, eye-level "
-                  f"medium shot, shot on a 35mm lens at f/2, natural skin texture, plain "
+        around = _join(anchors[:3]) if anchors else f"the situation this describes: {summary}"
+        prompt = (f"{context}A photorealistic candid documentary photograph for a {use}: {who} "
+                  f"caught mid-conversation around {around}, in a real working setting, "
+                  f"eye-level medium shot, shot on a 35mm lens at f/2, visible skin pores, plain "
                   f"unbranded clothing, {finish}")
-    elif len(entities) >= 2:
-        extra = f", with {entities[2]} in the frame" if len(entities) > 2 else ""
-        prompt = (f"{context}A candid editorial photograph for a {use} of {entities[0]} and "
-                  f"{entities[1]} in the real place this happens{extra}, shot on a 50mm lens "
-                  f"at f/2.8, {finish}")
+    elif len(anchors) >= 2:
+        extra = f", with {anchors[2]} in the frame" if len(anchors) > 2 else ""
+        prompt = (f"{context}A photorealistic candid editorial photograph for a {use} of "
+                  f"{anchors[0]} and {anchors[1]} in the real place this happens{extra}, shot on "
+                  f"a 50mm lens at f/2.8, {finish}")
     else:
-        prompt = (f"{context}A candid editorial photograph for a {use} of the real, specific "
-                  f"situation this describes: {summary}. One clear focal subject, shot on a 50mm "
-                  f"lens at f/2.8, {finish}")
+        subject = anchors[0] if anchors else f"the real, specific situation this describes: {summary}"
+        prompt = (f"{context}A photorealistic candid editorial photograph for a {use} of "
+                  f"{subject}. One clear focal subject, shot on a 50mm lens at f/2.8, {finish}")
     return ImageBrief(prompt=prompt, ratio=ratio, surface=surface,
                       style_preset=surface if surface in _STYLE_PRESETS else _DEFAULT_PRESET,
                       focal_concept=(summary[:120] or "professional LinkedIn visual"),
                       fallback=True, concept=concept, treatment=treatment,
-                      required_entities=tuple(e for e in entities if entity_mentioned(e, prompt)),
-                      hook_text=hook)
+                      required_entities=tuple(a for a in anchors if entity_mentioned(a, prompt)),
+                      hook_text=None, rejections=tuple(rejections))
 
 
-def _analysis_block(concept: Optional[ImageConcept], entities: list[str],
+def _analysis_block(concept: Optional[ImageConcept], anchors: list[str],
                     hook: Optional[str]) -> str:
     if concept is None:
         return ("Analysis of the piece: unavailable — read the excerpt and build the image on "
-                "the specific things it names.\n")
+                "the specific, depictable things it describes.\n")
     analysis = {"thesis": concept.thesis, "audience": concept.audience,
-                "specific_entities": entities, "emotional_beat": concept.emotional_beat}
+                "facts_context_only_never_drawn": list(concept.specific_entities),
+                "visual_anchors_to_depict": anchors, "emotional_beat": concept.emotional_beat}
     block = f"Analysis of the piece: {json.dumps(analysis)}\n"
     if hook:
         block += f'Hook — the ONLY text in the image, quoted exactly: "{hook}"\n'
@@ -555,11 +677,12 @@ def build_image_brief(content: str, *, surface: str, ratio: str = "1:1",
             author only — never a gate and never in the fallback, because relevance outranks
             variety and a fallback prompt is read by the renderer as a request.
         concept: Stage 1's analysis, when the caller already has one; otherwise this runs it.
-        brand_kit: A pre-rendered brand clause (palette, type), folded into the author's context
-            and the graphic fallback's palette.
+        brand_kit: A pre-rendered brand clause (palette, type), folded into the AUTHOR's context
+            only — never pasted into the fallback, which is a render prompt.
 
     Returns:
-        The brief. ``fallback`` is True when the deterministic template shipped.
+        The brief. ``fallback`` is True when the deterministic template shipped; ``rejections``
+        carries why every rejected attempt was thrown out.
     """
     from cqc_lem.utilities.ai.ai_helper import _call_llm, _loads_json_object, _profile_visual_context
     from cqc_lem.utilities.avatar.attributes import subject_directive
@@ -573,8 +696,9 @@ def build_image_brief(content: str, *, surface: str, ratio: str = "1:1",
             concept = None
     preset = surface if surface in _STYLE_PRESETS else _DEFAULT_PRESET
     treatment = _treatment_for(concept, avatar)
-    entities = usable_entities(concept)
-    weak = concept is None or concept.weak or len(entities) < WEAK_ENTITY_FLOOR
+    anchors = usable_anchors(concept)
+    weak = _concept_is_weak(concept, anchors)
+    names = fact_name_tokens(concept)
     hook = concept.hook_phrase if concept and treatment == TREATMENT_GRAPHIC else None
     # The likeness directive leads the context on purpose (issue #744): with nothing stating who
     # a depicted person is, the model invents one and the LoRA renders the invention.
@@ -585,7 +709,7 @@ def build_image_brief(content: str, *, surface: str, ratio: str = "1:1",
         f"{context}USE CASE: {_STYLE_PRESETS[preset]}\n"
         f"{_TREATMENT_TEMPLATES[treatment]}\n\n"
         f"Compose for a {ratio} aspect ratio.\n"
-        + _analysis_block(concept, entities, hook)
+        + _analysis_block(concept, anchors, hook)
         + (f"Brand: {brand_kit}\n" if brand_kit else "")
         + ("" if avatar else _NO_AVATAR_PEOPLE)
         + (f"Content shape: {content_shape}\n" if content_shape else "")
@@ -596,6 +720,10 @@ def build_image_brief(content: str, *, surface: str, ratio: str = "1:1",
           f"<content>{(content or '')[:_EXCERPT_CHARS]}</content>")
 
     reason = "unknown"
+    rejections: list[str] = []
+    # Attempts where the AUTHOR never answered usably (exception, empty, unparsable) — as opposed
+    # to answering with a brief the checks refused. Only an all-outage fallback is a warning.
+    outages = 0
     judged = False
     # A brief that passed every deterministic check but that Stage 3's judge objected to: shipped
     # if the one repair pass cannot do better, because a real brief beats the template.
@@ -620,6 +748,8 @@ def build_image_brief(content: str, *, surface: str, ratio: str = "1:1",
             if not raw.strip():
                 # The shape an exhausted token budget takes: finish_reason='length', no content.
                 reason = f"empty response (finish_reason={getattr(choice, 'finish_reason', None)})"
+                rejections.append(reason)
+                outages += 1
                 log_debug("Image brief came back empty", surface=surface, attempt=attempt,
                           ai_model="lem-medium", reason=reason)
                 continue
@@ -627,12 +757,16 @@ def build_image_brief(content: str, *, surface: str, ratio: str = "1:1",
             parsed = _loads_json_object(raw)
             if parsed is None:
                 reason = "unparsable JSON (fenced or malformed reply)"
+                rejections.append(reason)
+                outages += 1
                 log_debug("Image brief reply was not valid JSON", surface=surface,
                           attempt=attempt, ai_model="lem-medium", reason=reason)
                 continue
-            rejection = _rejection(parsed, entities=entities, weak=weak, hook_text=hook)
+            rejection = _rejection(parsed, anchors=anchors, weak=weak, hook_text=hook,
+                                   names=names)
             if rejection:
                 reason = rejection
+                rejections.append(reason)
                 log_debug("Image brief failed validation — retrying", surface=surface,
                           attempt=attempt, ai_model="lem-medium", reason=reason)
                 continue
@@ -641,8 +775,8 @@ def build_image_brief(content: str, *, surface: str, ratio: str = "1:1",
                 prompt=prompt, ratio=ratio, surface=surface, style_preset=preset,
                 focal_concept=str(parsed["focal_concept"]).strip(), fallback=False,
                 concept=concept, treatment=treatment,
-                required_entities=tuple(e for e in entities if entity_mentioned(e, prompt)),
-                hook_text=hook)
+                required_entities=tuple(a for a in anchors if entity_mentioned(a, prompt)),
+                hook_text=hook, rejections=tuple(rejections))
             if concept is None or judged:
                 brief.prompt_check = (f"repaired after: {reason}" if judged
                                       else "deterministic checks passed")
@@ -653,22 +787,30 @@ def build_image_brief(content: str, *, surface: str, ratio: str = "1:1",
                 return brief
             # ONE repair pass through the author with the judge's reason.
             judged, judged_brief, reason = True, brief, why
+            rejections.append(why)
             log_debug("Image prompt check failed — one repair pass", surface=surface,
                       attempt=attempt, action_type="image_brief", reason=why)
         except Exception as e:
             # One condition, ONE warning: the fallback below carries it — per-attempt noise
             # would double-file the same fault with the escalation cron.
             reason = f"{type(e).__name__}: {e}"[:120]
+            rejections.append(reason)
+            outages += 1
             log_debug("Image brief attempt failed", error=str(e), ai_model="lem-medium",
                       attempt=attempt)
     if judged_brief is not None:
         # Expected, not a defect: a valid brief the judge doubted, and the repair fell short.
         log_debug("Image brief repair fell short — shipping the judged brief", surface=surface,
                   action_type="image_brief", reason=reason)
+        judged_brief.rejections = tuple(rejections)
         return judged_brief
-    # Carry WHY on the warning: this fell back on every generation for weeks and the message
-    # alone gave no way to tell an outage from an empty response from a validation reject.
-    log_warning("Image brief fell back to the deterministic template", surface=surface,
-                action_type="image_brief", reason=reason)
+    # WHY it fell back, every attempt's reason, at INFO: a validation fallback is the engine
+    # working, not a fault. Only an author that never answered usably at all — every attempt an
+    # exception, an empty reply or unparsable JSON — is an outage, and that alone is a warning.
+    log_info("Image brief fell back to the deterministic template", surface=surface,
+             action_type="image_brief", reason=reason, rejections=" | ".join(rejections))
+    if outages == _BRIEF_ATTEMPTS:
+        log_warning("Image brief author unavailable — deterministic template shipped",
+                    surface=surface, action_type="image_brief", reason=reason)
     return _fallback_brief(content, surface=surface, ratio=ratio, context=context, avatar=avatar,
-                           concept=concept, treatment=treatment, brand_kit=brand_kit)
+                           concept=concept, treatment=treatment, rejections=tuple(rejections))

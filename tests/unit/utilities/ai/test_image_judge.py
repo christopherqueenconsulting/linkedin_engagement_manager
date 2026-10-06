@@ -20,6 +20,7 @@ from cqc_lem.utilities.ai.image_gen import (
     inspect_render_quality,
     render_image_gated,
     rubric_repair_directive,
+    stray_texts,
     with_no_marks,
 )
 
@@ -317,3 +318,73 @@ class TestHookTextException:
         with patch.object(image_gen, "_render_via_gpt_image", return_value="/tmp/g.png") as gpt:
             image_gen._render_with_backend("A graphic.", hook_text=_HOOK)
         assert f'exactly "{_HOOK}"' in gpt.call_args[0][0]
+
+
+# The blind descriptions gpt-4o-mini returned for gauntlet round 1 of #2241, verbatim.
+_ED16_BLIND = ('The image features a stack of cash, specifically bundles of hundred-dollar bills, '
+               'placed on a contrasting black and yellow background. The visible text reads, '
+               '"Stop wasting your budget!" and "$30K" is displayed on a piece of torn paper next '
+               'to the cash.')
+_ED18_BLIND = ('The image features a magazine titled "AI posts fall flat" alongside a tablet '
+               'displaying the text "Originality ai." The setting has a warm, neutral background, '
+               'and the magazine includes a blue and green arrow graphic, with additional text at '
+               'the bottom that reads "2013 Eletinain Lintedin Eath mae 3 Lugolictily. Impare '
+               'Reporctt."')
+_ED17_BLIND = ('The image features two black devices on a desk, set in a modern office. The '
+               'visible text reads, "Web search isn’t enough."')
+
+
+class TestStrayTextInTheBlindDescription:
+    def test_ed16_the_number_beside_the_hook_is_stray(self):
+        assert stray_texts(_ED16_BLIND, "Stop wasting your budget!") == ["$30K"]
+
+    def test_ed18_the_tablet_and_report_text_is_stray(self):
+        assert stray_texts(_ED18_BLIND, "AI posts fall flat") == [
+            "Originality ai.", "2013 Eletinain Lintedin Eath mae 3 Lugolictily. Impare Reporctt."]
+
+    def test_ed17_only_the_hook_is_clean(self):
+        assert stray_texts(_ED17_BLIND, "Web search isn’t enough") == []
+
+    @pytest.mark.parametrize("blind,expected", [
+        ("A man reading a printed report at a desk. There is no visible text.", []),
+        ("A storefront with a sign reading OPEN LATE. A woman walks past.", ["OPEN LATE"]),
+        ('A folder labeled QUARTERLY on a desk.', ["QUARTERLY"]),
+    ])
+    def test_unquoted_text_after_a_text_verb_counts_but_reading_alone_does_not(self, blind,
+                                                                              expected):
+        found = stray_texts(blind, None)
+        assert len(found) == len(expected)
+        assert all(f.startswith(e) for f, e in zip(found, expected))
+
+    @pytest.mark.parametrize("blind,hook", [(_ED16_BLIND, "Stop wasting your budget!"),
+                                            (_ED18_BLIND, "AI posts fall flat")])
+    def test_stray_text_fails_the_gate_even_when_the_judge_scores_text_5(self, tmp_path, blind,
+                                                                         hook):
+        verdict, _ = _judge(tmp_path, blind=blind, hook_text=hook,
+                            answer=_answer(dict(_GOOD_RUBRIC, text_accuracy=5), text_seen=hook))
+        assert not verdict.acceptable
+        assert verdict.rubric["text_accuracy"] == 2 and "text_accuracy" in verdict.failing
+        assert any(i.startswith("stray text:") for i in verdict.issues)
+
+    def test_the_blind_prompt_asks_for_every_piece_of_text(self):
+        assert "list EVERY piece of visible text verbatim" in BLIND_JUDGE_PROMPT
+        assert "small or garbled text, labels, and text on devices or paper" in BLIND_JUDGE_PROMPT
+
+
+class TestSpecificityNeedsTheThesis:
+    def test_a_thesis_the_judge_says_a_stranger_cannot_infer_caps_specificity(self, tmp_path):
+        verdict, _ = _judge(tmp_path, answer=_answer(thesis_inferable=False))
+        assert not verdict.acceptable and verdict.rubric["specificity"] == 3
+
+    def test_the_targeted_judge_is_asked_about_anchors_and_inference(self, tmp_path):
+        concept = ImageConcept(
+            thesis="t", audience="a", specific_entities=("Terralogic", "$30K"),
+            emotional_beat="e", hook_phrase="", treatment="people_scene",
+            treatment_rationale="r", visual_anchors=("a marketing lead", "a printed checklist"))
+        _verdict, create = _judge(tmp_path, concept=concept,
+                                  answer=_answer(entities_depicted={"a marketing lead": True,
+                                                                    "a printed checklist": True}))
+        text = create.call_args_list[1][1]["messages"][0]["content"][0]["text"]
+        assert "a marketing lead; a printed checklist" in text
+        assert "Terralogic" not in text, "a fact is never asked about as something visible"
+        assert "thesis_inferable" in text

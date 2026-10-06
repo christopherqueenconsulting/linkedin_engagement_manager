@@ -248,6 +248,16 @@ def _recent_focal_concepts(user_id: int, limit: int = _VARIETY_WINDOW,
             for r in _recent_cover_receipts(user_id, limit, include_fallback)]
 
 
+def _recent_cover_treatments(user_id: int, limit: int = 3) -> list[str]:
+    """The treatments of the last `limit` covers, most-recent first (gauntlet round 1 of #2241).
+
+    Fallback receipts count too — a fallback cover still went out looking like its treatment. Fed
+    to Stage 1 so it prefers a different treatment, and to the deterministic graphic cap.
+    """
+    return [str(r.get("treatment")).strip() for r in _recent_cover_receipts(user_id, limit)
+            if str(r.get("treatment") or "").strip()]
+
+
 def _recent_cover_signals(user_id: int, limit: int = _VARIETY_WINDOW) -> list[str]:
     """What the last few covers looked like — ``"<treatment>: <focal concept>"`` — for the brief.
 
@@ -380,8 +390,11 @@ def generate_cover_for_edition(user_id: int, edition_id: int, title: Optional[st
             if edition_format or hook_style else None)
 
     try:
-        concept = analyze_content_for_image(_edition_full_text(subtitle, body), title=title,
-                                            surface="newsletter", user_id=user_id)
+        from cqc_lem.utilities.ai.image_concept import GRAPHIC_WINDOW
+        concept = analyze_content_for_image(
+            _edition_full_text(subtitle, body), title=title, surface="newsletter",
+            user_id=user_id,
+            recent_treatments=_recent_cover_treatments(user_id, GRAPHIC_WINDOW))
         # The avatar is resolved BEFORE the brief is authored: its declared subject clause is what
         # stops the prompt LLM inventing a different person for the LoRA to contradict (#744).
         brief = build_image_brief("\n\n".join(p for p in (title, subtitle, body) if p),

@@ -27,28 +27,52 @@ scored 5/5 against "a valve symbolising leaks". The engine is now four stages, s
 
 | Stage | Where | What it does |
 |---|---|---|
-| 1. Concept | `image_concept.analyze_content_for_image` | ONE `lem-medium` JSON call over up to 12k chars of the FULL text → `ImageConcept`: thesis, audience, 3–6 `specific_entities`, emotional beat, a 2–5 word `hook_phrase`, and a `treatment` |
+| 1. Concept | `image_concept.analyze_content_for_image` | ONE `lem-medium` JSON call over up to 12k chars of the FULL text → `ImageConcept`: thesis, audience, 3–6 `specific_entities` (FACTS), 3–5 `visual_anchors` (what is DRAWN), emotional beat, a 2–5 word `hook_phrase`, and a `treatment` |
 | 2. Brief | `image_brief.build_image_brief` | Use case + treatment template + concept + brand clause + a ≤3000-char excerpt → `{focal_concept, prompt, required_entities, hook_text}`, validated deterministically, retried up to twice with the reason |
 | 3. Prompt check | `image_brief.check_prompt_against_concept` | Deterministic checks, then ONE `lem-simple` judge: "could a stranger guess the thesis?" A fail buys ONE repair pass through Stage 2 |
 | 4. Blind judge | `image_gen.inspect_render_quality(..., concept=, hook_text=)` | Two `lem-vision` calls: a BLIND description, then targeted questions scored on a rubric |
 
-**Stage 1 grounds its entities.** The prompt forbids inventing one, and `parse_concept` enforces it:
-an entity that does not appear in the source (case-insensitive, loose word stems —
-`entity_mentioned`) is dropped. Fewer than two survivors marks the concept `weak` — still usable for
-treatment and thesis, but the entity-coverage checks downstream stand down. A hook that is not 2–5
-words, runs past 32 chars, or only restates the title is dropped; an `editorial_graphic` left with
-no hook becomes a `concrete_scene`, and a `metaphor_last_resort` with three or more grounded
-entities is overruled to `concrete_scene` ("only when nothing concrete exists"). Any failure
-returns `None`, and every caller has a path without a concept.
+**Facts are not anchors (gauntlet round 1).** The first live run against user 1's real editions
+returned entities like "Terralogic", "GPT-5.2", "Stanford HAI", "2025 Edelman-LinkedIn … Report"
+and "53.7%". A renderer cannot draw a name: it wrote them as garbled text on a tablet and a report
+cover, or invented "two AI accelerator boxes representing Claude Opus 4.5 and GPT-5.2" — and the
+judge rightly scored specificity 1 on all four covers. So Stage 1 returns two lists:
+
+- `specific_entities` are FACTS, grounded in the source (case-insensitive loose stems,
+  `entity_mentioned`; an invented one is dropped). They feed the thesis and hook and are **never
+  drawn or written**. A capitalised common noun the source also uses in lowercase is normalised
+  to lowercase, so what stays capitalised is a name.
+- `visual_anchors` are DEPICTABLE — roles, places, physical artifacts, situations. `anchor_rejection`
+  refuses, deterministically, any anchor with a digit, a capitalised token past its first word, a
+  capitalised first word the source never lowercases, or any token of a proper-noun fact;
+  `GENERIC_ACRONYMS` (AI, B2B, CEO…) are exempt. An anchor with nothing grounded in the source is
+  dropped too. Fewer than two survivors marks the concept `weak`, and the coverage checks stand
+  down. Briefs, Stage 3 and the vision judge's specificity all work from `usable_anchors()` — the
+  anchors, or for a concept with none, its plain common-noun facts.
+
+**Hooks.** 2–5 words, ≤32 chars, a curiosity gap or a concrete contrast from the thesis: no `!`, no
+imperative opener ("Stop…", "Start…", "Don't…", "Cut…" — `_IMPERATIVE_OPENERS`), never a
+restatement of the title. Stated in the prompt and enforced in `_valid_hook`; an
+`editorial_graphic` left with no hook becomes a `concrete_scene`, and a `metaphor_last_resort` with
+three or more anchors is overruled to `concrete_scene`. Any failure returns `None`, and every caller
+has a path without a concept.
+
+**Treatment variety.** Every round-1 edition chose `editorial_graphic`, so the series had none.
+`analyze_content_for_image(..., recent_treatments=)` tells the analyst what the author's last images
+used and to prefer a different one; for `surface="newsletter"` it also biases toward
+`people_scene` (LinkedIn's guidance: real faces beat clipart) and reserves `editorial_graphic` for
+when a single number or contrast IS the thesis. Then `enforce_graphic_cap` makes it hard: at most
+ONE graphic in any `GRAPHIC_WINDOW` (3) consecutive covers — a graphic within two of the last one
+becomes a `people_scene`, noted in `treatment_rationale`.
 
 **Treatments** (`_TREATMENT_TEMPLATES`; Stage 1 picks, an avatar always forces `people_scene`
 because a person IS the subject and the LoRA cannot set type):
 
 | Treatment | When | The image |
 |---|---|---|
-| `people_scene` | The piece is about people, teams, clients, a decision | A candid documentary photo of the audience in the situation it describes |
-| `editorial_graphic` | The core is a number, contrast or sharp claim | A designed graphic whose ONLY text is the hook, quoted exactly, bold sans, placement stated, beside one element from the entities |
-| `concrete_scene` | A specific tangible situation exists | That situation, photographed — a screen is allowed when it IS the subject |
+| `people_scene` | The piece is about people, teams, clients, a decision — the cover default | A photorealistic candid documentary photo of the audience in the situation, with real texture (pores, fabric wear, imperfections — not studio polish) |
+| `editorial_graphic` | A single number or contrast IS the thesis; ≤1 per 3 covers | A designed graphic whose ONLY text is the hook, quoted exactly, bold sans, placement stated, beside one element from the anchors |
+| `concrete_scene` | A specific tangible situation exists | That situation, photorealistic, with real texture; screens and documents blank or abstract |
 | `metaphor_last_resort` | Nothing concrete exists | An uncommon, piece-specific metaphor — never a cliché |
 
 **Per-surface presets** (`_STYLE_PRESETS`) now state only the USE CASE — format and where it has to
@@ -59,9 +83,13 @@ never offer a subject: a menu of objects is exactly what every cover picked from
 gauge, light bulb, puzzle piece/jigsaw, handshake, chess, robot/android, glowing brain/neural network
 glow, circuit board, binary/matrix code, rocket, target/dartboard/bullseye, mountain summit, compass,
 hourglass, domino, chain link, maze, ladder, lock and key/padlock, crystal ball, magnifying glass —
-plus the stock office (#1992): person at a laptop, typing hands, hands on a keyboard, coffee with a
-notebook. Matched by `cliche_hit` as whole words in any inflection (`pipes`, `piping`, `dripping`),
-multi-word entries with an optional article between words; "target audience" and the other business
+money and stock-business imagery (round 1 shipped a stack of $100 bills): stack/pile/bundle of cash,
+pile of money, dollar bills, banknotes, pile/stack of coins, piggy bank, money bag, a calculator with
+coins, shaking hands, thumbs up, holograms, a glowing dashboard, data streams — plus the stock office
+(#1992): person at a laptop, typing hands, hands on a keyboard, coffee with a notebook. Matched by
+`cliche_hit` as whole words, EVERY word in any inflection (`pipes`, `stacks of cash`), multi-word
+entries with an optional article between words, pairings (coffee + notebook, calculator + coins)
+anywhere in the text; "target audience" and the other business
 senses of *target* never count. ONE list, read by the author's system prompt, the brief validator
 (**whole prompt, every surface, the avatar path too**), the deterministic fallback (scrubbed out of
 anything it interpolates), and the vision judge's targeted question. A bare `laptop`, `desk` or
@@ -69,15 +97,27 @@ anything it interpolates), and the vision judge's targeted question. A bare `lap
 
 **What `_rejection` refuses**, each with the reason fed back to the next attempt: length bounds,
 refusal phrasing, any cliché, a declared `hook_text` off the graphic treatment, any quoted text
-other than the hook (and a graphic whose prompt does not quote its hook exactly), and — unless the
-concept is weak — a prompt depicting fewer than two of the concept's entities.
+other than the hook (and a graphic whose prompt does not quote its hook exactly), **any name or
+number token of a proper-noun/number fact** outside the quoted hook (`fact_name_tokens`,
+case-sensitive; "LinkedIn" alone is allowed, since the use case names it), **any phrase that puts
+words on a surface** (`_WORDS_ON_SURFACE`: "displaying the X dashboard", "titled", "labelled", "a
+sign reading", a report/magazine/screen "with text" — "a man reading a report" is an activity and
+passes; screens and documents may appear, blank or abstract), and — unless the concept is weak — a
+prompt depicting fewer than two visual anchors.
 
-**The deterministic fallback is built from the piece.** `_fallback_brief` assembles the prompt from
-the treatment and the concept's own entities ("A candid editorial photograph for a LinkedIn
-newsletter cover of unpaid invoices and payroll run in the real place this happens…"); with no
-concept, from the excerpt with every cliché scrubbed out. The brass-valve workshop still-life is
-deleted. The fallback template IS a render prompt, so every noun in it is a request: it still never
-carries negation, dead words, or a caller's `avoid_terms`.
+**The deterministic fallback is built from the piece, and is always a photograph.**
+`_fallback_brief` assembles a `people_scene` or `concrete_scene` from the concept's visual anchors
+("A photorealistic candid editorial photograph for a LinkedIn newsletter cover of a consultant and
+a printed audit checklist…"); a graphic or metaphor treatment falls back to `concrete_scene` (or
+`people_scene` with no anchors). Round 1's graphic fallback rendered "a photographic cutout of
+$30K" — that branch is gone. Anything interpolated (anchors, audience, thesis, excerpt) loses its
+stock symbols, quotes, names and numbers first (`_plain_words`). The brass-valve workshop
+still-life is deleted. The fallback template IS a render prompt, so every noun in it is a request:
+it never carries negation, dead words, the `brand_kit` clause (round 1 pasted "avoid: pipes,
+gears…" straight into one) or a caller's `avoid_terms`. **A fallback says why**: every rejected
+attempt's reason is kept on `ImageBrief.rejections` (on the receipt), and the fallback is logged at
+INFO with all of them. Only an author that never answered usably — every attempt an exception, an
+empty reply or unparsable JSON — is also a WARNING.
 
 **`avoid_terms` is now a soft steer, never a gate.** The old object/family gate (#2000, #2241's
 first fix) could only push the author from one metaphor to the next; with stock symbols refused
@@ -86,12 +126,12 @@ caller's recent-image signals reach the AUTHOR only, as "make this one visibly d
 and composition", and never change the treatment.
 
 **The receipt carries the stages.** `ImageBrief` adds `concept`, `treatment`, `required_entities`
-(the concept entities the prompt actually depicts, computed, not trusted from the reply),
-`hook_text` and `prompt_check`; `write_brief_receipt` records all of them, the concept as its
+(the visual anchors the prompt actually depicts, computed, not trusted from the reply),
+`hook_text`, `prompt_check` and `rejections`; `write_brief_receipt` records all of them, the concept as its
 fields.
 
-**`brand_kit`** is a pre-rendered brand clause (palette, type) folded into the author's context and
-the graphic fallback's palette. The brand-kit table that produces it is a separate change.
+**`brand_kit`** is a pre-rendered brand clause (palette, type) folded into the AUTHOR's context
+only — never into the fallback. The brand-kit table that produces it is a separate change.
 
 **Cost.** Stage 1 (`lem-medium`) and Stage 3 (`lem-simple`) add two text calls to every brief —
 including each carousel slide and post image, which call `build_image_brief` without a concept. Both
@@ -112,13 +152,17 @@ rules that kill the AI sheen.
 The preset and that system prompt reach the model in the SAME request, so they can contradict each
 other silently: the `thumbnail` preset asked for an "illustration", the word the system prompt
 calls a dead word, and nothing compared the two (#1141). `DEAD_STYLE_WORDS` / `DEAD_QUALITY_TAGS`
-are ONE list the prompt names and `test_image_preset_drift.py` greps — over every preset, every
+are ONE list the prompt names and `test_image_preset_drift.py` greps ("photorealistic" left it in
+round 1, on OpenAI's gpt-image prompting guide —
+https://developers.openai.com/cookbook/examples/multimodal/image-gen-models-prompting-guide — which
+pairs it with real texture and no studio polish) — over every preset, every
 treatment template and every fallback — and that test also fails the build on a preset **no caller
 ever selects**, which is how `thumbnail` stayed wrong until #1141 wired
 `video_tutorials.generate_thumbnail` up to it.
 
 **NO text, letters, or logos in any render — EXCEPT one declared 2–5 word hook on the
-`editorial_graphic` treatment, verified by the judge.** Enforced in the system prompt and
+`editorial_graphic` treatment, verified by the judge.** No name or number of the piece's facts in a
+prompt either, and nothing in the scene "titled", "labelled" or "displaying" named content. Enforced in the system prompt and
 `_rejection`, with `with_no_marks()` as the render-side belt: a brief carrying `hook_text` gets
 "The only text in the image is exactly "<hook>" — no other words, letters, numbers, logos,
 watermarks or UI" INSTEAD of the blanket ban (positively phrased for FLUX), and the printed-surface
@@ -177,9 +221,11 @@ prompt tends to confirm it (FineGRAIN, arXiv 2512.02161) — which is how a valv
 "a valve symbolising leaks". So:
 
 1. **Blind** — `BLIND_JUDGE_PROMPT` and the image, nothing else: "describe the main subject,
-   setting, any text (transcribed exactly), any objects." No brief, no thesis, no entities.
-2. **Targeted** — the concept + that blind description + the image: is each entity visibly
-   depicted; transcribe all text, does it equal the hook exactly; is any `CLICHE_OBJECTS` symbol
+   setting and objects, then list EVERY piece of visible text verbatim, each in double quotes,
+   including small or garbled text, labels, and text on devices or paper." No brief, no thesis, no
+   anchors.
+2. **Targeted** — the concept + that blind description + the image: is each visual anchor visibly
+   depicted (facts are never asked about — a name cannot be "visibly depicted"); transcribe all text, does it equal the hook exactly; is any `CLICHE_OBJECTS` symbol
    present; legible as a 400×225 thumbnail; AI artifacts (waxy skin, malformed hands, melted
    objects); would a viewer infer the thesis. Scored 1–5 on `RUBRIC_CRITERIA`: `specificity`,
    `no_cliche`, `thumbnail_read`, `text_accuracy`, `craft`, `scroll_stop`.
@@ -187,8 +233,13 @@ prompt tends to confirm it (FineGRAIN, arXiv 2512.02161) — which is how a valv
 **Acceptable iff** `specificity ≥ 4`, `no_cliche = 5`, `craft ≥ 4`, and `text_accuracy ≥ 4` (or
 n/a — no text expected, none seen). Deterministic overlays the judge cannot talk past: a cliché the
 BLIND description names (or the judge lists) caps `no_cliche` at 2; a transcription that is not the
-hook caps `text_accuracy` at 3, stray text with no hook at 2; fewer than two entities seen caps
-`specificity` at 3. A missing required score is an unusable answer and fails OPEN, like an outage.
+hook caps `text_accuracy` at 3, stray text with no hook at 2; **any string the BLIND description
+transcribes that is not contained in the hook caps `text_accuracy` at 2** (`stray_texts`: every
+quoted string, plus unquoted text after "text/sign/label … reads/says" or "labelled/titled" —
+"a man reading a report" is not text). Round 1 shipped '$30K' on a tag beside the hook and a garbled
+report title at text_accuracy 5, because the targeted judge only reported the hook. **Specificity
+means ≥2 anchors visibly depicted AND a stranger could infer the thesis**: fewer than two anchors
+seen, or `thesis_inferable: false`, caps it at 3. A missing required score is an unusable answer and fails OPEN, like an outage.
 The repair round is built from the FAILING criteria (`rubric_repair_directive`) — the entities and
 thesis named back, the exact hook re-stated, FLUX told only what to show. `IMAGE_GATE_CANDIDATES`
 (read at call time, default 1, max 2, staged judge only) renders that many per attempt and keeps the
