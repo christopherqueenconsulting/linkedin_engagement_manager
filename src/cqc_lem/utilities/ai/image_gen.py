@@ -475,29 +475,39 @@ A viewer who knew nothing about its purpose described it as:
 <blind>{blind}</blind>
 
 The image was made for a piece arguing: {thesis}
+The cover's headline: {headline}
 Look at the image itself and answer:
 1. Is each of these things visibly depicted? {entities}
 2. Transcribe ALL text visible in the image. {hook_question}
 3. Is any of these stock symbols present: {cliches}?
 4. Does the main subject still read as a 400x225 thumbnail?
 5. Any AI artifacts — waxy skin, malformed hands, melted or fused objects, garbled lettering?
-6. Would a stranger, from the blind description and the image alone, infer the thesis above?
+6. Together with its headline, would a viewer correctly guess what the article argues?
+7. Does a face show a clear, specific emotion readable at 400x225?
+8. Does a gold accent or the charcoal / off-white brand palette read in the image?
 
-Score each criterion 1-5, 5 best: specificity (shows THIS piece's things AND lets a stranger infer
-the thesis — not a generic scene),
-no_cliche (5 = no stock symbol at all), thumbnail_read, text_accuracy (null when the image should
-carry no text and carries none), craft (no artifacts), scroll_stop.
+Score each criterion 1-5, 5 best: specificity (image AND headline together convey THIS piece's
+argument, with at least one of its things visible — not a generic scene), no_cliche (5 = no stock
+symbol at all), thumbnail_read, text_accuracy (null when the image should carry no text and carries
+none), craft (no artifacts), scroll_stop (would it stop a scroll — a readable emotion counts most),
+brand_fit (the brand palette reads).
 Respond with ONLY a JSON object:
 {{"entities_depicted": {{"<thing>": true}}, "text_seen": "<exact transcription, or empty>",
- "cliches_present": ["..."], "thesis_inferable": true,
+ "cliches_present": ["..."], "thesis_inferable": true, "face_emotion": true,
  "rubric": {{"specificity": 1, "no_cliche": 1, "thumbnail_read": 1, "text_accuracy": null,
-            "craft": 1, "scroll_stop": 1}},
+            "craft": 1, "scroll_stop": 1, "brand_fit": 1}},
  "issues": ["<short actionable phrase>"]}}"""
 
 RUBRIC_CRITERIA = ("specificity", "no_cliche", "thumbnail_read", "text_accuracy", "craft",
-                   "scroll_stop")
-# Acceptable iff every floor holds. `text_accuracy` None means "no text expected, none seen".
-_RUBRIC_FLOORS = {"specificity": 4, "no_cliche": 5, "text_accuracy": 4, "craft": 4}
+                   "scroll_stop", "brand_fit")
+# Acceptable iff every floor holds. `text_accuracy` None means "no text expected, none seen";
+# `brand_fit` None means the judge did not answer it (never a fail on its own).
+_RUBRIC_FLOORS = {"specificity": 4, "no_cliche": 5, "text_accuracy": 4, "craft": 4,
+                  "brand_fit": 3}
+# Round 3 (#2241): four rejected covers were people at laptops with neutral faces, scroll_stop 3.
+# On the surfaces that have to stop a feed, 3 is a fail.
+_SCROLL_STOP_SURFACES = frozenset({"newsletter", "post_image"})
+_SCROLL_STOP_FLOOR = 4
 _REQUIRED_SCORES = ("specificity", "no_cliche", "craft")
 
 
@@ -560,13 +570,15 @@ def stray_texts(blind: str, hook_text: Optional[str]) -> list[str]:
 
 
 def _apply_overlays(rubric: dict, *, blind: str, answer: dict, entities: list,
-                    hook_text: Optional[str]) -> dict:
+                    hook_text: Optional[str], face_expected: bool = False) -> dict:
     """Deterministic corrections the judge cannot talk its way past.
 
     A stock symbol the BLIND description names, or the judge itself lists, caps ``no_cliche``; a
     transcription that is not the hook caps ``text_accuracy``, and ANY text the blind description
-    quotes beyond the hook caps it at 2; fewer than two anchors seen, or a thesis the judge says a
-    stranger cannot infer, caps ``specificity``.
+    quotes beyond the hook caps it at 2. ``specificity`` is judged on the headline AND image
+    together (round 3): no anchor seen at all, or a thesis the judge says the pair does not
+    convey, caps it at 3 — the anchor count is otherwise advisory. Where a face is expected (a
+    people_scene), no clear emotion readable at thumbnail size caps ``scroll_stop`` at 3.
     """
     from cqc_lem.utilities.ai.image_brief import cliche_hit
 
@@ -583,12 +595,12 @@ def _apply_overlays(rubric: dict, *, blind: str, answer: dict, entities: list,
     if stray_texts(blind, hook_text):
         rubric["text_accuracy"] = min(rubric.get("text_accuracy") or 2, 2)
     seen = answer.get("entities_depicted") or {}
-    if len(entities) >= 2 and isinstance(seen, dict):
-        depicted = sum(1 for e in entities if seen.get(e) is True)
-        if depicted < 2:
-            rubric["specificity"] = min(rubric.get("specificity") or 3, 3)
+    if entities and isinstance(seen, dict) and not any(seen.get(e) is True for e in entities):
+        rubric["specificity"] = min(rubric.get("specificity") or 3, 3)
     if answer.get("thesis_inferable") is False:
         rubric["specificity"] = min(rubric.get("specificity") or 3, 3)
+    if face_expected and answer.get("face_emotion") is False:
+        rubric["scroll_stop"] = min(rubric.get("scroll_stop") or 3, 3)
     return rubric
 
 
@@ -610,12 +622,14 @@ def _staged_inspect(image_path: str, concept: Any, hook_text: Optional[str],
         entities = usable_anchors(concept)
         hook_question = (f'Does it equal exactly "{hook_text}"?' if hook_text
                          else "This image should carry no text at all.")
+        headline = f'"{hook_text}"' if hook_text else "(none — judge the image alone)"
         targeted = client.chat.completions.create(
             model="lem-vision",
             messages=[{"role": "user", "content": [
                 {"type": "text", "text": _TARGETED_JUDGE_PROMPT.format(
                     surface=surface or "post", blind=blind or "(no description)",
-                    thesis=concept.thesis, entities="; ".join(entities) or "(none named)",
+                    thesis=concept.thesis, headline=headline,
+                    entities="; ".join(entities) or "(none named)",
                     hook_question=hook_question, cliches=", ".join(CLICHE_OBJECTS))},
                 image_part]}],
             response_format={"type": "json_object"},
@@ -628,13 +642,17 @@ def _staged_inspect(image_path: str, concept: Any, hook_text: Optional[str],
         if any(rubric[name] is None for name in _REQUIRED_SCORES):
             raise ValueError("rubric is missing a required score")
         rubric = _apply_overlays(rubric, blind=blind, answer=answer, entities=entities,
-                                 hook_text=hook_text)
+                                 hook_text=hook_text,
+                                 face_expected=getattr(concept, "treatment", "") == "people_scene")
     except Exception as e:
         log_debug("Staged image judge unavailable — passing render through", error=str(e),
                   surface=surface, action_type="image_gate")
         return QualityVerdict(acceptable=True, checked=False)
 
-    failing = [name for name, floor in _RUBRIC_FLOORS.items()
+    floors = dict(_RUBRIC_FLOORS)
+    if surface in _SCROLL_STOP_SURFACES:
+        floors["scroll_stop"] = _SCROLL_STOP_FLOOR
+    failing = [name for name, floor in floors.items()
                if rubric.get(name) is not None and rubric[name] < floor]
     issues = [f"{name} {rubric[name]}/5" for name in failing]
     issues += [f"stray text: {t}" for t in stray_texts(blind, hook_text)][:3]
@@ -683,6 +701,9 @@ _RUBRIC_REPAIRS_GPT = {
     "text_accuracy": "{text_fix}",
     "craft": "natural skin texture, hands relaxed or out of frame, every object whole and solid",
     "thumbnail_read": "make the subject larger and simpler, centred in the frame",
+    "scroll_stop": ("a closer framing where {emotion} shows on the face as a specific reaction, "
+                    "a laptop at most a prop"),
+    "brand_fit": "one deliberate warm gold accent against the charcoal and off-white palette",
 }
 # FLUX renders what a prompt NAMES, so its repair never names the defect — only what to show.
 _RUBRIC_REPAIRS_FLUX = {
@@ -691,6 +712,8 @@ _RUBRIC_REPAIRS_FLUX = {
     "text_accuracy": "{text_fix}",
     "craft": "natural skin texture, hands relaxed and out of frame, every object whole and solid",
     "thumbnail_read": "the subject larger and simpler, centred in the frame",
+    "scroll_stop": "a closer framing where {emotion} shows on the face as a specific reaction",
+    "brand_fit": "one deliberate warm gold accent against a charcoal and off-white palette",
 }
 
 
@@ -718,8 +741,9 @@ def rubric_repair_directive(verdict: QualityVerdict, backend: str, concept: Any,
         text_fix = "every garment and surface plain and unmarked, screens blank, walls clean"
     cliches = ", ".join(i for i in verdict.issues if "/5" not in i)[:120] or "generic symbols"
     table = _RUBRIC_REPAIRS_FLUX if backend == "flux" else _RUBRIC_REPAIRS_GPT
+    emotion = getattr(concept, "emotional_beat", "") or "the piece's emotion"
     parts = [table[name].format(entities=entities, thesis=thesis, text_fix=text_fix,
-                                cliches=cliches)
+                                cliches=cliches, emotion=emotion)
              for name in (verdict.failing or []) if name in table]
     if not parts:
         return repair_directive(verdict.issues, backend, thesis)

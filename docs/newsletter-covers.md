@@ -194,6 +194,15 @@ anchors, the name and words-on-surface rejections, the blind stray-text cap, the
 cover bias, the money clichés, the hook rules, and a fallback that is always a photograph and
 records every rejection (`docs/image-stack.md`).
 
+### Gauntlet round 2 (overcorrected into stock)
+
+Clichés and stray text were gone, but every cover was people at laptops or holding paper with a
+neutral face, no hook, no brand color — all REJECTED at specificity 2. Round 3's engine answer:
+every cover now carries its hook as the headline (`COVER_HOOK_LAYOUT`), the visual must carry the
+emotional beat on a face, Stage 1 proposes three visual ideas that one cheap call ranks, the judge
+grades headline + image together with `scroll_stop ≥ 4` and `brand_fit ≥ 3`, and every cover names
+one brand-color accent (`docs/image-stack.md`).
+
 ### Rejections land for review, with their reason
 
 A definite judge failure on `no_cliche` or `specificity` after the attempt budget returns verdict

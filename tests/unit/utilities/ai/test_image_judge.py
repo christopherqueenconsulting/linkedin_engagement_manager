@@ -108,10 +108,16 @@ class TestRubric:
         verdict, _ = _judge(tmp_path, answer=_answer(cliches_present=["gear"]))
         assert not verdict.acceptable and verdict.rubric["no_cliche"] <= 2
 
-    def test_fewer_than_two_entities_seen_caps_specificity(self, tmp_path):
-        seen = {"unpaid invoices": True, "payroll run": False, "agency owner": False}
+    def test_no_anchor_seen_at_all_caps_specificity(self, tmp_path):
+        seen = {"unpaid invoices": False, "payroll run": False, "agency owner": False}
         verdict, _ = _judge(tmp_path, answer=_answer(entities_depicted=seen))
         assert not verdict.acceptable and verdict.rubric["specificity"] == 3
+
+    def test_one_anchor_seen_is_enough_the_count_is_advisory(self, tmp_path):
+        """Round 3: the headline carries the thesis; two anchors is no longer required."""
+        seen = {"unpaid invoices": True, "payroll run": False, "agency owner": False}
+        verdict, _ = _judge(tmp_path, answer=_answer(entities_depicted=seen))
+        assert verdict.acceptable and verdict.rubric["specificity"] == 5
 
     def test_the_hook_must_be_transcribed_exactly(self, tmp_path):
         verdict, _ = _judge(tmp_path, hook_text=_HOOK,
@@ -388,3 +394,71 @@ class TestSpecificityNeedsTheThesis:
         assert "a marketing lead; a printed checklist" in text
         assert "Terralogic" not in text, "a fact is never asked about as something visible"
         assert "thesis_inferable" in text
+
+
+_PEOPLE = ImageConcept(
+    thesis="Late invoices quietly starve a small agency's payroll", audience="agency owners",
+    specific_entities=("unpaid invoices",), emotional_beat="a wince of dread",
+    hook_phrase="Payroll eats first", treatment="people_scene", treatment_rationale="r",
+    visual_anchors=("an agency owner", "a payroll run printout"))
+
+
+def _judge_on(tmp_path, surface, answer, concept=_PEOPLE, hook_text=None):
+    # This concept's own anchor is the one in frame, so only the criterion under test can fail.
+    answer = dict(answer, entities_depicted={"an agency owner": True})
+    img = tmp_path / "r.png"
+    img.write_bytes(b"png")
+    with patch.object(image_gen, "client") as client:
+        client.chat.completions.create.side_effect = [_resp(_BLIND), _resp(answer)]
+        verdict = inspect_render_quality(str(img), "f", surface=surface, concept=concept,
+                                         hook_text=hook_text)
+    return verdict, client.chat.completions.create
+
+
+class TestRoundThreeJudge:
+    """Round 3 of #2241: headline + image judged together; emotion and brand are graded."""
+
+    def test_the_headline_reaches_the_targeted_judge(self, tmp_path):
+        _v, create = _judge_on(tmp_path, "newsletter", _answer(), hook_text="Payroll eats first")
+        text = create.call_args_list[1][1]["messages"][0]["content"][0]["text"]
+        assert "The cover's headline: \"Payroll eats first\"" in text
+        assert "Together with its headline, would a viewer correctly guess" in text
+        assert "Does a face show a clear, specific emotion readable at 400x225?" in text
+        assert "brand_fit" in text
+
+    def test_the_blind_call_still_never_sees_the_headline(self, tmp_path):
+        _v, create = _judge_on(tmp_path, "newsletter", _answer(), hook_text="Payroll eats first")
+        assert "Payroll eats first" not in json.dumps(create.call_args_list[0][1]["messages"])
+
+    def test_a_blank_face_caps_scroll_stop_and_fails_a_cover(self, tmp_path):
+        verdict, _ = _judge_on(tmp_path, "newsletter", _answer(face_emotion=False))
+        assert verdict.rubric["scroll_stop"] == 3 and "scroll_stop" in verdict.failing
+
+    def test_face_emotion_is_only_demanded_of_a_people_scene(self, tmp_path):
+        concrete = ImageConcept(**{**_PEOPLE.to_dict(), "treatment": "concrete_scene",
+                                   "specific_entities": ("unpaid invoices",),
+                                   "visual_anchors": ("an agency owner",)})
+        verdict, _ = _judge_on(tmp_path, "newsletter", _answer(face_emotion=False), concrete)
+        assert verdict.acceptable
+
+    @pytest.mark.parametrize("surface,fails", [("newsletter", True), ("post_image", True),
+                                               ("carousel", False)])
+    def test_scroll_stop_of_three_fails_covers_and_post_images(self, tmp_path, surface, fails):
+        verdict, _ = _judge_on(tmp_path, surface, _answer(dict(_GOOD_RUBRIC, scroll_stop=3)))
+        assert ("scroll_stop" in verdict.failing) is fails
+
+    def test_brand_fit_below_three_fails_and_is_recorded(self, tmp_path):
+        verdict, _ = _judge_on(tmp_path, "newsletter", _answer(dict(_GOOD_RUBRIC, brand_fit=2)))
+        assert not verdict.acceptable and verdict.failing == ["brand_fit"]
+        assert verdict.rubric["brand_fit"] == 2
+
+    def test_an_unanswered_brand_fit_is_not_a_fail(self, tmp_path):
+        verdict, _ = _judge_on(tmp_path, "newsletter", _answer())
+        assert verdict.acceptable and verdict.rubric["brand_fit"] is None
+
+    def test_the_repair_names_the_emotion_and_the_gold_accent(self):
+        verdict = QualityVerdict(acceptable=False, failing=["scroll_stop", "brand_fit"],
+                                 issues=["scroll_stop 3/5", "brand_fit 2/5"])
+        directive = rubric_repair_directive(verdict, "flux", _PEOPLE, None)
+        assert "a wince of dread shows on the face" in directive
+        assert "warm gold accent" in directive

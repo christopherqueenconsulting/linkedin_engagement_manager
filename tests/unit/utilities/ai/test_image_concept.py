@@ -14,6 +14,7 @@ from cqc_lem.utilities.ai.image_concept import (
     entity_mentioned,
     is_fact_only,
     parse_concept,
+    pick_visual_idea,
 )
 
 pytestmark = pytest.mark.unit
@@ -308,3 +309,88 @@ class TestTreatmentVariety:
         with patch(_CREATE, return_value=_resp(_PAYLOAD)) as create:
             analyze_content_for_image(_SOURCE, surface="post_image")
         assert "COVER" not in create.call_args[1]["messages"][1]["content"]
+
+
+_IDEAS = [
+    "A copy editor's red pen frozen mid-strike over a confidently printed paragraph, her face a "
+    "half-smile of disbelief.",
+    "A stack of unpaid invoices under a paperweight beside a cold cup of tea.",
+    "An agency owner wincing at a payroll run printout in an empty office at dusk.",
+]
+
+
+class TestVisualIdeas:
+    """Round 3 of #2241: candidate ideas, filtered deterministically, then one cheap pick."""
+
+    @pytest.mark.parametrize("idea,why", [
+        ("A pile of coins beside a calculator on a desk.", "stock symbol"),
+        ("A founder typing on a laptop late at night.", "stock symbol"),
+        ("A manager with a neutral expression at a desk.", "stock symbol"),
+        ("Two boxes representing GPT-5.2 glowing on a desk.", "names or numbers"),
+        ("A researcher outside Stanford HAI holding a report.", "names or numbers"),
+        ("A tag reading $30K on a desk.", "names or numbers"),
+    ])
+    def test_cliches_names_and_numbers_are_filtered_before_ranking(self, idea, why):
+        from cqc_lem.utilities.ai.image_concept import idea_rejection
+        assert why in idea_rejection(idea, ("GPT-5.2", "Stanford HAI", "$30K"))
+
+    def test_a_plain_people_led_idea_passes(self):
+        from cqc_lem.utilities.ai.image_concept import idea_rejection, is_people_led
+        assert idea_rejection(_IDEAS[0], ("GPT-5.2",)) == ""
+        assert is_people_led(_IDEAS[0]) and not is_people_led(_IDEAS[1])
+
+    def test_parse_keeps_at_most_three_surviving_ideas(self):
+        payload = dict(_PAYLOAD, visual_ideas=["A founder typing on a laptop."] + _IDEAS + [
+            "A fourth idea about an agency owner."])
+        concept = parse_concept(payload, _SOURCE)
+        assert concept.visual_ideas == tuple(_IDEAS)
+
+    def test_the_ranking_call_picks_the_winner_and_keeps_the_rest(self):
+        concept = parse_concept(dict(_PAYLOAD, visual_ideas=_IDEAS), _SOURCE)
+        reply = _resp({"ranking": [3, 1, 2], "reason": "most specific"})
+        with patch(_CREATE, return_value=reply) as create:
+            picked = pick_visual_idea(concept, "newsletter")
+        assert picked.chosen_idea == _IDEAS[2]
+        assert picked.rejected_ideas == (_IDEAS[0], _IDEAS[1])
+        assert picked.idea_pick_reason == "most specific"
+        kwargs = create.call_args[1]
+        assert kwargs["model"] == "lem-simple"
+        text = kwargs["messages"][0]["content"]
+        assert "surprise" in text and "400x225" in text and "1. A copy editor" in text
+
+    @pytest.mark.parametrize("reply", [RuntimeError("down"), _resp("not json"),
+                                       _resp({"ranking": [9, "x"]})])
+    def test_an_unusable_ranking_fails_open_to_the_first_people_led_idea(self, reply):
+        concept = parse_concept(dict(_PAYLOAD, visual_ideas=[_IDEAS[1], _IDEAS[0]]), _SOURCE)
+        kwargs = {"side_effect": reply} if isinstance(reply, Exception) else {"return_value": reply}
+        with patch(_CREATE, **kwargs):
+            picked = pick_visual_idea(concept)
+        assert picked.chosen_idea == _IDEAS[0] and picked.rejected_ideas == (_IDEAS[1],)
+
+    def test_a_single_idea_needs_no_ranking_call(self):
+        concept = parse_concept(dict(_PAYLOAD, visual_ideas=[_IDEAS[1]]), _SOURCE)
+        with patch(_CREATE) as create:
+            picked = pick_visual_idea(concept)
+        create.assert_not_called()
+        assert picked.chosen_idea == _IDEAS[1] and picked.rejected_ideas == ()
+
+    def test_no_ideas_leaves_the_concept_unchanged(self):
+        concept = parse_concept(_PAYLOAD, _SOURCE)
+        assert pick_visual_idea(concept) is concept
+
+    def test_analyze_runs_the_pick_and_the_prompt_asks_for_people_led_ideas(self):
+        payload = dict(_PAYLOAD, visual_ideas=_IDEAS)
+        with patch(_CREATE, side_effect=[_resp(payload),
+                                         _resp({"ranking": [1], "reason": "r"})]) as create:
+            concept = analyze_content_for_image(_SOURCE, surface="newsletter")
+        assert create.call_count == 2
+        assert concept.chosen_idea == _IDEAS[0]
+        system = create.call_args_list[0][1]["messages"][0]["content"]
+        assert "exactly 3 one-sentence ideas" in system and "At least ONE idea is people-led" in system
+        user = create.call_args_list[0][1]["messages"][1]["content"]
+        assert "hook_phrase is required" in user
+
+    def test_a_shouted_hook_falls_through_to_a_valid_alternative(self):
+        payload = dict(_PAYLOAD, hook_phrase="Stop wasting money!",
+                       hook_alternatives=["Fix it now!", "Payroll eats first"])
+        assert parse_concept(payload, _SOURCE).hook_phrase == "Payroll eats first"

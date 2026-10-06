@@ -78,6 +78,8 @@ Respond with ONLY a JSON object:
 actions or situations>"],
  "emotional_beat": "<the feeling the reader should get, a few words>",
  "hook_phrase": "<2-5 words, at most 32 characters>",
+ "hook_alternatives": ["<two more hooks, same rules>"],
+ "visual_ideas": ["<3 one-sentence image ideas>"],
  "treatment": "{'|'.join(TREATMENTS)}",
  "treatment_rationale": "<one sentence>"}}
 
@@ -89,9 +91,17 @@ lead", "a client kickoff meeting", "a stack of printed proposals", "a shared off
 NEVER a brand, product, company or model name, a report title, or a number: a renderer cannot \
 draw "GPT-5.2" or "a 2025 report", it writes the words as garbled text. Write them in lowercase.
 
-Rules for hook_phrase: a curiosity gap a reader would want closed, or a concrete contrast drawn \
-from the thesis. Never an exclamation, never an order to the reader ("Stop…", "Start…", \
-"Don't…"), never a restatement of the title, never a full sentence.
+Rules for hook_phrase and hook_alternatives: a curiosity gap a reader would want closed, or a \
+concrete contrast drawn from the thesis. Never an exclamation, never an order to the reader \
+("Stop…", "Start…", "Don't…"), never a restatement of the title, never a full sentence. The hook \
+carries the THESIS; the image carries emotion and specificity.
+
+Rules for visual_ideas: exactly 3 one-sentence ideas, each combining the hook with a concrete \
+scene or juxtaposition built from the visual anchors and the emotional beat — for an article \
+about AI hallucination, "A copy editor's red pen frozen mid-strike over a confidently printed \
+paragraph, her face a half-smile of disbelief." At least ONE idea is people-led: a visible face \
+with a specific reaction. No names, no numbers, no stock symbols, and never a person merely \
+looking at or typing on a laptop.
 
 Choose the treatment:
 - {TREATMENT_PEOPLE}: the piece is about people, teams, clients, hiring or a decision someone \
@@ -109,7 +119,29 @@ piece, pipes or valves, a rocket, a chess board, a compass, money or a handshake
 _COVER_GUIDANCE = (
     "This is a newsletter COVER. Prefer people_scene — LinkedIn's guidance is that real faces "
     "beat clipart and symbols. Use editorial_graphic only when a single number or contrast IS "
-    "the thesis.")
+    "the thesis. A cover ALWAYS carries its hook as a headline, whatever the treatment, so "
+    "hook_phrase is required.")
+
+# Round 3 (#2241): abstract theses ("AI hallucinates", "hidden buyers") cannot be carried by a
+# literal scene, so Stage 1 proposes several ideas and a cheap judge picks one (the Idea2Img
+# pattern: generate candidates, rank, build from the winner).
+_VISUAL_IDEAS = 3
+_PEOPLE_WORDS = re.compile(
+    r"\b(?:face|faces|her|his|their|she|he|person|people|man|woman|men|women|team|colleague|"
+    r"founder|owner|lead|manager|editor|analyst|marketer|consultant|client|buyer|officer|"
+    r"executive|expression|smile|frown|wince|laugh|eyebrow)s?\b", re.IGNORECASE)
+_IDEA_PICK_MAX_TOKENS = 1500
+_IDEA_PICK_PROMPT = """You are picking ONE image idea for a LinkedIn {surface}.
+
+The piece argues: {thesis}
+Its headline (hook): {hook}
+
+Candidate ideas:
+{ideas}
+
+Rank them on: specificity to THIS article, surprise, legibility as a 400x225 thumbnail, and \
+distance from stock clichés. Respond with ONLY a JSON object:
+{{"ranking": [<idea numbers, best first>], "reason": "<one sentence on the winner>"}}"""
 
 
 @dataclass(frozen=True)
@@ -128,6 +160,11 @@ class ImageConcept:
         weak: True when fewer than ``WEAK_ENTITY_FLOOR`` visual anchors survived validation, so
             the anchor-coverage checks downstream stand down.
         visual_anchors: The DEPICTABLE things the image shows — no names, no numbers.
+        visual_ideas: Up to three one-sentence image ideas that survived the deterministic filters
+            (no stock symbol, no name or number).
+        chosen_idea: The idea the cheap ranking call picked; Stage 2 builds from it.
+        rejected_ideas: The ideas it did not pick, kept for the receipt.
+        idea_pick_reason: Why it picked the winner, or why it could not rank.
     """
 
     thesis: str
@@ -139,6 +176,10 @@ class ImageConcept:
     treatment_rationale: str
     weak: bool = False
     visual_anchors: tuple[str, ...] = ()
+    visual_ideas: tuple[str, ...] = ()
+    chosen_idea: str = ""
+    rejected_ideas: tuple[str, ...] = ()
+    idea_pick_reason: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         """The concept as a JSON-safe dict, for prompts and receipts."""
@@ -315,6 +356,66 @@ def _ground_anchors(raw: Any, source: str, facts: Sequence[str]) -> tuple[str, .
     return tuple(anchors[:_MAX_ANCHORS])
 
 
+def idea_rejection(idea: str, facts: Sequence[str]) -> str:
+    """Why a visual idea cannot be built, or '' when it can.
+
+    The same deterministic filters every render prompt faces, run BEFORE the ranking call so it
+    never picks an idea the brief would then refuse: a stock symbol, a name, or a number.
+
+    Args:
+        idea: One candidate idea sentence.
+        facts: The concept's ``specific_entities``.
+
+    Returns:
+        A short reason, or ``''``.
+    """
+    from cqc_lem.utilities.ai.image_brief import cliche_hit
+
+    hit = cliche_hit(idea)
+    if hit:
+        return f"stock symbol {hit!r}"
+    names = name_tokens(idea)
+    if names:
+        return f"names or numbers {names}"
+    lowered = {t.lower() for t in re.findall(r"[A-Za-z0-9]+", idea)}
+    for fact in facts:
+        if is_fact_only(fact):
+            fact_names = {t.lower() for t in name_tokens(fact)} | (
+                {fact.split()[0].lower()} if fact[:1].isupper() else set())
+            if lowered & (fact_names - {t.lower() for t in GENERIC_ACRONYMS}):
+                return f"it names the fact {fact!r}"
+    return ""
+
+
+def is_people_led(idea: str) -> bool:
+    """Does this idea put a person (and so a face) in the frame?"""
+    return bool(_PEOPLE_WORDS.search(idea or ""))
+
+
+def _filter_ideas(raw: Any, facts: Sequence[str]) -> tuple[str, ...]:
+    ideas: list[str] = []
+    for item in (raw if isinstance(raw, list) else []):
+        idea = _clean(item, 280)
+        if not idea or idea in ideas:
+            continue
+        reason = idea_rejection(idea, facts)
+        if reason:
+            log_debug("Visual idea dropped", idea=idea, reason=reason,
+                      action_type="image_concept")
+            continue
+        ideas.append(idea)
+    return tuple(ideas[:_VISUAL_IDEAS])
+
+
+def _first_valid_hook(payload: dict[str, Any], title: Optional[str]) -> str:
+    candidates = [payload.get("hook_phrase")] + list(payload.get("hook_alternatives") or [])
+    for candidate in candidates:
+        hook = _valid_hook(_clean(candidate, 80), title)
+        if hook:
+            return hook
+    return ""
+
+
 def _resolve_treatment(raw: str, anchors: tuple[str, ...], hook: str) -> str:
     treatment = raw if raw in TREATMENTS else TREATMENT_CONCRETE
     if treatment == TREATMENT_GRAPHIC and not hook:
@@ -345,7 +446,9 @@ def parse_concept(payload: Optional[dict[str, Any]], source: str,
         return None
     entities = _ground_entities(payload.get("specific_entities"), source)
     anchors = _ground_anchors(payload.get("visual_anchors"), source, entities)
-    hook = _valid_hook(_clean(payload.get("hook_phrase"), 80), title)
+    # The first hook that passes the rules, so a shouted primary hook does not cost a cover its
+    # headline when a usable alternative was offered (round 3: every cover carries one).
+    hook = _first_valid_hook(payload, title)
     treatment = _resolve_treatment(_clean(payload.get("treatment"), 40).lower(), anchors, hook)
     return ImageConcept(
         thesis=thesis,
@@ -357,6 +460,7 @@ def parse_concept(payload: Optional[dict[str, Any]], source: str,
         treatment_rationale=_clean(payload.get("treatment_rationale")),
         weak=len(anchors) < WEAK_ENTITY_FLOOR,
         visual_anchors=anchors,
+        visual_ideas=_filter_ideas(payload.get("visual_ideas"), entities),
     )
 
 
@@ -386,6 +490,58 @@ def enforce_graphic_cap(concept: ImageConcept, recent_treatments: Optional[Seque
         concept, treatment=TREATMENT_PEOPLE,
         treatment_rationale=(f"{concept.treatment_rationale} [capped: at most one "
                              f"editorial_graphic per {GRAPHIC_WINDOW} covers]").strip())
+
+
+@llm_step("image_idea_pick")
+def pick_visual_idea(concept: ImageConcept, surface: str = "post_image") -> ImageConcept:
+    """Rank the concept's visual ideas with ONE cheap call and keep the winner. Never raises.
+
+    ``lem-simple`` ranks on specificity to this article, surprise, thumbnail legibility and cliché
+    distance. Fails OPEN to the first surviving idea — preferring a people-led one — so an
+    unreachable judge still yields a chosen idea rather than none.
+
+    Args:
+        concept: Stage 1's concept, with ``visual_ideas`` already filtered.
+        surface: The surface, named to the ranker.
+
+    Returns:
+        The concept with ``chosen_idea``, ``rejected_ideas`` and ``idea_pick_reason`` set; the
+        concept unchanged when it has no ideas.
+    """
+    ideas = list(concept.visual_ideas)
+    if not ideas:
+        return concept
+    default = next((i for i in ideas if is_people_led(i)), ideas[0])
+    winner, reason = default, "ranking unavailable — first people-led idea"
+    if len(ideas) > 1:
+        from cqc_lem.utilities.ai.ai_helper import _loads_json_object
+        from cqc_lem.utilities.ai.client import client
+
+        try:
+            response = client.chat.completions.create(
+                model="lem-simple",
+                messages=[{"role": "user", "content": _IDEA_PICK_PROMPT.format(
+                    surface=surface, thesis=concept.thesis, hook=concept.hook_phrase or "(none)",
+                    ideas="\n".join(f"{n}. {idea}" for n, idea in enumerate(ideas, 1)))}],
+                response_format={"type": "json_object"},
+                temperature=0,
+                max_tokens=_IDEA_PICK_MAX_TOKENS,
+            )
+            verdict = _loads_json_object(response.choices[0].message.content or "") or {}
+            ranking = [int(n) for n in (verdict.get("ranking") or [])
+                       if isinstance(n, (int, float, str)) and str(n).strip().isdigit()]
+            ranked = [ideas[n - 1] for n in ranking if 1 <= n <= len(ideas)]
+            if ranked:
+                winner = ranked[0]
+                reason = _clean(verdict.get("reason"), 200) or "ranked first"
+        except Exception as e:
+            log_debug("Visual idea ranking unavailable — taking the default", error=str(e),
+                      action_type="image_concept")
+    else:
+        reason = "only one idea survived the filters"
+    return dataclasses.replace(concept, chosen_idea=winner,
+                               rejected_ideas=tuple(i for i in ideas if i != winner),
+                               idea_pick_reason=reason)
 
 
 @llm_step("image_concept")
@@ -444,4 +600,4 @@ def analyze_content_for_image(text: str, *, title: Optional[str] = None,
         log_debug("Image concept reply unusable", user_id=user_id, surface=surface,
                   action_type="image_concept", raw=json.dumps(payload)[:200] if payload else "")
         return None
-    return enforce_graphic_cap(concept, recent, surface)
+    return pick_visual_idea(enforce_graphic_cap(concept, recent, surface), surface)
