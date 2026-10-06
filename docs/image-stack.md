@@ -50,6 +50,45 @@ judge rightly scored specificity 1 on all four covers. So Stage 1 returns two li
   down. Briefs, Stage 3 and the vision judge's specificity all work from `usable_anchors()` — the
   anchors, or for a concept with none, its plain common-noun facts.
 
+**The hook carries the thesis; the image carries emotion and specificity (gauntlet round 2).**
+Round 1's fixes removed the clichés and stray text but overcorrected: all four covers came back as
+people at laptops or holding paper, neutral faces, no hook, no brand color — specificity 2 on every
+one, "a stranger could not guess the thesis". The theses were abstract (AI hallucination, AI posts
+underperforming, hidden buyers) and a literal scene cannot carry one. So the engine follows the
+YouTube-thumbnail / editorial-cover pattern:
+
+- **Every newsletter cover carries its hook**, whatever the treatment (`carries_hook`); posts,
+  carousels and video keep it optional (graphics only). `COVER_HOOK_LAYOUT` states the placement:
+  one third of the frame, left or right opposite the subject, bold geometric sans, brand light gold
+  or off-white on a dark area, ≤5 words; the subject takes the other two thirds. Stage 1 also
+  returns `hook_alternatives`, and the first that passes the hook rules wins, so a shouted primary
+  hook no longer costs a cover its headline. `with_no_marks` already handles a declared hook.
+- **Emotion is required.** `people_scene` must show the `emotional_beat` as a specific, visible
+  reaction (a wince at a number, mid-laugh relief, a raised eyebrow at a draft, arms crossed in a
+  tense meeting) in a close or medium framing where the face reads at thumbnail size. "Neutral
+  expression", and "looking at / typing on / focused on / working on a laptop" as the action, are
+  now `CLICHE_OBJECTS` entries — a laptop may only be a prop.
+- **Three ideas, then a cheap pick (Idea2Img).** Stage 1 returns 3 one-sentence `visual_ideas`,
+  each combining the hook with a concrete scene or juxtaposition from the anchors, at least one
+  people-led. `idea_rejection` drops any with a cliché, a name or a number BEFORE ranking;
+  `pick_visual_idea` makes ONE `lem-simple` call ranking the survivors on specificity to this
+  article, surprise, thumbnail legibility and cliché distance (fail-open: the first people-led
+  idea). Stage 2 builds on `chosen_idea`; `rejected_ideas` and `idea_pick_reason` ride the concept
+  onto the receipt.
+- **Specificity is judged on headline + image together.** Stage 3 and the vision judge both get the
+  hook as "the headline": "together with its headline, would a viewer correctly guess what the
+  article argues?" The anchor count is now advisory — the brief needs ONE anchor in frame (two sent
+  ed16 to the fallback twice), and the judge caps specificity only when NO anchor is seen or the
+  pair does not convey the thesis. Documents and checklists stay blank or unreadable: "numbered",
+  "bullet points", "a list of numbers" and "a three-step checklist" are refused as words on a
+  surface (ed17's checklist came back reading "1, 2, 8").
+- **Brand on every render.** Every brief is asked for ONE deliberate brand-color element named by
+  its color — the hook color, a wardrobe accent, a wall or background accent, or a warm gold grade
+  (`BRAND_ACCENT_DIRECTIVE`; colors from `brand_colors(brand_kit)`, default gold / charcoal /
+  off-white). On covers it is enforced: a prompt naming none of them is rejected.
+- **The fallback builds from the top-ranked idea plus the hook**, with the cover layout and a named
+  gold accent — never a bare anchor list.
+
 **Hooks.** 2–5 words, ≤32 chars, a curiosity gap or a concrete contrast from the thesis: no `!`, no
 imperative opener ("Stop…", "Start…", "Don't…", "Cut…" — `_IMPERATIVE_OPENERS`), never a
 restatement of the title. Stated in the prompt and enforced in `_valid_hook`; an
@@ -228,10 +267,15 @@ prompt tends to confirm it (FineGRAIN, arXiv 2512.02161) — which is how a valv
    depicted (facts are never asked about — a name cannot be "visibly depicted"); transcribe all text, does it equal the hook exactly; is any `CLICHE_OBJECTS` symbol
    present; legible as a 400×225 thumbnail; AI artifacts (waxy skin, malformed hands, melted
    objects); would a viewer infer the thesis. Scored 1–5 on `RUBRIC_CRITERIA`: `specificity`,
-   `no_cliche`, `thumbnail_read`, `text_accuracy`, `craft`, `scroll_stop`.
+   `no_cliche`, `thumbnail_read`, `text_accuracy`, `craft`, `scroll_stop`, `brand_fit`. Round 3
+   adds the headline ("together with its headline, would a viewer correctly guess what the article
+   argues?"), "does a face show a clear, specific emotion readable at 400×225?" and "does a gold
+   accent or the charcoal/off-white palette read?".
 
-**Acceptable iff** `specificity ≥ 4`, `no_cliche = 5`, `craft ≥ 4`, and `text_accuracy ≥ 4` (or
-n/a — no text expected, none seen). Deterministic overlays the judge cannot talk past: a cliché the
+**Acceptable iff** `specificity ≥ 4`, `no_cliche = 5`, `craft ≥ 4`, `text_accuracy ≥ 4` (or
+n/a — no text expected, none seen), `brand_fit ≥ 3` (n/a when unanswered), and on `newsletter` /
+`post_image` `scroll_stop ≥ 4` — round 2's covers all sat at 3. On a `people_scene`, a face with no
+clear emotion (`face_emotion: false`) caps `scroll_stop` at 3. Deterministic overlays the judge cannot talk past: a cliché the
 BLIND description names (or the judge lists) caps `no_cliche` at 2; a transcription that is not the
 hook caps `text_accuracy` at 3, stray text with no hook at 2; **any string the BLIND description
 transcribes that is not contained in the hook caps `text_accuracy` at 2** (`stray_texts`: every

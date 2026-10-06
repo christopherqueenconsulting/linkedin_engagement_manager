@@ -75,11 +75,13 @@ _USE_LABELS: dict[str, str] = {
 _TREATMENT_TEMPLATES: dict[str, str] = {
     TREATMENT_PEOPLE: (
         "TREATMENT people_scene: a photorealistic, candid documentary photograph of the piece's "
-        "audience in the exact situation it describes, built from its visual anchors — people "
-        "caught mid-task with natural expressions in available light, with real texture: visible "
-        "skin pores, fabric wear and creases, scuffed surfaces and everyday imperfections rather "
-        "than studio polish. When the author's likeness is supplied, the author is the person in "
-        "the scene."),
+        "audience in the exact situation it describes, built from the chosen visual idea. The "
+        "emotional beat is VISIBLE as a specific human reaction — a wince at a number, mid-laugh "
+        "relief, a raised eyebrow at a draft, arms crossed in a tense meeting — in a close or "
+        "medium framing where the face reads at thumbnail size. A laptop is at most a prop. Real "
+        "texture: visible skin pores, fabric wear and creases, scuffed surfaces and everyday "
+        "imperfections rather than studio polish. When the author's likeness is supplied, the "
+        "author is the person in the scene."),
     TREATMENT_GRAPHIC: (
         "TREATMENT editorial_graphic: a designed editorial graphic. The ONLY words in the image "
         "are the hook, in double quotes, spelled exactly, set in bold sans-serif type with its "
@@ -137,6 +139,10 @@ CLICHE_OBJECTS: tuple[str, ...] = (
     "person at laptop", "man at laptop", "woman at laptop", "professional at laptop",
     "typing hands", "hands typing", "hands on keyboard", "coffee and notebook",
     "calculator with coins",
+    # Round 3 (#2241): four covers of people at laptops with neutral faces. A laptop may be a
+    # prop; looking at or typing on one is never the action, and a neutral face is no reaction.
+    "neutral expression", "looking at laptop", "typing on laptop", "staring at laptop",
+    "focused on laptop", "working on laptop", "person typing", "professional typing",
 )
 # "target audience" is a reader, not a dartboard — the business senses never count as the symbol.
 _TARGET_BUSINESS_SENSE = re.compile(
@@ -227,18 +233,23 @@ itself, and you turn them into a single render-ready prompt.
 
 ### Hard rules
 - ONE flowing natural-language paragraph of 40-90 words. No keyword stacking, no weight syntax.
-- Depict at least two of the visual anchors literally, and name the ones you used in
-  required_entities.
+- Build the image on the CHOSEN VISUAL IDEA. Depict at least one visual anchor literally, and
+  name the ones you used in required_entities.
+- When a person appears, the emotional beat shows on their face as a specific reaction readable at
+  thumbnail size. A laptop is at most a prop — never the thing a person is looking at or typing on.
+- Include ONE deliberate brand-color element, named by its color: the hook's color, a wardrobe
+  accent, a wall or background accent, or a warm gold grade.
 - The FACTS are context only. NEVER put a company, brand, product, model or report name, or a
   number, in the prompt — a renderer cannot draw a name, it writes it as garbled text or invents
   a prop that "represents" it.
 - Nothing in the scene carries words: never "displaying the X dashboard", "titled", "labelled",
   "a sign reading", or a report, magazine or screen "with text". Screens and documents may
-  appear, blank or abstract.
+  appear, blank or abstract; documents and checklists are blank or unreadable — no numerals, no
+  list markers, never "a three-step checklist".
 - Stock symbols are REFUSED, whatever the topic: """ + ", ".join(CLICHE_OBJECTS) + """. Find
   what THIS piece shows instead.
-- Quotation marks appear ONLY around the hook on the editorial_graphic treatment, copied exactly.
-  Every other treatment carries no quoted text and no hook.
+- Quotation marks appear ONLY around the hook, copied exactly, when a hook is given (every
+  newsletter cover, and the editorial_graphic treatment). Otherwise no quoted text and no hook.
 """
 
 _VOCABULARY_RULES = (
@@ -306,8 +317,54 @@ _WORDS_ON_SURFACE = re.compile(
     r"|\b(?:display(?:s|ing)?|show(?:s|ing))\s+(?:the|a|an|its|their)?\s*(?:[\w.\-]+\s+){0,3}"
     r"(?:dashboard|website|homepage|app|interface|logo|text|words|headline|title|report)\b"
     r"|\b(?:report|magazine|screen|document|page|cover|book|slide)s?\s+with\s+(?:the\s+)?"
-    r"(?:text|words|writing|headline|title|caption)s?\b",
+    r"(?:text|words|writing|headline|title|caption)s?\b"
+    # Round 3: "a printed three-step checklist" came back reading "1, 2, 8".
+    r"|\bnumbered\b|\bbullet(?:ed)?\s+(?:points?|list)\b|\blist\s+of\s+numbers\b"
+    r"|\b(?:\w+|\d+)[\s\-‑]step\s+(?:checklist|list|guide|plan|process)s?\b",
     re.IGNORECASE)
+
+# Round 3 (#2241): people and concrete scenes lost the palette entirely. A cover brief must name
+# one deliberate brand-color element; these are the color words it may name it by.
+_COLOR_WORDS = frozenset({
+    "gold", "golden", "charcoal", "off-white", "cream", "ivory", "navy", "teal", "amber",
+    "ochre", "mustard", "black", "white", "grey", "gray", "green", "blue", "red", "orange",
+    "yellow", "purple", "burgundy", "slate", "sand", "beige", "copper", "bronze", "silver",
+    "coral", "olive", "forest", "emerald", "crimson", "indigo", "magenta", "pink", "brown"})
+_DEFAULT_BRAND_COLORS = frozenset({"gold", "golden", "charcoal", "off-white"})
+BRAND_ACCENT_DIRECTIVE = (
+    "BRAND ACCENT: include exactly one deliberate brand-color element — the hook's color, a "
+    "wardrobe accent, a wall or background accent, or a warm gold grade — named by its color "
+    "({colors}).\n")
+# Every newsletter cover carries its hook as a headline (round 3): the hook carries the THESIS,
+# the visual carries emotion and specificity — the YouTube-thumbnail / editorial-cover pattern.
+COVER_HOOK_LAYOUT = (
+    'COVER LAYOUT: the headline "{hook}" sits in one third of the frame — left or right, opposite '
+    "the subject — in bold geometric sans, brand light gold or off-white on a dark area, five "
+    "words at most. The visual subject fills the other two thirds.\n")
+
+
+def brand_colors(brand_kit: Optional[str]) -> frozenset[str]:
+    """The color words a brief may name its brand accent by.
+
+    Args:
+        brand_kit: The pre-rendered brand clause, or None.
+
+    Returns:
+        The color words the clause names, or the default charcoal / off-white / gold palette.
+    """
+    found = {w for w in re.findall(r"[a-z][a-z\-]*", (brand_kit or "").lower()) if w in _COLOR_WORDS}
+    return frozenset(found) or _DEFAULT_BRAND_COLORS
+
+
+def _names_a_color(prompt: str, colors: frozenset[str]) -> bool:
+    lowered = prompt.lower()
+    return any(re.search(rf"\b{re.escape(c)}\b", lowered) for c in colors)
+
+
+def carries_hook(surface: str, treatment: str) -> bool:
+    """Does this image carry the concept's hook? Every newsletter cover, and any graphic."""
+    return surface == "newsletter" or treatment == TREATMENT_GRAPHIC
+
 
 # Name tokens a prompt may carry anyway: the platform the use case itself names.
 _ALLOWED_NAME_TOKENS = frozenset({"LinkedIn"})
@@ -440,7 +497,8 @@ def _named_fact(prompt: str, names: set[str]) -> Optional[str]:
 
 def _deterministic_failure(prompt: str, *, anchors: list[str], weak: bool,
                            hook_text: Optional[str],
-                           names: Optional[set[str]] = None) -> Optional[str]:
+                           names: Optional[set[str]] = None,
+                           colors: Optional[frozenset[str]] = None) -> Optional[str]:
     """Why ``prompt`` fails the deterministic checks, or None when it passes them.
 
     Shared by Stage 2's validation and Stage 3, so the two can never disagree about a cliché,
@@ -469,16 +527,20 @@ def _deterministic_failure(prompt: str, *, anchors: list[str], weak: bool,
     if words:
         return (f"the prompt puts words on a surface ({words.group(0).strip()!r}) — screens and "
                 f"documents stay blank or abstract")
-    if not weak and len(anchors) >= WEAK_ENTITY_FLOOR:
-        depicted = [a for a in anchors if entity_mentioned(a, prompt)]
-        if len(depicted) < WEAK_ENTITY_FLOOR:
-            return (f"the prompt depicts {len(depicted)} of the piece's visual anchors; show at "
-                    f"least two of: {'; '.join(anchors)}")
+    # Advisory since round 3: the hook carries the thesis, so ONE anchor in frame is enough — two
+    # pushed ed16 onto the fallback twice for "depicts 1 of the anchors".
+    if not weak and anchors and not any(entity_mentioned(a, prompt) for a in anchors):
+        return (f"the prompt depicts none of the piece's visual anchors; show at least one of: "
+                f"{'; '.join(anchors)}")
+    if colors and not _names_a_color(unhooked, colors):
+        return (f"the prompt has no deliberate brand-color element — name one accent in "
+                f"{', '.join(sorted(colors))}")
     return None
 
 
 def _rejection(parsed: dict[str, Any], *, anchors: list[str], weak: bool,
-               hook_text: Optional[str], names: Optional[set[str]] = None) -> Optional[str]:
+               hook_text: Optional[str], names: Optional[set[str]] = None,
+               colors: Optional[frozenset[str]] = None) -> Optional[str]:
     """Why an authored brief is unusable, or None. The reason goes back to the author verbatim."""
     prompt = str(parsed.get("prompt") or "").strip()
     focal = str(parsed.get("focal_concept") or "").strip()
@@ -489,21 +551,22 @@ def _rejection(parsed: dict[str, Any], *, anchors: list[str], weak: bool,
         return "failed validation (refusal phrasing)"
     reply_hook = str(parsed.get("hook_text") or "").strip()
     if reply_hook.lower() not in ("", "null", "none") and not hook_text:
-        return "the reply declared hook text, but only the editorial_graphic treatment has a hook"
+        return "the reply declared hook text, but this image carries no hook"
     return _deterministic_failure(prompt, anchors=anchors, weak=weak, hook_text=hook_text,
-                                  names=names)
+                                  names=names, colors=colors)
 
 
 _CHECK_PROMPT = """You are checking an image prompt BEFORE it is sent to a renderer.
 
 The piece's thesis: {thesis}
 What the image should show: {anchors}
+The image's headline: {hook}
 
 The prompt:
 <prompt>{prompt}</prompt>
 
-Would an image rendered from this prompt let a stranger guess the piece's thesis? Name which of
-the things above the prompt depicts. Respond with ONLY a JSON object:
+Together with its headline, would an image rendered from this prompt let a stranger guess the
+piece's thesis? Name which of the things above the prompt depicts. Respond with ONLY a JSON object:
 {{"guessable": true|false, "depicted_entities": ["..."], "reason": "<one short sentence>"}}"""
 
 
@@ -546,7 +609,7 @@ def check_prompt_against_concept(prompt: str, concept: Optional[ImageConcept],
             model="lem-simple",
             messages=[{"role": "user", "content": _CHECK_PROMPT.format(
                 thesis=concept.thesis, anchors="; ".join(anchors) or "(none named)",
-                prompt=prompt)}],
+                hook=f'"{hook_text}"' if hook_text else "(none)", prompt=prompt)}],
             response_format={"type": "json_object"},
             temperature=0,
             max_tokens=_CHECK_MAX_TOKENS,
@@ -598,7 +661,8 @@ def _fallback_brief(content: str, *, surface: str, ratio: str, context: str,
                     avatar: Optional[dict[str, Any]] = None,
                     concept: Optional[ImageConcept] = None,
                     treatment: Optional[str] = None,
-                    rejections: tuple[str, ...] = ()) -> ImageBrief:
+                    rejections: tuple[str, ...] = (),
+                    brand_kit: Optional[str] = None) -> ImageBrief:
     """Deterministic last resort when the brief author is down — built from the piece, not a set.
 
     Every noun here is a RENDER request, so it is assembled only from the concept's visual
@@ -606,6 +670,11 @@ def _fallback_brief(content: str, *, surface: str, ratio: str, context: str,
     symbol, name and number scrubbed out of anything interpolated. The old newsletter fallback was
     a workshop still-life (a brass valve, a gauge, a gear) — the scene issue #2241 was filed about
     — and the old graphic fallback put a number in as its subject; both are gone.
+
+    Since round 3 it builds from the concept's top-ranked VISUAL IDEA when there is one — never a
+    bare anchor list — and a newsletter cover keeps its hook as the headline, laid out like the
+    authored ones. The brand accent is named by color only; the brand clause itself never reaches
+    a render prompt.
     """
     treatment = _fallback_treatment(treatment or _treatment_for(concept, avatar),
                                     usable_anchors(concept))
@@ -613,46 +682,62 @@ def _fallback_brief(content: str, *, surface: str, ratio: str, context: str,
     anchors = [a for a in anchors if a]
     use = _USE_LABELS.get(surface, _USE_LABELS[_DEFAULT_PRESET])
     summary = _plain_words(concept.thesis if concept else content)[:240]
-    finish = (f"composed for a {ratio} aspect ratio with the subject large in the central frame, "
-              f"soft window light with natural fill, subtle film grain, real texture with fabric "
-              f"wear and everyday imperfections, plain unbranded surfaces, clean unmarked walls.")
+    hook = (concept.hook_phrase if concept and concept.hook_phrase
+            and carries_hook(surface, treatment) else None)
+    accent = sorted(brand_colors(brand_kit) & {"gold", "golden"}) or sorted(brand_colors(brand_kit))
+    finish = (f"composed for a {ratio} aspect ratio with the subject large in the frame, soft "
+              f"window light with natural fill and one deliberate {accent[0]} accent, subtle film "
+              f"grain, real texture with fabric wear and everyday imperfections, plain unbranded "
+              f"surfaces, clean unmarked walls.")
+    layout = (f' The headline "{hook}" sits in the left third in bold geometric sans, light gold '
+              f"on a dark area; the subject fills the other two thirds." if hook else "")
+    idea = _plain_words(concept.chosen_idea) if concept and concept.chosen_idea else ""
 
-    if treatment == TREATMENT_PEOPLE:
+    if idea:
+        prompt = (f"{context}A photorealistic editorial photograph for a {use}: {idea}, shot on a "
+                  f"50mm lens at f/2.8, visible skin pores, {finish}{layout}")
+    elif treatment == TREATMENT_PEOPLE:
         who = _plain_words(concept.audience) if concept and concept.audience else ""
         who = who or "a small working team"
         around = _join(anchors[:3]) if anchors else f"the situation this describes: {summary}"
         prompt = (f"{context}A photorealistic candid documentary photograph for a {use}: {who} "
                   f"caught mid-conversation around {around}, in a real working setting, "
                   f"eye-level medium shot, shot on a 35mm lens at f/2, visible skin pores, plain "
-                  f"unbranded clothing, {finish}")
+                  f"unbranded clothing, {finish}{layout}")
     elif len(anchors) >= 2:
         extra = f", with {anchors[2]} in the frame" if len(anchors) > 2 else ""
         prompt = (f"{context}A photorealistic candid editorial photograph for a {use} of "
                   f"{anchors[0]} and {anchors[1]} in the real place this happens{extra}, shot on "
-                  f"a 50mm lens at f/2.8, {finish}")
+                  f"a 50mm lens at f/2.8, {finish}{layout}")
     else:
         subject = anchors[0] if anchors else f"the real, specific situation this describes: {summary}"
         prompt = (f"{context}A photorealistic candid editorial photograph for a {use} of "
-                  f"{subject}. One clear focal subject, shot on a 50mm lens at f/2.8, {finish}")
+                  f"{subject}. One clear focal subject, shot on a 50mm lens at f/2.8, "
+                  f"{finish}{layout}")
     return ImageBrief(prompt=prompt, ratio=ratio, surface=surface,
                       style_preset=surface if surface in _STYLE_PRESETS else _DEFAULT_PRESET,
                       focal_concept=(summary[:120] or "professional LinkedIn visual"),
                       fallback=True, concept=concept, treatment=treatment,
                       required_entities=tuple(a for a in anchors if entity_mentioned(a, prompt)),
-                      hook_text=None, rejections=tuple(rejections))
+                      hook_text=hook, rejections=tuple(rejections))
 
 
 def _analysis_block(concept: Optional[ImageConcept], anchors: list[str],
-                    hook: Optional[str]) -> str:
+                    hook: Optional[str], surface: str = "post_image") -> str:
     if concept is None:
         return ("Analysis of the piece: unavailable — read the excerpt and build the image on "
                 "the specific, depictable things it describes.\n")
     analysis = {"thesis": concept.thesis, "audience": concept.audience,
                 "facts_context_only_never_drawn": list(concept.specific_entities),
-                "visual_anchors_to_depict": anchors, "emotional_beat": concept.emotional_beat}
+                "visual_anchors_to_depict": anchors,
+                "emotional_beat_to_show": concept.emotional_beat}
     block = f"Analysis of the piece: {json.dumps(analysis)}\n"
+    if concept.chosen_idea:
+        block += f"CHOSEN VISUAL IDEA — build the image on this: {concept.chosen_idea}\n"
     if hook:
         block += f'Hook — the ONLY text in the image, quoted exactly: "{hook}"\n'
+        if surface == "newsletter" and concept.treatment != TREATMENT_GRAPHIC:
+            block += COVER_HOOK_LAYOUT.format(hook=hook)
     return block
 
 
@@ -699,7 +784,11 @@ def build_image_brief(content: str, *, surface: str, ratio: str = "1:1",
     anchors = usable_anchors(concept)
     weak = _concept_is_weak(concept, anchors)
     names = fact_name_tokens(concept)
-    hook = concept.hook_phrase if concept and treatment == TREATMENT_GRAPHIC else None
+    hook = (concept.hook_phrase if concept and concept.hook_phrase
+            and carries_hook(surface, treatment) else None)
+    colors = brand_colors(brand_kit)
+    # Deterministically enforced on covers; requested on every surface.
+    gate_colors = colors if surface == "newsletter" else None
     # The likeness directive leads the context on purpose (issue #744): with nothing stating who
     # a depicted person is, the model invents one and the LoRA renders the invention.
     context = _profile_visual_context(profile, subject_directive(avatar))
@@ -709,8 +798,9 @@ def build_image_brief(content: str, *, surface: str, ratio: str = "1:1",
         f"{context}USE CASE: {_STYLE_PRESETS[preset]}\n"
         f"{_TREATMENT_TEMPLATES[treatment]}\n\n"
         f"Compose for a {ratio} aspect ratio.\n"
-        + _analysis_block(concept, anchors, hook)
+        + _analysis_block(concept, anchors, hook, surface)
         + (f"Brand: {brand_kit}\n" if brand_kit else "")
+        + BRAND_ACCENT_DIRECTIVE.format(colors=", ".join(sorted(colors)))
         + ("" if avatar else _NO_AVATAR_PEOPLE)
         + (f"Content shape: {content_shape}\n" if content_shape else "")
         + (f"This author's recent images already looked like this, so make this one visibly "
@@ -763,7 +853,7 @@ def build_image_brief(content: str, *, surface: str, ratio: str = "1:1",
                           attempt=attempt, ai_model="lem-medium", reason=reason)
                 continue
             rejection = _rejection(parsed, anchors=anchors, weak=weak, hook_text=hook,
-                                   names=names)
+                                   names=names, colors=gate_colors)
             if rejection:
                 reason = rejection
                 rejections.append(reason)
@@ -813,4 +903,5 @@ def build_image_brief(content: str, *, surface: str, ratio: str = "1:1",
         log_warning("Image brief author unavailable — deterministic template shipped",
                     surface=surface, action_type="image_brief", reason=reason)
     return _fallback_brief(content, surface=surface, ratio=ratio, context=context, avatar=avatar,
-                           concept=concept, treatment=treatment, rejections=tuple(rejections))
+                           concept=concept, treatment=treatment, rejections=tuple(rejections),
+                           brand_kit=brand_kit)
