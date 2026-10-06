@@ -66,6 +66,16 @@ GRAPHIC_WINDOW = 3
 GENERIC_ACRONYMS = frozenset({"AI", "B2B", "B2C", "CEO", "CFO", "CTO", "COO", "CMO", "HR", "IT",
                               "SaaS"})
 
+# Round 5 (#2241): "45% less engagement" says how much but not OF WHAT. A numeric hook must name
+# its subject, so these words never count as one — they are what a number is ABOUT, not the thing.
+_GENERIC_HOOK_WORDS = frozenset({
+    "less", "more", "fewer", "lower", "higher", "engagement", "reach", "growth", "wasted", "waste",
+    "lost", "loss", "lose", "cost", "costs", "spend", "spent", "saved", "savings", "drop", "drops",
+    "increase", "decrease", "gain", "gains", "miss", "missed", "lies", "wrong", "right", "faster",
+    "slower", "better", "worse", "percent", "times", "every", "only", "still", "just", "never",
+    "always", "mark", "fall", "flat", "down", "off", "per", "cent", "half", "most", "least",
+})
+
 # A hook that shouts or orders the reader about is an ad, not a curiosity gap.
 _IMPERATIVE_OPENERS = frozenset({
     "stop", "start", "don't", "dont", "do", "never", "always", "quit", "avoid", "try", "make",
@@ -106,9 +116,10 @@ draw "GPT-5.2" or "a 2025 report", it writes the words as garbled text. Write th
 Rules for hook_phrase and hook_alternatives: a curiosity gap a reader would want closed, or a \
 concrete contrast drawn from the thesis. Never an exclamation, never an order to the reader \
 ("Stop…", "Start…", "Don't…"), never a restatement of the title, never a full sentence. Sentence \
-case, never Title Case. Numbers and facts from the article BELONG in the hook ("53.7% miss the \
-mark") — it is the one place a fact may be written. The hook carries the THESIS; the image \
-carries emotion and specificity.
+case, never Title Case. Numbers and facts from the article BELONG in the hook — it is the one \
+place a fact may be written — but a numeric hook must NAME ITS SUBJECT within the 5 words: "45% \
+less reach for AI posts" or "AI posts: 45% less reach", never "45% less engagement". The hook \
+carries the THESIS; the image carries emotion and specificity.
 
 Rules for visual_ideas: exactly 3 one-sentence ideas, each combining the hook with a concrete \
 scene or juxtaposition built from the visual anchors and the emotional beat — for an article \
@@ -134,7 +145,19 @@ _COVER_GUIDANCE = (
     "This is a newsletter COVER. Prefer people_scene — LinkedIn's guidance is that real faces "
     "beat clipart and symbols. Use editorial_graphic only when a single number or contrast IS "
     "the thesis. A cover ALWAYS carries its hook as a headline, whatever the treatment, so "
-    "hook_phrase is required.")
+    "hook_phrase is required. A concrete_scene only when the idea is a striking, specific object "
+    "juxtaposition — never an object sitting on a desk.")
+
+# Round 5: the post image follows the cover recipe — a hook, a face, a bright scene.
+_POST_GUIDANCE = (
+    "This is a LinkedIn feed POST image (4:5). Prefer people_scene — a real face with a readable "
+    "reaction stops a scroll; a concrete_scene only when the idea is a striking, specific object "
+    "juxtaposition, never an object sitting on a desk. The image ALWAYS carries its hook as a "
+    "headline, so hook_phrase is required.")
+# An idea that is just an object resting on furniture is a still life, not a scroll-stopper.
+_OBJECT_ON_FURNITURE = re.compile(
+    r"\bon\s+(?:a|an|the|his|her|their)?\s*(?:[\w\-]+\s+){0,2}"
+    r"(?:desk|table|shelf|counter|workbench|desktop)\b", re.IGNORECASE)
 
 # Round 3 (#2241): abstract theses ("AI hallucinates", "hidden buyers") cannot be carried by a
 # literal scene, so Stage 1 proposes several ideas and a cheap judge picks one (the Idea2Img
@@ -154,7 +177,9 @@ Candidate ideas:
 {ideas}
 
 Rank them on: specificity to THIS article, surprise, legibility as a 400x225 thumbnail, and \
-distance from stock clichés. Respond with ONLY a JSON object:
+distance from stock clichés. Penalise an object sitting on a desk or table with no person — a \
+face with a readable reaction stops a scroll; a still life does not. Respond with ONLY a JSON \
+object:
 {{"ranking": [<idea numbers, best first>], "reason": "<one sentence on the winner>"}}"""
 
 
@@ -279,11 +304,34 @@ def _clean(value: Any, limit: int = 300) -> str:
     return " ".join(str(value or "").split())[:limit]
 
 
-def _valid_hook(hook: str, title: Optional[str]) -> str:
+def names_its_subject(hook: str, topic_text: str) -> bool:
+    """Does a hook name what it is about, beyond a number and generic words?
+
+    True when it carries a generic acronym the piece is about ("AI"), or a content word that is
+    not a generic hook word and that the piece's own title, thesis, facts or anchors use.
+
+    Args:
+        hook: The hook.
+        topic_text: The concept's title, thesis, facts and anchors, joined.
+
+    Returns:
+        Whether the hook names its subject.
+    """
+    if any(w.strip(".,:;?'’") in GENERIC_ACRONYMS for w in hook.split()):
+        return True
+    topic = (topic_text or "").lower()
+    return any(re.search(rf"\b{re.escape(_stem(t))}", topic)
+               for t in _content_tokens(hook)
+               if t not in _GENERIC_HOOK_WORDS and not any(ch.isdigit() for ch in t))
+
+
+def _valid_hook(hook: str, title: Optional[str], topic_text: str = "") -> str:
     """The hook if it is a usable curiosity gap; else ''.
 
-    2-5 words, at most ``_HOOK_MAX_CHARS``, no exclamation mark, no imperative opener, and not
-    the title again.
+    2-5 words, at most ``_HOOK_MAX_CHARS``, no exclamation mark, no imperative opener, not Title
+    Case, not the title again — and a hook with a number in it must name its subject
+    (``names_its_subject``), so "45% less engagement" is refused and "45% less reach for AI posts"
+    is not.
     """
     hook = hook.strip().strip("\"'“”‘’").strip()
     words = hook.split()
@@ -298,6 +346,9 @@ def _valid_hook(hook: str, title: Optional[str]) -> str:
     if hook_tokens and title_tokens and (
             len(hook_tokens & title_tokens) / len(hook_tokens) >= _HOOK_TITLE_OVERLAP):
         return ""  # a near-restatement of the title closes no gap
+    if any(ch.isdigit() for ch in hook) and not names_its_subject(
+            hook, f"{title or ''} {topic_text}"):
+        return ""  # a number with no subject says how much, never of what
     return hook
 
 
@@ -436,6 +487,11 @@ def idea_rejection(idea: str, facts: Sequence[str]) -> str:
     return ""
 
 
+def is_desk_still_life(idea: str) -> bool:
+    """Is this idea an object resting on furniture with no person in it?"""
+    return bool(_OBJECT_ON_FURNITURE.search(idea or "")) and not is_people_led(idea)
+
+
 def is_people_led(idea: str) -> bool:
     """Does this idea put a person (and so a face) in the frame?"""
     return bool(_PEOPLE_WORDS.search(idea or ""))
@@ -456,10 +512,11 @@ def _filter_ideas(raw: Any, facts: Sequence[str]) -> tuple[str, ...]:
     return tuple(ideas[:_VISUAL_IDEAS])
 
 
-def _first_valid_hook(payload: dict[str, Any], title: Optional[str]) -> str:
+def _first_valid_hook(payload: dict[str, Any], title: Optional[str],
+                      topic_text: str = "") -> str:
     candidates = [payload.get("hook_phrase")] + list(payload.get("hook_alternatives") or [])
     for candidate in candidates:
-        hook = _valid_hook(_clean(candidate, 80), title)
+        hook = _valid_hook(_clean(candidate, 80), title, topic_text)
         if hook:
             return hook
     return ""
@@ -497,7 +554,7 @@ def parse_concept(payload: Optional[dict[str, Any]], source: str,
     anchors = _ground_anchors(payload.get("visual_anchors"), source, entities)
     # The first hook that passes the rules, so a shouted primary hook does not cost a cover its
     # headline when a usable alternative was offered (round 3: every cover carries one).
-    hook = _first_valid_hook(payload, title)
+    hook = _first_valid_hook(payload, title, " ".join((thesis, *entities, *anchors)))
     treatment = _resolve_treatment(_clean(payload.get("treatment"), 40).lower(), anchors, hook)
     return ImageConcept(
         thesis=thesis,
@@ -584,6 +641,12 @@ def pick_visual_idea(concept: ImageConcept, surface: str = "post_image") -> Imag
             if ranked:
                 winner = ranked[0]
                 reason = _clean(verdict.get("reason"), 200) or "ranked first"
+                if is_desk_still_life(winner):
+                    # Deterministic backstop: a people-led idea beats an object on a desk.
+                    people = [i for i in ranked if is_people_led(i)]
+                    if people:
+                        winner = people[0]
+                        reason = "object-on-a-desk idea demoted for the best people-led one"
         except Exception as e:
             log_debug("Visual idea ranking unavailable — taking the default", error=str(e),
                       action_type="image_concept")
@@ -624,7 +687,8 @@ def analyze_content_for_image(text: str, *, title: Optional[str] = None,
     if not source.strip():
         return None
     recent = [t for t in (recent_treatments or []) if t]
-    guidance = (_COVER_GUIDANCE + "\n" if surface == "newsletter" else "") + (
+    surface_guidance = {"newsletter": _COVER_GUIDANCE, "post_image": _POST_GUIDANCE}
+    guidance = (surface_guidance[surface] + "\n" if surface in surface_guidance else "") + (
         f"Recent images by this author used, most recent first: {', '.join(recent)}. Prefer a "
         f"different treatment than {recent[0]} when the piece allows.\n" if recent else "")
     try:

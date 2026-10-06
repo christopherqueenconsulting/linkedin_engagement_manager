@@ -212,6 +212,15 @@ title, a broad smile for a "relief" beat, and a generic flip chart the judge sco
 specificity. Each became an engine rule (`docs/image-stack.md`, "the round-4 rules"); covers now
 also render two candidates per attempt and keep the better.
 
+### Gauntlet round 4
+
+ed19 scored 5 across the board. ed16 was correctly rejected (stray text on a paper prop, a neutral
+half-smile on both candidates); ed17 and ed18 were held at specificity 3 because the reuse test
+looked at the image without its headline, and ed18's "45% less engagement" never said what got
+less. Round 5 judges the cover as headline + image, requires a numeric hook to name its subject,
+keeps paper off covers (a blank sheet seen edge-on when the idea is about a document), and carries
+an emotion-intensity directive into every later candidate and retry.
+
 ### Rejections land for review, with their reason
 
 A definite judge failure on `no_cliche` or `specificity` after the attempt budget returns verdict

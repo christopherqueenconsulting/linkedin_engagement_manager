@@ -128,6 +128,57 @@ emotion; two were accepted. What still failed became engine rules:
 - **Covers render two candidates per attempt** (`_gate_candidates`: `IMAGE_GATE_CANDIDATES` when
   set, else 2 for `newsletter`, 1 elsewhere) and keep the better rubric total.
 
+**Gauntlet round 4 → the round-5 rules.** Thumbnail-style, brand-gold covers with grounded
+number hooks and real expressions; ed19 scored 5 across the board. What remained:
+
+- **The reuse test asks about the COVER, not the bare image.** With a headline, the judge asks
+  "Considering the headline '…' together with the image, could this cover be reused unchanged for
+  an unrelated article?" (yes still caps specificity at 3). ed17 and ed18 were capped at 3 for an
+  image their grounded headline made specific.
+- **A headline names its subject.** The judge asks "Does the headline alone name its subject — not
+  just a number?" — no caps specificity at 4 (passes, never a 5). Stage 1 is told a numeric hook
+  names its subject within 5 words ("AI posts: 45% less reach"), and `names_its_subject` enforces
+  it: a hook with a digit must carry a generic acronym the piece is about (AI) or a non-generic word
+  the concept's title, thesis, facts or anchors use — "45% less engagement" and "$30K wasted" are
+  refused, "$30K wasted on AI" passes (`_GENERIC_HOOK_WORDS`).
+- **No paper props on covers.** Even blank-ruled, paper kept rendering legible text ("LEAD LAST
+  REMARKS" on ed16's checklist). `cover_paper_rule`: a newsletter brief may not name paper,
+  documents, clipboards, printouts, reports, checklists, invoices, folders… (`_PAPER_PROPS`) unless
+  the chosen visual idea is ABOUT a document — and then the only paper is "a blank sheet seen
+  edge-on", stated exactly. Enforced in `_rejection` for the newsletter surface only, stated to the
+  author (`COVER_PROPS_DIRECTIVE`), and the cover fallback drops paper anchors.
+- **Emotion carries forward.** ed16's second candidate and its retry came out as neutral as the
+  first: nothing carried the judge's "enhance emotional expression" forward. A staged verdict now
+  sets `emotion_weak` (no clear face emotion, an emotion that does not match the beat, a
+  `scroll_stop` fail, or a judge issue naming the expression), and from then on EVERY render in
+  `_gate_loop` — the next candidate and every retry, on both renderers — carries
+  `EMOTION_DIRECTIVE`: "The expression must be unmistakable at thumbnail size: {beat}, exaggerated
+  like a magazine cover photo." A test asserts it is in the render prompts actually sent.
+
+**Post images follow the cover recipe (round 5, post gauntlet).** Five post renders came back
+dark and moody, hookless, near-neutral — a lone man at a desk, a metal box with a pinned paper of
+garbled text. The charcoal brand neutral was dragging whole scenes to near-black, which reads as
+murky in a white feed. So `post_image` joins `newsletter` in `HOOK_SURFACES`:
+
+- **The hook is required** (Stage 1's `_POST_GUIDANCE`), with the same rules — ≤5 words, names its
+  subject, grounded number allowed, the fixed sans typography — laid out by `POST_HOOK_LAYOUT`:
+  large in the top third of the 4:5 frame, the subject in the lower two thirds.
+- **The same emotion, no-paper and blank-screen rules as covers.** One candidate per attempt
+  (cost); the repair loop and the emotion carry-forward apply.
+- **Bright, not moody.** Brand colors are ACCENTS — the hook's color and one wardrobe or
+  background accent; charcoal belongs only behind the hook, as its backing panel
+  (`hook_type_spec` now says "on a charcoal backing panel"). The people_scene and concrete_scene
+  templates ask for high-key or warm daylight with strong subject contrast, and on both recipe
+  surfaces `_DARK_SCENE` ("moody", "low-key", "dimly lit", "dark room", "shadowy", "noir"…) is
+  rejected unless the emotional beat is itself dark (dread, crisis, fear…). The judge's
+  thumbnail question adds "is it bright enough, with a clear subject, to stand out in a white
+  social feed?" — no caps `thumbnail_read` at 3, and `thumbnail_read ≥ 4` is now a floor on
+  `newsletter` and `post_image`.
+- **People over still lifes.** Covers and posts prefer `people_scene`; a `concrete_scene` only for
+  a striking, specific object juxtaposition. The idea ranker is told to penalise an object on a
+  desk, and `is_desk_still_life` demotes a top-ranked desk still life for the best people-led idea
+  when one exists.
+
 **Hooks.** 2–5 words, ≤32 chars, a curiosity gap or a concrete contrast from the thesis: no `!`, no
 imperative opener ("Stop…", "Start…", "Don't…", "Cut…" — `_IMPERATIVE_OPENERS`), never a
 restatement of the title. Stated in the prompt and enforced in `_valid_hook`; an
