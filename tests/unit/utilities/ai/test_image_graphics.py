@@ -332,6 +332,35 @@ class TestRenderGraphic:
             os.remove(render.path)
 
 
+class TestChartAnnotation:
+    def test_an_annotation_restating_the_highlight_label_is_not_drawn(self, graphic, tmp_path):
+        render = g.render_graphic(g.HIGHLIGHT_CHART, graphic, surface="post_image", hook="A hook",
+                                  out_path=str(tmp_path / "c.png"))
+        assert graphic["comparison"]["annotation"] == "AI-written posts"
+        assert not [p for p in render.placements if p.role == "annotation"]
+
+    def test_a_distinct_annotation_is_drawn(self, graphic, tmp_path):
+        noted = copy.deepcopy(graphic)
+        noted["comparison"]["annotation"] = "less engagement than posts written by people"
+        render = g.render_graphic(g.HIGHLIGHT_CHART, noted, surface="post_image", hook="A hook",
+                                  out_path=str(tmp_path / "c.png"))
+        assert [p for p in render.placements if p.role == "annotation"]
+
+    def test_repeats_label(self):
+        assert g._repeats_label("AI-written posts", "Fully AI-written posts")
+        assert not g._repeats_label("Half the comments", "Fully AI-written posts")
+        assert not g._repeats_label("", "x")
+
+    def test_temp_cleanup_failure_is_logged_not_raised(self, graphic, tmp_path):
+        from unittest.mock import patch
+
+        with patch.object(g.os, "remove", side_effect=OSError("busy")), \
+                patch.object(g, "log_debug") as debug:
+            g.render_graphic(g.STAT_CARD, graphic, surface="post_image", hook="A hook",
+                             out_path=str(tmp_path / "s.png"))
+        debug.assert_called_once()
+
+
 class TestChecklistStates:
     @pytest.mark.parametrize("count,expected", [
         (3, ("check", "gap", "open")),

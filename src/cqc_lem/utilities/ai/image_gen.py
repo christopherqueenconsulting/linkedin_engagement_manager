@@ -1198,8 +1198,10 @@ def render_code_drawn(concept: Any, *, surface: str, hook_text: Optional[str],
                  issues="; ".join(verdict.issues))
         try:
             os.remove(drawn.path)
-        except OSError:
-            pass
+        except OSError as e:
+            # A rejected graphic left on disk costs space only; the chain moves on regardless.
+            log_debug("Rejected code-drawn graphic not removed", error=str(e),
+                      action_type="image_archetype", archetype=archetype)
     if render_info is not None:
         render_info["archetype_fallback_reason"] = "; ".join(reasons)
     return None

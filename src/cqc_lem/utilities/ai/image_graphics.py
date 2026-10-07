@@ -49,6 +49,7 @@ from cqc_lem.utilities.ai.image_compose import (
     load_font,
     tracked_width,
 )
+from cqc_lem.utilities.logger import log_debug
 
 STAT_CARD = "stat_card"
 HIGHLIGHT_CHART = "highlight_chart"
@@ -664,7 +665,8 @@ def _draw_highlight_chart(c: _Canvas, graphic: dict, pal: _Palette) -> None:
     width = right - left
     gap_s = c.floor(0.015)
     bottom = _source_line(c, graphic.get("source_line") or FROM_THE_ARTICLE, safe, pal) - gap_s
-    if data.get("annotation"):
+    if data.get("annotation") and not _repeats_label(data["annotation"],
+                                                     items[highlight]["label"]):
         note = _fit_block(c.draw, data["annotation"], width - c.floor(0.03), c.h, 2,
                           c.floor(0.03), c.floor(BODY_MIN))
         if note is None:
@@ -719,6 +721,12 @@ def _draw_highlight_chart(c: _Canvas, graphic: dict, pal: _Palette) -> None:
         c.text((left + length + round(lh * 0.35), bar_top + (bar_h - lh) // 2), fact["display"],
                font, size, pal.gold if hot else pal.grey_text, safe, "value")
         y += row_h + gap
+
+
+def _repeats_label(annotation: str, label: str) -> bool:
+    """Does the annotation only restate the highlighted bar's own label (a redundant legend)?"""
+    note, own = (" ".join(re.findall(r"[a-z0-9%]+", t.lower())) for t in (annotation, label))
+    return bool(note) and note in own
 
 
 def _zigzag(width: int, height: int, tooth: int) -> list[tuple[int, int]]:
@@ -1031,8 +1039,10 @@ def render_graphic(archetype: str, graphic: dict, *, surface: str, hook: str,
     finally:
         try:
             os.remove(region_path)
-        except OSError:
-            pass
+        except OSError as e:
+            # A leftover temp region is harmless; the composite is already written.
+            log_debug("Temp graphic region not removed", error=str(e),
+                      action_type="image_archetype")
     traced = tuple({k: v for k, v in fact.items() if k not in ("amount", "kind")}
                    for fact in facts)
     return GraphicRender(path=path, archetype=archetype, facts=traced,

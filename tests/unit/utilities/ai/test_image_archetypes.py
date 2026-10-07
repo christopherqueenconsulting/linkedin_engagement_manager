@@ -248,6 +248,15 @@ class TestRenderCodeDrawn:
         assert loop.call_args.kwargs["concept"].archetype == "editorial_concept"
         assert not [n for n in os.listdir(assets / "images" / "generated" / "system")]
 
+    def test_a_rejected_graphic_that_cannot_be_removed_is_logged(self, assets):
+        rejected = _verdict(acceptable=False, failing=["specificity"])
+        with patch.object(image_gen, "inspect_render_quality", return_value=rejected), \
+                patch.object(image_gen.os, "remove", side_effect=OSError("busy")), \
+                patch.object(image_gen, "log_debug") as debug:
+            assert render_code_drawn(_selected(), surface="post_image", hook_text="A hook",
+                                     render_info={}) is None
+        assert any("not removed" in c.args[0] for c in debug.call_args_list)
+
     def test_an_ungradable_graphic_is_looked_at_twice_then_fails_open(self, assets):
         info: dict = {}
         unchecked = _verdict(acceptable=True, checked=False)
