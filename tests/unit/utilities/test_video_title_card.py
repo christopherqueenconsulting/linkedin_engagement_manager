@@ -157,6 +157,15 @@ class TestVariants:
         frame = tc.render_title_card_frame(layout, 0.0)
         assert frame.size == (540, 540)
 
+    @pytest.mark.parametrize("variant", [tc.VARIANT_POSTER, tc.VARIANT_QUESTION])
+    def test_a_non_number_layout_sets_the_whole_hook_figure_included(self, variant):
+        # The path that never splits a hero (CodeQL py/uninitialized-local-variable on `rest`).
+        layout = tc.plan_title_card("30% of AI spend buys nothing you can see", size=(540, 540),
+                                    palette=tc.title_card_palette(), kicker="AI",
+                                    variant=variant)
+        assert layout.variant == variant and layout.hero == "" and layout.hero_font is None
+        assert " ".join(w.text for w in layout.words) == "30% of AI spend buys nothing you can see"
+
     def test_number_led_without_a_figure_is_the_poster(self):
         layout = tc.plan_title_card("Our cron caught a retired model", size=(540, 540),
                                     palette=tc.title_card_palette(), variant=tc.VARIANT_NUMBER)

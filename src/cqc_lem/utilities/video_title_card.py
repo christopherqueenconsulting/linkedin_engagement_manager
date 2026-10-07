@@ -376,6 +376,7 @@ def plan_title_card(hook: str, *, size: tuple, palette: TitleCardPalette, kicker
     hero, hero_font, hero_xy = "", None, (0, 0)
     centred = False
     text = hook
+    rest = hook  # what sets beneath the hero; the whole hook on every non-number path
     if variant == VARIANT_NUMBER:
         hero, rest = split_hero(hook)
         if not hero or len(rest.split()) < 2:
