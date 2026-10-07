@@ -388,9 +388,9 @@ def _png(path, size, fmt="PNG"):
 
 
 class TestConformToRatio:
-    """4:5 portrait (issue #2241): render 1024x1536, centre-crop to 1024x1280 before the judge.
+    """4:5 portrait (issue #2241): render 1024x1536, crop to 1024x1280 before the judge.
 
-    gpt-image has no 4:5 size; the crop is deterministic.
+    gpt-image has no 4:5 size; the crop is deterministic and top-protecting (#2249).
     """
 
     def test_a_portrait_gpt_image_render_crops_to_exactly_1024x1280(self, tmp_path):
@@ -400,18 +400,37 @@ class TestConformToRatio:
         with Image.open(path) as img:
             assert img.size == (1024, 1280) and img.format == "PNG"
 
-    def test_the_crop_is_centred(self, tmp_path):
+    def test_the_crop_protects_the_top_where_the_hook_sits(self, tmp_path):
+        """#2249 gauntlet: a centred crop clipped the headline; now 48px top, 208px bottom.
+
+        The centred crop cut 128px off the top, where post images put the hook.
+        """
         from PIL import Image
         img = Image.new("RGB", (1024, 1536), (0, 0, 0))
-        img.paste((255, 0, 0), (0, 0, 1024, 128))       # top band: cropped away
-        img.paste((0, 255, 0), (0, 128, 1024, 1408))    # the kept middle
-        img.paste((0, 0, 255), (0, 1408, 1024, 1536))   # bottom band: cropped away
+        img.paste((255, 0, 0), (0, 0, 1024, 48))          # top margin: cropped away
+        img.paste((255, 255, 255), (0, 48, 1024, 176))    # the headline's top line: KEPT
+        img.paste((0, 255, 0), (0, 176, 1024, 1328))      # the rest of the kept frame
+        img.paste((0, 0, 255), (0, 1328, 1024, 1536))     # bottom 208px: cropped away
         path = str(tmp_path / "c.png")
         img.save(path)
         image_gen.conform_to_ratio(path, "4:5")
         with Image.open(path) as out:
+            assert out.size == (1024, 1280)
+            assert out.getpixel((10, 0)) == (255, 255, 255), "the headline's first row survives"
+            assert out.getpixel((10, 127)) == (255, 255, 255)
+            assert out.getpixel((10, 1279)) == (0, 255, 0), "nothing of the bottom band is left"
+
+    def test_other_heights_split_the_excess_in_the_same_proportion(self, tmp_path):
+        from PIL import Image
+        img = Image.new("RGB", (1000, 1500), (0, 0, 0))
+        img.paste((255, 0, 0), (0, 0, 1000, 46))          # 250px excess -> 46 off the top
+        img.paste((0, 255, 0), (0, 46, 1000, 1500))
+        path = str(tmp_path / "h.png")
+        img.save(path)
+        image_gen.conform_to_ratio(path, "4:5")
+        with Image.open(path) as out:
+            assert out.size == (1000, 1250)
             assert out.getpixel((10, 0)) == (0, 255, 0)
-            assert out.getpixel((10, 1279)) == (0, 255, 0)
 
     def test_a_too_wide_render_crops_its_width(self, tmp_path):
         from PIL import Image

@@ -21,6 +21,12 @@ pytestmark = pytest.mark.unit
 
 
 @pytest.fixture(autouse=True)
+def _no_clip_check(monkeypatch):
+    """The post-render clip check (#2249) downloads the clip; these tests pin other behaviour."""
+    monkeypatch.setenv("VIDEO_CLIP_CHECK_ENABLED", "false")
+
+
+@pytest.fixture(autouse=True)
 def _no_stage_one_or_brand_reads():
     """Stub Stage 1 (an LLM call) and the brand kit (a DB read) to their neutral answers.
 
@@ -202,9 +208,10 @@ class TestTheGateVerdictReachesTheReceipt:
     def test_the_no_avatar_frame_is_graded_and_its_verdict_travels_too(self):
         # Issue #2241: the no-avatar standard tier used to render ungated and report nothing. It
         # now goes through `render_image_gated`, so its verdict reaches the receipt like any other.
+        # (A REJECTED frame is never animated at all since #2249 — test_image_engine_surfaces.)
         brief_info: dict = {}
-        assert self._render(brief_info, "rejected", avatar=False) == "https://runway.test/clip.mp4"
-        assert brief_info["gate_verdict"] == "rejected"
+        assert self._render(brief_info, "unchecked", avatar=False) == "https://runway.test/clip.mp4"
+        assert brief_info["gate_verdict"] == "unchecked"
 
     def test_a_frame_the_gate_never_reported_on_records_no_verdict(self):
         # The receipt must say nothing rather than inherit a made-up verdict.

@@ -11,6 +11,13 @@ importlib.import_module("pydantic.v1.types")
 
 from cqc_lem.utilities.db import PostType
 
+
+@pytest.fixture(autouse=True)
+def _no_clip_check(monkeypatch):
+    """The post-render clip check (#2249) downloads the clip; these tests pin other behaviour."""
+    monkeypatch.setenv("VIDEO_CLIP_CHECK_ENABLED", "false")
+
+
 # Wall-clock MUST be frozen mid-month here: the plan window derives its length from
 # `days_left_in_month`, and on the last 1-2 days of any month a `last_planned_date = now + 1`
 # test lands at or past the month boundary, where `_cadence_slots` returns 0 slots and the

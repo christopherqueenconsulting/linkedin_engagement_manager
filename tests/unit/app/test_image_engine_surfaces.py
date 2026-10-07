@@ -6,6 +6,7 @@ each runs Stage 1 ONCE per artifact, briefs with the user's brand clause, and ha
 concept to the judge. Every LLM, render and DB call is mocked.
 """
 
+import os
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -14,6 +15,12 @@ from cqc_lem.utilities.ai.image_brief import ImageBrief
 from cqc_lem.utilities.ai.image_concept import ImageConcept
 
 pytestmark = pytest.mark.unit
+
+
+@pytest.fixture(autouse=True)
+def _no_clip_check(monkeypatch):
+    """Off unless a test turns it on: the clip check downloads the clip (#2249)."""
+    monkeypatch.setenv("VIDEO_CLIP_CHECK_ENABLED", "false")
 
 _RCP = "cqc_lem.app.run_content_plan"
 _BRAND = "Brand palette: light gold (#e9d437) against charcoal (#1f1f1f)."
@@ -29,6 +36,14 @@ def _concept(**overrides) -> ImageConcept:
     return ImageConcept(**fields)
 
 
+def _author_concept(**overrides) -> ImageConcept:
+    """A people_scene about the author's OWN decision — the one case the likeness belongs."""
+    fields = dict(treatment="people_scene", audience="founders like the author",
+                  emotional_beat="the author's relief after finally saying no")
+    fields.update(overrides)
+    return _concept(**fields)
+
+
 def _brief(concept=None, hook_text=None) -> ImageBrief:
     return ImageBrief(prompt="a rendered prompt", ratio="4:5", surface="post_image",
                       style_preset="post_image", focal_concept="the focal idea",
@@ -39,7 +54,7 @@ def _brief(concept=None, hook_text=None) -> ImageBrief:
 
 class TestPostImageStagedEngine:
     def _generate(self, tmp_path, monkeypatch, *, avatar=None, concept="default", env_ratio=None,
-                  render_info_out=None):
+                  render_info_out=None, lora_effect=None):
         from cqc_lem.utilities.post_image import generate_image_for_post
 
         if env_ratio is None:
@@ -70,7 +85,7 @@ class TestPostImageStagedEngine:
              patch("cqc_lem.utilities.ai.image_gen.render_image_gated",
                    side_effect=_render) as render, \
              patch("cqc_lem.utilities.ai.image_gen.render_avatar_image_gated",
-                   side_effect=_render) as lora:
+                   side_effect=lora_effect or _render) as lora:
             result = generate_image_for_post(9, "Post text about invoices", post_id=42)
         return result, stage1, brand, build, render, lora
 
@@ -96,7 +111,7 @@ class TestPostImageStagedEngine:
         assert url
 
     def test_the_avatar_path_is_graded_against_the_concept_too(self, tmp_path, monkeypatch):
-        concept = _concept()
+        concept = _author_concept()
         avatar = {"model_ref": "owner/lora:v1", "trigger_word": "TOK"}
         (url, _), _, _, _, render, lora = self._generate(tmp_path, monkeypatch, avatar=avatar,
                                                          concept=concept)
@@ -113,6 +128,97 @@ class TestPostImageStagedEngine:
         assert build.call_args[1]["ratio"] == expected
         assert render.call_args[1]["ratio"] == expected
 
+    def test_a_post_not_about_the_author_renders_without_the_likeness(self, tmp_path,
+                                                                      monkeypatch):
+        """#2249 gauntlet: six LoRA renders of posts about invoices and servers, six rejections."""
+        avatar = {"model_ref": "owner/lora:v1", "trigger_word": "TOK"}
+        (url, _), _, _, build, render, lora = self._generate(tmp_path, monkeypatch, avatar=avatar,
+                                                             concept=_concept())
+        assert url
+        lora.assert_not_called()
+        render.assert_called_once()
+        assert build.call_args[1]["avatar"] is None
+
+    @pytest.mark.parametrize("failure", ["rejected", "raises", "nothing", "flux_fallback"])
+    def test_an_unusable_avatar_render_gets_one_gpt_image_attempt(self, tmp_path, monkeypatch,
+                                                                  failure):
+        from cqc_lem.utilities.media_provenance import read_brief_receipt
+        avatar = {"model_ref": "owner/lora:v1", "trigger_word": "TOK"}
+        bad = str(tmp_path / "lora.png")
+        with open(bad, "wb") as fh:
+            fh.write(b"png")
+
+        def _lora(*_args, render_info=None, **_kwargs):
+            if failure == "raises":
+                raise RuntimeError("Replicate 500")
+            if failure == "nothing":
+                return None
+            if failure == "flux_fallback":
+                render_info.update({"used_avatar": False, "gate_verdict": "unchecked"})
+            else:
+                render_info.update({"used_avatar": True, "gate_verdict": "rejected"})
+            return bad
+
+        with patch("cqc_lem.utilities.post_image.log_info") as info:
+            (url, reason), _, _, build, render, lora = self._generate(
+                tmp_path, monkeypatch, avatar=avatar, concept=_author_concept(), lora_effect=_lora)
+        assert reason is None and url
+        lora.assert_called_once()
+        render.assert_called_once()
+        concept = build.call_args_list[0][1]["concept"]
+        # Re-briefed WITHOUT the likeness, on the SAME concept — Stage 1 is not re-run.
+        assert build.call_count == 2
+        assert build.call_args_list[0][1]["avatar"] == avatar
+        assert build.call_args_list[1][1]["avatar"] is None
+        assert build.call_args_list[1][1]["concept"] is concept
+        assert render.call_args[1]["concept"] is concept
+        assert any("one gpt-image attempt" in c.args[0] for c in info.call_args_list)
+        with patch("cqc_lem.assets_dir", str(tmp_path / "assets")):
+            receipt = read_brief_receipt(url)
+        assert receipt["render_path"] == "base_after_avatar"
+        assert receipt["avatar_fallback_reason"]
+
+    def test_a_usable_avatar_render_records_its_path(self, tmp_path, monkeypatch):
+        from cqc_lem.utilities.media_provenance import read_brief_receipt
+        avatar = {"model_ref": "owner/lora:v1", "trigger_word": "TOK"}
+        (url, _), _, _, build, render, _ = self._generate(tmp_path, monkeypatch, avatar=avatar,
+                                                          concept=_author_concept())
+        render.assert_not_called()
+        assert build.call_count == 1
+        with patch("cqc_lem.assets_dir", str(tmp_path / "assets")):
+            receipt = read_brief_receipt(url)
+        assert receipt["render_path"] == "avatar" and "avatar_fallback_reason" not in receipt
+
+    def test_the_fallback_that_is_also_rejected_ships_bare(self, tmp_path, monkeypatch):
+        from cqc_lem.utilities.post_image import GATE_REJECTED_REASON
+        avatar = {"model_ref": "owner/lora:v1", "trigger_word": "TOK"}
+        (url, reason), _, _, _, render, _ = self._generate(
+            tmp_path, monkeypatch, avatar=avatar, concept=_author_concept(),
+            render_info_out={"gate_verdict": "rejected"})
+        assert url is None and reason == GATE_REJECTED_REASON
+        render.assert_called_once()
+
+    def test_a_failed_fallback_brief_is_reported(self, tmp_path, monkeypatch):
+        from cqc_lem.utilities.post_image import generate_image_for_post
+        monkeypatch.delenv("POST_IMAGE_RATIO", raising=False)
+        avatar = {"model_ref": "owner/lora:v1", "trigger_word": "TOK"}
+        with patch("cqc_lem.utilities.linkedin.helper.load_profile_for_user", return_value=None), \
+             patch("cqc_lem.utilities.avatar.guardrails.resolve_avatar_for", return_value=avatar), \
+             patch("cqc_lem.utilities.ai.image_concept.analyze_content_for_image",
+                   return_value=_author_concept()), \
+             patch("cqc_lem.utilities.ai.image_brief.build_image_brief",
+                   side_effect=[_brief(), RuntimeError("author down")]), \
+             patch("cqc_lem.utilities.ai.image_gen.render_avatar_image_gated", return_value=None):
+            assert generate_image_for_post(9, "text", post_id=42) == (
+                None, "Could not write an image prompt")
+
+    def test_a_raising_fit_check_renders_without_the_likeness(self, tmp_path, monkeypatch):
+        with patch("cqc_lem.utilities.avatar.guardrails.resolve_avatar_for_concept",
+                   side_effect=RuntimeError("db down")):
+            (url, _), _, _, build, render, lora = self._generate(tmp_path, monkeypatch)
+        assert url and build.call_args[1]["avatar"] is None
+        lora.assert_not_called()
+
     def test_the_judges_rubric_lands_on_the_receipt(self, tmp_path, monkeypatch):
         from cqc_lem.utilities.media_provenance import read_brief_receipt
         out = {"gate_verdict": "accepted", "gate_rubric": {"relevance": 5},
@@ -128,8 +234,8 @@ class TestPostImageStagedEngine:
 # ── Video source frame + motion ───────────────────────────────────────────────
 
 class TestVideoStagedEngine:
-    def _run(self, *, avatar=None, quality="standard"):
-        concept = _concept()
+    def _run(self, *, avatar=None, quality="standard", concept=None, caption=None):
+        concept = concept or _concept()
 
         def _prompt(*_args, brief_info=None, **_kwargs):
             brief_info["brief"] = _brief(concept, None)
@@ -144,6 +250,8 @@ class TestVideoStagedEngine:
              patch("cqc_lem.utilities.ai.image_concept.analyze_content_for_image",
                    return_value=concept) as stage1, \
              patch("cqc_lem.utilities.brand_kit.brand_clause_for_user", return_value=_BRAND), \
+             patch("cqc_lem.utilities.video_captions.burned_caption_text",
+                   return_value=caption) as captions, \
              patch(f"{_RCP}.get_flux_image_prompt_from_ai", side_effect=_prompt) as prompt, \
              patch(f"{_RCP}.get_runway_ml_video_prompt_from_ai", return_value="motion") as motion, \
              patch("cqc_lem.utilities.ai.ai_helper.generate_post_image",
@@ -154,7 +262,29 @@ class TestVideoStagedEngine:
              patch(f"{_RCP}.create_runway_video", return_value="https://x.mp4") as runway:
             from cqc_lem.app.run_content_plan import _generate_video_src
             src = _generate_video_src(7, "The post about invoices", None, post_id=9)
+        self.captions = captions
         return src, concept, stage1, prompt, motion, gpi, gated, ungated, runway
+
+    def test_the_frame_judge_reads_the_burned_caption_as_its_headline(self):
+        caption = "Agencies wait 90 days to get paid. Here is the fix."
+        _, _, _, prompt, _, _, gated, _, _ = self._run(caption=caption)
+        assert gated.call_args[1]["hook_text"] == caption
+        assert gated.call_args[1]["surface"] == "video"
+        self.captions.assert_called_once_with("The post about invoices", user_id=7,
+                                              avatar_led=False)
+        # Judge-only: the brief author never sees it.
+        assert caption not in str(prompt.call_args)
+
+    def test_the_avatar_frame_judge_reads_it_too_with_the_avatar_gate(self):
+        avatar = {"model_ref": "owner/lora:v1", "trigger_word": "TOK"}
+        _, _, _, _, _, gpi, _, _, _ = self._run(avatar=avatar, concept=_author_concept(),
+                                                caption="My hardest no.")
+        assert gpi.call_args[1]["hook_text"] == "My hardest no."
+        assert self.captions.call_args.kwargs["avatar_led"] is True
+
+    def test_no_burned_caption_means_no_headline(self):
+        _, _, _, _, _, _, gated, _, _ = self._run(caption=None)
+        assert gated.call_args[1]["hook_text"] is None
 
     def test_the_standard_no_avatar_frame_is_now_gated_on_the_video_surface(self):
         src, concept, stage1, _, _, gpi, gated, ungated, runway = self._run()
@@ -178,10 +308,197 @@ class TestVideoStagedEngine:
 
     def test_the_avatar_frame_is_graded_against_the_same_concept(self):
         avatar = {"model_ref": "owner/lora:v1", "trigger_word": "TOK"}
-        _, concept, _, _, _, gpi, gated, _, _ = self._run(avatar=avatar)
+        _, concept, _, _, _, gpi, gated, _, _ = self._run(avatar=avatar, concept=_author_concept())
         gated.assert_not_called()
         assert gpi.call_args[1]["concept"] is concept
         assert gpi.call_args[1]["focal_concept"] == "the focal idea"
+
+
+    def test_a_video_not_about_the_author_frames_without_the_likeness(self):
+        avatar = {"model_ref": "owner/lora:v1", "trigger_word": "TOK"}
+        _, _, _, prompt, _, gpi, gated, _, _ = self._run(avatar=avatar)
+        gpi.assert_not_called()
+        gated.assert_called_once()
+        assert prompt.call_args[1]["avatar"] is None
+
+
+class TestVideoFrameGateAndClipCheck:
+    """#2249 video gauntlet: the frame gate is enforced before Runway; the clip is checked after."""
+
+    def _run(self, *, verdict="accepted", runway=("https://r/1.mp4",), checks=(), enabled=False,
+             monkeypatch=None, brief_info=None):
+        from cqc_lem.utilities.video_clip_check import ClipVerdict
+        if enabled:
+            monkeypatch.setenv("VIDEO_CLIP_CHECK_ENABLED", "true")
+
+        def _frame(*_args, render_info=None, **_kwargs):
+            render_info.update({"gate_verdict": verdict, "gate_issues": ["craft 2/5"]})
+            return "/tmp/frame.png"
+
+        with patch("cqc_lem.utilities.db.get_post_video_quality", return_value="standard"), \
+             patch("cqc_lem.utilities.db.get_default_video_quality", return_value="standard"), \
+             patch("cqc_lem.utilities.avatar.guardrails.resolve_avatar_for", return_value=None), \
+             patch(f"{_RCP}._persist_video_model"), \
+             patch(f"{_RCP}.create_folder_if_not_exists"), \
+             patch("cqc_lem.utilities.ai.image_concept.analyze_content_for_image",
+                   return_value=_concept()), \
+             patch("cqc_lem.utilities.brand_kit.brand_clause_for_user", return_value=""), \
+             patch(f"{_RCP}.get_flux_image_prompt_from_ai", return_value="scene"), \
+             patch(f"{_RCP}.get_runway_ml_video_prompt_from_ai", return_value="m" * 500), \
+             patch("cqc_lem.utilities.ai.image_gen.render_image_gated",
+                   side_effect=_frame) as gated, \
+             patch(f"{_RCP}.create_runway_video", side_effect=list(runway)) as rw, \
+             patch("cqc_lem.utilities.video_clip_check.check_clip_url",
+                   side_effect=[ClipVerdict(**c) for c in checks]) as check, \
+             patch("cqc_lem.utilities.pexels_helper.download_pexels_video",
+                   return_value="/tmp/stock.mp4") as pexels, \
+             patch(f"{_RCP}.log_info") as info:
+            from cqc_lem.app.run_content_plan import _generate_video_src
+            src = _generate_video_src(7, "The post", None, post_id=9, brief_info=brief_info)
+        return src, gated, rw, check, pexels, info
+
+    def test_the_frame_gate_is_enforced_whatever_the_env_says(self):
+        _, gated, *_ = self._run()
+        assert gated.call_args.kwargs["enforce"] is True
+
+    def test_a_rejected_frame_is_never_animated(self):
+        brief_info: dict = {}
+        src, _, runway, _, pexels, info = self._run(verdict="rejected", brief_info=brief_info)
+        assert src == "/tmp/stock.mp4"
+        runway.assert_not_called()
+        pexels.assert_called_once()
+        assert any("not animating it" in c.args[0] for c in info.call_args_list)
+        assert "brief" not in brief_info and "gate_verdict" not in brief_info
+
+    def test_the_check_is_off_when_disabled(self):
+        src, _, runway, check, _, _ = self._run()
+        assert src == "https://r/1.mp4"
+        check.assert_not_called()
+        runway.assert_called_once()
+
+    def test_a_clean_clip_ships_after_one_check(self, monkeypatch):
+        brief_info: dict = {}
+        src, _, runway, check, _, _ = self._run(
+            enabled=True, monkeypatch=monkeypatch, brief_info=brief_info,
+            checks=[{"checked": True}])
+        assert src == "https://r/1.mp4"
+        runway.assert_called_once()
+        check.assert_called_once_with("https://r/1.mp4", user_id=7, post_id=9)
+        assert brief_info["clip_check"] == {"first": {"checked": True, "defects": [],
+                                                      "details": "", "reason": ""}}
+
+    def test_a_defect_buys_one_re_render_with_a_repair_clause(self, monkeypatch):
+        brief_info: dict = {}
+        src, _, runway, check, _, _ = self._run(
+            enabled=True, monkeypatch=monkeypatch, brief_info=brief_info,
+            runway=("https://r/1.mp4", "https://r/2.mp4"),
+            checks=[{"checked": True, "defects": ["an object or person appeared"],
+                     "details": "a mug pops in"}, {"checked": True}])
+        assert src == "https://r/2.mp4"
+        assert runway.call_count == 2
+        retry_motion = runway.call_args_list[1].args[1]
+        assert len(retry_motion) <= 512
+        assert "a mug pops in" in retry_motion and retry_motion.startswith("m")
+        assert brief_info["clip_check"]["shipped"] == "retry"
+        assert brief_info["clip_check"]["retry"]["checked"] is True
+        assert check.call_count == 2
+
+    def test_a_re_render_that_returns_nothing_ships_the_first_clip(self, monkeypatch):
+        brief_info: dict = {}
+        src, *_ = self._run(enabled=True, monkeypatch=monkeypatch, brief_info=brief_info,
+                            runway=("https://r/1.mp4", None),
+                            checks=[{"checked": True, "defects": ["a limb or face distorted"]}])
+        assert src == "https://r/1.mp4"
+        assert brief_info["clip_check"]["shipped"] == "first"
+
+    def test_an_unchecked_clip_ships_without_a_re_render(self, monkeypatch):
+        src, _, runway, *_ = self._run(enabled=True, monkeypatch=monkeypatch,
+                                       checks=[{"checked": False, "reason": "no ffmpeg"}])
+        assert src == "https://r/1.mp4"
+        runway.assert_called_once()
+
+    def test_the_clip_record_reaches_the_stored_receipt(self, tmp_path, monkeypatch):
+        import cqc_lem.app.run_content_plan as rcp
+        from cqc_lem.utilities.media_provenance import read_brief_receipt
+        monkeypatch.setattr(rcp, "assets_dir", str(tmp_path))
+        monkeypatch.setattr("cqc_lem.assets_dir", str(tmp_path))
+
+        def _save(url, directory):
+            path = os.path.join(directory, "clip.mp4")
+            with open(path, "wb") as fh:
+                fh.write(b"\x00\x00\x00 ftypisom" + b"\x00" * 56)
+            return path
+
+        record = {"first": {"checked": True, "defects": [], "details": "", "reason": ""}}
+        with patch(f"{_RCP}.save_video_url_to_dir", side_effect=_save), \
+             patch(f"{_RCP}._accept_probed_video", return_value=True), \
+             patch(f"{_RCP}._caption_video_asset"), \
+             patch(f"{_RCP}._record_video_asset_measures"), \
+             patch("cqc_lem.utilities.c2pa_helper.add_ai_content_credentials"), \
+             patch(f"{_RCP}.update_db_post_video_url"):
+            url = rcp._store_video_asset(7, "https://r/1.mp4", user_id=3, brief=_brief(),
+                                         gate_verdict="accepted", clip_check=record)
+        assert read_brief_receipt(url)["clip_check"] == record
+
+    def test_no_clip_record_means_no_extra(self):
+        from cqc_lem.app.run_content_plan import _clip_check_extra
+        assert _clip_check_extra(None) is None and _clip_check_extra({}) is None
+        assert _clip_check_extra({"clip_check": {"a": 1}}) == {"clip_check": {"a": 1}}
+
+
+class TestVideoCaptionIsJudgeOnly:
+    """The caption reaches the video frame's judge, never the render (PR #2249)."""
+
+    def test_video_never_composites_and_the_caption_never_reaches_the_renderer(self):
+        from cqc_lem.utilities.ai import image_gen
+        caption = "Agencies wait 90 days to get paid."
+        with patch.object(image_gen, "_render_with_backend",
+                          return_value=("/tmp/frame.png", "gpt-image")) as render, \
+             patch("cqc_lem.utilities.ai.image_compose.compose_headline") as compose, \
+             patch.object(image_gen, "inspect_render_quality",
+                          return_value=image_gen.QualityVerdict(acceptable=True)) as judge:
+            path = image_gen.render_image_gated("a scene", surface="video", ratio="9:16",
+                                                concept=_concept(), hook_text=caption,
+                                                enforce=True)
+        assert path == "/tmp/frame.png", "the raw frame ships — no composite"
+        compose.assert_not_called()
+        assert render.call_args.kwargs["ratio"] == "9:16", "no square scene for a split layout"
+        assert caption not in render.call_args.args[0]
+        assert judge.call_args.kwargs["hook_text"] == caption
+        assert judge.call_args.kwargs["composite_path"] is None
+        assert "video" not in image_gen.COMPOSE_SURFACES
+
+
+class TestBurnedCaptionText:
+    _POST = "Agencies wait 90 days to get paid.\nHere is the fix.\n\nMore detail.\n#cashflow"
+
+    def _caption(self, *, flag=True, avatar_led=False, opt_in=False):
+        from cqc_lem.utilities import video_captions as vc
+        with patch("cqc_lem.utilities.flags.flag_enabled", return_value=flag), \
+             patch.object(vc, "captions_allowed_on_avatar_video", return_value=opt_in):
+            return vc.burned_caption_text(self._POST, user_id=7, avatar_led=avatar_led)
+
+    def test_it_is_the_same_text_the_burn_uses(self):
+        from cqc_lem.utilities.video_captions import caption_lines
+        assert self._caption() == " ".join(caption_lines(self._POST))
+        assert self._caption().startswith("Agencies wait 90 days")
+
+    def test_flag_off_is_none(self):
+        assert self._caption(flag=False) is None
+
+    def test_an_avatar_frame_without_the_overlay_opt_in_is_none(self):
+        assert self._caption(avatar_led=True) is None
+        assert self._caption(avatar_led=True, opt_in=True)
+
+    def test_no_prose_is_none(self):
+        from cqc_lem.utilities import video_captions as vc
+        with patch("cqc_lem.utilities.flags.flag_enabled", return_value=True):
+            assert vc.burned_caption_text("#a #b", user_id=7) is None
+
+    def test_a_raising_flag_read_is_none(self):
+        from cqc_lem.utilities import video_captions as vc
+        with patch("cqc_lem.utilities.flags.flag_enabled", side_effect=RuntimeError("x")):
+            assert vc.burned_caption_text(self._POST, user_id=7) is None
 
 
 class TestMotionPromptCarriesTheConcept:
@@ -200,9 +517,18 @@ class TestMotionPromptCarriesTheConcept:
         assert "<thesis>Late invoices quietly starve" in user_text
         assert "<emotional_beat>quiet dread turning to resolve</emotional_beat>" in user_text
 
-    def test_without_a_concept_the_prompt_is_unchanged(self):
+    def test_without_a_concept_only_the_discipline_rides(self):
         _, user_text = self._draft(None)
         assert "<thesis>" not in user_text and "emotional_beat" not in user_text
+        assert "ONE subtle, continuous action that expresses the post's point" in user_text
+
+    def test_the_motion_discipline_rides_on_every_prompt(self):
+        _, user_text = self._draft(_concept())
+        for rule in ("ONE subtle, continuous action that expresses quiet dread turning to resolve",
+                     "locked off or does a single slow push-in",
+                     "no new objects or people enter the frame",
+                     "Hands and limbs move naturally", "Screens stay dark and unchanged"):
+            assert rule in user_text, rule
 
     def test_the_public_entry_point_threads_the_concept_through(self):
         from cqc_lem.utilities.ai import ai_helper
@@ -291,8 +617,13 @@ class TestCarouselStagedEngine:
         llm.chat.completions.create.assert_not_called()
         queries = [c.args[0] for c in pexels.call_args_list]
         assert len(queries) == 3
-        assert queries[0].startswith("unpaid invoices")
+        # Anchors this slide names lead: slide 2 searches the bank balance, slide 3 the owner.
         assert queries[1].startswith("bank balance")
+        assert queries[2].startswith("agency owner")
+        # "unpaid invoices" is a paper prop, which the engine stopped offering as an anchor in
+        # round 7, so it is never a stock search either — slide 1 takes the deck's anchors.
+        assert queries[0] == "agency owner bank balance"
+        assert not any("invoice" in q for q in queries)
 
     def test_no_slide_wanting_an_image_costs_no_concept(self, tmp_path):
         from cqc_lem.utilities import carousel_creator as cc

@@ -16,7 +16,6 @@ for covers the human ``pending_review`` gate still sits behind this one.
 """
 
 import base64
-import json
 import os
 import re
 import secrets
@@ -39,7 +38,7 @@ from cqc_lem.utilities.logger import log_debug, log_info, log_warning
 
 # gpt-image accepts exactly these; anything else falls back to square. 4:5 is NOT a gpt-image size
 # (gpt-image-2 may take other multiples of 16, but nothing here relies on that): it renders at the
-# portrait size and `conform_to_ratio` centre-crops the result before the judge ever sees it.
+# portrait size and `conform_to_ratio` crops the result (top-protecting) before the judge sees it.
 _SIZE_BY_RATIO = {
     "1:1": "1024x1024",
     "16:9": "1536x1024",
@@ -51,6 +50,12 @@ _SIZE_BY_RATIO = {
 _CROP_RATIOS = {"4:5": (4, 5)}
 # A render already within this of the target aspect is left alone (FLUX takes "4:5" natively).
 _CROP_TOLERANCE = 0.01
+# Where a portrait render loses its excess height (#2249 gauntlet): post images put the hook in the
+# top third, and a CENTRED 1024x1536 -> 1024x1280 crop cut 128px off the top — the headline's top
+# line on 2 of 5 renders. So the top loses 48px and the bottom 208px; on any other height the excess
+# is split in the same 48:208 proportion. Width trims (too-wide renders) stay centred.
+_CROP_TOP_PX = 48
+_CROP_BOTTOM_PX = 208
 
 # Replicate renders are bounded so a hung prediction can't stall a Celery worker forever.
 _REPLICATE_TIMEOUT_SECONDS = int(os.getenv("REPLICATE_TIMEOUT_SECONDS", "300"))
@@ -68,20 +73,24 @@ _GENERATED_SUBDIR = os.path.join("images", "generated")
 # explicit prohibition works. FLUX has no negative prompting and largely ignores negation —
 # naming "logos" in a FLUX prompt can SUMMON one — so FLUX renders get the same constraint
 # phrased positively instead.
+# Round 9 (#2241): gpt-image painted the brief's role and group nouns as labels — a poster
+# reading "Founders & Content Teams In Conversation", badges saying "SECURITY" — so both
+# backends now refuse every label-carrying surface by name.
+_NO_LABELS = (" No captions, titles, posters, signage, name badges, lanyards with text, or labels "
+              "of any kind.")
+# Round 11: no brief named a laptop, yet "AI routing" and "smaller model servers" rendered laptops
+# showing code, server racks and cables — the image model INFERS tech hardware from the topic.
+# So every render, on every surface and backend, states the scene positively and then explicitly.
+NO_TECH_CLAUSE = (" The scene contains no computers, laptops, screens, servers, cables or code; "
+                  "people interact with each other in a real place.")
 _NO_MARKS_GPT = (" Absolutely no text, letters, words, numbers, captions, watermarks, logos, "
                  "brand marks, app icons, social-media icons, charts, or UI elements anywhere "
-                 "in the image.")
+                 "in the image." + _NO_LABELS + NO_TECH_CLAUSE)
 _NO_MARKS_FLUX = (" Every garment and surface is plain and unbranded, screens are blank, walls "
-                  "clean and unmarked.")
+                  "clean and unmarked." + _NO_LABELS + NO_TECH_CLAUSE)
 
-# The ONE text exception (issue #2241): an `editorial_graphic` brief carries a declared 2-5 word
-# hook, and the blanket constraint above would forbid the very words the graphic exists to show.
-# So a hook-carrying render gets this INSTEAD — the hook named exactly, everything else still
-# refused. FLUX gets it positively, for the same reason as `_NO_MARKS_FLUX`.
-_HOOK_ONLY_GPT = (' The only text in the image is exactly "{hook}" — no other words, letters, '
-                  'numbers, logos, watermarks or UI.')
-_HOOK_ONLY_FLUX = (' The only lettering in the image is the exact phrase "{hook}"; every other '
-                   'garment and surface is plain and unbranded.')
+# No render carries text — not even a headline (issue #2241, round 6): ``image_compose`` typesets
+# the hook onto the finished render, so this constraint holds on every surface without exception.
 
 # The blanket constraint above is not enough when the scene NAMES a surface whose whole purpose is
 # carrying marks (issue #1376). Newsletter cover ed9 went through this exact path — brief authored
@@ -110,12 +119,10 @@ _MARK_MAGNETS: tuple[tuple[str, str], ...] = (
 )
 _MARK_MAGNET_PATTERNS: tuple[tuple[re.Pattern, str], ...] = tuple(
     (re.compile(rf"\b(?:{words})\b", re.IGNORECASE), clause) for words, clause in _MARK_MAGNETS)
-# The board/page/printed-surface clause — the one a hook-carrying graphic must not be handed.
-_PRINTED_SURFACE_INDEX = 1
 
 
 def with_no_marks(prompt: str, backend: str = "gpt-image", *,
-                  scene: Optional[str] = None, hook_text: Optional[str] = None) -> str:
+                  scene: Optional[str] = None) -> str:
     """The render prompt plus the no-marks constraint for that backend, added at most once.
 
     A prompt that NAMES a mark-carrying surface — a screen, a whiteboard, a page — also gets that
@@ -132,22 +139,15 @@ def with_no_marks(prompt: str, backend: str = "gpt-image", *,
             quotes the gate's issue strings verbatim ("garbled text on whiteboard") — matching on
             that would hand a screenless satchel scene a clause naming a screen, on the backend
             where naming a thing summons it. Defaults to ``prompt``.
-        hook_text: the editorial_graphic hook (issue #2241). When set, the blanket constraint is
-            replaced by one naming that hook as the ONLY text allowed, and the printed-surface
-            clause is skipped — it would blank the very surface the hook is set on.
     """
-    if hook_text:
-        suffix = (_HOOK_ONLY_FLUX if backend == "flux" else _HOOK_ONLY_GPT).format(hook=hook_text)
+    suffix = _NO_MARKS_FLUX if backend == "flux" else _NO_MARKS_GPT
+    if _NO_MARKS_GPT in prompt or _NO_MARKS_FLUX in prompt:
+        marked = prompt
     else:
-        suffix = _NO_MARKS_FLUX if backend == "flux" else _NO_MARKS_GPT
-    blankets = (_NO_MARKS_GPT, _NO_MARKS_FLUX, suffix)
-    marked = prompt if any(b in prompt for b in blankets) else f"{prompt}{suffix}"
+        marked = f"{prompt}{suffix}"
     source = prompt if scene is None else scene
-    for blanket in blankets:
-        source = source.replace(blanket, "")
-    for index, (pattern, clause) in enumerate(_MARK_MAGNET_PATTERNS):
-        if hook_text and index == _PRINTED_SURFACE_INDEX:
-            continue
+    source = source.replace(_NO_MARKS_GPT, "").replace(_NO_MARKS_FLUX, "")
+    for pattern, clause in _MARK_MAGNET_PATTERNS:
         if clause not in marked and pattern.search(source):
             marked = f"{marked}{clause}"
     return marked
@@ -214,6 +214,9 @@ class QualityVerdict:
     rubric: dict = field(default_factory=dict)
     blind_description: Optional[str] = None
     failing: list = field(default_factory=list)
+    # The judge saw a weak or wrong expression (round 5): the NEXT render — the second candidate
+    # and every retry — must push the emotion harder.
+    emotion_weak: bool = False
 
 
 def size_for_ratio(ratio: str) -> str:
@@ -227,10 +230,12 @@ def size_for_ratio(ratio: str) -> str:
 
 
 def conform_to_ratio(path: Optional[str], ratio: str) -> Optional[str]:
-    """Centre-crop a render in place to ``ratio`` when that ratio is one no backend renders natively.
+    """Crop a render in place to ``ratio`` when that ratio is one no backend renders natively.
 
-    Deterministic: the largest centred box of the target aspect, so a 1024x1536 gpt-image render
-    becomes exactly 1024x1280 for 4:5. Only ratios in ``_CROP_RATIOS`` are touched, and a render
+    Deterministic: the largest box of the target aspect, so a 1024x1536 gpt-image render becomes
+    exactly 1024x1280 for 4:5 — TOP-PROTECTING, not centred: 48px off the top and 208px off the
+    bottom (``_CROP_TOP_PX`` / ``_CROP_BOTTOM_PX``), because the hook sits in the top third. A
+    too-wide render is trimmed evenly from both sides. Only ratios in ``_CROP_RATIOS`` are touched, and a render
     already at the aspect (FLUX/Replicate takes ``aspect_ratio="4:5"``) is left as it is. Runs
     before the vision judge, so the judge grades what will ship.
 
@@ -257,7 +262,9 @@ def conform_to_ratio(path: Optional[str], ratio: str) -> Optional[str]:
                 new_w, new_h = int(round(height * target)), height
             else:
                 new_w, new_h = width, int(round(width / target))
-            left, top = (width - new_w) // 2, (height - new_h) // 2
+            excess = height - new_h
+            left = (width - new_w) // 2
+            top = excess * _CROP_TOP_PX // (_CROP_TOP_PX + _CROP_BOTTOM_PX)
             image_format = img.format
             cropped = img.crop((left, top, left + new_w, top + new_h))
             cropped.load()
@@ -370,8 +377,7 @@ def _render_with_backend(prompt: str, *, ratio: str = "1:1",
                          post_id: Optional[int] = None,
                          image_model: str = DEFAULT_IMAGE_MODEL,
                          surface: Optional[str] = None,
-                         scene: Optional[str] = None,
-                         hook_text: Optional[str] = None) -> tuple[str, str]:
+                         scene: Optional[str] = None) -> tuple[str, str]:
     """One render, plus the backend that actually produced it (``gpt-image`` or ``flux``).
 
     Which backend ran is not answerable from configuration: under the default ``auto`` gpt-image
@@ -380,8 +386,7 @@ def _render_with_backend(prompt: str, *, ratio: str = "1:1",
     on exactly the runs where gpt-image is down (issue #1141).
 
     ``scene`` is the author's brief when ``prompt`` carries a repair round on top of it — it is
-    what the mark-magnet clauses are matched against (issue #1376). ``hook_text`` is the one
-    string an editorial_graphic may carry (issue #2241), handed to ``with_no_marks``.
+    what the mark-magnet clauses are matched against (issue #1376).
     """
     backend = (IMAGE_BACKEND or "auto").strip().lower()
     if backend not in ("auto", "gpt-image", "flux"):
@@ -390,8 +395,7 @@ def _render_with_backend(prompt: str, *, ratio: str = "1:1",
 
     if backend in ("auto", "gpt-image"):
         try:
-            path = _render_via_gpt_image(with_no_marks(prompt, "gpt-image", scene=scene,
-                                                       hook_text=hook_text),
+            path = _render_via_gpt_image(with_no_marks(prompt, "gpt-image", scene=scene),
                                          ratio=ratio, quality=quality, user_id=user_id,
                                          post_id=post_id, surface=surface)
             return conform_to_ratio(path, ratio), "gpt-image"
@@ -400,8 +404,7 @@ def _render_with_backend(prompt: str, *, ratio: str = "1:1",
                 raise
             log_warning("gpt-image render failed — falling back to FLUX", exc=e,
                         user_id=user_id, post_id=post_id, api_provider="openai", surface=surface)
-    path = _render_via_flux(with_no_marks(prompt, "flux", scene=scene, hook_text=hook_text),
-                            ratio=ratio,
+    path = _render_via_flux(with_no_marks(prompt, "flux", scene=scene), ratio=ratio,
                             image_model=image_model, user_id=user_id, surface=surface)
     return conform_to_ratio(path, ratio), "flux"
 
@@ -469,6 +472,36 @@ _STRICT_MIN_RELEVANCE = 4
 _VISION_GATE_DETAIL = "high"
 
 
+def _judge_json(response: Any, which: str) -> dict:
+    """The judge's JSON object, tolerant of a fenced reply. Raises when there is none.
+
+    A strict parse turned a fenced reply into an ``unchecked`` pass; an empty one (a spent token
+    budget) now says so in the reason instead of as a bare decode error.
+    """
+    from cqc_lem.utilities.ai.ai_helper import _loads_json_object
+
+    choice = response.choices[0]
+    raw = choice.message.content or ""
+    parsed = _loads_json_object(raw)
+    if not isinstance(parsed, dict):
+        raise ValueError(f"{which} reply was not a JSON object "
+                         f"(finish_reason={getattr(choice, 'finish_reason', None)}, "
+                         f"{len(raw)} chars)")
+    return parsed
+
+
+def _unchecked(e: Exception, surface: Optional[str], which: str) -> QualityVerdict:
+    """The fail-open verdict for a judge that could not run — LOGGED, with its reason.
+
+    WARNING with ``exc=``, never DEBUG: an unchecked render ships ungraded, and a silent one is
+    indistinguishable from a judged pass until someone looks at the image.
+    """
+    reason = f"{which} judge unavailable: {type(e).__name__}: {e}"[:300]
+    log_warning("Image judge could not grade the render — failing open", exc=e,
+                surface=surface, action_type="image_gate", judge=which)
+    return QualityVerdict(acceptable=True, checked=False, issues=[reason])
+
+
 def _legacy_inspect(image_path: str, focal_concept: str,
                     surface: Optional[str]) -> QualityVerdict:
     """The single-call gate, graded against the brief's own focal concept (pre-#2241 callers)."""
@@ -488,7 +521,7 @@ def _legacy_inspect(image_path: str, focal_concept: str,
             temperature=0,
             max_tokens=300,
         )
-        verdict = json.loads(response.choices[0].message.content)
+        verdict = _judge_json(response, "legacy judge")
         acceptable = bool(verdict.get("acceptable"))
         relevance = verdict.get("relevance")
         issues = [str(i) for i in (verdict.get("issues") or [])][:6]
@@ -500,8 +533,7 @@ def _legacy_inspect(image_path: str, focal_concept: str,
                           "actual idea"]
         return QualityVerdict(acceptable=acceptable, relevance=relevance, issues=issues)
     except Exception as e:
-        log_debug("Image quality gate unavailable — passing render through", error=str(e))
-        return QualityVerdict(acceptable=True, checked=False)
+        return _unchecked(e, surface, "legacy")
 
 
 def _image_part(image_path: str) -> dict:
@@ -522,46 +554,87 @@ BLIND_JUDGE_PROMPT = ("Describe this image in 2 sentences: the main subject, the
                       "double quotes, including small or garbled text, labels, and text on "
                       "devices or paper — or say there is no visible text.")
 
-# Stage 4b: the targeted questions, asked only AFTER the blind description exists.
+# Stage 4b: the targeted questions, asked only AFTER the blind description exists. Since round 6
+# they look at the COMPOSITE — the render with its typeset headline — because specificity, scroll
+# stop and brand are properties of the cover a scroller sees; the blind look and the stray-text
+# check stay on the RAW render, where any text at all is a defect.
 _TARGETED_JUDGE_PROMPT = """You are grading ONE AI-generated image for a LinkedIn {surface}.
-A viewer who knew nothing about its purpose described it as:
+A viewer who knew nothing about its purpose described the photograph as:
 <blind>{blind}</blind>
 
 The image was made for a piece arguing: {thesis}
-The cover's headline: {headline}
-Look at the image itself and answer:
-1. Is each of these things visibly depicted? {entities}
-2. Transcribe ALL text visible in the image. {hook_question}
-3. Is any of these stock symbols present: {cliches}?
-4. Does the main subject still read as a 400x225 thumbnail?
-5. Any AI artifacts — waxy skin, malformed hands, melted or fused objects, garbled lettering?
-6. Together with its headline, would a viewer correctly guess what the article argues?
-7. Does a face show a clear, specific emotion readable at 400x225?
-8. Does a gold accent or the charcoal / off-white brand palette read in the image?
+The cover's kicker (topic tag, typeset by the system): {kicker}
+{headline_line}
+Read the kicker, headline and scene together as one cover. Look at the image itself and answer:
+1. (Advisory only — never part of a score.) Is each of these things visibly depicted?
+   {entities}
+2. Is any of these stock symbols present: {cliches}?
+3. Does the main subject still read as a 400x225 thumbnail? Is the image bright enough, with a
+   clear subject, that it stands out in a white social feed?
+4. Any AI artifacts — waxy skin, malformed hands, melted or fused objects, garbled lettering?
+5. Could this whole cover — kicker, headline and scene together — sit unchanged on an
+   unrelated article? Would a viewer get the GIST of the claim above?
+6. Does a face show a clear, specific emotion readable at 400x225?
+7. Does the visible emotion match "{emotional_beat}" with a {valence} valence ({valence_hint})?
+8. Is the emotion authentic rather than exaggerated or cartoonish?
+9. Does a gold accent or the charcoal / off-white brand palette read in the image?
+10. Does the headline alone name its subject — not just a number? (true when there is none)
+11. Is any expression overacted — an open or gaping mouth, a furrowed brow, alarm, a grin at
+    bad news?
 
-Score each criterion 1-5, 5 best: specificity (image AND headline together convey THIS piece's
-argument, with at least one of its things visible — not a generic scene), no_cliche (5 = no stock
-symbol at all), thumbnail_read, text_accuracy (null when the image should carry no text and carries
-none), craft (no artifacts), scroll_stop (would it stop a scroll — a readable emotion counts most),
-brand_fit (the brand palette reads).
+Score each criterion 1-5, 5 best:
+- specificity: 5 = with its headline, a scroller would correctly guess this piece's argument —
+  the kicker + headline name the exact topic and the scene shows the human stakes of it (a
+  generic office is fine when kicker, headline and emotion are specific; a 5 needs all three
+  working together); 4 = clearly on-topic, slightly generic scene; 3 = the scene could sit on many unrelated posts
+  even with the headline; 2 or less = misleading or off-topic.
+- no_cliche (5 = no stock symbol at all), thumbnail_read, craft (no artifacts, an authentic
+  face), scroll_stop (would it stop a scroll — a readable, fitting emotion counts most), brand_fit
+  (the brand palette reads).
 Respond with ONLY a JSON object:
-{{"entities_depicted": {{"<thing>": true}}, "text_seen": "<exact transcription, or empty>",
- "cliches_present": ["..."], "thesis_inferable": true, "face_emotion": true,
- "rubric": {{"specificity": 1, "no_cliche": 1, "thumbnail_read": 1, "text_accuracy": null,
-            "craft": 1, "scroll_stop": 1, "brand_fit": 1}},
+{{"entities_depicted": {{"<thing>": true}}, "cliches_present": ["..."],
+ "thesis_inferable": true, "face_emotion": true, "emotion_matches": true,
+ "emotion_authentic": true, "headline_names_subject": true, "bright_enough": true,
+ "expression_overacted": false,
+ "rubric": {{"specificity": 1, "no_cliche": 1, "thumbnail_read": 1, "craft": 1,
+            "scroll_stop": 1, "brand_fit": 1}},
  "issues": ["<short actionable phrase>"]}}"""
+
+_VALENCE_HINTS = {
+    "positive": "calm, pleased, relieved or wry — never shock",
+    "negative": "concerned, skeptical or frustrated",
+    "mixed": "wry or thoughtful",
+}
+
+# A judge issue that names a weak expression ("enhance emotional expression", "neutral face").
+_EMOTION_ISSUE = re.compile(r"emotion|expression|expressive|neutral|smile|deadpan|blank face",
+                            re.IGNORECASE)
+# Round 6: "exaggerated like a magazine cover" over-fired into a man wailing over a bill.
+EMOTION_DIRECTIVE = ("The expression must be clearly readable at thumbnail size but authentic and "
+                     "restrained: {beat}, the face a real person would make, never cartoonish or "
+                     "crying.")
 
 RUBRIC_CRITERIA = ("specificity", "no_cliche", "thumbnail_read", "text_accuracy", "craft",
                    "scroll_stop", "brand_fit")
-# Acceptable iff every floor holds. `text_accuracy` None means "no text expected, none seen";
-# `brand_fit` None means the judge did not answer it (never a fail on its own).
+# Acceptable iff every floor holds. `text_accuracy` is decided deterministically from the RAW
+# render (None = no text at all, the only right answer); `brand_fit` None means unanswered.
 _RUBRIC_FLOORS = {"specificity": 4, "no_cliche": 5, "text_accuracy": 4, "craft": 4,
                   "brand_fit": 3}
 # Round 3 (#2241): four rejected covers were people at laptops with neutral faces, scroll_stop 3.
 # On the surfaces that have to stop a feed, 3 is a fail.
 _SCROLL_STOP_SURFACES = frozenset({"newsletter", "post_image"})
+# Round 11: a VIDEO frame with no caption headline (VIDEO_CAPTIONS off, so `burned_caption_text`
+# is None) passes specificity at 3. The post text above the video carries the thesis, and a lone
+# frame cannot: at 4 every caption-less frame scored 2-3 and every video fell back to Pexels
+# stock — a regression from shipping Runway clips. With a caption headline the floor stays 4;
+# no_cliche, craft and stray text are never relaxed.
+_UNCAPTIONED_VIDEO_SPECIFICITY_FLOOR = 3
 _SCROLL_STOP_FLOOR = 4
 _REQUIRED_SCORES = ("specificity", "no_cliche", "craft")
+# The surfaces whose headline ``image_compose`` typesets onto the render. NEVER ``video``: its
+# frame's ``hook_text`` is the caption ``video_captions`` burns onto the MP4 later, handed to the
+# judge as context only (PR #2249) — compositing it would paint the caption twice.
+COMPOSE_SURFACES = frozenset({"newsletter", "post_image"})
 
 
 def _score(value: Any) -> Optional[int]:
@@ -574,9 +647,18 @@ def _normalise_text(text: str) -> str:
     return " ".join(re.sub(r"[^a-z0-9 ]+", " ", (text or "").lower()).split())
 
 
+# Round 11 (#2241): the blind judge QUOTED its own negative — `Visible text: - "There is no visible
+# text."` — and the parser counted that sentence as stray text, failing a clean render.
+_NEGATIVE_TEXT = re.compile(
+    r"^(?:visible text )?(?:there (?:is|are) )?(?:no|none|nothing)"
+    r"(?: (?:visible|legible|readable|discernible))?(?: text| words| lettering| writing)?"
+    r"(?: (?:is )?(?:visible|present|shown|at all|in the image|anywhere))*$")
+
+
 def _no_text_seen(text: str) -> bool:
     normal = _normalise_text(text)
-    return not normal or normal in ("none", "no text", "no visible text", "n a", "na")
+    return (not normal or normal in ("none", "n a", "na", "visible text none")
+            or bool(_NEGATIVE_TEXT.match(normal)))
 
 
 # Text a blind description reports: every quoted string, plus whatever follows a text verb with
@@ -603,19 +685,19 @@ def blind_text_strings(blind: str) -> list[str]:
     return [t for t in found if t and not _no_text_seen(t)]
 
 
-def stray_texts(blind: str, hook_text: Optional[str]) -> list[str]:
-    """Text the blind description saw that is not (part of) the declared hook.
+def stray_texts(blind: str, hook_text: Optional[str] = None) -> list[str]:
+    """Text the blind description saw that is not (part of) ``hook_text``.
 
-    Gauntlet round 1 of #2241: the blind judge transcribed '$30K' on a tag beside the hook, and a
-    garbled report title, and text_accuracy still scored 5 — the targeted judge reported only the
-    hook. This reads the BLIND transcription deterministically instead.
+    Since round 6 the blind look runs on the RAW render, which must carry no text at all, so the
+    gate passes no hook: every transcribed string is stray. ``hook_text`` remains for a caller
+    describing an image that legitimately carries one.
 
     Args:
         blind: The blind judge's description.
-        hook_text: The one string the image may carry, or None.
+        hook_text: Text the image may carry, or None (the raw render: none).
 
     Returns:
-        Each stray string; empty when every transcribed string is contained in the hook.
+        Each stray string.
     """
     hook = _normalise_text(hook_text or "")
     return [t for t in blind_text_strings(blind)
@@ -626,12 +708,12 @@ def _apply_overlays(rubric: dict, *, blind: str, answer: dict, entities: list,
                     hook_text: Optional[str], face_expected: bool = False) -> dict:
     """Deterministic corrections the judge cannot talk its way past.
 
-    A stock symbol the BLIND description names, or the judge itself lists, caps ``no_cliche``; a
-    transcription that is not the hook caps ``text_accuracy``, and ANY text the blind description
-    quotes beyond the hook caps it at 2. ``specificity`` is judged on the headline AND image
-    together (round 3): no anchor seen at all, or a thesis the judge says the pair does not
-    convey, caps it at 3 — the anchor count is otherwise advisory. Where a face is expected (a
-    people_scene), no clear emotion readable at thumbnail size caps ``scroll_stop`` at 3.
+    ``text_accuracy`` is DECIDED here: any text the blind look found on the raw render is a 2,
+    none is n/a. A stock symbol the blind description names, or the judge lists, caps
+    ``no_cliche``. No anchor seen, or a gist the headline + image do not convey, caps
+    ``specificity`` at 3; a headline that never names its subject caps it at 4. A missing or
+    mismatched emotion caps ``scroll_stop``, a cartoonish one caps ``craft``, a dark image caps
+    ``thumbnail_read``.
     """
     from cqc_lem.utilities.ai.image_brief import cliche_hit
 
@@ -639,57 +721,98 @@ def _apply_overlays(rubric: dict, *, blind: str, answer: dict, entities: list,
     cliches = [str(c) for c in (answer.get("cliches_present") or []) if str(c).strip()]
     if cliches or cliche_hit(blind):
         rubric["no_cliche"] = min(rubric.get("no_cliche") or 5, 2)
-    text_seen = str(answer.get("text_seen") or "")
-    if hook_text:
-        if _normalise_text(text_seen) != _normalise_text(hook_text):
-            rubric["text_accuracy"] = min(rubric.get("text_accuracy") or 3, 3)
-    elif not _no_text_seen(text_seen):
-        rubric["text_accuracy"] = min(rubric.get("text_accuracy") or 2, 2)
-    if stray_texts(blind, hook_text):
-        rubric["text_accuracy"] = min(rubric.get("text_accuracy") or 2, 2)
-    seen = answer.get("entities_depicted") or {}
-    if entities and isinstance(seen, dict) and not any(seen.get(e) is True for e in entities):
-        rubric["specificity"] = min(rubric.get("specificity") or 3, 3)
-    if answer.get("thesis_inferable") is False:
-        rubric["specificity"] = min(rubric.get("specificity") or 3, 3)
+    rubric["text_accuracy"] = 2 if stray_texts(blind) else None
+    # Round 8: specificity is the judge's ANCHORED DESCRIPTORS on kicker + headline + scene
+    # together — nothing deterministic caps it. Anchors seen, the gist and a subject-less
+    # headline are advisory issues only (``advisory_issues``): gpt-4.1's "no vendor contract
+    # depicted" was asking for exactly the props the brief now refuses to draw.
     if face_expected and answer.get("face_emotion") is False:
         rubric["scroll_stop"] = min(rubric.get("scroll_stop") or 3, 3)
+    if answer.get("emotion_matches") is False:
+        rubric["scroll_stop"] = min(rubric.get("scroll_stop") or 3, 3)
+    # Round 6: a wailing man over a bill, caricature faces — a fake emotion is a craft defect.
+    if answer.get("emotion_authentic") is False or answer.get("expression_overacted") is True:
+        rubric["craft"] = min(rubric.get("craft") or 3, 3)
+    if answer.get("bright_enough") is False:
+        rubric["thumbnail_read"] = min(rubric.get("thumbnail_read") or 3, 3)
     return rubric
 
 
+def advisory_issues(answer: dict, entities: list, hook_text: Optional[str]) -> list[str]:
+    """The judge's advisory findings — reported on the receipt, never part of a score.
+
+    Args:
+        answer: The targeted judge's JSON.
+        entities: The anchors it was asked about.
+        hook_text: The headline, if any.
+
+    Returns:
+        Short issue strings prefixed "advisory:".
+    """
+    notes = []
+    seen = answer.get("entities_depicted") or {}
+    if entities and isinstance(seen, dict) and not any(seen.get(e) is True for e in entities):
+        notes.append("advisory: no anchor visibly depicted")
+    if answer.get("thesis_inferable") is False:
+        notes.append("advisory: the gist does not read")
+    if hook_text and answer.get("headline_names_subject") is False:
+        notes.append("advisory: the headline does not name its subject")
+    return notes
+
+
+def _headline_line(hook_text: Optional[str], surface: Optional[str]) -> str:
+    """How the judge is told about the headline this image is read with.
+
+    A cover or post has it typeset onto the composite. A VIDEO frame never does (round 10):
+    ``video_captions`` burns the post's opening line(s) into the stored MP4, so the frame is judged
+    WITH that caption as its headline — for specificity — while the still itself must carry none.
+    """
+    if not hook_text:
+        return "The cover's headline (typeset onto it by the system): (none — judge the image alone)"
+    if surface == "video":
+        return (f"The video's opening caption (burned into the video over this frame by the "
+                f"system; it is NOT in this still and must not be — judge the frame WITH it as "
+                f'its headline): "{hook_text}"')
+    return f'The cover\'s headline (typeset onto it by the system): "{hook_text}"'
+
+
 def _staged_inspect(image_path: str, concept: Any, hook_text: Optional[str],
-                    surface: Optional[str]) -> QualityVerdict:
-    """Stage 4: a BLIND description first, then targeted questions graded on a rubric."""
+                    surface: Optional[str], composite_path: Optional[str] = None
+                    ) -> QualityVerdict:
+    """Stage 4: a BLIND look at the RAW render, then targeted questions on the COMPOSITE."""
     from cqc_lem.utilities.ai.image_brief import CLICHE_OBJECTS, usable_anchors
 
     try:
-        image_part = _image_part(image_path)
+        raw_part = _image_part(image_path)
         blind_response = client.chat.completions.create(
             model="lem-vision",
             messages=[{"role": "user", "content": [
-                {"type": "text", "text": BLIND_JUDGE_PROMPT}, image_part]}],
+                {"type": "text", "text": BLIND_JUDGE_PROMPT}, raw_part]}],
             temperature=0,
             max_tokens=350,
         )
         blind = " ".join(str(blind_response.choices[0].message.content or "").split())[:1200]
         entities = usable_anchors(concept)
-        hook_question = (f'Does it equal exactly "{hook_text}"?' if hook_text
-                         else "This image should carry no text at all.")
-        headline = f'"{hook_text}"' if hook_text else "(none — judge the image alone)"
+        valence = getattr(concept, "valence", "") or "mixed"
         targeted = client.chat.completions.create(
             model="lem-vision",
             messages=[{"role": "user", "content": [
                 {"type": "text", "text": _TARGETED_JUDGE_PROMPT.format(
                     surface=surface or "post", blind=blind or "(no description)",
-                    thesis=concept.thesis, headline=headline,
+                    thesis=concept.thesis,
+                    kicker=(f'"{getattr(concept, "kicker", "")}"' if getattr(concept, "kicker", "")
+                            else "(none)"),
+                    headline_line=_headline_line(hook_text, surface),
+                    emotional_beat=getattr(concept, "emotional_beat", "") or "the piece's mood",
+                    valence=valence, valence_hint=_VALENCE_HINTS.get(valence, ""),
                     entities="; ".join(entities) or "(none named)",
-                    hook_question=hook_question, cliches=", ".join(CLICHE_OBJECTS))},
-                image_part]}],
+                    cliches=", ".join(CLICHE_OBJECTS))},
+                _image_part(composite_path) if composite_path else raw_part]}],
             response_format={"type": "json_object"},
             temperature=0,
             max_tokens=500,
         )
-        answer = json.loads(targeted.choices[0].message.content)
+        answer = _judge_json(targeted, "targeted judge")
         raw_rubric = answer.get("rubric") or {}
         rubric = {name: _score(raw_rubric.get(name)) for name in RUBRIC_CRITERIA}
         if any(rubric[name] is None for name in _REQUIRED_SCORES):
@@ -698,64 +821,75 @@ def _staged_inspect(image_path: str, concept: Any, hook_text: Optional[str],
                                  hook_text=hook_text,
                                  face_expected=getattr(concept, "treatment", "") == "people_scene")
     except Exception as e:
-        log_debug("Staged image judge unavailable — passing render through", error=str(e),
-                  surface=surface, action_type="image_gate")
-        return QualityVerdict(acceptable=True, checked=False)
+        return _unchecked(e, surface, "staged")
 
     floors = dict(_RUBRIC_FLOORS)
     if surface in _SCROLL_STOP_SURFACES:
         floors["scroll_stop"] = _SCROLL_STOP_FLOOR
+        floors["thumbnail_read"] = _SCROLL_STOP_FLOOR
+    if surface == "video" and not hook_text:
+        floors["specificity"] = _UNCAPTIONED_VIDEO_SPECIFICITY_FLOOR
     failing = [name for name, floor in floors.items()
                if rubric.get(name) is not None and rubric[name] < floor]
     issues = [f"{name} {rubric[name]}/5" for name in failing]
-    issues += [f"stray text: {t}" for t in stray_texts(blind, hook_text)][:3]
+    issues += [f"stray text: {t}" for t in stray_texts(blind)][:3]
+    issues += advisory_issues(answer, entities, hook_text)
     issues += [str(i) for i in (answer.get("issues") or []) if str(i).strip()]
+    emotion_weak = (answer.get("face_emotion") is False or answer.get("emotion_matches") is False
+                    or "scroll_stop" in failing
+                    or any(_EMOTION_ISSUE.search(str(i)) for i in (answer.get("issues") or [])))
     return QualityVerdict(acceptable=not failing, relevance=rubric.get("specificity"),
                           issues=issues[:8], rubric=rubric, blind_description=blind,
-                          failing=failing)
+                          failing=failing, emotion_weak=bool(emotion_weak))
 
 
 def inspect_render_quality(image_path: str, focal_concept: str,
                            surface: Optional[str] = None, *,
                            concept: Any = None,
-                           hook_text: Optional[str] = None) -> QualityVerdict:
+                           hook_text: Optional[str] = None,
+                           composite_path: Optional[str] = None) -> QualityVerdict:
     """Vision look at a finished render. Fails OPEN — any error returns acceptable/unchecked.
 
     With a Stage 1 ``concept`` (issue #2241) the gate is two ``lem-vision`` calls: a BLIND
-    description that is shown nothing about the brief or the piece, then targeted questions —
-    per-entity presence, an exact transcription against ``hook_text``, the stock-symbol list,
-    thumbnail legibility, artifacts, and whether the thesis reads — scored on ``RUBRIC_CRITERIA``.
-    Acceptable iff specificity >= 4, no_cliche == 5, craft >= 4 and text_accuracy >= 4 (or n/a).
-    Grading against the brief's own focal concept was circular: a valve scored 5 against "a valve
-    symbolising leaks".
+    description of the RAW render that is shown nothing about the brief or the piece (any text it
+    reports is a defect — renders carry none), then targeted questions on the COMPOSITE (the
+    render with its typeset headline) — anchors, stock symbols, thumbnail legibility in a white
+    feed, artifacts, the gist, the emotion and its valence and authenticity, brand — scored on
+    ``RUBRIC_CRITERIA`` with anchored specificity descriptors. Acceptable iff specificity >= 4,
+    no_cliche == 5, craft >= 4, brand_fit >= 3, no text in the raw render, and on covers and posts
+    scroll_stop and thumbnail_read >= 4. Headline legibility and clipping are guaranteed by
+    ``image_compose`` and asserted in its tests, not judged here.
 
     Without a concept the legacy single call runs: ``surface`` turns on the newsletter-only
     stock-office rule, and for ``newsletter``/``post_image`` (issue #2015) raises the relevance
     floor to ``_STRICT_MIN_RELEVANCE``.
 
     Args:
-        image_path: The finished render on disk.
+        image_path: The RAW render on disk.
         focal_concept: The brief's focal concept — the legacy gate's only yardstick.
         surface: The surface the render is for.
         concept: Stage 1's ``ImageConcept``; switches on the staged judge.
-        hook_text: The one string an editorial_graphic may carry.
+        hook_text: The headline composited onto it, if any.
+        composite_path: The composite on disk; the targeted questions look at it.
 
     Returns:
         The verdict; ``checked=False`` when the gate could not run.
     """
     if concept is None:
         return _legacy_inspect(image_path, focal_concept, surface)
-    return _staged_inspect(image_path, concept, hook_text, surface)
+    return _staged_inspect(image_path, concept, hook_text, surface, composite_path)
 
 
 _RUBRIC_REPAIRS_GPT = {
     "specificity": "show {entities} literally, so the image is plainly about {thesis}",
     "no_cliche": "remove every stock symbol ({cliches}) and build the frame on {entities}",
     "text_accuracy": "{text_fix}",
-    "craft": "natural skin texture, hands relaxed or out of frame, every object whole and solid",
-    "thumbnail_read": "make the subject larger and simpler, centred in the frame",
-    "scroll_stop": ("a closer framing where {emotion} shows on the face as a specific reaction, "
-                    "a laptop at most a prop"),
+    "craft": ("natural skin texture, hands relaxed or out of frame, every object whole and solid, "
+              "an authentic expression rather than a cartoonish one"),
+    "thumbnail_read": ("make the subject larger and simpler, centred in the frame, and light the "
+                       "scene bright and high-key so it stands out in a white feed"),
+    "scroll_stop": ("a closer framing where {emotion} shows on the face as a specific, authentic "
+                    "reaction, a laptop at most a prop"),
     "brand_fit": "one deliberate warm gold accent against the charcoal and off-white palette",
 }
 # FLUX renders what a prompt NAMES, so its repair never names the defect — only what to show.
@@ -763,35 +897,39 @@ _RUBRIC_REPAIRS_FLUX = {
     "specificity": "{entities} shown literally, so the image is plainly about {thesis}",
     "no_cliche": "the whole frame built on {entities}",
     "text_accuracy": "{text_fix}",
-    "craft": "natural skin texture, hands relaxed and out of frame, every object whole and solid",
-    "thumbnail_read": "the subject larger and simpler, centred in the frame",
-    "scroll_stop": "a closer framing where {emotion} shows on the face as a specific reaction",
+    "craft": ("natural skin texture, hands relaxed and out of frame, every object whole and "
+              "solid, an authentic, restrained expression"),
+    "thumbnail_read": ("the subject larger and simpler, centred in the frame, in bright, "
+                       "high-key daylight"),
+    "scroll_stop": ("a closer framing where {emotion} shows on the face as a specific, authentic "
+                    "reaction"),
     "brand_fit": "one deliberate warm gold accent against a charcoal and off-white palette",
 }
 
 
 def rubric_repair_directive(verdict: QualityVerdict, backend: str, concept: Any,
-                            hook_text: Optional[str]) -> str:
+                            hook_text: Optional[str] = None) -> str:
     """The re-render clause for a staged-judge rejection, built from its FAILING criteria.
 
     Args:
         verdict: The staged verdict; ``failing`` names the criteria below their floor.
         backend: ``flux`` or ``gpt-image``; FLUX is only ever told what to SHOW.
         concept: Stage 1's concept, whose entities and thesis the repair names back.
-        hook_text: The graphic's hook, when the text criterion failed on one.
+        hook_text: Unused since round 6 — the headline is composited, never rendered; kept for
+            call-site compatibility.
 
     Returns:
         One directive sentence for the next attempt.
     """
     from cqc_lem.utilities.ai.image_brief import usable_anchors
 
+    _ = hook_text
     entities = "; ".join(usable_anchors(concept)[:3]) or "the piece's own specific subject"
     thesis = getattr(concept, "thesis", "") or "the piece's idea"
-    if hook_text:
-        text_fix = (f'the only text spelled exactly "{hook_text}"' if backend == "flux" else
-                    f'make the only text exactly "{hook_text}", spelled correctly')
-    else:
-        text_fix = "every garment and surface plain and unmarked, screens blank, walls clean"
+    text_fix = ("every paper and screen blank and unmarked, every garment and wall plain"
+                if backend == "flux" else
+                "remove every legible mark from papers and screens; the image carries no text at "
+                "all — the headline is typeset later")
     cliches = ", ".join(i for i in verdict.issues if "/5" not in i)[:120] or "generic symbols"
     table = _RUBRIC_REPAIRS_FLUX if backend == "flux" else _RUBRIC_REPAIRS_GPT
     emotion = getattr(concept, "emotional_beat", "") or "the piece's emotion"
@@ -806,18 +944,25 @@ def rubric_repair_directive(verdict: QualityVerdict, backend: str, concept: Any,
             + ". Fix it: " + "; ".join(parts) + ".")
 
 
-def _gate_candidates(concept: Any) -> int:
+# Covers are weekly, so two candidates per attempt is affordable there (round 4); every other
+# surface defaults to one.
+_DEFAULT_CANDIDATES = {"newsletter": 2}
+
+
+def _gate_candidates(concept: Any, surface: Optional[str] = None) -> int:
     """How many renders per attempt.
 
-    ``IMAGE_GATE_CANDIDATES`` (read at call time), at most 2, and only for the staged judge — the
-    legacy gate has no rubric to rank candidates by.
+    ``IMAGE_GATE_CANDIDATES`` (read at call time) when set; otherwise 2 for ``newsletter`` and 1
+    everywhere else. At most 2, and only for the staged judge — the legacy gate has no rubric to
+    rank candidates by. The better rubric total wins.
     """
     if concept is None:
         return 1
+    default = _DEFAULT_CANDIDATES.get(surface or "", 1)
     try:
-        return max(1, min(2, int(os.getenv("IMAGE_GATE_CANDIDATES", "1"))))
+        return max(1, min(2, int(os.getenv("IMAGE_GATE_CANDIDATES", str(default)))))
     except ValueError:
-        return 1
+        return default
 
 
 def _verdict_rank(verdict: QualityVerdict) -> tuple:
@@ -825,38 +970,109 @@ def _verdict_rank(verdict: QualityVerdict) -> tuple:
     return (verdict.acceptable, sum(scores), verdict.relevance or 0)
 
 
+def _scene_ratio(ratio: str, hook_text: Optional[str], surface: str) -> str:
+    """The render's ratio: SQUARE whenever ``image_compose`` will split it beside a type panel.
+
+    Round 8: the split layouts centre-crop a square scene into a 0.9-1.2 aspect region on a 16:9
+    or 4:5 canvas, so a centred subject survives either way; any other render keeps its ratio.
+    """
+    return "1:1" if hook_text and surface in COMPOSE_SURFACES else ratio
+
+
+def _emotion_beat(concept: Any) -> str:
+    """The beat the emotion repair names: good news is spelled out, never "relief" (round 13)."""
+    from cqc_lem.utilities.ai.image_brief import POSITIVE_FACE
+
+    if getattr(concept, "valence", "") == "positive":
+        return POSITIVE_FACE
+    return getattr(concept, "emotional_beat", "") or "the piece's emotion"
+
+
+def _kicker_for(concept: Any) -> str:
+    """Every composite carries a kicker: Stage 1's, else one derived from the concept (round 9)."""
+    from cqc_lem.utilities.ai.image_concept import concept_kicker
+
+    return concept_kicker(concept)
+
+
+def _composite(raw_path: str, hook_text: Optional[str], surface: str, layout: Optional[str],
+               brand_kit: Optional[str], kicker: Optional[str] = None,
+               signature: Optional[str] = None) -> Optional[str]:
+    """The render with its headline typeset on, or None when there is no headline or it fails.
+
+    A compositing failure is a warning, never a lost render: the raw image still ships.
+    """
+    if not hook_text or surface not in COMPOSE_SURFACES:
+        return None
+    from cqc_lem.utilities.ai.image_compose import brand_style, compose_headline
+
+    try:
+        return compose_headline(raw_path, hook_text, layout=layout,
+                                brand=brand_style(brand_kit), surface=surface, kicker=kicker,
+                                signature=signature)
+    except Exception as e:
+        log_warning("Headline compositing failed — shipping the render without it", exc=e,
+                    surface=surface, action_type="image_compose")
+        return None
+
+
 def _gate_loop(render_once, *, prompt: str, surface: str, focal_concept: Optional[str],
                concept: Any, hook_text: Optional[str], user_id: Optional[int],
                post_id: Optional[int], render_info: Optional[dict],
-               log_message: str) -> Optional[str]:
-    """The bounded render → judge → repair loop both gated renderers share.
+               log_message: str, layout: Optional[str] = None,
+               brand_kit: Optional[str] = None,
+               signature: Optional[str] = None,
+               enforce: Optional[bool] = None) -> Optional[str]:
+    """The bounded render → composite → judge → repair loop both gated renderers share.
 
     ``render_once(current_prompt)`` returns ``(path, backend, info)`` — ``path`` None means the
     render produced nothing and the loop returns None at once; ``info`` is merged into
-    ``render_info`` for the candidate actually returned.
+    ``render_info`` for the candidate actually returned. On covers and posts the headline is
+    composited onto each candidate (``image_compose``); the loop returns the COMPOSITE and records
+    the raw render as ``render_info["raw_render_path"]``. ``enforce`` overrides the surface's
+    membership of ``IMAGE_QUALITY_GATE_SURFACES`` — the video frame passes True, because a frame
+    the judge rejects must never be animated whatever the deployment's env says (#2249).
     """
     from cqc_lem.utilities.observability import track_image_gate_verdict
 
-    enforced = surface in IMAGE_QUALITY_GATE_SURFACES
+    enforced = surface in IMAGE_QUALITY_GATE_SURFACES if enforce is None else enforce
     attempts = max(1, IMAGE_GATE_MAX_ATTEMPTS) if enforced else 1
-    candidates = _gate_candidates(concept)
+    candidates = _gate_candidates(concept, surface)
     current_prompt = prompt
     path: Optional[str] = None
     last_verdict: Optional[QualityVerdict] = None
-    gate_kwargs = {"concept": concept, "hook_text": hook_text} if concept is not None else {}
+    layout = layout or getattr(concept, "layout", "") or None
+
+    # Sticky once set (round 5): ed16's second candidate and its retry came out as neutral as the
+    # first, because nothing carried the judge's "enhance emotional expression" forward.
+    emotion_boost = ""
 
     for attempt in range(1, attempts + 1):
         best: Optional[tuple] = None
         for _ in range(candidates):
-            cand_path, backend, info = render_once(current_prompt)
+            cand_path, backend, info = render_once(
+                f"{current_prompt}\n\n{emotion_boost}" if emotion_boost else current_prompt)
             if not cand_path:
                 return None
+            composite = _composite(cand_path, hook_text, surface, layout, brand_kit,
+                                   kicker=_kicker_for(concept) or None,
+                                   signature=signature)
+            gate_kwargs = ({"concept": concept, "hook_text": hook_text,
+                            "composite_path": composite} if concept is not None else {})
             verdict = inspect_render_quality(cand_path, focal_concept or prompt[:200],
                                              surface=surface, **gate_kwargs)
+            if not verdict.checked and enforced:
+                # ONE more look before failing open on a surface the gate is meant to hold: a
+                # judge blip must not wave an ungraded render through (#2249 gauntlet).
+                verdict = inspect_render_quality(cand_path, focal_concept or prompt[:200],
+                                                 surface=surface, **gate_kwargs)
+            info = dict(info, raw_render_path=cand_path) if composite else info
             if best is None or _verdict_rank(verdict) > _verdict_rank(best[2]):
-                best = (cand_path, backend, verdict, info)
+                best = (composite or cand_path, backend, verdict, info)
             if verdict.acceptable or not verdict.checked:
                 break
+            if verdict.emotion_weak and concept is not None and not emotion_boost:
+                emotion_boost = EMOTION_DIRECTIVE.format(beat=_emotion_beat(concept))
         path, used_backend, verdict, info = best
         if render_info is not None:
             render_info.update(info)
@@ -867,7 +1083,7 @@ def _gate_loop(render_once, *, prompt: str, surface: str, focal_concept: Optiona
                  surface=surface, attempt=attempt, issues="; ".join(verdict.issues))
         if not enforced or attempt == attempts:
             break
-        directive = (rubric_repair_directive(verdict, used_backend, concept, hook_text)
+        directive = (rubric_repair_directive(verdict, used_backend, concept)
                      if verdict.failing else
                      repair_directive(verdict.issues, used_backend, focal_concept))
         current_prompt = f"{prompt}\n\n{directive}"
@@ -877,14 +1093,22 @@ def _gate_loop(render_once, *, prompt: str, surface: str, focal_concept: Optiona
             gate_verdict = "accepted" if last_verdict.acceptable else "rejected"
         else:
             gate_verdict = "unchecked"
+        if gate_verdict == "unchecked" and enforced:
+            # Availability over strictness, as before — but never silently. The reason rides on
+            # the receipt so an ungraded render is visible as one.
+            log_info("Render shipped UNCHECKED — the judge could not grade it twice", user_id=user_id,
+                     post_id=post_id, action_type="image_gate", surface=surface,
+                     reason="; ".join(last_verdict.issues))
         if render_info is not None:
             render_info["gate_verdict"] = gate_verdict
             if last_verdict.rubric:
                 # The WHY behind a rejection, for the brief receipt (issue #2241).
                 render_info["gate_rubric"] = dict(last_verdict.rubric)
                 render_info["gate_failing"] = list(last_verdict.failing)
-                render_info["gate_issues"] = list(last_verdict.issues)
                 render_info["gate_blind_description"] = last_verdict.blind_description
+            if last_verdict.issues:
+                # On the legacy path and for an unchecked verdict too — the WHY either way.
+                render_info["gate_issues"] = list(last_verdict.issues)
         track_image_gate_verdict(
             surface=surface,
             verdict=gate_verdict,
@@ -904,7 +1128,11 @@ def render_avatar_image_gated(prompt: str, *, avatar: dict, user_id: Optional[in
                               post_id: Optional[int] = None,
                               render_info: Optional[dict] = None,
                               concept: Any = None,
-                              hook_text: Optional[str] = None) -> Optional[str]:
+                              hook_text: Optional[str] = None,
+                              layout: Optional[str] = None,
+                              brand_kit: Optional[str] = None,
+                              signature: Optional[str] = None,
+                              enforce: Optional[bool] = None) -> Optional[str]:
     """LoRA render of an image the author appears in, behind the SAME bounded gate as the base.
 
     Likeness never renders through the gpt-image path (``generate_post_image`` owns the avatar
@@ -921,8 +1149,8 @@ def render_avatar_image_gated(prompt: str, *, avatar: dict, user_id: Optional[in
     same reason: the verdict is only in hand here, and the brief receipt stored beside the render
     (issue #1377) is what makes it auditable afterwards.
 
-    ``concept``/``hook_text`` (issue #2241) switch on the staged blind judge, exactly as for
-    ``render_image_gated``.
+    ``concept``/``hook_text``/``layout``/``brand_kit`` (issue #2241) switch on the staged blind
+    judge and the composited headline, exactly as for ``render_image_gated``.
     """
     from cqc_lem.utilities.ai.ai_helper import _record_avatar_media
     from cqc_lem.utilities.avatar.attributes import apply_subject_clause
@@ -931,11 +1159,12 @@ def render_avatar_image_gated(prompt: str, *, avatar: dict, user_id: Optional[in
     def render_once(current_prompt: str) -> tuple:
         # The likeness path talks to Replicate directly, so it never passes through
         # render_image_from_prompt where the constraint is otherwise added. Always FLUX.
-        marked = with_no_marks(current_prompt, "flux", scene=prompt, hook_text=hook_text)
+        marked = with_no_marks(current_prompt, "flux", scene=prompt)
         path, used_avatar = generate_image_with_avatar(
             apply_subject_clause(marked, avatar), avatar["model_ref"],
-            ratio=ratio, fallback_prompt=marked, surface=surface)
-        path = conform_to_ratio(path, ratio)
+            ratio=_scene_ratio(ratio, hook_text, surface), fallback_prompt=marked,
+            surface=surface)
+        path = conform_to_ratio(path, _scene_ratio(ratio, hook_text, surface)) if path else path
         if used_avatar and path:
             # Provenance for a synthetic likeness of a real person.
             _record_avatar_media(path, post_id, user_id)
@@ -945,7 +1174,9 @@ def render_avatar_image_gated(prompt: str, *, avatar: dict, user_id: Optional[in
 
     return _gate_loop(render_once, prompt=prompt, surface=surface, focal_concept=focal_concept,
                       concept=concept, hook_text=hook_text, user_id=user_id, post_id=post_id,
-                      render_info=render_info, log_message="Avatar image failed the quality gate")
+                      render_info=render_info, log_message="Avatar image failed the quality gate",
+                      layout=layout, brand_kit=brand_kit, signature=signature,
+                      enforce=enforce)
 
 
 def render_image_gated(prompt: str, *, surface: str, ratio: str = "1:1",
@@ -956,7 +1187,11 @@ def render_image_gated(prompt: str, *, surface: str, ratio: str = "1:1",
                        image_model: str = DEFAULT_IMAGE_MODEL,
                        render_info: Optional[dict] = None,
                        concept: Any = None,
-                       hook_text: Optional[str] = None) -> str:
+                       hook_text: Optional[str] = None,
+                       layout: Optional[str] = None,
+                       brand_kit: Optional[str] = None,
+                       signature: Optional[str] = None,
+                       enforce: Optional[bool] = None) -> str:
     """Render with the bounded vision gate. Returns the best candidate's path.
 
     Surfaces outside IMAGE_QUALITY_GATE_SURFACES get one advisory-only pass (verdict logged,
@@ -970,20 +1205,26 @@ def render_image_gated(prompt: str, *, surface: str, ratio: str = "1:1",
 
     ``concept`` (issue #2241) switches on the staged blind judge and its rubric; the repair round
     is then built from the rubric's failing criteria, and ``IMAGE_GATE_CANDIDATES`` > 1 renders
-    two candidates per attempt and keeps the better. ``hook_text`` is the one string an
-    editorial_graphic may carry, handed to the renderer's no-marks clause and to the judge.
+    two candidates per attempt and keeps the better. On covers and posts ``hook_text`` is
+    composited onto every candidate by ``image_compose`` (in ``layout``, in ``brand_kit``'s exact
+    colors) — the render itself carries no text — and the COMPOSITE is what returns, with the
+    concept's kicker above the headline and ``signature`` as a byline (round 7).
     """
     def render_once(current_prompt: str) -> tuple:
         # The backend that RENDERED, not the one configured: under `auto` a gpt-image failure
         # falls through to FLUX, and the retry has to be phrased for whichever one answered.
         # `scene=prompt`: from attempt 2 `current_prompt` carries the repair round too, and the
         # mark-magnet clauses must stay derived from what the AUTHOR described (issue #1376).
-        path, backend = _render_with_backend(current_prompt, ratio=ratio, quality=quality,
+        path, backend = _render_with_backend(current_prompt,
+                                             ratio=_scene_ratio(ratio, hook_text, surface),
+                                             quality=quality,
                                              user_id=user_id, post_id=post_id,
                                              image_model=image_model, surface=surface,
-                                             scene=prompt, hook_text=hook_text)
+                                             scene=prompt)
         return path, backend, {}
 
     return _gate_loop(render_once, prompt=prompt, surface=surface, focal_concept=focal_concept,
                       concept=concept, hook_text=hook_text, user_id=user_id, post_id=post_id,
-                      render_info=render_info, log_message="Image failed the quality gate")
+                      render_info=render_info, log_message="Image failed the quality gate",
+                      layout=layout, brand_kit=brand_kit, signature=signature,
+                      enforce=enforce)

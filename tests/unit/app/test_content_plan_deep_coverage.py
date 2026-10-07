@@ -14,6 +14,22 @@ import pytest
 
 pytestmark = pytest.mark.unit
 
+
+@pytest.fixture(autouse=True)
+def _no_clip_check(monkeypatch):
+    """The post-render clip check (#2249) downloads the clip; these tests pin other behaviour."""
+    monkeypatch.setenv("VIDEO_CLIP_CHECK_ENABLED", "false")
+
+
+@pytest.fixture(autouse=True)
+def _piece_is_about_the_author():
+    """These tests pin the avatar path itself, so the post counts as being about the author.
+
+    The fit rule (`guardrails.avatar_fits_concept`, #2249) is pinned in test_image_engine_surfaces.
+    """
+    with patch("cqc_lem.utilities.avatar.guardrails.avatar_fits_concept", return_value=True):
+        yield
+
 _RCP = "cqc_lem.app.run_content_plan"
 _BLUEPRINT = {"format": "listicle", "hook_style": "question", "cta_style": "soft"}
 
@@ -429,7 +445,8 @@ class TestGenerateVideoSrcPremium:
         # None here because the brief wrapper is mocked and Stage 1 found nothing.
         gen_img.assert_called_once_with("image prompt", 1, ratio="9:16",
                                         surface="video", post_id=9, render_info={},
-                                        focal_concept=None, concept=None, hook_text=None)
+                                        enforce=True, focal_concept=None, concept=None,
+                                        hook_text=None)
         assert create_video.call_args[0][0] == "/tmp/avatar.png"
         assert create_video.call_args[1]["audio"] is True
         refund.assert_not_called()

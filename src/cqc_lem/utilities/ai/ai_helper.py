@@ -3525,7 +3525,8 @@ def generate_post_image(prompt: str, user_id: int, *, ratio: str = DEFAULT_IMAGE
                         focal_concept: Optional[str] = None,
                         render_info: Optional[dict] = None,
                         concept: Any = None,
-                        hook_text: Optional[str] = None) -> str:
+                        hook_text: Optional[str] = None,
+                        enforce: Optional[bool] = None) -> str:
     """Generate a LinkedIn post image, using the user's avatar LoRA when the guardrails allow it.
 
     Falls back to the base Flux.1 model whenever ``resolve_avatar_for`` declines (issue #744):
@@ -3555,7 +3556,8 @@ def generate_post_image(prompt: str, user_id: int, *, ratio: str = DEFAULT_IMAGE
     render read as ungraded.
 
     ``concept``/``hook_text`` (issue #2241) switch both gated branches onto the staged blind judge,
-    graded against the same Stage 1 concept the brief was authored from.
+    graded against the same Stage 1 concept the brief was authored from. ``enforce`` overrides
+    ``IMAGE_QUALITY_GATE_SURFACES`` for the surface (the video frame passes True).
     """
     from cqc_lem.utilities.ai.image_gen import render_avatar_image_gated, render_image_gated
     from cqc_lem.utilities.avatar.guardrails import resolve_avatar_for
@@ -3565,7 +3567,7 @@ def generate_post_image(prompt: str, user_id: int, *, ratio: str = DEFAULT_IMAGE
         return render_avatar_image_gated(
             prompt, avatar=avatar, user_id=user_id, surface=surface,
             ratio=ratio, focal_concept=focal_concept, post_id=post_id,
-            render_info=render_info, concept=concept, hook_text=hook_text)
+            render_info=render_info, concept=concept, hook_text=hook_text, enforce=enforce)
     if render_info is not None:
         # No avatar resolved, so no likeness renders here at all — never left unset, or the
         # caller cannot tell "base render" from "nobody reported".
@@ -3576,7 +3578,7 @@ def generate_post_image(prompt: str, user_id: int, *, ratio: str = DEFAULT_IMAGE
     return render_image_gated(
         prompt, surface=surface, ratio=ratio, focal_concept=focal_concept,
         user_id=user_id, post_id=post_id, image_model=image_model,
-        render_info=render_info, concept=concept, hook_text=hook_text)
+        render_info=render_info, concept=concept, hook_text=hook_text, enforce=enforce)
 
 
 def _record_avatar_media(image_path: str, post_id: "int | None", user_id: "int | None") -> None:
@@ -3619,27 +3621,41 @@ def _audio_direction(model: str, language: str = DEFAULT_CONTENT_LANGUAGE) -> st
             f"speech must be in {language_name(language)}.")
 
 
+# Motion discipline (PR #2249 video gauntlet): unattended, Runway let the camera AND the subject
+# wander, grew UI on a dark monitor and popped a mug into the last second. ONE directive, every
+# motion prompt, written for the motion AUTHOR (its own output stays positive, per the system rules).
+MOTION_DISCIPLINE = (
+    "    Motion discipline — write ONE subtle, continuous action that expresses {beat}. The camera "
+    "is locked off or does a single slow push-in. Only what the image already holds moves: no new "
+    "objects or people enter the frame. Hands and limbs move naturally. Screens stay dark and "
+    "unchanged. Phrase all of this positively in your prompt (e.g. 'everything else in the frame "
+    "holds still').\n")
+_MOTION_DEFAULT_BEAT = "the post's point"
+
+
 def _motion_concept_block(concept: Any) -> str:
-    """What the post argues and the feeling it carries, for the motion author — or ``""``.
+    """What the post argues, the feeling it carries, and the motion discipline, for the author.
 
     The motion is the one part of a video the still frame does not already decide, so it is where
-    a clip either moves like the article or like any stock clip (issue #2241).
+    a clip either moves like the article or like any stock clip (issue #2241). The discipline
+    (``MOTION_DISCIPLINE``) rides on EVERY motion prompt, concept or not.
 
     Args:
         concept: The post's Stage 1 ``ImageConcept``, or None.
 
     Returns:
-        A prompt block naming the thesis and emotional beat, or ``""`` without either.
+        A prompt block: the thesis and emotional beat when known, then the motion discipline.
     """
     thesis = str(getattr(concept, "thesis", "") or "").strip()
     beat = str(getattr(concept, "emotional_beat", "") or "").strip()
-    if not thesis and not beat:
-        return ""
-    lines = ["", "    What the post argues — let the motion serve it:"]
+    lines = [""]
+    if thesis or beat:
+        lines.append("    What the post argues — let the motion serve it:")
     if thesis:
         lines.append(f"    <thesis>{thesis}</thesis>")
     if beat:
         lines.append(f"    The feeling the motion should carry: <emotional_beat>{beat}</emotional_beat>")
+    lines.append(MOTION_DISCIPLINE.format(beat=beat or _MOTION_DEFAULT_BEAT).rstrip("\n"))
     return "\n".join(lines) + "\n"
 
 

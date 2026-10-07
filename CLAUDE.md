@@ -114,7 +114,7 @@ container — so it stays **stdlib-only** (no `cqc_lem.*` imports). Off unless B
 authors every image prompt — add a preset, never a per-content-type helper.
 `utilities/ai/image_gen.py` renders it; `render_image_gated` adds the bounded `lem-vision` check,
 failing OPEN. Avatar likeness NEVER renders in `image_gen` — `generate_post_image` owns the LoRA path
-behind `avatar/guardrails.resolve_avatar_for`. NO text/logos rendered bar ONE graphic hook.
+behind `avatar/guardrails.resolve_avatar_for`. NO text/logos in a render prompt.
 `utilities/post_image.py` (#1030) is the ONE place a POST's image is validated, stored, removed.
 A compose-time `image_url` is CALLER input: `/schedule_post/` takes it only when
 `owns_post_image_url` says it is a preview we issued that caller, and a stored URL never leaves

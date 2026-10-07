@@ -198,10 +198,106 @@ records every rejection (`docs/image-stack.md`).
 
 Clichés and stray text were gone, but every cover was people at laptops or holding paper with a
 neutral face, no hook, no brand color — all REJECTED at specificity 2. Round 3's engine answer:
-every cover now carries its hook as the headline (`COVER_HOOK_LAYOUT`), the visual must carry the
+every cover now carries its hook as the headline (composited since round 6), the visual must carry the
 emotional beat on a face, Stage 1 proposes three visual ideas that one cheap call ranks, the judge
 grades headline + image together with `scroll_stop ≥ 4` and `brand_fit ≥ 3`, and every cover names
 one brand-color accent (`docs/image-stack.md`).
+
+### Gauntlet round 3
+
+Gold, a hook and visible emotion on all four; ed18 and ed19 accepted. The rest failed on a token
+budget a reasoning model ran out of, profile boilerplate leaking into a fallback render prompt,
+a readable "billing dashboard" and "paper check", a serif hook, a Title Case hook close to the
+title, a broad smile for a "relief" beat, and a generic flip chart the judge scored 5 for
+specificity. Each became an engine rule (`docs/image-stack.md`, "the round-4 rules"); covers now
+also render two candidates per attempt and keep the better.
+
+### Gauntlet round 4
+
+ed19 scored 5 across the board. ed16 was correctly rejected (stray text on a paper prop, a neutral
+half-smile on both candidates); ed17 and ed18 were held at specificity 3 because the reuse test
+looked at the image without its headline, and ed18's "45% less engagement" never said what got
+less. Round 5 judges the cover as headline + image, requires a numeric hook to name its subject,
+keeps paper off covers (a blank sheet seen edge-on when the idea is about a document), and carries
+an emotion-intensity directive into every later candidate and retry.
+
+### Gauntlet round 5 and the blind critic → composited headlines
+
+1 of 4 covers accepted; the quality was good but every cover shared one composition (dark panel
+left, a reacting man in his 30s-40s right), and an independent blind critic traced the remaining
+defects — drifting panel and type colors, thin weights, clipped headlines, "AI X: N% Y" everywhere,
+hook words the article never used — to gpt-image drawing the headline. The render now carries no
+text; `image_compose` typesets the hook in the exact brand colors and the bundled Montserrat
+ExtraBold, in a rotated layout. Cast, hook shape and layout each rotate least-recently-used over
+the last receipts (`_recent_concept_field`), hooks must use the article's own words, emotion
+follows the piece's valence and must be authentic, and the judge grades the composite against
+anchored specificity descriptors (`docs/image-stack.md`, "The headline is composited"). The stored
+cover is the COMPOSITE; the raw render's path rides `render_info["raw_render_path"]`.
+
+### Gauntlet round 6 → the editorial cover
+
+Compositing worked (exact colors, the brand font, rotating layouts, a varied cast); what remained
+was type too small for a thumbnail, a `full_bleed` headline across a face, a lowercase hook,
+props still carrying stray text, "relief" rendered as pain, and both judges calling every scene a
+generic office. The cover is now a kicker + hero numeral + headline + byline system with a
+cap-height floor and a growing backing; props are refused on every surface; and the byline is the
+newsletter title when the caller passes `signature`, else the author's profile name
+(`docs/image-stack.md`, "The cover is an editorial system").
+
+### Gauntlet round 7 → split covers
+
+Type still landed on faces, laptops and server rooms crept back in, and the judge capped
+specificity for not showing props the brief refuses. Covers are now a type panel BESIDE a square
+scene (`split_left`/`split_right`), screens are banned on every surface, anchors that are props
+are dropped at parse time, the anchor checks are advisory only, and the avatar renders only when
+the concept fit rule says the piece is about the author (`docs/image-stack.md`, "Split layouts,
+square scenes, no screens").
+
+### Gauntlet round 8 → no painted labels
+
+Split covers held (three of four accepted); ed17 failed on a painted poster caption and two
+covers had no kicker. Renders now refuse every label-carrying surface, the brief describes people
+by appearance rather than by group caption, a missing kicker is derived from the piece, and a
+comparative hook must say "than" or carry a number (`docs/image-stack.md`, "No labels, a kicker
+always, anchored comparatives").
+
+### Gauntlet round 9 → the render is only a photograph
+
+Two covers failed only on stray text: told it was a "LinkedIn newsletter cover", the renderer
+typeset a fake cover into the empty side of the scene. The render prompt now describes only a
+photograph, checked deterministically and repaired before it ships (`docs/image-stack.md`, "The
+render is only a photograph").
+
+### Gauntlet round 11 → the blind critic
+
+Every cover passed the in-pipeline judge, but the blind critic scored most items 2-4 on
+specificity and scroll stop: a warehouse backdrop whatever the topic, the lead stat missing from
+the headline, a caveat or a neutral "vs" as the headline, symbolic props, overacted faces and
+primary-colour objects. Each became an engine rule, and covers are now built at 1920x1080
+(`docs/image-stack.md`, "What the blind critic asked for").
+
+### Gauntlet round 12 → stats, framing, smiles
+
+ed17 led with a model version ("4.5"), a post dropped its 60% stat, every scene held a mug in a
+medium shot at a table, and ed16's "$30K saved" rendered alarmed. Headline numbers are now
+stats in the source's casing and must survive into the hook, hooks must assert with a verb, mugs
+are props, the framing rotates, and good news is a literal relaxed smile (`docs/image-stack.md`,
+"Stats, not versions; framing rotates; good news smiles").
+
+### Gauntlet round 13 → true hooks
+
+Images held, but a hook paired a number with the wrong claim ("53.7% less engagement" — 53.7%
+was the share of AI posts), one was ungrammatical and two ran past six words. A number now must
+share a source sentence with its claim, a judge checks grammar and truth against the cited
+sentence, and six words is a hard cap (`docs/image-stack.md`, "A hook is true, grammatical and
+short").
+
+### Gauntlet round 14 → hooks are built, never cut
+
+All four covers passed; the hook defects were deterministic: a mid-phrase cut, "$30k" for
+"$30K", and a label fallback. Long hooks are regenerated, then built as a complete clause;
+numbers carry the source spelling; and no label survives any path (`docs/image-stack.md`,
+"Never truncate a hook").
 
 ### Rejections land for review, with their reason
 

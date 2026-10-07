@@ -1521,6 +1521,63 @@ def _persist_video_model(post_id: Optional[int], model: Optional[str]) -> None:
                   f"({type(e).__name__}: {e})", post_id=post_id)
 
 
+class SourceFrameRejected(Exception):
+    """The video's source frame failed the enforced judge on every attempt (PR #2249 gauntlet).
+
+    Raised only to reuse `_generate_video_src`'s refund + Pexels path: animating a frame the judge
+    already rejected spends a Runway render on an image nobody should see. A decision, not a
+    failure, so it logs INFO.
+    """
+
+
+def _require_accepted_frame(render_info: dict, *, user_id: Optional[int],
+                            post_id: Optional[int]) -> None:
+    """Raise `SourceFrameRejected` when the frame's final verdict is `rejected`.
+
+    `unchecked` (the judge could not run, twice) still animates — the gate fails open for
+    availability and records the reason; only a judge that LOOKED and said no stops the spend.
+    """
+    if render_info.get("gate_verdict") == "rejected":
+        raise SourceFrameRejected("; ".join(str(i) for i in render_info.get("gate_issues") or [])
+                                  or "rejected")
+
+
+def _render_clip_checked(render, motion: str, *, user_id: Optional[int],
+                         post_id: Optional[int], brief_info: Optional[dict]):
+    """Render the clip, check it for hallucinations, and re-render ONCE if the check finds any.
+
+    `render(motion_text)` is the branch's Runway call. The check (`utilities/video_clip_check.py`)
+    samples three frames and asks `lem-vision` whether anything appeared, distorted or grew UI; a
+    yes buys ONE re-render with a repair clause naming the defect, within the 512-char cap. The
+    verdict(s) land in `brief_info["clip_check"]` for the receipt. Fails open: an unchecked clip,
+    or a re-render that returns nothing, ships the first clip.
+    """
+    from cqc_lem.utilities.video_clip_check import check_clip_url, clip_check_enabled, repair_clause
+
+    src = render(motion)
+    if not src or not clip_check_enabled():
+        return src
+    first = check_clip_url(src, user_id=user_id, post_id=post_id)
+    record: dict = {"first": first.to_receipt()}
+    if first.checked and first.defects:
+        clause = repair_clause(first)
+        repaired = f"{motion[:max(0, 512 - len(clause) - 1)].rstrip()} {clause}"[:512]
+        log_info("Clip check found defects — ONE re-render with a repair clause",
+                 user_id=user_id, post_id=post_id, task_name="create_video_content",
+                 defects="; ".join(first.defects))
+        retry_src = render(repaired)
+        if retry_src:
+            record["retry"] = check_clip_url(retry_src, user_id=user_id,
+                                             post_id=post_id).to_receipt()
+            record["shipped"] = "retry"
+            src = retry_src
+        else:
+            record["shipped"] = "first"
+    if brief_info is not None:
+        brief_info["clip_check"] = record
+    return src
+
+
 @attribute_llm_cost(FEATURE_CONTENT)
 def _generate_video_src(user_id: int, text_content: str, profile, post_id: int = None,
                         brief_info: dict = None):
@@ -1551,7 +1608,7 @@ def _generate_video_src(user_id: int, text_content: str, profile, post_id: int =
     from cqc_lem.utilities.ai.ai_helper import generate_post_image
     from cqc_lem.utilities.ai.image_concept import analyze_content_for_image
     from cqc_lem.utilities.ai.video_models import is_premium, supports_audio
-    from cqc_lem.utilities.avatar.guardrails import AVATAR_SURFACE_VIDEO, resolve_avatar_for
+    from cqc_lem.utilities.avatar.guardrails import AVATAR_SURFACE_VIDEO, resolve_avatar_for_concept
     from cqc_lem.utilities.avatar.likeness_probe import AvatarLikenessHold
     from cqc_lem.utilities.brand_kit import brand_clause_for_user
     from cqc_lem.utilities.db import (
@@ -1582,19 +1639,21 @@ def _generate_video_src(user_id: int, text_content: str, profile, post_id: int =
             log_info(f"Premium video requested but no credits for user {user_id} — using standard")
 
     try:
+        # ONE Stage 1 call per video: the frame brief, the frame's judge and the motion author all
+        # read this same concept, and None (analysis unavailable) is passed on as-is so nothing
+        # downstream pays for a second attempt (issue #2241).
+        concept = analyze_content_for_image(text_content, surface="video", user_id=user_id)
         # The avatar is resolved BEFORE the image prompt is authored: its declared subject clause
         # is what stops the prompt LLM inventing a person of a different gender for the LoRA to
-        # then contradict (issue #744). None here means the guardrails said no.
-        avatar = resolve_avatar_for(user_id, surface=AVATAR_SURFACE_VIDEO, post_id=post_id)
+        # then contradict (issue #744). None here means the guardrails said no — or the post is
+        # not about the author, so the frame renders without the likeness (#2249 gauntlet).
+        avatar = resolve_avatar_for_concept(user_id, surface=AVATAR_SURFACE_VIDEO, concept=concept,
+                                            source_text=text_content, post_id=post_id)
         has_avatar = avatar is not None
         # Brief the ratio this tier will actually RENDER at: the image brief composes framing for
         # the aspect ratio it is handed, so briefing 1:1 and rendering the premium source frame at
         # 9:16 asked for a square composition and cropped it vertical (issue #1141).
         source_frame_ratio = "9:16" if is_premium(model) else DEFAULT_IMAGE_RATIO
-        # ONE Stage 1 call per video: the frame brief, the frame's judge and the motion author all
-        # read this same concept, and None (analysis unavailable) is passed on as-is so nothing
-        # downstream pays for a second attempt (issue #2241).
-        concept = analyze_content_for_image(text_content, surface="video", user_id=user_id)
         # `frame_info` catches the brief object the wrapper otherwise discards — the focal concept
         # this frame is graded on, recorded beside the stored MP4 (issue #1377). The caller's
         # `brief_info` IS that dict when one was passed.
@@ -1605,8 +1664,15 @@ def _generate_video_src(user_id: int, text_content: str, profile, post_id: int =
                                                     concept=concept,
                                                     brand_kit=brand_clause_for_user(user_id))
         frame_brief = frame_info.get("brief")
+        # The frame's judge reads the caption `_caption_video_asset` will burn onto the MP4 as its
+        # headline (PR #2249): a person with no context scored specificity 2-3 on every frame.
+        # JUDGE-ONLY: `video` is not a compositing surface (`image_gen.COMPOSE_SURFACES`), and
+        # `hook_text` never reaches a render prompt, so nothing is painted onto the frame.
+        from cqc_lem.utilities.video_captions import burned_caption_text
         gate_kwargs = {"focal_concept": getattr(frame_brief, "focal_concept", None),
-                       "concept": concept, "hook_text": getattr(frame_brief, "hook_text", None)}
+                       "concept": concept,
+                       "hook_text": burned_caption_text(text_content, user_id=user_id,
+                                                        avatar_led=has_avatar)}
         # Audio-capable (premium/Veo) renders need the user's language in the prompt — Veo has no
         # language parameter and invents a voiceover otherwise (issue #548). Silent models skip
         # the lookup entirely.
@@ -1621,18 +1687,23 @@ def _generate_video_src(user_id: int, text_content: str, profile, post_id: int =
             if has_avatar:
                 image_path = generate_post_image(image_prompt, user_id, ratio=source_frame_ratio,
                                                  surface=AVATAR_SURFACE_VIDEO, post_id=post_id,
-                                                 render_info=render_info, **gate_kwargs)
+                                                 render_info=render_info, enforce=True,
+                                                 **gate_kwargs)
                 _check_avatar_likeness(image_path, avatar, user_id=user_id, post_id=post_id,
                                        used_avatar=render_info.get("used_avatar"))
-                src = create_runway_video(image_path, motion, model=model, ratio="9:16", audio=audio,
-                                          user_id=user_id, post_id=post_id)
+                _require_accepted_frame(render_info, user_id=user_id, post_id=post_id)
+
+                def _runway(motion_text: str):
+                    return create_runway_video(image_path, motion_text, model=model, ratio="9:16",
+                                               audio=audio, user_id=user_id, post_id=post_id)
             else:
-                # Trim the scene half, never the motion half — the motion prompt carries the audio
-                # direction and a truncated one silently disables audio (issue #548).
-                head = image_prompt[:max(0, 980 - len(motion) - len(" Motion: "))]
-                combined = f"{head} Motion: {motion}"
-                src = create_runway_video(None, combined, model=model, ratio="9:16", audio=audio,
-                                          user_id=user_id, post_id=post_id)
+                def _runway(motion_text: str):
+                    # Trim the scene half, never the motion half — the motion prompt carries the
+                    # audio direction and a truncated one silently disables audio (issue #548).
+                    head = image_prompt[:max(0, 980 - len(motion_text) - len(" Motion: "))]
+                    return create_runway_video(None, f"{head} Motion: {motion_text}", model=model,
+                                               ratio="9:16", audio=audio, user_id=user_id,
+                                               post_id=post_id)
         else:
             # Standard tier still uses the account avatar for the source frame when the user has one
             # (avatar likeness regardless of tier; premium only adds the higher-quality Veo motion +
@@ -1640,19 +1711,27 @@ def _generate_video_src(user_id: int, text_content: str, profile, post_id: int =
             if has_avatar:
                 image_path = generate_post_image(image_prompt, user_id, ratio=source_frame_ratio,
                                                  surface=AVATAR_SURFACE_VIDEO, post_id=post_id,
-                                                 render_info=render_info, **gate_kwargs)
+                                                 render_info=render_info, enforce=True,
+                                                 **gate_kwargs)
                 _check_avatar_likeness(image_path, avatar, user_id=user_id, post_id=post_id,
                                        used_avatar=render_info.get("used_avatar"))
             else:
                 # Gated like every other frame: this was the one source frame rendered with no
                 # judge at all, so a frame the article never described went straight to Runway.
+                # ENFORCED whatever IMAGE_QUALITY_GATE_SURFACES says: Runway is the expensive step.
                 from cqc_lem.utilities.ai.image_gen import render_image_gated
                 image_path = render_image_gated(image_prompt, surface="video",
                                                 ratio=source_frame_ratio, user_id=user_id,
                                                 post_id=post_id, render_info=render_info,
-                                                **gate_kwargs)
-            src = create_runway_video(image_path, motion, model=model, ratio=DEFAULT_VIDEO_RATIO,
-                                      user_id=user_id, post_id=post_id)
+                                                enforce=True, **gate_kwargs)
+            _require_accepted_frame(render_info, user_id=user_id, post_id=post_id)
+
+            def _runway(motion_text: str):
+                return create_runway_video(image_path, motion_text, model=model,
+                                           ratio=DEFAULT_VIDEO_RATIO, user_id=user_id,
+                                           post_id=post_id)
+        src = _render_clip_checked(_runway, motion, user_id=user_id, post_id=post_id,
+                                   brief_info=brief_info)
         if not src:
             raise RuntimeError("no video output")
         # The gate looked at the SOURCE FRAME, so the verdict only exists here — carried out so the
@@ -1669,6 +1748,10 @@ def _generate_video_src(user_id: int, text_content: str, profile, post_id: int =
         if isinstance(e, AvatarLikenessHold):
             log_info("Avatar likeness hold — refunding any credits and falling back to Pexels",
                      user_id=user_id, post_id=post_id, task_name="create_video_content")
+        elif isinstance(e, SourceFrameRejected):
+            log_info("Source frame rejected by the judge — not animating it; falling back to "
+                     "Pexels", user_id=user_id, post_id=post_id, task_name="create_video_content",
+                     issues=str(e))
         else:
             log_warning("Video generation failed — refunding any credits and falling back to Pexels",
                         exc=e, user_id=user_id, post_id=post_id, task_name="create_video_content")
@@ -1678,6 +1761,7 @@ def _generate_video_src(user_id: int, text_content: str, profile, post_id: int =
         if brief_info is not None:
             brief_info.pop("brief", None)
             brief_info.pop("gate_verdict", None)
+            brief_info.pop("clip_check", None)
         try:
             from cqc_lem.utilities.content_quality import VIDEO_MODEL_PEXELS
             from cqc_lem.utilities.pexels_helper import download_pexels_video
@@ -2124,9 +2208,16 @@ def _record_video_asset_measures(post_id: int, video_file_path: str,
         return None
 
 
+def _clip_check_extra(brief_info: Optional[dict]) -> Optional[dict]:
+    """The clip check's record as receipt `extra`, or None when no check ran."""
+    record = (brief_info or {}).get("clip_check")
+    return {"clip_check": record} if record else None
+
+
 def _store_video_asset(post_id: int, video_src_url: str, content: Optional[str] = None,
                        user_id: Optional[int] = None, brief=None,
-                       gate_verdict: Optional[str] = None) -> Optional[str]:
+                       gate_verdict: Optional[str] = None,
+                       clip_check: Optional[dict] = None) -> Optional[str]:
     """Download a generated video into the shared assets volume, probe it, and attach C2PA
     credentials to AI output. Persist posts.video_url and return the public API asset URL only when
     the probe passes. The ONE place a regenerated video is stored — both the asset-only healer and
@@ -2136,7 +2227,7 @@ def _store_video_asset(post_id: int, video_src_url: str, content: Optional[str] 
     `brief` is the source frame's `ImageBrief` when one was authored, and `gate_verdict` the vision
     gate's reading of that frame; both are recorded beside the stored file (issue #1377). A `brief`
     of None — a Pexels fallback, or a caller that has no brief in hand — records nothing rather than
-    an empty receipt.
+    an empty receipt. `clip_check` is the post-render clip check's record (PR #2249), ridden along.
     """
     videos_dir = os.path.join(assets_dir, 'videos', 'runwayml')
     create_folder_if_not_exists(videos_dir)
@@ -2179,7 +2270,8 @@ def _store_video_asset(post_id: int, video_src_url: str, content: Optional[str] 
     api_video_url = f"{API_URL_FINAL}/api/assets?file_name=videos/runwayml/{video_file_name}"
     # Keyed by the URL the row is about to carry, so the brief can be walked back from it (#1377).
     write_brief_receipt(api_video_url, brief, post_id=post_id, user_id=user_id,
-                        gate_verdict=gate_verdict)
+                        gate_verdict=gate_verdict,
+                        extra={"clip_check": clip_check} if clip_check else None)
     update_db_post_video_url(post_id, api_video_url)
     return api_video_url
 
@@ -2218,7 +2310,8 @@ def regenerate_video_for_post(post_id: int) -> Optional[str]:
     try:
         api_video_url = _store_video_asset(post_id, video_src_url, content=text_content,
                                            user_id=user_id, brief=brief_info.get("brief"),
-                                           gate_verdict=brief_info.get("gate_verdict"))
+                                           gate_verdict=brief_info.get("gate_verdict"),
+                                           clip_check=brief_info.get("clip_check"))
     except Exception as e:
         # A hard probe failure (or any other storage error) should not strand the post; log it
         # and let the missing-asset gate hold it for review / backfill.
@@ -2464,7 +2557,8 @@ def regenerate_post(post_id: int, guidance: str = None) -> Optional[str]:
                 api_video_url = _store_video_asset(post_id, video_src_url, content=content,
                                                    user_id=user_id,
                                                    brief=brief_info.get("brief"),
-                                                   gate_verdict=brief_info.get("gate_verdict"))
+                                                   gate_verdict=brief_info.get("gate_verdict"),
+                                                   clip_check=brief_info.get("clip_check"))
             except Exception as e:
                 # Losing the download must not lose the regenerated caption too — persist it and
                 # let the missing-asset gate hold the post, exactly as a failed render does.
@@ -4770,7 +4864,8 @@ def _create_content_for_planned_post(post: dict, prefs: dict) -> bool:
                 # stock footage was never what this brief described.
                 write_brief_receipt(api_video_url, brief_info.get("brief"), post_id=post_id,
                                     user_id=user_id,
-                                    gate_verdict=brief_info.get("gate_verdict"))
+                                    gate_verdict=brief_info.get("gate_verdict"),
+                                    extra=_clip_check_extra(brief_info))
 
                 # Update the database with the video url
                 update_db_post_video_url(post_id, api_video_url)
