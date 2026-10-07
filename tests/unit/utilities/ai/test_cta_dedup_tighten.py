@@ -133,9 +133,16 @@ class TestCreateTextPostThreadsKeyword:
              patch(f"{_RCP}.get_thought_leadership_post_from_ai", side_effect=gen), \
              patch(f"{_RCP}.get_ai_linked_post_refinement",
                    side_effect=lambda c, **kw: c) as refine, \
-             patch(f"{_RCP}.optimize_post_hook", side_effect=lambda c, **kw: c) as hook:
+             patch(f"{_RCP}.optimize_post_hook", side_effect=lambda c, **kw: c) as hook, \
+             patch(f"{_RCP}._select_story_for_post",
+                   return_value={"id": 3, "title": "A win", "body": "generated body"}), \
+             patch(f"{_RCP}.record_story_bank_use"), \
+             patch(f"{_RCP}.get_post_texts_near_slot", return_value=[]), \
+             patch(f"{_RCP}.update_post_generation_record"):
+            # The keyword ask is the promo slot's alone (showcase round 5).
             rcp.create_text_post(1, "awareness", post_type="thought_leadership",
-                                 user_profile=MagicMock(), refine_final_post=True, post_id=30)
+                                 user_profile=MagicMock(), refine_final_post=True, post_id=30,
+                                 content_mix="promo")
         assert refine.call_args.kwargs["preserve_cta_keyword"] == "AUDIT"
         assert hook.call_args.kwargs["preserve_cta_keyword"] == "AUDIT"
 

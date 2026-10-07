@@ -32,6 +32,7 @@ from cqc_lem.platform.db.shared import (
     ONBOARDING_STEPS,
     VALID_VIDEO_QUALITIES,
 )
+from cqc_lem.utilities.ai.audience_mix import parse_audience_mix
 from cqc_lem.utilities.brand_kit import parse_brand_kit
 from cqc_lem.utilities.crypto import (
     decrypt_secret,
@@ -2241,6 +2242,9 @@ _ENGAGEMENT_DEFAULTS: dict = {
     # engine reads as neutral grading. Stored as a JSON object, never a list, so it is decoded by
     # `_decode_brand_kit` rather than through `_ENGAGEMENT_JSON_FIELDS`.
     "brand_kit": None,
+    # Dual-audience alternation (showcase round 5, utilities/ai/audience_mix.py). None = a single
+    # audience; decoded by `parse_audience_mix`, never through `_ENGAGEMENT_JSON_FIELDS`.
+    "audience_mix": None,
 }
 _ENGAGEMENT_JSON_FIELDS = ("include_topics", "exclude_topics", "include_keywords",
                            "exclude_keywords", "include_authors", "exclude_authors", "post_types",
@@ -2269,7 +2273,8 @@ _ENGAGEMENT_COLS = ("tone", "comment_length", "comment_style", "use_emojis", "us
                     "max_catchup_touches_per_contact_days", "posts_per_week", "posting_days",
                     "text_post_images", "roster_auto_follow", "max_follows_per_day",
                     "roster_auto_connect", "hold_repaired_posts_for_review",
-                    "profile_viewer_dm_auto_send", "forbidden_claim_terms", "brand_kit")
+                    "profile_viewer_dm_auto_send", "forbidden_claim_terms", "brand_kit",
+                    "audience_mix")
 VALID_REPLY_MODES = ("event", "scheduled", "off")
 # Approval posture for the proactive connect flow (issue #398 owner review).
 VALID_CONNECTION_REQUEST_MODES = ("auto_approve", "pre_review")
@@ -2359,6 +2364,7 @@ def _select_engagement_row(user_id: int) -> Optional[dict]:
         for f in _ENGAGEMENT_BOOL_FIELDS:
             row[f] = bool(row.get(f))
         row["brand_kit"] = _decode_brand_kit(row.get("brand_kit"), user_id)
+        row["audience_mix"] = parse_audience_mix(row.get("audience_mix"))
         return row
     finally:
         cursor.close()
@@ -2488,6 +2494,8 @@ def update_engagement_preferences(user_id: int, prefs: dict) -> bool:
     # field, and an empty kit is stored as NULL — "no kit", the same as never having saved one.
     _kit = parse_brand_kit(merged.get("brand_kit"))
     merged["brand_kit"] = None if _kit is None or _kit.is_empty() else _kit.to_dict()
+    # The audience mix, normalized here for the same reason; nothing to store is NULL.
+    merged["audience_mix"] = parse_audience_mix(merged.get("audience_mix"))
     if merged.get("catchup_touch_mode") not in VALID_CATCHUP_TOUCH_MODES:
         merged["catchup_touch_mode"] = "pre_review"
     if merged.get("catchup_message_source") not in VALID_CATCHUP_MESSAGE_SOURCES:
@@ -2527,7 +2535,7 @@ def update_engagement_preferences(user_id: int, prefs: dict) -> bool:
 
     def _val(col):
         v = merged[col]
-        if col == "brand_kit":
+        if col in ("brand_kit", "audience_mix"):
             return None if v is None else json.dumps(v)
         if col in _ENGAGEMENT_JSON_FIELDS:
             return json.dumps(v or [])

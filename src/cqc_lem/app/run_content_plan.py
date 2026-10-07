@@ -22,6 +22,7 @@ import dataclasses
 import json
 import os
 import random
+import re
 from datetime import datetime, timedelta
 from typing import Any, Optional, Tuple, Union
 from urllib.parse import urlparse
@@ -36,7 +37,7 @@ from urllib3 import Retry
 from cqc_lem import assets_dir
 from cqc_lem.app.my_celery import app as shared_task
 from cqc_lem.domain.models import PostDraftContext
-from cqc_lem.utilities.ai import story_bank as _story_bank
+from cqc_lem.utilities.ai import audience_mix as _audience_mix, story_bank as _story_bank
 from cqc_lem.utilities.ai.ai_helper import (
     apply_post_guidance,
     create_runway_video,
@@ -65,6 +66,7 @@ from cqc_lem.utilities.ai.content_alignment import (
     contains_meeting_ask,
     ensure_lead_magnet_cta,
     has_artifact_cta,
+    has_lead_magnet_cta_mechanic,
     humanize_text,
     lead_magnet_cta_directive,
     lead_magnet_enabled,
@@ -78,11 +80,17 @@ from cqc_lem.utilities.ai.content_alignment import (
     topic_authority_score,
 )
 from cqc_lem.utilities.ai.content_framework import (
+    ARTIFACT_CTA_COOLDOWN_DAYS,
     CTA_TYPE_ARTIFACT,
     CTA_TYPE_NONE,
     CTA_TYPE_WINDOW,
+    TOPIC_CLUSTER_WINDOW,
     TOPIC_DIVERSITY_WINDOW,
+    allowed_hook_shapes,
     assign_cta_style,
+    capped_topic_cluster,
+    cluster_avoidance_directive,
+    crowded_topic_clusters,
     cta_type_of,
     day_type_for_weekday,
     day_type_formats,
@@ -93,12 +101,15 @@ from cqc_lem.utilities.ai.content_framework import (
     deck_topic_report,
     document_deck_wording,
     document_wording,
+    drop_opening_question,
     dwell_report,
     dwell_score_min,
     fact_anchored_formats,
     fact_grounding_report,
     has_first_person_proof,
     history_avoidance_directive,
+    hook_shape_violation,
+    hook_style_for_shape,
     occasion_stage,
     post_similarity_report,
     post_topic,
@@ -107,11 +118,14 @@ from cqc_lem.utilities.ai.content_framework import (
     requires_fact_anchor,
     select_blueprint,
     select_cta_type,
+    select_hook_shape,
     shape_for_dwell,
     smb_audience,
     strip_closing_ask,
     topic_avoidance_directive,
+    topic_cluster,
     weekly_post_slots,
+    what_if_banned,
 )
 from cqc_lem.utilities.ai.slop_lint import (
     CHECK_FOLD_JARGON,
@@ -156,9 +170,11 @@ from cqc_lem.utilities.db import (
     get_post_content_mix,
     get_post_ever_gate_demoted,
     get_post_gate_reason,
+    get_post_texts_near_slot,
     get_post_type_counts,
     get_profile_synthesis,
     get_recent_content_mix_sequence,
+    get_recent_post_records,
     get_recent_post_shape_history,
     get_recent_post_texts,
     get_recent_post_topics,
@@ -184,6 +200,7 @@ from cqc_lem.utilities.db import (
     update_db_post_status,
     update_db_post_video_url,
     update_post_content_mix,
+    update_post_generation_record,
 )
 from cqc_lem.utilities.env_constants import (
     AI_DISCLOSURE_ENABLED,
@@ -794,7 +811,7 @@ def create_content(user_id: int, post_type: str, stage: str, post_id: int = None
 
     if post_type == PostType.VIDEO.value:
         content, video_url = create_video_content(user_id, stage, post_id=post_id,
-                                                  brief_info=brief_info)
+                                                  brief_info=brief_info, content_mix=content_mix)
     elif post_type in (PostType.CAROUSEL.value, PostType.DOCUMENT.value):
         # A document post IS a carousel deck — same generated slides, published as a
         # native PDF instead of a multi-image share (see share_document_on_linkedin).
@@ -1043,15 +1060,23 @@ def _select_post_blueprint(user_id: int, prefer_save_targeted: bool = False,
         log_warning("Could not load shape performance — selecting without it", exc=e,
                     user_id=user_id, task_name="create_content")
         performance = None
-    return select_blueprint(
+    recent_hooks = [h.get("hook_style") for h in shape_history if h.get("hook_style")]
+    blueprint = select_blueprint(
         "post",
         recent_formats=[h.get("archetype") for h in shape_history if h.get("archetype")],
-        recent_hook_styles=[h.get("hook_style") for h in shape_history if h.get("hook_style")],
+        recent_hook_styles=recent_hooks,
         performance=performance,
         prefer_save_targeted=prefer_save_targeted,
         exclude_formats=exclude_formats,
         preferred_formats=preferred_formats,
         guidance=guidance)
+    # Carried so the opening-shape rotation (showcase round 5) can honour the same hook window.
+    return {**blueprint, "recent_hook_styles": recent_hooks[:_HOOK_AVOID_WINDOW]}
+
+
+# The recent hook styles a newly assigned opening shape must not bring back (the framework's own
+# no-repeat window for hook styles).
+_HOOK_AVOID_WINDOW = 3
 
 
 def _select_carousel_blueprint(user_id: int, fact_anchors: Optional[list] = None,
@@ -1282,13 +1307,19 @@ def create_carousel_content(user_id: int, stage: str, post_id: int = None,
                     user_id=user_id, post_id=post_id, task_name="create_carousel_content")
         profile_synthesis = None
 
+    # Which reader this deck is for (showcase round 5) — it re-aims the prefs every step below reads.
+    history = _recent_post_records(user_id, post_id)
+    prefs, audience = _resolve_post_audience(user_id, post_id, prefs, history)
+    prefs = _without_crowded_focus_topics(prefs, _record_texts(history))
+
     # ONE story-bank anchor per piece (issue #728), the same split text posts have always had: the
     # WRITER gets the single selected entry, the CHECKERS keep the whole bank. Handing the writer
     # every active entry is what produced a six-receipt greatest-hits deck that spent the account's
     # best material in one post. Selected BEFORE the blueprint, because whether we HAVE an anchor is
     # what decides if a fact-anchored archetype is even on the carousel menu.
     anchor_outcome: dict = {}
-    story = _select_story_for_post(user_id, prefs, outcome=anchor_outcome)
+    story = _select_story_for_post(user_id, prefs, outcome=anchor_outcome, audience=audience,
+                                   post_id=post_id)
     story_directive = (_story_bank.story_directive(story) if story
                        else _no_anchor_directive(user_id, anchor_outcome))
     writer_anchors = _story_bank.fact_sources(story) if story else []
@@ -1300,7 +1331,8 @@ def create_carousel_content(user_id: int, stage: str, post_id: int = None,
     # rotate against the same V51 shape history, so a build receipt can land as a document post —
     # and so a carousel archetype counts against the next text post's rotation.
     blueprint = _select_carousel_blueprint(user_id, writer_anchors, day_weekday)
-    blueprint = _steer_post_blueprint(user_id, blueprint, post_id, None, prefs, profile_synthesis)
+    blueprint = _steer_post_blueprint(user_id, blueprint, post_id, None, prefs, profile_synthesis,
+                                      _record_texts(history), audience=audience)
     post_text, carousel_dict = generate_carousel_content(user_id, stage, prefs=prefs,
                                                          profile_synthesis=profile_synthesis,
                                                          blueprint=blueprint,
@@ -1465,6 +1497,7 @@ def create_carousel_content(user_id: int, stage: str, post_id: int = None,
             log_warning("Could not persist the carousel's shape — future posts will not rotate "
                         "away from it", exc=e, user_id=user_id, post_id=post_id,
                         task_name="create_carousel_content")
+    _record_generation(user_id, post_id, audience, story)
 
     return post_text
 
@@ -1915,13 +1948,18 @@ def _fallback_video_src(text_content: str, *, user_id: int, post_id: Optional[in
 
 @attribute_llm_cost(FEATURE_CONTENT)
 def create_video_content(user_id: int, stage: str, post_id: int = None,
-                         brief_info: dict = None) -> tuple[str, str | None]:
+                         brief_info: dict = None,
+                         content_mix: Optional[str] = None) -> tuple[str, str | None]:
     """Write a video post: the text first, then a video generated to match it.
 
     `brief_info` is passed straight through to `_generate_video_src`, which fills it with the source
     frame's brief so the caller — the one that STORES the file — can record it beside the MP4
     (issue #1377). The store is where it has to happen: the receipt is keyed by the stored path, and
     nothing here has one yet.
+
+    `content_mix` is the slot's 70/20/10 class, passed to the caption exactly as a text post gets
+    it (showcase round 5). Without it the caption fell back to the legacy 1-in-N lead-magnet
+    cadence, which is how three non-promo videos each closed on "Comment AUDIT".
 
     Returns:
         `(text_content, video_url)`. The URL is None when BOTH the generator and the title-card
@@ -1930,7 +1968,7 @@ def create_video_content(user_id: int, stage: str, post_id: int = None,
         `_post_missing_required_asset` is what turns that into a flagged post downstream.
     """
     # Get Text Content
-    text_content = create_text_post(user_id, stage, post_id=post_id)
+    text_content = create_text_post(user_id, stage, post_id=post_id, content_mix=content_mix)
     # Load profile once so the image prompt is brand/role-aligned
     user_profile = load_profile_for_user(user_id)
     video_url = _generate_video_src(user_id, text_content, user_profile, post_id,
@@ -2861,16 +2899,21 @@ def _fabrication_regen_enabled() -> bool:
 
 
 def _select_story_for_post(user_id: int, prefs: dict = None,
-                           blueprint: dict = None, outcome: Optional[dict] = None) -> Optional[dict]:
+                           blueprint: dict = None, outcome: Optional[dict] = None,
+                           audience: Optional[dict] = None,
+                           post_id: Optional[int] = None) -> Optional[dict]:
     """The one story-bank entry this post is anchored to, or None when the bank can't ground it
     (empty, all retired, nothing related to the user's focus topics, or every entry COOLING DOWN).
     Never fatal — a DB hiccup just falls back to the no-fabrication directive.
 
     The cooldown (showcase round 4): an entry anchors at most one post in the window of the user's
-    last `STORY_COOLDOWN_POSTS` posts or `STORY_COOLDOWN_DAYS` days, whichever is longer — read off
-    the window's post texts. `outcome`, when given, is filled with `cooled: True` when the answer is
-    None because entries were cooling, which is what switches the caller to the research/curated
-    directive instead of the empty-bank one.
+    last `STORY_COOLDOWN_POSTS` posts or `STORY_COOLDOWN_DAYS` days, whichever is longer. Since
+    showcase round 5 it reads the entry each post RECORDED (`posts.story_id`) and falls back to
+    echo detection only for posts that recorded none. `outcome`, when given, is filled with
+    `cooled: True` when the answer is None because entries were cooling, which is what switches
+    the caller to the research/curated directive instead of the empty-bank one. `audience` (the
+    post's `audience_mix` profile) prefers an owner's story for a small-business reader; `post_id`
+    keeps a regenerated post out of its own window.
     """
     try:
         entries = get_story_bank_entries(user_id, active_only=True)
@@ -2881,19 +2924,20 @@ def _select_story_for_post(user_id: int, prefs: dict = None,
     topics = [str(t).strip() for t in ((prefs or {}).get("focus_topics") or []) if str(t).strip()]
     # The cooldown window, newest first; its first `STORY_RECENT_POSTS` are the soft rotation's
     # history (#2241 showcase). Unreadable history only loses both guards — `used_count` holds.
-    try:
-        window = get_recent_post_texts(user_id, limit=_story_bank.STORY_COOLDOWN_POSTS,
-                                       within_days=_story_bank.STORY_COOLDOWN_DAYS)
-    except Exception as e:
-        log_debug("Recent posts unreadable — story rotation falls back to used_count only",
-                  error=str(e), user_id=user_id, task_name="create_text_post")
-        window = []
+    rows = _recent_post_records(user_id, post_id, limit=_story_bank.STORY_COOLDOWN_POSTS,
+                                within_days=_story_bank.STORY_COOLDOWN_DAYS) or []
+    recorded = {r.get("story_id") for r in rows if r.get("story_id") is not None}
+    # Echo detection is the fallback for LEGACY posts only: a post that recorded its entry has
+    # already said which story it told, and its wording must not cool a second one.
+    legacy = [r.get("content") for r in rows if r.get("story_id") is None and r.get("content")]
+    window = [r.get("content") for r in rows if r.get("content")]
     story = _story_bank.select_story(entries, subject=(blueprint or {}).get("subject"),
                                      focus_topics=topics,
-                                     recent_texts=list(window)[:_story_bank.STORY_RECENT_POSTS],
-                                     cooldown_texts=window)
+                                     recent_texts=window[:_story_bank.STORY_RECENT_POSTS],
+                                     cooldown_texts=legacy, cooling_story_ids=recorded,
+                                     smb=bool((audience or {}).get("smb")))
     if story is None and outcome is not None:
-        outcome["cooled"] = bool(_story_bank.cooling_ids(entries, window))
+        outcome["cooled"] = bool(_story_bank.cooling_ids(entries, legacy, recorded))
     return story
 
 
@@ -3896,7 +3940,8 @@ def _resolve_post_history(user_id: int, post_id: Optional[int], similarity_check
 
 def _resolve_story_anchor(user_id: int, post_id: Optional[int], prefs: dict,
                           blueprint: Optional[dict], story_directive: Optional[str],
-                          content_mix: Optional[str], outcome: Optional[dict] = None
+                          content_mix: Optional[str], outcome: Optional[dict] = None,
+                          audience: Optional[dict] = None
                           ) -> Tuple[Optional[dict], str, Optional[str]]:
     """The ONE thing the user actually did that this post is anchored to (issue #620).
 
@@ -3914,6 +3959,7 @@ def _resolve_story_anchor(user_id: int, post_id: Optional[int], prefs: dict,
             an earlier pass and this is a no-op that keeps the whole post on the same anchor.
         content_mix: this post's 70/20/10 class.
         outcome: filled with `cooled` (see `_select_story_for_post`) for the caller.
+        audience: this post's `audience_mix` profile, which prefers a story that fits its reader.
 
     Returns:
         `(story, story_directive, content_mix)` — content_mix demoted out of 'promo' when the bank
@@ -3927,7 +3973,8 @@ def _resolve_story_anchor(user_id: int, post_id: Optional[int], prefs: dict,
         return None, story_directive, content_mix
 
     outcome = {} if outcome is None else outcome
-    story = _select_story_for_post(user_id, prefs, blueprint, outcome=outcome)
+    story = _select_story_for_post(user_id, prefs, blueprint, outcome=outcome, audience=audience,
+                                   post_id=post_id)
     story_directive = (_story_bank.story_directive(story) if story
                        else _no_anchor_directive(user_id, outcome))
     if story:
@@ -3991,6 +4038,139 @@ def _resolve_blueprint(user_id: int, blueprint: Optional[dict], content_mix: Opt
     return blueprint
 
 
+def _recent_post_records(user_id: int, post_id: Optional[int], limit: int = 10,
+                         within_days: Optional[int] = None) -> Optional[list]:
+    """The user's recent generated posts (`get_recent_post_records`), newest first, or None.
+
+    The one history read behind the showcase-round-5 rules (audience alternation, story cooldown,
+    hook shapes, topic cap). None means unreadable — every caller then runs without that history,
+    which is never worse than before the rule existed.
+    """
+    try:
+        rows = get_recent_post_records(user_id, limit=limit, exclude_post_id=post_id,
+                                       within_days=within_days)
+    except Exception as e:
+        log_debug("Recent post records unreadable — writing without the rotation history",
+                  error=str(e), user_id=user_id, post_id=post_id, task_name="create_content")
+        return None
+    return list(rows) if isinstance(rows, (list, tuple)) else None
+
+
+def _record_texts(rows: Optional[list]) -> Optional[list]:
+    """The non-empty contents of `_recent_post_records` rows, newest first; None stays None."""
+    if rows is None:
+        return None
+    return [r.get("content") for r in rows if isinstance(r, dict) and r.get("content")]
+
+
+def _resolve_post_audience(user_id: int, post_id: Optional[int], prefs: Optional[dict],
+                           history: Optional[list]) -> Tuple[Optional[dict], Optional[dict]]:
+    """Which ONE reader this post is written for, and the prefs re-aimed at them (showcase round 5).
+
+    Off unless the user's `audience_mix` has a positive share and a secondary audience — then the
+    pick is `audience_mix.select_audience` over the audiences the recent posts recorded.
+
+    Args:
+        user_id: The author.
+        post_id: The post being written, for log context.
+        prefs: Engagement preferences.
+        history: `_recent_post_records` rows.
+
+    Returns:
+        `(prefs, audience)` — prefs unchanged and None for a single-audience author.
+    """
+    mix = prefs.get("audience_mix") if isinstance(prefs, dict) else None
+    if not _audience_mix.mix_active(mix):
+        return prefs, None
+    audience = _audience_mix.select_audience(mix, [r.get("audience") for r in (history or [])])
+    profile = _audience_mix.audience_profile(mix, audience, prefs)
+    log_info(f"Audience for post_id={post_id}: {audience}", user_id=user_id,
+             task_name="create_content")
+    return _audience_mix.audience_prefs(prefs, profile), profile
+
+
+def _without_crowded_focus_topics(prefs: Optional[dict],
+                                  recent_texts: Optional[list]) -> Optional[dict]:
+    """`prefs` minus the focus topics whose cluster already hit the topic cap (showcase round 5).
+
+    Steers topic selection away from a crowded cluster BEFORE drafting, which is cheaper than the
+    regeneration `_diversify_topic` spends after. Leaves prefs alone when it would empty the list.
+    """
+    if not isinstance(prefs, dict):
+        return prefs
+    crowded = crowded_topic_clusters(recent_texts)
+    topics = list(prefs.get("focus_topics") or [])
+    if not crowded or not topics:
+        return prefs
+    kept = [t for t in topics if topic_cluster(str(t), min_hits=1) not in crowded]
+    return {**prefs, "focus_topics": kept} if kept and len(kept) < len(topics) else prefs
+
+
+def _record_generation(user_id: int, post_id: Optional[int], audience: Optional[dict],
+                       story: Optional[dict]) -> None:
+    """Record the post's audience and story-bank entry (`posts.audience` / `posts.story_id`).
+
+    What the next post's audience pick and story cooldown read back (showcase round 5). Written at
+    generation time, before the content is stored, so a post generated in the same run counts.
+    """
+    if post_id is None:
+        return
+    story_id = story.get("id") if isinstance(story, dict) else None
+    try:
+        update_post_generation_record(post_id, (audience or {}).get("audience"), story_id)
+    except Exception as e:
+        log_warning("Could not record the post's audience and story — the next post's cooldown "
+                    "falls back to reading its wording", exc=e, user_id=user_id, post_id=post_id,
+                    task_name="create_content")
+
+
+def _keyword_cta_capped(user_id: int, post_id: Optional[int]) -> bool:
+    """Whether the keyword artifact ask already ran within `ARTIFACT_CTA_COOLDOWN_DAYS` of this slot.
+
+    Showcase round 5: "Comment AUDIT" closed four of ten posts. The ask is the promo slot's alone,
+    and at most once in any seven days of slots. Fails CLOSED on an unreadable history — a promo
+    post without its keyword costs one ask, a fifth "Comment AUDIT" costs the reader.
+    """
+    try:
+        lead_magnet = get_lead_magnet_settings(user_id)
+    except Exception as e:
+        log_debug("Lead-magnet settings unreadable — no keyword ask to cap", error=str(e),
+                  user_id=user_id, post_id=post_id, task_name="create_text_post")
+        return False
+    if not lead_magnet_enabled(lead_magnet):
+        return False
+    try:
+        texts = get_post_texts_near_slot(user_id, post_id, ARTIFACT_CTA_COOLDOWN_DAYS)
+    except Exception as e:
+        texts = None
+        log_debug("Posts near this slot unreadable", error=str(e), user_id=user_id,
+                  post_id=post_id, task_name="create_text_post")
+    if texts is None:
+        log_warning("Could not read the posts near this slot — the keyword CTA is skipped on it",
+                    user_id=user_id, post_id=post_id, task_name="create_text_post")
+        return True
+    keyword = str(lead_magnet.get("keyword") or "").strip()
+    return any(has_lead_magnet_cta_mechanic(t, keyword) for t in texts)
+
+
+def _cap_promo_keyword(user_id: int, post_id: Optional[int],
+                       content_mix: Optional[str]) -> Optional[str]:
+    """The slot's class, demoted out of 'promo' when its keyword ask is inside the 7-day cooldown.
+
+    A promo post must close on an artifact (`_promo_artifact_finding`), and the artifact a lead
+    magnet user gets is the keyword ask — so a capped promo slot is written, and re-classed, as
+    'value' (the same demotion an anchorless promo slot gets).
+    """
+    if content_mix != ContentMix.PROMO.value or not _keyword_cta_capped(user_id, post_id):
+        return content_mix
+    log_info(f"Keyword CTA already used within {ARTIFACT_CTA_COOLDOWN_DAYS} days of this slot — "
+             f"post_id={post_id} written as 'value'", user_id=user_id, post_id=post_id,
+             task_name="create_text_post")
+    if post_id:
+        update_post_content_mix(post_id, ContentMix.VALUE.value)
+    return ContentMix.VALUE.value
+
+
 def _recent_cta_types(user_id: int, recent_texts: Optional[list] = None) -> list:
     """The CTA types the user's last posts closed on, most recent first (`cta_type_of`).
 
@@ -4009,14 +4189,17 @@ def _recent_cta_types(user_id: int, recent_texts: Optional[list] = None) -> list
 
 def _steer_post_blueprint(user_id: int, blueprint: Optional[dict], post_id: Optional[int],
                           content_mix: Optional[str], prefs: Optional[dict] = None,
-                          profile_synthesis=None, recent_texts: Optional[list] = None
+                          profile_synthesis=None, recent_texts: Optional[list] = None,
+                          audience: Optional[dict] = None, hook_shape: bool = False
                           ) -> Optional[dict]:
-    """Two showcase-round-4 rules hung on a freshly selected blueprint, for posts AND decks.
+    """The showcase-round-4/5 rules hung on a freshly selected blueprint, for posts AND decks.
 
     The CTA TYPE rotates against the user's recent closes (`select_cta_type`: never the same type
     twice in three posts, the artifact ask only on the promo slot), and the plain-fold rule
-    (`plain_fold`) is switched on for an author whose readers are small-business owners
-    (`smb_audience`) — `blueprint_directive` turns both into writer instructions.
+    (`plain_fold`) is switched on for a post whose reader is a small-business owner
+    (`smb_audience` — per post when the user alternates audiences). Round 5 adds the post's
+    audience directive and, with `hook_shape`, its rotated opening shape — `blueprint_directive`
+    turns all of them into writer instructions.
 
     Args:
         user_id: The author.
@@ -4026,18 +4209,32 @@ def _steer_post_blueprint(user_id: int, blueprint: Optional[dict], post_id: Opti
         prefs: Engagement preferences.
         profile_synthesis: The author's voice brief.
         recent_texts: The user's recent posts when the caller already loaded them.
+        audience: This post's `audience_mix` profile, or None for a single-audience author.
+        hook_shape: Assign a rotated opening shape (text posts; a deck's cover is its own hook).
 
     Returns:
         The steered blueprint, or the input when it is not a dict.
     """
     if not isinstance(blueprint, dict):
         return blueprint
+    smb = smb_audience(prefs, profile_synthesis, audience)
+    menu_smb = smb if audience else None
     cta_type = select_cta_type(_recent_cta_types(user_id, recent_texts),
                                promo=normalize_content_mix(content_mix) == ContentMix.PROMO.value,
-                               sequence_index=post_id)
-    steered = assign_cta_style(blueprint, cta_type, sequence_index=post_id)
-    if smb_audience(prefs, profile_synthesis):
+                               sequence_index=post_id, smb=menu_smb)
+    steered = assign_cta_style(blueprint, cta_type, sequence_index=post_id, smb=menu_smb)
+    if smb:
         steered = {**steered, "plain_fold": True}
+    if audience:
+        steered = {**steered, "audience": audience.get("audience"),
+                   "audience_directive": _audience_mix.audience_directive(audience)}
+    if hook_shape and recent_texts is not None:
+        avoid = steered.get("recent_hook_styles") or ()
+        shape = select_hook_shape(recent_texts, smb=menu_smb,
+                                  allowed=allowed_hook_shapes(steered.get("format"), avoid))
+        style = hook_style_for_shape(shape, steered.get("format"), avoid)
+        steered = {**steered, "hook_shape": shape, "what_if_banned": what_if_banned(recent_texts),
+                   **({"hook_style": style} if style else {})}
     log_debug(f"CTA type for post_id={post_id}: {cta_type}", user_id=user_id,
               task_name="create_content")
     return steered
@@ -4162,8 +4359,11 @@ def _refine_draft(content: str, ctx: PostDraftContext, cta_keyword: Optional[str
     """
     content = get_ai_linked_post_refinement(content, prefs=ctx.prefs,
                                             preserve_cta_keyword=cta_keyword)
+    blueprint = ctx.blueprint or {}
     content = optimize_post_hook(content, prefs=ctx.prefs, preserve_cta_keyword=cta_keyword,
-                                 cta_type=(ctx.blueprint or {}).get("cta_type"))
+                                 cta_type=blueprint.get("cta_type"),
+                                 hook_shape=blueprint.get("hook_shape"),
+                                 ban_what_if=bool(blueprint.get("what_if_banned")))
     content = sanitize_for_linkedin(content)
     # Guardrail: strip classic engagement-bait CTAs (penalized), keeping lead-magnet CTAs.
     content = strip_engagement_bait(content, exempt_keyword=bait_exempt_keyword)
@@ -4213,39 +4413,51 @@ def _compose_draft(ctx: PostDraftContext, cta_keyword: Optional[str] = None,
     return content, ctx
 
 
-def _recent_topics(user_id: int, post_id: Optional[int]) -> list:
-    """The last `TOPIC_DIVERSITY_WINDOW` posts' topics, most recent first.
+def _recent_topic_rows(user_id: int, post_id: Optional[int]) -> list:
+    """The last `TOPIC_CLUSTER_WINDOW - 1` posts' `{topic, content}` rows, most recent first.
 
-    The recorded `posts.topic` where there is one, else the post's own keyword fingerprint
-    (`post_topic`) — posts written before every post recorded a topic still count. Unreadable
-    history is no history: the post is written without the diversity check.
+    Unreadable history is no history: the post is written without the diversity checks.
     """
     try:
-        rows = get_recent_post_topics(user_id, limit=TOPIC_DIVERSITY_WINDOW,
-                                      exclude_post_id=post_id)
+        return list(get_recent_post_topics(user_id, limit=TOPIC_CLUSTER_WINDOW - 1,
+                                           exclude_post_id=post_id) or [])
     except Exception as e:
         log_debug("Recent post topics unreadable — writing without the topic-diversity check",
                   error=str(e), user_id=user_id, task_name="create_text_post")
         return []
+
+
+def _recent_topics(user_id: int, post_id: Optional[int], rows: Optional[list] = None) -> list:
+    """The last `TOPIC_DIVERSITY_WINDOW` posts' topics, most recent first.
+
+    The recorded `posts.topic` where there is one, else the post's own keyword fingerprint
+    (`post_topic`) — posts written before every post recorded a topic still count. `rows` are
+    `_recent_topic_rows` when the caller already read them.
+    """
+    if rows is None:
+        rows = _recent_topic_rows(user_id, post_id)
     topics = []
-    for row in rows or []:
+    for row in list(rows or [])[:TOPIC_DIVERSITY_WINDOW]:
         topic = post_topic((row or {}).get("content"), (row or {}).get("topic"))
         if topic:
             topics.append(topic)
     return topics
 
 
-def _without_repeated_focus_topics(prefs: Optional[dict], recent_topics: list) -> dict:
-    """`prefs` minus every focus topic a recent post already covered.
+def _without_repeated_focus_topics(prefs: Optional[dict], recent_topics: list,
+                                   crowded: Optional[set] = None) -> dict:
+    """`prefs` minus every focus topic a recent post already covered, or whose cluster is capped.
 
     The research fallback's subject steer: the trend research is anchored to a focus topic, so the
-    ones just written about are taken off the rotation for this one draft. With none left the
+    ones just written about — and, since showcase round 5, the ones in a cluster that already hit
+    the topic cap (`crowded`) — are taken off the rotation for this one draft. With none left the
     research falls back to the profile's own niche anchors.
     """
     prefs = dict(prefs or {})
     prefs["focus_topics"] = [t for t in (prefs.get("focus_topics") or [])
                              if not repeated_topic(str(t), recent_topics)
-                             and not any(str(t).lower() in str(r).lower() for r in recent_topics)]
+                             and not any(str(t).lower() in str(r).lower() for r in recent_topics)
+                             and topic_cluster(str(t), min_hits=1) not in (crowded or set())]
     return prefs
 
 
@@ -4255,13 +4467,17 @@ _RESEARCH_TOPIC_TYPE = "industry_news"
 
 def _diversify_topic(ctx: PostDraftContext, content: Optional[str], cta_keyword: Optional[str],
                      bait_exempt_keyword: Optional[str]) -> Tuple[Optional[str], PostDraftContext]:
-    """Topic diversity across the plan (showcase round 4): never the last three posts' topic again.
+    """Topic diversity across the plan: no recent topic again, no over-full topic cluster.
 
-    The draft's topic (`post_topic`) is compared with the last `TOPIC_DIVERSITY_WINDOW` posts'
-    (`repeated_topic`, the similarity toolbox's token overlap). A repeat is regenerated ONCE with
-    the topics named as off-limits; a second repeat falls back to a RESEARCH topic — the
-    research-grounded type with the just-covered focus topics taken off its rotation. A caller that
-    pinned the subject on the blueprint is never second-guessed.
+    Never the last three posts' topic (showcase round 4), and never a fourth post in one topic
+    CLUSTER inside ten (showcase round 5). The draft's topic (`post_topic`) is compared with the
+    last `TOPIC_DIVERSITY_WINDOW` posts' (`repeated_topic`, the similarity toolbox's token
+    overlap), and its cluster (`topic_cluster`)
+    with the last `TOPIC_CLUSTER_WINDOW - 1` posts' (`capped_topic_cluster`: at most
+    `TOPIC_CLUSTER_MAX` per window). Either is regenerated ONCE with the topics and clusters named
+    as off-limits; a second failure falls back to a RESEARCH topic — the research-grounded type
+    with the just-covered focus topics and the capped clusters taken off its rotation. A caller
+    that pinned the subject on the blueprint is never second-guessed.
 
     Args:
         ctx: The settled inputs.
@@ -4275,27 +4491,108 @@ def _diversify_topic(ctx: PostDraftContext, content: Optional[str], cta_keyword:
     if not content or not ctx.similarity_check or not ctx.refine_final_post or \
             (ctx.blueprint or {}).get("subject"):
         return content, ctx
-    recent = _recent_topics(ctx.user_id, ctx.post_id)
-    match = repeated_topic(post_topic(content), recent)
+    rows = _recent_topic_rows(ctx.user_id, ctx.post_id)
+    recent = _recent_topics(ctx.user_id, ctx.post_id, rows)
+    history = [(r or {}).get("content") for r in rows if (r or {}).get("content")]
+    crowded = crowded_topic_clusters(history)
+
+    def repeats(draft: str) -> Optional[str]:
+        return (repeated_topic(post_topic(draft), recent)
+                or capped_topic_cluster(draft, history))
+
+    match = repeats(content)
     if not match:
         return content, ctx
-    log_info(f"Draft repeats a recent post's topic ({match}) — regenerating once",
-             user_id=ctx.user_id, post_id=ctx.post_id, task_name="create_text_post")
+    log_info(f"Draft repeats a recent post's topic or a capped cluster ({match}) — regenerating "
+             "once", user_id=ctx.user_id, post_id=ctx.post_id, task_name="create_text_post")
     retry = ctx.with_history_directive((ctx.history_directive or "")
-                                       + topic_avoidance_directive(recent))
+                                       + topic_avoidance_directive(recent)
+                                       + cluster_avoidance_directive(crowded))
     second, retry = _compose_draft(retry, cta_keyword=cta_keyword,
                                    bait_exempt_keyword=bait_exempt_keyword)
-    if second and not repeated_topic(post_topic(second), recent):
+    if second and not repeats(second):
         return second, retry
     log_info("Regenerated draft still repeats a recent topic — falling back to a research topic",
              user_id=ctx.user_id, post_id=ctx.post_id, task_name="create_text_post")
     research = dataclasses.replace(retry, post_type=_RESEARCH_TOPIC_TYPE,
-                                   prefs=_without_repeated_focus_topics(retry.prefs, recent))
+                                   prefs=_without_repeated_focus_topics(retry.prefs, recent,
+                                                                        crowded))
     third, research = _compose_draft(research, cta_keyword=cta_keyword,
                                      bait_exempt_keyword=bait_exempt_keyword)
     if third:
         return third, research
     return second or content, retry
+
+
+def _enforce_hook_shape(ctx: PostDraftContext, content: Optional[str],
+                        history: Optional[list], cta_keyword: Optional[str]) -> Optional[str]:
+    """The opening-shape rotation's check on the composed draft (showcase round 5).
+
+    The hook pass was told the shape; when the draft still opens like the previous post, or opens
+    "What if" inside the `WHAT_IF_WINDOW`, it gets ONE more hook pass with the shape and the ban
+    restated. A question opener that survives that is cut deterministically when the post still
+    stands without it (`drop_opening_question`). Anything else ships as is, recorded at INFO.
+
+    Args:
+        ctx: The settled inputs; only a blueprint carrying a `hook_shape` is enforced.
+        content: The composed draft.
+        history: The user's recent posts, most recent first.
+        cta_keyword: The sanctioned keyword the hook pass must preserve.
+
+    Returns:
+        The draft with a rotated opening where that was possible.
+    """
+    blueprint = ctx.blueprint or {}
+    if not content or not ctx.refine_final_post or not blueprint.get("hook_shape"):
+        return content
+    reason = hook_shape_violation(content, history)
+    if not reason:
+        return content
+    log_info(f"Draft {reason} — one more hook pass", user_id=ctx.user_id, post_id=ctx.post_id,
+             task_name="create_text_post")
+    second = optimize_post_hook(content, prefs=ctx.prefs, preserve_cta_keyword=cta_keyword,
+                                cta_type=blueprint.get("cta_type"),
+                                hook_shape=blueprint.get("hook_shape"), ban_what_if=True)
+    second = sanitize_for_linkedin(second) if second else content
+    if not hook_shape_violation(second, history):
+        return second
+    return _drop_repeated_question(ctx, second, history)
+
+
+def _drop_repeated_question(ctx: PostDraftContext, content: Optional[str],
+                            history: Optional[list]) -> Optional[str]:
+    """Cut an opening question that still breaks the rotation, when the post stands without it."""
+    if not content or not (ctx.blueprint or {}).get("hook_shape") \
+            or not hook_shape_violation(content, history):
+        return content
+    dropped = drop_opening_question(content)
+    if dropped != content and not hook_shape_violation(dropped, history):
+        log_info("Opening question cut — the post opens on its next paragraph",
+                 user_id=ctx.user_id, post_id=ctx.post_id, task_name="create_text_post")
+        return dropped
+    log_info("Post opening still repeats the rotation after its retry — shipped as is",
+             user_id=ctx.user_id, post_id=ctx.post_id, task_name="create_text_post")
+    return content
+
+
+def _strip_unsanctioned_keyword_cta(ctx: PostDraftContext, content: Optional[str],
+                                    lead_magnet: Optional[dict], include_cta: bool) -> Optional[str]:
+    """Remove a "Comment KEYWORD" ask from a post that was not given one (showcase round 5).
+
+    The keyword ask belongs to the promo slot alone; a rewrite that copied it onto another post
+    (it reads the user's recent posts) loses the lines carrying the mechanic.
+    """
+    keyword = str((lead_magnet or {}).get("keyword") or "").strip()
+    if include_cta or not content or not keyword \
+            or not has_lead_magnet_cta_mechanic(content, keyword):
+        return content
+    kept = [ln for ln in content.split("\n") if not has_lead_magnet_cta_mechanic(ln, keyword)]
+    trimmed = re.sub(r"\n{3,}", "\n\n", "\n".join(kept)).strip()
+    if trimmed and trimmed != content:
+        log_info("Keyword CTA on a post that was not given one — removed", user_id=ctx.user_id,
+                 post_id=ctx.post_id, task_name="create_text_post")
+        return trimmed
+    return content
 
 
 def _enforce_cta_rotation(ctx: PostDraftContext, content: Optional[str],
@@ -4407,12 +4704,11 @@ def _repair_post_ctas(ctx: PostDraftContext, content: str, lead_magnet: Optional
             content = repaired
 
     if include_cta and content:
-        # A classified post's `include_cta` came from the CTA rotation, which IS the selection
-        # (every_n=1); an unclassified one keeps the legacy cadence the repair also keys on.
+        # `include_cta` IS the selection (the promo slot's CTA rotation, showcase round 5), so the
+        # repair must not re-apply the legacy 1-in-N cadence on top of it (every_n=1).
         repaired = ensure_lead_magnet_cta(content, lead_magnet, post_id,
                                           use_emojis=bool((prefs or {}).get("use_emojis")),
-                                          every_n=1 if normalize_content_mix(ctx.content_mix)
-                                          else None)
+                                          every_n=1)
         if repaired != content:
             log_info("Lead-magnet CTA lost in refinement - repaired deterministically",
                      post_id=post_id, user_id=user_id, task_name="create_text_post")
@@ -4510,6 +4806,9 @@ def _persist_draft_outcome(ctx: PostDraftContext, content: Optional[str],
             log_warning("Could not persist the post's shape — future posts will not rotate away "
                         "from it", exc=e, user_id=user_id, post_id=post_id,
                         task_name="create_text_post")
+    if content:
+        _record_generation(user_id, post_id, {"audience": (ctx.blueprint or {}).get("audience")},
+                           story)
 
 
 @llm_pipeline("post_generation", feature=FEATURE_CONTENT)
@@ -4561,6 +4860,12 @@ def create_text_post(user_id: int, stage: str, post_type: str = None,
     # profile JSON as the voice/credibility source — keeps posts in the user's voice without dragging
     # in their volatile recent activity / current projects (LEM-drift).
     profile_synthesis = get_or_create_profile_synthesis(user_id, user_profile)
+    # Showcase round 5: ONE reader per post (the audience mix re-aims the prefs every step below
+    # reads), and focus topics in a cluster that already hit the topic cap are taken off this one.
+    history = _recent_post_records(user_id, post_id)
+    history_texts = _record_texts(history)
+    prefs, audience = _resolve_post_audience(user_id, post_id, prefs, history)
+    prefs = _without_crowded_focus_topics(prefs, history_texts)
 
     recent_texts, history_directive = _resolve_post_history(user_id, post_id, similarity_check,
                                                             history_directive)
@@ -4568,7 +4873,10 @@ def create_text_post(user_id: int, stage: str, post_type: str = None,
     anchor_outcome: dict = {}
     story, story_directive, content_mix = _resolve_story_anchor(user_id, post_id, prefs, blueprint,
                                                                 story_directive, content_mix,
-                                                                outcome=anchor_outcome)
+                                                                outcome=anchor_outcome,
+                                                                audience=audience)
+    # The keyword ask at most once in seven days of slots (showcase round 5).
+    content_mix = _cap_promo_keyword(user_id, post_id, content_mix)
     if anchor_outcome.get("cooled") and post_type in _STORY_ONLY_POST_TYPES:
         # Every story is cooling down, and this slot's type only works with one: write it from
         # research instead of inventing the experience (showcase round 4).
@@ -4578,16 +4886,19 @@ def create_text_post(user_id: int, stage: str, post_type: str = None,
     blueprint_selected_here = blueprint is None
     blueprint = _resolve_blueprint(user_id, blueprint, content_mix, day_weekday, story,
                                    story_selected_here)
+    rotation_texts = history_texts or (recent_texts if similarity_check else None)
     if blueprint_selected_here:
         blueprint = _steer_post_blueprint(user_id, blueprint, post_id, content_mix, prefs,
-                                          profile_synthesis,
-                                          recent_texts if similarity_check else None)
-    # A classified post's artifact ask follows the CTA rotation (the promo slot only — the
-    # 70/20/10 rule); an unclassified one (a manual or legacy post) keeps the 1-in-N cadence.
+                                          profile_synthesis, rotation_texts, audience=audience,
+                                          hook_shape=True)
+    # The keyword artifact ask is the PROMO slot's alone (showcase round 5): the CTA rotation's
+    # verdict when it ran, the slot's class otherwise. The legacy 1-in-N cadence it replaced is
+    # what put "Comment AUDIT" on unclassified video captions.
     lead_magnet, include_cta, lead_magnet_cta = _resolve_lead_magnet(
         user_id, post_id, lead_magnet_cta,
         allow_artifact=((blueprint or {}).get("cta_type") == CTA_TYPE_ARTIFACT
-                        if content_mix and "cta_type" in (blueprint or {}) else None))
+                        if "cta_type" in (blueprint or {})
+                        else content_mix == ContentMix.PROMO.value))
 
     # Everything this draft is written from, settled (issue #1220). The generate step and the two
     # retries around it read it instead of re-threading a dozen arguments each.
@@ -4608,11 +4919,17 @@ def create_text_post(user_id: int, stage: str, post_type: str = None,
     final_content, ctx = _compose_draft(ctx, cta_keyword=cta_keyword,
                                         bait_exempt_keyword=bait_exempt_keyword)
     final_content, ctx = _diversify_topic(ctx, final_content, cta_keyword, bait_exempt_keyword)
+    final_content = _enforce_hook_shape(ctx, final_content, rotation_texts, cta_keyword)
     final_content = _apply_once_per_post_gates(ctx, final_content, recent_texts, story,
                                                cta_keyword)
     final_content = _repair_post_ctas(ctx, final_content, lead_magnet, include_cta)
     if not include_cta:
-        final_content = _enforce_cta_rotation(ctx, final_content, recent_texts)
+        final_content = _strip_unsanctioned_keyword_cta(ctx, final_content, lead_magnet,
+                                                        include_cta)
+        final_content = _enforce_cta_rotation(ctx, final_content, rotation_texts)
+    # The gates above can rewrite the opening; a "What if" they put back is cut here, without an
+    # LLM call, when the post stands without it.
+    final_content = _drop_repeated_question(ctx, final_content, rotation_texts)
     # LAST word on the draft's currency glyphs (issue #1529). `_refine_draft`'s
     # `sanitize_for_linkedin` runs BEFORE the humanization rewrite and the review gate's
     # regeneration, and both of those are LLM passes that can price a dollar figure in rupees all

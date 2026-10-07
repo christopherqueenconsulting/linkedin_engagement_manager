@@ -526,10 +526,14 @@ class TestCreateContent:
     @patch("cqc_lem.app.run_content_plan.create_video_content", return_value=("Video post content", "https://video.url"))
     def test_video_post_type(self, mock_video):
         from cqc_lem.app.run_content_plan import create_content
-        content, video_url = create_content(user_id=1, post_type="video", stage="decision")
+        content, video_url = create_content(user_id=1, post_type="video", stage="decision",
+                                            content_mix="value")
         assert content == "Video post content"
         assert video_url == "https://video.url"
-        mock_video.assert_called_once_with(1, "decision", post_id=None, brief_info=None)
+        # The slot's class reaches the caption (showcase round 5): without it the caption fell
+        # back to the legacy 1-in-N lead-magnet cadence on a non-promo slot.
+        mock_video.assert_called_once_with(1, "decision", post_id=None, brief_info=None,
+                                           content_mix="value")
 
     @patch("cqc_lem.app.run_content_plan.create_text_post", return_value="  Trimmed content  ")
     def test_text_content_is_stripped(self, mock_text):

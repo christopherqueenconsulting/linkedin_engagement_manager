@@ -39,7 +39,9 @@ def _run(post_id=77, blueprint=None, history=None, lead_magnet=None, stories=Non
          patch(f"{_RCP}.get_story_bank_entries", return_value=stories or []), \
          patch(f"{_RCP}.record_story_bank_use") as story_use, \
          patch(f"{_RCP}.update_db_post_shape") as save, \
-         patch(f"{_RCP}.get_thought_leadership_post_from_ai", side_effect=gen):
+         patch(f"{_RCP}.get_thought_leadership_post_from_ai", side_effect=gen), \
+         patch(f"{_RCP}.get_recent_post_records", return_value=[]), \
+         patch(f"{_RCP}.update_post_generation_record"):
         out = rcp.create_text_post(1, "awareness", post_type="thought_leadership",
                                    user_profile=MagicMock(), refine_final_post=False,
                                    blueprint=blueprint, post_id=post_id)
@@ -75,12 +77,12 @@ class TestPostShapeRotation:
         hist.assert_not_called()
         save.assert_called_once_with(77, "tactical_list", "bold_claim", topic=post_topic(out))
 
-    def test_lead_magnet_cta_woven_when_enabled_and_selected(self):
+    def test_lead_magnet_cta_never_on_an_unclassified_post(self):
         lm = {"enabled": True, "keyword": "AUDIT", "message": "Free profile audit checklist."}
-        # post_id=3 is a multiple of the default 1-in-3 cadence → selected.
+        # post_id=3 is a multiple of the legacy 1-in-3 cadence, which used to select it. The ask is
+        # the promo slot's alone now (showcase round 5) — an unclassified post never carries it.
         _, captured, _, _, _ = _run(post_id=3, lead_magnet=lm)
-        cta = captured["lead_magnet_cta"]
-        assert cta and "AUDIT" in cta and "SANCTIONED" in cta
+        assert captured["lead_magnet_cta"] == ""
 
     def test_lead_magnet_cta_absent_when_not_selected(self):
         lm = {"enabled": True, "keyword": "AUDIT", "message": "Free profile audit checklist."}

@@ -140,28 +140,64 @@ def recently_used_ids(entries: Optional[list], recent_texts: Optional[list]) -> 
     return used
 
 
-def cooling_ids(entries: Optional[list], window_texts: Optional[list]) -> set:
+def cooling_ids(entries: Optional[list], window_texts: Optional[list],
+                recorded_ids: Optional[set] = None) -> set:
     """The ids of the entries still COOLING DOWN: already anchored a post inside the window.
 
-    Deterministic — read off the window's post texts with `entry_echoed_in`, because there is no
-    per-post story column. ``window_texts`` is every post in the cooldown window
-    (`STORY_COOLDOWN_POSTS` / `STORY_COOLDOWN_DAYS`, whichever is longer).
+    The RECORD comes first (showcase round 5): every post written since `posts.story_id` existed
+    names the entry it was anchored to, so an entry in ``recorded_ids`` is cooling however the
+    post paraphrased it — the "$49 fabricated-ROI" story was told twice in one window because the
+    second telling echoed too few of its numbers. ``window_texts`` is the FALLBACK for legacy posts
+    with no recorded entry, read with `entry_echoed_in`; a caller passes only those posts' texts.
 
     Args:
         entries: The story-bank rows.
-        window_texts: The cooldown window's post texts.
+        window_texts: The cooldown window's unrecorded post texts.
+        recorded_ids: The story ids the window's posts recorded.
 
     Returns:
         The cooling entries' ids.
     """
-    return recently_used_ids(entries, window_texts)
+    known = {e.get("id") for e in (entries or []) if isinstance(e, dict)}
+    recorded = {i for i in (recorded_ids or set()) if i in known}
+    return recorded | recently_used_ids(entries, window_texts)
+
+
+# Plain-business vocabulary in an entry's text: what a small-business owner reads as THEIR story.
+_SMB_STORY_RE = re.compile(
+    r"\b(?:customers?|clients?|owners?|revenue|sales|invoices?|hours?|money|cash|payroll|staff|"
+    r"employees?|shop|store|bookkeep\w*|small business(?:es)?|leads?|replies|emails?|"
+    r"feedback|reviews?|support|orders?|marketing|hiring|hire)\b", re.IGNORECASE)
+# Engineering vocabulary that makes a story an engineer's story.
+_TECH_STORY_RE = re.compile(
+    r"\b(?:deploy\w*|docker|kubernetes|repo|github|pull request|PRs?|schema|migrations?|"
+    r"endpoints?|latency|tokens?|gpu|llm-?ops|cron|webhooks?|sdk|api|ci|plugin|config)\b",
+    re.IGNORECASE)
+
+
+def audience_fit(entry: dict, smb: bool) -> int:
+    """How well an entry's body fits the post's reader. Only the small-business reader is scored.
+
+    Args:
+        entry: One story-bank row.
+        smb: Whether this post is written for small-business owners.
+
+    Returns:
+        Plain-business words minus engineering words in the entry; 0 when ``smb`` is False.
+    """
+    if not smb:
+        return 0
+    text = entry_text(entry)
+    return len(_SMB_STORY_RE.findall(text)) - len(_TECH_STORY_RE.findall(text))
 
 
 def select_story(entries: Optional[list], subject: Optional[str] = None,
                  focus_topics: Optional[list] = None,
                  min_relevance: Optional[int] = None,
                  recent_texts: Optional[list] = None,
-                 cooldown_texts: Optional[list] = None) -> Optional[dict]:
+                 cooldown_texts: Optional[list] = None,
+                 cooling_story_ids: Optional[set] = None,
+                 smb: bool = False) -> Optional[dict]:
     """The one entry this post is anchored to, or None when the bank can't ground it.
 
     Relevance decides WHICH entries are eligible; rotation decides which eligible one is used, so
@@ -180,11 +216,17 @@ def select_story(entries: Optional[list], subject: Optional[str] = None,
     post of the cooldown window is not eligible at all, and when every entry is cooling the answer
     is None, so the post runs on research and curated material instead of telling the same story a
     fourth time. Comments keep the soft rotation (they pass no cooldown window).
+    ``cooling_story_ids`` are the entries the window's posts RECORDED (`cooling_ids`); with them,
+    ``cooldown_texts`` should carry only the posts that recorded none.
+
+    ``smb`` (showcase round 5): for a post written for small-business owners, an eligible entry
+    whose body reads as an owner's story (`audience_fit` > 0) is preferred over one that does not,
+    rotation deciding within each group.
     """
     usable = [e for e in (entries or []) if isinstance(e, dict) and entry_text(e)
               and e.get("active", True)]
-    if cooldown_texts:
-        cooling = cooling_ids(usable, cooldown_texts)
+    if cooldown_texts or cooling_story_ids:
+        cooling = cooling_ids(usable, cooldown_texts, cooling_story_ids)
         usable = [e for e in usable if e.get("id") not in cooling]
     if not usable:
         return None
@@ -200,8 +242,11 @@ def select_story(entries: Optional[list], subject: Optional[str] = None,
     if not eligible:
         return None
     recent = recently_used_ids(eligible, recent_texts)
-    fresh = [e for e in eligible if e.get("id") not in recent]
-    return sorted(fresh or eligible, key=_rotation_key)[0]
+    fresh = [e for e in eligible if e.get("id") not in recent] or eligible
+    if smb:
+        fitting = [e for e in fresh if audience_fit(e, True) > 0]
+        fresh = fitting or fresh
+    return sorted(fresh, key=_rotation_key)[0]
 
 
 def _happened_phrase(entry: dict) -> str:

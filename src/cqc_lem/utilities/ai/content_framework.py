@@ -1220,6 +1220,11 @@ def blueprint_directive(content_type: str, blueprint: dict,
         lines.append(f"OPENING HOOK STYLE: {h_meta['label']}. {h_meta['guidance']}")
     if f_meta.get("hook_styles"):
         lines.append(hook_constraint_directive())
+    if blueprint.get("hook_shape"):
+        lines.append(hook_shape_directive(blueprint.get("hook_shape"),
+                                          bool(blueprint.get("what_if_banned"))))
+    if blueprint.get("audience_directive"):
+        lines.append(str(blueprint["audience_directive"]))
     if blueprint.get("plain_fold"):
         lines.append(fold_outcome_directive())
     cta = _normalize(blueprint.get("cta_style"), menu["ctas"])
@@ -2902,6 +2907,8 @@ def carousel_blueprint_directive(blueprint: dict, fact_anchors: Optional[list] =
         lines.append(fact_anchor_directive(fact_anchors))
     # Showcase round 4: the same plain-fold rule and rotated close a text post gets — the fold is
     # the caption's first two lines AND the cover slide, the close is the caption's.
+    if blueprint.get("audience_directive"):
+        lines.append(str(blueprint["audience_directive"]))
     if blueprint.get("plain_fold"):
         lines.append(fold_outcome_directive() + " The same goes for the COVER slide.")
     cta = _normalize(blueprint.get("cta_style"), POST_CTA_STYLES) if blueprint.get("cta_type") \
@@ -3405,19 +3412,30 @@ def fold_jargon_hits(text: Optional[str]) -> list:
     return hits
 
 
-def smb_audience(prefs: Optional[dict] = None, profile_synthesis=None) -> bool:
-    """Whether this author writes FOR small-business owners — the plain-fold rule's switch.
+def smb_audience_text(text: Optional[str]) -> bool:
+    """Whether an audience description names small-business owners (`_SMB_AUDIENCE_RE`)."""
+    return bool(_SMB_AUDIENCE_RE.search(str(text or "")))
 
-    Read off what the author declared (business goals, personal goals, focus topics) and their
-    voice brief. A developer-facing author never gets their jargon flagged.
+
+def smb_audience(prefs: Optional[dict] = None, profile_synthesis=None,
+                 audience: Optional[dict] = None) -> bool:
+    """Whether THIS post is written FOR small-business owners — the plain-fold rule's switch.
+
+    Per post (showcase round 5): a post that picked an audience from the user's `audience_mix`
+    answers from that audience alone, so a practitioner post is never held to the owner's fold and
+    an owner post always is. Without one, it is read off what the author declared (business goals,
+    personal goals, focus topics) and their voice brief, as before.
 
     Args:
         prefs: Engagement preferences.
         profile_synthesis: The cached voice brief (str or dict).
+        audience: This post's `audience_mix.audience_profile`, when the user alternates audiences.
 
     Returns:
-        True when any of them names a small-business audience.
+        True when the post's reader is a small-business owner.
     """
+    if isinstance(audience, dict) and "smb" in audience:
+        return bool(audience.get("smb"))
     prefs = prefs or {}
     parts = [str(prefs.get("business_goals") or ""), str(prefs.get("personal_goals") or ""),
              " ".join(str(t) for t in (prefs.get("focus_topics") or [])),
@@ -3460,11 +3478,21 @@ CTA_TYPES = (CTA_TYPE_ARTIFACT, CTA_TYPE_QUESTION, CTA_TYPE_SAVE, CTA_TYPE_SHARE
              CTA_TYPE_NONE)
 # Never the same CTA type twice in any `CTA_TYPE_WINDOW` consecutive posts.
 CTA_TYPE_WINDOW = 3
+# The keyword artifact ask ("Comment AUDIT") at most once in any window of this many days, and only
+# on the promo slot (showcase round 5: four of ten posts closed on it).
+ARTIFACT_CTA_COOLDOWN_DAYS = 7
 # The order the rotation prefers among types tied on recency — question first because a real
 # question is still the strongest comment driver, then the two save/share signals, then silence.
 _CTA_ROTATION = (CTA_TYPE_QUESTION, CTA_TYPE_SAVE, CTA_TYPE_SHARE, CTA_TYPE_NONE, CTA_TYPE_DM)
 # The question type's sub-styles, rotated by post id so consecutive question closes differ.
 _QUESTION_STYLES = ("reply_question", "challenge", "debate", "poll_prompt")
+# Per-audience CTA menus (showcase round 5). A small-business owner answers a plain question or a
+# quick poll and passes a useful post to someone they know; a practitioner argues with a challenge
+# or a debate, and a post that just ends on its insight reads as peer talk.
+_CTA_ROTATION_SMB = (CTA_TYPE_QUESTION, CTA_TYPE_SAVE, CTA_TYPE_SHARE, CTA_TYPE_NONE)
+_CTA_ROTATION_PRACTITIONER = (CTA_TYPE_QUESTION, CTA_TYPE_NONE, CTA_TYPE_SAVE, CTA_TYPE_SHARE)
+_QUESTION_STYLES_SMB = ("reply_question", "poll_prompt")
+_QUESTION_STYLES_PRACTITIONER = ("challenge", "debate", "reply_question")
 _CTA_TYPE_STYLE = {CTA_TYPE_SAVE: "save_worthy", CTA_TYPE_SHARE: "share_one",
                    CTA_TYPE_NONE: "no_ask", CTA_TYPE_DM: "dm_offer"}
 # How many closing lines a CTA is read from.
@@ -3517,7 +3545,8 @@ def cta_type_of(text: Optional[str]) -> str:
 
 
 def select_cta_type(recent_types: Optional[list], promo: bool = False, allow_dm: bool = False,
-                    sequence_index: Optional[int] = None) -> str:
+                    sequence_index: Optional[int] = None, smb: Optional[bool] = None,
+                    artifact_allowed: bool = True) -> str:
     """The CTA type THIS post closes on, rotated against the user's recent posts.
 
     The promo slot always closes on its artifact (the 70/20/10 rule: an artifact CTA appears ONLY
@@ -3530,15 +3559,21 @@ def select_cta_type(recent_types: Optional[list], promo: bool = False, allow_dm:
         promo: Whether this is the promo slot.
         allow_dm: Whether a DM ask is allowed for this author.
         sequence_index: A stable per-post integer (the post id) breaking ties deterministically.
+        smb: This post's audience (showcase round 5) — True the small-business owner's menu,
+            False the practitioner's, None (single-audience author) the original rotation.
+        artifact_allowed: False when the keyword ask already ran inside its
+            `ARTIFACT_CTA_COOLDOWN_DAYS` window — a promo slot then rotates like any other post.
 
     Returns:
         One of `CTA_TYPES`.
     """
-    if promo:
+    if promo and artifact_allowed:
         return CTA_TYPE_ARTIFACT
     recent = [t for t in (recent_types or []) if t in CTA_TYPES]
     blocked = set(recent[:CTA_TYPE_WINDOW - 1])
-    menu = [t for t in _CTA_ROTATION if t != CTA_TYPE_DM or allow_dm]
+    rotation = (_CTA_ROTATION if smb is None
+                else _CTA_ROTATION_SMB if smb else _CTA_ROTATION_PRACTITIONER)
+    menu = [t for t in rotation if t != CTA_TYPE_DM or allow_dm]
     candidates = [t for t in menu if t not in blocked] or menu
 
     def rank(t: str) -> int:
@@ -3551,7 +3586,8 @@ def select_cta_type(recent_types: Optional[list], promo: bool = False, allow_dm:
 
 
 def assign_cta_style(blueprint: Optional[dict], cta_type: str,
-                     sequence_index: Optional[int] = None) -> Optional[dict]:
+                     sequence_index: Optional[int] = None,
+                     smb: Optional[bool] = None) -> Optional[dict]:
     """The blueprint with its CTA style set from `cta_type` — the ONE place a type becomes a style.
 
     The artifact type keeps the blueprint's own conversation close: the sanctioned lead-magnet
@@ -3561,6 +3597,7 @@ def assign_cta_style(blueprint: Optional[dict], cta_type: str,
         blueprint: The post's blueprint (copied, never mutated).
         cta_type: One of `CTA_TYPES`.
         sequence_index: Rotates the question type's sub-style.
+        smb: This post's audience, which narrows the question sub-styles (None: all of them).
 
     Returns:
         The new blueprint, or the input when it is not a dict.
@@ -3569,7 +3606,9 @@ def assign_cta_style(blueprint: Optional[dict], cta_type: str,
         return blueprint
     style = _CTA_TYPE_STYLE.get(cta_type)
     if cta_type == CTA_TYPE_QUESTION:
-        style = _QUESTION_STYLES[int(sequence_index or 0) % len(_QUESTION_STYLES)]
+        styles = (_QUESTION_STYLES if smb is None
+                  else _QUESTION_STYLES_SMB if smb else _QUESTION_STYLES_PRACTITIONER)
+        style = styles[int(sequence_index or 0) % len(styles)]
     out = {**blueprint, "cta_type": cta_type}
     if style:
         out["cta_style"] = style
@@ -3646,6 +3685,333 @@ def topic_avoidance_directive(recent_topics: Optional[list]) -> str:
     return ("\n\nTOPIC RULE — your last draft covered the same ground as a recent post. Write about "
             "a DIFFERENT subject than each of these recent posts (not a new angle on the same one):\n"
             + "\n".join(f"- {t}" for t in topics) + "\n")
+
+
+# --- Topic-cluster cap (showcase round 5) ---------------------------------------------------------
+# The topic-diversity rule above compares fingerprints, so "AI spend", "model routing" and "cost per
+# successful call" read as three topics while a reader sees ONE idea twelve times. A cluster is a
+# keyword family; at most `TOPIC_CLUSTER_MAX` of any rolling `TOPIC_CLUSTER_WINDOW` posts may share
+# one.
+TOPIC_CLUSTER_WINDOW = 10
+TOPIC_CLUSTER_MAX = 3
+# How many family keywords a POST must carry to belong to it — one passing mention is not a topic.
+TOPIC_CLUSTER_MIN_HITS = 3
+TOPIC_CLUSTERS: dict = {
+    "ai_cost": ("ai spend", "spend", "spending", "cost", "costs", "budget", "bill", "bills",
+                "pricing", "price", "cheap", "cheaper", "cheapest", "expensive", "token", "tokens",
+                "routing", "router", "model tier", "savings", "per call", "per-call", "roi",
+                "invoice", "overspend", "leak", "leaking", "leaks", "efficiency"),
+    "ai_reliability": ("observability", "monitoring", "silent failure", "silently", "failure",
+                       "failures", "reliability", "reliable", "uptime", "drift", "outage", "alert",
+                       "alerts", "tracing", "quality check", "quality checks", "breaks", "broken",
+                       "eval", "evals", "test set"),
+    "ai_governance": ("governance", "vendor", "vendors", "vendor risk", "compliance", "policy",
+                      "policies", "regulation", "lock-in", "contract", "privacy"),
+    "sales_outreach": ("outreach", "cold email", "cold emails", "prospect", "prospects", "pipeline",
+                       "leads", "sales", "reply rate", "replies", "follow-up", "follow up"),
+    "hiring": ("hire", "hiring", "candidate", "candidates", "interview", "recruit", "recruiting",
+               "take-home"),
+    "customer_feedback": ("feedback", "customer service", "support ticket", "tickets", "reviews",
+                          "complaint", "complaints", "survey"),
+}
+TOPIC_CLUSTER_LABELS: dict = {
+    "ai_cost": "AI spend, cost and model routing",
+    "ai_reliability": "AI reliability, monitoring and silent failures",
+    "ai_governance": "AI governance and vendor risk",
+    "sales_outreach": "sales outreach and prospecting",
+    "hiring": "hiring and candidates",
+    "customer_feedback": "customer feedback and support",
+}
+_TOPIC_CLUSTER_RES: dict = {
+    key: re.compile(r"(?<![\w-])(?:" + "|".join(re.escape(t) for t in sorted(terms, key=len,
+                                                                             reverse=True))
+                    + r")(?![\w-])", re.IGNORECASE)
+    for key, terms in TOPIC_CLUSTERS.items()
+}
+
+
+def topic_cluster(text: Optional[str], min_hits: int = TOPIC_CLUSTER_MIN_HITS) -> Optional[str]:
+    """The keyword family (`TOPIC_CLUSTERS`) a post or topic belongs to, or None. Deterministic.
+
+    A "Comment KEYWORD" artifact line is left out: its resource blurb ("where your AI spend leaks")
+    would otherwise file every promo post under the same family.
+
+    Args:
+        text: The post, or a short topic string.
+        min_hits: Family keyword occurrences needed — 1 for a short topic string.
+
+    Returns:
+        The family with the most hits at or over `min_hits` (first listed wins a tie), else None.
+    """
+    body = "\n".join(ln for ln in (text or "").splitlines() if not _CTA_ARTIFACT_RE.search(ln))
+    best, best_hits = None, 0
+    for key, pattern in _TOPIC_CLUSTER_RES.items():
+        hits = len(pattern.findall(body))
+        if hits >= max(1, int(min_hits)) and hits > best_hits:
+            best, best_hits = key, hits
+    return best
+
+
+def crowded_topic_clusters(recent_texts: Optional[list]) -> set:
+    """The clusters a new post may NOT join: already `TOPIC_CLUSTER_MAX` of the last posts.
+
+    Args:
+        recent_texts: The user's recent posts, most recent first; the first
+            `TOPIC_CLUSTER_WINDOW - 1` are read (with the new post, that is the window).
+
+    Returns:
+        The crowded cluster keys.
+    """
+    counts: dict = {}
+    for text in list(recent_texts or [])[:TOPIC_CLUSTER_WINDOW - 1]:
+        cluster = topic_cluster(text)
+        if cluster:
+            counts[cluster] = counts.get(cluster, 0) + 1
+    return {k for k, n in counts.items() if n >= TOPIC_CLUSTER_MAX}
+
+
+def capped_topic_cluster(text: Optional[str], recent_texts: Optional[list]) -> Optional[str]:
+    """The cluster this draft would push over the cap, or None.
+
+    Args:
+        text: The draft.
+        recent_texts: The user's recent posts, most recent first.
+
+    Returns:
+        The draft's cluster when it is already crowded (`crowded_topic_clusters`), else None.
+    """
+    cluster = topic_cluster(text)
+    return cluster if cluster and cluster in crowded_topic_clusters(recent_texts) else None
+
+
+def cluster_avoidance_directive(clusters) -> str:
+    """The steer naming the crowded clusters the next draft must stay out of."""
+    names = [TOPIC_CLUSTER_LABELS.get(c, c) for c in sorted(clusters or []) if c]
+    if not names:
+        return ""
+    return ("\n\nTOPIC CAP — your recent posts already covered these subjects as often as the plan "
+            "allows. This post must be about something ELSE entirely (not a new angle on them):\n"
+            + "\n".join(f"- {n}" for n in names) + "\n")
+
+
+# --- Opening (hook) shape rotation (showcase round 5) -------------------------------------------
+# The hook pass was told "a bold claim, a surprising stat, or a sharp question" and answered "What
+# if…" on most posts. The OPENING SHAPE is now assigned per post, rotated against the shapes the
+# user's recent posts actually opened with (read off their text, so legacy posts count too).
+HOOK_SHAPE_STATEMENT = "statement"
+HOOK_SHAPE_NUMBER = "number_led"
+HOOK_SHAPE_STORY = "story"
+HOOK_SHAPE_CONTRARIAN = "contrarian"
+HOOK_SHAPE_QUESTION = "question"
+HOOK_SHAPE_HOW_TO = "how_to"
+HOOK_SHAPES = (HOOK_SHAPE_STATEMENT, HOOK_SHAPE_NUMBER, HOOK_SHAPE_STORY, HOOK_SHAPE_CONTRARIAN,
+               HOOK_SHAPE_QUESTION, HOOK_SHAPE_HOW_TO)
+# How many recent openings the rotation looks back over; "What if" may open at most one post in
+# any `WHAT_IF_WINDOW` consecutive posts.
+HOOK_SHAPE_WINDOW = 5
+WHAT_IF_WINDOW = 5
+# Which `HOOK_STYLES` entry each shape is written with (first one the format allows wins), so the
+# blueprint's hook style and its opening shape never contradict each other.
+HOOK_SHAPE_STYLES: dict = {
+    HOOK_SHAPE_STATEMENT: ("common_frustration", "pattern_interrupt"),
+    HOOK_SHAPE_NUMBER: ("surprising_stat",),
+    HOOK_SHAPE_STORY: ("micro_story", "mistake_confession"),
+    HOOK_SHAPE_CONTRARIAN: ("bold_claim",),
+    HOOK_SHAPE_QUESTION: ("question",),
+    HOOK_SHAPE_HOW_TO: ("direct_promise",),
+}
+HOOK_SHAPE_GUIDANCE: dict = {
+    HOOK_SHAPE_STATEMENT: ("Statement", (
+        "Open with ONE plain declarative sentence that states the point. No question mark.")),
+    HOOK_SHAPE_NUMBER: ("Number-led", (
+        "Put a specific number from the post itself in the first five words. Never invent one — "
+        "if the post has none, open with a plain statement instead.")),
+    HOOK_SHAPE_STORY: ("Short story", (
+        "Open mid-scene in a real moment from the post ('Last Tuesday…', 'In March I…') in one "
+        "or two short lines.")),
+    HOOK_SHAPE_CONTRARIAN: ("Contrarian", (
+        "Open by naming something the reader believes and saying plainly that it is wrong. A "
+        "statement, not a question.")),
+    HOOK_SHAPE_QUESTION: ("Question", (
+        "Open with ONE pointed, specific question the reader has actually asked themselves.")),
+    HOOK_SHAPE_HOW_TO: ("How-to", (
+        "Open by naming exactly what the reader will be able to do ('How to…', 'Here is how…', "
+        "'Three steps to…').")),
+}
+# The order each audience prefers among shapes tied on recency.
+_HOOK_SHAPE_ORDER_SMB = (HOOK_SHAPE_STATEMENT, HOOK_SHAPE_NUMBER, HOOK_SHAPE_STORY,
+                         HOOK_SHAPE_HOW_TO, HOOK_SHAPE_CONTRARIAN, HOOK_SHAPE_QUESTION)
+_HOOK_SHAPE_ORDER_PRACTITIONER = (HOOK_SHAPE_CONTRARIAN, HOOK_SHAPE_NUMBER, HOOK_SHAPE_STORY,
+                                  HOOK_SHAPE_STATEMENT, HOOK_SHAPE_QUESTION, HOOK_SHAPE_HOW_TO)
+_WHAT_IF_RE = re.compile(r"^\W*what\s+if\b", re.IGNORECASE)
+_HOW_TO_OPEN_RE = re.compile(
+    r"^\W*(?:how\s+(?:to|i|we)\b|here(?:'|’)?s\s+how\b|here\s+is\s+how\b|"
+    r"(?:\d+|two|three|four|five|six|seven)\s+(?:ways|steps|things|lessons|mistakes|rules|"
+    r"questions)\b|step\s+1\b)", re.IGNORECASE)
+_STORY_OPEN_RE = re.compile(
+    r"^\W*(?:last\s+(?:week|month|year|monday|tuesday|wednesday|thursday|friday|saturday|sunday)|"
+    r"yesterday|this\s+(?:morning|week)|(?:in|on|back\s+in)\s+(?:" + _PROOF_MONTHS + r"|"
+    + _PROOF_WEEKDAYS + r"|(?:19|20)\d{2})|(?:a|one|two|three|four|five|six|\d+)\s+"
+    r"(?:days?|weeks?|months?|years?)\s+ago|i\s+(?:once|was|sent|spent|built|shipped|watched|got|"
+    r"had|put|asked|ran|tried|lost|made|wrote|found|opened|launched|hired|deleted|broke))\b",
+    re.IGNORECASE)
+_CONTRARIAN_OPEN_RE = re.compile(
+    r"^\W*(?:most\b|everyone\b|nobody\b|stop\b|forget\b|unpopular\b|"
+    r"the\s+(?:biggest|real)\s+(?:lie|myth|problem|mistake)\b)|"
+    r"\b(?:is|are)\s+(?:not|wrong|overrated|a\s+myth)\b|\b(?:isn|aren|doesn|don)(?:'|’)?t\b",
+    re.IGNORECASE)
+_NUMBER_OPEN_RE = re.compile(r"[$€£]?\d")
+
+
+def _opening_sentence(text: Optional[str]) -> str:
+    first = next((ln.strip() for ln in (text or "").splitlines() if ln.strip()), "")
+    match = re.match(r"^(.*?[.!?])(?:\s|$)", first)
+    return match.group(1) if match else first
+
+
+def opens_with_what_if(text: Optional[str]) -> bool:
+    """Whether the post opens "What if…"."""
+    return bool(_WHAT_IF_RE.match(_opening_sentence(text)))
+
+
+def opening_shape(text: Optional[str]) -> Optional[str]:
+    """The SHAPE a post opens with (`HOOK_SHAPES`), read off its first sentence. Deterministic.
+
+    Precedence: how-to, question (any first sentence ending '?', "What if" included), short story,
+    number-led (a figure in the first six words), contrarian, else statement.
+
+    Args:
+        text: The post.
+
+    Returns:
+        One of `HOOK_SHAPES`, or None for an empty post.
+    """
+    first = _opening_sentence(text)
+    if not first:
+        return None
+    if _HOW_TO_OPEN_RE.match(first):
+        return HOOK_SHAPE_HOW_TO
+    if first.rstrip().endswith("?") or opens_with_what_if(first):
+        return HOOK_SHAPE_QUESTION
+    if _STORY_OPEN_RE.match(first):
+        return HOOK_SHAPE_STORY
+    if _NUMBER_OPEN_RE.search(" ".join(first.split()[:6])):
+        return HOOK_SHAPE_NUMBER
+    if _CONTRARIAN_OPEN_RE.search(first):
+        return HOOK_SHAPE_CONTRARIAN
+    return HOOK_SHAPE_STATEMENT
+
+
+def what_if_banned(recent_texts: Optional[list]) -> bool:
+    """Whether a "What if" opener already ran in the last `WHAT_IF_WINDOW - 1` posts."""
+    return any(opens_with_what_if(t) for t in list(recent_texts or [])[:WHAT_IF_WINDOW - 1])
+
+
+def allowed_hook_shapes(format_key=None, avoid_styles=None) -> tuple:
+    """The shapes a post archetype can be written with: those whose hook style its menu allows.
+
+    `avoid_styles` are the hook styles the user's recent posts already used (the V51 shape
+    history): a shape whose every allowed style is among them is left out, so the shape rotation
+    never re-assigns a recently used hook style. Relaxed rather than ever returning nothing.
+    """
+    hooks = allowed_hooks("post", format_key) if format_key else HOOK_STYLES
+    allowed = tuple(s for s in HOOK_SHAPES if any(h in hooks for h in HOOK_SHAPE_STYLES[s])) \
+        or HOOK_SHAPES
+    avoid = set(avoid_styles or ())
+    fresh = tuple(s for s in allowed
+                  if any(h in hooks and h not in avoid for h in HOOK_SHAPE_STYLES[s]))
+    return fresh or allowed
+
+
+def select_hook_shape(recent_texts: Optional[list], smb: Optional[bool] = None,
+                      allowed: Optional[tuple] = None) -> str:
+    """The opening shape THIS post is written with, rotated against the user's recent openings.
+
+    Never the shape the previous post opened with, and the least recently used of the rest over
+    the last `HOOK_SHAPE_WINDOW` posts; ties go to the audience's preferred order (a small-business
+    owner's posts lead with statements and numbers, a practitioner's with a contrarian take).
+
+    Args:
+        recent_texts: The user's recent posts, most recent first.
+        smb: This post's audience (None: a single-audience author, the plain `HOOK_SHAPES` order).
+        allowed: The shapes the archetype allows (`allowed_hook_shapes`).
+
+    Returns:
+        One of `HOOK_SHAPES`.
+    """
+    order = (HOOK_SHAPES if smb is None
+             else _HOOK_SHAPE_ORDER_SMB if smb else _HOOK_SHAPE_ORDER_PRACTITIONER)
+    menu = [s for s in order if s in (allowed or HOOK_SHAPES)] or list(order)
+    recent = [opening_shape(t) for t in list(recent_texts or [])[:HOOK_SHAPE_WINDOW]]
+    head = recent[0] if recent else None
+    candidates = [s for s in menu if s != head] or menu
+
+    def rank(shape: str) -> int:
+        return recent.index(shape) if shape in recent else len(recent) + 1
+
+    best = max(rank(s) for s in candidates)
+    return next(s for s in candidates if rank(s) == best)
+
+
+def hook_style_for_shape(shape: Optional[str], format_key=None,
+                         avoid_styles=None) -> Optional[str]:
+    """The `HOOK_STYLES` key a shape is written with under this archetype, or None.
+
+    A style outside `avoid_styles` (the recently used ones) wins over one inside it.
+    """
+    hooks = allowed_hooks("post", format_key) if format_key else HOOK_STYLES
+    styles = [h for h in HOOK_SHAPE_STYLES.get(shape or "", ()) if h in hooks]
+    avoid = set(avoid_styles or ())
+    return next((h for h in styles if h not in avoid), styles[0] if styles else None)
+
+
+def hook_shape_directive(shape: Optional[str], ban_what_if: bool = False) -> str:
+    """The writer/hook-pass instruction for the assigned opening shape.
+
+    "What if" is banned on every shape but a question, and on a question too while one already
+    opened a post in the window (`what_if_banned`).
+    """
+    label, guidance = HOOK_SHAPE_GUIDANCE.get(shape or "", ("", ""))
+    if not label:
+        return ""
+    line = f"OPENING SHAPE: {label}. {guidance}"
+    if ban_what_if or shape != HOOK_SHAPE_QUESTION:
+        line += " Do NOT open with 'What if'."
+    return line
+
+
+def hook_shape_violation(text: Optional[str], recent_texts: Optional[list]) -> Optional[str]:
+    """Why this draft's opening breaks the rotation, or None.
+
+    Args:
+        text: The draft.
+        recent_texts: The user's recent posts, most recent first.
+
+    Returns:
+        A plain-English reason: the same shape as the previous post, or a "What if" opener inside
+        the `WHAT_IF_WINDOW`. None when the opening is fine.
+    """
+    recent = list(recent_texts or [])
+    if opens_with_what_if(text) and what_if_banned(recent):
+        return f"opens 'What if' again within {WHAT_IF_WINDOW} posts"
+    shape = opening_shape(text)
+    if recent and shape and shape == opening_shape(recent[0]):
+        return f"opens with the same shape as the previous post ({shape})"
+    return None
+
+
+def drop_opening_question(text: Optional[str]) -> Optional[str]:
+    """The post without its opening question paragraph, when the rest still stands as a post.
+
+    The deterministic last word on a question opener the hook pass would not let go of: a "What
+    if…?" line is a lead-in, so the paragraph after it opens the post. Only a one-line question
+    paragraph goes, and only when at least two paragraphs remain.
+    """
+    paragraphs = [p for p in re.split(r"\n\s*\n", (text or "").strip()) if p.strip()]
+    if len(paragraphs) < 3 or "\n" in paragraphs[0].strip() \
+            or opening_shape(paragraphs[0]) != HOOK_SHAPE_QUESTION:
+        return text
+    return "\n\n".join(paragraphs[1:]).strip()
 
 
 # --- Deck counts and document wording -------------------------------------------------------------

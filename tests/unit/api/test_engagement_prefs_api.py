@@ -556,3 +556,49 @@ class TestBrandKitRoundTrip:
                                   json={"session_token": _SESSION, "brand_kit": ["#e9d437"]})
         assert resp.status_code == 422
         upd.assert_not_called()
+
+
+class TestAudienceMixRoundTrip:
+    """The audience mix (showcase round 5) rides the engagement-prefs GET/PUT like the brand kit."""
+
+    MIX = {"primary_audience": "ops leaders", "secondary_audience": "small-business owners",
+           "secondary_share": 0.6, "secondary_focus_topics": ["cash flow"]}
+
+    def test_get_returns_the_saved_mix(self, api_client):
+        with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
+             patch("cqc_lem.api.routers.user.has_engagement_preferences", return_value=True), \
+             patch("cqc_lem.api.routers.user.get_engagement_preferences",
+                   return_value={"tone": None, "audience_mix": self.MIX}):
+            resp = api_client.get(f"/api/user/engagement-preferences?session_token={_SESSION}")
+        assert resp.status_code == 200
+        assert resp.json()["detail"]["audience_mix"] == self.MIX
+
+    def test_put_tidies_and_clamps_instead_of_failing(self, api_client):
+        with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
+             patch("cqc_lem.api.routers.user.update_engagement_preferences",
+                   return_value=True) as upd:
+            resp = api_client.put("/api/user/engagement-preferences", json={
+                "session_token": _SESSION,
+                "audience_mix": {**self.MIX, "secondary_share": 7, "junk": True,
+                                 "secondary_focus_topics": ["cash flow", "Cash flow"]}})
+        assert resp.status_code == 200
+        assert upd.call_args[0][1]["audience_mix"] == {**self.MIX, "secondary_share": 1.0}
+
+    @pytest.mark.parametrize("body", [{}, {"audience_mix": None}])
+    def test_put_without_a_mix_leaves_the_stored_one_alone(self, api_client, body):
+        with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
+             patch("cqc_lem.api.routers.user.update_engagement_preferences",
+                   return_value=True) as upd:
+            resp = api_client.put("/api/user/engagement-preferences",
+                                  json={"session_token": _SESSION, **body})
+        assert resp.status_code == 200
+        assert "audience_mix" not in upd.call_args[0][1]
+
+    def test_put_empty_mix_clears_it(self, api_client):
+        with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
+             patch("cqc_lem.api.routers.user.update_engagement_preferences",
+                   return_value=True) as upd:
+            resp = api_client.put("/api/user/engagement-preferences",
+                                  json={"session_token": _SESSION, "audience_mix": {}})
+        assert resp.status_code == 200
+        assert upd.call_args[0][1]["audience_mix"] == {}

@@ -244,11 +244,12 @@ class TestStoryRotation:
         from cqc_lem.app import run_content_plan as rcp
 
         with patch.object(rcp, "get_story_bank_entries", return_value=self.ENTRIES), \
-                patch.object(rcp, "get_recent_post_texts",
-                             return_value=["the 429s of July 20 2026"]) as recent:
+                patch.object(rcp, "get_recent_post_records",
+                             return_value=[{"content": "the 429s of July 20 2026",
+                                            "story_id": None}]) as recent:
             story = rcp._select_story_for_post(1, {})
         # The cooldown window (showcase round 4): last 10 posts or 14 days, whichever is longer.
-        recent.assert_called_once_with(1, limit=sb.STORY_COOLDOWN_POSTS,
+        recent.assert_called_once_with(1, limit=sb.STORY_COOLDOWN_POSTS, exclude_post_id=None,
                                        within_days=sb.STORY_COOLDOWN_DAYS)
         assert story["id"] == 2
 
@@ -256,7 +257,7 @@ class TestStoryRotation:
         from cqc_lem.app import run_content_plan as rcp
 
         with patch.object(rcp, "get_story_bank_entries", return_value=self.ENTRIES), \
-                patch.object(rcp, "get_recent_post_texts", side_effect=RuntimeError("db")):
+                patch.object(rcp, "get_recent_post_records", side_effect=RuntimeError("db")):
             assert rcp._select_story_for_post(1, {})["id"] == 1
 
 

@@ -29,6 +29,12 @@ TOLD_1 = "Between June 25 and July 27 we shipped 160 releases with no downtime."
 TOLD_2 = "On July 20 the 429s started and the breaker stayed tripped for 6 days."
 
 
+def _rows(*texts):
+    """Legacy post records (no recorded story) carrying these texts, newest first."""
+    return [{"id": 100 - i, "content": t, "story_id": None, "audience": None}
+            for i, t in enumerate(texts)]
+
+
 def _ctx(**overrides) -> PostDraftContext:
     fields = dict(user_id=1, stage="awareness", post_type="thought_leadership",
                   user_profile=MagicMock(), prefs={"focus_topics": ["AI costs", "Hiring"]},
@@ -45,23 +51,24 @@ class TestStoryCooldownWiring:
     def test_every_story_cooling_returns_none_and_says_so(self):
         outcome: dict = {}
         with patch(f"{_RCP}.get_story_bank_entries", return_value=ENTRIES), \
-             patch(f"{_RCP}.get_recent_post_texts", return_value=[TOLD_1, TOLD_2]) as recent:
+             patch(f"{_RCP}.get_recent_post_records",
+                   return_value=_rows(TOLD_1, TOLD_2)) as recent:
             assert rcp._select_story_for_post(1, {}, outcome=outcome) is None
-        recent.assert_called_once_with(1, limit=sb.STORY_COOLDOWN_POSTS,
+        recent.assert_called_once_with(1, limit=sb.STORY_COOLDOWN_POSTS, exclude_post_id=None,
                                        within_days=sb.STORY_COOLDOWN_DAYS)
         assert outcome == {"cooled": True}
 
     def test_a_fresh_story_still_anchors(self):
         outcome: dict = {}
         with patch(f"{_RCP}.get_story_bank_entries", return_value=ENTRIES), \
-             patch(f"{_RCP}.get_recent_post_texts", return_value=[TOLD_1]):
+             patch(f"{_RCP}.get_recent_post_records", return_value=_rows(TOLD_1)):
             assert rcp._select_story_for_post(1, {}, outcome=outcome)["id"] == 2
         assert outcome == {}
 
     def test_an_empty_bank_is_not_a_cooldown(self):
         outcome: dict = {}
         with patch(f"{_RCP}.get_story_bank_entries", return_value=[]), \
-             patch(f"{_RCP}.get_recent_post_texts", return_value=[TOLD_1]):
+             patch(f"{_RCP}.get_recent_post_records", return_value=_rows(TOLD_1)):
             assert rcp._select_story_for_post(1, {}, outcome=outcome) is None
         assert outcome == {"cooled": False}
 
@@ -215,7 +222,7 @@ class TestTopicDiversityWiring:
                 {"topic": None, "content": REPEAT}, {"topic": None, "content": ""}]
         with patch(f"{_RCP}.get_recent_post_topics", return_value=rows) as read:
             topics = rcp._recent_topics(1, 9)
-        read.assert_called_once_with(1, limit=cf.TOPIC_DIVERSITY_WINDOW, exclude_post_id=9)
+        read.assert_called_once_with(1, limit=cf.TOPIC_CLUSTER_WINDOW - 1, exclude_post_id=9)
         assert topics == ["payroll, bakery", cf.post_topic(REPEAT)]
         with patch(f"{_RCP}.get_recent_post_topics", side_effect=RuntimeError("db")):
             assert rcp._recent_topics(1, 9) == []

@@ -1812,7 +1812,8 @@ def generate_nurture_dm(their_message: str, intent: str, profile: "LinkedInProfi
 
 @llm_step("hook")
 def optimize_post_hook(post_content: str, prefs: dict = None,
-                       preserve_cta_keyword: str = None, cta_type: str = None) -> str:
+                       preserve_cta_keyword: str = None, cta_type: str = None,
+                       hook_shape: str = None, ban_what_if: bool = False) -> str:
     """Rewrite a generated post so it opens with a scroll-stopping hook within the first ~210
     characters (before LinkedIn's '…more' fold) and, when the topic fits, frames it as save-worthy
     (a framework/checklist) with ONE soft 'save this' invite. Preserves substance + voice. Returns
@@ -1821,18 +1822,26 @@ def optimize_post_hook(post_content: str, prefs: dict = None,
     `cta_type` is the close the CTA rotation assigned (showcase round 4). When it is set and is not
     the save close, the pass keeps the draft's own close instead of adding a save invite — the
     reflex save line on every post is part of what made the closes interchangeable.
+
+    `hook_shape` is the opening shape the rotation assigned (showcase round 5: "What if…" opened
+    most posts because this pass was offered "a bold claim, a surprising stat, or a sharp
+    question"). When set, the pass writes THAT shape instead of choosing one; `ban_what_if` forbids
+    a "What if" opener even on a question.
     """
     if not post_content:
         return post_content
-    from cqc_lem.utilities.ai.content_framework import CTA_TYPE_SAVE
+    from cqc_lem.utilities.ai.content_framework import CTA_TYPE_SAVE, hook_shape_directive
+    shape_rule = hook_shape_directive(hook_shape, ban_what_if) if hook_shape else ""
+    opening = (f"in the shape below.\n        {shape_rule}\n        " if shape_rule else
+               "—\n        a bold claim, a surprising stat, or a sharp question. ")
     keep_close = ("\n\nCLOSE — PRESERVE: keep the draft's existing closing line(s) as its close. Do "
                   "NOT add a 'save this' invite, a new question, or any other ask."
                   if cta_type and cta_type != CTA_TYPE_SAVE else "")
     system_prompt = {
         "role": "system",
         "content": """You are a LinkedIn post editor. Rewrite the post so its FIRST LINE is a
-        scroll-stopping hook that lands within the first 210 characters (before the '…more' fold) —
-        a bold claim, a surprising stat, or a sharp question. The hook must OPEN a loop, never close
+        scroll-stopping hook that lands within the first 210 characters (before the '…more' fold) """
+        + opening + """The hook must OPEN a loop, never close
         it: the payoff belongs below the fold so expanding is the obvious next move. Keep the
         author's substance and voice. Keep every paragraph under 300 characters with a blank line
         between them — a wall of text loses the reader in under three seconds.
