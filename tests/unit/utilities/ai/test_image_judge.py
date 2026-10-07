@@ -825,3 +825,17 @@ class TestRoundThirteenEmotionRepair:
                                treatment="people_scene", treatment_rationale="", weak=False,
                                valence="negative")
         assert _emotion_beat(concept) == "quiet dread"
+
+
+@pytest.mark.unit
+class TestRoundFifteenPostSignage:
+    def test_a_post_image_render_carries_the_signage_clause(self):
+        """Post 100's garbled sign ("UDA HINEBEL"): the round-9 clause reaches post_image."""
+        with patch.object(image_gen, "IMAGE_BACKEND", "gpt-image"), \
+             patch.object(image_gen, "_render_via_gpt_image", return_value="/x.png") as gpt:
+            image_gen._render_with_backend("Two people talking in a hallway.",
+                                           surface="post_image")
+        sent = gpt.call_args[0][0]
+        assert ("No captions, titles, posters, signage, name badges, lanyards with text, or "
+                "labels of any kind.") in sent
+        assert gpt.call_args[1]["surface"] == "post_image"

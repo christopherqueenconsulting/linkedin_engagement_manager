@@ -749,25 +749,158 @@ def cited_sentence(hook: str, source: str) -> str:
     return max(sentences, key=lambda s: len(tokens & set(_content_tokens(s))))
 
 
-def cap_hook(hook: str) -> str:
-    """``hook`` cut to at most ``_HOOK_MAX_WORDS`` words and ``_HOOK_MAX_CHARS`` characters.
+_PRONOUN_CONTRACTIONS = frozenset({"it's", "that's", "what's", "who's", "here's", "there's",
+                                   "he's", "she's", "nobody's", "everyone's"})
+_PREPOSITIONS = frozenset({"to", "by", "for", "with", "on", "in", "of", "at", "from", "into",
+                           "across", "over", "under", "through", "without", "per", "via",
+                           "than", "because", "while", "when", "that", "which"})
+_FILLER = frozenset({"the", "a", "an", "everywhere", "anywhere", "always", "often", "now",
+                     "today", "again", "too", "very", "really", "just", "still"})
+_ADVERB_KEEP = frozenset({"only", "early", "family", "supply", "apply", "daily", "rely",
+                          "reply", "fly", "ally", "italy", "july"})
 
-    The HARD limit, applied after every rewrite (round 14: 7-9 word hooks shipped). Trailing
-    function words are dropped so the cut never ends on "and" or "the".
+
+def _is_verb_word(word: str) -> bool:
+    """Is this single word an asserting verb (copula, modal, known verb, or -ed form)?"""
+    w = word.lower().strip(".,;:!?\"'“”‘’")
+    if w in _PRONOUN_CONTRACTIONS or w.split("'")[0] in ("isn", "aren", "don", "doesn",
+                                                         "didn", "can", "won", "wasn"):
+        return True
+    if "'" in w or "’" in w:
+        return False  # "AI's" is a possessive, not "is"
+    if w in _ASSERTING - {"s", "d", "ll", "re", "ve"} or w in _VERBS:
+        return True
+    for cut in (1, 2, 3):
+        if len(w) - cut >= 3 and (w[:-cut] in _VERBS or f"{w[:-cut]}e" in _VERBS):
+            if w.endswith(("s", "ed", "es", "ies")):
+                return True
+    return len(w) > 4 and w.endswith("ed") and w not in ("unused", "need", "speed")
+
+
+def _clause_words(thesis: str) -> list[str]:
+    clause = _CLAUSE_BREAK.split(thesis or "", maxsplit=1)[0]
+    words = [w.strip(".!?\"“”") for w in clause.split()]
+    words = [w for w in words if w]
+    if words and words[0].lower() in ("a", "an", "the"):
+        words = words[1:]
+    # "-ly" adverbs carry no claim and cost words ("raises deal costs dramatically").
+    return [w for w in words if not (len(w) > 4 and w.lower().endswith("ly")
+                                     and w.lower() not in _ADVERB_KEEP)]
+
+
+def _fits(words: Sequence[str]) -> bool:
+    text = " ".join(words)
+    return _HOOK_MIN_WORDS <= len(words) <= _HOOK_MAX_WORDS and len(text) <= _HOOK_MAX_CHARS
+
+
+def _noun_phrase(words: Sequence[str]) -> list[str]:
+    """The words up to the first preposition or auxiliary — the phrase's own noun group.
+
+    Only an auxiliary ends it: "deal costs" and "AI spend" are nouns here, not verbs.
+    """
+    out: list[str] = []
+    for w in words:
+        if out and (w.lower() in _PREPOSITIONS or w.lower().strip(".,") in _ASSERTING):
+            break
+        out.append(w)
+    return out
+
+
+def clause_hook(thesis: str) -> str:
+    """A COMPLETE clause of at most ``_HOOK_MAX_WORDS`` words built from the thesis (round 15).
+
+    Never a truncation: "Ignoring AI's hidden buyers raises deal costs dramatically" becomes
+    "Ignoring AI's hidden buyers raises costs", not "… raises deal". The first clause wins when it
+    already fits and asserts something; otherwise subject + verb group + object are compressed to
+    their noun heads, in that order, until the clause fits. A thesis with no verb at all (a label)
+    is given one: its noun group plus "matters".
+
+    Args:
+        thesis: Stage 1's thesis.
+
+    Returns:
+        The clause, sentence-cased; '' only for an empty thesis.
+    """
+    words = _clause_words(thesis)
+    if not words:
+        return ""
+    if _fits(words) and any(_is_verb_word(w) for w in words):
+        return _sentence_cased(words)
+    index = next((i for i, w in enumerate(words) if i > 0 and _is_verb_word(w)), None)
+    if index is None:
+        # A label: take the verb from the WHOLE thesis if it has one, else assert it matters.
+        whole = [w.strip(".!?\"“”") for w in (thesis or "").split() if w.strip(".!?\"“”")]
+        index = next((i for i, w in enumerate(whole) if i > 0 and _is_verb_word(w)), None)
+        if index is None:
+            subject = _noun_phrase(words)[:_HOOK_MAX_WORDS - 1]
+            return _sentence_cased([*subject, "matters"])
+        words = whole
+    end = index + 1
+    while end < len(words) and (_is_verb_word(words[end]) or words[end].lower() in ("not",
+                                                                                   "never")):
+        end += 1
+    if end < len(words) and (words[end - 1].lower() in ("not", "never")
+                             or words[end - 1].lower() in _ASSERTING):
+        end += 1  # "does not guarantee": the main verb after an auxiliary belongs to the group
+    subject, verbs, rest = words[:index], words[index:end], words[end:]
+    obj = _noun_phrase(rest)
+    while obj and obj[-1].lower() in _TRAILING:
+        obj = obj[:-1]
+    subject_np = _noun_phrase(subject) or subject
+    lean = [w for w in obj if w.lower() not in _FILLER]
+    head = [next((w for w in reversed(lean) if w.lower() not in _FILLER), "")] if lean else []
+    head = [w for w in head if w]
+    candidates = (
+        [*subject, *verbs, *obj],
+        [*subject, *verbs, *lean],
+        [*subject, *verbs, *head],
+        [*subject_np, *verbs, *lean],
+        [*subject_np, *verbs, *head],
+        [*subject_np[-2:], *verbs, *head],
+        [*subject_np[-1:], *verbs, *head],
+        [*subject_np[-1:], *verbs[-1:], *head],
+    )
+    for candidate in candidates:
+        if _fits(candidate):
+            return _sentence_cased(candidate)
+    return _sentence_cased([*subject_np[-1:], verbs[-1]])
+
+
+def restore_number_casing(hook: str, source: str) -> str:
+    """Every number token in ``hook`` spelled exactly as the source spells it ("$30K", not "$30k").
 
     Args:
         hook: The hook.
+        source: The analysed text.
 
     Returns:
-        The capped hook.
+        The hook with each number restored; unchanged where the source has no match.
     """
-    words = (hook or "").split()
-    words = words[:_HOOK_MAX_WORDS]
-    while len(" ".join(words)) > _HOOK_MAX_CHARS and len(words) > _HOOK_MIN_WORDS:
-        words.pop()
-    while len(words) > _HOOK_MIN_WORDS and words[-1].lower().strip(",.;:") in _TRAILING:
-        words.pop()
-    return " ".join(words).rstrip(",;:")
+    def restore(match: "re.Match[str]") -> str:
+        token = match.group(0)
+        found = re.search(rf"(?<![\w.$€£]){re.escape(token)}(?![\d])", source or "",
+                          re.IGNORECASE)
+        return found.group(0) if found else token
+
+    return _HOOK_NUMBER.sub(restore, hook or "")
+
+
+def fit_hook(hook: str, thesis: str) -> str:
+    """``hook`` when it is at most ``_HOOK_MAX_WORDS`` words, else ``clause_hook(thesis)``.
+
+    The backstop where a CALLER's concept reaches the brief without Stage 1's regeneration:
+    a long hook is replaced by a complete clause, never cut mid-phrase (round 15).
+
+    Args:
+        hook: The concept's hook.
+        thesis: The concept's thesis.
+
+    Returns:
+        A hook of at most ``_HOOK_MAX_WORDS`` words.
+    """
+    if len((hook or "").split()) <= _HOOK_MAX_WORDS:
+        return hook
+    return clause_hook(thesis) or clause_hook(hook)
 
 
 def _valid_hook(hook: str, title: Optional[str], topic_text: str = "",
@@ -813,18 +946,13 @@ def derive_hook(thesis: str, source: str, title: Optional[str] = None,
     Returns:
         The hook, in sentence case.
     """
-    clause = _CLAUSE_BREAK.split(thesis or "", maxsplit=1)[0]
-    words = [w.strip(".!?\"'“”") for w in clause.split()]
-    words = [w for w in words if w]
-    if words and words[0].lower() in ("a", "an", "the"):
-        words = words[1:]
-    words = words[:_HOOK_MAX_WORDS]
-    while len(words) > _HOOK_MIN_WORDS and words[-1].lower() in _TRAILING:
-        words.pop()
-    trimmed = _sentence_cased(words) if words else ""
+    # Round 15: a COMPLETE clause of at most six words — never a mid-phrase truncation, and
+    # never a label (``clause_hook`` gives a verbless thesis a verb).
+    trimmed = clause_hook(thesis)
     if trimmed and number_claim_mismatch(trimmed, source):
         # Round 14: never a false pairing, even in the last resort — drop the number.
-        trimmed = _sentence_cased([w for w in words if not _HOOK_NUMBER.fullmatch(w)])
+        trimmed = clause_hook(" ".join(w for w in (thesis or "").split()
+                                       if not _HOOK_NUMBER.fullmatch(w.strip(".,;:"))))
     topic = " ".join((thesis or "", *facts, *anchors))
     valid = _valid_hook(trimmed, title, topic, source)
     if valid:
@@ -1672,6 +1800,34 @@ def _hook_asserts_thesis(concept: ImageConcept, payload: Any, source: str,
     return dataclasses.replace(concept, valence=valence) if valence else concept
 
 
+def _final_hook(concept: ImageConcept, payload: Any, source: str, title: Optional[str],
+                surface: str, user_id: Optional[int]) -> ImageConcept:
+    """The last step of hook selection: <=6 words HARD, never truncated; source number casing.
+
+    Round 15: round 14's cap cut "Ignoring AI's hidden buyers raises deal costs" to "… raises
+    deal". A long hook is REGENERATED with the reason; still long, it takes ``clause_hook`` — a
+    complete clause by construction. Then every number is spelled as the source spells it.
+    """
+    if len(concept.hook_phrase.split()) > _HOOK_MAX_WORDS:
+        reason = (f'"{concept.hook_phrase}": {len(concept.hook_phrase.split())} words — the '
+                  f"hook is at most {_HOOK_MAX_WORDS} words, a complete claim")
+        concept = _ensure_hook(dataclasses.replace(concept, hook_phrase=""), payload, source,
+                               title, surface, user_id, extra_reasons=(reason,))
+        if len(concept.hook_phrase.split()) > _HOOK_MAX_WORDS:
+            hook = clause_hook(concept.thesis)
+            concept = dataclasses.replace(concept, hook_phrase=hook,
+                                          hook_shape=hook_shape_of(hook))
+    hook = concept.hook_phrase
+    if hook and not _HOOK_NUMBER.search(hook) and not asserts_something(hook):
+        # The claim-not-label rule holds on EVERY path, the fallbacks included (round 15).
+        hook = clause_hook(concept.thesis) or hook
+        concept = dataclasses.replace(concept, hook_phrase=hook, hook_shape=hook_shape_of(hook))
+    restored = restore_number_casing(concept.hook_phrase, source)
+    if restored != concept.hook_phrase:
+        concept = dataclasses.replace(concept, hook_phrase=restored)
+    return concept
+
+
 def _ensure_hook(concept: ImageConcept, payload: Any, source: str, title: Optional[str],
                  surface: str, user_id: Optional[int],
                  extra_reasons: Sequence[str] = ()) -> ImageConcept:
@@ -1802,9 +1958,5 @@ def analyze_content_for_image(text: str, *, title: Optional[str] = None,
         # Round 12: the lead number outranks shape rotation, and the hook must assert the thesis.
         concept = _enforce_stat(concept, payload, source, title, surface, user_id)
         concept = _hook_asserts_thesis(concept, payload, source, title, surface, user_id)
-        # Round 14: <=6 words is HARD, after every rewrite.
-        capped = cap_hook(concept.hook_phrase)
-        if capped != concept.hook_phrase:
-            concept = dataclasses.replace(concept, hook_phrase=capped,
-                                          hook_shape=hook_shape_of(capped))
+        concept = _final_hook(concept, payload, source, title, surface, user_id)
     return assign_layout_and_cast(concept, surface, recent_layouts, recent_casts, recent_shots)

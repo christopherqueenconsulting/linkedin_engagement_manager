@@ -51,6 +51,22 @@ judge rightly scored specificity 1 on all four covers. So Stage 1 returns two li
   down. Briefs, Stage 3 and the vision judge's specificity all work from `usable_anchors()` — the
   anchors, or for a concept with none, its plain common-noun facts.
 
+## Never truncate a hook; source spelling; no label survives (round 15)
+
+- **No truncation.** Round 14's cap cut "Ignoring AI's hidden buyers raises deal costs" to
+  "… raises deal". `_final_hook` now REGENERATES a hook over six words with the reason; still
+  long, it takes `clause_hook`, which builds a complete clause by construction: the thesis's
+  first clause with "-ly" adverbs dropped, then subject + verb group + object compressed to their
+  noun heads ("Ignoring AI's hidden buyers raises costs"). Where a caller's concept reaches the
+  brief without Stage 1, `fit_hook` applies the same clause.
+- **Source spelling.** `restore_number_casing` re-spells every number token as the source writes
+  it ("$30K", "53.7%", "3x") after hook selection.
+- **No label on any path.** The claim-not-label rule runs on the final hook too; a label is
+  replaced by `clause_hook`, which takes the subject and a verb from the thesis ("Routing prompts
+  cuts AI spend") and, for a thesis with no verb at all, asserts that the noun group matters.
+- **Signage on posts.** Post 100's garbled sign ("UDA HINEBEL") was caught by the gate; the
+  round-9 no-captions/signage/badges clause is confirmed on the post_image render path by test.
+
 ## A hook is true, grammatical and short (round 14)
 
 Round 13's stat-survival rule paired a number with the wrong claim: ed18 shipped "53.7% less
@@ -67,8 +83,7 @@ engagement than humans", but 53.7% is the SHARE of AI-generated posts and the en
   whether the headline is grammatical English, at most 6 words, and literally true against the
   source sentence it cites (`cited_sentence`, passed to the judge). On no, the hook is
   regenerated once with the reason; a second no takes the deterministic `derive_hook`.
-- **Six words is HARD.** `cap_hook` runs after every rewrite at the end of hook selection, and
-  again where the brief and the fallback read a concept's hook.
+- **Six words is HARD** — enforced without truncation since round 15 (below).
 
 ## Stats, not versions; framing rotates; good news smiles (round 13)
 

@@ -292,6 +292,13 @@ share a source sentence with its claim, a judge checks grammar and truth against
 sentence, and six words is a hard cap (`docs/image-stack.md`, "A hook is true, grammatical and
 short").
 
+### Gauntlet round 14 → hooks are built, never cut
+
+All four covers passed; the hook defects were deterministic: a mid-phrase cut, "$30k" for
+"$30K", and a label fallback. Long hooks are regenerated, then built as a complete clause;
+numbers carry the source spelling; and no label survives any path (`docs/image-stack.md`,
+"Never truncate a hook").
+
 ### Rejections land for review, with their reason
 
 A definite judge failure on `no_cliche` or `specificity` after the attempt budget returns verdict

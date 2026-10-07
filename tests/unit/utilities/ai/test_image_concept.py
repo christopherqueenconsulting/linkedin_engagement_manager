@@ -1205,10 +1205,13 @@ class TestRoundFourteenJudgeAndCap:
         "Web search does not guarantee AI-generated answers are right",
         "Ignoring AI's hidden buyers raises deal costs dramatically",
     ])
-    def test_the_cap_is_hard(self, hook):
-        from cqc_lem.utilities.ai.image_concept import cap_hook
-        capped = cap_hook(hook)
-        assert len(capped.split()) <= 6 and len(capped) <= 44
+    def test_a_long_hook_becomes_a_complete_clause_never_a_cut(self, hook):
+        # Round 15 replaced round 14's truncating cap: the fallback is built, never cut.
+        from cqc_lem.utilities.ai.image_concept import asserts_something, fit_hook
+        fitted = fit_hook(hook, hook)
+        assert len(fitted.split()) <= 6 and len(fitted) <= 44
+        assert asserts_something(fitted)
+        assert not fitted.endswith((" deal", " AI-generated"))
 
     def test_analysis_never_ships_more_than_six_words(self):
         from cqc_lem.utilities.ai.image_concept import analyze_content_for_image
@@ -1233,3 +1236,107 @@ class TestRoundFourteenBriefCap:
         with patch("cqc_lem.utilities.ai.ai_helper._call_llm", side_effect=RuntimeError("x")):
             brief = build_image_brief("c", surface="newsletter", concept=concept)
         assert len(brief.hook_text.split()) <= 6
+
+
+# ed19's thesis: round 14's cap shipped "Ignoring AI's hidden buyers raises deal" — "costs" lost.
+_ED19_THESIS = "Ignoring AI's hidden buyers raises deal costs dramatically"
+_ED19_SOURCE = ("Ignoring AI's hidden buyers raises deal costs dramatically. Procurement officers "
+                "and security leads now shape most AI deals.")
+
+
+@pytest.mark.unit
+class TestRoundFifteenNeverTruncate:
+    def test_ed19_the_fallback_is_a_complete_six_word_clause(self):
+        from cqc_lem.utilities.ai.image_concept import clause_hook, derive_hook
+        assert clause_hook(_ED19_THESIS) == "Ignoring AI's hidden buyers raises costs"
+        assert derive_hook(_ED19_THESIS, _ED19_SOURCE) == "Ignoring AI's hidden buyers raises costs"
+
+    @pytest.mark.parametrize("thesis,expected", [
+        ("Web search does not guarantee AI-generated answers are accurate",
+         "Web search does not guarantee answers"),
+        ("AI-generated posts get 45% less engagement than human-written ones",
+         "AI-generated posts get 45% less engagement"),
+        ("Late invoices quietly starve a small agency's payroll",
+         "Late invoices starve small agency's payroll"),
+    ])
+    def test_the_clause_keeps_subject_verb_and_object(self, thesis, expected):
+        from cqc_lem.utilities.ai.image_concept import clause_hook
+        assert clause_hook(thesis) == expected
+
+    def test_a_long_hook_is_regenerated_with_the_reason_then_built(self):
+        from cqc_lem.utilities.ai.image_concept import _final_hook
+        concept = ImageConcept(thesis=_ED19_THESIS, audience="", specific_entities=(),
+                               emotional_beat="", hook_phrase=_ED19_THESIS,
+                               treatment="people_scene", treatment_rationale="", weak=False)
+        regen = _resp({"hook_phrase": "Hidden buyers shape most AI deals now, quietly"})
+        with patch(_CREATE, return_value=regen) as create:
+            out = _final_hook(concept, {}, _ED19_SOURCE, None, "newsletter", 1)
+        assert "at most 6 words" in create.call_args_list[0][1]["messages"][1]["content"]
+        assert out.hook_phrase == "Ignoring AI's hidden buyers raises costs"
+
+    def test_a_regenerated_hook_that_fits_is_kept(self):
+        from cqc_lem.utilities.ai.image_concept import _final_hook
+        concept = ImageConcept(thesis=_ED19_THESIS, audience="", specific_entities=(),
+                               emotional_beat="", hook_phrase=_ED19_THESIS,
+                               treatment="people_scene", treatment_rationale="", weak=False)
+        with patch(_CREATE, return_value=_resp({"hook_phrase": "Hidden buyers shape AI deals"})):
+            out = _final_hook(concept, {}, _ED19_SOURCE, None, "newsletter", 1)
+        assert out.hook_phrase == "Hidden buyers shape AI deals"
+
+
+@pytest.mark.unit
+class TestRoundFifteenNumberCasing:
+    _ED16_SOURCE = ("An audit exposed hidden AI tool spend, saving $30K quarterly. Nobody had "
+                    "looked at the bill.")
+
+    def test_ed16_the_source_spelling_is_restored(self):
+        from cqc_lem.utilities.ai.image_concept import restore_number_casing
+        assert restore_number_casing("$30k saved quarterly", self._ED16_SOURCE) == \
+            "$30K saved quarterly"
+
+    def test_every_number_token_is_restored(self):
+        from cqc_lem.utilities.ai.image_concept import restore_number_casing
+        source = "53.7% of posts were AI-written; replies came 3x faster."
+        assert restore_number_casing("53.7% of posts, 3X faster", source) == \
+            "53.7% of posts, 3x faster"
+
+    def test_the_final_hook_carries_the_source_spelling(self):
+        from cqc_lem.utilities.ai.image_concept import _final_hook
+        concept = ImageConcept(thesis="An audit saved $30K quarterly", audience="",
+                               specific_entities=("$30K",), emotional_beat="",
+                               hook_phrase="Audit saved $30k quarterly", treatment="people_scene",
+                               treatment_rationale="", weak=False)
+        with patch(_CREATE) as create:
+            out = _final_hook(concept, {}, self._ED16_SOURCE, None, "newsletter", 1)
+        assert out.hook_phrase == "Audit saved $30K quarterly"
+        create.assert_not_called()
+
+
+@pytest.mark.unit
+class TestRoundFifteenNoLabelFallback:
+    def test_a_label_fallback_gets_its_subject_and_the_theses_verb(self):
+        from cqc_lem.utilities.ai.image_concept import asserts_something, clause_hook
+        hook = clause_hook("Routing prompts to models by complexity cuts AI spend by 60%")
+        assert hook == "Routing prompts cuts AI spend" and asserts_something(hook)
+
+    def test_a_verbless_thesis_still_yields_a_claim(self):
+        from cqc_lem.utilities.ai.image_concept import asserts_something, clause_hook
+        hook = clause_hook("Routing prompts to models by complexity")
+        assert asserts_something(hook) and len(hook.split()) <= 6
+
+    def test_derive_hook_never_returns_a_label(self):
+        from cqc_lem.utilities.ai.image_concept import asserts_something, derive_hook
+        hook = derive_hook("Routing prompts to models by complexity",
+                           "Routing prompts to models by complexity.")
+        assert asserts_something(hook)
+
+    def test_a_label_reaching_the_end_of_selection_is_replaced(self):
+        from cqc_lem.utilities.ai.image_concept import _final_hook
+        concept = ImageConcept(
+            thesis="Routing prompts to models by complexity cuts AI spend by 60%", audience="",
+            specific_entities=(), emotional_beat="",
+            hook_phrase="Routing prompts by complexity", treatment="people_scene",
+            treatment_rationale="", weak=False)
+        out = _final_hook(concept, {}, "Routing prompts to models by complexity cuts AI spend.",
+                          None, "post_image", 1)
+        assert out.hook_phrase == "Routing prompts cuts AI spend"
