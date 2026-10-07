@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.182.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.181.6...v0.182.0) (2026-10-07)
+
+
+### Features
+
+* **brand:** per-user brand kit for image generation ([#2247](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2247)) ([6c652c0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/6c652c0af809428a0f413223ce55231de80f68bd))
+* curated outside sources phase 1 - reshare, re-chart and link posts that credit the source ([#2263](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2263)) ([46e6651](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/46e665123ef4197bdaf1ceb8f42daa7a40436090))
+* **image:** article-grounded staged image engine — kill the metaphor still-life covers (refs [#2241](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2241)) ([#2248](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2248)) ([7411a91](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/7411a91eea93d77825643edaad86ee9860b4eb34))
+* **image:** post treatment rotation, panel/grade variants and a sameness gate (refs [#2241](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2241)) ([#2262](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2262)) ([57df927](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/57df9278e49c54103cfa2a6e8a4546c450aa6528))
+* **image:** staged engine + brand kit on post, carousel and video images ([#2249](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2249)) ([eb2de56](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/eb2de569c8a28630c18373d0a328d1ea7580cdc1))
+* **image:** visual archetypes — code-drawn stat cards, charts, receipts and editorial concepts (refs [#2241](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2241)) ([#2254](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2254)) ([a400c42](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/a400c423e227240d9bd87b2c0612eecaad9d6141))
+* **media:** animated loop posts (GIF / short MP4) behind ANIMATED_POST_ENABLED ([#2250](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2250)) ([441414a](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/441414ae0fc42bbbcea825be30d70177093b6bff))
+* **models:** model registry and evaluation loop across every LiteLLM tier ([#2252](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2252)) ([965e594](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/965e59421325dc131a2ce3cac9536c1a4ab97ab5))
+
+
+### Bug Fixes
+
+* **content:** on-brand decks, deck validation crash, archetype variety on covers, hero-split grammar, video-frame text tolerance (refs [#2241](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2241)) ([#2264](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2264)) ([841a42a](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/841a42adc7851f0d5009e60829f32b7764d0862e))
+* **models:** replace retiring gpt-image-1 fallback with gpt-image-2.5-sunburst (benchmarked) ([#2259](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2259)) ([137a1de](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/137a1de522745dbd03d8d8c0f84996b114bfa87a))
+
 ## [0.181.6](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.181.5...v0.181.6) (2026-10-06)
 
 
