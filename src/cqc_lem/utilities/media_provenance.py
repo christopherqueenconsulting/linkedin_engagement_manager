@@ -30,6 +30,7 @@ Two rules the readers depend on, taken from `video_receipt.py` because they are 
   for broken alike, so a caller falls back to "unknown" rather than to a guess.
 """
 
+import dataclasses
 import json
 import os
 from dataclasses import dataclass
@@ -62,7 +63,11 @@ _PURGED_AT_PUBLISH_STATUSES = (PostStatus.POSTED.value,)
 # way to tell these five newsletter covers apart from `_fallback_brief`'s deterministic template,
 # which describes almost exactly what shipped). Absent on a duck-typed `brief` with no such
 # attribute, never fabricated as False.
-_BRIEF_FIELDS = ("focal_concept", "prompt", "surface", "style_preset", "ratio", "fallback")
+# The staged engine's fields (issue #2241) ride along when the brief carries them: the Stage 1
+# concept, the treatment, which entities the prompt depicts, the hook, and Stage 3's verdict.
+_BRIEF_FIELDS = ("focal_concept", "prompt", "surface", "style_preset", "ratio", "fallback",
+                 "concept", "treatment", "required_entities", "hook_text", "prompt_check",
+                 "rejections")
 
 
 def _assets_root() -> str:
@@ -163,7 +168,11 @@ def write_brief_receipt(media_url: Optional[str], brief: Any, *,
                      "gate_verdict": gate_verdict}
     for field in _BRIEF_FIELDS:
         if hasattr(brief, field):
-            payload[field] = getattr(brief, field)
+            value = getattr(brief, field)
+            # A nested dataclass (the Stage 1 concept) is recorded as its fields, not dropped.
+            if dataclasses.is_dataclass(value) and not isinstance(value, type):
+                value = dataclasses.asdict(value)
+            payload[field] = value
     payload["focal_concept"] = focal
     if extra:
         payload.update(extra)
