@@ -73,6 +73,7 @@ from cqc_lem.utilities.ai.video_models import (
 from cqc_lem.utilities.avatar.guardrails import AVATAR_SURFACE_POST_IMAGE
 from cqc_lem.utilities.carousel_creator import (
     CAROUSEL_SLIDE_BODY_MAX_CHARS,
+    carousel_limits_directive,
     carousel_model_for_stage,
     carousel_schema_hint,
 )
@@ -4079,6 +4080,10 @@ Return ONLY valid JSON. No explanation, no markdown fences."""
     # number-led hook constraints and the no-fabrication rules with it for a fact-anchored
     # archetype, so a build-receipt carousel can no more invent a metric than a text one can.
     prompt += _framework.carousel_blueprint_directive(blueprint, fact_anchors)
+    # The model's own slide-count limits, AFTER the archetype on purpose: "one slide per middle
+    # beat" overrides the generic guidance and produced 3-4 `additional_features` against a max
+    # of 2 (#2241 showcase). The construction site trims too; this keeps the trim rare.
+    prompt += carousel_limits_directive(model_cls)
 
     # The ONE story-bank entry this deck is anchored to (issue #620, wired for carousels in #728) —
     # the author's own material, and the only personal specifics the writer may state. Carousels

@@ -336,10 +336,13 @@ def split_hero(hook: str) -> tuple[str, str]:
 
     Returns:
         ``(hero, rest)`` — ``("45%", "Less engagement on AI posts")``; ``("", hook)`` when it
-        carries no number.
+        carries no number, OR when the number does not LEAD the hook. #2241 showcase: "We saved
+        $30K per quarter" became hero "$30K" over "We saved per quarter" — lifting a number out of
+        mid-sentence leaves a hole. Only a leading number lifts cleanly ("45% less engagement…"
+        → "Less engagement…"); any other hook keeps its whole sentence in the headline.
     """
     match = _NUMBER_TOKEN.search(hook or "")
-    if not match:
+    if not match or (hook or "")[:match.start()].strip(" \"'“‘([—–-:"):
         return "", sentence_case(hook)
     rest = f"{hook[:match.start()]} {hook[match.end():]}"
     rest = " ".join(rest.split()).strip(" ,:;-–—")

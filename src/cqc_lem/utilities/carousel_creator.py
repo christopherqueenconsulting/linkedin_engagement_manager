@@ -275,6 +275,154 @@ def missing_carousel_fields(model_cls: type[BaseModel], carousel: Optional[dict]
     return missing
 
 
+def _field_max_length(field: Any) -> Optional[int]:
+    """The ``max_length`` a pydantic field enforces (a conlist's, or a string's), else None."""
+    for meta in getattr(field, "metadata", None) or ():
+        limit = getattr(meta, "max_length", None)
+        if isinstance(limit, int):
+            return limit
+    return None
+
+
+def _nested_model(field: Any) -> Optional[type[BaseModel]]:
+    """The model class a field holds — directly, or as a list item / Optional — else None."""
+    from typing import get_args
+
+    annotation = getattr(field, "annotation", None)
+    stack = [annotation]
+    while stack:
+        candidate = stack.pop()
+        if isinstance(candidate, type) and issubclass(candidate, BaseModel):
+            return candidate
+        stack.extend(get_args(candidate))
+    return None
+
+
+def _trim_text(text: str, limit: int) -> str:
+    """``text`` cut to ``limit`` characters at the last sentence end, else the last word."""
+    head = text[:limit]
+    sentence_end = max(head.rfind(". "), head.rfind("! "), head.rfind("? "))
+    if sentence_end >= limit // 2:
+        return head[:sentence_end + 1].strip()
+    if text[limit:limit + 1].isspace() or not text[limit:limit + 1]:
+        return head.strip()
+    word_end = head.rfind(" ")
+    return (head[:word_end] if word_end > 0 else head).strip()
+
+
+def fit_carousel_to_model(model_cls: type[BaseModel], carousel: Optional[dict],
+                          _path: str = "") -> tuple[Optional[dict], list[str]]:
+    """Trim an LLM-parsed deck to every length limit ``model_cls`` declares, BEFORE validation.
+
+    Prod bug (#2241 showcase): three of five decision-stage decks came back with 3-4
+    ``additional_features`` against ``ProductDemoCarousel``'s ``max_length=2``, and the whole deck
+    died at ``model_cls(**carousel_dict)`` — no slides rendered at all. The archetype directive
+    maps "one slide per middle beat" and outranks the schema hint, so the model over-delivers.
+    A list over its limit keeps its FIRST items (the beats run in order, cover-side first), and a
+    string over its limit is cut at a sentence end, else a word. Read off ``model_fields``
+    recursively, so every carousel model — and any limit added later — is covered without a
+    second list kept in step. Nothing else is touched: a missing field stays missing for
+    ``missing_carousel_fields`` to name.
+
+    Args:
+        model_cls: The carousel (or slide) model the dict must satisfy.
+        carousel: The LLM-parsed dict. A non-dict passes through unchanged.
+        _path: Dotted prefix for the trim notes (recursion only).
+
+    Returns:
+        ``(fitted, notes)`` — a trimmed COPY (the input is never mutated) and one note per trim,
+        e.g. ``"additional_features: 4 -> 2 items"``. ``notes`` is empty when nothing was over.
+    """
+    if not isinstance(carousel, dict):
+        return carousel, []
+    fitted = dict(carousel)
+    notes: list[str] = []
+    for name, field in model_cls.model_fields.items():
+        if name not in fitted or fitted[name] is None:
+            continue
+        value = fitted[name]
+        where = f"{_path}{name}"
+        limit = _field_max_length(field)
+        if isinstance(value, list) and limit is not None and len(value) > limit:
+            notes.append(f"{where}: {len(value)} -> {limit} items")
+            value = value[:limit]
+        elif isinstance(value, str) and limit is not None and len(value) > limit:
+            notes.append(f"{where}: {len(value)} -> {limit} chars")
+            value = _trim_text(value, limit)
+        nested = _nested_model(field)
+        if nested is not None and isinstance(value, dict):
+            value, inner = fit_carousel_to_model(nested, value, f"{where}.")
+            notes.extend(inner)
+        elif nested is not None and isinstance(value, list):
+            items = []
+            for n, item in enumerate(value):
+                item, inner = fit_carousel_to_model(nested, item, f"{where}[{n}].")
+                notes.extend(inner)
+                items.append(item)
+            value = items
+        fitted[name] = value
+    return fitted, notes
+
+
+def build_carousel_model(model_cls: type[BaseModel], carousel: dict,
+                         user_id: Optional[int] = None,
+                         post_id: Optional[int] = None) -> BaseModel:
+    """Fit ``carousel`` to ``model_cls``'s limits, log what was trimmed, then construct it.
+
+    The ONE construction path for a generated deck — the 30-day plan and the preview route both
+    call it, so a deck over a list limit renders its first N slides instead of crashing (#2241).
+    The trim is INFO: an over-long reply is the generator over-delivering, recovered here, not a
+    defect — and the post still ships.
+
+    Args:
+        model_cls: The carousel model to build.
+        carousel: The LLM-parsed deck.
+        user_id: For the log line.
+        post_id: For the log line.
+
+    Returns:
+        The validated model.
+
+    Raises:
+        pydantic.ValidationError: The deck is invalid for a reason trimming cannot fix (a wrong
+            type, a missing field the caller did not check for).
+    """
+    from cqc_lem.utilities.logger import log_info
+
+    fitted, notes = fit_carousel_to_model(model_cls, carousel)
+    if notes:
+        log_info(f"Generated {model_cls.__name__} exceeded its limits — trimmed: "
+                 + "; ".join(notes), user_id=user_id, post_id=post_id,
+                 task_name="create_carousel_content")
+    return model_cls(**fitted)
+
+
+def carousel_limits_directive(model_cls: type[BaseModel]) -> str:
+    """The prompt line stating every list-length limit of ``model_cls``, read off the model.
+
+    Appended AFTER the archetype directive on purpose: that directive asks for one slide per beat
+    and says it overrides the generic slide guidance, which is how a decision deck came back with
+    four ``additional_features`` (#2241 showcase). The limits are the schema, so they outrank it.
+
+    Args:
+        model_cls: The carousel model the reply must satisfy.
+
+    Returns:
+        A directive naming each list field's 1-N bound, or ``""`` when the model has none.
+    """
+    limits = []
+    for name, field in model_cls.model_fields.items():
+        limit = _field_max_length(field)
+        annotation = str(getattr(field, "annotation", ""))
+        if limit is not None and ("list" in annotation.lower() or "List" in annotation):
+            limits.append(f'"{name}" holds AT MOST {limit} slides')
+    if not limits:
+        return ""
+    return ("\n\nHARD SLIDE LIMITS — these are the schema and they outrank the archetype's beat "
+            "count: " + "; ".join(limits) + ". When the archetype has more middle beats than "
+            "that, MERGE adjacent beats into one slide; never add slides past the limit.")
+
+
 class PowerPointThemeColors(BaseModel):
     """The theme colour slots `convert_ppt_theme_colors` writes into a saved .pptx.
 
@@ -799,6 +947,10 @@ def select_slide_image(
 
     from cqc_lem.utilities.env_constants import CAROUSEL_IMAGE_QUERY_LLM
     generate = _should_generate_with_replicate(post_id, slide_index, user_id, content_type)
+    if not generate and not CAROUSEL_PEXELS_ENABLED:
+        # Neither opt-in source is on (the default since #2241): no query, no LLM call — the
+        # slide is typographic.
+        return default_path
     scope = _CAROUSEL_SCOPE.get()
     # The concept is only worth its call when it replaces a per-slide LLM call or briefs a render.
     concept = scope.concept() if scope is not None and (CAROUSEL_IMAGE_QUERY_LLM or generate) else None
@@ -1911,77 +2063,107 @@ def test_caption_only_slide(design_number: int = 1):
 
 
 # ── Research-backed carousel templates ────────────────────────────────────────
-# Each template is a dict of color and style parameters.
-# Derived from Buffer/PostNitro/Hootsuite analysis of highest-engagement carousels.
+# Each template is a LAYOUT plus a SKIN — which theme role fills each surface — never a colour.
+# Until #2241's showcase every template carried its own palette (navy/blue/green/amber, in a system
+# font), so every deck ignored the author's brand. `themed_template` resolves the skin against
+# `brand_kit.deck_theme` (the author's kit, or the neutral default), so a template keeps its layout
+# identity and wears the brand. Derived from Buffer/PostNitro/Hootsuite analysis of
+# highest-engagement carousels.
 CAROUSEL_TEMPLATES: dict[str, dict] = {
     "bold_listicle": {
         "label": "Bold Listicle",
-        "description": "White slides, numbered badge circles, rainbow accents. Best for: tips, tools, mistakes.",
-        "layout":      "listicle",
-        "cover_bg":    (15, 23, 42),
-        "cover_text":  (255, 255, 255),
-        "cover_accent": (59, 130, 246),
-        "content_bg":  (255, 255, 255),
-        "title_color": (15, 23, 42),
-        "body_color":  (71, 85, 105),
-        "bottom_bar":  (15, 23, 42),
-        "badge_colors": [(59, 130, 246), (16, 185, 129), (239, 68, 68), (139, 92, 246), (245, 158, 11), (14, 165, 233)],
+        "description": ("Light slides, numbered badge circles, alternating brand accents. Best for: "
+                        "tips, tools, mistakes."),
+        "layout": "listicle",
+        "content": "light",
+        "badges": ("accent", "accent_deep"),
     },
     "minimal_dark": {
         "label": "Minimal Dark",
-        "description": "Black slides, huge left-aligned titles, gold accents. Best for: bold opinions, predictions.",
-        "layout":      "dark_minimal",
-        "cover_bg":    (10, 10, 10),
-        "cover_text":  (255, 255, 255),
-        "cover_accent": (251, 191, 36),
-        "content_bg":  (18, 18, 18),
-        "title_color": (255, 255, 255),
-        "body_color":  (163, 163, 163),
-        "bottom_bar":  (30, 30, 30),
-        "badge_colors": [(251, 191, 36), (251, 146, 60), (52, 211, 153), (129, 140, 248), (248, 113, 113), (34, 211, 238)],
+        "description": ("Dark slides, huge left-aligned titles, brand accents. Best for: bold "
+                        "opinions, predictions."),
+        "layout": "dark_minimal",
+        "content": "dark",
+        "badges": ("accent", "accent_deep"),
     },
     "stat_reveal": {
         "label": "Stat Reveal",
-        "description": "Each slide title displayed ENORMOUS centered. Best for: data insights, research findings.",
-        "layout":      "stat_big",
-        "cover_bg":    (30, 64, 175),
-        "cover_text":  (255, 255, 255),
-        "cover_accent": (147, 197, 253),
-        "content_bg":  (239, 246, 255),
-        "title_color": (30, 64, 175),
-        "body_color":  (55, 65, 81),
-        "bottom_bar":  (30, 64, 175),
-        "badge_colors": [(30, 64, 175)] * 6,
+        "description": ("Each slide title displayed ENORMOUS centered. Best for: data insights, "
+                        "research findings."),
+        "layout": "stat_big",
+        "content": "light",
+        "badges": ("accent",),
     },
     "step_framework": {
         "label": "Step Framework",
-        "description": "Visual progress dots at top, arrow-bulleted body. Best for: how-to guides, playbooks.",
-        "layout":      "step_progress",
-        "cover_bg":    (4, 120, 87),
-        "cover_text":  (255, 255, 255),
-        "cover_accent": (110, 231, 183),
-        "content_bg":  (255, 255, 255),
-        "title_color": (6, 78, 59),
-        "body_color":  (55, 65, 81),
-        "bottom_bar":  (4, 120, 87),
-        "badge_colors": [(16, 185, 129)] * 6,
+        "description": ("Visual progress dots at top, arrow-bulleted body. Best for: how-to guides, "
+                        "playbooks."),
+        "layout": "step_progress",
+        "content": "light",
+        "badges": ("accent",),
     },
     "story_arc": {
         "label": "Story Arc",
-        "description": "Cream slides, giant quote marks, square numbered badges. Best for: personal stories.",
-        "layout":      "quote_pull",
-        "cover_bg":    (120, 53, 15),
-        "cover_text":  (255, 255, 255),
-        "cover_accent": (253, 186, 116),
-        "content_bg":  (255, 251, 235),
-        "title_color": (92, 45, 0),
-        "body_color":  (120, 53, 15),
-        "bottom_bar":  (120, 53, 15),
-        "badge_colors": [(245, 158, 11), (234, 88, 12), (217, 70, 239), (99, 102, 241), (239, 68, 68), (16, 185, 129)],
+        "description": ("Warm light slides, giant quote marks, square numbered badges. Best for: "
+                        "personal stories."),
+        "layout": "quote_pull",
+        "content": "warm",
+        "badges": ("accent_deep", "accent"),
     },
 }
 
 DEFAULT_TEMPLATE = "bold_listicle"
+
+
+def themed_template(name: str, theme: Any) -> dict:
+    """One template's concrete colours under ``theme`` — every TEXT colour contrast-checked.
+
+    The skin decides which role fills which surface; the theme decides the colours. Title and body
+    text must reach ``brand_kit.MIN_TEXT_CONTRAST`` (4.5:1) on the ground they sit on, cover text
+    on the cover, and every badge colour on the dark bar its counter is drawn on — a colour that
+    does not is pushed toward the better ink (``brand_kit.readable_on``), so a pale kit accent
+    still yields legible labels.
+
+    Args:
+        name: A ``CAROUSEL_TEMPLATES`` key; an unknown one renders the default template.
+        theme: A ``brand_kit.DeckTheme``.
+
+    Returns:
+        The dict the renderer reads — ``cover_bg``, ``cover_text``, ``cover_accent``,
+        ``content_bg``, ``title_color``, ``body_color``, ``bottom_bar``, ``badge_colors``,
+        ``layout`` — plus ``label`` and ``description``.
+    """
+    from cqc_lem.utilities.brand_kit import mix, readable_on
+
+    skin = CAROUSEL_TEMPLATES.get(name, CAROUSEL_TEMPLATES[DEFAULT_TEMPLATE])
+    inks = theme.inks
+    if skin["content"] == "dark":
+        content_bg = mix(theme.dark, theme.light, 0.04)
+        title = theme.ink_light
+        body = mix(theme.ink_light, theme.dark, 0.22)
+        bottom_bar = mix(theme.dark, theme.light, 0.10)
+    else:
+        content_bg = (mix(theme.light, theme.accent, 0.07) if skin["content"] == "warm"
+                      else theme.light)
+        title = theme.ink_dark
+        body = mix(theme.ink_dark, theme.light, 0.18)
+        bottom_bar = theme.dark
+    roles = {"accent": theme.accent, "accent_deep": theme.accent_deep}
+    badges = [readable_on(roles[role], bottom_bar, inks) for role in skin["badges"]]
+    return {
+        "label": skin["label"],
+        "description": skin["description"],
+        "layout": skin["layout"],
+        "cover_bg": theme.dark,
+        "cover_text": readable_on(theme.ink_light, theme.dark, inks),
+        "cover_accent": readable_on(theme.accent, theme.dark, inks),
+        "content_bg": content_bg,
+        "title_color": readable_on(title, content_bg, inks),
+        "body_color": readable_on(body, content_bg, inks),
+        "bottom_bar": bottom_bar,
+        # Six slots, as before, cycling the skin's roles so the rotation stays deterministic.
+        "badge_colors": [badges[n % len(badges)] for n in range(6)],
+    }
 
 # ── The ONE slide-body length contract (issue #1375) ──────────────────────────
 # The writer prompt states this number and the renderer honours it: a body of up to
@@ -2107,16 +2289,26 @@ def _wrap_text(text: str, font, max_px: int, draw) -> list[str]:
     return lines
 
 
-def load_slide_font(size: int, bold: bool = True):
-    """Load the slide typeface at `size`, falling back across platforms then to Pillow's default.
+_SLIDE_FONT_DIR = os.path.join(os.path.dirname(__file__), "..", "resources", "fonts")
+# The brand's type (#2241 showcase: decks shipped in a system sans while every cover was
+# Montserrat). Headings in the bundled Montserrat ExtraBold — the cover compositor's face — and
+# body text in Montserrat Medium, the same family at a reading weight. Both SIL OFL.
+SLIDE_HEADING_FONT = os.path.join(_SLIDE_FONT_DIR, "Montserrat-ExtraBold.ttf")
+SLIDE_BODY_FONT = os.path.join(_SLIDE_FONT_DIR, "Montserrat-Medium.ttf")
 
-    Module-level so the fit engine and its tests can measure with the SAME font the
-    renderer draws with — a fit decision made against a different face is not a
-    measurement of anything.
+
+def load_slide_font(size: int, bold: bool = True):
+    """Load the slide typeface at `size`: bundled Montserrat, then system faces, then Pillow's.
+
+    ``bold`` is the heading face (Montserrat ExtraBold), otherwise the body face (Montserrat
+    Medium). Module-level so the fit engine and its tests can measure with the SAME font the
+    renderer draws with — a fit decision made against a different face is not a measurement of
+    anything.
     """
     from PIL import ImageFont
 
     bold_paths = [
+        SLIDE_HEADING_FONT,
         "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
         "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
         "/usr/share/fonts/truetype/freefont/FreeSansBold.ttf",
@@ -2125,6 +2317,7 @@ def load_slide_font(size: int, bold: bool = True):
         "/System/Library/Fonts/Helvetica.ttc",
     ]
     reg_paths = [
+        SLIDE_BODY_FONT,
         "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
         "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
         "/usr/share/fonts/truetype/freefont/FreeSans.ttf",
@@ -2274,6 +2467,87 @@ def _carousel_content_type(carousel_data) -> str:
     }.get(type(carousel_data), "professional")
 
 
+class _SlideElement:
+    """A drawn slide element on disk: what it is, how tall its band is, and what it drew."""
+
+    def __init__(self, path: str, archetype: str, band_h: int, chars: int) -> None:
+        self.path = path
+        self.archetype = archetype
+        self.band_h = band_h
+        self.chars = chars
+        # A checklist carries the body's own points, so the layout must not print them again.
+        self.replaces_body = archetype == "checklist"
+
+    def discard(self) -> None:
+        """Remove the temp element file once the slide is composited. Never raises."""
+        _remove_quietly(self.path)
+
+
+def _remove_quietly(path: Optional[str]) -> None:
+    """Delete a temp file; a leftover one costs disk only, so a failure is not an error."""
+    from contextlib import suppress
+
+    with suppress(OSError, TypeError):
+        os.remove(path)
+
+
+def _theme_brand_style(theme: Any) -> Any:
+    """The deck theme as the ``image_compose.BrandStyle`` the graphic drawers read."""
+    from cqc_lem.utilities.ai.image_compose import BrandStyle
+
+    def as_hex(rgb: tuple) -> str:
+        return "#{:02X}{:02X}{:02X}".format(*rgb)
+
+    return BrandStyle(primary=as_hex(theme.accent), neutral_dark=as_hex(theme.dark),
+                      accent=as_hex(theme.accent_deep), neutral_light=as_hex(theme.light))
+
+
+def _slide_element(title: str, body: str, theme: Any, post_id: Optional[int],
+                   slide_index: int) -> Optional[_SlideElement]:
+    """Draw the code-drawn element this body slide earns from its own text, or None.
+
+    ``image_graphics.slide_graphic`` decides (a figure, a from→to change, or a 3-5 point list,
+    all verbatim from the slide); ``render_slide_graphic`` draws it in the deck's colours. A
+    refusal — nothing to draw, a figure that does not trace, data that cannot be set legibly — is
+    the expected answer for most slides and leaves a typographic slide (DEBUG).
+
+    Args:
+        title: The slide title.
+        body: The slide body as written.
+        theme: The deck's ``DeckTheme``.
+        post_id: For the log line.
+        slide_index: For the log line.
+
+    Returns:
+        The element, or None.
+    """
+    from cqc_lem.utilities.ai.image_graphics import (
+        SLIDE_BAND_H,
+        GraphicError,
+        render_slide_graphic,
+        slide_graphic,
+    )
+    from cqc_lem.utilities.logger import log_debug
+
+    picked = slide_graphic(title, body)
+    if picked is None:
+        return None
+    archetype, graphic = picked
+    band_h = SLIDE_BAND_H.get(archetype, 360)
+    handle, out_path = tempfile.mkstemp(suffix=".png", prefix="lem_slide_element_")
+    os.close(handle)
+    try:
+        drawn = render_slide_graphic(archetype, graphic, size=(1080, band_h),
+                                     brand=_theme_brand_style(theme), out_path=out_path)
+    except GraphicError as e:
+        _remove_quietly(out_path)
+        log_debug("Slide element refused — typographic slide", error=str(e), post_id=post_id,
+                  slide_index=slide_index, action_type="carousel_image")
+        return None
+    chars = sum(len(p.text) for p in drawn.placements if p.text)
+    return _SlideElement(drawn.path, archetype, band_h, chars)
+
+
 def create_carousel_slide_images(
     carousel_data: Union[
         EducationalContentCarousel,
@@ -2292,33 +2566,59 @@ def create_carousel_slide_images(
     bg_color: tuple = (26, 86, 219),
     accent_color: tuple = (255, 255, 255),
     secondary_bg: tuple = (15, 52, 142),
+    brand_user_id: Optional[int] = None,
+    theme: Any = None,
 ) -> list[str]:
     """Render carousel slides as 1080x1080 PNG images using Pillow.
 
     Creates one image per slide in output_dir (defaults to
     assets/images/carousel/{post_id}/). Returns a list of absolute image paths.
 
-    ``template`` selects a visual style from CAROUSEL_TEMPLATES. Defaults to
-    DEFAULT_TEMPLATE ("bold_listicle").
+    ``template`` selects a LAYOUT from CAROUSEL_TEMPLATES (default "bold_listicle"); its colours
+    come from the author's brand kit (``brand_kit.deck_theme``, the neutral default without one),
+    in the bundled Montserrat (#2241 showcase).
 
-    CONTENT (middle) slides composite a relevant image into a bottom photo band via
-    the shared, deterministic ``select_slide_image`` engine (Pexels-first, optional
-    avatar-gated generation), seeded by (post_id, slide_index). Text reflows into the
-    area above the band so nothing overlaps or clips. When no image is selected or the
-    decode fails, the slide renders exactly as before (text-only). Cover + CTA slides
-    are left as-is.
+    CONTENT (middle) slides take, in order: a code-drawn element of the slide's OWN verbatim
+    figure(s) or points (``slide_graphic``, the image_graphics drawers and fact rules); else the
+    opt-in ``select_slide_image`` sources (Pexels only behind ``CAROUSEL_PEXELS_ENABLED``, off by
+    default; the avatar path behind its own flags); else NO picture — a typographic slide with a
+    brand accent shape. Text reflows above any band so nothing overlaps or clips. Cover + CTA
+    slides are typographic.
+
+    Args:
+        carousel_data: The validated deck.
+        post_id: The post; names the output directory and seeds per-slide decisions.
+        output_dir: Where to write; ``assets/images/carousel/{post_id}`` by default.
+        template: A ``CAROUSEL_TEMPLATES`` key; unknown falls back to the default.
+        user_id: The author — their brand kit, and the (flag-gated) avatar path.
+        bg_color: Ignored (legacy).
+        accent_color: Ignored (legacy).
+        secondary_bg: Ignored (legacy).
+        brand_user_id: Read ONLY for the brand kit, when ``user_id`` is not passed (the preview
+            route, which must not reach the avatar path).
+        theme: A ``brand_kit.DeckTheme`` to use as-is (offline samples, tests); resolved from the
+            kit when None.
+
+    Returns:
+        The slide PNG paths, in order.
     """
     from PIL import Image, ImageDraw
 
+    from cqc_lem.utilities.brand_kit import brand_kit_for_user, deck_theme
     from cqc_lem.utilities.logger import log_warning
 
     W, H = 1080, 1080
-    WHITE = (255, 255, 255)
 
     # The template that will actually be DRAWN, not the one that was asked for: an unknown name
     # falls back below, and the receipt has to name the layout whose caps produced the clipping.
     template_key = template if template in CAROUSEL_TEMPLATES else DEFAULT_TEMPLATE
-    tmpl = CAROUSEL_TEMPLATES.get(template, CAROUSEL_TEMPLATES[DEFAULT_TEMPLATE])
+    if theme is None:
+        theme = deck_theme(brand_kit_for_user(user_id or brand_user_id))
+    tmpl = themed_template(template_key, theme)
+    # Text set ON a filled accent shape (a badge number, a pill) takes whichever ink reads on it.
+    _ink_on = theme.ink_on
+    # The light ink, for the few decorative light marks (a tint strip, a ring around a dot).
+    WHITE = tuple(theme.ink_light)
     cover_bg     = tmpl["cover_bg"]
     cover_text   = tmpl["cover_text"]
     cover_accent = tmpl["cover_accent"]
@@ -2433,9 +2733,28 @@ def create_carousel_slide_images(
     # means a decode failure returns (None, None) and the slide renders text-only —
     # identical to today — instead of clipping text for an image that never lands.
     BAND_H = 360
+    # Per-slide: a code-drawn checklist band is taller, because it REPLACES the body text.
+    slide_band = {"h": BAND_H}
 
-    def _prep_band(image_path, footer_h, band_h=BAND_H):
+    def _accent_mark(draw, accent, footer_h):
+        """The typographic slide's brand accent shape (#2241): no photo, one deliberate mark.
+
+        A wide arc in the lower-right corner, drawn BEFORE the text so nothing ever sits under
+        it, plus a short solid rule above the footer — the layout's own accent colour, light
+        enough on its ground to read as a shape and never as content.
+        """
+        r = 300
+        cx, cy = W - 40, H - footer_h + 40
+        draw.arc([(cx - r, cy - r), (cx + r, cy + r)], start=180, end=270,
+                 fill=(*accent, 90), width=26)
+        draw.rectangle([(W - 190, H - footer_h - 54), (W - 70, H - footer_h - 44)],
+                       fill=(*accent, 255))
+
+    def _prep_band(image_path, footer_h, band_h=None, draw=None, accent=None):
+        band_h = band_h or slide_band["h"]
         if not image_path:
+            if draw is not None and accent is not None:
+                _accent_mark(draw, accent, footer_h)
             return None, None
         band_top = H - footer_h - band_h
         try:
@@ -2443,6 +2762,8 @@ def create_carousel_slide_images(
         except Exception as e:
             log_warning("Carousel content image composite failed; rendering text-only",
                         exc=e, post_id=post_id)
+            if draw is not None and accent is not None:
+                _accent_mark(draw, accent, footer_h)
             return None, None
         # The band is what makes a body slide's line cap the TIGHTER one, so the receipt records
         # whether this slide actually got one rather than whether one was asked for.
@@ -2470,7 +2791,7 @@ def create_carousel_slide_images(
         pill = f"1 of {total}"
         pw = int(draw.textlength(pill, font=f_l)) + 36
         _rrect(draw, (50, 52, 50 + pw, 96), radius=22, fill=(*cover_accent, 200))
-        draw.text((68, 60), pill, font=f_l, fill=cover_bg if sum(cover_accent) > 380 else WHITE)
+        draw.text((68, 60), pill, font=f_l, fill=_ink_on(cover_accent))
         t_lines, f_t = _fit(title, f_t, W - 140, draw, max_lines=4, spacing=18)
         t_h = _block_h(t_lines, f_t, 18, draw)
         t_y = max(150, (H // 2) - t_h // 2 - 80)
@@ -2492,7 +2813,7 @@ def create_carousel_slide_images(
         img = Image.new("RGB", (W, H), color=content_bg)
         draw = ImageDraw.Draw(img, "RGBA")
         BAR = 80
-        panel, band_top = _prep_band(image_path, BAR)
+        panel, band_top = _prep_band(image_path, BAR, draw=draw, accent=badge_color)
         draw.rectangle([(0, 0), (W, 10)], fill=badge_color)
         cx, cy, cr = 118, 155, 68
         draw.ellipse([(cx - cr, cy - cr), (cx + cr, cy + cr)], fill=badge_color)
@@ -2500,7 +2821,7 @@ def create_carousel_slide_images(
         nw = int(draw.textlength(num_str, font=f_n))
         bb = draw.textbbox((0, 0), num_str, font=f_n)
         nh = bb[3] - bb[1]
-        draw.text((cx - nw // 2, cy - nh // 2 - 3), num_str, font=f_n, fill=WHITE)
+        draw.text((cx - nw // 2, cy - nh // 2 - 3), num_str, font=f_n, fill=_ink_on(badge_color))
         PAD = 62
         t_lines, f_t = _fit(title, f_t, W - PAD * 2, draw,
                             max_lines=2 if band_top else 3, spacing=12)
@@ -2536,7 +2857,7 @@ def create_carousel_slide_images(
         pill = SAVE_ASK_PILL
         pw = int(draw.textlength(pill, font=f_l)) + 36
         _rrect(draw, ((W - pw) // 2, 140, (W + pw) // 2, 184), radius=20, fill=(*cover_accent, 180))
-        draw.text(((W - pw) // 2 + 18, 148), pill, font=f_l, fill=cover_bg if sum(cover_accent) > 380 else WHITE)
+        draw.text(((W - pw) // 2 + 18, 148), pill, font=f_l, fill=_ink_on(cover_accent))
         cta_lines, f_t = _fit(title, f_t, W - 140, draw, max_lines=3, spacing=20)
         cta_h = _block_h(cta_lines, f_t, 20, draw)
         cta_y = (H - cta_h) // 2 - 60
@@ -2589,7 +2910,7 @@ def create_carousel_slide_images(
         title, body = _norm(title), _norm(body)
         img = Image.new("RGB", (W, H), color=content_bg)
         draw = ImageDraw.Draw(img, "RGBA")
-        panel, band_top = _prep_band(image_path, 60)
+        panel, band_top = _prep_band(image_path, 60, draw=draw, accent=badge_color)
         # Left accent bar (thicker than cover)
         draw.rectangle([(0, 0), (16, H)], fill=badge_color)
         # Slide number — top right, muted
@@ -2657,7 +2978,7 @@ def create_carousel_slide_images(
         pill = f"1 of {total} reveals"
         pw = int(draw.textlength(pill, font=f_l)) + 36
         _rrect(draw, ((W - pw) // 2, 52, (W + pw) // 2, 96), radius=22, fill=(*cover_accent, 200))
-        draw.text(((W - pw) // 2 + 18, 60), pill, font=f_l, fill=cover_bg)
+        draw.text(((W - pw) // 2 + 18, 60), pill, font=f_l, fill=_ink_on(cover_accent))
         # Title centered
         PAD = 60
         t_lines, f_t = _fit(title, f_t, W - PAD * 2, draw, max_lines=4, spacing=18)
@@ -2678,13 +2999,13 @@ def create_carousel_slide_images(
         title, body = _norm(title), _norm(body)
         img = Image.new("RGB", (W, H), color=content_bg)
         draw = ImageDraw.Draw(img, "RGBA")
-        panel, band_top = _prep_band(image_path, 60)
+        panel, band_top = _prep_band(image_path, 60, draw=draw, accent=badge_color)
         # Top color band
         draw.rectangle([(0, 0), (W, 90)], fill=badge_color)
         # Step number in top band
         step_label = f"#{idx - 1}"
         draw.text((W // 2 - int(draw.textlength(step_label, font=f_num)) // 2, 30),
-                  step_label, font=f_num, fill=(*content_bg, 220))
+                  step_label, font=f_num, fill=(*_ink_on(badge_color), 230))
         PAD = 60
         # HUGE title — centered vertically in upper 65%; lifted to the top band when
         # an image occupies the lower third.
@@ -2775,7 +3096,7 @@ def create_carousel_slide_images(
 
         img = Image.new("RGB", (W, H), color=content_bg)
         draw = ImageDraw.Draw(img, "RGBA")
-        panel, band_top = _prep_band(image_path, 60)
+        panel, band_top = _prep_band(image_path, 60, draw=draw, accent=badge_color)
 
         # ── Step progress strip at top ────────────────────────────────────────
         STRIP = 100
@@ -2792,7 +3113,7 @@ def create_carousel_slide_images(
                 draw.ellipse([(cx - dot_r, cy - dot_r), (cx + dot_r, cy + dot_r)], fill=badge_color)
                 check = "+"
                 cw = int(draw.textlength(check, font=f_n))
-                draw.text((cx - cw // 2, cy - 14), check, font=f_n, fill=WHITE)
+                draw.text((cx - cw // 2, cy - 14), check, font=f_n, fill=_ink_on(badge_color))
             elif i + 1 == step_num:
                 # current — filled with border
                 draw.ellipse([(cx - dot_r - 4, cy - dot_r - 4), (cx + dot_r + 4, cy + dot_r + 4)],
@@ -2800,7 +3121,7 @@ def create_carousel_slide_images(
                 draw.ellipse([(cx - dot_r, cy - dot_r), (cx + dot_r, cy + dot_r)], fill=badge_color)
                 num = str(step_num)
                 nw = int(draw.textlength(num, font=f_n))
-                draw.text((cx - nw // 2, cy - 14), num, font=f_n, fill=WHITE)
+                draw.text((cx - nw // 2, cy - 14), num, font=f_n, fill=_ink_on(badge_color))
             else:
                 # future — outline only
                 draw.ellipse([(cx - dot_r, cy - dot_r), (cx + dot_r, cy + dot_r)],
@@ -2911,7 +3232,7 @@ def create_carousel_slide_images(
         title, body = _norm(title), _norm(body)
         img = Image.new("RGB", (W, H), color=content_bg)
         draw = ImageDraw.Draw(img, "RGBA")
-        panel, band_top = _prep_band(image_path, 60)
+        panel, band_top = _prep_band(image_path, 60, draw=draw, accent=badge_color)
         # Right accent border
         draw.rectangle([(W - 14, 0), (W, H)], fill=badge_color)
         # Slide number — top-left badge (square, not circle)
@@ -2921,7 +3242,7 @@ def create_carousel_slide_images(
         nw = int(draw.textlength(num_str, font=f_n))
         bb = draw.textbbox((0, 0), num_str, font=f_n)
         nh = bb[3] - bb[1]
-        draw.text((83 - nw // 2, 83 - nh // 2 - 3), num_str, font=f_n, fill=WHITE)
+        draw.text((83 - nw // 2, 83 - nh // 2 - 3), num_str, font=f_n, fill=_ink_on(badge_color))
         # Large decorative quote mark
         draw.text((50, 90), '"', font=f_quote, fill=(*badge_color, 25))
         # Title — larger, treated as pull-quote
@@ -3058,6 +3379,7 @@ def create_carousel_slide_images(
     slide_receipts: list[dict] = []
     for idx, (title, body) in enumerate(slides_data, start=1):
         marks.update({"drawn": 0, "dropped": 0, "band": False})
+        element = None
         if idx == 1:
             role = SLIDE_ROLE_COVER
             path = render_cover(idx, total, title, body)
@@ -3067,14 +3389,31 @@ def create_carousel_slide_images(
         else:
             role = SLIDE_ROLE_BODY
             bc = badge_colors[(idx - 2) % len(badge_colors)]
-            # Shared deterministic engine; default_path=None so a miss => text-only
-            # (never a placeholder image).
-            with carousel_image_scope_token(scope):
-                slide_image = select_slide_image(
-                    title=title, content=body, content_type=content_type,
-                    post_id=post_id, slide_index=idx, user_id=user_id, default_path=None,
-                )
-            path = render_content(idx, total, title, body, bc, slide_image)
+            # The slide's OWN figures/points, drawn in code (#2241) — before any picture source.
+            element = _slide_element(title, body, theme, post_id, idx)
+            drawn_body = body
+            if element is not None:
+                slide_band["h"] = element.band_h
+                if element.replaces_body:
+                    drawn_body = ""  # the checklist IS the body; never print it twice
+                slide_image = element.path
+            else:
+                # Opt-in sources only (Pexels behind CAROUSEL_PEXELS_ENABLED, the avatar behind
+                # its own flags); default_path=None so a miss => a typographic slide, never a
+                # placeholder image.
+                with carousel_image_scope_token(scope):
+                    slide_image = select_slide_image(
+                        title=title, content=body, content_type=content_type,
+                        post_id=post_id, slide_index=idx, user_id=user_id, default_path=None,
+                    )
+            try:
+                path = render_content(idx, total, title, drawn_body, bc, slide_image)
+            finally:
+                slide_band["h"] = BAND_H
+                if element is not None:
+                    element.discard()
+            if element is not None:
+                marks["drawn"] += element.chars
         image_paths.append(path)
         # `body` is what the WRITER wrote; `chars_dropped` is what the layout refused to draw. The
         # two are recorded side by side because the gap between them is the whole finding (#1375).
@@ -3082,6 +3421,7 @@ def create_carousel_slide_images(
             "index": idx, "role": role, "title_chars": len(title or ""),
             "body_chars": len(body or ""), "chars_drawn": marks["drawn"],
             "chars_dropped": marks["dropped"], "band": bool(marks["band"]),
+            "element": element.archetype if element is not None else None,
         })
 
     write_deck_render_receipt(output_dir, post_id, template_key, slide_receipts)

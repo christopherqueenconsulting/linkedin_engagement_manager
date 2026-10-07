@@ -66,8 +66,12 @@ def _recording_renderer(band_path=None):
             slides.append([])
         return original_new(mode, size, *args, **kwargs)
 
+    # These tests are about how the LAYOUT typesets a body's points. A 3-5 point body would
+    # otherwise become a code-drawn checklist element that replaces the body text (#2241); that
+    # path has its own tests in test_carousel_brand_theme.py.
     with patch.object(ImageDraw.ImageDraw, "text", _record), \
             patch.object(Image, "new", _new_slide), \
+            patch("cqc_lem.utilities.carousel_creator._slide_element", return_value=None), \
             patch("cqc_lem.utilities.carousel_creator.select_slide_image",
                   return_value=band_path):
         yield slides

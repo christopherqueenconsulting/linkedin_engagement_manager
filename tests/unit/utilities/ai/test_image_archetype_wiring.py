@@ -73,10 +73,37 @@ class TestEditorialBrief:
         assert brief.prompt.startswith("A vintage risograph print")
         assert "Objects only" in brief.prompt and "skin pores" not in brief.prompt
 
-    def test_the_fallback_without_an_idea_is_an_object_photograph(self):
+    def test_the_fallback_without_an_idea_stays_an_object_only_editorial(self):
+        # #2241 showcase: this used to fall to a concrete_scene, and the render came back with a
+        # person in it. It stays editorial, built from the Idea Miner's object nouns.
+        concept = _editorial(chosen_idea="", idea_nouns=("invoice", "CFO", "server rack",
+                                                         "stopwatch", "the founder"))
         brief = ib._fallback_brief("x", surface="post_image", ratio="1:1", context="",
-                                   concept=_editorial(chosen_idea=""))
-        assert brief.treatment == "concrete_scene" and "everyday objects" in brief.prompt
+                                   concept=concept)
+        assert brief.treatment == TREATMENT_EDITORIAL
+        assert "Objects only" in brief.prompt and ib.person_word(brief.prompt) is None
+        assert "stopwatch" in brief.prompt and "CFO" not in brief.prompt
+
+    def test_the_fallback_with_a_people_idea_drops_it(self):
+        concept = _editorial(chosen_idea="An engineering manager frowning at an invoice",
+                             idea_nouns=(), visual_anchors=("a shared inbox",))
+        brief = ib._fallback_brief("x", surface="post_image", ratio="1:1", context="",
+                                   concept=concept)
+        assert ib.person_word(brief.prompt) is None and "shared inbox" in brief.prompt
+
+    def test_the_fallback_with_nothing_left_is_still_an_object(self):
+        concept = _editorial(chosen_idea="", idea_nouns=(), visual_anchors=("an agency owner",))
+        brief = ib._fallback_brief("x", surface="post_image", ratio="1:1", context="",
+                                   concept=concept)
+        assert brief.treatment == TREATMENT_EDITORIAL and ib.person_word(brief.prompt) is None
+        assert "everyday object" in brief.prompt
+
+    @pytest.mark.parametrize("prompt", ["A CFO beside a ledger", "an engineer's desk",
+                                        "a smiling barista", "the manager's chair"])
+    def test_role_and_portrait_words_are_refused_for_an_editorial_concept(self, prompt):
+        assert ib.person_word(prompt) is not None
+        assert "shows no person" in ib._deterministic_failure(
+            prompt, anchors=[], weak=True, hook_text=None, no_people=True)
 
 
 class TestGaze:

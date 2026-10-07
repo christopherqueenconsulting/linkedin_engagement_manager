@@ -1195,6 +1195,7 @@ def create_carousel_content(user_id: int, stage: str, post_id: int = None,
     """
     from cqc_lem.utilities.ai.ai_helper import generate_carousel_content
     from cqc_lem.utilities.carousel_creator import (
+        build_carousel_model,
         carousel_model_for_stage,
         create_carousel_slide_images,
         create_ppt,
@@ -1316,7 +1317,10 @@ def create_carousel_content(user_id: int, stage: str, post_id: int = None,
                   task_name="create_carousel_content")
     else:
         try:
-            carousel_obj = model_cls(**carousel_dict)
+            # Trimmed to the model's own list/string limits first (#2241 showcase: 3 of 5
+            # decision decks died here on `additional_features` 3-4 > 2 and rendered nothing).
+            carousel_obj = build_carousel_model(model_cls, carousel_dict, user_id=user_id,
+                                                post_id=post_id)
         except Exception as e:
             # ERROR, not INFO: there is no raw-slide fallback any more — a deck that will not parse
             # flags the post 'error' below and a human has to fix it. This is where the fault is
@@ -2733,8 +2737,16 @@ def _select_story_for_post(user_id: int, prefs: dict = None,
                     user_id=user_id, task_name="create_text_post")
         return None
     topics = [str(t).strip() for t in ((prefs or {}).get("focus_topics") or []) if str(t).strip()]
+    # The user's last N generated posts (#2241 showcase: three decks in a row anchored on one
+    # story). Unreadable history only loses this extra guard — `used_count` rotation still holds.
+    try:
+        recent_texts = get_recent_post_texts(user_id, limit=_story_bank.STORY_RECENT_POSTS)
+    except Exception as e:
+        log_debug("Recent posts unreadable — story rotation falls back to used_count only",
+                  error=str(e), user_id=user_id, task_name="create_text_post")
+        recent_texts = []
     return _story_bank.select_story(entries, subject=(blueprint or {}).get("subject"),
-                                    focus_topics=topics)
+                                    focus_topics=topics, recent_texts=recent_texts)
 
 
 def _score_and_persist_authenticity(user_id: int, post_id: int, content: str,

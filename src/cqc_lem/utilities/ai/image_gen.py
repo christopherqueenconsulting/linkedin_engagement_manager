@@ -751,7 +751,37 @@ def stray_texts(blind: str, hook_text: Optional[str] = None) -> list[str]:
     """
     hook = _normalise_text(hook_text or "")
     return [t for t in blind_text_strings(blind)
-            if not hook or _normalise_text(t) not in hook]
+            if (not hook or _normalise_text(t) not in hook) and not trivial_mark(t, blind)]
+
+
+# #2241 showcase: video frames failed text_accuracy on an "O" and a clock's numerals — marks no
+# reader reads as text. A 1-2 character token that is not a word is ignored, UNLESS the blind look
+# itself calls it legible/readable text. Everything longer ("pause", "MONTHLY BILL") stays strict.
+_SHORT_WORDS = frozenset({"a", "i", "ai", "ok", "no", "go", "hi", "up", "us", "we", "me", "it",
+                          "is", "on", "in", "of", "to", "do", "be", "my", "by", "or", "an", "at",
+                          "as", "if", "so", "he", "tv", "pr", "hr", "ux", "ui", "vs"})
+_LEGIBLE = re.compile(r"\b(?:legible|readable|clearly (?:reads|written|visible text)|"
+                      r"text reads)\b", re.IGNORECASE)
+
+
+def trivial_mark(text: str, blind: str) -> bool:
+    """Is ``text`` a 1-2 character non-word mark the stray-text check should ignore?
+
+    Args:
+        text: One string the blind description transcribed.
+        blind: The whole blind description, for the legibility exception.
+
+    Returns:
+        True for a short non-word token (``"O"``, ``"12"``, ``"3"``) that the blind look did not
+        call legible text in the sentence that names it.
+    """
+    token = _normalise_text(text).replace(" ", "")
+    if not token or len(token) > 2 or token in _SHORT_WORDS:
+        return False
+    for sentence in re.split(r"(?<=[.!?])\s+", blind or ""):
+        if text in sentence and _LEGIBLE.search(sentence):
+            return False
+    return True
 
 
 def _apply_overlays(rubric: dict, *, blind: str, answer: dict, entities: list,
@@ -916,9 +946,12 @@ def _staged_inspect(image_path: str, concept: Any, hook_text: Optional[str],
     emotion_weak = (answer.get("face_emotion") is False or answer.get("emotion_matches") is False
                     or "scroll_stop" in failing
                     or any(_EMOTION_ISSUE.search(str(i)) for i in (answer.get("issues") or [])))
+    # A faceless archetype (code-drawn, editorial concept) is never "emotion weak": the emotion
+    # repair would ask for a face, which is how an editorial cover shipped a person (#2241).
     return QualityVerdict(acceptable=not failing, relevance=rubric.get("specificity"),
                           issues=issues[:8], rubric=rubric, blind_description=blind,
-                          failing=failing, emotion_weak=bool(emotion_weak) and not code_drawn,
+                          failing=failing,
+                          emotion_weak=bool(emotion_weak) and not _shows_no_face(concept),
                           pop=pop)
 
 
@@ -986,6 +1019,16 @@ _RUBRIC_REPAIRS_FLUX = {
 }
 
 
+# The repairs an OBJECT-ONLY render gets instead: "a closer framing where the emotion shows on the
+# face" put a woman on a phone into an editorial_concept cover (#2241 showcase).
+_FACELESS_REPAIRS = {
+    "scroll_stop": ("a bolder single focal object, larger in the frame, with one unexpected "
+                    "oddity that resolves in two seconds — objects only"),
+    "craft": "every object whole and solid with crisp edges and real texture — objects only",
+    "specificity": "objects that plainly carry {thesis} — objects only",
+}
+
+
 def rubric_repair_directive(verdict: QualityVerdict, backend: str, concept: Any,
                             hook_text: Optional[str] = None) -> str:
     """The re-render clause for a staged-judge rejection, built from its FAILING criteria.
@@ -1011,6 +1054,9 @@ def rubric_repair_directive(verdict: QualityVerdict, backend: str, concept: Any,
                 "all — the headline is typeset later")
     cliches = ", ".join(i for i in verdict.issues if "/5" not in i)[:120] or "generic symbols"
     table = _RUBRIC_REPAIRS_FLUX if backend == "flux" else _RUBRIC_REPAIRS_GPT
+    if _shows_no_face(concept):
+        # An object-only archetype is never repaired toward a face or a person (#2241 showcase).
+        table = dict(table, **_FACELESS_REPAIRS)
     emotion = getattr(concept, "emotional_beat", "") or "the piece's emotion"
     parts = [table[name].format(entities=entities, thesis=thesis, text_fix=text_fix,
                                 cliches=cliches, emotion=emotion)

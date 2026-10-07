@@ -3399,6 +3399,7 @@ def generate_carousel_preview(request: GenerateCarouselPreviewRequest) -> Respon
     from cqc_lem.utilities.carousel_creator import (
         CAROUSEL_TEMPLATES,
         DEFAULT_TEMPLATE,
+        build_carousel_model,
         carousel_model_for_stage,
         create_carousel_slide_images,
         missing_carousel_fields,
@@ -3449,9 +3450,12 @@ def generate_carousel_preview(request: GenerateCarouselPreviewRequest) -> Respon
                 detail="The carousel generator returned a deck missing required slide(s): "
                        + ", ".join(missing) + ". Try again.")
 
-        carousel_obj = model_cls(**carousel_dict)
+        carousel_obj = build_carousel_model(model_cls, carousel_dict, user_id=user_id)
+        # The author's brand kit themes the preview exactly as it themes the posted deck; the
+        # likeness path stays unreached here (`brand_user_id` reads the kit and nothing else).
         image_paths = create_carousel_slide_images(
-            carousel_obj, post_id=0, output_dir=output_dir, template=carousel_template
+            carousel_obj, post_id=0, output_dir=output_dir, template=carousel_template,
+            brand_user_id=user_id,
         )
         slide_urls = [
             f"{API_URL_FINAL}/api/assets?file_name=images/carousel/{preview_id}/{os.path.basename(p)}"
