@@ -51,6 +51,17 @@ class _FakeCursor:
             # The occasion/milestone gate (issue #1074). This fixture publishes through the
             # AUTOMATIC path, so the column reads 0 exactly as it does for every pre-#1074 row.
             self._rows([posts[params[0]]], ["manual_publish"])
+        elif s.startswith("SELECT p.id AS post_id") and "curated_source_id" in s:
+            # The curated-source publish read (docs/curated-sources.md). This fixture's post is an
+            # ordinary one, so `curated_source_id` is NULL exactly as on every pre-#2260 row.
+            row = posts[params[0]]
+            self._rows([{"post_id": row["id"], "post_user_id": 1, "post_status": row["status"],
+                         "approved_by": row.get("approved_by"),
+                         "source_treatment": row.get("source_treatment"),
+                         "image_url": row.get("image_url"),
+                         "curated_source_id": row.get("curated_source_id")}],
+                       ["post_id", "post_user_id", "post_status", "approved_by",
+                        "source_treatment", "image_url", "curated_source_id"])
         elif s.startswith("UPDATE posts SET content"):
             posts[params[1]]["content"] = params[0]
             self.rowcount = 1
@@ -111,7 +122,8 @@ class _FakeConn:
 def _store(link_pref_row=None):
     return {
         "posts": {10: {"id": 10, "status": "approved", "content": _BODY, "post_type": "text",
-                       "first_comment_link": None, "manual_publish": 0}},
+                       "first_comment_link": None, "manual_publish": 0,
+                       "curated_source_id": None}},
         "users": {1: {"email": "u@example.com", "password": "pw"}},
         "prefs": ({1: link_pref_row} if link_pref_row else {}),
         "logs": [],

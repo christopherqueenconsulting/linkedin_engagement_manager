@@ -220,6 +220,32 @@ class TestManual:
         assert item["licence"] == cs.LICENCE_CC_BY
         assert item["author"] == "Some One"
 
+    @pytest.mark.parametrize("url", [
+        "https://evil.com/?x=linkedin.com/feed/update/urn:li:share:77/",
+        "https://linkedin.com.evil.com/feed/update/urn:li:share:77/",
+        "https://evil-linkedin.com/feed/update/urn:li:share:77/",
+        "https://evil.com/linkedin.com/feed/update/urn:li:share:77/",
+    ])
+    def test_a_hostile_url_naming_linkedin_is_never_a_linkedin_post(self, url):
+        item = cc.manual_candidate(url, author="Ann")
+        assert item["platform"] == cs.PLATFORM_MANUAL
+        assert item["canonical_id"] is None and item["activity_urn"] is None
+        assert item["link_only"] is True
+        assert not cs.treatment_allowed(item, cs.TREATMENT_RESHARE).ok
+
+    def test_a_urn_smuggled_into_a_linkedin_query_string_is_ignored(self):
+        item = cc.manual_candidate("https://www.linkedin.com/in/ann?x=urn:li:share:77")
+        assert item["canonical_id"] is None
+        assert item["platform"] == cs.PLATFORM_MANUAL
+
+    @pytest.mark.parametrize("url,ok", [
+        ("https://www.linkedin.com/feed/", True), ("https://linkedin.com/x", True),
+        ("https://evil.com/?x=linkedin.com", False), ("ftp://www.linkedin.com/x", False),
+        ("https://[::1/x", False), (None, False),
+    ])
+    def test_is_linkedin_host(self, url, ok):
+        assert cc.is_linkedin_host(url) is ok
+
     def test_a_pasted_linkedin_share_url_can_reshare(self):
         item = cc.manual_candidate(
             "https://www.linkedin.com/feed/update/urn:li:share:77/", author="Ann")

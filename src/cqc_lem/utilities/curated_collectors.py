@@ -16,6 +16,7 @@ import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from typing import Optional
+from urllib.parse import urlparse
 
 import requests
 from bs4 import BeautifulSoup
@@ -312,6 +313,20 @@ def record_linkedin_candidate(user_id: int, card, author: str, content: str, dri
 
 # --- Manual ---------------------------------------------------------------------------------------
 
+def is_linkedin_host(url: Optional[str]) -> bool:
+    """True only when the URL's parsed hostname IS linkedin.com or a subdomain of it.
+
+    Never a substring test: ``https://evil.com/?x=linkedin.com/`` names linkedin.com and is not it.
+    """
+    try:
+        parsed = urlparse(url or "")
+        host = (parsed.hostname or "").lower()
+    except ValueError:
+        return False
+    return parsed.scheme in ("http", "https") and (
+        host == "linkedin.com" or host.endswith(".linkedin.com"))
+
+
 def manual_candidate(url: str, author: Optional[str] = None, title: Optional[str] = None,
                      excerpt: Optional[str] = None, publisher: Optional[str] = None,
                      licence: Optional[str] = None) -> dict:
@@ -322,8 +337,12 @@ def manual_candidate(url: str, author: Optional[str] = None, title: Optional[str
     URNs, so a pasted share URL can still be reshared.
     """
     url = (url or "").strip()
-    share, activity = split_post_urns(url)
-    is_linkedin = "linkedin.com/" in url and bool(share or activity)
+    is_linkedin, share, activity = False, None, None
+    if is_linkedin_host(url):
+        # URNs are read from the PATH only: a query string is attacker-shaped text, and a URN
+        # smuggled into it would reshare a post the pasted URL does not point at.
+        share, activity = split_post_urns(urlparse(url).path)
+        is_linkedin = bool(share or activity)
     return {
         "platform": PLATFORM_LINKEDIN if is_linkedin else PLATFORM_MANUAL,
         "url": url,
