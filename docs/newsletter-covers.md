@@ -261,6 +261,44 @@ by appearance rather than by group caption, a missing kicker is derived from the
 comparative hook must say "than" or carry a number (`docs/image-stack.md`, "No labels, a kicker
 always, anchored comparatives").
 
+### Gauntlet round 9 → the render is only a photograph
+
+Two covers failed only on stray text: told it was a "LinkedIn newsletter cover", the renderer
+typeset a fake cover into the empty side of the scene. The render prompt now describes only a
+photograph, checked deterministically and repaired before it ships (`docs/image-stack.md`, "The
+render is only a photograph").
+
+### Gauntlet round 11 → the blind critic
+
+Every cover passed the in-pipeline judge, but the blind critic scored most items 2-4 on
+specificity and scroll stop: a warehouse backdrop whatever the topic, the lead stat missing from
+the headline, a caveat or a neutral "vs" as the headline, symbolic props, overacted faces and
+primary-colour objects. Each became an engine rule, and covers are now built at 1920x1080
+(`docs/image-stack.md`, "What the blind critic asked for").
+
+### Gauntlet round 12 → stats, framing, smiles
+
+ed17 led with a model version ("4.5"), a post dropped its 60% stat, every scene held a mug in a
+medium shot at a table, and ed16's "$30K saved" rendered alarmed. Headline numbers are now
+stats in the source's casing and must survive into the hook, hooks must assert with a verb, mugs
+are props, the framing rotates, and good news is a literal relaxed smile (`docs/image-stack.md`,
+"Stats, not versions; framing rotates; good news smiles").
+
+### Gauntlet round 13 → true hooks
+
+Images held, but a hook paired a number with the wrong claim ("53.7% less engagement" — 53.7%
+was the share of AI posts), one was ungrammatical and two ran past six words. A number now must
+share a source sentence with its claim, a judge checks grammar and truth against the cited
+sentence, and six words is a hard cap (`docs/image-stack.md`, "A hook is true, grammatical and
+short").
+
+### Gauntlet round 14 → hooks are built, never cut
+
+All four covers passed; the hook defects were deterministic: a mid-phrase cut, "$30k" for
+"$30K", and a label fallback. Long hooks are regenerated, then built as a complete clause;
+numbers carry the source spelling; and no label survives any path (`docs/image-stack.md`,
+"Never truncate a hook").
+
 ### Rejections land for review, with their reason
 
 A definite judge failure on `no_cliche` or `specificity` after the attempt budget returns verdict

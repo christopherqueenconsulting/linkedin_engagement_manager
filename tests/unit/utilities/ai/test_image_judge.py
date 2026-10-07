@@ -753,3 +753,141 @@ class TestRoundNineNoLabels:
                                specific_entities=(), emotional_beat="", hook_phrase="Who pays?",
                                treatment="people_scene", treatment_rationale="", weak=False)
         assert _kicker_for(concept) == "PAYROLL"
+
+
+@pytest.mark.unit
+class TestRoundTenVideoCaption:
+    def test_a_video_frame_is_judged_with_its_caption_as_the_headline(self, tmp_path):
+        verdict, create = _judge_on(tmp_path, "video", _answer(), hook_text="Payroll eats first")
+        text = create.call_args_list[1][1]["messages"][0]["content"][0]["text"]
+        assert "The video's opening caption" in text and '"Payroll eats first"' in text
+        assert "it is NOT in this still" in text
+        assert verdict.checked
+
+    def test_the_caption_is_never_composited_nor_squares_the_frame(self, tmp_path):
+        from cqc_lem.utilities.ai.image_gen import _composite, _scene_ratio
+        raw = tmp_path / "f.png"
+        raw.write_bytes(b"png")
+        assert _composite(str(raw), "Payroll eats first", "video", None, None) is None
+        assert _scene_ratio("16:9", "Payroll eats first", "video") == "16:9"
+
+    def test_a_cover_still_reads_its_typeset_headline(self):
+        from cqc_lem.utilities.ai.image_gen import _headline_line
+        assert _headline_line("Who buys?", "newsletter") == (
+            'The cover\'s headline (typeset onto it by the system): "Who buys?"')
+        assert "none — judge the image alone" in _headline_line(None, "video")
+
+
+# The exact r10/judged/001 blind description that failed text_accuracy on its own negative.
+_R10_001_BLIND = ('The main subject is a man with glasses sitting at a table with three other '
+                  'people, smiling at the camera. The setting appears to be a casual meeting or '
+                  'collaborative workspace, with a mug visible on the table. Visible text: - '
+                  '"There is no visible text."')
+
+
+@pytest.mark.unit
+class TestRoundElevenJudge:
+    def test_the_judge_quoting_its_own_negative_is_not_stray_text(self):
+        from cqc_lem.utilities.ai.image_gen import stray_texts
+        assert stray_texts(_R10_001_BLIND) == []
+
+    @pytest.mark.parametrize("negative", ["There is no visible text.", "no visible text", "None",
+                                          "No text visible", "There is no text",
+                                          "Visible text: none", "No text is visible in the image"])
+    def test_negative_statements_are_never_stray(self, negative):
+        from cqc_lem.utilities.ai.image_gen import stray_texts
+        assert stray_texts(f'A man at a table. Visible text: "{negative}"') == []
+
+    @pytest.mark.parametrize("real", ["OPEN LATE", "No entry", "None of the above"])
+    def test_real_text_is_still_stray(self, real):
+        from cqc_lem.utilities.ai.image_gen import stray_texts
+        assert stray_texts(f'A door with a sign: "{real}".') == [real]
+
+    def test_r10_001_passes_text_accuracy(self, tmp_path):
+        verdict, _ = _judge(tmp_path, blind=_R10_001_BLIND)
+        assert verdict.rubric["text_accuracy"] is None
+        assert not any(i.startswith("stray text") for i in verdict.issues)
+
+    @pytest.mark.parametrize("backend", ["gpt-image", "flux"])
+    def test_every_render_states_the_no_tech_scene(self, backend):
+        from cqc_lem.utilities.ai.image_gen import with_no_marks
+        marked = with_no_marks("Two people talking in a warehouse aisle.", backend)
+        assert marked.endswith("The scene contains no computers, laptops, screens, servers, cables "
+                               "or code; people interact with each other in a real place.")
+
+    def test_the_no_tech_clause_never_summons_a_screen_clause(self):
+        from cqc_lem.utilities.ai.image_gen import with_no_marks
+        marked = with_no_marks("Two people talking in a warehouse aisle.", "flux")
+        assert marked.count("screens") == 2  # the blanket constraint + the no-tech clause only
+
+    def _video(self, tmp_path, specificity, hook_text=None, **rubric):
+        answer = _answer(rubric=dict(_GOOD_RUBRIC, specificity=specificity, **rubric))
+        verdict, _ = _judge_on(tmp_path, "video", answer, hook_text=hook_text)
+        return verdict
+
+    def test_an_uncaptioned_video_frame_passes_at_specificity_3(self, tmp_path):
+        assert self._video(tmp_path, 3).acceptable
+
+    def test_an_uncaptioned_video_frame_still_fails_at_2(self, tmp_path):
+        verdict = self._video(tmp_path, 2)
+        assert not verdict.acceptable and "specificity" in verdict.failing
+
+    def test_a_captioned_video_frame_keeps_the_floor_of_4(self, tmp_path):
+        verdict = self._video(tmp_path, 3, hook_text="Payroll eats first")
+        assert not verdict.acceptable and "specificity" in verdict.failing
+
+    @pytest.mark.parametrize("criterion,score", [("no_cliche", 4), ("craft", 3)])
+    def test_the_relaxed_floor_relaxes_nothing_else(self, tmp_path, criterion, score):
+        verdict = self._video(tmp_path, 3, **{criterion: score})
+        assert not verdict.acceptable and criterion in verdict.failing
+
+    def test_a_cover_keeps_specificity_4(self, tmp_path):
+        answer = _answer(rubric=dict(_GOOD_RUBRIC, specificity=3))
+        verdict, _ = _judge_on(tmp_path, "newsletter", answer)
+        assert not verdict.acceptable
+
+
+@pytest.mark.unit
+class TestRoundTwelveJudge:
+    def test_an_overacted_expression_caps_craft(self, tmp_path):
+        verdict, create = _judge(tmp_path, answer=_answer(expression_overacted=True))
+        assert verdict.rubric["craft"] == 3 and not verdict.acceptable
+        text = create.call_args_list[1][1]["messages"][0]["content"][0]["text"]
+        assert "Is any expression overacted" in text
+
+    def test_a_restrained_face_passes(self, tmp_path):
+        verdict, _ = _judge(tmp_path, answer=_answer(expression_overacted=False))
+        assert verdict.acceptable
+
+
+@pytest.mark.unit
+class TestRoundThirteenEmotionRepair:
+    def test_good_news_repairs_to_the_literal_face_never_relief(self):
+        from cqc_lem.utilities.ai.image_gen import _emotion_beat
+        concept = ImageConcept(thesis="t", audience="", specific_entities=(),
+                               emotional_beat="relief and urgency", hook_phrase="",
+                               treatment="people_scene", treatment_rationale="", weak=False,
+                               valence="positive")
+        assert _emotion_beat(concept) == "a relaxed, genuine smile, eyes bright, shoulders loose"
+
+    def test_other_valences_keep_their_beat(self):
+        from cqc_lem.utilities.ai.image_gen import _emotion_beat
+        concept = ImageConcept(thesis="t", audience="", specific_entities=(),
+                               emotional_beat="quiet dread", hook_phrase="",
+                               treatment="people_scene", treatment_rationale="", weak=False,
+                               valence="negative")
+        assert _emotion_beat(concept) == "quiet dread"
+
+
+@pytest.mark.unit
+class TestRoundFifteenPostSignage:
+    def test_a_post_image_render_carries_the_signage_clause(self):
+        """Post 100's garbled sign ("UDA HINEBEL"): the round-9 clause reaches post_image."""
+        with patch.object(image_gen, "IMAGE_BACKEND", "gpt-image"), \
+             patch.object(image_gen, "_render_via_gpt_image", return_value="/x.png") as gpt:
+            image_gen._render_with_backend("Two people talking in a hallway.",
+                                           surface="post_image")
+        sent = gpt.call_args[0][0]
+        assert ("No captions, titles, posters, signage, name badges, lanyards with text, or "
+                "labels of any kind.") in sent
+        assert gpt.call_args[1]["surface"] == "post_image"

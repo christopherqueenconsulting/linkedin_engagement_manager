@@ -78,11 +78,16 @@ _GENERATED_SUBDIR = os.path.join("images", "generated")
 # backends now refuse every label-carrying surface by name.
 _NO_LABELS = (" No captions, titles, posters, signage, name badges, lanyards with text, or labels "
               "of any kind.")
+# Round 11: no brief named a laptop, yet "AI routing" and "smaller model servers" rendered laptops
+# showing code, server racks and cables — the image model INFERS tech hardware from the topic.
+# So every render, on every surface and backend, states the scene positively and then explicitly.
+NO_TECH_CLAUSE = (" The scene contains no computers, laptops, screens, servers, cables or code; "
+                  "people interact with each other in a real place.")
 _NO_MARKS_GPT = (" Absolutely no text, letters, words, numbers, captions, watermarks, logos, "
                  "brand marks, app icons, social-media icons, charts, or UI elements anywhere "
-                 "in the image." + _NO_LABELS)
+                 "in the image." + _NO_LABELS + NO_TECH_CLAUSE)
 _NO_MARKS_FLUX = (" Every garment and surface is plain and unbranded, screens are blank, walls "
-                  "clean and unmarked." + _NO_LABELS)
+                  "clean and unmarked." + _NO_LABELS + NO_TECH_CLAUSE)
 
 # No render carries text — not even a headline (issue #2241, round 6): ``image_compose`` typesets
 # the hook onto the finished render, so this constraint holds on every surface without exception.
@@ -559,7 +564,7 @@ A viewer who knew nothing about its purpose described the photograph as:
 
 The image was made for a piece arguing: {thesis}
 The cover's kicker (topic tag, typeset by the system): {kicker}
-The cover's headline (typeset onto it by the system): {headline}
+{headline_line}
 Read the kicker, headline and scene together as one cover. Look at the image itself and answer:
 1. (Advisory only — never part of a score.) Is each of these things visibly depicted?
    {entities}
@@ -574,6 +579,8 @@ Read the kicker, headline and scene together as one cover. Look at the image its
 8. Is the emotion authentic rather than exaggerated or cartoonish?
 9. Does a gold accent or the charcoal / off-white brand palette read in the image?
 10. Does the headline alone name its subject — not just a number? (true when there is none)
+11. Is any expression overacted — an open or gaping mouth, a furrowed brow, alarm, a grin at
+    bad news?
 
 Score each criterion 1-5, 5 best:
 - specificity: 5 = with its headline, a scroller would correctly guess this piece's argument —
@@ -588,6 +595,7 @@ Respond with ONLY a JSON object:
 {{"entities_depicted": {{"<thing>": true}}, "cliches_present": ["..."],
  "thesis_inferable": true, "face_emotion": true, "emotion_matches": true,
  "emotion_authentic": true, "headline_names_subject": true, "bright_enough": true,
+ "expression_overacted": false,
  "rubric": {{"specificity": 1, "no_cliche": 1, "thumbnail_read": 1, "craft": 1,
             "scroll_stop": 1, "brand_fit": 1}},
  "issues": ["<short actionable phrase>"]}}"""
@@ -615,6 +623,12 @@ _RUBRIC_FLOORS = {"specificity": 4, "no_cliche": 5, "text_accuracy": 4, "craft":
 # Round 3 (#2241): four rejected covers were people at laptops with neutral faces, scroll_stop 3.
 # On the surfaces that have to stop a feed, 3 is a fail.
 _SCROLL_STOP_SURFACES = frozenset({"newsletter", "post_image"})
+# Round 11: a VIDEO frame with no caption headline (VIDEO_CAPTIONS off, so `burned_caption_text`
+# is None) passes specificity at 3. The post text above the video carries the thesis, and a lone
+# frame cannot: at 4 every caption-less frame scored 2-3 and every video fell back to Pexels
+# stock — a regression from shipping Runway clips. With a caption headline the floor stays 4;
+# no_cliche, craft and stray text are never relaxed.
+_UNCAPTIONED_VIDEO_SPECIFICITY_FLOOR = 3
 _SCROLL_STOP_FLOOR = 4
 _REQUIRED_SCORES = ("specificity", "no_cliche", "craft")
 # The surfaces whose headline ``image_compose`` typesets onto the render. NEVER ``video``: its
@@ -633,9 +647,18 @@ def _normalise_text(text: str) -> str:
     return " ".join(re.sub(r"[^a-z0-9 ]+", " ", (text or "").lower()).split())
 
 
+# Round 11 (#2241): the blind judge QUOTED its own negative — `Visible text: - "There is no visible
+# text."` — and the parser counted that sentence as stray text, failing a clean render.
+_NEGATIVE_TEXT = re.compile(
+    r"^(?:visible text )?(?:there (?:is|are) )?(?:no|none|nothing)"
+    r"(?: (?:visible|legible|readable|discernible))?(?: text| words| lettering| writing)?"
+    r"(?: (?:is )?(?:visible|present|shown|at all|in the image|anywhere))*$")
+
+
 def _no_text_seen(text: str) -> bool:
     normal = _normalise_text(text)
-    return not normal or normal in ("none", "no text", "no visible text", "n a", "na")
+    return (not normal or normal in ("none", "n a", "na", "visible text none")
+            or bool(_NEGATIVE_TEXT.match(normal)))
 
 
 # Text a blind description reports: every quoted string, plus whatever follows a text verb with
@@ -708,7 +731,7 @@ def _apply_overlays(rubric: dict, *, blind: str, answer: dict, entities: list,
     if answer.get("emotion_matches") is False:
         rubric["scroll_stop"] = min(rubric.get("scroll_stop") or 3, 3)
     # Round 6: a wailing man over a bill, caricature faces — a fake emotion is a craft defect.
-    if answer.get("emotion_authentic") is False:
+    if answer.get("emotion_authentic") is False or answer.get("expression_overacted") is True:
         rubric["craft"] = min(rubric.get("craft") or 3, 3)
     if answer.get("bright_enough") is False:
         rubric["thumbnail_read"] = min(rubric.get("thumbnail_read") or 3, 3)
@@ -737,6 +760,22 @@ def advisory_issues(answer: dict, entities: list, hook_text: Optional[str]) -> l
     return notes
 
 
+def _headline_line(hook_text: Optional[str], surface: Optional[str]) -> str:
+    """How the judge is told about the headline this image is read with.
+
+    A cover or post has it typeset onto the composite. A VIDEO frame never does (round 10):
+    ``video_captions`` burns the post's opening line(s) into the stored MP4, so the frame is judged
+    WITH that caption as its headline — for specificity — while the still itself must carry none.
+    """
+    if not hook_text:
+        return "The cover's headline (typeset onto it by the system): (none — judge the image alone)"
+    if surface == "video":
+        return (f"The video's opening caption (burned into the video over this frame by the "
+                f"system; it is NOT in this still and must not be — judge the frame WITH it as "
+                f'its headline): "{hook_text}"')
+    return f'The cover\'s headline (typeset onto it by the system): "{hook_text}"'
+
+
 def _staged_inspect(image_path: str, concept: Any, hook_text: Optional[str],
                     surface: Optional[str], composite_path: Optional[str] = None
                     ) -> QualityVerdict:
@@ -763,7 +802,7 @@ def _staged_inspect(image_path: str, concept: Any, hook_text: Optional[str],
                     thesis=concept.thesis,
                     kicker=(f'"{getattr(concept, "kicker", "")}"' if getattr(concept, "kicker", "")
                             else "(none)"),
-                    headline=f'"{hook_text}"' if hook_text else "(none — judge the image alone)",
+                    headline_line=_headline_line(hook_text, surface),
                     emotional_beat=getattr(concept, "emotional_beat", "") or "the piece's mood",
                     valence=valence, valence_hint=_VALENCE_HINTS.get(valence, ""),
                     entities="; ".join(entities) or "(none named)",
@@ -788,6 +827,8 @@ def _staged_inspect(image_path: str, concept: Any, hook_text: Optional[str],
     if surface in _SCROLL_STOP_SURFACES:
         floors["scroll_stop"] = _SCROLL_STOP_FLOOR
         floors["thumbnail_read"] = _SCROLL_STOP_FLOOR
+    if surface == "video" and not hook_text:
+        floors["specificity"] = _UNCAPTIONED_VIDEO_SPECIFICITY_FLOOR
     failing = [name for name, floor in floors.items()
                if rubric.get(name) is not None and rubric[name] < floor]
     issues = [f"{name} {rubric[name]}/5" for name in failing]
@@ -938,6 +979,15 @@ def _scene_ratio(ratio: str, hook_text: Optional[str], surface: str) -> str:
     return "1:1" if hook_text and surface in COMPOSE_SURFACES else ratio
 
 
+def _emotion_beat(concept: Any) -> str:
+    """The beat the emotion repair names: good news is spelled out, never "relief" (round 13)."""
+    from cqc_lem.utilities.ai.image_brief import POSITIVE_FACE
+
+    if getattr(concept, "valence", "") == "positive":
+        return POSITIVE_FACE
+    return getattr(concept, "emotional_beat", "") or "the piece's emotion"
+
+
 def _kicker_for(concept: Any) -> str:
     """Every composite carries a kicker: Stage 1's, else one derived from the concept (round 9)."""
     from cqc_lem.utilities.ai.image_concept import concept_kicker
@@ -1022,8 +1072,7 @@ def _gate_loop(render_once, *, prompt: str, surface: str, focal_concept: Optiona
             if verdict.acceptable or not verdict.checked:
                 break
             if verdict.emotion_weak and concept is not None and not emotion_boost:
-                emotion_boost = EMOTION_DIRECTIVE.format(
-                    beat=getattr(concept, "emotional_beat", "") or "the piece's emotion")
+                emotion_boost = EMOTION_DIRECTIVE.format(beat=_emotion_beat(concept))
         path, used_backend, verdict, info = best
         if render_info is not None:
             render_info.update(info)

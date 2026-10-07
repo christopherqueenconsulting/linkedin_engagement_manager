@@ -51,6 +51,140 @@ judge rightly scored specificity 1 on all four covers. So Stage 1 returns two li
   down. Briefs, Stage 3 and the vision judge's specificity all work from `usable_anchors()` — the
   anchors, or for a concept with none, its plain common-noun facts.
 
+## Never truncate a hook; source spelling; no label survives (round 15)
+
+- **No truncation.** Round 14's cap cut "Ignoring AI's hidden buyers raises deal costs" to
+  "… raises deal". `_final_hook` now REGENERATES a hook over six words with the reason; still
+  long, it takes `clause_hook`, which builds a complete clause by construction: the thesis's
+  first clause with "-ly" adverbs dropped, then subject + verb group + object compressed to their
+  noun heads ("Ignoring AI's hidden buyers raises costs"). Where a caller's concept reaches the
+  brief without Stage 1, `fit_hook` applies the same clause.
+- **Source spelling.** `restore_number_casing` re-spells every number token as the source writes
+  it ("$30K", "53.7%", "3x") after hook selection.
+- **No label on any path.** The claim-not-label rule runs on the final hook too; a label is
+  replaced by `clause_hook`, which takes the subject and a verb from the thesis ("Routing prompts
+  cuts AI spend") and, for a thesis with no verb at all, asserts that the noun group matters.
+- **Signage on posts.** Post 100's garbled sign ("UDA HINEBEL") was caught by the gate; the
+  round-9 no-captions/signage/badges clause is confirmed on the post_image render path by test.
+
+## A hook is true, grammatical and short (round 14)
+
+Round 13's stat-survival rule paired a number with the wrong claim: ed18 shipped "53.7% less
+engagement than humans", but 53.7% is the SHARE of AI-generated posts and the engagement gap is
+45%. That is now impossible:
+
+- **Fact fidelity, deterministic.** `number_claim_mismatch`: a number in a hook is valid only
+  when the number AND its claim word (`claim_noun`: the content word it quantifies) occur in the
+  SAME source sentence. It runs inside `hook_rejection`, so every Stage 1 option, regeneration and
+  built hook passes it; the stat fallback and `derive_hook` drop the number rather than pair it
+  falsely. `thesis_number` picks, among the tied stats, the one whose own sentence best matches
+  the thesis.
+- **Fidelity and grammar judge.** The end-of-Stage-1 `lem-simple` hook check now also asks
+  whether the headline is grammatical English, at most 6 words, and literally true against the
+  source sentence it cites (`cited_sentence`, passed to the judge). On no, the hook is
+  regenerated once with the reason; a second no takes the deterministic `derive_hook`.
+- **Six words is HARD** — enforced without truncation since round 15 (below).
+
+## Stats, not versions; framing rotates; good news smiles (round 13)
+
+- **A headline number is a STAT.** `stat_numbers` accepts a percentage, a currency amount
+  ("$30K"), a multiplier ("3x"), or a number followed by a unit or count noun ("45 posts") —
+  never a version beside a capitalised name ("Opus 4.5", "GPT-5.2"; ed17 rendered "4.5") and
+  never a bare year. The number keeps the SOURCE's casing ("$30K", not "$30k").
+- **The stat survives.** `_enforce_stat`: when the thesis has a stat, the hook must carry it
+  verbatim — an offered hook with it first, else ONE regeneration naming the stat, else the stat
+  plus the first anchor's noun (post 102 had shipped "Routing saves most spend" for a 60% cut).
+- **A hook is a claim.** `asserts_something` requires a verb (a copula or modal, a known verb in
+  any inflection, or an -ed form); a question or a number_claim passes. "Routing prompts to
+  models by complexity" is a label and is refused.
+- **No mugs.** mug, cup, coffee, tea and latte are props (`prop_failure`); the directive says
+  hands are empty, gesturing, or hold a face-down phone.
+- **Framing rotates, the place does not.** `SHOTS` (close-up portrait, over-the-shoulder
+  two-shot, walking-and-talking two-shot, standing at a window, presenting to a small group seen
+  from behind) rotates least-recently-used from the receipts (`recent_shots`), like the cast.
+  The setting still comes from the article.
+- **Good news smiles, literally.** Positive valence is "a relaxed, genuine smile, eyes bright,
+  shoulders loose" — in the brief, the repair reason and the emotion-repair directive
+  (`_emotion_beat`). "relief" without a smile is refused: the model reads relief as distress
+  (ed16 rendered alarmed four times).
+
+## What the blind critic asked for (round 12)
+
+The in-pipeline judge passed every item in round 11; the independent blind critic did not. Each
+of its notes became an engine rule:
+
+- **The setting is the article's.** "warehouse floor" from the cast rotation turned up on four of
+  nine items whatever the topic. The rotation now covers only people (gender, age band,
+  ethnicity); Stage 1 returns `setting` — the story's own scene, else the audience's real
+  workplace — validated by `_ground_setting` like an anchor (no name, number, prop, tech hardware
+  or stock symbol, and grounded in the source; a weekday or month is a time, not a name). It
+  reaches the author as `SETTING` and the cast line as ", at …".
+- **The lead number leads.** `thesis_number` finds a grounded number tied to the thesis — in the
+  title, the first two body sentences, or the sentence carrying the claim — and
+  `lead_with_number` forces a `number_claim` hook carrying it (an offered one first, else the
+  number plus the first anchor's noun). Shape rotation applies only without one.
+- **The hook asserts the thesis.** An "X vs Y" hook is refused (`hook_rejection`).
+  `check_hook_against_thesis` (ONE `lem-simple` call at the end of Stage 1, failing open) asks
+  whether the headline asserts the main claim rather than a caveat; on no, the hook is
+  regenerated once with that reason. It sits in Stage 1 rather than Stage 3 because the hook is
+  the concept's — Stage 2/3 never rewrite it. The same call returns the headline's own valence,
+  and the face follows THAT (post 140 grinned at "hurts").
+- **No symbolic props**: figurines, tokens, cards, flags, chess, blocks, sticky notes, game
+  pieces are refused by `prop_failure`.
+- **Restrained faces.** "open mouth", "gasping", "alarmed", "furrowed brow", "wide-eyed",
+  "shocked" are refused in briefs; negative valence is concern in posture and eyes, mouth closed.
+  The judge asks "Is any expression overacted?" and a yes caps craft at 3.
+- **Brand-bound colour.** Wardrobe and objects stay within gold, charcoal, off-white and natural
+  tones; `saturated_color` refuses a saturated red, blue or green object (a muted tone or nature
+  passes).
+- **Covers at 1920x1080** (LinkedIn's recommended size); posts stay 1080x1350.
+- **Video frames keep the near foreground empty** (`VIDEO_FRAME_DIRECTIVE`, built on
+  `NO_NEAR_FOREGROUND`): Runway smears a hand close to the lens. The motion prompt's
+  `MOTION_DISCIPLINE` lives on PR #2249 and should append the same clause.
+
+## Negatives, inferred hardware, caption-less video (round 11)
+
+- **A quoted negative is not stray text.** The blind judge wrote `Visible text: - "There is no
+  visible text."` and the parser failed the render on it. `_no_text_seen` now recognises negative
+  statements ("no visible text", "there is no text", "none", "Visible text: none", "No text is
+  visible in the image"); real text ("No entry") still counts.
+- **Tech hardware is inferred, so it is refused twice.** No brief named a laptop, yet "AI routing"
+  and "smaller model servers" rendered laptops showing code, racks and cables. Anchors naming
+  `TECH_HARDWARE` (laptop, computer, monitor, screen, keyboard, server, rack, cable, data center,
+  terminal, code) are dropped at parse time and by `usable_anchors`, and EVERY render, on every
+  surface and backend, ends with `NO_TECH_CLAUSE`: "The scene contains no computers, laptops,
+  screens, servers, cables or code; people interact with each other in a real place." The cliché
+  checks are unchanged.
+- **A caption-less video frame passes specificity at 3.** With `VIDEO_CAPTIONS` off,
+  `burned_caption_text` is None and the frame is judged alone. The post text above the video
+  carries the thesis and a lone frame cannot, so at 4 every frame scored 2-3 and every video fell
+  back to Pexels stock — a regression from shipping Runway clips. With a caption headline the
+  floor stays 4; no_cliche (5), craft (4) and stray text are never relaxed. Turning
+  `VIDEO_CAPTIONS` on (sound-off viewing) restores the stricter floor.
+
+## The render is only a photograph (round 10)
+
+- **Photo-only render prompts.** Told it was making "a LinkedIn newsletter cover" with "negative
+  space" for a headline, gpt-image designed a cover and typeset fake text into the empty side
+  ("ENGINEERING LEAD / Billing Dashboard"). On a composited surface (newsletter, post_image) the
+  render prompt now describes ONLY a photograph. `render_framing_failure` rejects an authored
+  prompt naming LinkedIn, a newsletter, cover, post, headline, title, text area, negative space,
+  a magazine, an editorial layout or typesetting, or repeating a hook/kicker word (a word that is
+  part of a visual anchor stays allowed: it is the subject, drawn rather than written). Every
+  brief that ships, the fallback included, then passes `photo_only_prompt`, which rewrites the
+  opening to "A candid documentary photograph", drops framing sentences and words, and appends
+  the square-frame instruction. The USE CASE stays author context in the brief author's prompt.
+  The square-scene directive no longer mentions a headline. Whitepapers, brochures and
+  dashboards joined the prop list.
+- **A hook always.** On a composited surface, when no Stage 1 hook passes `hook_rejection`,
+  Stage 1 is asked ONCE more for a hook with every rejection reason; if that fails too,
+  `derive_hook` takes the thesis up to its first clause boundary (at most 6 words), else a
+  grounded number plus the first anchor's noun.
+- **Video frames read with their caption.** `inspect_render_quality(..., surface="video",
+  hook_text=<the caption video_captions burns in>)` tells the judge the caption is burned into
+  the MP4 over the frame and is NOT in the still. Nothing is composited and the render prompt
+  never carries it. The wiring belongs in `_generate_video_src` (PR #2249).
+
 ## No labels, a kicker always, anchored comparatives (round 9)
 
 - **No painted captions.** gpt-image rendered the brief's role and group nouns as labels — a
