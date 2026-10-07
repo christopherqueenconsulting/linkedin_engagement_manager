@@ -450,6 +450,69 @@ def slot_allows(content_mix: Optional[str]) -> bool:
     return (content_mix or "").strip().lower() in CURATED_MIX_SLOTS
 
 
+# --- Pick diversity (showcase round 4) -----------------------------------------------------------
+# All four curated posts in the round-4 gauntlet were big-vendor announcements, two from Google, so
+# they read as a news feed rather than a point of view. The pick now prefers a publisher the last
+# few curated posts did not use, then an item that talks to a small business, then the source CLASS
+# below — government data, then independent newsletters/blogs, then everything else, vendor press
+# rooms last — with freshness (the collector's order) breaking what is left.
+SOURCE_CLASS_GOV = 0
+SOURCE_CLASS_NEWSLETTER = 1
+SOURCE_CLASS_OTHER = 2
+SOURCE_CLASS_VENDOR = 3
+# How many recent curated posts' publishers a candidate should differ from.
+PUBLISHER_DIVERSITY_WINDOW = 3
+_SMB_RELEVANCE_RE = re.compile(
+    r"\b(?:small[- ]business(?:es)?|smbs?|business owners?|owners?|shops?|stores?|restaurants?|"
+    r"local|main street|freelanc\w*|solopreneurs?|bookkeep\w*|invoices?|payroll|customers?|"
+    r"hiring|wages?|earnings|prices?|inflation|employees?)\b", re.IGNORECASE)
+
+
+def source_class(item: dict) -> int:
+    """Where a candidate sits in the pick order: gov data, newsletter/blog, other, vendor PR.
+
+    Read off what the collector recorded: the government-data platform or a public-domain licence
+    is government data; ``facts_only`` is the independent writers' licence in the allowlist;
+    ``editorial`` is a press room or company blog — the vendor's own announcement.
+    """
+    if item.get("platform") == PLATFORM_GOV_DATA or \
+            normalize_licence(item.get("licence")) == LICENCE_PUBLIC_DOMAIN:
+        return SOURCE_CLASS_GOV
+    licence = normalize_licence(item.get("licence"))
+    if licence == LICENCE_FACTS_ONLY:
+        return SOURCE_CLASS_NEWSLETTER
+    if licence == LICENCE_EDITORIAL:
+        return SOURCE_CLASS_VENDOR
+    return SOURCE_CLASS_OTHER
+
+
+def smb_relevant(item: dict) -> bool:
+    """Whether a candidate's title or excerpt talks to a small-business owner's world."""
+    return bool(_SMB_RELEVANCE_RE.search(f"{item.get('title') or ''} {item.get('excerpt') or ''}"))
+
+
+def rank_candidates(candidates: Optional[list], recent_publishers: Optional[list] = None) -> list:
+    """The draftable candidates in pick order. Deterministic and stable.
+
+    Args:
+        candidates: The user's ``new`` sources, freshest first (the collector's order).
+        recent_publishers: Publishers of the last ``PUBLISHER_DIVERSITY_WINDOW`` curated posts.
+
+    Returns:
+        The candidates re-ordered: a publisher not used recently first, then SMB-relevant, then by
+        ``source_class``, then freshness.
+    """
+    recent = {str(p).strip().lower() for p in (recent_publishers or []) if str(p or "").strip()}
+    items = [c for c in (candidates or []) if isinstance(c, dict)]
+
+    def key(pair: tuple) -> tuple:
+        index, item = pair
+        publisher = str(item.get("publisher") or "").strip().lower()
+        return (publisher in recent, not smb_relevant(item), source_class(item), index)
+
+    return [item for _, item in sorted(enumerate(items), key=key)]
+
+
 # --- little text ---------------------------------------------------------------------------------
 
 def escape_little_text(text: Optional[str], keep_hashtags: bool = True) -> str:

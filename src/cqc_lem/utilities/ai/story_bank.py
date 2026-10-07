@@ -96,6 +96,13 @@ STORY_ECHO_MIN_SPECIFICS = 2
 STORY_ECHO_MIN_TITLE_WORDS = 2
 # The user's last N generated posts an entry must not appear in (#2241 showcase).
 STORY_RECENT_POSTS = 3
+# The COOLDOWN window (showcase round 4): an entry anchors at most ONE post in the user's last
+# `STORY_COOLDOWN_POSTS` generated posts or last `STORY_COOLDOWN_DAYS` days, whichever covers more
+# posts. Seven entries each used 12-18 times produced ~16 posts telling five stories; the soft
+# rotation above still repeats an entry the moment every eligible one is recent, the cooldown does
+# not — a post with every entry cooling runs with NO anchor instead.
+STORY_COOLDOWN_POSTS = 10
+STORY_COOLDOWN_DAYS = 14
 
 
 def entry_echoed_in(entry: dict, text: Optional[str]) -> bool:
@@ -133,10 +140,28 @@ def recently_used_ids(entries: Optional[list], recent_texts: Optional[list]) -> 
     return used
 
 
+def cooling_ids(entries: Optional[list], window_texts: Optional[list]) -> set:
+    """The ids of the entries still COOLING DOWN: already anchored a post inside the window.
+
+    Deterministic — read off the window's post texts with `entry_echoed_in`, because there is no
+    per-post story column. ``window_texts`` is every post in the cooldown window
+    (`STORY_COOLDOWN_POSTS` / `STORY_COOLDOWN_DAYS`, whichever is longer).
+
+    Args:
+        entries: The story-bank rows.
+        window_texts: The cooldown window's post texts.
+
+    Returns:
+        The cooling entries' ids.
+    """
+    return recently_used_ids(entries, window_texts)
+
+
 def select_story(entries: Optional[list], subject: Optional[str] = None,
                  focus_topics: Optional[list] = None,
                  min_relevance: Optional[int] = None,
-                 recent_texts: Optional[list] = None) -> Optional[dict]:
+                 recent_texts: Optional[list] = None,
+                 cooldown_texts: Optional[list] = None) -> Optional[dict]:
     """The one entry this post is anchored to, or None when the bank can't ground it.
 
     Relevance decides WHICH entries are eligible; rotation decides which eligible one is used, so
@@ -150,9 +175,17 @@ def select_story(entries: Optional[list], subject: Optional[str] = None,
     loop" story, because ``used_count`` only advances once a post is written): an eligible entry
     echoed in any of them is skipped while a fresh eligible one exists. When every eligible
     entry is recent, the least-used one is still returned — a repeat beats a post with no anchor.
+
+    ``cooldown_texts`` is the HARD version, for posts (showcase round 4): an entry echoed in any
+    post of the cooldown window is not eligible at all, and when every entry is cooling the answer
+    is None, so the post runs on research and curated material instead of telling the same story a
+    fourth time. Comments keep the soft rotation (they pass no cooldown window).
     """
     usable = [e for e in (entries or []) if isinstance(e, dict) and entry_text(e)
               and e.get("active", True)]
+    if cooldown_texts:
+        cooling = cooling_ids(usable, cooldown_texts)
+        usable = [e for e in usable if e.get("id") not in cooling]
     if not usable:
         return None
     threshold = relevance_min_tokens() if min_relevance is None else min_relevance
@@ -215,6 +248,47 @@ def no_story_directive() -> str:
         "the sourced material instead, and let the author's stated expertise carry the credibility.\n")
 
 
+# How many curated-pool items ride into a cooled-down post's prompt, and how much of each.
+COOLDOWN_CURATED_ITEMS = 3
+COOLDOWN_CURATED_EXCERPT_CHARS = 280
+
+
+def cooldown_story_directive(curated_items: Optional[list] = None) -> str:
+    """The writer-side injection when every story-bank entry is COOLING DOWN (showcase round 4).
+
+    Not the empty-bank fallback: this author HAS stories, they have just each anchored a recent
+    post. So the post is built on outside material (the research findings already in the prompt,
+    and up to `COOLDOWN_CURATED_ITEMS` items from the user's curated-sources pool, credited by name)
+    while the no-invention rule stays exactly as hard: the story bank is still the ONLY source of a
+    first-person fact, and no entry is offered this time.
+
+    Args:
+        curated_items: Curated-source rows (publisher, title, excerpt); may be empty.
+
+    Returns:
+        The directive.
+    """
+    lines = [
+        "\n\nNO STORY THIS TIME — the author's own stories have all been told recently:",
+        "- Do NOT retell, paraphrase or allude to any personal anecdote, build, incident, client "
+        "or result of the author's. This post is about something OUTSIDE their own projects.",
+        "- Build it on the research findings above"
+        + (" and/or the outside items below" if curated_items else "")
+        + ": name who found or reported each fact ('BLS reports…', 'Shopify found…') and say "
+          "what it means for the reader's business.",
+        "- ABSOLUTE RULE: no first-person claims of experience, numbers, clients or outcomes. The "
+        "author's credibility comes from the quality of the take, not from an invented story.",
+    ]
+    for item in [i for i in (curated_items or []) if isinstance(i, dict)][:COOLDOWN_CURATED_ITEMS]:
+        title = str(item.get("title") or "").strip()
+        if not title:
+            continue
+        who = str(item.get("publisher") or item.get("author") or "an outside source").strip()
+        excerpt = " ".join(str(item.get("excerpt") or "").split())[:COOLDOWN_CURATED_EXCERPT_CHARS]
+        lines.append(f"- OUTSIDE ITEM ({who}): {title}" + (f" — {excerpt}" if excerpt else ""))
+    return "\n".join(lines) + "\n"
+
+
 # --- Fabricated-specific detection -------------------------------------------------------------
 # The deterministic (no-LLM) counterpart to the directive above: a specific the draft states in the
 # FIRST PERSON that appears nowhere in the material we gave it is, by definition, invented. Only run
@@ -268,6 +342,56 @@ def unsourced_specifics(content: Optional[str], sources: Optional[list]) -> list
         for token in sorted(specific_tokens(sentence)):
             if token not in allowed and token not in found:
                 found.append(token)
+    return found
+
+
+# Company/industry nouns a draft can bolt onto the author's own story ("one e-commerce story taught
+# me", "our SaaS platform") — showcase round 4 shipped an "e-commerce platform" claim onto a
+# LinkedIn-automation build. Matched case-insensitively on word boundaries; a term the story bank
+# or the profile states is the author's real context and passes.
+INDUSTRY_CLAIM_TERMS: tuple = (
+    "e-commerce", "ecommerce", "online store", "retail", "retailer", "saas", "fintech", "healthcare",
+    "hospital", "clinic", "dental practice", "law firm", "manufacturing", "manufacturer",
+    "logistics", "real estate", "restaurant", "hospitality", "insurance", "banking", "nonprofit",
+    "non-profit", "marketplace", "fortune 500", "construction", "accounting firm", "edtech",
+)
+_INDUSTRY_CLAIM_RE = re.compile(
+    r"(?<![\w-])(" + "|".join(re.escape(t) for t in sorted(INDUSTRY_CLAIM_TERMS, key=len,
+                                                            reverse=True)) + r")(?![\w-])",
+    re.IGNORECASE)
+_CLAIM_SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+|\n+")
+# A sentence that attributes something to the AUTHOR or their work: first person, or the words a
+# draft uses to dress up a story ("one client", "a case study", "this story").
+_AUTHOR_CLAIM_RE = re.compile(
+    r"\b(?:i|i'm|i've|i'd|me|my|we|we're|we've|our|us|client|clients|customer of mine|"
+    r"case study|story)\b", re.IGNORECASE)
+
+
+def unsourced_industry_claims(content: Optional[str], sources: Optional[list]) -> list:
+    """Company/industry claims about the author's work that no source we supplied makes.
+
+    Deterministic, the industry-noun twin of `unsourced_specifics`: a sentence that attributes
+    something to the author (first person, or "client"/"story"/"case study") and names an industry
+    from `INDUSTRY_CLAIM_TERMS` the story bank and profile never mention is a bolted-on claim. A
+    third-person research sentence ("e-commerce brands saw…") is not checked.
+
+    Args:
+        content: The draft.
+        sources: The author's facts — story-bank text and profile, never outside research.
+
+    Returns:
+        The offending terms, lowercased, in the order they appear.
+    """
+    allowed = " ".join(str(s) for s in (sources or []) if s).lower()
+    found: list = []
+    for sentence in _CLAIM_SENTENCE_SPLIT.split(content or ""):
+        if not _AUTHOR_CLAIM_RE.search(sentence):
+            continue
+        for match in _INDUSTRY_CLAIM_RE.finditer(sentence):
+            term = match.group(1).lower()
+            if term not in found and not re.search(
+                    r"(?<![\w-])" + re.escape(term) + r"(?![\w-])", allowed):
+                found.append(term)
     return found
 
 

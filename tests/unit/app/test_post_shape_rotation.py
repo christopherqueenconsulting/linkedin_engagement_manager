@@ -7,6 +7,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from cqc_lem.utilities.ai.content_framework import post_topic
+
 pytestmark = pytest.mark.unit
 
 _RCP = "cqc_lem.app.run_content_plan"
@@ -54,7 +56,8 @@ class TestPostShapeRotation:
         assert bp["format"] not in ("personal_lesson", "contrarian_take")
         assert bp["hook_style"] not in ("question", "surprising_stat")
         hist.assert_called_once()
-        save.assert_called_once_with(77, bp["format"], bp["hook_style"], topic=bp.get("subject"))
+        save.assert_called_once_with(77, bp["format"], bp["hook_style"],
+                                     topic=post_topic(out, bp.get("subject")))
 
     def test_no_persistence_without_post_id(self):
         out, captured, _, save, _ = _run(post_id=None)
@@ -70,7 +73,7 @@ class TestPostShapeRotation:
         assert captured["blueprint"].items() >= bp_in.items()
         assert "fact_anchors" not in bp_in
         hist.assert_not_called()
-        save.assert_called_once_with(77, "tactical_list", "bold_claim", topic=None)
+        save.assert_called_once_with(77, "tactical_list", "bold_claim", topic=post_topic(out))
 
     def test_lead_magnet_cta_woven_when_enabled_and_selected(self):
         lm = {"enabled": True, "keyword": "AUDIT", "message": "Free profile audit checklist."}

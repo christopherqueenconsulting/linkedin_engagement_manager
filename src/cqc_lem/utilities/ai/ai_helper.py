@@ -1812,14 +1812,22 @@ def generate_nurture_dm(their_message: str, intent: str, profile: "LinkedInProfi
 
 @llm_step("hook")
 def optimize_post_hook(post_content: str, prefs: dict = None,
-                       preserve_cta_keyword: str = None) -> str:
+                       preserve_cta_keyword: str = None, cta_type: str = None) -> str:
     """Rewrite a generated post so it opens with a scroll-stopping hook within the first ~210
     characters (before LinkedIn's '…more' fold) and, when the topic fits, frames it as save-worthy
     (a framework/checklist) with ONE soft 'save this' invite. Preserves substance + voice. Returns
     the original text on any failure.
+
+    `cta_type` is the close the CTA rotation assigned (showcase round 4). When it is set and is not
+    the save close, the pass keeps the draft's own close instead of adding a save invite — the
+    reflex save line on every post is part of what made the closes interchangeable.
     """
     if not post_content:
         return post_content
+    from cqc_lem.utilities.ai.content_framework import CTA_TYPE_SAVE
+    keep_close = ("\n\nCLOSE — PRESERVE: keep the draft's existing closing line(s) as its close. Do "
+                  "NOT add a 'save this' invite, a new question, or any other ask."
+                  if cta_type and cta_type != CTA_TYPE_SAVE else "")
     system_prompt = {
         "role": "system",
         "content": """You are a LinkedIn post editor. Rewrite the post so its FIRST LINE is a
@@ -1837,7 +1845,8 @@ def optimize_post_hook(post_content: str, prefs: dict = None,
         # This pass's own NO-engagement-bait rule is precisely what used to rewrite the sanctioned
         # 'comment KEYWORD' lead-magnet ask into 'reach out for...' — the preserve note carves the
         # configured keyword out of that rule. "" when no keyword.
-        + _lead_magnet_preserve_note(preserve_cta_keyword),
+        + _lead_magnet_preserve_note(preserve_cta_keyword)
+        + keep_close,
     }
     user_prompt = {"role": "user", "content": post_content}
     try:

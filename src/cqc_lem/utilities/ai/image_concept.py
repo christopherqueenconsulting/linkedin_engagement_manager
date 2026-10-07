@@ -1847,6 +1847,10 @@ def thesis_number(concept: ImageConcept, source: str, title: Optional[str] = Non
         source: The analysed text (title first, as Stage 1 reads it).
         title: The piece's title.
 
+    Showcase round 4 puts the TITLE first: when the title states a stat that the body also states,
+    that stat is the cover's number. ed18's title said 53.7% and its cover said 45% — the cover
+    and the headline above it disagreed, which reads as an error whatever each number measures.
+
     Returns:
         The number as the source writes it ("$30K", "45%"), or ''.
     """
@@ -1854,13 +1858,16 @@ def thesis_number(concept: ImageConcept, source: str, title: Optional[str] = Non
     body = source or ""
     if title and body.startswith(title):
         body = body[len(title):]
+    for number in stat_numbers(title or ""):
+        if number.lower() in body.lower():
+            return _source_casing(number, body)
     sentences = [s for s in _SENTENCE.split(body.strip()) if s.strip()]
     thesis_tokens = set(_content_tokens(concept.thesis))
     claim_sentences = [s for s in sentences if thesis_tokens and len(
         thesis_tokens & set(_content_tokens(s))) * 2 >= len(thesis_tokens)]
     tied_text = " ".join([title or "", *sentences[:2], *claim_sentences]).lower()
-    # Round 14: among tied stats, the one whose OWN sentence best matches the thesis wins — ed18's
-    # title stat (53.7%, a share of posts) must not beat the engagement gap (45%).
+    # Round 14: among tied stats, the one whose OWN sentence best matches the thesis wins. (A
+    # title stat the body also states returned above, before this ranking — round 4.)
     claim = {t for t in thesis_tokens if t not in _HOOK_FREE_WORDS and len(t) >= 4}
     best, best_score = "", -1
     for text in (concept.thesis, *concept.specific_entities):
@@ -1952,7 +1959,16 @@ def _enforce_stat(concept: ImageConcept, payload: Any, source: str, title: Optio
                  if a and not any(ch.isdigit() for ch in a)), "") or "saved"
     hook = f"{number} {noun}"  # the stat survives even when no rule-passing hook could carry it
     if number_claim_mismatch(hook, source):
-        return concept  # round 14: never a false pairing — the number is dropped instead
+        # round 14: never a false pairing — the number is dropped instead. Round 4: and when the
+        # title carries the stat, a hook leading on a DIFFERENT number gives way to a number-free
+        # option, so the cover never contradicts the headline above it.
+        if number in stat_numbers(title or "") and stat_numbers(concept.hook_phrase):
+            plain = next((h for h in (concept.hook_options or {}).values()
+                          if h and not stat_numbers(h)), "")
+            if plain:
+                return dataclasses.replace(concept, hook_phrase=plain,
+                                           hook_shape=hook_shape_of(plain))
+        return concept
     return dataclasses.replace(concept, hook_phrase=hook, hook_shape="number_claim",
                                hook_options={**(concept.hook_options or {}), "number_claim": hook})
 
