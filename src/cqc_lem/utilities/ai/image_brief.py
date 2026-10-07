@@ -234,6 +234,9 @@ CLICHE_OBJECTS: tuple[str, ...] = (
     "pipe", "plumbing", "valve", "faucet", "drip", "leak", "gear", "cog", "gauge",
     "lightbulb", "light bulb", "puzzle piece", "jigsaw", "handshake", "chess", "chessboard",
     "chess piece", "robot", "android", "glowing brain", "neural network glow",
+    # #2241 showcase B: an editorial concept rendered a row of human brains around an alarm
+    # clock — the glowing brain's cousin.
+    "brain", "brains", "human brain", "brain model",
     "glowing neural network", "circuit board", "binary code", "matrix code", "rocket", "target",
     "dartboard", "bullseye", "mountain summit", "mountain peak", "compass", "hourglass", "domino",
     "chain link", "maze", "ladder", "key and lock", "lock and key", "padlock", "crystal ball",

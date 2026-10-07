@@ -1008,7 +1008,11 @@ class TestRoundTwelveHookAssertsThesis:
                                emotional_beat="", hook_phrase="Who pays?",
                                treatment="people_scene", treatment_rationale="", weak=False)
         with patch(_CREATE, side_effect=RuntimeError("down")):
-            assert _hook_asserts_thesis(concept, {}, "s", None, "post_image", 1) is concept
+            out = _hook_asserts_thesis(concept, {}, "s", None, "post_image", 1)
+        # Kept as-is (fails open); it is recorded as the hook the judge passed, so the final gate
+        # does not ask an unreachable judge again.
+        assert out.hook_phrase == "Who pays?" and out.valence == concept.valence
+        assert out.hook_verified == "Who pays?"
 
 
 @pytest.mark.unit
@@ -1313,7 +1317,8 @@ class TestRoundFifteenNumberCasing:
         concept = ImageConcept(thesis="An audit saved $30K quarterly", audience="",
                                specific_entities=("$30K",), emotional_beat="",
                                hook_phrase="Audit saved $30k quarterly", treatment="people_scene",
-                               treatment_rationale="", weak=False)
+                               treatment_rationale="", weak=False,
+                               hook_verified="Audit saved $30k quarterly")
         with patch(_CREATE) as create:
             out = _final_hook(concept, {}, self._ED16_SOURCE, None, "newsletter", 1)
         assert out.hook_phrase == "Audit saved $30K quarterly"

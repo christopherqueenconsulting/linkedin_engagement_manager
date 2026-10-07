@@ -190,3 +190,22 @@ def test_the_legacy_judge_fails_loudly_too():
     assert verdict.checked is False and verdict.acceptable is True
     assert "legacy judge reply was not a JSON object" in verdict.issues[0]
     assert warn.call_args.kwargs["exc"] is not None
+
+
+@pytest.fixture(autouse=True)
+def _no_last_resort_card():
+    """Pin the treatment chain itself: the $0 last-resort typeset card is disabled here.
+
+    Since #2241 showcase B a post whose every treatment fails ships the last-resort card instead
+    of nothing; these tests assert the chain's own outcomes and the bare-ship path that remains
+    when even that card cannot be drawn. The card has its own tests
+    (``test_post_last_resort_card.py``).
+    """
+    import unittest.mock
+
+    from cqc_lem.utilities import post_image as _post_image
+
+    with unittest.mock.patch.object(
+            _post_image, "_render_last_resort_card",
+            return_value=_post_image._Rendered(reason="last resort disabled in this test")):
+        yield

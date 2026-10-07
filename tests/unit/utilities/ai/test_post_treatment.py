@@ -282,7 +282,9 @@ def test_a_six_post_sequence_never_runs_a_dimension_three_times():
         treatment = rhythm.plan.chain[0]
         record = {"treatment": treatment, "layout": rhythm.layout,
                   "panel": rhythm.panel if treatment in (T, D) else None,
-                  "shot": rhythm.shot, "grade": rhythm.grade if treatment in (T, P) else None}
+                  "shot": rhythm.shot, "grade": rhythm.grade if treatment in (T, P) else None,
+                  "setting": (pt.setting_class(rhythm.setting or concept.setting) or None)
+                  if treatment in (T, P) else None}
         for dim in pt.RHYTHM_DIMENSIONS:
             history[dim].insert(0, record[dim])
     for dim, values in history.items():

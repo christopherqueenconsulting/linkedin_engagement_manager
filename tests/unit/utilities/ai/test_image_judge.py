@@ -832,8 +832,11 @@ class TestRoundElevenJudge:
         verdict = self._video(tmp_path, 2)
         assert not verdict.acceptable and "specificity" in verdict.failing
 
-    def test_a_captioned_video_frame_keeps_the_floor_of_4(self, tmp_path):
-        verdict = self._video(tmp_path, 3, hook_text="Payroll eats first")
+    def test_a_captioned_video_frame_takes_the_same_floor_of_3(self, tmp_path):
+        # #2241 showcase B, owner-delegated: a video frame takes the photo floors with OR without
+        # a caption — specificity 3, but scroll_stop and craft must reach 4.
+        assert self._video(tmp_path, 3, hook_text="Payroll eats first").acceptable
+        verdict = self._video(tmp_path, 2, hook_text="Payroll eats first")
         assert not verdict.acceptable and "specificity" in verdict.failing
 
     @pytest.mark.parametrize("criterion,score", [("no_cliche", 4), ("craft", 3)])

@@ -1183,6 +1183,75 @@ _DRAWERS = {STAT_CARD: _draw_stat_card, HIGHLIGHT_CHART: _draw_highlight_chart,
             CHECKLIST: _draw_checklist}
 
 
+TYPESET_CARD = "typeset_card"
+
+
+def render_typeset_card(hook: str, *, surface: str = "post_image", kicker: str = "",
+                        signature: str = "", brand: Optional[BrandStyle] = None,
+                        layout: Optional[str] = None, panel: Optional[str] = None,
+                        out_path: Optional[str] = None) -> GraphicRender:
+    """The $0 LAST RESORT: the post's hook on a brand panel, beside a code-drawn accent shape.
+
+    #2241 showcase B: posts 97 and 137 shipped with NO image — the AI render was rejected and no
+    data or quote card applied. This card needs only a headline: the scene region holds no photo,
+    just a brand accent shape (a gold ring and a dark-gold rule on the panel's ground), and the
+    headline panel is ``image_compose``'s, on the rotated panel variant. Nothing here calls a model.
+
+    Args:
+        hook: The headline — the post's own hook.
+        surface: ``post_image`` (1080x1350) or ``newsletter``.
+        kicker: The uppercase topic tag.
+        signature: The byline.
+        brand: The exact colours; the reference brand by default.
+        layout: A split layout; the surface default when not one.
+        panel: The rotated panel variant.
+        out_path: Where to write; a temp file by default.
+
+    Returns:
+        The render (no facts: the hook is the post's own words).
+
+    Raises:
+        GraphicError: There is no headline to set.
+    """
+    if not (hook or "").strip():
+        raise GraphicError("a typeset card needs a headline")
+    brand = brand or BrandStyle()
+    size = GRAPHIC_CANVAS.get(surface, GRAPHIC_CANVAS["post_image"])
+    layout = layout if layout in SPLIT_LAYOUTS else DEFAULT_LAYOUT.get(surface, SPLIT_LAYOUTS[0])
+    plan = fit_cover(size, layout, headline_parts(hook, kicker, signature)).plan
+    scene = plan.scene
+    pal = _palette(brand)
+    region = _Canvas((scene.width, scene.height), pal.soft, size[0],
+                     offset=(scene.left, scene.top))
+    w, h = region.w, region.h
+    r = round(min(w, h) * 0.34)
+    cx, cy = round(w * 0.62), round(h * 0.5)
+    ring = max(8, round(r * 0.12))
+    region.draw.ellipse((cx - r, cy - r, cx + r, cy + r), outline=(*pal.gold, 255), width=ring)
+    rule_w = round(w * 0.28)
+    region.draw.rectangle((round(w * 0.12), cy + r + ring, round(w * 0.12) + rule_w,
+                           cy + r + ring * 2), fill=(*pal.accent, 255))
+    region.record("accent", "", (cx - r, cy - r, cx + r, cy + r), (0, 0, w, h))
+    handle, region_path = tempfile.mkstemp(suffix=".png", prefix="lem_typeset_")
+    os.close(handle)
+    try:
+        region.image.convert("RGB").save(region_path, "PNG")
+        if out_path is None:
+            handle, out_path = tempfile.mkstemp(suffix=".png", prefix="lem_typeset_card_")
+            os.close(handle)
+        path = compose_headline(region_path, hook, layout=layout, brand=brand, surface=surface,
+                                out_path=out_path, kicker=kicker, signature=signature,
+                                canvas=size, panel=panel)
+    finally:
+        try:
+            os.remove(region_path)
+        except OSError as e:
+            log_debug("Temp typeset region not removed", error=str(e),
+                      action_type="image_archetype")
+    return GraphicRender(path=path, archetype=TYPESET_CARD, facts=(),
+                         placements=tuple(region.placements), canvas=size)
+
+
 _HOOK_FIGURE = re.compile(r"[$€£]?\d[\d,]*(?:\.\d+)?\s?(?:[KkMmBb]n?(?![A-Za-z])|thousand\b|"
                           r"million\b|billion\b)?%?")
 

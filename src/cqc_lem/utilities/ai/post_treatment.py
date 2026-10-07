@@ -53,7 +53,29 @@ CARD_SHARE_WINDOW = 10
 SAMENESS_WINDOW = 5
 MAX_RUN = 2
 # The receipt dimensions the sameness gate reads, in the order they are recorded.
-RHYTHM_DIMENSIONS = ("treatment", "layout", "panel", "shot", "grade")
+RHYTHM_DIMENSIONS = ("treatment", "layout", "panel", "shot", "grade", "setting")
+
+# #2241 showcase B: two consecutive people posts were both "in a warehouse with boxes". A setting
+# CLASS may not appear in two consecutive AI renders. Matched by keyword, earliest in the text
+# first (a longer keyword wins a tie, so "home office" is never read as "office").
+SETTING_CLASSES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("warehouse", ("warehouse", "loading dock", "stockroom", "pallet", "boxes", "depot",
+                   "distribution center", "storage room")),
+    ("home_office", ("home office", "kitchen table", "living room", "spare room", "at home",
+                     "apartment")),
+    ("cafe", ("café", "cafe", "coffee shop", "coffeehouse")),
+    ("conference", ("conference", "expo", "trade show", "summit", "auditorium", "keynote",
+                    "event hall", "hallway")),
+    ("shop_floor", ("shop floor", "factory", "workshop", "production line", "plant floor",
+                    "assembly line", "manufacturing")),
+    ("retail", ("store", "storefront", "boutique", "checkout counter", "shop counter")),
+    ("outdoors", ("street", "park", "sidewalk", "outdoors", "outside")),
+    ("office", ("office", "meeting room", "boardroom", "cubicle", "desk", "workspace",
+                "co-working", "coworking")),
+)
+# Used only when the article itself names no alternative setting.
+DEFAULT_SETTINGS = {"office": "a bright open-plan office", "home_office": "a home office by a window",
+                    "cafe": "a quiet café table", "conference": "a conference hallway"}
 
 QUOTE_MAX_CHARS = 160
 QUOTE_MIN_CHARS = 30
@@ -86,6 +108,59 @@ def lru_order(options: Sequence[str], recent: Sequence[str], seed: str = "") -> 
     unused = [o for o in options if o not in seen]
     used = sorted((o for o in options if o in seen), key=seen.index, reverse=True)
     return unused + used
+
+
+def _setting_hits(text: Optional[str]) -> list[tuple[int, int, str, str]]:
+    """``(start, -length, class, matched text)`` for every setting keyword in ``text``."""
+    lowered = (text or "").lower()
+    hits = []
+    for name, keywords in SETTING_CLASSES:
+        for keyword in keywords:
+            for match in re.finditer(rf"\b{re.escape(keyword)}\b", lowered):
+                hits.append((match.start(), -len(keyword), name,
+                             (text or "")[match.start():match.end()]))
+    return sorted(hits)
+
+
+def setting_class(text: Optional[str]) -> str:
+    """The setting CLASS a scene description is in — warehouse, office, café… — or ``""``.
+
+    Args:
+        text: A concept's setting, or a render prompt.
+
+    Returns:
+        The class of the earliest setting keyword, or ``""`` when none is named.
+    """
+    hits = _setting_hits(text)
+    return hits[0][2] if hits else ""
+
+
+def reroll_setting(setting: str, recent: Sequence[Any], article: str) -> tuple[str, bool]:
+    """Keep Stage 1's setting unless its class repeats the last AI render's; then pick another.
+
+    A setting the concept leaves EMPTY is re-rolled too when there is a recent class, because the
+    brief author then picks freely — which is how the warehouse came back. The alternative comes
+    from the ARTICLE's own words (the first setting keyword of a different class it names); only
+    an article naming none takes a neutral default.
+
+    Args:
+        setting: Stage 1's setting ('' when it named none).
+        recent: The setting classes of recent posts, most recent first; None for a non-AI post.
+        article: The post text.
+
+    Returns:
+        ``(setting, rerolled)`` — the setting to brief with ('' = Stage 1's own, unchanged).
+    """
+    last = next((r for r in recent if r), "")
+    if not last or (setting and setting_class(setting) != last):
+        return "", False
+    for _start, _length, name, words in _setting_hits(article):
+        if name != last:
+            return words, True
+    for name, phrase in DEFAULT_SETTINGS.items():
+        if name != last:
+            return phrase, True
+    return "", False
 
 
 def repeats_run(recent: Sequence[Any], value: Any, max_run: int = MAX_RUN) -> bool:
@@ -447,6 +522,10 @@ def rhythm_history(receipts: Sequence[Mapping[str, Any]]) -> dict[str, list]:
                       "layout": concept.get("layout") if composite else None,
                       "panel": "charcoal" if composite else None,
                       "shot": concept.get("shot") or None, "grade": None}
+        if "setting" not in rhythm and rhythm.get("treatment") in AI_SCENE_TREATMENTS:
+            # A receipt from before the setting dimension: read it off what was briefed.
+            rhythm = dict(rhythm, setting=setting_class(concept.get("setting"))
+                          or setting_class(receipt.get("prompt")) or None)
         for dim in RHYTHM_DIMENSIONS:
             value = rhythm.get(dim)
             history[dim].append(str(value) if value else None)
@@ -468,6 +547,8 @@ class PostRhythm:
         quote_candidates: The deterministic pull-quote candidates (empty off opinion posts).
         opinion: Why the post reads as an opinion ('' when it does not).
         rerolled: The dimensions the sameness gate re-rolled.
+        setting: The setting to brief an AI scene with when the gate re-rolled it ('' keeps
+            Stage 1's own).
     """
 
     plan: TreatmentPlan
@@ -478,6 +559,7 @@ class PostRhythm:
     quote_candidates: tuple[str, ...]
     opinion: str
     rerolled: tuple[str, ...]
+    setting: str = ""
 
 
 def unavailable_treatments(concept: Any, byline: Optional[str], candidates: Sequence[str],
@@ -549,6 +631,11 @@ def plan_post_rhythm(concept: Any, text: str, history: Mapping[str, Sequence[Any
     shot, again = gate_value(getattr(concept, "shot", "") or "", SHOTS, history.get("shot", []),
                              seed + "shot")
     rerolled += ["shot"] if again else []
+    setting = ""
+    if concept is not None:
+        setting, again = reroll_setting(getattr(concept, "setting", "") or "",
+                                        history.get("setting", []), text)
+        rerolled += ["setting"] if again else []
     return PostRhythm(plan=plan, panel=panel or "charcoal", grade=grade or "",
                       layout=layout or "", shot=shot or "", quote_candidates=candidates,
-                      opinion=opinion, rerolled=tuple(rerolled))
+                      opinion=opinion, rerolled=tuple(rerolled), setting=setting)

@@ -30,6 +30,7 @@ receipt would make an unauthored image read as one that depicted nothing.
 
 import dataclasses
 import os
+import re
 import secrets
 import shutil
 from dataclasses import dataclass, field
@@ -557,6 +558,67 @@ def _render_quote_card(concept, rhythm, text: str, *, user_id: int, post_id: Opt
     return out
 
 
+# The last resort's headline when Stage 1 gave none: the post's own opening sentence, verbatim,
+# when it is short enough to set.
+_LAST_RESORT_MAX_WORDS = 12
+
+
+def last_resort_hook(concept, text: str) -> Optional[str]:
+    """The headline a last-resort typeset card sets: Stage 1's hook, else the post's first line.
+
+    Args:
+        concept: Stage 1's concept, or None.
+        text: The post.
+
+    Returns:
+        The hook, or None when neither exists in a settable length.
+    """
+    hook = _card_hook(concept) if concept is not None else None
+    if hook:
+        return hook
+    first = re.split(r"(?<=[.!?])\s+|\n+", (text or "").strip(), maxsplit=1)[0].strip()
+    if first and len(first.split()) <= _LAST_RESORT_MAX_WORDS and not re.search(
+            r"https?://|#\w", first):
+        return first
+    return None
+
+
+def _render_last_resort_card(concept, rhythm, text: str, *, user_id: int,
+                             post_id: Optional[int], brand: str,
+                             ratio: str) -> _Rendered:
+    """The guaranteed $0 card (#2241 showcase B): the hook on a brand panel, no photo, no judge.
+
+    Every treatment in the chain failed — posts 97 and 137 shipped bare that way. This is drawn
+    by code from the post's own hook, so there is nothing for a judge to catch that the hook gate
+    has not already checked; it records ``gate_verdict = "last_resort"`` so it is never mistaken
+    for a graded image. A post ships imageless only when even this fails.
+    """
+    from cqc_lem.utilities.ai.image_compose import brand_style
+    from cqc_lem.utilities.ai.image_gen import _kicker_for
+    from cqc_lem.utilities.ai.image_graphics import GraphicError, render_typeset_card
+
+    out = _Rendered()
+    hook = last_resort_hook(concept, text)
+    if not hook:
+        out.reason = "no headline for the last-resort card"
+        return out
+    out_dir = os.path.join(assets_dir, "images", "generated", str(user_id or "system"))
+    os.makedirs(out_dir, exist_ok=True)
+    try:
+        drawn = render_typeset_card(
+            hook, surface="post_image", kicker=_kicker_for(concept) if concept else "",
+            brand=brand_style(brand), layout=rhythm.layout or getattr(concept, "layout", None),
+            panel=rhythm.panel, out_path=os.path.join(out_dir, f"img_{secrets.token_hex(8)}.png"))
+    except (GraphicError, OSError, ValueError) as e:
+        out.reason = f"the last-resort card could not be drawn: {e}"
+        return out
+    out.path = drawn.path
+    out.render_info = {"gate_verdict": "last_resort", "archetype_rendered": "typeset_card"}
+    out.brief = _code_drawn_brief(concept, "typeset_card", hook, ratio)
+    out.render_path = "code_drawn_last_resort"
+    return out
+
+
 def _render_ai_post(concept, text: str, rhythm, treatment: str, *, user_id: int,
                     post_id: Optional[int], profile, brand: str, ratio: str) -> _Rendered:
     """``typeset_card`` or ``photo_only``: brief, then the gated render (avatar first when due).
@@ -579,6 +641,12 @@ def _render_ai_post(concept, text: str, rhythm, treatment: str, *, user_id: int,
     if concept is not None:
         gated = {"layout": rhythm.layout or concept.layout,
                  "shot": rhythm.shot if concept.shot else concept.shot}
+        if getattr(rhythm, "setting", ""):
+            # The sameness gate re-rolled the setting class (#2241 showcase B: two warehouses in a
+            # row); the cast line carries the setting too, so both move together.
+            gated["setting"] = rhythm.setting
+            if isinstance(concept.cast, dict):
+                gated["cast"] = dict(concept.cast, setting=rhythm.setting)
         if any(getattr(concept, k) != v for k, v in gated.items()):
             # Only a sameness re-roll changes Stage 1's own pick; otherwise the concept is as given.
             concept = dataclasses.replace(concept, **gated)
@@ -676,6 +744,7 @@ def _rhythm_receipt(treatment: str, rhythm, done: _Rendered, card_share: float,
     gate reads as a break in any run.
     """
     from cqc_lem.utilities.ai.image_concept import AI_ARCHETYPES
+    from cqc_lem.utilities.ai.post_treatment import setting_class
 
     if treatment == "typeset_card" and not getattr(done.brief, "hook_text", None):
         # No headline survived (Stage 1 unavailable): nothing was typeset, so it shipped photo-only.
@@ -695,6 +764,10 @@ def _rhythm_receipt(treatment: str, rhythm, done: _Rendered, card_share: float,
         "panel": (rhythm.panel if has_panel else None),
         "shot": (getattr(concept, "shot", "") or None) if people else None,
         "grade": (rhythm.grade or None) if ai_scene else None,
+        # The setting CLASS the shipped scene is in, read off what was briefed (#2241 B).
+        "setting": ((setting_class(getattr(concept, "setting", ""))
+                     or setting_class(getattr(done.brief, "prompt", ""))) or None)
+        if ai_scene else None,
         "card_share": card_share,
         "card_wanted": rhythm.plan.card_wanted,
         "chain": list(rhythm.plan.chain),
@@ -806,6 +879,18 @@ def generate_image_for_post(user_id: int, text: str, post_id: Optional[int] = No
                          "treatment"], reason=attempt.reason, next_treatment=treatment,
                      **_gate_log_fields(attempt.render_info))
 
+    if done is None:
+        # The guaranteed $0 last resort (#2241 showcase B): a code-drawn typeset card of the
+        # post's own hook. A post ships imageless only when even this cannot be drawn.
+        last = _render_last_resort_card(concept, rhythm, text, user_id=user_id, post_id=post_id,
+                                        brand=brand, ratio=ratio)
+        if last.path:
+            log_info("Every post image treatment failed — shipping the last-resort typeset card",
+                     user_id=user_id, post_id=post_id, action_type="post_treatment",
+                     fallbacks="; ".join(f"{f['treatment']}: {f['reason']}" for f in fallbacks))
+            done, treatment = last, "typeset_card"
+        else:
+            fallbacks.append({"treatment": "typeset_card (last resort)", "reason": last.reason})
     if done is None:
         tried = "; ".join(f"{f['treatment']}: {f['reason']}" for f in fallbacks)
         if rejection is not None:
