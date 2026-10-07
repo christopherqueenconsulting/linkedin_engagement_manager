@@ -72,8 +72,8 @@ of seven **archetypes**, and the people photo is the rarest of them.
 
 **Selection** (`image_concept.select_archetype`, deterministic). Candidates come from what
 VALIDATED, never from what Stage 1 hoped for; a code-drawn archetype also needs a headline. Score
-= evidence strength (`ARCHETYPE_BASE_SCORES`: chart/receipt/before-after 4, stat card/checklist/
-people 3, editorial 1) + 0.5 for Stage 1's own `archetype` pick (a TIEBREAK, never more) − 4 for
+= evidence strength (`ARCHETYPE_BASE_SCORES`: chart/receipt/before-after 4, stat card/checklist 3,
+people 2.5, editorial 1) + 0.5 for Stage 1's own `archetype` pick (a TIEBREAK, never more) − 4 for
 either of the last two archetypes the author shipped. Equal scores go to code-drawn first. The
 ranking becomes a fallback CHAIN that stops at the first AI archetype; that one sets the
 `treatment` (`editorial_concept`, or `people_scene` for a human moment), so the brief is always
@@ -146,6 +146,52 @@ folds into the existing seven criteria rather than adding an eighth: a total und
 `POP_SHIP_FLOOR` (9/14) caps `scroll_stop` at 3, a zero thesis fit caps `specificity` at 3, and
 a code-drawn graphic's credibility is 2 by construction. The scores ride on the receipt as
 `gate_pop`. A faceless archetype is never capped for a missing or mismatched emotion.
+
+## Showcase round — why the code-drawn archetypes lost, and the fixes
+
+A read-only showcase run generated four newsletter covers through the real path: all four were people
+or "editorial concept" photographs, although every article stated a thesis stat ($30K, 45%, 95%).
+The receipts (`cover_*.brief.json`) show the cause was never the rotation penalty or a cover
+exclusion. It was two things:
+
+1. **The validator refused true facts.** ed16's stat came back as value `"30K"`, unit `"$"` and was
+   refused as "30K$ is not in its source sentence"; ed18's 45% sentence was quoted with a U+2011
+   non-breaking hyphen ("human‑written") against the article's plain one; every step of ed18's
+   four-step list was refused for being over 8 words. Now `image_graphics.split_value` reads a value
+   that carries its own symbol or multiplier (the multiplier must still match the sentence's — the
+   drawn string is still the sentence's own); `_norm` folds every dash variant and soft hyphen and
+   strips markdown emphasis on BOTH sides; `fit_step` keeps a long step's first 2-8-word CLAUSE (a
+   run of its own words, so it traces exactly as the whole would). Nothing is reworded; a number or
+   multiplier that differs is still refused.
+2. **The score let people outrank a validated graphic.** People scored 3, the same as a checklist
+   or stat card, and Stage 1's +0.5 tiebreak (it hinted people on every human-moment edition) made
+   it 3.5 — ed19's validated checklist (3) lost. `ARCHETYPE_BASE_SCORES[people_scene]` is now
+   **2.5**: the tiebreak can at most TIE a 3.0 graphic, and ties go code-drawn first. People still
+   win when nothing validated, or when the graphic is one of the last two shipped.
+
+**`editorial_concept` is object-only on every path.** ed17/ed18 chose it and shipped a woman on a
+phone: the deterministic fallback, with no surviving idea, became a `concrete_scene` ("the everyday
+objects at the heart of this: not AI"), and the gate's emotion repair ("a closer framing where the
+emotion shows on the face") then asked for a person. Now the fallback stays editorial and builds a
+still life from Stage 1's `idea_nouns`/anchors filtered by `person_word`; `_PERSON_WORDS` also
+refuses role and portrait words (CFO, manager, engineer, buyer, smiling…); a faceless archetype is
+never `emotion_weak` and its repair table (`_FACELESS_REPAIRS`) never mentions a face.
+
+**A hero numeral lifts only a LEADING number.** "We saved $30K per quarter" became hero "$30K" over
+"We saved per quarter". `image_compose.split_hero` now splits only when the number opens the hook
+("45% less engagement…" → "Less engagement…"); otherwise the whole sentence is the headline, in the
+brand primary, with no hero.
+
+**Video frames.** Two of three fell back to Pexels on an "O", a "pause" label and clock numerals.
+`image_gen.trivial_mark` drops a 1-2 character NON-word token from the stray-text check unless the
+blind look calls it legible in the sentence that names it — words ("pause", "AI", "OK") stay strict.
+`VIDEO_FRAME_DIRECTIVE` asks for no clocks, signs or labelled buttons and ONE gold or charcoal
+accent object or wardrobe piece; `video_frame_failure` refuses a prompt naming a clock, sign,
+button or keypad, and the video brand gate accepts only an accent colour (`video_accent_colors`),
+never the off-white neutral any wall satisfies.
+
+**Carousel decks** follow the brand kit, draw their own figures in code and default to no stock —
+`docs/content-quality-audits/carousel.md` §8.
 
 ## Never truncate a hook; source spelling; no label survives (round 15)
 
