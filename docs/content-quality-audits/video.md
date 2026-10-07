@@ -131,7 +131,7 @@ stock matched the WORDS: "model retirement" became an elderly couple, a VARCHAR 
 hands reaching. `_fallback_video_src` now renders `utilities/video_title_card.py`: a $0, 6-8 s
 (`VIDEO_TITLE_CARD_SECONDS`) clip at the tier's ratio (1:1 standard, 9:16 premium) — charcoal or
 off-white ground, Stage 1's hook (else a complete first clause of the post) in Montserrat, gold on
-charcoal, revealed word by word, a gold rule drawing in, the byline, and one brand slab drifting
+charcoal (complete on frame 0 since round 5, § F3c), a gold rule, the byline, and one brand slab drifting
 below the type. Frames are drawn by Pillow and piped raw into libx264. The lower 30% stays clear
 for the caption band. It is stored, probed and captioned like any other video, named
 `title_card_*` so `video_model_tier` (and `posts.video_model` = `title_card`) never reads it
@@ -147,6 +147,24 @@ The sidecar-only alternative (LinkedIn's REST Videos API `initializeUpload` with
 `uploadCaptions: true`) was rejected for now: LEM publishes through `/ugcPosts` +
 `assets?action=registerUpload`, so it would mean migrating the upload path, and a native caption
 track is invisible on the muted autoplay this finding is about.
+
+### F3c — Frame 0 is the thumbnail; three rotated layouts (showcase round 5)
+
+LinkedIn shows a video's FIRST frame as its thumbnail, and the card above revealed its hook word by
+word — slot_123, 135 and 141 sat in the feed as a lone "AI", "What" and "Is". Every word, the
+kicker and the byline are now drawn on frame 0; only secondary elements move (the brand slab
+drifts, the gold rule extends by a third), so the clip still moves for its whole length.
+
+The card takes one of `TITLE_CARD_VARIANTS`: `statement_poster` (the hook at poster scale),
+`number_led` (a figure that LEADS the hook as the hero, the rest beneath — only when lifting it
+leaves a phrase) and `question_kicker` (the kicker on a gold tag, the hook centred; a question hook
+prefers it). The pick is least-recently-used from the author's own history on disk
+(`<assets>/videos/title_card/history/<user_id>.json`, newest first, six deep), so two
+consecutive cards never open on the same layout across workers and restarts; a lost history write
+costs one repeat at most (DEBUG).
+
+A separate thumbnail upload (`uploadThumbnail`) needs the REST Videos API, which LEM does not
+publish through (above); frame 0 is therefore the thumbnail, and it is complete.
 
 What it costs and what it is bounded by:
 

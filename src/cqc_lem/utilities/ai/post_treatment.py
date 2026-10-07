@@ -68,13 +68,24 @@ STYLE_CODE_DRAWN = "code_drawn_card"
 STYLE_QUOTE_CARD = "quote_card"
 QUOTE_CAP = 2
 QUOTE_CAP_WINDOW = 6
+# Round 5: one setting class at most twice in the last six classified AI renders.
+SETTING_CAP = 2
+SETTING_CAP_WINDOW = 6
 
 # #2241 showcase B: two consecutive people posts were both "in a warehouse with boxes". A setting
 # CLASS may not appear in two consecutive AI renders. Matched by keyword, earliest in the text
 # first (a longer keyword wins a tie, so "home office" is never read as "office").
 SETTING_CLASSES: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("warehouse", ("warehouse", "loading dock", "stockroom", "pallet", "boxes", "depot",
-                   "distribution center", "storage room")),
+    # Round 5: rhythm_3 briefed "an e-commerce fulfillment center", which matched no keyword, so
+    # it recorded no setting and rhythm_4's warehouse ran straight after it.
+    ("warehouse", ("warehouse", "loading dock", "loading bay", "stockroom", "stock room",
+                   "pallet", "boxes", "depot", "distribution center", "distribution centre",
+                   "distribution hub", "fulfillment center", "fulfillment centre",
+                   "fulfilment center", "fulfilment centre", "fulfillment floor",
+                   "logistics hub", "logistics center", "sorting area", "sorting facility",
+                   "sorting table",
+                   "packing station", "packing area", "shipping dock", "storage room",
+                   "inventory aisle", "shelving aisle")),
     ("home_office", ("home office", "kitchen table", "living room", "spare room", "at home",
                      "apartment")),
     ("cafe", ("café", "cafe", "coffee shop", "coffeehouse")),
@@ -130,7 +141,8 @@ def _setting_hits(text: Optional[str]) -> list[tuple[int, int, str, str]]:
     hits = []
     for name, keywords in SETTING_CLASSES:
         for keyword in keywords:
-            for match in re.finditer(rf"\b{re.escape(keyword)}\b", lowered):
+            # A plural names the same place ("warehouses", "pallets", "loading docks").
+            for match in re.finditer(rf"\b{re.escape(keyword)}(?:s|es)?\b", lowered):
                 hits.append((match.start(), -len(keyword), name,
                              (text or "")[match.start():match.end()]))
     return sorted(hits)
@@ -149,8 +161,28 @@ def setting_class(text: Optional[str]) -> str:
     return hits[0][2] if hits else ""
 
 
+def blocked_settings(recent: Sequence[Any]) -> frozenset:
+    """The setting classes the next AI render may not use.
+
+    The last AI render's class (never two in a row), plus — round 5 — any class already used
+    ``SETTING_CAP`` times in the last ``SETTING_CAP_WINDOW`` classified renders, so one setting
+    cannot dominate a feed by alternating with another.
+
+    Args:
+        recent: The setting classes of recent posts, most recent first; None for a post whose
+            image was not an AI scene (or named no setting).
+
+    Returns:
+        The blocked classes.
+    """
+    seen = [r for r in recent if r][:SETTING_CAP_WINDOW]
+    blocked = {seen[0]} if seen else set()
+    blocked |= {c for c in seen if seen.count(c) >= SETTING_CAP}
+    return frozenset(blocked)
+
+
 def reroll_setting(setting: str, recent: Sequence[Any], article: str) -> tuple[str, bool]:
-    """Keep Stage 1's setting unless its class repeats the last AI render's; then pick another.
+    """Keep Stage 1's setting unless its class is blocked (``blocked_settings``); then pick another.
 
     A setting the concept leaves EMPTY is re-rolled too when there is a recent class, because the
     brief author then picks freely — which is how the warehouse came back. The alternative comes
@@ -165,14 +197,14 @@ def reroll_setting(setting: str, recent: Sequence[Any], article: str) -> tuple[s
     Returns:
         ``(setting, rerolled)`` — the setting to brief with ('' = Stage 1's own, unchanged).
     """
-    last = next((r for r in recent if r), "")
-    if not last or (setting and setting_class(setting) != last):
+    blocked = blocked_settings(recent)
+    if not blocked or (setting and setting_class(setting) not in blocked):
         return "", False
     for _start, _length, name, words in _setting_hits(article):
-        if name != last:
+        if name not in blocked:
             return words, True
     for name, phrase in DEFAULT_SETTINGS.items():
-        if name != last:
+        if name not in blocked:
             return phrase, True
     return "", False
 
@@ -611,10 +643,13 @@ def rhythm_history(receipts: Sequence[Mapping[str, Any]]) -> dict[str, list]:
                       "layout": concept.get("layout") if composite else None,
                       "panel": "charcoal" if composite else None,
                       "shot": concept.get("shot") or None, "grade": None}
-        if "setting" not in rhythm and rhythm.get("treatment") in AI_SCENE_TREATMENTS:
-            # A receipt from before the setting dimension: read it off what was briefed.
-            rhythm = dict(rhythm, setting=setting_class(concept.get("setting"))
-                          or setting_class(receipt.get("prompt")) or None)
+        if (not rhythm.get("setting") and rhythm.get("treatment") in AI_SCENE_TREATMENTS
+                and rhythm.get("style") not in (STYLE_CODE_DRAWN, STYLE_QUOTE_CARD)):
+            # A receipt from before the setting dimension — or one whose setting no keyword
+            # matched when it was written (round 5: rhythm_3's "fulfillment center" recorded
+            # null) — is read again off what was briefed, the prompt first.
+            rhythm = dict(rhythm, setting=setting_class(receipt.get("prompt"))
+                          or setting_class(concept.get("setting")) or None)
         if "style" not in rhythm:
             # A receipt from before the style dimension: read it off what was rendered.
             rhythm = dict(rhythm, style=style_of(
@@ -736,11 +771,11 @@ def plan_post_rhythm(concept: Any, text: str, history: Mapping[str, Sequence[Any
     shot, again = gate_value(getattr(concept, "shot", "") or "", SHOTS, history.get("shot", []),
                              seed + "shot")
     rerolled += ["shot"] if again else []
-    setting = ""
-    if concept is not None:
-        setting, again = reroll_setting(getattr(concept, "setting", "") or "",
-                                        history.get("setting", []), text)
-        rerolled += ["setting"] if again else []
+    # Round 5: re-rolled with or without a concept — rhythm_3 had no Stage 1 concept, so the gate
+    # never ran and the brief author picked a warehouse freely.
+    setting, again = reroll_setting(getattr(concept, "setting", "") or "",
+                                    history.get("setting", []), text)
+    rerolled += ["setting"] if again else []
     return PostRhythm(plan=plan, panel=panel or "charcoal", grade=grade or "",
                       layout=layout or "", shot=shot or "", quote_candidates=candidates,
                       opinion=opinion, rerolled=tuple(rerolled), setting=setting,
