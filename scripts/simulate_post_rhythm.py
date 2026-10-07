@@ -36,6 +36,12 @@ from contextlib import ExitStack
 from typing import Any, Optional
 from unittest.mock import patch
 
+# Operator harness, not the app: a paid run in a prod-image sidecar carries the production
+# POSTHOG_API_KEY and reads the brand kit through the DB, so a schema this branch is ahead of
+# (`brand_kit` before its migration deployed) filed a production error-tracking issue (#2266,
+# see `logger.telemetry_muted`). Set BEFORE cqc_lem is imported — the Logs handler is built then.
+os.environ.setdefault("LEM_TELEMETRY_MUTED", "1")
+
 if os.path.isdir(os.path.join(os.path.dirname(__file__), "..", "src")):
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
