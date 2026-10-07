@@ -114,7 +114,7 @@ aliases are defined in `.litellm/config.yaml`:
 | `lem-simple` | Fast, lightweight — refine / summarize / list tasks |
 | `lem-medium` | Balanced: comments, post refinement |
 | `lem-complex` | Long-form: thought leadership, personal story |
-| `lem-image` | Image generation (gpt-image-2, gpt-image-1 in-group fallback) |
+| `lem-image` | Image generation (gpt-image-2, gpt-image-2.5-sunburst in-group fallback) |
 | `lem-vision` | Render quality gate — looks at a generated image (gpt-4o-mini) |
 | `lem-router` | Auto-routes to a tier by prompt shape (`LEMComplexityRouter` in `.litellm/complexity_router.py`) |
 

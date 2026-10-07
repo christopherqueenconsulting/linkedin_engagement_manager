@@ -97,7 +97,7 @@ duplicate. A timeout, 4xx or 5xx is the proxy answering, and fails as before.
 | `lem-simple` | Short outputs ≤300 chars: refine, summarize, comma list |
 | `lem-medium` | Balanced: comments, post refinement, blog summaries |
 | `lem-complex` | Long-form: thought leadership, personal story, industry news |
-| `lem-image` | Image generation (gpt-image-2, gpt-image-1 in-group fallback) |
+| `lem-image` | Image generation (gpt-image-2, 2.5-sunburst fallback) |
 | `lem-vision` | Render quality gate — looks at a render |
 | `lem-embedding` | Vectors for feedback dedup/clustering |
 | `lem-router` | Auto-routes by prompt complexity via `LEMComplexityRouter`; INERT until #1880 |
