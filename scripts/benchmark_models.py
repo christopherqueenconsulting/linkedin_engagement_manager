@@ -63,6 +63,20 @@ Options:
   --max-judge-calls N      Hard cap on judge calls for the whole run (default BENCHMARK_MAX_JUDGE_CALLS).
   --run-id ID              Fix the run id (tests / reproducible dry runs).
   --today YYYY-MM-DD       Override today's date.
+
+Media tiers (issue #2251, logic in scripts/benchmark_media.py) - `--tiers lem-vision,lem-image`:
+  --max-spend-usd N        Hard per-run dollar cap (default $BENCHMARK_MAX_SPEND_USD, else 2.00). The
+                           plan is priced from the pinned cost map BEFORE any call; over the cap, or
+                           any unpriced model, and the run is refused (exit 1).
+  --vision-models a,b      lem-vision candidates (default: in-group fallbacks + the newest family
+                           successor the provider snapshot lists, sunsetting models dropped).
+  --image-models a,b       lem-image candidates (same default rule).
+  --image-quality Q        gpt-image quality to render at (default medium, production's default).
+  --prices PATH            Pinned cost map (default .litellm/model_prices_snapshot.json).
+  --provider-snapshot PATH Provider scan snapshot (default .litellm/provider_models_snapshot.json).
+  --dry-run                For media tiers: print the roster's planned spend and exit. No calls.
+Every render into a README that carries the model-registry block regenerates that block
+(scripts/model_registry.py).
 Exit: 0 ran / nothing recommended, 2 at least one swap recommendation, 1 error.
 """
 from __future__ import annotations
@@ -2146,6 +2160,93 @@ def _run_id(today: str) -> str:
     return f"bm-{today.replace('-', '')}-{os.urandom(3).hex()}"
 
 
+def _regenerate_registry(out_dir: str, config: str, prices: str, provider_snapshot: str) -> None:
+    """Refresh the generated model registry beside a freshly rendered report (issue #2251).
+
+    Only a README that already carries the registry markers is touched - a scratch `--out-dir`
+    (the cron's staging dir, a test's tmp dir) has no registry to keep in step with.
+    """
+    readme = os.path.join(out_dir, "README.md")
+    try:
+        import model_registry  # noqa: WPS433 - sibling script
+        if not os.path.exists(readme) or model_registry.REGISTRY_BEGIN not in _read_text(readme):
+            return
+        model_registry.regenerate_readme(readme, config=config, prices=prices,
+                                         provider=provider_snapshot)
+        print(f"registry -> {readme}")
+    except Exception as exc:  # noqa: BLE001 - the report is the deliverable; say so and go on
+        print(f"  ! could not regenerate the model registry: {exc}", file=sys.stderr)
+
+
+def _media_main(args: argparse.Namespace, tiers: list, today: str) -> int:
+    """`--tiers lem-vision,lem-image`: plan + cap the spend, then run, render and gate."""
+    import benchmark_media as media  # noqa: WPS433 - sibling script
+    import provider_model_scan as pms  # noqa: WPS433
+    from model_health_check import load_config_text, parse_deployments  # noqa: WPS433
+
+    try:
+        deployments = parse_deployments(load_config_text(_read_text(args.config)))
+        prices = json.loads(_read_text(args.prices)).get("models") or {}
+    except (OSError, ValueError) as exc:
+        print(f"could not read the config or the pinned prices: {exc}", file=sys.stderr)
+        return 1
+    snapshot = pms.load_provider_snapshot(_read_text(args.provider_snapshot)
+                                          if os.path.exists(args.provider_snapshot) else None)
+    overrides = {tier: parse_models(raw) for tier, raw in
+                 (("lem-vision", args.vision_models), ("lem-image", args.image_models))
+                 if parse_models(raw)}
+    roster = media.resolve_roster(deployments, tiers, overrides, snapshot, today)
+    serving_vision = media.tier_deployments(deployments, "lem-vision")
+    judge = serving_vision[0] if serving_vision else None
+    cap = args.max_spend_usd if args.max_spend_usd is not None else media.max_spend_usd()
+    plan = media.plan_spend(roster, prices, judge_model=judge, quality=args.image_quality)
+    print(media.render_spend_plan(plan, cap))
+    refusal = media.spend_refusal(plan, cap)
+    if refusal:
+        print(refusal, file=sys.stderr)
+        return 1
+    if args.dry_run:
+        print("dry run: no provider was called and nothing was written")
+        return 0
+    if not benchmark_enabled():
+        print("BENCHMARK_ENABLED is not set — nothing to do (use --dry-run to see the plan)")
+        return 0
+    api_key = os.environ.get("OPENAI_API_KEY", "")
+    if not api_key:
+        print("OPENAI_API_KEY must be set to run the media benchmark", file=sys.stderr)
+        return 1
+    provider = media.MediaProvider(api_key, os.environ.get("OPENAI_BASE_URL")
+                                   or media.DEFAULT_OPENAI_BASE_URL)
+    run = media.run_media_benchmark(
+        roster, provider=provider, prices=prices, cap=cap, judge_model=judge,
+        run_id=args.run_id or _run_id(today).replace("bm-", "mm-", 1), today=today,
+        quality=args.image_quality, log=lambda m: print(m, file=sys.stderr))
+    if args.results_out:
+        with open(args.results_out, "w") as f:
+            json.dump(run, f, indent=2)
+        print(f"results -> {args.results_out}")
+    return _media_publish(run, args)
+
+
+def _media_publish(run: dict, args: argparse.Namespace) -> int:
+    """Write a media run's report + leaderboard (+ registry); exit 2 on a recommendation."""
+    import benchmark_media as media  # noqa: WPS433
+
+    try:
+        path = media.write_media_report(run, args.out_dir)
+    except ValueError as exc:
+        print(f"refusing to render: {exc}", file=sys.stderr)
+        return 1
+    print(f"report -> {path}")
+    _regenerate_registry(args.out_dir, args.config, args.prices, args.provider_snapshot)
+    recommended = [g for g in run.get("gates") or [] if g["verdict"] == media.VERDICT_RECOMMEND]
+    for g in recommended:
+        print(f"RECOMMEND [{g['tier']}] {g['champion']} -> {g['model']}")
+    if not recommended:
+        print("no swap recommendations")
+    return 2 if recommended else 0
+
+
 def main(argv: Optional[list] = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -2167,10 +2268,28 @@ def main(argv: Optional[list] = None) -> int:
     ap.add_argument("--max-judge-calls", type=int, default=None)
     ap.add_argument("--run-id", default=None)
     ap.add_argument("--today", default=None)
+    ap.add_argument("--max-spend-usd", type=float, default=None)
+    ap.add_argument("--vision-models", default="")
+    ap.add_argument("--image-models", default="")
+    ap.add_argument("--image-quality", default="medium", choices=("low", "medium", "high"))
+    ap.add_argument("--prices", default=".litellm/model_prices_snapshot.json")
+    ap.add_argument("--provider-snapshot", default=".litellm/provider_models_snapshot.json")
     args = ap.parse_args(argv)
 
     today = args.today or _today()
     tiers = parse_models(args.tiers) or None
+
+    if args.render:
+        rendered = json.loads(_read_text(args.render))
+        if rendered.get("kind") == "media":
+            return _media_publish(rendered, args)
+
+    media_tiers = [t for t in (tiers or []) if t in ("lem-vision", "lem-image")]
+    if media_tiers:
+        media_rc = _media_main(args, media_tiers, today)
+        tiers = [t for t in tiers if t not in media_tiers]
+        if not tiers or media_rc == 1:
+            return media_rc
 
     try:
         suites = load_suites(args.suite_dir, tiers)
@@ -2202,6 +2321,7 @@ def main(argv: Optional[list] = None) -> int:
             print(f"refusing to render: {exc}", file=sys.stderr)
             return 1
         print(f"report -> {path}")
+        _regenerate_registry(args.out_dir, args.config, args.prices, args.provider_snapshot)
         return 2 if run.get("recommendations") else 0
 
     if not args.dry_run and not benchmark_enabled():
@@ -2276,6 +2396,7 @@ def main(argv: Optional[list] = None) -> int:
         print(f"refusing to render: {exc}", file=sys.stderr)
         return 1
     print(f"report -> {path}")
+    _regenerate_registry(args.out_dir, args.config, args.prices, args.provider_snapshot)
     for rec in run["recommendations"]:
         print(f"RECOMMEND [{rec['tier']}] {rec['champion']} -> {rec['model']}")
     if not run["recommendations"]:

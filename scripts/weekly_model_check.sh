@@ -13,6 +13,12 @@
 # tags and configured models trailing a newer version of their own family become agent:ready issues.
 # Repo-visible changes (map, snapshot) go out as a PR — never a silent edit on the box.
 #
+# PROVIDER + MEDIA flow (issue #2251): the same scan for OpenAI and Perplexity (sunsets, newer
+# family members, unlisted models -> alerts + agent:ready issues + a snapshot PR), then the
+# lem-vision/lem-image benchmark loop (scripts/model_eval_loop.py: monthly, on a config change on
+# main, and as an advisory COMMENT on open PRs that touch the model config). Spend-capped, never a
+# required check, never a swap. Every PR this script opens regenerates the model registry.
+#
 # Safe by construction: a replacement is provider-verified before use, changes are smoke-tested
 # before they're kept, and deploy.sh resets .litellm before its checkout so an on-box hotfix can
 # never block a release.
@@ -103,6 +109,30 @@ mutate_swap(){  # re-plan against the worktree's own config so the PR diff match
   "${PY[@]}" "$REPO/scripts/model_health_check.py" --apply "$1/.litellm/config.yaml" \
       --config "$1/.litellm/config.yaml" --map "$1/.litellm/model_upgrades.yaml" >>"$LOG" 2>&1
   git add .litellm/config.yaml
+  registry_write "$1"
+}
+
+registry_write(){  # regenerate the model registry (issue #2251) from the worktree's own files.
+                   # The registry is a function of config + snapshots + leaderboards, and the unit
+                   # suite fails on a stale block, so every mutate that moves an input calls this.
+  ( cd "$1" && "${PY[@]}" "$REPO/scripts/model_registry.py" --write >>"$LOG" 2>&1 ) \
+    || log "registry regeneration failed (the PR's unit run will say so)"
+  git add docs/model-benchmarks/README.md
+}
+
+mutate_provider(){  # refresh the OpenAI/Perplexity snapshot + re-pin prices + registry (#2251)
+  ( cd "$1" && "${PY[@]}" "$REPO/scripts/model_health_check.py" --provider-scan --provider-apply \
+      --config .litellm/config.yaml >>"$LOG" 2>&1 )
+  ( cd "$1" && "${PY[@]}" "$REPO/scripts/model_registry.py" --refresh-prices >>"$LOG" 2>&1 ) \
+    || log "price re-pin failed (snapshot PR proceeds with the old prices)"
+  git add .litellm/provider_models_snapshot.json .litellm/model_prices_snapshot.json
+  registry_write "$1"
+}
+
+mutate_media_benchmark(){  # render the media run we ALREADY measured (issue #2251); pure, no calls
+  ( cd "$1" && "${PY[@]}" "$REPO/scripts/benchmark_models.py" --render "$MEDIA_RESULTS" \
+      --out-dir docs/model-benchmarks >>"$LOG" 2>&1 )
+  git add docs/model-benchmarks
 }
 
 mutate_catalog(){  # pre-approve upcoming retirements + refresh the committed catalog snapshot
@@ -114,13 +144,15 @@ mutate_catalog(){  # pre-approve upcoming retirements + refresh the committed ca
       --tags-fixture "$1/tests/unit/fixtures/ollama/tags.json" --no-usage-levels >>"$LOG" 2>&1
   git add .litellm/model_upgrades.yaml .litellm/ollama_catalog_snapshot.json \
           tests/unit/fixtures/ollama/tags.json
+  registry_write "$1"
 }
 
 mutate_benchmark(){  # render the run we ALREADY measured into the worktree (issue #721)
                      # --render is pure: no provider or PostHog calls, so the PR always describes
                      # the same measurement the alert above was based on.
-  "${PY[@]}" "$REPO/scripts/benchmark_models.py" --render "$BENCH_RESULTS" \
-      --out-dir "$1/docs/model-benchmarks" >>"$LOG" 2>&1
+  # Run from inside the worktree so the registry it regenerates reads the worktree's own config.
+  ( cd "$1" && "${PY[@]}" "$REPO/scripts/benchmark_models.py" --render "$BENCH_RESULTS" \
+      --out-dir docs/model-benchmarks >>"$LOG" 2>&1 )
   git add docs/model-benchmarks
 }
 
@@ -304,5 +336,59 @@ for r in run['recommendations']:
       esac
     fi
   fi
+fi
+
+# ── provider scan: OpenAI + Perplexity (issue #2251) ──────────────────────────────────────────
+# The Ollama scan above never looked at the other two providers the proxy routes to. Same posture:
+# alert + agent:ready issues, NEVER a swap; the snapshot the registry reads goes out as a PR.
+# OPENAI_API_KEY makes the OpenAI list authoritative (what our key can call); without it the scan
+# falls back to LiteLLM's public cost map and can never report a model as gone.
+set -a; source <(sudo -n grep -E "^(OPENAI_API_KEY|PERPLEXITY_API_KEY|BENCHMARK_[A-Z_]+|MODEL_EVAL_[A-Z_]+)=" /opt/lem/.env) 2>/dev/null; set +a
+PROV="$("${PY[@]}" scripts/model_health_check.py --provider-json --config "$BOX_CFG" 2>>"$LOG")"
+if [ -z "$PROV" ]; then
+  log "provider scan produced no output — skipping"
+else
+  read -r NSUN NPUPG NPVAN PSNAP <<<"$(printf '%s' "$PROV" | python3 -c "
+import sys, json
+p = json.load(sys.stdin)
+print(len(p['sunsets']), len(p['upgrades']), len(p['vanished']), int(bool(p['snapshot_changed'])))
+" 2>/dev/null || echo "0 0 0 0")"
+  log "provider scan: sunsets=$NSUN newer-in-family=$NPUPG unlisted=$NPVAN snapshot-changed=$PSNAP"
+  PMSG="$(printf '%s' "$PROV" | python3 -c "import sys, json; print(json.load(sys.stdin).get('alert_text') or '')" 2>/dev/null)"
+  [ -n "$PMSG" ] && alert "Provider model sunsets / unlisted models on live tiers:"$'\n'"$PMSG"
+  if [ "${PSNAP:-0}" -gt 0 ]; then
+    open_pr "auto/provider-models" "chore(litellm): refresh the OpenAI/Perplexity model snapshot" \
+      "Automated by the weekly model-health check (issue #2251). Refreshes .litellm/provider_models_snapshot.json, re-pins the configured + candidate prices from LiteLLM's cost map, and regenerates the model registry in docs/model-benchmarks/README.md. Nothing in .litellm/config.yaml changes." \
+      mutate_provider
+  fi
+  if [ "${NSUN:-0}" -gt 0 ] || [ "${NPUPG:-0}" -gt 0 ] || [ "${NPVAN:-0}" -gt 0 ]; then
+    PPLANF="$(mktemp)"; printf '%s' "$PROV" >"$PPLANF"
+    "${PY[@]}" scripts/model_health_check.py --file-provider-issues --plan-file "$PPLANF" >>"$LOG" 2>&1
+    PRC=$?; rm -f "$PPLANF"
+    case "$PRC" in 0|2|3) ;; *) log "provider issue filing failed (non-fatal, rc=$PRC)";; esac
+  fi
+fi
+
+# ── media-tier benchmark loop: monthly / main config change / open PRs (issue #2251) ─────────
+# model_eval_loop.py decides what is due. A main run's results come back on stdout and are rendered
+# into a docs PR here; a PR run only ever COMMENTS on its PR - never a check, never a gate. Every
+# run is spend-capped by BENCHMARK_MAX_SPEND_USD inside benchmark_models.py.
+if [ "${BENCHMARK_ENABLED:-false}" != "true" ]; then
+  log "model-eval loop: BENCHMARK_ENABLED not set — skipping"
+else
+  MEDIA_RESULTS="$("${PY[@]}" scripts/model_eval_loop.py --state "$DIR/model-eval-state.json" \
+      --results-dir "$DIR" --repo-dir "$REPO" 2>>"$LOG")"
+  MRC=$?  # no pipe on purpose: a pipe would report its LAST stage's status, not the loop's
+  case "$MRC" in
+    0) log "model-eval loop: nothing to publish";;
+    2)
+      log "model-eval loop: media benchmark results -> $MEDIA_RESULTS"
+      open_pr "auto/media-benchmark" \
+        "docs(model-benchmarks): media-tier benchmark report and registry refresh" \
+        "Automated by the weekly model-health check (issue #2251): the monthly / config-change lem-vision + lem-image benchmark, spend-capped. Recommendations are advisory; adopting one is a deliberate .litellm/config.yaml change." \
+        mutate_media_benchmark
+      ;;
+    *) alert "Media-tier benchmark loop FAILED (rc=$MRC) — see $LOG. Nothing was changed.";;
+  esac
 fi
 log "=== weekly model-health check done ==="
