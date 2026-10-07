@@ -638,9 +638,40 @@ _SCROLL_STOP_SURFACES = frozenset({"newsletter", "post_image"})
 # Round 11: a VIDEO frame with no caption headline (VIDEO_CAPTIONS off, so `burned_caption_text`
 # is None) passes specificity at 3. The post text above the video carries the thesis, and a lone
 # frame cannot: at 4 every caption-less frame scored 2-3 and every video fell back to Pexels
-# stock — a regression from shipping Runway clips. With a caption headline the floor stays 4;
-# no_cliche, craft and stray text are never relaxed.
-_UNCAPTIONED_VIDEO_SPECIFICITY_FLOOR = 3
+# stock — a regression from shipping Runway clips. (Superseded below: a CAPTIONED frame takes the
+# same floors now.)
+# #2241 showcase B (owner-delegated decision): EVERY headline-free AI render — each photo_only
+# post and each video frame — failed specificity at 2-3, "thesis not visually inferable". In the
+# feed the post text sits directly above that image, so the image is never asked to carry the
+# thesis alone. Headline-free renders pass specificity at 3 and must instead be visually strong:
+# scroll_stop and craft at 4; no_cliche 5 and stray text stay strict. A render WITH a typeset
+# headline keeps specificity 4. Video frames take the photo floors with or without a caption.
+_HEADLINE_FREE_SPECIFICITY_FLOOR = 3
+
+
+def rubric_floors(surface: Optional[str], hook_text: Optional[str],
+                  code_drawn: bool = False) -> dict[str, int]:
+    """The rubric floors a staged verdict must clear on this surface.
+
+    Args:
+        surface: ``newsletter``, ``post_image``, ``video``, ``carousel``…
+        hook_text: The headline typeset with the image (a video's burned caption), or None.
+        code_drawn: A code-drawn graphic, whose text is correct by construction.
+
+    Returns:
+        ``{criterion: floor}``.
+    """
+    if code_drawn:
+        return dict(_CODE_DRAWN_FLOORS)
+    floors = dict(_RUBRIC_FLOORS)
+    if surface in _SCROLL_STOP_SURFACES:
+        floors["scroll_stop"] = _SCROLL_STOP_FLOOR
+        floors["thumbnail_read"] = _SCROLL_STOP_FLOOR
+    if surface == "video" or (surface == "post_image" and not hook_text):
+        floors["specificity"] = _HEADLINE_FREE_SPECIFICITY_FLOOR
+        floors["scroll_stop"] = _SCROLL_STOP_FLOOR
+        floors["craft"] = max(floors.get("craft", 0), 4)
+    return floors
 _SCROLL_STOP_FLOOR = 4
 _REQUIRED_SCORES = ("specificity", "no_cliche", "craft")
 # The "piques interest" rubric (docs/visual-archetypes-research.md §6.4): 0-2 each, ship at >= 9.
@@ -931,15 +962,7 @@ def _staged_inspect(image_path: str, concept: Any, hook_text: Optional[str],
     pop = _pop_scores(answer.get("pop"))
     if pop and code_drawn:
         pop["credibility"] = 2
-    if code_drawn:
-        floors = dict(_CODE_DRAWN_FLOORS)
-    else:
-        floors = dict(_RUBRIC_FLOORS)
-        if surface in _SCROLL_STOP_SURFACES:
-            floors["scroll_stop"] = _SCROLL_STOP_FLOOR
-            floors["thumbnail_read"] = _SCROLL_STOP_FLOOR
-        if surface == "video" and not hook_text:
-            floors["specificity"] = _UNCAPTIONED_VIDEO_SPECIFICITY_FLOOR
+    floors = rubric_floors(surface, hook_text, code_drawn)
     failing = [name for name, floor in floors.items()
                if rubric.get(name) is not None and rubric[name] < floor]
     issues = [f"{name} {rubric[name]}/5" for name in failing]

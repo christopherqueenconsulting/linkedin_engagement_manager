@@ -387,3 +387,22 @@ class TestManualGenerationCap:
         with patch("cqc_lem.utilities.linkedin.rate_limit.shared_redis_client",
                    return_value=_Broken()):
             assert claim_manual_generation(9) is True
+
+
+@pytest.fixture(autouse=True)
+def _no_last_resort_card():
+    """Pin the treatment chain itself: the $0 last-resort typeset card is disabled here.
+
+    Since #2241 showcase B a post whose every treatment fails ships the last-resort card instead
+    of nothing; these tests assert the chain's own outcomes and the bare-ship path that remains
+    when even that card cannot be drawn. The card has its own tests
+    (``test_post_last_resort_card.py``).
+    """
+    import unittest.mock
+
+    from cqc_lem.utilities import post_image as _post_image
+
+    with unittest.mock.patch.object(
+            _post_image, "_render_last_resort_card",
+            return_value=_post_image._Rendered(reason="last resort disabled in this test")):
+        yield

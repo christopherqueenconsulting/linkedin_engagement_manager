@@ -203,6 +203,73 @@ quarter"); with neither, no stat card is drawn — never "Our routing change sav
 **Carousel decks** follow the brand kit, draw their own figures in code and default to no stock —
 `docs/content-quality-audits/carousel.md` §8.
 
+## Showcase round B — floors, the last-resort card, the final hook gate, settings
+
+Run on deployed v0.182.0 with the real brand kit (`gauntlet/out/showB/judged/*.json`).
+
+**Headline-free floors (owner-delegated decision).** Of the gated renders, 8 of 10 headline-free
+`photo_only` posts and all 6 video frames failed. Their specificity was 2–3 and the judge's reason
+was "thesis not visually inferable". But in the feed the post text sits DIRECTLY above the image,
+so the image is never asked to carry the thesis alone. `image_gen.rubric_floors` now sets:
+
+| Render | specificity | scroll_stop | craft | no_cliche | stray text |
+|---|---|---|---|---|---|
+| `photo_only` post (no headline) | ≥3 | **≥4** | ≥4 | 5 | strict |
+| video frame (with OR without a caption) | ≥3 | **≥4** | ≥4 | 5 | strict |
+| anything with a typeset headline | ≥4 | ≥4 (cover/post) | ≥4 | 5 | strict |
+
+This is a trade, not a relaxation. Specificity drops one point where the post text supplies the
+thesis, and scroll_stop rises to 4 on video too, so a headline-free image must be visually strong.
+In the round-B evidence most headline-free failures ALSO scored scroll_stop 2. Those still fail,
+and are now caught by the last-resort card below instead of shipping bare. This supersedes round
+11's "a captioned frame keeps 4".
+
+**No post ships bare.** Posts 97 and 137 shipped with no image: the AI render was rejected and no
+data or quote card applied. `post_image._render_last_resort_card` is a guaranteed $0 last resort
+(`image_graphics.render_typeset_card`). It draws the post's hook — Stage 1's, else the post's own
+first sentence of at most 12 words — on the brand panel, using the rotated panel variant and
+layout. The scene region holds no photo, only a code-drawn accent shape (a gold ring and a
+dark-gold rule). It is not judged: its words are the already-gated hook. The receipt records
+`gate_verdict = "last_resort"` and `render_path = "code_drawn_last_resort"`, so it is never
+mistaken for a graded image. A post goes imageless only when even this card cannot be drawn.
+
+**The final hook gate.** A typeset card shipped "Routing prompts to models based costs". The
+thesis was "Routing prompts to models based on complexity reduces AI costs …". `clause_hook` took
+"based" as the main verb (an -ed word, and "reduce" was not in the verb list), so its compression
+glued "based" to "costs". The judge never saw it, because the judge had passed a different hook
+upstream. Three fixes:
+- `_participle_phrase` stops an -ed word followed by a preposition from being picked as the verb.
+- `dropped_preposition` deterministically refuses a hook that glues a participle or verb to a word
+  its preposition owned. Compressing a noun's own modifier ("prompts [to models] reduces") is
+  allowed.
+- `_gate_final_hook` runs the guard and then the Stage-3 judge on the FINAL hook from every path
+  (fallbacks and trims included) unless it is the exact hook the judge last passed
+  (`ImageConcept.hook_verified`). A failure buys ONE regeneration with the reason, then
+  `clause_hook`. If nothing passes, the image ships with no headline rather than a broken one.
+
+`fit_hook` applies the same guard at render time.
+
+**Clichés.** An editorial concept rendered a row of human brains around an alarm clock. `brain`,
+`brains`, `human brain` and `brain model` are now in `CLICHE_OBJECTS`, next to "glowing brain".
+
+**Setting is a sameness dimension.** Two consecutive people posts were both in a warehouse with
+boxes. `post_treatment.setting_class` reads a setting CLASS — warehouse, home office, café,
+conference, shop floor, retail, outdoors or office — off Stage 1's setting. On a receipt from
+before this change, it reads the class off the briefed prompt instead. A class may not appear in
+two consecutive AI renders; card posts in between do not reset the gate. `reroll_setting` replaces
+a repeating or EMPTY setting with the first setting of a different class the post itself names,
+and only then with a neutral default. The re-roll moves the concept's setting and its cast line
+together, and the receipt's `rhythm.setting` records the class that shipped.
+
+**Deck accents.** The stat cover's giant decorative "?" sat over "Model" in "Prevent AI Model
+Failures: 4-Step Guide". Decorative glyphs, corner triangles and the typographic accent mark are
+now queued and placed at save time (`carousel_creator.make_ink_draw`). Each takes the first
+candidate position whose box meets no text box on the slide; with none clear, the accent is left
+out. Glyphs are painted through an alpha mask, because Pillow ignores a text fill's alpha, which is
+why the "faint" watermark glyphs had been shipping opaque.
+`tests/unit/utilities/test_carousel_accent_clearance.py` asserts no intersection on every template
+at three title lengths.
+
 ## Post rhythm — treatments, panels, grades and the sameness gate (anti-monotony round)
 
 Every post image was the same composite — a photograph beside a charcoal type panel — so an

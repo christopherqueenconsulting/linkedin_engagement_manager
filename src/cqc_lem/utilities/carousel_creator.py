@@ -2469,6 +2469,79 @@ def _carousel_content_type(carousel_data) -> str:
     }.get(type(carousel_data), "professional")
 
 
+def boxes_intersect(a: tuple, b: tuple) -> bool:
+    """Do two ``(left, top, right, bottom)`` boxes overlap (touching edges do not)?"""
+    return a[0] < b[2] and b[0] < a[2] and a[1] < b[3] and b[1] < a[3]
+
+
+_INK_DRAW_CLASS: Any = None
+
+
+def make_ink_draw(img: Any) -> Any:
+    """An RGBA ``ImageDraw`` that records every text box and places accents only clear of them.
+
+    #2241 showcase B: the stat cover's giant decorative "?" was drawn at a fixed spot, so a long
+    title ("Prevent AI Model Failures: 4-Step Guide") ran under it. Decorative accents — glyphs,
+    corner triangles, the typographic accent mark — are now QUEUED with candidate positions
+    (``decorate``) and placed at save time (``finish_decor``) at the first position whose box
+    meets no text box on the slide; with none clear, the accent is left out.
+
+    Args:
+        img: The slide image.
+
+    Returns:
+        The draw, with ``text_boxes``, ``decor_boxes``, ``decorate`` and ``finish_decor``.
+    """
+    global _INK_DRAW_CLASS
+    if _INK_DRAW_CLASS is None:
+        from PIL import ImageDraw
+
+        class _InkDraw(ImageDraw.ImageDraw):
+            def __init__(self, im: Any, mode: Optional[str] = None) -> None:
+                super().__init__(im, mode)
+                self._target = im
+                self.text_boxes: list[tuple] = []
+                self.decor_boxes: list[tuple] = []
+                self._queued: list[list] = []
+
+            def text(self, xy: Any, text: Any, fill: Any = None, font: Any = None,
+                     *args: Any, **kwargs: Any) -> Any:
+                if isinstance(text, str) and text.strip():
+                    self.text_boxes.append(tuple(self.textbbox(xy, text, font=font)))
+                return super().text(xy, text, fill, font, *args, **kwargs)
+
+            def paint_glyph(self, xy: Any, glyph: str, font: Any, fill: Any) -> None:
+                # A decorative glyph is not text the slide says, and Pillow ignores a text fill's
+                # alpha — so "faint" watermark glyphs shipped OPAQUE. Paint it through an alpha
+                # mask the size of its own box instead.
+                from PIL import Image
+
+                left, top, right, bottom = self.textbbox(xy, glyph, font=font)
+                mask = Image.new("L", (max(1, right - left), max(1, bottom - top)), 0)
+                ImageDraw.Draw(mask).text((xy[0] - left, xy[1] - top), glyph,
+                                          fill=fill[3] if len(fill) > 3 else 255, font=font)
+                self._target.paste(tuple(fill[:3]), (left, top), mask)
+
+            def decorate(self, candidates: list) -> None:
+                self._queued.append(candidates)
+
+            def finish_decor(self) -> int:
+                skipped = 0
+                for candidates in self._queued:
+                    for box, paint in candidates:
+                        if not any(boxes_intersect(box, t) for t in self.text_boxes):
+                            paint()
+                            self.decor_boxes.append(tuple(box))
+                            break
+                    else:
+                        skipped += 1
+                self._queued = []
+                return skipped
+
+        _INK_DRAW_CLASS = _InkDraw
+    return _INK_DRAW_CLASS(img, "RGBA")
+
+
 class _SlideElement:
     """A drawn slide element on disk: what it is, how tall its band is, and what it drew."""
 
@@ -2604,7 +2677,7 @@ def create_carousel_slide_images(
     Returns:
         The slide PNG paths, in order.
     """
-    from PIL import Image, ImageDraw
+    from PIL import Image
 
     from cqc_lem.utilities.brand_kit import brand_kit_for_user, deck_theme
     from cqc_lem.utilities.logger import log_warning
@@ -2725,7 +2798,33 @@ def create_carousel_slide_images(
     def _rrect(draw, xy, radius, fill):
         draw.rounded_rectangle(list(xy), radius=radius, fill=fill)
 
+    # The slide being drawn: its ink-tracking draw, so `_save` can place the deferred accents.
+    slide_ctx: dict = {"draw": None}
+
+    def _new_draw(img):
+        draw = make_ink_draw(img)
+        slide_ctx["draw"] = draw
+        return draw
+
+    def _glyph(draw, glyph, font, fill, positions):
+        """Queue a decorative glyph at the first of ``positions`` clear of every text box."""
+        draw.decorate([(draw.textbbox(xy, glyph, font=font),
+                        (lambda xy=xy: draw.paint_glyph(xy, glyph, font, fill)))
+                       for xy in positions])
+
+    def _tri(draw, points, fill):
+        """Queue a corner triangle; it goes down only where it meets no text."""
+        xs, ys = [x for x, _ in points], [y for _, y in points]
+        draw.decorate([((min(xs), min(ys), max(xs), max(ys)),
+                        (lambda: draw.polygon(points, fill=fill)))])
+
     def _save(img: "Image.Image", idx: int) -> str:
+        draw = slide_ctx["draw"]
+        if draw is not None:
+            # Accents go down LAST, only where they intersect no text (#2241 showcase B: the
+            # cover "?" sat over "Model" in "Prevent AI Model Failures").
+            marks["accents_skipped"] = draw.finish_decor()
+            slide_ctx["draw"] = None
         out = os.path.join(output_dir, f"slide_{idx:02d}.png")
         img.convert("RGB").save(out, "PNG", optimize=True)
         return out
@@ -2747,10 +2846,15 @@ def create_carousel_slide_images(
         """
         r = 300
         cx, cy = W - 40, H - footer_h + 40
-        draw.arc([(cx - r, cy - r), (cx + r, cy + r)], start=180, end=270,
-                 fill=(*accent, 90), width=26)
-        draw.rectangle([(W - 190, H - footer_h - 54), (W - 70, H - footer_h - 44)],
-                       fill=(*accent, 255))
+
+        def paint():
+            draw.arc([(cx - r, cy - r), (cx + r, cy + r)], start=180, end=270,
+                     fill=(*accent, 90), width=26)
+            draw.rectangle([(W - 190, H - footer_h - 54), (W - 70, H - footer_h - 44)],
+                           fill=(*accent, 255))
+
+        # Deferred like every accent: placed only when its box meets no text on the slide.
+        draw.decorate([((cx - r, cy - r, W, H - footer_h), paint)])
 
     def _prep_band(image_path, footer_h, band_h=None, draw=None, accent=None):
         band_h = band_h or slide_band["h"]
@@ -2786,7 +2890,7 @@ def create_carousel_slide_images(
         f_l = _load_font(26, bold=False)
         title, body = _norm(title), _norm(body)
         img = Image.new("RGB", (W, H), color=cover_bg)
-        draw = ImageDraw.Draw(img, "RGBA")
+        draw = _new_draw(img)
         for row in range(H):
             draw.line([(0, row), (W, row)], fill=(*cover_accent, int(25 * (1 - row / H))))
         draw.rectangle([(0, 0), (10, H)], fill=cover_accent)
@@ -2813,7 +2917,7 @@ def create_carousel_slide_images(
         f_l = _load_font(26, bold=False)
         title, body = _norm(title), _norm(body)
         img = Image.new("RGB", (W, H), color=content_bg)
-        draw = ImageDraw.Draw(img, "RGBA")
+        draw = _new_draw(img)
         BAR = 80
         panel, band_top = _prep_band(image_path, BAR, draw=draw, accent=badge_color)
         draw.rectangle([(0, 0), (W, 10)], fill=badge_color)
@@ -2848,7 +2952,7 @@ def create_carousel_slide_images(
         f_l = _load_font(26, bold=False)
         title, body = _norm(title), _norm(body)
         img = Image.new("RGB", (W, H), color=cover_bg)
-        draw = ImageDraw.Draw(img, "RGBA")
+        draw = _new_draw(img)
         for row in range(H):
             draw.line([(0, row), (W, row)], fill=(*cover_accent, int(25 * (row / H))))
         draw.rectangle([(W - 10, 0), (W, H)], fill=cover_accent)
@@ -2881,10 +2985,11 @@ def create_carousel_slide_images(
         f_l = _load_font(24, bold=False)
         title, body = _norm(title), _norm(body)
         img = Image.new("RGB", (W, H), color=cover_bg)
-        draw = ImageDraw.Draw(img, "RGBA")
+        draw = _new_draw(img)
         # Large decorative background character
         f_bg = _load_font(500, bold=True)
-        draw.text((-40, H // 2 - 280), '"', font=f_bg, fill=(*cover_accent, 15))
+        _glyph(draw, '"', f_bg, (*cover_accent, 15),
+               [(-40, H // 2 - 280), (W - 300, H - 520), (W - 300, -120)])
         # Left thick accent bar
         draw.rectangle([(0, 0), (8, H)], fill=cover_accent)
         # Top-right slide counter
@@ -2911,7 +3016,7 @@ def create_carousel_slide_images(
         f_l = _load_font(24, bold=False)
         title, body = _norm(title), _norm(body)
         img = Image.new("RGB", (W, H), color=content_bg)
-        draw = ImageDraw.Draw(img, "RGBA")
+        draw = _new_draw(img)
         panel, band_top = _prep_band(image_path, 60, draw=draw, accent=badge_color)
         # Left accent bar (thicker than cover)
         draw.rectangle([(0, 0), (16, H)], fill=badge_color)
@@ -2943,7 +3048,7 @@ def create_carousel_slide_images(
         f_l = _load_font(24, bold=False)
         title, body = _norm(title), _norm(body)
         img = Image.new("RGB", (W, H), color=cover_bg)
-        draw = ImageDraw.Draw(img, "RGBA")
+        draw = _new_draw(img)
         draw.rectangle([(0, 0), (8, H)], fill=cover_accent)
         cnt_str = f"{idx:02d} / {total:02d}"
         cw = int(draw.textlength(cnt_str, font=f_l))
@@ -2970,12 +3075,13 @@ def create_carousel_slide_images(
         f_l = _load_font(24, bold=False)
         title, body = _norm(title), _norm(body)
         img = Image.new("RGB", (W, H), color=cover_bg)
-        draw = ImageDraw.Draw(img, "RGBA")
+        draw = _new_draw(img)
         # Wave-like two-tone split
         draw.rectangle([(0, H - 220), (W, H)], fill=(*cover_accent, 30))
         # Decorative large number "?" hinting at reveals
         f_deco = _load_font(300, bold=True)
-        draw.text((W - 220, H // 2 - 200), "?", font=f_deco, fill=(*cover_accent, 18))
+        _glyph(draw, "?", f_deco, (*cover_accent, 18),
+               [(W - 220, H // 2 - 200), (W - 200, 110), (40, H - 470), (W - 200, H - 470)])
         # Slide counter pill top-center
         pill = f"1 of {total} reveals"
         pw = int(draw.textlength(pill, font=f_l)) + 36
@@ -3000,7 +3106,7 @@ def create_carousel_slide_images(
         f_num  = _load_font(22, bold=True)
         title, body = _norm(title), _norm(body)
         img = Image.new("RGB", (W, H), color=content_bg)
-        draw = ImageDraw.Draw(img, "RGBA")
+        draw = _new_draw(img)
         panel, band_top = _prep_band(image_path, 60, draw=draw, accent=badge_color)
         # Top color band
         draw.rectangle([(0, 0), (W, 90)], fill=badge_color)
@@ -3040,11 +3146,11 @@ def create_carousel_slide_images(
         f_l = _load_font(24, bold=False)
         title, body = _norm(title), _norm(body)
         img = Image.new("RGB", (W, H), color=cover_bg)
-        draw = ImageDraw.Draw(img, "RGBA")
+        draw = _new_draw(img)
         draw.rectangle([(0, 0), (W, H)], fill=cover_bg)
         # Decorative corner triangle
-        draw.polygon([(0, 0), (300, 0), (0, 300)], fill=(*cover_accent, 40))
-        draw.polygon([(W, H), (W - 300, H), (W, H - 300)], fill=(*cover_accent, 40))
+        _tri(draw, [(0, 0), (300, 0), (0, 300)], (*cover_accent, 40))
+        _tri(draw, [(W, H), (W - 300, H), (W, H - 300)], (*cover_accent, 40))
         PAD = 70
         t_lines, f_t = _fit(title, f_t, W - PAD * 2, draw, max_lines=3, spacing=18)
         t_h = _block_h(t_lines, f_t, 18, draw)
@@ -3068,9 +3174,9 @@ def create_carousel_slide_images(
         f_l = _load_font(24, bold=False)
         title, body = _norm(title), _norm(body)
         img = Image.new("RGB", (W, H), color=cover_bg)
-        draw = ImageDraw.Draw(img, "RGBA")
+        draw = _new_draw(img)
         # Diagonal accent block bottom-right
-        draw.polygon([(W - 280, H), (W, H - 280), (W, H)], fill=(*cover_accent, 60))
+        _tri(draw, [(W - 280, H), (W, H - 280), (W, H)], (*cover_accent, 60))
         # Step label strip at top
         draw.rectangle([(0, 0), (W, 100)], fill=(*WHITE, 20))
         header = f"A {total - 2}-Step Framework"
@@ -3097,7 +3203,7 @@ def create_carousel_slide_images(
         step_num = max(1, idx - 1)
 
         img = Image.new("RGB", (W, H), color=content_bg)
-        draw = ImageDraw.Draw(img, "RGBA")
+        draw = _new_draw(img)
         panel, band_top = _prep_band(image_path, 60, draw=draw, accent=badge_color)
 
         # ── Step progress strip at top ────────────────────────────────────────
@@ -3174,9 +3280,9 @@ def create_carousel_slide_images(
         f_s = _load_font(36, bold=False)
         title, body = _norm(title), _norm(body)
         img = Image.new("RGB", (W, H), color=cover_bg)
-        draw = ImageDraw.Draw(img, "RGBA")
-        draw.polygon([(W - 280, H), (W, H - 280), (W, H)], fill=(*cover_accent, 60))
-        draw.polygon([(0, 0), (280, 0), (0, 280)], fill=(*cover_accent, 40))
+        draw = _new_draw(img)
+        _tri(draw, [(W - 280, H), (W, H - 280), (W, H)], (*cover_accent, 60))
+        _tri(draw, [(0, 0), (280, 0), (0, 280)], (*cover_accent, 40))
         # Checkmark large
         f_check = _load_font(120, bold=True)
         check_text = "Done!"
@@ -3203,9 +3309,10 @@ def create_carousel_slide_images(
         f_big = _load_font(260, bold=True)
         title, body = _norm(title), _norm(body)
         img = Image.new("RGB", (W, H), color=cover_bg)
-        draw = ImageDraw.Draw(img, "RGBA")
+        draw = _new_draw(img)
         # Big decorative quote mark — watermark
-        draw.text((50, 100), '"', font=f_big, fill=(*cover_accent, 35))
+        _glyph(draw, '"', f_big, (*cover_accent, 35),
+               [(50, 100), (W - 260, H - 460), (W - 260, 60)])
         # Warm texture: bottom band
         draw.rectangle([(0, H - 180), (W, H)], fill=(*cover_accent, 40))
         # Right border
@@ -3233,7 +3340,7 @@ def create_carousel_slide_images(
         f_l     = _load_font(22, bold=False)
         title, body = _norm(title), _norm(body)
         img = Image.new("RGB", (W, H), color=content_bg)
-        draw = ImageDraw.Draw(img, "RGBA")
+        draw = _new_draw(img)
         panel, band_top = _prep_band(image_path, 60, draw=draw, accent=badge_color)
         # Right accent border
         draw.rectangle([(W - 14, 0), (W, H)], fill=badge_color)
@@ -3246,7 +3353,7 @@ def create_carousel_slide_images(
         nh = bb[3] - bb[1]
         draw.text((83 - nw // 2, 83 - nh // 2 - 3), num_str, font=f_n, fill=_ink_on(badge_color))
         # Large decorative quote mark
-        draw.text((50, 90), '"', font=f_quote, fill=(*badge_color, 25))
+        _glyph(draw, '"', f_quote, (*badge_color, 25), [(50, 90), (W - 200, 60)])
         # Title — larger, treated as pull-quote
         PAD = 70
         t_lines, f_t = _fit(title, f_t, W - PAD - 80, draw,
@@ -3276,9 +3383,10 @@ def create_carousel_slide_images(
         f_l = _load_font(24, bold=False)
         title, body = _norm(title), _norm(body)
         img = Image.new("RGB", (W, H), color=cover_bg)
-        draw = ImageDraw.Draw(img, "RGBA")
+        draw = _new_draw(img)
         # Closing quote mark (right-aligned)
-        draw.text((W - 200, H // 2 - 80), '"', font=f_quote, fill=(*cover_accent, 30))
+        _glyph(draw, '"', f_quote, (*cover_accent, 30),
+               [(W - 200, H // 2 - 80), (W - 200, 120), (W - 200, H - 330)])
         draw.rectangle([(W - 12, 0), (W, H)], fill=cover_accent)
         # "The End" style label
         label = "The Takeaway"
@@ -3380,7 +3488,7 @@ def create_carousel_slide_images(
     image_paths = []
     slide_receipts: list[dict] = []
     for idx, (title, body) in enumerate(slides_data, start=1):
-        marks.update({"drawn": 0, "dropped": 0, "band": False})
+        marks.update({"drawn": 0, "dropped": 0, "band": False, "accents_skipped": 0})
         element = None
         if idx == 1:
             role = SLIDE_ROLE_COVER
@@ -3424,6 +3532,7 @@ def create_carousel_slide_images(
             "body_chars": len(body or ""), "chars_drawn": marks["drawn"],
             "chars_dropped": marks["dropped"], "band": bool(marks["band"]),
             "element": element.archetype if element is not None else None,
+            "accents_skipped": marks["accents_skipped"],
         })
 
     write_deck_render_receipt(output_dir, post_id, template_key, slide_receipts)

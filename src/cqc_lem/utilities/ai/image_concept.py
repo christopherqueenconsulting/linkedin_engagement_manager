@@ -382,6 +382,8 @@ class ImageConcept:
         people_idea: The one people-led idea, used only when the archetype is a people scene.
         idea_nouns: The Idea Miner's nouns, kept for the receipt.
         art_style: The rotated ``ART_STYLES`` key an editorial_concept renders in.
+        hook_verified: The hook the Stage-3 judge last PASSED; the final gate re-checks any hook
+            that differs from it (a fallback or a trim), so no path ships an unchecked hook.
     """
 
     thesis: str
@@ -414,6 +416,7 @@ class ImageConcept:
     people_idea: str = ""
     idea_nouns: tuple[str, ...] = ()
     art_style: str = ""
+    hook_verified: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         """The concept as a JSON-safe dict, for prompts and receipts."""
@@ -744,6 +747,10 @@ _VERBS = frozenset({
     "misses", "needs", "works", "lose", "sees", "says", "knows", "wants", "uses", "runs",
     "grows", "falls", "rises", "drops", "shows", "proves", "makes", "takes", "gets", "keeps",
     "finds", "spends", "wastes", "starves", "stalls", "slips", "holds", "lands", "earns",
+    # #2241 showcase B: "… based on complexity reduces AI costs" — without "reduce" the trim took
+    # "based" as the verb.
+    "reduce", "increase", "improve", "lower", "boost", "double", "halve", "cap", "triple",
+    "speed", "protect", "block", "unlock", "erode", "inflate",
 })
 
 
@@ -939,6 +946,53 @@ def _noun_phrase(words: Sequence[str]) -> list[str]:
     return out
 
 
+def _participle_phrase(words: Sequence[str], index: int) -> bool:
+    """Is ``words[index]`` a participle opening a modifier ("based on", "built for"), not the verb?
+
+    #2241 showcase B: "Routing prompts to models based on complexity reduces AI costs" took
+    "based" as its main verb and shipped "Routing prompts to models based costs". An -ed word
+    followed by a preposition is a modifier when a finite verb still follows it.
+    """
+    word = words[index].lower().strip(".,;:")
+    nxt = words[index + 1].lower().strip(".,;:") if index + 1 < len(words) else ""
+    return (word.endswith("ed") and nxt in _PREPOSITIONS
+            and any(_is_verb_word(w) and not w.lower().endswith("ed")
+                    for w in words[index + 2:]))
+
+
+def dropped_preposition(hook: str, thesis: str) -> str:
+    """The word pair a trim glued together by dropping a preposition, or ``""``.
+
+    Deterministic grammar guard for every hook path: "based costs" in a hook whose thesis reads
+    "based on … costs" means a preposition and its object were cut out from between them.
+
+    Args:
+        hook: The final headline.
+        thesis: Stage 1's thesis.
+
+    Returns:
+        The offending pair ("based costs"), or ``""`` when every adjacent pair is clean.
+    """
+    def norm(text: str) -> list[str]:
+        return [w.lower().strip(".,;:!?\"'“”‘’") for w in (text or "").split()]
+
+    hook_words, source = norm(hook), norm(thesis)
+    if not hook_words or not source:
+        return ""
+    joined = " ".join(source)
+    for first, second in zip(hook_words, hook_words[1:]):
+        if f"{first} {second}" in joined or first in _PREPOSITIONS:
+            continue
+        # Dropping a noun's own modifier ("prompts [to models] reduces") is compression; dropping
+        # the complement a participle or verb REQUIRES ("based [on complexity] costs") is not.
+        if not (first.endswith("ed") or _is_verb_word(first)):
+            continue
+        for i, word in enumerate(source[:-1]):
+            if word == first and source[i + 1] in _PREPOSITIONS and second in source[i + 2:]:
+                return f"{first} {second}"
+    return ""
+
+
 def clause_hook(thesis: str) -> str:
     """A COMPLETE clause of at most ``_HOOK_MAX_WORDS`` words built from the thesis (round 15).
 
@@ -959,7 +1013,8 @@ def clause_hook(thesis: str) -> str:
         return ""
     if _fits(words) and any(_is_verb_word(w) for w in words):
         return _sentence_cased(words)
-    index = next((i for i, w in enumerate(words) if i > 0 and _is_verb_word(w)), None)
+    index = next((i for i, w in enumerate(words) if i > 0 and _is_verb_word(w)
+                  and not _participle_phrase(words, i)), None)
     if index is None:
         # A label: take the verb from the WHOLE thesis if it has one, else assert it matters.
         whole = [w.strip(".!?\"“”") for w in (thesis or "").split() if w.strip(".!?\"“”")]
@@ -1031,9 +1086,14 @@ def fit_hook(hook: str, thesis: str) -> str:
     Returns:
         A hook of at most ``_HOOK_MAX_WORDS`` words.
     """
-    if len((hook or "").split()) <= _HOOK_MAX_WORDS:
+    if len((hook or "").split()) <= _HOOK_MAX_WORDS and not dropped_preposition(hook, thesis):
         return hook
-    return clause_hook(thesis) or clause_hook(hook)
+    # The deterministic grammar guard holds here too (#2241 showcase B): a clause that glues a
+    # participle to a word its preposition owned is no headline at all.
+    for clause in (clause_hook(thesis), clause_hook(hook)):
+        if clause and not dropped_preposition(clause, thesis):
+            return clause
+    return ""
 
 
 def _valid_hook(hook: str, title: Optional[str], topic_text: str = "",
@@ -1951,6 +2011,8 @@ def _hook_asserts_thesis(concept: ImageConcept, payload: Any, source: str,
         return concept
     ok, valence, reason = check_hook_against_thesis(
         concept.hook_phrase, concept.thesis, cited_sentence(concept.hook_phrase, source))
+    if ok:
+        concept = dataclasses.replace(concept, hook_verified=concept.hook_phrase)
     if not ok:
         rejected = (f'"{concept.hook_phrase}": it does not assert the main claim, or is not '
                     f'grammatical and literally true ({reason})')
@@ -1993,8 +2055,58 @@ def _final_hook(concept: ImageConcept, payload: Any, source: str, title: Optiona
         concept = dataclasses.replace(concept, hook_phrase=hook, hook_shape=hook_shape_of(hook))
     restored = restore_number_casing(concept.hook_phrase, source)
     if restored != concept.hook_phrase:
-        concept = dataclasses.replace(concept, hook_phrase=restored)
-    return concept
+        concept = dataclasses.replace(concept, hook_phrase=restored,
+                                      hook_verified=(restored if concept.hook_verified
+                                                     == concept.hook_phrase else
+                                                     concept.hook_verified))
+    return _gate_final_hook(concept, payload, source, title, surface, user_id)
+
+
+def _hook_passes(hook: str, thesis: str, source: str) -> tuple[bool, str]:
+    """The deterministic grammar guard, then the Stage-3 judge, on ONE candidate hook."""
+    glued = dropped_preposition(hook, thesis)
+    if glued:
+        return False, f'it glues "{glued}" — a preposition and its object were cut out'
+    ok, _valence, reason = check_hook_against_thesis(hook, thesis, cited_sentence(hook, source))
+    return ok, reason
+
+
+def _gate_final_hook(concept: ImageConcept, payload: Any, source: str, title: Optional[str],
+                     surface: str, user_id: Optional[int]) -> ImageConcept:
+    """The Stage-3 grammar/fidelity check on the FINAL hook, from whatever path built it.
+
+    #2241 showcase B shipped "Routing prompts to models based costs": a trim produced it AFTER the
+    judge had passed a different hook, so nothing checked the words that shipped. Any final hook
+    that is not the one the judge last passed (``hook_verified``) — a fallback, a trim, a
+    regeneration — is checked here: the deterministic ``dropped_preposition`` guard first, then
+    the judge. A failure buys ONE regeneration with the reason, then ``clause_hook``; a hook that
+    still fails is dropped, and the image ships with no headline rather than a broken one.
+    """
+    hook = concept.hook_phrase
+    if not hook or (hook == concept.hook_verified and not dropped_preposition(hook,
+                                                                             concept.thesis)):
+        return concept
+    ok, reason = _hook_passes(hook, concept.thesis, source)
+    if ok:
+        return dataclasses.replace(concept, hook_verified=hook)
+    log_info("Final hook failed the grammar/fidelity check — regenerating", user_id=user_id,
+             surface=surface, action_type="image_concept", hook=hook, reason=reason)
+    redo = _ensure_hook(dataclasses.replace(concept, hook_phrase=""), payload, source, title,
+                        surface, user_id,
+                        extra_reasons=(f'"{hook}": not grammatical and true ({reason})',))
+    candidates = [redo.hook_phrase, clause_hook(concept.thesis)]
+    for candidate in candidates:
+        if (candidate and candidate != hook and len(candidate.split()) <= _HOOK_MAX_WORDS
+                and _hook_passes(candidate, concept.thesis, source)[0]):
+            candidate = restore_number_casing(candidate, source)
+            return dataclasses.replace(redo, hook_phrase=candidate,
+                                       hook_shape=hook_shape_of(candidate),
+                                       hook_options={hook_shape_of(candidate): candidate},
+                                       hook_verified=candidate)
+    log_info("No grammatical hook survived — the image ships without a headline",
+             user_id=user_id, surface=surface, action_type="image_concept", hook=hook)
+    return dataclasses.replace(concept, hook_phrase="", hook_shape="", hook_options=None,
+                               hook_verified="")
 
 
 def _ensure_hook(concept: ImageConcept, payload: Any, source: str, title: Optional[str],
