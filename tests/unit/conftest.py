@@ -230,6 +230,23 @@ def _no_real_selenium():
 
 
 @pytest.fixture(autouse=True)
+def _no_real_title_card_encode():
+    """No unit test encodes a real title-card video by accident (showcase round 4).
+
+    Every refused video source frame now falls to `video_title_card.create_title_card_video`,
+    which pipes frames into a real ffmpeg when one is on the PATH — and the CI runner has one. An
+    un-mocked fallback would then spend seconds per test and write MP4s, and the same test would
+    pass or fail by whether the machine has ffmpeg. Here the binary reads as absent, exactly the
+    production branch on a box without it (the card is None). Tests that drive the encoder patch
+    `_ffmpeg` themselves; their patch nests inside this one and wins.
+    """
+    from cqc_lem.utilities import video_title_card
+
+    with patch.object(video_title_card, "_ffmpeg", return_value=None):
+        yield
+
+
+@pytest.fixture(autouse=True)
 def _posthog_scoped_keys_absent(monkeypatch):
     """Start the lane with every purpose-scoped PostHog key unset (issue #1453).
 

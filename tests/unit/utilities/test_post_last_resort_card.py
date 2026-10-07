@@ -86,7 +86,9 @@ class TestLastResortCard:
         with Image.open(drawn.path) as im:
             assert im.size == ig.GRAPHIC_CANVAS["post_image"]
         assert drawn.archetype == ig.TYPESET_CARD and drawn.facts == ()
-        assert [p.role for p in drawn.placements] == ["accent"]
+        # Showcase round 4: the ring-and-bar "accent" scene is retired — the card is type.
+        roles = [p.role for p in drawn.placements]
+        assert "accent" not in roles and "headline" in roles and "kicker" in roles
 
     def test_no_headline_no_card(self):
         with pytest.raises(ig.GraphicError):

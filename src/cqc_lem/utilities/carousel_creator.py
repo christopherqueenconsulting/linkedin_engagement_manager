@@ -47,8 +47,10 @@ from cqc_lem.utilities.deck_render import (
     SLIDE_ROLE_BODY,
     SLIDE_ROLE_COVER,
     SLIDE_ROLE_CTA,
+    deck_render_receipt_path,
     write_deck_render_receipt,
 )
+from cqc_lem.utilities.env_constants import isTrue
 
 
 # Generic slide model for reusability
@@ -2623,6 +2625,163 @@ def _slide_element(title: str, body: str, theme: Any, post_id: Optional[int],
     return _SlideElement(drawn.path, archetype, band_h, chars)
 
 
+# ── Deck rhythm (showcase round 4) ─────────────────────────────────────────────
+# Five decks shipped on two templates with identical inside slides, and the stat cover carried a
+# giant "?" watermark. Each deck now takes a COVER TREATMENT and an inside ACCENT MOTIF, both
+# rotated least-recently-used from the author's own deck receipts (``deck_render.json``).
+DECK_COVER_POSTER = "poster"          # a typographic poster: the title at poster scale
+DECK_COVER_NUMBER = "number_led"      # the title's LEADING figure as the hero
+DECK_COVER_DRAWN = "code_drawn"       # a code-drawn element of the deck's own verbatim figures
+DECK_COVER_CONCEPT = "ai_concept"     # the deck's ONE editorial_concept render (object-only, gated)
+DECK_COVER_TREATMENTS = (DECK_COVER_POSTER, DECK_COVER_DRAWN, DECK_COVER_NUMBER,
+                         DECK_COVER_CONCEPT)
+DECK_COVER_TEMPLATE = "template"      # the template's own cover: the last resort, never rotated to
+DECK_MOTIFS = ("arc", "bracket", "dots", "stripes")
+_DECK_HISTORY = 6
+
+
+def recent_deck_choices(root_dir: Optional[str], user_id: Optional[int],
+                        limit: int = _DECK_HISTORY) -> dict:
+    """This author's recent deck cover treatments and motifs, most recent first. Never raises.
+
+    Read off the ``deck_render.json`` receipts beside the decks (they survive the publish purge).
+    A receipt from before this rotation names neither, and contributes nothing.
+
+    Args:
+        root_dir: The directory holding one sub-directory per deck.
+        user_id: The author; None reads no history.
+        limit: How many decks to read.
+
+    Returns:
+        ``{"cover_treatment": [...], "motif": [...]}``.
+    """
+    import json
+
+    out: dict = {"cover_treatment": [], "motif": []}
+    if not root_dir or user_id is None:
+        return out
+    found = []
+    try:
+        entries = [e.path for e in os.scandir(root_dir) if e.is_dir()]
+    except OSError:
+        return out
+    for directory in entries:
+        path = deck_render_receipt_path(directory)
+        try:
+            with open(path, "r", encoding="utf-8") as handle:
+                receipt = json.load(handle)
+            stamp = os.path.getmtime(path)
+        except (OSError, ValueError):
+            continue
+        if isinstance(receipt, dict) and receipt.get("user_id") == user_id:
+            found.append((stamp, path, receipt))
+    found.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    for _stamp, _path, receipt in found[:max(0, int(limit))]:
+        out["cover_treatment"].append(receipt.get("cover_treatment"))
+        out["motif"].append(receipt.get("motif"))
+    return out
+
+
+def deck_cover_chain(title: str, has_element: bool, ai_available: bool,
+                     recent: list, seed: str = "") -> list:
+    """The cover treatments to try for one deck, least-recently-used first.
+
+    ``number_led`` needs a title that LEADS with a figure; ``code_drawn`` a slide figure that
+    validated; ``ai_concept`` an available render. The template's own cover always ends the chain.
+
+    Args:
+        title: The cover title.
+        has_element: A code-drawn element of the deck's own figures exists.
+        ai_available: An editorial render may be made (or was handed in).
+        recent: Recent decks' cover treatments, most recent first.
+        seed: Stable per-deck text for the no-history case.
+
+    Returns:
+        The chain.
+    """
+    from cqc_lem.utilities.ai.image_compose import split_hero
+    from cqc_lem.utilities.ai.post_treatment import lru_order
+
+    available = [DECK_COVER_POSTER]
+    if has_element:
+        available.append(DECK_COVER_DRAWN)
+    if split_hero(title or "")[0]:
+        available.append(DECK_COVER_NUMBER)
+    if ai_available:
+        available.append(DECK_COVER_CONCEPT)
+    ordered = [t for t in DECK_COVER_TREATMENTS if t in available]
+    return lru_order(ordered, [r for r in recent if r], seed) + [DECK_COVER_TEMPLATE]
+
+
+def deck_motif(recent: list, seed: str = "") -> str:
+    """The inside-slide accent motif for one deck: least-recently-used, never the last deck's."""
+    from cqc_lem.utilities.ai.post_treatment import lru_order
+
+    return lru_order(DECK_MOTIFS, [r for r in recent if r], seed)[0]
+
+
+def render_deck_cover_concept(scope: "_CarouselImageScope", user_id: Optional[int],
+                              post_id: Optional[int]) -> Optional[str]:
+    """The deck's ONE editorial_concept render for its cover — object-only, gated. Never raises.
+
+    Stage 1's deck concept is forced to an ``editorial_concept`` (an object still life in a
+    rotated art style, never a person) and rendered through the vision gate with ``enforce``; a
+    rejected render, a prompt that names a person, or any failure is None, and the cover rotation
+    moves on to its next treatment. Off unless ``DECK_AI_COVER_ENABLED``.
+
+    Args:
+        scope: The deck's shared image inputs (its one Stage 1 concept and brand clause).
+        user_id: The author.
+        post_id: The post.
+
+    Returns:
+        The render's path, or None.
+    """
+    from cqc_lem.utilities.logger import log_debug, log_info
+
+    if not isTrue(os.environ.get("DECK_AI_COVER_ENABLED", "True")):
+        return None
+    try:
+        import dataclasses
+
+        from cqc_lem.utilities.ai.image_brief import build_image_brief, person_word
+        from cqc_lem.utilities.ai.image_concept import (
+            ARCHETYPE_EDITORIAL,
+            TREATMENT_EDITORIAL,
+            assign_art_style,
+        )
+        from cqc_lem.utilities.ai.image_gen import render_image_gated
+
+        concept = scope.concept()
+        if concept is None:
+            return None
+        concept = assign_art_style(dataclasses.replace(
+            concept, treatment=TREATMENT_EDITORIAL, archetype=ARCHETYPE_EDITORIAL,
+            archetype_ranking=(ARCHETYPE_EDITORIAL,), hook_phrase="", layout="", art_style=""))
+        brief = build_image_brief(scope.text, surface="carousel", ratio="1:1", concept=concept,
+                                  brand_kit=scope.brand())
+        if person_word(brief.prompt):
+            log_info("Deck cover concept named a person — not rendering it", user_id=user_id,
+                     post_id=post_id, action_type="carousel_image")
+            return None
+        info: dict = {}
+        path = render_image_gated(brief.prompt, surface="carousel", ratio="1:1",
+                                  focal_concept=brief.focal_concept, user_id=user_id,
+                                  post_id=post_id, render_info=info, concept=brief.concept,
+                                  brand_kit=scope.brand(), enforce=True)
+        if not path or info.get("gate_verdict") == "rejected" or not os.path.isfile(path):
+            log_info("Deck cover concept was not accepted — next cover treatment",
+                     user_id=user_id, post_id=post_id, action_type="carousel_image",
+                     gate_verdict=info.get("gate_verdict"))
+            return None
+        return path
+    except Exception as e:
+        # The rotation simply moves on to a $0 cover: an expected degradation, not a fault.
+        log_debug("Deck cover concept unavailable", error=str(e), user_id=user_id,
+                  post_id=post_id, action_type="carousel_image")
+        return None
+
+
 def create_carousel_slide_images(
     carousel_data: Union[
         EducationalContentCarousel,
@@ -2643,6 +2802,9 @@ def create_carousel_slide_images(
     secondary_bg: tuple = (15, 52, 142),
     brand_user_id: Optional[int] = None,
     theme: Any = None,
+    cover_treatment: Optional[str] = None,
+    motif: Optional[str] = None,
+    cover_image_path: Optional[str] = None,
 ) -> list[str]:
     """Render carousel slides as 1080x1080 PNG images using Pillow.
 
@@ -2657,8 +2819,11 @@ def create_carousel_slide_images(
     figure(s) or points (``slide_graphic``, the image_graphics drawers and fact rules); else the
     opt-in ``select_slide_image`` sources (Pexels only behind ``CAROUSEL_PEXELS_ENABLED``, off by
     default; the avatar path behind its own flags); else NO picture — a typographic slide with a
-    brand accent shape. Text reflows above any band so nothing overlaps or clips. Cover + CTA
-    slides are typographic.
+    brand accent shape (the deck's rotated ``motif``). Text reflows above any band so nothing
+    overlaps or clips. The cover takes the deck's rotated ``cover_treatment`` (showcase round 4):
+    a typographic poster, a number-led cover, a code-drawn element of the deck's own figures, or
+    the deck's one gated editorial render — falling through the chain, then to the template's own
+    cover. The CTA slide is typographic.
 
     Args:
         carousel_data: The validated deck.
@@ -2673,6 +2838,11 @@ def create_carousel_slide_images(
             route, which must not reach the avatar path).
         theme: A ``brand_kit.DeckTheme`` to use as-is (offline samples, tests); resolved from the
             kit when None.
+        cover_treatment: Force one ``DECK_COVER_TREATMENTS`` value; rotated from receipts when
+            None.
+        motif: Force one ``DECK_MOTIFS`` value; rotated from receipts when None.
+        cover_image_path: An editorial render to use for an ``ai_concept`` cover (offline samples);
+            rendered on demand when None and the rotation picks it.
 
     Returns:
         The slide PNG paths, in order.
@@ -2800,6 +2970,10 @@ def create_carousel_slide_images(
 
     # The slide being drawn: its ink-tracking draw, so `_save` can place the deferred accents.
     slide_ctx: dict = {"draw": None}
+    # The deck's rotated rhythm (showcase round 4), decided once below.
+    history = recent_deck_choices(os.path.dirname(output_dir), user_id)
+    deck_rhythm = {"motif": motif if motif in DECK_MOTIFS
+                   else deck_motif(history["motif"], f"{post_id}:{template}")}
 
     def _new_draw(img):
         draw = make_ink_draw(img)
@@ -2846,10 +3020,30 @@ def create_carousel_slide_images(
         """
         r = 300
         cx, cy = W - 40, H - footer_h + 40
+        base = H - footer_h
 
         def paint():
-            draw.arc([(cx - r, cy - r), (cx + r, cy + r)], start=180, end=270,
-                     fill=(*accent, 90), width=26)
+            # The deck's rotated motif (showcase round 4), always inside the same box.
+            if deck_rhythm["motif"] == "bracket":
+                for k in (0, 1):
+                    off = 70 + k * 46
+                    draw.line([(W - off - 200, base - off), (W - off, base - off),
+                               (W - off, base - off - 200)], fill=(*accent, 150 - 60 * k),
+                              width=14, joint="curve")
+            elif deck_rhythm["motif"] == "dots":
+                for row in range(3):
+                    for col in range(4):
+                        x, y = W - 80 - col * 52, base - 70 - row * 52
+                        draw.ellipse([(x - 9, y - 9), (x + 9, y + 9)], fill=(*accent, 150))
+            elif deck_rhythm["motif"] == "stripes":
+                for k in range(4):
+                    off = 60 + k * 44
+                    draw.polygon([(W - off - 16, base - 40), (W - off + 4, base - 40),
+                                  (W - off + 130, base - 210), (W - off + 110, base - 210)],
+                                 fill=(*accent, 120))
+            else:
+                draw.arc([(cx - r, cy - r), (cx + r, cy + r)], start=180, end=270,
+                         fill=(*accent, 90), width=26)
             draw.rectangle([(W - 190, H - footer_h - 54), (W - 70, H - footer_h - 44)],
                            fill=(*accent, 255))
 
@@ -3078,10 +3272,7 @@ def create_carousel_slide_images(
         draw = _new_draw(img)
         # Wave-like two-tone split
         draw.rectangle([(0, H - 220), (W, H)], fill=(*cover_accent, 30))
-        # Decorative large number "?" hinting at reveals
-        f_deco = _load_font(300, bold=True)
-        _glyph(draw, "?", f_deco, (*cover_accent, 18),
-               [(W - 220, H // 2 - 200), (W - 200, 110), (40, H - 470), (W - 200, H - 470)])
+        # Showcase round 4: the giant "?" watermark is gone — it undercut every case study.
         # Slide counter pill top-center
         pill = f"1 of {total} reveals"
         pw = int(draw.textlength(pill, font=f_l)) + 36
@@ -3405,6 +3596,105 @@ def create_carousel_slide_images(
         return _save(img, idx)
 
     # ══════════════════════════════════════════════════════════════════════════
+    # Rotated cover treatments (showcase round 4) — every one typographic-first, no watermark
+    # ══════════════════════════════════════════════════════════════════════════
+    def _cover_base():
+        img = Image.new("RGB", (W, H), color=cover_bg)
+        draw = _new_draw(img)
+        return img, draw
+
+    def _cover_footer(draw, total):
+        f_l = _load_font(24, bold=False)
+        draw.text((70, H - 80), f"SWIPE  >   1 / {total}", font=f_l, fill=(*cover_accent, 170))
+
+    def _poster_cover(idx, total, title, body) -> Optional[str]:
+        title, body = _norm(title), _norm(body)
+        img, draw = _cover_base()
+        PAD = 70
+        draw.rectangle([(PAD, 70), (PAD + 140, 84)], fill=cover_accent)
+        s_lines, f_s = _fit(body, _load_font(34, bold=False), W - PAD * 2, draw, max_lines=3,
+                            spacing=12)
+        s_h = _block_h(s_lines, f_s, 12, draw) if body else 0
+        t_lines, f_t = _fit(title, _load_font(104, bold=True), W - PAD * 2, draw, max_lines=5,
+                            spacing=10)
+        t_h = _block_h(t_lines, f_t, 10, draw)
+        y = H - 130 - s_h - (36 if body else 0) - t_h
+        y = _draw_block(draw, t_lines, f_t, PAD, max(130, y), cover_text, spacing=10)
+        if body:
+            _draw_block(draw, s_lines, f_s, PAD, y + 26, fill=(*cover_text, 190), spacing=12)
+        _cover_footer(draw, total)
+        return _save(img, idx)
+
+    def _number_cover(idx, total, title, body) -> Optional[str]:
+        from cqc_lem.utilities.ai.image_compose import split_hero
+
+        hero, rest = split_hero(_norm(title))
+        if not hero:
+            return None
+        body = _norm(body)
+        img, draw = _cover_base()
+        PAD = 70
+        h_lines, f_h = _fit(hero, _load_font(300, bold=True), W - PAD * 2, draw, max_lines=1,
+                            spacing=0)
+        y = _draw_block(draw, h_lines, f_h, PAD, 120, cover_accent, spacing=0)
+        draw.rectangle([(PAD, y + 30), (PAD + 160, y + 40)], fill=cover_accent)
+        r_lines, f_r = _fit(rest, _load_font(66, bold=True), W - PAD * 2, draw, max_lines=3,
+                            spacing=12)
+        y = _draw_block(draw, r_lines, f_r, PAD, y + 80, cover_text, spacing=12)
+        if body:
+            s_lines, f_s = _fit(body, _load_font(34, bold=False), W - PAD * 2, draw,
+                                max_lines=3, spacing=12)
+            _draw_block(draw, s_lines, f_s, PAD, y + 24, fill=(*cover_text, 190), spacing=12)
+        _cover_footer(draw, total)
+        return _save(img, idx)
+
+    def _title_and_body(draw, title, body, y, title_px, body_px, title_lines, body_lines):
+        """The cover's title then its subtitle, both whole (the writer's text is never cut)."""
+        PAD = 70
+        t_lines, f_t = _fit(title, _load_font(title_px, bold=True), W - PAD * 2, draw,
+                            max_lines=title_lines, spacing=10)
+        y = _draw_block(draw, t_lines, f_t, PAD, y, cover_text, spacing=10)
+        if body:
+            s_lines, f_s = _fit(body, _load_font(body_px, bold=False), W - PAD * 2, draw,
+                                max_lines=body_lines, spacing=10)
+            y = _draw_block(draw, s_lines, f_s, PAD, y + 18, fill=(*cover_text, 190),
+                            spacing=10)
+        return y
+
+    def _drawn_cover(idx, total, title, body, element) -> Optional[str]:
+        title, body = _norm(title), _norm(body)
+        img, draw = _cover_base()
+        band_top = H - 100 - element.band_h
+        try:
+            panel = _fit_and_crop_image(element.path, W, element.band_h)
+        except Exception as e:
+            log_warning("Deck cover element could not be placed — next cover treatment", exc=e,
+                        post_id=post_id)
+            return None
+        _title_and_body(draw, title, body, 90, 66, 30, 3, 4)
+        img.paste(panel, (0, band_top))
+        draw.rectangle([(0, band_top - 8), (W, band_top)], fill=cover_accent)
+        marks["drawn"] += element.chars
+        _cover_footer(draw, total)
+        return _save(img, idx)
+
+    def _concept_cover(idx, total, title, body, image_path) -> Optional[str]:
+        title, body = _norm(title), _norm(body)
+        img, draw = _cover_base()
+        art_h = 500
+        try:
+            art = _fit_and_crop_image(image_path, W, art_h)
+        except Exception as e:
+            log_warning("Deck cover render could not be placed — next cover treatment", exc=e,
+                        post_id=post_id)
+            return None
+        img.paste(art, (0, 0))
+        draw.rectangle([(0, art_h), (W, art_h + 10)], fill=cover_accent)
+        _title_and_body(draw, title, body, art_h + 44, 62, 30, 3, 4)
+        _cover_footer(draw, total)
+        return _save(img, idx)
+
+    # ══════════════════════════════════════════════════════════════════════════
     # Dispatch to the right render functions
     # ══════════════════════════════════════════════════════════════════════════
     COVER_FN = {
@@ -3487,12 +3777,59 @@ def create_carousel_slide_images(
     total = len(slides_data)
     image_paths = []
     slide_receipts: list[dict] = []
+
+    def _cover_element():
+        """The first code-drawn element the deck's own text earns: the cover's, then a body's."""
+        candidates = [slides_data[0]] + slides_data[1:-1] if slides_data else []
+        for n, (t, b) in enumerate(candidates):
+            element = _slide_element(t, b, theme, post_id, n + 1)
+            if element is not None:
+                return element
+        return None
+
+    def _render_rotated_cover(idx, total, title, body):
+        """The deck cover through its rotated chain; the template's own cover ends it."""
+        element = _cover_element()
+        ai_available = bool(cover_image_path) or (
+            user_id is not None and isTrue(os.environ.get("DECK_AI_COVER_ENABLED", "True")))
+        if cover_treatment in (*DECK_COVER_TREATMENTS, DECK_COVER_TEMPLATE):
+            chain = [cover_treatment, DECK_COVER_TEMPLATE]
+        else:
+            chain = deck_cover_chain(_norm(title), element is not None, ai_available,
+                                     history["cover_treatment"], f"{post_id}:{title}")
+        try:
+            for treatment in chain:
+                path = None
+                # A treatment that gave up must not leave its tally on the receipt.
+                marks.update({"drawn": 0, "dropped": 0})
+                if treatment == DECK_COVER_POSTER:
+                    path = _poster_cover(idx, total, title, body)
+                elif treatment == DECK_COVER_NUMBER:
+                    path = _number_cover(idx, total, title, body)
+                elif treatment == DECK_COVER_DRAWN and element is not None:
+                    path = _drawn_cover(idx, total, title, body, element)
+                elif treatment == DECK_COVER_CONCEPT and ai_available:
+                    with carousel_image_scope_token(scope):
+                        art = cover_image_path or render_deck_cover_concept(scope, user_id,
+                                                                            post_id)
+                    path = _concept_cover(idx, total, title, body, art) if art else None
+                elif treatment == DECK_COVER_TEMPLATE:
+                    path = render_cover(idx, total, title, body)
+                if path:
+                    return path, treatment
+                # A drawer that gave up mid-slide leaves its draw pending; drop it.
+                slide_ctx["draw"] = None
+            return render_cover(idx, total, title, body), DECK_COVER_TEMPLATE
+        finally:
+            if element is not None:
+                element.discard()
+
     for idx, (title, body) in enumerate(slides_data, start=1):
         marks.update({"drawn": 0, "dropped": 0, "band": False, "accents_skipped": 0})
         element = None
         if idx == 1:
             role = SLIDE_ROLE_COVER
-            path = render_cover(idx, total, title, body)
+            path, deck_rhythm["cover_treatment"] = _render_rotated_cover(idx, total, title, body)
         elif idx == total:
             role = SLIDE_ROLE_CTA
             path = render_cta(idx, total, title, body)
@@ -3535,7 +3872,10 @@ def create_carousel_slide_images(
             "accents_skipped": marks["accents_skipped"],
         })
 
-    write_deck_render_receipt(output_dir, post_id, template_key, slide_receipts)
+    write_deck_render_receipt(output_dir, post_id, template_key, slide_receipts,
+                              extra={"user_id": user_id,
+                                     "cover_treatment": deck_rhythm.get("cover_treatment"),
+                                     "motif": deck_rhythm["motif"]})
     # Cover + first body slide, copied from what just shipped (#1704) — the render receipt has the
     # text-fit numbers; R2/R8 need pixels, and this is the only moment the slides and a grader are
     # both in the room before purge_post_assets clears the directory.

@@ -603,7 +603,7 @@ def last_resort_hook(concept, text: str) -> Optional[str]:
 
 def _render_last_resort_card(concept, rhythm, text: str, *, user_id: int,
                              post_id: Optional[int], brand: str,
-                             ratio: str) -> _Rendered:
+                             ratio: str, byline: Optional[str] = None) -> _Rendered:
     """The guaranteed $0 card (#2241 showcase B): the hook on a brand panel, no photo, no judge.
 
     Every treatment in the chain failed — posts 97 and 137 shipped bare that way. This is drawn
@@ -613,20 +613,30 @@ def _render_last_resort_card(concept, rhythm, text: str, *, user_id: int,
     """
     from cqc_lem.utilities.ai.image_compose import brand_style
     from cqc_lem.utilities.ai.image_gen import _kicker_for
-    from cqc_lem.utilities.ai.image_graphics import GraphicError, render_typeset_card
+    from cqc_lem.utilities.ai.image_graphics import (
+        GraphicError,
+        render_typeset_card,
+        typeset_layouts_for,
+    )
+    from cqc_lem.utilities.ai.post_treatment import is_verbatim, pick_dimension
 
     out = _Rendered()
     hook = last_resort_hook(concept, text)
     if not hook:
         out.reason = "no headline for the last-resort card"
         return out
+    # Showcase round 4: one of four typographic compositions, least-recently-used from the
+    # receipts — the retired ring-and-bar scene repeated on every card.
+    card_layout, _ = pick_dimension(typeset_layouts_for(hook, verbatim=is_verbatim(hook, text)),
+                                    getattr(rhythm, "recent_card_layouts", ()), hook)
     out_dir = os.path.join(assets_dir, "images", "generated", str(user_id or "system"))
     os.makedirs(out_dir, exist_ok=True)
     try:
         drawn = render_typeset_card(
             hook, surface="post_image", kicker=_kicker_for(concept) if concept else "",
-            brand=brand_style(brand), layout=rhythm.layout or getattr(concept, "layout", None),
-            panel=rhythm.panel, out_path=os.path.join(out_dir, f"img_{secrets.token_hex(8)}.png"))
+            signature=byline or "", brand=brand_style(brand), panel=rhythm.panel,
+            card_layout=card_layout,
+            out_path=os.path.join(out_dir, f"img_{secrets.token_hex(8)}.png"))
     except (GraphicError, OSError, ValueError) as e:
         out.reason = f"the last-resort card could not be drawn: {e}"
         return out
@@ -638,10 +648,43 @@ def _render_last_resort_card(concept, rhythm, text: str, *, user_id: int,
         out.reason = f"the last-resort card raised {type(e).__name__}"
         return out
     out.path = drawn.path
-    out.render_info = {"gate_verdict": "last_resort", "archetype_rendered": "typeset_card"}
+    out.render_info = {"gate_verdict": "last_resort", "archetype_rendered": "typeset_card",
+                       "card_layout": card_layout}
     out.brief = _code_drawn_brief(concept, "typeset_card", hook, ratio)
     out.render_path = "code_drawn_last_resort"
     return out
+
+
+def _avoid_last_style(concept, rhythm):
+    """Steer the archetype chain off the last post's style, when another style is possible.
+
+    Showcase round 4: two claymation renders ran back to back. A people photo may not follow a
+    people photo — the chain's people tail becomes an object-only editorial concept in a rotated
+    art style — and a code-drawn graphic may not follow a code-drawn card (the chain's AI tail
+    then leads). The chain keeps its order otherwise; with nothing to change it is returned as is.
+    """
+    from cqc_lem.utilities.ai.image_concept import (
+        AI_ARCHETYPES,
+        ARCHETYPE_EDITORIAL,
+        ARCHETYPE_PEOPLE,
+        TREATMENT_EDITORIAL,
+        assign_art_style,
+    )
+    from cqc_lem.utilities.ai.post_treatment import blocked_archetypes
+
+    blocked = blocked_archetypes(getattr(rhythm, "last_style", ""))
+    chain = tuple(getattr(concept, "archetype_ranking", ()) or ())
+    if not blocked or not chain:
+        return concept
+    kept = [a for a in chain if a not in blocked]
+    if ARCHETYPE_PEOPLE in blocked and not any(a in AI_ARCHETYPES for a in kept):
+        kept.append(ARCHETYPE_EDITORIAL)
+        concept = assign_art_style(
+            dataclasses.replace(concept, treatment=TREATMENT_EDITORIAL, art_style=""),
+            list(getattr(rhythm, "recent_styles", ()) or ()))
+    if not kept or tuple(kept) == chain:
+        return concept
+    return dataclasses.replace(concept, archetype=kept[0], archetype_ranking=tuple(kept))
 
 
 def _render_ai_post(concept, text: str, rhythm, treatment: str, *, user_id: int,
@@ -683,6 +726,7 @@ def _render_ai_post(concept, text: str, rhythm, treatment: str, *, user_id: int,
                 chain = chain or tuple(a for a in concept.archetype_ranking if a in AI_ARCHETYPES)
                 concept = dataclasses.replace(concept, archetype=chain[0] if chain else
                                               concept.archetype, archetype_ranking=chain)
+        concept = _avoid_last_style(concept, rhythm)
     try:
         # Stage 1 first, because whether the author belongs in frame is a question about the piece.
         avatar = resolve_avatar_for_concept(user_id, surface=AVATAR_SURFACE_POST_IMAGE,
@@ -774,7 +818,7 @@ def _rhythm_receipt(treatment: str, rhythm, done: _Rendered, card_share: float,
     gate reads as a break in any run.
     """
     from cqc_lem.utilities.ai.image_concept import AI_ARCHETYPES
-    from cqc_lem.utilities.ai.post_treatment import setting_class
+    from cqc_lem.utilities.ai.post_treatment import setting_class, style_of
 
     if treatment == "typeset_card" and not getattr(done.brief, "hook_text", None):
         # No headline survived (Stage 1 unavailable): nothing was typeset, so it shipped photo-only.
@@ -798,6 +842,11 @@ def _rhythm_receipt(treatment: str, rhythm, done: _Rendered, card_share: float,
         "setting": ((setting_class(getattr(concept, "setting", ""))
                      or setting_class(getattr(done.brief, "prompt", ""))) or None)
         if ai_scene else None,
+        # The visual style that shipped (showcase round 4) — the gate's newest dimension.
+        "style": style_of(treatment, archetype or getattr(concept, "archetype", ""),
+                          getattr(concept, "art_style", "") if ai_scene else "",
+                          done.render_info.get("gate_verdict") == "last_resort"),
+        "card_layout": done.render_info.get("card_layout"),
         "card_share": card_share,
         "card_wanted": rhythm.plan.card_wanted,
         "chain": list(rhythm.plan.chain),
@@ -841,7 +890,11 @@ def generate_image_for_post(user_id: int, text: str, post_id: Optional[int] = No
         return None, "Write the post content first — the image is drawn from it"
 
     from cqc_lem.utilities.ai.image_compose import available_panels, brand_style
-    from cqc_lem.utilities.ai.image_concept import ARCHETYPE_WINDOW, analyze_content_for_image
+    from cqc_lem.utilities.ai.image_concept import (
+        ARCHETYPE_WINDOW,
+        ART_STYLES,
+        analyze_content_for_image,
+    )
     from cqc_lem.utilities.ai.post_treatment import (
         CARD_SHARE_WINDOW,
         next_treatment,
@@ -865,7 +918,8 @@ def generate_image_for_post(user_id: int, text: str, post_id: Optional[int] = No
         recent_archetypes=recent_post_archetypes(user_id, ARCHETYPE_WINDOW),
         recent_layouts=[v for v in history["layout"] if v],
         recent_casts=[c for c in history["cast"] if c],
-        recent_shots=[v for v in history["shot"] if v])
+        recent_shots=[v for v in history["shot"] if v],
+        recent_art_styles=[v for v in history["style"] if v in ART_STYLES])
     brand = brand_clause_for_user(user_id)
     card_share = card_share_for_user(user_id)
     byline = (getattr(profile, "full_name", None) or "").strip() or None
@@ -913,7 +967,7 @@ def generate_image_for_post(user_id: int, text: str, post_id: Optional[int] = No
         # The guaranteed $0 last resort (#2241 showcase B): a code-drawn typeset card of the
         # post's own hook. A post ships imageless only when even this cannot be drawn.
         last = _render_last_resort_card(concept, rhythm, text, user_id=user_id, post_id=post_id,
-                                        brand=brand, ratio=ratio)
+                                        brand=brand, ratio=ratio, byline=byline)
         if last.path:
             log_info("Every post image treatment failed — shipping the last-resort typeset card",
                      user_id=user_id, post_id=post_id, action_type="post_treatment",

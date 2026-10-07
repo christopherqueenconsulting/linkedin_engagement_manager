@@ -1189,16 +1189,193 @@ _DRAWERS = {STAT_CARD: _draw_stat_card, HIGHLIGHT_CHART: _draw_highlight_chart,
 TYPESET_CARD = "typeset_card"
 
 
+# Showcase round 4: the last-resort card's "gold ring and a bar" read as unfinished placeholder art
+# and repeated post after post. It is retired; the card is now ONE of four full-canvas typographic
+# compositions, rotated least-recently-used from the receipts (``post_treatment``).
+CARD_POSTER = "poster"            # a poster-scale headline under its kicker
+CARD_QUOTE_MARKS = "quote_marks"  # oversized quote marks over the pull line (verbatim lines only)
+CARD_NUMBER_LED = "number_led"    # the hook's LEADING figure as the hero (a stat hook only)
+CARD_GRID_RULE = "grid_rule"      # a minimal grid with rules framing the headline
+TYPESET_CARD_LAYOUTS = (CARD_POSTER, CARD_GRID_RULE, CARD_QUOTE_MARKS, CARD_NUMBER_LED)
+
+
+def typeset_layouts_for(hook: Optional[str], *, verbatim: bool = False) -> tuple[str, ...]:
+    """The typographic compositions ``hook`` can take, in tie order.
+
+    ``number_led`` needs a figure that LEADS the hook (``image_compose.split_hero``), so lifting it
+    never leaves a hole in the sentence. ``quote_marks`` puts the line in quotation marks, so it
+    needs a line that is the post's own words verbatim.
+
+    Args:
+        hook: The headline.
+        verbatim: The hook is an exact substring of the post.
+
+    Returns:
+        The available layouts; ``poster`` and ``grid_rule`` are always available.
+    """
+    from cqc_lem.utilities.ai.image_compose import split_hero
+
+    out = [CARD_POSTER, CARD_GRID_RULE]
+    if verbatim:
+        out.append(CARD_QUOTE_MARKS)
+    hero, rest = split_hero(hook or "")
+    if hero and len(rest.split()) >= 2:
+        out.append(CARD_NUMBER_LED)
+    return tuple(out)
+
+
+def _card_colors(brand: BrandStyle, panel: Optional[str]) -> dict:
+    from cqc_lem.utilities.ai.image_compose import panel_colors
+
+    colors = panel_colors(brand, panel)
+    ground = _hex(colors.panel)
+    return {"ground": ground, "headline": _hex(colors.headline), "hero": _hex(colors.hero),
+            "rest": _hex(colors.rest), "kicker": _hex(colors.kicker), "seam": _hex(colors.seam),
+            "byline": _hex(colors.byline), "faint": _mix(ground, _hex(colors.seam), 0.16)}
+
+
+def _card_kicker(c: _Canvas, kicker: str, xy: tuple, ink: tuple, safe: tuple) -> int:
+    """The tracked uppercase kicker at ``xy``; returns the y below it (``xy[1]`` when none)."""
+    kicker = (kicker or "").strip().upper()
+    if not kicker:
+        return xy[1]
+    size = c.floor(0.032)
+    font = load_font(size)
+    if tracked_width(c.draw, kicker, font, size) > safe[2] - xy[0]:
+        return xy[1]
+    box = c.text(xy, kicker, font, size, ink, safe, "kicker", tracked=True)
+    return box[3]
+
+
+def _card_byline(c: _Canvas, signature: str, y_bottom: int, left: int, ink: tuple,
+                 safe: tuple) -> int:
+    """The byline with its bottom at ``y_bottom``; returns its top (``y_bottom`` when none)."""
+    signature = (signature or "").strip()
+    if not signature:
+        return y_bottom
+    size = c.floor(0.03)
+    font = load_font(size)
+    if _ink_width(c.draw, signature, font) > safe[2] - left:
+        return y_bottom
+    top = y_bottom - _line_height(font, size)
+    c.text((left, top), signature, font, size, ink, safe, "byline")
+    return top
+
+
+def _fit_headline(c: _Canvas, text: str, width: int, height: int, high: float, low: float,
+                  max_lines: int = 6):
+    fitted = _fit_block(c.draw, text, width, height, max_lines, c.floor(high), c.floor(low))
+    if fitted is None:
+        raise GraphicLayoutError("the headline does not fit the typeset card legibly")
+    return fitted
+
+
+def _draw_card_poster(c: _Canvas, hook: str, kicker: str, signature: str, pal: dict) -> None:
+    left, top, right, bottom = safe = _safe(c)
+    y = _card_kicker(c, kicker, (left, top), pal["kicker"], safe)
+    rule_h = max(6, c.floor(0.008))
+    c.draw.rectangle((left, y + c.floor(0.02), left + round((right - left) * 0.16),
+                      y + c.floor(0.02) + rule_h), fill=(*pal["seam"], 255))
+    c.record("rule", "", (left, y + c.floor(0.02), left + round((right - left) * 0.16),
+                          y + c.floor(0.02) + rule_h), safe)
+    by_top = _card_byline(c, signature, bottom, left, pal["byline"], safe)
+    floor_y = by_top - c.floor(0.05)
+    room_top = y + c.floor(0.08)
+    fitted = _fit_headline(c, hook, right - left, floor_y - room_top, 0.15, 0.06)
+    # Poster: the headline sits LOW, anchored on the byline, with the kicker alone up top.
+    _lines(c, left, floor_y - fitted[2] * len(fitted[1]), fitted, pal["headline"], safe,
+           "headline")
+
+
+def _draw_card_quote_marks(c: _Canvas, hook: str, kicker: str, signature: str,
+                           pal: dict) -> None:
+    left, top, right, bottom = safe = _safe(c)
+    mark_size = round(c.basis * 0.42)
+    mark_font = load_font(mark_size)
+    mark_box = c.draw.textbbox((0, 0), "\u201c", font=mark_font)
+    c.text((left, top - mark_box[1]), "\u201c", mark_font, mark_size, pal["seam"], safe, "mark")
+    mark_bottom = top + (mark_box[3] - mark_box[1])
+    if kicker:
+        size = c.floor(0.032)
+        width = tracked_width(c.draw, kicker.upper(), load_font(size), size)
+        _card_kicker(c, kicker, (max(left, right - width), top), pal["kicker"], safe)
+    by_top = _card_byline(c, f"\u2014 {signature}" if signature else "", bottom, left,
+                          pal["kicker"], safe)
+    room_top, room_bottom = mark_bottom + c.floor(0.04), by_top - c.floor(0.05)
+    fitted = _fit_headline(c, hook, right - left, room_bottom - room_top, 0.085, 0.05, 7)
+    block = fitted[2] * len(fitted[1])
+    _lines(c, left, room_top + max(0, (room_bottom - room_top - block) // 2), fitted,
+           pal["headline"], safe, "headline")
+
+
+def _draw_card_number_led(c: _Canvas, hook: str, kicker: str, signature: str,
+                          pal: dict) -> None:
+    from cqc_lem.utilities.ai.image_compose import split_hero
+
+    hero, rest = split_hero(hook)
+    if not hero:
+        raise GraphicError("a number-led card needs a hook that leads with a figure")
+    left, top, right, bottom = safe = _safe(c)
+    y = _card_kicker(c, kicker, (left, top), pal["kicker"], safe)
+    by_top = _card_byline(c, signature, bottom, left, pal["byline"], safe)
+    room = by_top - c.floor(0.05) - (y + c.floor(0.05))
+    hero_fit = _fit_block(c.draw, hero, right - left, round(room * 0.48), 1, c.floor(0.34),
+                          c.floor(0.12))
+    if hero_fit is None:
+        raise GraphicLayoutError("the hero figure does not fit the typeset card")
+    rest_fit = _fit_headline(c, rest, right - left, round(room * 0.40), 0.07, 0.045, 4)
+    rule_h = max(6, c.floor(0.008))
+    gap = c.floor(0.03)
+    block = hero_fit[2] + gap + rule_h + gap + rest_fit[2] * len(rest_fit[1])
+    y0 = y + c.floor(0.05) + max(0, (room - block) // 2)
+    _lines(c, left, y0, hero_fit, pal["hero"], safe, "hero")
+    rule_y = y0 + hero_fit[2] + gap
+    c.draw.rectangle((left, rule_y, left + round((right - left) * 0.22), rule_y + rule_h),
+                     fill=(*pal["seam"], 255))
+    c.record("rule", "", (left, rule_y, left + round((right - left) * 0.22), rule_y + rule_h),
+             safe)
+    _lines(c, left, rule_y + rule_h + gap, rest_fit, pal["rest"], safe, "headline")
+
+
+def _draw_card_grid_rule(c: _Canvas, hook: str, kicker: str, signature: str, pal: dict) -> None:
+    left, top, right, bottom = safe = _safe(c)
+    hair = max(2, c.floor(0.002))
+    columns = 6
+    band_top = top + round((bottom - top) * 0.16)
+    band_bottom = top + round((bottom - top) * 0.84)
+    # The grid lives only between the two rules: the kicker and byline sit on clean ground.
+    for n in range(1, columns):
+        x = left + round((right - left) * n / columns)
+        c.draw.rectangle((x, band_top, x + hair - 1, band_bottom), fill=(*pal["faint"], 255))
+    thick = max(8, c.floor(0.012))
+    c.draw.rectangle((left, band_top, right, band_top + thick - 1), fill=(*pal["seam"], 255))
+    c.draw.rectangle((left, band_bottom, right, band_bottom + hair - 1), fill=(*pal["seam"], 255))
+    c.record("rule", "", (left, band_top, right, band_top + thick), safe)
+    _card_kicker(c, kicker, (left, top), pal["kicker"], safe)
+    _card_byline(c, signature, bottom, left, pal["byline"], safe)
+    # The headline starts one column in, so the grid shows on its left.
+    column = left + round((right - left) / columns)
+    room_top, room_bottom = band_top + thick + c.floor(0.04), band_bottom - c.floor(0.04)
+    fitted = _fit_headline(c, hook, right - column, room_bottom - room_top, 0.11, 0.05)
+    _lines(c, column, room_top, fitted, pal["headline"], safe, "headline")
+
+
+_CARD_DRAWERS = {CARD_POSTER: _draw_card_poster, CARD_QUOTE_MARKS: _draw_card_quote_marks,
+                 CARD_NUMBER_LED: _draw_card_number_led, CARD_GRID_RULE: _draw_card_grid_rule}
+
+
 def render_typeset_card(hook: str, *, surface: str = "post_image", kicker: str = "",
                         signature: str = "", brand: Optional[BrandStyle] = None,
                         layout: Optional[str] = None, panel: Optional[str] = None,
-                        out_path: Optional[str] = None) -> GraphicRender:
-    """The $0 LAST RESORT: the post's hook on a brand panel, beside a code-drawn accent shape.
+                        out_path: Optional[str] = None,
+                        card_layout: Optional[str] = None) -> GraphicRender:
+    """The $0 LAST RESORT: the post's hook as a full-canvas typographic card. No model call.
 
     #2241 showcase B: posts 97 and 137 shipped with NO image — the AI render was rejected and no
-    data or quote card applied. This card needs only a headline: the scene region holds no photo,
-    just a brand accent shape (a gold ring and a dark-gold rule on the panel's ground), and the
-    headline panel is ``image_compose``'s, on the rotated panel variant. Nothing here calls a model.
+    data or quote card applied — so this card needs only a headline. Showcase round 4 retired its
+    old scene (a gold ring and a bar, which read as unfinished and repeated): the card is now one
+    of ``TYPESET_CARD_LAYOUTS``, drawn in the rotated panel variant's colours. Every text element
+    is fitted inside the safe area at a legible size or the card refuses.
 
     Args:
         hook: The headline — the post's own hook.
@@ -1206,52 +1383,34 @@ def render_typeset_card(hook: str, *, surface: str = "post_image", kicker: str =
         kicker: The uppercase topic tag.
         signature: The byline.
         brand: The exact colours; the reference brand by default.
-        layout: A split layout; the surface default when not one.
-        panel: The rotated panel variant.
+        layout: Ignored — the split layouts belonged to the retired composite. Kept so older
+            callers still bind.
+        panel: The rotated panel variant (its ground and inks).
         out_path: Where to write; a temp file by default.
+        card_layout: One of ``TYPESET_CARD_LAYOUTS``; ``poster`` when None or unknown.
 
     Returns:
-        The render (no facts: the hook is the post's own words).
+        The render (no facts: the hook is the post's own words). ``archetype`` is
+        ``typeset_card``; the placements carry every drawn string.
 
     Raises:
-        GraphicError: There is no headline to set.
+        GraphicError: There is no headline to set, or the layout cannot take this hook.
+        GraphicLayoutError: The headline cannot be set legibly.
     """
+    del layout
     if not (hook or "").strip():
         raise GraphicError("a typeset card needs a headline")
     brand = brand or BrandStyle()
     size = GRAPHIC_CANVAS.get(surface, GRAPHIC_CANVAS["post_image"])
-    layout = layout if layout in SPLIT_LAYOUTS else DEFAULT_LAYOUT.get(surface, SPLIT_LAYOUTS[0])
-    plan = fit_cover(size, layout, headline_parts(hook, kicker, signature)).plan
-    scene = plan.scene
-    pal = _palette(brand)
-    region = _Canvas((scene.width, scene.height), pal.soft, size[0],
-                     offset=(scene.left, scene.top))
-    w, h = region.w, region.h
-    r = round(min(w, h) * 0.34)
-    cx, cy = round(w * 0.62), round(h * 0.5)
-    ring = max(8, round(r * 0.12))
-    region.draw.ellipse((cx - r, cy - r, cx + r, cy + r), outline=(*pal.gold, 255), width=ring)
-    rule_w = round(w * 0.28)
-    region.draw.rectangle((round(w * 0.12), cy + r + ring, round(w * 0.12) + rule_w,
-                           cy + r + ring * 2), fill=(*pal.accent, 255))
-    region.record("accent", "", (cx - r, cy - r, cx + r, cy + r), (0, 0, w, h))
-    handle, region_path = tempfile.mkstemp(suffix=".png", prefix="lem_typeset_")
-    os.close(handle)
-    try:
-        region.image.convert("RGB").save(region_path, "PNG")
-        if out_path is None:
-            handle, out_path = tempfile.mkstemp(suffix=".png", prefix="lem_typeset_card_")
-            os.close(handle)
-        path = compose_headline(region_path, hook, layout=layout, brand=brand, surface=surface,
-                                out_path=out_path, kicker=kicker, signature=signature,
-                                canvas=size, panel=panel)
-    finally:
-        try:
-            os.remove(region_path)
-        except OSError as e:
-            log_debug("Temp typeset region not removed", error=str(e),
-                      action_type="image_archetype")
-    return GraphicRender(path=path, archetype=TYPESET_CARD, facts=(),
+    pal = _card_colors(brand, panel)
+    region = _Canvas(size, pal["ground"], min(size))
+    drawer = _CARD_DRAWERS.get(card_layout or CARD_POSTER, _draw_card_poster)
+    drawer(region, " ".join(hook.split()), kicker or "", signature or "", pal)
+    if out_path is None:
+        handle, out_path = tempfile.mkstemp(suffix=".png", prefix="lem_typeset_card_")
+        os.close(handle)
+    region.image.convert("RGB").save(out_path, "PNG")
+    return GraphicRender(path=out_path, archetype=TYPESET_CARD, facts=(),
                          placements=tuple(region.placements), canvas=size)
 
 
@@ -1322,7 +1481,8 @@ def complete_context(label: str, sentence: str, value: str) -> str:
 def render_graphic(archetype: str, graphic: dict, *, surface: str, hook: str,
                    kicker: str = "", signature: str = "", brand: Optional[BrandStyle] = None,
                    layout: Optional[str] = None, out_path: Optional[str] = None,
-                   panel: Optional[str] = None) -> GraphicRender:
+                   panel: Optional[str] = None,
+                   source_line: Optional[str] = None) -> GraphicRender:
     """Draw one code-drawn archetype beside the typeset headline panel. $0, no model call.
 
     Args:
@@ -1337,6 +1497,8 @@ def render_graphic(archetype: str, graphic: dict, *, surface: str, hook: str,
         out_path: Where to write; a temp file by default.
         panel: The headline panel's variant (``image_compose.PANEL_VARIANTS``); charcoal when None.
             ``quote_card`` has no headline panel and ignores it.
+        source_line: The caller's source line — a named source ("Source: …") or ``""`` for
+            none; None keeps the graphic's own (the named source its text cites, else none).
 
     Returns:
         The render, its drawn facts and every placement.
@@ -1348,6 +1510,8 @@ def render_graphic(archetype: str, graphic: dict, *, surface: str, hook: str,
     """
     if archetype == QUOTE_CARD:
         return render_quote_card(graphic, surface=surface, brand=brand, out_path=out_path)
+    if source_line is not None:
+        graphic = dict(graphic, source_line=source_line)
     if archetype not in _DRAWERS:
         raise GraphicError(f"{archetype!r} is not a code-drawn archetype")
     if not (hook or "").strip():

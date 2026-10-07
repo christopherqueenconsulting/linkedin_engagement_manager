@@ -353,9 +353,10 @@ class TestGenerateCoverForEdition:
         assert reason is None and rel is not None
         # Avatar resolved BEFORE the brief so the subject clause leads the prompt (#744)...
         assert brief.call_args[1]["avatar"] == _USABLE_AVATAR
-        # ...the LoRA prompt carries the trigger word + declared clause, at the cover ratio...
+        # ...the LoRA prompt carries the trigger word + declared clause; every cover is composed
+        # (showcase round 4), so the scene renders square for its split region...
         assert lora.call_args[0][0].startswith("TOK, a man in his 40s")
-        assert lora.call_args[1]["ratio"] == nc.COVER_IMAGE_RATIO
+        assert lora.call_args[1]["ratio"] == "1:1"
         # ...and a rendered likeness is C2PA-signed.
         record.assert_called_once_with(generated, None, 3)
 
@@ -636,7 +637,9 @@ class TestStagedCoverEngine:
             nc.generate_cover_for_edition(3, 9, "T", "S", "B")
         assert writer.call_args[1]["avatar"] is avatar
         assert gen.call_args[1]["concept"] is concept
-        assert gen.call_args[1]["hook_text"] is None
+        # Showcase round 4: with no Stage 1 hook the edition's own title is the headline — a
+        # cover is never photo_only.
+        assert gen.call_args[1]["hook_text"] == "T"
 
     def test_a_rejected_render_records_the_rubric_on_the_receipt(self, tmp_path):
         from cqc_lem.utilities.media_provenance import read_brief_receipt

@@ -80,6 +80,9 @@ ALERT_SIMILARITY_CREEP = "similarity_creep"
 # Video asset vocabulary. Keep these constants in ONE place so the scorer, the DB writer, the
 # nightly beat and the weekly rollup all name the same states.
 VIDEO_MODEL_PEXELS = "pexels"
+# Showcase round 4: the $0 code-drawn branded title card (`video_title_card`) — the default video
+# when the AI source frame is refused. Its files are named `title_card_*`.
+VIDEO_MODEL_TITLE_CARD = "title_card"
 # The FALLBACK tier, not the normal one: the stored URL proves the asset came out of the Runway
 # path, not WHICH model rendered it. Since #1410 the render path records the exact key on
 # `posts.video_model`, so this is what a post that shipped before that column existed reads as.
@@ -534,9 +537,9 @@ def probe_video_asset(path: Optional[str]) -> dict:
 def video_model_tier(model: Optional[str], video_url: Optional[str] = None) -> Optional[str]:
     """Normalize a model identifier to the tier recorded in telemetry.
 
-    Known Runway keys from `video_models.VIDEO_MODELS` are passed through; Pexels stock is
-    named explicitly; an empty/unknown model with no URL is None; an unrecognized model is
-    preserved as-is so it is not silently rewritten.
+    Known Runway keys from `video_models.VIDEO_MODELS` are passed through; Pexels stock and the
+    code-drawn title card (`title_card_*`) are named explicitly; an empty/unknown model with no
+    URL is None; an unrecognized model is preserved as-is so it is not silently rewritten.
 
     The nightly beat passes the `posts.video_model` the render path recorded (issue #1410), so the
     exact `VIDEO_MODELS` key is the normal reading. With no `model` in hand — a post that shipped
@@ -552,6 +555,8 @@ def video_model_tier(model: Optional[str], video_url: Optional[str] = None) -> O
     file_name = _asset_file_name(video_url) or ""
     if os.path.basename(file_name).startswith("pexels_"):
         return VIDEO_MODEL_PEXELS
+    if os.path.basename(file_name).startswith("title_card_"):
+        return VIDEO_MODEL_TITLE_CARD
     url = str(video_url or "").strip()
     if "videos/pexels" in url:
         return VIDEO_MODEL_PEXELS

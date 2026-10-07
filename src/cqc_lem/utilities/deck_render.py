@@ -42,20 +42,23 @@ def deck_render_receipt_path(output_dir: str) -> str:
 
 
 def write_deck_render_receipt(output_dir: str, post_id: Optional[int], template: str,
-                              slides: list) -> Optional[str]:
+                              slides: list, extra: Optional[dict] = None) -> Optional[str]:
     """Write ONE render receipt for a deck; return its path, or None if the write failed.
 
     Best-effort by design: telemetry never costs a user their carousel, so a failed write is logged
     and the slides still ship. It is a WARNING rather than an expected no-op because the render just
     succeeded — an unwritable output directory here is a real fault, not a quiet skip.
+
+    ``extra`` rides along at the top level — the deck's rhythm (showcase round 4: ``user_id``,
+    ``cover_treatment``, ``motif``), which the NEXT deck's rotation reads back.
     """
     from cqc_lem.utilities.logger import log_warning
 
     path = deck_render_receipt_path(output_dir)
     try:
         with open(path, "w", encoding="utf-8") as handle:
-            json.dump({"post_id": post_id, "template": template, "slides": list(slides or [])},
-                      handle)
+            json.dump({**(extra or {}), "post_id": post_id, "template": template,
+                       "slides": list(slides or [])}, handle)
         return path
     except OSError as e:
         log_warning("Could not write the carousel render receipt", exc=e, post_id=post_id)

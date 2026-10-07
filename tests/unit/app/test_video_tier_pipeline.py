@@ -80,7 +80,7 @@ class TestGenerateVideoSrc:
         assert crv.call_args[0][0] is None
         assert crv.call_args[1]["model"] == "veo3.1_fast" and crv.call_args[1]["audio"] is True
 
-    def test_failure_refunds_and_pexels_fallback(self):
+    def test_failure_refunds_and_falls_back_to_the_title_card(self):
         with patch("cqc_lem.utilities.db.get_post_video_quality", return_value="premium"), \
              patch("cqc_lem.utilities.db.get_video_credit_balance", return_value=5), \
              patch("cqc_lem.utilities.db.deduct_video_credits", return_value=True), \
@@ -90,7 +90,7 @@ class TestGenerateVideoSrc:
              patch("cqc_lem.app.run_content_plan.get_runway_ml_video_prompt_from_ai", return_value="motion"), \
              patch("cqc_lem.app.run_content_plan.create_runway_video", side_effect=RuntimeError("boom")), \
              patch("cqc_lem.app.run_content_plan.create_folder_if_not_exists"), \
-             patch("cqc_lem.utilities.pexels_helper.download_pexels_video", return_value="/tmp/p.mp4", create=True):
+             patch("cqc_lem.utilities.video_title_card.create_title_card_video", return_value="/tmp/p.mp4"):
             from cqc_lem.app.run_content_plan import _generate_video_src
             src = _generate_video_src(1, "text", None, post_id=9)
         ref.assert_called_once()
@@ -258,11 +258,9 @@ class TestPersistedRenderModel:
         crv = (patch("cqc_lem.app.run_content_plan.create_runway_video", side_effect=render)
                if isinstance(render, Exception)
                else patch("cqc_lem.app.run_content_plan.create_runway_video", return_value=render))
-        pexels = (patch("cqc_lem.utilities.pexels_helper.download_pexels_video",
-                        side_effect=stock, create=True)
+        pexels = (patch("cqc_lem.utilities.video_title_card.create_title_card_video", side_effect=stock)
                   if isinstance(stock, Exception)
-                  else patch("cqc_lem.utilities.pexels_helper.download_pexels_video",
-                             return_value=stock, create=True))
+                  else patch("cqc_lem.utilities.video_title_card.create_title_card_video", return_value=stock))
         with patch("cqc_lem.utilities.db.get_post_video_quality", return_value=quality), \
              patch("cqc_lem.utilities.db.get_default_video_quality", return_value=quality), \
              patch("cqc_lem.utilities.db.get_video_credit_balance", return_value=balance), \
@@ -290,11 +288,11 @@ class TestPersistedRenderModel:
         _src, writer = self._render(quality="premium", balance=0)
         writer.assert_called_once_with(9, "gen4_turbo")
 
-    def test_the_stock_fallback_records_pexels(self):
-        from cqc_lem.utilities.content_quality import VIDEO_MODEL_PEXELS
+    def test_the_title_card_fallback_records_title_card(self):
+        from cqc_lem.utilities.content_quality import VIDEO_MODEL_TITLE_CARD
         src, writer = self._render(render=RuntimeError("boom"))
         assert src == "/tmp/p.mp4"
-        writer.assert_called_once_with(9, VIDEO_MODEL_PEXELS)
+        writer.assert_called_once_with(9, VIDEO_MODEL_TITLE_CARD)
 
     def test_a_render_that_produced_nothing_clears_the_column(self):
         """Leaving a previous render's key behind would name the model of a video it never made."""
@@ -302,8 +300,8 @@ class TestPersistedRenderModel:
         assert src is None
         writer.assert_called_once_with(9, None)
 
-    def test_a_failed_stock_fallback_clears_the_column_too(self):
-        src, writer = self._render(render=RuntimeError("boom"), stock=RuntimeError("pexels down"))
+    def test_a_failed_title_card_clears_the_column_too(self):
+        src, writer = self._render(render=RuntimeError("boom"), stock=None)
         assert src is None
         writer.assert_called_once_with(9, None)
 

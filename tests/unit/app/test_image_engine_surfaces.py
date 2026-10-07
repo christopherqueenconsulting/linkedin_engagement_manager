@@ -355,12 +355,12 @@ class TestVideoFrameGateAndClipCheck:
              patch(f"{_RCP}.create_runway_video", side_effect=list(runway)) as rw, \
              patch("cqc_lem.utilities.video_clip_check.check_clip_url",
                    side_effect=[ClipVerdict(**c) for c in checks]) as check, \
-             patch("cqc_lem.utilities.pexels_helper.download_pexels_video",
-                   return_value="/tmp/stock.mp4") as pexels, \
+             patch("cqc_lem.utilities.video_title_card.create_title_card_video",
+                   return_value="/tmp/title_card_9.mp4") as card, \
              patch(f"{_RCP}.log_info") as info:
             from cqc_lem.app.run_content_plan import _generate_video_src
             src = _generate_video_src(7, "The post", None, post_id=9, brief_info=brief_info)
-        return src, gated, rw, check, pexels, info
+        return src, gated, rw, check, card, info
 
     def test_the_frame_gate_is_enforced_whatever_the_env_says(self):
         _, gated, *_ = self._run()
@@ -368,10 +368,11 @@ class TestVideoFrameGateAndClipCheck:
 
     def test_a_rejected_frame_is_never_animated(self):
         brief_info: dict = {}
-        src, _, runway, _, pexels, info = self._run(verdict="rejected", brief_info=brief_info)
-        assert src == "/tmp/stock.mp4"
+        src, _, runway, _, card, info = self._run(verdict="rejected", brief_info=brief_info)
+        # Showcase round 4: the refused frame falls to the $0 branded title card, not stock.
+        assert src == "/tmp/title_card_9.mp4"
         runway.assert_not_called()
-        pexels.assert_called_once()
+        card.assert_called_once()
         assert any("not animating it" in c.args[0] for c in info.call_args_list)
         assert "brief" not in brief_info and "gate_verdict" not in brief_info
 

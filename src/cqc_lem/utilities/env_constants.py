@@ -114,7 +114,7 @@ VIDEO_PROBE_MIN_SIZE_BYTES = int(get_constant_from_env('VIDEO_PROBE_MIN_SIZE_BYT
 # toggle can move without a deploy. The rest shape the burned card: the post's first 1-2 lines,
 # wrapped, held over the window LinkedIn plays muted.
 VIDEO_CAPTIONS_ENABLED = isTrue(get_constant_from_env('VIDEO_CAPTIONS_ENABLED', default_value='False'))
-VIDEO_CAPTION_MAX_LINES = int(get_constant_from_env('VIDEO_CAPTION_MAX_LINES', default_value='2'))
+VIDEO_CAPTION_MAX_LINES = int(get_constant_from_env('VIDEO_CAPTION_MAX_LINES', default_value='3'))
 VIDEO_CAPTION_MAX_CHARS_PER_LINE = int(get_constant_from_env('VIDEO_CAPTION_MAX_CHARS_PER_LINE',
                                                              default_value='42'))
 VIDEO_CAPTION_HOLD_SECONDS = float(get_constant_from_env('VIDEO_CAPTION_HOLD_SECONDS',
@@ -122,6 +122,16 @@ VIDEO_CAPTION_HOLD_SECONDS = float(get_constant_from_env('VIDEO_CAPTION_HOLD_SEC
 # Local ffmpeg compute for the burn-in pass, attributed per post like the tutorial renderer's.
 VIDEO_CAPTION_RENDER_COST_PER_MINUTE = float(
     get_constant_from_env('VIDEO_CAPTION_RENDER_COST_PER_MINUTE', default_value='0.01'))
+
+# Showcase round 4: a video whose AI source frame was rejected falls back to a $0 code-drawn
+# branded title card (`utilities/video_title_card.py`). Pexels stock is an explicit OPT-IN
+# (default off): "model retirement" came back as an elderly couple. Read at the call site.
+VIDEO_PEXELS_FALLBACK_ENABLED = isTrue(get_constant_from_env('VIDEO_PEXELS_FALLBACK_ENABLED',
+                                                             default_value='False'))
+VIDEO_TITLE_CARD_SECONDS = float(get_constant_from_env('VIDEO_TITLE_CARD_SECONDS',
+                                                       default_value='7.0'))
+# The deck cover's rotation may spend ONE gated editorial_concept render per deck it picks.
+DECK_AI_COVER_ENABLED = isTrue(get_constant_from_env('DECK_AI_COVER_ENABLED', default_value='True'))
 
 # --- Carousel content-slide imagery ---
 # A body slide's picture is a code-drawn element of its OWN figures/points, else a typographic

@@ -20,6 +20,11 @@ post, deterministically from the author's own post receipts (``post_image.recent
   layout, panel, shot, grade) may run more than ``MAX_RUN`` posts in a row; a pick that would is
   re-rolled to the next least-recently-used option. The gate outranks ``card_share``: a share of
   1.0 still yields at most two typeset cards in a row.
+- **Visual style** (showcase round 4: two claymation renders ran back to back) — every image has
+  ONE ``style``: an editorial art style (claymation, cut collage, risograph, editorial photo), a
+  people photo, a code-drawn card or a quote card. The same style may not appear in two
+  consecutive posts, and quote cards are capped at ``QUOTE_CAP`` per ``QUOTE_CAP_WINDOW`` posts.
+  The last-resort card is the one exception: it is the guarantee that a post never ships bare.
 
 Newsletter covers never come through here — they keep their one consistent card.
 
@@ -53,7 +58,16 @@ CARD_SHARE_WINDOW = 10
 SAMENESS_WINDOW = 5
 MAX_RUN = 2
 # The receipt dimensions the sameness gate reads, in the order they are recorded.
-RHYTHM_DIMENSIONS = ("treatment", "layout", "panel", "shot", "grade", "setting")
+RHYTHM_DIMENSIONS = ("treatment", "layout", "panel", "shot", "grade", "setting", "style",
+                     "card_layout")
+
+# Showcase round 4: the image's visual STYLE is a dimension of its own. An editorial concept's
+# style is its ``image_concept.ART_STYLES`` key; the rest are named here.
+STYLE_PEOPLE_PHOTO = "people_photo"
+STYLE_CODE_DRAWN = "code_drawn_card"
+STYLE_QUOTE_CARD = "quote_card"
+QUOTE_CAP = 2
+QUOTE_CAP_WINDOW = 6
 
 # #2241 showcase B: two consecutive people posts were both "in a warehouse with boxes". A setting
 # CLASS may not appear in two consecutive AI renders. Matched by keyword, earliest in the text
@@ -255,6 +269,81 @@ def wants_card(recent_treatments: Sequence[str], card_share: float,
     cards = sum(1 for t in history if t == TREATMENT_TYPESET_CARD)
     share = min(1.0, max(0.0, float(card_share)))
     return math.floor(share * (len(history) + 1) + 0.5) - cards >= 1
+
+
+def style_of(treatment: Optional[str], archetype: Optional[str] = None,
+             art_style: Optional[str] = None, last_resort: bool = False) -> Optional[str]:
+    """The ONE visual style an image shipped in, or None when it is not known.
+
+    Args:
+        treatment: The post treatment that shipped.
+        archetype: The archetype rendered (``archetype_rendered``).
+        art_style: The editorial concept's ``ART_STYLES`` key.
+        last_resort: The image is the last-resort typeset card.
+
+    Returns:
+        ``quote_card``, ``code_drawn_card``, ``people_photo``, an art style key, or None.
+    """
+    from cqc_lem.utilities.ai.image_concept import (
+        ARCHETYPE_EDITORIAL,
+        ARCHETYPE_PEOPLE,
+        CODE_DRAWN_ARCHETYPES,
+    )
+
+    if treatment == TREATMENT_QUOTE_CARD or archetype == STYLE_QUOTE_CARD:
+        return STYLE_QUOTE_CARD
+    if (last_resort or treatment == TREATMENT_DATA_CARD or archetype in CODE_DRAWN_ARCHETYPES
+            or archetype == TREATMENT_TYPESET_CARD):
+        return STYLE_CODE_DRAWN
+    if archetype == ARCHETYPE_PEOPLE:
+        return STYLE_PEOPLE_PHOTO
+    if archetype == ARCHETYPE_EDITORIAL:
+        return art_style or None
+    return None
+
+
+def style_blocks(recent_styles: Sequence[Any]) -> dict[str, str]:
+    """``{treatment: reason}`` for the treatments the style rule rules out for the next post.
+
+    A quote card may not follow a quote card, nor make a third in ``QUOTE_CAP_WINDOW`` posts; a
+    data card (always code-drawn) may not follow a code-drawn card.
+
+    Args:
+        recent_styles: Styles of recent posts, most recent first (None = unknown).
+
+    Returns:
+        The blocked treatments with their reasons.
+    """
+    recent = list(recent_styles)
+    last = recent[0] if recent else None
+    blocked: dict[str, str] = {}
+    quotes = sum(1 for v in recent[:QUOTE_CAP_WINDOW - 1] if v == STYLE_QUOTE_CARD)
+    if last == STYLE_QUOTE_CARD:
+        blocked[TREATMENT_QUOTE_CARD] = "style repeats: the last post was a quote card"
+    elif quotes >= QUOTE_CAP:
+        blocked[TREATMENT_QUOTE_CARD] = (f"quote cards are capped at {QUOTE_CAP} per "
+                                         f"{QUOTE_CAP_WINDOW} posts")
+    if last == STYLE_CODE_DRAWN:
+        blocked[TREATMENT_DATA_CARD] = "style repeats: the last post was a code-drawn card"
+    return blocked
+
+
+def blocked_archetypes(last_style: Optional[str]) -> frozenset:
+    """The archetypes a rendered post must avoid so its style differs from the last post's.
+
+    Args:
+        last_style: The most recent post's style.
+
+    Returns:
+        ``people_scene`` after a people photo, every code-drawn archetype after a code-drawn card.
+    """
+    from cqc_lem.utilities.ai.image_concept import ARCHETYPE_PEOPLE, CODE_DRAWN_ARCHETYPES
+
+    if last_style == STYLE_PEOPLE_PHOTO:
+        return frozenset({ARCHETYPE_PEOPLE})
+    if last_style == STYLE_CODE_DRAWN:
+        return frozenset(CODE_DRAWN_ARCHETYPES)
+    return frozenset()
 
 
 @dataclass(frozen=True)
@@ -526,6 +615,12 @@ def rhythm_history(receipts: Sequence[Mapping[str, Any]]) -> dict[str, list]:
             # A receipt from before the setting dimension: read it off what was briefed.
             rhythm = dict(rhythm, setting=setting_class(concept.get("setting"))
                           or setting_class(receipt.get("prompt")) or None)
+        if "style" not in rhythm:
+            # A receipt from before the style dimension: read it off what was rendered.
+            rhythm = dict(rhythm, style=style_of(
+                rhythm.get("treatment"),
+                receipt.get("archetype_rendered") or concept.get("archetype"),
+                concept.get("art_style"), receipt.get("gate_verdict") == "last_resort"))
         for dim in RHYTHM_DIMENSIONS:
             value = rhythm.get(dim)
             history[dim].append(str(value) if value else None)
@@ -549,6 +644,9 @@ class PostRhythm:
         rerolled: The dimensions the sameness gate re-rolled.
         setting: The setting to brief an AI scene with when the gate re-rolled it ('' keeps
             Stage 1's own).
+        last_style: The most recent post's visual style ('' when unknown).
+        recent_card_layouts: The last-resort card layouts of recent posts, most recent first.
+        recent_styles: The visual styles of recent posts, most recent first.
     """
 
     plan: TreatmentPlan
@@ -560,6 +658,9 @@ class PostRhythm:
     opinion: str
     rerolled: tuple[str, ...]
     setting: str = ""
+    last_style: str = ""
+    recent_card_layouts: tuple = ()
+    recent_styles: tuple = ()
 
 
 def unavailable_treatments(concept: Any, byline: Optional[str], candidates: Sequence[str],
@@ -617,8 +718,12 @@ def plan_post_rhythm(concept: Any, text: str, history: Mapping[str, Sequence[Any
     opinion = opinion_signal(concept, text)
     candidates = tuple(quote_candidates(text, getattr(concept, "thesis", "") or "")
                        if opinion else ())
-    plan = plan_treatments(history.get("treatment", []), card_share,
-                           unavailable_treatments(concept, byline, candidates, opinion), seed)
+    styles = list(history.get("style", []))
+    # The style rule's blocks come AFTER the post's own reasons: a treatment the post cannot take
+    # keeps the reason that is about the post.
+    unavailable = {**style_blocks(styles),
+                   **unavailable_treatments(concept, byline, candidates, opinion)}
+    plan = plan_treatments(history.get("treatment", []), card_share, unavailable, seed)
     rerolled = ["treatment"] if plan.rerolled else []
     panel, again = pick_dimension(tuple(panels) or ("charcoal",), history.get("panel", []),
                                   seed + "panel")
@@ -638,4 +743,7 @@ def plan_post_rhythm(concept: Any, text: str, history: Mapping[str, Sequence[Any
         rerolled += ["setting"] if again else []
     return PostRhythm(plan=plan, panel=panel or "charcoal", grade=grade or "",
                       layout=layout or "", shot=shot or "", quote_candidates=candidates,
-                      opinion=opinion, rerolled=tuple(rerolled), setting=setting)
+                      opinion=opinion, rerolled=tuple(rerolled), setting=setting,
+                      last_style=(styles[0] if styles else None) or "",
+                      recent_card_layouts=tuple(history.get("card_layout", [])),
+                      recent_styles=tuple(v for v in styles if v))

@@ -102,7 +102,8 @@ sides cannot drift.
 Because it changes the credit-spend profile, enforcement is a runtime flag and starts OFF:
 `video-motion-lint-hold` off means a hard violation is reported (`motion_prompt_check` event) and the
 prompt ships unchanged; on, it buys one steered rewrite and then holds the render, which
-`_generate_video_src` already handles as a generation failure (refund, fall back to Pexels).
+`_generate_video_src` already handles as a generation failure (refund, fall back to the title card —
+§ F3b).
 Posture: `docs/content-core.md` § Motion-prompt lint.
 
 ### F3 — No caption / burned-text path for muted autoplay → **#1278** *(shipped)*
@@ -110,8 +111,37 @@ Posture: `docs/content-core.md` § Motion-prompt lint.
 LinkedIn's feed player starts muted. The post's caption is below the fold on mobile; the video
 itself has to communicate visually in the first 2–3 seconds. Veo/Gen-4 are not text-reliable, so
 the fix is a post-generation step rather than a prompt: **#1278 (decision 1A)** burns the post's
-own first 1–2 lines into the rendered MP4 with `ffmpeg`'s `subtitles` filter and writes the `.srt`
-sidecar next to it.
+own first 1–2 lines into the rendered MP4 and writes the `.srt` sidecar next to it.
+
+**On brand, never cut (showcase round 4).** The burn was white DejaVu on a black box, truncated with
+an ellipsis ("…turn into a hidden…"). Now `render_caption_overlay` draws Montserrat in off-white on
+a translucent charcoal band with a gold rule, inside safe margins (`CAPTION_*` constants), and
+ffmpeg's `overlay` filter lays it over the cue window — no libass or system font. The text is the
+FULL first sentence when it fits `VIDEO_CAPTION_MAX_LINES` (now 3) x
+`VIDEO_CAPTION_MAX_CHARS_PER_LINE`, else the longest complete leading clause of it
+(`caption_candidates`; a clause ending on a dangling word is not one). A first clause that cannot
+fit is NO caption — never an ellipsis. The burn reads its text back from the sidecar
+(`read_srt_cue`), so the two can never drift. The burn order (before C2PA) and both gates are
+unchanged.
+
+### F3b — The refused-frame fallback is a branded title card, not stock (showcase round 4)
+
+A rejected source frame used to fall to Pexels with the post's first 50 characters as the query, and
+stock matched the WORDS: "model retirement" became an elderly couple, a VARCHAR story got two
+hands reaching. `_fallback_video_src` now renders `utilities/video_title_card.py`: a $0, 6-8 s
+(`VIDEO_TITLE_CARD_SECONDS`) clip at the tier's ratio (1:1 standard, 9:16 premium) — charcoal or
+off-white ground, Stage 1's hook (else a complete first clause of the post) in Montserrat, gold on
+charcoal, revealed word by word, a gold rule drawing in, the byline, and one brand slab drifting
+below the type. Frames are drawn by Pillow and piped raw into libx264. The lower 30% stays clear
+for the caption band. It is stored, probed and captioned like any other video, named
+`title_card_*` so `video_model_tier` (and `posts.video_model` = `title_card`) never reads it
+as Runway or stock; it is not AI output, so it gets no C2PA credentials or AI disclosure.
+
+Pexels survives only behind `VIDEO_PEXELS_FALLBACK_ENABLED` (default off), and then only with a
+query from Stage 1's concrete visual anchors (`stock_query_from_concept`): an anchor carrying a
+`STOCK_HOMONYMS` word (retirement, model, pipeline, cloud…) or a person is dropped whole, and no
+safe anchor means no stock. Any stock miss still ships the card. The unit lane hides ffmpeg
+(`_no_real_title_card_encode`); one `slow` test encodes a real clip.
 
 The sidecar-only alternative (LinkedIn's REST Videos API `initializeUpload` with
 `uploadCaptions: true`) was rejected for now: LEM publishes through `/ugcPosts` +

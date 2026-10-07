@@ -308,6 +308,17 @@ class TestRenderGraphic:
                                   out_path=str(tmp_path / "s.png"))
         assert [p.text for p in render.placements if p.role == "source"] == []
 
+    # The checklist's steps are the piece's own advice: it never carries a source line.
+    @pytest.mark.parametrize("archetype", [a for a in g.CODE_DRAWN_ARCHETYPES if a != g.CHECKLIST])
+    def test_the_source_line_is_the_callers(self, graphic, archetype, tmp_path):
+        named = g.render_graphic(archetype, graphic, surface="post_image", hook="A hook",
+                                 source_line="Source: Example Co",
+                                 out_path=str(tmp_path / "a.png"))
+        assert [p.text for p in named.placements if p.role == "source"] == ["Source: Example Co"]
+        bare = g.render_graphic(archetype, graphic, surface="post_image", hook="A hook",
+                                source_line="", out_path=str(tmp_path / "b.png"))
+        assert [p.text for p in bare.placements if p.role == "source"] == []
+
     @pytest.mark.parametrize("archetype", [g.STAT_CARD, g.CHECKLIST])
     def test_no_card_ever_prints_from_the_article(self, graphic, archetype, tmp_path):
         unsourced = dict(graphic, source_line="")

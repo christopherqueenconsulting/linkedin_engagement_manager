@@ -33,7 +33,7 @@ _VARIETY_WINDOW = 5
 # The staged judge's findings, copied from the render gate onto the cover's brief receipt.
 _GATE_RECEIPT_KEYS = ("gate_rubric", "gate_failing", "gate_issues", "gate_blind_description",
                       "gate_pop", "archetype_rendered", "archetype_fallback_reason",
-                      "graphic_facts")
+                      "graphic_facts", "cover_composed")
 
 COVER_SOURCE_UPLOAD = "upload"
 COVER_SOURCE_AI = "ai"
@@ -395,6 +395,94 @@ def _resolve_cover_avatar(user_id: int, use_avatar: Optional[bool], title: Optio
     return avatar if classify_avatar_relevance(title, subtitle, body) else None
 
 
+def cover_headline(brief_hook: Optional[str], concept: Any, title: Optional[str],
+                   subtitle: Optional[str]) -> Optional[str]:
+    """The headline every cover carries: Stage 1's gated hook, else the edition's own title.
+
+    Showcase round 4: a cover is never ``photo_only``. The title is the author's headline, so it
+    is the honest fallback; a long one is cut to a complete clause, never mid-thought
+    (``post_image.last_resort_hook``). The subtitle stands in only for an untitled edition.
+
+    Args:
+        brief_hook: The brief's hook (Stage 1's, after the final hook gate), or None.
+        concept: Stage 1's concept, or None.
+        title: The edition title.
+        subtitle: The edition subtitle.
+
+    Returns:
+        The headline, or None for an edition with no words at all.
+    """
+    if (brief_hook or "").strip():
+        return brief_hook
+    from cqc_lem.utilities.post_image import last_resort_hook
+
+    for text in (title, subtitle):
+        hook = last_resort_hook(None, text or "")
+        if hook:
+            return hook
+    return last_resort_hook(concept, "") if concept is not None else None
+
+
+def ensure_composed_cover(path: str, hook: Optional[str], render_info: dict, *, concept: Any,
+                          brand: str, byline: Optional[str],
+                          user_id: Optional[int] = None) -> Optional[str]:
+    """``path`` if it already carries the type panel; else the panel composed onto it now.
+
+    The gated renderer composites the headline onto every candidate and records the raw render as
+    ``raw_render_path``; a code-drawn graphic is drawn WITH its panel. Anything else — a headline
+    the compositor refused, a render that came back raw — is composed here, and if even that fails
+    the cover becomes a code-drawn typographic card of the same headline. A cover never ships as a
+    bare photograph.
+
+    Args:
+        path: The render the gate returned.
+        hook: The cover headline.
+        render_info: The gate's out-param; ``cover_composed`` is recorded on it.
+        concept: Stage 1's concept, for the layout and kicker.
+        brand: The brand clause.
+        byline: The cover byline.
+        user_id: For log context.
+
+    Returns:
+        The composed cover's path, or None when there is no headline to compose.
+    """
+    from cqc_lem.utilities.ai.image_compose import brand_style, compose_headline
+    from cqc_lem.utilities.ai.image_concept import CODE_DRAWN_ARCHETYPES
+    from cqc_lem.utilities.ai.image_gen import _kicker_for
+    from cqc_lem.utilities.ai.image_graphics import QUOTE_CARD, render_typeset_card
+
+    drawn = render_info.get("archetype_rendered") in (*CODE_DRAWN_ARCHETYPES, QUOTE_CARD)
+    if render_info.get("raw_render_path") or drawn:
+        return path
+    if not hook:
+        log_warning("A newsletter cover has no headline to compose — not shipping it bare",
+                    user_id=user_id, action_type="newsletter_cover")
+        return None
+    from cqc_lem.utilities.ai.image_concept import derive_kicker
+
+    style = brand_style(brand)
+    # Every cover carries a kicker: Stage 1's, else one derived from the headline's own words.
+    kicker = (_kicker_for(concept) if concept is not None else "") or derive_kicker(hook)
+    try:
+        composed = compose_headline(path, hook, layout=getattr(concept, "layout", None),
+                                    brand=style, surface="newsletter", kicker=kicker or None,
+                                    signature=byline)
+        render_info["cover_composed"] = "late_compose"
+        return composed
+    except Exception as e:
+        log_info("Cover headline would not compose onto the render — drawing a typeset cover",
+                 user_id=user_id, action_type="newsletter_cover", error=str(e))
+    try:
+        card = render_typeset_card(hook, surface="newsletter", kicker=kicker,
+                                   signature=byline or "", brand=style)
+        render_info["cover_composed"] = "typeset_card"
+        return card.path
+    except Exception as e:
+        log_warning("A newsletter cover could not be composed — not shipping it bare", exc=e,
+                    user_id=user_id, action_type="newsletter_cover")
+        return None
+
+
 def generate_cover_for_edition(user_id: int, edition_id: int, title: Optional[str],
                                subtitle: Optional[str], body: Optional[str],
                                profile=None,
@@ -470,13 +558,16 @@ def generate_cover_for_edition(user_id: int, edition_id: int, title: Optional[st
     # The cover's byline (round 7): the newsletter's title when the caller has it, else the
     # author's name from the profile already in hand — no extra DB read.
     byline = signature or getattr(profile, "full_name", None) or None
+    # Showcase round 4: every cover is COMPOSED — kicker, headline, byline. cover_19 shipped as a
+    # bare people photo because no hook survived; the edition's own title is then the headline.
+    hook = cover_headline(brief.hook_text, concept, title, subtitle)
     render_info: dict = {}
     try:
         if avatar:
             generated_path = render_avatar_image_gated(
                 brief.prompt, avatar=avatar, user_id=user_id, surface="newsletter",
                 ratio=COVER_IMAGE_RATIO, focal_concept=brief.focal_concept,
-                render_info=render_info, concept=brief.concept, hook_text=brief.hook_text,
+                render_info=render_info, concept=brief.concept, hook_text=hook,
                 layout=getattr(brief.concept, "layout", None), signature=byline,
                 brand_kit=brand)
         else:
@@ -485,7 +576,7 @@ def generate_cover_for_edition(user_id: int, edition_id: int, title: Optional[st
                                                 focal_concept=brief.focal_concept,
                                                 user_id=user_id, render_info=render_info,
                                                 concept=brief.concept,
-                                                hook_text=brief.hook_text,
+                                                hook_text=hook,
                                                 layout=getattr(brief.concept, "layout", None),
                                                 signature=byline, brand_kit=brand)
     except Exception as e:
@@ -498,11 +589,24 @@ def generate_cover_for_edition(user_id: int, edition_id: int, title: Optional[st
                     action_type="newsletter_cover")
         return None, "Image generation returned nothing"
 
+    # The deterministic gate reads what the renderer produced FIRST — a truncated or undersized
+    # render must not be rescued by being composed into a full-size canvas.
     verdict = inspect_cover_file(generated_path)
     if not verdict.ok:
         log_warning("Generated newsletter cover failed the cover gate", user_id=user_id,
                     action_type="newsletter_cover", reason=verdict.reason)
         return None, verdict.reason or "Generated image rejected"
+    composed = ensure_composed_cover(generated_path, hook, render_info, concept=brief.concept,
+                                     brand=brand, byline=byline, user_id=user_id)
+    if not composed:
+        return None, "The cover could not be composed with its headline"
+    if composed != generated_path:
+        generated_path = composed
+        verdict = inspect_cover_file(generated_path)
+        if not verdict.ok:
+            log_warning("Composed newsletter cover failed the cover gate", user_id=user_id,
+                        action_type="newsletter_cover", reason=verdict.reason)
+            return None, verdict.reason or "Generated image rejected"
 
     directory = _cover_dir(user_id)
     try:
