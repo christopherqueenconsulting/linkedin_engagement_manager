@@ -163,6 +163,12 @@ prefers it). The pick is least-recently-used from the author's own history on di
 consecutive cards never open on the same layout across workers and restarts; a lost history write
 costs one repeat at most (DEBUG).
 
+**Motion (motion-design round).** The drift read as "not that appealing or dynamic", so the card now
+carries ONE kinetic motion after a 0.8 s full-hook hold — a counter, a chart draw-in, a checklist
+tick-through or a before/after wipe when the post has a TRACEABLE figure, else kinetic typography —
+rotated per author from the same history file and never repeated back to back. Frame 0 is still the
+complete hook. [`docs/motion-design.md`](../motion-design.md).
+
 A separate thumbnail upload (`uploadThumbnail`) needs the REST Videos API, which LEM does not
 publish through (above); frame 0 is therefore the thumbnail, and it is complete.
 

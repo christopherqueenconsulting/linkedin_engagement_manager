@@ -295,10 +295,17 @@ def produce_post_loop(user_id: int, post_id: Optional[int], text: str,
         receipt = read_brief_receipt(image_url)
         if _code_drawn(receipt):
             # A code-drawn graphic's figures were verified against the article; an image-to-video
-            # model would re-draw them. The verified still ships as it is (archetype round, #2241).
-            log_debug("Animated loop skipped — the still is a code-drawn data graphic",
-                      user_id=user_id, post_id=post_id, task_name=TASK_NAME)
-            return None
+            # model would re-draw them (archetype round, #2241). Its loop is drawn by code
+            # instead, at $0: the same verified facts in motion (docs/motion-design.md).
+            from cqc_lem.utilities.motion_design import loop_from_receipt
+
+            gif_path = loop_from_receipt(receipt, user_id=user_id, post_id=post_id,
+                                         ratio=post_image_ratio())
+            if not gif_path:
+                log_debug("No code-drawn loop for this data graphic — the still ships",
+                          user_id=user_id, post_id=post_id, task_name=TASK_NAME)
+                return None
+            return store_post_loop(image_url, gif_path)
         image_prompt = str((receipt or {}).get("prompt") or "")
         motion = get_runway_ml_video_prompt_from_ai(text, image_prompt, model=STANDARD_VIDEO_MODEL,
                                                     user_id=user_id, post_id=post_id,
