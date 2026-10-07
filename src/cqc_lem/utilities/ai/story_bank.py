@@ -270,14 +270,14 @@ def cooldown_story_directive(curated_items: Optional[list] = None) -> str:
     """
     lines = [
         "\n\nNO STORY THIS TIME — the author's own stories have all been told recently:",
-        "- Do NOT retell, paraphrase or allude to any personal anecdote, build, incident, client "
-        "or result of the author's. This post is about something OUTSIDE their own projects.",
+        ("- Do NOT retell, paraphrase or allude to any personal anecdote, build, incident, client "
+         "or result of the author's. This post is about something OUTSIDE their own projects."),
         "- Build it on the research findings above"
         + (" and/or the outside items below" if curated_items else "")
         + ": name who found or reported each fact ('BLS reports…', 'Shopify found…') and say "
           "what it means for the reader's business.",
-        "- ABSOLUTE RULE: no first-person claims of experience, numbers, clients or outcomes. The "
-        "author's credibility comes from the quality of the take, not from an invented story.",
+        ("- ABSOLUTE RULE: no first-person claims of experience, numbers, clients or outcomes. The "
+         "author's credibility comes from the quality of the take, not from an invented story."),
     ]
     for item in [i for i in (curated_items or []) if isinstance(i, dict)][:COOLDOWN_CURATED_ITEMS]:
         title = str(item.get("title") or "").strip()
