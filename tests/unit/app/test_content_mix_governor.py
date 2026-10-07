@@ -260,6 +260,11 @@ def _run_text_post(generated, content_mix=None, lead_magnet=None, newsletter=Non
         patch(f"{_RCP}.strip_engagement_bait", side_effect=lambda c, **kw: c),
         patch(f"{_RCP}._score_and_persist_authenticity"),
         patch(f"{_RCP}.update_post_content_mix"),
+        # Showcase round 5's history reads: no keyword ask near this slot, no recorded history.
+        patch(f"{_RCP}.get_post_texts_near_slot", return_value=[]),
+        patch(f"{_RCP}.get_recent_post_records", return_value=[]),
+        patch(f"{_RCP}.get_recent_post_topics", return_value=[]),
+        patch(f"{_RCP}.update_post_generation_record"),
     ]
     for p in patches:
         p.start()
@@ -338,7 +343,7 @@ class TestCreateTextPostMixHandling:
         from cqc_lem.utilities.ai.content_alignment import contains_meeting_ask
         lm = {"enabled": True, "keyword": "AUDIT", "message": "the churn audit checklist"}
         out, _, _ = _run_text_post(_WITH_MEETING_ASK, content_mix="promo", lead_magnet=lm,
-                                   post_id=30)
+                                   post_id=30, stories=[self._PROMO_STORY])
         assert contains_meeting_ask(out) is False
         assert "AUDIT" in out
         assert "churn from 9% to 4%" in out

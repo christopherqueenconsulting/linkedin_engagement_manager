@@ -981,6 +981,121 @@ def get_recent_post_topics(user_id: int, limit: int = 3,
         return []
 
 
+# Statuses a generated post can sit in while it still counts as "recent" for rotation (showcase
+# round 5). `planning` is included because a post's audience/story is recorded before its content.
+_RECORD_STATUSES = ("planning", "pending", "approved", "scheduled", "posted")
+
+
+def update_post_generation_record(post_id: int, audience: Optional[str],
+                                  story_id: Optional[int]) -> bool:
+    """Record what a generated post was written FOR and FROM (showcase round 5).
+
+    `audience` is the reader picked from the user's audience mix ('primary'/'secondary', None for
+    a single-audience author); `story_id` the story-bank entry it was anchored to, or None. Both are
+    written every time, so a regenerate that dropped its anchor clears the old one.
+
+    Args:
+        post_id: The post.
+        audience: The audience key, or None.
+        story_id: The story-bank entry id, or None.
+
+    Returns:
+        True when exactly one row was updated.
+    """
+    try:
+        with db_cursor(commit=True) as cursor:
+            cursor.execute("UPDATE posts SET audience = %s, story_id = %s WHERE id = %s",
+                           (audience, story_id, post_id))
+            return cursor.rowcount == 1
+    except mysql.connector.Error as err:
+        log_error("Could not record the post's audience and story", exc=err, post_id=post_id)
+        return False
+
+
+def get_recent_post_records(user_id: int, limit: int = 10, exclude_post_id: Optional[int] = None,
+                            within_days: Optional[int] = None) -> Optional[list]:
+    """The user's recent generated posts as `{id, content, audience, story_id, topic}`, newest first.
+
+    The ONE history read behind the audience alternation and the story cooldown (showcase round
+    5): a post counts once it has content OR a recorded audience/story. `within_days` widens the
+    window to "the last `limit` posts OR every post created in the last `within_days` days,
+    whichever is more" (the cooldown window), bounded at `_WINDOW_SCAN_MAX` rows.
+
+    Args:
+        user_id: The author.
+        limit: How many most-recent posts.
+        exclude_post_id: The post being written, which must not count as its own history.
+        within_days: Optional day window, see above.
+
+    Returns:
+        The rows, or None when the read failed — a caller can tell that from an empty history.
+    """
+    fetch = int(limit) if within_days is None else max(int(limit), _WINDOW_SCAN_MAX)
+    exclude_sql = " AND id <> %s" if exclude_post_id is not None else ""
+    params = [user_id, *_RECORD_STATUSES]
+    if exclude_post_id is not None:
+        params.append(exclude_post_id)
+    params.append(fetch)
+    try:
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(
+                "SELECT id, content, audience, story_id, topic, created_at FROM posts "
+                f"WHERE user_id = %s AND status IN ({', '.join(['%s'] * len(_RECORD_STATUSES))}) "
+                "AND ((content IS NOT NULL AND content <> '') OR audience IS NOT NULL "
+                "OR story_id IS NOT NULL)"
+                f"{exclude_sql} ORDER BY id DESC LIMIT %s", tuple(params))
+            rows = list(cursor.fetchall() or [])
+    except mysql.connector.Error as err:
+        log_error("Could not get recent post records", exc=err, user_id=user_id)
+        return None
+    if within_days is None:
+        return rows
+    cutoff = datetime.now() - timedelta(days=int(within_days))
+    return [r for i, r in enumerate(rows)
+            if i < int(limit) or (isinstance(r.get("created_at"), datetime)
+                                  and r["created_at"] >= cutoff)]
+
+
+def get_post_texts_near_slot(user_id: int, post_id: Optional[int], days: int) -> Optional[list]:
+    """The user's OTHER post texts scheduled within `days` of this post's slot, either side.
+
+    The keyword-CTA cooldown's read (showcase round 5): a plan is written weeks ahead, so "the last
+    seven days" is measured on the SLOTS (`scheduled_time`), not on when the text was generated.
+    Without a post id (or a slot) it falls back to posts created in the last `days` days.
+
+    Args:
+        user_id: The author.
+        post_id: The post being written.
+        days: The half-width of the window.
+
+    Returns:
+        The texts, or None when the read failed.
+    """
+    statuses = ", ".join(["%s"] * len(_RECORD_STATUSES))
+    try:
+        with db_cursor() as cursor:
+            if post_id is not None:
+                cursor.execute(
+                    "SELECT p.content FROM posts p JOIN posts me ON me.id = %s "
+                    f"WHERE p.user_id = %s AND p.id <> me.id AND p.status IN ({statuses}) "
+                    "AND p.content IS NOT NULL AND p.content <> '' "
+                    "AND me.scheduled_time IS NOT NULL AND p.scheduled_time IS NOT NULL "
+                    "AND p.scheduled_time BETWEEN me.scheduled_time - INTERVAL %s DAY "
+                    "AND me.scheduled_time + INTERVAL %s DAY",
+                    (post_id, user_id, *_RECORD_STATUSES, int(days), int(days)))
+            else:
+                cursor.execute(
+                    f"SELECT content FROM posts WHERE user_id = %s AND status IN ({statuses}) "
+                    "AND content IS NOT NULL AND content <> '' "
+                    "AND created_at >= NOW() - INTERVAL %s DAY",
+                    (user_id, *_RECORD_STATUSES, int(days)))
+            return [r[0] for r in cursor.fetchall() or []]
+    except mysql.connector.Error as err:
+        log_error("Could not get the posts near this slot", exc=err, user_id=user_id,
+                  post_id=post_id)
+        return None
+
+
 def replace_video_url_base(old_base: str, new_base: str, user_id: Optional[int] = None) -> int:
     """Replace old_base URL prefix with new_base in video_url for all matching posts.
 

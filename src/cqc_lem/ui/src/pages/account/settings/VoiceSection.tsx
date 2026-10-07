@@ -1,4 +1,5 @@
 import Toggle from '../../../components/Toggle'
+import AudienceMixCard from './AudienceMixCard'
 import { FIELD_LIMITS } from '../fieldLimits'
 import CsvInput from './CsvInput'
 import { useEngagementPrefs } from './engagementPrefsCtx'
@@ -81,6 +82,8 @@ export default function VoiceSection() {
             className={inputClass} />
         </Field>
       </SectionCard>
+
+      <AudienceMixCard />
     </>
   )
 }

@@ -168,10 +168,10 @@ lives in the shared core. None of them is a per-type prompt helper.
 
 - **Story cooldown** (`story_bank.select_story(cooldown_texts=…)`,
   `STORY_COOLDOWN_POSTS`=10, `STORY_COOLDOWN_DAYS`=14). An entry anchors at most one post in the
-  window of the user's last 10 posts or last 14 days, whichever covers more posts. The window is
-  read off post texts with `entry_echoed_in` (`get_recent_post_texts(within_days=…)`), because
-  there is no per-post story column. When every entry is cooling, the post runs **without** an
-  anchor: `cooldown_story_directive` tells the writer to build on the research already in the
+  window of the user's last 10 posts or last 14 days, whichever covers more posts. Since round 5
+  the window reads the entry each post RECORDED (`posts.story_id`, see below); `entry_echoed_in`
+  is only the fallback for legacy posts with no record. When every entry is cooling, the post
+  runs **without** an anchor: `cooldown_story_directive` tells the writer to build on the research already in the
   prompt plus up to three items from the user's curated-sources pool, credited by name. A
   `personal_story` or `engagement_prompt` slot moves to a research-grounded type
   (`thought_leadership` / `industry_news`). The story bank remains the ONLY source of a
@@ -197,9 +197,10 @@ lives in the shared core. None of them is a per-type prompt helper.
 - **CTA rotation** (`cta_type_of`, `select_cta_type`, `assign_cta_style`). The CTA types are
   `comment_keyword` (artifact), `question`, `save`, `share`, `dm` and `none`. A post never repeats
   the CTA type of either of the two posts before it. The artifact type goes to the promo slot only
-  (the 70/20/10 rule), and a classified post's lead-magnet ask follows the rotation instead of the
-  legacy 1-in-N cadence; unclassified posts keep the cadence. The DM ask is offered only where
-  `allow_dm` says policy allows it, and the content plan never sets that today. `share_one`,
+  (the 70/20/10 rule), and the lead-magnet ask follows the rotation instead of the legacy 1-in-N
+  cadence. Since round 5 an unclassified post never gets it either (see below). The DM ask is
+  offered only where `allow_dm` says policy allows it, and the content plan never sets that today.
+  `share_one`,
   `no_ask` and `dm_offer` are `ask: False` closes, which are never drawn at random and skip the
   reply-driving CTA rule. The hook pass keeps the assigned close (`optimize_post_hook(cta_type=…)`),
   and a draft that still closes on a recent type has its closing ask cut (`strip_closing_ask`).
@@ -208,6 +209,61 @@ lives in the shared core. None of them is a per-type prompt helper.
   from `INDUSTRY_CLAIM_TERMS` that neither the bank nor the profile states is a fabricated
   specific. It joins the fabrication repair. Research is NOT an allowed source here, because it
   describes the market, not the author.
+
+### Dual audience and the round-5 rules (showcase round 5)
+
+The round-5 critic still failed monotony and engagement readiness. "Comment AUDIT" closed four of
+ten posts, "What if…" opened most of them, the "$49 fabricated-ROI" story was told twice inside the
+cooldown, about twelve of 21 items were one idea (AI spend, routing, observability), and the copy
+addressed "technical leaders" while the brand also sells to small-business owners. The owner's call
+(2026-10-07) is that one account serves BOTH audiences, and each post picks ONE.
+
+- **Audience mix** (`utilities/ai/audience_mix.py`, `engagement_preferences.audience_mix`,
+  Settings → My Voice → "Who my posts are for"). A JSON object: `primary_audience`,
+  `secondary_audience`, `secondary_share` (0..1) and `secondary_focus_topics`. A share of 0, which
+  is the default and every row saved before this, means a single audience, and nothing below
+  changes a post. With a share, `select_audience` picks each post's reader from the audiences the
+  recent posts recorded (`posts.audience`). That is error diffusion over a rolling 10-post window:
+  0.6 gives S P S P S S P S P S, six in every ten and never a streak. Posts that recorded no audience
+  do not count, so switching the mix on does not start with a run of six. The pick re-aims the
+  prefs the rest of the post reads (`audience_prefs`). The focus topics become the audience's own,
+  so research and topic selection follow them. For the secondary reader, the business goal is
+  re-stated around that reader. The blueprint carries `audience_directive` (one reader, their rules).
+- **Per-post fold, CTA menu, hook order, story.** `smb_audience(audience=…)` answers from the post's
+  audience when there is one, so a practitioner post is never held to the owner's fold rule and an
+  owner post always is. `select_cta_type(smb=…)` / `assign_cta_style(smb=…)` give an owner a plain
+  question or poll and a practitioner a challenge or debate. `select_hook_shape(smb=…)` breaks ties
+  toward statements and numbers for an owner, and toward a contrarian take for a practitioner.
+  `select_story(smb=True)` prefers an entry whose body reads as an owner's story (`audience_fit`).
+- **Keyword CTA: promo slots only, at most once per 7 days of slots.** The root cause was a second
+  source. `create_video_content` called `create_text_post` without the slot's class, so a video
+  caption fell back to the legacy 1-in-3 cadence: slots 123, 135 and 141 are multiples of three.
+  The class is now passed through. `create_text_post` grants the ask only to a promo slot,
+  classified or not. `_cap_promo_keyword` reads the posts scheduled within
+  `ARTIFACT_CTA_COOLDOWN_DAYS` (7) of the slot (`get_post_texts_near_slot`, by `scheduled_time`,
+  since a plan is written weeks ahead). A promo slot inside that window is written and re-classed
+  as `value`, the same demotion an anchorless promo gets. An unreadable window fails CLOSED.
+  `_strip_unsanctioned_keyword_cta` removes a "Comment KEYWORD" line a rewrite copied onto a post
+  that was not given the ask. `test_content_freshness_r5_wiring.py` replays a 10-slot plan.
+- **Opening-shape rotation** (`opening_shape`, `select_hook_shape`, `hook_shape_violation`). The
+  shapes are statement, number-led, short story, contrarian, question and how-to. Each is read off
+  a post's first sentence, so legacy posts count. A text post's blueprint gets a `hook_shape`: never
+  the previous post's, otherwise the least recently used of the last five. Its `hook_style` is the
+  matching `HOOK_STYLES` entry the archetype allows. `optimize_post_hook(hook_shape=…)` writes that
+  shape instead of choosing "a bold claim, a surprising stat, or a sharp question". "What if" is
+  banned on every shape but a question, and on a question too while one already opened a post in
+  the last five. A draft that still breaks the rule gets ONE more hook pass. A question opener that
+  survives that is cut deterministically when the post stands without it (`drop_opening_question`).
+- **Recorded story id** (`posts.story_id`, `update_post_generation_record`). Written at generation
+  time, before the content is stored, so a post generated in the same run counts.
+  `story_bank.cooling_ids(recorded_ids=…)` cools a recorded entry however the post paraphrased it.
+- **Topic-cluster cap** (`TOPIC_CLUSTERS`, `topic_cluster`, `capped_topic_cluster`). At most
+  `TOPIC_CLUSTER_MAX` (3) of any rolling `TOPIC_CLUSTER_WINDOW` (10) posts share a keyword family,
+  such as AI spend/cost/routing. A post needs `TOPIC_CLUSTER_MIN_HITS` (3) family words to belong
+  to one, and a "Comment KEYWORD" line is not counted. Focus topics in a crowded cluster come off
+  the post's rotation before drafting (`_without_crowded_focus_topics`). A draft that still lands in
+  one is regenerated through the same ONE-retry-then-research path as a topic repeat, with
+  `cluster_avoidance_directive` naming the cluster.
 
 ### Save-targeted archetypes (issue #619)
 

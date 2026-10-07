@@ -3987,6 +3987,10 @@ export interface components {
          *     Everything above `has_saved_preferences` is a stored column and can be PUT back; everything from it down is derived per request and is ignored on a save.
          */
         EngagementPreferencesDetail: {
+            /** Audience Mix */
+            audience_mix: {
+                [key: string]: unknown;
+            } | null;
             /** Authenticity Score Min */
             authenticity_score_min: number | null;
             /** Brand Kit */
@@ -4115,6 +4119,10 @@ export interface components {
          *     stored", NOT the code default, so an older client cannot resurrect a lane the user switched off.
          */
         EngagementPreferencesRequest: {
+            /** Audience Mix */
+            audience_mix?: {
+                [key: string]: unknown;
+            } | null;
             /** Authenticity Score Min */
             authenticity_score_min?: number | null;
             /** Brand Kit */

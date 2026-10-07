@@ -40,7 +40,8 @@ _NEUTRAL_BLUEPRINT = {"subject": None, "angle": "", "format": "personal_lesson",
                       "structure": [], "hook_style": "micro_story", "cta_style": "reply_question"}
 
 
-def _run(outputs, recent=None, post_id=77, lead_magnet=None, repaired=None):
+def _run(outputs, recent=None, post_id=77, lead_magnet=None, repaired=None, content_mix=None,
+         story=None):
     """Drive create_text_post with a generator returning `outputs` in order.
 
     The authenticity judge and its DB write are captured rather than mocked away.
@@ -84,12 +85,17 @@ def _run(outputs, recent=None, post_id=77, lead_magnet=None, repaired=None):
         patch(f"{_RCP}.authenticity_gate_enabled", return_value=True),
         patch(f"{_RCP}.score_authenticity", scorer),
         patch(f"{_RCP}.update_db_post_authenticity_score", upd),
+        patch(f"{_RCP}._select_story_for_post", return_value=story),
+        patch(f"{_RCP}.record_story_bank_use"),
+        patch(f"{_RCP}.get_post_texts_near_slot", return_value=[]),
+        patch(f"{_RCP}.update_post_generation_record"),
     ]
     for p in patches:
         p.start()
     try:
         out = rcp.create_text_post(1, "awareness", post_type="thought_leadership",
-                                   user_profile=MagicMock(), post_id=post_id)
+                                   user_profile=MagicMock(), post_id=post_id,
+                                   content_mix=content_mix)
     finally:
         for p in patches:
             p.stop()
@@ -141,10 +147,13 @@ class TestAuthenticityScoresTheShippedDraft:
         No regeneration here: `ensure_lead_magnet_cta` is what rewrites the draft, so scoring
         before it would grade text that is not what ships.
         """
-        # post_id 60 is divisible by every plausible 1-in-N rotation, so the CTA is selected.
+        # The promo slot (anchored, so it is not demoted) is the one that carries the ask.
         out, gen, scorer, _ = _run([_FRESH], recent=[_RECENT], post_id=60,
                                    lead_magnet={"enabled": True, "keyword": "GUIDE",
-                                                "message": "the LLM cost checklist"})
+                                                "message": "the LLM cost checklist"},
+                                   content_mix="promo",
+                                   story={"id": 9, "kind": "mistake", "title": "Retry loop",
+                                          "body": _FRESH, "active": True})
         assert gen.call_count == 1
         assert "GUIDE" in out and out != _FRESH  # the repair really fired
         scorer.assert_called_once()

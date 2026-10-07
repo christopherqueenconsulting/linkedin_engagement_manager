@@ -3,6 +3,10 @@ directive weaves the CTA in, but the downstream LLM rewrites (refinement + hook 
 observed in prod rewording the 'comment KEYWORD' mechanic away (post 30) or dropping it (post 27),
 so the auto-DM keyword listener never fired. create_text_post now runs a deterministic
 verify-and-repair (ensure_lead_magnet_cta) after the pipeline.
+
+Since showcase round 5 the keyword ask belongs to the PROMO slot alone (the legacy 1-in-N cadence
+put "Comment AUDIT" on four of ten posts), so the repair is driven on a promo slot and the
+"unselected" post is a value slot.
 """
 
 from unittest.mock import MagicMock, patch
@@ -28,8 +32,13 @@ _REWORDED = ("Six months of testing taught us where acquisition cost hides.\n\n"
 # Prod post-27 failure mode: the CTA disappears entirely.
 _DROPPED = "Six months of testing taught us where acquisition cost hides."
 
+# A promo slot needs a story anchor or it is demoted to 'value' before its CTA is chosen.
+_STORY = {"id": 5, "kind": "client_win", "title": "Acquisition cost audit",
+          "body": "Six months of testing taught us where acquisition cost hides; a 12-point "
+                  "checklist came out of it.", "active": True}
 
-def _run_pipeline(post_id, refined_output, lead_magnet=_LM_ON, prefs=None):
+
+def _run_pipeline(post_id, refined_output, lead_magnet=_LM_ON, prefs=None, content_mix="promo"):
     """Drive create_text_post with the FULL refinement pipeline on, simulating the LLM passes via
     `refined_output` (what the rewrites turn the generated post into).
     """
@@ -50,15 +59,21 @@ def _run_pipeline(post_id, refined_output, lead_magnet=_LM_ON, prefs=None):
          patch(f"{_RCP}.get_thought_leadership_post_from_ai", side_effect=gen), \
          patch(f"{_RCP}.get_ai_linked_post_refinement", return_value=refined_output), \
          patch(f"{_RCP}._score_and_persist_authenticity"), \
-         patch(f"{_RCP}.optimize_post_hook", side_effect=lambda t, **kw: t):
+         patch(f"{_RCP}.optimize_post_hook", side_effect=lambda t, **kw: t), \
+         patch(f"{_RCP}._select_story_for_post", return_value=_STORY), \
+         patch(f"{_RCP}.record_story_bank_use"), \
+         patch(f"{_RCP}.get_recent_post_records", return_value=[]), \
+         patch(f"{_RCP}.get_recent_post_topics", return_value=[]), \
+         patch(f"{_RCP}.get_post_texts_near_slot", return_value=[]), \
+         patch(f"{_RCP}.update_post_generation_record"):
         return rcp.create_text_post(1, "awareness", post_type="thought_leadership",
                                     user_profile=MagicMock(), refine_final_post=True,
-                                    post_id=post_id)
+                                    post_id=post_id, content_mix=content_mix)
 
 
 class TestCreateTextPostCtaSurvival:
     def test_reworded_cta_is_repaired(self):
-        # post_id=30 is on the 1-in-3 rotation; the rewrite lost the comment-keyword mechanic.
+        # A promo slot gets the ask; the rewrite lost the comment-keyword mechanic.
         out = _run_pipeline(post_id=30, refined_output=_REWORDED)
         assert has_lead_magnet_cta_mechanic(out, "AUDIT")
         assert "AUDIT" in out
@@ -75,8 +90,9 @@ class TestCreateTextPostCtaSurvival:
         assert out.count("AUDIT") == 1
 
     def test_unselected_post_is_not_repaired(self):
-        # post_id=28 (28 % 3 != 0) never gets the CTA, even though the lead magnet is on.
-        out = _run_pipeline(post_id=28, refined_output=_DROPPED)
+        # A value slot never gets the CTA, even though the lead magnet is on — and even on a post
+        # id the legacy 1-in-3 cadence would have selected (30 % 3 == 0).
+        out = _run_pipeline(post_id=30, refined_output=_DROPPED, content_mix="value")
         assert out == _DROPPED
         assert "AUDIT" not in out
 
@@ -106,8 +122,8 @@ class TestCreateTextPostCtaSurvival:
 
     def test_different_posts_get_different_repair_phrasings(self):
         outs = {_run_pipeline(post_id=pid, refined_output=_DROPPED)[len(_DROPPED):]
-                for pid in (27, 30, 33, 36, 39, 42)}
-        assert len(outs) == 6  # 6-variant menu keyed by post_id % 6
+                for pid in (30, 31, 32, 33, 34, 35)}
+        assert len(outs) == 6  # 6-variant menu keyed by post_id % 6 (every promo is selected)
 
 
 class TestReviewGateRepairCtaSurvival:

@@ -60,6 +60,7 @@ from cqc_lem.api.response_schemas import (
     detail_model_from,
 )
 from cqc_lem.app.engagement.posting import update_stale_profile
+from cqc_lem.utilities.ai.audience_mix import parse_audience_mix
 from cqc_lem.utilities.ai.content_alignment import profile_niche_anchors
 from cqc_lem.utilities.ai.content_framework import GROUP_POST_BEST_PRACTICES
 from cqc_lem.utilities.ai.story_bank import split_forbidden_claim_terms
@@ -686,6 +687,18 @@ class EngagementPreferencesRequest(BaseModel):
     # what is stored"; `{}` clears it. Never a 422 for a bad field — the validator drops it, so an
     # odd hex cannot fail the whole settings save.
     brand_kit: Optional[Dict[str, Any]] = None
+    # Dual-audience alternation (`utilities/ai/audience_mix.py`): primary/secondary audience
+    # descriptions, the secondary's share of posts (0..1) and its focus topics. None (omitted)
+    # means "leave what is stored"; `{}` clears it. Bounded and tidied by the validator, never a
+    # 422 for an odd value — a share of 7 is clamped to 1, not a failed settings save.
+    audience_mix: Optional[Dict[str, Any]] = None
+
+    @field_validator("audience_mix")
+    @classmethod
+    def _clean_audience_mix(cls, v: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        if v is None:
+            return None
+        return parse_audience_mix(v) or {}
 
     @field_validator("brand_kit")
     @classmethod
@@ -1989,6 +2002,9 @@ def update_engagement_preferences_endpoint(request: EngagementPreferencesRequest
     # Same rule for the brand kit: omitted or null keeps the stored kit; `{}` clears it.
     if prefs.get("brand_kit") is None:
         prefs.pop("brand_kit", None)
+    # Same rule for the audience mix: omitted or null keeps it; `{}` clears it (stored NULL).
+    if prefs.get("audience_mix") is None:
+        prefs.pop("audience_mix", None)
     if not update_engagement_preferences(user_id, prefs):
         raise HTTPException(status_code=500, detail="Could not update engagement preferences")
     detail = "Engagement preferences updated"

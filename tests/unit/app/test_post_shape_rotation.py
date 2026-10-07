@@ -75,12 +75,12 @@ class TestPostShapeRotation:
         hist.assert_not_called()
         save.assert_called_once_with(77, "tactical_list", "bold_claim", topic=post_topic(out))
 
-    def test_lead_magnet_cta_woven_when_enabled_and_selected(self):
+    def test_lead_magnet_cta_never_on_an_unclassified_post(self):
         lm = {"enabled": True, "keyword": "AUDIT", "message": "Free profile audit checklist."}
-        # post_id=3 is a multiple of the default 1-in-3 cadence → selected.
+        # post_id=3 is a multiple of the legacy 1-in-3 cadence, which used to select it. The ask is
+        # the promo slot's alone now (showcase round 5) — an unclassified post never carries it.
         _, captured, _, _, _ = _run(post_id=3, lead_magnet=lm)
-        cta = captured["lead_magnet_cta"]
-        assert cta and "AUDIT" in cta and "SANCTIONED" in cta
+        assert captured["lead_magnet_cta"] == ""
 
     def test_lead_magnet_cta_absent_when_not_selected(self):
         lm = {"enabled": True, "keyword": "AUDIT", "message": "Free profile audit checklist."}
