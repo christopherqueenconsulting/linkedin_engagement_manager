@@ -589,6 +589,31 @@ POST_CTA_STYLES: dict = {
                      "strongest 2026 engagement signal) plus a specific question so commenters still "
                      "have a real way in. Never beg for the save."),
     },
+    # The CTA-type rotation's other closes (showcase round 4: nearly every post ended "Comment
+    # AUDIT…" or the same either/or question). `ask: False` closes invite no reply, so the
+    # reply-driving CTA RULE is not appended to them (`blueprint_directive`).
+    "share_one": {
+        "label": "Pass It To One Person",
+        "guidance": ("Close by naming the ONE specific kind of person this post would help right now "
+                     "(a business owner hiring their first ops person, a bookkeeper drowning in "
+                     "receipts) and suggest the reader send it to them. One line. No question, no "
+                     "blanket 'share this' or 'repost'."),
+        "ask": False,
+    },
+    "no_ask": {
+        "label": "No Call To Action",
+        "guidance": ("End on the post's last real insight — a plain, quotable final line. NO "
+                     "question, NO invitation to comment, save, share or message. Let the idea "
+                     "land and stop."),
+        "ask": False,
+    },
+    "dm_offer": {
+        "label": "Message Me For It",
+        "guidance": ("Close with ONE plain line offering to send the specific thing this post "
+                     "describes (the checklist, the template, the numbers) to anyone who messages "
+                     "you. Never a call, demo or meeting."),
+        "ask": False,
+    },
 }
 
 # ---------------------------------------------------------------------------
@@ -1151,7 +1176,10 @@ def select_blueprint(content_type: str, subject: str = None, angle: str = None,
     hooks = allowed_hooks(content_type, fmt)
     out["hook_style"] = _pick(hooks, rh, {rh[0] if rh else None} | set(rh[:_AVOID_WINDOW]),
                               hook_weights) if hooks else None
-    out["cta_style"] = _pick(ctas, [], set()) if ctas else None
+    # The CTA-type rotation's own closes (`ask: False`) are assigned by `assign_cta_style` only,
+    # never drawn at random, so a caller outside the rotation keeps the conversation closes.
+    drawable = {k: v for k, v in ctas.items() if v.get("ask") is not False}
+    out["cta_style"] = _pick(drawable, [], set()) if drawable else None
     return out
 
 
@@ -1192,11 +1220,17 @@ def blueprint_directive(content_type: str, blueprint: dict,
         lines.append(f"OPENING HOOK STYLE: {h_meta['label']}. {h_meta['guidance']}")
     if f_meta.get("hook_styles"):
         lines.append(hook_constraint_directive())
+    if blueprint.get("plain_fold"):
+        lines.append(fold_outcome_directive())
     cta = _normalize(blueprint.get("cta_style"), menu["ctas"])
     if cta:
         c_meta = menu["ctas"][cta]
         lines.append(f"CTA STYLE: {c_meta['label']}. {c_meta['guidance']}")
-        lines.append(cta_policy_directive())
+        if c_meta.get("ask") is False:
+            from cqc_lem.utilities.ai.content_alignment import ARTIFACT_CTA_POLICY
+            lines.append("CTA RULE: " + ARTIFACT_CTA_POLICY)
+        else:
+            lines.append(cta_policy_directive())
     if content_type in _PROOF_SLOT_TYPES:
         lines.append(PERSONAL_PROOF_SLOT)
     if f_meta.get("fact_anchored"):
@@ -2866,6 +2900,15 @@ def carousel_blueprint_directive(blueprint: dict, fact_anchors: Optional[list] =
         lines.append(CONTEXT_BEAT_DIRECTIVE)
     if meta.get("fact_anchored"):
         lines.append(fact_anchor_directive(fact_anchors))
+    # Showcase round 4: the same plain-fold rule and rotated close a text post gets — the fold is
+    # the caption's first two lines AND the cover slide, the close is the caption's.
+    if blueprint.get("plain_fold"):
+        lines.append(fold_outcome_directive() + " The same goes for the COVER slide.")
+    cta = _normalize(blueprint.get("cta_style"), POST_CTA_STYLES) if blueprint.get("cta_type") \
+        else None
+    if cta:
+        c_meta = POST_CTA_STYLES[cta]
+        lines.append(f"CAPTION CTA STYLE: {c_meta['label']}. {c_meta['guidance']}")
     return "\n".join(lines) + "\n"
 
 
@@ -3301,3 +3344,399 @@ def deck_retry_directive(report: Optional[dict]) -> str:
     lines.append("- Keep every verified fact you were given and invent NOTHING to fill a slide — if "
                  "you do not have the specific, use the placeholder form you were given.")
     return "\n".join(lines) + "\n"
+
+
+# ---------------------------------------------------------------------------
+# Showcase round 4: SMB-outcome fold, CTA-type rotation, topic diversity, deck-count and document
+# wording. The gauntlet's critic failed both monotony and engagement readiness: posts written for
+# engineers (MySQL, cron, PRs) to an audience of small-business owners, the same "Comment AUDIT"
+# close on most posts, the same story told four times, and decks whose cover promised "4 steps"
+# over three. Every rule below is deterministic; the LLM only ever gets steered by it.
+# ---------------------------------------------------------------------------
+
+# What a small-business owner reads as engineering talk. Matched on the feed FOLD only (the first
+# two lines — `feed_fold_text`): the body may carry the technical detail, translated, below it.
+# Lowercase entries match case-insensitively; the all-caps acronyms match as written, so "rag" in
+# "rag rug" or "pr" inside a word never fires.
+FOLD_JARGON_TERMS: tuple = (
+    "mysql", "postgres", "sql", "varchar", "cron", "cron job", "pull request", "deploy", "deploys",
+    "deployed", "deployment", "deployments", "kubernetes", "k8s", "llm-ops", "llmops", "schema",
+    "migration", "migrations", "endpoint", "endpoints", "latency", "docker", "container",
+    "containers", "repo", "repository", "git", "github", "ci/cd", "webhook", "webhooks", "sdk",
+    "yaml", "json", "python", "regex", "stack trace", "rollback", "circuit breaker", "litellm",
+    "token", "tokens", "inference", "model tier", "alias", "aliases", "blue/green", "codeql",
+)
+FOLD_JARGON_ACRONYMS: tuple = ("PR", "PRs", "RAG", "API", "APIs", "LLM", "LLMs", "CI", "HTTP",
+                               "ORM")
+_FOLD_JARGON_RE = re.compile(
+    r"(?<![\w/-])(" + "|".join(re.escape(t) for t in sorted(FOLD_JARGON_TERMS, key=len,
+                                                             reverse=True)) + r")(?![\w/-])",
+    re.IGNORECASE)
+_FOLD_ACRONYM_RE = re.compile(
+    r"(?<![\w/-])(" + "|".join(re.escape(t) for t in sorted(FOLD_JARGON_ACRONYMS, key=len,
+                                                             reverse=True)) + r")(?![\w/-])")
+# How a user's ICP reads as small-business owners: their goals, focus topics or voice brief say so.
+_SMB_AUDIENCE_RE = re.compile(
+    r"\b(?:small[- ]business(?:es)?|smbs?|small and mid[- ]sized|main street|local business(?:es)?|"
+    r"business owners?|owner[- ]operators?|solopreneurs?|small firms?|small teams?)\b",
+    re.IGNORECASE)
+
+
+def fold_jargon_hits(text: Optional[str]) -> list:
+    """The engineering jargon a small-business reader meets ABOVE the '...more' fold.
+
+    Deterministic: `FOLD_JARGON_TERMS` (any case) and `FOLD_JARGON_ACRONYMS` (as written) matched
+    on word boundaries in `feed_fold_text(text)` only.
+
+    Args:
+        text: The post.
+
+    Returns:
+        The distinct terms as they appear, in order.
+    """
+    fold = feed_fold_text(text)
+    hits: list = []
+    matches = sorted(list(_FOLD_JARGON_RE.finditer(fold)) + list(_FOLD_ACRONYM_RE.finditer(fold)),
+                     key=lambda m: m.start())
+    for match in matches:
+        term = match.group(1)
+        if term.lower() not in {h.lower() for h in hits}:
+            hits.append(term)
+    return hits
+
+
+def smb_audience(prefs: Optional[dict] = None, profile_synthesis=None) -> bool:
+    """Whether this author writes FOR small-business owners — the plain-fold rule's switch.
+
+    Read off what the author declared (business goals, personal goals, focus topics) and their
+    voice brief. A developer-facing author never gets their jargon flagged.
+
+    Args:
+        prefs: Engagement preferences.
+        profile_synthesis: The cached voice brief (str or dict).
+
+    Returns:
+        True when any of them names a small-business audience.
+    """
+    prefs = prefs or {}
+    parts = [str(prefs.get("business_goals") or ""), str(prefs.get("personal_goals") or ""),
+             " ".join(str(t) for t in (prefs.get("focus_topics") or [])),
+             json.dumps(profile_synthesis, default=str) if isinstance(profile_synthesis, dict)
+             else str(profile_synthesis or "")]
+    return bool(_SMB_AUDIENCE_RE.search(" ".join(parts)))
+
+
+def fold_outcome_directive() -> str:
+    """The writer rule for a small-business ICP: the fold states a business outcome, in plain words.
+
+    Rides the blueprint's hook machinery (`blueprint_directive`, `plain_fold`), so it reaches every
+    post prompt that already carries a hook style — text posts and deck captions alike.
+    """
+    return (
+        "FOLD RULE (the reader is a small-business owner): the first TWO lines must state a business "
+        "outcome they care about — money saved or lost, hours back, customers won or kept, a risk "
+        "avoided — in plain language a shop owner would say out loud. Technical detail goes BELOW "
+        "the fold, translated ('the overnight job that checks prices' — not 'cron'). No engineering "
+        "words in those two lines: never MySQL, VARCHAR, cron, deploy, schema, migration, endpoint, "
+        "latency, Kubernetes, tokens, PR, API, RAG or LLM.")
+
+
+def fold_jargon_finding(hits: list) -> str:
+    """The slop-lint detail for a jargon fold — the editor's brief for the ONE opening rewrite."""
+    return ("opens with engineering jargon a small-business owner skips ("
+            + ", ".join(f'"{h}"' for h in hits[:6])
+            + ") — rewrite ONLY the first two lines to state the business outcome (money, hours, "
+              "customers or risk) in plain words, and move the technical detail below the fold")
+
+
+# --- CTA-type rotation ----------------------------------------------------------------------------
+CTA_TYPE_ARTIFACT = "comment_keyword"
+CTA_TYPE_QUESTION = "question"
+CTA_TYPE_SAVE = "save"
+CTA_TYPE_SHARE = "share"
+CTA_TYPE_DM = "dm"
+CTA_TYPE_NONE = "none"
+CTA_TYPES = (CTA_TYPE_ARTIFACT, CTA_TYPE_QUESTION, CTA_TYPE_SAVE, CTA_TYPE_SHARE, CTA_TYPE_DM,
+             CTA_TYPE_NONE)
+# Never the same CTA type twice in any `CTA_TYPE_WINDOW` consecutive posts.
+CTA_TYPE_WINDOW = 3
+# The order the rotation prefers among types tied on recency — question first because a real
+# question is still the strongest comment driver, then the two save/share signals, then silence.
+_CTA_ROTATION = (CTA_TYPE_QUESTION, CTA_TYPE_SAVE, CTA_TYPE_SHARE, CTA_TYPE_NONE, CTA_TYPE_DM)
+# The question type's sub-styles, rotated by post id so consecutive question closes differ.
+_QUESTION_STYLES = ("reply_question", "challenge", "debate", "poll_prompt")
+_CTA_TYPE_STYLE = {CTA_TYPE_SAVE: "save_worthy", CTA_TYPE_SHARE: "share_one",
+                   CTA_TYPE_NONE: "no_ask", CTA_TYPE_DM: "dm_offer"}
+# How many closing lines a CTA is read from.
+_CTA_TAIL_LINES = 2
+# "Comment AUDIT": the verb in any case, then an ALL-CAPS keyword on the same line.
+_CTA_ARTIFACT_RE = re.compile(r"\b(?i:comment)\b[^\n]{0,40}?[\"“']?\b[A-Z][A-Z0-9]{1,}\b")
+_CTA_DM_RE = re.compile(r"\b(?:dm|message|msg)\s+me\b|\bsend me a (?:dm|message|note)\b|"
+                        r"\bin (?:my|the) dms?\b", re.IGNORECASE)
+_CTA_SAVE_RE = re.compile(r"\bsave (?:this|it)\b|\bbookmark\b|\bworth saving\b|\bkeep this\b",
+                          re.IGNORECASE)
+_CTA_SHARE_RE = re.compile(
+    r"\b(?:share|send|forward)\b[^\n]{0,30}\b(?:with|to)\b|\bpass (?:this|it) (?:on|along)\b|"
+    r"\bknow someone who\b", re.IGNORECASE)
+
+
+def _closing_lines(text: Optional[str]) -> list:
+    lines = [ln.strip() for ln in (text or "").splitlines() if ln.strip()]
+    # A hashtag-only final line is not the close.
+    while lines and all(w.startswith("#") for w in lines[-1].split()):
+        lines.pop()
+    return lines
+
+
+def cta_type_of(text: Optional[str]) -> str:
+    """The CTA TYPE a finished post closes on, read off its last two lines. Deterministic.
+
+    Precedence: a "comment KEYWORD" artifact ask, a DM ask, a save ask, a share ask, a question,
+    else none.
+
+    Args:
+        text: The post.
+
+    Returns:
+        One of `CTA_TYPES`.
+    """
+    tail = "\n".join(_closing_lines(text)[-_CTA_TAIL_LINES:])
+    if not tail:
+        return CTA_TYPE_NONE
+    if _CTA_ARTIFACT_RE.search(tail):
+        return CTA_TYPE_ARTIFACT
+    if _CTA_DM_RE.search(tail):
+        return CTA_TYPE_DM
+    if _CTA_SAVE_RE.search(tail):
+        return CTA_TYPE_SAVE
+    if _CTA_SHARE_RE.search(tail):
+        return CTA_TYPE_SHARE
+    if "?" in tail:
+        return CTA_TYPE_QUESTION
+    return CTA_TYPE_NONE
+
+
+def select_cta_type(recent_types: Optional[list], promo: bool = False, allow_dm: bool = False,
+                    sequence_index: Optional[int] = None) -> str:
+    """The CTA type THIS post closes on, rotated against the user's recent posts.
+
+    The promo slot always closes on its artifact (the 70/20/10 rule: an artifact CTA appears ONLY
+    on promo). Every other post takes the least-recently-used type that the previous
+    `CTA_TYPE_WINDOW - 1` posts did not use, so no type repeats inside any three consecutive posts.
+    The DM ask is offered only where policy allows it (`allow_dm`).
+
+    Args:
+        recent_types: The user's recent posts' CTA types, most recent first (`cta_type_of`).
+        promo: Whether this is the promo slot.
+        allow_dm: Whether a DM ask is allowed for this author.
+        sequence_index: A stable per-post integer (the post id) breaking ties deterministically.
+
+    Returns:
+        One of `CTA_TYPES`.
+    """
+    if promo:
+        return CTA_TYPE_ARTIFACT
+    recent = [t for t in (recent_types or []) if t in CTA_TYPES]
+    blocked = set(recent[:CTA_TYPE_WINDOW - 1])
+    menu = [t for t in _CTA_ROTATION if t != CTA_TYPE_DM or allow_dm]
+    candidates = [t for t in menu if t not in blocked] or menu
+
+    def rank(t: str) -> int:
+        return recent.index(t) if t in recent else len(recent) + 1
+
+    best = max(rank(t) for t in candidates)
+    tied = [t for t in candidates if rank(t) == best]
+    offset = int(sequence_index) % len(tied) if sequence_index is not None else 0
+    return tied[offset]
+
+
+def assign_cta_style(blueprint: Optional[dict], cta_type: str,
+                     sequence_index: Optional[int] = None) -> Optional[dict]:
+    """The blueprint with its CTA style set from `cta_type` — the ONE place a type becomes a style.
+
+    The artifact type keeps the blueprint's own conversation close: the sanctioned lead-magnet
+    directive (`lead_magnet_cta_directive`) supplies the artifact line itself.
+
+    Args:
+        blueprint: The post's blueprint (copied, never mutated).
+        cta_type: One of `CTA_TYPES`.
+        sequence_index: Rotates the question type's sub-style.
+
+    Returns:
+        The new blueprint, or the input when it is not a dict.
+    """
+    if not isinstance(blueprint, dict):
+        return blueprint
+    style = _CTA_TYPE_STYLE.get(cta_type)
+    if cta_type == CTA_TYPE_QUESTION:
+        style = _QUESTION_STYLES[int(sequence_index or 0) % len(_QUESTION_STYLES)]
+    out = {**blueprint, "cta_type": cta_type}
+    if style:
+        out["cta_style"] = style
+    return out
+
+
+def strip_closing_ask(text: Optional[str]) -> Optional[str]:
+    """The post with its closing ask paragraph removed, when the rest still stands as a post.
+
+    The deterministic half of the CTA rotation: a rewrite that wrote the SAME close as the last two
+    posts back in is cut to a no-ask ending rather than re-generated. Only the final paragraph goes,
+    only when it carries an ask (`cta_type_of` is not none), and only when at least two paragraphs
+    remain.
+
+    Args:
+        text: The post.
+
+    Returns:
+        The trimmed post, or the input unchanged.
+    """
+    paragraphs = [p for p in re.split(r"\n\s*\n", (text or "").strip()) if p.strip()]
+    if len(paragraphs) < 3 or cta_type_of(paragraphs[-1]) == CTA_TYPE_NONE:
+        return text
+    return "\n\n".join(paragraphs[:-1]).strip()
+
+
+# --- Topic diversity across the plan ------------------------------------------------------------
+# A new post's topic must differ from the last `TOPIC_DIVERSITY_WINDOW` posts' topics.
+TOPIC_DIVERSITY_WINDOW = 3
+# Topic fingerprints sharing at least this share of their tokens (overlap coefficient,
+# `text_similarity`) are the same topic. 0.6 = three of five fingerprint keywords.
+TOPIC_REPEAT_MIN_DEFAULT = 0.6
+
+
+def topic_repeat_min() -> float:
+    """Read at call time so ops can tune the topic-repeat bar without a restart."""
+    try:
+        value = float(os.getenv("TOPIC_REPEAT_MIN", TOPIC_REPEAT_MIN_DEFAULT))
+    except (TypeError, ValueError):
+        return TOPIC_REPEAT_MIN_DEFAULT
+    return value if 0.0 < value <= 1.0 else TOPIC_REPEAT_MIN_DEFAULT
+
+
+def post_topic(text: Optional[str], subject: Optional[str] = None) -> str:
+    """A post's TOPIC: its assigned subject when it had one, else its keyword fingerprint."""
+    subject = str(subject or "").strip()
+    return subject[:255] if subject else infer_post_subject(text or "")[:255]
+
+
+def repeated_topic(topic: Optional[str], recent_topics: Optional[list]) -> Optional[str]:
+    """The recent topic `topic` repeats, or None. Deterministic token overlap (`text_similarity`).
+
+    Args:
+        topic: The new post's topic.
+        recent_topics: The last `TOPIC_DIVERSITY_WINDOW` posts' topics.
+
+    Returns:
+        The first recent topic at or over `topic_repeat_min()`, else None.
+    """
+    if not str(topic or "").strip():
+        return None
+    bar = topic_repeat_min()
+    for recent in recent_topics or []:
+        if str(recent or "").strip() and text_similarity(topic, recent) >= bar:
+            return recent
+    return None
+
+
+def topic_avoidance_directive(recent_topics: Optional[list]) -> str:
+    """The regeneration steer after a draft repeated a recent topic: name the topics to leave."""
+    topics = [str(t).strip() for t in (recent_topics or []) if str(t or "").strip()]
+    if not topics:
+        return ""
+    return ("\n\nTOPIC RULE — your last draft covered the same ground as a recent post. Write about "
+            "a DIFFERENT subject than each of these recent posts (not a new angle on the same one):\n"
+            + "\n".join(f"- {t}" for t in topics) + "\n")
+
+
+# --- Deck counts and document wording -------------------------------------------------------------
+_COUNT_WORD_FOR = {v: k for k, v in _DECK_COUNT_WORDS.items()}
+
+
+def _rewrite_count(phrase: str, count: int) -> str:
+    """`phrase` ("4 Steps", "three key steps") with its number set to `count`, in the same form."""
+    head, _, rest = phrase.partition(" ")
+    if head.isdigit():
+        new = str(count)
+    else:
+        word = _COUNT_WORD_FOR.get(count, str(count))
+        new = word.capitalize() if head[:1].isupper() else word
+    return f"{new} {rest}" if rest else new
+
+
+def _reconcile_text(text: str, count: int) -> tuple:
+    changed = []
+
+    def fix(match: "re.Match") -> str:
+        claimed = deck_count_claims(match.group(0))
+        if not claimed or claimed[0]["count"] == count:
+            return match.group(0)
+        changed.append(match.group(0))
+        return _rewrite_count(match.group(0), count)
+
+    return _DECK_COUNT_CLAIM_RE.sub(fix, text), changed
+
+
+def reconcile_deck_counts(carousel: Optional[dict], post_text: Optional[str] = None) -> tuple:
+    """Make the deck's own promised count equal the item slides it actually carries. Deterministic.
+
+    The cover ("4 Steps…" over three step slides) is ALWAYS rewritten to the real count: it is
+    about this deck and nothing else. The caption is rewritten only when it makes exactly ONE count
+    claim and `deck_count_report` fails, so a caption that also counts something about the author's
+    past is never touched. Runs before the render and before the deck-consistency gate.
+
+    Args:
+        carousel: The generated deck dict (cover + body slides + CTA).
+        post_text: The caption.
+
+    Returns:
+        `(carousel, post_text, changes)` — copies; `changes` lists every rewritten phrase.
+    """
+    graded = [s for s in deck_slides(carousel) if s["graded"]]
+    if not isinstance(carousel, dict) or not graded:
+        return carousel, post_text, []
+    count = len(graded)
+    changes: list = []
+    out = dict(carousel)
+    cover = out.get("cover")
+    if isinstance(cover, dict):
+        fixed = dict(cover)
+        for key, value in cover.items():
+            if isinstance(value, str):
+                fixed[key], changed = _reconcile_text(value, count)
+                changes += changed
+        out["cover"] = fixed
+    caption = post_text
+    claims = deck_count_claims(post_text)
+    if len(claims) == 1 and not deck_count_report(out, post_text)["passes"]:
+        caption, changed = _reconcile_text(str(post_text), count)
+        changes += changed
+    return out, caption, changes
+
+
+_CAROUSEL_WORD_RE = re.compile(r"\bcarousel(s)?\b", re.IGNORECASE)
+
+
+def document_wording(text: Optional[str]) -> Optional[str]:
+    """`text` with every "carousel" called what a document post is: a document. Case kept."""
+    if not text:
+        return text
+
+    def fix(match: "re.Match") -> str:
+        word = "document" + ("s" if match.group(1) else "")
+        raw = match.group(0)
+        if raw.isupper():
+            return word.upper()
+        return word.capitalize() if raw[:1].isupper() else word
+
+    return _CAROUSEL_WORD_RE.sub(fix, text)
+
+
+def document_deck_wording(carousel):
+    """Every string in a deck dict (any nesting) passed through `document_wording`."""
+    if isinstance(carousel, dict):
+        return {k: document_deck_wording(v) for k, v in carousel.items()}
+    if isinstance(carousel, list):
+        return [document_deck_wording(v) for v in carousel]
+    if isinstance(carousel, str):
+        return document_wording(carousel)
+    return carousel

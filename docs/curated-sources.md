@@ -100,9 +100,40 @@ must name the source in its own words ("X found…"); the `Source: Author, "Titl
 is appended deterministically by `with_credit`. No URL goes in the body — the link card carries it,
 and the link-in-first-comment split would otherwise move it.
 
+**The author's voice, never the vendor's (showcase round 4).** curated_1 shipped "OpenAI reports
+that Jump Trading is using our models", which reads as if the author worked at OpenAI. The prompt
+now tells the writer to refer to the publisher and its products in the third person. The
+deterministic check `vendor_voice_hits` covers first-person-plural possessives on a vendor-product
+noun ("our models", "our API", "our platform") and "we launched/released/announced". A hit gets ONE
+rewrite with the phrases named (`vendor_voice_directive`). Anything that survives is re-pointed at
+the publisher by name (`third_person_vendor`). The author's own "our clients", "our team" or "we
+built" is never touched.
+
 Every `/rest/posts` commentary on this path is escaped with `escape_little_text` (reserved
 `\ | { } @ [ ] ( ) < > # * _ ~`; a `#word` becomes the `{hashtag|\#|word}` template). Existing
 API posts are NOT changed here — #2261 tracks that.
+
+## The pick (showcase round 4)
+
+All four curated posts in the round-4 gauntlet were big-vendor announcements, two of them from
+Google, so they read as a news feed rather than a point of view. `curated_content_for_slot` now
+reads up to `CANDIDATE_POOL` (20) fresh candidates and orders them with `rank_candidates` before it
+tries the first `DRAFT_CANDIDATES` (3):
+
+1. a publisher that none of the last `PUBLISHER_DIVERSITY_WINDOW` (3) drafted curated posts used
+   (`get_recent_curated_publishers`);
+2. an item that talks to a small-business owner's world (`smb_relevant`: owners, shops, invoices,
+   payroll, customers, wages, prices…);
+3. the source class (`source_class`): government data (`gov_data` platform or public-domain
+   licence), then independent newsletters and blogs (`facts_only`), then anything else, then vendor
+   press rooms (`editorial`) last;
+4. freshness, which is the collector's order.
+
+An unreadable publisher history only loses the first preference.
+
+The same pool feeds original posts. When every story-bank entry is cooling down (see
+`docs/content-core.md`, "Freshness rules"), up to three `new` items ride into the post's prompt as
+outside material, credited by name.
 
 ## The allowlist
 

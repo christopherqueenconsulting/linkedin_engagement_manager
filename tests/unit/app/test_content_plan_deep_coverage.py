@@ -12,6 +12,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from cqc_lem.utilities.ai.content_framework import post_topic
+
 pytestmark = pytest.mark.unit
 
 
@@ -185,8 +187,14 @@ class TestCreateTextPost:
         assert result == "refined:TL post"
         # The assigned shape, plus the post's verified-fact allow-list (#619) — empty here because
         # this harness gives the user no story-bank entries.
-        assert m["tl"].call_args[1]["blueprint"] == {**_BLUEPRINT, "fact_anchors": []}
-        m["shape_save"].assert_called_once_with(42, "listicle", "question", topic=None)
+        # The CTA rotation (showcase round 4) then assigns the close, so the style is its pick.
+        blueprint = m["tl"].call_args[1]["blueprint"]
+        assert blueprint.items() >= {"format": "listicle", "hook_style": "question",
+                                     "fact_anchors": []}.items()
+        assert blueprint["cta_type"] and blueprint["cta_style"]
+        # Every post records a topic now: its keyword fingerprint when the blueprint has no subject.
+        m["shape_save"].assert_called_once_with(42, "listicle", "question",
+                                                topic=post_topic(result))
 
     def test_day_type_narrows_the_archetype_family(self):
         """The slot's weekday picks the day-type family the blueprint is drawn from (issue #621)."""
@@ -314,7 +322,8 @@ class TestCreateTextPost:
         m["website"].assert_not_called()  # its source was missing too
         review.assert_called_once()
         assert m["refine"].call_count == 1
-        m["shape_save"].assert_called_once_with(42, "listicle", "question", topic=None)
+        m["shape_save"].assert_called_once_with(42, "listicle", "question",
+                                                topic=post_topic(result))
 
     def test_random_type_chosen_when_none(self):
         from cqc_lem.app.run_content_plan import create_text_post

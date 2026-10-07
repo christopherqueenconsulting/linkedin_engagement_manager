@@ -247,7 +247,9 @@ class TestStoryRotation:
                 patch.object(rcp, "get_recent_post_texts",
                              return_value=["the 429s of July 20 2026"]) as recent:
             story = rcp._select_story_for_post(1, {})
-        recent.assert_called_once_with(1, limit=sb.STORY_RECENT_POSTS)
+        # The cooldown window (showcase round 4): last 10 posts or 14 days, whichever is longer.
+        recent.assert_called_once_with(1, limit=sb.STORY_COOLDOWN_POSTS,
+                                       within_days=sb.STORY_COOLDOWN_DAYS)
         assert story["id"] == 2
 
     def test_unreadable_history_falls_back_to_rotation(self):

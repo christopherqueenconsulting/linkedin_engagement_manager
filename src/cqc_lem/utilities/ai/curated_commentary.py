@@ -82,6 +82,7 @@ def commentary_messages(source: dict, treatment: str, voice: str, prefs: Optiona
         The chat messages.
     """
     who = source.get("author") or source.get("publisher") or "the source"
+    vendor = _vendor_name(source)
     system = (
         "You are writing a LinkedIn post AS the author described below, commenting on someone "
         "else's content. You are NOT its author and must never imply you are.\n"
@@ -89,6 +90,9 @@ def commentary_messages(source: dict, treatment: str, voice: str, prefs: Optiona
         "Rules:\n"
         f"- Name the source in your own words early in the post: '{who} found…', "
         f"'{who} reports…', '{who} argues…'. Never state their point as your own claim.\n"
+        f"- Speak in YOUR voice ABOUT the source. Refer to {vendor} and its products in the THIRD "
+        f"person — '{vendor}'s models', '{vendor}'s API' — never 'our models', 'our API' or 'we "
+        "launched': you do not work there.\n"
         "- Bring a real take: agree and extend with something the author knows from their own "
         "work, push back on one point, or translate it into what it means for a small-business "
         "owner. A post that only summarizes the source is a failure.\n"
@@ -105,6 +109,49 @@ def commentary_messages(source: dict, treatment: str, voice: str, prefs: Optiona
     system += "\n" + _framework.hashtag_directive(prefs)
     user = f"The content you are commenting on:\n{_source_block(source)}\n{extra}"
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
+
+
+def _vendor_name(source: dict) -> str:
+    """Who the commentary must speak ABOUT in the third person: the publisher, else the author."""
+    return str((source or {}).get("publisher") or (source or {}).get("author")
+               or "the source").strip()
+
+
+# First-person-plural possessives tied to a vendor's product (showcase round 4): curated_1 shipped
+# "OpenAI reports that Jump Trading is using our models", which reads as if the author were OpenAI.
+# Vendor-product nouns only, so the author's own "our clients", "our team" or "we built" is never
+# touched.
+_VENDOR_PRODUCT_NOUNS = (r"models?|apis?|sdks?|platform|products?|chips?|gpus?|researchers?|"
+                         r"launch|release|announcement")
+_VENDOR_VOICE_RE = re.compile(
+    r"\bour\s+(?:(?:own|new|latest|newest)\s+)?(?:" + _VENDOR_PRODUCT_NOUNS + r")\b"
+    r"|\bwe(?:'ve| have)?\s+(?:just\s+)?(?:launched|released|announced)\b",
+    re.IGNORECASE)
+
+
+def vendor_voice_hits(text: Optional[str]) -> list:
+    """The phrases where the commentary speaks AS the vendor ("our models", "we launched")."""
+    return [m.group(0) for m in _VENDOR_VOICE_RE.finditer(text or "")]
+
+
+def vendor_voice_directive(hits: list, vendor: str) -> str:
+    """The ONE rewrite's steer: name the phrases and the third-person form to use instead."""
+    listed = ", ".join(f'"{h}"' for h in hits[:5])
+    return (f"\n\nYOUR PREVIOUS DRAFT SPOKE AS IF YOU WORKED AT {vendor.upper()} ({listed}). "
+            f"Rewrite it in your own voice: refer to {vendor} in the third person ('{vendor}'s "
+            f"models', '{vendor} launched'). Keep everything else.\n")
+
+
+def third_person_vendor(text: str, vendor: str) -> str:
+    """The deterministic last word: every vendor-voice phrase re-pointed at the vendor by name."""
+    def fix(match: "re.Match") -> str:
+        phrase = match.group(0)
+        if phrase.lower().startswith("our"):
+            return f"{vendor}'s" + phrase[3:]
+        rest = re.sub(r"^we(?:'ve| have)?\s+", "", phrase, flags=re.IGNORECASE)
+        return f"{vendor} {rest}"
+
+    return _VENDOR_VOICE_RE.sub(fix, text or "")
 
 
 def _complete(messages: list, model: str = "lem-medium", json_mode: bool = False) -> str:
@@ -175,6 +222,15 @@ def generate_curated_commentary(user_id: int, source: dict, treatment: str, prof
     text = draft()
     text = lint_repaired(text, "post", draft, prefs=prefs, user_id=user_id,
                          task_name="curated_commentary")
+    vendor = _vendor_name(source)
+    hits = vendor_voice_hits(text)
+    if text and hits:
+        # INFO: one rewrite is the check doing its job; a survivor is re-pointed below.
+        log_info("Curated commentary spoke as the vendor — rewriting once", user_id=user_id,
+                 phrases=hits[:5], task_name="curated_commentary")
+        text = draft(vendor_voice_directive(hits, vendor)) or text
+        if vendor_voice_hits(text):
+            text = third_person_vendor(text, vendor)
     anchors = source_anchors(source)
     report = _framework.fact_grounding_report(text, anchors)
     if text and not report["passes"]:

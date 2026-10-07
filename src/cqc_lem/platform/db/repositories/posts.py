@@ -916,29 +916,71 @@ def get_post_archetype(post_id: int) -> Optional[str]:
         log_error("Could not get archetype", exc=err, post_id=post_id)
         return None
 def get_recent_post_texts(user_id: int, limit: int = 20,
-                          exclude_post_id: Optional[int] = None) -> list:
+                          exclude_post_id: Optional[int] = None,
+                          within_days: Optional[int] = None) -> list:
     """Recent post CONTENT (pending/approved/posted, most-recent first) — the post-side dedup
     history (the newsletter's V49 subject dedup applied to posts). Feeds the opener/subject
     avoidance steering and the pre-persist similarity gate in create_text_post. Openers/subjects
     are derived from content on demand, so no new column is needed. `exclude_post_id` drops one post
     from the history — needed when re-scoring an ALREADY-SAVED post (issue #421), which would
     otherwise match itself at 100%.
+
+    `within_days` widens the window to "the last `limit` posts OR every post created in the last
+    `within_days` days, whichever is more" — the story-bank cooldown window (showcase round 4).
+    Bounded at `_WINDOW_SCAN_MAX` rows so a prolific account cannot turn it into a table scan.
     """
     try:
         with db_cursor() as cursor:
             exclude_sql = " AND id <> %s" if exclude_post_id is not None else ""
-            params = ((user_id, exclude_post_id, int(limit)) if exclude_post_id is not None
-                      else (user_id, int(limit)))
+            fetch = int(limit) if within_days is None else max(int(limit), _WINDOW_SCAN_MAX)
+            params = ((user_id, exclude_post_id, fetch) if exclude_post_id is not None
+                      else (user_id, fetch))
             cursor.execute(
-                "SELECT content FROM posts "
+                "SELECT content, created_at FROM posts "
                 "WHERE user_id = %s AND content IS NOT NULL AND content <> '' "
                 "AND status IN ('pending', 'approved', 'posted')"
                 f"{exclude_sql} "
                 "ORDER BY id DESC LIMIT %s", params)
-            return [r[0] for r in cursor.fetchall()]
+            rows = cursor.fetchall()
     except mysql.connector.Error as err:
         log_error("Could not get recent post texts", exc=err, user_id=user_id)
         return []
+    if within_days is None:
+        return [r[0] for r in rows]
+    cutoff = datetime.now() - timedelta(days=int(within_days))
+    return [r[0] for i, r in enumerate(rows)
+            if i < int(limit) or (isinstance(r[1], datetime) and r[1] >= cutoff)]
+
+
+# The most rows a windowed history read scans (the cooldown window above).
+_WINDOW_SCAN_MAX = 200
+
+
+def get_recent_post_topics(user_id: int, limit: int = 3,
+                           exclude_post_id: Optional[int] = None) -> list:
+    """The `limit` most recent posts' TOPICS, most-recent first, as `{topic, content}` dicts.
+
+    `topic` is what `update_db_post_shape` recorded (NULL on posts written before every post
+    recorded one); `content` rides along so the caller can derive a topic for those. The topic
+    diversity rule (showcase round 4) reads the last three.
+    """
+    try:
+        with db_cursor(dictionary=True) as cursor:
+            exclude_sql = " AND id <> %s" if exclude_post_id is not None else ""
+            params = ((user_id, exclude_post_id, int(limit)) if exclude_post_id is not None
+                      else (user_id, int(limit)))
+            cursor.execute(
+                "SELECT topic, content FROM posts "
+                "WHERE user_id = %s AND content IS NOT NULL AND content <> '' "
+                "AND status IN ('pending', 'approved', 'scheduled', 'posted')"
+                f"{exclude_sql} "
+                "ORDER BY id DESC LIMIT %s", params)
+            return list(cursor.fetchall() or [])
+    except mysql.connector.Error as err:
+        log_error("Could not get recent post topics", exc=err, user_id=user_id)
+        return []
+
+
 def replace_video_url_base(old_base: str, new_base: str, user_id: Optional[int] = None) -> int:
     """Replace old_base URL prefix with new_base in video_url for all matching posts.
 
