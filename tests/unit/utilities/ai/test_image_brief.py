@@ -781,7 +781,7 @@ class TestWordsOnSurfaces:
         assert "puts words on a surface" in llm.call_args_list[1][1]["messages"][1]["content"]
 
     @pytest.mark.parametrize("phrase", [
-        "a man reading over a colleague's shoulder", "the back of a laptop glowing softly",
+        "a man reading over a colleague's shoulder", "a colleague leaning in to listen",
         "a phone held face-down on the table",
     ])
     def test_reading_as_an_activity_and_blank_screens_pass(self, phrase):
@@ -1009,7 +1009,7 @@ class TestRoundThreeFallback:
                                 concept=_COVER_CONCEPT, treatment="people_scene")
         assert "agency owner wincing at the payroll run ahead" in brief.prompt
         assert brief.hook_text == _HOOK and _HOOK not in brief.prompt
-        assert "Compose to keep the LEFT half of the frame calm" in brief.prompt
+        assert "a SQUARE frame with the subject centred and filling it" in brief.prompt
         assert "caught mid-conversation around" not in brief.prompt, "never a bare anchor list"
         assert "gold accent" in brief.prompt
 
@@ -1132,14 +1132,17 @@ class TestNoPropsAnywhere:
         with patch(_LLM, side_effect=[_resp(bad), _resp(_GROUNDED_COVER)]) as llm:
             build_image_brief("c", surface=surface, concept=_concept())
         reason = llm.call_args_list[1][1]["messages"][1]["content"]
-        assert "legible text" in reason or "facing the camera" in reason
+        assert ("legible text" in reason or "screens are the stock" in reason
+                or "face-down" in reason)
 
-    @pytest.mark.parametrize("ok", ["the back of a laptop on the table",
-                                    "a screen facing away from camera",
-                                    "a phone held face-down beside her mug"])
-    def test_a_screen_seen_from_behind_passes(self, ok):
+    def test_only_a_face_down_phone_survives(self):
+        """Round 8: no screens at all — not even from behind (gpt-4.1: "laptop stock trope")."""
         from cqc_lem.utilities.ai.image_brief import prop_failure
-        assert prop_failure(_GROUNDED_COVER["prompt"] + f" {ok}.") is None
+        base = _GROUNDED_COVER["prompt"]
+        assert prop_failure(base + " A phone held face-down beside her mug.") is None
+        for screen in ("the back of a laptop on the table", "a screen facing away from camera",
+                       "a keyboard", "a monitor", "a phone in her hand"):
+            assert prop_failure(f"{base} {screen}."), screen
 
     def test_every_brief_is_told_the_alternatives(self):
         with patch(_LLM, return_value=_resp(_GROUNDED)) as llm:
@@ -1147,7 +1150,8 @@ class TestNoPropsAnywhere:
         user = llm.call_args[1]["messages"][1]["content"]
         assert "PROPS: no paper of any kind in frame" in user
         assert "Hands hold nothing, or a mug, pen or phone held face-down" in user
-        assert "gesture, posture, an interaction between two people, and the environment" in user
+        assert "people interacting and gesturing in a real environment" in user
+        assert "no screens at all: no laptop, monitor, keyboard, tablet or computer" in user
 
     def test_prop_anchors_are_never_asked_for(self):
         from cqc_lem.utilities.ai.image_brief import usable_anchors
@@ -1174,7 +1178,7 @@ class TestPostImageCoverRecipe:
             brief = build_image_brief("c", surface="post_image", concept=_POST_CONCEPT)
         assert llm.call_count == 1 and brief.hook_text == _HOOK and not brief.fallback
         user = llm.call_args[1]["messages"][1]["content"]
-        assert "NEGATIVE SPACE: keep the top 40% of the frame calm" in user
+        assert "NEGATIVE SPACE: compose a SQUARE frame with the subject centred" in user
         assert "PROPS: no paper of any kind in frame" in user
 
     def test_a_post_with_a_paper_prop_is_rejected(self):
@@ -1223,7 +1227,8 @@ class TestPostImageCoverRecipe:
     def test_a_post_fallback_is_bright_and_keeps_its_top_third_calm(self):
         brief = _fallback_brief("c", surface="post_image", ratio="4:5", context="",
                                 concept=_POST_CONCEPT, treatment="people_scene")
-        assert "Compose to keep the top 40% of the frame calm" in brief.prompt
+        assert "Compose to compose a SQUARE frame" not in brief.prompt
+        assert "a SQUARE frame with the subject centred and filling it" in brief.prompt
         assert "bright, high-key warm daylight" in brief.prompt
         assert brief.hook_text == _HOOK and _HOOK not in brief.prompt
 
@@ -1327,3 +1332,41 @@ class TestRoundSevenBrief:
             NEGATIVE_SPACE["lower_third_band"]
         assert set(NEGATIVE_SPACE) >= {"panel_left", "panel_right", "lower_third_band",
                                        "band_top", "full_bleed"}
+
+
+@pytest.mark.unit
+class TestRoundEightBrief:
+    _LEAKED = ("A developer leaning back in a chair with a look of relief, the soft blue glow of a "
+               "server room illuminating their face")
+
+    def test_the_leaked_server_room_phrase_is_a_cliche(self):
+        from cqc_lem.utilities.ai.image_brief import cliche_hit
+        assert cliche_hit(self._LEAKED)
+
+    @pytest.mark.parametrize("scene", ["rows of servers humming", "a data center aisle",
+                                       "racks blinking behind her", "two server cabinets",
+                                       "a data centre at night"])
+    def test_server_and_data_center_scenes_are_cliches(self, scene):
+        from cqc_lem.utilities.ai.image_brief import cliche_hit
+        assert cliche_hit(scene), scene
+
+    def test_a_video_frame_refuses_a_laptop(self):
+        laptop = dict(_GROUNDED_COVER,
+                      prompt=_GROUNDED_COVER["prompt"] + " A laptop sits open beside her.")
+        with patch(_LLM, side_effect=[_resp(laptop), _resp(_GROUNDED_COVER)]) as llm:
+            brief = build_image_brief("c", surface="video", concept=_concept())
+        reason = llm.call_args_list[1][1]["messages"][1]["content"]
+        assert "screens are the stock" in reason
+        assert "laptop" not in brief.prompt.lower()
+
+    def test_a_composited_surface_renders_a_square_scene(self):
+        with patch(_LLM, return_value=_resp(_POST)):
+            brief = build_image_brief("c", surface="post_image", ratio="4:5",
+                                      concept=_POST_CONCEPT)
+        assert brief.hook_text == _HOOK and brief.ratio == "1:1"
+
+    def test_the_fallback_reads_as_a_sentence(self):
+        brief = _fallback_brief("c", surface="newsletter", ratio="16:9", context="",
+                                concept=_COVER_CONCEPT, treatment="people_scene")
+        assert "Compose to compose" not in brief.prompt
+        assert "Compose a SQUARE frame with the subject centred" in brief.prompt

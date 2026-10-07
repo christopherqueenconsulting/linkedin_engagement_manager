@@ -55,8 +55,19 @@ _SCRIM_ALPHA = 190
 
 PANEL_LEFT, PANEL_RIGHT = "panel_left", "panel_right"
 BAND_TOP, LOWER_THIRD_BAND, FULL_BLEED = "band_top", "lower_third_band", "full_bleed"
-LAYOUTS = (PANEL_LEFT, PANEL_RIGHT, BAND_TOP, LOWER_THIRD_BAND, FULL_BLEED)
-DEFAULT_LAYOUT = {"newsletter": PANEL_LEFT, "post_image": BAND_TOP}
+# Round 8 (#2241): every overlay layout put type over a face or a torso, whatever the brief said.
+# SPLIT layouts make that impossible by construction: the render (always square) is centre-cropped
+# into ITS OWN region beside a solid type panel, on a canvas built at the surface's final size.
+SPLIT_LEFT, SPLIT_RIGHT = "split_left", "split_right"
+SPLIT_TOP, SPLIT_BOTTOM = "split_top", "split_bottom"
+SPLIT_LAYOUTS = (SPLIT_LEFT, SPLIT_RIGHT, SPLIT_TOP, SPLIT_BOTTOM)
+LAYOUTS = (PANEL_LEFT, PANEL_RIGHT, BAND_TOP, LOWER_THIRD_BAND, FULL_BLEED) + SPLIT_LAYOUTS
+DEFAULT_LAYOUT = {"newsletter": SPLIT_LEFT, "post_image": SPLIT_TOP}
+# The composited canvas per surface: a 16:9 cover, a 4:5 feed post (no later crop).
+CANVAS = {"newsletter": (1600, 900), "post_image": (1080, 1350)}
+# The type panel's share of the canvas, growing a step when the floor is not met.
+SPLIT_PANEL = {"vertical": (0.40, 0.45, 0.50), "horizontal": (0.34, 0.40, 0.46)}
+_SEAM_RULE = 4
 
 # User 1's kit is the reference brand; any kit naming its own hexes overrides it.
 DEFAULT_PRIMARY = "#E9D437"      # light gold — the headline
@@ -159,12 +170,14 @@ class LayoutPlan:
         backing: The solid panel/band box, or None for a scrim.
         scrim: The gradient scrim box for ``full_bleed``, or None.
         text_box: The safe area the text must fit inside.
+        scene: For a split layout, the region the render fills (never under the type).
     """
 
     layout: str
     backing: Optional[Box]
     scrim: Optional[Box]
     text_box: Box
+    scene: Optional[Box] = None
 
 
 def _darkest_third(image, portrait: bool) -> int:
@@ -180,6 +193,52 @@ def _darkest_third(image, portrait: bool) -> int:
         total = sum(hist) or 1
         means.append(sum(v * c for v, c in enumerate(hist)) / total)
     return min(range(3), key=means.__getitem__)
+
+
+def _plan_split(size: tuple[int, int], layout: str, grow: int) -> LayoutPlan:
+    """A solid type panel on one side, the scene region on the other — they never overlap."""
+    w, h = size
+    mx, my = round(w * SAFE_MARGIN), round(h * SAFE_MARGIN)
+    if layout in (SPLIT_LEFT, SPLIT_RIGHT):
+        pw = round(w * SPLIT_PANEL["vertical"][grow])
+        pad = round(w * 0.03)
+        if layout == SPLIT_LEFT:
+            panel, scene = Box(0, 0, pw, h), Box(pw, 0, w, h)
+            text = Box(mx, my, pw - pad, h - my)
+        else:
+            panel, scene = Box(w - pw, 0, w, h), Box(0, 0, w - pw, h)
+            text = Box(w - pw + pad, my, w - mx, h - my)
+        return LayoutPlan(layout, panel, None, text, scene)
+    ph = round(h * SPLIT_PANEL["horizontal"][grow])
+    pad = round(h * 0.025)
+    if layout == SPLIT_TOP:
+        panel, scene = Box(0, 0, w, ph), Box(0, ph, w, h)
+        text = Box(mx, my, w - mx, ph - pad)
+    else:
+        panel, scene = Box(0, h - ph, w, h), Box(0, 0, w, h - ph)
+        text = Box(mx, h - ph + pad, w - mx, h - my)
+    return LayoutPlan(layout, panel, None, text, scene)
+
+
+def cover_fit(image, box: "Box"):
+    """``image`` scaled to COVER ``box`` and centre-cropped to it exactly.
+
+    Args:
+        image: The square render.
+        box: The scene region.
+
+    Returns:
+        A new image of exactly ``box``'s size.
+    """
+    from PIL import Image
+
+    iw, ih = image.size
+    scale = max(box.width / iw, box.height / ih)
+    resized = image.resize((max(box.width, round(iw * scale)), max(box.height, round(ih * scale))),
+                           Image.LANCZOS)
+    left = (resized.width - box.width) // 2
+    top = (resized.height - box.height) // 2
+    return resized.crop((left, top, left + box.width, top + box.height))
 
 
 def plan_layout(size: tuple[int, int], layout: str, image=None, grow: int = 0) -> LayoutPlan:
@@ -198,6 +257,8 @@ def plan_layout(size: tuple[int, int], layout: str, image=None, grow: int = 0) -
     """
     w, h = size
     grow = max(0, min(grow, GROW_STEPS - 1))
+    if layout in SPLIT_LAYOUTS:
+        return _plan_split(size, layout, grow)
     panel_width, band_height = PANEL_WIDTHS[grow], BAND_HEIGHTS[grow]
     mx, my = round(w * SAFE_MARGIN), round(h * SAFE_MARGIN)
     pad_x = round(w * 0.02)
@@ -603,9 +664,11 @@ def compose_headline(render_path: str, hook: str, layout: Optional[str] = None,
     Args:
         render_path: The raw render — it carries no text.
         hook: The headline; a grounded number in it becomes the hero numeral.
-        layout: One of ``LAYOUTS``; defaults per surface (``DEFAULT_LAYOUT``).
+        layout: One of ``LAYOUTS``; defaults per surface (``DEFAULT_LAYOUT``). A split layout
+            builds a fresh ``CANVAS``-sized image and centre-crops the (square) render into its
+            scene region; an overlay layout draws on the render itself.
         brand: The exact colors; the reference brand by default.
-        surface: ``newsletter`` or ``post_image`` — picks the default layout.
+        surface: ``newsletter`` or ``post_image`` — picks the default layout and the canvas.
         out_path: Where to write; ``<render>_headline.png`` beside the render by default.
         kicker: Stage 1's uppercase topic tag, set above the headline in the accent color.
         signature: The byline (newsletter title or author name), set small at the bottom in
@@ -617,20 +680,41 @@ def compose_headline(render_path: str, hook: str, layout: Optional[str] = None,
     from PIL import Image, ImageDraw
 
     brand = brand or BrandStyle()
-    layout = layout if layout in LAYOUTS else DEFAULT_LAYOUT.get(surface, PANEL_LEFT)
+    layout = layout if layout in LAYOUTS else DEFAULT_LAYOUT.get(surface, SPLIT_LEFT)
     parts = headline_parts(hook, kicker, signature)
     with Image.open(render_path) as opened:
-        image = opened.convert("RGBA")
-    w, h = image.size
-    fit = fit_cover((w, h), layout, parts, image)
-    plan = fit.plan
+        render = opened.convert("RGBA")
     dark = _hex(brand.neutral_dark)
+    if layout in SPLIT_LAYOUTS:
+        # The canvas is built at the surface's FINAL size; the render fills only its own region.
+        w, h = CANVAS.get(surface, CANVAS["newsletter"])
+        fit = fit_cover((w, h), layout, parts)
+        plan = fit.plan
+        image = Image.new("RGBA", (w, h), (*dark, 255))
+        image.paste(cover_fit(render, plan.scene), (plan.scene.left, plan.scene.top))
+    else:
+        image = render
+        w, h = image.size
+        fit = fit_cover((w, h), layout, parts, image)
+        plan = fit.plan
     if plan.scrim is not None:
         image = _scrim(image, plan.scrim, dark, portrait=h > w)
     draw = ImageDraw.Draw(image)
     if plan.backing is not None:
         draw.rectangle((plan.backing.left, plan.backing.top, plan.backing.right - 1,
                         plan.backing.bottom - 1), fill=(*dark, 255))
+    if plan.scene is not None:
+        # A thin dark-gold seam where the type panel meets the photograph.
+        seam = plan.backing
+        if layout == SPLIT_LEFT:
+            line = (seam.right - _SEAM_RULE, 0, seam.right - 1, h - 1)
+        elif layout == SPLIT_RIGHT:
+            line = (seam.left, 0, seam.left + _SEAM_RULE - 1, h - 1)
+        elif layout == SPLIT_TOP:
+            line = (0, seam.bottom - _SEAM_RULE, w - 1, seam.bottom - 1)
+        else:
+            line = (0, seam.top, w - 1, seam.top + _SEAM_RULE - 1)
+        draw.rectangle(line, fill=(*_hex(brand.accent), 255))
     box, text_box = plan.text_box, fit.text_box
     gap = round(fit.size * _GAP_RATIO)
     x = text_box.left

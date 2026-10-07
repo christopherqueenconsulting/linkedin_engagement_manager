@@ -162,7 +162,7 @@ class TestCompose:
             font = ic.load_font(40)
         assert font is not None
         out = compose_headline(_render(tmp_path, _COVER), "Who buys?")
-        assert Image.open(out).size == _COVER
+        assert Image.open(out).size == ic.CANVAS["newsletter"]
 
     def test_the_bundled_font_ships_with_its_license(self):
         assert ic.BRAND_FONT.is_file() and (ic.FONT_DIR / "OFL.txt").is_file()
@@ -273,3 +273,61 @@ class TestEditorialCoverSystem:
         draw = ImageDraw.Draw(Image.new("RGB", (1, 1)))
         widest = max(ic._ink_width(draw, line, fit.font) for line in fit.lines)
         assert widest >= fit.text_box.width * 0.7
+
+
+_SPLITS = ("split_left", "split_right", "split_top", "split_bottom")
+
+
+def _overlaps(a, b):
+    return a.left < b.right and b.left < a.right and a.top < b.bottom and b.top < a.bottom
+
+
+def _inside(inner, outer):
+    return (inner.left >= outer.left and inner.top >= outer.top and inner.right <= outer.right
+            and inner.bottom <= outer.bottom)
+
+
+class TestSplitLayouts:
+    @pytest.mark.parametrize("layout", _SPLITS)
+    @pytest.mark.parametrize("grow", [0, 1, 2])
+    def test_the_scene_never_sits_under_the_type(self, layout, grow):
+        surface = "newsletter" if layout in ("split_left", "split_right") else "post_image"
+        size = ic.CANVAS[surface]
+        plan = plan_layout(size, layout, grow=grow)
+        assert plan.scene is not None and plan.backing is not None
+        assert not _overlaps(plan.scene, plan.backing)
+        assert not _overlaps(plan.scene, plan.text_box)
+        assert _inside(plan.text_box, plan.backing)
+        assert plan.scene.width * plan.scene.height + plan.backing.width * plan.backing.height \
+            == size[0] * size[1]
+
+    @pytest.mark.parametrize("surface,layout", [("newsletter", "split_left"),
+                                                ("newsletter", "split_right"),
+                                                ("post_image", "split_top"),
+                                                ("post_image", "split_bottom")])
+    def test_a_square_render_lands_on_the_final_canvas(self, tmp_path, surface, layout):
+        out = compose_headline(_render(tmp_path, (1024, 1024), color=(10, 200, 30)),
+                               "Hidden buyers cost you deals", layout=layout, surface=surface)
+        image = Image.open(out).convert("RGB")
+        assert image.size == ic.CANVAS[surface]
+        plan = plan_layout(image.size, layout)
+        cx = (plan.scene.left + plan.scene.right) // 2
+        cy = (plan.scene.top + plan.scene.bottom) // 2
+        assert image.getpixel((cx, cy)) == (10, 200, 30)
+
+    def test_the_seam_rule_is_the_brand_accent(self, tmp_path):
+        out = compose_headline(_render(tmp_path, (1024, 1024)), "Who buys?",
+                               layout="split_left", surface="newsletter")
+        image = Image.open(out).convert("RGB")
+        plan = plan_layout(image.size, "split_left")
+        accent = tuple(int(BrandStyle().accent[i:i + 2], 16) for i in (1, 3, 5))
+        assert image.getpixel((plan.backing.right - 2, image.size[1] // 2)) == accent
+
+    def test_cover_fit_returns_exactly_the_region(self):
+        box = ic.Box(0, 0, 960, 900)
+        assert ic.cover_fit(Image.new("RGB", (1024, 1024)), box).size == (960, 900)
+        tall = ic.Box(0, 0, 1080, 891)
+        assert ic.cover_fit(Image.new("RGB", (1024, 1024)), tall).size == (1080, 891)
+
+    def test_the_defaults_are_splits(self):
+        assert ic.DEFAULT_LAYOUT == {"newsletter": "split_left", "post_image": "split_top"}

@@ -244,6 +244,15 @@ cap-height floor and a growing backing; props are refused on every surface; and 
 newsletter title when the caller passes `signature`, else the author's profile name
 (`docs/image-stack.md`, "The cover is an editorial system").
 
+### Gauntlet round 7 → split covers
+
+Type still landed on faces, laptops and server rooms crept back in, and the judge capped
+specificity for not showing props the brief refuses. Covers are now a type panel BESIDE a square
+scene (`split_left`/`split_right`), screens are banned on every surface, anchors that are props
+are dropped at parse time, the anchor checks are advisory only, and the avatar renders only when
+the concept fit rule says the piece is about the author (`docs/image-stack.md`, "Split layouts,
+square scenes, no screens").
+
 ### Rejections land for review, with their reason
 
 A definite judge failure on `no_cliche` or `specificity` after the attempt budget returns verdict

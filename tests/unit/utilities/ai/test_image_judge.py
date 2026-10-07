@@ -109,10 +109,12 @@ class TestRubric:
         verdict, _ = _judge(tmp_path, answer=_answer(cliches_present=["gear"]))
         assert not verdict.acceptable and verdict.rubric["no_cliche"] <= 2
 
-    def test_no_anchor_seen_at_all_caps_specificity(self, tmp_path):
+    def test_no_anchor_seen_is_advisory_only(self, tmp_path):
+        """Round 8: specificity is the descriptors alone; anchors never cap it."""
         seen = {"unpaid invoices": False, "payroll run": False, "agency owner": False}
         verdict, _ = _judge(tmp_path, answer=_answer(entities_depicted=seen))
-        assert not verdict.acceptable and verdict.rubric["specificity"] == 3
+        assert verdict.acceptable and verdict.rubric["specificity"] == 5
+        assert "advisory: no anchor visibly depicted" in verdict.issues
 
     def test_one_anchor_seen_is_enough_the_count_is_advisory(self, tmp_path):
         """Round 3: the headline carries the thesis; two anchors is no longer required."""
@@ -396,9 +398,10 @@ class TestStrayTextInTheBlindDescription:
 
 
 class TestSpecificityNeedsTheThesis:
-    def test_a_thesis_the_judge_says_a_stranger_cannot_infer_caps_specificity(self, tmp_path):
+    def test_a_gist_that_does_not_read_is_advisory_only(self, tmp_path):
         verdict, _ = _judge(tmp_path, answer=_answer(thesis_inferable=False))
-        assert not verdict.acceptable and verdict.rubric["specificity"] == 3
+        assert verdict.rubric["specificity"] == 5
+        assert "advisory: the gist does not read" in verdict.issues
 
     def test_the_targeted_judge_is_asked_about_anchors_and_inference(self, tmp_path):
         concept = ImageConcept(
@@ -441,7 +444,8 @@ class TestRoundThreeJudge:
         text = create.call_args_list[1][1]["messages"][0]["content"][0]["text"]
         assert "The cover's headline (typeset onto it by the system): \"Payroll eats first\"" \
             in text
-        assert "Reading the headline together with the image, would a viewer get the GIST" in text
+        assert "Could this whole cover — kicker, headline and scene together — sit unchanged" \
+            in text
         assert "Does a face show a clear, specific emotion readable at 400x225?" in text
         assert "brand_fit" in text
 
@@ -547,7 +551,8 @@ class TestRoundFiveJudge:
                                        headline_names_subject=False,
                                        text_seen="Payroll eats first"),
                                hook_text="Payroll eats first")
-        assert verdict.rubric["specificity"] == 4 and verdict.acceptable, "passes, not a 5"
+        assert verdict.rubric["specificity"] == 5 and verdict.acceptable
+        assert "advisory: the headline does not name its subject" in verdict.issues
 
     @pytest.mark.parametrize("answer,weak", [
         (_answer(face_emotion=False), True), (_answer(emotion_matches=False), True),
@@ -655,3 +660,27 @@ class TestRoundSevenJudge:
                                signature="Christopher Queen")
         assert compose.call_args[1]["kicker"] == "AGENCY PAYROLL"
         assert compose.call_args[1]["signature"] == "Christopher Queen"
+
+
+@pytest.mark.unit
+class TestRoundEightJudge:
+    def test_advisory_issues_never_touch_a_score(self):
+        from cqc_lem.utilities.ai.image_gen import advisory_issues
+        notes = advisory_issues({"entities_depicted": {"a ledger": False},
+                                 "thesis_inferable": False, "headline_names_subject": False},
+                                ["a ledger"], "Who buys?")
+        assert notes == ["advisory: no anchor visibly depicted",
+                         "advisory: the gist does not read",
+                         "advisory: the headline does not name its subject"]
+        assert advisory_issues({"entities_depicted": {"a ledger": True},
+                                "headline_names_subject": False}, ["a ledger"], None) == []
+
+    @pytest.mark.parametrize("surface", ["newsletter", "post_image"])
+    def test_a_composited_render_is_square(self, surface):
+        from cqc_lem.utilities.ai.image_gen import _scene_ratio
+        assert _scene_ratio("16:9", "Who buys?", surface) == "1:1"
+        assert _scene_ratio("4:5", None, surface) == "4:5"
+
+    def test_an_uncomposited_surface_keeps_its_ratio(self):
+        from cqc_lem.utilities.ai.image_gen import _scene_ratio
+        assert _scene_ratio("16:9", "Who buys?", "video") == "16:9"

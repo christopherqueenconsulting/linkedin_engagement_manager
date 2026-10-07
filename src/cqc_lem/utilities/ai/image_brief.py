@@ -145,6 +145,9 @@ CLICHE_OBJECTS: tuple[str, ...] = (
     "pile of money", "stack of money", "dollar bill", "banknote", "pile of coins",
     "stack of coins", "coin stack", "piggy bank", "money bag", "shaking hands", "thumbs up",
     "hologram", "data visualization hologram", "glowing dashboard", "data stream",
+    # Round 8: "the soft blue glow of a server room" reached a post render, racks and all.
+    "server room", "server rack", "server cabinet", "servers", "racks", "rack of servers",
+    "data center", "data centre",
     # Stock office (issue #1992).
     "person at laptop", "man at laptop", "woman at laptop", "professional at laptop",
     "typing hands", "hands typing", "hands on keyboard", "coffee and notebook",
@@ -372,20 +375,23 @@ _PAPER_PROPS = re.compile(
     r"pages|receipt|receipts|notebook|notebooks|draft|drafts|manuscript|letter|letters|"
     r"whiteboard|whiteboards|chart|charts|graph|graphs|flip[\s\-]chart|code|console|terminal|"
     r"spreadsheet|spreadsheets|sticky\s+notes?|post-it)\b", re.IGNORECASE)
+# Round 8: gpt-4.1 flagged "person at laptop" on most scenes, so screens are gone entirely —
+# laptops, monitors, keyboards, tablets, displays, computers — on every surface. A phone may
+# appear only face-down.
 _SCREEN_WORDS = re.compile(
-    r"\b(?:laptop|laptops|screen|screens|monitor|monitors|tablet|tablets|phone|phones|"
-    r"smartphone|smartphones|display|displays|computer|computers|ipad|ipads)\b", re.IGNORECASE)
-_SCREEN_AWAY = re.compile(
-    r"\bback\s+of\s+(?:a|an|the|her|his|their)\s+(?:\w+\s+)?(?:laptop|tablet|monitor|screen|"
-    r"phone)|\bfacing\s+away\b|\bturned\s+away\b|\bface[\s\-]down\b|\bfrom\s+behind\b",
+    r"\b(?:laptop|laptops|screen|screens|monitor|monitors|tablet|tablets|keyboard|keyboards|"
+    r"display|displays|computer|computers|ipad|ipads|desktop|desktops|macbook|macbooks)\b",
     re.IGNORECASE)
+_PHONE_WORDS = re.compile(r"\b(?:phone|phones|smartphone|smartphones)\b", re.IGNORECASE)
+_FACE_DOWN = re.compile(r"\bface[\s\-]down\b", re.IGNORECASE)
 PAPER_FORBID = "forbid"
 PROPS_DIRECTIVE = (
     "PROPS: no paper of any kind in frame — no documents, sheets, reports, proposals, "
-    "clipboards, checklists, forms, invoices, bills, folders or binders — and no whiteboard, "
-    "chart or code content. A screen appears only as the back of a laptop or a screen facing "
-    "away from camera. Hands hold nothing, or a mug, pen or phone held face-down. Tell the story "
-    "with gesture, posture, an interaction between two people, and the environment.\n")
+    "clipboards, checklists, forms, invoices, bills, folders or binders — no whiteboard, chart "
+    "or code content — and no screens at all: no laptop, monitor, keyboard, tablet or computer. "
+    "Hands hold nothing, or a mug, pen or phone held face-down. Tell the story with people "
+    "interacting and gesturing in a real environment — a warehouse, a shop floor, a meeting room, "
+    "a hallway, a kitchen table, a workshop.\n")
 # Kept for the call sites that name it: covers and posts were the first surfaces with the rule.
 COVER_PROPS_DIRECTIVE = {PAPER_FORBID: PROPS_DIRECTIVE}
 
@@ -418,9 +424,12 @@ def prop_failure(text: Optional[str]) -> Optional[str]:
         return (f"the scene names {paper.group(0)!r} — paper, charts and code render legible "
                 f"text; tell the story with gesture, posture and the room instead")
     screen = _SCREEN_WORDS.search(text)
-    if screen and not _SCREEN_AWAY.search(text):
-        return (f"the scene names a {screen.group(0)} facing the camera — a screen appears only "
-                f"as the back of a laptop or a screen facing away from camera")
+    if screen:
+        return (f"the scene names a {screen.group(0)} — screens are the stock 'person at laptop' "
+                f"trope; show people interacting in a real environment instead")
+    phone = _PHONE_WORDS.search(text)
+    if phone and not _FACE_DOWN.search(text):
+        return (f"the scene names a {phone.group(0)} — a phone appears only held face-down")
     return None
 
 
@@ -554,7 +563,13 @@ NEGATIVE_SPACE: dict[str, str] = {
                  "ceiling — with every subject in the lower 60%; a headline band is added there "
                  "later"),
 }
-_DEFAULT_NEGATIVE_SPACE = {"newsletter": "panel_left", "post_image": "band_top"}
+# Round 8: the split layouts give the scene its own region, so the scene leaves no space at
+# all — it is a square with the subject centred, filling it (it is centre-cropped beside the type).
+_SQUARE_SCENE = ("compose a SQUARE frame with the subject centred and filling it, the headline is "
+                 "set beside the image, never on it")
+NEGATIVE_SPACE.update({layout: _SQUARE_SCENE for layout in
+                       ("split_left", "split_right", "split_top", "split_bottom")})
+_DEFAULT_NEGATIVE_SPACE = {"newsletter": "split_left", "post_image": "split_top"}
 
 
 def negative_space_directive(layout: str, surface: str) -> str:
@@ -952,7 +967,7 @@ def _fallback_brief(content: str, *, surface: str, ratio: str, context: str,
               f"grain, real texture with fabric wear and everyday imperfections, plain unbranded "
               f"surfaces, clean unmarked walls, hands at rest or around a mug.")
     space = negative_space_directive(concept.layout if concept else "", surface) if hook else ""
-    layout = f" Compose to {space}." if space else ""
+    layout = f" {space[:1].upper()}{space[1:]}." if space else ""
     # Profile context is AUTHOR context: a fallback is a render prompt, so it never carries it.
     context = ""
     idea = _plain_words(concept.chosen_idea) if concept and concept.chosen_idea else ""
@@ -1076,6 +1091,10 @@ def build_image_brief(content: str, *, surface: str, ratio: str = "1:1",
     names = fact_name_tokens(concept)
     hook = (concept.hook_phrase if concept and concept.hook_phrase
             and carries_hook(surface, treatment) else None)
+    if hook:
+        # Round 8: a composited surface renders a SQUARE scene that image_compose centre-crops
+        # beside its type panel, whatever the caller's final ratio.
+        ratio = "1:1"
     colors = brand_colors(brand_kit)
     # Deterministically enforced on covers; requested on every surface.
     gate_colors = colors if surface in BRAND_GATE_SURFACES else None

@@ -573,6 +573,13 @@ def anchor_rejection(anchor: str, facts: Sequence[str], source: Optional[str] = 
     return ""
 
 
+def _prop_reason(anchor: str) -> str:
+    """Why an anchor is a prop the brief would refuse to draw (round 8), or ''."""
+    from cqc_lem.utilities.ai.image_brief import prop_failure
+
+    return prop_failure(anchor) or ""
+
+
 def _ground_anchors(raw: Any, source: str, facts: Sequence[str]) -> tuple[str, ...]:
     anchors: list[str] = []
     lowered_source = source.lower()
@@ -580,7 +587,7 @@ def _ground_anchors(raw: Any, source: str, facts: Sequence[str]) -> tuple[str, .
         anchor = _clean(item, 80)
         if not anchor or anchor.lower() in (a.lower() for a in anchors):
             continue
-        reason = anchor_rejection(anchor, facts, source)
+        reason = anchor_rejection(anchor, facts, source) or _prop_reason(anchor)
         grounded = any(re.search(rf"\b{re.escape(_stem(t))}", lowered_source)
                        for t in _content_tokens(anchor))
         if reason or not grounded:
@@ -829,11 +836,11 @@ def pick_visual_idea(concept: ImageConcept, surface: str = "post_image") -> Imag
 # the author's last ``ROTATION_WINDOW`` receipts, as a sibling of ``enforce_graphic_cap``.
 ROTATION_WINDOW = 4
 # Compositing templates (``image_compose.LAYOUTS``): the headline is typeset, never rendered.
-# ``full_bleed`` is OUT of the rotation (round 7: it set a headline across a woman's face); the
-# compositor still supports it for a caller that asks.
-COVER_LAYOUTS = ("panel_left", "panel_right", "lower_third_band")
-# A 4:5 post keeps its headline in a band at the top, below a margin the crop protects.
-POST_LAYOUTS = ("band_top",)
+# Round 8: only SPLIT layouts rotate — the type panel and the scene never overlap, so a headline
+# can never sit on a face or a torso (every overlay layout did). The compositor still supports the
+# overlay layouts for a caller that asks.
+COVER_LAYOUTS = ("split_left", "split_right")
+POST_LAYOUTS = ("split_top", "split_bottom")
 SURFACE_LAYOUTS = {"newsletter": COVER_LAYOUTS, "post_image": POST_LAYOUTS}
 # Each dimension rotates INDEPENDENTLY, so no pairing (of age, gender, ethnicity or setting) is
 # ever correlated with another — or with the role, which always comes from the piece's anchors.

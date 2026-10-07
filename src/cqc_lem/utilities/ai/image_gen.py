@@ -465,12 +465,14 @@ The image was made for a piece arguing: {thesis}
 The cover's kicker (topic tag, typeset by the system): {kicker}
 The cover's headline (typeset onto it by the system): {headline}
 Read the kicker, headline and scene together as one cover. Look at the image itself and answer:
-1. Is each of these things visibly depicted? {entities}
+1. (Advisory only — never part of a score.) Is each of these things visibly depicted?
+   {entities}
 2. Is any of these stock symbols present: {cliches}?
 3. Does the main subject still read as a 400x225 thumbnail? Is the image bright enough, with a
    clear subject, that it stands out in a white social feed?
 4. Any AI artifacts — waxy skin, malformed hands, melted or fused objects, garbled lettering?
-5. Reading the headline together with the image, would a viewer get the GIST of the claim above?
+5. Could this whole cover — kicker, headline and scene together — sit unchanged on an
+   unrelated article? Would a viewer get the GIST of the claim above?
 6. Does a face show a clear, specific emotion readable at 400x225?
 7. Does the visible emotion match "{emotional_beat}" with a {valence} valence ({valence_hint})?
 8. Is the emotion authentic rather than exaggerated or cartoonish?
@@ -599,13 +601,10 @@ def _apply_overlays(rubric: dict, *, blind: str, answer: dict, entities: list,
     if cliches or cliche_hit(blind):
         rubric["no_cliche"] = min(rubric.get("no_cliche") or 5, 2)
     rubric["text_accuracy"] = 2 if stray_texts(blind) else None
-    seen = answer.get("entities_depicted") or {}
-    if entities and isinstance(seen, dict) and not any(seen.get(e) is True for e in entities):
-        rubric["specificity"] = min(rubric.get("specificity") or 3, 3)
-    if answer.get("thesis_inferable") is False:
-        rubric["specificity"] = min(rubric.get("specificity") or 3, 3)
-    if hook_text and answer.get("headline_names_subject") is False:
-        rubric["specificity"] = min(rubric.get("specificity") or 4, 4)
+    # Round 8: specificity is the judge's ANCHORED DESCRIPTORS on kicker + headline + scene
+    # together — nothing deterministic caps it. Anchors seen, the gist and a subject-less
+    # headline are advisory issues only (``advisory_issues``): gpt-4.1's "no vendor contract
+    # depicted" was asking for exactly the props the brief now refuses to draw.
     if face_expected and answer.get("face_emotion") is False:
         rubric["scroll_stop"] = min(rubric.get("scroll_stop") or 3, 3)
     if answer.get("emotion_matches") is False:
@@ -616,6 +615,28 @@ def _apply_overlays(rubric: dict, *, blind: str, answer: dict, entities: list,
     if answer.get("bright_enough") is False:
         rubric["thumbnail_read"] = min(rubric.get("thumbnail_read") or 3, 3)
     return rubric
+
+
+def advisory_issues(answer: dict, entities: list, hook_text: Optional[str]) -> list[str]:
+    """The judge's advisory findings — reported on the receipt, never part of a score.
+
+    Args:
+        answer: The targeted judge's JSON.
+        entities: The anchors it was asked about.
+        hook_text: The headline, if any.
+
+    Returns:
+        Short issue strings prefixed "advisory:".
+    """
+    notes = []
+    seen = answer.get("entities_depicted") or {}
+    if entities and isinstance(seen, dict) and not any(seen.get(e) is True for e in entities):
+        notes.append("advisory: no anchor visibly depicted")
+    if answer.get("thesis_inferable") is False:
+        notes.append("advisory: the gist does not read")
+    if hook_text and answer.get("headline_names_subject") is False:
+        notes.append("advisory: the headline does not name its subject")
+    return notes
 
 
 def _staged_inspect(image_path: str, concept: Any, hook_text: Optional[str],
@@ -675,6 +696,7 @@ def _staged_inspect(image_path: str, concept: Any, hook_text: Optional[str],
                if rubric.get(name) is not None and rubric[name] < floor]
     issues = [f"{name} {rubric[name]}/5" for name in failing]
     issues += [f"stray text: {t}" for t in stray_texts(blind)][:3]
+    issues += advisory_issues(answer, entities, hook_text)
     issues += [str(i) for i in (answer.get("issues") or []) if str(i).strip()]
     emotion_weak = (answer.get("face_emotion") is False or answer.get("emotion_matches") is False
                     or "scroll_stop" in failing
@@ -809,6 +831,15 @@ def _gate_candidates(concept: Any, surface: Optional[str] = None) -> int:
 def _verdict_rank(verdict: QualityVerdict) -> tuple:
     scores = [v for v in (verdict.rubric or {}).values() if isinstance(v, int)]
     return (verdict.acceptable, sum(scores), verdict.relevance or 0)
+
+
+def _scene_ratio(ratio: str, hook_text: Optional[str], surface: str) -> str:
+    """The render's ratio: SQUARE whenever ``image_compose`` will split it beside a type panel.
+
+    Round 8: the split layouts centre-crop a square scene into a 0.9-1.2 aspect region on a 16:9
+    or 4:5 canvas, so a centred subject survives either way; any other render keeps its ratio.
+    """
+    return "1:1" if hook_text and surface in COMPOSE_SURFACES else ratio
 
 
 def _composite(raw_path: str, hook_text: Optional[str], surface: str, layout: Optional[str],
@@ -962,7 +993,8 @@ def render_avatar_image_gated(prompt: str, *, avatar: dict, user_id: Optional[in
         marked = with_no_marks(current_prompt, "flux", scene=prompt)
         path, used_avatar = generate_image_with_avatar(
             apply_subject_clause(marked, avatar), avatar["model_ref"],
-            ratio=ratio, fallback_prompt=marked, surface=surface)
+            ratio=_scene_ratio(ratio, hook_text, surface), fallback_prompt=marked,
+            surface=surface)
         if used_avatar and path:
             # Provenance for a synthetic likeness of a real person.
             _record_avatar_media(path, post_id, user_id)
@@ -1011,7 +1043,9 @@ def render_image_gated(prompt: str, *, surface: str, ratio: str = "1:1",
         # falls through to FLUX, and the retry has to be phrased for whichever one answered.
         # `scene=prompt`: from attempt 2 `current_prompt` carries the repair round too, and the
         # mark-magnet clauses must stay derived from what the AUTHOR described (issue #1376).
-        path, backend = _render_with_backend(current_prompt, ratio=ratio, quality=quality,
+        path, backend = _render_with_backend(current_prompt,
+                                             ratio=_scene_ratio(ratio, hook_text, surface),
+                                             quality=quality,
                                              user_id=user_id, post_id=post_id,
                                              image_model=image_model, surface=surface,
                                              scene=prompt)

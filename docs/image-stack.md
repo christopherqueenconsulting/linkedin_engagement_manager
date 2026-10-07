@@ -51,6 +51,33 @@ judge rightly scored specificity 1 on all four covers. So Stage 1 returns two li
   down. Briefs, Stage 3 and the vision judge's specificity all work from `usable_anchors()` — the
   anchors, or for a concept with none, its plain common-noun facts.
 
+## Split layouts, square scenes, no screens (round 8)
+
+Every overlay layout still put type over a face or a torso, whatever the brief asked for, so the
+rotation is now SPLIT layouts only — the scene and the type panel never overlap by construction:
+
+- **Layouts.** Covers (16:9, a 1600x900 canvas) rotate `split_left` / `split_right` with a 40%
+  type panel; posts (4:5, built at 1080x1350 directly — no later crop) rotate `split_top` /
+  `split_bottom` with a 34% panel. The panel grows a step (45/50%, 40/46%) only when the
+  cap-height floor is not met. A 4px dark-gold seam rule marks where panel meets photograph.
+  The overlay layouts stay in `image_compose.LAYOUTS` for a caller that asks.
+- **Square scene.** Any composited render is requested at `1:1` (`_scene_ratio` in
+  `image_gen.py`, `ratio = "1:1"` in `build_image_brief`) — the avatar path included — and the
+  brief asks for "a SQUARE frame with the subject centred and filling it". `cover_fit` scales it
+  to cover the scene region and centre-crops, so a centred subject survives either aspect.
+  `conform_to_ratio` (PR #2249) does not exist on this branch; a composited post never needs it.
+- **No screens.** `prop_failure` refuses laptops, monitors, keyboards, tablets, displays and
+  computers on every surface (video frames included); a phone survives only face-down. Scenes are
+  people interacting in a real environment. "server room", "servers", "racks", "server cabinet"
+  and "data center" are clichés.
+- **Anchors are never props.** `_ground_anchors` drops an anchor `prop_failure` would refuse, so
+  Stage 1 can never ask the brief for something the brief must then refuse.
+- **Specificity is the descriptors alone.** The judge's anchor, gist and headline-names-subject
+  answers no longer cap `specificity`; they land as `advisory:` issues on the receipt
+  (`advisory_issues`).
+- **Cover avatar.** Auto uses `guardrails.resolve_avatar_for_concept` with Stage 1's concept when
+  that fit rule exists (PR #2249); otherwise the guardrails + classifier conjunction decides.
+
 ## The cover is an editorial system (round 7)
 
 Round 6's composites were a big step (exact gold and charcoal, Montserrat, rotating layouts, a

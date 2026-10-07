@@ -29,8 +29,8 @@ _PAYLOAD = {"thesis": "Late invoices quietly starve a small agency's payroll",
             "audience": "agency owners",
             "specific_entities": ["unpaid invoices", "payroll run", "agency owner",
                                   "personal credit card"],
-            "visual_anchors": ["an agency owner", "a stack of unpaid invoices",
-                               "a payroll run printout"],
+            "visual_anchors": ["an agency owner", "three late-paying clients",
+                               "a tense payroll day"],
             "emotional_beat": "quiet dread", "hook_phrase": "90 days unpaid",
             "treatment": "concrete_scene", "treatment_rationale": "a tangible situation"}
 
@@ -226,8 +226,8 @@ class TestVisualAnchors:
                                       "Stanford HAI facade", "a cluttered meeting room"],
                    "treatment": "concrete_scene"}
         concept = parse_concept(payload, _FACTS_SOURCE)
-        assert concept.visual_anchors == ("a marketing lead", "a printed audit checklist",
-                                          "a cluttered meeting room")
+        # The checklist is a prop the brief refuses to draw (round 8), so it is never an anchor.
+        assert concept.visual_anchors == ("a marketing lead", "a cluttered meeting room")
         assert not concept.weak
         assert concept.specific_entities[:2] == ("Terralogic", "GPT-5.2"), "facts are kept"
 
@@ -547,9 +547,8 @@ class TestSeriesRotation:
             concept = assign_layout_and_cast(concept, "newsletter", layouts[:4], casts[:4])
             layouts.insert(0, concept.layout)
             casts.insert(0, concept.cast)
-        for start in range(len(layouts) - 2):
-            window = layouts[start:start + 3]
-            assert len(set(window)) == 3, window
+        # Two split layouts: they alternate, so no layout ever repeats back to back.
+        assert all(a != b for a, b in zip(layouts, layouts[1:])), layouts
         assert len({(c["gender"], c["age"]) for c in casts}) >= 4, "the cast varies"
         assert len({c["setting"] for c in casts}) >= 4
 
@@ -586,14 +585,15 @@ class TestSeriesRotation:
 
     def test_posts_use_the_top_band(self):
         from cqc_lem.utilities.ai.image_concept import assign_layout_and_cast
-        assert assign_layout_and_cast(self._concept(), "post_image").layout == "band_top"
+        assert assign_layout_and_cast(self._concept(), "post_image").layout in (
+            "split_top", "split_bottom")
 
     def test_analyze_takes_the_recent_history(self):
         with patch(_CREATE, return_value=_resp(dict(_PAYLOAD, treatment="people_scene"))):
             concept = analyze_content_for_image(
                 _SOURCE, surface="newsletter",
-                recent_layouts=["panel_left", "panel_right", "full_bleed"])
-        assert concept.layout == "lower_third_band"
+                recent_layouts=["split_left"])
+        assert concept.layout == "split_right"
 
 
 class TestHookFidelityAndShape:
@@ -696,7 +696,8 @@ class TestRoundSevenStageOne:
     def test_full_bleed_is_out_of_the_cover_rotation(self):
         from cqc_lem.utilities.ai.image_concept import COVER_LAYOUTS
         assert "full_bleed" not in COVER_LAYOUTS
-        assert set(COVER_LAYOUTS) == {"panel_left", "panel_right", "lower_third_band"}
+        # Round 8: only split layouts rotate — type and scene never overlap.
+        assert set(COVER_LAYOUTS) == {"split_left", "split_right"}
 
     @pytest.mark.parametrize("idea", ["A founder holding a proposal on a clipboard.",
                                       "An analyst frowning at code on a monitor.",
@@ -704,3 +705,15 @@ class TestRoundSevenStageOne:
     def test_prop_ideas_are_filtered(self, idea):
         from cqc_lem.utilities.ai.image_concept import idea_rejection
         assert "legible words on a surface" in idea_rejection(idea, ())
+
+
+@pytest.mark.unit
+class TestRoundEightAnchors:
+    def test_an_anchor_the_brief_would_refuse_is_dropped_at_parse_time(self):
+        from cqc_lem.utilities.ai.image_concept import _ground_anchors
+        source = ("A marketing lead walks the warehouse floor with a laptop and a printed "
+                  "checklist before the audit.")
+        anchors = _ground_anchors(["a marketing lead", "a laptop", "a printed checklist",
+                                   "the warehouse floor"], source, ())
+        assert "a laptop" not in anchors and "a printed checklist" not in anchors
+        assert "a marketing lead" in anchors and "the warehouse floor" in anchors

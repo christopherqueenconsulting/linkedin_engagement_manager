@@ -848,3 +848,27 @@ class TestCoverByline:
                    return_value=None) as gen:
             nc.generate_cover_for_edition(3, 9, "T", "S", "B")
         assert gen.call_args[1]["signature"] is None
+
+
+class TestCoverAvatarFitRule:
+    def test_auto_uses_the_concept_fit_rule_when_the_guardrails_offer_it(self, monkeypatch):
+        from cqc_lem.utilities.avatar import guardrails
+        calls = []
+
+        def fit_rule(user_id, surface, concept, source_text):
+            calls.append((user_id, surface, concept, source_text))
+            return None
+
+        monkeypatch.setattr(guardrails, "resolve_avatar_for_concept", fit_rule, raising=False)
+        with patch("cqc_lem.utilities.avatar.guardrails.resolve_avatar_for") as legacy, \
+             patch.object(nc, "classify_avatar_relevance") as classify:
+            assert nc._resolve_cover_avatar(3, None, "T", "S", "B", concept="C") is None
+        assert calls and calls[0][1] == "newsletter" and calls[0][2] == "C"
+        legacy.assert_not_called()
+        classify.assert_not_called()
+
+    def test_an_explicit_without_never_consults_the_fit_rule(self, monkeypatch):
+        from cqc_lem.utilities.avatar import guardrails
+        monkeypatch.setattr(guardrails, "resolve_avatar_for_concept",
+                            lambda *a, **k: _USABLE_AVATAR, raising=False)
+        assert nc._resolve_cover_avatar(3, False, "T", "S", "B", concept="C") is None
