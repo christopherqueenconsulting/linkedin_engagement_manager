@@ -10,7 +10,9 @@ seven visual archetypes do that with the piece's own numbers and steps, drawn he
 - ``highlight_chart`` — 2-6 comparable values, ONE in gold, the rest grey;
 - ``receipt`` — "the real cost of X" line items with a circled amount;
 - ``before_after`` — a labelled BEFORE / AFTER split of one grounded measure;
-- ``checklist`` — 3-5 of the piece's own steps, some deliberately left unchecked.
+- ``checklist`` — 3-5 of the piece's own steps, some deliberately left unchecked;
+- ``quote_card`` — one sentence of the post itself, verbatim, attributed to the author's byline
+  (posts only, chosen by the treatment rotation in ``post_treatment``, never by Stage 1).
 
 FACT SAFETY is the point of drawing them in code. Stage 1 returns each candidate figure as
 ``{label, value, unit, source_sentence}``; ``validate_graphic_facts`` keeps an item only when its
@@ -57,6 +59,9 @@ RECEIPT = "receipt"
 BEFORE_AFTER = "before_after"
 CHECKLIST = "checklist"
 CODE_DRAWN_ARCHETYPES = (STAT_CARD, HIGHLIGHT_CHART, RECEIPT, BEFORE_AFTER, CHECKLIST)
+# Not a Stage 1 archetype (``available_archetypes`` never offers it): the post treatment rotation
+# asks for it with a sentence it already verified is a substring of the post.
+QUOTE_CARD = "quote_card"
 
 # A 16:9 cover and a 4:5 feed post — the compositor's own canvas, so a graphic and a photo cover
 # can never drift apart in size.
@@ -554,6 +559,8 @@ def drawn_facts(archetype: str, graphic: dict) -> list[dict]:
         return [graphic["before_after"]["before"], graphic["before_after"]["after"]]
     if archetype == CHECKLIST and graphic.get("steps"):
         return list(graphic["steps"])
+    if archetype == QUOTE_CARD and graphic.get("quote"):
+        return [graphic["quote"]]
     raise GraphicError(f"no validated data for {archetype}")
 
 
@@ -577,6 +584,11 @@ def assert_traceable(archetype: str, graphic: dict) -> list[dict]:
     facts = drawn_facts(archetype, graphic)
     for fact in facts:
         sentence = fact.get("source_sentence") or ""
+        if archetype == QUOTE_CARD:
+            # A quote is the sentence itself, character for character — never a paraphrase.
+            if not sentence or fact.get("text") != sentence:
+                raise UngroundedFactError("the quote is not its source sentence verbatim")
+            continue
         if "text" in fact and "display" not in fact:
             if not label_grounded(fact["text"], sentence):
                 raise UngroundedFactError(f"step {fact['text']!r} does not trace to its sentence")
@@ -1078,6 +1090,87 @@ def _draw_checklist(c: _Canvas, graphic: dict, pal: _Palette) -> None:
         y += max(len(lines) * lh, box) + gap
 
 
+# The quote card's type, as fractions of the canvas width.
+_QUOTE_MARK = 0.26
+_QUOTE_HIGH = 0.075
+_QUOTE_MIN = 0.045
+_QUOTE_MAX_LINES = 7
+_BYLINE = 0.034
+
+
+def _draw_quote_card(c: _Canvas, graphic: dict, pal: _Palette) -> None:
+    """A gold opening mark, the sentence in off-white, a gold rule and "— byline" in gold.
+
+    The whole block — mark, quote, rule, byline — is centred vertically in the safe area, so a
+    short quote never floats away from its mark.
+    """
+    quote = graphic["quote"]
+    byline = (graphic.get("byline") or "").strip()
+    if not byline:
+        raise GraphicError("a quote card needs the author's byline")
+    safe = _safe(c)
+    left, top, right, bottom = safe
+    width = right - left
+    mark_size = round(c.basis * _QUOTE_MARK)
+    mark_font = load_font(mark_size)
+    mark_box = c.draw.textbbox((0, 0), "\u201c", font=mark_font)
+    mark_h = mark_box[3] - mark_box[1]
+    by_size = c.floor(_BYLINE)
+    by_font = load_font(by_size)
+    by_text = f"\u2014 {byline}"
+    if _ink_width(c.draw, by_text, by_font) > width:
+        raise GraphicLayoutError("the byline does not fit")
+    by_h = _line_height(by_font, by_size)
+    gap = round(c.basis * 0.03)
+    rule_h = max(4, round(c.basis * 0.006))
+    chrome = mark_h + by_h + rule_h + 3 * gap
+    fitted = _fit_block(c.draw, quote["text"], width, bottom - top - chrome, _QUOTE_MAX_LINES,
+                        round(c.basis * _QUOTE_HIGH), c.floor(_QUOTE_MIN))
+    if fitted is None:
+        raise GraphicLayoutError("the quote does not fit legibly")
+    block = chrome + fitted[2] * len(fitted[1])
+    y = top + max(0, (bottom - top - block) // 2)
+    c.text((left, y - mark_box[1]), "\u201c", mark_font, mark_size, pal.gold, safe, "mark")
+    y = _lines(c, left, y + mark_h + gap, fitted, pal.light, safe, "quote") + gap
+    c.draw.rectangle((left, y, left + round(width * 0.18), y + rule_h - 1),
+                     fill=(*pal.accent, 255))
+    c.text((left, y + rule_h + gap), by_text, by_font, by_size, pal.gold, safe, "byline")
+
+
+def render_quote_card(graphic: dict, *, surface: str, brand: Optional[BrandStyle] = None,
+                      out_path: Optional[str] = None) -> GraphicRender:
+    """Draw a full-canvas quote card: the sentence, verbatim, on the brand ground. $0.
+
+    No headline panel — the quote IS the card's text, so the kicker and hook stay off it.
+
+    Args:
+        graphic: ``{"quote": {"text", "source_sentence"}, "byline": str}``.
+        surface: Picks the canvas (``post_image`` is 1080x1350).
+        brand: The exact colors; the reference brand by default.
+        out_path: Where to write; a temp file by default.
+
+    Returns:
+        The render, its one drawn fact and every placement.
+
+    Raises:
+        UngroundedFactError: The quote is not its source sentence verbatim.
+        GraphicLayoutError: The quote or byline cannot be set legibly.
+        GraphicError: There is no byline.
+    """
+    facts = assert_traceable(QUOTE_CARD, graphic)
+    size = GRAPHIC_CANVAS.get(surface, GRAPHIC_CANVAS["post_image"])
+    pal = _palette(brand or BrandStyle())
+    region = _Canvas(size, pal.ground, size[0])
+    _draw_quote_card(region, graphic, pal)
+    if out_path is None:
+        handle, out_path = tempfile.mkstemp(suffix=".png", prefix=f"lem_{QUOTE_CARD}_")
+        os.close(handle)
+    region.image.convert("RGB").save(out_path, "PNG")
+    traced = tuple(dict(fact) for fact in facts)
+    return GraphicRender(path=out_path, archetype=QUOTE_CARD, facts=traced,
+                         placements=tuple(region.placements), canvas=size)
+
+
 _DRAWERS = {STAT_CARD: _draw_stat_card, HIGHLIGHT_CHART: _draw_highlight_chart,
             RECEIPT: _draw_receipt, BEFORE_AFTER: _draw_before_after,
             CHECKLIST: _draw_checklist}
@@ -1085,7 +1178,8 @@ _DRAWERS = {STAT_CARD: _draw_stat_card, HIGHLIGHT_CHART: _draw_highlight_chart,
 
 def render_graphic(archetype: str, graphic: dict, *, surface: str, hook: str,
                    kicker: str = "", signature: str = "", brand: Optional[BrandStyle] = None,
-                   layout: Optional[str] = None, out_path: Optional[str] = None) -> GraphicRender:
+                   layout: Optional[str] = None, out_path: Optional[str] = None,
+                   panel: Optional[str] = None) -> GraphicRender:
     """Draw one code-drawn archetype beside the typeset headline panel. $0, no model call.
 
     Args:
@@ -1098,6 +1192,8 @@ def render_graphic(archetype: str, graphic: dict, *, surface: str, hook: str,
         brand: The exact colors; the reference brand by default.
         layout: A split layout; the surface default when not one.
         out_path: Where to write; a temp file by default.
+        panel: The headline panel's variant (``image_compose.PANEL_VARIANTS``); charcoal when None.
+            ``quote_card`` has no headline panel and ignores it.
 
     Returns:
         The render, its drawn facts and every placement.
@@ -1107,6 +1203,8 @@ def render_graphic(archetype: str, graphic: dict, *, surface: str, hook: str,
         GraphicLayoutError: The data cannot be set legibly.
         GraphicError: Anything else that stops the graphic (no hook, unknown archetype).
     """
+    if archetype == QUOTE_CARD:
+        return render_quote_card(graphic, surface=surface, brand=brand, out_path=out_path)
     if archetype not in _DRAWERS:
         raise GraphicError(f"{archetype!r} is not a code-drawn archetype")
     if not (hook or "").strip():
@@ -1132,7 +1230,7 @@ def render_graphic(archetype: str, graphic: dict, *, surface: str, hook: str,
             os.close(handle)
         path = compose_headline(region_path, hook, layout=layout, brand=brand, surface=surface,
                                 out_path=out_path, kicker=kicker, signature=signature,
-                                canvas=size, hero=False)
+                                canvas=size, hero=False, panel=panel)
     finally:
         try:
             os.remove(region_path)

@@ -1537,6 +1537,51 @@ _VALENCE_FACES = {
     "mixed": "wry or thoughtful",
 }
 
+# Post treatment rotation (#2241, anti-monotony round): an AI-rendered post scene rotates its photo
+# GRADE least-recently-used (``post_treatment``). Every grade keeps the round-5 brightness rule —
+# dusk is WARM, never dark — and every clause is phrased positively, because FLUX renders what a
+# prompt names and naming "murky" or "dim" summons it. ``_DARK_SCENE`` must never match one.
+GRADE_DAYLIGHT, GRADE_COOL_INTERIOR, GRADE_WARM_DUSK = "daylight", "cool_interior", "warm_dusk"
+PHOTO_GRADES: dict[str, str] = {
+    GRADE_DAYLIGHT: ("bright natural daylight, crisp neutral whites, true-to-life skin tones and "
+                     "open, airy shadows"),
+    GRADE_COOL_INTERIOR: ("a cool, clean interior grade: soft overcast window light, slate and "
+                          "off-white tones, bright and even across every face"),
+    GRADE_WARM_DUSK: ("a warm late-afternoon grade: low golden sunlight through a window, amber "
+                      "highlights, every face fully and evenly lit and the whole frame bright and "
+                      "readable with soft open shadows"),
+}
+
+
+def grade_clause(grade: Optional[str]) -> str:
+    """The render-prompt sentence for a photo grade, or '' for an unknown or missing one.
+
+    Args:
+        grade: One of ``PHOTO_GRADES``.
+
+    Returns:
+        "Photo grade: …." — appended to an AI-rendered post scene's prompt.
+    """
+    text = PHOTO_GRADES.get(grade or "")
+    return f"Photo grade: {text}." if text else ""
+
+
+def with_grade(prompt: str, grade: Optional[str]) -> str:
+    """``prompt`` with the grade's clause appended once; unchanged with no grade.
+
+    Args:
+        prompt: The render prompt.
+        grade: One of ``PHOTO_GRADES``.
+
+    Returns:
+        The prompt, graded.
+    """
+    clause = grade_clause(grade)
+    if not clause or clause in (prompt or ""):
+        return prompt
+    body = (prompt or "").rstrip()
+    return f"{body}{'' if not body or body.endswith(('.', '!', '?')) else '.'} {clause}".strip()
+
 
 def _analysis_block(concept: Optional[ImageConcept], anchors: list[str],
                     hook: Optional[str], surface: str = "post_image",

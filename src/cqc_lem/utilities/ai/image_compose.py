@@ -95,6 +95,129 @@ class BrandStyle:
     neutral_light: str = DEFAULT_NEUTRAL_LIGHT
 
 
+# Post treatment rotation (#2241, anti-monotony round): a ``typeset_card`` post rotates its type
+# panel among three variants, least-recently-used (``utilities/ai/post_treatment.py``). Newsletter
+# covers never pass ``panel`` and keep the charcoal card. A variant whose headline or hero numeral
+# would read below ``MIN_HEADLINE_CONTRAST`` against its panel (WCAG AA, normal text) is
+# unavailable for that brand — ``available_panels`` — so a custom kit cannot buy a low-contrast card.
+PANEL_CHARCOAL, PANEL_OFF_WHITE, PANEL_GOLD = "charcoal", "off_white", "gold"
+PANEL_VARIANTS = (PANEL_CHARCOAL, PANEL_OFF_WHITE, PANEL_GOLD)
+MIN_HEADLINE_CONTRAST = 4.5
+# The kicker is small uppercase type; it keeps the accent only where the accent still reads.
+_MIN_KICKER_CONTRAST = 3.0
+
+
+@dataclass(frozen=True)
+class PanelColors:
+    """The exact colors one panel variant paints, all ``#RRGGBB``.
+
+    Attributes:
+        variant: One of ``PANEL_VARIANTS``.
+        panel: The type panel's fill (and a split canvas's ground).
+        headline: The headline color without a hero numeral.
+        hero: The hero numeral's color.
+        rest: The headline color UNDER a hero numeral.
+        kicker: The kicker, and the rule drawn when there is no kicker.
+        seam: The rule where the panel meets the scene.
+        byline: The byline color (drawn at ``byline_alpha``).
+        byline_alpha: The byline's opacity, 0-255.
+    """
+
+    variant: str
+    panel: str
+    headline: str
+    hero: str
+    rest: str
+    kicker: str
+    seam: str
+    byline: str
+    byline_alpha: int = 128
+
+
+def _luminance(color: str) -> float:
+    def channel(value: int) -> float:
+        c = value / 255
+        return c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4
+
+    r, g, b = _hex(color)
+    return 0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b)
+
+
+def contrast_ratio(foreground: str, background: str) -> float:
+    """The WCAG 2 contrast ratio between two ``#RRGGBB`` colors, 1.0-21.0.
+
+    Args:
+        foreground: The text color.
+        background: The color behind it.
+
+    Returns:
+        ``(L1 + 0.05) / (L2 + 0.05)`` with L1 the lighter relative luminance.
+    """
+    a, b = _luminance(foreground), _luminance(background)
+    return (max(a, b) + 0.05) / (min(a, b) + 0.05)
+
+
+def panel_colors(brand: Optional[BrandStyle] = None, variant: Optional[str] = None) -> PanelColors:
+    """The colors ``variant`` paints in ``brand``; an unknown variant is the charcoal card.
+
+    Charcoal is the card as it always was — gold headline and hero on charcoal, dark-gold kicker
+    and seam, off-white byline. Off-white and gold set every line in charcoal (gold type on an
+    off-white or gold panel cannot reach 4.5:1); the kicker keeps the dark-gold accent only where
+    that still reads at ``_MIN_KICKER_CONTRAST``.
+
+    Args:
+        brand: The exact colors; the reference brand by default.
+        variant: One of ``PANEL_VARIANTS``.
+
+    Returns:
+        The variant's colors.
+    """
+    brand = brand or BrandStyle()
+    if variant not in (PANEL_OFF_WHITE, PANEL_GOLD):
+        return PanelColors(variant=PANEL_CHARCOAL, panel=brand.neutral_dark,
+                           headline=brand.primary, hero=brand.primary, rest=brand.neutral_light,
+                           kicker=brand.accent, seam=brand.accent, byline=brand.neutral_light)
+    ground = brand.neutral_light if variant == PANEL_OFF_WHITE else brand.primary
+    ink = brand.neutral_dark
+    kicker = (brand.accent if contrast_ratio(brand.accent, ground) >= _MIN_KICKER_CONTRAST
+              else ink)
+    seam = brand.primary if variant == PANEL_OFF_WHITE else ink
+    return PanelColors(variant=variant, panel=ground, headline=ink, hero=ink, rest=ink,
+                       kicker=kicker, seam=seam, byline=ink, byline_alpha=170)
+
+
+def panel_headline_contrast(brand: Optional[BrandStyle], variant: str) -> float:
+    """The lower of the headline's and the hero numeral's contrast against the variant's panel.
+
+    Args:
+        brand: The exact colors.
+        variant: One of ``PANEL_VARIANTS``.
+
+    Returns:
+        The WCAG ratio the variant's weakest headline line reaches.
+    """
+    colors = panel_colors(brand, variant)
+    return min(contrast_ratio(colors.headline, colors.panel),
+               contrast_ratio(colors.hero, colors.panel),
+               contrast_ratio(colors.rest, colors.panel))
+
+
+def available_panels(brand: Optional[BrandStyle] = None) -> tuple[str, ...]:
+    """The panel variants whose headline reaches ``MIN_HEADLINE_CONTRAST`` in this brand.
+
+    Charcoal is always offered — it is the card every brand had before variants existed — so a
+    brand whose own gold-on-charcoal is weak is no worse off than it was.
+
+    Args:
+        brand: The exact colors.
+
+    Returns:
+        The variants, in ``PANEL_VARIANTS`` order.
+    """
+    return tuple(v for v in PANEL_VARIANTS if v == PANEL_CHARCOAL
+                 or panel_headline_contrast(brand, v) >= MIN_HEADLINE_CONTRAST)
+
+
 _NAMED_HEX = re.compile(r"([A-Za-z][A-Za-z \-]{1,30}?)\s*\(?\s*(#[0-9A-Fa-f]{6})\b")
 _NEUTRAL_NAMES = re.compile(r"charcoal|black|ink|graphite|slate|neutral[_\s-]?dark", re.IGNORECASE)
 _PRIMARY_NAMES = re.compile(r"light gold|primary|gold", re.IGNORECASE)
@@ -670,7 +793,8 @@ def compose_headline(render_path: str, hook: str, layout: Optional[str] = None,
                      brand: Optional[BrandStyle] = None, surface: str = "newsletter",
                      out_path: Optional[str] = None, kicker: Optional[str] = None,
                      signature: Optional[str] = None,
-                     canvas: Optional[tuple[int, int]] = None, hero: bool = True) -> str:
+                     canvas: Optional[tuple[int, int]] = None, hero: bool = True,
+                     panel: Optional[str] = None) -> str:
     """Typeset the cover — kicker, hero numeral, headline, byline — onto the render.
 
     Args:
@@ -688,6 +812,8 @@ def compose_headline(render_path: str, hook: str, layout: Optional[str] = None,
         canvas: The split canvas size; ``CANVAS[surface]`` by default. ``image_graphics`` passes
             its own (a 1920x1080 cover).
         hero: Whether a number in the hook becomes a hero numeral (``headline_parts``).
+        panel: The panel variant (``PANEL_VARIANTS``) — post ``typeset_card`` rotation only.
+            None is the charcoal card. An overlay layout's scrim stays charcoal whatever is asked.
 
     Returns:
         The composite's path.
@@ -700,12 +826,14 @@ def compose_headline(render_path: str, hook: str, layout: Optional[str] = None,
     with Image.open(render_path) as opened:
         render = opened.convert("RGBA")
     dark = _hex(brand.neutral_dark)
+    colors = panel_colors(brand, panel if layout in SPLIT_LAYOUTS else None)
+    ground = _hex(colors.panel)
     if layout in SPLIT_LAYOUTS:
         # The canvas is built at the surface's FINAL size; the render fills only its own region.
         w, h = canvas or CANVAS.get(surface, CANVAS["newsletter"])
         fit = fit_cover((w, h), layout, parts)
         plan = fit.plan
-        image = Image.new("RGBA", (w, h), (*dark, 255))
+        image = Image.new("RGBA", (w, h), (*ground, 255))
         image.paste(cover_fit(render, plan.scene), (plan.scene.left, plan.scene.top))
     else:
         image = render
@@ -717,7 +845,7 @@ def compose_headline(render_path: str, hook: str, layout: Optional[str] = None,
     draw = ImageDraw.Draw(image)
     if plan.backing is not None:
         draw.rectangle((plan.backing.left, plan.backing.top, plan.backing.right - 1,
-                        plan.backing.bottom - 1), fill=(*dark, 255))
+                        plan.backing.bottom - 1), fill=(*ground, 255))
     if plan.scene is not None:
         # A thin dark-gold seam where the type panel meets the photograph.
         seam = plan.backing
@@ -729,7 +857,7 @@ def compose_headline(render_path: str, hook: str, layout: Optional[str] = None,
             line = (0, seam.bottom - _SEAM_RULE, w - 1, seam.bottom - 1)
         else:
             line = (0, seam.top, w - 1, seam.top + _SEAM_RULE - 1)
-        draw.rectangle(line, fill=(*_hex(brand.accent), 255))
+        draw.rectangle(line, fill=(*_hex(colors.seam), 255))
     box, text_box = plan.text_box, fit.text_box
     gap = round(fit.size * _GAP_RATIO)
     x = text_box.left
@@ -739,15 +867,15 @@ def compose_headline(render_path: str, hook: str, layout: Optional[str] = None,
         k_font = load_font(k_size)
         ink_left = draw.textbbox((0, 0), parts.kicker, font=k_font)[0]
         _draw_tracked(draw, (x - ink_left, y), parts.kicker, k_font, k_size,
-                      (*_hex(brand.accent), 255))
+                      (*_hex(colors.kicker), 255))
         y += _line_height(k_font, k_size) + gap
     if parts.hero:
         h_size = _hero_size(fit.size)
         h_font = load_font(h_size)
         ink_left = draw.textbbox((0, 0), parts.hero, font=h_font)[0]
-        draw.text((x - ink_left, y), parts.hero, font=h_font, fill=(*_hex(brand.primary), 255))
+        draw.text((x - ink_left, y), parts.hero, font=h_font, fill=(*_hex(colors.hero), 255))
         y += _line_height(h_font, h_size) + gap
-    rest_color = brand.neutral_light if parts.hero else brand.primary
+    rest_color = colors.rest if parts.hero else colors.headline
     for line in fit.lines:
         ink_left = draw.textbbox((0, 0), line, font=fit.font)[0]
         draw.text((x - ink_left, y), line, font=fit.font, fill=(*_hex(rest_color), 255))
@@ -757,7 +885,7 @@ def compose_headline(render_path: str, hook: str, layout: Optional[str] = None,
         rule_bottom = min(rule_top + max(3, round(fit.size * 0.06)), text_box.bottom
                           + max(10, round(box.height * 0.08)))
         draw.rectangle((x, rule_top, x + round(box.width * 0.18), rule_bottom),
-                       fill=(*_hex(brand.accent), 255))
+                       fill=(*_hex(colors.kicker), 255))
     if parts.signature:
         sig_size = signature_size(h)
         sig_font = load_font(sig_size)
@@ -766,7 +894,7 @@ def compose_headline(render_path: str, hook: str, layout: Optional[str] = None,
         sig_y = box.bottom - _line_height(sig_font, sig_size)
         ink_left = sig_draw.textbbox((0, 0), parts.signature, font=sig_font)[0]
         sig_draw.text((x - ink_left, sig_y), parts.signature, font=sig_font,
-                      fill=(*_hex(brand.neutral_light), 128))
+                      fill=(*_hex(colors.byline), colors.byline_alpha))
         image = Image.alpha_composite(image, overlay)
     out_path = out_path or f"{os.path.splitext(render_path)[0]}_headline.png"
     image.convert("RGB").save(out_path, "PNG")

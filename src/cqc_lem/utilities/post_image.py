@@ -28,11 +28,12 @@ uploaded one gets none: there is no brief behind the author's own artwork, and w
 receipt would make an unauthored image read as one that depicted nothing.
 """
 
+import dataclasses
 import os
 import secrets
 import shutil
-from dataclasses import dataclass
-from typing import Optional
+from dataclasses import dataclass, field
+from typing import Any, Optional
 from urllib.parse import parse_qs, quote, urlparse
 
 from cqc_lem import assets_dir
@@ -344,11 +345,10 @@ def claim_manual_generation(user_id: int) -> bool:
                     user_id=user_id, action_type="post_image")
         return True
 
+def recent_post_receipts(user_id: int, limit: int) -> list[dict]:
+    """This author's most recent post-image brief receipts, most-recent first.
 
-def recent_post_archetypes(user_id: int, limit: int) -> list[str]:
-    """The archetypes this author's most recent post images shipped as, most-recent first.
-
-    Read off the brief receipts beside the stored images (no DB column), newest directories first
+    Read off the assets volume beside the stored images (no DB column), newest directories first
     and at most ``_RECENT_RECEIPT_DIRS`` of them. Never raises: an unreadable directory or receipt
     contributes nothing, and no history means no rotation penalty.
 
@@ -357,13 +357,13 @@ def recent_post_archetypes(user_id: int, limit: int) -> list[str]:
         limit: How many to return.
 
     Returns:
-        ``archetype_rendered`` (else the concept's archetype) of each receipt, newest first.
+        The parsed receipts, newest first by file time.
     """
     import json
 
     from cqc_lem.utilities.media_provenance import BRIEF_RECEIPT_SUFFIX
 
-    found: list[tuple[float, str]] = []
+    found: list[tuple[float, str, dict]] = []
     roots = [os.path.join(assets_dir, *POST_IMAGE_SUBDIR.split("/")),
              os.path.join(assets_dir, *POST_IMAGE_PREVIEW_SUBDIR.split("/"))]
     dirs: list[str] = []
@@ -389,13 +389,29 @@ def recent_post_archetypes(user_id: int, limit: int) -> list[str]:
                 stamp = os.path.getmtime(path)
             except (OSError, ValueError):
                 continue
-            if not isinstance(payload, dict) or payload.get("user_id") != user_id:
-                continue
-            concept = payload.get("concept") if isinstance(payload.get("concept"), dict) else {}
-            archetype = payload.get("archetype_rendered") or concept.get("archetype")
-            if archetype:
-                found.append((stamp, str(archetype)))
-    return [a for _, a in sorted(found, reverse=True)][:max(0, int(limit))]
+            if isinstance(payload, dict) and payload.get("user_id") == user_id:
+                found.append((stamp, path, payload))
+    found.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    return [payload for _, _, payload in found][:max(0, int(limit))]
+
+
+def recent_post_archetypes(user_id: int, limit: int) -> list[str]:
+    """The archetypes this author's most recent post images shipped as, most-recent first.
+
+    Args:
+        user_id: The author.
+        limit: How many to return.
+
+    Returns:
+        ``archetype_rendered`` (else the concept's archetype) of each receipt, newest first.
+    """
+    archetypes = []
+    for payload in recent_post_receipts(user_id, _RECENT_RECEIPT_DIRS * 4):
+        concept = payload.get("concept") if isinstance(payload.get("concept"), dict) else {}
+        archetype = payload.get("archetype_rendered") or concept.get("archetype")
+        if archetype:
+            archetypes.append(str(archetype))
+    return archetypes[:max(0, int(limit))]
 
 
 def _gate_log_fields(render_info: dict) -> dict:
@@ -410,12 +426,15 @@ def _gate_log_fields(render_info: dict) -> dict:
 
 
 def _render_avatar_post_image(brief, avatar: dict, user_id: int, post_id: Optional[int],
-                              ratio: str, render_info: dict) -> "tuple[Optional[str], Optional[str]]":
+                              ratio: str, render_info: dict, panel: Optional[str] = None
+                              ) -> "tuple[Optional[str], Optional[str]]":
     """The LoRA render of a post image, and why it is unusable (None when it is usable).
 
     Unusable means: the render raised (a Replicate 5xx), produced nothing, was REJECTED by the
     gate, or came back from the base-FLUX fallback inside the avatar renderer without the gate
     accepting it — the likeness never rendered, and FLUX is the weaker brief-follower.
+
+    ``panel`` is the typeset card's rotated panel variant (None: charcoal, or no composite).
 
     Returns:
         ``(path, fallback_reason)``.
@@ -425,7 +444,8 @@ def _render_avatar_post_image(brief, avatar: dict, user_id: int, post_id: Option
         path = render_avatar_image_gated(
             brief.prompt, avatar=avatar, user_id=user_id, surface="post_image",
             ratio=ratio, focal_concept=brief.focal_concept, post_id=post_id,
-            render_info=render_info, concept=brief.concept, hook_text=brief.hook_text)
+            render_info=render_info, concept=brief.concept, hook_text=brief.hook_text,
+            panel=panel)
     except Exception as e:
         return None, f"avatar render raised {type(e).__name__}: {e}"[:200]
     if not path or not os.path.isfile(path):
@@ -451,6 +471,244 @@ def post_image_ratio() -> str:
     return ratio if ratio in POST_IMAGE_RATIOS else DEFAULT_POST_IMAGE_RATIO
 
 
+@dataclass
+class _Rendered:
+    """One treatment's attempt: the image (or None) and everything the receipt needs about it."""
+
+    path: Optional[str] = None
+    brief: Any = None
+    render_info: dict = field(default_factory=dict)
+    render_path: str = RENDER_PATH_BASE
+    avatar_fallback_reason: Optional[str] = None
+    reason: Optional[str] = None
+    # The gate LOOKED and said no — a verdict, not an outage (#2105).
+    rejected: bool = False
+    # An AI render was attempted, so render spend is gone and no second AI render follows.
+    spent: bool = False
+    quote: Optional[str] = None
+    quote_pick: Optional[str] = None
+
+
+def _code_drawn_brief(concept, treatment: str, hook: Optional[str], ratio: str):
+    """The receipt's brief for a $0 code-drawn card: no prompt was authored, the thesis is focal.
+
+    A receipt is a record, never a default — so it names what the card carried (the thesis it
+    argues, the headline it set) and leaves ``prompt`` empty, because no render prompt existed.
+    """
+    from cqc_lem.utilities.ai.image_brief import ImageBrief
+
+    return ImageBrief(prompt="", ratio=ratio, surface="post_image", style_preset="post_image",
+                      focal_concept=getattr(concept, "thesis", "") or treatment,
+                      concept=concept, treatment=treatment, hook_text=hook,
+                      prompt_check=f"code-drawn {treatment}: no render prompt")
+
+
+def _card_hook(concept) -> Optional[str]:
+    from cqc_lem.utilities.ai.image_concept import fit_hook
+
+    hook = getattr(concept, "hook_phrase", "") or ""
+    return fit_hook(hook, concept.thesis) if hook else None
+
+
+def _render_data_card(concept, rhythm, *, user_id: int, post_id: Optional[int], brand: str,
+                      ratio: str) -> _Rendered:
+    """``data_card``: #2254's ``stat_card`` renderer, verbatim fact checks and source line included."""
+    from cqc_lem.utilities.ai.image_concept import ARCHETYPE_STAT_CARD
+    from cqc_lem.utilities.ai.image_gen import render_code_drawn
+
+    card = dataclasses.replace(concept, archetype=ARCHETYPE_STAT_CARD,
+                               archetype_ranking=(ARCHETYPE_STAT_CARD,),
+                               layout=rhythm.layout or concept.layout)
+    hook = _card_hook(card)
+    info: dict = {}
+    path = render_code_drawn(card, surface="post_image", hook_text=hook, layout=card.layout,
+                             brand_kit=brand, user_id=user_id, post_id=post_id,
+                             render_info=info, panel=rhythm.panel)
+    out = _Rendered(path=path, brief=_code_drawn_brief(card, "data_card", hook, ratio),
+                    render_info=info)
+    if not path:
+        out.reason = info.get("archetype_fallback_reason") or "the stat card could not be drawn"
+    return out
+
+
+def _render_quote_card(concept, rhythm, text: str, *, user_id: int, post_id: Optional[int],
+                       brand: str, byline: str, ratio: str) -> _Rendered:
+    """``quote_card``: one sentence of the post, verbatim, over the author's byline."""
+    from cqc_lem.utilities.ai.image_gen import render_code_drawn
+    from cqc_lem.utilities.ai.image_graphics import QUOTE_CARD
+    from cqc_lem.utilities.ai.post_treatment import is_verbatim, pick_quote
+
+    quote, how = pick_quote(rhythm.quote_candidates, concept.thesis, user_id=user_id)
+    out = _Rendered(quote=quote or None, quote_pick=how)
+    if not is_verbatim(quote, text):
+        out.reason = "the quote is not a verbatim sentence of the post"
+        return out
+    card = dataclasses.replace(
+        concept, archetype=QUOTE_CARD, archetype_ranking=(QUOTE_CARD,),
+        graphic={"quote": {"text": quote, "source_sentence": quote}, "byline": byline})
+    info: dict = {}
+    path = render_code_drawn(card, surface="post_image", hook_text=None, brand_kit=brand,
+                             signature=byline, user_id=user_id, post_id=post_id,
+                             render_info=info)
+    out.path, out.render_info = path, info
+    out.brief = _code_drawn_brief(card, "quote_card", None, ratio)
+    if not path:
+        out.reason = info.get("archetype_fallback_reason") or "the quote card could not be drawn"
+    return out
+
+
+def _render_ai_post(concept, text: str, rhythm, treatment: str, *, user_id: int,
+                    post_id: Optional[int], profile, brand: str, ratio: str) -> _Rendered:
+    """``typeset_card`` or ``photo_only``: brief, then the gated render (avatar first when due).
+
+    ``photo_only`` strips the headline and every code-drawn archetype, so the render is the AI
+    scene alone at the post's own ratio. ``typeset_card`` keeps #2254's archetype chain minus the
+    stat card (that is ``data_card``'s) and typesets onto the rotated panel variant.
+    """
+    from cqc_lem.utilities.ai.image_brief import PHOTO_GRADES, build_image_brief, with_grade
+    from cqc_lem.utilities.ai.image_concept import (
+        AI_ARCHETYPES,
+        ARCHETYPE_STAT_CARD,
+        ai_archetype_only,
+    )
+    from cqc_lem.utilities.avatar.guardrails import (
+        AVATAR_SURFACE_POST_IMAGE,
+        resolve_avatar_for_concept,
+    )
+
+    if concept is not None:
+        gated = {"layout": rhythm.layout or concept.layout,
+                 "shot": rhythm.shot if concept.shot else concept.shot}
+        if any(getattr(concept, k) != v for k, v in gated.items()):
+            # Only a sameness re-roll changes Stage 1's own pick; otherwise the concept is as given.
+            concept = dataclasses.replace(concept, **gated)
+        if treatment == "photo_only":
+            concept = dataclasses.replace(ai_archetype_only(concept), hook_phrase="", layout="")
+        else:
+            chain = tuple(a for a in concept.archetype_ranking if a != ARCHETYPE_STAT_CARD)
+            if chain != concept.archetype_ranking:
+                chain = chain or tuple(a for a in concept.archetype_ranking if a in AI_ARCHETYPES)
+                concept = dataclasses.replace(concept, archetype=chain[0] if chain else
+                                              concept.archetype, archetype_ranking=chain)
+    try:
+        # Stage 1 first, because whether the author belongs in frame is a question about the piece.
+        avatar = resolve_avatar_for_concept(user_id, surface=AVATAR_SURFACE_POST_IMAGE,
+                                            concept=concept, source_text=text, post_id=post_id)
+    except Exception as e:
+        log_warning("Avatar check failed for post image — rendering without", exc=e,
+                    user_id=user_id, post_id=post_id, action_type="post_image")
+        avatar = None
+
+    grade_direction = (f"Photo grade for this image: {PHOTO_GRADES[rhythm.grade]}."
+                       if rhythm.grade in PHOTO_GRADES else None)
+
+    def brief_for(with_avatar):
+        brief = build_image_brief(text, surface="post_image", ratio=ratio, profile=profile,
+                                  avatar=with_avatar, concept=concept, brand_kit=brand,
+                                  extra_direction=grade_direction)
+        brief.prompt = with_grade(brief.prompt, rhythm.grade)
+        return brief
+
+    out = _Rendered(spent=True)
+    try:
+        out.brief = brief_for(avatar)
+    except Exception as e:
+        log_warning("Post image prompt failed", exc=e, user_id=user_id, post_id=post_id,
+                    action_type="post_image")
+        out.reason, out.spent = "Could not write an image prompt", False
+        return out
+    panel = rhythm.panel if treatment == "typeset_card" else None
+    rendered: Optional[str] = None
+    if avatar:
+        rendered, out.avatar_fallback_reason = _render_avatar_post_image(
+            out.brief, avatar, user_id, post_id, ratio, out.render_info, panel=panel)
+        out.render_path = RENDER_PATH_AVATAR
+        if out.avatar_fallback_reason:
+            # ONE non-avatar attempt before giving up: the stricter gate must not silently strip
+            # images off posts because the LoRA could not follow a brief (#2249 gauntlet).
+            log_info("Avatar post image unusable — one gpt-image attempt without the likeness",
+                     user_id=user_id, post_id=post_id, action_type="post_image",
+                     reason=out.avatar_fallback_reason, **_gate_log_fields(out.render_info))
+            out.render_path, out.render_info = RENDER_PATH_BASE_FALLBACK, {}
+            try:
+                out.brief = brief_for(None)
+            except Exception as e:
+                log_warning("Post image prompt failed", exc=e, user_id=user_id, post_id=post_id,
+                            action_type="post_image")
+                out.reason = "Could not write an image prompt"
+                return out
+    if out.render_path != RENDER_PATH_AVATAR:
+        try:
+            from cqc_lem.utilities.ai.image_gen import render_image_gated
+            rendered = render_image_gated(out.brief.prompt, surface="post_image", ratio=ratio,
+                                          focal_concept=out.brief.focal_concept,
+                                          user_id=user_id, post_id=post_id,
+                                          render_info=out.render_info,
+                                          concept=out.brief.concept,
+                                          hook_text=out.brief.hook_text, brand_kit=brand,
+                                          panel=panel)
+        except Exception as e:
+            log_warning("Post image generation failed", exc=e, user_id=user_id, post_id=post_id,
+                        action_type="post_image")
+            out.reason = "Image generation failed"
+            return out
+    if not rendered or not os.path.isfile(rendered):
+        log_warning("Post image generation returned no image", user_id=user_id, post_id=post_id,
+                    action_type="post_image")
+        out.reason = "Image generation returned nothing"
+        return out
+    if out.render_info.get("gate_verdict") == "rejected":
+        # The gate LOOKED and said no on the final candidate (issue #2105). Failing open is for a
+        # gate that could not run (`unchecked`); a rejection is never stored. The caller's log
+        # line IS the rejection record, carrying the judge's whole WHY (#2249 gauntlet).
+        out.reason, out.rejected = GATE_REJECTED_REASON, True
+        return out
+    out.path = rendered
+    return out
+
+
+def _rhythm_receipt(treatment: str, rhythm, done: _Rendered, card_share: float,
+                    fallbacks: list) -> dict:
+    """The receipt's ``rhythm`` block: every dimension of what actually SHIPPED, and why.
+
+    A dimension is recorded only where it shaped the image — a panel on a card with a headline
+    panel, a grade and shot on an AI-rendered scene — and is None elsewhere, which the sameness
+    gate reads as a break in any run.
+    """
+    from cqc_lem.utilities.ai.image_concept import AI_ARCHETYPES
+
+    if treatment == "typeset_card" and not getattr(done.brief, "hook_text", None):
+        # No headline survived (Stage 1 unavailable): nothing was typeset, so it shipped photo-only.
+        fallbacks = fallbacks + [{"treatment": treatment,
+                                  "reason": "no headline — rendered as photo_only"}]
+        treatment = "photo_only"
+    archetype = done.render_info.get("archetype_rendered")
+    ai_scene = treatment in ("typeset_card", "photo_only") and (
+        not archetype or archetype in AI_ARCHETYPES)
+    concept = getattr(done.brief, "concept", None)
+    has_panel = treatment in ("typeset_card", "data_card") and bool(
+        getattr(done.brief, "hook_text", None))
+    people = ai_scene and getattr(concept, "treatment", "") == "people_scene"
+    receipt = {
+        "treatment": treatment,
+        "layout": (getattr(concept, "layout", "") or rhythm.layout or None) if has_panel else None,
+        "panel": (rhythm.panel if has_panel else None),
+        "shot": (getattr(concept, "shot", "") or None) if people else None,
+        "grade": (rhythm.grade or None) if ai_scene else None,
+        "card_share": card_share,
+        "card_wanted": rhythm.plan.card_wanted,
+        "chain": list(rhythm.plan.chain),
+        "fallbacks": fallbacks,
+        "rerolled": list(rhythm.rerolled),
+    }
+    if rhythm.opinion:
+        receipt["opinion"] = rhythm.opinion
+    if done.quote:
+        receipt["quote"] = done.quote
+        receipt["quote_pick"] = done.quote_pick
+    return receipt
+
+
 def generate_image_for_post(user_id: int, text: str, post_id: Optional[int] = None
                             ) -> "tuple[Optional[str], Optional[str]]":
     """Render the image a text post publishes with.
@@ -458,30 +716,36 @@ def generate_image_for_post(user_id: int, text: str, post_id: Optional[int] = No
     Returns ``(public_url, None)`` or ``(None, reason)``.
 
     Never raises: an image is enhancement, and a failed render must never take a post — or the
-    author's edit — down with it. The avatar rides the EXISTING ``post_image`` surface and is
-    resolved BEFORE the brief is authored, so the declared subject clause leads the prompt (#744).
-    A final ``rejected`` gate verdict is never stored (#2105); an ``unchecked`` one fails open.
+    author's edit — down with it.
 
-    The staged engine (issue #2241), as for newsletter covers: Stage 1 reads the post ONCE, the
-    brief is authored from that concept plus the user's brand clause, and the render is graded by
-    the blind judge against the same concept on both the base and avatar paths. The judge's rubric
-    rides into the brief receipt.
+    The anti-monotony round (#2241): the post first gets a TREATMENT from the rotation in
+    ``post_treatment`` — ``typeset_card`` (the composite, on a rotated panel variant), ``photo_only``
+    (the AI scene, no text), ``data_card`` (#2254's code-drawn stat card) or ``quote_card`` (a
+    verbatim sentence of the post over the author's byline) — least-recently-used from this
+    author's post receipts, with the brand kit's ``card_share`` honoured over the last ten posts
+    and the sameness gate re-rolling any dimension about to run a third time. A treatment the post
+    cannot take is skipped with its reason; one that fails at render time falls to the next, but
+    after an AI render was spent only the $0 code-drawn cards remain. Every dimension lands in the
+    receipt's ``rhythm`` block.
 
-    The likeness renders only when the piece is about the author
-    (``guardrails.resolve_avatar_for_concept``). When it does and the LoRA render is unusable —
-    rejected, empty, or a Replicate error — ONE gpt-image attempt without the likeness runs before
-    the post ships bare; the receipt's ``render_path`` says which won (#2249 gauntlet).
+    The staged engine (issue #2241) is unchanged underneath: Stage 1 reads the post ONCE; an AI
+    scene's brief is authored from that concept plus the brand clause and the rotated photo grade,
+    and every image — drawn or rendered — is graded by the blind judge. The likeness renders only
+    when the piece is about the author; an unusable LoRA render gets ONE gpt-image attempt without
+    it (#2249). A final ``rejected`` verdict is never stored (#2105); ``unchecked`` fails open.
     """
     if not text or not text.strip():
         return None, "Write the post content first — the image is drawn from it"
 
-    from cqc_lem.utilities.ai.image_brief import build_image_brief
-    from cqc_lem.utilities.ai.image_concept import analyze_content_for_image
-    from cqc_lem.utilities.avatar.guardrails import (
-        AVATAR_SURFACE_POST_IMAGE,
-        resolve_avatar_for_concept,
+    from cqc_lem.utilities.ai.image_compose import available_panels, brand_style
+    from cqc_lem.utilities.ai.image_concept import ARCHETYPE_WINDOW, analyze_content_for_image
+    from cqc_lem.utilities.ai.post_treatment import (
+        CARD_SHARE_WINDOW,
+        next_treatment,
+        plan_post_rhythm,
+        rhythm_history,
     )
-    from cqc_lem.utilities.brand_kit import brand_clause_for_user
+    from cqc_lem.utilities.brand_kit import brand_clause_for_user, card_share_for_user
 
     ratio = post_image_ratio()
     profile = None
@@ -492,99 +756,90 @@ def generate_image_for_post(user_id: int, text: str, post_id: Optional[int] = No
         log_debug("Profile load skipped for post image", error=str(e), user_id=user_id,
                   action_type="post_image")
 
-    from cqc_lem.utilities.ai.image_concept import ARCHETYPE_WINDOW
-
+    history = rhythm_history(recent_post_receipts(user_id, CARD_SHARE_WINDOW))
     concept = analyze_content_for_image(
         text, surface="post_image", user_id=user_id,
-        recent_archetypes=recent_post_archetypes(user_id, ARCHETYPE_WINDOW))
-    try:
-        # Stage 1 first, because whether the author belongs in frame is a question about the piece.
-        avatar = resolve_avatar_for_concept(user_id, surface=AVATAR_SURFACE_POST_IMAGE,
-                                            concept=concept, source_text=text, post_id=post_id)
-    except Exception as e:
-        log_warning("Avatar check failed for post image — rendering without", exc=e,
-                    user_id=user_id, post_id=post_id, action_type="post_image")
-        avatar = None
-
+        recent_archetypes=recent_post_archetypes(user_id, ARCHETYPE_WINDOW),
+        recent_layouts=[v for v in history["layout"] if v],
+        recent_casts=[c for c in history["cast"] if c],
+        recent_shots=[v for v in history["shot"] if v])
     brand = brand_clause_for_user(user_id)
-    try:
-        brief = build_image_brief(text, surface="post_image", ratio=ratio,
-                                  profile=profile, avatar=avatar, concept=concept,
-                                  brand_kit=brand)
-    except Exception as e:
-        log_warning("Post image prompt failed", exc=e, user_id=user_id, post_id=post_id,
-                    action_type="post_image")
-        return None, "Could not write an image prompt"
+    card_share = card_share_for_user(user_id)
+    byline = (getattr(profile, "full_name", None) or "").strip() or None
+    rhythm = plan_post_rhythm(concept, text, history, card_share,
+                              available_panels(brand_style(brand)), byline=byline)
+    fallbacks = [{"treatment": t, "reason": why} for t, why in rhythm.plan.skipped]
+    remaining = list(rhythm.plan.chain)
+    treatment = remaining[0] if remaining else None
+    done: Optional[_Rendered] = None
+    rejection: Optional[_Rendered] = None
+    spent = False
+    last_reason = "Image generation returned nothing"
+    while treatment:
+        remaining.remove(treatment)
+        if treatment == "data_card":
+            attempt = _render_data_card(concept, rhythm, user_id=user_id, post_id=post_id,
+                                        brand=brand, ratio=ratio)
+        elif treatment == "quote_card":
+            attempt = _render_quote_card(concept, rhythm, text, user_id=user_id, post_id=post_id,
+                                         brand=brand, byline=byline or "", ratio=ratio)
+        else:
+            attempt = _render_ai_post(concept, text, rhythm, treatment, user_id=user_id,
+                                      post_id=post_id, profile=profile, brand=brand, ratio=ratio)
+        if attempt.path and attempt.render_info.get("gate_verdict") == "rejected":
+            # An advisory-only gate hands back what it rejected; a rejection is never stored.
+            attempt.path, attempt.reason, attempt.rejected = None, GATE_REJECTED_REASON, True
+        if attempt.path:
+            done = attempt
+            break
+        fallbacks.append({"treatment": treatment, "reason": attempt.reason})
+        last_reason = attempt.reason or last_reason
+        rejection = attempt if attempt.rejected else rejection
+        spent = spent or attempt.spent
+        if spent:
+            # Render spend is gone: only a $0 code-drawn card may follow, never a second AI render.
+            remaining = [t for t in remaining if t in ("data_card", "quote_card")]
+        treatment = next_treatment(remaining, history["treatment"])
+        if treatment:
+            log_info("Post image treatment fell through — trying the next", user_id=user_id,
+                     post_id=post_id, action_type="post_treatment", treatment=fallbacks[-1][
+                         "treatment"], reason=attempt.reason, next_treatment=treatment,
+                     **_gate_log_fields(attempt.render_info))
 
-    render_info: dict = {}
-    render_path = RENDER_PATH_BASE
-    fallback_reason: Optional[str] = None
-    rendered: Optional[str] = None
-    if avatar:
-        rendered, fallback_reason = _render_avatar_post_image(brief, avatar, user_id, post_id,
-                                                              ratio, render_info)
-        render_path = RENDER_PATH_AVATAR
-        if fallback_reason:
-            # ONE non-avatar attempt before giving up: the stricter gate must not silently strip
-            # images off posts because the LoRA could not follow a brief (#2249 gauntlet).
-            log_info("Avatar post image unusable — one gpt-image attempt without the likeness",
+    if done is None:
+        tried = "; ".join(f"{f['treatment']}: {f['reason']}" for f in fallbacks)
+        if rejection is not None:
+            # The gate LOOKED and said no (issue #2105): nothing is stored, so nothing carries a
+            # receipt — this line is the rejection record, with the judge's whole WHY.
+            log_info("Post image rejected by the quality gate — the post ships without one",
                      user_id=user_id, post_id=post_id, action_type="post_image",
-                     reason=fallback_reason, **_gate_log_fields(render_info))
-            render_path = RENDER_PATH_BASE_FALLBACK
-            render_info = {}
-            try:
-                brief = build_image_brief(text, surface="post_image", ratio=ratio,
-                                          profile=profile, avatar=None, concept=concept,
-                                          brand_kit=brand)
-            except Exception as e:
-                log_warning("Post image prompt failed", exc=e, user_id=user_id, post_id=post_id,
-                            action_type="post_image")
-                return None, "Could not write an image prompt"
-    if render_path != RENDER_PATH_AVATAR:
-        try:
-            from cqc_lem.utilities.ai.image_gen import render_image_gated
-            rendered = render_image_gated(brief.prompt, surface="post_image",
-                                          ratio=ratio,
-                                          focal_concept=brief.focal_concept,
-                                          user_id=user_id, post_id=post_id,
-                                          render_info=render_info, concept=brief.concept,
-                                          hook_text=brief.hook_text, brand_kit=brand)
-        except Exception as e:
-            log_warning("Post image generation failed", exc=e, user_id=user_id, post_id=post_id,
-                        action_type="post_image")
-            return None, "Image generation failed"
+                     render_path=rejection.render_path,
+                     avatar_fallback_reason=rejection.avatar_fallback_reason, fallbacks=tried,
+                     **_gate_log_fields(rejection.render_info))
+            return None, GATE_REJECTED_REASON
+        log_info("No post image treatment produced an image — the post ships without one",
+                 user_id=user_id, post_id=post_id, action_type="post_treatment", fallbacks=tried)
+        return None, last_reason
 
-    if not rendered or not os.path.isfile(rendered):
-        log_warning("Post image generation returned no image", user_id=user_id, post_id=post_id,
-                    action_type="post_image")
-        return None, "Image generation returned nothing"
-
-    if render_info.get("gate_verdict") == "rejected":
-        # The gate LOOKED and said no on the final candidate (issue #2105). Failing open is for a
-        # gate that could not run (`unchecked`); a rejection means the post ships with no image.
-        # Nothing is stored, so nothing carries a receipt — the log IS the rejection record, and
-        # it carries the judge's whole WHY so a bare post is diagnosable (#2249 gauntlet).
-        log_info("Post image rejected by the quality gate — the post ships without one",
-                 user_id=user_id, post_id=post_id, action_type="post_image",
-                 render_path=render_path, avatar_fallback_reason=fallback_reason,
-                 **_gate_log_fields(render_info))
-        return None, GATE_REJECTED_REASON
-
-    stored = store_rendered_post_image(user_id, rendered, post_id=post_id)
+    stored = store_rendered_post_image(user_id, done.path, post_id=post_id)
     if not stored:
         return None, "Could not store the generated image"
     # Recorded against the STORED url, not the temp render: the receipt is keyed by the value that
     # lands on `posts.image_url`, which is the only handle a later audit has (issue #1377).
+    render_info = done.render_info
     gate_detail = {key: render_info[key] for key in GATE_RECEIPT_KEYS + ARCHETYPE_RECEIPT_KEYS
                    if key in render_info}
-    gate_detail["render_path"] = render_path
-    if fallback_reason:
-        gate_detail["avatar_fallback_reason"] = fallback_reason
-    write_brief_receipt(stored, brief, post_id=post_id, user_id=user_id,
+    gate_detail["render_path"] = done.render_path
+    if done.avatar_fallback_reason:
+        gate_detail["avatar_fallback_reason"] = done.avatar_fallback_reason
+    gate_detail["rhythm"] = _rhythm_receipt(treatment, rhythm, done, card_share, fallbacks)
+    write_brief_receipt(stored, done.brief, post_id=post_id, user_id=user_id,
                         gate_verdict=render_info.get("gate_verdict"), extra=gate_detail)
     # The verdict is ON the log line: an `unchecked` image (judge unreachable twice) ships, as it
     # always has, but is never indistinguishable from a graded one again (#2249 gauntlet).
     log_info("Generated post image", user_id=user_id, post_id=post_id, action_type="post_image",
-             gate_verdict=render_info.get("gate_verdict"), render_path=render_path,
+             gate_verdict=render_info.get("gate_verdict"), render_path=done.render_path,
+             treatment=gate_detail["rhythm"]["treatment"], panel=gate_detail["rhythm"]["panel"],
+             grade=gate_detail["rhythm"]["grade"],
              gate_issues="; ".join(str(i) for i in render_info.get("gate_issues") or []))
     return stored, None
