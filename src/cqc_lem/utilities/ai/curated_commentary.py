@@ -289,6 +289,42 @@ def gov_graphic_facts(source: dict) -> dict:
     return {}
 
 
+_AUDIENCE_FIT_PROMPT = """You decide whether an outside article is worth a LinkedIn author's \
+commentary for THEIR readers. Rate 0-10 how directly the article matters to the readers described \
+below: 10 = squarely about their work and decisions, 5 = useful with a clear link, 0 = about \
+someone else entirely. Return JSON: {"score": <0-10>, "why": "<one short sentence>"}."""
+
+
+@llm_step("curated_audience_fit")
+def score_audience_fit(source: dict, brief: Optional[dict]) -> Optional[float]:
+    """ONE cheap call: how relevant ``source`` is to the author's readers, 0-10. None on failure.
+
+    Args:
+        source: The curated-source row (its title and excerpt are read).
+        brief: ``curated_sources.audience_brief(prefs)``.
+
+    Returns:
+        The score, or None when the call failed or answered nothing usable — the caller then falls
+        back to ``curated_sources.audience_token_fit``.
+    """
+    if not brief:
+        return None
+    readers = "\n".join([f"- Reader: {a}" for a in brief.get("audiences") or []]
+                        + [f"- Topic they follow: {t}" for t in brief.get("topics") or []])
+    article = (f"Title: {source.get('title') or ''}\nPublisher: {source.get('publisher') or ''}\n"
+               f"Excerpt: {(source.get('excerpt') or '')[:1500]}")
+    try:
+        raw = _complete([{"role": "system", "content": _AUDIENCE_FIT_PROMPT},
+                         {"role": "user", "content": f"{readers}\n\n<article>{article}</article>"}],
+                        model="lem-simple", json_mode=True)
+        score = float(json.loads(raw or "{}").get("score"))
+    except Exception as e:
+        log_warning("Could not score a curated source's audience fit — using the token fallback",
+                    exc=e, task_name="curated_commentary")
+        return None
+    return max(0.0, min(10.0, score))
+
+
 @llm_step("curated_chart_facts")
 def extract_chart_facts(source: dict) -> dict:
     """The raw figures a re-chart could draw, read FROM THE SOURCE. ``{}`` when none or on error."""

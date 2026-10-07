@@ -55,6 +55,10 @@ class _Harness:
                   side_effect=RuntimeError("no creds")),
             patch("cqc_lem.utilities.linkedin.helper.load_profile_for_user", return_value=None),
             patch(f"{_AI}._alignment_directive", return_value=""),
+            # The substance retry (showcase round 6) is its own gate with its own tests
+            # (test_deck_substance.py); stood down here so every count stays the reference gate's.
+            patch(f"{_AI}._repair_carousel_substance",
+                  side_effect=lambda draft, text, deck, *a, **k: (text, deck)),
         ]
         for p in self._patches:
             p.start()

@@ -55,6 +55,7 @@ from cqc_lem.utilities.ai.content_alignment import (
     voice_reference as _voice_reference,
 )
 from cqc_lem.utilities.ai.content_research import research_topic
+from cqc_lem.utilities.ai.fact_consistency import named_source_material
 from cqc_lem.utilities.ai.outbound_qa import (
     SURFACE_DM as OUTBOUND_SURFACE_DM,
     refusal_reason as outbound_refusal_reason,
@@ -2667,7 +2668,9 @@ def get_industry_trend_analysis_based_on_user_profile(linked_in_profile: LinkedI
                               blueprint={"format": "industry_observation"},
                               prefs=prefs)
     if research.get("findings"):
-        record_supplied_material(sequence_index, research["findings"])
+        # Showcase round 6: only the research sentences that NAME their source widen the post's
+        # number allow-list — an unsourced statistic in the research is not a source.
+        record_supplied_material(sequence_index, named_source_material(research["findings"]))
         return {
             'industry': industry.strip(),
             'analysis': research["findings"],
@@ -2694,7 +2697,7 @@ def get_industry_trend_analysis_based_on_user_profile(linked_in_profile: LinkedI
 
     # Get the trend analysis of the industry (scoped to the anchored focus topic when present)
     trend_analysis = get_industry_trend_from_ai(focus_topic or industry, articles)
-    record_supplied_material(sequence_index, trend_analysis)
+    record_supplied_material(sequence_index, named_source_material(trend_analysis))
 
     return {
         'industry': industry.strip(),
@@ -4239,6 +4242,8 @@ Return ONLY valid JSON. No explanation, no markdown fences."""
     post_text, carousel_dict = _repair_carousel_fact_grounding(
         _draft, post_text, carousel_dict, blueprint, grounding_anchors or fact_anchors,
         model_cls, report, save_targeted, user_id)
+    post_text, carousel_dict = _repair_carousel_substance(
+        _draft, post_text, carousel_dict, fact_anchors, model_cls, report, save_targeted, user_id)
 
     # Deck-shape residual check (issue #1666), read against the deck actually being RETURNED —
     # never right after the shape gate's own repair. The reference-value loop above can hand back
@@ -4298,6 +4303,58 @@ def _repair_carousel_fact_grounding(draft, post_text: str, carousel_dict: dict,
     if (reference_held and placeholders_held
             and len(retry_report["unverified"]) < len(report["unverified"])):
         return retry_text, retry_deck
+    return post_text, carousel_dict
+
+
+def _repair_carousel_substance(draft, post_text: str, carousel_dict: dict,
+                               sources: Optional[list], model_cls, reference_report: dict,
+                               save_targeted: bool, user_id: int) -> tuple[str, dict]:
+    """Give a deck ONE regeneration when a body slide is a template heading with nothing on it.
+
+    Showcase round 6: slides 2-3 read "The Initial Challenge" / "Decisive Moves Made" over generic
+    text. `deck_substance_report` names those slides; the retry replaces the deck only when it is
+    buildable, no worse on the reference gate, and has strictly fewer thin slides. Anything else
+    keeps the deck in hand — a thin slide is a weaker deck, never a reason to lose the post.
+
+    Args:
+        draft: `generate_carousel_content`'s draft closure (extra directive -> text, deck, ok).
+        post_text: The caption in hand.
+        carousel_dict: The deck in hand.
+        sources: The anchoring story's fact sources, which a slide may draw its particulars from.
+        model_cls: The carousel model the deck must build into.
+        reference_report: The reference gate's verdict on the deck in hand.
+        save_targeted: Whether the reference gate is required for this archetype.
+        user_id: For log context.
+
+    Returns:
+        ``(post_text, carousel_dict)`` — the retry's, or the ones handed in.
+    """
+    if not carousel_dict:
+        return post_text, carousel_dict
+    from cqc_lem.utilities.carousel_creator import missing_carousel_fields
+    report = _framework.deck_substance_report(carousel_dict, post_text, sources)
+    if report["passes"]:
+        return post_text, carousel_dict
+    log_info("Carousel deck has template slides with no substance — regenerating once: "
+             + "; ".join(report["reasons"]), user_id=user_id, task_name="create_carousel_content")
+    try:
+        retry_text, retry_deck, _ = draft(_framework.deck_substance_directive(report))
+        if missing_carousel_fields(model_cls, retry_deck):
+            return post_text, carousel_dict
+        retry_report = _framework.deck_substance_report(retry_deck, retry_text, sources)
+        retry_reference = _framework.deck_reference_report(retry_deck, retry_text,
+                                                           save_targeted=save_targeted)
+    except Exception as exc:
+        log_warning("Carousel substance retry failed — keeping the previous deck", exc=exc,
+                    user_id=user_id, task_name="create_carousel_content")
+        return post_text, carousel_dict
+    reference_held = (not reference_report.get("required") or not reference_report.get("passes")
+                      or retry_reference["passes"])
+    if (retry_report["checked"] and reference_held
+            and len(retry_report["thin_slides"]) < len(report["thin_slides"])):
+        return retry_text, retry_deck
+    log_info("Carousel substance retry was no better — keeping the previous deck",
+             user_id=user_id, task_name="create_carousel_content")
     return post_text, carousel_dict
 
 

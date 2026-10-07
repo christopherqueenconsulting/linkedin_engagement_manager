@@ -468,6 +468,61 @@ _SMB_RELEVANCE_RE = re.compile(
     r"hiring|wages?|earnings|prices?|inflation|employees?)\b", re.IGNORECASE)
 
 
+# Showcase round 6: curated_1 — a teen college-planner announcement — fitted neither of the
+# author's audiences. A candidate is scored for relevance to the author's described readers before
+# any commentary is written, on a 0-10 scale; below this floor it is dropped.
+AUDIENCE_FIT_MIN_DEFAULT = 5.0
+
+
+def audience_fit_min() -> float:
+    """``CURATED_AUDIENCE_FIT_MIN`` (0-10, default 5), read at the call site."""
+    try:
+        return max(0.0, min(10.0, float(os.getenv("CURATED_AUDIENCE_FIT_MIN") or
+                                        AUDIENCE_FIT_MIN_DEFAULT)))
+    except ValueError:
+        return AUDIENCE_FIT_MIN_DEFAULT
+
+
+def audience_brief(prefs: Optional[dict]) -> Optional[dict]:
+    """Who the author writes for, as ``{audiences, topics}`` — or None when nothing is described.
+
+    Read from ``engagement_preferences``: the ``audience_mix`` primary and secondary descriptions
+    and the focus topics (the user's own plus the secondary audience's).
+    """
+    from cqc_lem.utilities.ai.audience_mix import parse_audience_mix
+
+    prefs = prefs or {}
+    mix = parse_audience_mix(prefs.get("audience_mix")) or {}
+    audiences = [a for a in (mix.get("primary_audience"), mix.get("secondary_audience")) if a]
+    topics: list = []
+    for topic in list(prefs.get("focus_topics") or []) + list(mix.get("secondary_focus_topics")
+                                                              or []):
+        topic = str(topic).strip()
+        if topic and topic not in topics:
+            topics.append(topic)
+    if not audiences and not topics:
+        return None
+    return {"audiences": audiences, "topics": topics}
+
+
+def audience_token_fit(item: dict, brief: Optional[dict]) -> float:
+    """The deterministic fallback score (0-10): how much of the item's vocabulary the brief shares.
+
+    Used only when the scoring call cannot run. Any shared meaningful word scores the floor, so a
+    fallback never drops a candidate the model might have kept for a reason it could state.
+    """
+    from cqc_lem.utilities.ai.content_framework import content_tokens
+
+    if not brief:
+        return 10.0
+    wanted = content_tokens(" ".join(list(brief.get("audiences") or [])
+                                     + list(brief.get("topics") or [])))
+    have = content_tokens(f"{item.get('title') or ''} {item.get('excerpt') or ''}")
+    if not wanted or not have:
+        return 0.0
+    return min(10.0, AUDIENCE_FIT_MIN_DEFAULT + 2.5 * len(wanted & have)) if wanted & have else 0.0
+
+
 def source_class(item: dict) -> int:
     """Where a candidate sits in the pick order: gov data, newsletter/blog, other, vendor PR.
 

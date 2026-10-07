@@ -127,6 +127,11 @@ from cqc_lem.utilities.ai.content_framework import (
     weekly_post_slots,
     what_if_banned,
 )
+from cqc_lem.utilities.ai.fact_consistency import (
+    consistency_report,
+    fix_weekday_mismatches,
+    strip_signature_lines,
+)
 from cqc_lem.utilities.ai.slop_lint import (
     CHECK_FOLD_JARGON,
     SEVERITY_HARD,
@@ -240,6 +245,7 @@ from cqc_lem.utilities.observability import (
 from cqc_lem.utilities.quality_gates import (
     GATE_DECK_COUNT,
     GATE_DECK_TOPIC,
+    GATE_FACT_CONSISTENCY,
     GATE_FACT_GROUNDING,
     GATE_FORBIDDEN_CLAIM,
     GATE_MALFORMED_ASSET,
@@ -251,6 +257,7 @@ from cqc_lem.utilities.quality_gates import (
     deck_topic_finding,
     demoting_findings,
     fabrication_finding,
+    fact_consistency_finding,
     fact_grounding_finding,
     focus_finding,
     forbidden_claim_finding,
@@ -1348,6 +1355,9 @@ def create_carousel_content(user_id: int, stage: str, post_id: int = None,
     # the slides are normalized string-by-string, and the context words that make a foreign symbol
     # deliberate ("European ARR") routinely sit on a different slide from the figure.
     post_text = normalize_currency_symbols(post_text)
+    # Showcase round 6: the deterministic date/sign-off fixes, on the caption AND every slide.
+    post_text = _deterministic_fact_cleanup(post_text, user_id=user_id, post_id=post_id)
+    carousel_dict = _fact_cleanup_deck(carousel_dict)
 
     # Credibility (showcase round 4): the cover's promised count ("4 Steps") is the number of item
     # slides the deck actually carries, fixed here before anything renders; and a document post's
@@ -1374,6 +1384,11 @@ def create_carousel_content(user_id: int, stage: str, post_id: int = None,
     # The deck against its own caption (issue #2106): a count the slides do not hold, or slides on
     # a different topic, HOLDS the post — read against the finished caption, like the slop note.
     _report_carousel_deck_consistency(user_id, post_id, carousel_dict, post_text)
+    # The caption and slides against the calendar and the anchoring story (showcase round 6): the
+    # deck has no editor pass, so an impossible date or timeline is recorded and HOLDS the post.
+    _record_consistency_finding(
+        post_id, consistency_report(f"{post_text or ''}\n{deck_text(carousel_dict)}",
+                                    (story or {}).get("happened_at"))["issues"], user_id=user_id)
 
     # The caption's authenticity judge (issue #1512, owner decision 2A on PR #1554): a carousel
     # caption is a post like any other, and until now it was the one generated post type that
@@ -2201,6 +2216,101 @@ def _carry_forbidden_claim_hold(post_id: int, findings: list[dict]) -> list[dict
         if detail not in fresh[0].setdefault("details", []):
             fresh[0]["details"].append(detail)
     return findings
+
+
+def _recorded_consistency_finding(post_id: int) -> list[dict]:
+    """The date/timeline hold the review gate (or the deck check) recorded on this post, if any.
+
+    The timeline half needs the anchoring story's date, which only the review gate holds, so the
+    gate pass re-reads the verdict instead of re-deriving it (showcase round 6). Never raises — an
+    unreadable verdict only costs the hold.
+    """
+    try:
+        return [f for f in get_post_gate_reason(post_id) if f.get("gate") == GATE_FACT_CONSISTENCY]
+    except Exception as e:
+        log_warning("Could not read the recorded date/timeline verdict — an impossible timeline "
+                    "will not be held for review", exc=e, post_id=post_id,
+                    task_name="create_content")
+        return []
+
+
+def _carry_consistency_hold(post_id: int, findings: list[dict]) -> list[dict]:
+    """Keep the RECORDED date/timeline hold through a generation-time gate pass.
+
+    `evaluate_post_gates` re-checks the calendar half (weekday, deadline) live, but cannot see the
+    story's date; the recorded verdict carries the timeline half. Merged into a live finding when
+    there is one, so the post shows ONE consistency finding.
+
+    Args:
+        post_id: The post being graded.
+        findings: This pass's findings.
+
+    Returns:
+        `findings`, with the recorded issues carried forward.
+    """
+    recorded = _recorded_consistency_finding(post_id)
+    if not recorded:
+        return findings
+    fresh = [f for f in findings if f.get("gate") == GATE_FACT_CONSISTENCY]
+    if not fresh:
+        return findings + recorded[:1]
+    for detail in recorded[0].get("details") or []:
+        if detail not in fresh[0].setdefault("details", []):
+            fresh[0]["details"].append(detail)
+    return findings
+
+
+def _record_consistency_finding(post_id: Optional[int], issues: list,
+                                user_id: Optional[int] = None) -> None:
+    """Record — or clear — the date/timeline hold on `posts.gate_reason` (showcase round 6).
+
+    Written where the story's date is known (the review gate, the deck check) and carried by
+    `_carry_consistency_hold`. A clean draft clears a stale verdict from an earlier generation and
+    otherwise never writes. Best-effort — the reason is review UX, so a failed write only logs.
+    """
+    if post_id is None:
+        return
+    try:
+        existing = get_post_gate_reason(post_id)
+        kept = [f for f in existing if f.get("gate") != GATE_FACT_CONSISTENCY]
+        if not issues and len(kept) == len(existing):
+            return
+        update_db_post_gate_reason(post_id, kept + ([fact_consistency_finding(issues)]
+                                                    if issues else []))
+    except Exception as e:
+        log_warning("Could not record the date/timeline verdict — a held post will show no reason",
+                    exc=e, user_id=user_id, post_id=post_id, task_name="create_content")
+
+
+def _deterministic_fact_cleanup(content: Optional[str], *, user_id: Optional[int] = None,
+                                post_id: Optional[int] = None) -> Optional[str]:
+    """The fixes a draft never needs an LLM for (showcase round 6). Never raises.
+
+    A weekday that is not its date's is DROPPED (`fix_weekday_mismatches`), and a leaked job-title
+    sign-off is cut (`strip_signature_lines`). Run before the review gate and again on the final
+    text, because every LLM pass in between can put either back.
+    """
+    if not content:
+        return content
+    fixed, weekdays = fix_weekday_mismatches(content)
+    signed = strip_signature_lines(fixed)
+    if weekdays or signed != fixed:
+        log_info("Draft repaired without an LLM: "
+                 + "; ".join([f"dropped the wrong weekday from {w}" for w in weekdays]
+                             + (["cut a job-title sign-off"] if signed != fixed else [])),
+                 user_id=user_id, post_id=post_id, task_name="create_text_post")
+    return signed
+
+
+def _fact_cleanup_deck(value):
+    """Every slide string with a wrong weekday dropped — the deck half of the cleanup above."""
+    if isinstance(value, str):
+        return fix_weekday_mismatches(value)[0]
+    if isinstance(value, dict):
+        return {k: _fact_cleanup_deck(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_fact_cleanup_deck(v) for v in value]
+    return value
 
 
 def _recorded_deck_notes(post_id: int, content: Optional[str] = None) -> list[dict]:
@@ -3136,6 +3246,15 @@ def evaluate_post_gates(post_id: int, content: str, post_type: Union[PostType, s
         if forbidden:
             findings.append(forbidden_claim_finding(forbidden))
 
+    # Dates (showcase round 6): a weekday that is not its date's, a deadline set before the offer
+    # that set it. Checked live on every pass, whoever wrote the sentence — a calendar needs no
+    # story. The timeline half needs the story's date and is carried from the review gate's record
+    # (`_carry_consistency_hold`).
+    if content:
+        consistency = consistency_report(content)
+        if not consistency["passes"]:
+            findings.append(fact_consistency_finding(consistency["issues"]))
+
     topics = [str(t).strip() for t in (prefs.get("focus_topics") or []) if str(t).strip()]
     if content and topics:
         headline, about = profile_topic_dna(user_profile, profile_synthesis)
@@ -3191,12 +3310,14 @@ def _gate_findings_for_post(user_id: int, post_id: int, content: str,
             extra_fact_sources=_post_material_sources(user_id, post_id)
             if _grades_fact_grounding(archetype) else None,
             user_id=user_id, content_mix=_post_content_mix(post_id)) + similarity
+        findings = _carry_consistency_hold(post_id, findings)
         # An unreadable list must not release a hold it produced (issue #2047).
         return findings if prefs_readable else _carry_forbidden_claim_hold(post_id, findings)
     except Exception as e:
         log_warning("Could not evaluate the quality gates for this post", exc=e,
                     user_id=user_id, post_id=post_id, task_name="create_content")
-        return similarity + _recorded_deck_notes(post_id, content)
+        return (similarity + _recorded_deck_notes(post_id, content)
+                + _recorded_consistency_finding(post_id))
 
 
 def _cta_keyword_for(user_id: int, post_id: int) -> Optional[str]:
@@ -3470,7 +3591,16 @@ def _author_facts(user_id: int, profile_synthesis=None, user_profile=None) -> li
     What a company or industry claim about the author's work must trace to (showcase round 4).
     Research findings are deliberately absent: they describe the market, not the author.
     """
-    facts = list(_fact_anchors(user_id))
+    return list(_fact_anchors(user_id)) + _profile_facts(user_id, profile_synthesis, user_profile)
+
+
+def _profile_facts(user_id: int, profile_synthesis=None, user_profile=None) -> list:
+    """The author's PROFILE as text — the voice brief and the scraped profile, nothing else.
+
+    Since showcase round 6 this is where the profile's INDUSTRY terms are read from
+    (`story_bank.industry_terms_in`), so the industry check can flag one the story never names.
+    """
+    facts = []
     if profile_synthesis:
         facts.append(json.dumps(profile_synthesis, default=str)
                      if isinstance(profile_synthesis, dict) else str(profile_synthesis))
@@ -3481,6 +3611,16 @@ def _author_facts(user_id: int, profile_synthesis=None, user_profile=None) -> li
             log_debug("Profile not serializable for the industry-claim check", error=str(e),
                       user_id=user_id, task_name="create_text_post")
     return facts
+
+
+def _industry_claims(content: str, bank_facts: list, profile_terms: list) -> list:
+    """Industry terms the draft attaches to the author that the STORY BANK never names.
+
+    Showcase round 6: checked against the bank alone — the profile's industry ("E-commerce") is
+    who the author's readers are, not where a story happened, so it no longer clears a claim; a
+    profile term framing the post ("In AI-driven e-commerce, …") is flagged too.
+    """
+    return _story_bank.unsourced_industry_claims(content, bank_facts, profile_terms)
 
 
 def _fabricated_specifics(content: str, story: Optional[dict],
@@ -3503,7 +3643,8 @@ def _review_gate_findings(similarity: Optional[dict], *, proof_missing: bool,
                           fabricated: Optional[list], fact_report: Optional[dict],
                           slop: Optional[dict],
                           profile_synthesis: Optional[str] = None,
-                          forbidden: Optional[list] = None) -> list[dict]:
+                          forbidden: Optional[list] = None,
+                          consistency: Optional[list] = None) -> list[dict]:
     """The review gate's deterministic failures as structured findings (issue #1134).
 
     The same vocabulary `evaluate_post_gates` speaks, built from the measurements the review gate
@@ -3519,6 +3660,8 @@ def _review_gate_findings(similarity: Optional[dict], *, proof_missing: bool,
         slop: the slop-lint report, only when a HARD check fired.
         profile_synthesis: the author's voice brief, which the proof finding points the editor at.
         forbidden: the forbidden-claim subjects the draft attached a figure to (issue #1971).
+        consistency: the date/timeline issues `fact_consistency.consistency_report` found
+            (showcase round 6).
 
     Returns:
         The findings, in the order the checks are named in the review gate. Empty when the draft
@@ -3537,6 +3680,8 @@ def _review_gate_findings(similarity: Optional[dict], *, proof_missing: bool,
                                                fact_report.get("placeholders")))
     if forbidden:
         findings.append(forbidden_claim_finding(forbidden))
+    if consistency:
+        findings.append(fact_consistency_finding(consistency))
     if slop and not slop.get("passes", True):
         findings.append(slop_finding(violation_reasons(slop["hard"]),
                                      violation_reasons(slop.get("warnings"))))
@@ -3653,9 +3798,12 @@ def _review_generated_post(ctx: PostDraftContext, content: str, recent_texts: li
     proof_regen = missing_proof and _proof_regen_enabled()
     fabricated = _fabricated_specifics(content, story, profile_synthesis, lead_magnet_cta)
     # Company/industry claims (showcase round 4: an "e-commerce platform" bolted onto a build
-    # story) are checked against the AUTHOR's facts only — the bank and the profile, never research.
-    author_facts = _author_facts(user_id, profile_synthesis, user_profile)
-    fabricated += [t for t in _story_bank.unsourced_industry_claims(content, author_facts)
+    # story) are checked against the STORY BANK only since round 6 — the profile's industry is who
+    # reads the author, never evidence of where a story happened (`_industry_claims`).
+    bank_facts = _fact_anchors(user_id)
+    profile_terms = _story_bank.industry_terms_in(
+        " ".join(str(f) for f in _profile_facts(user_id, profile_synthesis, user_profile)))
+    fabricated += [t for t in _industry_claims(content, bank_facts, profile_terms)
                    if t not in fabricated]
     fabrication_regen = bool(fabricated) and _fabrication_regen_enabled()
     # No-fabrication guard (issue #619 / G4) on the archetypes whose value IS the specifics — and,
@@ -3683,9 +3831,13 @@ def _review_generated_post(ctx: PostDraftContext, content: str, recent_texts: li
     plain_fold = bool((blueprint or {}).get("plain_fold"))
     slop = slop_lint_report(content, "post", exempt_keyword=cta_keyword, plain_fold=plain_fold)
     slopped = not slop["passes"]
+    # Dates and timelines (showcase round 6): a weekday that is not the date's, a deadline before
+    # the offer, more elapsed time than has passed since the anchoring story happened.
+    happened_at = (story or {}).get("happened_at")
+    consistency = consistency_report(content, happened_at)["issues"]
 
     if (not too_similar and not proof_regen and not fabrication_regen and not unverified
-            and not slopped and not forbidden):
+            and not slopped and not forbidden and not consistency):
         if missing_proof:
             log_warning("Generated post lacks a concrete first-person lived detail (A2 proof slot)",
                         user_id=user_id, post_id=post_id, task_name="create_text_post")
@@ -3694,6 +3846,7 @@ def _review_generated_post(ctx: PostDraftContext, content: str, recent_texts: li
                         f"{', '.join(fabricated)}",
                         user_id=user_id, post_id=post_id, task_name="create_text_post")
         _record_post_similarity_finding(post_id, similarity, user_id=user_id)
+        _record_consistency_finding(post_id, [], user_id=user_id)
         _check_post_alignment(content, prefs, user_id, post_id, user_profile, profile_synthesis)
         return content
 
@@ -3712,6 +3865,8 @@ def _review_generated_post(ctx: PostDraftContext, content: str, recent_texts: li
         reasons.append("attaches a figure to a forbidden-claim subject (" + ", ".join(forbidden) + ")")
     if slopped:
         reasons.append("trips the AI-slop lint (" + "; ".join(violation_reasons(slop["hard"])) + ")")
+    if consistency:
+        reasons.append("states an impossible date or timeline (" + "; ".join(consistency) + ")")
     log_info(f"Post {'; '.join(reasons)} — repairing once with the editor pass")
 
     # The failure, in the structured form the review queue speaks (issue #1134) — it is both what
@@ -3721,10 +3876,13 @@ def _review_generated_post(ctx: PostDraftContext, content: str, recent_texts: li
         similarity if too_similar else None,
         proof_missing=proof_regen, fabricated=fabricated if fabrication_regen else [],
         fact_report=fact_report if unverified else None, slop=slop if slopped else None,
-        profile_synthesis=profile_synthesis, forbidden=forbidden)
+        profile_synthesis=profile_synthesis, forbidden=forbidden, consistency=consistency)
     _persist_gate_findings(user_id, post_id, findings, mark_repaired=True)
 
     second = _repair_draft(ctx, content, findings, cta_keyword, story=story)
+    if second:
+        # The editor can reintroduce a wrong weekday or a sign-off; both have a deterministic fix.
+        second = _deterministic_fact_cleanup(second, user_id=user_id, post_id=post_id)
     if not second:
         # The first draft is what ships, so ITS verdict is the one the gate pass must read.
         _record_post_similarity_finding(post_id, similarity, user_id=user_id)
@@ -3735,8 +3893,9 @@ def _review_generated_post(ctx: PostDraftContext, content: str, recent_texts: li
     # only happens on the repair path (a clean first draft still costs exactly one).
     second_similarity = post_similarity_report(second, recent_texts, prefs)
     still_fabricated = _fabricated_specifics(second, story, profile_synthesis, lead_magnet_cta)
-    still_fabricated += [t for t in _story_bank.unsourced_industry_claims(second, author_facts)
+    still_fabricated += [t for t in _industry_claims(second, bank_facts, profile_terms)
                          if t not in still_fabricated]
+    still_inconsistent = consistency_report(second, happened_at)["issues"]
     second_fact_report = fact_grounding_report(second, anchors) if fact_report is not None else None
     second_forbidden = _story_bank.forbidden_claims(second, forbidden_terms)
     second_slop = slop_lint_report(second, "post", exempt_keyword=cta_keyword,
@@ -3751,7 +3910,8 @@ def _review_generated_post(ctx: PostDraftContext, content: str, recent_texts: li
         proof_missing=not has_first_person_proof(second), fabricated=still_fabricated,
         fact_report=second_fact_report if (second_fact_report or {}).get("unverified") else None,
         slop=second_slop if not second_slop["passes"] else None,
-        profile_synthesis=profile_synthesis, forbidden=second_forbidden), mark_repaired=True)
+        profile_synthesis=profile_synthesis, forbidden=second_forbidden,
+        consistency=still_inconsistent), mark_repaired=True)
     _record_post_similarity_finding(post_id, second_similarity, user_id=user_id)
     if second_similarity["too_similar"]:
         log_warning(f"Post still similar to a recent post after repair "
@@ -3776,6 +3936,11 @@ def _review_generated_post(ctx: PostDraftContext, content: str, recent_texts: li
     if second_forbidden:
         log_info("Post still attaches a figure to a forbidden-claim subject after repair — the "
                  "forbidden-claim gate will hold it for review",
+                 user_id=user_id, post_id=post_id, task_name="create_text_post")
+    if still_inconsistent:
+        # INFO: the recorded finding holds the post at PENDING, which is this path working.
+        log_info("Post still states an impossible date or timeline after repair — held for "
+                 "review: " + "; ".join(still_inconsistent),
                  user_id=user_id, post_id=post_id, task_name="create_text_post")
     still_slop = [v for v in second_slop["hard"] if v.get("check") != CHECK_FOLD_JARGON]
     if still_slop:
@@ -4920,6 +5085,7 @@ def create_text_post(user_id: int, stage: str, post_type: str = None,
                                         bait_exempt_keyword=bait_exempt_keyword)
     final_content, ctx = _diversify_topic(ctx, final_content, cta_keyword, bait_exempt_keyword)
     final_content = _enforce_hook_shape(ctx, final_content, rotation_texts, cta_keyword)
+    final_content = _deterministic_fact_cleanup(final_content, user_id=user_id, post_id=post_id)
     final_content = _apply_once_per_post_gates(ctx, final_content, recent_texts, story,
                                                cta_keyword)
     final_content = _repair_post_ctas(ctx, final_content, lead_magnet, include_cta)
@@ -4937,6 +5103,7 @@ def create_text_post(user_id: int, stage: str, post_type: str = None,
     # that reason, and currency is deliberately not part of that pass. Scored and persisted below
     # on the text this returns, so the judge reads what ships.
     final_content = normalize_currency_symbols(final_content)
+    final_content = _deterministic_fact_cleanup(final_content, user_id=user_id, post_id=post_id)
     _persist_draft_outcome(ctx, final_content, story)
     return final_content
 

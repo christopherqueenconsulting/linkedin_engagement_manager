@@ -132,21 +132,32 @@ def _clause_prefixes(sentence: str) -> list:
     return out
 
 
-def caption_candidates(content: Optional[str], budget: int) -> list:
-    """The texts a caption may carry, preferred first — each a COMPLETE thought within ``budget``.
+def _post_sentences(content: Optional[str]) -> list:
+    """Every sentence of the post's prose, in order — the same cleaning as `_hook_sentences`."""
+    text = strip_non_bmp(content or "").replace("*", "").replace("_", " ")
+    out: list = []
+    for raw in text.splitlines():
+        line = " ".join(raw.split())
+        if not line or line.startswith(_SKIP_PREFIXES) or not any(c.isalnum() for c in line):
+            continue
+        out += [part.strip() for part in _SENTENCE_END.split(line) if part.strip()]
+    return out
 
-    The first sentence whole (with the next one too when the first is short); then the longest
-    leading runs of the first sentence's clauses that fit. Never a truncation: a first clause
-    longer than ``budget`` yields no candidate at all.
 
-    Args:
-        content: The post.
-        budget: The most characters the caption may hold.
+_WORDS = re.compile(r"[a-z0-9]+")
+# Token overlap (of the shorter side) at which a caption reads as the headline said again.
+SAME_THOUGHT_OVERLAP = 0.6
 
-    Returns:
-        Candidate captions, best first; ``[]`` when no complete thought fits.
-    """
-    sentences = _hook_sentences(content)
+
+def same_thought(a: Optional[str], b: Optional[str]) -> bool:
+    """Whether two lines say the same thing — one contains the other, or their words overlap."""
+    ta, tb = set(_WORDS.findall((a or "").lower())), set(_WORDS.findall((b or "").lower()))
+    if not ta or not tb:
+        return False
+    return len(ta & tb) / min(len(ta), len(tb)) >= SAME_THOUGHT_OVERLAP
+
+
+def _candidates_from(sentences: list, budget: int) -> list:
     if not sentences:
         return []
     first = sentences[0]
@@ -161,8 +172,51 @@ def caption_candidates(content: Optional[str], budget: int) -> list:
     return out
 
 
+def payoff_candidates(content: Optional[str], budget: int, headline: Optional[str]) -> list:
+    """Caption candidates that do NOT repeat ``headline`` — the post's next sentence, its payoff.
+
+    Showcase round 6: a title card set the post's first sentence as its headline and the burned
+    caption set the same sentence again beneath it. The caption now starts AFTER the sentence the
+    headline came from, and no candidate may say the same thing as the headline.
+
+    Args:
+        content: The post.
+        budget: The most characters the caption may hold.
+        headline: The words the frame already shows.
+
+    Returns:
+        Candidates, best first; ``[]`` when nothing but the headline fits.
+    """
+    sentences = _post_sentences(content)
+    if headline:
+        matched = [i for i, sentence in enumerate(sentences) if same_thought(sentence, headline)]
+        if matched:
+            # The payoff follows the headline; a headline that closes the post leaves the rest.
+            sentences = (sentences[matched[0] + 1:]
+                         or [s for s in sentences if not same_thought(s, headline)])
+    return [c for c in _candidates_from(sentences, budget) if not same_thought(c, headline)]
+
+
+def caption_candidates(content: Optional[str], budget: int) -> list:
+    """The texts a caption may carry, preferred first — each a COMPLETE thought within ``budget``.
+
+    The first sentence whole (with the next one too when the first is short); then the longest
+    leading runs of the first sentence's clauses that fit. Never a truncation: a first clause
+    longer than ``budget`` yields no candidate at all.
+
+    Args:
+        content: The post.
+        budget: The most characters the caption may hold.
+
+    Returns:
+        Candidate captions, best first; ``[]`` when no complete thought fits.
+    """
+    return _candidates_from(_hook_sentences(content), budget)
+
+
 def caption_lines(content: Optional[str], *, max_lines: int = VIDEO_CAPTION_MAX_LINES,
-                  max_chars: int = VIDEO_CAPTION_MAX_CHARS_PER_LINE) -> list:
+                  max_chars: int = VIDEO_CAPTION_MAX_CHARS_PER_LINE,
+                  avoid: Optional[str] = None) -> list:
     """The post's opening, as at most ``max_lines`` lines that carry a COMPLETE thought.
 
     The hook is whatever the post already opens with, minus the things that read as noise on a
@@ -171,13 +225,18 @@ def caption_lines(content: Optional[str], *, max_lines: int = VIDEO_CAPTION_MAX_
     longest complete leading clause of it — never a cut with an ellipsis (showcase round 4:
     "…turn into a hidden…"). A post whose first clause cannot fit is not captioned.
 
+    ``avoid`` is the headline the frame already shows (a title card's): the caption then carries
+    the post's NEXT sentence instead (`payoff_candidates`), never the headline again.
+
     Returns:
         `[]` when the post has no usable prose, or no complete thought that fits — the caller's
         signal to skip.
     """
     width = max(8, int(max_chars))
     lines_cap = max(1, int(max_lines))
-    for candidate in caption_candidates(content, width * lines_cap):
+    candidates = (payoff_candidates(content, width * lines_cap, avoid) if avoid
+                  else caption_candidates(content, width * lines_cap))
+    for candidate in candidates:
         # Never split "cost-saving" at its hyphen: the burn re-joins lines with a space.
         lines = textwrap.wrap(candidate, width=width, break_on_hyphens=False)
         if lines and len(lines) <= lines_cap:
@@ -284,6 +343,30 @@ def fit_caption(draw: Any, text: str, max_width: int, max_lines: int, high: int,
         if lines and len(lines) <= max_lines:
             return font, size, lines, _line_height(font, size)
     return None
+
+
+def caption_band_top(size: tuple, max_lines: Optional[int] = None) -> int:
+    """The HIGHEST y the burned caption band can reach on a frame of ``size``.
+
+    The band's worst case — the largest font at the most lines — so anything a frame draws above
+    it can never sit under a caption (showcase round 6: the title card's byline did).
+
+    Args:
+        size: The video's ``(width, height)``.
+        max_lines: The most lines; ``VIDEO_CAPTION_MAX_LINES`` by default.
+
+    Returns:
+        The band's top edge in pixels.
+    """
+    from cqc_lem.utilities.ai.image_compose import _line_height, load_font
+
+    width, height = int(size[0]), int(size[1])
+    basis = min(width, height)
+    size_px = round(basis * CAPTION_FONT_MAX)
+    line_h = _line_height(load_font(size_px), size_px)
+    lines = int(max_lines or VIDEO_CAPTION_MAX_LINES)
+    bottom = height - round(height * CAPTION_BOTTOM_MARGIN)
+    return bottom - line_h * lines - 2 * round(basis * 0.025)
 
 
 def render_caption_overlay(lines: list, size: tuple, out_path: str, brand: Any = None,
@@ -547,7 +630,10 @@ def apply_captions_to_video(video_path: str, content: Optional[str], *,
         return CaptionResult(video_path=video_path, skipped_reason="flag_off")
 
     try:
-        lines = caption_lines(content)
+        # A title card already shows a headline; the caption must not say it again.
+        from cqc_lem.utilities.video_title_card import card_headline
+
+        lines = caption_lines(content, avoid=card_headline(video_path, content))
         if not lines:
             log_debug("No usable caption text on this post — nothing to burn", post_id=post_id,
                       user_id=user_id, task_name=TASK_NAME)

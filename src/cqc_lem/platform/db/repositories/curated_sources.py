@@ -164,6 +164,23 @@ def update_curated_source_status(source_id: int, status: str, block_reason: Opti
         return False
 
 
+def update_curated_source_og_image(source_id: int, og_image_url: str) -> bool:
+    """Record the preview image found for a source at draft time (showcase round 6).
+
+    A link post REQUIRES a fetchable og:image; the draft step discovers it when the collector did
+    not, and the publish path reads it back from here.
+    """
+    try:
+        with db_cursor(commit=True) as cursor:
+            cursor.execute("UPDATE curated_sources SET og_image_url = %s WHERE id = %s",
+                           (_clip("og_image_url", og_image_url), source_id))
+            return True
+    except mysql.connector.Error as err:
+        log_error("Could not record a curated source's preview image", exc=err,
+                  source_id=source_id)
+        return False
+
+
 def attach_curated_source_to_post(post_id: int, source_id: int, treatment: str) -> bool:
     """Mark `post_id` as the curated post built from `source_id` with `treatment`."""
     try:

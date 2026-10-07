@@ -2648,7 +2648,16 @@ _FACT_PLACEHOLDER_RE = re.compile(r"\[\[\s*([^\[\]]+?)\s*\]\]")
 # A numeric specific: 20, 8%, $4,000, 2.5x. The lookbehind keeps the tail of a version string or a
 # decimal from being counted a second time; the thousands group must be a real one (so "Postgres 16,
 # and n8n" yields "16", not "16,").
-_NUMBER_TOKEN_RE = re.compile(r"(?<![\w.$])\$?\d+(?:,\d{3})*(?:\.\d+)?\s*(?:%|percent|x)?",
+_NUMBER_TOKEN_RE = re.compile(r"(?<![\w.$])\$?\d+(?:,\d{3})*(?:\.\d+)?\s*"
+                              r"(?:%|percent|x|×|[-‑‐ ]?fold)?", re.IGNORECASE)
+# A spelled-out multiplier ("thirteen-fold", round 6's slot_125) is the same claim as "13x" and has
+# to be graded like one — the digit pattern above never sees it.
+_SPELLED_FOLD_WORDS = {"two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7,
+                       "eight": 8, "nine": 9, "ten": 10, "eleven": 11, "twelve": 12, "thirteen": 13,
+                       "fourteen": 14, "fifteen": 15, "sixteen": 16, "seventeen": 17,
+                       "eighteen": 18, "nineteen": 19, "twenty": 20, "thirty": 30, "forty": 40,
+                       "fifty": 50, "hundred": 100, "thousand": 1000}
+_SPELLED_FOLD_RE = re.compile(r"\b(" + "|".join(_SPELLED_FOLD_WORDS) + r")[-‑‐ ]fold\b",
                               re.IGNORECASE)
 # A bare year is a public, checkable fact, not a project specific — a build receipt saying "in 2026"
 # is not fabricating anything, so years never trip the guard.
@@ -2758,6 +2767,8 @@ def _anchor_numbers(anchors: Optional[list]) -> set:
             value = _normalize_number(match.group(0))
             if value:
                 found.add(value)
+        for match in _SPELLED_FOLD_RE.finditer(str(fact or "")):
+            found.add(str(_SPELLED_FOLD_WORDS[match.group(1).lower()]))
     return found
 
 
@@ -2811,6 +2822,9 @@ def numeric_claims(text: Optional[str]) -> list:
             if _is_product_version(stripped, match.start(), raw):
                 continue
             claims.append({"value": value, "raw": raw, "context": stripped})
+        for match in _SPELLED_FOLD_RE.finditer(stripped):
+            claims.append({"value": str(_SPELLED_FOLD_WORDS[match.group(1).lower()]),
+                           "raw": match.group(0), "context": stripped})
     return claims
 
 
@@ -3221,15 +3235,32 @@ _DECK_COUNT_CLAIM_RE = re.compile(
 _DECK_LIST_ITEM_RE = re.compile(r"^\s*(?:[-•*▪✓✔]|\d{1,2}[.)])\s+\S", re.MULTILINE)
 
 
-def deck_count_claims(post_text: Optional[str]) -> list:
-    """Every "N <items>" count the CAPTION makes about the deck, as {count, phrase} entries.
+# The hyphenated count a deck promises about ITSELF (showcase round 6: "a 6-part snapshot" on a
+# five-slide deck): "6-part", "five-step", "7-point". Always about the deck's own shape, so no noun
+# lexicon is needed after it.
+_DECK_COUNT_COMPOUND_RE = re.compile(
+    r"\b(\d{1,2}|" + "|".join(_DECK_COUNT_WORDS) + r")[-‑‐](part|step|point|slide|item|lesson|"
+    r"tip|rule|check|stage|phase)\b", re.IGNORECASE)
 
-    Only counts from 2 to 12 — "one tip" is not a list, and nothing past a dozen fits a deck.
+
+def _count_value(raw: str) -> int:
+    raw = raw.lower()
+    return int(raw) if raw.isdigit() else _DECK_COUNT_WORDS[raw]
+
+
+def deck_count_claims(post_text: Optional[str]) -> list:
+    """Every count the CAPTION makes about the deck, as {count, phrase} entries, in text order.
+
+    Both phrasings: "N <items>" ("5 steps", "three insights") and the hyphenated "N-part" /
+    "N-step" / "N-point". Only counts from 2 to 12 — "one tip" is not a list, and nothing past a
+    dozen fits a deck.
     """
+    text = str(post_text or "")
+    found = [(m.start(), m) for m in _DECK_COUNT_CLAIM_RE.finditer(text)]
+    found += [(m.start(), m) for m in _DECK_COUNT_COMPOUND_RE.finditer(text)]
     claims = []
-    for match in _DECK_COUNT_CLAIM_RE.finditer(str(post_text or "")):
-        raw = match.group(1).lower()
-        count = int(raw) if raw.isdigit() else _DECK_COUNT_WORDS[raw]
+    for _, match in sorted(found, key=lambda pair: pair[0]):
+        count = _count_value(match.group(1))
         if 2 <= count <= 12:
             claims.append({"count": count, "phrase": match.group(0)})
     return claims
@@ -3350,6 +3381,108 @@ def deck_retry_directive(report: Optional[dict]) -> str:
     lines += [f"  * {name}: {how}." for name, how in REFERENCE_SLIDE_SHAPES]
     lines.append("- Keep every verified fact you were given and invent NOTHING to fill a slide — if "
                  "you do not have the specific, use the placeholder form you were given.")
+    return "\n".join(lines) + "\n"
+
+
+# Showcase round 6: slides 2-3 of a deck were template headings over generic text ("The Initial
+# Challenge", "Decisive Moves Made", "Step 1: Identify…"). These words are what such a slide is
+# built from, so sharing them with the post proves nothing about the slide carrying the post's
+# substance; everything else a slide shares with its post or story is a real particular.
+DECK_TEMPLATE_WORDS = frozenset((
+    "ai", "action", "actions", "approach", "areas", "balance", "business", "businesses", "case",
+    "challenge", "challenges", "change", "changes", "conclusion", "consider", "critical", "crucial",
+    "decision", "decisions", "decisive", "efficiency", "ensure", "essential", "final", "first",
+    "focus", "goal", "goals", "growth", "how", "human", "identify", "impact", "implement",
+    "implementation", "important", "improve", "initial", "insight", "insights", "key", "lesson",
+    "lessons", "made", "matters", "moment", "moves", "next", "operations", "outcome", "overview",
+    "plan", "problem", "process", "result", "results", "snapshot", "step", "steps", "story",
+    "strategy", "success", "summary", "takeaway", "takeaways", "team", "teams", "time", "tool",
+    "tools", "touch", "understand", "value", "what", "why", "work", "workflow", "workflows",
+))
+# How many particulars a body slide must share with its post or story when it carries nothing
+# concrete of its own.
+DECK_SUBSTANCE_MIN_SHARED = 2
+_DIGIT_RE = re.compile(r"\d")
+# Reference artifacts that are concrete by construction. Step and checklist shapes are NOT here:
+# "Step 1: Identify the key areas" is exactly the template slide this check exists to catch.
+_CONCRETE_ARTIFACTS = frozenset((ARTIFACT_COMMAND, ARTIFACT_CONFIG, ARTIFACT_THRESHOLD,
+                                 ARTIFACT_DECISION_RULE, ARTIFACT_COMPARISON, ARTIFACT_METRIC))
+# A named thing inside a slide BODY (titles are Title Case, so they are never read for this):
+# a capitalised word that does not open its sentence, or an identifier like IMAGE_TAG.
+_NAMED_IN_BODY_RE = re.compile(r"(?<![.!?:\n]\s)(?<!^)\b(?:[A-Z][a-z]+[A-Z]\w*|[A-Z]{2,}[A-Z0-9_]*|"
+                               r"[A-Z][a-z]{2,})\b")
+_NOT_NAMES = frozenset(("AI", "I", "OK"))
+
+
+def _slide_particulars(text: str) -> set:
+    return {t for t in content_tokens(text) if t not in DECK_TEMPLATE_WORDS and not t.isdigit()}
+
+
+def _names_something(body: str) -> bool:
+    for line in body.splitlines():
+        for match in _NAMED_IN_BODY_RE.finditer(line.strip()):
+            if match.group(0) not in _NOT_NAMES:
+                return True
+    return False
+
+
+def deck_substance_report(carousel: Optional[dict], post_text: Optional[str] = None,
+                          sources: Optional[list] = None) -> dict:
+    """Does every BODY slide carry something concrete from the post or its story? Deterministic.
+
+    A body slide (cover and CTA excluded, as `deck_slides` grades them) passes when it carries
+    something concrete of its own — a number (list numbering like "Step 1:" does not count), a
+    command / setting / threshold / rule / comparison (`slide_artifacts`), or a named thing in its
+    body ("Claude", "IMAGE_TAG") — or shares at least `DECK_SUBSTANCE_MIN_SHARED` particulars with
+    the caption and the story's facts: words that are not the template vocabulary every generic
+    slide is made of (`DECK_TEMPLATE_WORDS`). A template heading over generic text has none of
+    these, so it fails.
+
+    Args:
+        carousel: The generated deck.
+        post_text: The caption.
+        sources: The anchoring story's fact sources (`story_bank.fact_sources`).
+
+    Returns:
+        ``{checked, passes, thin_slides, reasons}``. ``checked`` is False — and the report passes —
+        when the deck has no body slide or there is no post/story text to compare against.
+    """
+    graded = [s for s in deck_slides(carousel) if s["graded"]]
+    reference = " ".join([str(post_text or "")] + [str(s) for s in (sources or []) if s])
+    known = _slide_particulars(reference)
+    if not graded or not known:
+        return {"checked": False, "passes": True, "thin_slides": [], "reasons": []}
+    thin = []
+    for slide in graded:
+        title = _LEADING_ENUM_RE.sub("", slide["title"])
+        body = "\n".join(_LEADING_ENUM_RE.sub("", line) for line in slide["content"].splitlines())
+        text = f"{title}\n{body}"
+        if _DIGIT_RE.search(text) or _names_something(body):
+            continue
+        if set(slide_artifacts(text)) & _CONCRETE_ARTIFACTS:
+            continue
+        if len(_slide_particulars(text) & known) >= DECK_SUBSTANCE_MIN_SHARED:
+            continue
+        thin.append(_slide_label(slide))
+    reasons = [f"slide “{name}” is a template heading with no fact, example or number from the "
+               f"post or its story" for name in thin]
+    return {"checked": True, "passes": not thin, "thin_slides": thin, "reasons": reasons}
+
+
+def deck_substance_directive(report: Optional[dict]) -> str:
+    """The regeneration steer after `deck_substance_report` found template slides; '' for none."""
+    reasons = [str(r) for r in (report or {}).get("reasons", []) if str(r).strip()]
+    if not reasons:
+        return ""
+    lines = ["\n\nYOUR PREVIOUS DECK HAD SLIDES WITH NOTHING ON THEM. Rewrite it so none of these "
+             "remain:"]
+    lines += [f"- The {r}." for r in reasons]
+    lines.append("- Every body slide must carry ONE concrete thing from the post or the story "
+                 "entry: its actual number, the actual thing that happened, or the actual example "
+                 "— named, not described. A heading like \"The Initial Challenge\" over a general "
+                 "statement is not a slide.")
+    lines.append("- Use ONLY facts from the post and the story entry. Invent nothing to fill a "
+                 "slide.")
     return "\n".join(lines) + "\n"
 
 
@@ -4019,7 +4152,16 @@ _COUNT_WORD_FOR = {v: k for k, v in _DECK_COUNT_WORDS.items()}
 
 
 def _rewrite_count(phrase: str, count: int) -> str:
-    """`phrase` ("4 Steps", "three key steps") with its number set to `count`, in the same form."""
+    """`phrase` ("4 Steps", "three key steps", "6-part") with its number set to `count`, same form."""
+    compound = _DECK_COUNT_COMPOUND_RE.fullmatch(phrase)
+    if compound:
+        head = compound.group(1)
+        if head.isdigit():
+            new = str(count)
+        else:
+            word = _COUNT_WORD_FOR.get(count, str(count))
+            new = word.capitalize() if head[:1].isupper() else word
+        return new + phrase[len(head):]
     head, _, rest = phrase.partition(" ")
     if head.isdigit():
         new = str(count)
@@ -4039,7 +4181,8 @@ def _reconcile_text(text: str, count: int) -> tuple:
         changed.append(match.group(0))
         return _rewrite_count(match.group(0), count)
 
-    return _DECK_COUNT_CLAIM_RE.sub(fix, text), changed
+    text = _DECK_COUNT_CLAIM_RE.sub(fix, text)
+    return _DECK_COUNT_COMPOUND_RE.sub(fix, text), changed
 
 
 def reconcile_deck_counts(carousel: Optional[dict], post_text: Optional[str] = None) -> tuple:

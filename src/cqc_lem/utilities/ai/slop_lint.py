@@ -57,6 +57,7 @@ CHECK_BLOG_ALIGNMENT = "blog_alignment"
 CHECK_SECOND_PERSON_AUTHOR = "second_person_author"
 CHECK_PREFERENCE_BANNED = "preference_banned_phrase"
 CHECK_FOLD_JARGON = "fold_jargon"
+CHECK_STOCK_OPENER = "stock_opener"
 
 # Default severities. HARD violations are regenerated and then block; WARN ones are recorded and
 # reported but never hold a draft.
@@ -94,6 +95,10 @@ DEFAULT_SEVERITIES: dict = {
     # but it only ever fires when the caller says the author's ICP is small-business
     # (`lint_report(plain_fold=True)`), so no other surface or author is graded against it.
     CHECK_FOLD_JARGON: SEVERITY_HARD,
+    # Showcase round 6: "In today's AI-driven e-commerce landscape", "In a world driven by data".
+    # OFF by default and HARD on posts below — the stock scene-setter is runway on a post, where
+    # the critic read it in two of ten drafts, and no other surface was measured.
+    CHECK_STOCK_OPENER: SEVERITY_OFF,
 }
 
 # Per-SURFACE severity, applied on top of DEFAULT_SEVERITIES (issue #1285). A check's false-positive
@@ -106,6 +111,7 @@ DEFAULT_SEVERITIES: dict = {
 # HARD violations only) and the reasons in the log, and never blocks a publish.
 SURFACE_SEVERITIES: dict = {
     "newsletter": {CHECK_SCAFFOLD: SEVERITY_HARD},
+    "post": {CHECK_STOCK_OPENER: SEVERITY_HARD},
     # The seed comment (#344) and second wave (#622) are the AUTHOR's own comments on the
     # author's own post. HARD rather than WARN because the failure is not a matter of taste:
     # it is factually wrong about who wrote the post, it lands in the first-comment slot —
@@ -224,6 +230,22 @@ _RHETORICAL_HOOK_RE = re.compile(
     r"^(?:ever\s+(?:wonder|noticed|felt|tried)|have\s+you\s+ever|what\s+if|did\s+you\s+know|"
     r"why\s+do\s+(?:so\s+many|most|we|you)|sound\s+familiar|who\s+else|what\s+would\s+happen|"
     r"imagine\s+(?:if|for\s+a))\b", re.IGNORECASE)
+
+# Stock scene-setting openers (showcase round 6) — a sentence that STARTS by placing the reader in
+# "today's landscape" or "a world driven by data" says nothing a reader can use. Matched only at a
+# sentence start, so "the cost of running in today's market" mid-sentence is untouched. The
+# sentence is lower-cased and smart-punctuation-folded first (`_plain`).
+_STOCK_OPENER_RES: tuple = (
+    re.compile(r"^in\s+today's\s+(?:[\w-]+\s+){0,3}?(?:landscape|world|era|age|climate|"
+               r"environment|economy|market(?:place)?|space|reality)\b"),
+    re.compile(r"^in\s+(?:a|an|the|our|this)\s+world\s+(?:driven\s+by|where|of|full\s+of|"
+               r"dominated\s+by|that|increasingly|obsessed|shaped\s+by|powered\s+by|run\s+by)\b"),
+    re.compile(r"^in\s+the\s+(?:fast[- ]paced|ever[- ][\w-]+|rapidly\s+[\w-]+|modern|digital|"
+               r"current)\s+(?:[\w-]+\s+){0,2}?(?:world|landscape|era|age|space|market)\b"),
+    re.compile(r"^in\s+(?:an|this|the)\s+(?:era|age)\s+(?:of|where|when)\b"),
+    re.compile(r"^(?:in\s+this\s+day\s+and\s+age|now\s+more\s+than\s+ever)\b"),
+    re.compile(r"^as\s+(?:we\s+navigate|the\s+world\s+(?:becomes|grows|moves|shifts))\b"),
+)
 
 # Rule-of-three: three single-word items whose endings mark them as adjectives/adverbs/gerunds
 # ("faster, smarter, better"). Constrained to those endings so a real list of three nouns
@@ -743,6 +765,32 @@ def _check_fold_jargon(text: str, sents: list, ctx: dict) -> Optional[dict]:
             "threshold": 0.0}
 
 
+def stock_opener_hits(text: Optional[str]) -> list:
+    """The sentences of `text` that open on a stock scene-setter ("In today's … landscape").
+
+    Args:
+        text: The draft.
+
+    Returns:
+        Each offending sentence's opening, excerpted, in order.
+    """
+    hits = []
+    for sentence in sentences(text):
+        plain = _plain(sentence).lstrip(" \t-–—•*\"'(")
+        if any(rx.match(plain) for rx in _STOCK_OPENER_RES):
+            hits.append(_excerpt(sentence, 70))
+    return hits
+
+
+def _check_stock_opener(text: str, sents: list, ctx: dict) -> Optional[dict]:
+    hits = stock_opener_hits(text)
+    if not hits:
+        return None
+    return {"detail": ("opens a sentence on a stock scene-setter that says nothing — start on the "
+                       "specific instead: " + "; ".join(f'"{h}"' for h in hits[:3])),
+            "evidence": hits[:5], "score": float(len(hits)), "threshold": 0.0}
+
+
 def _check_preference_banned(text: str, sents: list, ctx: dict) -> Optional[dict]:
     hits = find_preference_banned(text, ctx.get("preference_banned"))
     if not hits:
@@ -768,6 +816,7 @@ _CHECKS: tuple = (
     (CHECK_SECOND_PERSON_AUTHOR, _check_second_person_author),
     (CHECK_PREFERENCE_BANNED, _check_preference_banned),
     (CHECK_FOLD_JARGON, _check_fold_jargon),
+    (CHECK_STOCK_OPENER, _check_stock_opener),
 )
 
 

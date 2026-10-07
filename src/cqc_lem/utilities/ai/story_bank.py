@@ -257,6 +257,16 @@ def _happened_phrase(entry: dict) -> str:
     return f" It happened on {happened} — you may reference that timing." if happened else ""
 
 
+# Showcase round 6: "e-commerce" was bolted onto six posts whose stories never mention it — the
+# writer reads the profile's INDUSTRY and frames every story inside it. The industry is context
+# (who reads the author), never a claim about where a story happened.
+INDUSTRY_CONTEXT_RULE = (
+    "- The author's profile industry tells you who READS them — it is background, never a claim. "
+    "Do NOT place a story, a project or the post itself in an industry, market or client type "
+    "(e-commerce, retail, SaaS, fintech…) that the material above does not name, and never open "
+    "with an industry frame like 'In AI-driven e-commerce…'.\n")
+
+
 def story_directive(entry: Optional[dict]) -> str:
     """The writer-side injection: the author's real material, plus the hard rule that it is the ONLY
     personal specific allowed. Returns the non-story fallback when there is no entry.
@@ -276,7 +286,8 @@ def story_directive(entry: Optional[dict]) -> str:
         "specifics (the numbers, names, dates and outcomes above).\n"
         "- ABSOLUTE RULE: these facts are the ONLY personal specifics you may state. Do not add, "
         "round, embellish or invent any other number, client, date, result or anecdote about the "
-        "author. If a detail is not above, leave it out rather than making one up.\n")
+        "author. If a detail is not above, leave it out rather than making one up.\n"
+        + INDUSTRY_CONTEXT_RULE)
 
 
 def no_story_directive() -> str:
@@ -290,7 +301,8 @@ def no_story_directive() -> str:
         "profile material already provided above.\n"
         "- ABSOLUTE RULE: do NOT invent a personal anecdote, client story, result, or number about "
         "the author. No 'last year I helped a client…', no made-up percentages. Ground the post in "
-        "the sourced material instead, and let the author's stated expertise carry the credibility.\n")
+        "the sourced material instead, and let the author's stated expertise carry the credibility.\n"
+        + INDUSTRY_CONTEXT_RULE)
 
 
 # How many curated-pool items ride into a cooled-down post's prompt, and how much of each.
@@ -412,7 +424,27 @@ _AUTHOR_CLAIM_RE = re.compile(
     r"case study|story)\b", re.IGNORECASE)
 
 
-def unsourced_industry_claims(content: Optional[str], sources: Optional[list]) -> list:
+def industry_terms_in(text: Optional[str]) -> list:
+    """The `INDUSTRY_CLAIM_TERMS` a piece of text names, lowercased, in order of appearance."""
+    found: list = []
+    for match in _INDUSTRY_CLAIM_RE.finditer(text or ""):
+        term = match.group(1).lower()
+        if term not in found:
+            found.append(term)
+    return found
+
+
+def _industry_frame_re(term: str) -> "re.Pattern":
+    # "In AI-driven e-commerce,", "the e-commerce landscape", "the fast-paced world of e-commerce".
+    t = re.escape(term)
+    return re.compile(
+        r"(?:^|[.!?]\s+|\n)\s*in\s+(?:today's\s+|the\s+)?(?:[\w-]+\s+){0,3}?" + t + r"\b"
+        r"|(?<![\w-])" + t + r"(?![\w-])\s+(?:landscape|world|space|sector|industry|era|market)\b"
+        r"|\bworld\s+of\s+" + t + r"(?![\w-])", re.IGNORECASE)
+
+
+def unsourced_industry_claims(content: Optional[str], sources: Optional[list],
+                              profile_terms: Optional[list] = None) -> list:
     """Company/industry claims about the author's work that no source we supplied makes.
 
     Deterministic, the industry-noun twin of `unsourced_specifics`: a sentence that attributes
@@ -420,23 +452,39 @@ def unsourced_industry_claims(content: Optional[str], sources: Optional[list]) -
     from `INDUSTRY_CLAIM_TERMS` the story bank and profile never mention is a bolted-on claim. A
     third-person research sentence ("e-commerce brands saw…") is not checked.
 
+    Showcase round 6 adds the PROFILE's own industry: the writer framed stories inside it ("In
+    AI-driven e-commerce, …") without any first-person cue, so a profile industry term the story
+    facts do not name is also flagged where it FRAMES the post — a sentence opening "In … <term>",
+    "<term> landscape/world/space", "the world of <term>".
+
     Args:
         content: The draft.
-        sources: The author's facts — story-bank text and profile, never outside research.
+        sources: The author's facts — the story bank, never the profile and never outside research
+            (since round 6: the profile's industry is context, not evidence).
+        profile_terms: The industry terms the author's profile names (`industry_terms_in`).
 
     Returns:
         The offending terms, lowercased, in the order they appear.
     """
     allowed = " ".join(str(s) for s in (sources or []) if s).lower()
+
+    def sourced(term: str) -> bool:
+        return bool(re.search(r"(?<![\w-])" + re.escape(term) + r"(?![\w-])", allowed))
+
     found: list = []
     for sentence in _CLAIM_SENTENCE_SPLIT.split(content or ""):
         if not _AUTHOR_CLAIM_RE.search(sentence):
             continue
         for match in _INDUSTRY_CLAIM_RE.finditer(sentence):
             term = match.group(1).lower()
-            if term not in found and not re.search(
-                    r"(?<![\w-])" + re.escape(term) + r"(?![\w-])", allowed):
+            if term not in found and not sourced(term):
                 found.append(term)
+    for term in profile_terms or []:
+        term = str(term).lower()
+        if term in found or sourced(term):
+            continue
+        if _industry_frame_re(term).search(content or ""):
+            found.append(term)
     return found
 
 

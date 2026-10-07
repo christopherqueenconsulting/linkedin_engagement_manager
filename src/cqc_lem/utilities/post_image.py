@@ -39,6 +39,7 @@ from urllib.parse import parse_qs, quote, urlparse
 
 from cqc_lem import assets_dir
 from cqc_lem.utilities.ai.content_framework import feed_fold_text
+from cqc_lem.utilities.ai.post_treatment import CARD_LAYOUT_QUOTE, CARD_LAYOUT_STAT
 from cqc_lem.utilities.logger import log_debug, log_info, log_warning
 from cqc_lem.utilities.media_provenance import write_brief_receipt
 
@@ -528,6 +529,8 @@ def _render_data_card(concept, rhythm, *, user_id: int, post_id: Optional[int], 
     path = render_code_drawn(card, surface="post_image", hook_text=hook, layout=card.layout,
                              brand_kit=brand, user_id=user_id, post_id=post_id,
                              render_info=info, panel=rhythm.panel)
+    if path:
+        info.setdefault("card_layout", CARD_LAYOUT_STAT)
     out = _Rendered(path=path, brief=_code_drawn_brief(card, "data_card", hook, ratio),
                     render_info=info)
     if not path:
@@ -554,6 +557,8 @@ def _render_quote_card(concept, rhythm, text: str, *, user_id: int, post_id: Opt
     path = render_code_drawn(card, surface="post_image", hook_text=None, brand_kit=brand,
                              signature=byline, user_id=user_id, post_id=post_id,
                              render_info=info)
+    if path:
+        info.setdefault("card_layout", CARD_LAYOUT_QUOTE)
     out.path, out.render_info = path, info
     out.brief = _code_drawn_brief(card, "quote_card", None, ratio)
     if not path:
@@ -618,7 +623,7 @@ def _render_last_resort_card(concept, rhythm, text: str, *, user_id: int,
         render_typeset_card,
         typeset_layouts_for,
     )
-    from cqc_lem.utilities.ai.post_treatment import is_verbatim, pick_dimension
+    from cqc_lem.utilities.ai.post_treatment import card_panel, is_verbatim, pick_card_layout
 
     out = _Rendered()
     hook = last_resort_hook(concept, text)
@@ -626,15 +631,18 @@ def _render_last_resort_card(concept, rhythm, text: str, *, user_id: int,
         out.reason = "no headline for the last-resort card"
         return out
     # Showcase round 4: one of four typographic compositions, least-recently-used from the
-    # receipts — the retired ring-and-bar scene repeated on every card.
-    card_layout, _ = pick_dimension(typeset_layouts_for(hook, verbatim=is_verbatim(hook, text)),
-                                    getattr(rhythm, "recent_card_layouts", ()), hook)
+    # receipts — the retired ring-and-bar scene repeated on every card. Round 6: rotated against
+    # EVERY card family's layout, and never one used within the last few posts.
+    card_layout, _ = pick_card_layout(typeset_layouts_for(hook, verbatim=is_verbatim(hook, text)),
+                                      getattr(rhythm, "recent_card_layouts", ()), hook)
+    panel = card_panel(card_layout, rhythm.panel, getattr(rhythm, "recent_card_layouts", ()),
+                       getattr(rhythm, "recent_card_panels", ()), getattr(rhythm, "panels", ()))
     out_dir = os.path.join(assets_dir, "images", "generated", str(user_id or "system"))
     os.makedirs(out_dir, exist_ok=True)
     try:
         drawn = render_typeset_card(
             hook, surface="post_image", kicker=_kicker_for(concept) if concept else "",
-            signature=byline or "", brand=brand_style(brand), panel=rhythm.panel,
+            signature=byline or "", brand=brand_style(brand), panel=panel,
             card_layout=card_layout,
             out_path=os.path.join(out_dir, f"img_{secrets.token_hex(8)}.png"))
     except (GraphicError, OSError, ValueError) as e:
@@ -649,7 +657,7 @@ def _render_last_resort_card(concept, rhythm, text: str, *, user_id: int,
         return out
     out.path = drawn.path
     out.render_info = {"gate_verdict": "last_resort", "archetype_rendered": "typeset_card",
-                       "card_layout": card_layout}
+                       "card_layout": card_layout, "panel": panel}
     out.brief = _code_drawn_brief(concept, "typeset_card", hook, ratio)
     out.render_path = "code_drawn_last_resort"
     return out
@@ -824,7 +832,7 @@ def _rhythm_receipt(treatment: str, rhythm, done: _Rendered, card_share: float,
     gate reads as a break in any run.
     """
     from cqc_lem.utilities.ai.image_concept import AI_ARCHETYPES
-    from cqc_lem.utilities.ai.post_treatment import setting_class, style_of
+    from cqc_lem.utilities.ai.post_treatment import card_layout_of, setting_class, style_of
 
     if treatment == "typeset_card" and not getattr(done.brief, "hook_text", None):
         # No headline survived (Stage 1 unavailable): nothing was typeset, so it shipped photo-only.
@@ -841,7 +849,7 @@ def _rhythm_receipt(treatment: str, rhythm, done: _Rendered, card_share: float,
     receipt = {
         "treatment": treatment,
         "layout": (getattr(concept, "layout", "") or rhythm.layout or None) if has_panel else None,
-        "panel": (rhythm.panel if has_panel else None),
+        "panel": ((done.render_info.get("panel") or rhythm.panel) if has_panel else None),
         "shot": (getattr(concept, "shot", "") or None) if people else None,
         "grade": (rhythm.grade or None) if ai_scene else None,
         # The setting CLASS the shipped scene is in. Round 5: read off the PROMPT first — it is
@@ -853,7 +861,11 @@ def _rhythm_receipt(treatment: str, rhythm, done: _Rendered, card_share: float,
         "style": style_of(treatment, archetype or getattr(concept, "archetype", ""),
                           getattr(concept, "art_style", "") if ai_scene else "",
                           done.render_info.get("gate_verdict") == "last_resort"),
-        "card_layout": done.render_info.get("card_layout"),
+        # Every code-drawn card family records its layout (showcase round 6), so the rotation
+        # spans them all; a typeset panel is read as `panel_<layout>`.
+        "card_layout": done.render_info.get("card_layout") or card_layout_of(
+            {"treatment": treatment, "layout": getattr(concept, "layout", "") or rhythm.layout}
+            if has_panel else {"treatment": treatment}),
         "card_share": card_share,
         "card_wanted": rhythm.plan.card_wanted,
         "chain": list(rhythm.plan.chain),

@@ -26,9 +26,16 @@ from cqc_lem.app.my_celery import app as shared_task
 from cqc_lem.utilities.ai.curated_commentary import (
     extract_chart_facts,
     generate_curated_commentary,
+    score_audience_fit,
     validated_chart,
 )
-from cqc_lem.utilities.curated_collectors import collect_gov_data, collect_rss, curated_enabled
+from cqc_lem.utilities.curated_collectors import (
+    collect_gov_data,
+    collect_rss,
+    curated_enabled,
+    discover_og_image,
+    image_fetchable,
+)
 from cqc_lem.utilities.curated_sources import (
     BLOCK_NO_PROVENANCE,
     CEILING_WINDOW,
@@ -40,6 +47,9 @@ from cqc_lem.utilities.curated_sources import (
     TREATMENT_RECHART,
     TREATMENT_RESHARE,
     TREATMENTS,
+    audience_brief,
+    audience_fit_min,
+    audience_token_fit,
     ceiling_allows,
     load_feed_allowlist,
     pick_treatment,
@@ -58,6 +68,7 @@ from cqc_lem.utilities.db import (
     get_curated_neighbors,
     get_draftable_curated_sources,
     get_recent_curated_publishers,
+    update_curated_source_og_image,
     update_curated_source_status,
     update_db_post_image_url,
 )
@@ -66,6 +77,9 @@ from cqc_lem.utilities.observability import track_curated_source
 
 # Each candidate that passes the gates costs a commentary call, so a slot tries a few, not all.
 DRAFT_CANDIDATES = 3
+# The audience-fit check (showcase round 6) is one cheap call per candidate, bounded here so a slot
+# whose pool is all off-audience costs a handful of calls, never the whole pool.
+FIT_CANDIDATES = 6
 # How many fresh candidates are RANKED to choose those few (`rank_candidates`): wide enough that a
 # second publisher and a non-vendor item are usually in reach, narrow enough to stay one query.
 CANDIDATE_POOL = 20
@@ -145,6 +159,33 @@ def _render_rechart(user_id: int, post_id: int, source: dict, graphic: dict) -> 
             log_debug("Temp re-chart not removed", error=str(e))
 
 
+def audience_fit(user_id: int, source: dict, brief: Optional[dict]) -> tuple[bool, float]:
+    """Whether ``source`` matters to the author's readers, and the 0-10 score that decided it.
+
+    ONE cheap scoring call (``score_audience_fit``); the deterministic token fallback when it
+    cannot run. No described audience means nothing to score against: every candidate fits.
+    """
+    if not brief:
+        return True, 10.0
+    score = score_audience_fit(source, brief)
+    if score is None:
+        score = audience_token_fit(source, brief)
+    return score >= audience_fit_min(), score
+
+
+def _link_preview(source: dict, user_id: int) -> Optional[str]:
+    """The fetchable og:image a link post needs — the collected one, else discovered now."""
+    known = source.get("og_image_url")
+    if known and image_fetchable(known):
+        return known
+    found = discover_og_image(source.get("url"))
+    if found and found != known and source.get("id") is not None:
+        update_curated_source_og_image(source["id"], found)
+    if found:
+        source["og_image_url"] = found
+    return found
+
+
 def draft_curated_post(user_id: int, post_id: int, source: dict, content_mix: Optional[str],
                        prefs: Optional[dict] = None, profile_synthesis: Optional[str] = None,
                        profile=None) -> Optional[str]:
@@ -181,6 +222,12 @@ def draft_curated_post(user_id: int, post_id: int, source: dict, content_mix: Op
             if treatment is None:
                 _block(source, "rechart_failed", user_id)
                 return None
+    if treatment == TREATMENT_LINK and not _link_preview(source, user_id):
+        # Showcase round 6: two curated link posts shipped with no preview image. A link card
+        # REQUIRES the publisher's fetchable og:image; the re-chart was already preferred above
+        # wherever the source allowed one, so with neither the item is skipped.
+        _block(source, "link_no_preview_image", user_id)
+        return None
 
     commentary = generate_curated_commentary(user_id, source, treatment, profile=profile,
                                              profile_synthesis=profile_synthesis, prefs=prefs,
@@ -237,10 +284,20 @@ def curated_content_for_slot(user_id: int, post_id: Optional[int], content_mix: 
         # item that talks to a small business, and government data or an independent writer ahead
         # of a vendor's own announcement.
         candidates = rank_candidates(pool, get_recent_curated_publishers(
-            user_id, limit=PUBLISHER_DIVERSITY_WINDOW))[:DRAFT_CANDIDATES]
+            user_id, limit=PUBLISHER_DIVERSITY_WINDOW))[:FIT_CANDIDATES]
         prefs, profile_synthesis = load_voice() if load_voice else (None, None)
+        # Showcase round 6: who the author writes for, scored BEFORE any commentary is written.
+        brief = audience_brief(prefs)
         profile = None
+        drafted = 0
         for source in candidates:
+            if drafted >= DRAFT_CANDIDATES:
+                break
+            fits, score = audience_fit(user_id, source, brief)
+            if not fits:
+                _block(source, f"audience_fit:{score:.1f}", user_id)
+                continue
+            drafted += 1
             content = draft_curated_post(user_id, post_id, source, content_mix, prefs=prefs,
                                          profile_synthesis=profile_synthesis, profile=profile)
             if content:

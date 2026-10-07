@@ -265,6 +265,58 @@ addressed "technical leaders" while the brand also sells to small-business owner
   one is regenerated through the same ONE-retry-then-research path as a topic repeat, with
   `cluster_avoidance_directive` naming the cluster.
 
+### Facts that must agree with a calendar (showcase round 6)
+
+The round-6 critic failed credibility on errors a reader can check: "Wednesday, June 22, 2026" (a
+Monday), a 30% result "within the first month" of a story dated six days earlier, an offer made on
+February 14 "aiming to finish in January", "6-part" on a five-slide deck, unsourced 79% / 13x, a
+"Senior Applied AI & Full-Stack Engineer" sign-off, and "e-commerce" framing six posts whose stories
+never mention it. Every rule below lives in the shared core and is deterministic.
+
+- **`utilities/ai/fact_consistency.py`** is the checker. `consistency_report(text, happened_at)`
+  bundles three checks. `weekday_mismatches` reads "Weekday, Month D, YYYY" in either order.
+  `deadline_contradictions` flags a same-sentence deadline month before the dated offer, with no
+  year it must sit more than 6 months ahead, so December → "in January" passes. `timeline_violations`
+  flags first-person, past-tense elapsed time ("within the first month", "three months later") longer
+  than now minus the anchoring story's `happened_at`, with one day of slack. An unknown, unreadable
+  or future date is never evidence.
+- **Deterministic first.** `_deterministic_fact_cleanup` drops a wrong weekday (never "corrects" it,
+  because the date may be the wrong half) and cuts a trailing job-title sign-off
+  (`strip_signature_lines`). It runs before the review gate, on the editor's repair, and on the final
+  text. A deck gets the same weekday fix on its caption and on every slide string.
+- **Then ONE repair, then a hold.** What survives the cleanup reaches `_review_generated_post` as a
+  `fact_consistency` finding (`quality_gates.fact_consistency_finding`, HOLDS). The editor is briefed
+  once. The repaired draft is re-graded and its verdict recorded. `evaluate_post_gates` re-checks the
+  calendar half live on every pass. The timeline half needs the story's date, so it is carried from
+  the record (`_carry_consistency_hold`). A clean draft clears a stale record. A deck has no editor
+  pass, so `create_carousel_content` records the caption + slides verdict against its story.
+- **Every number has a named source.** The research block recorded for the post's allow-list is
+  filtered to the sentences that NAME their source: a citation marker, URL, "according to", a
+  "(Publisher, 2025)" cite, or a named publisher's survey/report/study
+  (`named_source_material`). An unsourced research statistic is now an unbacked number, and gets the
+  same repair-then-hold as an invented one. Spelled multipliers ("thirteen-fold", "13×") are numeric
+  claims (`_SPELLED_FOLD_RE`).
+- **Deck counts in every phrasing.** `deck_count_claims` reads the hyphenated "N-part / N-step /
+  N-point" as well as "N steps / N insights / N tips". `reconcile_deck_counts` rewrites the cover in
+  its own form ("6-part" → "4-part"), and the `deck_count` gate holds the caption.
+- **Template slides.** `deck_substance_report` fails a body slide that carries no number, no
+  command/setting/threshold/rule/comparison, no named thing, and fewer than two particulars shared
+  with the caption and the story's facts. Template vocabulary ("challenge", "moves", "identify",
+  "step") does not count as shared. `ai_helper._repair_carousel_substance` regenerates the deck ONCE
+  and keeps the retry only when it is buildable, no worse on the reference gate, and has strictly
+  fewer thin slides.
+- **Stock openers are HARD on posts.** `slop_lint.CHECK_STOCK_OPENER` matches "In today's …
+  landscape/world", "In a world driven by data", "In the fast-paced world of …" and similar at a
+  sentence start. It is OFF by default and HARD on `post` (`SURFACE_SEVERITIES`).
+- **The profile's industry is context.** `story_directive` and `no_story_directive` carry
+  `INDUSTRY_CONTEXT_RULE`. The review gate's industry check reads the STORY BANK only
+  (`_industry_claims`). The profile no longer clears a claim. A profile industry term that frames the
+  post ("In AI-driven e-commerce, …", "the e-commerce landscape") is flagged even without a
+  first-person cue.
+
+Tests: `test_fact_consistency.py`, `test_content_core_r6.py`, `test_deck_substance.py`,
+`tests/unit/app/test_fact_consistency_wiring.py`.
+
 ### Save-targeted archetypes (issue #619)
 
 Two save-targeted post archetypes live in the same `POST_FORMATS` menu: `build_receipt` and

@@ -196,6 +196,7 @@ from cqc_lem.platform.db.repositories.curated_sources import (
     get_recent_curated_publishers,
     insert_curated_source,
     post_is_curated,
+    update_curated_source_og_image,
     update_curated_source_status,
 )
 from cqc_lem.platform.db.repositories.dashboard import get_planned_tasks
@@ -1423,6 +1424,7 @@ __all__ = [
     "update_company_linked_in_url_for_user",
     "update_connection_request",
     "update_connection_request_status",
+    "update_curated_source_og_image",
     "update_curated_source_status",
     "update_db_post",
     "update_db_post_authenticity_score",
