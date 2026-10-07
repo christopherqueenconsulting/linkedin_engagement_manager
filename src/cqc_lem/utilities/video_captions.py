@@ -262,6 +262,37 @@ def captions_allowed_on_avatar_video(user_id: Optional[int]) -> bool:
         return False
 
 
+def burned_caption_text(content: Optional[str], *, user_id: Optional[int] = None,
+                        avatar_led: bool = False) -> Optional[str]:
+    """The text `apply_captions_to_video` WILL burn onto this post's video, or None. Never raises.
+
+    The same `caption_lines` and the same two gates (the `VIDEO_CAPTIONS` flag; the avatar overlay
+    opt-in on an avatar-led frame), asked BEFORE the render — so the source frame's judge can read
+    the frame the way a viewer will, with its caption as the headline (PR #2249). None whenever no
+    caption would ship, because a headline the viewer never sees must not grade the frame.
+
+    Args:
+        content: The post's caption text.
+        user_id: The owner, for the flag and the opt-in.
+        avatar_led: The frame renders off the user's avatar.
+
+    Returns:
+        The caption as one line, or None.
+    """
+    try:
+        from cqc_lem.utilities.flags import VIDEO_CAPTIONS, flag_enabled
+
+        if not flag_enabled(VIDEO_CAPTIONS, user_id=user_id):
+            return None
+        if avatar_led and not captions_allowed_on_avatar_video(user_id):
+            return None
+        return " ".join(caption_lines(content)) or None
+    except Exception as e:
+        log_debug("Caption text unavailable for the frame judge", error=str(e), user_id=user_id,
+                  task_name=TASK_NAME)
+        return None
+
+
 def caption_srt_dir() -> str:
     """Where caption sidecars live inside the shared assets volume."""
     from cqc_lem import assets_dir

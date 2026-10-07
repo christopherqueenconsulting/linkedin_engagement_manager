@@ -215,3 +215,34 @@ def describe_for_prompt(kit: Optional[BrandKit]) -> str:
         parts.append(f"avoid: {', '.join(kit.avoid)}")
     text = "; ".join(parts)
     return text[0].upper() + text[1:] + "."
+
+
+def brand_clause_for_user(user_id: Optional[int]) -> str:
+    """The ONE resolver from a user to the brand clause every image brief carries. Never raises.
+
+    Lazy-imports the db facade so this module stays pure for its other callers. Every unhappy path
+    — no user, no kit, an unreadable kit, a DB fault — is the same answer as an empty kit: `""`,
+    which leaves the brief on its neutral grading. That is the expected state for most users, so it
+    logs at DEBUG.
+
+    Args:
+        user_id: The author whose kit to read; None for a surface with no user.
+
+    Returns:
+        `describe_for_prompt` of the saved kit, or `""`.
+    """
+    if not user_id:
+        return ""
+    try:
+        from cqc_lem.utilities.db import get_brand_kit
+        clause = describe_for_prompt(parse_brand_kit(get_brand_kit(user_id)))
+    except Exception as e:
+        from cqc_lem.utilities.logger import log_debug
+        log_debug("Brand kit unreadable — briefing without it", error=str(e), user_id=user_id,
+                  action_type="brand_kit")
+        return ""
+    if not clause:
+        from cqc_lem.utilities.logger import log_debug
+        log_debug("No brand kit — briefing on neutral grading", user_id=user_id,
+                  action_type="brand_kit")
+    return clause

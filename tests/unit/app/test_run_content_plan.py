@@ -11,6 +11,13 @@ importlib.import_module("pydantic.v1.types")
 
 from cqc_lem.utilities.db import PostType
 
+
+@pytest.fixture(autouse=True)
+def _no_clip_check(monkeypatch):
+    """The post-render clip check (#2249) downloads the clip; these tests pin other behaviour."""
+    monkeypatch.setenv("VIDEO_CLIP_CHECK_ENABLED", "false")
+
+
 # Wall-clock MUST be frozen mid-month here: the plan window derives its length from
 # `days_left_in_month`, and on the last 1-2 days of any month a `last_planned_date = now + 1`
 # test lands at or past the month boundary, where `_cadence_slots` returns 0 slots and the
@@ -721,7 +728,7 @@ class TestGetMainBlogUrlContent:
 
 class TestCreateVideoContent:
     @patch("cqc_lem.app.run_content_plan.create_runway_video", return_value="https://runway.video/abc.mp4")
-    @patch("cqc_lem.utilities.ai.image_gen.render_image_from_prompt", return_value="/tmp/image.png")
+    @patch("cqc_lem.utilities.ai.image_gen.render_image_gated", return_value="/tmp/image.png")
     @patch("cqc_lem.app.run_content_plan.get_runway_ml_video_prompt_from_ai", return_value="a cinematic scene" * 30)
     @patch("cqc_lem.app.run_content_plan.get_flux_image_prompt_from_ai", return_value="An inspiring image")
     @patch("cqc_lem.utilities.db.get_active_avatar", return_value=None)

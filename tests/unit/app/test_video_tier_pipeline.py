@@ -7,6 +7,34 @@ import pytest
 pytestmark = pytest.mark.unit
 
 
+@pytest.fixture(autouse=True)
+def _no_clip_check(monkeypatch):
+    """The post-render clip check (#2249) downloads the clip; these tests pin other behaviour."""
+    monkeypatch.setenv("VIDEO_CLIP_CHECK_ENABLED", "false")
+
+
+@pytest.fixture(autouse=True)
+def _piece_is_about_the_author():
+    """These tests pin the avatar path itself, so the post counts as being about the author.
+
+    The fit rule (`guardrails.avatar_fits_concept`, #2249) is pinned in test_image_engine_surfaces.
+    """
+    with patch("cqc_lem.utilities.avatar.guardrails.avatar_fits_concept", return_value=True):
+        yield
+
+
+@pytest.fixture(autouse=True)
+def _no_stage_one_or_brand_reads():
+    """Stub Stage 1 (an LLM call) and the brand kit (a DB read) to their neutral answers.
+
+    Both are wired into every image surface since issue #2241; these tests pin other behaviour.
+    Tests that care patch them again on top.
+    """
+    with patch("cqc_lem.utilities.ai.image_concept.analyze_content_for_image", return_value=None), \
+         patch("cqc_lem.utilities.brand_kit.brand_clause_for_user", return_value=""):
+        yield
+
+
 class TestPremiumTier:
     def test_mapping(self):
         from cqc_lem.app.run_content_plan import _premium_tier_for_quality
@@ -25,7 +53,7 @@ class TestGenerateVideoSrc:
              patch("cqc_lem.utilities.db.deduct_video_credits") as ded, \
              patch("cqc_lem.utilities.db.get_active_avatar", return_value=None), \
              patch("cqc_lem.app.run_content_plan.get_flux_image_prompt_from_ai", return_value="scene"), \
-             patch("cqc_lem.utilities.ai.image_gen.render_image_from_prompt", return_value="/tmp/i.png"), \
+             patch("cqc_lem.utilities.ai.image_gen.render_image_gated", return_value="/tmp/i.png"), \
              patch("cqc_lem.app.run_content_plan.get_runway_ml_video_prompt_from_ai", return_value="motion"), \
              patch("cqc_lem.app.run_content_plan.create_runway_video", return_value="https://x.mp4") as crv:
             from cqc_lem.app.run_content_plan import _generate_video_src
@@ -75,7 +103,7 @@ class TestGenerateVideoSrc:
              patch("cqc_lem.utilities.db.deduct_video_credits") as ded, \
              patch("cqc_lem.utilities.db.get_active_avatar", return_value=None), \
              patch("cqc_lem.app.run_content_plan.get_flux_image_prompt_from_ai", return_value="scene"), \
-             patch("cqc_lem.utilities.ai.image_gen.render_image_from_prompt", return_value="/tmp/i.png"), \
+             patch("cqc_lem.utilities.ai.image_gen.render_image_gated", return_value="/tmp/i.png"), \
              patch("cqc_lem.app.run_content_plan.get_runway_ml_video_prompt_from_ai", return_value="motion"), \
              patch("cqc_lem.app.run_content_plan.create_runway_video", return_value="https://x.mp4") as crv:
             from cqc_lem.app.run_content_plan import _generate_video_src
@@ -134,7 +162,7 @@ class TestAvatarOnStandardTier:
              patch("cqc_lem.utilities.avatar.guardrails.resolve_avatar_for", return_value=_ACTIVE_AVATAR), \
              patch("cqc_lem.app.run_content_plan.get_flux_image_prompt_from_ai", return_value="scene"), \
              patch("cqc_lem.utilities.ai.ai_helper.generate_post_image", return_value="/tmp/avatar.png") as gpi, \
-             patch("cqc_lem.utilities.ai.image_gen.render_image_from_prompt") as flux, \
+             patch("cqc_lem.utilities.ai.image_gen.render_image_gated") as flux, \
              patch("cqc_lem.app.run_content_plan.get_runway_ml_video_prompt_from_ai", return_value="motion"), \
              patch("cqc_lem.app.run_content_plan.create_runway_video", return_value="https://x.mp4") as crv:
             from cqc_lem.app.run_content_plan import _generate_video_src
@@ -153,7 +181,7 @@ class TestAvatarOnStandardTier:
              patch("cqc_lem.utilities.db.get_active_avatar", return_value=None), \
              patch("cqc_lem.app.run_content_plan.get_flux_image_prompt_from_ai", return_value="scene"), \
              patch("cqc_lem.utilities.ai.ai_helper.generate_post_image") as gpi, \
-             patch("cqc_lem.utilities.ai.image_gen.render_image_from_prompt", return_value="/tmp/i.png") as render, \
+             patch("cqc_lem.utilities.ai.image_gen.render_image_gated", return_value="/tmp/i.png") as render, \
              patch("cqc_lem.app.run_content_plan.get_runway_ml_video_prompt_from_ai", return_value="motion"), \
              patch("cqc_lem.app.run_content_plan.create_runway_video", return_value="https://x.mp4") as crv:
             from cqc_lem.app.run_content_plan import _generate_video_src
@@ -206,7 +234,7 @@ class TestDefaultVideoQualityPreference:
              patch("cqc_lem.utilities.db.deduct_video_credits") as ded, \
              patch("cqc_lem.utilities.db.get_active_avatar", return_value=None), \
              patch("cqc_lem.app.run_content_plan.get_flux_image_prompt_from_ai", return_value="scene"), \
-             patch("cqc_lem.utilities.ai.image_gen.render_image_from_prompt", return_value="/tmp/i.png"), \
+             patch("cqc_lem.utilities.ai.image_gen.render_image_gated", return_value="/tmp/i.png"), \
              patch("cqc_lem.app.run_content_plan.get_runway_ml_video_prompt_from_ai", return_value="motion"), \
              patch("cqc_lem.app.run_content_plan.create_runway_video", return_value="https://x.mp4") as crv:
             from cqc_lem.app.run_content_plan import _generate_video_src
@@ -243,7 +271,7 @@ class TestPersistedRenderModel:
              patch("cqc_lem.utilities.db.update_db_post_video_model", writer), \
              patch("cqc_lem.utilities.db.get_active_avatar", return_value=None), \
              patch("cqc_lem.app.run_content_plan.get_flux_image_prompt_from_ai", return_value="scene"), \
-             patch("cqc_lem.utilities.ai.image_gen.render_image_from_prompt", return_value="/tmp/i.png"), \
+             patch("cqc_lem.utilities.ai.image_gen.render_image_gated", return_value="/tmp/i.png"), \
              patch("cqc_lem.app.run_content_plan.get_runway_ml_video_prompt_from_ai",
                    return_value="motion"), \
              patch("cqc_lem.app.run_content_plan.create_folder_if_not_exists"), \
@@ -293,7 +321,7 @@ class TestPersistedRenderModel:
              patch("cqc_lem.utilities.db.update_db_post_video_model", writer), \
              patch("cqc_lem.utilities.db.get_active_avatar", return_value=None), \
              patch("cqc_lem.app.run_content_plan.get_flux_image_prompt_from_ai", return_value="scene"), \
-             patch("cqc_lem.utilities.ai.image_gen.render_image_from_prompt", return_value="/tmp/i.png"), \
+             patch("cqc_lem.utilities.ai.image_gen.render_image_gated", return_value="/tmp/i.png"), \
              patch("cqc_lem.app.run_content_plan.get_runway_ml_video_prompt_from_ai",
                    return_value="motion"), \
              patch("cqc_lem.app.run_content_plan.create_runway_video", return_value="https://x.mp4"):
@@ -406,7 +434,7 @@ class TestContentLanguageThreading:
              patch("cqc_lem.utilities.db.get_active_avatar", return_value=None), \
              patch("cqc_lem.utilities.db.get_user_content_language") as lang, \
              patch("cqc_lem.app.run_content_plan.get_flux_image_prompt_from_ai", return_value="scene"), \
-             patch("cqc_lem.utilities.ai.image_gen.render_image_from_prompt", return_value="/tmp/i.png"), \
+             patch("cqc_lem.utilities.ai.image_gen.render_image_gated", return_value="/tmp/i.png"), \
              patch("cqc_lem.app.run_content_plan.get_runway_ml_video_prompt_from_ai", return_value="motion"), \
              patch("cqc_lem.app.run_content_plan.create_runway_video", return_value="https://x.mp4"):
             from cqc_lem.app.run_content_plan import _generate_video_src

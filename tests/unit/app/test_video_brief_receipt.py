@@ -19,6 +19,24 @@ from cqc_lem.utilities.media_provenance import read_brief_receipt
 
 pytestmark = pytest.mark.unit
 
+
+@pytest.fixture(autouse=True)
+def _no_clip_check(monkeypatch):
+    """The post-render clip check (#2249) downloads the clip; these tests pin other behaviour."""
+    monkeypatch.setenv("VIDEO_CLIP_CHECK_ENABLED", "false")
+
+
+@pytest.fixture(autouse=True)
+def _no_stage_one_or_brand_reads():
+    """Stub Stage 1 (an LLM call) and the brand kit (a DB read) to their neutral answers.
+
+    Both are wired into every image surface since issue #2241; these tests pin other behaviour.
+    Tests that care patch them again on top.
+    """
+    with patch("cqc_lem.utilities.ai.image_concept.analyze_content_for_image", return_value=None), \
+         patch("cqc_lem.utilities.brand_kit.brand_clause_for_user", return_value=""):
+        yield
+
 _RCP = "cqc_lem.app.run_content_plan"
 
 
@@ -110,7 +128,7 @@ class TestPexelsFallbackKeepsNoBrief:
              patch("cqc_lem.utilities.db.get_active_avatar", return_value=None), \
              patch(f"{_RCP}.get_flux_image_prompt_from_ai", side_effect=_prompt), \
              patch(f"{_RCP}.get_runway_ml_video_prompt_from_ai", return_value="motion"), \
-             patch("cqc_lem.utilities.ai.image_gen.render_image_from_prompt",
+             patch("cqc_lem.utilities.ai.image_gen.render_image_gated",
                    return_value="/tmp/frame.png"), \
              patch(f"{_RCP}.create_runway_video", side_effect=RuntimeError("runway down")), \
              patch(f"{_RCP}._persist_video_model"), \
@@ -134,7 +152,7 @@ class TestPexelsFallbackKeepsNoBrief:
              patch("cqc_lem.utilities.db.get_active_avatar", return_value=None), \
              patch(f"{_RCP}.get_flux_image_prompt_from_ai", side_effect=_prompt), \
              patch(f"{_RCP}.get_runway_ml_video_prompt_from_ai", return_value="motion"), \
-             patch("cqc_lem.utilities.ai.image_gen.render_image_from_prompt",
+             patch("cqc_lem.utilities.ai.image_gen.render_image_gated",
                    return_value="/tmp/frame.png"), \
              patch(f"{_RCP}._persist_video_model"), \
              patch(f"{_RCP}.create_runway_video", return_value="https://runway.test/clip.mp4"):
@@ -155,9 +173,9 @@ class TestTheGateVerdictReachesTheReceipt:
     def _render(self, brief_info, verdict, *, avatar):
         """Drive `_generate_video_src` to a successful render.
 
-        `avatar=True` takes the gated source-frame branch (`generate_post_image`); `avatar=False`
-        takes the ungated `render_image_from_prompt` one, which grades nothing and therefore has no
-        verdict to hand back.
+        `avatar=True` takes the avatar source-frame branch (`generate_post_image`); `avatar=False`
+        takes the no-avatar standard-tier one, which renders through `render_image_gated` since
+        issue #2241 — both are graded, so both have a verdict to hand back.
         """
         def _prompt(*_args, brief_info=None, **_kwargs):
             brief_info["brief"] = _brief()
@@ -174,8 +192,7 @@ class TestTheGateVerdictReachesTheReceipt:
                    return_value={"model_ref": "user/lora"} if avatar else None), \
              patch(f"{_RCP}._check_avatar_likeness"), \
              patch("cqc_lem.utilities.ai.ai_helper.generate_post_image", side_effect=_frame), \
-             patch("cqc_lem.utilities.ai.image_gen.render_image_from_prompt",
-                   return_value="/tmp/frame.png"), \
+             patch("cqc_lem.utilities.ai.image_gen.render_image_gated", side_effect=_frame), \
              patch(f"{_RCP}.get_flux_image_prompt_from_ai", side_effect=_prompt), \
              patch(f"{_RCP}.get_runway_ml_video_prompt_from_ai", return_value="motion"), \
              patch(f"{_RCP}._persist_video_model"), \
@@ -188,12 +205,18 @@ class TestTheGateVerdictReachesTheReceipt:
         assert self._render(brief_info, "accepted", avatar=True) == "https://runway.test/clip.mp4"
         assert brief_info["gate_verdict"] == "accepted"
 
-    def test_an_ungraded_frame_reports_no_verdict_rather_than_a_made_up_one(self):
-        # The no-avatar standard tier renders through `render_image_from_prompt`, which is not the
-        # gated entry point — so there is no verdict, and the receipt must say nothing rather than
-        # inherit one.
+    def test_the_no_avatar_frame_is_graded_and_its_verdict_travels_too(self):
+        # Issue #2241: the no-avatar standard tier used to render ungated and report nothing. It
+        # now goes through `render_image_gated`, so its verdict reaches the receipt like any other.
+        # (A REJECTED frame is never animated at all since #2249 — test_image_engine_surfaces.)
         brief_info: dict = {}
-        self._render(brief_info, "accepted", avatar=False)
+        assert self._render(brief_info, "unchecked", avatar=False) == "https://runway.test/clip.mp4"
+        assert brief_info["gate_verdict"] == "unchecked"
+
+    def test_a_frame_the_gate_never_reported_on_records_no_verdict(self):
+        # The receipt must say nothing rather than inherit a made-up verdict.
+        brief_info: dict = {}
+        assert self._render(brief_info, None, avatar=False) == "https://runway.test/clip.mp4"
         assert "gate_verdict" not in brief_info
 
     def test_the_stored_receipt_carries_the_verdict(self, tmp_path, monkeypatch):
@@ -223,7 +246,7 @@ class TestTheGateVerdictReachesTheReceipt:
              patch("cqc_lem.utilities.db.get_active_avatar", return_value=None), \
              patch(f"{_RCP}.get_flux_image_prompt_from_ai", side_effect=_prompt), \
              patch(f"{_RCP}.get_runway_ml_video_prompt_from_ai", return_value="motion"), \
-             patch("cqc_lem.utilities.ai.image_gen.render_image_from_prompt",
+             patch("cqc_lem.utilities.ai.image_gen.render_image_gated",
                    return_value="/tmp/frame.png"), \
              patch(f"{_RCP}.create_runway_video", side_effect=RuntimeError("runway down")), \
              patch(f"{_RCP}._persist_video_model"), \

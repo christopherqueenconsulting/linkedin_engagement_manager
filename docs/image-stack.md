@@ -482,6 +482,45 @@ when a single number or contrast IS the thesis. Then `enforce_graphic_cap` makes
 ONE graphic in any `GRAPHIC_WINDOW` (3) consecutive covers — a graphic within two of the last one
 becomes a `people_scene`, noted in `treatment_rationale`.
 
+**Every surface with a user runs all four stages**, Stage 1 ONCE per artifact, and briefs with the
+user's brand clause (`brand_kit.brand_clause_for_user`):
+
+| Surface | Stage 1 reads | Brand | Judge sees the concept | Ratio |
+|---|---|---|---|---|
+| Newsletter cover (`newsletter_cover.generate_cover_for_edition`) | title + subtitle + full body | yes | base + avatar | 16:9 |
+| Post image (`post_image.generate_image_for_post`) | the post text | yes | base + avatar (avatar only when the post is about the author; one gpt-image retry if the avatar render is unusable); rubric + `render_path` on the receipt | `POST_IMAGE_RATIO`, default **4:5** |
+| Carousel slide (`carousel_creator`, avatar slides) | the WHOLE carousel, once per deck, lazily — only if a slide wants an image | yes | avatar-eligible slides (the likeness only when the deck is about the author) | 1:1 |
+| Carousel stock query (`derive_image_query`) | the same per-deck concept: its visual anchors (never its facts — a name or number is not a stock photo) ARE the Pexels query, so no per-slide `lem-simple` call | — | — | — |
+| Video source frame (`run_content_plan._generate_video_src`) | the post text | yes | every frame, ENFORCED (incl. the standard-tier no-avatar frame, which was ungated); a rejected frame is never animated; the judge reads the caption that will be burned on (`video_captions.burned_caption_text`) as its headline — judge-only, never composited; the likeness only when the post is about the author | tier's ratio |
+| Video motion prompt (`get_runway_ml_video_prompt_from_ai`) | the same concept: thesis + emotional beat reach the motion author, plus `MOTION_DISCIPLINE` | — | — | — |
+| Video clip (`utilities/video_clip_check.py`) | — | — | 3 sampled frames, one `lem-vision` call; a defect buys ONE re-render | — |
+| Admin variants (`generate_variants`) | the source text, once per batch | yes | per variant | per combo |
+| Tutorial thumbnail (`video_tutorials`) | the title (no user, so no brand) | — | yes | 16:9 |
+
+**The video frame's headline is its caption.** `_caption_video_asset` burns the post's first 1-2
+lines onto the stored MP4, so a viewer sees the frame WITH that text; judged without it, a person
+with no context scored specificity 2-3 on every gauntlet frame. `video_captions.burned_caption_text`
+returns exactly what the burn will use (same `caption_lines`, same flag and avatar-overlay gates;
+None when nothing would be burned), and it is passed as the frame's `hook_text`. It reaches the
+judge only: `video` is never in `COMPOSE_SURFACES`, so nothing is composited, the scene keeps its
+ratio, and `hook_text` never enters a render prompt.
+
+**Video (PR #2249 video gauntlet).** Both gauntlet frames failed an advisory gate and were animated
+anyway, so Runway spent a render on a frame the judge disliked. The frame gate is now ENFORCED for
+video — `video` joins the `IMAGE_QUALITY_GATE_SURFACES` default, and the video path passes
+`enforce=True` so a deployment env that predates it cannot turn it back off — with the usual
+`IMAGE_GATE_MAX_ATTEMPTS` (2) and repair round. A frame still `rejected` raises
+`SourceFrameRejected` into the existing Pexels fallback (logged INFO, credits refunded); an
+`unchecked` one still animates. Every motion prompt carries `ai_helper.MOTION_DISCIPLINE`: ONE
+subtle continuous action expressing the beat, camera locked or one slow push-in, nothing new enters
+the frame, natural limbs, screens dark and unchanged — phrased positively in the output. After
+Runway returns, `video_clip_check.check_clip_url` samples frames at 1s, 2.5s and 4.5s (ffmpeg) and
+asks `lem-vision`, in ONE call, whether objects or people appear or disappear, limbs or faces
+distort, or text/UI appears. Any yes buys ONE re-render with `repair_clause` (naming the defect)
+appended within the 512-char cap; the record (`first`, `retry`, `shipped`) rides on the MP4's
+receipt as `clip_check`. Fails open on every error (WARNING with `exc=`); off with
+`VIDEO_CLIP_CHECK_ENABLED=false`, read at call time.
+
 **Treatments** (`_TREATMENT_TEMPLATES`; Stage 1 picks, an avatar always forces `people_scene`
 because a person IS the subject and the LoRA cannot set type):
 
@@ -503,7 +542,9 @@ hourglass, domino, chain link, maze, ladder, lock and key/padlock, crystal ball,
 money and stock-business imagery (round 1 shipped a stack of $100 bills): stack/pile/bundle of cash,
 pile of money, dollar bills, banknotes, pile/stack of coins, piggy bank, money bag, a calculator with
 coins, shaking hands, thumbs up, holograms, a glowing dashboard, data streams — plus the stock office
-(#1992): person at a laptop, typing hands, hands on a keyboard, coffee with a notebook. Matched by
+(#1992): person at a laptop, typing hands, hands on a keyboard, coffee with a notebook — and the
+data-center set every rejected post render of the #2249 gauntlet reached for: server racks, a data
+center aisle, blinking server lights, a wall of monitors, a stock trading chart screen. Matched by
 `cliche_hit` as whole words, EVERY word in any inflection (`pipes`, `stacks of cash`), multi-word
 entries with an optional article between words, pairings (coffee + notebook, calculator + coins)
 anywhere in the text; "target audience" and the other business
@@ -548,11 +589,14 @@ and composition", and never change the treatment.
 fields.
 
 **`brand_kit`** is a pre-rendered brand clause (palette, type) folded into the AUTHOR's context
-only — never into the fallback. The brand-kit table that produces it is a separate change.
+only — never into the fallback. `brand_kit.brand_clause_for_user(user_id)` is the ONE resolver every
+call site uses: it never raises, and no user, no kit or an unreadable read are all `""`.
 
-**Cost.** Stage 1 (`lem-medium`) and Stage 3 (`lem-simple`) add two text calls to every brief —
-including each carousel slide and post image, which call `build_image_brief` without a concept. Both
-fail soft and are text-only, an order of magnitude below the render they steer.
+**Cost.** Stage 1 (`lem-medium`) and Stage 3 (`lem-simple`) add two text calls per brief; both fail
+soft and are text-only, an order of magnitude below the render they steer. **Stage 1 never runs
+twice per artifact:** a caller that ran it passes the result as `concept=` — None included, which
+means "ran, nothing usable" — and `build_image_brief` analyses only when left at its
+`NOT_ANALYZED` default.
 
 ## `image_brief.py` — the ONE prompt author
 
@@ -605,7 +649,12 @@ the five live editions of #1992 that put four of five covers on the deterministi
 - **`gpt-image`** / **`flux`**: force one backend, no cross-fallback.
 
 Ratios map to the three sizes gpt-image accepts (`1:1`, `16:9`, `9:16`); anything else falls back to
-square. Replicate renders are bounded (`REPLICATE_TIMEOUT_SECONDS`, 300s, 2 attempts) so a hung
+square. **4:5** (post images) is the exception: gpt-image renders it at 1024x1536 and
+`conform_to_ratio` crops the file to exactly 1024x1280 — deterministic, before the judge sees
+it, on the gpt-image, FLUX and avatar paths alike. The crop PROTECTS THE TOP, where the hook sits:
+48px off the top and 208px off the bottom (`_CROP_TOP_PX` / `_CROP_BOTTOM_PX`; other heights split
+the excess 48:208). A centred crop cut 128px off the top and clipped headlines on the #2249 gauntlet. FLUX/Replicate is asked for `aspect_ratio="4:5"`
+natively, and a render already at the aspect is left alone. Replicate renders are bounded (`REPLICATE_TIMEOUT_SECONDS`, 300s, 2 attempts) so a hung
 prediction can't stall a Celery worker forever. The run uses `wait=False`, so the create request
 returns at once and GET polls do the waiting inside that bound — the SDK's held-open create (60.5s
 read, never retried) timed out a slow avatar LoRA start before the bound applied. Cost is attributed via `track_media_cost`, with the
@@ -723,6 +772,27 @@ this module only for the non-avatar case; `render_avatar_image_gated` is the gat
 owner. Newsletter covers add a fail-closed relevance classifier on the Auto path
 (`utilities/newsletter_cover.py`, see `docs/newsletter-covers.md`).
 
+**Policy allows it ≠ the piece wants it (#2249 gauntlet).** All three of user 1's text posts came
+back with NO image: the avatar was on, every post took the FLUX-dev LoRA, and its posed smiling
+portraits, mugs, cluttered screens and server racks failed the judge — rightly. So on the surfaces
+that have a Stage 1 concept (post images, the video source frame, carousel slides) the likeness is
+put in frame only when `guardrails.resolve_avatar_for_concept` says so: policy
+(`resolve_avatar_for`) first, then `avatar_fits_concept` — a `people_scene` whose concept names
+the author or speaks in the first person, or a first-person post. Everything else renders without
+the likeness through gpt-image. An explicit compose-time `posts.use_avatar = true` still wins. The
+carousel reads the same rule through `generate_post_image(depicts_person=...)`, so the likeness
+still only renders behind `resolve_avatar_for`.
+
+When the avatar IS used, its brief carries `avatar_directive(concept)`: the author mid-action with
+the concept's emotional beat in their expression and hands, gaze on the work, screens dark or out of
+focus — phrased positively, since FLUX ignores negation — and `_rejection` refuses an avatar prompt
+that poses the author (`_AVATAR_POSE`: looking/smiling at the camera, eye contact, posed, headshot,
+a coffee mug). And a post image never ships bare because of the LoRA alone: if the avatar render is
+rejected, empty, raises (a Replicate 5xx) or came from the in-renderer base-FLUX fallback without an
+`accepted` verdict, `generate_image_for_post` re-briefs WITHOUT the likeness on the SAME concept and
+makes ONE `render_image_gated` attempt, logged at INFO. The receipt's `render_path` (`avatar` /
+`base` / `base_after_avatar`) and `avatar_fallback_reason` say which won.
+
 ## Post images — the author's own half (issue #1030)
 
 `utilities/post_image.py` is the ONE place a POST's image is validated, stored and removed. It adds
@@ -839,8 +909,10 @@ SPA's **Content & Publishing → Brand kit** card, and read with `db.get_brand_k
 |---|---|
 | `IMAGE_BACKEND` | `auto` (default) / `gpt-image` / `flux` |
 | `POST_IMAGE_GENERATE_MAX_PER_HOUR` | Manual post-image generations per user per hour (20) |
+| `POST_IMAGE_RATIO` | Post-image ratio, read at call time: `4:5` (default), `1:1`, `16:9`, `9:16` |
 | `DEFAULT_IMAGE_MODEL` | Model handed to the `lem-image` group |
 | `IMAGE_QUALITY` | gpt-image quality tier |
-| `IMAGE_QUALITY_GATE_SURFACES` | Surfaces where the vision gate is enforced, not advisory |
+| `IMAGE_QUALITY_GATE_SURFACES` | Surfaces where the vision gate is enforced, not advisory (`newsletter,post_image,video`; the video frame is enforced regardless) |
+| `VIDEO_CLIP_CHECK_ENABLED` | Post-render clip check (default on), read at call time |
 | `IMAGE_GATE_MAX_ATTEMPTS` | Total renders allowed per gated request |
 | `REPLICATE_TIMEOUT_SECONDS` | Bound on a single FLUX/Replicate prediction |

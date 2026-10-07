@@ -42,6 +42,16 @@ from cqc_lem.utilities.media_provenance import write_brief_receipt
 POST_IMAGE_SUBDIR = "images/posts"
 POST_IMAGE_PREVIEW_SUBDIR = "images/post_previews"
 
+# 4:5 portrait by default (`post_image_ratio`); the others are what the renderers support.
+DEFAULT_POST_IMAGE_RATIO = "4:5"
+POST_IMAGE_RATIOS = ("4:5", "1:1", "16:9", "9:16")
+# Which render produced the stored image — recorded on the receipt (#2249 gauntlet).
+RENDER_PATH_AVATAR = "avatar"
+RENDER_PATH_BASE = "base"
+RENDER_PATH_BASE_FALLBACK = "base_after_avatar"
+# The staged judge's WHY, recorded on the receipt beside the stored render (issue #2241).
+GATE_RECEIPT_KEYS = ("gate_rubric", "gate_failing", "gate_issues", "gate_blind_description")
+
 MAX_POST_IMAGE_BYTES = 8 * 1024 * 1024
 # Below this a LinkedIn image share renders as a blurry thumbnail rather than media.
 MIN_POST_IMAGE_WIDTH = 400
@@ -264,6 +274,59 @@ def claim_manual_generation(user_id: int) -> bool:
         return True
 
 
+def _gate_log_fields(render_info: dict) -> dict:
+    """The judge's verdict as log fields: rubric, failing criteria, issues and blind description."""
+    fields = {key: render_info[key] for key in GATE_RECEIPT_KEYS if render_info.get(key)}
+    if "gate_rubric" in fields:
+        fields["gate_rubric"] = ", ".join(f"{k}={v}" for k, v in fields["gate_rubric"].items())
+    for key in ("gate_failing", "gate_issues"):
+        if key in fields:
+            fields[key] = "; ".join(str(i) for i in fields[key])
+    return fields
+
+
+def _render_avatar_post_image(brief, avatar: dict, user_id: int, post_id: Optional[int],
+                              ratio: str, render_info: dict) -> "tuple[Optional[str], Optional[str]]":
+    """The LoRA render of a post image, and why it is unusable (None when it is usable).
+
+    Unusable means: the render raised (a Replicate 5xx), produced nothing, was REJECTED by the
+    gate, or came back from the base-FLUX fallback inside the avatar renderer without the gate
+    accepting it — the likeness never rendered, and FLUX is the weaker brief-follower.
+
+    Returns:
+        ``(path, fallback_reason)``.
+    """
+    from cqc_lem.utilities.ai.image_gen import render_avatar_image_gated
+    try:
+        path = render_avatar_image_gated(
+            brief.prompt, avatar=avatar, user_id=user_id, surface="post_image",
+            ratio=ratio, focal_concept=brief.focal_concept, post_id=post_id,
+            render_info=render_info, concept=brief.concept, hook_text=brief.hook_text)
+    except Exception as e:
+        return None, f"avatar render raised {type(e).__name__}: {e}"[:200]
+    if not path or not os.path.isfile(path):
+        return None, "avatar render returned nothing"
+    verdict = render_info.get("gate_verdict")
+    if verdict == "rejected":
+        return path, "avatar render rejected by the quality gate"
+    if render_info.get("used_avatar") is False and verdict != "accepted":
+        return path, "avatar inference failed and the base-FLUX fallback was not accepted"
+    return path, None
+
+
+def post_image_ratio() -> str:
+    """The ratio a post image renders at — ``POST_IMAGE_RATIO``, read at call time, default 4:5.
+
+    4:5 portrait takes more of the LinkedIn feed than a square does. An unsupported value falls
+    back to the default rather than reaching a renderer that would quietly square it.
+
+    Returns:
+        One of ``POST_IMAGE_RATIOS``.
+    """
+    ratio = (os.getenv("POST_IMAGE_RATIO") or DEFAULT_POST_IMAGE_RATIO).strip()
+    return ratio if ratio in POST_IMAGE_RATIOS else DEFAULT_POST_IMAGE_RATIO
+
+
 def generate_image_for_post(user_id: int, text: str, post_id: Optional[int] = None
                             ) -> "tuple[Optional[str], Optional[str]]":
     """Render the image a text post publishes with.
@@ -274,14 +337,29 @@ def generate_image_for_post(user_id: int, text: str, post_id: Optional[int] = No
     author's edit — down with it. The avatar rides the EXISTING ``post_image`` surface and is
     resolved BEFORE the brief is authored, so the declared subject clause leads the prompt (#744).
     A final ``rejected`` gate verdict is never stored (#2105); an ``unchecked`` one fails open.
+
+    The staged engine (issue #2241), as for newsletter covers: Stage 1 reads the post ONCE, the
+    brief is authored from that concept plus the user's brand clause, and the render is graded by
+    the blind judge against the same concept on both the base and avatar paths. The judge's rubric
+    rides into the brief receipt.
+
+    The likeness renders only when the piece is about the author
+    (``guardrails.resolve_avatar_for_concept``). When it does and the LoRA render is unusable —
+    rejected, empty, or a Replicate error — ONE gpt-image attempt without the likeness runs before
+    the post ships bare; the receipt's ``render_path`` says which won (#2249 gauntlet).
     """
     if not text or not text.strip():
         return None, "Write the post content first — the image is drawn from it"
 
     from cqc_lem.utilities.ai.image_brief import build_image_brief
-    from cqc_lem.utilities.avatar.guardrails import AVATAR_SURFACE_POST_IMAGE, resolve_avatar_for
-    from cqc_lem.utilities.env_constants import DEFAULT_IMAGE_RATIO
+    from cqc_lem.utilities.ai.image_concept import analyze_content_for_image
+    from cqc_lem.utilities.avatar.guardrails import (
+        AVATAR_SURFACE_POST_IMAGE,
+        resolve_avatar_for_concept,
+    )
+    from cqc_lem.utilities.brand_kit import brand_clause_for_user
 
+    ratio = post_image_ratio()
     profile = None
     try:
         from cqc_lem.utilities.linkedin.helper import load_profile_for_user
@@ -290,40 +368,63 @@ def generate_image_for_post(user_id: int, text: str, post_id: Optional[int] = No
         log_debug("Profile load skipped for post image", error=str(e), user_id=user_id,
                   action_type="post_image")
 
+    concept = analyze_content_for_image(text, surface="post_image", user_id=user_id)
     try:
-        avatar = resolve_avatar_for(user_id, surface=AVATAR_SURFACE_POST_IMAGE, post_id=post_id)
+        # Stage 1 first, because whether the author belongs in frame is a question about the piece.
+        avatar = resolve_avatar_for_concept(user_id, surface=AVATAR_SURFACE_POST_IMAGE,
+                                            concept=concept, source_text=text, post_id=post_id)
     except Exception as e:
         log_warning("Avatar check failed for post image — rendering without", exc=e,
                     user_id=user_id, post_id=post_id, action_type="post_image")
         avatar = None
 
+    brand = brand_clause_for_user(user_id)
     try:
-        brief = build_image_brief(text, surface="post_image", ratio=DEFAULT_IMAGE_RATIO,
-                                  profile=profile, avatar=avatar)
+        brief = build_image_brief(text, surface="post_image", ratio=ratio,
+                                  profile=profile, avatar=avatar, concept=concept,
+                                  brand_kit=brand)
     except Exception as e:
         log_warning("Post image prompt failed", exc=e, user_id=user_id, post_id=post_id,
                     action_type="post_image")
         return None, "Could not write an image prompt"
 
     render_info: dict = {}
-    try:
-        if avatar:
-            from cqc_lem.utilities.ai.image_gen import render_avatar_image_gated
-            rendered = render_avatar_image_gated(
-                brief.prompt, avatar=avatar, user_id=user_id, surface="post_image",
-                ratio=DEFAULT_IMAGE_RATIO, focal_concept=brief.focal_concept, post_id=post_id,
-                render_info=render_info)
-        else:
+    render_path = RENDER_PATH_BASE
+    fallback_reason: Optional[str] = None
+    rendered: Optional[str] = None
+    if avatar:
+        rendered, fallback_reason = _render_avatar_post_image(brief, avatar, user_id, post_id,
+                                                              ratio, render_info)
+        render_path = RENDER_PATH_AVATAR
+        if fallback_reason:
+            # ONE non-avatar attempt before giving up: the stricter gate must not silently strip
+            # images off posts because the LoRA could not follow a brief (#2249 gauntlet).
+            log_info("Avatar post image unusable — one gpt-image attempt without the likeness",
+                     user_id=user_id, post_id=post_id, action_type="post_image",
+                     reason=fallback_reason, **_gate_log_fields(render_info))
+            render_path = RENDER_PATH_BASE_FALLBACK
+            render_info = {}
+            try:
+                brief = build_image_brief(text, surface="post_image", ratio=ratio,
+                                          profile=profile, avatar=None, concept=concept,
+                                          brand_kit=brand)
+            except Exception as e:
+                log_warning("Post image prompt failed", exc=e, user_id=user_id, post_id=post_id,
+                            action_type="post_image")
+                return None, "Could not write an image prompt"
+    if render_path != RENDER_PATH_AVATAR:
+        try:
             from cqc_lem.utilities.ai.image_gen import render_image_gated
             rendered = render_image_gated(brief.prompt, surface="post_image",
-                                          ratio=DEFAULT_IMAGE_RATIO,
+                                          ratio=ratio,
                                           focal_concept=brief.focal_concept,
                                           user_id=user_id, post_id=post_id,
-                                          render_info=render_info)
-    except Exception as e:
-        log_warning("Post image generation failed", exc=e, user_id=user_id, post_id=post_id,
-                    action_type="post_image")
-        return None, "Image generation failed"
+                                          render_info=render_info, concept=brief.concept,
+                                          hook_text=brief.hook_text)
+        except Exception as e:
+            log_warning("Post image generation failed", exc=e, user_id=user_id, post_id=post_id,
+                        action_type="post_image")
+            return None, "Image generation failed"
 
     if not rendered or not os.path.isfile(rendered):
         log_warning("Post image generation returned no image", user_id=user_id, post_id=post_id,
@@ -333,8 +434,12 @@ def generate_image_for_post(user_id: int, text: str, post_id: Optional[int] = No
     if render_info.get("gate_verdict") == "rejected":
         # The gate LOOKED and said no on the final candidate (issue #2105). Failing open is for a
         # gate that could not run (`unchecked`); a rejection means the post ships with no image.
+        # Nothing is stored, so nothing carries a receipt — the log IS the rejection record, and
+        # it carries the judge's whole WHY so a bare post is diagnosable (#2249 gauntlet).
         log_info("Post image rejected by the quality gate — the post ships without one",
-                 user_id=user_id, post_id=post_id, action_type="post_image")
+                 user_id=user_id, post_id=post_id, action_type="post_image",
+                 render_path=render_path, avatar_fallback_reason=fallback_reason,
+                 **_gate_log_fields(render_info))
         return None, GATE_REJECTED_REASON
 
     stored = store_rendered_post_image(user_id, rendered, post_id=post_id)
@@ -342,7 +447,15 @@ def generate_image_for_post(user_id: int, text: str, post_id: Optional[int] = No
         return None, "Could not store the generated image"
     # Recorded against the STORED url, not the temp render: the receipt is keyed by the value that
     # lands on `posts.image_url`, which is the only handle a later audit has (issue #1377).
+    gate_detail = {key: render_info[key] for key in GATE_RECEIPT_KEYS if key in render_info}
+    gate_detail["render_path"] = render_path
+    if fallback_reason:
+        gate_detail["avatar_fallback_reason"] = fallback_reason
     write_brief_receipt(stored, brief, post_id=post_id, user_id=user_id,
-                        gate_verdict=render_info.get("gate_verdict"))
-    log_info("Generated post image", user_id=user_id, post_id=post_id, action_type="post_image")
+                        gate_verdict=render_info.get("gate_verdict"), extra=gate_detail)
+    # The verdict is ON the log line: an `unchecked` image (judge unreachable twice) ships, as it
+    # always has, but is never indistinguishable from a graded one again (#2249 gauntlet).
+    log_info("Generated post image", user_id=user_id, post_id=post_id, action_type="post_image",
+             gate_verdict=render_info.get("gate_verdict"), render_path=render_path,
+             gate_issues="; ".join(str(i) for i in render_info.get("gate_issues") or []))
     return stored, None

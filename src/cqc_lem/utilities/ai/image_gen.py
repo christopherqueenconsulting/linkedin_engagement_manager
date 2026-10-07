@@ -16,7 +16,6 @@ for covers the human ``pending_review`` gate still sits behind this one.
 """
 
 import base64
-import json
 import os
 import re
 import secrets
@@ -37,12 +36,26 @@ from cqc_lem.utilities.env_constants import (
 )
 from cqc_lem.utilities.logger import log_debug, log_info, log_warning
 
-# gpt-image accepts exactly these; anything else falls back to square.
+# gpt-image accepts exactly these; anything else falls back to square. 4:5 is NOT a gpt-image size
+# (gpt-image-2 may take other multiples of 16, but nothing here relies on that): it renders at the
+# portrait size and `conform_to_ratio` crops the result (top-protecting) before the judge sees it.
 _SIZE_BY_RATIO = {
     "1:1": "1024x1024",
     "16:9": "1536x1024",
     "9:16": "1024x1536",
+    "4:5": "1024x1536",
 }
+
+# Ratios a render is cropped to after it lands, as (width, height) parts. 1024x1536 -> 1024x1280.
+_CROP_RATIOS = {"4:5": (4, 5)}
+# A render already within this of the target aspect is left alone (FLUX takes "4:5" natively).
+_CROP_TOLERANCE = 0.01
+# Where a portrait render loses its excess height (#2249 gauntlet): post images put the hook in the
+# top third, and a CENTRED 1024x1536 -> 1024x1280 crop cut 128px off the top — the headline's top
+# line on 2 of 5 renders. So the top loses 48px and the bottom 208px; on any other height the excess
+# is split in the same 48:208 proportion. Width trims (too-wide renders) stay centred.
+_CROP_TOP_PX = 48
+_CROP_BOTTOM_PX = 208
 
 # Replicate renders are bounded so a hung prediction can't stall a Celery worker forever.
 _REPLICATE_TIMEOUT_SECONDS = int(os.getenv("REPLICATE_TIMEOUT_SECONDS", "300"))
@@ -209,10 +222,57 @@ class QualityVerdict:
 def size_for_ratio(ratio: str) -> str:
     """The gpt-image `size` for an aspect ratio; anything unrecognised falls back to square.
 
-    Only the three ratios the surfaces render at map to a size the API accepts, so an unknown ratio
+    Only the ratios the surfaces render at map to a size the API accepts, so an unknown ratio
     degrades to 1024x1024 rather than being passed through as a size the request would fail on.
+    4:5 maps to the portrait size; ``conform_to_ratio`` crops it afterwards.
     """
     return _SIZE_BY_RATIO.get(ratio, "1024x1024")
+
+
+def conform_to_ratio(path: Optional[str], ratio: str) -> Optional[str]:
+    """Crop a render in place to ``ratio`` when that ratio is one no backend renders natively.
+
+    Deterministic: the largest box of the target aspect, so a 1024x1536 gpt-image render becomes
+    exactly 1024x1280 for 4:5 — TOP-PROTECTING, not centred: 48px off the top and 208px off the
+    bottom (``_CROP_TOP_PX`` / ``_CROP_BOTTOM_PX``), because the hook sits in the top third. A
+    too-wide render is trimmed evenly from both sides. Only ratios in ``_CROP_RATIOS`` are touched, and a render
+    already at the aspect (FLUX/Replicate takes ``aspect_ratio="4:5"``) is left as it is. Runs
+    before the vision judge, so the judge grades what will ship.
+
+    Never raises: an unreadable file is returned unchanged and the gate decides what it is worth.
+
+    Args:
+        path: The rendered file, or None when nothing rendered.
+        ratio: The ratio the caller asked for, e.g. ``"4:5"``.
+
+    Returns:
+        ``path`` (the same file, possibly cropped), or None when ``path`` was None.
+    """
+    parts = _CROP_RATIOS.get(ratio)
+    if not path or not parts:
+        return path
+    try:
+        from PIL import Image
+        with Image.open(path) as img:
+            width, height = img.size
+            target = parts[0] / parts[1]
+            if abs(width / height - target) <= _CROP_TOLERANCE:
+                return path
+            if width / height > target:
+                new_w, new_h = int(round(height * target)), height
+            else:
+                new_w, new_h = width, int(round(width / target))
+            excess = height - new_h
+            left = (width - new_w) // 2
+            top = excess * _CROP_TOP_PX // (_CROP_TOP_PX + _CROP_BOTTOM_PX)
+            image_format = img.format
+            cropped = img.crop((left, top, left + new_w, top + new_h))
+            cropped.load()
+        cropped.save(path, format=image_format)
+        log_debug("Render cropped to ratio", ratio=ratio, size=f"{new_w}x{new_h}")
+    except Exception as e:
+        log_warning("Could not crop render to ratio — keeping it uncropped", exc=e, ratio=ratio)
+    return path
 
 
 def _save_image_bytes(data: bytes, user_id: Optional[int], extension: str = ".png") -> str:
@@ -335,16 +395,18 @@ def _render_with_backend(prompt: str, *, ratio: str = "1:1",
 
     if backend in ("auto", "gpt-image"):
         try:
-            return _render_via_gpt_image(with_no_marks(prompt, "gpt-image", scene=scene),
+            path = _render_via_gpt_image(with_no_marks(prompt, "gpt-image", scene=scene),
                                          ratio=ratio, quality=quality, user_id=user_id,
-                                         post_id=post_id, surface=surface), "gpt-image"
+                                         post_id=post_id, surface=surface)
+            return conform_to_ratio(path, ratio), "gpt-image"
         except Exception as e:
             if backend == "gpt-image":
                 raise
             log_warning("gpt-image render failed — falling back to FLUX", exc=e,
                         user_id=user_id, post_id=post_id, api_provider="openai", surface=surface)
-    return _render_via_flux(with_no_marks(prompt, "flux", scene=scene), ratio=ratio,
-                            image_model=image_model, user_id=user_id, surface=surface), "flux"
+    path = _render_via_flux(with_no_marks(prompt, "flux", scene=scene), ratio=ratio,
+                            image_model=image_model, user_id=user_id, surface=surface)
+    return conform_to_ratio(path, ratio), "flux"
 
 
 def render_image_from_prompt(prompt: str, *, ratio: str = "1:1",
@@ -410,6 +472,36 @@ _STRICT_MIN_RELEVANCE = 4
 _VISION_GATE_DETAIL = "high"
 
 
+def _judge_json(response: Any, which: str) -> dict:
+    """The judge's JSON object, tolerant of a fenced reply. Raises when there is none.
+
+    A strict parse turned a fenced reply into an ``unchecked`` pass; an empty one (a spent token
+    budget) now says so in the reason instead of as a bare decode error.
+    """
+    from cqc_lem.utilities.ai.ai_helper import _loads_json_object
+
+    choice = response.choices[0]
+    raw = choice.message.content or ""
+    parsed = _loads_json_object(raw)
+    if not isinstance(parsed, dict):
+        raise ValueError(f"{which} reply was not a JSON object "
+                         f"(finish_reason={getattr(choice, 'finish_reason', None)}, "
+                         f"{len(raw)} chars)")
+    return parsed
+
+
+def _unchecked(e: Exception, surface: Optional[str], which: str) -> QualityVerdict:
+    """The fail-open verdict for a judge that could not run — LOGGED, with its reason.
+
+    WARNING with ``exc=``, never DEBUG: an unchecked render ships ungraded, and a silent one is
+    indistinguishable from a judged pass until someone looks at the image.
+    """
+    reason = f"{which} judge unavailable: {type(e).__name__}: {e}"[:300]
+    log_warning("Image judge could not grade the render — failing open", exc=e,
+                surface=surface, action_type="image_gate", judge=which)
+    return QualityVerdict(acceptable=True, checked=False, issues=[reason])
+
+
 def _legacy_inspect(image_path: str, focal_concept: str,
                     surface: Optional[str]) -> QualityVerdict:
     """The single-call gate, graded against the brief's own focal concept (pre-#2241 callers)."""
@@ -429,7 +521,7 @@ def _legacy_inspect(image_path: str, focal_concept: str,
             temperature=0,
             max_tokens=300,
         )
-        verdict = json.loads(response.choices[0].message.content)
+        verdict = _judge_json(response, "legacy judge")
         acceptable = bool(verdict.get("acceptable"))
         relevance = verdict.get("relevance")
         issues = [str(i) for i in (verdict.get("issues") or [])][:6]
@@ -441,8 +533,7 @@ def _legacy_inspect(image_path: str, focal_concept: str,
                           "actual idea"]
         return QualityVerdict(acceptable=acceptable, relevance=relevance, issues=issues)
     except Exception as e:
-        log_debug("Image quality gate unavailable — passing render through", error=str(e))
-        return QualityVerdict(acceptable=True, checked=False)
+        return _unchecked(e, surface, "legacy")
 
 
 def _image_part(image_path: str) -> dict:
@@ -540,7 +631,9 @@ _SCROLL_STOP_SURFACES = frozenset({"newsletter", "post_image"})
 _UNCAPTIONED_VIDEO_SPECIFICITY_FLOOR = 3
 _SCROLL_STOP_FLOOR = 4
 _REQUIRED_SCORES = ("specificity", "no_cliche", "craft")
-# The surfaces whose headline ``image_compose`` typesets onto the render.
+# The surfaces whose headline ``image_compose`` typesets onto the render. NEVER ``video``: its
+# frame's ``hook_text`` is the caption ``video_captions`` burns onto the MP4 later, handed to the
+# judge as context only (PR #2249) — compositing it would paint the caption twice.
 COMPOSE_SURFACES = frozenset({"newsletter", "post_image"})
 
 
@@ -719,7 +812,7 @@ def _staged_inspect(image_path: str, concept: Any, hook_text: Optional[str],
             temperature=0,
             max_tokens=500,
         )
-        answer = json.loads(targeted.choices[0].message.content)
+        answer = _judge_json(targeted, "targeted judge")
         raw_rubric = answer.get("rubric") or {}
         rubric = {name: _score(raw_rubric.get(name)) for name in RUBRIC_CRITERIA}
         if any(rubric[name] is None for name in _REQUIRED_SCORES):
@@ -728,9 +821,7 @@ def _staged_inspect(image_path: str, concept: Any, hook_text: Optional[str],
                                  hook_text=hook_text,
                                  face_expected=getattr(concept, "treatment", "") == "people_scene")
     except Exception as e:
-        log_debug("Staged image judge unavailable — passing render through", error=str(e),
-                  surface=surface, action_type="image_gate")
-        return QualityVerdict(acceptable=True, checked=False)
+        return _unchecked(e, surface, "staged")
 
     floors = dict(_RUBRIC_FLOORS)
     if surface in _SCROLL_STOP_SURFACES:
@@ -930,18 +1021,21 @@ def _gate_loop(render_once, *, prompt: str, surface: str, focal_concept: Optiona
                post_id: Optional[int], render_info: Optional[dict],
                log_message: str, layout: Optional[str] = None,
                brand_kit: Optional[str] = None,
-               signature: Optional[str] = None) -> Optional[str]:
+               signature: Optional[str] = None,
+               enforce: Optional[bool] = None) -> Optional[str]:
     """The bounded render → composite → judge → repair loop both gated renderers share.
 
     ``render_once(current_prompt)`` returns ``(path, backend, info)`` — ``path`` None means the
     render produced nothing and the loop returns None at once; ``info`` is merged into
     ``render_info`` for the candidate actually returned. On covers and posts the headline is
     composited onto each candidate (``image_compose``); the loop returns the COMPOSITE and records
-    the raw render as ``render_info["raw_render_path"]``.
+    the raw render as ``render_info["raw_render_path"]``. ``enforce`` overrides the surface's
+    membership of ``IMAGE_QUALITY_GATE_SURFACES`` — the video frame passes True, because a frame
+    the judge rejects must never be animated whatever the deployment's env says (#2249).
     """
     from cqc_lem.utilities.observability import track_image_gate_verdict
 
-    enforced = surface in IMAGE_QUALITY_GATE_SURFACES
+    enforced = surface in IMAGE_QUALITY_GATE_SURFACES if enforce is None else enforce
     attempts = max(1, IMAGE_GATE_MAX_ATTEMPTS) if enforced else 1
     candidates = _gate_candidates(concept, surface)
     current_prompt = prompt
@@ -967,6 +1061,11 @@ def _gate_loop(render_once, *, prompt: str, surface: str, focal_concept: Optiona
                             "composite_path": composite} if concept is not None else {})
             verdict = inspect_render_quality(cand_path, focal_concept or prompt[:200],
                                              surface=surface, **gate_kwargs)
+            if not verdict.checked and enforced:
+                # ONE more look before failing open on a surface the gate is meant to hold: a
+                # judge blip must not wave an ungraded render through (#2249 gauntlet).
+                verdict = inspect_render_quality(cand_path, focal_concept or prompt[:200],
+                                                 surface=surface, **gate_kwargs)
             info = dict(info, raw_render_path=cand_path) if composite else info
             if best is None or _verdict_rank(verdict) > _verdict_rank(best[2]):
                 best = (composite or cand_path, backend, verdict, info)
@@ -994,14 +1093,22 @@ def _gate_loop(render_once, *, prompt: str, surface: str, focal_concept: Optiona
             gate_verdict = "accepted" if last_verdict.acceptable else "rejected"
         else:
             gate_verdict = "unchecked"
+        if gate_verdict == "unchecked" and enforced:
+            # Availability over strictness, as before — but never silently. The reason rides on
+            # the receipt so an ungraded render is visible as one.
+            log_info("Render shipped UNCHECKED — the judge could not grade it twice", user_id=user_id,
+                     post_id=post_id, action_type="image_gate", surface=surface,
+                     reason="; ".join(last_verdict.issues))
         if render_info is not None:
             render_info["gate_verdict"] = gate_verdict
             if last_verdict.rubric:
                 # The WHY behind a rejection, for the brief receipt (issue #2241).
                 render_info["gate_rubric"] = dict(last_verdict.rubric)
                 render_info["gate_failing"] = list(last_verdict.failing)
-                render_info["gate_issues"] = list(last_verdict.issues)
                 render_info["gate_blind_description"] = last_verdict.blind_description
+            if last_verdict.issues:
+                # On the legacy path and for an unchecked verdict too — the WHY either way.
+                render_info["gate_issues"] = list(last_verdict.issues)
         track_image_gate_verdict(
             surface=surface,
             verdict=gate_verdict,
@@ -1024,7 +1131,8 @@ def render_avatar_image_gated(prompt: str, *, avatar: dict, user_id: Optional[in
                               hook_text: Optional[str] = None,
                               layout: Optional[str] = None,
                               brand_kit: Optional[str] = None,
-                              signature: Optional[str] = None) -> Optional[str]:
+                              signature: Optional[str] = None,
+                              enforce: Optional[bool] = None) -> Optional[str]:
     """LoRA render of an image the author appears in, behind the SAME bounded gate as the base.
 
     Likeness never renders through the gpt-image path (``generate_post_image`` owns the avatar
@@ -1056,6 +1164,7 @@ def render_avatar_image_gated(prompt: str, *, avatar: dict, user_id: Optional[in
             apply_subject_clause(marked, avatar), avatar["model_ref"],
             ratio=_scene_ratio(ratio, hook_text, surface), fallback_prompt=marked,
             surface=surface)
+        path = conform_to_ratio(path, _scene_ratio(ratio, hook_text, surface)) if path else path
         if used_avatar and path:
             # Provenance for a synthetic likeness of a real person.
             _record_avatar_media(path, post_id, user_id)
@@ -1066,7 +1175,8 @@ def render_avatar_image_gated(prompt: str, *, avatar: dict, user_id: Optional[in
     return _gate_loop(render_once, prompt=prompt, surface=surface, focal_concept=focal_concept,
                       concept=concept, hook_text=hook_text, user_id=user_id, post_id=post_id,
                       render_info=render_info, log_message="Avatar image failed the quality gate",
-                      layout=layout, brand_kit=brand_kit, signature=signature)
+                      layout=layout, brand_kit=brand_kit, signature=signature,
+                      enforce=enforce)
 
 
 def render_image_gated(prompt: str, *, surface: str, ratio: str = "1:1",
@@ -1080,7 +1190,8 @@ def render_image_gated(prompt: str, *, surface: str, ratio: str = "1:1",
                        hook_text: Optional[str] = None,
                        layout: Optional[str] = None,
                        brand_kit: Optional[str] = None,
-                       signature: Optional[str] = None) -> str:
+                       signature: Optional[str] = None,
+                       enforce: Optional[bool] = None) -> str:
     """Render with the bounded vision gate. Returns the best candidate's path.
 
     Surfaces outside IMAGE_QUALITY_GATE_SURFACES get one advisory-only pass (verdict logged,
@@ -1115,4 +1226,5 @@ def render_image_gated(prompt: str, *, surface: str, ratio: str = "1:1",
     return _gate_loop(render_once, prompt=prompt, surface=surface, focal_concept=focal_concept,
                       concept=concept, hook_text=hook_text, user_id=user_id, post_id=post_id,
                       render_info=render_info, log_message="Image failed the quality gate",
-                      layout=layout, brand_kit=brand_kit, signature=signature)
+                      layout=layout, brand_kit=brand_kit, signature=signature,
+                      enforce=enforce)

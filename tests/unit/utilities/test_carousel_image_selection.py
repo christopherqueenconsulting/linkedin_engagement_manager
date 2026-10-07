@@ -30,6 +30,28 @@ from cqc_lem.utilities.carousel_creator import (
 
 ENV = "cqc_lem.utilities.env_constants"
 
+
+@pytest.fixture(autouse=True)
+def _piece_is_about_the_author():
+    """These tests pin the avatar path itself, so the post counts as being about the author.
+
+    The fit rule (`guardrails.avatar_fits_concept`, #2249) is pinned in test_image_engine_surfaces.
+    """
+    with patch("cqc_lem.utilities.avatar.guardrails.avatar_fits_concept", return_value=True):
+        yield
+
+
+@pytest.fixture(autouse=True)
+def _no_stage_one_or_brand_reads():
+    """Stub Stage 1 (an LLM call) and the brand kit (a DB read) to their neutral answers.
+
+    Both are wired into every image surface since issue #2241; these tests pin other behaviour.
+    Tests that care patch them again on top.
+    """
+    with patch("cqc_lem.utilities.ai.image_concept.analyze_content_for_image", return_value=None), \
+         patch("cqc_lem.utilities.brand_kit.brand_clause_for_user", return_value=""):
+        yield
+
 IMAGE_LAYOUTS = {create_one_column_text_layout_slide, create_one_column_text_1_layout_slide}
 TEXT_LAYOUTS = {create_title_and_body_layout_slide, create_title_and_body_1_layout_slide}
 
@@ -240,7 +262,8 @@ class TestGenerateAvatarSlideImage:
         brief = SimpleNamespace(
             prompt="a quiet supporting photograph of a team retro",
             focal_concept="a team retrospective around a whiteboard",
-            ratio="1:1", surface="carousel", style_preset="carousel")
+            ratio="1:1", surface="carousel", style_preset="carousel", concept=None,
+            hook_text=None)
         with patch("cqc_lem.utilities.ai.image_brief.build_image_brief",
                    return_value=brief), \
              patch("cqc_lem.utilities.ai.ai_helper.generate_post_image",

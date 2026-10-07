@@ -5,6 +5,22 @@ import pytest
 
 pytestmark = pytest.mark.unit
 
+
+@pytest.fixture(autouse=True)
+def _no_clip_check(monkeypatch):
+    """The post-render clip check (#2249) downloads the clip; these tests pin other behaviour."""
+    monkeypatch.setenv("VIDEO_CLIP_CHECK_ENABLED", "false")
+
+
+@pytest.fixture(autouse=True)
+def _piece_is_about_the_author():
+    """These tests pin the avatar path itself, so the post counts as being about the author.
+
+    The fit rule (`guardrails.avatar_fits_concept`, #2249) is pinned in test_image_engine_surfaces.
+    """
+    with patch("cqc_lem.utilities.avatar.guardrails.avatar_fits_concept", return_value=True):
+        yield
+
 _RCP = "cqc_lem.app.run_content_plan"
 _LIKENESS = "cqc_lem.utilities.avatar.likeness_probe"
 _OBS = "cqc_lem.utilities.observability"
@@ -53,7 +69,7 @@ class TestAvatarLikenessProbeInVideoGeneration:
              patch("cqc_lem.utilities.db.get_default_video_quality", return_value="standard"), \
              patch(f"{_RCP}.get_flux_image_prompt_from_ai", return_value="image prompt"), \
              patch(f"{_RCP}.get_runway_ml_video_prompt_from_ai", return_value="motion"), \
-             patch("cqc_lem.utilities.ai.image_gen.render_image_from_prompt",
+             patch("cqc_lem.utilities.ai.image_gen.render_image_gated",
                    return_value="/tmp/base_frame.webp"), \
              patch(f"{_RCP}.create_runway_video", return_value="https://runway.video/base.mp4"), \
              patch(f"{_LIKENESS}.probe_avatar_likeness") as probe, \

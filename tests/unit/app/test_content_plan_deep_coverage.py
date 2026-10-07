@@ -14,6 +14,22 @@ import pytest
 
 pytestmark = pytest.mark.unit
 
+
+@pytest.fixture(autouse=True)
+def _no_clip_check(monkeypatch):
+    """The post-render clip check (#2249) downloads the clip; these tests pin other behaviour."""
+    monkeypatch.setenv("VIDEO_CLIP_CHECK_ENABLED", "false")
+
+
+@pytest.fixture(autouse=True)
+def _piece_is_about_the_author():
+    """These tests pin the avatar path itself, so the post counts as being about the author.
+
+    The fit rule (`guardrails.avatar_fits_concept`, #2249) is pinned in test_image_engine_surfaces.
+    """
+    with patch("cqc_lem.utilities.avatar.guardrails.avatar_fits_concept", return_value=True):
+        yield
+
 _RCP = "cqc_lem.app.run_content_plan"
 _BLUEPRINT = {"format": "listicle", "hook_style": "question", "cta_style": "soft"}
 
@@ -407,6 +423,9 @@ class TestGenerateVideoSrcPremium:
              patch("cqc_lem.utilities.ai.video_models.is_premium", return_value=True), \
              patch(f"{_RCP}.get_flux_image_prompt_from_ai", return_value="image prompt"), \
              patch(f"{_RCP}.get_runway_ml_video_prompt_from_ai", return_value="motion"), \
+             patch("cqc_lem.utilities.ai.image_concept.analyze_content_for_image",
+                   return_value=None), \
+             patch("cqc_lem.utilities.brand_kit.brand_clause_for_user", return_value=""), \
              patch("cqc_lem.utilities.ai.ai_helper.generate_post_image",
                    return_value="/tmp/avatar.png") as gen_img, \
              patch(f"{_RCP}.create_runway_video",
@@ -422,9 +441,12 @@ class TestGenerateVideoSrcPremium:
         result, gen_img, create_video, refund, _ = self._run(avatar)
         assert result == "https://runway/v.mp4"
         # `render_info` is the out-dict the renderer fills with THIS frame's provenance for the
-        # likeness probe (issue #1430).
+        # likeness probe (issue #1430). The staged judge's inputs ride along (issue #2241) — all
+        # None here because the brief wrapper is mocked and Stage 1 found nothing.
         gen_img.assert_called_once_with("image prompt", 1, ratio="9:16",
-                                        surface="video", post_id=9, render_info={})
+                                        surface="video", post_id=9, render_info={},
+                                        enforce=True, focal_concept=None, concept=None,
+                                        hook_text=None)
         assert create_video.call_args[0][0] == "/tmp/avatar.png"
         assert create_video.call_args[1]["audio"] is True
         refund.assert_not_called()

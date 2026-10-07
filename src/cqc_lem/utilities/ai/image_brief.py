@@ -43,6 +43,19 @@ from cqc_lem.utilities.ai.image_concept import (
 from cqc_lem.utilities.logger import log_debug, log_info, log_warning
 from cqc_lem.utilities.observability import llm_step
 
+
+class _NotAnalyzed:
+    """Type of ``NOT_ANALYZED`` — "the caller never ran Stage 1", as distinct from "it returned None"."""
+
+    def __repr__(self) -> str:
+        return "NOT_ANALYZED"
+
+
+# The default for ``build_image_brief(concept=)``. A caller that ran Stage 1 passes whatever it
+# got, None included, so a failed analysis is never paid for twice on one artifact.
+NOT_ANALYZED = _NotAnalyzed()
+
+
 # Per-surface USE CASE: what the image is for and where it has to read. The visual approach is
 # the TREATMENT's job (below) — a surface preset never offers subjects, because a menu of objects
 # is exactly what every cover then picked from (issue #2241).
@@ -166,6 +179,10 @@ CLICHE_OBJECTS: tuple[str, ...] = (
     # prop; looking at or typing on one is never the action, and a neutral face is no reaction.
     "neutral expression", "looking at laptop", "typing on laptop", "staring at laptop",
     "focused on laptop", "working on laptop", "person typing", "professional typing",
+    # Post-image gauntlet on #2249: every one of these came back from a text post's render.
+    "server rack", "data center aisle", "datacenter aisle", "data centre aisle",
+    "blinking server lights", "server lights", "wall of monitors", "stock trading chart",
+    "trading chart screen",
 )
 # "target audience" is a reader, not a dartboard — the business senses never count as the symbol.
 _TARGET_BUSINESS_SENSE = re.compile(
@@ -326,6 +343,38 @@ _BANNED_FRAGMENTS = ("i'm sorry", "i am sorry", "i cannot", "i can't", "i am una
 # any identifiable person outright, and together with the stock-office gate it left the author
 # one move — an object still-life — which is how every cover became a valve (issue #2241).
 # LinkedIn's own guidance is that real people beat symbols; what reads as stock is the POSED model.
+# The author's likeness IS in frame (post-image gauntlet on #2249). The LoRA path is FLUX, which
+# follows a prompt loosely and largely ignores negation, so the defaults it drifts to — a posed
+# smile at the lens, a mug on a desk, a busy screen — are steered out POSITIVELY here and refused
+# by `_AVATAR_POSE`. The beat comes from Stage 1, so the expression matches the piece.
+_AVATAR_PEOPLE = (
+    "The author IS in this image, caught mid-action inside the situation, never posing: their "
+    "expression and what their hands are doing show {beat}. Their gaze is on the work or the "
+    "other people in the scene, the camera observing from the side as a documentary photographer "
+    "would. The surfaces around them carry only the props the visual anchors name. Any screen in "
+    "frame is dark, blank or softly out of focus.\n")
+_AVATAR_DEFAULT_BEAT = "a specific, genuine reaction to what is happening"
+# Refused on an avatar brief only: what FLUX turns into a stock headshot.
+_AVATAR_POSE = re.compile(
+    r"\b(?:(?:looking|smiling|staring|gazing)\s+(?:directly\s+)?(?:at|into|toward)\s+(?:the\s+)?"
+    r"(?:camera|lens|viewer)|eye\s+contact|faces?\s+the\s+camera|facing\s+the\s+camera|"
+    r"pos(?:ed|ing|es)\b|headshot|portrait\s+of|coffee\s+mug|mug\s+of\s+coffee|cup\s+of\s+coffee)",
+    re.IGNORECASE)
+
+
+def avatar_directive(concept: Optional[ImageConcept]) -> str:
+    """The author-in-frame directive for an avatar brief, carrying the concept's emotional beat.
+
+    Args:
+        concept: Stage 1's analysis, or None.
+
+    Returns:
+        The directive, its beat taken from the concept (a generic genuine reaction without one).
+    """
+    beat = (concept.emotional_beat.strip() if concept and concept.emotional_beat else "")
+    return _AVATAR_PEOPLE.format(beat=beat or _AVATAR_DEFAULT_BEAT)
+
+
 _NO_AVATAR_PEOPLE = (
     "The author's likeness is NOT available for this image. People may appear as real "
     "participants caught mid-task — candid, partly turned, absorbed in the situation — never "
@@ -1058,9 +1107,14 @@ def _rejection(parsed: dict[str, Any], *, anchors: list[str], weak: bool,
                hook_text: Optional[str], names: Optional[set[str]] = None,
                colors: Optional[frozenset[str]] = None,
                paper_rule: Optional[str] = None, bright: bool = False,
-               positive: bool = False) -> Optional[str]:
+               positive: bool = False, avatar: bool = False) -> Optional[str]:
     """Why an authored brief is unusable, or None. The reason goes back to the author verbatim."""
     prompt = str(parsed.get("prompt") or "").strip()
+    pose = _AVATAR_POSE.search(prompt) if avatar else None
+    if pose:
+        return (f"the author is posed ({pose.group(0)!r}) — show them mid-action with the "
+                f"emotional beat in their expression and hands, gaze on the work, no mug or desk "
+                f"props the anchors do not name")
     focal = str(parsed.get("focal_concept") or "").strip()
     if not (_MIN_PROMPT_CHARS <= len(prompt) <= _MAX_PROMPT_CHARS) or not (3 <= len(focal) <= 300):
         return "failed validation (length bounds)"
@@ -1313,7 +1367,7 @@ def build_image_brief(content: str, *, surface: str, ratio: str = "1:1",
                       extra_direction: Optional[str] = None,
                       content_shape: Optional[str] = None,
                       avoid_terms: Optional[list[str]] = None,
-                      concept: Optional[ImageConcept] = None,
+                      concept: "Optional[ImageConcept] | _NotAnalyzed" = NOT_ANALYZED,
                       brand_kit: Optional[str] = None) -> ImageBrief:
     """Author the brief for one render. Never raises — degrades to a deterministic brief.
 
@@ -1328,7 +1382,9 @@ def build_image_brief(content: str, *, surface: str, ratio: str = "1:1",
         avoid_terms: What the author's recent images already looked like. A SOFT steer to the
             author only — never a gate and never in the fallback, because relevance outranks
             variety and a fallback prompt is read by the renderer as a request.
-        concept: Stage 1's analysis, when the caller already has one; otherwise this runs it.
+        concept: Stage 1's analysis when the caller already ran it — None included, which means
+            it ran and came back empty, so it is NOT run again. Left at ``NOT_ANALYZED`` this runs
+            Stage 1 itself.
         brand_kit: A pre-rendered brand clause (palette, type), folded into the AUTHOR's context
             only — never pasted into the fallback, which is a render prompt.
 
@@ -1339,7 +1395,7 @@ def build_image_brief(content: str, *, surface: str, ratio: str = "1:1",
     from cqc_lem.utilities.ai.ai_helper import _call_llm, _loads_json_object, _profile_visual_context
     from cqc_lem.utilities.avatar.attributes import subject_directive
 
-    if concept is None:
+    if isinstance(concept, _NotAnalyzed):
         try:
             concept = analyze_content_for_image(content, surface=surface)
         except Exception as e:  # analyze never raises, but the brief must not depend on that
@@ -1384,7 +1440,7 @@ def build_image_brief(content: str, *, surface: str, ratio: str = "1:1",
         + BRAND_ACCENT_DIRECTIVE.format(colors=", ".join(sorted(colors)))
         + PROPS_DIRECTIVE
         + (VIDEO_FRAME_DIRECTIVE if surface == "video" else "")
-        + ("" if avatar else _NO_AVATAR_PEOPLE)
+        + (avatar_directive(concept) if avatar else _NO_AVATAR_PEOPLE)
         + (f"Content shape: {content_shape}\n" if content_shape else "")
         + (f"This author's recent images already looked like this, so make this one visibly "
            f"different in setting and composition: {'; '.join(avoid)}\n" if avoid else "")
@@ -1448,7 +1504,7 @@ def build_image_brief(content: str, *, surface: str, ratio: str = "1:1",
                 parsed["prompt"] = strip_author_context(parsed["prompt"], context)
             rejection = _rejection(parsed, anchors=anchors, weak=weak, hook_text=None,
                                    names=names, colors=gate_colors, paper_rule=paper_rule,
-                                   bright=bright, positive=positive)
+                                   bright=bright, positive=positive, avatar=bool(avatar))
             if not rejection and hook:
                 rejection = render_framing_failure(str(parsed.get("prompt") or ""), hook,
                                                    kicker, anchors)

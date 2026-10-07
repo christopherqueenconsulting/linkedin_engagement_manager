@@ -11,7 +11,7 @@ import json
 import os
 import shutil
 import time
-from typing import Optional
+from typing import Any, Optional
 from uuid import uuid4
 
 from cqc_lem import assets_dir
@@ -137,7 +137,13 @@ def _sign_best_effort(file_path: str) -> None:
 
 
 def _generate_one_variant(idx: int, combo: dict, source_text: str, profile, user_id: Optional[int],
-                          batch_dir: str, batch_id: str, post_id: Optional[int] = None) -> dict:
+                          batch_dir: str, batch_id: str, post_id: Optional[int] = None,
+                          concept: Any = None, brand_clause: str = "") -> dict:
+    """Render one variant: image prompt, image, then (optionally) motion prompt and video.
+
+    ``concept`` is the batch's ONE Stage 1 analysis and ``brand_clause`` its ONE brand clause —
+    every variant reads the same source text, so neither is paid for per variant (issue #2241).
+    """
     image_model = combo.get("image_model", DEFAULT_IMAGE_MODEL)
     video_model = combo.get("video_model", DEFAULT_VIDEO_MODEL)
     ratio = combo.get("ratio", DEFAULT_VIDEO_RATIO)
@@ -162,13 +168,19 @@ def _generate_one_variant(idx: int, combo: dict, source_text: str, profile, user
     # otherwise the LLM invents a person for the LoRA to contradict (issue #744).
     from cqc_lem.utilities.avatar.guardrails import AVATAR_SURFACE_POST_IMAGE, resolve_avatar_for
     avatar = resolve_avatar_for(user_id, surface=AVATAR_SURFACE_POST_IMAGE, post_id=post_id)
+    brief_info: dict = {}
     image_prompt = get_flux_image_prompt_from_ai(source_text, profile=profile, ratio=img_ratio,
-                                                 avatar=avatar)
+                                                 avatar=avatar, brief_info=brief_info,
+                                                 concept=concept, brand_kit=brand_clause)
     result["image_prompt"] = image_prompt
+    brief = brief_info.get("brief")
     if user_id:
         image_path = generate_post_image(image_prompt, user_id, ratio=img_ratio,
                                          image_model=image_model,
-                                         surface=AVATAR_SURFACE_POST_IMAGE, post_id=post_id)
+                                         surface=AVATAR_SURFACE_POST_IMAGE, post_id=post_id,
+                                         focal_concept=getattr(brief, "focal_concept", None),
+                                         concept=concept,
+                                         hook_text=getattr(brief, "hook_text", None))
     else:
         image_path = generate_flux1_image_from_prompt(image_prompt, ratio=img_ratio,
                                                        image_model=image_model,
@@ -189,7 +201,7 @@ def _generate_one_variant(idx: int, combo: dict, source_text: str, profile, user
                     else DEFAULT_CONTENT_LANGUAGE)
         video_prompt = get_runway_ml_video_prompt_from_ai(
             source_text, image_prompt, model=video_model, language=language, user_id=user_id,
-            post_id=post_id)[:512]
+            post_id=post_id, concept=concept)[:512]
         result["video_prompt"] = video_prompt
         video_src_url = create_runway_video(
             dest_img, video_prompt, model=video_model, ratio=ratio, duration=duration, seed=seed,
@@ -229,12 +241,18 @@ def generate_media_variants(*, post_id: Optional[int] = None, text: Optional[str
 
     use_combos = combos if combos else DEFAULT_COMBOS
     log_info(f"Generating {len(use_combos)} media variant(s) into batch {batch_id}")
+    # Once per batch, not per variant: every combo renders the same source text.
+    from cqc_lem.utilities.ai.image_concept import analyze_content_for_image
+    from cqc_lem.utilities.brand_kit import brand_clause_for_user
+    concept = analyze_content_for_image(source_text, surface="post_image", user_id=user_id)
+    brand_clause = brand_clause_for_user(user_id)
 
     variants = []
     for idx, combo in enumerate(use_combos):
         try:
             variants.append(_generate_one_variant(idx, combo, source_text, profile, user_id, batch_dir,
-                                                  batch_id, post_id=post_id))
+                                                  batch_id, post_id=post_id, concept=concept,
+                                                  brand_clause=brand_clause))
         except Exception as e:
             log_warning(f"Variant {idx} failed", exc=e)
             variants.append({
