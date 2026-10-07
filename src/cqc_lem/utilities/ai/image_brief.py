@@ -92,7 +92,9 @@ _TREATMENT_TEMPLATES: dict[str, str] = {
         "audience in the exact situation it describes, built from the chosen visual idea. The "
         "emotional beat is VISIBLE as a specific human reaction — a wince at a number, mid-laugh "
         "relief, a raised eyebrow at a draft, arms crossed in a tense meeting — in a close or "
-        "medium framing where the face reads at thumbnail size. A laptop is at most a prop. Real "
+        "medium framing where the face reads at thumbnail size. A laptop is at most a prop. "
+        "The image is BRIGHT — high-key or warm daylight with strong subject contrast — never a "
+        "dark, moody, low-key scene unless the emotional beat itself is dark (dread, crisis). Real "
         "texture: visible skin pores, fabric wear and creases, scuffed surfaces and everyday "
         "imperfections rather than studio polish. When the author's likeness is supplied, the "
         "author is the person in the scene."),
@@ -106,7 +108,9 @@ _TREATMENT_TEMPLATES: dict[str, str] = {
         "TREATMENT concrete_scene: a photorealistic photograph of the specific, tangible "
         "situation the visual anchors describe, shot where it really happens, with real texture "
         "— worn edges, fingerprints, fabric wear, dust and everyday imperfections rather than "
-        "studio polish. Screens and documents may appear, blank or abstract."),
+        "studio polish. The image is BRIGHT — high-key or warm daylight with strong subject "
+        "contrast — never a dark, moody, low-key still life. Screens and documents may appear, "
+        "blank or abstract."),
     TREATMENT_METAPHOR: (
         "TREATMENT metaphor_last_resort: one uncommon visual metaphor specific to this piece's "
         "thesis, photographed as a real scene — one a reader has never seen on a hundred other "
@@ -399,6 +403,64 @@ _UNREADABLE_QUALIFIERS = re.compile(
 DOCUMENT_BLANKING = ("every paper and screen in the frame is blank, seen at a steep angle so no "
                      "writing is legible, or out of focus")
 
+# Round 5 (#2241): even under the blank rule, paper props kept rendering legible text on covers
+# ("LEAD LAST REMARKS" on ed16's checklist). A cover carries NO paper prop unless its chosen
+# visual idea is ABOUT a document — and then only as a blank sheet seen edge-on.
+_PAPER_PROPS = re.compile(
+    r"\b(?:paper|papers|sheet|sheets|document|documents|clipboard|clipboards|printout|printouts|"
+    r"printed|report|reports|checklist|checklists|invoice|invoices|statement|statements|folder|"
+    r"folders|binder|binders|memo|memos|page|pages|receipt|receipts|notebook|notebooks|"
+    r"flip[\s\-]chart|draft|drafts|manuscript|letter|letters)\b", re.IGNORECASE)
+_EDGE_ON_SHEET = re.compile(r"\bblank sheet seen edge[\s\-]on\b", re.IGNORECASE)
+COVER_EDGE_ON = "a blank sheet seen edge-on"
+PAPER_FORBID, PAPER_EDGE_ON = "forbid", "edge_on"
+COVER_PROPS_DIRECTIVE = {
+    PAPER_FORBID: ("COVER PROPS: no paper in frame — no documents, clipboards, printouts, "
+                   "reports or checklists. Paper renders legible text; build the scene on faces, "
+                   "hands at rest and the room.\n"),
+    PAPER_EDGE_ON: (f"COVER PROPS: the chosen idea is about a document, so the ONLY paper in frame "
+                    f"is {COVER_EDGE_ON} — say exactly that.\n"),
+}
+
+
+def cover_paper_rule(concept: Optional[ImageConcept]) -> str:
+    """How a cover may show paper.
+
+    ``edge_on`` when the chosen idea is about a document, else ``forbid``.
+
+    Args:
+        concept: Stage 1's concept, or None.
+
+    Returns:
+        ``PAPER_EDGE_ON`` or ``PAPER_FORBID``.
+    """
+    idea = concept.chosen_idea if concept else ""
+    return PAPER_EDGE_ON if _PAPER_PROPS.search(idea or "") else PAPER_FORBID
+
+
+def paper_rule_failure(prompt: str, rule: Optional[str]) -> Optional[str]:
+    """Why ``prompt`` breaks a cover's paper rule, or None.
+
+    Args:
+        prompt: The render prompt, hook stripped.
+        rule: ``PAPER_FORBID``, ``PAPER_EDGE_ON`` or None (no rule — not a cover).
+
+    Returns:
+        The rejection reason.
+    """
+    if not rule:
+        return None
+    hit = _PAPER_PROPS.search(prompt or "")
+    if not hit:
+        return None
+    if rule == PAPER_FORBID:
+        return (f"a cover carries no paper props ({hit.group(0)!r}) — paper keeps rendering "
+                f"legible text; build the scene on faces and the room")
+    if not _EDGE_ON_SHEET.search(prompt):
+        return (f"the only paper on this cover is {COVER_EDGE_ON} — describe it exactly so, "
+                f"never {hit.group(0)!r}")
+    return None
+
 
 def words_on_surface(text: Optional[str]) -> Optional[str]:
     """The first phrase in ``text`` that puts words on a surface, or None.
@@ -473,9 +535,25 @@ _COLOR_WORDS = frozenset({
     "coral", "olive", "forest", "emerald", "crimson", "indigo", "magenta", "pink", "brown"})
 _DEFAULT_BRAND_COLORS = frozenset({"gold", "golden", "charcoal", "off-white"})
 BRAND_ACCENT_DIRECTIVE = (
-    "BRAND ACCENT: include exactly one deliberate brand-color element — the hook's color, a "
-    "wardrobe accent, a wall or background accent, or a warm gold grade — named by its color "
-    "({colors}).\n")
+    "BRAND ACCENT: brand colors are ACCENTS, never the overall tone — include exactly one "
+    "deliberate brand-color element, named by its color ({colors}): the hook's color, a wardrobe "
+    "accent, or a wall or background accent. Charcoal belongs only behind the hook, as its "
+    "backing panel; the scene itself stays bright.\n")
+# Round 5 (#2241, post gauntlet): every post render came back dark and moody — the charcoal brand
+# neutral dragged whole scenes to near-black, which reads as murky in a white feed. A low-key
+# scene is refused on the cover-recipe surfaces unless the emotional beat is itself dark.
+_DARK_SCENE = re.compile(
+    r"\b(?:moody|low[\s\-]key|dimly[\s\-]lit|dimly|dark\s+(?:room|office|scene|setting|"
+    r"background|interior|studio)|shadowy|noir|chiaroscuro|pitch[\s\-]black|near[\s\-]black|"
+    r"gloomy|murky|unlit)\b", re.IGNORECASE)
+_DARK_BEAT = re.compile(r"\b(?:dread|crisis|fear|grief|panic|despair|dark|ominous|loss)\b",
+                        re.IGNORECASE)
+# The surfaces that follow the cover recipe: a hook, a face with a readable emotion, no paper,
+# blank screens, bright light (round 5 extended it from covers to post images).
+HOOK_SURFACES = frozenset({"newsletter", "post_image"})
+POST_HOOK_LAYOUT = (
+    'POST LAYOUT (4:5 portrait): the headline "{hook}" sits large in the top third — '
+    "{type_spec}, five words at most. The subject fills the lower two thirds.\n")
 # Every newsletter cover carries its hook as a headline (round 3): the hook carries the THESIS,
 # the visual carries emotion and specificity — the YouTube-thumbnail / editorial-cover pattern.
 COVER_HOOK_LAYOUT = (
@@ -486,8 +564,8 @@ COVER_HOOK_LAYOUT = (
 # back in a serif face). The brand kit's font vibe replaces the default typeface when present.
 _DEFAULT_TYPEFACE = "a heavy geometric sans-serif (Montserrat ExtraBold style)"
 _DEFAULT_HOOK_COLOR = "light gold"
-HOOK_TYPE_SPEC = ("set in {typeface}, sentence case, {color} on a dark area, large enough to read "
-                  "at 400x225")
+HOOK_TYPE_SPEC = ("set in {typeface}, sentence case, {color} on a charcoal backing panel, large "
+                  "enough to read at 400x225")
 _FONT_VIBE = re.compile(r"(?:font[_\s]?vibe|typography(?:\s+feel)?|typeface|font)\s*:\s*([^;\n]+)",
                         re.IGNORECASE)
 _SHADED_COLOR = re.compile(
@@ -534,8 +612,8 @@ def _names_a_color(prompt: str, colors: frozenset[str]) -> bool:
 
 
 def carries_hook(surface: str, treatment: str) -> bool:
-    """Does this image carry the concept's hook? Every newsletter cover, and any graphic."""
-    return surface == "newsletter" or treatment == TREATMENT_GRAPHIC
+    """Does this image carry the concept's hook? Covers, post images, and any graphic."""
+    return surface in HOOK_SURFACES or treatment == TREATMENT_GRAPHIC
 
 
 # Name tokens a prompt may carry anyway: the platform the use case itself names.
@@ -670,7 +748,9 @@ def _named_fact(prompt: str, names: set[str]) -> Optional[str]:
 def _deterministic_failure(prompt: str, *, anchors: list[str], weak: bool,
                            hook_text: Optional[str],
                            names: Optional[set[str]] = None,
-                           colors: Optional[frozenset[str]] = None) -> Optional[str]:
+                           colors: Optional[frozenset[str]] = None,
+                           paper_rule: Optional[str] = None,
+                           bright: bool = False) -> Optional[str]:
     """Why ``prompt`` fails the deterministic checks, or None when it passes them.
 
     Shared by Stage 2's validation and Stage 3, so the two can never disagree about a cliché,
@@ -695,6 +775,13 @@ def _deterministic_failure(prompt: str, *, anchors: list[str], weak: bool,
     if named:
         return (f"the prompt names {named!r}, a fact the image cannot draw — show the visual "
                 f"anchors, never a name or a number")
+    paper = paper_rule_failure(unhooked, paper_rule)
+    if paper:
+        return paper
+    dark = _DARK_SCENE.search(unhooked) if bright else None
+    if dark:
+        return (f"the prompt asks for a dark scene ({dark.group(0)!r}) — light it bright, high-key "
+                f"or warm daylight with strong subject contrast; charcoal only behind the hook")
     words = words_on_surface(unhooked)
     if words:
         return (f"the prompt puts words on a surface ({words!r}) — screens and documents stay "
@@ -726,6 +813,7 @@ def _deterministic_failure(prompt: str, *, anchors: list[str], weak: bool,
 def _rejection(parsed: dict[str, Any], *, anchors: list[str], weak: bool,
                hook_text: Optional[str], names: Optional[set[str]] = None,
                colors: Optional[frozenset[str]] = None,
+               paper_rule: Optional[str] = None, bright: bool = False,
                avatar: bool = False) -> Optional[str]:
     """Why an authored brief is unusable, or None. The reason goes back to the author verbatim."""
     prompt = str(parsed.get("prompt") or "").strip()
@@ -744,7 +832,8 @@ def _rejection(parsed: dict[str, Any], *, anchors: list[str], weak: bool,
     if reply_hook.lower() not in ("", "null", "none") and not hook_text:
         return "the reply declared hook text, but this image carries no hook"
     return _deterministic_failure(prompt, anchors=anchors, weak=weak, hook_text=hook_text,
-                                  names=names, colors=colors)
+                                  names=names, colors=colors, paper_rule=paper_rule,
+                                  bright=bright)
 
 
 _CHECK_PROMPT = """You are checking an image prompt BEFORE it is sent to a renderer.
@@ -872,18 +961,29 @@ def _fallback_brief(content: str, *, surface: str, ratio: str, context: str,
     treatment = _fallback_treatment(treatment or _treatment_for(concept, avatar),
                                     usable_anchors(concept))
     anchors = [_plain_words(a) for a in usable_anchors(concept)]
-    anchors = [a for a in anchors if a]
+    cover = surface in HOOK_SURFACES
+    # A cover carries no paper prop (round 5), so a paper anchor never reaches its fallback.
+    anchors = [a for a in anchors if a and not (cover and _PAPER_PROPS.search(a))]
     use = _USE_LABELS.get(surface, _USE_LABELS[_DEFAULT_PRESET])
     summary = _plain_words(concept.thesis if concept else content)[:240]
     hook = (concept.hook_phrase if concept and concept.hook_phrase
             and carries_hook(surface, treatment) else None)
     accent = sorted(brand_colors(brand_kit) & {"gold", "golden"}) or sorted(brand_colors(brand_kit))
-    finish = (f"composed for a {ratio} aspect ratio with the subject large in the frame, soft "
-              f"window light with natural fill and one deliberate {accent[0]} accent, subtle film "
+    finish = (f"composed for a {ratio} aspect ratio with the subject large in the frame, "
+              f"bright, high-key warm daylight with strong subject contrast and one deliberate "
+              f"{accent[0]} accent, subtle film "
               f"grain, real texture with fabric wear and everyday imperfections, plain unbranded "
-              f"surfaces, clean unmarked walls; {DOCUMENT_BLANKING}.")
-    layout = (f' The headline "{hook}" sits in the left third, {hook_type_spec(brand_kit)}; '
-              f"the subject fills the other two thirds." if hook else "")
+              f"surfaces, clean unmarked walls; "
+              + (f"every screen in the frame is blank or out of focus, and any paper is "
+                 f"{COVER_EDGE_ON}." if cover else f"{DOCUMENT_BLANKING}."))
+    if not hook:
+        layout = ""
+    elif surface == "post_image":
+        layout = (f' The headline "{hook}" sits large in the top third, '
+                  f"{hook_type_spec(brand_kit)}; the subject fills the lower two thirds.")
+    else:
+        layout = (f' The headline "{hook}" sits in the left third, {hook_type_spec(brand_kit)}; '
+                  f"the subject fills the other two thirds.")
     # Profile context is AUTHOR context: a fallback is a render prompt, so it never carries it.
     context = ""
     idea = _plain_words(concept.chosen_idea) if concept and concept.chosen_idea else ""
@@ -937,6 +1037,8 @@ def _analysis_block(concept: Optional[ImageConcept], anchors: list[str],
                   f"state that typography in the prompt.\n")
         if surface == "newsletter" and concept.treatment != TREATMENT_GRAPHIC:
             block += COVER_HOOK_LAYOUT.format(hook=hook, type_spec=type_spec)
+        elif surface == "post_image" and concept.treatment != TREATMENT_GRAPHIC:
+            block += POST_HOOK_LAYOUT.format(hook=hook, type_spec=type_spec)
     return block
 
 
@@ -990,6 +1092,9 @@ def build_image_brief(content: str, *, surface: str, ratio: str = "1:1",
     colors = brand_colors(brand_kit)
     # Deterministically enforced on covers; requested on every surface.
     gate_colors = colors if surface == "newsletter" else None
+    paper_rule = cover_paper_rule(concept) if surface in HOOK_SURFACES else None
+    bright = surface in HOOK_SURFACES and not (
+        concept is not None and _DARK_BEAT.search(concept.emotional_beat or ""))
     # The likeness directive leads the context on purpose (issue #744): with nothing stating who
     # a depicted person is, the model invents one and the LoRA renders the invention.
     context = _profile_visual_context(profile, subject_directive(avatar))
@@ -1002,6 +1107,7 @@ def build_image_brief(content: str, *, surface: str, ratio: str = "1:1",
         + _analysis_block(concept, anchors, hook, surface, brand_kit)
         + (f"Brand: {brand_kit}\n" if brand_kit else "")
         + BRAND_ACCENT_DIRECTIVE.format(colors=", ".join(sorted(colors)))
+        + (COVER_PROPS_DIRECTIVE[paper_rule] if paper_rule else "")
         + (avatar_directive(concept) if avatar else _NO_AVATAR_PEOPLE)
         + (f"Content shape: {content_shape}\n" if content_shape else "")
         + (f"This author's recent images already looked like this, so make this one visibly "
@@ -1065,7 +1171,8 @@ def build_image_brief(content: str, *, surface: str, ratio: str = "1:1",
             if isinstance(parsed.get("prompt"), str):
                 parsed["prompt"] = strip_author_context(parsed["prompt"], context)
             rejection = _rejection(parsed, anchors=anchors, weak=weak, hook_text=hook,
-                                   names=names, colors=gate_colors, avatar=bool(avatar))
+                                   names=names, colors=gate_colors, paper_rule=paper_rule,
+                                   bright=bright, avatar=bool(avatar))
             if rejection:
                 reason = rejection
                 rejections.append(reason)

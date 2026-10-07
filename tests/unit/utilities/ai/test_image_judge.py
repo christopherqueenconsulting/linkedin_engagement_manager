@@ -525,7 +525,8 @@ class TestRoundFourJudge:
         text = create.call_args_list[1][1]["messages"][0]["content"][0]["text"]
         assert 'Does the visible emotion match "a wince of dread"?' in text
         assert "Is the headline set in a sans-serif typeface?" in text
-        assert "reused unchanged on an unrelated business article" in text
+        assert ('Considering the headline "Payroll eats first" together with the image, could '
+                'this cover be reused unchanged for an unrelated article?') in text
         assert "GIST of the claim" in text
 
     def test_a_mismatched_emotion_fails_scroll_stop(self, tmp_path):
@@ -572,3 +573,96 @@ class TestRoundFourJudge:
             "A cover.", "gpt-image", hook_text="Payroll eats first")
         assert "heavy geometric sans-serif in sentence case" in with_no_marks(
             "A cover.", "flux", hook_text="Payroll eats first")
+
+
+class TestRoundFiveJudge:
+    """Round 5 of #2241: headline + image judged as ONE cover; emotion pushes forward."""
+
+    def test_without_a_headline_the_reuse_question_is_about_the_image(self, tmp_path):
+        _v, create = _judge_on(tmp_path, "post_image", _answer())
+        text = create.call_args_list[1][1]["messages"][0]["content"][0]["text"]
+        assert "Could this exact image be reused unchanged on an unrelated business article?" \
+            in text
+        assert "Does the headline alone name its subject" in text
+
+    def test_a_headline_that_does_not_name_its_subject_caps_specificity_at_four(self, tmp_path):
+        verdict, _ = _judge_on(tmp_path, "newsletter",
+                               _answer(dict(_GOOD_RUBRIC, text_accuracy=5),
+                                       headline_names_subject=False,
+                                       text_seen="Payroll eats first"),
+                               hook_text="Payroll eats first")
+        assert verdict.rubric["specificity"] == 4 and verdict.acceptable, "passes, not a 5"
+
+    @pytest.mark.parametrize("answer,weak", [
+        (_answer(face_emotion=False), True), (_answer(emotion_matches=False), True),
+        (_answer(issues=["Enhance emotional expression for stronger impact"]), True),
+        (_answer(issues=["tighten the crop"]), False),
+    ])
+    def test_a_weak_expression_is_flagged(self, tmp_path, answer, weak):
+        verdict, _ = _judge_on(tmp_path, "newsletter", answer)
+        assert verdict.emotion_weak is weak
+
+
+class TestEmotionCarriesForward:
+    """ed16: both candidates and the retry came out neutral — nothing carried the push forward."""
+
+    _WEAK = QualityVerdict(acceptable=False, failing=["specificity"], issues=["specificity 3/5"],
+                           rubric={"specificity": 3}, emotion_weak=True)
+    _PLAIN = QualityVerdict(acceptable=False, failing=["specificity"],
+                            issues=["specificity 3/5"], rubric={"specificity": 3})
+
+    def test_candidate_two_and_every_retry_carry_the_emotion_directive(self, monkeypatch):
+        monkeypatch.setenv("IMAGE_GATE_CANDIDATES", "2")
+        with patch.object(image_gen, "IMAGE_GATE_MAX_ATTEMPTS", 2), \
+             patch.object(image_gen, "_render_with_backend",
+                          return_value=("/tmp/x.png", "gpt-image")) as render, \
+             patch.object(image_gen, "inspect_render_quality", return_value=self._WEAK):
+            render_image_gated("base", surface="newsletter", concept=_PEOPLE)
+        prompts = [c[0][0] for c in render.call_args_list]
+        directive = ("The expression must be unmistakable at thumbnail size: a wince of dread, "
+                     "exaggerated like a magazine cover photo.")
+        assert len(prompts) == 4
+        assert directive not in prompts[0]
+        assert all(directive in p for p in prompts[1:]), "candidate 2 and the retry both carry it"
+        assert "The previous render was rejected on: specificity" in prompts[2], \
+            "the retry carries the rubric repair as well"
+
+    def test_no_directive_when_the_expression_was_fine(self, monkeypatch):
+        monkeypatch.setenv("IMAGE_GATE_CANDIDATES", "2")
+        with patch.object(image_gen, "IMAGE_GATE_MAX_ATTEMPTS", 1), \
+             patch.object(image_gen, "_render_with_backend",
+                          return_value=("/tmp/x.png", "gpt-image")) as render, \
+             patch.object(image_gen, "inspect_render_quality", return_value=self._PLAIN):
+            render_image_gated("base", surface="newsletter", concept=_PEOPLE)
+        assert all("unmistakable" not in c[0][0] for c in render.call_args_list)
+
+    def test_the_avatar_path_carries_it_too(self, monkeypatch):
+        monkeypatch.setenv("IMAGE_GATE_CANDIDATES", "2")
+        avatar = {"model_ref": "owner/lora:v1", "trigger_word": "TOK"}
+        with patch.object(image_gen, "IMAGE_GATE_MAX_ATTEMPTS", 1), \
+             patch("cqc_lem.utilities.avatar.replicate_avatar.generate_image_with_avatar",
+                   return_value=("/tmp/1.png", True)) as lora, \
+             patch("cqc_lem.utilities.ai.ai_helper._record_avatar_media"), \
+             patch.object(image_gen, "inspect_render_quality", return_value=self._WEAK):
+            image_gen.render_avatar_image_gated("base", avatar=avatar, user_id=3,
+                                                surface="newsletter", concept=_PEOPLE)
+        assert "unmistakable at thumbnail size" in lora.call_args_list[1][0][0]
+
+
+class TestBrightEnoughForAWhiteFeed:
+    def test_the_thumbnail_question_asks_about_the_white_feed(self, tmp_path):
+        _v, create = _judge_on(tmp_path, "post_image", _answer())
+        text = create.call_args_list[1][1]["messages"][0]["content"][0]["text"]
+        assert "stands out in a white social feed" in text
+
+    @pytest.mark.parametrize("surface,fails", [("post_image", True), ("newsletter", True),
+                                               ("carousel", False)])
+    def test_a_dark_render_fails_the_feed_surfaces(self, tmp_path, surface, fails):
+        verdict, _ = _judge_on(tmp_path, surface, _answer(bright_enough=False))
+        assert verdict.rubric["thumbnail_read"] == 3
+        assert ("thumbnail_read" in verdict.failing) is fails
+
+    def test_the_repair_asks_for_bright_light(self):
+        verdict = QualityVerdict(acceptable=False, failing=["thumbnail_read"],
+                                 issues=["thumbnail_read 3/5"])
+        assert "bright, high-key" in rubric_repair_directive(verdict, "flux", _PEOPLE, None)

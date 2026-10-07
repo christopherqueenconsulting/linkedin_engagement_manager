@@ -252,8 +252,7 @@ class TestHookRules:
     def test_shouts_and_orders_are_refused(self, hook):
         assert parse_concept(dict(_PAYLOAD, hook_phrase=hook), _SOURCE).hook_phrase == ""
 
-    @pytest.mark.parametrize("hook", ["The 95% you're missing", "Web search isn't enough",
-                                      "90 days unpaid"])
+    @pytest.mark.parametrize("hook", ["Web search isn't enough", "90 days unpaid"])
     def test_curiosity_gaps_and_contrasts_pass(self, hook):
         assert parse_concept(dict(_PAYLOAD, hook_phrase=hook), _SOURCE).hook_phrase == hook
 
@@ -430,7 +429,7 @@ class TestRoundFourStageOne:
     def test_title_case_hooks_are_refused(self, hook):
         assert parse_concept(dict(_PAYLOAD, hook_phrase=hook), _SOURCE).hook_phrase == ""
 
-    @pytest.mark.parametrize("hook", ["53.7% miss the mark", "AI posts fall flat",
+    @pytest.mark.parametrize("hook", ["AI posts: 45% less reach", "AI posts fall flat",
                                       "Payroll eats first"])
     def test_sentence_case_and_numbers_are_welcome(self, hook):
         assert parse_concept(dict(_PAYLOAD, hook_phrase=hook), _SOURCE).hook_phrase == hook
@@ -466,3 +465,62 @@ class TestRoundFourStageOne:
     def test_ideas_asking_for_legible_documents_are_filtered(self, idea):
         from cqc_lem.utilities.ai.image_concept import idea_rejection
         assert "legible words on a surface" in idea_rejection(idea, ())
+
+
+class TestRoundFiveHookNamesItsSubject:
+    """Round 5 of #2241: "45% less engagement" says how much, never of what."""
+
+    @pytest.mark.parametrize("hook", ["45% less engagement", "The 95% you're missing",
+                                      "$30K wasted", "53.7% miss the mark"])
+    def test_a_number_with_only_generic_words_is_refused(self, hook):
+        assert parse_concept(dict(_PAYLOAD, hook_phrase=hook), _SOURCE).hook_phrase == ""
+
+    @pytest.mark.parametrize("hook", ["AI posts: 45% less reach", "30% AI lies",
+                                      "$30K wasted on AI", "45% fewer invoices paid"])
+    def test_a_number_with_its_subject_passes(self, hook):
+        assert parse_concept(dict(_PAYLOAD, hook_phrase=hook), _SOURCE).hook_phrase == hook
+
+    def test_a_subjectless_number_falls_through_to_an_alternative(self):
+        payload = dict(_PAYLOAD, hook_phrase="45% less engagement",
+                       hook_alternatives=["AI posts: 45% less reach"])
+        assert parse_concept(payload, _SOURCE).hook_phrase == "AI posts: 45% less reach"
+
+    def test_the_prompt_asks_numeric_hooks_to_name_the_subject(self):
+        with patch(_CREATE, return_value=_resp(_PAYLOAD)) as create:
+            analyze_content_for_image(_SOURCE)
+        system = create.call_args[1]["messages"][0]["content"]
+        assert "a numeric hook must NAME ITS SUBJECT" in system
+        assert '"45% less reach for AI posts"' in system
+
+
+class TestPostImagesFollowTheCoverRecipe:
+    """Round 5 (post gauntlet): five dark, moody, hookless post renders; a metal box on a desk."""
+
+    def test_post_guidance_requires_a_hook_and_prefers_people(self):
+        with patch(_CREATE, return_value=_resp(_PAYLOAD)) as create:
+            analyze_content_for_image(_SOURCE, surface="post_image")
+        user = create.call_args[1]["messages"][1]["content"]
+        assert "LinkedIn feed POST image (4:5). Prefer people_scene" in user
+        assert "hook_phrase is required" in user and "never an object sitting on a desk" in user
+
+    def test_the_ranker_is_told_to_penalise_desk_still_lifes(self):
+        concept = parse_concept(dict(_PAYLOAD, visual_ideas=_IDEAS), _SOURCE)
+        with patch(_CREATE, return_value=_resp({"ranking": [1]})) as create:
+            pick_visual_idea(concept)
+        assert "Penalise an object sitting on a desk or table with no person" in \
+            create.call_args[1]["messages"][0]["content"]
+
+    def test_a_desk_still_life_ranked_first_is_demoted_for_a_people_led_idea(self):
+        still = "A dented metal cash box sitting on a cluttered desk under a lamp."
+        concept = parse_concept(dict(_PAYLOAD, visual_ideas=[still, _IDEAS[2]]), _SOURCE)
+        with patch(_CREATE, return_value=_resp({"ranking": [1, 2], "reason": "r"})):
+            picked = pick_visual_idea(concept)
+        assert picked.chosen_idea == _IDEAS[2]
+        assert "demoted" in picked.idea_pick_reason
+
+    def test_a_striking_object_idea_with_no_people_alternative_stays(self):
+        still = "A dented metal cash box sitting on a cluttered desk under a lamp."
+        other = "A stack of unpaid invoices under a paperweight beside a cold cup of tea."
+        concept = parse_concept(dict(_PAYLOAD, visual_ideas=[still, other]), _SOURCE)
+        with patch(_CREATE, return_value=_resp({"ranking": [1, 2]})):
+            assert pick_visual_idea(concept).chosen_idea == still

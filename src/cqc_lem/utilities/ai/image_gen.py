@@ -221,6 +221,9 @@ class QualityVerdict:
     rubric: dict = field(default_factory=dict)
     blind_description: Optional[str] = None
     failing: list = field(default_factory=list)
+    # The judge saw a weak or wrong expression (round 5): the NEXT render — the second candidate
+    # and every retry — must push the emotion harder.
+    emotion_weak: bool = False
 
 
 def size_for_ratio(ratio: str) -> str:
@@ -573,7 +576,8 @@ Look at the image itself and answer:
 1. Is each of these things visibly depicted? {entities}
 2. Transcribe ALL text visible in the image. {hook_question}
 3. Is any of these stock symbols present: {cliches}?
-4. Does the main subject still read as a 400x225 thumbnail?
+4. Does the main subject still read as a 400x225 thumbnail? Is the image bright enough, with a
+   clear subject, that it stands out in a white social feed?
 5. Any AI artifacts — waxy skin, malformed hands, melted or fused objects, garbled lettering?
 6. Reading the headline together with the image, would a viewer get the GIST of the claim
    above? Not every detail or benefit — just the gist.
@@ -581,7 +585,9 @@ Look at the image itself and answer:
 8. Does the visible emotion match "{emotional_beat}"?
 9. Does a gold accent or the charcoal / off-white brand palette read in the image?
 10. Is the headline set in a sans-serif typeface? (true when there is no headline)
-11. Could this exact image be reused unchanged on an unrelated business article?
+11. {reuse_question}
+12. Does the headline alone name its subject — not just a number? (true when there is no
+    headline)
 
 Score each criterion 1-5, 5 best: specificity (image AND headline together convey THIS piece's
 argument, with at least one of its things visible — not a generic scene), no_cliche (5 = no stock
@@ -592,9 +598,16 @@ Respond with ONLY a JSON object:
 {{"entities_depicted": {{"<thing>": true}}, "text_seen": "<exact transcription, or empty>",
  "cliches_present": ["..."], "thesis_inferable": true, "face_emotion": true,
  "emotion_matches": true, "headline_sans_serif": true, "reusable_elsewhere": false,
+ "headline_names_subject": true, "bright_enough": true,
  "rubric": {{"specificity": 1, "no_cliche": 1, "thumbnail_read": 1, "text_accuracy": null,
             "craft": 1, "scroll_stop": 1, "brand_fit": 1}},
  "issues": ["<short actionable phrase>"]}}"""
+
+# A judge issue that names a weak expression ("enhance emotional expression", "neutral face").
+_EMOTION_ISSUE = re.compile(r"emotion|expression|expressive|neutral|smile|deadpan|blank face",
+                            re.IGNORECASE)
+EMOTION_DIRECTIVE = ("The expression must be unmistakable at thumbnail size: {beat}, exaggerated "
+                     "like a magazine cover photo.")
 
 RUBRIC_CRITERIA = ("specificity", "no_cliche", "thumbnail_read", "text_accuracy", "craft",
                    "scroll_stop", "brand_fit")
@@ -707,6 +720,12 @@ def _apply_overlays(rubric: dict, *, blind: str, answer: dict, entities: list,
         rubric["brand_fit"] = min(rubric.get("brand_fit") or 3, 3)
     # ed18's generic flip-chart presentation scored specificity 5: an image that would fit any
     # business article is not specific to this one, whatever else the judge says.
+    # Round 5 (posts): five dark, moody renders read as murky in a white feed.
+    if answer.get("bright_enough") is False:
+        rubric["thumbnail_read"] = min(rubric.get("thumbnail_read") or 3, 3)
+    # Round 5: "45% less engagement" says how much, never of what — good, not the best.
+    if hook_text and answer.get("headline_names_subject") is False:
+        rubric["specificity"] = min(rubric.get("specificity") or 4, 4)
     if answer.get("reusable_elsewhere") is True:
         rubric["specificity"] = min(rubric.get("specificity") or 3, 3)
     return rubric
@@ -731,12 +750,18 @@ def _staged_inspect(image_path: str, concept: Any, hook_text: Optional[str],
         hook_question = (f'Does it equal exactly "{hook_text}"?' if hook_text
                          else "This image should carry no text at all.")
         headline = f'"{hook_text}"' if hook_text else "(none — judge the image alone)"
+        # The headline is part of the cover, so the reuse test asks about the PAIR (round 5: ed17
+        # and ed18 were capped for a generic-looking image their grounded headline made specific).
+        reuse_question = (
+            f"Considering the headline {headline} together with the image, could this cover be "
+            f"reused unchanged for an unrelated article?" if hook_text else
+            "Could this exact image be reused unchanged on an unrelated business article?")
         targeted = client.chat.completions.create(
             model="lem-vision",
             messages=[{"role": "user", "content": [
                 {"type": "text", "text": _TARGETED_JUDGE_PROMPT.format(
                     surface=surface or "post", blind=blind or "(no description)",
-                    thesis=concept.thesis, headline=headline,
+                    thesis=concept.thesis, headline=headline, reuse_question=reuse_question,
                     emotional_beat=getattr(concept, "emotional_beat", "") or "the piece's mood",
                     entities="; ".join(entities) or "(none named)",
                     hook_question=hook_question, cliches=", ".join(CLICHE_OBJECTS))},
@@ -759,14 +784,18 @@ def _staged_inspect(image_path: str, concept: Any, hook_text: Optional[str],
     floors = dict(_RUBRIC_FLOORS)
     if surface in _SCROLL_STOP_SURFACES:
         floors["scroll_stop"] = _SCROLL_STOP_FLOOR
+        floors["thumbnail_read"] = _SCROLL_STOP_FLOOR
     failing = [name for name, floor in floors.items()
                if rubric.get(name) is not None and rubric[name] < floor]
     issues = [f"{name} {rubric[name]}/5" for name in failing]
     issues += [f"stray text: {t}" for t in stray_texts(blind, hook_text)][:3]
     issues += [str(i) for i in (answer.get("issues") or []) if str(i).strip()]
+    emotion_weak = (answer.get("face_emotion") is False or answer.get("emotion_matches") is False
+                    or "scroll_stop" in failing
+                    or any(_EMOTION_ISSUE.search(str(i)) for i in (answer.get("issues") or [])))
     return QualityVerdict(acceptable=not failing, relevance=rubric.get("specificity"),
                           issues=issues[:8], rubric=rubric, blind_description=blind,
-                          failing=failing)
+                          failing=failing, emotion_weak=bool(emotion_weak))
 
 
 def inspect_render_quality(image_path: str, focal_concept: str,
@@ -807,7 +836,8 @@ _RUBRIC_REPAIRS_GPT = {
     "no_cliche": "remove every stock symbol ({cliches}) and build the frame on {entities}",
     "text_accuracy": "{text_fix}",
     "craft": "natural skin texture, hands relaxed or out of frame, every object whole and solid",
-    "thumbnail_read": "make the subject larger and simpler, centred in the frame",
+    "thumbnail_read": ("make the subject larger and simpler, centred in the frame, and light the "
+                       "scene bright and high-key so it stands out in a white feed"),
     "scroll_stop": ("a closer framing where {emotion} shows on the face as a specific reaction, "
                     "a laptop at most a prop"),
     "brand_fit": "one deliberate warm gold accent against the charcoal and off-white palette",
@@ -818,7 +848,8 @@ _RUBRIC_REPAIRS_FLUX = {
     "no_cliche": "the whole frame built on {entities}",
     "text_accuracy": "{text_fix}",
     "craft": "natural skin texture, hands relaxed and out of frame, every object whole and solid",
-    "thumbnail_read": "the subject larger and simpler, centred in the frame",
+    "thumbnail_read": ("the subject larger and simpler, centred in the frame, in bright, "
+                       "high-key daylight"),
     "scroll_stop": "a closer framing where {emotion} shows on the face as a specific reaction",
     "brand_fit": "one deliberate warm gold accent against a charcoal and off-white palette",
 }
@@ -912,10 +943,15 @@ def _gate_loop(render_once, *, prompt: str, surface: str, focal_concept: Optiona
     last_verdict: Optional[QualityVerdict] = None
     gate_kwargs = {"concept": concept, "hook_text": hook_text} if concept is not None else {}
 
+    # Sticky once set (round 5): ed16's second candidate and its retry came out as neutral as the
+    # first, because nothing carried the judge's "enhance emotional expression" forward.
+    emotion_boost = ""
+
     for attempt in range(1, attempts + 1):
         best: Optional[tuple] = None
         for _ in range(candidates):
-            cand_path, backend, info = render_once(current_prompt)
+            cand_path, backend, info = render_once(
+                f"{current_prompt}\n\n{emotion_boost}" if emotion_boost else current_prompt)
             if not cand_path:
                 return None
             verdict = inspect_render_quality(cand_path, focal_concept or prompt[:200],
@@ -929,6 +965,9 @@ def _gate_loop(render_once, *, prompt: str, surface: str, focal_concept: Optiona
                 best = (cand_path, backend, verdict, info)
             if verdict.acceptable or not verdict.checked:
                 break
+            if verdict.emotion_weak and concept is not None and not emotion_boost:
+                emotion_boost = EMOTION_DIRECTIVE.format(
+                    beat=getattr(concept, "emotional_beat", "") or "the piece's emotion")
         path, used_backend, verdict, info = best
         if render_info is not None:
             render_info.update(info)
