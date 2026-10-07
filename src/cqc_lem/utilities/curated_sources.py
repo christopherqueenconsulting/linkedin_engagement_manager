@@ -467,7 +467,12 @@ def escape_little_text(text: Optional[str], keep_hashtags: bool = True) -> str:
     Returns:
         The escaped commentary.
     """
-    text = text or ""
+    # #2241 showcase C: the commentary carried markdown "**bold**" list items, which this escaper
+    # turned into literal asterisks. LinkedIn renders no markdown, so it is stripped to plain text
+    # FIRST — the same `sanitize_for_linkedin` every generated text post already goes through.
+    from cqc_lem.utilities.linkedin_formatter import sanitize_for_linkedin
+
+    text = sanitize_for_linkedin(text or "") or ""
     out: list[str] = []
     pos = 0
     for match in (_HASHTAG_RE.finditer(text) if keep_hashtags else ()):

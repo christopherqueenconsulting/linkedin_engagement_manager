@@ -180,19 +180,22 @@ def _concept(**overrides):
     return ImageConcept(**base)
 
 
-def test_a_quote_card_is_code_drawn_without_a_hook_and_judged_without_one(tmp_path):
+def test_a_quote_card_is_code_drawn_without_a_hook_and_never_pop_judged(tmp_path):
+    # #2241 showcase C: a quote card is gated STRUCTURALLY (verbatim, fitted, legible) only —
+    # the scene/POP judge rejected two as "text-only, lacks visual intrigue".
     concept = _concept(archetype=ig.QUOTE_CARD, archetype_ranking=(ig.QUOTE_CARD,),
                        graphic=_quote_graphic())
-    accepted = image_gen.QualityVerdict(acceptable=True)
+    rejected = image_gen.QualityVerdict(acceptable=False, failing=["scroll_stop"])
     info: dict = {}
     with patch.object(image_gen, "assets_dir", str(tmp_path)), \
-         patch.object(image_gen, "inspect_render_quality", return_value=accepted) as judge, \
+         patch.object(image_gen, "inspect_render_quality", return_value=rejected) as judge, \
          patch("cqc_lem.utilities.observability.track_image_gate_verdict"):
         path = image_gen.render_code_drawn(concept, surface="post_image", hook_text=None,
                                            render_info=info, signature="Jane Doe")
     assert path and info["archetype_rendered"] == ig.QUOTE_CARD
+    assert info["gate_verdict"] == "code_drawn"
     assert info["graphic_facts"][0]["text"] == _QUOTE
-    assert judge.call_args.kwargs["hook_text"] is None
+    judge.assert_not_called()
     assert image_gen._code_drawn(concept) and image_gen._shows_no_face(concept)
 
 

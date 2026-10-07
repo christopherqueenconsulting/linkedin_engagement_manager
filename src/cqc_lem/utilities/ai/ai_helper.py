@@ -3527,7 +3527,8 @@ def generate_post_image(prompt: str, user_id: int, *, ratio: str = DEFAULT_IMAGE
                         render_info: Optional[dict] = None,
                         concept: Any = None,
                         hook_text: Optional[str] = None,
-                        enforce: Optional[bool] = None) -> str:
+                        enforce: Optional[bool] = None,
+                        feed_context: Optional[str] = None) -> str:
     """Generate a LinkedIn post image, using the user's avatar LoRA when the guardrails allow it.
 
     Falls back to the base Flux.1 model whenever ``resolve_avatar_for`` declines (issue #744):
@@ -3559,6 +3560,8 @@ def generate_post_image(prompt: str, user_id: int, *, ratio: str = DEFAULT_IMAGE
     ``concept``/``hook_text`` (issue #2241) switch both gated branches onto the staged blind judge,
     graded against the same Stage 1 concept the brief was authored from. ``enforce`` overrides
     ``IMAGE_QUALITY_GATE_SURFACES`` for the surface (the video frame passes True).
+    ``feed_context`` is the post's opening a reader sees above a headline-free image or a video
+    (#2241 showcase C); both gated branches hand it to the targeted judge only.
     """
     from cqc_lem.utilities.ai.image_gen import render_avatar_image_gated, render_image_gated
     from cqc_lem.utilities.avatar.guardrails import resolve_avatar_for
@@ -3568,7 +3571,8 @@ def generate_post_image(prompt: str, user_id: int, *, ratio: str = DEFAULT_IMAGE
         return render_avatar_image_gated(
             prompt, avatar=avatar, user_id=user_id, surface=surface,
             ratio=ratio, focal_concept=focal_concept, post_id=post_id,
-            render_info=render_info, concept=concept, hook_text=hook_text, enforce=enforce)
+            render_info=render_info, concept=concept, hook_text=hook_text, enforce=enforce,
+            feed_context=feed_context)
     if render_info is not None:
         # No avatar resolved, so no likeness renders here at all — never left unset, or the
         # caller cannot tell "base render" from "nobody reported".
@@ -3579,7 +3583,8 @@ def generate_post_image(prompt: str, user_id: int, *, ratio: str = DEFAULT_IMAGE
     return render_image_gated(
         prompt, surface=surface, ratio=ratio, focal_concept=focal_concept,
         user_id=user_id, post_id=post_id, image_model=image_model,
-        render_info=render_info, concept=concept, hook_text=hook_text, enforce=enforce)
+        render_info=render_info, concept=concept, hook_text=hook_text, enforce=enforce,
+        feed_context=feed_context)
 
 
 def _record_avatar_media(image_path: str, post_id: "int | None", user_id: "int | None") -> None:

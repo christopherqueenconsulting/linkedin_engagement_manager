@@ -446,7 +446,7 @@ class TestGenerateVideoSrcPremium:
         gen_img.assert_called_once_with("image prompt", 1, ratio="9:16",
                                         surface="video", post_id=9, render_info={},
                                         enforce=True, focal_concept=None, concept=None,
-                                        hook_text=None)
+                                        hook_text=None, feed_context="text content")
         assert create_video.call_args[0][0] == "/tmp/avatar.png"
         assert create_video.call_args[1]["audio"] is True
         refund.assert_not_called()

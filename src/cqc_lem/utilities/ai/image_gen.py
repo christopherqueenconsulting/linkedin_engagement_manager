@@ -569,7 +569,7 @@ A viewer who knew nothing about its purpose described the photograph as:
 The image was made for a piece arguing: {thesis}
 The cover's kicker (topic tag, typeset by the system): {kicker}
 {headline_line}
-Read the kicker, headline and scene together as one cover. Look at the image itself and answer:
+{feed_line}Read the kicker, headline and scene together as one cover. Look at the image itself and answer:
 1. (Advisory only — never part of a score.) Is each of these things visibly depicted?
    {entities}
 2. Is any of these stock symbols present: {cliches}?
@@ -593,11 +593,7 @@ Read the kicker, headline and scene together as one cover. Look at the image its
    icp_relevance (a small-business owner's money, time or risk is visible).
 {graphic_note}
 Score each criterion 1-5, 5 best:
-- specificity: 5 = with its headline, a scroller would correctly guess this piece's argument —
-  the kicker + headline name the exact topic and the scene shows the human stakes of it (a
-  generic office is fine when kicker, headline and emotion are specific; a 5 needs all three
-  working together); 4 = clearly on-topic, slightly generic scene; 3 = the scene could sit on many unrelated posts
-  even with the headline; 2 or less = misleading or off-topic.
+{specificity_rule}
 - no_cliche (5 = no stock symbol at all), thumbnail_read, craft (no artifacts, an authentic
   face), scroll_stop (would it stop a scroll — the question 12 scores, and a readable, fitting
   emotion when there is a face), brand_fit (the brand palette reads).
@@ -611,6 +607,52 @@ Respond with ONLY a JSON object:
  "rubric": {{"specificity": 1, "no_cliche": 1, "thumbnail_read": 1, "craft": 1,
             "scroll_stop": 1, "brand_fit": 1}},
  "issues": ["<short actionable phrase>"]}}"""
+
+_SPECIFICITY_RULE = (
+    "- specificity: 5 = with its headline, a scroller would correctly guess this piece's argument —\n"
+    "  the kicker + headline name the exact topic and the scene shows the human stakes of it (a\n"
+    "  generic office is fine when kicker, headline and emotion are specific; a 5 needs all three\n"
+    "  working together); 4 = clearly on-topic, slightly generic scene; 3 = the scene could sit on "
+    "many unrelated posts\n  even with the headline; 2 or less = misleading or off-topic.")
+# #2241 showcase C: a claymation snail carrying a message stack and a collage filing cabinet
+# pouring a waterfall failed specificity at 2 because the judge saw them ALONE. On LinkedIn the
+# reader sees the post's opening lines ABOVE a headline-free image or video first, so the PAIR is
+# judged: does the image fit and reinforce the text the reader already has?
+_FEED_SPECIFICITY_RULE = (
+    "- specificity: A reader sees this text first: \"{feed}\". Does the image fit and reinforce "
+    "it, so the pair reads as one idea within 2 seconds? 5 = plainly about what the text says and "
+    "adds to it; 4 = clearly fits the text; 3 = loosely fits; 2 or less = unrelated to the text, "
+    "or misleading.")
+
+
+def feed_context_line(feed_context: Optional[str]) -> str:
+    """The targeted judge's line naming the feed text above a headline-free image ('' without).
+
+    Args:
+        feed_context: The post's opening lines (``content_framework.feed_fold_text``), or None.
+
+    Returns:
+        One prompt line ending in a newline, or ``""``.
+    """
+    if not (feed_context or "").strip():
+        return ""
+    return (f"The text a reader sees FIRST, directly above this image in the feed (the post's "
+            f'opening, before "...more"): "{feed_context.strip()}"\n')
+
+
+def specificity_rule(feed_context: Optional[str]) -> str:
+    """The specificity criterion: the image WITH its feed text, else the headline reading.
+
+    Args:
+        feed_context: The post's opening lines, or None.
+
+    Returns:
+        The rubric line the targeted judge scores specificity by.
+    """
+    if (feed_context or "").strip():
+        return _FEED_SPECIFICITY_RULE.format(feed=feed_context.strip().replace('"', "'"))
+    return _SPECIFICITY_RULE
+
 
 _VALENCE_HINTS = {
     "positive": "calm, pleased, relieved or wry — never shock",
@@ -909,9 +951,14 @@ def _headline_line(hook_text: Optional[str], surface: Optional[str]) -> str:
 
 
 def _staged_inspect(image_path: str, concept: Any, hook_text: Optional[str],
-                    surface: Optional[str], composite_path: Optional[str] = None
-                    ) -> QualityVerdict:
-    """Stage 4: a BLIND look at the RAW render, then targeted questions on the COMPOSITE."""
+                    surface: Optional[str], composite_path: Optional[str] = None,
+                    feed_context: Optional[str] = None) -> QualityVerdict:
+    """Stage 4: a BLIND look at the RAW render, then targeted questions on the COMPOSITE.
+
+    ``feed_context`` — the post's opening lines a reader sees above a headline-free image or a
+    video — reaches the TARGETED step only, where it reshapes the specificity question. The blind
+    look never sees it: it must describe the picture as a stranger would.
+    """
     from cqc_lem.utilities.ai.image_brief import CLICHE_OBJECTS, usable_anchors
 
     code_drawn = _code_drawn(concept)
@@ -940,7 +987,9 @@ def _staged_inspect(image_path: str, concept: Any, hook_text: Optional[str],
                     valence=valence, valence_hint=_VALENCE_HINTS.get(valence, ""),
                     entities="; ".join(entities) or "(none named)",
                     cliches=", ".join(CLICHE_OBJECTS),
-                    graphic_note=_CODE_DRAWN_NOTE if code_drawn else "")},
+                    graphic_note=_CODE_DRAWN_NOTE if code_drawn else "",
+                    feed_line=feed_context_line(feed_context),
+                    specificity_rule=specificity_rule(feed_context))},
                 _image_part(composite_path) if composite_path else raw_part]}],
             response_format={"type": "json_object"},
             temperature=0,
@@ -988,7 +1037,8 @@ def inspect_render_quality(image_path: str, focal_concept: str,
                            surface: Optional[str] = None, *,
                            concept: Any = None,
                            hook_text: Optional[str] = None,
-                           composite_path: Optional[str] = None) -> QualityVerdict:
+                           composite_path: Optional[str] = None,
+                           feed_context: Optional[str] = None) -> QualityVerdict:
     """Vision look at a finished render. Fails OPEN — any error returns acceptable/unchecked.
 
     With a Stage 1 ``concept`` (issue #2241) the gate is two ``lem-vision`` calls: a BLIND
@@ -1012,13 +1062,17 @@ def inspect_render_quality(image_path: str, focal_concept: str,
         concept: Stage 1's ``ImageConcept``; switches on the staged judge.
         hook_text: The headline composited onto it, if any.
         composite_path: The composite on disk; the targeted questions look at it.
+        feed_context: The post's opening lines a reader sees ABOVE a headline-free image or a
+            video (#2241 showcase C); the targeted judge reads the pair. Never shown to the blind
+            look.
 
     Returns:
         The verdict; ``checked=False`` when the gate could not run.
     """
     if concept is None:
         return _legacy_inspect(image_path, focal_concept, surface)
-    return _staged_inspect(image_path, concept, hook_text, surface, composite_path)
+    return _staged_inspect(image_path, concept, hook_text, surface, composite_path,
+                           feed_context=feed_context)
 
 
 _RUBRIC_REPAIRS_GPT = {
@@ -1186,6 +1240,10 @@ def _record_verdict(render_info: Optional[dict], verdict: QualityVerdict) -> str
     return label
 
 
+# Code-drawn formats graded by their deterministic structure alone — never the scene/POP judge.
+STRUCTURAL_ONLY_ARCHETYPES = frozenset({"quote_card"})
+
+
 def render_code_drawn(concept: Any, *, surface: str, hook_text: Optional[str],
                       layout: Optional[str] = None, brand_kit: Optional[str] = None,
                       signature: Optional[str] = None, user_id: Optional[int] = None,
@@ -1247,6 +1305,20 @@ def render_code_drawn(concept: Any, *, surface: str, hook_text: Optional[str],
                      post_id=post_id, action_type="image_archetype", archetype=archetype,
                      reason=str(e))
             continue
+        if archetype in STRUCTURAL_ONLY_ARCHETYPES:
+            # #2241 showcase C: two quote cards were rejected as "text-only, lacks visual
+            # intrigue" — a scene/POP verdict on a deliberate typographic format. A quote card is
+            # gated STRUCTURALLY only, and that already happened in `render_graphic`: the
+            # sentence is the post's own verbatim, its text fitted in bounds at legible contrast.
+            if render_info is not None:
+                render_info.update({"gate_verdict": "code_drawn", "archetype_rendered": archetype,
+                                    "graphic_facts": [dict(f) for f in drawn.facts]})
+                if reasons:
+                    render_info["archetype_fallback_reason"] = "; ".join(reasons)
+            log_info("Code-drawn image rendered", user_id=user_id, post_id=post_id,
+                     action_type="image_archetype", archetype=archetype,
+                     gate_verdict="code_drawn", surface=surface)
+            return drawn.path
         judged = dataclasses.replace(concept, archetype=archetype)
         # A quote card shows no headline, so the judge is not told one is typeset on it.
         judged_hook = None if archetype == QUOTE_CARD else hook_text
@@ -1312,7 +1384,8 @@ def _gate_loop(render_once, *, prompt: str, surface: str, focal_concept: Optiona
                brand_kit: Optional[str] = None,
                signature: Optional[str] = None,
                enforce: Optional[bool] = None,
-               panel: Optional[str] = None) -> Optional[str]:
+               panel: Optional[str] = None,
+               feed_context: Optional[str] = None) -> Optional[str]:
     """The bounded render → composite → judge → repair loop both gated renderers share.
 
     ``render_once(current_prompt)`` returns ``(path, backend, info)`` — ``path`` None means the
@@ -1348,7 +1421,8 @@ def _gate_loop(render_once, *, prompt: str, surface: str, focal_concept: Optiona
                                    kicker=_kicker_for(concept) or None,
                                    signature=signature, panel=panel)
             gate_kwargs = ({"concept": concept, "hook_text": hook_text,
-                            "composite_path": composite} if concept is not None else {})
+                            "composite_path": composite, "feed_context": feed_context}
+                           if concept is not None else {})
             verdict = inspect_render_quality(cand_path, focal_concept or prompt[:200],
                                              surface=surface, **gate_kwargs)
             if not verdict.checked and enforced:
@@ -1425,7 +1499,8 @@ def render_avatar_image_gated(prompt: str, *, avatar: dict, user_id: Optional[in
                               brand_kit: Optional[str] = None,
                               signature: Optional[str] = None,
                               enforce: Optional[bool] = None,
-                              panel: Optional[str] = None) -> Optional[str]:
+                              panel: Optional[str] = None,
+                              feed_context: Optional[str] = None) -> Optional[str]:
     """LoRA render of an image the author appears in, behind the SAME bounded gate as the base.
 
     Likeness never renders through the gpt-image path (``generate_post_image`` owns the avatar
@@ -1479,7 +1554,7 @@ def render_avatar_image_gated(prompt: str, *, avatar: dict, user_id: Optional[in
                       concept=concept, hook_text=hook_text, user_id=user_id, post_id=post_id,
                       render_info=render_info, log_message="Avatar image failed the quality gate",
                       layout=layout, brand_kit=brand_kit, signature=signature,
-                      enforce=enforce, panel=panel)
+                      enforce=enforce, panel=panel, feed_context=feed_context)
 
 
 def render_image_gated(prompt: str, *, surface: str, ratio: str = "1:1",
@@ -1495,7 +1570,8 @@ def render_image_gated(prompt: str, *, surface: str, ratio: str = "1:1",
                        brand_kit: Optional[str] = None,
                        signature: Optional[str] = None,
                        enforce: Optional[bool] = None,
-                       panel: Optional[str] = None) -> str:
+                       panel: Optional[str] = None,
+                       feed_context: Optional[str] = None) -> str:
     """Render with the bounded vision gate. Returns the best candidate's path.
 
     Surfaces outside IMAGE_QUALITY_GATE_SURFACES get one advisory-only pass (verdict logged,
@@ -1540,4 +1616,4 @@ def render_image_gated(prompt: str, *, surface: str, ratio: str = "1:1",
                       concept=concept, hook_text=hook_text, user_id=user_id, post_id=post_id,
                       render_info=render_info, log_message="Image failed the quality gate",
                       layout=layout, brand_kit=brand_kit, signature=signature,
-                      enforce=enforce, panel=panel)
+                      enforce=enforce, panel=panel, feed_context=feed_context)
