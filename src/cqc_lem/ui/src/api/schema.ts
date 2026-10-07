@@ -3883,6 +3883,10 @@ export interface components {
         EngagementPreferencesDetail: {
             /** Authenticity Score Min */
             authenticity_score_min: number | null;
+            /** Brand Kit */
+            brand_kit: {
+                [key: string]: unknown;
+            } | null;
             /** Business Goals */
             business_goals: string | null;
             catchup_contact_interval_bounds: components["schemas"]["CatchupContactIntervalBounds"];
@@ -4007,6 +4011,10 @@ export interface components {
         EngagementPreferencesRequest: {
             /** Authenticity Score Min */
             authenticity_score_min?: number | null;
+            /** Brand Kit */
+            brand_kit?: {
+                [key: string]: unknown;
+            } | null;
             /** Business Goals */
             business_goals?: string | null;
             /**

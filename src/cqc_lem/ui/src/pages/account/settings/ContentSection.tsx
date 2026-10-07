@@ -6,6 +6,7 @@ import { useAuth } from '../../../contexts/useAuth'
 import { useEngagementPrefs } from './engagementPrefsCtx'
 import { useUserPrefs } from './userPrefsCtx'
 import { Advanced, Field, SectionCard, inputClass } from './Field'
+import BrandKitCard from './BrandKitCard'
 import { CADENCE_OPTIONS, DEFAULT_POSTING_DAYS, WEEKDAY_OPTIONS, weekdayLabels, weeklyPostSlots } from './options'
 
 // Everything about producing and shipping a post. The content-buffer knobs (F4) and the review
@@ -30,88 +31,91 @@ export default function ContentSection() {
   const resolvedDays = weeklyPostSlots(eng.posts_per_week ?? 3, postingDays)
 
   return (
-    <SectionCard title="Publishing" blurb="What LEM generates, and what has to clear review before it ships.">
-      <Field settingKey="posts_per_week">
-        <select value={eng.posts_per_week ?? 3}
-          onChange={(e) => setEng({ posts_per_week: Number(e.target.value) })} className={inputClass}>
-          {CADENCE_OPTIONS.map((o) => (
-            <option key={o.value} value={o.value}>{o.label}</option>
-          ))}
-        </select>
-      </Field>
-      <Field settingKey="posting_days">
-        <div className="flex flex-wrap gap-2">
-          {WEEKDAY_OPTIONS.map((o) => (
-            <button key={o.value} type="button" onClick={() => toggleDay(o.value)}
-              aria-pressed={postingDays.includes(o.value)}
-              className={`px-3 py-1 rounded-full border text-sm ${postingDays.includes(o.value)
-                ? 'bg-blue-600 border-blue-600 text-white'
-                : 'bg-white border-gray-300 text-gray-600'}`}>
-              {o.label}
-            </button>
-          ))}
-        </div>
-        <p className="mt-2 text-xs text-gray-500">Publishes on: {weekdayLabels(resolvedDays)}</p>
-      </Field>
-      <Field settingKey="auto_schedule_posts">
-        <Toggle on={!!prefs?.auto_schedule_posts}
-          onClick={() => prefs && setPrefs({ auto_schedule_posts: !prefs.auto_schedule_posts })} />
-      </Field>
-      <Field settingKey="hold_repaired_posts_for_review">
-        <Toggle on={eng.hold_repaired_posts_for_review ?? true}
-          onClick={() => setEng({
-            hold_repaired_posts_for_review: !(eng.hold_repaired_posts_for_review ?? true),
-          })} />
-      </Field>
-      <Field settingKey="link_in_first_comment">
-        <Toggle on={eng.link_in_first_comment}
-          onClick={() => setEng({ link_in_first_comment: !eng.link_in_first_comment })} />
-      </Field>
-      <Field settingKey="text_post_images">
-        <Toggle on={eng.text_post_images ?? true}
-          onClick={() => setEng({ text_post_images: !(eng.text_post_images ?? true) })} />
-      </Field>
-      <Field settingKey="default_video_quality">
-        <select value={eng.default_video_quality ?? 'standard'}
-          onChange={(e) => setEng({ default_video_quality: e.target.value })} className={inputClass}>
-          <option value="standard">Standard (free)</option>
-          <option value="premium">Premium (uses 1 video credit)</option>
-          <option value="premium_top">Premium Top (uses 3 video credits)</option>
-        </select>
-      </Field>
+    <>
+      <SectionCard title="Publishing" blurb="What LEM generates, and what has to clear review before it ships.">
+        <Field settingKey="posts_per_week">
+          <select value={eng.posts_per_week ?? 3}
+            onChange={(e) => setEng({ posts_per_week: Number(e.target.value) })} className={inputClass}>
+            {CADENCE_OPTIONS.map((o) => (
+              <option key={o.value} value={o.value}>{o.label}</option>
+            ))}
+          </select>
+        </Field>
+        <Field settingKey="posting_days">
+          <div className="flex flex-wrap gap-2">
+            {WEEKDAY_OPTIONS.map((o) => (
+              <button key={o.value} type="button" onClick={() => toggleDay(o.value)}
+                aria-pressed={postingDays.includes(o.value)}
+                className={`px-3 py-1 rounded-full border text-sm ${postingDays.includes(o.value)
+                  ? 'bg-blue-600 border-blue-600 text-white'
+                  : 'bg-white border-gray-300 text-gray-600'}`}>
+                {o.label}
+              </button>
+            ))}
+          </div>
+          <p className="mt-2 text-xs text-gray-500">Publishes on: {weekdayLabels(resolvedDays)}</p>
+        </Field>
+        <Field settingKey="auto_schedule_posts">
+          <Toggle on={!!prefs?.auto_schedule_posts}
+            onClick={() => prefs && setPrefs({ auto_schedule_posts: !prefs.auto_schedule_posts })} />
+        </Field>
+        <Field settingKey="hold_repaired_posts_for_review">
+          <Toggle on={eng.hold_repaired_posts_for_review ?? true}
+            onClick={() => setEng({
+              hold_repaired_posts_for_review: !(eng.hold_repaired_posts_for_review ?? true),
+            })} />
+        </Field>
+        <Field settingKey="link_in_first_comment">
+          <Toggle on={eng.link_in_first_comment}
+            onClick={() => setEng({ link_in_first_comment: !eng.link_in_first_comment })} />
+        </Field>
+        <Field settingKey="text_post_images">
+          <Toggle on={eng.text_post_images ?? true}
+            onClick={() => setEng({ text_post_images: !(eng.text_post_images ?? true) })} />
+        </Field>
+        <Field settingKey="default_video_quality">
+          <select value={eng.default_video_quality ?? 'standard'}
+            onChange={(e) => setEng({ default_video_quality: e.target.value })} className={inputClass}>
+            <option value="standard">Standard (free)</option>
+            <option value="premium">Premium (uses 1 video credit)</option>
+            <option value="premium_top">Premium Top (uses 3 video credits)</option>
+          </select>
+        </Field>
 
-      <Advanced>
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-          <Field settingKey="authenticity_score_min">
-            <input type="number" min={0} max={100} value={eng.authenticity_score_min ?? ''}
-              placeholder={`Default ${gateDefaults.authenticity_score_min}`}
-              onChange={(e) => setEng({
-                authenticity_score_min: e.target.value === '' ? null : Number(e.target.value),
-              })}
-              className={inputClass} />
-          </Field>
-          <Field settingKey="post_similarity_max_pct">
-            <input type="number" min={10} max={100} value={eng.post_similarity_max_pct ?? ''}
-              placeholder={`Default ${gateDefaults.post_similarity_max_pct}%`}
-              onChange={(e) => setEng({
-                post_similarity_max_pct: e.target.value === '' ? null : Number(e.target.value),
-              })}
-              className={inputClass} />
-          </Field>
-          <Field settingKey="content_buffer_days">
-            <input type="number" min={1} max={30} value={prefs?.content_buffer_days ?? ''} disabled={!prefs}
-              onChange={(e) => setPrefs({ content_buffer_days: Number(e.target.value) })}
-              className={inputClass} />
-          </Field>
-          <Field settingKey="content_buffer_max_posts">
-            <input type="number" min={1} max={30} value={prefs?.content_buffer_max_posts ?? ''} disabled={!prefs}
-              onChange={(e) => setPrefs({ content_buffer_max_posts: Number(e.target.value) })}
-              className={inputClass} />
-          </Field>
-        </div>
-      </Advanced>
-      <ProfileSkillsPanel />
-    </SectionCard>
+        <Advanced>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <Field settingKey="authenticity_score_min">
+              <input type="number" min={0} max={100} value={eng.authenticity_score_min ?? ''}
+                placeholder={`Default ${gateDefaults.authenticity_score_min}`}
+                onChange={(e) => setEng({
+                  authenticity_score_min: e.target.value === '' ? null : Number(e.target.value),
+                })}
+                className={inputClass} />
+            </Field>
+            <Field settingKey="post_similarity_max_pct">
+              <input type="number" min={10} max={100} value={eng.post_similarity_max_pct ?? ''}
+                placeholder={`Default ${gateDefaults.post_similarity_max_pct}%`}
+                onChange={(e) => setEng({
+                  post_similarity_max_pct: e.target.value === '' ? null : Number(e.target.value),
+                })}
+                className={inputClass} />
+            </Field>
+            <Field settingKey="content_buffer_days">
+              <input type="number" min={1} max={30} value={prefs?.content_buffer_days ?? ''} disabled={!prefs}
+                onChange={(e) => setPrefs({ content_buffer_days: Number(e.target.value) })}
+                className={inputClass} />
+            </Field>
+            <Field settingKey="content_buffer_max_posts">
+              <input type="number" min={1} max={30} value={prefs?.content_buffer_max_posts ?? ''} disabled={!prefs}
+                onChange={(e) => setPrefs({ content_buffer_max_posts: Number(e.target.value) })}
+                className={inputClass} />
+            </Field>
+          </div>
+        </Advanced>
+        <ProfileSkillsPanel />
+      </SectionCard>
+      <BrandKitCard />
+    </>
   )
 }
 
