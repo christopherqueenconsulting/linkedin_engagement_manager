@@ -328,7 +328,7 @@ class TestTreatmentVariety:
 
 _IDEAS = [
     "A copy editor's red pen frozen mid-strike, her face a half-smile of disbelief.",
-    "An empty office chair under a warm lamp beside a cold cup of tea.",
+    "An empty office chair under a warm lamp beside a dark window.",
     "An agency owner wincing at the payroll run ahead in an empty office at dusk.",
 ]
 
@@ -991,3 +991,118 @@ class TestRoundTwelveHookAssertsThesis:
                                treatment="people_scene", treatment_rationale="", weak=False)
         with patch(_CREATE, side_effect=RuntimeError("down")):
             assert _hook_asserts_thesis(concept, {}, "s", None, "post_image", 1) is concept
+
+
+@pytest.mark.unit
+class TestRoundThirteenStats:
+    @pytest.mark.parametrize("text,stats", [
+        ("Claude Opus 4.5 reviews every draft", []),
+        ("GPT-5.2 is the default model", []),
+        ("In 2025 we rebuilt the stack", []),
+        ("We saved $30K a quarter", ["$30K"]),
+        ("Routing cut AI spend by 60%", ["60%"]),
+        ("Replies came 3x faster", ["3x"]),
+        ("We wrote 45 posts a month", ["45"]),
+        ("Saved 30% in March", ["30%"]),
+        ("12 hours lost every week", ["12"]),
+    ])
+    def test_only_stats_are_stats(self, text, stats):
+        from cqc_lem.utilities.ai.image_concept import stat_numbers
+        assert stat_numbers(text) == stats
+
+    def test_ed17_never_leads_with_a_model_version(self):
+        from cqc_lem.utilities.ai.image_concept import thesis_number
+        source = ("Claude Opus 4.5 now reviews our content. A content reviewer still catches "
+                  "what it misses.")
+        concept = ImageConcept(thesis="Claude Opus 4.5 still needs a content reviewer",
+                               audience="", specific_entities=("Claude Opus 4.5",),
+                               emotional_beat="", hook_phrase="", treatment="people_scene",
+                               treatment_rationale="", weak=False)
+        assert thesis_number(concept, source) == ""
+
+    def test_the_sources_casing_is_kept(self):
+        from cqc_lem.utilities.ai.image_concept import thesis_number
+        source = "An audit saved $30K a quarter. Nobody had looked at the bill."
+        concept = ImageConcept(thesis="An audit saved $30k a quarter", audience="",
+                               specific_entities=("$30k",), emotional_beat="", hook_phrase="",
+                               treatment="people_scene", treatment_rationale="", weak=False)
+        assert thesis_number(concept, source) == "$30K"
+
+
+@pytest.mark.unit
+class TestRoundThirteenStatSurvives:
+    _SOURCE = ("Routing cut our AI spend by 60%. The engineering lead set it up in a week. "
+               "Quality held.")
+
+    def _concept(self, hook):
+        return ImageConcept(thesis="Routing cut AI spend by 60%", audience="",
+                            specific_entities=("60%",), emotional_beat="", hook_phrase=hook,
+                            treatment="people_scene", treatment_rationale="", weak=False,
+                            visual_anchors=("the engineering lead",),
+                            hook_options={"plain_claim": hook})
+
+    def test_a_hook_without_the_stat_is_regenerated_with_the_reason(self):
+        from cqc_lem.utilities.ai.image_concept import _enforce_stat
+        with patch(_CREATE, return_value=_resp({"hook_phrase": "Routing cut spend by 60%"})) as c:
+            out = _enforce_stat(self._concept("Routing saves most spend"), {}, self._SOURCE,
+                                None, "post_image", 1)
+        assert out.hook_phrase == "Routing cut spend by 60%" and out.hook_shape == "number_claim"
+        assert 'must contain the stat "60%" verbatim' in \
+            c.call_args_list[0][1]["messages"][1]["content"]
+
+    def test_a_second_miss_falls_back_to_the_stat_and_its_subject(self):
+        from cqc_lem.utilities.ai.image_concept import _enforce_stat
+        with patch(_CREATE, return_value=_resp({"hook_phrase": "Routing saves most spend"})):
+            out = _enforce_stat(self._concept("Routing saves most spend"), {}, self._SOURCE,
+                                None, "post_image", 1)
+        assert "60%" in out.hook_phrase and out.hook_shape == "number_claim"
+
+    def test_a_hook_already_carrying_the_stat_costs_no_call(self):
+        from cqc_lem.utilities.ai.image_concept import _enforce_stat
+        with patch(_CREATE) as create:
+            out = _enforce_stat(self._concept("Routing cut spend by 60%"), {}, self._SOURCE,
+                                None, "post_image", 1)
+        assert out.hook_phrase == "Routing cut spend by 60%"
+        create.assert_not_called()
+
+
+@pytest.mark.unit
+class TestRoundThirteenHookIsAClaim:
+    @pytest.mark.parametrize("hook", ["Routing prompts to models by complexity",
+                                      "Hybrid model routing strategy"])
+    def test_a_label_is_refused(self, hook):
+        from cqc_lem.utilities.ai.image_concept import hook_rejection
+        assert "descriptive label" in hook_rejection(hook, None)
+
+    @pytest.mark.parametrize("hook", ["Cheap-first hurts precision", "Payroll eats first",
+                                      "Your cheapest model is enough", "Who buys?",
+                                      "Audit exposed hidden tool spend", "60% less AI spend"])
+    def test_a_claim_a_question_or_a_number_passes(self, hook):
+        from cqc_lem.utilities.ai.image_concept import hook_rejection
+        assert "descriptive label" not in hook_rejection(hook, None)
+
+
+@pytest.mark.unit
+class TestRoundThirteenShot:
+    def test_shots_rotate_least_recently_used(self):
+        from cqc_lem.utilities.ai.image_concept import SHOTS, assign_layout_and_cast
+        recent: list[str] = []
+        for i in range(len(SHOTS)):
+            concept = parse_concept(dict(_PAYLOAD, treatment="people_scene",
+                                         thesis=f"Late invoices starve payroll {i}"), _SOURCE)
+            shot = assign_layout_and_cast(concept, "newsletter", recent_shots=recent).shot
+            assert shot in SHOTS and shot not in recent
+            recent.insert(0, shot)
+        assert set(recent) == set(SHOTS)
+
+    def test_the_shot_is_framing_only_and_the_setting_stays_the_articles(self):
+        from cqc_lem.utilities.ai.image_concept import assign_layout_and_cast
+        concept = parse_concept(dict(_PAYLOAD, treatment="people_scene",
+                                     setting="a tense payroll day"), _SOURCE)
+        out = assign_layout_and_cast(concept, "post_image")
+        assert out.shot and out.cast["setting"] == "a tense payroll day"
+
+    def test_a_non_people_scene_gets_no_shot(self):
+        from cqc_lem.utilities.ai.image_concept import assign_layout_and_cast
+        concept = parse_concept(dict(_PAYLOAD, treatment="concrete_scene"), _SOURCE)
+        assert assign_layout_and_cast(concept, "newsletter").shot == ""

@@ -51,6 +51,29 @@ judge rightly scored specificity 1 on all four covers. So Stage 1 returns two li
   down. Briefs, Stage 3 and the vision judge's specificity all work from `usable_anchors()` — the
   anchors, or for a concept with none, its plain common-noun facts.
 
+## Stats, not versions; framing rotates; good news smiles (round 13)
+
+- **A headline number is a STAT.** `stat_numbers` accepts a percentage, a currency amount
+  ("$30K"), a multiplier ("3x"), or a number followed by a unit or count noun ("45 posts") —
+  never a version beside a capitalised name ("Opus 4.5", "GPT-5.2"; ed17 rendered "4.5") and
+  never a bare year. The number keeps the SOURCE's casing ("$30K", not "$30k").
+- **The stat survives.** `_enforce_stat`: when the thesis has a stat, the hook must carry it
+  verbatim — an offered hook with it first, else ONE regeneration naming the stat, else the stat
+  plus the first anchor's noun (post 102 had shipped "Routing saves most spend" for a 60% cut).
+- **A hook is a claim.** `asserts_something` requires a verb (a copula or modal, a known verb in
+  any inflection, or an -ed form); a question or a number_claim passes. "Routing prompts to
+  models by complexity" is a label and is refused.
+- **No mugs.** mug, cup, coffee, tea and latte are props (`prop_failure`); the directive says
+  hands are empty, gesturing, or hold a face-down phone.
+- **Framing rotates, the place does not.** `SHOTS` (close-up portrait, over-the-shoulder
+  two-shot, walking-and-talking two-shot, standing at a window, presenting to a small group seen
+  from behind) rotates least-recently-used from the receipts (`recent_shots`), like the cast.
+  The setting still comes from the article.
+- **Good news smiles, literally.** Positive valence is "a relaxed, genuine smile, eyes bright,
+  shoulders loose" — in the brief, the repair reason and the emotion-repair directive
+  (`_emotion_beat`). "relief" without a smile is refused: the model reads relief as distress
+  (ed16 rendered alarmed four times).
+
 ## What the blind critic asked for (round 12)
 
 The in-pipeline judge passed every item in round 11; the independent blind critic did not. Each

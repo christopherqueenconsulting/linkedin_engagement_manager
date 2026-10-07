@@ -888,6 +888,15 @@ def _scene_ratio(ratio: str, hook_text: Optional[str], surface: str) -> str:
     return "1:1" if hook_text and surface in COMPOSE_SURFACES else ratio
 
 
+def _emotion_beat(concept: Any) -> str:
+    """The beat the emotion repair names: good news is spelled out, never "relief" (round 13)."""
+    from cqc_lem.utilities.ai.image_brief import POSITIVE_FACE
+
+    if getattr(concept, "valence", "") == "positive":
+        return POSITIVE_FACE
+    return getattr(concept, "emotional_beat", "") or "the piece's emotion"
+
+
 def _kicker_for(concept: Any) -> str:
     """Every composite carries a kicker: Stage 1's, else one derived from the concept (round 9)."""
     from cqc_lem.utilities.ai.image_concept import concept_kicker
@@ -964,8 +973,7 @@ def _gate_loop(render_once, *, prompt: str, surface: str, focal_concept: Optiona
             if verdict.acceptable or not verdict.checked:
                 break
             if verdict.emotion_weak and concept is not None and not emotion_boost:
-                emotion_boost = EMOTION_DIRECTIVE.format(
-                    beat=getattr(concept, "emotional_beat", "") or "the piece's emotion")
+                emotion_boost = EMOTION_DIRECTIVE.format(beat=_emotion_beat(concept))
         path, used_backend, verdict, info = best
         if render_info is not None:
             render_info.update(info)

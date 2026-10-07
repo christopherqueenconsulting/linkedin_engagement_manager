@@ -84,12 +84,12 @@ _TREATMENT_TEMPLATES: dict[str, str] = {
         "TREATMENT people_scene: a photorealistic, candid documentary photograph of the piece's "
         "audience in the exact situation it describes, built from the chosen visual idea. The "
         "emotional beat is VISIBLE as a specific human reaction — a wince at a number, mid-laugh "
-        "relief, a raised eyebrow at a colleague, arms crossed in a tense meeting — in a close or "
+        "smile, a raised eyebrow at a colleague, arms crossed in a tense meeting — in a close or "
         "medium framing where the face reads at thumbnail size — clearly readable but authentic "
         "and restrained, the face a real person would make, never cartoonish or crying. There is "
         "no laptop or screen in frame. The emotion's direction follows the piece's valence: a saving or a "
-        "win is a quiet, satisfied half-smile with relaxed shoulders, eyes open and engaged with "
-        "the other person or the task, hands away from head and face; a risk or a "
+        "win is a relaxed, genuine smile, eyes bright, shoulders loose, engaged with the other "
+        "person or the task, hands away from head and face; a risk or a "
         "loss reads concerned, skeptical or frustrated — never shock or despair for good news. "
         "The image is BRIGHT — high-key or warm daylight with strong subject contrast — never a "
         "dark, moody, low-key scene unless the emotional beat itself is dark (dread, crisis). Real "
@@ -299,8 +299,8 @@ _SYSTEM_PROMPT_TAIL = """- The renderer ignores negation, so never write "no X" 
   supplied separately and must not be contradicted). Give them natural skin texture with
   visible pores and realistic uneven skin tone — never flawless, porcelain, or smooth skin.
 - HANDS are the renderer's weakest anatomy — keep them low-risk or out of frame. Good: arms
-  relaxed at the sides, hands resting flat on a desk, framed above the waist, one hand
-  loosely holding a simple large object (a mug, a folder). Never: pointing at the camera,
+  relaxed at the sides, hands resting flat on a desk, framed above the waist, hands empty
+  (never a mug, cup or coffee — that is stock monotony). Never: pointing at the camera,
   open-palm gestures mid-air, interlocked or spread fingers, two hands interacting, or
   hands as the focal point.
 
@@ -411,7 +411,8 @@ PROPS_DIRECTIVE = (
     "PROPS: no paper of any kind in frame — no documents, sheets, reports, proposals, "
     "clipboards, checklists, forms, invoices, bills, folders or binders — no whiteboard, chart "
     "or code content — and no screens at all: no laptop, monitor, keyboard, tablet or computer. "
-    "Hands hold nothing, or a mug, pen or phone held face-down. Tell the story with people "
+    "No mugs, cups, coffee or tea. Hands are empty, gesturing, or a phone held face-down. "
+    "Tell the story with people "
     "interacting and gesturing in a real environment — a warehouse, a shop floor, a meeting room, "
     "a hallway, a kitchen table, a workshop. Describe each person by APPEARANCE and ACTION (\"a "
     "woman in a green jumper pointing at the shelf\"), never by a role or group caption such as "
@@ -454,7 +455,9 @@ _TECH_HARDWARE = re.compile(
 # interact.
 _SYMBOLIC_PROPS = re.compile(
     r"\b(?:figurines?|tokens?|cards?|flags?|chess(?:\s+pieces?|\s+board)?|blocks?|"
-    r"sticky\s+notes?|post-its?|game\s+pieces?|pawns?|dominoe?s?)\b", re.IGNORECASE)
+    r"sticky\s+notes?|post-its?|game\s+pieces?|pawns?|dominoe?s?|"
+    # Round 13: a coffee mug was in nearly every scene — monotony, not a story.
+    r"mugs?|cups?|coffee|teas?|lattes?)\b", re.IGNORECASE)
 
 
 def tech_hardware(text: Optional[str]) -> Optional[str]:
@@ -482,8 +485,8 @@ def prop_failure(text: Optional[str]) -> Optional[str]:
     text = text or ""
     symbolic = _SYMBOLIC_PROPS.search(text)
     if symbolic:
-        return (f"the scene names {symbolic.group(0)!r} — a symbolic prop reads as an AI "
-                f"artifact; hands are empty or the people interact")
+        return (f"the scene names {symbolic.group(0)!r} — a symbolic prop or a mug reads as an "
+                f"AI artifact or stock monotony; hands are empty or the people interact")
     paper = _PAPER_PROPS.search(text)
     if paper:
         return (f"the scene names {paper.group(0)!r} — paper, charts and code render legible "
@@ -1011,11 +1014,12 @@ def _deterministic_failure(prompt: str, *, anchors: list[str], weak: bool,
     if color:
         return (f"the prompt names a saturated {color!r} — wardrobe and objects stay within "
                 f"gold, charcoal, off-white and natural tones")
+    if positive and _RELIEF.search(unhooked) and "smile" not in unhooked.lower():
+        return (f"\"relief\" alone reads as distress — for good news write: {POSITIVE_FACE}")
     pained = _PAINED_RELIEF.search(unhooked) if positive else None
     if pained:
-        return (f"good news reads as pain ({pained.group(0)!r}) — a quiet, satisfied half-smile "
-                f"with relaxed shoulders, eyes open, engaged with the other person or the task, "
-                f"hands away from the head and face")
+        return (f"good news reads as pain ({pained.group(0)!r}) — {POSITIVE_FACE}, eyes open, "
+                f"engaged with the other person or the task, hands away from the head and face")
     label = _GROUP_LABEL.search(unhooked)
     if label:
         return (f"the prompt names a group caption ({label.group(0)!r}) — the renderer paints "
@@ -1209,7 +1213,7 @@ def _fallback_brief(content: str, *, surface: str, ratio: str, context: str,
               f"bright, high-key warm daylight with strong subject contrast and one deliberate "
               f"{accent[0]} accent, subtle film "
               f"grain, real texture with fabric wear and everyday imperfections, plain unbranded "
-              f"surfaces, clean unmarked walls, hands at rest or around a mug.")
+              f"surfaces, clean unmarked walls, hands empty and relaxed.")
     space = negative_space_directive(concept.layout if concept else "", surface) if hook else ""
     layout = f" {space[:1].upper()}{space[1:]}." if space else ""
     # Profile context is AUTHOR context: a fallback is a render prompt, so it never carries it.
@@ -1219,6 +1223,8 @@ def _fallback_brief(content: str, *, surface: str, ratio: str, context: str,
     if idea:
         who = (f", the person {cast_phrase(concept.cast)}"
                if concept and concept.cast and not avatar else "")
+        if concept and concept.shot:
+            who += f", framed as {concept.shot}"  # round 13: the rotated framing
         prompt = (f"{context}A photorealistic editorial photograph for a {use}: {idea}{who}, shot "
                   f"on a 50mm lens at f/2.8, visible skin pores, {finish}{layout}")
     elif treatment == TREATMENT_PEOPLE:
@@ -1253,10 +1259,13 @@ def _fallback_brief(content: str, *, surface: str, ratio: str, context: str,
                       hook_text=hook, rejections=tuple(rejections))
 
 
+# Round 13: ed16 ("$30K saved") rendered alarmed four times — the model reads "relief" as
+# distress. Positive valence is stated LITERALLY, and "relief" never stands alone.
+POSITIVE_FACE = "a relaxed, genuine smile, eyes bright, shoulders loose"
+_RELIEF = re.compile(r"\breliev\w*|\brelief\b", re.IGNORECASE)
 _VALENCE_FACES = {
-    "positive": ("a quiet, satisfied half-smile and relaxed shoulders, eyes open, engaged with "
-                 "the other person or the task — never eyes closed, never a hand on the chest, "
-                 "head or face"),
+    "positive": (POSITIVE_FACE + ", engaged with the other person or the task — never eyes "
+                 "closed, never a hand on the chest, head or face"),
     "negative": ("concern shown through posture and eyes, mouth closed — restrained, never an "
                  "open mouth, a furrowed brow or alarm"),
     "mixed": "wry or thoughtful",
@@ -1281,6 +1290,9 @@ def _analysis_block(concept: Optional[ImageConcept], anchors: list[str],
         # from the piece's own anchors.
         block += (f"CAST: the person in frame is {cast_phrase(concept.cast)} — a real, "
                   f"unremarkable member of this audience, no stereotyped styling.\n")
+    if concept.shot:
+        # Round 13: every scene was a medium shot of 2-4 people at a table. Framing rotates.
+        block += f"SHOT (framing — use it): {concept.shot}\n"
     if concept.setting:
         # Round 12: the place is the ARTICLE's — never a stock backdrop like a warehouse.
         block += f"SETTING (from the article — use it): {concept.setting}\n"

@@ -882,3 +882,9 @@ class TestCoverAvatarFitRule:
                    return_value=_USABLE_AVATAR), \
              patch.object(nc, "classify_avatar_relevance", return_value=True):
             assert nc._resolve_cover_avatar(3, None, "T", "S", "B") == _USABLE_AVATAR
+
+
+def test_cover_receipts_feed_the_shot_rotation():
+    import inspect
+    assert 'recent_shots=_recent_concept_field(user_id, "shot", ROTATION_WINDOW)' in \
+        inspect.getsource(nc.generate_cover_for_edition)

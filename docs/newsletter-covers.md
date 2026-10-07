@@ -276,6 +276,14 @@ the headline, a caveat or a neutral "vs" as the headline, symbolic props, overac
 primary-colour objects. Each became an engine rule, and covers are now built at 1920x1080
 (`docs/image-stack.md`, "What the blind critic asked for").
 
+### Gauntlet round 12 → stats, framing, smiles
+
+ed17 led with a model version ("4.5"), a post dropped its 60% stat, every scene held a mug in a
+medium shot at a table, and ed16's "$30K saved" rendered alarmed. Headline numbers are now
+stats in the source's casing and must survive into the hook, hooks must assert with a verb, mugs
+are props, the framing rotates, and good news is a literal relaxed smile (`docs/image-stack.md`,
+"Stats, not versions; framing rotates; good news smiles").
+
 ### Rejections land for review, with their reason
 
 A definite judge failure on `no_cliche` or `specificity` after the attempt budget returns verdict

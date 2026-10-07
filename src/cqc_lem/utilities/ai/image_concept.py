@@ -150,9 +150,11 @@ Case, 2-6 words. Every number and every noun in a hook comes from the article's 
 "engagement" stays "engagement", never "reach"; "hidden buyers" never becomes "influencers". A \
 numeric hook names its subject: "45% less engagement on AI posts", never "45% less \
 engagement". Give one hook in EACH shape in hook_candidates — number_claim ("45% less engagement \
-on AI posts"), contrast ("Search on, still wrong"), question ("Who really buys your AI?"), \
+on AI posts"), contrast ("Search is on, still wrong"), question ("Who really buys your AI?"), \
 plain_claim ("Your cheapest model is enough") — the series rotates through them. The hook \
-carries the THESIS; the image carries emotion and specificity.
+carries the THESIS; the image carries emotion and specificity. A hook is a CLAIM with a verb \
+("Routing cuts spend 60%"), never a descriptive label ("Routing prompts by complexity"), never \
+a caveat and never "X vs Y". When the piece leads with a stat, the hook carries it verbatim.
 
 Rules for valence: positive when the piece is about a saving, a win or relief; negative when it \
 is about a risk, a loss or a mistake; mixed otherwise. The face in the image follows it.
@@ -278,6 +280,7 @@ class ImageConcept:
     hook_options: Optional[dict[str, str]] = None
     kicker: str = ""
     setting: str = ""
+    shot: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         """The concept as a JSON-safe dict, for prompts and receipts."""
@@ -563,6 +566,8 @@ def hook_rejection(hook: str, title: Optional[str], topic_text: str = "",
         return "sentence case only, never Title Case"
     if _VERSUS.search(hook):
         return "an 'X vs Y' hook takes no side — state the piece's claim"
+    if not any(ch.isdigit() for ch in hook) and not asserts_something(hook):
+        return "a descriptive label, not a claim — the hook needs a verb that asserts something"
     hook_tokens = set(_content_tokens(hook))
     title_tokens = set(_content_tokens(title or ""))
     if hook_tokens and title_tokens and (
@@ -577,6 +582,52 @@ def hook_rejection(hook: str, title: Optional[str], topic_text: str = "",
     if comparative:
         return f"{comparative!r} needs its reference: say 'than …' or give the number"
     return ""
+
+
+# Round 13: "Routing prompts to models by complexity" is a label, not a claim. A hook (other than
+# a number_claim) needs a verb that ASSERTS something. Deterministic and conservative: a copula
+# or modal, a known business verb in any inflection, or a past-tense -ed form; a question passes.
+_ASSERTING = frozenset({
+    "is", "are", "was", "were", "be", "been", "isn", "aren", "wasn", "weren", "s", "can", "cannot",
+    "could", "will", "won", "would", "should", "must", "might", "may", "do", "does", "did", "don",
+    "doesn", "didn", "has", "have", "had", "hasn", "haven", "ll", "re", "ve", "d",
+})
+_VERBS = frozenset({
+    "beat", "break", "bring", "build", "buy", "catch", "change", "cost", "cut", "decide", "die",
+    "drain", "drive", "drop", "earn", "eat", "end", "fail", "fall", "find", "fix", "get", "give",
+    "go", "grow", "hide", "hit", "hold", "hurt", "keep", "kill", "know", "lag", "land", "last",
+    "lead", "leak", "learn", "leave", "lie", "lift", "lose", "make", "matter", "mean", "miss",
+    "move", "need", "outperform", "owe", "pay", "pick", "prove", "pull", "push", "quit", "raise",
+    "read", "rely", "rise", "rule", "run", "save", "say", "see", "sell", "send", "shift", "ship",
+    "show", "shrink", "sink", "skip", "slip", "slow", "solve", "spend", "stall", "starve", "stay",
+    "steal", "stop", "take", "talk", "tell", "think", "trust", "turn", "use", "waste", "want",
+    "win", "work", "write", "beats", "wins", "matters", "decides", "pays", "buys", "cuts", "saves",
+    "hurts", "kills", "costs", "breaks", "leaks", "lies", "outsell", "underperform", "doubt",
+    "fear", "ignore", "forget", "outgrow", "replace", "eats", "drains", "fails", "loses",
+    "misses", "needs", "works", "lose", "sees", "says", "knows", "wants", "uses", "runs",
+    "grows", "falls", "rises", "drops", "shows", "proves", "makes", "takes", "gets", "keeps",
+    "finds", "spends", "wastes", "starves", "stalls", "slips", "holds", "lands", "earns",
+})
+
+
+def asserts_something(hook: str) -> bool:
+    """Does ``hook`` carry a verb that asserts something (round 13)?
+
+    Args:
+        hook: The hook.
+
+    Returns:
+        True for a question, a copula or modal, a known verb in any inflection, or an -ed past
+        form; False for a noun-phrase label ("Routing prompts to models by complexity").
+    """
+    if (hook or "").rstrip().endswith("?"):
+        return True
+    for token in re.findall(r"[a-z]+", (hook or "").lower().replace("’", "'")):
+        if token in _ASSERTING or token in _VERBS or _root(token) in _VERBS:
+            return True
+        if len(token) > 4 and token.endswith("ed") and token not in ("unused", "need"):
+            return True
+    return False
 
 
 # Round 12: "Cheapest model everywhere vs hybrid routing" takes no side; the critic wants a claim.
@@ -643,11 +694,12 @@ def derive_hook(thesis: str, source: str, title: Optional[str] = None,
     noun = next((" ".join(a.split()[-2:]) for a in anchors if a and not any(
         ch.isdigit() for ch in a)), "")
     for fact in (*facts, thesis or ""):
-        number = _NUMBER.search(fact or "")
-        if number and number.group(0).lower() in lowered and noun:
-            candidate = _valid_hook(f"{number.group(0)} {noun}", title, topic, source)
-            if candidate:
-                return candidate
+        for stat in stat_numbers(fact or ""):
+            if stat.lower() in lowered and noun:
+                candidate = _valid_hook(f"{_source_casing(stat, source)} {noun}", title, topic,
+                                        source)
+                if candidate:
+                    return candidate
     return trimmed or "What changed here"
 
 
@@ -1080,6 +1132,15 @@ CAST_DIMENSIONS: dict[str, tuple[str, ...]] = {
                   "Southeast Asian"),
 }
 # Round 12 (#2241): the SETTING is no longer rotated — it comes from the article (``setting``).
+# Round 13: every scene was a medium shot of 2-4 people at a table in a beige office. The FRAMING
+# rotates least-recently-used from the receipts, like the cast; the place never does.
+SHOTS = (
+    "a close-up single portrait, one face filling the frame",
+    "an over-the-shoulder two-shot, the camera behind one person looking at the other",
+    "a walking-and-talking two-shot, two people mid-stride side by side",
+    "one person standing at a window, half-turned toward the camera",
+    "one person presenting to a small group, seen from behind the group",
+)
 _CAST_SURFACES = frozenset({"newsletter", "post_image", "video"})
 _ROLE_WORDS = re.compile(
     r"\b(?:owner|founder|lead|manager|editor|analyst|marketer|consultant|director|officer|"
@@ -1177,7 +1238,8 @@ def rotate_hook_shape(concept: ImageConcept,
 
 def assign_layout_and_cast(concept: ImageConcept, surface: str,
                            recent_layouts: Optional[Sequence[str]] = None,
-                           recent_casts: Optional[Sequence[dict]] = None) -> ImageConcept:
+                           recent_casts: Optional[Sequence[dict]] = None,
+                           recent_shots: Optional[Sequence[str]] = None) -> ImageConcept:
     """Rotate the composition and (for a people_scene) the person, least-recently-used.
 
     Args:
@@ -1186,9 +1248,10 @@ def assign_layout_and_cast(concept: ImageConcept, surface: str,
             get a cast.
         recent_layouts: The last ``ROTATION_WINDOW`` layouts on this surface, most recent first.
         recent_casts: The last ``ROTATION_WINDOW`` cast dicts, most recent first.
+        recent_shots: The last ``ROTATION_WINDOW`` shots (``SHOTS``), most recent first.
 
     Returns:
-        The concept with ``layout`` and ``cast`` set (unchanged values when not applicable).
+        The concept with ``layout``, ``cast`` and ``shot`` set (unchanged when not applicable).
     """
     seed = concept.thesis
     layout = concept.layout
@@ -1202,7 +1265,10 @@ def assign_layout_and_cast(concept: ImageConcept, surface: str,
                 for dim, values in CAST_DIMENSIONS.items()}
         cast["role"] = _role_from_anchors(concept)
         cast["setting"] = concept.setting
-    return dataclasses.replace(concept, layout=layout, cast=cast)
+    shot = concept.shot
+    if surface in _CAST_SURFACES and concept.treatment == TREATMENT_PEOPLE and not shot:
+        shot = _least_recent(SHOTS, list(recent_shots or [])[:ROTATION_WINDOW], seed + "shot")
+    return dataclasses.replace(concept, layout=layout, cast=cast, shot=shot)
 
 
 # Round 10 (#2241): the surfaces ``image_compose`` typesets a headline onto — each MUST have one.
@@ -1226,6 +1292,51 @@ def _offered_hooks(payload: Any) -> list[str]:
 
 
 _SENTENCE = re.compile(r"(?<=[.!?])\s+|\n+")
+
+
+# Round 13 (#2241): the lead-number rule grabbed "4.5" from "Claude Opus 4.5". A headline number
+# is a STAT — a percentage, a currency amount, a multiplier, or a number followed by a unit or a
+# count noun — never a product/model version next to a capitalised name, and never a year.
+_COUNT_NOUNS = (
+    "posts|hours|days|weeks|months|years|minutes|customers|clients|users|people|teams|leads|"
+    "seats|tools|calls|replies|deals|buyers|employees|staff|percent|times|invoices|meetings|"
+    "comments|followers|views|signups|sales|orders|projects|steps|errors|tickets|subscribers")
+_STAT = re.compile(
+    r"[$€£]\d[\d,.]*\s?(?:[KkMmBb]n?\b|million\b|billion\b|thousand\b)?"
+    r"|\b\d[\d,.]*\s?%"
+    r"|\b\d+(?:\.\d+)?[xX×](?!\w)"
+    rf"|\b\d[\d,.]*(?=\s+(?:more\s+|fewer\s+|less\s+|new\s+)?(?:{_COUNT_NOUNS})\b)",
+    re.IGNORECASE)
+_YEAR = re.compile(r"^(?:19|20)\d\d$")
+_VERSIONED = re.compile(r"\b[A-Z][A-Za-z0-9]*[\s\-]?$")
+
+
+def stat_numbers(text: str) -> list[str]:
+    """The STATS ``text`` states, in order, as written.
+
+    Args:
+        text: Any text.
+
+    Returns:
+        Each stat ("$30K", "60%", "3x", "45" in "45 posts"); never a version next to a
+        capitalised name ("Opus 4.5", "GPT-5.2") or a bare year.
+    """
+    found = []
+    for match in _STAT.finditer(text or ""):
+        stat = match.group(0).strip().rstrip(".,")
+        before = (text or "")[:match.start()]
+        if not re.search(r"[$€£%]", stat) and _VERSIONED.search(before):
+            continue  # "Opus 4.5", "GPT-5.2": a version next to a name, not a stat
+        if _YEAR.match(stat):
+            continue
+        found.append(stat)
+    return found
+
+
+def _source_casing(stat: str, source: str) -> str:
+    """``stat`` as the SOURCE writes it ("$30K", never "$30k")."""
+    match = re.search(re.escape(stat), source or "", re.IGNORECASE)
+    return match.group(0) if match else stat
 
 
 def thesis_number(concept: ImageConcept, source: str, title: Optional[str] = None) -> str:
@@ -1253,15 +1364,14 @@ def thesis_number(concept: ImageConcept, source: str, title: Optional[str] = Non
         thesis_tokens & set(_content_tokens(s))) * 2 >= len(thesis_tokens)]
     tied_text = " ".join([title or "", *sentences[:2], *claim_sentences]).lower()
     for text in (concept.thesis, *concept.specific_entities):
-        for match in _NUMBER.finditer(text or ""):
-            number = match.group(0).rstrip(".,")
+        for number in stat_numbers(text):
             if number.lower() in lowered and number.lower() in tied_text:
-                return number
+                return _source_casing(number, source)
     return ""
 
 
 def lead_with_number(concept: ImageConcept, source: str,
-                     title: Optional[str] = None) -> ImageConcept:
+                     title: Optional[str] = None, build: bool = True) -> ImageConcept:
     """Force a ``number_claim`` hook carrying the thesis's lead number, when there is one.
 
     Round 12: the critic's best cover led with its stat ("45%"); four others left theirs out. A
@@ -1273,6 +1383,8 @@ def lead_with_number(concept: ImageConcept, source: str,
         concept: The concept after shape rotation.
         source: The analysed text.
         title: The piece's title.
+        build: Whether to build "number + noun" when no offered hook carries the number;
+            ``_enforce_stat`` asks the analyst first and builds only as the last resort.
 
     Returns:
         The concept, its hook led by the number when one could be made.
@@ -1282,7 +1394,7 @@ def lead_with_number(concept: ImageConcept, source: str,
         return concept
     candidates = [concept.hook_phrase, *(concept.hook_options or {}).values()]
     hook = next((h for h in candidates if h and number.lower() in h.lower()), "")
-    if not hook:
+    if not hook and build:
         topic = " ".join((concept.thesis, *concept.specific_entities, *concept.visual_anchors))
         noun = next((" ".join(a.split()[-2:]) for a in concept.visual_anchors
                      if a and not any(ch.isdigit() for ch in a)), "")
@@ -1304,6 +1416,33 @@ Does the headline ASSERT the piece's main claim — not a caveat, a side point o
 that takes no side? And what is the headline's own valence: positive (a saving, a win, relief),
 negative (a risk, a loss, a mistake) or mixed? Respond with ONLY a JSON object:
 {{"asserts_thesis": true|false, "valence": "positive|negative|mixed", "reason": "<one sentence>"}}"""
+
+
+def _enforce_stat(concept: ImageConcept, payload: Any, source: str, title: Optional[str],
+                  surface: str, user_id: Optional[int]) -> ImageConcept:
+    """The thesis stat MUST survive into the hook, verbatim (round 13).
+
+    Post 102 argued "cut AI spend by 60%" and shipped "Routing saves most spend". After
+    ``lead_with_number``, a hook still missing the stat is regenerated ONCE with that reason; if
+    the analyst still drops it, the hook is the stat plus the first anchor's noun.
+    """
+    number = thesis_number(concept, source, title)
+    concept = lead_with_number(concept, source, title, build=False)
+    if not number or number in concept.hook_phrase:
+        return concept
+    reason = f'the hook must contain the stat "{number}" verbatim — it is the piece\'s lead number'
+    retried = _ensure_hook(dataclasses.replace(concept, hook_phrase=""), payload, source, title,
+                           surface, user_id, extra_reasons=(reason,))
+    if number in retried.hook_phrase:
+        return dataclasses.replace(retried, hook_shape="number_claim")
+    built = lead_with_number(concept, source, title)
+    if number in built.hook_phrase:
+        return built
+    noun = next((" ".join(a.split()[-2:]) for a in concept.visual_anchors
+                 if a and not any(ch.isdigit() for ch in a)), "") or "saved"
+    hook = f"{number} {noun}"  # the stat survives even when no rule-passing hook could carry it
+    return dataclasses.replace(concept, hook_phrase=hook, hook_shape="number_claim",
+                               hook_options={**(concept.hook_options or {}), "number_claim": hook})
 
 
 def check_hook_against_thesis(hook: str, thesis: str) -> tuple[bool, str, str]:
@@ -1357,7 +1496,7 @@ def _hook_asserts_thesis(concept: ImageConcept, payload: Any, source: str,
         rejected = f'"{concept.hook_phrase}": it does not assert the main claim ({reason})'
         concept = _ensure_hook(dataclasses.replace(concept, hook_phrase=""), payload, source,
                                title, surface, user_id, extra_reasons=(rejected,))
-        concept = lead_with_number(concept, source, title)
+        concept = _enforce_stat(concept, payload, source, title, surface, user_id)
         _, valence, _ = check_hook_against_thesis(concept.hook_phrase, concept.thesis)
     return dataclasses.replace(concept, valence=valence) if valence else concept
 
@@ -1417,6 +1556,7 @@ def analyze_content_for_image(text: str, *, title: Optional[str] = None,
                               recent_layouts: Optional[Sequence[str]] = None,
                               recent_casts: Optional[Sequence[dict]] = None,
                               recent_hook_shapes: Optional[Sequence[str]] = None,
+                              recent_shots: Optional[Sequence[str]] = None,
                               ) -> Optional[ImageConcept]:
     """Read the full content and decide what its image must show. Never raises.
 
@@ -1433,6 +1573,7 @@ def analyze_content_for_image(text: str, *, title: Optional[str] = None,
         recent_layouts: Layouts of the most recent images on this surface, most recent first.
         recent_casts: Cast dicts of the most recent images, most recent first.
         recent_hook_shapes: Hook shapes of the most recent images, most recent first.
+        recent_shots: Shots (framings) of the most recent images, most recent first.
 
     Returns:
         The concept, or None when the call fails or returns nothing usable — callers keep a
@@ -1488,6 +1629,6 @@ def analyze_content_for_image(text: str, *, title: Optional[str] = None,
     concept = rotate_hook_shape(concept, recent_hook_shapes)
     if surface in _HOOKED_SURFACES:
         # Round 12: the lead number outranks shape rotation, and the hook must assert the thesis.
-        concept = lead_with_number(concept, source, title)
+        concept = _enforce_stat(concept, payload, source, title, surface, user_id)
         concept = _hook_asserts_thesis(concept, payload, source, title, surface, user_id)
-    return assign_layout_and_cast(concept, surface, recent_layouts, recent_casts)
+    return assign_layout_and_cast(concept, surface, recent_layouts, recent_casts, recent_shots)

@@ -806,3 +806,22 @@ class TestRoundTwelveJudge:
     def test_a_restrained_face_passes(self, tmp_path):
         verdict, _ = _judge(tmp_path, answer=_answer(expression_overacted=False))
         assert verdict.acceptable
+
+
+@pytest.mark.unit
+class TestRoundThirteenEmotionRepair:
+    def test_good_news_repairs_to_the_literal_face_never_relief(self):
+        from cqc_lem.utilities.ai.image_gen import _emotion_beat
+        concept = ImageConcept(thesis="t", audience="", specific_entities=(),
+                               emotional_beat="relief and urgency", hook_phrase="",
+                               treatment="people_scene", treatment_rationale="", weak=False,
+                               valence="positive")
+        assert _emotion_beat(concept) == "a relaxed, genuine smile, eyes bright, shoulders loose"
+
+    def test_other_valences_keep_their_beat(self):
+        from cqc_lem.utilities.ai.image_gen import _emotion_beat
+        concept = ImageConcept(thesis="t", audience="", specific_entities=(),
+                               emotional_beat="quiet dread", hook_phrase="",
+                               treatment="people_scene", treatment_rationale="", weak=False,
+                               valence="negative")
+        assert _emotion_beat(concept) == "quiet dread"
