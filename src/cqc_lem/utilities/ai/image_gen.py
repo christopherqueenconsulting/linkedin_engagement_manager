@@ -670,10 +670,16 @@ def _pop_scores(raw: Any) -> dict:
     return scores
 
 
-def _code_drawn(concept: Any) -> bool:
+def _drawn_archetypes() -> tuple[str, ...]:
+    """Every archetype drawn by code: Stage 1's five, plus the post rotation's quote card."""
     from cqc_lem.utilities.ai.image_concept import CODE_DRAWN_ARCHETYPES
+    from cqc_lem.utilities.ai.image_graphics import QUOTE_CARD
 
-    return getattr(concept, "archetype", "") in CODE_DRAWN_ARCHETYPES
+    return CODE_DRAWN_ARCHETYPES + (QUOTE_CARD,)
+
+
+def _code_drawn(concept: Any) -> bool:
+    return getattr(concept, "archetype", "") in _drawn_archetypes()
 
 
 def _shows_no_face(concept: Any) -> bool:
@@ -1076,7 +1082,7 @@ def _kicker_for(concept: Any) -> str:
 
 def _composite(raw_path: str, hook_text: Optional[str], surface: str, layout: Optional[str],
                brand_kit: Optional[str], kicker: Optional[str] = None,
-               signature: Optional[str] = None) -> Optional[str]:
+               signature: Optional[str] = None, panel: Optional[str] = None) -> Optional[str]:
     """The render with its headline typeset on, or None when there is no headline or it fails.
 
     A compositing failure is a warning, never a lost render: the raw image still ships.
@@ -1088,7 +1094,7 @@ def _composite(raw_path: str, hook_text: Optional[str], surface: str, layout: Op
     try:
         return compose_headline(raw_path, hook_text, layout=layout,
                                 brand=brand_style(brand_kit), surface=surface, kicker=kicker,
-                                signature=signature)
+                                signature=signature, panel=panel)
     except Exception as e:
         log_warning("Headline compositing failed — shipping the render without it", exc=e,
                     surface=surface, action_type="image_compose")
@@ -1115,7 +1121,8 @@ def render_code_drawn(concept: Any, *, surface: str, hook_text: Optional[str],
                       layout: Optional[str] = None, brand_kit: Optional[str] = None,
                       signature: Optional[str] = None, user_id: Optional[int] = None,
                       post_id: Optional[int] = None, render_info: Optional[dict] = None,
-                      enforce: Optional[bool] = None) -> Optional[str]:
+                      enforce: Optional[bool] = None,
+                      panel: Optional[str] = None) -> Optional[str]:
     """Draw the concept's code-drawn archetype(s) and grade the composite — $0 render spend.
 
     Walks the code-drawn head of ``concept.archetype_ranking``. Each is drawn by
@@ -1138,19 +1145,21 @@ def render_code_drawn(concept: Any, *, surface: str, hook_text: Optional[str],
         render_info: Filled with ``archetype_rendered``, ``graphic_facts`` (every drawn figure
             with its source sentence — the receipt's trace) and the gate fields.
         enforce: As for ``render_image_gated``.
+        panel: The headline panel's variant (post ``typeset_card`` rotation); charcoal when None.
 
     Returns:
         The composite's path, or None to fall back to the AI render.
     """
     from cqc_lem.utilities.ai.image_compose import brand_style
-    from cqc_lem.utilities.ai.image_concept import CODE_DRAWN_ARCHETYPES
-    from cqc_lem.utilities.ai.image_graphics import GraphicError, render_graphic
+    from cqc_lem.utilities.ai.image_graphics import QUOTE_CARD, GraphicError, render_graphic
     from cqc_lem.utilities.observability import track_image_gate_verdict
 
-    chain = [a for a in (getattr(concept, "archetype_ranking", ()) or ())
-             if a in CODE_DRAWN_ARCHETYPES]
-    if (concept is None or not chain or not hook_text or surface not in COMPOSE_SURFACES
-            or not _code_drawn(concept)):
+    drawable = _drawn_archetypes()
+    chain = [a for a in (getattr(concept, "archetype_ranking", ()) or ()) if a in drawable]
+    # A quote card carries the post's own sentence, not the headline: it alone needs no hook.
+    needs_hook = any(a != QUOTE_CARD for a in chain)
+    if (concept is None or not chain or (needs_hook and not hook_text)
+            or surface not in COMPOSE_SURFACES or not _code_drawn(concept)):
         return None
     enforced = surface in IMAGE_QUALITY_GATE_SURFACES if enforce is None else enforce
     reasons: list[str] = []
@@ -1160,9 +1169,9 @@ def render_code_drawn(concept: Any, *, surface: str, hook_text: Optional[str],
         try:
             drawn = render_graphic(
                 archetype, getattr(concept, "graphic", None) or {}, surface=surface,
-                hook=hook_text, kicker=_kicker_for(concept), signature=signature or "",
+                hook=hook_text or "", kicker=_kicker_for(concept), signature=signature or "",
                 brand=brand_style(brand_kit), layout=layout or getattr(concept, "layout", None),
-                out_path=os.path.join(out_dir, f"img_{secrets.token_hex(8)}.png"))
+                out_path=os.path.join(out_dir, f"img_{secrets.token_hex(8)}.png"), panel=panel)
         except GraphicError as e:
             reasons.append(f"{archetype}: {e}")
             log_info("Code-drawn archetype refused — trying the next", user_id=user_id,
@@ -1170,13 +1179,15 @@ def render_code_drawn(concept: Any, *, surface: str, hook_text: Optional[str],
                      reason=str(e))
             continue
         judged = dataclasses.replace(concept, archetype=archetype)
+        # A quote card shows no headline, so the judge is not told one is typeset on it.
+        judged_hook = None if archetype == QUOTE_CARD else hook_text
         verdict = inspect_render_quality(drawn.path, getattr(concept, "thesis", "")[:200],
-                                         surface=surface, concept=judged, hook_text=hook_text,
+                                         surface=surface, concept=judged, hook_text=judged_hook,
                                          composite_path=drawn.path)
         if not verdict.checked and enforced:
             verdict = inspect_render_quality(drawn.path, getattr(concept, "thesis", "")[:200],
                                              surface=surface, concept=judged,
-                                             hook_text=hook_text, composite_path=drawn.path)
+                                             hook_text=judged_hook, composite_path=drawn.path)
         if verdict.acceptable or not verdict.checked or not enforced:
             label = _record_verdict(render_info, verdict)
             if render_info is not None:
@@ -1231,7 +1242,8 @@ def _gate_loop(render_once, *, prompt: str, surface: str, focal_concept: Optiona
                log_message: str, layout: Optional[str] = None,
                brand_kit: Optional[str] = None,
                signature: Optional[str] = None,
-               enforce: Optional[bool] = None) -> Optional[str]:
+               enforce: Optional[bool] = None,
+               panel: Optional[str] = None) -> Optional[str]:
     """The bounded render → composite → judge → repair loop both gated renderers share.
 
     ``render_once(current_prompt)`` returns ``(path, backend, info)`` — ``path`` None means the
@@ -1265,7 +1277,7 @@ def _gate_loop(render_once, *, prompt: str, surface: str, focal_concept: Optiona
                 return None
             composite = _composite(cand_path, hook_text, surface, layout, brand_kit,
                                    kicker=_kicker_for(concept) or None,
-                                   signature=signature)
+                                   signature=signature, panel=panel)
             gate_kwargs = ({"concept": concept, "hook_text": hook_text,
                             "composite_path": composite} if concept is not None else {})
             verdict = inspect_render_quality(cand_path, focal_concept or prompt[:200],
@@ -1343,7 +1355,8 @@ def render_avatar_image_gated(prompt: str, *, avatar: dict, user_id: Optional[in
                               layout: Optional[str] = None,
                               brand_kit: Optional[str] = None,
                               signature: Optional[str] = None,
-                              enforce: Optional[bool] = None) -> Optional[str]:
+                              enforce: Optional[bool] = None,
+                              panel: Optional[str] = None) -> Optional[str]:
     """LoRA render of an image the author appears in, behind the SAME bounded gate as the base.
 
     Likeness never renders through the gpt-image path (``generate_post_image`` owns the avatar
@@ -1361,7 +1374,7 @@ def render_avatar_image_gated(prompt: str, *, avatar: dict, user_id: Optional[in
     (issue #1377) is what makes it auditable afterwards.
 
     ``concept``/``hook_text``/``layout``/``brand_kit`` (issue #2241) switch on the staged blind
-    judge and the composited headline, exactly as for ``render_image_gated``.
+    judge and the composited headline, exactly as for ``render_image_gated``, and ``panel`` too.
     """
     from cqc_lem.utilities.ai.ai_helper import _record_avatar_media
     from cqc_lem.utilities.avatar.attributes import apply_subject_clause
@@ -1369,7 +1382,8 @@ def render_avatar_image_gated(prompt: str, *, avatar: dict, user_id: Optional[in
 
     drawn = render_code_drawn(concept, surface=surface, hook_text=hook_text, layout=layout,
                               brand_kit=brand_kit, signature=signature, user_id=user_id,
-                              post_id=post_id, render_info=render_info, enforce=enforce)
+                              post_id=post_id, render_info=render_info, enforce=enforce,
+                              panel=panel)
     if drawn:
         if render_info is not None:
             render_info["used_avatar"] = False
@@ -1396,7 +1410,7 @@ def render_avatar_image_gated(prompt: str, *, avatar: dict, user_id: Optional[in
                       concept=concept, hook_text=hook_text, user_id=user_id, post_id=post_id,
                       render_info=render_info, log_message="Avatar image failed the quality gate",
                       layout=layout, brand_kit=brand_kit, signature=signature,
-                      enforce=enforce)
+                      enforce=enforce, panel=panel)
 
 
 def render_image_gated(prompt: str, *, surface: str, ratio: str = "1:1",
@@ -1411,7 +1425,8 @@ def render_image_gated(prompt: str, *, surface: str, ratio: str = "1:1",
                        layout: Optional[str] = None,
                        brand_kit: Optional[str] = None,
                        signature: Optional[str] = None,
-                       enforce: Optional[bool] = None) -> str:
+                       enforce: Optional[bool] = None,
+                       panel: Optional[str] = None) -> str:
     """Render with the bounded vision gate. Returns the best candidate's path.
 
     Surfaces outside IMAGE_QUALITY_GATE_SURFACES get one advisory-only pass (verdict logged,
@@ -1428,11 +1443,13 @@ def render_image_gated(prompt: str, *, surface: str, ratio: str = "1:1",
     two candidates per attempt and keeps the better. On covers and posts ``hook_text`` is
     composited onto every candidate by ``image_compose`` (in ``layout``, in ``brand_kit``'s exact
     colors) — the render itself carries no text — and the COMPOSITE is what returns, with the
-    concept's kicker above the headline and ``signature`` as a byline (round 7).
+    concept's kicker above the headline and ``signature`` as a byline (round 7). ``panel`` picks
+    the type panel's variant (``image_compose.PANEL_VARIANTS``) for a post ``typeset_card``.
     """
     drawn = render_code_drawn(concept, surface=surface, hook_text=hook_text, layout=layout,
                               brand_kit=brand_kit, signature=signature, user_id=user_id,
-                              post_id=post_id, render_info=render_info, enforce=enforce)
+                              post_id=post_id, render_info=render_info, enforce=enforce,
+                              panel=panel)
     if drawn:
         return drawn
     concept = _as_ai_render(concept, render_info)
@@ -1454,4 +1471,4 @@ def render_image_gated(prompt: str, *, surface: str, ratio: str = "1:1",
                       concept=concept, hook_text=hook_text, user_id=user_id, post_id=post_id,
                       render_info=render_info, log_message="Image failed the quality gate",
                       layout=layout, brand_kit=brand_kit, signature=signature,
-                      enforce=enforce)
+                      enforce=enforce, panel=panel)

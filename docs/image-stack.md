@@ -17,7 +17,8 @@ per-content-type prompt helper** — add a preset.
 | `utilities/ai/image_brief.py` | Authoring the prompt: content + concept in → validated brief out |
 | `utilities/ai/image_gen.py` | Rendering that brief, plus the vision quality gate |
 | `utilities/ai/image_compose.py` | Typesetting the headline onto a finished render — the ONE place a headline meets a render (round 6) |
-| `utilities/ai/image_graphics.py` | Drawing the five code-drawn archetypes from VERIFIED facts — the ONE place a data graphic is drawn (archetype round) |
+| `utilities/ai/image_graphics.py` | Drawing the five code-drawn archetypes from VERIFIED facts — the ONE place a data graphic is drawn (archetype round) — plus the post `quote_card` |
+| `utilities/ai/post_treatment.py` | A POST image's rhythm: treatment, panel variant, photo grade and the sameness gate, read off the post receipts (anti-monotony round) |
 
 ## The staged engine (issue #2241)
 
@@ -85,9 +86,10 @@ receipts — `archetype_rendered` first, since a fallback shipped as its fallbac
 **Deviations from the report, on purpose.** The chart needs 2 values, not the report's 3 (the
 owner's spec: "≥2 comparable numbers"; a two-bar contrast is still evidence). The rotation
 penalty is −4, not −2: at −2 a recent chart (4−2) still beat a fresh editorial concept (1), which
-repeats rather than avoids. There is no founder quote card yet: `BrandKit.founder_photo` is
-parsed (an image path, no traversal, never sent to a prompt) but no archetype renders it until
-the owner sets an approved real photo — and a renderer must then check it is an asset we own.
+repeats rather than avoids. The founder quote card ships WITHOUT the photo: posts get a text-only
+`quote_card` (§ Post rhythm below); `BrandKit.founder_photo` is parsed (an image path, no
+traversal, never sent to a prompt) but nothing renders it until the owner sets an approved real
+photo — and a renderer must then check it is an asset we own.
 The before/after halves are code-drawn only; the optional AI object halves are not built.
 
 **Fact safety — the reason five archetypes are drawn in code.** Stage 1's JSON carries
@@ -146,6 +148,87 @@ folds into the existing seven criteria rather than adding an eighth: a total und
 `POP_SHIP_FLOOR` (9/14) caps `scroll_stop` at 3, a zero thesis fit caps `specificity` at 3, and
 a code-drawn graphic's credibility is 2 by construction. The scores ride on the receipt as
 `gate_pop`. A faceless archetype is never capped for a missing or mismatched emotion.
+
+## Post rhythm — treatments, panels, grades and the sameness gate (anti-monotony round)
+
+Every post image was the same composite — a photograph beside a charcoal type panel — so an
+author's profile grid read as one image posted N times. Posts now ROTATE; **newsletter covers do
+not** (they keep the one consistent card and never pass a panel variant). `post_treatment.py`
+decides, deterministically, from the author's own post receipts
+(`post_image.recent_post_receipts`, newest first, the same bounded 40-directory walk); the
+renderers below it are unchanged except where named.
+
+| Treatment | What ships | Renderer |
+|---|---|---|
+| `typeset_card` | The composite — #2254's archetype chain (`people_scene`, `editorial_concept`, or a code-drawn chart / receipt / checklist / before-after) beside the type panel, on a ROTATED panel variant | `render_image_gated` / `render_avatar_image_gated(panel=)` |
+| `photo_only` | The AI scene alone: no headline, no kicker, no compose, rendered at the post's own ratio. AI archetypes only (`ai_archetype_only`) | the same gated renderers, `hook_text=None` |
+| `data_card` | IS #2254's `stat_card` for posts — verified numeral, its claim, the source line, `assert_traceable` before ink. Never duplicated: `typeset_card` drops `stat_card` from its chain | `render_code_drawn` with the chain `(stat_card,)` |
+| `quote_card` | One sentence of the post, VERBATIM, on the charcoal ground over "— <author's byline>" | `render_code_drawn` → `image_graphics.render_quote_card` |
+
+**Choosing the treatment.** `card_share` (brand kit, 0–1, default 0.4) is the share of posts that
+get a `typeset_card`, honoured over the last `CARD_SHARE_WINDOW` (10) posts by a deficit rule
+(`wants_card`): a card is due when the rounded target for this window exceeds the cards already
+shipped — 0.4 from no history gives no, card, no, card, no, no, card, no, card, no. A due card
+leads the chain; otherwise the other three lead, least-recently-used, and the card comes last.
+A treatment the post CANNOT take is skipped before rendering with its reason on the receipt
+(`unavailable_treatments`): `data_card` needs a verified thesis stat and a headline;
+`quote_card` needs an opinion post, a quotable sentence and a byline (`profile.full_name`).
+`photo_only` and `typeset_card` are always available. A treatment that FAILS at render time (a
+refused or rejected graphic, a non-verbatim quote, an AI render the judge rejected) falls to the
+next in the chain, through the gate again — but once an AI render was spent only the $0
+code-drawn cards may follow, never a second AI render; with none left a rejection ships the post
+bare exactly as before (#2105). Pre-rotation receipts read as the charcoal `typeset_card` they
+were, so the rotation starts from the real recent past.
+
+**The quote.** "Opinion post" comes from Stage 1 — a `contrast` hook, or a negative/mixed valence
+on a thesis that asserts something — or from the post's own stance markers ("I think", "most
+founders", "stop …ing", "unpopular opinion"); a positive, unmarked report is not one. Candidates
+are deterministic (`quote_candidates`): complete sentences ending `.`/`!` (never a question or an
+ellipsis), 30–160 characters and ≥5 words, no hashtag, link or mention, nothing the brand font
+cannot set, ranked by stance markers, thesis overlap, first person and length — at most five.
+ONE `lem-simple` tiebreak (`pick_quote`, `@llm_step("post_quote_pick")`) picks among them; any
+failure keeps the deterministic best, and the quote is never authored. The check is a
+character-for-character SUBSTRING of the post (`is_verbatim`), re-asserted before ink
+(`assert_traceable`: the drawn text must equal its source sentence).
+
+**Panel variants** (`image_compose.PANEL_VARIANTS`): charcoal (the card as it always was), off-white
+with charcoal type, gold with charcoal type; the kicker keeps the dark-gold accent only where it
+still reads at 3:1. They rotate least-recently-used among `available_panels(brand)` — the
+variants whose headline, hero numeral and under-hero line all reach **4.5:1** (WCAG AA) in the
+author's own colours; charcoal is always offered. `test_post_card_render.py` asserts the ratio
+for every variant. The variant applies to every post card with a headline panel (`typeset_card`
+and `data_card`); an overlay layout's scrim stays charcoal.
+
+**Photo grades** (`image_brief.PHOTO_GRADES`): daylight / cool interior / warm dusk, least-recently-
+used, on every AI-rendered post scene — the author is told the grade (`extra_direction`) and the
+render prompt carries it deterministically (`with_grade`). Every clause keeps the round-5
+brightness rule positively worded (dusk is "warm … every face fully and evenly lit … bright and
+readable"); none may match `_DARK_SCENE`, because naming dark summons it on FLUX.
+
+**The sameness gate.** Over the last `SAMENESS_WINDOW` (5) receipts, no dimension — treatment,
+layout, panel, shot, grade — may run more than `MAX_RUN` (2) posts in a row: a pick that would is
+re-rolled to the next least-recently-used option (`sameness_pick`, `gate_value` for Stage 1's
+own layout and shot picks). The gate OUTRANKS `card_share` — a share of 1.0 still yields at most
+two typeset cards in a row. A dimension is recorded only where it shaped the image (a panel on a
+card, a grade and shot on an AI scene) and is `null` elsewhere, which breaks a run.
+
+**The receipt** carries it all under `rhythm`: `treatment`, `layout`, `panel`, `shot`, `grade`,
+`card_share`, `card_wanted`, the planned `chain`, every `fallbacks` entry with its reason,
+`rerolled` (the dimensions the gate moved), and for a quote card `quote`, `quote_pick` and
+`opinion`. A code-drawn card's receipt records its thesis as the focal concept and an EMPTY
+prompt — no render prompt existed.
+
+**Gauntlet harness.** `scripts/simulate_post_rhythm.py posts.json --user-id N --assets-dir DIR`
+renders N posts in sequence through `generate_image_for_post` into DIR, so receipts accumulate and
+the rotation acts, and writes a feed-order (newest first) contact sheet. `--offline` is $0: a
+deterministic Stage 1 that still runs the real archetype and layout/shot rotation, a template
+brief, labelled grade-tinted placeholders for AI scenes and an `unchecked` judge — the code-drawn
+cards and panel variants are real. The paid mode mocks nothing; run it in a prod-image sidecar.
+
+**Open question for the paid run.** `photo_only` is judged with no headline, so the specificity
+floor (4) must be met by the scene alone; the uncaptioned VIDEO frame relaxes that floor to 3 for
+the same reason (the post text above carries the thesis). Posts do NOT relax it here — whether
+they should is a call for the gauntlet's evidence, not this change.
 
 ## Never truncate a hook; source spelling; no label survives (round 15)
 
@@ -990,6 +1073,7 @@ SPA's **Content & Publishing → Brand kit** card, and read with `db.get_brand_k
 | `font_vibe` | ≤80 chars, e.g. "geometric sans, heavy weight" |
 | `visual_mood` | ≤160 chars |
 | `avoid` | ≤12 motifs, each ≤40 chars |
+| `card_share` | 0–1 (2 places), default 0.4 — the share of POST images that get a typeset card (§ Post rhythm). Steers the rotation, never a prompt |
 
 - **Tolerant, never raising.** `parse_brand_kit` drops an invalid field rather than refusing the
   kit, at the API, in the upsert, and on read. A kit with nothing valid left is stored as NULL.

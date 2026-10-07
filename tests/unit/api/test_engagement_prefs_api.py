@@ -522,6 +522,16 @@ class TestBrandKitRoundTrip:
         assert upd.call_args[0][1]["brand_kit"] == {
             "primary_hex": "#e9d437", "font_vibe": "bold sans", "avoid": ["gears"]}
 
+    def test_put_keeps_a_valid_card_share_and_drops_a_bad_one(self, api_client):
+        for sent, kept in ((0.25, {"card_share": 0.25}), (3, {})):
+            with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
+                 patch("cqc_lem.api.routers.user.update_engagement_preferences",
+                       return_value=True) as upd:
+                resp = api_client.put("/api/user/engagement-preferences", json={
+                    "session_token": _SESSION, "brand_kit": {"card_share": sent}})
+            assert resp.status_code == 200, "a bad share never fails the whole save"
+            assert upd.call_args[0][1]["brand_kit"] == kept
+
     @pytest.mark.parametrize("body", [{}, {"brand_kit": None}])
     def test_put_without_a_kit_leaves_the_stored_one_alone(self, api_client, body):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \

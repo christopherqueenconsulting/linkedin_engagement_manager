@@ -1,7 +1,9 @@
 import CsvInput from './CsvInput'
 import { useEngagementPrefs } from './engagementPrefsCtx'
 import { Field, SectionCard, inputClass } from './Field'
-import { BRAND_COLORS, BRAND_KIT_LIMITS, type BrandKit, isValidHex, mergeKit } from './brandKit'
+import {
+  BRAND_COLORS, BRAND_KIT_LIMITS, DEFAULT_CARD_SHARE, type BrandKit, isValidHex, mergeKit, shareFromPercent,
+} from './brandKit'
 
 // The brand kit rides the engagement-prefs row's GET/PUT, but the server stores it in its own
 // column and re-validates every field — a bad hex is dropped there, never a failed save — so this
@@ -60,6 +62,18 @@ export default function BrandKitCard() {
           onChange={(e) => update({ visual_mood: e.target.value })}
           placeholder="e.g. practitioner field notes: real work, warm light, confident and specific"
           className={inputClass} />
+      </Field>
+      <Field settingKey="brand_kit_card_share">
+        <div className="flex items-center gap-3">
+          <input type="range" min={0} max={100} step={5} data-testid="brand-card-share"
+            aria-label="Share of post images with a typeset card"
+            value={Math.round((kit.card_share ?? DEFAULT_CARD_SHARE) * 100)}
+            onChange={(e) => update({ card_share: shareFromPercent(Number(e.target.value)) })}
+            className="w-48 accent-gray-700" />
+          <span className="text-sm text-gray-700 tabular-nums">
+            {Math.round((kit.card_share ?? DEFAULT_CARD_SHARE) * 100)}% typeset cards
+          </span>
+        </div>
       </Field>
     </SectionCard>
   )

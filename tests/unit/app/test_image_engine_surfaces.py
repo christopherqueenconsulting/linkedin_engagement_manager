@@ -57,6 +57,10 @@ class TestPostImageStagedEngine:
                   render_info_out=None, lora_effect=None):
         from cqc_lem.utilities.post_image import generate_image_for_post
 
+        # card_share 1.0 with no history: this post's treatment is the typeset card (the
+        # composite these tests pin) — the rotation itself is tests/unit/utilities/ai/
+        # test_post_treatment.py's.
+
         if env_ratio is None:
             monkeypatch.delenv("POST_IMAGE_RATIO", raising=False)
         else:
@@ -80,6 +84,7 @@ class TestPostImageStagedEngine:
                    return_value=concept) as stage1, \
              patch("cqc_lem.utilities.brand_kit.brand_clause_for_user",
                    return_value=_BRAND) as brand, \
+             patch("cqc_lem.utilities.brand_kit.card_share_for_user", return_value=1.0), \
              patch("cqc_lem.utilities.ai.image_brief.build_image_brief",
                    return_value=_brief(concept, "Paid in 90 days")) as build, \
              patch("cqc_lem.utilities.ai.image_gen.render_image_gated",

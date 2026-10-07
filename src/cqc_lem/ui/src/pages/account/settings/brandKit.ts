@@ -9,6 +9,8 @@ export type BrandKit = {
   font_vibe?: string
   visual_mood?: string
   avoid?: string[]
+  // Share of post images that get a typeset card, 0-1 (post treatment rotation).
+  card_share?: number
 }
 
 type ColorKey = 'primary_hex' | 'secondary_hex' | 'accent_hex' | 'neutral_dark_hex' | 'neutral_light_hex'
@@ -23,6 +25,15 @@ export const BRAND_COLORS: { key: ColorKey; label: string }[] = [
 
 // Kept in lockstep with FONT_VIBE_MAX / VISUAL_MOOD_MAX / AVOID_* in utilities/brand_kit.py.
 export const BRAND_KIT_LIMITS = { font_vibe: 80, visual_mood: 160, avoid_items: 12, avoid_item: 40 }
+
+// Kept in lockstep with DEFAULT_CARD_SHARE in utilities/brand_kit.py.
+export const DEFAULT_CARD_SHARE = 0.4
+
+/** A slider percentage (0-100) as the stored share, or undefined (default) when out of range. */
+export function shareFromPercent(percent: number): number | undefined {
+  if (!Number.isFinite(percent) || percent < 0 || percent > 100) return undefined
+  return Math.round(percent) / 100
+}
 
 const HEX_RE = /^#?[0-9a-fA-F]{6}$/
 
