@@ -257,12 +257,11 @@ _GROUNDED_COVER = {"focal_concept": "an agency owner wincing before payroll",
                               "Portra 400 tones, subtle film grain.")}
 
 _HOOK = "Payroll eats first"
-_GRAPHIC = {"focal_concept": "the hook beside a stack of unpaid invoices",
-            "prompt": (f'A designed editorial graphic for a LinkedIn newsletter cover: bold '
-                       f'sans-serif type reading "{_HOOK}" set large in the left third, beside '
-                       f'a photographic cutout of an agency owner mid-wince, on a flat charcoal '
-                       f'color field with generous negative space.'),
-            "required_entities": ["unpaid invoices", "payroll run"], "hook_text": _HOOK}
+_GRAPHIC = {"focal_concept": "an agency owner beside calm negative space",
+            "prompt": ('A designed editorial layout for a LinkedIn newsletter cover: a '
+                       'photographic cutout of an agency owner mid-wince on the right, on a flat '
+                       'charcoal color field with generous calm negative space on the left.'),
+            "required_entities": ["agency owner"], "hook_text": None}
 
 
 @pytest.mark.unit
@@ -314,10 +313,10 @@ _FIVE_EDITIONS = (
               specific_entities=("outreach team", "routing rules", "42% cost drop"),
               treatment="editorial_graphic", hook_phrase="42% cheaper, same replies"),
      {"focal_concept": "the 42% hook beside an outreach team",
-      "prompt": ('A designed editorial graphic for a LinkedIn newsletter cover: bold sans-serif '
-                 'type reading "42% cheaper, same replies" set large in the left third, beside '
-                 'a photographic cutout of an outreach team trading relieved grins, on a flat '
-                 'charcoal color field with generous negative space, high contrast.')}),
+      "prompt": ('A designed editorial layout for a LinkedIn newsletter cover: a photographic '
+                 'cutout of an outreach team trading relieved grins on the right, on a flat '
+                 'charcoal color field with generous calm negative space on the left, high '
+                 'contrast.')}),
     ("My Multi-Agent Content System Broke Quietly",
      _concept(thesis="An automated content system failed silently for weeks",
               specific_entities=("content calendar", "draft queue", "editor")),
@@ -486,35 +485,31 @@ class TestStage2Contract:
         assert llm.call_count == 2 and brief.hook_text is None
         assert "'PAY ME'" in llm.call_args_list[1][1]["messages"][1]["content"]
 
-    def test_a_declared_hook_is_rejected_off_the_graphic_treatment(self):
+    def test_a_declared_hook_is_rejected_on_every_treatment(self):
+        """Round 6: the render carries no text — the headline is composited by image_compose."""
         hooked = dict(_GROUNDED, hook_text="Payroll eats first")
         with patch(_LLM, side_effect=[_resp(hooked), _resp(_GROUNDED)]) as llm:
             build_image_brief("c", surface="carousel", concept=_concept())
-        assert "this image carries no hook" in \
+        assert "the image carries no text — the headline is typeset later" in \
             llm.call_args_list[1][1]["messages"][1]["content"]
 
-    def test_the_graphic_treatment_carries_its_hook(self):
+    def test_a_graphic_cover_keeps_its_hook_for_compositing_not_in_the_prompt(self):
         concept = _concept(treatment="editorial_graphic", hook_phrase=_HOOK)
         with patch(_LLM, return_value=_resp(_GRAPHIC)) as llm:
             brief = build_image_brief("c", surface="newsletter", concept=concept)
-        assert llm.call_count == 1
-        assert brief.hook_text == _HOOK and brief.treatment == "editorial_graphic"
-        assert f'"{_HOOK}"' in llm.call_args[1]["messages"][1]["content"]
+        assert llm.call_count == 1 and not brief.fallback
+        assert brief.hook_text == _HOOK and _HOOK not in brief.prompt
+        user = llm.call_args[1]["messages"][1]["content"]
+        assert f"HEADLINE (typeset onto the image later by the system — never draw it, never " \
+               f"quote it): {_HOOK}" in user
 
-    def test_a_graphic_missing_or_misspelling_its_hook_is_rejected(self):
+    def test_a_prompt_quoting_the_headline_is_rejected(self):
         concept = _concept(treatment="editorial_graphic", hook_phrase=_HOOK)
-        wrong = dict(_GRAPHIC, prompt=_GRAPHIC["prompt"].replace(_HOOK, "Payrol eats first"))
-        with patch(_LLM, side_effect=[_resp(wrong), _resp(_GRAPHIC)]) as llm:
+        quoted = dict(_GRAPHIC, prompt=_GRAPHIC["prompt"] + f' Type reading "{_HOOK}" on the left.')
+        with patch(_LLM, side_effect=[_resp(quoted), _resp(_GRAPHIC)]) as llm:
             brief = build_image_brief("c", surface="newsletter", concept=concept)
         assert llm.call_count == 2 and brief.prompt == _GRAPHIC["prompt"]
-        assert "exactly as" in llm.call_args_list[1][1]["messages"][1]["content"]
-
-    def test_a_graphic_quoting_a_second_string_is_rejected(self):
-        concept = _concept(treatment="editorial_graphic", hook_phrase=_HOOK)
-        extra = dict(_GRAPHIC, prompt=_GRAPHIC["prompt"] + ' A caption reads "Q3".')
-        with patch(_LLM, side_effect=[_resp(extra), _resp(_GRAPHIC)]) as llm:
-            build_image_brief("c", surface="newsletter", concept=concept)
-        assert "other than the hook" in llm.call_args_list[1][1]["messages"][1]["content"]
+        assert "carries no words at all" in llm.call_args_list[1][1]["messages"][1]["content"]
 
     def test_avoid_terms_are_a_soft_steer_never_a_gate(self):
         with patch(_LLM, return_value=_resp(_GROUNDED_COVER)) as llm:
@@ -567,8 +562,8 @@ class TestFallbackIsBuiltFromThePiece:
         brief = _fallback_brief("c", surface="newsletter", ratio="16:9", context="",
                                 concept=concept)
         assert brief.treatment == "concrete_scene"
-        # A cover keeps its hook as the headline; it is the ONLY quoted text, never a cutout.
-        assert brief.hook_text == _HOOK and brief.prompt.count('"') == 2
+        # A cover keeps its hook for compositing; the render prompt carries no text at all.
+        assert brief.hook_text == _HOOK and '"' not in brief.prompt
         assert "cutout" not in brief.prompt
         assert "30K" not in brief.prompt and "Terralogic" not in brief.prompt
         # A cover's fallback drops its paper anchor (round 5) and keeps the person.
@@ -614,9 +609,9 @@ class TestFallbackIsBuiltFromThePiece:
             assert marker not in lowered
         for word in DEAD_STYLE_WORDS + DEAD_QUALITY_TAGS:
             assert word.lower() not in lowered
-        # A fallback is a photograph: on a cover its ONLY text is the hook, as the headline.
+        # A fallback is a photograph with no text: the cover's headline is composited later.
         from cqc_lem.utilities.ai.image_brief import _quoted_strings
-        assert _quoted_strings(prompt) == [_HOOK]
+        assert _quoted_strings(prompt) == [] and _HOOK not in prompt
         assert brief_treatment_is_photographic(treatment)
 
     def test_no_concept_scrubs_cliches_from_the_excerpt(self):
@@ -740,18 +735,16 @@ class TestFactsAreNeverDrawn:
         retry = llm.call_args_list[1][1]["messages"][1]["content"]
         assert "a fact the image cannot draw" in retry
 
-    def test_a_number_inside_the_quoted_hook_is_allowed(self):
-        concept = _concept(treatment="editorial_graphic", hook_phrase="53.7% never noticed",
+    def test_a_hooks_number_lives_in_the_headline_never_the_prompt(self):
+        concept = _concept(treatment="people_scene", hook_phrase="53.7% never noticed",
                            specific_entities=("53.7%", "marketing team"),
                            visual_anchors=("a marketing team", "a printed survey"))
-        graphic = {"focal_concept": "the hook beside a marketing team",
-                   "prompt": ('A designed editorial graphic: bold sans-serif type reading "53.7% '
-                              'never noticed" set large in the left third, beside a photographic '
-                              'cutout of a marketing team around a printed survey, on a flat '
-                              'charcoal color field with generous negative space.')}
-        with patch(_LLM, return_value=_resp(graphic)) as llm:
+        ok = {"focal_concept": "a marketing team",
+              "prompt": ("A photorealistic candid photograph of a marketing team around a "
+                         "table, one frowning, a gold mug, bright daylight, 35mm f/2.")}
+        with patch(_LLM, return_value=_resp(ok)) as llm:
             brief = build_image_brief("c", surface="carousel", concept=concept)
-        assert llm.call_count == 1 and not brief.fallback
+        assert llm.call_count == 1 and "53.7" not in brief.prompt
 
     def test_the_facts_reach_the_author_as_context_only(self):
         with patch(_LLM, return_value=_resp(_ANCHORED)) as llm:
@@ -876,33 +869,32 @@ _COVER_CONCEPT = _concept(hook_phrase=_HOOK, treatment="people_scene",
                           emotional_beat="a wince of dread", chosen_idea=_IDEA,
                           rejected_ideas=("A stack of unpaid invoices under a paperweight.",))
 _COVER = {"focal_concept": "an agency owner wincing at payroll",
-          "prompt": (f'A photorealistic close medium shot of an agency owner wincing at a payroll '
-                     f'run printout as unpaid invoices spill off the desk, every page out of '
-                     f'focus, the printout a blank sheet seen edge-on, a warm gold lamp the only '
-                     f'light, visible skin pores, 35mm f/2. '
-                     f'The headline "{_HOOK}" sits in '
-                     f'the left third in bold geometric sans, light gold on charcoal.')}
+          "prompt": ('A photorealistic close medium shot of an agency owner wincing at a payroll '
+                     'run printout as unpaid invoices spill off the desk, every page out of '
+                     'focus, the printout a blank sheet seen edge-on, a warm gold lamp the only '
+                     'light, visible skin pores, 35mm f/2, a plain charcoal wall calm on the '
+                     'left.')}
 
 
 @pytest.mark.unit
 class TestEveryCoverCarriesAHook:
-    def test_a_people_scene_cover_carries_the_hook_with_its_layout(self):
+    def test_a_people_scene_cover_carries_the_hook_for_compositing(self):
+        concept = _concept(hook_phrase=_HOOK, treatment="people_scene",
+                           emotional_beat="a wince of dread", chosen_idea=_IDEA,
+                           layout="panel_left")
         with patch(_LLM, return_value=_resp(_COVER)) as llm:
-            brief = build_image_brief("c", surface="newsletter", concept=_COVER_CONCEPT)
+            brief = build_image_brief("c", surface="newsletter", concept=concept)
         assert llm.call_count == 1 and not brief.fallback
         assert brief.hook_text == _HOOK and brief.treatment == "people_scene"
+        assert _HOOK not in brief.prompt
         user = llm.call_args[1]["messages"][1]["content"]
-        assert f'COVER LAYOUT: the headline "{_HOOK}" sits in one third of the frame' in user
-        assert "opposite the subject" in user
-        assert ("set in a heavy geometric sans-serif (Montserrat ExtraBold style), sentence case, "
-                "light gold on a charcoal backing panel, large enough to read at 400x225") in user
+        assert "NEGATIVE SPACE: keep the LEFT 40% of the frame calm" in user
 
-    def test_a_cover_missing_its_hook_is_rejected(self):
-        bare = dict(_COVER, prompt=_COVER["prompt"].split(" The headline")[0] + ".")
-        with patch(_LLM, side_effect=[_resp(bare), _resp(_COVER)]) as llm:
+    def test_a_cover_prompt_drawing_its_hook_is_rejected(self):
+        drawn = dict(_COVER, prompt=_COVER["prompt"] + f' The headline "{_HOOK}" on the left.')
+        with patch(_LLM, side_effect=[_resp(drawn), _resp(_COVER)]) as llm:
             build_image_brief("c", surface="newsletter", concept=_COVER_CONCEPT)
-        assert "the hook must appear in double quotes" in \
-            llm.call_args_list[1][1]["messages"][1]["content"]
+        assert "carries no words at all" in llm.call_args_list[1][1]["messages"][1]["content"]
 
     @pytest.mark.parametrize("surface", ["carousel", "video"])
     def test_other_surfaces_keep_the_hook_optional(self, surface):
@@ -991,7 +983,7 @@ class TestTheChosenIdeaAndTheEmotion:
 class TestBrandAccent:
     def test_a_cover_without_a_brand_color_is_rejected(self):
         plain = dict(_COVER, prompt=_COVER["prompt"].replace("warm gold lamp", "desk lamp")
-                     .replace("light gold on charcoal", "white on a dark wall"))
+                     .replace("a plain charcoal wall", "a plain wall"))
         with patch(_LLM, side_effect=[_resp(plain), _resp(_COVER)]) as llm:
             brief = build_image_brief("c", surface="newsletter", concept=_COVER_CONCEPT)
         assert brief.prompt == _COVER["prompt"]
@@ -1019,8 +1011,8 @@ class TestRoundThreeFallback:
         brief = _fallback_brief("c", surface="newsletter", ratio="16:9", context="",
                                 concept=_COVER_CONCEPT, treatment="people_scene")
         assert "agency owner wincing at a payroll run printout" in brief.prompt
-        assert f'The headline "{_HOOK}" sits in the left third' in brief.prompt
-        assert brief.hook_text == _HOOK
+        assert brief.hook_text == _HOOK and _HOOK not in brief.prompt
+        assert "Compose to keep the LEFT 40% of the frame calm" in brief.prompt
         assert "caught mid-conversation around" not in brief.prompt, "never a bare anchor list"
         assert "gold accent" in brief.prompt
 
@@ -1124,29 +1116,12 @@ class TestRoundFourBrief:
             build_image_brief("c", surface="carousel", concept=_concept())
         assert llm.call_count == 1
 
-    def test_a_hook_without_a_stated_sans_serif_is_refused(self):
-        serif = dict(_COVER, prompt=_COVER["prompt"].replace("bold geometric sans", "elegant serif"))
-        with patch(_LLM, side_effect=[_resp(serif), _resp(_COVER)]) as llm:
-            build_image_brief("c", surface="newsletter", concept=_COVER_CONCEPT)
-        assert "set it in a heavy geometric sans-serif" in \
-            llm.call_args_list[1][1]["messages"][1]["content"]
-
-    def test_the_hook_type_spec_follows_the_brand_kit(self):
-        from cqc_lem.utilities.ai.image_brief import hook_type_spec
-        assert hook_type_spec(None) == (
-            "set in a heavy geometric sans-serif (Montserrat ExtraBold style), sentence case, "
-            "light gold on a charcoal backing panel, large enough to read at 400x225")
-        kit = "Palette: dark gold (#a89816) and charcoal; typography feel: clean geometric sans"
-        assert hook_type_spec(kit) == ("set in clean geometric sans, sentence case, dark gold on "
-                                       "a charcoal backing panel, large enough to read at 400x225")
-        assert "a heavy geometric sans-serif" in hook_type_spec("font: Playfair Display")
-
     def test_the_fallback_blanks_documents_and_states_the_type(self):
         brief = _fallback_brief("c", surface="newsletter", ratio="16:9", context="The author is x.",
                                 concept=_COVER_CONCEPT, treatment="people_scene")
         assert "every screen in the frame is blank" in brief.prompt
         assert "any paper is a blank sheet seen edge-on" in brief.prompt
-        assert "heavy geometric sans-serif" in brief.prompt
+        assert "sans-serif" not in brief.prompt, "type is set by image_compose, never rendered"
         assert "The author is" not in brief.prompt
 
 
@@ -1214,23 +1189,21 @@ _POST_CONCEPT = _concept(hook_phrase=_HOOK, treatment="people_scene",
                          emotional_beat="a wince of dread",
                          chosen_idea="An agency owner wincing at the payroll run ahead.")
 _POST = {"focal_concept": "an agency owner wincing at payroll",
-         "prompt": (f'A photorealistic close shot of an agency owner wincing at the payroll run '
-                    f'ahead, bright warm daylight, a gold scarf, 35mm f/2. The headline "{_HOOK}" '
-                    f'sits large in the top third in a heavy geometric sans-serif, light gold on a '
-                    f'charcoal backing panel.')}
+         "prompt": ('A photorealistic close shot of an agency owner wincing at the payroll run '
+                    'ahead, bright warm daylight, a gold scarf, 35mm f/2, a plain wall calm in the '
+                    'top third.')}
 
 
 @pytest.mark.unit
 class TestPostImageCoverRecipe:
     """Round 5 (post gauntlet): the post image gets the cover recipe, bright and hooked."""
 
-    def test_a_post_carries_its_hook_in_the_top_third(self):
+    def test_a_post_carries_its_hook_for_a_top_band(self):
         with patch(_LLM, return_value=_resp(_POST)) as llm:
             brief = build_image_brief("c", surface="post_image", concept=_POST_CONCEPT)
         assert llm.call_count == 1 and brief.hook_text == _HOOK and not brief.fallback
         user = llm.call_args[1]["messages"][1]["content"]
-        assert f'POST LAYOUT (4:5 portrait): the headline "{_HOOK}" sits large in the top third' \
-            in user
+        assert "NEGATIVE SPACE: keep the top third of the frame calm" in user
         assert "COVER PROPS: no paper in frame" in user
 
     def test_a_post_with_a_paper_prop_is_rejected(self):
@@ -1272,14 +1245,71 @@ class TestPostImageCoverRecipe:
         assert "never a dark, moody, low-key" in template
 
     def test_charcoal_belongs_only_behind_the_hook(self):
-        from cqc_lem.utilities.ai.image_brief import BRAND_ACCENT_DIRECTIVE, hook_type_spec
+        from cqc_lem.utilities.ai.image_brief import BRAND_ACCENT_DIRECTIVE
         assert "brand colors are ACCENTS, never the overall tone" in BRAND_ACCENT_DIRECTIVE
         assert "Charcoal belongs only behind the hook" in BRAND_ACCENT_DIRECTIVE
-        assert "on a charcoal backing panel" in hook_type_spec(None)
 
-    def test_a_post_fallback_is_bright_and_hooked_in_the_top_third(self):
+    def test_a_post_fallback_is_bright_and_keeps_its_top_third_calm(self):
         brief = _fallback_brief("c", surface="post_image", ratio="4:5", context="",
                                 concept=_POST_CONCEPT, treatment="people_scene")
-        assert f'The headline "{_HOOK}" sits large in the top third' in brief.prompt
+        assert "Compose to keep the top third of the frame calm" in brief.prompt
         assert "bright, high-key warm daylight" in brief.prompt
-        assert brief.hook_text == _HOOK
+        assert brief.hook_text == _HOOK and _HOOK not in brief.prompt
+
+
+
+@pytest.mark.unit
+class TestRoundSixBrief:
+    """Round 6 of #2241: cast rotation, valence, video frames, a headline never drawn."""
+
+    _CAST = {"gender": "woman", "age": "50s", "ethnicity": "South Asian",
+             "setting": "warehouse floor", "role": "agency owner"}
+
+    def test_the_cast_reaches_the_author(self):
+        concept = _concept(treatment="people_scene", cast=self._CAST, layout="panel_left")
+        with patch(_LLM, return_value=_resp(_GROUNDED_COVER)) as llm:
+            build_image_brief("c", surface="newsletter", concept=concept)
+        user = llm.call_args[1]["messages"][1]["content"]
+        assert ("CAST: the person in frame is a South Asian woman in her 50s, an agency owner, on a "
+                "warehouse floor") in user
+
+    def test_an_avatar_is_never_recast(self):
+        avatar = {"gender_presentation": "man", "age_band": "40s", "trigger_word": "TOK"}
+        concept = _concept(treatment="people_scene", cast=self._CAST, layout="panel_left")
+        with patch(_LLM, return_value=_resp(_GROUNDED_COVER)) as llm:
+            build_image_brief("c", surface="newsletter", concept=concept, avatar=avatar)
+        assert "CAST:" not in llm.call_args[1]["messages"][1]["content"]
+
+    def test_a_concept_without_rotation_gets_one(self):
+        with patch(_LLM, return_value=_resp(_GROUNDED_COVER)):
+            brief = build_image_brief("c", surface="newsletter",
+                                      concept=_concept(treatment="people_scene"))
+        assert brief.concept.layout and brief.concept.cast
+
+    def test_valence_reaches_the_author_and_the_people_template(self):
+        concept = _concept(treatment="people_scene", valence="positive")
+        with patch(_LLM, return_value=_resp(_GROUNDED)) as llm:
+            build_image_brief("c", surface="carousel", concept=concept)
+        assert "VALENCE: positive" in llm.call_args[1]["messages"][1]["content"]
+        assert "never shock or despair for good news" in _TREATMENT_TEMPLATES["people_scene"]
+
+    def test_the_people_template_asks_for_an_authentic_face(self):
+        assert "authentic and restrained" in _TREATMENT_TEMPLATES["people_scene"]
+        assert "never cartoonish or crying" in _TREATMENT_TEMPLATES["people_scene"]
+
+    def test_a_video_frame_carries_no_paper_and_names_a_brand_accent(self):
+        papered = dict(_GROUNDED_COVER,
+                       prompt=_GROUNDED_COVER["prompt"] + " A printed monthly bill, out of focus.")
+        plain = dict(_GROUNDED_COVER, prompt=_GROUNDED_COVER["prompt"].replace("warm gold lamp",
+                                                                                "lamp"))
+        with patch(_LLM, side_effect=[_resp(papered), _resp(plain), _resp(_GROUNDED_COVER)]) as llm:
+            brief = build_image_brief("c", surface="video", concept=_concept())
+        reasons = [c[1]["messages"][1]["content"] for c in llm.call_args_list[1:]]
+        assert "a cover carries no paper props" in reasons[0]
+        assert "no deliberate brand-color element" in reasons[1]
+        assert brief.prompt == _GROUNDED_COVER["prompt"] and brief.hook_text is None
+
+    def test_the_system_prompt_restores_the_no_text_invariant(self):
+        from cqc_lem.utilities.ai.image_brief import _SYSTEM_PROMPT
+        assert "The image carries NO text at all, ever" in _SYSTEM_PROMPT
+        assert "one exception" not in _SYSTEM_PROMPT

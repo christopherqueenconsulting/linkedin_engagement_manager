@@ -778,3 +778,39 @@ class TestRecentCoverTreatments:
             nc.generate_cover_for_edition(3, 9, "T", "S", "B")
         assert recent.call_args[0] == (3, 3)
         assert stage1.call_args[1]["recent_treatments"] == ["editorial_graphic"]
+
+
+class TestCoverRotationHistory:
+    def test_stage_one_gets_layout_cast_and_hook_shape_history(self, tmp_path):
+        receipts = [{"focal_concept": "x", "concept": {"layout": "panel_left",
+                                                       "cast": {"gender": "man"},
+                                                       "hook_shape": "question"}}]
+        with patch.object(nc, "assets_dir", str(tmp_path / "assets")), \
+             patch.object(nc, "_resolve_cover_avatar", return_value=None), \
+             patch.object(nc, "_recent_cover_receipts", return_value=receipts), \
+             patch("cqc_lem.utilities.ai.image_concept.analyze_content_for_image",
+                   return_value=None) as stage1, \
+             patch("cqc_lem.utilities.ai.image_brief.build_image_brief", return_value=_brief()), \
+             patch("cqc_lem.utilities.ai.image_gen.render_image_gated", return_value=None):
+            nc.generate_cover_for_edition(3, 9, "T", "S", "B")
+        kwargs = stage1.call_args[1]
+        assert kwargs["recent_layouts"] == ["panel_left"]
+        assert kwargs["recent_casts"] == [{"gender": "man"}]
+        assert kwargs["recent_hook_shapes"] == ["question"]
+
+    def test_the_rotated_layout_reaches_the_compositor(self, tmp_path):
+        from cqc_lem.utilities.ai.image_brief import ImageBrief
+        concept = _concept(layout="full_bleed")
+        brief = ImageBrief(prompt="p", ratio=nc.COVER_IMAGE_RATIO, surface="newsletter",
+                           style_preset="newsletter", focal_concept="f", concept=concept,
+                           hook_text="Who buys?")
+        with patch.object(nc, "assets_dir", str(tmp_path / "assets")), \
+             patch.object(nc, "_resolve_cover_avatar", return_value=None), \
+             patch("cqc_lem.utilities.ai.image_concept.analyze_content_for_image",
+                   return_value=concept), \
+             patch("cqc_lem.utilities.ai.image_brief.build_image_brief", return_value=brief), \
+             patch("cqc_lem.utilities.ai.image_gen.render_image_gated",
+                   return_value=None) as gen:
+            nc.generate_cover_for_edition(3, 9, "T", "S", "B")
+        assert gen.call_args[1]["layout"] == "full_bleed"
+        assert gen.call_args[1]["hook_text"] == "Who buys?"

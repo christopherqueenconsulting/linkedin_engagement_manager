@@ -16,6 +16,7 @@ per-content-type prompt helper** — add a preset.
 | `utilities/ai/image_concept.py` | Stage 1: reading the WHOLE piece → a grounded `ImageConcept` (#2241) |
 | `utilities/ai/image_brief.py` | Authoring the prompt: content + concept in → validated brief out |
 | `utilities/ai/image_gen.py` | Rendering that brief, plus the vision quality gate |
+| `utilities/ai/image_compose.py` | Typesetting the headline onto a finished render — the ONE place a headline meets a render (round 6) |
 
 ## The staged engine (issue #2241)
 
@@ -49,6 +50,62 @@ judge rightly scored specificity 1 on all four covers. So Stage 1 returns two li
   dropped too. Fewer than two survivors marks the concept `weak`, and the coverage checks stand
   down. Briefs, Stage 3 and the vision judge's specificity all work from `usable_anchors()` — the
   anchors, or for a concept with none, its plain common-noun facts.
+
+## The headline is composited, never rendered (round 6)
+
+**This supersedes every earlier "hook in the render" rule below** — the round-3 cover layout, the
+round-4 typography spec and the round-5 post layout all asked gpt-image to DRAW the headline, and
+the blind critic traced most remaining defects to that one root cause: the panel drifted through
+charcoal, black, navy and grey-green, the type through gold, pale gold and off-white at any
+weight, and three of nine headlines clipped the frame edge. So:
+
+- **`utilities/ai/image_compose.py` is the ONE place a headline meets a render.**
+  `compose_headline(render_path, hook, layout, brand, surface)` typesets the hook with PIL in the
+  bundled **Montserrat ExtraBold** (SIL OFL, `src/cqc_lem/resources/fonts/` with `OFL.txt` —
+  `src/` ships whole in the image; the system bold faces `carousel_creator` uses are the
+  fallback). The panel/band/scrim is the brand's neutral dark and the headline its primary,
+  **exactly** (`brand_style` reads "name (#hex)" pairs from the brand clause; the reference brand
+  is light gold `#E9D437` on charcoal `#1F1F1F` with a dark-gold `#A89816` rule). Text wraps to at
+  most 3 lines and binary-searches the largest size that fits a safe box keeping ≥6% of the frame
+  clear on every side; each line is aligned by its INK, so no glyph crosses the margin. A cover
+  line is held to ≥7% of the frame height (legible at 400px); anything smaller is logged.
+- **Layouts are compositing templates**, rotated least-recently-used over the last 4 receipts
+  (`assign_layout_and_cast`, a sibling of `enforce_graphic_cap`): covers `panel_left` /
+  `panel_right` (a solid panel over 38% of the width), `full_bleed` (over the scene's darkest
+  third, a charcoal gradient scrim, no panel) and `lower_third_band` (a band, its text held to the
+  central 60% of a landscape frame); posts `band_top` (a band over 26% of the height below a 6% top
+  margin — the 4:5 crop change is a separate PR). The brief tells the author only to keep that
+  region calm negative space (`NEGATIVE_SPACE`).
+- **No render carries any text.** The declared-hook exception is gone: `with_no_marks` is the
+  blanket "no text" on every surface again, the brief never quotes the headline (a quoted string
+  is rejected), and `carries_hook` now means "gets a composited headline" — covers and posts only;
+  video frames get none (captions come later) and carousel is unchanged.
+- **The judge grades each image where it lives.** The blind look and the text check run on the
+  RAW render — any text it transcribes caps `text_accuracy` at 2 (`text_accuracy` is decided
+  deterministically now). The targeted questions run on the COMPOSITE: specificity, scroll stop,
+  brand. Headline legibility and clipping are asserted in `test_image_compose.py`, not judged.
+- **Calibrated specificity.** The targeted prompt anchors the scale — 5 "with its headline, a
+  scroller would correctly guess this piece's argument", 4 "clearly on-topic, slightly generic
+  scene", 3 "the scene could sit on many unrelated posts even with the headline", ≤2 "misleading
+  or off-topic" — gated at ≥4. The round-4 "reusable on an unrelated article" cap is dropped; the
+  descriptors carry it.
+- **Hook fidelity and variety.** `hook_is_faithful`: every number in a hook must appear in the
+  source, and every other content word must match a source word by its root, bar common function
+  words, verbs and adjectives (`_HOOK_FREE_WORDS`; AI/LLM always) — the critic caught "reach" for
+  "engagement" and "influencers" for "hidden buyers". Stage 1 offers one hook per SHAPE
+  (`number_claim`, `contrast`, `question`, `plain_claim`) and `rotate_hook_shape` picks the
+  least-recently-used valid one — every hook had been "AI X: N% Y". Hooks may run to 6 words now
+  that they are typeset.
+- **Cast and emotion.** A people_scene gets a rotated cast hint — gender, age band, ethnicity and
+  setting each rotate independently and least-recently-used, the role is drawn from the piece's
+  anchors ("a South Asian woman in her 50s, an agency owner, on a warehouse floor") — so the series
+  stops reading as one man in his 30s-40s; an avatar is never recast. Stage 1 sets a `valence`
+  (positive / negative / mixed): a saving reads calm, pleased, relieved or wry, a risk concerned,
+  skeptical or frustrated, and the judge's emotion question carries it. Emotion must be authentic
+  and restrained — the carry-forward directive no longer says "exaggerated" (a frame showed a man
+  wailing over a bill) and a cartoonish face caps `craft` at 3.
+- **Video frames** take the no-paper rule (they had brought back a sheet reading "MONTHLY BILL")
+  and the brand-accent gate, as covers and posts do.
 
 **The hook carries the thesis; the image carries emotion and specificity (gauntlet round 2).**
 Round 1's fixes removed the clichés and stray text but overcorrected: all four covers came back as
@@ -289,14 +346,12 @@ treatment template and every fallback — and that test also fails the build on 
 ever selects**, which is how `thumbnail` stayed wrong until #1141 wired
 `video_tutorials.generate_thumbnail` up to it.
 
-**NO text, letters, or logos in any render — EXCEPT one declared 2–5 word hook on the
-`editorial_graphic` treatment, verified by the judge.** No name or number of the piece's facts in a
-prompt either, and nothing in the scene "titled", "labelled" or "displaying" named content. Enforced in the system prompt and
-`_rejection`, with `with_no_marks()` as the render-side belt: a brief carrying `hook_text` gets
-"The only text in the image is exactly "<hook>" — no other words, letters, numbers, logos,
-watermarks or UI" INSTEAD of the blanket ban (positively phrased for FLUX), and the printed-surface
-blank-state clause is skipped since the hook is set on one. The blind judge then transcribes what
-is actually there and the rubric's `text_accuracy` compares it to the hook.
+**NO text, letters, or logos in any render — no exception.** A cover's or post's headline is
+typeset afterwards by `image_compose` (round 6). No name or number of the piece's facts in a
+prompt either, and nothing in the scene "titled", "labelled" or "displaying" named content.
+Enforced in the system prompt and `_rejection` (any quoted string is refused), with
+`with_no_marks()` as the render-side belt on every surface. The blind judge transcribes what is
+actually on the raw render, and any text at all caps `text_accuracy` at 2.
 
 **A SCREEN is the one surface a blanket constraint does not hold on.** A described laptop or
 monitor invites the renderer to fill its glass with plausible UI, and newsletter cover ed9 came back
