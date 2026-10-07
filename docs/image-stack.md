@@ -17,6 +17,7 @@ per-content-type prompt helper** — add a preset.
 | `utilities/ai/image_brief.py` | Authoring the prompt: content + concept in → validated brief out |
 | `utilities/ai/image_gen.py` | Rendering that brief, plus the vision quality gate |
 | `utilities/ai/image_compose.py` | Typesetting the headline onto a finished render — the ONE place a headline meets a render (round 6) |
+| `utilities/ai/image_graphics.py` | Drawing the five code-drawn archetypes from VERIFIED facts — the ONE place a data graphic is drawn (archetype round) |
 
 ## The staged engine (issue #2241)
 
@@ -50,6 +51,100 @@ judge rightly scored specificity 1 on all four covers. So Stage 1 returns two li
   dropped too. Fewer than two survivors marks the concept `weak`, and the coverage checks stand
   down. Briefs, Stage 3 and the vision judge's specificity all work from `usable_anchors()` — the
   anchors, or for a concept with none, its plain common-noun facts.
+
+## Visual archetypes — the image carries the idea or the evidence (archetype round)
+
+The owner's verdict on the round-9 covers: "still generic with just random people". The research
+agrees ([`visual-archetypes-research.md`](visual-archetypes-research.md)): readers skip anonymous
+stock people as filler (NN/g), faces did not help — and did worse — in the Business niche of a
+300k-video dataset, and AI-looking people cost trust. So every cover and post image now takes one
+of seven **archetypes**, and the people photo is the rarest of them.
+
+| Archetype | Drawn by | When it is a candidate |
+|---|---|---|
+| `stat_card` | code (`image_graphics`) | a verified thesis stat |
+| `highlight_chart` | code | 2–6 verified numbers on the SAME unit; one gold, the rest grey |
+| `receipt` | code | 2–5 verified money or time amounts ("the real cost of X") |
+| `before_after` | code | a verified before AND after on the same unit |
+| `checklist` | code | 3–5 of the piece's own steps, grounded in their sentences |
+| `editorial_concept` | AI render + the typeset panel | always — the default AI image |
+| `people_scene` | AI render + the typeset panel | ONLY when Stage 1 flags a `human_moment` |
+
+**Selection** (`image_concept.select_archetype`, deterministic). Candidates come from what
+VALIDATED, never from what Stage 1 hoped for; a code-drawn archetype also needs a headline. Score
+= evidence strength (`ARCHETYPE_BASE_SCORES`: chart/receipt/before-after 4, stat card/checklist/
+people 3, editorial 1) + 0.5 for Stage 1's own `archetype` pick (a TIEBREAK, never more) − 4 for
+either of the last two archetypes the author shipped. Equal scores go to code-drawn first. The
+ranking becomes a fallback CHAIN that stops at the first AI archetype; that one sets the
+`treatment` (`editorial_concept`, or `people_scene` for a human moment), so the brief is always
+written for what renders if every graphic ahead of it fails. Recent archetypes come from the
+receipts — `archetype_rendered` first, since a fallback shipped as its fallback: covers through
+`newsletter_cover._recent_cover_archetypes`, posts through `post_image.recent_post_archetypes`
+(newest 40 post-image directories, bounded). Off the composited surfaces nothing changes.
+
+**Deviations from the report, on purpose.** The chart needs 2 values, not the report's 3 (the
+owner's spec: "≥2 comparable numbers"; a two-bar contrast is still evidence). The rotation
+penalty is −4, not −2: at −2 a recent chart (4−2) still beat a fresh editorial concept (1), which
+repeats rather than avoids. There is no founder quote card yet: `BrandKit.founder_photo` is
+parsed (an image path, no traversal, never sent to a prompt) but no archetype renders it until
+the owner sets an approved real photo — and a renderer must then check it is an asset we own.
+The before/after halves are code-drawn only; the optional AI object halves are not built.
+
+**Fact safety — the reason five archetypes are drawn in code.** Stage 1's JSON carries
+`graphic_facts`: each figure as `{label, value, unit, source_sentence}`, plus `steps`, a `costs`
+block, a `comparison` and an optional `source_name`. `image_graphics.validate_graphic_facts`
+keeps an item ONLY when its sentence is in the source (whitespace/quote-normalised), its number is
+in THAT sentence with that unit (`verbatim_figure` — the drawn string is the sentence's own
+match, so "$30K" stays "$30K"), and every content word of its label is in the sentence by root.
+Nothing is derived: no baseline, no ratio, and no sum — a receipt circles a TOTAL only when the
+piece states one, otherwise its largest line. The source line is "Source: <name>" only when the
+name is verbatim in the piece, else "From the article". Immediately before drawing,
+`assert_traceable` re-checks every string against its recorded sentence and raises
+`UngroundedFactError` on any mismatch; a fabricated value is refused deterministically
+(`test_image_graphics.py::TestFactValidation::test_a_fabricated_value_is_refused_deterministically`).
+Every validated fact rides on the concept (`concept.graphic`) and every DRAWN fact, with its
+sentence, on the receipt (`graphic_facts`), beside `archetype_rendered` and
+`archetype_fallback_reason`.
+
+**Drawing** (`image_graphics.render_graphic`, PIL only). The graphic fills the split layout's
+scene region beside `image_compose`'s unchanged panel — kicker, headline, byline — at 1920×1080
+for a cover and 1080×1350 for a post (`compose_headline(canvas=, hero=False)`: the graphic's own
+figure is the hero, so the panel never repeats it). Brand light gold is the ONLY colour (one
+highlight per graphic); everything else is charcoal, grey and off-white. Text is fitted, never
+clipped: every string is recorded with the box it must stay inside, body text is at least 2.4%
+of the canvas width (≈9 px on a 400 px thumbnail) and the source line 1.6%, and data that cannot
+meet those floors raises `GraphicLayoutError` rather than shrink — the chain moves on. The
+checklist ticks about a third and marks the next with a gold "?" (the moderate knowledge gap of
+research §1.3).
+
+**Rendering and grading** (`image_gen.render_code_drawn`). `render_image_gated` and
+`render_avatar_image_gated` try the code-drawn head of the chain FIRST: $0 render spend, no
+gpt-image call. Each graphic is judged ONCE (a deterministic drawing does not change on a retry;
+an ungradable one gets one more look on an enforced surface, then fails open like every render)
+on `specificity`, `scroll_stop` and `brand_fit` only — `text_accuracy` is n/a by construction and
+the targeted prompt says so. A refusal or a rejection falls to the next archetype; past the last
+graphic the AI archetype renders through the normal gate loop, and the concept the judge sees is
+re-pointed at it. The admin variant tool compares renders, so it strips code-drawn archetypes
+(`ai_archetype_only`).
+
+**The editorial concept.** Stage 1's ideas are now the report's Idea Miner (§3.3): up to 20
+concrete `idea_nouns`, one operator (juxtaposition, scale shift, oxymoron, literal idiom,
+transformation), clichés dropped, three object-only ideas kept — and ONE separate `people_idea`
+for a human moment. An editorial concept never ranks a people-led idea; its ranker scores the
+"piques interest" criteria and demotes a desk still life to the next object idea. The brief gets
+`TREATMENT editorial_concept` with a rotated, text-free art style (`ART_STYLES`: risograph,
+cut-out collage, claymation, editorial still-life photo — worded so the prop and vocabulary rules
+never refuse the style itself), `EDITORIAL_PROPS_DIRECTIVE`, and a deterministic refusal of any
+person word in the prompt. Anchor coverage stands down for it: its anchors are often people it
+must not draw. A people scene's brief carries `gaze_directive` — eyes toward the headline panel,
+never the camera (gaze cueing, §1.2).
+
+**The "piques interest" rubric** (§6.4) is question 11 of the targeted judge: thumbnail read,
+thesis fit, curiosity gap, novelty, 2-second resolve, credibility, ICP relevance, 0–2 each. It
+folds into the existing seven criteria rather than adding an eighth: a total under
+`POP_SHIP_FLOOR` (9/14) caps `scroll_stop` at 3, a zero thesis fit caps `specificity` at 3, and
+a code-drawn graphic's credibility is 2 by construction. The scores ride on the receipt as
+`gate_pop`. A faceless archetype is never capped for a missing or mismatched emotion.
 
 ## No labels, a kicker always, anchored comparatives (round 9)
 

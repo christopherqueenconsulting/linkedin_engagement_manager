@@ -16,6 +16,7 @@ for covers the human ``pending_review`` gate still sits behind this one.
 """
 
 import base64
+import dataclasses
 import os
 import re
 import secrets
@@ -212,6 +213,9 @@ class QualityVerdict:
     # The judge saw a weak or wrong expression (round 5): the NEXT render — the second candidate
     # and every retry — must push the emotion harder.
     emotion_weak: bool = False
+    # The "piques interest" rubric (archetype round): seven 0-2 scores, folded into scroll_stop
+    # and specificity, kept whole for the receipt.
+    pop: dict = field(default_factory=dict)
 
 
 def size_for_ratio(ratio: str) -> str:
@@ -574,7 +578,13 @@ Read the kicker, headline and scene together as one cover. Look at the image its
 8. Is the emotion authentic rather than exaggerated or cartoonish?
 9. Does a gold accent or the charcoal / off-white brand palette read in the image?
 10. Does the headline alone name its subject — not just a number? (true when there is none)
-
+11. Does it PIQUE INTEREST? Score each 0-2: thumbnail_read (one focal point legible at
+   400x225), thesis_fit (it could NOT illustrate the opposite argument), curiosity_gap (shows
+   part, withholds part), novelty (an object or number from the reader's world, never stock
+   people or a stock symbol), resolves_2s (a stranger "gets it" within 2 seconds with the
+   headline), credibility (a sourced number, a real face or stylised art — no AI-person tells),
+   icp_relevance (a small-business owner's money, time or risk is visible).
+{graphic_note}
 Score each criterion 1-5, 5 best:
 - specificity: 5 = with its headline, a scroller would correctly guess this piece's argument —
   the kicker + headline name the exact topic and the scene shows the human stakes of it (a
@@ -582,12 +592,14 @@ Score each criterion 1-5, 5 best:
   working together); 4 = clearly on-topic, slightly generic scene; 3 = the scene could sit on many unrelated posts
   even with the headline; 2 or less = misleading or off-topic.
 - no_cliche (5 = no stock symbol at all), thumbnail_read, craft (no artifacts, an authentic
-  face), scroll_stop (would it stop a scroll — a readable, fitting emotion counts most), brand_fit
-  (the brand palette reads).
+  face), scroll_stop (would it stop a scroll — the question 11 scores, and a readable, fitting
+  emotion when there is a face), brand_fit (the brand palette reads).
 Respond with ONLY a JSON object:
 {{"entities_depicted": {{"<thing>": true}}, "cliches_present": ["..."],
  "thesis_inferable": true, "face_emotion": true, "emotion_matches": true,
  "emotion_authentic": true, "headline_names_subject": true, "bright_enough": true,
+ "pop": {{"thumbnail_read": 0, "thesis_fit": 0, "curiosity_gap": 0, "novelty": 0,
+         "resolves_2s": 0, "credibility": 0, "icp_relevance": 0}},
  "rubric": {{"specificity": 1, "no_cliche": 1, "thumbnail_read": 1, "craft": 1,
             "scroll_stop": 1, "brand_fit": 1}},
  "issues": ["<short actionable phrase>"]}}"""
@@ -617,6 +629,44 @@ _RUBRIC_FLOORS = {"specificity": 4, "no_cliche": 5, "text_accuracy": 4, "craft":
 _SCROLL_STOP_SURFACES = frozenset({"newsletter", "post_image"})
 _SCROLL_STOP_FLOOR = 4
 _REQUIRED_SCORES = ("specificity", "no_cliche", "craft")
+# The "piques interest" rubric (docs/visual-archetypes-research.md §6.4): 0-2 each, ship at >= 9.
+POP_CRITERIA = ("thumbnail_read", "thesis_fit", "curiosity_gap", "novelty", "resolves_2s",
+                "credibility", "icp_relevance")
+POP_SHIP_FLOOR = 9
+# A code-drawn graphic's text is typeset from verified facts, so only what code cannot guarantee
+# is gated: does it carry THIS piece, would it stop a scroll, does the brand read.
+_CODE_DRAWN_FLOORS = {"specificity": 4, "scroll_stop": _SCROLL_STOP_FLOOR, "brand_fit": 3}
+_CODE_DRAWN_NOTE = (
+    "This cover is a CODE-DRAWN data graphic: every number and label on it was verified against "
+    "the article's own sentences and set in the brand font, so its text is correct by "
+    "construction. Judge it on whether it carries THIS piece's argument, stops a scroll, and "
+    "reads as the brand.\n")
+
+
+def _pop_scores(raw: Any) -> dict:
+    """The judge's seven 0-2 "piques interest" scores, or {} when any is missing or unreadable."""
+    if not isinstance(raw, dict):
+        return {}
+    scores = {}
+    for name in POP_CRITERIA:
+        value = raw.get(name)
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return {}
+        scores[name] = max(0, min(2, int(value)))
+    return scores
+
+
+def _code_drawn(concept: Any) -> bool:
+    from cqc_lem.utilities.ai.image_concept import CODE_DRAWN_ARCHETYPES
+
+    return getattr(concept, "archetype", "") in CODE_DRAWN_ARCHETYPES
+
+
+def _shows_no_face(concept: Any) -> bool:
+    """A code-drawn graphic or an editorial concept: a missing face is right, never a defect."""
+    from cqc_lem.utilities.ai.image_concept import ARCHETYPE_EDITORIAL
+
+    return _code_drawn(concept) or getattr(concept, "archetype", "") == ARCHETYPE_EDITORIAL
 # The surfaces whose headline ``image_compose`` typesets onto the render. NEVER ``video``: its
 # frame's ``hook_text`` is the caption ``video_captions`` burns onto the MP4 later, handed to the
 # judge as context only (PR #2249) — compositing it would paint the caption twice.
@@ -682,7 +732,8 @@ def stray_texts(blind: str, hook_text: Optional[str] = None) -> list[str]:
 
 
 def _apply_overlays(rubric: dict, *, blind: str, answer: dict, entities: list,
-                    hook_text: Optional[str], face_expected: bool = False) -> dict:
+                    hook_text: Optional[str], face_expected: bool = False,
+                    no_face: bool = False, code_drawn: bool = False) -> dict:
     """Deterministic corrections the judge cannot talk its way past.
 
     ``text_accuracy`` is DECIDED here: any text the blind look found on the raw render is a 2,
@@ -691,24 +742,37 @@ def _apply_overlays(rubric: dict, *, blind: str, answer: dict, entities: list,
     ``specificity`` at 3; a headline that never names its subject caps it at 4. A missing or
     mismatched emotion caps ``scroll_stop``, a cartoonish one caps ``craft``, a dark image caps
     ``thumbnail_read``.
+
+    Archetype round: an image that SHOULD show no face (``no_face``) is never capped for a
+    missing or mismatched emotion; a code-drawn graphic's text is correct by construction, so
+    its ``text_accuracy`` is n/a. The "piques interest" scores fold in: under
+    ``POP_SHIP_FLOOR`` caps ``scroll_stop`` at 3, a zero ``thesis_fit`` caps ``specificity`` at 3.
     """
     from cqc_lem.utilities.ai.image_brief import cliche_hit
 
     rubric = dict(rubric)
+    pop = _pop_scores(answer.get("pop"))
+    if pop:
+        if code_drawn:
+            pop["credibility"] = 2  # every drawn figure traced to its sentence (image_graphics)
+        if sum(pop.values()) < POP_SHIP_FLOOR:
+            rubric["scroll_stop"] = min(rubric.get("scroll_stop") or 3, 3)
+        if pop["thesis_fit"] == 0:
+            rubric["specificity"] = min(rubric.get("specificity") or 3, 3)
     cliches = [str(c) for c in (answer.get("cliches_present") or []) if str(c).strip()]
     if cliches or cliche_hit(blind):
         rubric["no_cliche"] = min(rubric.get("no_cliche") or 5, 2)
-    rubric["text_accuracy"] = 2 if stray_texts(blind) else None
+    rubric["text_accuracy"] = 2 if stray_texts(blind) and not code_drawn else None
     # Round 8: specificity is the judge's ANCHORED DESCRIPTORS on kicker + headline + scene
     # together — nothing deterministic caps it. Anchors seen, the gist and a subject-less
     # headline are advisory issues only (``advisory_issues``): gpt-4.1's "no vendor contract
     # depicted" was asking for exactly the props the brief now refuses to draw.
     if face_expected and answer.get("face_emotion") is False:
         rubric["scroll_stop"] = min(rubric.get("scroll_stop") or 3, 3)
-    if answer.get("emotion_matches") is False:
+    if answer.get("emotion_matches") is False and not no_face:
         rubric["scroll_stop"] = min(rubric.get("scroll_stop") or 3, 3)
     # Round 6: a wailing man over a bill, caricature faces — a fake emotion is a craft defect.
-    if answer.get("emotion_authentic") is False:
+    if answer.get("emotion_authentic") is False and not no_face:
         rubric["craft"] = min(rubric.get("craft") or 3, 3)
     if answer.get("bright_enough") is False:
         rubric["thumbnail_read"] = min(rubric.get("thumbnail_read") or 3, 3)
@@ -743,6 +807,7 @@ def _staged_inspect(image_path: str, concept: Any, hook_text: Optional[str],
     """Stage 4: a BLIND look at the RAW render, then targeted questions on the COMPOSITE."""
     from cqc_lem.utilities.ai.image_brief import CLICHE_OBJECTS, usable_anchors
 
+    code_drawn = _code_drawn(concept)
     try:
         raw_part = _image_part(image_path)
         blind_response = client.chat.completions.create(
@@ -767,7 +832,8 @@ def _staged_inspect(image_path: str, concept: Any, hook_text: Optional[str],
                     emotional_beat=getattr(concept, "emotional_beat", "") or "the piece's mood",
                     valence=valence, valence_hint=_VALENCE_HINTS.get(valence, ""),
                     entities="; ".join(entities) or "(none named)",
-                    cliches=", ".join(CLICHE_OBJECTS))},
+                    cliches=", ".join(CLICHE_OBJECTS),
+                    graphic_note=_CODE_DRAWN_NOTE if code_drawn else "")},
                 _image_part(composite_path) if composite_path else raw_part]}],
             response_format={"type": "json_object"},
             temperature=0,
@@ -778,20 +844,31 @@ def _staged_inspect(image_path: str, concept: Any, hook_text: Optional[str],
         rubric = {name: _score(raw_rubric.get(name)) for name in RUBRIC_CRITERIA}
         if any(rubric[name] is None for name in _REQUIRED_SCORES):
             raise ValueError("rubric is missing a required score")
+        face_expected = (getattr(concept, "treatment", "") == "people_scene"
+                         and not _shows_no_face(concept))
         rubric = _apply_overlays(rubric, blind=blind, answer=answer, entities=entities,
-                                 hook_text=hook_text,
-                                 face_expected=getattr(concept, "treatment", "") == "people_scene")
+                                 hook_text=hook_text, face_expected=face_expected,
+                                 no_face=_shows_no_face(concept), code_drawn=code_drawn)
     except Exception as e:
         return _unchecked(e, surface, "staged")
 
-    floors = dict(_RUBRIC_FLOORS)
-    if surface in _SCROLL_STOP_SURFACES:
-        floors["scroll_stop"] = _SCROLL_STOP_FLOOR
-        floors["thumbnail_read"] = _SCROLL_STOP_FLOOR
+    pop = _pop_scores(answer.get("pop"))
+    if pop and code_drawn:
+        pop["credibility"] = 2
+    if code_drawn:
+        floors = dict(_CODE_DRAWN_FLOORS)
+    else:
+        floors = dict(_RUBRIC_FLOORS)
+        if surface in _SCROLL_STOP_SURFACES:
+            floors["scroll_stop"] = _SCROLL_STOP_FLOOR
+            floors["thumbnail_read"] = _SCROLL_STOP_FLOOR
     failing = [name for name, floor in floors.items()
                if rubric.get(name) is not None and rubric[name] < floor]
     issues = [f"{name} {rubric[name]}/5" for name in failing]
-    issues += [f"stray text: {t}" for t in stray_texts(blind)][:3]
+    if pop:
+        issues.append(f"pop {sum(pop.values())}/{2 * len(POP_CRITERIA)}")
+    if not code_drawn:
+        issues += [f"stray text: {t}" for t in stray_texts(blind)][:3]
     issues += advisory_issues(answer, entities, hook_text)
     issues += [str(i) for i in (answer.get("issues") or []) if str(i).strip()]
     emotion_weak = (answer.get("face_emotion") is False or answer.get("emotion_matches") is False
@@ -799,7 +876,8 @@ def _staged_inspect(image_path: str, concept: Any, hook_text: Optional[str],
                     or any(_EMOTION_ISSUE.search(str(i)) for i in (answer.get("issues") or [])))
     return QualityVerdict(acceptable=not failing, relevance=rubric.get("specificity"),
                           issues=issues[:8], rubric=rubric, blind_description=blind,
-                          failing=failing, emotion_weak=bool(emotion_weak))
+                          failing=failing, emotion_weak=bool(emotion_weak) and not code_drawn,
+                          pop=pop)
 
 
 def inspect_render_quality(image_path: str, focal_concept: str,
@@ -966,6 +1044,134 @@ def _composite(raw_path: str, hook_text: Optional[str], surface: str, layout: Op
         return None
 
 
+def _record_verdict(render_info: Optional[dict], verdict: QualityVerdict) -> str:
+    """Write a verdict onto ``render_info`` the way the gate loop does; return its label."""
+    label = ("accepted" if verdict.acceptable else "rejected") if verdict.checked else "unchecked"
+    if render_info is not None:
+        render_info["gate_verdict"] = label
+        if verdict.rubric:
+            render_info["gate_rubric"] = dict(verdict.rubric)
+            render_info["gate_failing"] = list(verdict.failing)
+            render_info["gate_blind_description"] = verdict.blind_description
+        if verdict.pop:
+            render_info["gate_pop"] = dict(verdict.pop)
+        if verdict.issues:
+            render_info["gate_issues"] = list(verdict.issues)
+    return label
+
+
+def render_code_drawn(concept: Any, *, surface: str, hook_text: Optional[str],
+                      layout: Optional[str] = None, brand_kit: Optional[str] = None,
+                      signature: Optional[str] = None, user_id: Optional[int] = None,
+                      post_id: Optional[int] = None, render_info: Optional[dict] = None,
+                      enforce: Optional[bool] = None) -> Optional[str]:
+    """Draw the concept's code-drawn archetype(s) and grade the composite — $0 render spend.
+
+    Walks the code-drawn head of ``concept.archetype_ranking``. Each is drawn by
+    ``image_graphics`` (which refuses a figure it cannot trace to its sentence, or data it cannot
+    set legibly) and graded ONCE by the staged judge on specificity, scroll stop and brand — a
+    deterministic drawing would not change on a retry. The first accepted (or ungradable, which
+    fails open as every render does) graphic returns. Anything else falls through: None, with
+    ``render_info["archetype_fallback_reason"]`` saying why, and the caller renders the chain's AI
+    archetype.
+
+    Args:
+        concept: Stage 1's concept, after ``select_archetype``.
+        surface: ``newsletter`` or ``post_image``.
+        hook_text: The headline; no headline, no graphic.
+        layout: The rotated split layout.
+        brand_kit: The brand clause, for the exact colors.
+        signature: The byline.
+        user_id: The author.
+        post_id: The post, for telemetry.
+        render_info: Filled with ``archetype_rendered``, ``graphic_facts`` (every drawn figure
+            with its source sentence — the receipt's trace) and the gate fields.
+        enforce: As for ``render_image_gated``.
+
+    Returns:
+        The composite's path, or None to fall back to the AI render.
+    """
+    from cqc_lem.utilities.ai.image_compose import brand_style
+    from cqc_lem.utilities.ai.image_concept import CODE_DRAWN_ARCHETYPES
+    from cqc_lem.utilities.ai.image_graphics import GraphicError, render_graphic
+    from cqc_lem.utilities.observability import track_image_gate_verdict
+
+    chain = [a for a in (getattr(concept, "archetype_ranking", ()) or ())
+             if a in CODE_DRAWN_ARCHETYPES]
+    if (concept is None or not chain or not hook_text or surface not in COMPOSE_SURFACES
+            or not _code_drawn(concept)):
+        return None
+    enforced = surface in IMAGE_QUALITY_GATE_SURFACES if enforce is None else enforce
+    reasons: list[str] = []
+    for archetype in chain:
+        out_dir = os.path.join(assets_dir, _GENERATED_SUBDIR, str(user_id or "system"))
+        os.makedirs(out_dir, exist_ok=True)
+        try:
+            drawn = render_graphic(
+                archetype, getattr(concept, "graphic", None) or {}, surface=surface,
+                hook=hook_text, kicker=_kicker_for(concept), signature=signature or "",
+                brand=brand_style(brand_kit), layout=layout or getattr(concept, "layout", None),
+                out_path=os.path.join(out_dir, f"img_{secrets.token_hex(8)}.png"))
+        except GraphicError as e:
+            reasons.append(f"{archetype}: {e}")
+            log_info("Code-drawn archetype refused — trying the next", user_id=user_id,
+                     post_id=post_id, action_type="image_archetype", archetype=archetype,
+                     reason=str(e))
+            continue
+        judged = dataclasses.replace(concept, archetype=archetype)
+        verdict = inspect_render_quality(drawn.path, getattr(concept, "thesis", "")[:200],
+                                         surface=surface, concept=judged, hook_text=hook_text,
+                                         composite_path=drawn.path)
+        if not verdict.checked and enforced:
+            verdict = inspect_render_quality(drawn.path, getattr(concept, "thesis", "")[:200],
+                                             surface=surface, concept=judged,
+                                             hook_text=hook_text, composite_path=drawn.path)
+        if verdict.acceptable or not verdict.checked or not enforced:
+            label = _record_verdict(render_info, verdict)
+            if render_info is not None:
+                render_info["archetype_rendered"] = archetype
+                render_info["graphic_facts"] = [dict(f) for f in drawn.facts]
+                if reasons:
+                    render_info["archetype_fallback_reason"] = "; ".join(reasons)
+            track_image_gate_verdict(surface=surface, verdict=label, issues=verdict.issues,
+                                     attempt_count=1, checked=verdict.checked,
+                                     acceptable=verdict.acceptable, user_id=user_id,
+                                     post_id=post_id)
+            log_info("Code-drawn image rendered", user_id=user_id, post_id=post_id,
+                     action_type="image_archetype", archetype=archetype, gate_verdict=label,
+                     surface=surface)
+            return drawn.path
+        reasons.append(f"{archetype}: judge rejected ({', '.join(verdict.failing)})")
+        log_info("Code-drawn archetype rejected by the judge — trying the next", user_id=user_id,
+                 post_id=post_id, action_type="image_archetype", archetype=archetype,
+                 issues="; ".join(verdict.issues))
+        try:
+            os.remove(drawn.path)
+        except OSError:
+            pass
+    if render_info is not None:
+        render_info["archetype_fallback_reason"] = "; ".join(reasons)
+    return None
+
+
+def _as_ai_render(concept: Any, render_info: Optional[dict]) -> Any:
+    """The concept as its AI archetype, so the judge grades the render that actually shipped."""
+    archetype = _ai_archetype(concept)
+    if concept is None or not archetype:
+        return concept
+    if render_info is not None:
+        render_info["archetype_rendered"] = archetype
+    if getattr(concept, "archetype", "") == archetype or not dataclasses.is_dataclass(concept):
+        return concept
+    return dataclasses.replace(concept, archetype=archetype)
+
+
+def _ai_archetype(concept: Any) -> str:
+    """The AI archetype a render falls back to: the END of the concept's chain ('' without one)."""
+    chain = getattr(concept, "archetype_ranking", ()) or ()
+    return chain[-1] if chain else (getattr(concept, "archetype", "") or "")
+
+
 def _gate_loop(render_once, *, prompt: str, surface: str, focal_concept: Optional[str],
                concept: Any, hook_text: Optional[str], user_id: Optional[int],
                post_id: Optional[int], render_info: Optional[dict],
@@ -1057,6 +1263,8 @@ def _gate_loop(render_once, *, prompt: str, surface: str, focal_concept: Optiona
                 render_info["gate_rubric"] = dict(last_verdict.rubric)
                 render_info["gate_failing"] = list(last_verdict.failing)
                 render_info["gate_blind_description"] = last_verdict.blind_description
+            if last_verdict.pop:
+                render_info["gate_pop"] = dict(last_verdict.pop)
             if last_verdict.issues:
                 # On the legacy path and for an unchecked verdict too — the WHY either way.
                 render_info["gate_issues"] = list(last_verdict.issues)
@@ -1106,6 +1314,15 @@ def render_avatar_image_gated(prompt: str, *, avatar: dict, user_id: Optional[in
     from cqc_lem.utilities.ai.ai_helper import _record_avatar_media
     from cqc_lem.utilities.avatar.attributes import apply_subject_clause
     from cqc_lem.utilities.avatar.replicate_avatar import generate_image_with_avatar
+
+    drawn = render_code_drawn(concept, surface=surface, hook_text=hook_text, layout=layout,
+                              brand_kit=brand_kit, signature=signature, user_id=user_id,
+                              post_id=post_id, render_info=render_info, enforce=enforce)
+    if drawn:
+        if render_info is not None:
+            render_info["used_avatar"] = False
+        return drawn
+    concept = _as_ai_render(concept, render_info)
 
     def render_once(current_prompt: str) -> tuple:
         # The likeness path talks to Replicate directly, so it never passes through
@@ -1161,6 +1378,13 @@ def render_image_gated(prompt: str, *, surface: str, ratio: str = "1:1",
     colors) — the render itself carries no text — and the COMPOSITE is what returns, with the
     concept's kicker above the headline and ``signature`` as a byline (round 7).
     """
+    drawn = render_code_drawn(concept, surface=surface, hook_text=hook_text, layout=layout,
+                              brand_kit=brand_kit, signature=signature, user_id=user_id,
+                              post_id=post_id, render_info=render_info, enforce=enforce)
+    if drawn:
+        return drawn
+    concept = _as_ai_render(concept, render_info)
+
     def render_once(current_prompt: str) -> tuple:
         # The backend that RENDERED, not the one configured: under `auto` a gpt-image failure
         # falls through to FLUX, and the retry has to be phrased for whichever one answered.

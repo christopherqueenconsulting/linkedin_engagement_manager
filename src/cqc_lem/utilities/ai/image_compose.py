@@ -346,17 +346,23 @@ def split_hero(hook: str) -> tuple[str, str]:
 
 
 def headline_parts(hook: str, kicker: Optional[str] = None,
-                   signature: Optional[str] = None) -> HeadlineParts:
+                   signature: Optional[str] = None, hero: bool = True) -> HeadlineParts:
     """The cover's typeset parts for a hook, its kicker and its byline.
 
     Args:
         hook: The headline.
         kicker: Stage 1's topic tag; uppercased here.
         signature: The byline.
+        hero: Lift a number in the hook out as a hero numeral. A code-drawn graphic passes
+            False: its own figure is the hero, and a second one in the panel would repeat it.
 
     Returns:
         The parts.
     """
+    if not hero:
+        return HeadlineParts(kicker=" ".join((kicker or "").upper().split()),
+                             rest=sentence_case(hook),
+                             signature=" ".join((signature or "").split()))
     hero, rest = split_hero(sentence_case(hook))
     return HeadlineParts(kicker=" ".join((kicker or "").upper().split()), hero=hero, rest=rest,
                          signature=" ".join((signature or "").split()))
@@ -658,7 +664,8 @@ def _draw_tracked(draw, xy: tuple[int, int], text: str, font, size: int, fill) -
 def compose_headline(render_path: str, hook: str, layout: Optional[str] = None,
                      brand: Optional[BrandStyle] = None, surface: str = "newsletter",
                      out_path: Optional[str] = None, kicker: Optional[str] = None,
-                     signature: Optional[str] = None) -> str:
+                     signature: Optional[str] = None,
+                     canvas: Optional[tuple[int, int]] = None, hero: bool = True) -> str:
     """Typeset the cover — kicker, hero numeral, headline, byline — onto the render.
 
     Args:
@@ -673,6 +680,9 @@ def compose_headline(render_path: str, hook: str, layout: Optional[str] = None,
         kicker: Stage 1's uppercase topic tag, set above the headline in the accent color.
         signature: The byline (newsletter title or author name), set small at the bottom in
             off-white at half opacity; omitted when empty.
+        canvas: The split canvas size; ``CANVAS[surface]`` by default. ``image_graphics`` passes
+            its own (a 1920x1080 cover).
+        hero: Whether a number in the hook becomes a hero numeral (``headline_parts``).
 
     Returns:
         The composite's path.
@@ -681,13 +691,13 @@ def compose_headline(render_path: str, hook: str, layout: Optional[str] = None,
 
     brand = brand or BrandStyle()
     layout = layout if layout in LAYOUTS else DEFAULT_LAYOUT.get(surface, SPLIT_LEFT)
-    parts = headline_parts(hook, kicker, signature)
+    parts = headline_parts(hook, kicker, signature, hero=hero)
     with Image.open(render_path) as opened:
         render = opened.convert("RGBA")
     dark = _hex(brand.neutral_dark)
     if layout in SPLIT_LAYOUTS:
         # The canvas is built at the surface's FINAL size; the render fills only its own region.
-        w, h = CANVAS.get(surface, CANVAS["newsletter"])
+        w, h = canvas or CANVAS.get(surface, CANVAS["newsletter"])
         fit = fit_cover((w, h), layout, parts)
         plan = fit.plan
         image = Image.new("RGBA", (w, h), (*dark, 255))

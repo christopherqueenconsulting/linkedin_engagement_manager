@@ -110,11 +110,11 @@ container — so it stays **stdlib-only** (no `cqc_lem.*` imports). Off unless B
 `.litellm/*.py` hook loads via `litellm_settings.callbacks`, never `custom_callbacks`.
 `docs/cost-performance-margin-plan.md` §D.1.1. Per-function assignment: `ai_helper.py`.
 
-**Image stack (ONE engine, two modules, `docs/image-stack.md`):** `utilities/ai/image_brief.py`
-authors every image prompt — add a preset, never a per-content-type helper.
-`utilities/ai/image_gen.py` renders it; `render_image_gated` adds the bounded `lem-vision` check,
-failing OPEN. Avatar likeness NEVER renders in `image_gen` — `generate_post_image` owns the LoRA path
-behind `avatar/guardrails.resolve_avatar_for`. NO text/logos in a render prompt.
+**Image stack (ONE engine, `docs/image-stack.md`):** `utilities/ai/image_brief.py` authors
+every image prompt — add a preset, never a per-content-type helper. `image_gen.py` renders it,
+`image_graphics.py` draws VERIFIED data graphics; `render_image_gated` adds the bounded
+`lem-vision` check, failing OPEN. Avatar likeness NEVER renders in `image_gen` —
+`generate_post_image` owns the LoRA path behind `resolve_avatar_for`. NO text/logos in a prompt.
 `utilities/post_image.py` (#1030) is the ONE place a POST's image is validated, stored, removed.
 A compose-time `image_url` is CALLER input: `/schedule_post/` takes it only when
 `owns_post_image_url` says it is a preview we issued that caller, and a stored URL never leaves

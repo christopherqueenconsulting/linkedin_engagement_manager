@@ -32,7 +32,8 @@ index and the `CLAUDE.md` row that points at it, or the pointer becomes a dead e
 - ★ [Unified content core](content-core.md) — framework / research / alignment shared by posts, comments and newsletters; the similarity + slop gates
 - ★ [Content plan cadence & posting days](content-scheduling.md) — `POST_DAY_TYPES`, `posts_per_week`, `posting_days`; the plan is not one post a day
 - ★ [Newsletter cover images](newsletter-covers.md) — upload lands `approved`, generated lands `pending_review`; notify-and-publish at the slot
-- ★ [The image stack](image-stack.md) — one engine, two modules; staged concept → brief → prompt check → BLIND judge (#2241); `image_brief.py` authors, `image_gen.py` renders, `image_compose.py` typesets headlines, presets not per-type helpers
+- ★ [The image stack](image-stack.md) — one engine, two modules; staged concept → brief → prompt check → BLIND judge (#2241); `image_brief.py` authors, `image_gen.py` renders, `image_compose.py` typesets headlines, `image_graphics.py` draws verified data graphics, presets not per-type helpers
+- [Visual archetypes research](visual-archetypes-research.md) — why covers and post images carry the idea or the evidence, not stock people; the seven archetypes, the selection order and the "piques interest" rubric the engine implements
 - [Weekly group post](group-posts.md) — statuses, media, and what actually works inside a LinkedIn group
 - [Timezone contract](timezone-contract.md) — what is stored in UTC, what is rendered local, and where the boundary is
 - [Authenticity rubric](AUTHENTICITY_RUBRIC.md) — the A1 anti-slop gate and the 360Brew defense it is built against

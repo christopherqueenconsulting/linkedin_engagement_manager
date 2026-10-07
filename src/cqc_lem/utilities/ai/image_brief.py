@@ -20,9 +20,11 @@ from dataclasses import dataclass
 from typing import Any, Optional
 
 from cqc_lem.utilities.ai.image_concept import (
+    ART_STYLES,
     GENERIC_ACRONYMS,
     REASONING_EFFORT,
     TREATMENT_CONCRETE,
+    TREATMENT_EDITORIAL,
     TREATMENT_GRAPHIC,
     TREATMENT_METAPHOR,
     TREATMENT_PEOPLE,
@@ -121,7 +123,38 @@ _TREATMENT_TEMPLATES: dict[str, str] = {
         "TREATMENT metaphor_last_resort: one uncommon visual metaphor specific to this piece's "
         "thesis, photographed as a real scene — one a reader has never seen on a hundred other "
         "covers. Stock symbols are refused."),
+    # Archetype round (#2241, docs/visual-archetypes-research.md §6.2 F): the image carries the
+    # IDEA, as an Economist cover does — one juxtaposition of the reader's own everyday objects.
+    TREATMENT_EDITORIAL: (
+        "TREATMENT editorial_concept: ONE surprising but instantly legible idea built exactly on "
+        "the CHOSEN VISUAL IDEA — a juxtaposition, a scale shift or an object contradicting its "
+        "own function, made from everyday objects in the reader's own working world. Objects "
+        "only: the frame holds no person, face, hand or silhouette. One focal point and ONE "
+        "oddity a stranger resolves within two seconds, centred on a flat, calm ground with "
+        "generous space around it. Its finish: {style}."),
 }
+# The fallback style when a concept carries none.
+_DEFAULT_ART_STYLE = "editorial_photo"
+# Archetype round: an editorial concept shows nobody — refused deterministically, not requested.
+_PERSON_WORDS = re.compile(
+    r"\b(?:person|people|man|men|woman|women|face|faces|hand|hands|finger|fingers|figure|"
+    r"figures|silhouette|silhouettes|worker|workers|employee|employees|owner|founder|"
+    r"customer|customers|client|clients|team|crowd|he|she|his|her|their)\b", re.IGNORECASE)
+
+
+def treatment_text(treatment: str, concept: Optional[ImageConcept] = None) -> str:
+    """The treatment block the author reads, with an editorial concept's rotated art style.
+
+    Args:
+        treatment: One of the ``_TREATMENT_TEMPLATES`` keys.
+        concept: Stage 1's concept, for its ``art_style``.
+
+    Returns:
+        The template text.
+    """
+    style = ART_STYLES.get(getattr(concept, "art_style", "") or "",
+                           ART_STYLES[_DEFAULT_ART_STYLE])
+    return _TREATMENT_TEMPLATES[treatment].format(style=style)
 
 # The ONE vocabulary ban list, named by the system prompt below AND read by the checking side
 # (`tests/unit/utilities/ai/test_image_preset_drift.py`) — the writer side and the checking side
@@ -462,6 +495,38 @@ PROPS_DIRECTIVE = (
     "posters and badges. No posters, signage, name badges, lanyards or labels.\n")
 # Kept for the call sites that name it: covers and posts were the first surfaces with the rule.
 COVER_PROPS_DIRECTIVE = {PAPER_FORBID: PROPS_DIRECTIVE}
+# An editorial concept keeps every prop rule and drops the people: the objects carry the idea.
+EDITORIAL_PROPS_DIRECTIVE = (
+    "PROPS: no paper of any kind in frame — no documents, sheets, reports, invoices, bills, "
+    "folders or binders — no whiteboard, chart or code content — and no screens at all. OBJECTS "
+    "ONLY: no person, face, hand or silhouette anywhere in the frame; the idea is carried by "
+    "everyday objects from the reader's working world. No posters, signage, badges or labels.\n")
+# Archetype round: a people scene's person looks TOWARD the typeset headline, never the camera —
+# gaze cueing pulls the reader's eye to what the person looks at (research §1.2).
+_GAZE_TOWARD_PANEL = {
+    "split_left": "toward the LEFT edge of the frame",
+    "split_right": "toward the RIGHT edge of the frame",
+    "split_top": "up and across toward the TOP of the frame",
+    "split_bottom": "down and across toward the BOTTOM of the frame",
+}
+
+
+def gaze_directive(concept: Optional[ImageConcept]) -> str:
+    """Where a people scene's person looks: toward the headline panel's side, never the lens.
+
+    Args:
+        concept: Stage 1's concept.
+
+    Returns:
+        The directive line, or '' when the concept is no people scene on a split layout.
+    """
+    if concept is None or concept.treatment != TREATMENT_PEOPLE:
+        return ""
+    toward = _GAZE_TOWARD_PANEL.get(concept.layout or "")
+    if not toward:
+        return ""
+    return (f"GAZE: the person's eyes and shoulders turn {toward}, where the headline sits — "
+            f"never toward the camera.\n")
 
 
 def cover_paper_rule(concept: Optional[ImageConcept] = None) -> str:
@@ -824,7 +889,8 @@ def _deterministic_failure(prompt: str, *, anchors: list[str], weak: bool,
                            names: Optional[set[str]] = None,
                            colors: Optional[frozenset[str]] = None,
                            paper_rule: Optional[str] = None,
-                           bright: bool = False, positive: bool = False) -> Optional[str]:
+                           bright: bool = False, positive: bool = False,
+                           no_people: bool = False) -> Optional[str]:
     """Why ``prompt`` fails the deterministic checks, or None when it passes them.
 
     Shared by Stage 2's validation and Stage 3, so the two can never disagree about a cliché,
@@ -845,6 +911,10 @@ def _deterministic_failure(prompt: str, *, anchors: list[str], weak: bool,
         return (f"the prompt quotes text ({quoted[0]!r}) but this treatment carries no words "
                 f"at all")
     unhooked = _strip_hook(prompt, hook_text)
+    person = _PERSON_WORDS.search(unhooked) if no_people else None
+    if person:
+        return (f"an editorial concept shows no person ({person.group(0)!r}) — carry the idea "
+                f"with the objects alone")
     named = _named_fact(unhooked, names or set())
     if named:
         return (f"the prompt names {named!r}, a fact the image cannot draw — show the visual "
@@ -891,7 +961,8 @@ def _rejection(parsed: dict[str, Any], *, anchors: list[str], weak: bool,
                hook_text: Optional[str], names: Optional[set[str]] = None,
                colors: Optional[frozenset[str]] = None,
                paper_rule: Optional[str] = None, bright: bool = False,
-               positive: bool = False, avatar: bool = False) -> Optional[str]:
+               positive: bool = False, avatar: bool = False,
+               no_people: bool = False) -> Optional[str]:
     """Why an authored brief is unusable, or None. The reason goes back to the author verbatim."""
     prompt = str(parsed.get("prompt") or "").strip()
     pose = _AVATAR_POSE.search(prompt) if avatar else None
@@ -910,7 +981,7 @@ def _rejection(parsed: dict[str, Any], *, anchors: list[str], weak: bool,
         return "the reply declared hook text, but the image carries no text — the headline is typeset later"
     return _deterministic_failure(prompt, anchors=anchors, weak=weak, hook_text=hook_text,
                                   names=names, colors=colors, paper_rule=paper_rule,
-                                  bright=bright, positive=positive)
+                                  bright=bright, positive=positive, no_people=no_people)
 
 
 _CHECK_PROMPT = """You are checking an image prompt BEFORE it is sent to a renderer.
@@ -929,10 +1000,17 @@ the prompt depicts. Respond with ONLY a JSON object:
 
 
 def _concept_is_weak(concept: Optional[ImageConcept], anchors: list[str]) -> bool:
-    return concept is None or concept.weak or len(anchors) < WEAK_ENTITY_FLOOR
+    # An editorial concept is built on its chosen idea's OBJECTS; its anchors are often people
+    # ("an agency owner"), which it must not draw — so anchor coverage stands down for it.
+    return (concept is None or concept.weak or len(anchors) < WEAK_ENTITY_FLOOR
+            or concept.treatment == TREATMENT_EDITORIAL)
 
 
 @llm_step("image_prompt_check")
+def _shows_nobody(concept: Optional[ImageConcept]) -> bool:
+    return concept is not None and concept.treatment == TREATMENT_EDITORIAL
+
+
 def check_prompt_against_concept(prompt: str, concept: Optional[ImageConcept],
                                  hook_text: Optional[str]) -> tuple[bool, str]:
     """Stage 3: is this prompt worth rendering? Deterministic checks first, then ONE judge call.
@@ -953,7 +1031,8 @@ def check_prompt_against_concept(prompt: str, concept: Optional[ImageConcept],
     anchors = usable_anchors(concept)
     failure = _deterministic_failure(prompt, anchors=anchors,
                                      weak=_concept_is_weak(concept, anchors),
-                                     hook_text=None, names=fact_name_tokens(concept))
+                                     hook_text=None, names=fact_name_tokens(concept),
+                                     no_people=_shows_nobody(concept))
     if failure:
         return False, failure
     if concept is None:
@@ -1011,7 +1090,7 @@ def _fallback_treatment(treatment: str, anchors: list[str]) -> str:
     The deterministic graphic once rendered "a photographic cutout of $30K" (gauntlet round 1 of
     #2241). A people_scene stays one; anything else is a concrete scene when there are anchors.
     """
-    if treatment in (TREATMENT_PEOPLE, TREATMENT_CONCRETE):
+    if treatment in (TREATMENT_PEOPLE, TREATMENT_CONCRETE, TREATMENT_EDITORIAL):
         return treatment
     return TREATMENT_CONCRETE if anchors else TREATMENT_PEOPLE
 
@@ -1059,7 +1138,19 @@ def _fallback_brief(content: str, *, surface: str, ratio: str, context: str,
     context = ""
     idea = _plain_words(concept.chosen_idea) if concept and concept.chosen_idea else ""
 
-    if idea:
+    if treatment == TREATMENT_EDITORIAL and idea:
+        style = ART_STYLES.get(concept.art_style or "", ART_STYLES[_DEFAULT_ART_STYLE])
+        prompt = (f"{context}{style[:1].upper()}{style[1:]}, for a {use}: {idea}. Objects only, "
+                  f"one focal point centred on a flat calm ground with generous space around "
+                  f"it, one deliberate {accent[0]} accent, composed for a {ratio} aspect "
+                  f"ratio.{layout}")
+    elif treatment == TREATMENT_EDITORIAL:
+        # No surviving idea: a plain object photograph of the piece, never a person.
+        treatment = TREATMENT_CONCRETE
+        prompt = (f"{context}A photorealistic editorial still-life photograph for a {use} of "
+                  f"the everyday objects at the heart of this: {summary}. One clear focal "
+                  f"object, shot on a 50mm lens at f/2.8, {finish}{layout}")
+    elif idea:
         who = (f", the person {cast_phrase(concept.cast)}"
                if concept and concept.cast and not avatar else "")
         prompt = (f"{context}A photorealistic editorial photograph for a {use}: {idea}{who}, shot "
@@ -1180,6 +1271,7 @@ def build_image_brief(content: str, *, surface: str, ratio: str = "1:1",
     treatment = _treatment_for(concept, avatar)
     anchors = usable_anchors(concept)
     weak = _concept_is_weak(concept, anchors)
+    no_people = _shows_nobody(concept) and not avatar
     names = fact_name_tokens(concept)
     hook = (concept.hook_phrase if concept and concept.hook_phrase
             and carries_hook(surface, treatment) else None)
@@ -1201,13 +1293,14 @@ def build_image_brief(content: str, *, surface: str, ratio: str = "1:1",
 
     user_prompt = (
         f"{context}USE CASE: {_STYLE_PRESETS[preset]}\n"
-        f"{_TREATMENT_TEMPLATES[treatment]}\n\n"
+        f"{treatment_text(treatment, concept)}\n\n"
         f"Compose for a {ratio} aspect ratio.\n"
         + _analysis_block(concept, anchors, hook, surface, brand_kit, avatar=bool(avatar))
         + (f"Brand: {brand_kit}\n" if brand_kit else "")
         + BRAND_ACCENT_DIRECTIVE.format(colors=", ".join(sorted(colors)))
-        + PROPS_DIRECTIVE
-        + (avatar_directive(concept) if avatar else _NO_AVATAR_PEOPLE)
+        + (EDITORIAL_PROPS_DIRECTIVE if no_people else PROPS_DIRECTIVE)
+        + (avatar_directive(concept) if avatar else "" if no_people else _NO_AVATAR_PEOPLE)
+        + ("" if avatar else gaze_directive(concept))
         + (f"Content shape: {content_shape}\n" if content_shape else "")
         + (f"This author's recent images already looked like this, so make this one visibly "
            f"different in setting and composition: {'; '.join(avoid)}\n" if avoid else "")
@@ -1271,7 +1364,8 @@ def build_image_brief(content: str, *, surface: str, ratio: str = "1:1",
                 parsed["prompt"] = strip_author_context(parsed["prompt"], context)
             rejection = _rejection(parsed, anchors=anchors, weak=weak, hook_text=None,
                                    names=names, colors=gate_colors, paper_rule=paper_rule,
-                                   bright=bright, positive=positive, avatar=bool(avatar))
+                                   bright=bright, positive=positive, avatar=bool(avatar),
+                                   no_people=no_people)
             if rejection:
                 reason = rejection
                 rejections.append(reason)

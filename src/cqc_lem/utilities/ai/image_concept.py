@@ -33,6 +33,52 @@ TREATMENT_GRAPHIC = "editorial_graphic"
 TREATMENT_CONCRETE = "concrete_scene"
 TREATMENT_METAPHOR = "metaphor_last_resort"
 TREATMENTS = (TREATMENT_PEOPLE, TREATMENT_GRAPHIC, TREATMENT_CONCRETE, TREATMENT_METAPHOR)
+# Archetype round (#2241): the AI render for an ``editorial_concept`` — one surprising juxtaposition
+# of everyday objects, no people. Set by ``select_archetype``, never offered to the analyst.
+TREATMENT_EDITORIAL = "editorial_concept"
+
+# The seven visual archetypes (``docs/visual-archetypes-research.md`` §6.2). The first five are
+# drawn by ``image_graphics`` from the piece's own verified numbers and steps; the last two are AI
+# renders beside the typeset panel. A people scene is a HUMAN MOMENT only, never the default.
+ARCHETYPE_STAT_CARD = "stat_card"
+ARCHETYPE_HIGHLIGHT_CHART = "highlight_chart"
+ARCHETYPE_RECEIPT = "receipt"
+ARCHETYPE_BEFORE_AFTER = "before_after"
+ARCHETYPE_CHECKLIST = "checklist"
+ARCHETYPE_EDITORIAL = "editorial_concept"
+ARCHETYPE_PEOPLE = "people_scene"
+CODE_DRAWN_ARCHETYPES = (ARCHETYPE_STAT_CARD, ARCHETYPE_HIGHLIGHT_CHART, ARCHETYPE_RECEIPT,
+                         ARCHETYPE_BEFORE_AFTER, ARCHETYPE_CHECKLIST)
+AI_ARCHETYPES = (ARCHETYPE_EDITORIAL, ARCHETYPE_PEOPLE)
+ARCHETYPES = CODE_DRAWN_ARCHETYPES + AI_ARCHETYPES
+# Only the composited surfaces choose an archetype; every other surface keeps its treatment.
+ARCHETYPE_SURFACES = frozenset({"newsletter", "post_image"})
+# Selection (§6.3): evidence strength first. A chart, a receipt or a before/after needs MORE
+# verified data than a single stat, so it is the more specific image when the piece has it.
+ARCHETYPE_BASE_SCORES = {ARCHETYPE_HIGHLIGHT_CHART: 4.0, ARCHETYPE_RECEIPT: 4.0,
+                         ARCHETYPE_BEFORE_AFTER: 4.0, ARCHETYPE_STAT_CARD: 3.0,
+                         ARCHETYPE_CHECKLIST: 3.0, ARCHETYPE_PEOPLE: 3.0,
+                         ARCHETYPE_EDITORIAL: 1.0}
+# The analyst's own pick only BREAKS a tie; it never outranks a stronger evidence score.
+ARCHETYPE_TIEBREAK = 0.5
+# Never the same archetype as either of the last two images (§6.3 step 4). The research's -2
+# let a recent chart (4 - 2) still beat a fresh editorial concept (1), which is a repeat, not
+# avoidance; the penalty is larger than any gap between base scores, so a recent archetype loses
+# to EVERY fresh candidate and only renders when nothing else can.
+ARCHETYPE_WINDOW = 2
+ARCHETYPE_ROTATION_PENALTY = 4.0
+# The text-free art styles an editorial_concept rotates through, least-recently-used. Phrased
+# without "paper", "printed" or "illustration": the brief's prop and vocabulary rules refuse those.
+ART_STYLES: dict[str, str] = {
+    "risograph": ("a 1970s risograph print in two spot inks, charcoal and mustard gold, with "
+                  "visible grain and slight misregistration on a flat off-white ground"),
+    "cut_collage": ("a torn-edge cut-out collage with halftone photo fragments and soft drop "
+                    "shadows on a flat off-white ground"),
+    "claymation": ("a tactile claymation miniature set with fingerprinted clay surfaces, shot "
+                   "with a macro lens under soft studio light on a seamless warm-grey ground"),
+    "editorial_photo": ("a single-object editorial still-life photograph on a seamless "
+                        "colour-blocked backdrop, hard flash, from an unusual overhead angle"),
+}
 
 # Enough of a long newsletter edition to reach its payoff, which usually sits well past the hook.
 _MAX_SOURCE_CHARS = 12000
@@ -129,9 +175,29 @@ actions or situations>"],
  "hook_alternatives": ["<two more hooks, same rules>"],
  "hook_candidates": {{"number_claim": "<…>", "contrast": "<…>", "question": "<…>",
                      "plain_claim": "<…>"}},
- "visual_ideas": ["<3 one-sentence image ideas>"],
+ "idea_nouns": ["<up to 20 concrete nouns from the piece and the reader's working day>"],
+ "visual_ideas": ["<3 one-sentence object-only image ideas>"],
+ "people_idea": "<ONE one-sentence people-led idea, for a human moment only>",
+ "human_moment": true|false,
  "treatment": "{'|'.join(TREATMENTS)}",
- "treatment_rationale": "<one sentence>"}}
+ "treatment_rationale": "<one sentence>",
+ "archetype": "{'|'.join(ARCHETYPES)}",
+ "graphic_facts": {{
+   "source_name": "<the publication, study or report the piece names for its numbers, copied \
+exactly, or ''>",
+   "thesis_stat": {{"label": "<what the number measures, words from its sentence>",
+                    "value": "<the number exactly as written, e.g. 45 or 30,000>",
+                    "unit": "<$ or € or £, %, x, a unit word such as hours, or ''>",
+                    "source_sentence": "<the sentence it appears in, copied verbatim>"}} | null,
+   "comparison": {{"measure": "<what all the items measure>", "items": [<2-6 items shaped like \
+thesis_stat, ALL on that same measure and unit>], "highlight": <index of the item the piece is \
+about>, "annotation": "<at most 8 words from the piece>"}} | null,
+   "costs": {{"subject": "<X in 'the real cost of X', 1-4 words from the piece>", "items": \
+[<2-5 cost or time items shaped like thesis_stat, labels at most 5 words>], "total": <an item, \
+ONLY if the piece states a total> | null}} | null,
+   "before_after": {{"before": <item>, "after": <item, same measure and unit>}} | null,
+   "steps": [{{"text": "<a step or recommendation in at most 8 of the piece's words>", \
+"source_sentence": "<copied verbatim>"}}]}}}}
 
 Rules for specific_entities: copy them FROM THE TEXT. Never invent one. These are FACTS: they \
 inform the thesis and the hook, and they are never drawn.
@@ -159,12 +225,37 @@ Rules for kicker: the 1-3 word topic tag a magazine prints above a headline — 
 "LLM COSTS", "AI FACT-CHECKING", "B2B BUYING". Every word comes from the article. It is what tells \
 a scroller what the cover is ABOUT, so the scene never has to.
 
-Rules for visual_ideas: exactly 3 one-sentence ideas, each combining the hook with a concrete \
-scene or juxtaposition built from the visual anchors and the emotional beat — for an article \
-about AI hallucination, "A copy editor's red pen frozen mid-strike over a confidently printed \
-paragraph, her face a half-smile of disbelief." At least ONE idea is people-led: a visible face \
-with a specific reaction. No names, no numbers, no stock symbols, and never a person merely \
-looking at or typing on a laptop.
+Rules for visual_ideas — the Idea Miner. (1) Hold the thesis. (2) List up to 20 concrete nouns \
+in idea_nouns, from the piece and from the reader's working day: tools, containers, furniture, \
+vehicles, rooms, everyday objects — never paper, documents, screens or a person. (3) Pair them \
+with the piece's tension using ONE operator: juxtaposition, scale shift, a visual oxymoron, a \
+literalised idiom, or a transformation in progress — two objects side by side beat one fused \
+hybrid. (4) Drop every cliché: gears, lightbulbs, puzzle pieces, robots, brains, rockets, chess, \
+handshakes, targets, magnifying glasses, clouds, binary code, glowing networks. (5) Keep the 3 a \
+stranger would "get" within two seconds with the headline and that could NOT illustrate the \
+opposite argument. Each idea is ONE sentence naming its objects and its single oddity, with NO \
+person, face or hand in it — for "your CRM leaks leads": "A galvanised bucket shaped like a card \
+file, business cards spilling through holes in its side, seen from overhead." No names, no \
+numbers, no stock symbols.
+
+Rules for people_idea and human_moment: human_moment is true ONLY when the piece is about a human \
+moment — a hire, a hard conversation, a client's reaction, a founder's own decision — where a \
+face IS the story; false for analysis, numbers, tools, processes and frameworks. people_idea is \
+that moment as one sentence: a specific person, a specific readable reaction, their gaze turned \
+toward the side of the frame — never at the camera, never at a laptop.
+
+Rules for graphic_facts: the evidence a data graphic can draw. Copy every value and every \
+source_sentence EXACTLY from the text; a number the text does not state, a baseline it does not \
+give, a total it does not state, or a sum you computed is FORBIDDEN — leave the field null \
+instead. Every word of a label comes from its own sentence. comparison only when the piece \
+gives 2+ numbers on the SAME measure (45% vs 38.2% engagement). steps only when the piece gives \
+3+ steps or recommendations.
+
+Rules for archetype: your one pick for the image. It only breaks a tie between the evidence the \
+system has already verified, so pick by what would make a stranger stop: a stat_card for one \
+surprising number, a highlight_chart for a comparison, a receipt for costs, before_after for a \
+transformation, a checklist for steps, an editorial_concept for an abstract claim, a \
+people_scene only for a human moment.
 
 Choose the treatment:
 - {TREATMENT_PEOPLE}: the piece is about people, teams, clients, hiring or a decision someone \
@@ -180,18 +271,17 @@ piece, pipes or valves, a rocket, a chess board, a compass, money or a handshake
 # Covers lean on people (gauntlet round 1 of #2241): LinkedIn's own creative guidance is that
 # real faces outperform clipart and symbols, and a series of graphics is a series of ads.
 _COVER_GUIDANCE = (
-    "This is a newsletter COVER. Prefer people_scene — LinkedIn's guidance is that real faces "
-    "beat clipart and symbols. Use editorial_graphic only when a single number or contrast IS "
-    "the thesis. A cover ALWAYS carries its hook as a headline, whatever the treatment, so "
-    "hook_phrase is required. A concrete_scene only when the idea is a striking, specific object "
-    "juxtaposition — never an object sitting on a desk.")
+    "This is a newsletter COVER. It carries the piece's IDEA or its EVIDENCE — readers skip "
+    "anonymous stock people as filler, so a people_scene is for a human moment only. Fill "
+    "graphic_facts with every verifiable number and step. A cover ALWAYS carries its hook as a "
+    "headline, so hook_phrase is required. Never an object sitting on a desk.")
 
 # Round 5: the post image follows the cover recipe — a hook, a face, a bright scene.
 _POST_GUIDANCE = (
-    "This is a LinkedIn feed POST image (4:5). Prefer people_scene — a real face with a readable "
-    "reaction stops a scroll; a concrete_scene only when the idea is a striking, specific object "
-    "juxtaposition, never an object sitting on a desk. The image ALWAYS carries its hook as a "
-    "headline, so hook_phrase is required.")
+    "This is a LinkedIn feed POST image (4:5). It carries the post's IDEA or its EVIDENCE — a "
+    "people_scene only for a human moment, never as the default. Fill graphic_facts with every "
+    "verifiable number and step. The image ALWAYS carries its hook as a headline, so "
+    "hook_phrase is required. Never an object sitting on a desk.")
 # An idea that is just an object resting on furniture is a still life, not a scroll-stopper.
 _OBJECT_ON_FURNITURE = re.compile(
     r"\bon\s+(?:a|an|the|his|her|their)?\s*(?:[\w\-]+\s+){0,2}"
@@ -218,6 +308,24 @@ Rank them on: specificity to THIS article, surprise, legibility as a 400x225 thu
 distance from stock clichés. Penalise an object sitting on a desk or table with no person — a \
 face with a readable reaction stops a scroll; a still life does not. Respond with ONLY a JSON \
 object:
+{{"ranking": [<idea numbers, best first>], "reason": "<one sentence on the winner>"}}"""
+
+
+# Archetype round: an editorial_concept's ideas are object-only juxtapositions, ranked on the
+# "piques interest" rubric (docs/visual-archetypes-research.md §6.4) instead of a face.
+_EDITORIAL_PICK_PROMPT = """You are picking ONE editorial-cover idea for a LinkedIn {surface}.
+
+The piece argues: {thesis}
+Its headline (hook): {hook}
+
+Candidate ideas:
+{ideas}
+
+Score each 0-2 on: thumbnail read (one focal point at 400x225), thesis fit (it could NOT \
+illustrate the opposite argument), curiosity gap (shows part, withholds part), novelty (an \
+object from the reader's own world in an unexpected pairing, never a stock symbol), resolves \
+within 2 seconds with the headline, and relevance to a small-business owner's money, time or \
+risk. Rank by total. Respond with ONLY a JSON object:
 {{"ranking": [<idea numbers, best first>], "reason": "<one sentence on the winner>"}}"""
 
 
@@ -249,6 +357,18 @@ class ImageConcept:
         hook_options: Every valid hook Stage 1 offered, by shape, for the rotation to pick from.
         kicker: The 1-3 word UPPERCASE topic tag ``image_compose`` sets above the headline, every
             word grounded in the source ('' when none survived validation).
+        archetype: The visual archetype the image takes (``ARCHETYPES``); '' off the composited
+            surfaces.
+        archetype_ranking: The fallback chain, best first, ending at the first AI archetype — a
+            code-drawn graphic that cannot be drawn falls to the next.
+        archetype_rationale: Every candidate's score, for the receipt.
+        archetype_hint: The analyst's own pick — a tiebreak only.
+        graphic: The VALIDATED graphic facts (``image_graphics.validate_graphic_facts``): every
+            figure with the source sentence it was verified against.
+        human_moment: The analyst's call that a face IS the story; the only way to a people scene.
+        people_idea: The one people-led idea, used only when the archetype is a people scene.
+        idea_nouns: The Idea Miner's nouns, kept for the receipt.
+        art_style: The rotated ``ART_STYLES`` key an editorial_concept renders in.
     """
 
     thesis: str
@@ -270,6 +390,15 @@ class ImageConcept:
     hook_shape: str = ""
     hook_options: Optional[dict[str, str]] = None
     kicker: str = ""
+    archetype: str = ""
+    archetype_ranking: tuple[str, ...] = ()
+    archetype_rationale: str = ""
+    archetype_hint: str = ""
+    graphic: Optional[dict[str, Any]] = None
+    human_moment: bool = False
+    people_idea: str = ""
+    idea_nouns: tuple[str, ...] = ()
+    art_style: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         """The concept as a JSON-safe dict, for prompts and receipts."""
@@ -821,6 +950,10 @@ def parse_concept(payload: Optional[dict[str, Any]], source: str,
     options = _hook_options(payload, title, topic, source)
     hook = _first_valid_hook(payload, title, topic, source) or next(iter(options.values()), "")
     treatment = _resolve_treatment(_clean(payload.get("treatment"), 40).lower(), anchors, hook)
+    people = _filter_ideas([payload.get("people_idea")], entities)
+    hint = _clean(payload.get("archetype"), 40).lower()
+    raw_nouns = payload.get("idea_nouns") if isinstance(payload.get("idea_nouns"), list) else []
+    nouns = tuple(n for n in (_clean(x, 40) for x in raw_nouns) if n)[:20]
     return ImageConcept(
         thesis=thesis,
         audience=_clean(payload.get("audience"), 120),
@@ -837,7 +970,21 @@ def parse_concept(payload: Optional[dict[str, Any]], source: str,
         weak=len(anchors) < WEAK_ENTITY_FLOOR,
         visual_anchors=anchors,
         visual_ideas=_filter_ideas(payload.get("visual_ideas"), entities),
+        archetype_hint=hint if hint in ARCHETYPES else "",
+        graphic=_validated_graphic(payload.get("graphic_facts"), source),
+        human_moment=payload.get("human_moment") is True,
+        people_idea=people[0] if people else "",
+        idea_nouns=nouns,
     )
+
+
+def _validated_graphic(raw: Any, source: str) -> Optional[dict[str, Any]]:
+    """Stage 1's graphic facts with every unverifiable item dropped; None when none were given."""
+    if not isinstance(raw, dict):
+        return None
+    from cqc_lem.utilities.ai.image_graphics import validate_graphic_facts
+
+    return validate_graphic_facts(raw, source)
 
 
 def enforce_graphic_cap(concept: ImageConcept, recent_treatments: Optional[Sequence[str]],
@@ -884,11 +1031,26 @@ def pick_visual_idea(concept: ImageConcept, surface: str = "post_image") -> Imag
         The concept with ``chosen_idea``, ``rejected_ideas`` and ``idea_pick_reason`` set; the
         concept unchanged when it has no ideas.
     """
+    # The idea is for the AI render — the END of the archetype chain, whatever draws first.
+    renders = (concept.archetype_ranking or (concept.archetype,))[-1]
+    if renders == ARCHETYPE_PEOPLE and concept.people_idea:
+        # A human moment: the analyst's one people-led idea IS the image.
+        return dataclasses.replace(concept, chosen_idea=concept.people_idea,
+                                   rejected_ideas=tuple(concept.visual_ideas),
+                                   idea_pick_reason="human moment — the people-led idea")
+    editorial = renders == ARCHETYPE_EDITORIAL
     ideas = list(concept.visual_ideas)
+    if editorial:
+        # An editorial concept shows no person: a people-led idea is not a candidate.
+        ideas = [i for i in ideas if not is_people_led(i)]
     if not ideas:
         return concept
-    default = next((i for i in ideas if is_people_led(i)), ideas[0])
-    winner, reason = default, "ranking unavailable — first people-led idea"
+    if editorial:
+        default = next((i for i in ideas if not is_desk_still_life(i)), ideas[0])
+        winner, reason = default, "ranking unavailable — first object idea"
+    else:
+        default = next((i for i in ideas if is_people_led(i)), ideas[0])
+        winner, reason = default, "ranking unavailable — first people-led idea"
     if len(ideas) > 1:
         from cqc_lem.utilities.ai.ai_helper import _loads_json_object
         from cqc_lem.utilities.ai.client import client
@@ -896,7 +1058,8 @@ def pick_visual_idea(concept: ImageConcept, surface: str = "post_image") -> Imag
         try:
             response = client.chat.completions.create(
                 model="lem-simple",
-                messages=[{"role": "user", "content": _IDEA_PICK_PROMPT.format(
+                messages=[{"role": "user", "content": (
+                    _EDITORIAL_PICK_PROMPT if editorial else _IDEA_PICK_PROMPT).format(
                     surface=surface, thesis=concept.thesis, hook=concept.hook_phrase or "(none)",
                     ideas="\n".join(f"{n}. {idea}" for n, idea in enumerate(ideas, 1)))}],
                 response_format={"type": "json_object"},
@@ -912,11 +1075,14 @@ def pick_visual_idea(concept: ImageConcept, surface: str = "post_image") -> Imag
                 winner = ranked[0]
                 reason = _clean(verdict.get("reason"), 200) or "ranked first"
                 if is_desk_still_life(winner):
-                    # Deterministic backstop: a people-led idea beats an object on a desk.
-                    people = [i for i in ranked if is_people_led(i)]
-                    if people:
-                        winner = people[0]
-                        reason = "object-on-a-desk idea demoted for the best people-led one"
+                    # Deterministic backstop: an object on a desk is a still life, not an idea.
+                    better = [i for i in ranked if (not is_desk_still_life(i) if editorial
+                                                    else is_people_led(i))]
+                    if better:
+                        winner = better[0]
+                        reason = ("object-on-a-desk idea demoted for the next object idea"
+                                  if editorial else
+                                  "object-on-a-desk idea demoted for the best people-led one")
         except Exception as e:
             log_debug("Visual idea ranking unavailable — taking the default", error=str(e),
                       action_type="image_concept")
@@ -1059,6 +1225,133 @@ def assign_layout_and_cast(concept: ImageConcept, surface: str,
     return dataclasses.replace(concept, layout=layout, cast=cast)
 
 
+def archetype_candidates(concept: ImageConcept) -> list[str]:
+    """Which archetypes this concept can take (§6.3 step 2).
+
+    A code-drawn archetype only when its data VALIDATED (``image_graphics.available_archetypes``)
+    and there is a headline to set beside it; a people scene only for a human moment; an
+    editorial concept always.
+
+    Args:
+        concept: Stage 1's concept.
+
+    Returns:
+        The candidates, in ``ARCHETYPES`` order.
+    """
+    from cqc_lem.utilities.ai.image_graphics import available_archetypes
+
+    candidates = list(available_archetypes(concept.graphic)) if concept.hook_phrase else []
+    if concept.human_moment:
+        candidates.append(ARCHETYPE_PEOPLE)
+    candidates.append(ARCHETYPE_EDITORIAL)
+    return candidates
+
+
+def rank_archetypes(candidates: Sequence[str], hint: str = "",
+                    recent: Optional[Sequence[str]] = None) -> list[tuple[str, float]]:
+    """Score and order the candidates. Deterministic: same inputs, same order.
+
+    Score = ``ARCHETYPE_BASE_SCORES`` + ``ARCHETYPE_TIEBREAK`` for the analyst's pick −
+    ``ARCHETYPE_ROTATION_PENALTY`` when the archetype is one of the last ``ARCHETYPE_WINDOW``.
+    Equal scores go to code-drawn first (cheaper, no AI look, no garbled text), then
+    ``ARCHETYPES`` order.
+
+    Args:
+        candidates: From ``archetype_candidates``.
+        hint: The analyst's pick.
+        recent: The archetypes of the most recent images, most recent first.
+
+    Returns:
+        ``(archetype, score)`` pairs, best first.
+    """
+    window = [r for r in (recent or []) if r][:ARCHETYPE_WINDOW]
+    scored = []
+    for archetype in dict.fromkeys(candidates):
+        score = ARCHETYPE_BASE_SCORES.get(archetype, 0.0)
+        if archetype == hint:
+            score += ARCHETYPE_TIEBREAK
+        if archetype in window:
+            score -= ARCHETYPE_ROTATION_PENALTY
+        scored.append((archetype, score))
+    return sorted(scored, key=lambda pair: (-pair[1], pair[0] not in CODE_DRAWN_ARCHETYPES,
+                                            ARCHETYPES.index(pair[0])))
+
+
+def select_archetype(concept: ImageConcept, surface: str,
+                     recent_archetypes: Optional[Sequence[str]] = None) -> ImageConcept:
+    """Choose the archetype and its fallback chain, and point the AI treatment at the chain's end.
+
+    Off the composited surfaces the concept is returned unchanged. The chain runs best-first and
+    stops at the first AI archetype, which is what renders when every code-drawn one ahead of it
+    fails (no data fits, a figure does not trace, the judge refuses it). That AI archetype sets
+    the treatment: ``editorial_concept`` for everything but a human moment — the people photo is
+    demoted from the default.
+
+    Args:
+        concept: Stage 1's concept.
+        surface: The surface.
+        recent_archetypes: Archetypes of this author's most recent images, most recent first.
+
+    Returns:
+        The concept with ``archetype``, ``archetype_ranking``, ``archetype_rationale`` and the
+        ``treatment`` set.
+    """
+    if surface not in ARCHETYPE_SURFACES:
+        return concept
+    ranked = rank_archetypes(archetype_candidates(concept), concept.archetype_hint,
+                             recent_archetypes)
+    chain: list[str] = []
+    for archetype, _score in ranked:
+        chain.append(archetype)
+        if archetype in AI_ARCHETYPES:
+            break
+    ai = chain[-1]
+    treatment = TREATMENT_PEOPLE if ai == ARCHETYPE_PEOPLE else TREATMENT_EDITORIAL
+    rationale = ", ".join(f"{a}={score:g}" for a, score in ranked)
+    log_debug("Image archetype selected", action_type="image_concept", archetype=chain[0],
+              chain=",".join(chain), scores=rationale)
+    return dataclasses.replace(concept, archetype=chain[0], archetype_ranking=tuple(chain),
+                               archetype_rationale=rationale, treatment=treatment,
+                               cast=concept.cast if treatment == TREATMENT_PEOPLE else None)
+
+
+def ai_archetype_only(concept: Optional[ImageConcept]) -> Optional[ImageConcept]:
+    """The concept with its code-drawn archetypes stripped — for a caller that must render.
+
+    The admin variant tool compares RENDERS; a code-drawn graphic would make every variant the
+    same picture.
+
+    Args:
+        concept: A concept, or None.
+
+    Returns:
+        The concept with ``archetype`` set to its AI fallback (unchanged when already AI).
+    """
+    if concept is None or concept.archetype not in CODE_DRAWN_ARCHETYPES:
+        return concept
+    chain = tuple(a for a in concept.archetype_ranking if a in AI_ARCHETYPES) or (
+        ARCHETYPE_EDITORIAL,)
+    return dataclasses.replace(concept, archetype=chain[0], archetype_ranking=chain)
+
+
+def assign_art_style(concept: ImageConcept,
+                     recent_styles: Optional[Sequence[str]] = None) -> ImageConcept:
+    """Rotate the editorial art style least-recently-used, when the chain ends in one.
+
+    Args:
+        concept: The concept after ``select_archetype``.
+        recent_styles: Art styles of the most recent images, most recent first.
+
+    Returns:
+        The concept with ``art_style`` set (unchanged when no editorial concept can render).
+    """
+    if concept.treatment != TREATMENT_EDITORIAL or concept.art_style:
+        return concept
+    style = _least_recent(tuple(ART_STYLES), list(recent_styles or [])[:ROTATION_WINDOW],
+                          concept.thesis + "style")
+    return dataclasses.replace(concept, art_style=style)
+
+
 @llm_step("image_concept")
 def analyze_content_for_image(text: str, *, title: Optional[str] = None,
                               surface: str = "post_image",
@@ -1067,6 +1360,8 @@ def analyze_content_for_image(text: str, *, title: Optional[str] = None,
                               recent_layouts: Optional[Sequence[str]] = None,
                               recent_casts: Optional[Sequence[dict]] = None,
                               recent_hook_shapes: Optional[Sequence[str]] = None,
+                              recent_archetypes: Optional[Sequence[str]] = None,
+                              recent_art_styles: Optional[Sequence[str]] = None,
                               ) -> Optional[ImageConcept]:
     """Read the full content and decide what its image must show. Never raises.
 
@@ -1083,6 +1378,9 @@ def analyze_content_for_image(text: str, *, title: Optional[str] = None,
         recent_layouts: Layouts of the most recent images on this surface, most recent first.
         recent_casts: Cast dicts of the most recent images, most recent first.
         recent_hook_shapes: Hook shapes of the most recent images, most recent first.
+        recent_archetypes: Archetypes of the most recent images, most recent first — the last
+            ``ARCHETYPE_WINDOW`` are penalised (``select_archetype``).
+        recent_art_styles: Art styles of the most recent editorial concepts, most recent first.
 
     Returns:
         The concept, or None when the call fails or returns nothing usable — callers keep a
@@ -1132,6 +1430,8 @@ def analyze_content_for_image(text: str, *, title: Optional[str] = None,
         log_debug("Image concept reply unusable", user_id=user_id, surface=surface,
                   action_type="image_concept", raw=json.dumps(payload)[:200] if payload else "")
         return None
-    concept = pick_visual_idea(enforce_graphic_cap(concept, recent, surface), surface)
-    concept = rotate_hook_shape(concept, recent_hook_shapes)
+    concept = rotate_hook_shape(enforce_graphic_cap(concept, recent, surface),
+                                recent_hook_shapes)
+    concept = select_archetype(concept, surface, recent_archetypes)
+    concept = assign_art_style(pick_visual_idea(concept, surface), recent_art_styles)
     return assign_layout_and_cast(concept, surface, recent_layouts, recent_casts)

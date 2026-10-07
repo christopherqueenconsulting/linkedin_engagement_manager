@@ -31,7 +31,9 @@ from cqc_lem.utilities.logger import log_debug, log_info, log_warning
 _VARIETY_WINDOW = 5
 
 # The staged judge's findings, copied from the render gate onto the cover's brief receipt.
-_GATE_RECEIPT_KEYS = ("gate_rubric", "gate_failing", "gate_issues", "gate_blind_description")
+_GATE_RECEIPT_KEYS = ("gate_rubric", "gate_failing", "gate_issues", "gate_blind_description",
+                      "gate_pop", "archetype_rendered", "archetype_fallback_reason",
+                      "graphic_facts")
 
 COVER_SOURCE_UPLOAD = "upload"
 COVER_SOURCE_AI = "ai"
@@ -273,6 +275,21 @@ def _recent_concept_field(user_id: int, field: str, limit: int) -> list:
     return values
 
 
+def _recent_cover_archetypes(user_id: int, limit: int) -> list[str]:
+    """The archetypes the last `limit` covers actually SHIPPED as, most-recent first.
+
+    ``archetype_rendered`` wins over the concept's pick: a stat card that fell back to an
+    editorial render went out as the editorial render, and that is what the series showed.
+    """
+    values = []
+    for receipt in _recent_cover_receipts(user_id, limit):
+        concept = receipt.get("concept") if isinstance(receipt.get("concept"), dict) else {}
+        value = receipt.get("archetype_rendered") or concept.get("archetype")
+        if value:
+            values.append(str(value))
+    return values
+
+
 def _recent_cover_signals(user_id: int, limit: int = _VARIETY_WINDOW) -> list[str]:
     """What the last few covers looked like — ``"<treatment>: <focal concept>"`` — for the brief.
 
@@ -418,15 +435,22 @@ def generate_cover_for_edition(user_id: int, edition_id: int, title: Optional[st
     shape = (f"format={edition_format or 'unspecified'}, hook_style={hook_style or 'unspecified'}"
             if edition_format or hook_style else None)
 
+    brand = brand_clause_for_user(user_id)
     try:
-        from cqc_lem.utilities.ai.image_concept import GRAPHIC_WINDOW, ROTATION_WINDOW
+        from cqc_lem.utilities.ai.image_concept import (
+            ARCHETYPE_WINDOW,
+            GRAPHIC_WINDOW,
+            ROTATION_WINDOW,
+        )
         concept = analyze_content_for_image(
             _edition_full_text(subtitle, body), title=title, surface="newsletter",
             user_id=user_id,
             recent_treatments=_recent_cover_treatments(user_id, GRAPHIC_WINDOW),
             recent_layouts=_recent_concept_field(user_id, "layout", ROTATION_WINDOW),
             recent_casts=_recent_concept_field(user_id, "cast", ROTATION_WINDOW),
-            recent_hook_shapes=_recent_concept_field(user_id, "hook_shape", ROTATION_WINDOW))
+            recent_hook_shapes=_recent_concept_field(user_id, "hook_shape", ROTATION_WINDOW),
+            recent_archetypes=_recent_cover_archetypes(user_id, ARCHETYPE_WINDOW),
+            recent_art_styles=_recent_concept_field(user_id, "art_style", ROTATION_WINDOW))
         # Round 8: the avatar is resolved AFTER Stage 1, so the fit rule can read the concept.
         avatar = _resolve_cover_avatar(user_id, use_avatar, title, subtitle, body,
                                        concept=concept)
@@ -436,7 +460,7 @@ def generate_cover_for_edition(user_id: int, edition_id: int, title: Optional[st
                                   surface="newsletter", ratio=COVER_IMAGE_RATIO, profile=profile,
                                   avatar=avatar, extra_direction=guidance, content_shape=shape,
                                   avoid_terms=_recent_cover_signals(user_id), concept=concept,
-                                  brand_kit=brand_clause_for_user(user_id))
+                                  brand_kit=brand)
     except Exception as e:
         log_warning("Newsletter cover prompt failed", exc=e, user_id=user_id,
                     action_type="newsletter_cover")
@@ -452,7 +476,8 @@ def generate_cover_for_edition(user_id: int, edition_id: int, title: Optional[st
                 brief.prompt, avatar=avatar, user_id=user_id, surface="newsletter",
                 ratio=COVER_IMAGE_RATIO, focal_concept=brief.focal_concept,
                 render_info=render_info, concept=brief.concept, hook_text=brief.hook_text,
-                layout=getattr(brief.concept, "layout", None), signature=byline)
+                layout=getattr(brief.concept, "layout", None), signature=byline,
+                brand_kit=brand)
         else:
             generated_path = render_image_gated(brief.prompt, surface="newsletter",
                                                 ratio=COVER_IMAGE_RATIO,
@@ -461,7 +486,7 @@ def generate_cover_for_edition(user_id: int, edition_id: int, title: Optional[st
                                                 concept=brief.concept,
                                                 hook_text=brief.hook_text,
                                                 layout=getattr(brief.concept, "layout", None),
-                                                signature=byline)
+                                                signature=byline, brand_kit=brand)
     except Exception as e:
         log_warning("Newsletter cover generation failed", exc=e, user_id=user_id,
                     action_type="newsletter_cover")

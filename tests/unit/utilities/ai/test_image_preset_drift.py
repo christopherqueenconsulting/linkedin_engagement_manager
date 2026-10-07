@@ -24,6 +24,7 @@ from cqc_lem.utilities.ai.image_brief import (
     NEGATION_MARKERS,
     _fallback_brief,
 )
+from cqc_lem.utilities.ai.image_concept import ART_STYLES
 
 pytestmark = pytest.mark.unit
 
@@ -78,8 +79,26 @@ class TestPresetsObeyTheSharedSystemPrompt:
         assert set(DEAD_QUALITY_TAGS) == {"cinematic", "8k", "masterpiece", "ultra-detailed"}
 
     def test_every_treatment_has_a_template(self):
-        from cqc_lem.utilities.ai.image_concept import TREATMENTS
-        assert set(_TREATMENT_TEMPLATES) == set(TREATMENTS)
+        from cqc_lem.utilities.ai.image_concept import TREATMENT_EDITORIAL, TREATMENTS
+        # editorial_concept is set by the archetype selection, never offered to the analyst.
+        assert set(_TREATMENT_TEMPLATES) == set(TREATMENTS) | {TREATMENT_EDITORIAL}
+
+    @pytest.mark.parametrize("style", sorted(ART_STYLES))
+    def test_every_art_style_obeys_the_shared_rules(self, style):
+        """Archetype round: a rotated art style lands in the same request as the template."""
+        from cqc_lem.utilities.ai.image_brief import prop_failure, treatment_text
+        from cqc_lem.utilities.ai.image_concept import TREATMENT_EDITORIAL
+
+        text = ART_STYLES[style]
+        lowered = treatment_text(TREATMENT_EDITORIAL, type("C", (), {"art_style": style})())
+        lowered = lowered.lower()
+        assert text in treatment_text(TREATMENT_EDITORIAL,
+                                      type("C", (), {"art_style": style})())
+        for word in DEAD_STYLE_WORDS + DEAD_QUALITY_TAGS:
+            assert word.lower() not in lowered, f"{style!r} asks for {word!r}"
+        for marker in _NEGATION_MARKERS:
+            assert marker not in lowered, f"{style!r} uses {marker!r}"
+        assert prop_failure(text) is None, f"{style!r} names a prop the brief refuses"
 
     def test_the_deterministic_fallback_obeys_the_same_rules(self):
         """The fallback is a working code path — it renders when the author is down."""
