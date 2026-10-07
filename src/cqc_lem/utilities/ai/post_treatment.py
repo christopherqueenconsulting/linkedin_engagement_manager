@@ -102,6 +102,14 @@ SETTING_CLASSES: tuple[tuple[str, tuple[str, ...]], ...] = (
 DEFAULT_SETTINGS = {"office": "a bright open-plan office", "home_office": "a home office by a window",
                     "cafe": "a quiet café table", "conference": "a conference hallway"}
 
+# Showcase round 6: slot_125 and rhythm_2 shipped the identical charcoal grid card. The CARD
+# LAYOUT — what a code-drawn post card looks like, across every family (the last-resort typeset
+# compositions, the quote card, the stat card, the typeset panel) — may not repeat within any
+# run of this many consecutive posts.
+CARD_LAYOUT_WINDOW = 3
+CARD_LAYOUT_QUOTE = "quote_card"
+CARD_LAYOUT_STAT = "stat_card"
+
 QUOTE_MAX_CHARS = 160
 QUOTE_MIN_CHARS = 30
 QUOTE_MIN_WORDS = 5
@@ -395,6 +403,102 @@ class TreatmentPlan:
     rerolled: bool
 
 
+def card_layout_of(rhythm: Mapping[str, Any]) -> Optional[str]:
+    """The ONE card-layout value a receipt's rhythm block stands for, or None for no card.
+
+    The recorded ``card_layout`` when there is one (the last-resort typeset compositions, and every
+    card since round 6); otherwise read off what shipped, so the rotation spans receipts written
+    before the dimension covered every family: a quote card is ``quote_card``, a data card
+    ``stat_card``, a typeset panel ``panel_<layout>``.
+
+    Args:
+        rhythm: A receipt's ``rhythm`` block.
+
+    Returns:
+        The layout, or None when the post shipped no code-drawn card.
+    """
+    recorded = rhythm.get("card_layout")
+    if recorded:
+        return str(recorded)
+    treatment = rhythm.get("treatment")
+    if treatment == TREATMENT_QUOTE_CARD or rhythm.get("style") == STYLE_QUOTE_CARD:
+        return CARD_LAYOUT_QUOTE
+    if treatment == TREATMENT_DATA_CARD:
+        return CARD_LAYOUT_STAT
+    if treatment == TREATMENT_TYPESET_CARD and rhythm.get("layout"):
+        return f"panel_{rhythm['layout']}"
+    return None
+
+
+def recent_card_window(recent_card_layouts: Sequence[Any]) -> list:
+    """The card layouts the next post must not repeat: the last ``CARD_LAYOUT_WINDOW - 1`` posts."""
+    return [v for v in list(recent_card_layouts)[:max(0, CARD_LAYOUT_WINDOW - 1)] if v]
+
+
+def pick_card_layout(options: Sequence[str], recent_card_layouts: Sequence[Any],
+                     seed: str = "") -> tuple[Optional[str], bool]:
+    """The next code-drawn card's layout: least-recently-used, never one in the recent window.
+
+    Args:
+        options: The layouts this card can take, in tie order.
+        recent_card_layouts: Card layouts of recent posts across EVERY card family, most recent
+            first (None = no card).
+        seed: Stable per-piece text for the no-history case.
+
+    Returns:
+        ``(layout, rerolled)`` — ``rerolled`` is True when the least-recently-used choice sat in
+        the window. With every option in the window the least-recently-used one is kept.
+    """
+    ordered = lru_order(options, [r for r in recent_card_layouts if r], seed)
+    if not ordered:
+        return None, False
+    window = recent_card_window(recent_card_layouts)
+    fresh = [o for o in ordered if o not in window]
+    if fresh:
+        return fresh[0], fresh[0] != ordered[0]
+    return ordered[0], False
+
+
+def card_panel(layout: Optional[str], panel: str, recent_card_layouts: Sequence[Any],
+               recent_card_panels: Sequence[Any], panels: Sequence[str]) -> str:
+    """The panel for a card in ``layout``: never the panel that layout last shipped on.
+
+    The identity a reader sees is the layout AND its colours — slot_125 and rhythm_2 were the same
+    grid on the same charcoal. When the last ``CARD_SHARE_WINDOW`` posts already showed ``layout``
+    on ``panel``, another available panel that has not shipped that layout is used.
+
+    Args:
+        layout: The card layout chosen for this post.
+        panel: The rotation's panel pick.
+        recent_card_layouts: Card layouts of recent posts, most recent first.
+        recent_card_panels: Their panels, aligned.
+        panels: The brand's available panels.
+
+    Returns:
+        The panel to draw on.
+    """
+    shown = {(lay, pan) for lay, pan in zip(list(recent_card_layouts)[:CARD_SHARE_WINDOW],
+                                            list(recent_card_panels)[:CARD_SHARE_WINDOW])
+             if lay and pan}
+    if not layout or (layout, panel) not in shown:
+        return panel
+    fresh = [p for p in panels if (layout, p) not in shown]
+    return fresh[0] if fresh else panel
+
+
+def card_layout_blocks(recent_card_layouts: Sequence[Any]) -> dict[str, str]:
+    """``{treatment: reason}`` for the single-layout cards whose layout ran within the window."""
+    window = recent_card_window(recent_card_layouts)
+    blocked: dict[str, str] = {}
+    if CARD_LAYOUT_QUOTE in window:
+        blocked[TREATMENT_QUOTE_CARD] = (f"card layout repeats: a quote card ran within the last "
+                                         f"{CARD_LAYOUT_WINDOW} posts")
+    if CARD_LAYOUT_STAT in window:
+        blocked[TREATMENT_DATA_CARD] = (f"card layout repeats: a stat card ran within the last "
+                                        f"{CARD_LAYOUT_WINDOW} posts")
+    return blocked
+
+
 def plan_treatments(recent_treatments: Sequence[str], card_share: float,
                     unavailable: Optional[Mapping[str, str]] = None,
                     seed: str = "") -> TreatmentPlan:
@@ -656,6 +760,7 @@ def rhythm_history(receipts: Sequence[Mapping[str, Any]]) -> dict[str, list]:
                 rhythm.get("treatment"),
                 receipt.get("archetype_rendered") or concept.get("archetype"),
                 concept.get("art_style"), receipt.get("gate_verdict") == "last_resort"))
+        rhythm = dict(rhythm, card_layout=card_layout_of(rhythm))
         for dim in RHYTHM_DIMENSIONS:
             value = rhythm.get(dim)
             history[dim].append(str(value) if value else None)
@@ -680,7 +785,11 @@ class PostRhythm:
         setting: The setting to brief an AI scene with when the gate re-rolled it ('' keeps
             Stage 1's own).
         last_style: The most recent post's visual style ('' when unknown).
-        recent_card_layouts: The last-resort card layouts of recent posts, most recent first.
+        recent_card_layouts: The card layouts of recent posts (every card family), most
+            recent first.
+        recent_card_panels: The panels of the same recent posts, aligned with
+            ``recent_card_layouts``.
+        panels: The panel variants available in the author's brand.
         recent_styles: The visual styles of recent posts, most recent first.
     """
 
@@ -696,6 +805,8 @@ class PostRhythm:
     last_style: str = ""
     recent_card_layouts: tuple = ()
     recent_styles: tuple = ()
+    recent_card_panels: tuple = ()
+    panels: tuple = ()
 
 
 def unavailable_treatments(concept: Any, byline: Optional[str], candidates: Sequence[str],
@@ -757,6 +868,7 @@ def plan_post_rhythm(concept: Any, text: str, history: Mapping[str, Sequence[Any
     # The style rule's blocks come AFTER the post's own reasons: a treatment the post cannot take
     # keeps the reason that is about the post.
     unavailable = {**style_blocks(styles),
+                   **card_layout_blocks(history.get("card_layout", [])),
                    **unavailable_treatments(concept, byline, candidates, opinion)}
     plan = plan_treatments(history.get("treatment", []), card_share, unavailable, seed)
     rerolled = ["treatment"] if plan.rerolled else []
@@ -781,4 +893,6 @@ def plan_post_rhythm(concept: Any, text: str, history: Mapping[str, Sequence[Any
                       opinion=opinion, rerolled=tuple(rerolled), setting=setting,
                       last_style=(styles[0] if styles else None) or "",
                       recent_card_layouts=tuple(history.get("card_layout", [])),
-                      recent_styles=tuple(v for v in styles if v))
+                      recent_styles=tuple(v for v in styles if v),
+                      recent_card_panels=tuple(history.get("panel", [])),
+                      panels=tuple(panels))

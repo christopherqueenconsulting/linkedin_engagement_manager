@@ -124,6 +124,48 @@ def title_card_hook(text: Optional[str], concept: Any = None) -> Optional[str]:
     return candidates[0] if candidates else None
 
 
+# The headline each card set, keyed by the card's file name — read by the caption burn (same task)
+# so the caption never repeats it. Bounded and process-local, like the supplied-material registry.
+_CARD_HEADLINES: dict = {}
+_CARD_HEADLINES_MAX = 64
+
+
+def remember_headline(path: str, headline: str) -> None:
+    """Record the headline a rendered card set, keyed by its file name."""
+    key = os.path.basename(path or "")
+    if not key or not headline:
+        return
+    while len(_CARD_HEADLINES) >= _CARD_HEADLINES_MAX:
+        _CARD_HEADLINES.pop(next(iter(_CARD_HEADLINES)))
+    _CARD_HEADLINES[key] = headline
+
+
+def card_headline(path: Optional[str], text: Optional[str] = None) -> Optional[str]:
+    """The headline a title-card video shows, or None for any other video.
+
+    The recorded one when this process rendered the card; otherwise, for a ``title_card_*`` file,
+    the hook the card would have set from the post (`title_card_hook`). Never raises.
+
+    Args:
+        path: The video file (its name survives the copy into the assets volume).
+        text: The post, for a card this process did not render.
+
+    Returns:
+        The headline, or None.
+    """
+    name = os.path.basename(path or "")
+    if name in _CARD_HEADLINES:
+        return _CARD_HEADLINES[name]
+    if not name.startswith(TITLE_CARD_PREFIX):
+        return None
+    try:
+        return title_card_hook(text)
+    except Exception as e:
+        log_debug("Title card headline unavailable for the caption", error=str(e),
+                  task_name=TASK_NAME)
+        return None
+
+
 def pick_ground(seed: str) -> str:
     """Charcoal or off-white, stable per piece so a re-render draws the same card."""
     digest = hashlib.sha256((seed or "").encode("utf-8")).digest()
@@ -368,7 +410,13 @@ def plan_title_card(hook: str, *, size: tuple, palette: TitleCardPalette, kicker
     draw = ImageDraw.Draw(Image.new("RGB", (8, 8)))
     usable_w = width - 2 * margin
     top_zone = round(height * 0.17)
-    floor_y = round(height * (1 - CAPTION_CLEARANCE)) - round(height * 0.08)
+    # Showcase round 6: the byline sat UNDER the burned caption band on both title-card videos.
+    # The floor is now the higher of the reserved clearance and the band's worst-case top, and the
+    # rule + byline are reserved INSIDE it (`tail` below), so nothing the card draws can land there.
+    from cqc_lem.utilities.video_captions import caption_band_top
+
+    floor_y = min(round(height * (1 - CAPTION_CLEARANCE)),
+                  caption_band_top((width, height))) - round(height * 0.08)
     usable_h = floor_y - top_zone
     kicker = (kicker or "").upper().strip()
     kicker_font = load_font(max(18, round(width * 0.03)))
@@ -405,12 +453,39 @@ def plan_title_card(hook: str, *, size: tuple, palette: TitleCardPalette, kicker
             top_zone = max(top_zone, kicker_box[3] + round(height * 0.05))
             usable_h = floor_y - top_zone
     high = round(width * (0.08 if variant == VARIANT_NUMBER else 0.105))
-    fitted = _fit_lines(draw, text, usable_w, usable_h, high, round(width * 0.05), 5)
+    byline = (byline or "").strip()
+    byline_font = _medium_font(max(18, round(width * 0.034)))
+    rule_h = max(6, round(width * 0.008))
+    byline_gap = round(width * 0.035)
+    byline_top_row = False
+
+    def tail(line_h: int, with_byline: bool) -> int:
+        # What sets beneath the hook: the gap, the rule and — unless it moved up — the byline.
+        below = round(line_h * 0.35) + rule_h
+        return below + (byline_gap + round(byline_font.size * 1.25) if with_byline else 0)
+
+    from cqc_lem.utilities.ai.image_compose import _line_height
+
+    worst_line = _line_height(load_font(high), high)
+    fitted = _fit_lines(draw, text, usable_w, usable_h - tail(worst_line, bool(byline)), high,
+                        round(width * 0.05), 5)
+    if fitted is None and byline:
+        # No room for the byline under the hook: it moves into the top row instead, never under
+        # the caption band.
+        byline_top_row = True
+        fitted = _fit_lines(draw, text, usable_w, usable_h - tail(worst_line, False), high,
+                            round(width * 0.05), 5)
+    if fitted is None:
+        # The pre-round-6 fit, with the byline (if any) already moved up: a hook that set before
+        # still sets, and only the short rule can sit in the floor's margin.
+        byline_top_row = bool(byline)
+        fitted = _fit_lines(draw, text, usable_w, usable_h, high, round(width * 0.05), 5)
     if fitted is None:
         raise ValueError("the hook does not fit the title card legibly")
     font, size_px, lines, line_h = fitted
     block_h = line_h * len(lines)
-    y0 = top_zone + (0 if variant == VARIANT_NUMBER else max(0, (usable_h - block_h) // 2))
+    stack_h = block_h + tail(line_h, bool(byline) and not byline_top_row)
+    y0 = top_zone + (0 if variant == VARIANT_NUMBER else max(0, (usable_h - stack_h) // 2))
     words: list[_Word] = []
     space = draw.textlength(" ", font=font)
     for row, line in enumerate(lines):
@@ -421,15 +496,17 @@ def plan_title_card(hook: str, *, size: tuple, palette: TitleCardPalette, kicker
             words.append(_Word(word, round(x), y0 + row * line_h))
             x += draw.textlength(word, font=font) + space
     rule_y = y0 + block_h + round(line_h * 0.35)
-    rule_h = max(6, round(width * 0.008))
     rule_w = round(width * 0.22)
     rule_x = round((width - rule_w) / 2) if centred else margin
     rule_box = (rule_x, rule_y, rule_x + rule_w, rule_y + rule_h)
-    byline = (byline or "").strip()
-    byline_font = _medium_font(max(18, round(width * 0.034)))
-    byline_x = (round((width - draw.textlength(byline, font=byline_font)) / 2) if centred
-                else margin)
-    byline_xy = (byline_x, rule_y + rule_h + round(width * 0.035))
+    if byline_top_row:
+        # Right-aligned above the kicker row, clear of a centred kicker tag.
+        byline_xy = (round(width - margin - draw.textlength(byline, font=byline_font)),
+                     round(height * 0.035))
+    else:
+        byline_x = (round((width - draw.textlength(byline, font=byline_font)) / 2) if centred
+                    else margin)
+        byline_xy = (byline_x, rule_y + rule_h + byline_gap)
     # The slab lives BELOW the type block, so it never sits under a word.
     slab_top = min(round(height * 0.80), max(round(height * 0.62),
                                              byline_xy[1] + round(height * 0.08)))
@@ -628,6 +705,7 @@ def create_title_card_video(text: Optional[str], *, user_id: Optional[int] = Non
                                 f"{TITLE_CARD_PREFIX}{post_id or 0}_{secrets.token_hex(6)}.mp4")
         if not write_title_card_video(layout, out_path):
             return None
+        remember_headline(out_path, hook)
         record_variant(user_id, layout.variant)
         log_info("Rendered the branded title card video", user_id=user_id, post_id=post_id,
                  task_name=TASK_NAME, ratio=ratio, variant=layout.variant)

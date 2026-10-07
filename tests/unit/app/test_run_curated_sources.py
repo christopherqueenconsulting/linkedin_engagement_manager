@@ -74,7 +74,9 @@ class TestDraft:
         with patch(f"{_M}.update_curated_source_status") as status, \
              patch(f"{_M}.attach_curated_source_to_post", return_value=True) as attach, \
              patch(f"{_M}.update_db_post_image_url") as image, \
-             patch(f"{_M}.track_curated_source"):
+             patch(f"{_M}.track_curated_source"), \
+             patch(f"{_M}._link_preview", return_value="https://example.com/og.png"):
+            # The preview fetch is network I/O; its own rules are tested in TestLinkPreview.
             yield status, attach, image
 
     @pytest.mark.parametrize("over,reason", [

@@ -422,6 +422,46 @@ runs without a concept and rides the brief's `extra_direction`; and `blocked_set
 class at `SETTING_CAP` (2) per `SETTING_CAP_WINDOW` (6) classified renders on top of
 never-twice-in-a-row.
 
+## Showcase round 6 — title-card captions, one card-layout rotation, curated images
+
+The critic (`gauntlet/critic6/critic_scores.json`) found three visual faults. The text half of the
+round (dates, timelines, sources, deck slides) is in `docs/content-core.md`, under "Facts that must
+agree with a calendar".
+
+**The byline is never under the caption band.** Both title-card videos (slot_135, slot_141) drew
+the byline where the burned caption box later covered it. The card fitted the hook into the area
+above the band but placed the rule and byline below the hook without reserving room for them.
+`plan_title_card` now sets its floor at the higher of `CAPTION_CLEARANCE` and the band's
+worst-case top (`video_captions.caption_band_top`: largest font, most lines). It reserves the
+rule + byline inside that floor. If the hook cannot fit with the byline beneath it, the byline
+moves to the top row, right-aligned above the kicker. A hook that only fit under the pre-round-6
+rule still sets, with the byline moved up.
+
+**The caption is the payoff, not the headline again.** slot_141 set the same sentence twice. The
+card records its headline (`video_title_card.remember_headline`, keyed by file name, because the
+name survives the copy into the assets volume). `card_headline` reads it back, or re-derives it for
+any `title_card_*` file. `apply_captions_to_video` passes it to `caption_lines(avoid=…)`, which
+captions from the sentence AFTER the one the headline came from (`payoff_candidates`). No candidate
+may say the same thing (`same_thought`, 60% word overlap). A post that is only its headline gets no
+caption.
+
+**One card-layout rotation across every card family.** slot_125 and rhythm_2 were the identical
+charcoal grid. `rhythm.card_layout` used to be recorded for the last-resort card only. Every
+code-drawn card now records it: the typeset compositions, `quote_card`, `stat_card` (the data card),
+and `panel_<layout>` for a typeset panel. `post_treatment.card_layout_of` reads older receipts the
+same way. The last-resort card picks with `pick_card_layout`, least-recently-used and never one of
+the last `CARD_LAYOUT_WINDOW - 1` posts' layouts, so no three consecutive posts repeat one while an
+alternative exists. `card_panel` then refuses the panel that layout last shipped on within
+`CARD_SHARE_WINDOW`. A quote or stat card whose single layout ran inside the window is skipped with
+its reason (`card_layout_blocks`).
+
+**A curated link needs its publisher's image.** Two curated link posts shipped imageless. At draft
+time a link treatment now requires a fetchable `og:image`: the collected one, else
+`curated_collectors.discover_og_image` (the page's `og:image` / `twitter:image`, resolved and
+verified to answer `image/*`), recorded on the source (`update_curated_source_og_image`). A re-chart
+is already preferred wherever the licence and figures allow one. With neither, the item is blocked
+as `link_no_preview_image` before any commentary is written (`docs/curated-sources.md`).
+
 ## Post rhythm — treatments, panels, grades and the sameness gate (anti-monotony round)
 
 Every post image was the same composite — a photograph beside a charcoal type panel — so an

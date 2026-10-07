@@ -16,7 +16,7 @@ import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from typing import Optional
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 import requests
 from bs4 import BeautifulSoup
@@ -247,6 +247,59 @@ def collect_gov_data(user_ids: list, allowlist: dict) -> dict:
             if row_id:
                 counts["new" if status == STATUS_NEW else "blocked"] += 1
     return counts
+
+
+# --- Preview images (showcase round 6) ----------------------------------------------------------
+
+_OG_IMAGE_RE = re.compile(
+    r"<meta\s+[^>]*(?:property|name)\s*=\s*[\"'](?:og:image(?::secure_url)?|twitter:image)[\"']"
+    r"[^>]*>", re.IGNORECASE)
+_CONTENT_ATTR_RE = re.compile(r"content\s*=\s*[\"']([^\"']+)[\"']", re.IGNORECASE)
+PREVIEW_FETCH_TIMEOUT = 10
+
+
+def image_fetchable(url: Optional[str]) -> bool:
+    """Whether ``url`` answers an https GET with an ``image/*`` body. Never raises."""
+    if not url or not str(url).startswith("https://"):
+        return False
+    try:
+        response = requests.get(url, timeout=PREVIEW_FETCH_TIMEOUT, stream=True,
+                                headers={"User-Agent": "LEM link preview"})
+        try:
+            kind = (response.headers.get("content-type") or "").split(";")[0].strip().lower()
+            return response.status_code == 200 and kind.startswith("image/")
+        finally:
+            response.close()
+    except requests.RequestException as e:
+        log_debug("Preview image not fetchable", error=str(e))
+        return False
+
+
+def discover_og_image(page_url: Optional[str]) -> Optional[str]:
+    """The publisher's own preview image for ``page_url`` — fetched, and verified fetchable.
+
+    Reads the page's ``og:image`` (or ``twitter:image``), resolves it against the page, and keeps
+    it only when it answers as an image. None for anything else. Never raises.
+    """
+    if not page_url or not str(page_url).startswith(("https://", "http://")):
+        return None
+    try:
+        response = requests.get(page_url, timeout=PREVIEW_FETCH_TIMEOUT,
+                                headers={"User-Agent": "LEM link preview"})
+        if response.status_code != 200:
+            return None
+        html = response.text[:400_000]
+    except requests.RequestException as e:
+        log_debug("Source page unreadable for its preview image", error=str(e))
+        return None
+    for tag in _OG_IMAGE_RE.findall(html):
+        found = _CONTENT_ATTR_RE.search(tag)
+        if not found:
+            continue
+        candidate = urljoin(page_url, found.group(1).strip())
+        if image_fetchable(candidate):
+            return candidate
+    return None
 
 
 # --- LinkedIn -------------------------------------------------------------------------------------

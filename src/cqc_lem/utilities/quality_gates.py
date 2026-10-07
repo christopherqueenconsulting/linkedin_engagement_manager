@@ -30,6 +30,10 @@ GATE_DECK_TOPIC = "deck_off_topic"
 GATE_AFFILIATE_PROMO = "affiliate_promo"
 GATE_FORBIDDEN_CLAIM = "forbidden_claim"
 GATE_PROMO_ARTIFACT_CTA = "promo_artifact_cta"
+# A draft that contradicts the calendar or its own story (showcase round 6): a weekday that is not
+# that date's, a deadline before the offer that set it, or more elapsed time than has passed since
+# the anchoring story happened. HOLDS, like fact grounding — a reader can check every one of them.
+GATE_FACT_CONSISTENCY = "fact_consistency"
 # The two review-gate checks that had no finding shape until the repair pass needed one (issue
 # #1134). Both are built ONLY by `_review_generated_post`, never by `evaluate_post_gates` — they
 # describe why a draft was sent to the editor for repair, so nothing holds a post on them, and both
@@ -53,6 +57,7 @@ GATE_LABELS = {
     GATE_AFFILIATE_PROMO: "Affiliate promotion",
     GATE_FORBIDDEN_CLAIM: "Forbidden claim",
     GATE_PROMO_ARTIFACT_CTA: "Promo without an artifact",
+    GATE_FACT_CONSISTENCY: "Impossible date or timeline",
     GATE_PERSONAL_PROOF: "Missing personal proof",
     GATE_FABRICATION: "Unsourced personal specifics",
 }
@@ -253,6 +258,26 @@ def fact_grounding_finding(unverified: Optional[list] = None,
                      f"It deliberately did not invent them, so it is held until you fill them in."),
         remediation="Edit the post, replace each [[...]] placeholder with the real detail, and re-score it.",
         details=[f"Fill in: {p}" for p in to_fill[:10]])
+
+
+def fact_consistency_finding(issues: Optional[list] = None) -> dict:
+    """Dates and timelines in the draft that cannot all be true (showcase round 6).
+
+    Each issue is one plain sentence naming the claim and why it is impossible — "Wednesday, June
+    22, 2026: that date is a Monday", or "a result after the first month, but the story happened 6
+    days ago". Holds the post: a reader can check every one of these against a calendar.
+    """
+    found = [str(i).strip() for i in (issues or []) if str(i).strip()]
+    return build_finding(
+        GATE_FACT_CONSISTENCY,
+        explanation=(f"This draft states {len(found)} date or timeline claim(s) that cannot be true "
+                     f"— a reader can check each one against a calendar, and one impossible date "
+                     f"makes every other claim in the post look invented."),
+        remediation=("Drop the weekday, the deadline or the elapsed-time claim, or restate it so it "
+                     "matches when the story actually happened. Never replace it with a different "
+                     "invented date or result."),
+        score=float(len(found)), threshold=0.0,
+        details=found[:10])
 
 
 def forbidden_claim_finding(terms: Optional[list] = None) -> dict:

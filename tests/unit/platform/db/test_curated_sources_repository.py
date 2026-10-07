@@ -22,7 +22,8 @@ def test_the_facade_re_exports_every_reader():
     for name in ("insert_curated_source", "get_curated_sources", "get_curated_source",
                  "get_draftable_curated_sources", "update_curated_source_status",
                  "attach_curated_source_to_post", "post_is_curated", "get_post_curated_context",
-                 "get_curated_neighbors", "get_curated_summaries", "curated_url_hash"):
+                 "get_curated_neighbors", "get_curated_summaries", "curated_url_hash",
+                 "update_curated_source_og_image"):
         assert getattr(db, name) is getattr(repo, name)
         assert name in db.__all__
 
@@ -109,6 +110,18 @@ class TestWrites:
         sql, params = cur.execute.call_args.args
         assert "status = %s, block_reason = %s, post_id = %s" in sql
         assert len(params[1]) == 255 and params[2:] == [10, 3]
+
+    def test_og_image(self, fake_cursor):
+        conn, cur = fake_cursor()
+        with patch(_CONN, return_value=conn):
+            assert repo.update_curated_source_og_image(3, "https://e.com/" + "x" * 2000)
+        sql, params = cur.execute.call_args.args
+        assert "SET og_image_url = %s WHERE id = %s" in sql
+        assert len(params[0]) == 1024 and params[1] == 3
+
+    def test_og_image_failure_is_false(self):
+        with patch(_CONN, side_effect=_ERR):
+            assert repo.update_curated_source_og_image(3, "https://e.com/x.png") is False
 
     def test_attach(self, fake_cursor):
         conn, cur = fake_cursor()

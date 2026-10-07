@@ -340,13 +340,29 @@ class TestTheWritersMaterialWidensTheAllowList:
         industry.choices = [MagicMock(message=MagicMock(content="Software"))]
         with patch("cqc_lem.utilities.ai.ai_helper._call_llm", return_value=industry), \
              patch("cqc_lem.utilities.ai.ai_helper.research_topic",
-                   return_value={"findings": "median age rose 40%", "sources": []}), \
+                   return_value={"findings": "According to Pew, median age rose 40%. "
+                                             "79% of firms still overspend.", "sources": []}), \
              patch("cqc_lem.utilities.ai.ai_helper._select_focus_topic", return_value=None):
             profile = MagicMock(industry="Software")
             profile.model_dump_json.return_value = '{"industry": "Software"}'
             ai_helper.get_industry_trend_analysis_based_on_user_profile(
                 profile, prefs={}, sequence_index=91)
-        assert ai_helper.supplied_material_for(91) == "median age rose 40%"
+        # Showcase round 6: only the research sentence that NAMES its source is an allow-list
+        # entry; the unsourced "79%" is not.
+        assert ai_helper.supplied_material_for(91) == "According to Pew, median age rose 40%."
+
+    def test_research_with_no_named_source_widens_nothing(self):
+        industry = MagicMock()
+        industry.choices = [MagicMock(message=MagicMock(content="Software"))]
+        with patch("cqc_lem.utilities.ai.ai_helper._call_llm", return_value=industry), \
+             patch("cqc_lem.utilities.ai.ai_helper.research_topic",
+                   return_value={"findings": "79% of firms still overspend.", "sources": []}), \
+             patch("cqc_lem.utilities.ai.ai_helper._select_focus_topic", return_value=None):
+            profile = MagicMock(industry="Software")
+            profile.model_dump_json.return_value = '{"industry": "Software"}'
+            ai_helper.get_industry_trend_analysis_based_on_user_profile(
+                profile, prefs={}, sequence_index=92)
+        assert ai_helper.supplied_material_for(92) is None
 
     def test_the_material_sources_carry_the_brief_and_the_research(self):
         from cqc_lem.app import run_content_plan as rcp

@@ -131,6 +131,19 @@ tries the first `DRAFT_CANDIDATES` (3):
 
 An unreadable publisher history only loses the first preference.
 
+**Audience fit (showcase round 6).** curated_1, a teen college-planner announcement, fitted neither
+of the author's audiences. Before any commentary is written, each of the first `FIT_CANDIDATES` (6)
+ranked items is scored 0-10 for its relevance to the author's readers. The readers are
+`audience_brief(prefs)`: the `audience_mix` primary and secondary descriptions plus the focus
+topics. `score_audience_fit` makes ONE `lem-simple` call. When it cannot run, the deterministic
+`audience_token_fit` is used instead. An item below `CURATED_AUDIENCE_FIT_MIN` (default 5) is
+blocked as `audience_fit:<score>`. At most `DRAFT_CANDIDATES` fitting items are drafted. An author
+with no described audience is not scored at all.
+
+**A link post needs its preview image.** A link treatment requires the publisher's fetchable
+`og:image`, fetched at draft time when the collector had none (`discover_og_image`). Otherwise the
+item is blocked as `link_no_preview_image` (`docs/image-stack.md`, showcase round 6).
+
 The same pool feeds original posts. When every story-bank entry is cooling down (see
 `docs/content-core.md`, "Freshness rules"), up to three `new` items ride into the post's prompt as
 outside material, credited by name.
