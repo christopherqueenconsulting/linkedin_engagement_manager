@@ -19,6 +19,9 @@ VISUAL_MOOD_MAX = 160
 AVOID_MAX_ITEMS = 12
 AVOID_ITEM_MAX = 40
 FOUNDER_PHOTO_MAX = 300
+# The share of POST images that get a typeset card (``post_treatment``) — a float in [0, 1]. Unset
+# means the default; a value outside the range, a bool or a non-number is dropped like a bad hex.
+DEFAULT_CARD_SHARE = 0.4
 # An owner-approved REAL photo of the founder, for a future quote-card archetype
 # (docs/visual-archetypes-research.md §6.2 G). Parsed only — nothing renders it yet, and it never
 # reaches a prompt.
@@ -71,6 +74,8 @@ class BrandKit:
         avoid: Motifs to keep out of a render — at most 12, each at most 40 characters.
         founder_photo: The owner-approved real founder photo — an assets path or URL to a PNG,
             JPEG or WebP, at most 300 characters. Parsed only; no archetype draws it yet.
+        card_share: The share of post images that get a typeset card, 0-1; None means
+            ``DEFAULT_CARD_SHARE``. Steers the post treatment rotation, never a prompt.
     """
 
     primary_hex: Optional[str] = None
@@ -82,15 +87,17 @@ class BrandKit:
     visual_mood: Optional[str] = None
     avoid: list[str] = field(default_factory=list)
     founder_photo: Optional[str] = None
+    card_share: Optional[float] = None
 
     def is_empty(self) -> bool:
         """Whether the kit carries nothing at all.
 
         Returns:
-            True when every colour, text field and the avoid list are unset.
+            True when every colour, text field, the avoid list and the card share are unset.
         """
         return not any(getattr(self, f) for f in COLOR_FIELDS) and not (
-            self.font_vibe or self.visual_mood or self.avoid or self.founder_photo)
+            self.font_vibe or self.visual_mood or self.avoid or self.founder_photo
+            or self.card_share is not None)
 
     def to_dict(self) -> dict[str, Any]:
         """The kit as a JSON-ready dict, set fields only.
@@ -107,6 +114,8 @@ class BrandKit:
             out["avoid"] = list(self.avoid)
         if self.founder_photo:
             out["founder_photo"] = self.founder_photo
+        if self.card_share is not None:
+            out["card_share"] = self.card_share
         return out
 
 
@@ -157,6 +166,20 @@ def _clean_photo(value: Any) -> Optional[str]:
     return text
 
 
+def _clean_share(value: Any) -> Optional[float]:
+    """A card share in [0, 1] rounded to 2 places — from a number or a numeric string; else None."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, str):
+        try:
+            value = float(value.strip())
+        except ValueError:
+            return None
+    if not isinstance(value, (int, float)) or value != value or not 0 <= value <= 1:
+        return None
+    return round(float(value), 2)
+
+
 def parse_brand_kit(raw: Any) -> Optional[BrandKit]:
     """Build a `BrandKit` from untrusted input, dropping whatever is invalid. Never raises.
 
@@ -176,6 +199,7 @@ def parse_brand_kit(raw: Any) -> Optional[BrandKit]:
     kit.visual_mood = _clean_text(raw.get("visual_mood"), VISUAL_MOOD_MAX)
     kit.avoid = _clean_avoid(raw.get("avoid"))
     kit.founder_photo = _clean_photo(raw.get("founder_photo"))
+    kit.card_share = _clean_share(raw.get("card_share"))
     return kit
 
 
@@ -269,3 +293,27 @@ def brand_clause_for_user(user_id: Optional[int]) -> str:
         log_debug("No brand kit — briefing on neutral grading", user_id=user_id,
                   action_type="brand_kit")
     return clause
+
+
+def card_share_for_user(user_id: Optional[int]) -> float:
+    """The user's post card share, else ``DEFAULT_CARD_SHARE``. Never raises.
+
+    Args:
+        user_id: The author; None reads as the default.
+
+    Returns:
+        A float in [0, 1].
+    """
+    if not user_id:
+        return DEFAULT_CARD_SHARE
+    try:
+        from cqc_lem.utilities.db import get_brand_kit
+        kit = parse_brand_kit(get_brand_kit(user_id))
+    except Exception as e:
+        from cqc_lem.utilities.logger import log_debug
+        log_debug("Brand kit unreadable — default card share", error=str(e), user_id=user_id,
+                  action_type="brand_kit")
+        return DEFAULT_CARD_SHARE
+    if kit is None or kit.card_share is None:
+        return DEFAULT_CARD_SHARE
+    return kit.card_share

@@ -157,3 +157,48 @@ class TestBrandClauseForUser:
         with patch("cqc_lem.utilities.db.get_brand_kit") as read:
             assert brand_clause_for_user(user_id) == ""
         read.assert_not_called()
+
+
+class TestCardShare:
+    """The post treatment rotation's typeset-card share (#2241): validated, never a prompt."""
+
+    @pytest.mark.parametrize("raw,expected", [(0.4, 0.4), (0, 0.0), (1, 1.0), ("0.25", 0.25),
+                                              (0.333, 0.33), (" 1 ", 1.0)])
+    def test_a_share_in_range_is_kept(self, raw, expected):
+        assert parse_brand_kit({"card_share": raw}).card_share == expected
+
+    @pytest.mark.parametrize("raw", [1.5, -0.1, True, "lots", None, [0.4], float("nan")])
+    def test_anything_else_is_dropped_like_a_bad_hex(self, raw):
+        assert parse_brand_kit({"card_share": raw}).card_share is None
+
+    def test_a_kit_holding_only_a_share_is_kept_and_never_reaches_a_prompt(self):
+        kit = parse_brand_kit({"card_share": 0.6})
+        assert not kit.is_empty()
+        assert kit.to_dict() == {"card_share": 0.6}
+        assert describe_for_prompt(kit) == ""
+        assert "card_share" not in BrandKit().to_dict()
+
+    def test_the_resolver_reads_the_saved_share(self):
+        from unittest.mock import patch
+
+        from cqc_lem.utilities.brand_kit import card_share_for_user
+        with patch("cqc_lem.utilities.db.get_brand_kit", return_value={"card_share": 0.7}):
+            assert card_share_for_user(1) == 0.7
+
+    @pytest.mark.parametrize("stored", [None, {}, {"primary_hex": "#e9d437"}])
+    def test_no_share_is_the_default(self, stored):
+        from unittest.mock import patch
+
+        from cqc_lem.utilities.brand_kit import DEFAULT_CARD_SHARE, card_share_for_user
+        with patch("cqc_lem.utilities.db.get_brand_kit", return_value=stored):
+            assert card_share_for_user(1) == DEFAULT_CARD_SHARE == 0.4
+
+    def test_a_failed_read_or_no_user_is_the_default(self):
+        from unittest.mock import patch
+
+        from cqc_lem.utilities.brand_kit import DEFAULT_CARD_SHARE, card_share_for_user
+        with patch("cqc_lem.utilities.db.get_brand_kit", side_effect=TypeError("int(None)")):
+            assert card_share_for_user(1) == DEFAULT_CARD_SHARE
+        with patch("cqc_lem.utilities.db.get_brand_kit") as read:
+            assert card_share_for_user(None) == DEFAULT_CARD_SHARE
+        read.assert_not_called()

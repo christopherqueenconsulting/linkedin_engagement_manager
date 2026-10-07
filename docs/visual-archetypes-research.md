@@ -15,6 +15,19 @@ covers was "still generic with just random people"; the findings below are why t
   styles (§4.2);
 - adds the **"piques interest"** rubric (§6.4) to the vision judge, folded into `scroll_stop` and
   `specificity`.
+- for POST images, rotates the **treatment** itself (anti-monotony round,
+  `post_treatment.py`; `image-stack.md` § Post rhythm).
+
+**How the post rotation implements this.** §6.1's "code draws anything with text or numbers"
+becomes two $0 post cards: `data_card` is archetype A (the stat card) unchanged, and `quote_card`
+is archetype G *without* the photo — a verbatim pull-quote from the post over the author's byline,
+because §6.2 G forbids generated strangers and no approved founder photo exists yet. §2's
+"consistency as a system signature" stays with the newsletter cover; posts vary within it — three
+brand panel variants (charcoal, off-white, gold; each ≥4.5:1) and three photo grades — so the feed
+does not look templated (§6.2 F, "rotate the medium per post"). §6.3's rotation penalty is
+generalised into the sameness gate: no treatment, layout, panel, shot or grade more than twice in
+a row. The text-free `photo_only` treatment is §6.1 principle 2 taken literally for the share of
+posts that do not need a headline card.
 
 Where the engine deliberately departs from a recommendation (the chart threshold, the rotation
 penalty, the founder quote card) the departure and its reason are in `image-stack.md`. The report
