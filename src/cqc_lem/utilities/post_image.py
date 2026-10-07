@@ -51,6 +51,13 @@ RENDER_PATH_BASE = "base"
 RENDER_PATH_BASE_FALLBACK = "base_after_avatar"
 # The staged judge's WHY, recorded on the receipt beside the stored render (issue #2241).
 GATE_RECEIPT_KEYS = ("gate_rubric", "gate_failing", "gate_issues", "gate_blind_description")
+# The archetype round's receipt fields (#2241): what actually rendered, why a code-drawn graphic
+# fell back, and every drawn figure with its source sentence — kept off the log line.
+ARCHETYPE_RECEIPT_KEYS = ("gate_pop", "archetype_rendered", "archetype_fallback_reason",
+                          "graphic_facts")
+# How many post-image directories the archetype rotation reads, newest first — bounded, so a long
+# post history never turns one render into a directory walk.
+_RECENT_RECEIPT_DIRS = 40
 
 MAX_POST_IMAGE_BYTES = 8 * 1024 * 1024
 # Below this a LinkedIn image share renders as a blurry thumbnail rather than media.
@@ -338,6 +345,59 @@ def claim_manual_generation(user_id: int) -> bool:
         return True
 
 
+def recent_post_archetypes(user_id: int, limit: int) -> list[str]:
+    """The archetypes this author's most recent post images shipped as, most-recent first.
+
+    Read off the brief receipts beside the stored images (no DB column), newest directories first
+    and at most ``_RECENT_RECEIPT_DIRS`` of them. Never raises: an unreadable directory or receipt
+    contributes nothing, and no history means no rotation penalty.
+
+    Args:
+        user_id: The author.
+        limit: How many to return.
+
+    Returns:
+        ``archetype_rendered`` (else the concept's archetype) of each receipt, newest first.
+    """
+    import json
+
+    from cqc_lem.utilities.media_provenance import BRIEF_RECEIPT_SUFFIX
+
+    found: list[tuple[float, str]] = []
+    roots = [os.path.join(assets_dir, *POST_IMAGE_SUBDIR.split("/")),
+             os.path.join(assets_dir, *POST_IMAGE_PREVIEW_SUBDIR.split("/"))]
+    dirs: list[str] = []
+    for root in roots:
+        try:
+            dirs += [entry.path for entry in os.scandir(root) if entry.is_dir()]
+        except OSError:
+            continue
+    try:
+        dirs.sort(key=os.path.getmtime, reverse=True)
+    except OSError:
+        return []
+    for directory in dirs[:_RECENT_RECEIPT_DIRS]:
+        try:
+            names = [n for n in os.listdir(directory) if n.endswith(BRIEF_RECEIPT_SUFFIX)]
+        except OSError:
+            continue
+        for name in names:
+            path = os.path.join(directory, name)
+            try:
+                with open(path, "r", encoding="utf-8") as handle:
+                    payload = json.load(handle)
+                stamp = os.path.getmtime(path)
+            except (OSError, ValueError):
+                continue
+            if not isinstance(payload, dict) or payload.get("user_id") != user_id:
+                continue
+            concept = payload.get("concept") if isinstance(payload.get("concept"), dict) else {}
+            archetype = payload.get("archetype_rendered") or concept.get("archetype")
+            if archetype:
+                found.append((stamp, str(archetype)))
+    return [a for _, a in sorted(found, reverse=True)][:max(0, int(limit))]
+
+
 def _gate_log_fields(render_info: dict) -> dict:
     """The judge's verdict as log fields: rubric, failing criteria, issues and blind description."""
     fields = {key: render_info[key] for key in GATE_RECEIPT_KEYS if render_info.get(key)}
@@ -432,7 +492,11 @@ def generate_image_for_post(user_id: int, text: str, post_id: Optional[int] = No
         log_debug("Profile load skipped for post image", error=str(e), user_id=user_id,
                   action_type="post_image")
 
-    concept = analyze_content_for_image(text, surface="post_image", user_id=user_id)
+    from cqc_lem.utilities.ai.image_concept import ARCHETYPE_WINDOW
+
+    concept = analyze_content_for_image(
+        text, surface="post_image", user_id=user_id,
+        recent_archetypes=recent_post_archetypes(user_id, ARCHETYPE_WINDOW))
     try:
         # Stage 1 first, because whether the author belongs in frame is a question about the piece.
         avatar = resolve_avatar_for_concept(user_id, surface=AVATAR_SURFACE_POST_IMAGE,
@@ -484,7 +548,7 @@ def generate_image_for_post(user_id: int, text: str, post_id: Optional[int] = No
                                           focal_concept=brief.focal_concept,
                                           user_id=user_id, post_id=post_id,
                                           render_info=render_info, concept=brief.concept,
-                                          hook_text=brief.hook_text)
+                                          hook_text=brief.hook_text, brand_kit=brand)
         except Exception as e:
             log_warning("Post image generation failed", exc=e, user_id=user_id, post_id=post_id,
                         action_type="post_image")
@@ -511,7 +575,8 @@ def generate_image_for_post(user_id: int, text: str, post_id: Optional[int] = No
         return None, "Could not store the generated image"
     # Recorded against the STORED url, not the temp render: the receipt is keyed by the value that
     # lands on `posts.image_url`, which is the only handle a later audit has (issue #1377).
-    gate_detail = {key: render_info[key] for key in GATE_RECEIPT_KEYS if key in render_info}
+    gate_detail = {key: render_info[key] for key in GATE_RECEIPT_KEYS + ARCHETYPE_RECEIPT_KEYS
+                   if key in render_info}
     gate_detail["render_path"] = render_path
     if fallback_reason:
         gate_detail["avatar_fallback_reason"] = fallback_reason

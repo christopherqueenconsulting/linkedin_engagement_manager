@@ -18,6 +18,11 @@ FONT_VIBE_MAX = 80
 VISUAL_MOOD_MAX = 160
 AVOID_MAX_ITEMS = 12
 AVOID_ITEM_MAX = 40
+FOUNDER_PHOTO_MAX = 300
+# An owner-approved REAL photo of the founder, for a future quote-card archetype
+# (docs/visual-archetypes-research.md §6.2 G). Parsed only — nothing renders it yet, and it never
+# reaches a prompt.
+_PHOTO_PATH = re.compile(r"^[\w\-./:?=&%]+\.(?:png|jpe?g|webp)$", re.IGNORECASE)
 
 _HEX_RE = re.compile(r"^#?([0-9a-fA-F]{6})$")
 
@@ -64,6 +69,8 @@ class BrandKit:
         font_vibe: Typography feel in words, at most 80 characters.
         visual_mood: The imagery mood in words, at most 160 characters.
         avoid: Motifs to keep out of a render — at most 12, each at most 40 characters.
+        founder_photo: The owner-approved real founder photo — an assets path or URL to a PNG,
+            JPEG or WebP, at most 300 characters. Parsed only; no archetype draws it yet.
     """
 
     primary_hex: Optional[str] = None
@@ -74,6 +81,7 @@ class BrandKit:
     font_vibe: Optional[str] = None
     visual_mood: Optional[str] = None
     avoid: list[str] = field(default_factory=list)
+    founder_photo: Optional[str] = None
 
     def is_empty(self) -> bool:
         """Whether the kit carries nothing at all.
@@ -82,7 +90,7 @@ class BrandKit:
             True when every colour, text field and the avoid list are unset.
         """
         return not any(getattr(self, f) for f in COLOR_FIELDS) and not (
-            self.font_vibe or self.visual_mood or self.avoid)
+            self.font_vibe or self.visual_mood or self.avoid or self.founder_photo)
 
     def to_dict(self) -> dict[str, Any]:
         """The kit as a JSON-ready dict, set fields only.
@@ -97,6 +105,8 @@ class BrandKit:
             out["visual_mood"] = self.visual_mood
         if self.avoid:
             out["avoid"] = list(self.avoid)
+        if self.founder_photo:
+            out["founder_photo"] = self.founder_photo
         return out
 
 
@@ -137,6 +147,16 @@ def _clean_avoid(value: Any) -> list[str]:
     return out
 
 
+def _clean_photo(value: Any) -> Optional[str]:
+    """A founder photo reference: one image path or URL, no traversal; else None."""
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text or len(text) > FOUNDER_PHOTO_MAX or ".." in text or not _PHOTO_PATH.match(text):
+        return None
+    return text
+
+
 def parse_brand_kit(raw: Any) -> Optional[BrandKit]:
     """Build a `BrandKit` from untrusted input, dropping whatever is invalid. Never raises.
 
@@ -155,6 +175,7 @@ def parse_brand_kit(raw: Any) -> Optional[BrandKit]:
     kit.font_vibe = _clean_text(raw.get("font_vibe"), FONT_VIBE_MAX)
     kit.visual_mood = _clean_text(raw.get("visual_mood"), VISUAL_MOOD_MAX)
     kit.avoid = _clean_avoid(raw.get("avoid"))
+    kit.founder_photo = _clean_photo(raw.get("founder_photo"))
     return kit
 
 
@@ -213,6 +234,8 @@ def describe_for_prompt(kit: Optional[BrandKit]) -> str:
         parts.append(f"mood: {kit.visual_mood}")
     if kit.avoid:
         parts.append(f"avoid: {', '.join(kit.avoid)}")
+    if not parts:
+        return ""  # a kit holding only a founder photo has nothing a prompt may carry
     text = "; ".join(parts)
     return text[0].upper() + text[1:] + "."
 

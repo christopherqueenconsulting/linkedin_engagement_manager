@@ -318,7 +318,9 @@ class TestTreatmentVariety:
         user = _stage1(create)["messages"][1]["content"]
         assert "most recent first: concrete_scene, people_scene" in user
         assert "Prefer a different treatment than concrete_scene" in user
-        assert "Prefer people_scene" in user and "real faces beat clipart" in user
+        # Archetype round: the cover carries the idea or the evidence, never stock people.
+        assert "IDEA or its EVIDENCE" in user and "human moment only" in user
+        assert "Prefer people_scene" not in user
 
     def test_other_surfaces_get_no_cover_bias(self):
         with patch(_CREATE, return_value=_resp(_PAYLOAD)) as create:
@@ -392,15 +394,20 @@ class TestVisualIdeas:
         concept = parse_concept(_PAYLOAD, _SOURCE)
         assert pick_visual_idea(concept) is concept
 
-    def test_analyze_runs_the_pick_and_the_prompt_asks_for_people_led_ideas(self):
+    def test_analyze_keeps_only_object_ideas_and_the_prompt_is_the_idea_miner(self):
+        # Archetype round: no human moment, so the image is an editorial concept and the two
+        # people-led ideas are not candidates — the one object idea wins without a ranking call.
         payload = dict(_PAYLOAD, visual_ideas=_IDEAS)
         with patch(_CREATE, side_effect=[_resp(payload),
                                          _resp({"ranking": [1], "reason": "r"})]) as create:
             concept = analyze_content_for_image(_SOURCE, surface="newsletter")
-        assert len(_engine_calls(create)) == 2
-        assert concept.chosen_idea == _IDEAS[0]
+        assert len(_engine_calls(create)) == 1
+        assert concept.archetype == "editorial_concept"
+        assert concept.chosen_idea == _IDEAS[1]
         system = create.call_args_list[0][1]["messages"][0]["content"]
-        assert "exactly 3 one-sentence ideas" in system and "At least ONE idea is people-led" in system
+        # The Idea Miner (archetype round): object-only ideas, people only for a human moment.
+        assert "the Idea Miner" in system and "At least ONE idea is people-led" not in system
+        assert "human_moment is true ONLY" in system and "graphic_facts" in system
         user = create.call_args_list[0][1]["messages"][1]["content"]
         assert "hook_phrase is required" in user
 
@@ -518,8 +525,9 @@ class TestPostImagesFollowTheCoverRecipe:
         with patch(_CREATE, return_value=_resp(_PAYLOAD)) as create:
             analyze_content_for_image(_SOURCE, surface="post_image")
         user = _stage1(create)["messages"][1]["content"]
-        assert "LinkedIn feed POST image (4:5). Prefer people_scene" in user
-        assert "hook_phrase is required" in user and "never an object sitting on a desk" in user
+        assert "LinkedIn feed POST image (4:5). It carries the post's IDEA" in user
+        assert "never as the default" in user
+        assert "hook_phrase is required" in user and "Never an object sitting on a desk" in user
 
     def test_the_ranker_is_told_to_penalise_desk_still_lifes(self):
         concept = parse_concept(dict(_PAYLOAD, visual_ideas=_IDEAS), _SOURCE)

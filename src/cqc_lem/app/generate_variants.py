@@ -242,9 +242,12 @@ def generate_media_variants(*, post_id: Optional[int] = None, text: Optional[str
     use_combos = combos if combos else DEFAULT_COMBOS
     log_info(f"Generating {len(use_combos)} media variant(s) into batch {batch_id}")
     # Once per batch, not per variant: every combo renders the same source text.
-    from cqc_lem.utilities.ai.image_concept import analyze_content_for_image
+    from cqc_lem.utilities.ai.image_concept import ai_archetype_only, analyze_content_for_image
     from cqc_lem.utilities.brand_kit import brand_clause_for_user
-    concept = analyze_content_for_image(source_text, surface="post_image", user_id=user_id)
+    # The variant tool compares RENDERS, so a code-drawn graphic (the same picture for every
+    # combo) is never one of them.
+    concept = ai_archetype_only(
+        analyze_content_for_image(source_text, surface="post_image", user_id=user_id))
     brand_clause = brand_clause_for_user(user_id)
 
     variants = []

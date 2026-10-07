@@ -233,6 +233,18 @@ class TestProducePostLoop:
             assert al.produce_post_loop(7, 42, "text", url) is None
         warn.assert_called_once()
 
+    def test_a_code_drawn_still_is_never_animated(self, monkeypatch, stored_still):
+        """Archetype round: an image model would re-draw the verified figures, so it never runs."""
+        monkeypatch.setenv("ANIMATED_POST_ENABLED", "true")
+        url, _ = stored_still
+        with patch("cqc_lem.utilities.media_provenance.read_brief_receipt",
+                   return_value={"prompt": "p", "archetype_rendered": "stat_card"}), \
+             patch("cqc_lem.utilities.ai.video_models.create_runway_video") as runway:
+            assert al.produce_post_loop(7, 42, "text", url) is None
+        runway.assert_not_called()
+        assert al._code_drawn({"archetype_rendered": "editorial_concept"}) is False
+        assert al._code_drawn(None) is False
+
     def test_no_still_no_loop(self, monkeypatch):
         monkeypatch.setenv("ANIMATED_POST_ENABLED", "true")
         assert al.produce_post_loop(7, 42, "text", None) is None

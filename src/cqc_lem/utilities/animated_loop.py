@@ -241,6 +241,13 @@ def _receipt_concept(receipt: Optional[dict]):
     return None
 
 
+def _code_drawn(receipt: Optional[dict]) -> bool:
+    """Did the stored still ship as a code-drawn data graphic (its receipt says so)?"""
+    from cqc_lem.utilities.ai.image_concept import CODE_DRAWN_ARCHETYPES
+
+    return str((receipt or {}).get("archetype_rendered") or "") in CODE_DRAWN_ARCHETYPES
+
+
 def _download(url: str) -> Optional[str]:
     """Fetch the Runway output into a temp MP4. None on failure."""
     import requests
@@ -286,6 +293,12 @@ def produce_post_loop(user_id: int, post_id: Optional[int], text: str,
         if not still:
             return None
         receipt = read_brief_receipt(image_url)
+        if _code_drawn(receipt):
+            # A code-drawn graphic's figures were verified against the article; an image-to-video
+            # model would re-draw them. The verified still ships as it is (archetype round, #2241).
+            log_debug("Animated loop skipped — the still is a code-drawn data graphic",
+                      user_id=user_id, post_id=post_id, task_name=TASK_NAME)
+            return None
         image_prompt = str((receipt or {}).get("prompt") or "")
         motion = get_runway_ml_video_prompt_from_ai(text, image_prompt, model=STANDARD_VIDEO_MODEL,
                                                     user_id=user_id, post_id=post_id,

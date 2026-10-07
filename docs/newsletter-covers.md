@@ -124,10 +124,14 @@ staged engine") rather than any parallel per-content-type helper:
 1. **Stage 1 — read the whole edition.** `image_concept.analyze_content_for_image` gets the
    subtitle + the FULL body, with the title passed separately (so a hook that only restates it is
    refused). It returns the edition's thesis, its FACTS (`specific_entities` — names, numbers,
-   never drawn), its depictable `visual_anchors`, a hook, and the treatment: `people_scene` (the
-   cover default — real faces beat clipart), `editorial_graphic` (only when one number or contrast
-   IS the thesis), `concrete_scene`, or — only when nothing concrete exists —
-   `metaphor_last_resort`. It also gets `recent_treatments` from the last 3 receipts
+   never drawn), its depictable `visual_anchors`, a hook, its verifiable `graphic_facts`, and the
+   cover's **archetype** (archetype round, `docs/image-stack.md` → "Visual archetypes"): a
+   code-drawn stat card, highlight chart, receipt, before/after or checklist when the edition's
+   own numbers or steps VALIDATE verbatim, else an `editorial_concept` (one juxtaposition of
+   everyday objects, in a rotated art style). A `people_scene` is a human moment only — no longer
+   the cover default. The archetype history comes off the last two receipts
+   (`_recent_cover_archetypes`, which prefers `archetype_rendered`), the art style off the last
+   four (`_recent_concept_field(..., "art_style", ...)`). It also gets `recent_treatments` from the last 3 receipts
    (`_recent_cover_treatments`, fallbacks included) and prefers a different one; then
    `enforce_graphic_cap` allows at most ONE `editorial_graphic` in any 3 consecutive covers.
 2. **Stage 2/3 — the brief.** `build_image_brief(title + subtitle + body, surface="newsletter",
@@ -141,7 +145,10 @@ staged engine") rather than any parallel per-content-type helper:
    `render_image_gated`, both with `concept=brief.concept, hook_text=brief.hook_text`. **The avatar
    path gets every stage too** — it used to skip the newsletter gates entirely
    (`newsletter_gate = surface == "newsletter" and not avatar`). An avatar always takes
-   `people_scene`.
+   `people_scene`. A code-drawn archetype is drawn FIRST on both paths (`render_code_drawn`, $0
+   render spend, a 1920×1080 cover beside the same typeset panel) and judged once on specificity,
+   scroll stop and brand; only when every graphic in its chain is refused or rejected does the AI
+   archetype render.
 
 ### Why the metaphor extractor is gone (issue #2241)
 
@@ -306,6 +313,9 @@ A definite judge failure on `no_cliche` or `specificity` after the attempt budge
 reason travels: `render_info` carries `gate_rubric`, `gate_failing`, `gate_issues` and
 `gate_blind_description` (what a viewer who knew nothing saw), and `generate_cover_for_edition`
 copies them onto the cover's receipt (`_GATE_RECEIPT_KEYS`) and logs the rejection at INFO.
+Since the archetype round the receipt also carries `gate_pop` (the "piques interest" scores),
+`archetype_rendered`, `archetype_fallback_reason` and `graphic_facts` — every figure drawn on a
+code-drawn cover WITH the source sentence it was verified against.
 
 **Receipts (issue #1377's pattern, extended).** `generate_cover_for_edition` writes a
 `<stem>.brief.json` sidecar beside every STORED cover — real brief and deterministic fallback
