@@ -79,7 +79,8 @@ class TestBlindFirst:
         second = create.call_args_list[1][1]
         text = second["messages"][0]["content"][0]["text"]
         assert _CONCEPT.thesis in text and _BLIND in text
-        assert "unpaid invoices; payroll run; agency owner" in text
+        # A paper anchor is never asked about (round 7): it is never drawn.
+        assert "payroll run; agency owner" in text and "unpaid invoices;" not in text
         assert f'The cover\'s headline (typeset onto it by the system): "{_HOOK}"' in text
         assert "valve" in text, "the stock-symbol list is asked about by name"
         assert second["response_format"] == {"type": "json_object"}
@@ -115,7 +116,7 @@ class TestRubric:
 
     def test_one_anchor_seen_is_enough_the_count_is_advisory(self, tmp_path):
         """Round 3: the headline carries the thesis; two anchors is no longer required."""
-        seen = {"unpaid invoices": True, "payroll run": False, "agency owner": False}
+        seen = {"unpaid invoices": False, "payroll run": True, "agency owner": False}
         verdict, _ = _judge(tmp_path, answer=_answer(entities_depicted=seen))
         assert verdict.acceptable and verdict.rubric["specificity"] == 5
 
@@ -182,14 +183,14 @@ class TestRubricRepair:
                                                           ["a brass valve"]),
                                             "gpt-image", _CONCEPT, None)
         assert "specificity, no_cliche" in directive
-        assert "unpaid invoices; payroll run; agency owner" in directive
+        assert "payroll run; agency owner" in directive
         assert "a brass valve" in directive
 
     def test_flux_repair_never_names_the_defect(self):
         directive = rubric_repair_directive(self._verdict(["no_cliche"], ["a brass valve"]),
                                             "flux", _CONCEPT, None)
         assert directive.startswith("Render this scene again with")
-        assert "valve" not in directive and "unpaid invoices" in directive
+        assert "valve" not in directive and "payroll run" in directive
 
     def test_a_text_failure_never_asks_for_the_hook_to_be_rendered(self):
         directive = rubric_repair_directive(self._verdict(["text_accuracy"]), "gpt-image",
@@ -403,12 +404,12 @@ class TestSpecificityNeedsTheThesis:
         concept = ImageConcept(
             thesis="t", audience="a", specific_entities=("Terralogic", "$30K"),
             emotional_beat="e", hook_phrase="", treatment="people_scene",
-            treatment_rationale="r", visual_anchors=("a marketing lead", "a printed checklist"))
+            treatment_rationale="r", visual_anchors=("a marketing lead", "a crowded meeting room"))
         _verdict, create = _judge(tmp_path, concept=concept,
                                   answer=_answer(entities_depicted={"a marketing lead": True,
-                                                                    "a printed checklist": True}))
+                                                                    "a crowded meeting room": True}))
         text = create.call_args_list[1][1]["messages"][0]["content"][0]["text"]
-        assert "a marketing lead; a printed checklist" in text
+        assert "a marketing lead; a crowded meeting room" in text
         assert "Terralogic" not in text, "a fact is never asked about as something visible"
         assert "thesis_inferable" in text
 
@@ -622,3 +623,35 @@ class TestBrightEnoughForAWhiteFeed:
         verdict = QualityVerdict(acceptable=False, failing=["thumbnail_read"],
                                  issues=["thumbnail_read 3/5"])
         assert "bright, high-key" in rubric_repair_directive(verdict, "flux", _PEOPLE, None)
+
+
+
+class TestRoundSevenJudge:
+    def test_the_kicker_and_cover_reading_reach_the_judge(self, tmp_path):
+        from dataclasses import replace
+        concept = replace(_PEOPLE, kicker="AGENCY PAYROLL")
+        _v, create = _judge_on(tmp_path, "newsletter", _answer(), concept=concept,
+                               hook_text="Payroll eats first")
+        text = create.call_args_list[1][1]["messages"][0]["content"][0]["text"]
+        assert 'The cover\'s kicker (topic tag, typeset by the system): "AGENCY PAYROLL"' in text
+        assert "Read the kicker, headline and scene together as one cover." in text
+        assert ("the kicker + headline name the exact topic and the scene shows the human stakes "
+                "of it") in text
+
+    def test_kicker_and_signature_reach_the_compositor(self, tmp_path):
+        from dataclasses import replace
+
+        from PIL import Image
+        raw = tmp_path / "raw.png"
+        Image.new("RGB", (1536, 1024), (230, 225, 210)).save(raw)
+        concept = replace(_CONCEPT, kicker="AGENCY PAYROLL")
+        with patch.object(image_gen, "_render_with_backend",
+                          return_value=(str(raw), "gpt-image")), \
+             patch.object(image_gen, "inspect_render_quality",
+                          return_value=QualityVerdict(acceptable=True)), \
+             patch("cqc_lem.utilities.ai.image_compose.compose_headline",
+                   return_value=str(tmp_path / "c.png")) as compose:
+            render_image_gated("p", surface="newsletter", concept=concept, hook_text=_HOOK,
+                               signature="Christopher Queen")
+        assert compose.call_args[1]["kicker"] == "AGENCY PAYROLL"
+        assert compose.call_args[1]["signature"] == "Christopher Queen"

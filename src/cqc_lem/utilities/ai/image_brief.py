@@ -84,8 +84,8 @@ _TREATMENT_TEMPLATES: dict[str, str] = {
         "medium framing where the face reads at thumbnail size — clearly readable but authentic "
         "and restrained, the face a real person would make, never cartoonish or crying. A laptop "
         "is at most a prop. The emotion's direction follows the piece's valence: a saving or a "
-        "win reads calm, pleased, relieved or wry; a risk or a loss reads concerned, skeptical "
-        "or frustrated — never shock or despair for good news. "
+        "win is a quiet, satisfied half-smile with relaxed shoulders, eyes open; a risk or a "
+        "loss reads concerned, skeptical or frustrated — never shock or despair for good news. "
         "The image is BRIGHT — high-key or warm daylight with strong subject contrast — never a "
         "dark, moody, low-key scene unless the emotional beat itself is dark (dread, crisis). Real "
         "texture: visible skin pores, fabric wear and creases, scuffed surfaces and everyday "
@@ -354,68 +354,87 @@ _DOCUMENT_NOUNS = re.compile(
     r"checklists|flip[\s\-]chart|whiteboard|slide|slides)\b", re.IGNORECASE)
 _UNREADABLE_QUALIFIERS = re.compile(
     r"\bblank\b|\bsteep\s+angle\b|\bno\s+writing\s+is\s+legible\b|\bout\s+of\s+focus\b|"
-    r"\billegible\b|\bunreadable\b|\bface[\s\-]down\b|\bturned\s+away\b|\bsoft[\s\-]focus\b",
+    r"\billegible\b|\bunreadable\b|\bface[\s\-]down\b|\bturned\s+away\b|\bsoft[\s\-]focus\b|"
+    r"\bfacing\s+away\b|\bback\s+of\s+(?:a|an|the|her|his|their)\b",
     re.IGNORECASE)
 DOCUMENT_BLANKING = ("every paper and screen in the frame is blank, seen at a steep angle so no "
                      "writing is legible, or out of focus")
 
-# Round 5 (#2241): even under the blank rule, paper props kept rendering legible text on covers
-# ("LEAD LAST REMARKS" on ed16's checklist). A cover carries NO paper prop unless its chosen
-# visual idea is ABOUT a document — and then only as a blank sheet seen edge-on.
+# Round 7 (#2241): stray text on PROPS persisted on every surface even under "blank" — "Proposal"
+# on a clipboard, "COST REDUCTION CHECKLIST", "SOURCE PACK", "KPI Dashboard", console.log on a
+# monitor, "Name / Date" on a form. The renderer ignores "blank", so the props are refused
+# outright, on EVERY surface: paper of any kind, whiteboard or chart content, code, and any screen
+# that is not explicitly seen from behind or turned away.
 _PAPER_PROPS = re.compile(
-    r"\b(?:paper|papers|sheet|sheets|document|documents|clipboard|clipboards|printout|printouts|"
-    r"printed|report|reports|checklist|checklists|invoice|invoices|statement|statements|folder|"
-    r"folders|binder|binders|memo|memos|page|pages|receipt|receipts|notebook|notebooks|"
-    r"flip[\s\-]chart|draft|drafts|manuscript|letter|letters)\b", re.IGNORECASE)
-_EDGE_ON_SHEET = re.compile(r"\bblank sheet seen edge[\s\-]on\b", re.IGNORECASE)
-COVER_EDGE_ON = "a blank sheet seen edge-on"
-PAPER_FORBID, PAPER_EDGE_ON = "forbid", "edge_on"
-COVER_PROPS_DIRECTIVE = {
-    PAPER_FORBID: ("COVER PROPS: no paper in frame — no documents, clipboards, printouts, "
-                   "reports or checklists. Paper renders legible text; build the scene on faces, "
-                   "hands at rest and the room.\n"),
-    PAPER_EDGE_ON: (f"COVER PROPS: the chosen idea is about a document, so the ONLY paper in frame "
-                    f"is {COVER_EDGE_ON} — say exactly that.\n"),
-}
+    r"\b(?:paper|papers|sheet|sheets|document|documents|report|reports|proposal|proposals|"
+    r"clipboard|clipboards|checklist|checklists|form|forms|invoice|invoices|bill|bills|folder|"
+    r"folders|binder|binders|printout|printouts|printed|statement|statements|memo|memos|page|"
+    r"pages|receipt|receipts|notebook|notebooks|draft|drafts|manuscript|letter|letters|"
+    r"whiteboard|whiteboards|chart|charts|graph|graphs|flip[\s\-]chart|code|console|terminal|"
+    r"spreadsheet|spreadsheets|sticky\s+notes?|post-it)\b", re.IGNORECASE)
+_SCREEN_WORDS = re.compile(
+    r"\b(?:laptop|laptops|screen|screens|monitor|monitors|tablet|tablets|phone|phones|"
+    r"smartphone|smartphones|display|displays|computer|computers|ipad|ipads)\b", re.IGNORECASE)
+_SCREEN_AWAY = re.compile(
+    r"\bback\s+of\s+(?:a|an|the|her|his|their)\s+(?:\w+\s+)?(?:laptop|tablet|monitor|screen|"
+    r"phone)|\bfacing\s+away\b|\bturned\s+away\b|\bface[\s\-]down\b|\bfrom\s+behind\b",
+    re.IGNORECASE)
+PAPER_FORBID = "forbid"
+PROPS_DIRECTIVE = (
+    "PROPS: no paper of any kind in frame — no documents, sheets, reports, proposals, "
+    "clipboards, checklists, forms, invoices, bills, folders or binders — and no whiteboard, "
+    "chart or code content. A screen appears only as the back of a laptop or a screen facing "
+    "away from camera. Hands hold nothing, or a mug, pen or phone held face-down. Tell the story "
+    "with gesture, posture, an interaction between two people, and the environment.\n")
+# Kept for the call sites that name it: covers and posts were the first surfaces with the rule.
+COVER_PROPS_DIRECTIVE = {PAPER_FORBID: PROPS_DIRECTIVE}
 
 
-def cover_paper_rule(concept: Optional[ImageConcept]) -> str:
-    """How a cover may show paper.
-
-    ``edge_on`` when the chosen idea is about a document, else ``forbid``.
+def cover_paper_rule(concept: Optional[ImageConcept] = None) -> str:
+    """The prop rule for any surface: ``forbid`` since round 7, whatever the idea is about.
 
     Args:
-        concept: Stage 1's concept, or None.
+        concept: Unused — the edge-on exception for document ideas is gone.
 
     Returns:
-        ``PAPER_EDGE_ON`` or ``PAPER_FORBID``.
+        ``PAPER_FORBID``.
     """
-    idea = concept.chosen_idea if concept else ""
-    return PAPER_EDGE_ON if _PAPER_PROPS.search(idea or "") else PAPER_FORBID
+    _ = concept
+    return PAPER_FORBID
+
+
+def prop_failure(text: Optional[str]) -> Optional[str]:
+    """Why ``text`` names a prop that renders legible marks, or None.
+
+    Args:
+        text: A render prompt (hook stripped) or a visual idea.
+
+    Returns:
+        The reason: a paper/document/chart/code prop, or a screen not seen from behind.
+    """
+    text = text or ""
+    paper = _PAPER_PROPS.search(text)
+    if paper:
+        return (f"the scene names {paper.group(0)!r} — paper, charts and code render legible "
+                f"text; tell the story with gesture, posture and the room instead")
+    screen = _SCREEN_WORDS.search(text)
+    if screen and not _SCREEN_AWAY.search(text):
+        return (f"the scene names a {screen.group(0)} facing the camera — a screen appears only "
+                f"as the back of a laptop or a screen facing away from camera")
+    return None
 
 
 def paper_rule_failure(prompt: str, rule: Optional[str]) -> Optional[str]:
-    """Why ``prompt`` breaks a cover's paper rule, or None.
+    """Why ``prompt`` breaks the prop rule, or None (no rule passed: not checked).
 
     Args:
         prompt: The render prompt, hook stripped.
-        rule: ``PAPER_FORBID``, ``PAPER_EDGE_ON`` or None (no rule — not a cover).
+        rule: ``PAPER_FORBID`` or None.
 
     Returns:
         The rejection reason.
     """
-    if not rule:
-        return None
-    hit = _PAPER_PROPS.search(prompt or "")
-    if not hit:
-        return None
-    if rule == PAPER_FORBID:
-        return (f"a cover carries no paper props ({hit.group(0)!r}) — paper keeps rendering "
-                f"legible text; build the scene on faces and the room")
-    if not _EDGE_ON_SHEET.search(prompt):
-        return (f"the only paper on this cover is {COVER_EDGE_ON} — describe it exactly so, "
-                f"never {hit.group(0)!r}")
-    return None
+    return prop_failure(prompt) if rule else None
 
 
 def words_on_surface(text: Optional[str]) -> Optional[str]:
@@ -502,6 +521,11 @@ _DARK_SCENE = re.compile(
     r"\b(?:moody|low[\s\-]key|dimly[\s\-]lit|dimly|dark\s+(?:room|office|scene|setting|"
     r"background|interior|studio)|shadowy|noir|chiaroscuro|pitch[\s\-]black|near[\s\-]black|"
     r"gloomy|murky|unlit)\b", re.IGNORECASE)
+# Round 7: "relief" rendered as eyes squeezed shut and a hand on the chest — good news as pain.
+_PAINED_RELIEF = re.compile(
+    r"\beyes\s+(?:closed|shut|squeezed)\b|\b(?:closed|squeezed|shut)\s+eyes\b|"
+    r"\bhand\s+(?:on|over|to)\s+(?:her|his|their|the)\s+(?:chest|heart)\b",
+    re.IGNORECASE)
 _DARK_BEAT = re.compile(r"\b(?:dread|crisis|fear|grief|panic|despair|dark|ominous|loss)\b",
                         re.IGNORECASE)
 # The surfaces that follow the cover recipe: a hook, a face with a readable emotion, no paper,
@@ -514,21 +538,21 @@ BRAND_GATE_SURFACES = frozenset({"newsletter", "post_image", "video"})
 # Round 6 addendum (#2241): the headline is COMPOSITED by ``image_compose``, never rendered. The
 # brief only keeps the region the headline will sit on calm, so the typesetting has room.
 NEGATIVE_SPACE: dict[str, str] = {
-    "panel_left": ("keep the LEFT 40% of the frame calm, plain negative space — a soft wall or "
-                   "background — with the subject in the right 60%; a headline panel is added "
-                   "there later"),
-    "panel_right": ("keep the RIGHT 40% of the frame calm, plain negative space — a soft wall or "
-                    "background — with the subject in the left 60%; a headline panel is added "
+    "panel_left": ("keep the LEFT half of the frame calm, plain negative space — a soft wall or "
+                   "background — with every subject in the right half; a headline panel is "
+                   "added there later"),
+    "panel_right": ("keep the RIGHT half of the frame calm, plain negative space — a soft wall or "
+                    "background — with every subject in the left half; a headline panel is added "
                     "there later"),
     "full_bleed": ("keep one side third of the frame calm and slightly darker — a shadowed wall "
                    "or the window side — with nothing important in it; a headline is set over "
                    "it later"),
-    "lower_third_band": ("keep the bottom third of the frame calm and uncluttered, with faces and "
-                         "the subject in the upper two thirds; a headline band is added there "
-                         "later"),
-    "band_top": ("keep the top third of the frame calm, plain negative space — wall, sky or "
-                 "ceiling — with the subject in the lower two thirds; a headline band is added "
-                 "there later"),
+    "lower_third_band": ("keep every subject — faces, torsos and hands — in the UPPER 55% of the "
+                         "frame, the bottom 45% calm and uncluttered floor or wall; a headline "
+                         "band is added there later"),
+    "band_top": ("keep the top 40% of the frame calm, plain negative space — wall, sky or "
+                 "ceiling — with every subject in the lower 60%; a headline band is added there "
+                 "later"),
 }
 _DEFAULT_NEGATIVE_SPACE = {"newsletter": "panel_left", "post_image": "band_top"}
 
@@ -651,7 +675,8 @@ def usable_anchors(concept: Optional[ImageConcept]) -> list[str]:
         return []
     anchors = concept.visual_anchors or tuple(
         e for e in concept.specific_entities if not is_fact_only(e))
-    return [a for a in anchors if not cliche_hit(a) and not name_tokens(a)]
+    return [a for a in anchors if not cliche_hit(a) and not name_tokens(a)
+            and not prop_failure(a)]
 
 
 def fact_name_tokens(concept: Optional[ImageConcept]) -> set[str]:
@@ -710,7 +735,7 @@ def _deterministic_failure(prompt: str, *, anchors: list[str], weak: bool,
                            names: Optional[set[str]] = None,
                            colors: Optional[frozenset[str]] = None,
                            paper_rule: Optional[str] = None,
-                           bright: bool = False) -> Optional[str]:
+                           bright: bool = False, positive: bool = False) -> Optional[str]:
     """Why ``prompt`` fails the deterministic checks, or None when it passes them.
 
     Shared by Stage 2's validation and Stage 3, so the two can never disagree about a cliché,
@@ -735,9 +760,10 @@ def _deterministic_failure(prompt: str, *, anchors: list[str], weak: bool,
     if named:
         return (f"the prompt names {named!r}, a fact the image cannot draw — show the visual "
                 f"anchors, never a name or a number")
-    paper = paper_rule_failure(unhooked, paper_rule)
-    if paper:
-        return paper
+    pained = _PAINED_RELIEF.search(unhooked) if positive else None
+    if pained:
+        return (f"good news reads as pain ({pained.group(0)!r}) — a quiet, satisfied half-smile "
+                f"with relaxed shoulders, eyes open")
     dark = _DARK_SCENE.search(unhooked) if bright else None
     if dark:
         return (f"the prompt asks for a dark scene ({dark.group(0)!r}) — light it bright, high-key "
@@ -748,14 +774,14 @@ def _deterministic_failure(prompt: str, *, anchors: list[str], weak: bool,
                 f"blank or abstract")
     legible = legible_document(unhooked)
     if legible:
-        return (f"the prompt asks for a readable document ({legible!r}) — describe every paper "
-                f"and screen as blank, seen at a steep angle so no writing is legible, or out of "
-                f"focus")
-    unblanked = unblanked_document(unhooked)
-    if unblanked:
-        return (f"the prompt names a {unblanked} without saying how it stays unreadable — "
-                f"describe it as blank, seen at a steep angle so no writing is legible, or out "
-                f"of focus")
+        return (f"the prompt asks for a readable document ({legible!r}) — drop it; tell the story "
+                f"with gesture, posture and the room")
+    # (A document "described as blank" is no longer enough — round 7 refuses the prop itself,
+    # below — so the old unblanked-document check has nothing left to add.)
+    # After the specific phrase checks, so their more precise reason is the one the author hears.
+    paper = paper_rule_failure(unhooked, paper_rule)
+    if paper:
+        return paper
     # Advisory since round 3: the hook carries the thesis, so ONE anchor in frame is enough — two
     # pushed ed16 onto the fallback twice for "depicts 1 of the anchors".
     if not weak and anchors and not any(entity_mentioned(a, prompt) for a in anchors):
@@ -770,7 +796,8 @@ def _deterministic_failure(prompt: str, *, anchors: list[str], weak: bool,
 def _rejection(parsed: dict[str, Any], *, anchors: list[str], weak: bool,
                hook_text: Optional[str], names: Optional[set[str]] = None,
                colors: Optional[frozenset[str]] = None,
-               paper_rule: Optional[str] = None, bright: bool = False) -> Optional[str]:
+               paper_rule: Optional[str] = None, bright: bool = False,
+               positive: bool = False) -> Optional[str]:
     """Why an authored brief is unusable, or None. The reason goes back to the author verbatim."""
     prompt = str(parsed.get("prompt") or "").strip()
     focal = str(parsed.get("focal_concept") or "").strip()
@@ -784,7 +811,7 @@ def _rejection(parsed: dict[str, Any], *, anchors: list[str], weak: bool,
         return "the reply declared hook text, but the image carries no text — the headline is typeset later"
     return _deterministic_failure(prompt, anchors=anchors, weak=weak, hook_text=hook_text,
                                   names=names, colors=colors, paper_rule=paper_rule,
-                                  bright=bright)
+                                  bright=bright, positive=positive)
 
 
 _CHECK_PROMPT = """You are checking an image prompt BEFORE it is sent to a renderer.
@@ -912,9 +939,8 @@ def _fallback_brief(content: str, *, surface: str, ratio: str, context: str,
     treatment = _fallback_treatment(treatment or _treatment_for(concept, avatar),
                                     usable_anchors(concept))
     anchors = [_plain_words(a) for a in usable_anchors(concept)]
-    cover = surface in PAPER_SURFACES
-    # A cover carries no paper prop (round 5), so a paper anchor never reaches its fallback.
-    anchors = [a for a in anchors if a and not (cover and _PAPER_PROPS.search(a))]
+    # No prop anchor reaches a fallback (usable_anchors already drops them, round 7).
+    anchors = [a for a in anchors if a]
     use = _USE_LABELS.get(surface, _USE_LABELS[_DEFAULT_PRESET])
     summary = _plain_words(concept.thesis if concept else content)[:240]
     hook = (concept.hook_phrase if concept and concept.hook_phrase
@@ -924,9 +950,7 @@ def _fallback_brief(content: str, *, surface: str, ratio: str, context: str,
               f"bright, high-key warm daylight with strong subject contrast and one deliberate "
               f"{accent[0]} accent, subtle film "
               f"grain, real texture with fabric wear and everyday imperfections, plain unbranded "
-              f"surfaces, clean unmarked walls; "
-              + (f"every screen in the frame is blank or out of focus, and any paper is "
-                 f"{COVER_EDGE_ON}." if cover else f"{DOCUMENT_BLANKING}."))
+              f"surfaces, clean unmarked walls, hands at rest or around a mug.")
     space = negative_space_directive(concept.layout if concept else "", surface) if hook else ""
     layout = f" Compose to {space}." if space else ""
     # Profile context is AUTHOR context: a fallback is a render prompt, so it never carries it.
@@ -965,6 +989,14 @@ def _fallback_brief(content: str, *, surface: str, ratio: str, context: str,
                       hook_text=hook, rejections=tuple(rejections))
 
 
+_VALENCE_FACES = {
+    "positive": ("a quiet, satisfied half-smile and relaxed shoulders, eyes open — never eyes "
+                 "closed, never a hand on the chest"),
+    "negative": "concerned, skeptical or frustrated — restrained, never despair",
+    "mixed": "wry or thoughtful",
+}
+
+
 def _analysis_block(concept: Optional[ImageConcept], anchors: list[str],
                     hook: Optional[str], surface: str = "post_image",
                     brand_kit: Optional[str] = None, avatar: bool = False) -> str:
@@ -984,7 +1016,7 @@ def _analysis_block(concept: Optional[ImageConcept], anchors: list[str],
         block += (f"CAST: the person in frame is {cast_phrase(concept.cast)} — a real, "
                   f"unremarkable member of this audience, no stereotyped styling.\n")
     if concept.valence:
-        block += f"VALENCE: {concept.valence} — the face's emotion points this way.\n"
+        block += f"VALENCE: {concept.valence} — {_VALENCE_FACES.get(concept.valence, '')}.\n"
     if hook:
         block += (f"HEADLINE (typeset onto the image later by the system — never draw it, never "
                   f"quote it): {hook}\n")
@@ -1032,9 +1064,11 @@ def build_image_brief(content: str, *, surface: str, ratio: str = "1:1",
             log_debug("Image concept stage raised — briefing without it", error=str(e),
                       surface=surface, action_type="image_brief")
             concept = None
-    if concept is not None and not concept.layout and not concept.cast:
-        # No receipt history here (covers pass theirs to Stage 1): a stable per-piece rotation.
-        concept = assign_layout_and_cast(concept, surface)
+        if concept is not None and not concept.layout and not concept.cast:
+            # A concept this call computed gets a stable per-piece rotation (covers pass their
+            # receipt history to Stage 1). A CALLER's concept is used exactly as given.
+            concept = assign_layout_and_cast(concept, surface)
+
     preset = surface if surface in _STYLE_PRESETS else _DEFAULT_PRESET
     treatment = _treatment_for(concept, avatar)
     anchors = usable_anchors(concept)
@@ -1045,7 +1079,8 @@ def build_image_brief(content: str, *, surface: str, ratio: str = "1:1",
     colors = brand_colors(brand_kit)
     # Deterministically enforced on covers; requested on every surface.
     gate_colors = colors if surface in BRAND_GATE_SURFACES else None
-    paper_rule = cover_paper_rule(concept) if surface in PAPER_SURFACES else None
+    paper_rule = PAPER_FORBID  # every surface since round 7
+    positive = concept is not None and concept.valence == "positive"
     bright = surface in HOOK_SURFACES and not (
         concept is not None and _DARK_BEAT.search(concept.emotional_beat or ""))
     # The likeness directive leads the context on purpose (issue #744): with nothing stating who
@@ -1060,7 +1095,7 @@ def build_image_brief(content: str, *, surface: str, ratio: str = "1:1",
         + _analysis_block(concept, anchors, hook, surface, brand_kit, avatar=bool(avatar))
         + (f"Brand: {brand_kit}\n" if brand_kit else "")
         + BRAND_ACCENT_DIRECTIVE.format(colors=", ".join(sorted(colors)))
-        + (COVER_PROPS_DIRECTIVE[paper_rule] if paper_rule else "")
+        + PROPS_DIRECTIVE
         + ("" if avatar else _NO_AVATAR_PEOPLE)
         + (f"Content shape: {content_shape}\n" if content_shape else "")
         + (f"This author's recent images already looked like this, so make this one visibly "
@@ -1125,7 +1160,7 @@ def build_image_brief(content: str, *, surface: str, ratio: str = "1:1",
                 parsed["prompt"] = strip_author_context(parsed["prompt"], context)
             rejection = _rejection(parsed, anchors=anchors, weak=weak, hook_text=None,
                                    names=names, colors=gate_colors, paper_rule=paper_rule,
-                                   bright=bright)
+                                   bright=bright, positive=positive)
             if rejection:
                 reason = rejection
                 rejections.append(reason)

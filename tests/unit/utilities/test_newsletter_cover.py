@@ -814,3 +814,37 @@ class TestCoverRotationHistory:
             nc.generate_cover_for_edition(3, 9, "T", "S", "B")
         assert gen.call_args[1]["layout"] == "full_bleed"
         assert gen.call_args[1]["hook_text"] == "Who buys?"
+
+
+
+class TestCoverByline:
+    def _run(self, tmp_path, **kwargs):
+        from types import SimpleNamespace
+        profile = SimpleNamespace(full_name="Christopher Queen", job_title=None, industry=None,
+                                  company_name=None)
+        with patch.object(nc, "assets_dir", str(tmp_path / "assets")), \
+             patch.object(nc, "_resolve_cover_avatar", return_value=None), \
+             patch("cqc_lem.utilities.ai.image_concept.analyze_content_for_image",
+                   return_value=None), \
+             patch("cqc_lem.utilities.ai.image_brief.build_image_brief", return_value=_brief()), \
+             patch("cqc_lem.utilities.ai.image_gen.render_image_gated",
+                   return_value=None) as gen:
+            nc.generate_cover_for_edition(3, 9, "T", "S", "B", profile=profile, **kwargs)
+        return gen.call_args[1]["signature"]
+
+    def test_the_byline_defaults_to_the_authors_name(self, tmp_path):
+        assert self._run(tmp_path) == "Christopher Queen"
+
+    def test_a_newsletter_title_wins_when_the_caller_has_one(self, tmp_path):
+        assert self._run(tmp_path, signature="The AI Operator") == "The AI Operator"
+
+    def test_no_profile_means_no_byline(self, tmp_path):
+        with patch.object(nc, "assets_dir", str(tmp_path / "assets")), \
+             patch.object(nc, "_resolve_cover_avatar", return_value=None), \
+             patch("cqc_lem.utilities.ai.image_concept.analyze_content_for_image",
+                   return_value=None), \
+             patch("cqc_lem.utilities.ai.image_brief.build_image_brief", return_value=_brief()), \
+             patch("cqc_lem.utilities.ai.image_gen.render_image_gated",
+                   return_value=None) as gen:
+            nc.generate_cover_for_edition(3, 9, "T", "S", "B")
+        assert gen.call_args[1]["signature"] is None

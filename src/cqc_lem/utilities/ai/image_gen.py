@@ -462,8 +462,9 @@ A viewer who knew nothing about its purpose described the photograph as:
 <blind>{blind}</blind>
 
 The image was made for a piece arguing: {thesis}
+The cover's kicker (topic tag, typeset by the system): {kicker}
 The cover's headline (typeset onto it by the system): {headline}
-Look at the image itself and answer:
+Read the kicker, headline and scene together as one cover. Look at the image itself and answer:
 1. Is each of these things visibly depicted? {entities}
 2. Is any of these stock symbols present: {cliches}?
 3. Does the main subject still read as a 400x225 thumbnail? Is the image bright enough, with a
@@ -477,8 +478,10 @@ Look at the image itself and answer:
 10. Does the headline alone name its subject — not just a number? (true when there is none)
 
 Score each criterion 1-5, 5 best:
-- specificity: 5 = with its headline, a scroller would correctly guess this piece's argument;
-  4 = clearly on-topic, slightly generic scene; 3 = the scene could sit on many unrelated posts
+- specificity: 5 = with its headline, a scroller would correctly guess this piece's argument —
+  the kicker + headline name the exact topic and the scene shows the human stakes of it (a
+  generic office is fine when kicker, headline and emotion are specific; a 5 needs all three
+  working together); 4 = clearly on-topic, slightly generic scene; 3 = the scene could sit on many unrelated posts
   even with the headline; 2 or less = misleading or off-topic.
 - no_cliche (5 = no stock symbol at all), thumbnail_read, craft (no artifacts, an authentic
   face), scroll_stop (would it stop a scroll — a readable, fitting emotion counts most), brand_fit
@@ -639,6 +642,8 @@ def _staged_inspect(image_path: str, concept: Any, hook_text: Optional[str],
                 {"type": "text", "text": _TARGETED_JUDGE_PROMPT.format(
                     surface=surface or "post", blind=blind or "(no description)",
                     thesis=concept.thesis,
+                    kicker=(f'"{getattr(concept, "kicker", "")}"' if getattr(concept, "kicker", "")
+                            else "(none)"),
                     headline=f'"{hook_text}"' if hook_text else "(none — judge the image alone)",
                     emotional_beat=getattr(concept, "emotional_beat", "") or "the piece's mood",
                     valence=valence, valence_hint=_VALENCE_HINTS.get(valence, ""),
@@ -807,7 +812,8 @@ def _verdict_rank(verdict: QualityVerdict) -> tuple:
 
 
 def _composite(raw_path: str, hook_text: Optional[str], surface: str, layout: Optional[str],
-               brand_kit: Optional[str]) -> Optional[str]:
+               brand_kit: Optional[str], kicker: Optional[str] = None,
+               signature: Optional[str] = None) -> Optional[str]:
     """The render with its headline typeset on, or None when there is no headline or it fails.
 
     A compositing failure is a warning, never a lost render: the raw image still ships.
@@ -818,7 +824,8 @@ def _composite(raw_path: str, hook_text: Optional[str], surface: str, layout: Op
 
     try:
         return compose_headline(raw_path, hook_text, layout=layout,
-                                brand=brand_style(brand_kit), surface=surface)
+                                brand=brand_style(brand_kit), surface=surface, kicker=kicker,
+                                signature=signature)
     except Exception as e:
         log_warning("Headline compositing failed — shipping the render without it", exc=e,
                     surface=surface, action_type="image_compose")
@@ -829,7 +836,8 @@ def _gate_loop(render_once, *, prompt: str, surface: str, focal_concept: Optiona
                concept: Any, hook_text: Optional[str], user_id: Optional[int],
                post_id: Optional[int], render_info: Optional[dict],
                log_message: str, layout: Optional[str] = None,
-               brand_kit: Optional[str] = None) -> Optional[str]:
+               brand_kit: Optional[str] = None,
+               signature: Optional[str] = None) -> Optional[str]:
     """The bounded render → composite → judge → repair loop both gated renderers share.
 
     ``render_once(current_prompt)`` returns ``(path, backend, info)`` — ``path`` None means the
@@ -859,7 +867,9 @@ def _gate_loop(render_once, *, prompt: str, surface: str, focal_concept: Optiona
                 f"{current_prompt}\n\n{emotion_boost}" if emotion_boost else current_prompt)
             if not cand_path:
                 return None
-            composite = _composite(cand_path, hook_text, surface, layout, brand_kit)
+            composite = _composite(cand_path, hook_text, surface, layout, brand_kit,
+                                   kicker=getattr(concept, "kicker", "") or None,
+                                   signature=signature)
             gate_kwargs = ({"concept": concept, "hook_text": hook_text,
                             "composite_path": composite} if concept is not None else {})
             verdict = inspect_render_quality(cand_path, focal_concept or prompt[:200],
@@ -921,7 +931,8 @@ def render_avatar_image_gated(prompt: str, *, avatar: dict, user_id: Optional[in
                               concept: Any = None,
                               hook_text: Optional[str] = None,
                               layout: Optional[str] = None,
-                              brand_kit: Optional[str] = None) -> Optional[str]:
+                              brand_kit: Optional[str] = None,
+                              signature: Optional[str] = None) -> Optional[str]:
     """LoRA render of an image the author appears in, behind the SAME bounded gate as the base.
 
     Likeness never renders through the gpt-image path (``generate_post_image`` owns the avatar
@@ -962,7 +973,7 @@ def render_avatar_image_gated(prompt: str, *, avatar: dict, user_id: Optional[in
     return _gate_loop(render_once, prompt=prompt, surface=surface, focal_concept=focal_concept,
                       concept=concept, hook_text=hook_text, user_id=user_id, post_id=post_id,
                       render_info=render_info, log_message="Avatar image failed the quality gate",
-                      layout=layout, brand_kit=brand_kit)
+                      layout=layout, brand_kit=brand_kit, signature=signature)
 
 
 def render_image_gated(prompt: str, *, surface: str, ratio: str = "1:1",
@@ -975,7 +986,8 @@ def render_image_gated(prompt: str, *, surface: str, ratio: str = "1:1",
                        concept: Any = None,
                        hook_text: Optional[str] = None,
                        layout: Optional[str] = None,
-                       brand_kit: Optional[str] = None) -> str:
+                       brand_kit: Optional[str] = None,
+                       signature: Optional[str] = None) -> str:
     """Render with the bounded vision gate. Returns the best candidate's path.
 
     Surfaces outside IMAGE_QUALITY_GATE_SURFACES get one advisory-only pass (verdict logged,
@@ -991,7 +1003,8 @@ def render_image_gated(prompt: str, *, surface: str, ratio: str = "1:1",
     is then built from the rubric's failing criteria, and ``IMAGE_GATE_CANDIDATES`` > 1 renders
     two candidates per attempt and keeps the better. On covers and posts ``hook_text`` is
     composited onto every candidate by ``image_compose`` (in ``layout``, in ``brand_kit``'s exact
-    colors) — the render itself carries no text — and the COMPOSITE is what returns.
+    colors) — the render itself carries no text — and the COMPOSITE is what returns, with the
+    concept's kicker above the headline and ``signature`` as a byline (round 7).
     """
     def render_once(current_prompt: str) -> tuple:
         # The backend that RENDERED, not the one configured: under `auto` a gpt-image failure
@@ -1007,4 +1020,4 @@ def render_image_gated(prompt: str, *, surface: str, ratio: str = "1:1",
     return _gate_loop(render_once, prompt=prompt, surface=surface, focal_concept=focal_concept,
                       concept=concept, hook_text=hook_text, user_id=user_id, post_id=post_id,
                       render_info=render_info, log_message="Image failed the quality gate",
-                      layout=layout, brand_kit=brand_kit)
+                      layout=layout, brand_kit=brand_kit, signature=signature)

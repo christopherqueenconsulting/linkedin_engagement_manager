@@ -124,9 +124,9 @@ class TestRefusalFilterIsAnchoredToRefusals:
     """
 
     @pytest.mark.parametrize("prompt_text", [
-        ("A photorealistic scene of an engineer studying a wall display of large language model "
-         "routing costs, shallow depth of field, dramatic rim light, modern office at dusk."),
-        ("A close-up of a founder at a blank whiteboard mapping an AI language model pipeline, warm "
+        ("A photorealistic scene of an engineer explaining large language model routing costs "
+         "to a colleague, shallow depth of field, dramatic rim light, modern office at dusk."),
+        ("A close-up of a founder describing an AI language model pipeline to her team, warm "
          "window light, one bold orange accent, editorial photograph."),
     ])
     def test_legitimate_ai_subject_matter_is_accepted(self, prompt_text):
@@ -243,10 +243,10 @@ def _concept(**overrides) -> ImageConcept:
 
 _GROUNDED = {"focal_concept": "an agency owner facing unpaid invoices before payroll",
              "prompt": ("A candid editorial photograph of an agency owner at a kitchen table "
-                        "late at night, a stack of unpaid invoices fanned beside a printed "
-                        "payroll run, every page out of focus, warm gold lamp light from "
-                        "camera left, shot on a 35mm lens at f/2, Kodak Portra 400 tones, subtle film grain."),
-             "required_entities": ["unpaid invoices", "payroll run", "agency owner"],
+                        "late at night, jaw tight over the payroll run ahead, warm gold lamp light "
+                        "from camera left, shot on a 35mm lens at f/2, Kodak Portra 400 tones, "
+                        "subtle film grain."),
+             "required_entities": ["payroll run", "agency owner"],
              "hook_text": None}
 
 # Round 5: a cover carries no paper prop, so newsletter-surface tests use this paper-free twin.
@@ -346,9 +346,8 @@ _FIVE_EDITIONS = (
      _concept(thesis="Unused seats are where an AI budget quietly goes",
               specific_entities=("budget spreadsheet", "finance manager", "unused seats")),
      {"focal_concept": "a finance manager highlighting unused seats",
-      "prompt": ("A candid editorial photograph of a finance manager highlighting rows of "
-                 "unused seats on an out of focus budget spreadsheet pinned to a corkboard, a "
-                 "colleague looking over her shoulder in a charcoal blazer, morning light, shot on a "
+      "prompt": ("A candid editorial photograph of a finance manager frowning across a "
+                 "meeting table at a colleague in a charcoal blazer, morning light, shot on a "
                  "35mm lens at f/2.8, natural skin texture, subtle film grain.")}),
 )
 
@@ -469,8 +468,9 @@ class TestStage2Contract:
         with patch(_LLM, side_effect=[_resp(generic), _resp(_GROUNDED)]) as llm:
             brief = build_image_brief("c", surface="carousel", concept=_concept())
         retry = llm.call_args_list[1][1]["messages"][1]["content"]
-        assert "unpaid invoices; payroll run; agency owner" in retry
-        assert set(brief.required_entities) == {"unpaid invoices", "payroll run", "agency owner"}
+        assert "show at least one of: payroll run; agency owner" in retry
+        # Paper anchors ("unpaid invoices") are never asked for since round 7.
+        assert set(brief.required_entities) == {"payroll run", "agency owner"}
 
     def test_a_weak_concept_skips_entity_coverage(self):
         weak = _concept(specific_entities=("payroll run",), weak=True)
@@ -549,10 +549,9 @@ class TestFallbackIsBuiltFromThePiece:
         brief = _fallback_brief("c", surface="carousel", ratio="16:9", context="",
                                 concept=_concept())
         assert brief.prompt.startswith("A photorealistic candid editorial photograph for a "
-                                       "LinkedIn carousel slide of unpaid invoices and payroll run")
-        assert "agency owner in the frame" in brief.prompt
+                                       "LinkedIn carousel slide of payroll run and agency owner")
         assert brief.fallback and brief.treatment == "concrete_scene"
-        assert len(brief.required_entities) == 3
+        assert len(brief.required_entities) == 2
 
     def test_a_graphic_falls_back_to_a_photograph_never_a_cutout_of_a_number(self):
         """Gauntlet round 1: the graphic fallback rendered "a photographic cutout of $30K"."""
@@ -588,7 +587,7 @@ class TestFallbackIsBuiltFromThePiece:
     def test_a_people_fallback_uses_the_audience(self):
         brief = _fallback_brief("c", surface="carousel", ratio="1:1", context="",
                                 concept=_concept(treatment="people_scene"))
-        assert "agency owners caught mid-conversation around unpaid invoices" in brief.prompt
+        assert "agency owners caught mid-conversation around payroll run" in brief.prompt
 
     def test_a_cliche_entity_is_never_interpolated(self):
         concept = _concept(specific_entities=("leaking pipes", "plumbing invoice", "van"),
@@ -715,7 +714,7 @@ _FACTS_CONCEPT = _concept(
     visual_anchors=("a marketing lead", "a printed audit checklist", "a cluttered meeting room"))
 _ANCHORED = {"focal_concept": "a marketing lead working through an audit checklist",
              "prompt": ("A photorealistic candid photograph of a marketing lead in a cluttered "
-                        "meeting room ticking through a blank printed audit checklist with a gold pencil, "
+                        "meeting room, arms crossed, a gold pencil tucked behind her ear, "
                         "soft window light from camera left, shot on a 35mm lens at f/2, visible "
                         "skin pores, fabric wear, subtle film grain.")}
 
@@ -758,8 +757,8 @@ class TestFactsAreNeverDrawn:
     def test_anchors_not_facts_drive_coverage(self):
         with patch(_LLM, return_value=_resp(_ANCHORED)):
             brief = build_image_brief("c", surface="carousel", concept=_FACTS_CONCEPT)
-        assert set(brief.required_entities) == {"a marketing lead", "a printed audit checklist",
-                                                "a cluttered meeting room"}
+        # The checklist anchor is a prop (round 7) and is never asked for.
+        assert set(brief.required_entities) == {"a marketing lead", "a cluttered meeting room"}
 
     def test_without_anchors_only_plain_facts_stand_in(self):
         from cqc_lem.utilities.ai.image_brief import usable_anchors
@@ -782,8 +781,8 @@ class TestWordsOnSurfaces:
         assert "puts words on a surface" in llm.call_args_list[1][1]["messages"][1]["content"]
 
     @pytest.mark.parametrize("phrase", [
-        "a man reading a printed report seen at a steep angle", "a blank monitor glowing softly",
-        "a closed laptop with an abstract wallpaper",
+        "a man reading over a colleague's shoulder", "the back of a laptop glowing softly",
+        "a phone held face-down on the table",
     ])
     def test_reading_as_an_activity_and_blank_screens_pass(self, phrase):
         ok = dict(_ANCHORED, prompt=_ANCHORED["prompt"] + f" Nearby, {phrase}.")
@@ -863,17 +862,15 @@ class TestPhotographicLanguage:
 
 
 # Round 3 of #2241: the hook carries the thesis, the visual carries emotion and specificity.
-_IDEA = ("An agency owner wincing at a payroll run printout as unpaid invoices spill off the "
-         "desk, a warm gold lamp the only light.")
+_IDEA = ("An agency owner wincing at the payroll run ahead as the office empties, a warm gold "
+         "lamp the only light.")
 _COVER_CONCEPT = _concept(hook_phrase=_HOOK, treatment="people_scene",
                           emotional_beat="a wince of dread", chosen_idea=_IDEA,
                           rejected_ideas=("A stack of unpaid invoices under a paperweight.",))
 _COVER = {"focal_concept": "an agency owner wincing at payroll",
-          "prompt": ('A photorealistic close medium shot of an agency owner wincing at a payroll '
-                     'run printout as unpaid invoices spill off the desk, every page out of '
-                     'focus, the printout a blank sheet seen edge-on, a warm gold lamp the only '
-                     'light, visible skin pores, 35mm f/2, a plain charcoal wall calm on the '
-                     'left.')}
+          "prompt": ('A photorealistic close medium shot of an agency owner wincing at the '
+                     'payroll run ahead, a warm gold lamp the only light, visible skin pores, '
+                     '35mm f/2, a plain charcoal wall calm on the left.')}
 
 
 @pytest.mark.unit
@@ -888,7 +885,7 @@ class TestEveryCoverCarriesAHook:
         assert brief.hook_text == _HOOK and brief.treatment == "people_scene"
         assert _HOOK not in brief.prompt
         user = llm.call_args[1]["messages"][1]["content"]
-        assert "NEGATIVE SPACE: keep the LEFT 40% of the frame calm" in user
+        assert "NEGATIVE SPACE: keep the LEFT half of the frame calm" in user
 
     def test_a_cover_prompt_drawing_its_hook_is_rejected(self):
         drawn = dict(_COVER, prompt=_COVER["prompt"] + f' The headline "{_HOOK}" on the left.')
@@ -1010,9 +1007,9 @@ class TestRoundThreeFallback:
     def test_the_fallback_builds_from_the_chosen_idea_and_keeps_the_hook(self):
         brief = _fallback_brief("c", surface="newsletter", ratio="16:9", context="",
                                 concept=_COVER_CONCEPT, treatment="people_scene")
-        assert "agency owner wincing at a payroll run printout" in brief.prompt
+        assert "agency owner wincing at the payroll run ahead" in brief.prompt
         assert brief.hook_text == _HOOK and _HOOK not in brief.prompt
-        assert "Compose to keep the LEFT 40% of the frame calm" in brief.prompt
+        assert "Compose to keep the LEFT half of the frame calm" in brief.prompt
         assert "caught mid-conversation around" not in brief.prompt, "never a bare anchor list"
         assert "gold accent" in brief.prompt
 
@@ -1100,89 +1097,63 @@ class TestRoundFourBrief:
             build_image_brief("c", surface="carousel", concept=_concept())
         assert "asks for a readable document" in llm.call_args_list[1][1]["messages"][1]["content"]
 
-    def test_a_document_with_no_unreadable_qualifier_is_refused(self):
-        bad = dict(_GROUNDED, prompt=_GROUNDED["prompt"].replace(", every page out of focus", ""))
+    @pytest.mark.parametrize("prop", ["a blank invoice", "an out of focus report",
+                                      "a sheet seen at a steep angle", "a clipboard"])
+    def test_a_document_is_refused_even_with_an_unreadable_qualifier(self, prop):
+        """Round 7: the renderer ignores "blank", so paper is refused outright."""
+        bad = dict(_GROUNDED, prompt=_GROUNDED["prompt"] + f" On the table, {prop}.")
         with patch(_LLM, side_effect=[_resp(bad), _resp(_GROUNDED)]) as llm:
             build_image_brief("c", surface="carousel", concept=_concept())
-        assert "without saying how it stays unreadable" in \
+        assert "paper, charts and code render legible text" in \
             llm.call_args_list[1][1]["messages"][1]["content"]
-
-    @pytest.mark.parametrize("qualifier", ["blank", "seen at a steep angle so no writing is legible",
-                                           "out of focus"])
-    def test_any_unreadable_qualifier_passes(self, qualifier):
-        ok = dict(_GROUNDED, prompt=_GROUNDED["prompt"].replace("every page out of focus",
-                                                                f"every page {qualifier}"))
-        with patch(_LLM, return_value=_resp(ok)) as llm:
-            build_image_brief("c", surface="carousel", concept=_concept())
-        assert llm.call_count == 1
 
     def test_the_fallback_blanks_documents_and_states_the_type(self):
         brief = _fallback_brief("c", surface="newsletter", ratio="16:9", context="The author is x.",
                                 concept=_COVER_CONCEPT, treatment="people_scene")
-        assert "every screen in the frame is blank" in brief.prompt
-        assert "any paper is a blank sheet seen edge-on" in brief.prompt
+        assert "hands at rest or around a mug" in brief.prompt
+        from cqc_lem.utilities.ai.image_brief import prop_failure
+        assert prop_failure(brief.prompt) is None
         assert "sans-serif" not in brief.prompt, "type is set by image_compose, never rendered"
         assert "The author is" not in brief.prompt
 
 
-_DOC_IDEA = ("A finance lead frowning at an overdue invoice held up to the window, her jaw set "
-             "in disbelief.")
-
-
 @pytest.mark.unit
-class TestRoundFiveNoPaperOnCovers:
-    """Round 5 of #2241: paper props kept rendering legible text even under the blank rule."""
+class TestNoPropsAnywhere:
+    """Round 7 of #2241: stray text on props on every surface — the props are refused outright."""
 
-    @pytest.mark.parametrize("prop", ["a printed audit checklist", "a clipboard", "a report",
-                                      "a stack of documents", "a printout"])
-    def test_a_cover_with_a_paper_prop_is_rejected(self, prop):
-        bad = dict(_GROUNDED_COVER, prompt=_GROUNDED_COVER["prompt"]
-                   + f" Beside her, {prop}, out of focus.")
+    @pytest.mark.parametrize("surface", ["newsletter", "post_image", "carousel", "video",
+                                         "thumbnail"])
+    @pytest.mark.parametrize("prop", ["a proposal on a clipboard", "a cost checklist",
+                                      "a blank form", "a monthly bill", "a ring binder",
+                                      "a chart on the wall", "code on the wall",
+                                      "a laptop open in front of her"])
+    def test_props_are_refused_on_every_surface(self, surface, prop):
+        bad = dict(_GROUNDED_COVER, prompt=_GROUNDED_COVER["prompt"] + f" Beside her, {prop}.")
         with patch(_LLM, side_effect=[_resp(bad), _resp(_GROUNDED_COVER)]) as llm:
-            brief = build_image_brief("c", surface="newsletter", concept=_concept())
-        assert brief.prompt == _GROUNDED_COVER["prompt"]
-        assert "a cover carries no paper props" in \
-            llm.call_args_list[1][1]["messages"][1]["content"]
+            build_image_brief("c", surface=surface, concept=_concept())
+        reason = llm.call_args_list[1][1]["messages"][1]["content"]
+        assert "legible text" in reason or "facing the camera" in reason
 
-    def test_the_cover_is_told_no_paper(self):
-        with patch(_LLM, return_value=_resp(_GROUNDED_COVER)) as llm:
-            build_image_brief("c", surface="newsletter", concept=_concept())
-        assert "COVER PROPS: no paper in frame" in llm.call_args[1]["messages"][1]["content"]
+    @pytest.mark.parametrize("ok", ["the back of a laptop on the table",
+                                    "a screen facing away from camera",
+                                    "a phone held face-down beside her mug"])
+    def test_a_screen_seen_from_behind_passes(self, ok):
+        from cqc_lem.utilities.ai.image_brief import prop_failure
+        assert prop_failure(_GROUNDED_COVER["prompt"] + f" {ok}.") is None
 
-    def test_paper_is_still_fine_off_the_cover(self):
+    def test_every_brief_is_told_the_alternatives(self):
         with patch(_LLM, return_value=_resp(_GROUNDED)) as llm:
             build_image_brief("c", surface="carousel", concept=_concept())
-        assert llm.call_count == 1
-        assert "COVER PROPS" not in llm.call_args[1]["messages"][1]["content"]
+        user = llm.call_args[1]["messages"][1]["content"]
+        assert "PROPS: no paper of any kind in frame" in user
+        assert "Hands hold nothing, or a mug, pen or phone held face-down" in user
+        assert "gesture, posture, an interaction between two people, and the environment" in user
 
-    def test_an_idea_about_a_document_allows_only_a_blank_sheet_seen_edge_on(self):
-        concept = _concept(chosen_idea=_DOC_IDEA)
-        loose = {"focal_concept": "a finance lead and an overdue invoice",
-                 "prompt": ("A candid photograph of a finance lead frowning at an overdue invoice "
-                            "held up to the window, out of focus, her jaw set in disbelief, a gold "
-                            "scarf, 35mm f/2, subtle film grain, agency owner in the background.")}
-        edge = dict(loose, prompt=loose["prompt"].replace(
-            "an overdue invoice held up to the window, out of focus",
-            "a blank sheet seen edge-on held up to the window"))
-        with patch(_LLM, side_effect=[_resp(loose), _resp(edge)]) as llm:
-            brief = build_image_brief("c", surface="newsletter", concept=concept)
-        assert brief.prompt == edge["prompt"]
-        user = llm.call_args_list[0][1]["messages"][1]["content"]
-        assert "the ONLY paper in frame is a blank sheet seen edge-on" in user
-        assert "a blank sheet seen edge-on — describe it exactly so" in \
-            llm.call_args_list[1][1]["messages"][1]["content"]
-
-    def test_the_rule_follows_the_chosen_idea(self):
-        from cqc_lem.utilities.ai.image_brief import cover_paper_rule
-        assert cover_paper_rule(_concept(chosen_idea=_DOC_IDEA)) == "edge_on"
-        assert cover_paper_rule(_concept(chosen_idea="A founder laughing in relief.")) == "forbid"
-        assert cover_paper_rule(None) == "forbid"
-
-    def test_a_cover_fallback_drops_paper_anchors_and_says_edge_on(self):
-        brief = _fallback_brief("c", surface="newsletter", ratio="16:9", context="",
-                                concept=_concept())
-        assert "unpaid invoices" not in brief.prompt and "agency owner" in brief.prompt
-        assert "any paper is a blank sheet seen edge-on" in brief.prompt
+    def test_prop_anchors_are_never_asked_for(self):
+        from cqc_lem.utilities.ai.image_brief import usable_anchors
+        concept = _concept(visual_anchors=("an agency owner", "a stack of invoices",
+                                           "a laptop", "a busy kitchen"))
+        assert usable_anchors(concept) == ["an agency owner", "a busy kitchen"]
 
 
 _POST_CONCEPT = _concept(hook_phrase=_HOOK, treatment="people_scene",
@@ -1203,15 +1174,15 @@ class TestPostImageCoverRecipe:
             brief = build_image_brief("c", surface="post_image", concept=_POST_CONCEPT)
         assert llm.call_count == 1 and brief.hook_text == _HOOK and not brief.fallback
         user = llm.call_args[1]["messages"][1]["content"]
-        assert "NEGATIVE SPACE: keep the top third of the frame calm" in user
-        assert "COVER PROPS: no paper in frame" in user
+        assert "NEGATIVE SPACE: keep the top 40% of the frame calm" in user
+        assert "PROPS: no paper of any kind in frame" in user
 
     def test_a_post_with_a_paper_prop_is_rejected(self):
         bad = dict(_POST, prompt=_POST["prompt"].replace("a gold scarf", "a gold scarf, a "
                                                                           "clipboard"))
         with patch(_LLM, side_effect=[_resp(bad), _resp(_POST)]) as llm:
             build_image_brief("c", surface="post_image", concept=_POST_CONCEPT)
-        assert "a cover carries no paper props" in \
+        assert "paper, charts and code render legible text" in \
             llm.call_args_list[1][1]["messages"][1]["content"]
 
     @pytest.mark.parametrize("surface", ["post_image", "newsletter"])
@@ -1235,7 +1206,7 @@ class TestPostImageCoverRecipe:
     def test_a_carousel_is_not_held_to_the_recipe(self):
         dark = dict(_GROUNDED, prompt=_GROUNDED["prompt"] + " Moody low-key light.")
         with patch(_LLM, return_value=_resp(dark)) as llm:
-            brief = build_image_brief("c", surface="carousel", concept=_POST_CONCEPT)
+            brief = build_image_brief("c", surface="carousel", concept=_concept())
         assert llm.call_count == 1 and brief.hook_text is None
 
     @pytest.mark.parametrize("treatment", ["people_scene", "concrete_scene"])
@@ -1252,7 +1223,7 @@ class TestPostImageCoverRecipe:
     def test_a_post_fallback_is_bright_and_keeps_its_top_third_calm(self):
         brief = _fallback_brief("c", surface="post_image", ratio="4:5", context="",
                                 concept=_POST_CONCEPT, treatment="people_scene")
-        assert "Compose to keep the top third of the frame calm" in brief.prompt
+        assert "Compose to keep the top 40% of the frame calm" in brief.prompt
         assert "bright, high-key warm daylight" in brief.prompt
         assert brief.hook_text == _HOOK and _HOOK not in brief.prompt
 
@@ -1280,10 +1251,18 @@ class TestRoundSixBrief:
             build_image_brief("c", surface="newsletter", concept=concept, avatar=avatar)
         assert "CAST:" not in llm.call_args[1]["messages"][1]["content"]
 
-    def test_a_concept_without_rotation_gets_one(self):
+    def test_a_callers_concept_is_used_exactly_as_given(self):
+        """Round 7: the caller's concept is never decorated (PR #2249 relies on it)."""
+        concept = _concept(treatment="people_scene")
         with patch(_LLM, return_value=_resp(_GROUNDED_COVER)):
-            brief = build_image_brief("c", surface="newsletter",
-                                      concept=_concept(treatment="people_scene"))
+            brief = build_image_brief("c", surface="newsletter", concept=concept)
+        assert brief.concept is concept and not concept.layout and concept.cast is None
+
+    def test_a_concept_this_call_computes_gets_a_rotation(self):
+        with patch("cqc_lem.utilities.ai.image_brief.analyze_content_for_image",
+                   return_value=_concept(treatment="people_scene")), \
+             patch(_LLM, return_value=_resp(_GROUNDED_COVER)):
+            brief = build_image_brief("c", surface="newsletter")
         assert brief.concept.layout and brief.concept.cast
 
     def test_valence_reaches_the_author_and_the_people_template(self):
@@ -1305,7 +1284,7 @@ class TestRoundSixBrief:
         with patch(_LLM, side_effect=[_resp(papered), _resp(plain), _resp(_GROUNDED_COVER)]) as llm:
             brief = build_image_brief("c", surface="video", concept=_concept())
         reasons = [c[1]["messages"][1]["content"] for c in llm.call_args_list[1:]]
-        assert "a cover carries no paper props" in reasons[0]
+        assert "paper, charts and code render legible text" in reasons[0]
         assert "no deliberate brand-color element" in reasons[1]
         assert brief.prompt == _GROUNDED_COVER["prompt"] and brief.hook_text is None
 
@@ -1313,3 +1292,38 @@ class TestRoundSixBrief:
         from cqc_lem.utilities.ai.image_brief import _SYSTEM_PROMPT
         assert "The image carries NO text at all, ever" in _SYSTEM_PROMPT
         assert "one exception" not in _SYSTEM_PROMPT
+
+
+
+@pytest.mark.unit
+class TestRoundSevenBrief:
+    @pytest.mark.parametrize("pain", ["eyes closed in relief", "her eyes squeezed shut",
+                                      "a hand on her chest"])
+    def test_good_news_never_reads_as_pain(self, pain):
+        concept = _concept(valence="positive", emotional_beat="relief")
+        bad = dict(_GROUNDED, prompt=_GROUNDED["prompt"] + f" She smiles, {pain}.")
+        with patch(_LLM, side_effect=[_resp(bad), _resp(_GROUNDED)]) as llm:
+            build_image_brief("c", surface="carousel", concept=concept)
+        assert "good news reads as pain" in llm.call_args_list[1][1]["messages"][1]["content"]
+
+    def test_a_negative_piece_may_close_its_eyes(self):
+        concept = _concept(valence="negative")
+        ok = dict(_GROUNDED, prompt=_GROUNDED["prompt"] + " Eyes closed for a beat.")
+        with patch(_LLM, return_value=_resp(ok)) as llm:
+            build_image_brief("c", surface="carousel", concept=concept)
+        assert llm.call_count == 1
+
+    def test_the_positive_face_is_spelled_out(self):
+        concept = _concept(valence="positive")
+        with patch(_LLM, return_value=_resp(_GROUNDED)) as llm:
+            build_image_brief("c", surface="carousel", concept=concept)
+        assert ("VALENCE: positive — a quiet, satisfied half-smile and relaxed shoulders, eyes "
+                "open — never eyes closed, never a hand on the chest") in \
+            llm.call_args[1]["messages"][1]["content"]
+
+    def test_lower_third_keeps_every_subject_up_top(self):
+        from cqc_lem.utilities.ai.image_brief import NEGATIVE_SPACE
+        assert "faces, torsos and hands — in the UPPER 55% of the frame" in \
+            NEGATIVE_SPACE["lower_third_band"]
+        assert set(NEGATIVE_SPACE) >= {"panel_left", "panel_right", "lower_third_band",
+                                       "band_top", "full_bleed"}

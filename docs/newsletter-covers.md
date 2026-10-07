@@ -234,6 +234,16 @@ follows the piece's valence and must be authentic, and the judge grades the comp
 anchored specificity descriptors (`docs/image-stack.md`, "The headline is composited"). The stored
 cover is the COMPOSITE; the raw render's path rides `render_info["raw_render_path"]`.
 
+### Gauntlet round 6 → the editorial cover
+
+Compositing worked (exact colors, the brand font, rotating layouts, a varied cast); what remained
+was type too small for a thumbnail, a `full_bleed` headline across a face, a lowercase hook,
+props still carrying stray text, "relief" rendered as pain, and both judges calling every scene a
+generic office. The cover is now a kicker + hero numeral + headline + byline system with a
+cap-height floor and a growing backing; props are refused on every surface; and the byline is the
+newsletter title when the caller passes `signature`, else the author's profile name
+(`docs/image-stack.md`, "The cover is an editorial system").
+
 ### Rejections land for review, with their reason
 
 A definite judge failure on `no_cliche` or `specificity` after the attempt budget returns verdict

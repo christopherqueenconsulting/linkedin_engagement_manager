@@ -51,6 +51,52 @@ judge rightly scored specificity 1 on all four covers. So Stage 1 returns two li
   down. Briefs, Stage 3 and the vision judge's specificity all work from `usable_anchors()` — the
   anchors, or for a concept with none, its plain common-noun facts.
 
+## The cover is an editorial system (round 7)
+
+Round 6's composites were a big step (exact gold and charcoal, Montserrat, rotating layouts, a
+diverse cast), but gpt-4.1 and the blind critic both still read every scene as "a generic office"
+— the headline carried the topic alone, because the clichés that used to say "AI" are rightly
+banned. `image_compose` now typesets a whole editorial cover from Stage 1's facts:
+
+- **Kicker** — a 1–3 word UPPERCASE topic tag ("AI CONTENT AUDIT", "LLM COSTS", "B2B BUYING")
+  above the headline, in the brand accent (dark gold), letter-spaced, at `KICKER_RATIO` (35%) of
+  the headline size. Stage 1 returns it; `valid_kicker` keeps it only when every word matches the
+  source by its root (AI/LLM/B2B… always pass). It is what makes a human-reaction scene read as
+  "about AI" without a cliché.
+- **Hero numeral** — `split_hero` lifts a grounded number ("45%", "$30K", "53.7%") onto its own line
+  at `HERO_RATIO` (2×) the headline size in the brand primary; the rest of the hook goes underneath
+  in the brand `neutral_light` (off-white). A hook with no number stays all gold.
+- **Byline** — the newsletter's title when the caller passes `signature`, otherwise the author's
+  `profile.full_name` (already in hand — no new DB read), set small at the bottom in off-white at
+  50% opacity; omitted when empty. Posts take the author's name the same way once their call site
+  passes it.
+- **Bigger type.** Everything scales from one headline size, binary-searched to the largest the box
+  allows (so the widest line fills the box). The floor is a CAP HEIGHT of 9% of the image height on
+  landscape covers and 6% on 4:5 posts (`MIN_CAP_FRACTION`); when the default backing cannot hold
+  that in three lines, the panel widens (`PANEL_WIDTHS` 38→43→48%) or the band deepens
+  (`BAND_HEIGHTS` 26→32→38%) before settling, and a result still under the floor is logged. Hooks
+  are sentence-cased (first letter up, acronyms kept), in Stage 1 and again at compositing.
+- **`full_bleed` is out of the rotation** (it set a headline across a face); covers rotate
+  `panel_left`, `panel_right`, `lower_third_band`, posts `band_top`. Every layout has its own
+  negative-space instruction — `lower_third_band` keeps faces, torsos and hands in the upper 55%.
+- **No props, on any surface.** "Blank" never held: "Proposal" on a clipboard, "COST REDUCTION
+  CHECKLIST", "KPI Dashboard", `console.log` on a monitor, "Name / Date" on a form. `prop_failure`
+  refuses paper of every kind (documents, sheets, reports, proposals, clipboards, checklists, forms,
+  invoices, bills, folders, binders), whiteboard or chart content and code — on EVERY surface, the
+  round-5 edge-on exception included — and any screen not explicitly the back of a laptop, facing
+  away or face-down. The brief gives the author the alternatives (`PROPS_DIRECTIVE`: gesture,
+  posture, two people interacting, the environment; hands empty or holding a mug, pen or phone
+  face-down), prop anchors are never asked for, and prop ideas are filtered before ranking.
+- **Good news never reads as pain.** On a positive valence the face is "a quiet, satisfied
+  half-smile and relaxed shoulders, eyes open", and eyes closed/squeezed or a hand on the chest is
+  refused (`_PAINED_RELIEF`) — "relief" had rendered as both.
+- **The judge reads the cover as one.** The targeted prompt carries the kicker, says "Read the
+  kicker, headline and scene together as one cover", and the 5 descriptor adds "the kicker +
+  headline name the exact topic and the scene shows the human stakes of it" — a generic office is
+  fine when kicker, headline and emotion are specific.
+- **A caller's concept is used exactly as given** — only a concept `build_image_brief` computes
+  itself gets the per-piece layout/cast rotation (PR #2249 relies on this).
+
 ## The headline is composited, never rendered (round 6)
 
 **This supersedes every earlier "hook in the render" rule below** — the round-3 cover layout, the

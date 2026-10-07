@@ -124,6 +124,7 @@ Respond with ONLY a JSON object:
 actions or situations>"],
  "emotional_beat": "<the feeling the reader should get, a few words>",
  "valence": "positive|negative|mixed",
+ "kicker": "<1-3 word UPPERCASE topic tag, words from the article: AI CONTENT AUDIT, LLM COSTS>",
  "hook_phrase": "<2-6 words>",
  "hook_alternatives": ["<two more hooks, same rules>"],
  "hook_candidates": {{"number_claim": "<…>", "contrast": "<…>", "question": "<…>",
@@ -153,6 +154,10 @@ carries the THESIS; the image carries emotion and specificity.
 
 Rules for valence: positive when the piece is about a saving, a win or relief; negative when it \
 is about a risk, a loss or a mistake; mixed otherwise. The face in the image follows it.
+
+Rules for kicker: the 1-3 word topic tag a magazine prints above a headline — "AI CONTENT AUDIT", \
+"LLM COSTS", "AI FACT-CHECKING", "B2B BUYING". Every word comes from the article. It is what tells \
+a scroller what the cover is ABOUT, so the scene never has to.
 
 Rules for visual_ideas: exactly 3 one-sentence ideas, each combining the hook with a concrete \
 scene or juxtaposition built from the visual anchors and the emotional beat — for an article \
@@ -242,6 +247,8 @@ class ImageConcept:
         valence: positive / negative / mixed — the emotion's direction must match it.
         hook_shape: Which ``HOOK_SHAPES`` the chosen hook takes.
         hook_options: Every valid hook Stage 1 offered, by shape, for the rotation to pick from.
+        kicker: The 1-3 word UPPERCASE topic tag ``image_compose`` sets above the headline, every
+            word grounded in the source ('' when none survived validation).
     """
 
     thesis: str
@@ -262,6 +269,7 @@ class ImageConcept:
     valence: str = "mixed"
     hook_shape: str = ""
     hook_options: Optional[dict[str, str]] = None
+    kicker: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         """The concept as a JSON-safe dict, for prompts and receipts."""
@@ -402,6 +410,36 @@ def hook_is_faithful(hook: str, source: str) -> bool:
     return True
 
 
+_KICKER_ACRONYMS = frozenset({"ai", "llm", "llms", "b2b", "b2c", "saas", "seo", "crm", "roi"})
+_KICKER_MAX_WORDS = 3
+
+
+def valid_kicker(kicker: Any, source: str) -> str:
+    """The kicker, uppercased, if it is 1-3 words all drawn from the source; else ''.
+
+    Every word must match a source word by its root (hyphenated parts each count: "FACT-CHECKING"
+    needs "fact" and "check"); the generic acronyms AI, LLM, B2B… always pass.
+
+    Args:
+        kicker: Stage 1's raw kicker.
+        source: The analysed text.
+
+    Returns:
+        The uppercase kicker, or ''.
+    """
+    text = " ".join(str(kicker or "").split()).strip(" .,:;")
+    words = text.split()
+    if not (1 <= len(words) <= _KICKER_MAX_WORDS) or len(text) > 32:
+        return ""
+    lowered = (source or "").lower()
+    for part in re.findall(r"[a-z0-9]+", text.lower()):
+        if part in _KICKER_ACRONYMS or part in _STOPWORDS:
+            continue
+        if not re.search(rf"\b{re.escape(_root(part))}", lowered):
+            return ""
+    return text.upper()
+
+
 def hook_shape_of(hook: str) -> str:
     """Classify a hook into one of ``HOOK_SHAPES``.
 
@@ -448,7 +486,8 @@ def _valid_hook(hook: str, title: Optional[str], topic_text: str = "",
         return ""  # a number with no subject says how much, never of what
     if source is not None and not hook_is_faithful(hook, source):
         return ""  # a number or noun the piece never says
-    return hook
+    # Sentence case: the first letter up (round 7: "audit stops AI waste"); acronyms untouched.
+    return hook[:1].upper() + hook[1:] if hook[:1].islower() else hook
 
 
 def is_title_case(text: str) -> bool:
@@ -565,7 +604,12 @@ def idea_rejection(idea: str, facts: Sequence[str]) -> str:
     Returns:
         A short reason, or ``''``.
     """
-    from cqc_lem.utilities.ai.image_brief import cliche_hit, legible_document, words_on_surface
+    from cqc_lem.utilities.ai.image_brief import (
+        cliche_hit,
+        legible_document,
+        prop_failure,
+        words_on_surface,
+    )
 
     hit = cliche_hit(idea)
     if hit:
@@ -576,6 +620,9 @@ def idea_rejection(idea: str, facts: Sequence[str]) -> str:
     words = words_on_surface(idea) or legible_document(idea)
     if words:
         return f"legible words on a surface ({words!r})"
+    prop = prop_failure(idea)
+    if prop:
+        return f"legible words on a surface ({prop})"
     lowered = {t.lower() for t in re.findall(r"[A-Za-z0-9]+", idea)}
     for fact in facts:
         if is_fact_only(fact):
@@ -680,6 +727,7 @@ def parse_concept(payload: Optional[dict[str, Any]], source: str,
                  if _clean(payload.get("valence"), 20).lower() in VALENCES else "mixed"),
         hook_shape=hook_shape_of(hook) if hook else "",
         hook_options=options or None,
+        kicker=valid_kicker(payload.get("kicker"), source),
         hook_phrase=hook,
         treatment=treatment,
         treatment_rationale=_clean(payload.get("treatment_rationale")),
@@ -781,7 +829,9 @@ def pick_visual_idea(concept: ImageConcept, surface: str = "post_image") -> Imag
 # the author's last ``ROTATION_WINDOW`` receipts, as a sibling of ``enforce_graphic_cap``.
 ROTATION_WINDOW = 4
 # Compositing templates (``image_compose.LAYOUTS``): the headline is typeset, never rendered.
-COVER_LAYOUTS = ("panel_left", "panel_right", "full_bleed", "lower_third_band")
+# ``full_bleed`` is OUT of the rotation (round 7: it set a headline across a woman's face); the
+# compositor still supports it for a caller that asks.
+COVER_LAYOUTS = ("panel_left", "panel_right", "lower_third_band")
 # A 4:5 post keeps its headline in a band at the top, below a margin the crop protects.
 POST_LAYOUTS = ("band_top",)
 SURFACE_LAYOUTS = {"newsletter": COVER_LAYOUTS, "post_image": POST_LAYOUTS}

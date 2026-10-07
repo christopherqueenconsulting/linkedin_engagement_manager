@@ -123,7 +123,7 @@ class TestCompose:
         out = compose_headline(_render(tmp_path, size), "Hidden buyers cost you deals",
                                layout=layout, brand=brand)
         image = Image.open(out).convert("RGB")
-        plan = plan_layout(size, layout)
+        plan = ic.fit_headline(size, layout, "Hidden buyers cost you deals").plan
         corner = (plan.backing.left + 2, plan.backing.top + 2)
         assert image.getpixel(corner) == (0x1F, 0x1F, 0x1F)
         colors = {c for _, c in image.crop((plan.text_box.left, plan.text_box.top,
@@ -178,3 +178,98 @@ class TestBrandStyle:
 
     def test_no_kit_is_the_reference_brand(self):
         assert brand_style(None) == BrandStyle()
+
+
+
+class TestEditorialCoverSystem:
+    """Round 7 of #2241: kicker, hero numeral, headline and byline — typeset by code."""
+
+    @pytest.mark.parametrize("hook,hero,rest", [
+        ("$30K wasted on AI", "$30K", "Wasted on AI"),
+        ("53.7% miss the mark", "53.7%", "Miss the mark"),
+        ("45% less engagement on AI posts", "45%", "Less engagement on AI posts"),
+        ("AI posts: 45% less engagement", "45%", "AI posts: less engagement"),
+        ("Who really buys your AI?", "", "Who really buys your AI?"),
+    ])
+    def test_the_hero_numeral_splits_from_the_hook(self, hook, hero, rest):
+        assert ic.split_hero(hook) == (hero, rest)
+
+    def test_headlines_are_sentence_cased_with_acronyms_kept(self):
+        parts = ic.headline_parts("audit stops AI waste", "ai content audit", "  Chris  Q ")
+        assert parts.rest == "Audit stops AI waste"
+        assert parts.kicker == "AI CONTENT AUDIT" and parts.signature == "Chris Q"
+
+    def test_the_hierarchy_scales_from_the_headline_size(self):
+        fit = ic.fit_cover(_COVER, "panel_left",
+                           ic.headline_parts("45% less engagement on AI posts", "AI CONTENT"))
+        assert ic._hero_size(fit.size) == round(fit.size * 2.0)
+        assert ic._kicker_size(fit.size) == round(fit.size * 0.35)
+        assert fit.block_height <= fit.text_box.height
+
+    @pytest.mark.parametrize("size,layout", [(_COVER, "panel_left"), (_COVER, "panel_right"),
+                                             (_COVER, "lower_third_band"), (_POST, "band_top")])
+    def test_every_element_stays_in_the_safe_area(self, tmp_path, size, layout):
+        out = compose_headline(_render(tmp_path, size, color=(250, 250, 250)),
+                               "45% less engagement on AI posts", layout=layout,
+                               kicker="AI CONTENT AUDIT", signature="Christopher Queen")
+        image = Image.open(out).convert("RGB")
+        w, h = size
+        from PIL import ImageChops
+        for color in (BrandStyle().primary, BrandStyle().accent, BrandStyle().neutral_light):
+            diff = ImageChops.difference(image, Image.new("RGB", size, ic._hex(color)))
+            bbox = diff.convert("L").point(lambda v: 255 if v == 0 else 0).getbbox()
+            assert bbox, f"{color} never drawn"
+            left, top, right, bottom = bbox
+            assert left >= w * SAFE_MARGIN - 1 and right <= w - w * SAFE_MARGIN + 1
+            assert top >= h * SAFE_MARGIN - 1 and bottom <= h - h * SAFE_MARGIN + 1
+
+    def _colors(self, path):
+        return {c for _, c in Image.open(path).convert("RGB").getcolors(maxcolors=1 << 22)}
+
+    def test_a_number_led_hook_sets_the_rest_in_off_white(self, tmp_path):
+        colors = self._colors(compose_headline(_render(tmp_path, _COVER), "$30K wasted on AI"))
+        assert ic._hex(BrandStyle().primary) in colors
+        assert ic._hex(BrandStyle().neutral_light) in colors
+
+    def test_a_hook_without_a_number_is_all_gold(self, tmp_path):
+        colors = self._colors(compose_headline(_render(tmp_path, _COVER), "Who buys your AI?"))
+        assert ic._hex(BrandStyle().primary) in colors
+        assert ic._hex(BrandStyle().neutral_light) not in colors
+
+    def test_the_signature_is_omitted_when_empty(self, tmp_path):
+        raw = _render(tmp_path, _COVER)
+        bare = compose_headline(raw, "Who buys your AI?", out_path=str(tmp_path / "a.png"))
+        signed = compose_headline(raw, "Who buys your AI?", signature="Christopher Queen",
+                                  out_path=str(tmp_path / "b.png"))
+        empty = compose_headline(raw, "Who buys your AI?", signature="  ",
+                                 out_path=str(tmp_path / "c.png"))
+        assert Image.open(bare).tobytes() == Image.open(empty).tobytes()
+        assert Image.open(bare).tobytes() != Image.open(signed).tobytes()
+
+    def test_the_signature_is_off_white_at_half_opacity(self, tmp_path):
+        out = compose_headline(_render(tmp_path, _COVER), "Who buys your AI?",
+                               signature="Christopher Queen")
+        dark, light = ic._hex(BrandStyle().neutral_dark), ic._hex(BrandStyle().neutral_light)
+        half = tuple(round(d + (lt - d) * 128 / 255) for d, lt in zip(dark, light))
+        colors = self._colors(out)
+        assert any(all(abs(a - b) <= 2 for a, b in zip(c, half)) for c in colors)
+
+    def test_the_kicker_is_drawn_in_the_accent_color(self, tmp_path):
+        out = compose_headline(_render(tmp_path, _COVER), "Who buys your AI?", kicker="B2B BUYING")
+        assert ic._hex(BrandStyle().accent) in self._colors(out)
+
+    def test_a_short_cover_headline_meets_the_nine_percent_floor(self):
+        fit = ic.fit_cover(_COVER, "panel_left", ic.headline_parts("Who buys?"))
+        assert fit.cap >= _COVER[1] * ic.MIN_CAP_FRACTION["landscape"] - 1
+
+    def test_a_long_headline_widens_the_panel_before_settling(self):
+        fit = ic.fit_cover(_COVER, "panel_left",
+                           ic.headline_parts("Hidden buyers cost you real deals now"))
+        assert fit.plan.backing.width > round(_COVER[0] * ic.PANEL_WIDTHS[0])
+
+    def test_text_fills_most_of_its_box_width(self):
+        from PIL import ImageDraw
+        fit = ic.fit_cover(_COVER, "panel_left", ic.headline_parts("Who catches silent failures?"))
+        draw = ImageDraw.Draw(Image.new("RGB", (1, 1)))
+        widest = max(ic._ink_width(draw, line, fit.font) for line in fit.lines)
+        assert widest >= fit.text_box.width * 0.7

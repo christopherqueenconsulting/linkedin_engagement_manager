@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-from cqc_lem.utilities.logger import log_warning
+from cqc_lem.utilities.logger import log_info, log_warning
 
 FONT_DIR = Path(__file__).resolve().parents[2] / "resources" / "fonts"
 BRAND_FONT = FONT_DIR / "Montserrat-ExtraBold.ttf"
@@ -39,10 +39,17 @@ SAFE_MARGIN = 0.06
 MAX_LINES = 3
 # A covers line's cap height must stay legible at 400px wide: ~7% of the image height.
 MIN_LINE_FRACTION = {"newsletter": 0.07, "post_image": 0.055}
-PANEL_WIDTH = 0.38
+# Round 7: the headline must read as a thumbnail — a CAP HEIGHT of at least 9% of the image
+# height on a landscape cover, 6% on a 4:5 post. When the default backing cannot hold that in three
+# lines, the panel widens / the band deepens a step at a time (``GROW_STEPS``) before giving up.
+MIN_CAP_FRACTION = {"landscape": 0.09, "portrait": 0.06}
+PANEL_WIDTHS = (0.38, 0.43, 0.48)
+BAND_HEIGHTS = (0.26, 0.32, 0.38)
+GROW_STEPS = len(PANEL_WIDTHS)
+PANEL_WIDTH = PANEL_WIDTHS[0]
 # The centred layouts on a landscape cover keep the headline in the central 60% of the width.
 COVER_CENTRAL = 0.6
-BAND_HEIGHT = 0.26
+BAND_HEIGHT = BAND_HEIGHTS[0]
 _LINE_SPACING = 1.12
 _SCRIM_ALPHA = 190
 
@@ -54,7 +61,8 @@ DEFAULT_LAYOUT = {"newsletter": PANEL_LEFT, "post_image": BAND_TOP}
 # User 1's kit is the reference brand; any kit naming its own hexes overrides it.
 DEFAULT_PRIMARY = "#E9D437"      # light gold — the headline
 DEFAULT_NEUTRAL_DARK = "#1F1F1F"  # charcoal — the panel
-DEFAULT_ACCENT = "#A89816"        # dark gold — the rule under the headline
+DEFAULT_ACCENT = "#A89816"        # dark gold — the kicker, or the rule under the headline
+DEFAULT_NEUTRAL_LIGHT = "#F7F5EF"  # off-white — the headline under a hero numeral, the byline
 
 
 @dataclass(frozen=True)
@@ -64,17 +72,20 @@ class BrandStyle:
     Attributes:
         primary: Headline color, ``#RRGGBB``.
         neutral_dark: Panel / band / scrim color, ``#RRGGBB``.
-        accent: The thin rule under the headline, ``#RRGGBB``.
+        accent: The kicker (or, without one, the rule under the headline), ``#RRGGBB``.
+        neutral_light: The headline under a hero numeral, and the byline, ``#RRGGBB``.
     """
 
     primary: str = DEFAULT_PRIMARY
     neutral_dark: str = DEFAULT_NEUTRAL_DARK
     accent: str = DEFAULT_ACCENT
+    neutral_light: str = DEFAULT_NEUTRAL_LIGHT
 
 
 _NAMED_HEX = re.compile(r"([A-Za-z][A-Za-z \-]{1,30}?)\s*\(?\s*(#[0-9A-Fa-f]{6})\b")
 _NEUTRAL_NAMES = re.compile(r"charcoal|black|ink|graphite|slate|neutral[_\s-]?dark", re.IGNORECASE)
 _PRIMARY_NAMES = re.compile(r"light gold|primary|gold", re.IGNORECASE)
+_LIGHT_NAMES = re.compile(r"off[\s-]?white|cream|ivory|neutral[_\s-]?light|white", re.IGNORECASE)
 
 
 def brand_style(brand_kit: Optional[str]) -> BrandStyle:
@@ -95,7 +106,8 @@ def brand_style(brand_kit: Optional[str]) -> BrandStyle:
     primary = next((h for n, h in golds if "light" in n or "primary" in n),
                    golds[0][1] if golds else DEFAULT_PRIMARY)
     accent = next((h for n, h in golds if h != primary), DEFAULT_ACCENT)
-    return BrandStyle(primary=primary, neutral_dark=neutral, accent=accent)
+    light = next((h for n, h in pairs if _LIGHT_NAMES.search(n)), DEFAULT_NEUTRAL_LIGHT)
+    return BrandStyle(primary=primary, neutral_dark=neutral, accent=accent, neutral_light=light)
 
 
 def load_font(size: int):
@@ -170,7 +182,7 @@ def _darkest_third(image, portrait: bool) -> int:
     return min(range(3), key=means.__getitem__)
 
 
-def plan_layout(size: tuple[int, int], layout: str, image=None) -> LayoutPlan:
+def plan_layout(size: tuple[int, int], layout: str, image=None, grow: int = 0) -> LayoutPlan:
     """The backing and the text safe area for ``layout`` on a ``size`` frame.
 
     Every text box keeps at least ``SAFE_MARGIN`` of the frame clear on every side.
@@ -179,23 +191,26 @@ def plan_layout(size: tuple[int, int], layout: str, image=None) -> LayoutPlan:
         size: ``(width, height)``.
         layout: One of ``LAYOUTS``; unknown values take ``panel_left``.
         image: The render, needed only by ``full_bleed`` to find its darkest third.
+        grow: Which ``PANEL_WIDTHS`` / ``BAND_HEIGHTS`` step to use (0 = the default).
 
     Returns:
         The plan.
     """
     w, h = size
+    grow = max(0, min(grow, GROW_STEPS - 1))
+    panel_width, band_height = PANEL_WIDTHS[grow], BAND_HEIGHTS[grow]
     mx, my = round(w * SAFE_MARGIN), round(h * SAFE_MARGIN)
-    pad_x = round(w * 0.03)
+    pad_x = round(w * 0.02)
     if layout == PANEL_RIGHT:
-        panel = Box(w - round(w * PANEL_WIDTH), 0, w, h)
+        panel = Box(w - round(w * panel_width), 0, w, h)
         return LayoutPlan(layout, panel, None,
                           Box(panel.left + pad_x, my, w - mx, h - my))
     if layout == BAND_TOP:
-        band = Box(0, my, w, my + round(h * BAND_HEIGHT))
+        band = Box(0, my, w, my + round(h * band_height))
         return LayoutPlan(layout, band, None,
                           Box(mx, band.top + round(h * 0.02), w - mx, band.bottom - round(h * 0.02)))
     if layout == LOWER_THIRD_BAND:
-        band = Box(0, h - my - round(h * BAND_HEIGHT), w, h - my)
+        band = Box(0, h - my - round(h * band_height), w, h - my)
         # A centred headline on a landscape cover stays in the central 60% of the width.
         left, right = ((round(w * (1 - COVER_CENTRAL) / 2), round(w * (1 + COVER_CENTRAL) / 2))
                        if w > h else (mx, w - mx))
@@ -212,8 +227,233 @@ def plan_layout(size: tuple[int, int], layout: str, image=None) -> LayoutPlan:
             region = Box(third * w // 3, 0, (third + 1) * w // 3, h)
             text = Box(max(region.left, mx), my, min(region.right, w - mx), h - my)
         return LayoutPlan(layout, None, region, text)
-    panel = Box(0, 0, round(w * PANEL_WIDTH), h)
+    panel = Box(0, 0, round(w * panel_width), h)
     return LayoutPlan(PANEL_LEFT, panel, None, Box(mx, my, panel.right - pad_x, h - my))
+
+
+def cap_height(font) -> int:
+    """The font's cap height in pixels — what a thumbnail reader actually sees."""
+    left, top, right, bottom = font.getbbox("H")
+    return bottom - top
+
+
+# Round 7 (gauntlet, gpt-4.1 + blind critic): both judges scored every cover "a generic office" —
+# the headline carried the topic alone. The cover is now an editorial SYSTEM, typeset by code:
+# a KICKER (an uppercase topic tag above), a HERO NUMERAL (a grounded number on its own line at
+# twice the headline size), the headline, and a quiet BYLINE at the bottom.
+KICKER_RATIO = 0.35
+HERO_RATIO = 2.0
+_GAP_RATIO = 0.22
+_TRACKING = 0.12
+_NUMBER_TOKEN = re.compile(r"[$€£]?\d+(?:[.,]\d+)?(?:\s?%|[KkMmBb](?![A-Za-z])|x(?![A-Za-z]))?")
+
+
+@dataclass(frozen=True)
+class HeadlineParts:
+    """What the cover typesets, top to bottom.
+
+    Attributes:
+        kicker: The uppercase topic tag, or ''.
+        hero: The grounded number set as a hero numeral, or ''.
+        rest: The headline (the hook, minus the hero numeral when there is one).
+        signature: The byline, or ''.
+    """
+
+    kicker: str = ""
+    hero: str = ""
+    rest: str = ""
+    signature: str = ""
+
+
+def split_hero(hook: str) -> tuple[str, str]:
+    """Split a hook into its hero numeral and the rest.
+
+    Args:
+        hook: The hook, e.g. "45% less engagement on AI posts".
+
+    Returns:
+        ``(hero, rest)`` — ``("45%", "Less engagement on AI posts")``; ``("", hook)`` when it
+        carries no number.
+    """
+    match = _NUMBER_TOKEN.search(hook or "")
+    if not match:
+        return "", sentence_case(hook)
+    rest = f"{hook[:match.start()]} {hook[match.end():]}"
+    rest = " ".join(rest.split()).strip(" ,:;-–—")
+    rest = re.sub(r"\s+([,:;])", r"\1", rest)
+    return match.group(0).replace(" ", ""), sentence_case(rest)
+
+
+def headline_parts(hook: str, kicker: Optional[str] = None,
+                   signature: Optional[str] = None) -> HeadlineParts:
+    """The cover's typeset parts for a hook, its kicker and its byline.
+
+    Args:
+        hook: The headline.
+        kicker: Stage 1's topic tag; uppercased here.
+        signature: The byline.
+
+    Returns:
+        The parts.
+    """
+    hero, rest = split_hero(sentence_case(hook))
+    return HeadlineParts(kicker=" ".join((kicker or "").upper().split()), hero=hero, rest=rest,
+                         signature=" ".join((signature or "").split()))
+
+
+@dataclass(frozen=True)
+class HeadlineFit:
+    """A fitted cover: the plan, every element's font and position, and how big it reads.
+
+    Attributes:
+        plan: The layout plan (after any growth step).
+        text_box: The box the text block was fitted to.
+        size: The headline font size; the hero is ``HERO_RATIO`` and the kicker ``KICKER_RATIO``
+            of it.
+        font: The headline font.
+        lines: The wrapped headline lines.
+        line_height: Pixels per headline line.
+        cap: Headline cap height in pixels.
+        floor: The cap-height floor for this orientation, in pixels.
+        block_height: The whole kicker + hero + headline block's height.
+    """
+
+    plan: "LayoutPlan"
+    text_box: Box
+    size: int
+    font: object
+    lines: tuple
+    line_height: int
+    cap: int
+    floor: int
+    block_height: int
+
+
+def sentence_case(hook: str) -> str:
+    """Uppercase the first letter; every other character — acronyms included — is kept as is."""
+    hook = (hook or "").strip()
+    return hook[:1].upper() + hook[1:] if hook[:1].islower() else hook
+
+
+def _kicker_size(size: int) -> int:
+    return max(8, round(size * KICKER_RATIO))
+
+
+def _hero_size(size: int) -> int:
+    return round(size * HERO_RATIO)
+
+
+def tracked_width(draw, text: str, font, size: int) -> int:
+    """The width of letter-spaced text (the kicker), tracking ``_TRACKING`` of its size."""
+    if not text:
+        return 0
+    track = round(size * _TRACKING)
+    return sum(round(draw.textlength(ch, font=font)) for ch in text) + track * (len(text) - 1)
+
+
+def signature_size(height: int) -> int:
+    """The byline's pixel size — small and fixed, never fitted."""
+    return max(12, round(height * 0.026))
+
+
+def _block(draw, parts: HeadlineParts, size: int, width: int):
+    """Lay the block out at headline ``size``: ``(font, lines, line_height, block_height)`` or None."""
+    font = load_font(size)
+    line_height = _line_height(font, size)
+    gap = round(size * _GAP_RATIO)
+    height = 0
+    if parts.kicker:
+        k_size = _kicker_size(size)
+        if tracked_width(draw, parts.kicker, load_font(k_size), k_size) > width:
+            return None
+        height += _line_height(load_font(k_size), k_size) + gap
+    if parts.hero:
+        h_size = _hero_size(size)
+        h_font = load_font(h_size)
+        if _ink_width(draw, parts.hero, h_font) > width:
+            return None
+        height += _line_height(h_font, h_size) + gap
+    lines: list[str] = []
+    if parts.rest:
+        wrapped = _wrap(draw, parts.rest.split(), font, width)
+        if not wrapped or len(wrapped) > MAX_LINES:
+            return None
+        lines = wrapped
+        height += line_height * len(lines)
+    elif height:
+        height -= gap
+    return font, lines, line_height, height
+
+
+def fit_cover(size: tuple[int, int], layout: str, parts: HeadlineParts,
+              image=None) -> HeadlineFit:
+    """Grow the whole cover block to the largest size its box allows, widening the backing if needed.
+
+    The kicker, hero numeral and headline scale together from the headline size, binary-searched
+    to the largest that fits the box (so the text fills the box width), with the byline's strip
+    reserved at the bottom. When the headline's cap height is still under ``MIN_CAP_FRACTION`` of
+    the image height, the panel widens / the band deepens (``GROW_STEPS``). The largest result
+    wins; one still under the floor is logged.
+
+    Args:
+        size: ``(width, height)``.
+        layout: One of ``LAYOUTS``.
+        parts: What to typeset.
+        image: The render, for ``full_bleed``.
+
+    Returns:
+        The fit.
+    """
+    from PIL import Image, ImageDraw
+
+    draw = ImageDraw.Draw(Image.new("RGB", (1, 1)))
+    w, h = size
+    floor = round(h * MIN_CAP_FRACTION["portrait" if h > w else "landscape"])
+    best: Optional[HeadlineFit] = None
+    for grow in range(GROW_STEPS):
+        plan = plan_layout(size, layout, image, grow)
+        box = plan.text_box
+        reserve = (_line_height(load_font(signature_size(h)), signature_size(h))
+                   + round(box.height * 0.04)) if parts.signature else 0
+        if not parts.kicker:
+            reserve += max(10, round(box.height * 0.08))  # the accent rule's strip
+        text_box = Box(box.left, box.top, box.right, box.bottom - reserve)
+        low, high, found = 8, max(8, text_box.height // 2), None
+        while low <= high:
+            mid = (low + high) // 2
+            laid = _block(draw, parts, mid, text_box.width)
+            if laid and laid[3] <= text_box.height:
+                found, low = (mid, laid), mid + 1
+            else:
+                high = mid - 1
+        if found is None:
+            found = (8, _block(draw, parts, 8, 10 ** 6))
+        font_size, (font, lines, line_height, block_height) = found
+        fit = HeadlineFit(plan, text_box, font_size, font, tuple(lines), line_height,
+                          cap_height(font), floor, block_height)
+        if best is None or fit.cap > best.cap:
+            best = fit
+        if fit.cap >= floor or layout == FULL_BLEED:
+            break
+    if best.cap < floor:
+        log_info("Headline cap height below the thumbnail floor at the widest backing",
+                 action_type="image_compose", cap=best.cap, floor=floor, layout=layout)
+    return best
+
+
+def fit_headline(size: tuple[int, int], layout: str, hook: str, image=None) -> HeadlineFit:
+    """Fit a bare hook (no kicker, no byline) — ``fit_cover`` for the simple case.
+
+    Args:
+        size: ``(width, height)``.
+        layout: One of ``LAYOUTS``.
+        hook: The headline.
+        image: The render, for ``full_bleed``.
+
+    Returns:
+        The fit.
+    """
+    return fit_cover(size, layout, headline_parts(hook), image)
 
 
 def _ink_width(draw, text: str, font) -> int:
@@ -346,18 +586,30 @@ def _scrim(image, region: Box, color: tuple[int, int, int], portrait: bool):
     return Image.alpha_composite(image.convert("RGBA"), overlay)
 
 
+def _draw_tracked(draw, xy: tuple[int, int], text: str, font, size: int, fill) -> None:
+    x, y = xy
+    track = round(size * _TRACKING)
+    for ch in text:
+        draw.text((x, y), ch, font=font, fill=fill)
+        x += round(draw.textlength(ch, font=font)) + track
+
+
 def compose_headline(render_path: str, hook: str, layout: Optional[str] = None,
                      brand: Optional[BrandStyle] = None, surface: str = "newsletter",
-                     out_path: Optional[str] = None) -> str:
-    """Typeset ``hook`` onto the render and return the composite's path.
+                     out_path: Optional[str] = None, kicker: Optional[str] = None,
+                     signature: Optional[str] = None) -> str:
+    """Typeset the cover — kicker, hero numeral, headline, byline — onto the render.
 
     Args:
         render_path: The raw render — it carries no text.
-        hook: The headline, set exactly as given.
+        hook: The headline; a grounded number in it becomes the hero numeral.
         layout: One of ``LAYOUTS``; defaults per surface (``DEFAULT_LAYOUT``).
         brand: The exact colors; the reference brand by default.
-        surface: ``newsletter`` or ``post_image`` — sets the legibility floor.
+        surface: ``newsletter`` or ``post_image`` — picks the default layout.
         out_path: Where to write; ``<render>_headline.png`` beside the render by default.
+        kicker: Stage 1's uppercase topic tag, set above the headline in the accent color.
+        signature: The byline (newsletter title or author name), set small at the bottom in
+            off-white at half opacity; omitted when empty.
 
     Returns:
         The composite's path.
@@ -366,10 +618,12 @@ def compose_headline(render_path: str, hook: str, layout: Optional[str] = None,
 
     brand = brand or BrandStyle()
     layout = layout if layout in LAYOUTS else DEFAULT_LAYOUT.get(surface, PANEL_LEFT)
+    parts = headline_parts(hook, kicker, signature)
     with Image.open(render_path) as opened:
         image = opened.convert("RGBA")
     w, h = image.size
-    plan = plan_layout((w, h), layout, image)
+    fit = fit_cover((w, h), layout, parts, image)
+    plan = fit.plan
     dark = _hex(brand.neutral_dark)
     if plan.scrim is not None:
         image = _scrim(image, plan.scrim, dark, portrait=h > w)
@@ -377,19 +631,44 @@ def compose_headline(render_path: str, hook: str, layout: Optional[str] = None,
     if plan.backing is not None:
         draw.rectangle((plan.backing.left, plan.backing.top, plan.backing.right - 1,
                         plan.backing.bottom - 1), fill=(*dark, 255))
-    min_line = round(h * MIN_LINE_FRACTION.get(surface, 0.06))
-    box = plan.text_box
-    # The accent rule gets its own strip under the text, so it can never overlap a descender.
-    reserve = max(10, round(box.height * 0.12))
-    text_box = Box(box.left, box.top, box.right, box.bottom - reserve)
-    font, lines, line_height = fit_text(hook, text_box, min_line)
-    origins = line_origins(text_box, lines, font, line_height)
-    for (lx, ly), line in zip(origins, lines):
-        draw.text((lx, ly), line, font=font, fill=(*_hex(brand.primary), 255))
-    rule_top = origins[-1][1] + line_height + max(2, reserve // 4)
-    rule_bottom = min(rule_top + max(3, reserve // 5), box.bottom)
-    draw.rectangle((box.left, rule_top, box.left + round(box.width * 0.18), rule_bottom),
-                   fill=(*_hex(brand.accent), 255))
+    box, text_box = plan.text_box, fit.text_box
+    gap = round(fit.size * _GAP_RATIO)
+    x = text_box.left
+    y = text_box.top + (text_box.height - fit.block_height) // 2
+    if parts.kicker:
+        k_size = _kicker_size(fit.size)
+        k_font = load_font(k_size)
+        ink_left = draw.textbbox((0, 0), parts.kicker, font=k_font)[0]
+        _draw_tracked(draw, (x - ink_left, y), parts.kicker, k_font, k_size,
+                      (*_hex(brand.accent), 255))
+        y += _line_height(k_font, k_size) + gap
+    if parts.hero:
+        h_size = _hero_size(fit.size)
+        h_font = load_font(h_size)
+        ink_left = draw.textbbox((0, 0), parts.hero, font=h_font)[0]
+        draw.text((x - ink_left, y), parts.hero, font=h_font, fill=(*_hex(brand.primary), 255))
+        y += _line_height(h_font, h_size) + gap
+    rest_color = brand.neutral_light if parts.hero else brand.primary
+    for line in fit.lines:
+        ink_left = draw.textbbox((0, 0), line, font=fit.font)[0]
+        draw.text((x - ink_left, y), line, font=fit.font, fill=(*_hex(rest_color), 255))
+        y += fit.line_height
+    if not parts.kicker:
+        rule_top = y + max(2, (box.bottom - y) // 6)
+        rule_bottom = min(rule_top + max(3, round(fit.size * 0.06)), text_box.bottom
+                          + max(10, round(box.height * 0.08)))
+        draw.rectangle((x, rule_top, x + round(box.width * 0.18), rule_bottom),
+                       fill=(*_hex(brand.accent), 255))
+    if parts.signature:
+        sig_size = signature_size(h)
+        sig_font = load_font(sig_size)
+        overlay = Image.new("RGBA", image.size, (0, 0, 0, 0))
+        sig_draw = ImageDraw.Draw(overlay)
+        sig_y = box.bottom - _line_height(sig_font, sig_size)
+        ink_left = sig_draw.textbbox((0, 0), parts.signature, font=sig_font)[0]
+        sig_draw.text((x - ink_left, sig_y), parts.signature, font=sig_font,
+                      fill=(*_hex(brand.neutral_light), 128))
+        image = Image.alpha_composite(image, overlay)
     out_path = out_path or f"{os.path.splitext(render_path)[0]}_headline.png"
     image.convert("RGB").save(out_path, "PNG")
     return out_path

@@ -372,6 +372,7 @@ def generate_cover_for_edition(user_id: int, edition_id: int, title: Optional[st
                                guidance: Optional[str] = None,
                                edition_format: Optional[str] = None,
                                hook_style: Optional[str] = None,
+                               signature: Optional[str] = None,
                                ) -> "tuple[Optional[str], Optional[str]]":
     """Generate a cover for one edition. Returns ``(relative_path, None)`` or ``(None, reason)``.
 
@@ -424,6 +425,9 @@ def generate_cover_for_edition(user_id: int, edition_id: int, title: Optional[st
                     action_type="newsletter_cover")
         return None, "Could not write a cover prompt"
 
+    # The cover's byline (round 7): the newsletter's title when the caller has it, else the
+    # author's name from the profile already in hand — no extra DB read.
+    byline = signature or getattr(profile, "full_name", None) or None
     render_info: dict = {}
     try:
         if avatar:
@@ -431,7 +435,7 @@ def generate_cover_for_edition(user_id: int, edition_id: int, title: Optional[st
                 brief.prompt, avatar=avatar, user_id=user_id, surface="newsletter",
                 ratio=COVER_IMAGE_RATIO, focal_concept=brief.focal_concept,
                 render_info=render_info, concept=brief.concept, hook_text=brief.hook_text,
-                layout=getattr(brief.concept, "layout", None))
+                layout=getattr(brief.concept, "layout", None), signature=byline)
         else:
             generated_path = render_image_gated(brief.prompt, surface="newsletter",
                                                 ratio=COVER_IMAGE_RATIO,
@@ -439,7 +443,8 @@ def generate_cover_for_edition(user_id: int, edition_id: int, title: Optional[st
                                                 user_id=user_id, render_info=render_info,
                                                 concept=brief.concept,
                                                 hook_text=brief.hook_text,
-                                                layout=getattr(brief.concept, "layout", None))
+                                                layout=getattr(brief.concept, "layout", None),
+                                                signature=byline)
     except Exception as e:
         log_warning("Newsletter cover generation failed", exc=e, user_id=user_id,
                     action_type="newsletter_cover")

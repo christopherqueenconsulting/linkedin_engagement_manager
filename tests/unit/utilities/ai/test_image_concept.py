@@ -316,10 +316,9 @@ class TestTreatmentVariety:
 
 
 _IDEAS = [
-    "A copy editor's red pen frozen mid-strike over a confidently printed paragraph, her face a "
-    "half-smile of disbelief.",
-    "A stack of unpaid invoices under a paperweight beside a cold cup of tea.",
-    "An agency owner wincing at a payroll run printout in an empty office at dusk.",
+    "A copy editor's red pen frozen mid-strike, her face a half-smile of disbelief.",
+    "An empty office chair under a warm lamp beside a cold cup of tea.",
+    "An agency owner wincing at the payroll run ahead in an empty office at dusk.",
 ]
 
 
@@ -528,7 +527,7 @@ class TestPostImagesFollowTheCoverRecipe:
 
     def test_a_striking_object_idea_with_no_people_alternative_stays(self):
         still = "A dented metal cash box sitting on a cluttered desk under a lamp."
-        other = "A stack of unpaid invoices under a paperweight beside a cold cup of tea."
+        other = "An empty office chair under a warm lamp beside a cold cup of tea."
         concept = parse_concept(dict(_PAYLOAD, visual_ideas=[still, other]), _SOURCE)
         with patch(_CREATE, return_value=_resp({"ranking": [1, 2]})):
             assert pick_visual_idea(concept).chosen_idea == still
@@ -661,3 +660,47 @@ class TestValence:
             analyze_content_for_image(_SOURCE)
         assert "positive when the piece is about a saving, a win or relief" in \
             create.call_args[1]["messages"][0]["content"]
+
+
+
+class TestRoundSevenStageOne:
+    @pytest.mark.parametrize("raw,expected", [
+        ("agency payroll", "AGENCY PAYROLL"), ("Payroll", "PAYROLL"), ("AI content audit", ""),
+        ("LLM costs", ""), ("UNPAID INVOICES", "UNPAID INVOICES"),
+        ("collections", "COLLECTIONS"), ("way too many words here", ""),
+        ("hidden influencers", ""), ("", ""),
+    ])
+    def test_the_kicker_is_grounded_in_the_source(self, raw, expected):
+        from cqc_lem.utilities.ai.image_concept import valid_kicker
+        assert valid_kicker(raw, _SOURCE) == expected
+
+    def test_acronyms_always_pass_and_hyphens_split(self):
+        from cqc_lem.utilities.ai.image_concept import valid_kicker
+        assert valid_kicker("B2B buying", "Buyers keep buying.") == "B2B BUYING"
+        assert valid_kicker("AI fact-checking", "We fact checked every claim.") == \
+            "AI FACT-CHECKING"
+
+    def test_the_kicker_lands_on_the_concept(self):
+        concept = parse_concept(dict(_PAYLOAD, kicker="Agency payroll"), _SOURCE)
+        assert concept.kicker == "AGENCY PAYROLL"
+
+    def test_the_prompt_asks_for_a_kicker(self):
+        with patch(_CREATE, return_value=_resp(_PAYLOAD)) as create:
+            analyze_content_for_image(_SOURCE)
+        assert "Rules for kicker" in create.call_args[1]["messages"][0]["content"]
+
+    def test_hooks_come_back_sentence_cased(self):
+        concept = parse_concept(dict(_PAYLOAD, hook_phrase="payroll first, clients last"), _SOURCE)
+        assert concept.hook_phrase == "Payroll first, clients last"
+
+    def test_full_bleed_is_out_of_the_cover_rotation(self):
+        from cqc_lem.utilities.ai.image_concept import COVER_LAYOUTS
+        assert "full_bleed" not in COVER_LAYOUTS
+        assert set(COVER_LAYOUTS) == {"panel_left", "panel_right", "lower_third_band"}
+
+    @pytest.mark.parametrize("idea", ["A founder holding a proposal on a clipboard.",
+                                      "An analyst frowning at code on a monitor.",
+                                      "A manager signing a form at her desk."])
+    def test_prop_ideas_are_filtered(self, idea):
+        from cqc_lem.utilities.ai.image_concept import idea_rejection
+        assert "legible words on a surface" in idea_rejection(idea, ())
