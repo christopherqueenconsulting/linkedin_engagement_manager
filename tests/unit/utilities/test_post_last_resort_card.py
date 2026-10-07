@@ -97,9 +97,14 @@ class TestLastResortCard:
 
         assert last_resort_hook(_concept(_REPORT), _REPORT) == "Late invoices starve agencies"
         assert last_resort_hook(None, _REPORT) == "We moved support to a shared queue."
-        long = "One two three four five six seven eight nine ten eleven twelve thirteen."
-        assert last_resort_hook(None, long) is None
-        assert last_resort_hook(None, "See https://x.co now.") is None
+        # #2241 showcase C: a long opening is never a reason to ship bare — its first clause,
+        # else its first 12 words marked as cut. Links and hashtags are never set.
+        long = ("One two three four five six seven eight nine ten eleven twelve thirteen "
+                "fourteen fifteen sixteen seventeen eighteen nineteen.")
+        assert last_resort_hook(None, long) == ("One two three four five six seven eight nine "
+                                                "ten eleven twelve…")
+        assert last_resort_hook(None, "See https://x.co now.") == "See now."
+        assert last_resort_hook(None, "#tag https://x.co") is None
 
     def test_a_post_whose_every_treatment_fails_ships_the_card(self, tmp_path):
         env = _Env(tmp_path)

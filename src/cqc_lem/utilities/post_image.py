@@ -38,6 +38,7 @@ from typing import Any, Optional
 from urllib.parse import parse_qs, quote, urlparse
 
 from cqc_lem import assets_dir
+from cqc_lem.utilities.ai.content_framework import feed_fold_text
 from cqc_lem.utilities.logger import log_debug, log_info, log_warning
 from cqc_lem.utilities.media_provenance import write_brief_receipt
 
@@ -427,7 +428,8 @@ def _gate_log_fields(render_info: dict) -> dict:
 
 
 def _render_avatar_post_image(brief, avatar: dict, user_id: int, post_id: Optional[int],
-                              ratio: str, render_info: dict, panel: Optional[str] = None
+                              ratio: str, render_info: dict, panel: Optional[str] = None,
+                              feed_context: Optional[str] = None
                               ) -> "tuple[Optional[str], Optional[str]]":
     """The LoRA render of a post image, and why it is unusable (None when it is usable).
 
@@ -436,6 +438,7 @@ def _render_avatar_post_image(brief, avatar: dict, user_id: int, post_id: Option
     accepting it — the likeness never rendered, and FLUX is the weaker brief-follower.
 
     ``panel`` is the typeset card's rotated panel variant (None: charcoal, or no composite).
+    ``feed_context`` is the post's opening a reader sees above a headline-free image (#2241 C).
 
     Returns:
         ``(path, fallback_reason)``.
@@ -446,7 +449,7 @@ def _render_avatar_post_image(brief, avatar: dict, user_id: int, post_id: Option
             brief.prompt, avatar=avatar, user_id=user_id, surface="post_image",
             ratio=ratio, focal_concept=brief.focal_concept, post_id=post_id,
             render_info=render_info, concept=brief.concept, hook_text=brief.hook_text,
-            panel=panel)
+            panel=panel, feed_context=feed_context)
     except Exception as e:
         return None, f"avatar render raised {type(e).__name__}: {e}"[:200]
     if not path or not os.path.isfile(path):
@@ -558,29 +561,44 @@ def _render_quote_card(concept, rhythm, text: str, *, user_id: int, post_id: Opt
     return out
 
 
-# The last resort's headline when Stage 1 gave none: the post's own opening sentence, verbatim,
-# when it is short enough to set.
+# The last resort's headline when Stage 1 gave none: the post's own words, never invented.
 _LAST_RESORT_MAX_WORDS = 12
+# The longest opening clause still set whole (the compositor shrinks it to fit) before the card
+# falls back to the clause's first words with an ellipsis.
+_LAST_RESORT_CLAUSE_WORDS = 18
+_CLAUSE_BREAK = re.compile(r"\s*(?:[—–:;]|\s-\s|,)\s*")
+_NOT_SETTABLE = re.compile(r"https?://\S+|www\.\S+|#\w+|@\w+")
 
 
 def last_resort_hook(concept, text: str) -> Optional[str]:
-    """The headline a last-resort typeset card sets: Stage 1's hook, else the post's first line.
+    """The headline a last-resort typeset card sets — GUARANTEED for any post with words.
+
+    In order: Stage 1's hook; the post's first sentence (at most 12 words); its first clause (at
+    most 18 words — #2241 showcase C, posts 130 and 140 shipped bare because "Imagine running
+    your whole deployment on a cheap VPS and still pushing four solid releases a day—no
+    downtime, no Kubernetes." was over the 12-word line and nothing came after it); else the
+    opening's first 12 words marked "…" as cut. Links, hashtags and mentions are never set.
 
     Args:
         concept: Stage 1's concept, or None.
         text: The post.
 
     Returns:
-        The hook, or None when neither exists in a settable length.
+        The hook; None only for a post with no settable words at all.
     """
     hook = _card_hook(concept) if concept is not None else None
     if hook:
         return hook
-    first = re.split(r"(?<=[.!?])\s+|\n+", (text or "").strip(), maxsplit=1)[0].strip()
-    if first and len(first.split()) <= _LAST_RESORT_MAX_WORDS and not re.search(
-            r"https?://|#\w", first):
+    plain = " ".join(_NOT_SETTABLE.sub(" ", text or "").split())
+    first = re.split(r"(?<=[.!?])\s+", plain, maxsplit=1)[0].strip()
+    if not first:
+        return None
+    if len(first.split()) <= _LAST_RESORT_MAX_WORDS:
         return first
-    return None
+    clause = _CLAUSE_BREAK.split(first, maxsplit=1)[0].strip()
+    if 2 <= len(clause.split()) <= _LAST_RESORT_CLAUSE_WORDS:
+        return clause
+    return " ".join(first.split()[:_LAST_RESORT_MAX_WORDS]).rstrip(",;:—-") + "…"
 
 
 def _render_last_resort_card(concept, rhythm, text: str, *, user_id: int,
@@ -611,6 +629,13 @@ def _render_last_resort_card(concept, rhythm, text: str, *, user_id: int,
             panel=rhythm.panel, out_path=os.path.join(out_dir, f"img_{secrets.token_hex(8)}.png"))
     except (GraphicError, OSError, ValueError) as e:
         out.reason = f"the last-resort card could not be drawn: {e}"
+        return out
+    except Exception as e:
+        # The guarantee must never become the thing that crashes a post: a fault here is a defect
+        # worth an alert, and the post still ships (bare) exactly as before the card existed.
+        log_warning("Last-resort typeset card raised — the post ships without an image", exc=e,
+                    user_id=user_id, post_id=post_id, action_type="post_treatment")
+        out.reason = f"the last-resort card raised {type(e).__name__}"
         return out
     out.path = drawn.path
     out.render_info = {"gate_verdict": "last_resort", "archetype_rendered": "typeset_card"}
@@ -686,10 +711,15 @@ def _render_ai_post(concept, text: str, rhythm, treatment: str, *, user_id: int,
         out.reason, out.spent = "Could not write an image prompt", False
         return out
     panel = rhythm.panel if treatment == "typeset_card" else None
+    # A headline-free image is judged WITH the post's opening lines the reader sees above it
+    # (#2241 showcase C); a typeset card is judged with its own headline instead.
+    feed_context = None if getattr(out.brief, "hook_text", None) else (feed_fold_text(text)
+                                                                       or None)
     rendered: Optional[str] = None
     if avatar:
         rendered, out.avatar_fallback_reason = _render_avatar_post_image(
-            out.brief, avatar, user_id, post_id, ratio, out.render_info, panel=panel)
+            out.brief, avatar, user_id, post_id, ratio, out.render_info, panel=panel,
+            feed_context=feed_context)
         out.render_path = RENDER_PATH_AVATAR
         if out.avatar_fallback_reason:
             # ONE non-avatar attempt before giving up: the stricter gate must not silently strip
@@ -714,7 +744,7 @@ def _render_ai_post(concept, text: str, rhythm, treatment: str, *, user_id: int,
                                           render_info=out.render_info,
                                           concept=out.brief.concept,
                                           hook_text=out.brief.hook_text, brand_kit=brand,
-                                          panel=panel)
+                                          panel=panel, feed_context=feed_context)
         except Exception as e:
             log_warning("Post image generation failed", exc=e, user_id=user_id, post_id=post_id,
                         action_type="post_image")

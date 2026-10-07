@@ -1621,6 +1621,31 @@ def read_seconds(text: Optional[str]) -> float:
     return round(words / DWELL_READ_WPM * 60, 1)
 
 
+# The feed shows a post's first two lines (at most LINKEDIN_FOLD_CHARS) above its image or video.
+FEED_FOLD_LINES = 2
+
+
+def feed_fold_text(text: Optional[str]) -> str:
+    """What a reader sees ABOVE a post's image in the feed: its opening, up to the '...more' fold.
+
+    The first ``FEED_FOLD_LINES`` non-empty lines, cut to ``LINKEDIN_FOLD_CHARS`` at a word
+    boundary (marked "…" when cut). #2241 showcase C: a headline-free image is judged WITH this
+    text, because the reader has it before the picture.
+
+    Args:
+        text: The post.
+
+    Returns:
+        The fold text, or ``""`` for an empty post.
+    """
+    lines = [ln.strip() for ln in (text or "").splitlines() if ln.strip()][:FEED_FOLD_LINES]
+    fold = " ".join(lines)
+    if len(fold) <= LINKEDIN_FOLD_CHARS:
+        return fold
+    cut = fold[:LINKEDIN_FOLD_CHARS].rsplit(" ", 1)[0].rstrip(" ,;:—-")
+    return f"{cut}…"
+
+
 def dwell_metrics(text: Optional[str]) -> dict:
     """The raw deterministic dwell measurements of a finished draft: length/read-time, where the
     hook lands relative to the '...more' fold, and how scannable the body is. No LLM, no I/O.

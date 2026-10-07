@@ -270,6 +270,59 @@ why the "faint" watermark glyphs had been shipping opaque.
 `tests/unit/utilities/test_carousel_accent_clearance.py` asserts no intersection on every template
 at three title lengths.
 
+## Showcase round C — the feed text, quote cards, never bare, curated text
+
+Run on main with #2270. Results: 5 of 8 posts fell to the last-resort card, 2 still shipped bare,
+and all 3 video frames were rejected and fell to Pexels.
+
+**Judge a headline-free image WITH the text above it.** A claymation snail carrying a message
+stack, a collage filing cabinet pouring a waterfall and a marble-run router were all rejected at
+specificity 2. The judge had seen each image ALONE. On LinkedIn the reader sees the post's
+opening ABOVE a `photo_only` image or a video before "...more". So those renders now pass that
+opening to the TARGETED judge as `feed_context`: `content_framework.feed_fold_text` takes the first
+two lines, at most `LINKEDIN_FOLD_CHARS` (210).
+- Specificity becomes "A reader sees this text first: '…'. Does the image fit and reinforce it, so
+  the pair reads as one idea within 2 seconds?"
+- The blind look never sees the feed text: it still describes the picture as a stranger would.
+- #2270's floors are unchanged (specificity ≥3, scroll_stop ≥4, craft ≥4).
+- The feed text is threaded through `inspect_render_quality` → `_gate_loop` →
+  `render_image_gated` / `render_avatar_image_gated` → `ai_helper.generate_post_image`.
+- The post image passes it only when no headline is typeset. The video frame always passes it,
+  beside its caption.
+
+**Quote cards are not POP-gated.** Two were rejected as "text-only, lacks visual intrigue", which
+is a scene verdict on a deliberate typographic format. `image_gen.STRUCTURAL_ONLY_ARCHETYPES`
+(`quote_card`) skips the scene/POP judge. The card is still gated structurally: the sentence is
+the post's own verbatim (`post_treatment.is_verbatim`), and its text is fitted in bounds at
+legible contrast by the drawer. The receipt records `gate_verdict = "code_drawn"`.
+
+**Never bare, truly.** Posts 130 and 140 shipped bare although the card existed. Stage 1 had left
+them no headline. Their opening sentence ("Imagine running your whole deployment on a cheap VPS
+and still pushing four solid releases a day—no downtime, no Kubernetes.") was over the card's
+12-word line, and nothing came after it. `post_image.last_resort_hook` now takes, in order:
+1. Stage 1's hook;
+2. the first sentence, if at most 12 words;
+3. its first clause, if at most 18 words;
+4. else its first 12 words marked "…" as cut.
+
+Links, hashtags and mentions are never set. A card that raises an unexpected error is a WARNING
+and the post ships bare; it never crashes the post.
+
+**The video accent reaches the final prompt.** A frame failed brand_fit at 2 for "no gold
+accent". `build_image_brief` now ends every `video` brief (avatar and base frame alike, authored,
+judged or fallback) with `video_accent_backstop`. A prompt that names no gold or charcoal accent
+gets one positive accent sentence appended.
+
+**Curated commentary is plain text.** Curated drafts carried markdown `**bold**` list items, and
+`escape_little_text` then printed the asterisks literally. Two changes:
+- `curated_commentary.finish_post_text` gives every draft the text post's own finish:
+  `sanitize_for_linkedin`, then `shape_for_dwell`.
+- `escape_little_text` sanitizes before escaping, for anything stored earlier.
+
+Text posts already go through `sanitize_for_linkedin` in `_refine_draft`, and curated prompts
+already carry the same `post_writing_directive` length budget (1300–2000 characters). So the
+showcase's ~1,400-character drafts were within the shared budget, not over it.
+
 ## Post rhythm — treatments, panels, grades and the sameness gate (anti-monotony round)
 
 Every post image was the same composite — a photograph beside a charcoal type panel — so an

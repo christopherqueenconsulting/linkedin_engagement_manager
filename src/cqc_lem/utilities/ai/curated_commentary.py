@@ -115,6 +115,27 @@ def _complete(messages: list, model: str = "lem-medium", json_mode: bool = False
     return (response.choices[0].message.content or "").strip()
 
 
+def finish_post_text(text: Optional[str]) -> str:
+    """The same deterministic finish a generated text post gets: no markdown, no wall of text.
+
+    #2241 showcase C: curated drafts shipped ``**Define a research question**`` — LinkedIn renders
+    no markdown, and the little-text escaper then printed the asterisks literally. Text posts are
+    cleaned by ``sanitize_for_linkedin`` (bold, italics, headers, rules, code, links) and reflowed
+    by ``shape_for_dwell``; a curated draft now goes through exactly those two, so it follows the
+    text post's rules rather than a parallel set. The LENGTH budget is already shared: both prompts
+    carry ``post_writing_directive`` (1300-2000 characters).
+
+    Args:
+        text: The model's draft.
+
+    Returns:
+        The plain-text draft (``""`` for an empty one).
+    """
+    from cqc_lem.utilities.linkedin_formatter import sanitize_for_linkedin
+
+    return _framework.shape_for_dwell(sanitize_for_linkedin(text or "") or "") or ""
+
+
 def source_anchors(source: dict) -> list:
     """The only text a curated commentary's numbers may come from: the source's own snapshot."""
     return [t for t in ((source or {}).get("title"), (source or {}).get("excerpt")) if t]
@@ -148,7 +169,8 @@ def generate_curated_commentary(user_id: int, source: dict, treatment: str, prof
         voice = voice_reference(profile, profile_synthesis)
 
     def draft(extra: str = "") -> str:
-        return _complete(commentary_messages(source, treatment, voice, prefs, content_mix, extra))
+        return finish_post_text(_complete(commentary_messages(source, treatment, voice, prefs,
+                                                              content_mix, extra)))
 
     text = draft()
     text = lint_repaired(text, "post", draft, prefs=prefs, user_id=user_id,

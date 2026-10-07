@@ -1621,6 +1621,30 @@ def _analysis_block(concept: Optional[ImageConcept], anchors: list[str],
     return block
 
 
+def video_accent_backstop(prompt: str, brand_kit: Optional[str] = None) -> str:
+    """A video frame prompt that names a gold or charcoal accent — appended when it names none.
+
+    #2241 showcase C: a frame failed brand_fit at 2 for "no gold accent". The author is asked for
+    one (``VIDEO_FRAME_DIRECTIVE``) and an authored brief without one is refused, but a judged or
+    fallback brief could still reach Runway without it. This is the last word, on every path —
+    the avatar frame and the base frame are both authored here.
+
+    Args:
+        prompt: The final frame prompt.
+        brand_kit: The brand clause, for the accent colour words.
+
+    Returns:
+        ``prompt``, or ``prompt`` plus one positive accent sentence.
+    """
+    colors = video_accent_colors(brand_colors(brand_kit))
+    if _names_a_color(prompt or "", colors):
+        return prompt
+    color = "gold" if "gold" in colors else sorted(colors)[0]
+    body = (prompt or "").rstrip()
+    sep = "" if not body or body.endswith((".", "!", "?")) else "."
+    return f"{body}{sep} One deliberate {color} accent object or wardrobe piece in frame.".strip()
+
+
 def build_image_brief(content: str, *, surface: str, ratio: str = "1:1",
                       profile=None, avatar: Optional[dict[str, Any]] = None,
                       extra_direction: Optional[str] = None,
@@ -1628,6 +1652,40 @@ def build_image_brief(content: str, *, surface: str, ratio: str = "1:1",
                       avoid_terms: Optional[list[str]] = None,
                       concept: "Optional[ImageConcept] | _NotAnalyzed" = NOT_ANALYZED,
                       brand_kit: Optional[str] = None) -> ImageBrief:
+    """Author the brief for one render (``_author_image_brief``); a video frame's keeps its accent.
+
+    Args:
+        content: As for ``_author_image_brief``.
+        surface: As for ``_author_image_brief``.
+        ratio: As for ``_author_image_brief``.
+        profile: As for ``_author_image_brief``.
+        avatar: As for ``_author_image_brief``.
+        extra_direction: As for ``_author_image_brief``.
+        content_shape: As for ``_author_image_brief``.
+        avoid_terms: As for ``_author_image_brief``.
+        concept: As for ``_author_image_brief``.
+        brand_kit: As for ``_author_image_brief``.
+
+    Returns:
+        The brief; on ``video`` its prompt always names a gold or charcoal accent
+        (``video_accent_backstop``).
+    """
+    brief = _author_image_brief(content, surface=surface, ratio=ratio, profile=profile,
+                                avatar=avatar, extra_direction=extra_direction,
+                                content_shape=content_shape, avoid_terms=avoid_terms,
+                                concept=concept, brand_kit=brand_kit)
+    if surface == "video":
+        brief.prompt = video_accent_backstop(brief.prompt, brand_kit)
+    return brief
+
+
+def _author_image_brief(content: str, *, surface: str, ratio: str = "1:1",
+                        profile=None, avatar: Optional[dict[str, Any]] = None,
+                        extra_direction: Optional[str] = None,
+                        content_shape: Optional[str] = None,
+                        avoid_terms: Optional[list[str]] = None,
+                        concept: "Optional[ImageConcept] | _NotAnalyzed" = NOT_ANALYZED,
+                        brand_kit: Optional[str] = None) -> ImageBrief:
     """Author the brief for one render. Never raises — degrades to a deterministic brief.
 
     Args:

@@ -140,3 +140,10 @@ Also unverified live: the link-post article card with an uploaded thumbnail, and
 container exposes share URNs often enough to make reshares common (most cards expose only the
 activity URN, so most LinkedIn candidates will be `link_only`). The `curated_source` event's
 `treatment` breakdown will show it.
+
+## Plain text, same budget as a text post (#2241 showcase C)
+
+LinkedIn renders no markdown, and `escape_little_text` would print `**bold**` as literal asterisks.
+Every commentary draft goes through `curated_commentary.finish_post_text` (`sanitize_for_linkedin`
+then `shape_for_dwell`, the text post's own finish), and `escape_little_text` sanitizes again before
+escaping. Length follows the shared `post_writing_directive` budget (1300-2000 characters).

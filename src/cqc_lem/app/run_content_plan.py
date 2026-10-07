@@ -1711,11 +1711,15 @@ def _generate_video_src(user_id: int, text_content: str, profile, post_id: int =
         # headline (PR #2249): a person with no context scored specificity 2-3 on every frame.
         # JUDGE-ONLY: `video` is not a compositing surface (`image_gen.COMPOSE_SURFACES`), and
         # `hook_text` never reaches a render prompt, so nothing is painted onto the frame.
+        # #2241 showcase C: and with the post's opening lines, which LinkedIn shows ABOVE the
+        # video before "...more" — targeted judge only, never the blind look.
+        from cqc_lem.utilities.ai.content_framework import feed_fold_text
         from cqc_lem.utilities.video_captions import burned_caption_text
         gate_kwargs = {"focal_concept": getattr(frame_brief, "focal_concept", None),
                        "concept": concept,
                        "hook_text": burned_caption_text(text_content, user_id=user_id,
-                                                        avatar_led=has_avatar)}
+                                                        avatar_led=has_avatar),
+                       "feed_context": feed_fold_text(text_content) or None}
         # Audio-capable (premium/Veo) renders need the user's language in the prompt — Veo has no
         # language parameter and invents a voiceover otherwise (issue #548). Silent models skip
         # the lookup entirely.
