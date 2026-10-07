@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.182.4](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.182.3...v0.182.4) (2026-10-07)
+
+
+### Bug Fixes
+
+* **content:** fact/consistency gate, title-card caption layout, deck slide substance, curated audience fit (showcase round 6) ([#2278](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2278)) ([63d0d57](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/63d0d570ab9f0b10ba6e2ba09ce07a79d0596600))
+
 ## [0.182.3](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.182.2...v0.182.3) (2026-10-07)
 
 
