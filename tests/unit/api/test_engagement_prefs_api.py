@@ -495,3 +495,54 @@ class TestCatchupContactFrequencyPrefs:
                                         "max_catchup_touches_per_contact_days": given})
             assert resp.status_code == 200
             assert upd.call_args[0][1]["max_catchup_touches_per_contact_days"] == expected
+
+
+class TestBrandKitRoundTrip:
+    """The brand kit rides the engagement-prefs GET/PUT like every other column."""
+
+    def test_get_returns_the_saved_kit(self, api_client):
+        kit = {"primary_hex": "#e9d437", "avoid": ["gears"]}
+        with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
+             patch("cqc_lem.api.routers.user.has_engagement_preferences", return_value=True), \
+             patch("cqc_lem.api.routers.user.get_engagement_preferences",
+                   return_value={"tone": None, "brand_kit": kit}):
+            resp = api_client.get(f"/api/user/engagement-preferences?session_token={_SESSION}")
+        assert resp.status_code == 200
+        assert resp.json()["detail"]["brand_kit"] == kit
+
+    def test_put_validates_the_kit_before_the_upsert(self, api_client):
+        with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
+             patch("cqc_lem.api.routers.user.update_engagement_preferences", return_value=True) as upd:
+            resp = api_client.put("/api/user/engagement-preferences", json={
+                "session_token": _SESSION,
+                "brand_kit": {"primary_hex": "#E9D437", "accent_hex": "#nothex",
+                              "font_vibe": "bold sans", "avoid": ["gears", "gears"]},
+            })
+        assert resp.status_code == 200
+        assert upd.call_args[0][1]["brand_kit"] == {
+            "primary_hex": "#e9d437", "font_vibe": "bold sans", "avoid": ["gears"]}
+
+    @pytest.mark.parametrize("body", [{}, {"brand_kit": None}])
+    def test_put_without_a_kit_leaves_the_stored_one_alone(self, api_client, body):
+        with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
+             patch("cqc_lem.api.routers.user.update_engagement_preferences", return_value=True) as upd:
+            resp = api_client.put("/api/user/engagement-preferences",
+                                  json={"session_token": _SESSION, **body})
+        assert resp.status_code == 200
+        assert "brand_kit" not in upd.call_args[0][1]
+
+    def test_put_empty_kit_clears_it(self, api_client):
+        with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
+             patch("cqc_lem.api.routers.user.update_engagement_preferences", return_value=True) as upd:
+            resp = api_client.put("/api/user/engagement-preferences",
+                                  json={"session_token": _SESSION, "brand_kit": {}})
+        assert resp.status_code == 200
+        assert upd.call_args[0][1]["brand_kit"] == {}
+
+    def test_a_non_object_kit_is_a_422(self, api_client):
+        with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
+             patch("cqc_lem.api.routers.user.update_engagement_preferences", return_value=True) as upd:
+            resp = api_client.put("/api/user/engagement-preferences",
+                                  json={"session_token": _SESSION, "brand_kit": ["#e9d437"]})
+        assert resp.status_code == 422
+        upd.assert_not_called()

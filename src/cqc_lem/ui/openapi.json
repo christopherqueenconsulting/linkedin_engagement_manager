@@ -1089,6 +1089,18 @@
             ],
             "title": "Authenticity Score Min"
           },
+          "brand_kit": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Brand Kit"
+          },
           "business_goals": {
             "anyOf": [
               {
@@ -1491,6 +1503,7 @@
           "catchup_message_source",
           "min_catchup_contact_interval_days",
           "max_catchup_touches_per_contact_days",
+          "brand_kit",
           "has_saved_preferences",
           "reply_inbound_address",
           "gmail_forward_confirmation",
@@ -1516,6 +1529,18 @@
               }
             ],
             "title": "Authenticity Score Min"
+          },
+          "brand_kit": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Brand Kit"
           },
           "business_goals": {
             "anyOf": [
