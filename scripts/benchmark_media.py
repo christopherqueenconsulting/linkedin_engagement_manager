@@ -90,9 +90,10 @@ VISION_MIN_AGREEMENT = 0.8
 IMAGE_MIN_ACCEPTANCE = 2 / 3
 MAX_CANDIDATES_PER_TIER = 2
 
-# TODO(#2248): import RUBRIC_CRITERIA and _RUBRIC_FLOORS from cqc_lem.utilities.ai.image_gen once
-# #2248 merges. Mirrored here (names, order and floors as #2248's diff defines them) so this harness
-# never depends on unmerged code; `test_rubric_mirrors_2248` pins the seven names.
+# The rubric `image_gen` (#2248) judges renders with - mirrored rather than imported, because
+# importing image_gen builds the app's LLM client at import time, which needs credentials that a
+# `--dry-run` deliberately does not have. `test_rubric_matches_image_gen` fails the build the moment
+# the two drift apart (names, order, floors and the post_image scroll_stop floor).
 RUBRIC_CRITERIA = ("specificity", "no_cliche", "thumbnail_read", "text_accuracy", "craft",
                    "scroll_stop", "brand_fit")
 RUBRIC_DESCRIPTIONS = {

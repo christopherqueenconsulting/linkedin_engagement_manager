@@ -160,6 +160,13 @@ class TestImageScoring:
         assert set(media.RUBRIC_DESCRIPTIONS) == set(media.RUBRIC_CRITERIA)
         assert set(media.RUBRIC_FLOORS) <= set(media.RUBRIC_CRITERIA)
 
+    def test_rubric_matches_image_gen(self):
+        from cqc_lem.utilities.ai import image_gen
+        assert media.RUBRIC_CRITERIA == image_gen.RUBRIC_CRITERIA
+        floors = dict(image_gen._RUBRIC_FLOORS, scroll_stop=image_gen._SCROLL_STOP_FLOOR)
+        assert media.RUBRIC_FLOORS == floors
+        assert "post_image" in image_gen._SCROLL_STOP_SURFACES
+
     def test_parse_rubric_is_strict(self):
         assert media.parse_rubric(json.dumps(_scores(notes="ok"))) == _scores()
         assert media.parse_rubric(json.dumps(_scores(craft=6))) is None
