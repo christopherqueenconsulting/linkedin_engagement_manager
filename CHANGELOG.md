@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.182.2](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.182.1...v0.182.2) (2026-10-07)
+
+
+### Bug Fixes
+
+* **image:** judge photo-only and video frames with the feed text the reader sees first; quote cards not POP-gated; never ship bare (refs [#2241](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2241)) ([#2272](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2272)) ([1eeb9ff](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/1eeb9ff4920fa04be8c6f56c2547a520a00cf6fc))
+* **image:** photo/video floors, typeset last-resort fallback, deck glyph overlap, hook grammar, setting rotation (refs [#2241](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2241)) ([#2270](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2270)) ([764735f](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/764735f731ef6abcfb5efe7f3e51ac318885b100))
+
 ## [0.182.1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.182.0...v0.182.1) (2026-10-07)
 
 
