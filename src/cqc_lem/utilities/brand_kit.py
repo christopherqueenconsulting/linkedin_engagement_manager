@@ -9,6 +9,7 @@ Image models follow colour NAMES better than hex codes, so `describe_for_prompt`
 off a small nearest-named-colour table and keeps the hex beside it. `docs/image-stack.md`.
 """
 
+import math
 import re
 from dataclasses import dataclass, field
 from typing import Any, Optional
@@ -175,7 +176,7 @@ def _clean_share(value: Any) -> Optional[float]:
             value = float(value.strip())
         except ValueError:
             return None
-    if not isinstance(value, (int, float)) or value != value or not 0 <= value <= 1:
+    if not isinstance(value, (int, float)) or math.isnan(value) or not 0 <= value <= 1:
         return None
     return round(float(value), 2)
 
