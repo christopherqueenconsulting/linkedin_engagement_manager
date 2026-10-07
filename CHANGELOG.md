@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.182.1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.182.0...v0.182.1) (2026-10-07)
+
+
+### Bug Fixes
+
+* **errors:** mute telemetry in the post-rhythm sidecar harness (closes [#2266](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2266)) ([#2267](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2267)) ([d4e6215](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/d4e6215a946923d41b31a8094f84a2572ec9a98d))
+
 ## [0.182.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.181.6...v0.182.0) (2026-10-07)
 
 
