@@ -82,6 +82,17 @@ class TestSelectHookShape:
         assert cf.hook_style_for_shape(cf.HOOK_SHAPE_QUESTION, "build_receipt") is None
         assert cf.allowed_hook_shapes() == cf.HOOK_SHAPES
 
+    def test_recent_hook_styles_are_avoided_but_never_empty_the_menu(self):
+        allowed = cf.allowed_hook_shapes("build_receipt", ["surprising_stat"])
+        assert cf.HOOK_SHAPE_NUMBER not in allowed
+        everything = ["surprising_stat", "direct_promise", "mistake_confession"]
+        assert cf.allowed_hook_shapes("build_receipt", everything) == \
+            cf.allowed_hook_shapes("build_receipt")
+        assert cf.hook_style_for_shape(cf.HOOK_SHAPE_STORY, None, ["micro_story"]) == \
+            "mistake_confession"
+        assert cf.hook_style_for_shape(cf.HOOK_SHAPE_NUMBER, None, ["surprising_stat"]) == \
+            "surprising_stat"
+
 
 class TestHookShapeRules:
     def test_directive_bans_what_if_except_on_an_allowed_question(self):

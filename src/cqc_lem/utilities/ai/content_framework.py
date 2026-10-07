@@ -3907,11 +3907,20 @@ def what_if_banned(recent_texts: Optional[list]) -> bool:
     return any(opens_with_what_if(t) for t in list(recent_texts or [])[:WHAT_IF_WINDOW - 1])
 
 
-def allowed_hook_shapes(format_key=None) -> tuple:
-    """The shapes a post archetype can be written with: those whose hook style its menu allows."""
+def allowed_hook_shapes(format_key=None, avoid_styles=None) -> tuple:
+    """The shapes a post archetype can be written with: those whose hook style its menu allows.
+
+    `avoid_styles` are the hook styles the user's recent posts already used (the V51 shape
+    history): a shape whose every allowed style is among them is left out, so the shape rotation
+    never re-assigns a recently used hook style. Relaxed rather than ever returning nothing.
+    """
     hooks = allowed_hooks("post", format_key) if format_key else HOOK_STYLES
-    return tuple(s for s in HOOK_SHAPES if any(h in hooks for h in HOOK_SHAPE_STYLES[s])) \
+    allowed = tuple(s for s in HOOK_SHAPES if any(h in hooks for h in HOOK_SHAPE_STYLES[s])) \
         or HOOK_SHAPES
+    avoid = set(avoid_styles or ())
+    fresh = tuple(s for s in allowed
+                  if any(h in hooks and h not in avoid for h in HOOK_SHAPE_STYLES[s]))
+    return fresh or allowed
 
 
 def select_hook_shape(recent_texts: Optional[list], smb: Optional[bool] = None,
@@ -3944,10 +3953,16 @@ def select_hook_shape(recent_texts: Optional[list], smb: Optional[bool] = None,
     return next(s for s in candidates if rank(s) == best)
 
 
-def hook_style_for_shape(shape: Optional[str], format_key=None) -> Optional[str]:
-    """The `HOOK_STYLES` key a shape is written with under this archetype, or None."""
+def hook_style_for_shape(shape: Optional[str], format_key=None,
+                         avoid_styles=None) -> Optional[str]:
+    """The `HOOK_STYLES` key a shape is written with under this archetype, or None.
+
+    A style outside `avoid_styles` (the recently used ones) wins over one inside it.
+    """
     hooks = allowed_hooks("post", format_key) if format_key else HOOK_STYLES
-    return next((h for h in HOOK_SHAPE_STYLES.get(shape or "", ()) if h in hooks), None)
+    styles = [h for h in HOOK_SHAPE_STYLES.get(shape or "", ()) if h in hooks]
+    avoid = set(avoid_styles or ())
+    return next((h for h in styles if h not in avoid), styles[0] if styles else None)
 
 
 def hook_shape_directive(shape: Optional[str], ban_what_if: bool = False) -> str:

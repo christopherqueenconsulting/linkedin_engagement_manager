@@ -360,6 +360,23 @@ class TestHookShapeWiring:
         assert steered["hook_style"] == cf.hook_style_for_shape(steered["hook_shape"],
                                                                 "personal_lesson")
 
+    def test_the_shape_never_brings_back_a_recent_hook_style(self):
+        # A number-led archetype with "surprising_stat" just used: the shape rotation must not
+        # re-assign it (the V51 no-repeat rule the blueprint selection already honoured).
+        for recent in ([], ["Plain point."], ["Last week it broke."], ["How to fix it."]):
+            steered = rcp._steer_post_blueprint(
+                1, {"format": "build_receipt", "recent_hook_styles": ["surprising_stat"]}, 6,
+                "value", {}, "voice", recent, hook_shape=True)
+            assert steered["hook_style"] != "surprising_stat"
+
+    def test_the_post_blueprint_carries_the_recent_hook_window(self):
+        history = [{"archetype": "listicle", "hook_style": h}
+                   for h in ("question", "bold_claim", "micro_story", "surprising_stat")]
+        with patch(f"{_RCP}.get_recent_post_shape_history", return_value=history), \
+             patch(f"{_RCP}.get_shape_performance", return_value=None):
+            bp = rcp._select_post_blueprint(1)
+        assert bp["recent_hook_styles"] == ["question", "bold_claim", "micro_story"]
+
     def test_no_history_means_no_shape(self):
         steered = rcp._steer_post_blueprint(1, {"format": "personal_lesson"}, 6, "value", {},
                                             "voice", None, hook_shape=True)

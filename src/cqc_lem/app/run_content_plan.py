@@ -1060,15 +1060,23 @@ def _select_post_blueprint(user_id: int, prefer_save_targeted: bool = False,
         log_warning("Could not load shape performance — selecting without it", exc=e,
                     user_id=user_id, task_name="create_content")
         performance = None
-    return select_blueprint(
+    recent_hooks = [h.get("hook_style") for h in shape_history if h.get("hook_style")]
+    blueprint = select_blueprint(
         "post",
         recent_formats=[h.get("archetype") for h in shape_history if h.get("archetype")],
-        recent_hook_styles=[h.get("hook_style") for h in shape_history if h.get("hook_style")],
+        recent_hook_styles=recent_hooks,
         performance=performance,
         prefer_save_targeted=prefer_save_targeted,
         exclude_formats=exclude_formats,
         preferred_formats=preferred_formats,
         guidance=guidance)
+    # Carried so the opening-shape rotation (showcase round 5) can honour the same hook window.
+    return {**blueprint, "recent_hook_styles": recent_hooks[:_HOOK_AVOID_WINDOW]}
+
+
+# The recent hook styles a newly assigned opening shape must not bring back (the framework's own
+# no-repeat window for hook styles).
+_HOOK_AVOID_WINDOW = 3
 
 
 def _select_carousel_blueprint(user_id: int, fact_anchors: Optional[list] = None,
@@ -4221,9 +4229,10 @@ def _steer_post_blueprint(user_id: int, blueprint: Optional[dict], post_id: Opti
         steered = {**steered, "audience": audience.get("audience"),
                    "audience_directive": _audience_mix.audience_directive(audience)}
     if hook_shape and recent_texts is not None:
+        avoid = steered.get("recent_hook_styles") or ()
         shape = select_hook_shape(recent_texts, smb=menu_smb,
-                                  allowed=allowed_hook_shapes(steered.get("format")))
-        style = hook_style_for_shape(shape, steered.get("format"))
+                                  allowed=allowed_hook_shapes(steered.get("format"), avoid))
+        style = hook_style_for_shape(shape, steered.get("format"), avoid)
         steered = {**steered, "hook_shape": shape, "what_if_banned": what_if_banned(recent_texts),
                    **({"hook_style": style} if style else {})}
     log_debug(f"CTA type for post_id={post_id}: {cta_type}", user_id=user_id,
