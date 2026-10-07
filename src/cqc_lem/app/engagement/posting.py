@@ -87,6 +87,7 @@ from cqc_lem.utilities.db import (
     get_linkedin_profile_url_by_user_id,
     get_post_archetype,
     get_post_content,
+    get_post_curated_context,
     get_post_manual_publish,
     get_post_message_from_log_for_user,
     get_post_status,
@@ -2249,6 +2250,21 @@ def _affiliate_disclosure_gate(user_id: int, post_id: int, content: str,
     return f"Post {post_id} flagged 'error' — {reason}"
 
 
+def _curated_context(user_id: int, post_id: int) -> Optional[dict]:
+    """The curated-source context of this post, or None for an ordinary post.
+
+    An UNREADABLE context is treated as an ordinary post, logged: the curated gate's fail-closed
+    half is upstream, where a curated draft is never auto-approved, so a post reaching here was
+    approved by a human or is not curated at all.
+    """
+    context = get_post_curated_context(post_id)
+    if context and context.get("unreadable"):
+        log_warning("Could not read whether this post is curated — publishing it as an ordinary "
+                    "post", user_id=user_id, post_id=post_id, task_name="post_to_linkedin")
+        return None
+    return context
+
+
 @shared_task.task(name='cqc_lem.app.run_automation.post_to_linkedin',
                   bind=True, base=QueueOnce, once={'graceful': True, 'keys': ['post_id']}, reject_on_worker_lost=True,
                   rate_limit='2/m')
@@ -2305,7 +2321,37 @@ def post_to_linkedin(self, user_id: int, post_id: int):
     post_type = get_post_type(post_id)
     log_info(f"Post type: {post_type}")
 
-    if post_type in (PostType.CAROUSEL, PostType.DOCUMENT):
+    # A curated post (docs/curated-sources.md) comments on someone else's content, so it publishes
+    # through its own treatment (reshare / re-chart / link card) and ONLY on a human's approval.
+    curated = _curated_context(user_id, post_id)
+    if curated is not None:
+        from cqc_lem.app.run_curated_sources import curated_publish_refusal, publish_curated_post
+
+        refusal = curated_publish_refusal(curated)
+        if refusal:
+            reason, back_to = refusal
+            # Spelled per branch so neither write can ever be read as an approval (#2116).
+            if back_to == PostStatus.PENDING:
+                update_db_post_status(post_id, PostStatus.PENDING)
+            else:
+                update_db_post_status(post_id, PostStatus.ERROR)
+            log_warning(f"Refused to publish a curated post: {reason}", user_id=user_id,
+                        post_id=post_id, task_name="post_to_linkedin")
+            insert_new_log(user_id=user_id, action_type=LogActionType.POST,
+                           result=LogResultType.FAILURE, post_id=post_id,
+                           message=f"Curated post not published: {reason}. Status set to "
+                                   f"'{back_to.value}'.")
+            return f"Post {post_id} curated publish refused — {reason}"
+        content, urn = publish_curated_post(user_id, post_id, content, curated)
+        if not urn:
+            update_db_post_status(post_id, PostStatus.ERROR)
+            log_error("Curated post not published — flagged 'error' for a human", user_id=user_id,
+                      post_id=post_id, action_type="post", api_provider="linkedin")
+            insert_new_log(user_id=user_id, action_type=LogActionType.POST,
+                           result=LogResultType.FAILURE, post_id=post_id,
+                           message="Curated post not published. Status set to 'error'.")
+            return f"Post {post_id} flagged 'error' — curated post not published"
+    elif post_type in (PostType.CAROUSEL, PostType.DOCUMENT):
         slides = get_carousel_slides(post_id)
         label = "Document" if post_type == PostType.DOCUMENT else "Carousel"
         log_info(f"{label} slides ({len(slides)}): {slides}")

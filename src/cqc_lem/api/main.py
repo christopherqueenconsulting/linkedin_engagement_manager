@@ -77,6 +77,7 @@ from cqc_lem.utilities.auth_factors import (
     enrollment_required,
 )
 from cqc_lem.utilities.content_generation_status import clear_generation_status, get_generation_status, mark_queued
+from cqc_lem.utilities.curated_sources import credit_line
 from cqc_lem.utilities.db import (
     EMAIL_VERIFICATION_REQUIRED_MESSAGE,
     SESSION_SCOPE_AGENT,
@@ -105,6 +106,7 @@ from cqc_lem.utilities.db import (
     get_connection_request,
     get_connection_request_user_id,
     get_connection_requests,
+    get_curated_summaries,
     get_dashboard_counts,
     get_engagement_preferences,
     get_latest_post_stats,
@@ -541,6 +543,9 @@ _AGENT_SESSION_SURFACE = frozenset({
     "/user/linkedin-profile-skills",
     # create pending work + save drafts for a human to approve
     "/connection_request", "/outreach/target", "/schedule_dm", "/lead_signal", "/lead",
+    # curated outside sources: list candidates and queue a pasted URL. The same PUT that approves
+    # a curated draft is reachable, and `_refuse_agent_approval` refuses its `approve` action.
+    "/curated/sources", "/curated/source",
 })
 
 _SCOPE_SURFACES: Dict[str, frozenset[str]] = {
@@ -2334,6 +2339,19 @@ def get_user_id_from_email(session_token: Optional[str] = None,
     return ResponseModel(status_code=200, detail=user_id)
 
 
+def _curated_summary(post: dict, sources: dict) -> Optional[dict]:
+    """The approval card's source block for a curated post; None for every other post."""
+    source_id = post.get("curated_source_id")
+    if not source_id:
+        return None
+    source = sources.get(source_id) or {}
+    treatment = post.get("source_treatment")
+    return {"source_id": source_id, "treatment": treatment, "platform": source.get("platform"),
+            "url": source.get("url"),
+            "credit": credit_line(source, treatment or "") if source else "Source unavailable",
+            "link_only": bool(source.get("link_only"))}
+
+
 @router.get("/posts/", responses={
     200: {"description": "Posts retrieved successfully", "model": ResponseModel[PostsPage]},
     **{k: v for k, v in error_responses.items() if k in [401, 403]}
@@ -2367,6 +2385,8 @@ def get_posts_for_email(
         start_date=start_date, end_date=end_date,
     )
 
+    curated_ids = sorted({p.get("curated_source_id") for p in posts} - {None})
+    curated_sources = get_curated_summaries(user_id, curated_ids) if curated_ids else {}
     posts_list = [
         {
             "post_id": post["id"],
@@ -2388,6 +2408,9 @@ def get_posts_for_email(
             # An occasion draft the author publishes by hand (issue #1074) — the Studio renders a
             # copy-and-mark-as-posted state for it instead of a schedule.
             "manual_publish": bool(post.get("manual_publish")),
+            # The source a curated post comments on (docs/curated-sources.md): the approval card
+            # shows it, its treatment and the exact credit line before the owner approves.
+            "curated": _curated_summary(post, curated_sources),
         }
         for post in posts
     ]
@@ -3486,6 +3509,7 @@ from cqc_lem.api.routers import (  # noqa: E402
     auth as _auth_router,
     avatar as _avatar_router,
     billing as _billing_router,
+    curated as _curated_router,
     outreach as _outreach_router,
     user as _user_router,
 )
@@ -3494,6 +3518,7 @@ app.include_router(_admin_router.router)
 app.include_router(_auth_router.router)
 app.include_router(_avatar_router.router)
 app.include_router(_billing_router.router)
+app.include_router(_curated_router.router)
 app.include_router(_outreach_router.router)
 app.include_router(_user_router.router)
 

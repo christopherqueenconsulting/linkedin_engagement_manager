@@ -496,6 +496,21 @@ class GateFinding(BaseModel):
     details: List[str]
 
 
+class CuratedPostSummary(BaseModel):
+    """The source a curated post comments on (docs/curated-sources.md) — the approval card's block.
+
+    `credit` is the exact `Source:` line the post publishes with; `treatment` is how the source
+    is presented (reshare / rechart / link).
+    """
+
+    source_id: int
+    treatment: Optional[str]
+    platform: Optional[str]
+    url: Optional[str]
+    credit: str
+    link_only: bool
+
+
 class PostSummary(BaseModel):
     """One row of the Content Studio's paged post list.
 
@@ -517,6 +532,7 @@ class PostSummary(BaseModel):
     gate_reason: List[GateFinding]
     rejection_reason: Optional[str]
     manual_publish: bool
+    curated: Optional[CuratedPostSummary]
 
 
 class PostsPage(BaseModel):

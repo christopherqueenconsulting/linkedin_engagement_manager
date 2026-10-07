@@ -886,6 +886,170 @@
         "title": "ConnectionRequestUpdate",
         "type": "object"
       },
+      "CuratedPostSummary": {
+        "description": "The source a curated post comments on (docs/curated-sources.md) \u2014 the approval card's block.\n\n`credit` is the exact `Source:` line the post publishes with; `treatment` is how the source\nis presented (reshare / rechart / link).",
+        "properties": {
+          "credit": {
+            "title": "Credit",
+            "type": "string"
+          },
+          "link_only": {
+            "title": "Link Only",
+            "type": "boolean"
+          },
+          "platform": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Platform"
+          },
+          "source_id": {
+            "title": "Source Id",
+            "type": "integer"
+          },
+          "treatment": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Treatment"
+          },
+          "url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Url"
+          }
+        },
+        "required": [
+          "source_id",
+          "treatment",
+          "platform",
+          "url",
+          "credit",
+          "link_only"
+        ],
+        "title": "CuratedPostSummary",
+        "type": "object"
+      },
+      "CuratedSourceActionRequest": {
+        "description": "Body of `PUT /api/curated/source` \u2014 approve or reject the post a source became.",
+        "properties": {
+          "action": {
+            "title": "Action",
+            "type": "string"
+          },
+          "session_token": {
+            "title": "Session Token",
+            "type": "string"
+          },
+          "source_id": {
+            "title": "Source Id",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "session_token",
+          "source_id",
+          "action"
+        ],
+        "title": "CuratedSourceActionRequest",
+        "type": "object"
+      },
+      "CuratedSourceRequest": {
+        "description": "Body of `POST /api/curated/source` \u2014 one URL the owner pasted, with who said what.",
+        "properties": {
+          "author": {
+            "anyOf": [
+              {
+                "maxLength": 255,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Author"
+          },
+          "excerpt": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Excerpt"
+          },
+          "licence": {
+            "anyOf": [
+              {
+                "maxLength": 32,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Licence"
+          },
+          "publisher": {
+            "anyOf": [
+              {
+                "maxLength": 255,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Publisher"
+          },
+          "session_token": {
+            "title": "Session Token",
+            "type": "string"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "maxLength": 512,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          },
+          "url": {
+            "maxLength": 1024,
+            "title": "Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_token",
+          "url"
+        ],
+        "title": "CuratedSourceRequest",
+        "type": "object"
+      },
       "DashboardStats": {
         "description": "`detail` of `GET /dashboard/stats/` \u2014 the three headline counters, SQL aggregates over all posts.",
         "properties": {
@@ -4847,6 +5011,16 @@
             "title": "Content",
             "type": "string"
           },
+          "curated": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CuratedPostSummary"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "gate_reason": {
             "items": {
               "$ref": "#/components/schemas/GateFinding"
@@ -4928,7 +5102,8 @@
           "authenticity_score",
           "gate_reason",
           "rejection_reason",
-          "manual_publish"
+          "manual_publish",
+          "curated"
         ],
         "title": "PostSummary",
         "type": "object"
@@ -8576,6 +8751,138 @@
           }
         },
         "summary": "Create Weekly Content"
+      }
+    },
+    "/api/curated/source": {
+      "post": {
+        "description": "Queue a pasted URL as a curated candidate. It is screened exactly like a collected one.\n\nA blocked candidate is still recorded and returned with its reason, so the owner sees WHY\n(political, paywall, NC licence, excluded platform) instead of a silent no.",
+        "operationId": "create_curated_source_api_curated_source_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CuratedSourceRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseModel_dict_str__Any__"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Curated Source"
+      },
+      "put": {
+        "description": "Approve or reject the PENDING post a drafted source became.\n\n`approve` records the CALLER as the approver (`user:<id>`), which is the only approval the\ncurated publisher accepts. An agent session is refused before anything is read.",
+        "operationId": "act_on_curated_source_api_curated_source_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CuratedSourceActionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseModel_dict_str__Any__"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Act On Curated Source"
+      }
+    },
+    "/api/curated/sources": {
+      "get": {
+        "description": "The caller's curated candidates and drafts, newest first, each with its guardrail verdict.\n\nA read failure is a 503, never an empty list \u2014 \"no sources\" and \"could not read them\" are\ndifferent answers.",
+        "operationId": "list_curated_sources_api_curated_sources_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "session_token",
+            "required": true,
+            "schema": {
+              "title": "Session Token",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status_filter",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status Filter"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseModel_dict_str__Any__"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Curated Sources"
       }
     },
     "/api/dashboard/planned-tasks/": {

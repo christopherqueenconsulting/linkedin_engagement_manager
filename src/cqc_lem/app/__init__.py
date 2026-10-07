@@ -18,6 +18,7 @@ from . import (
     engagement,
     run_avatar,
     run_content_plan,
+    run_curated_sources,
     run_scheduler,
 )
 
@@ -29,5 +30,6 @@ __all__ = [
     "engagement",
     "run_avatar",
     "run_content_plan",
+    "run_curated_sources",
     "run_scheduler",
 ]

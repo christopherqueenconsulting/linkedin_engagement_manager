@@ -85,6 +85,21 @@ const PAGE_SIZE_OPTIONS = [10, 25, 50]
 // LinkedIn's "Celebrate an occasion" composer has no API, so the author copies it across.
 type Post = PostsResponse['posts'][number]
 
+const CURATED_TREATMENT_LABELS: Record<string, string> = {
+  reshare: 'Reshare with commentary',
+  rechart: 'Re-charted data card',
+  link: 'Link post',
+}
+
+function curatedTreatmentLabel(treatment: string | null | undefined): string {
+  return (treatment && CURATED_TREATMENT_LABELS[treatment]) || 'Curated source'
+}
+
+/** Only an http(s) URL is ever rendered as a link — a stored source URL is still third-party text. */
+function safeHttpUrl(url: string | null | undefined): string | undefined {
+  return url && /^https?:\/\//i.test(url) ? url : undefined
+}
+
 // What POST /user/post/rescore returns after re-running the gates on the saved content.
 interface RescoreResult {
   passed: boolean
@@ -980,6 +995,12 @@ export default function ContentStudio() {
                     </div>
                   </div>
                   <p className="text-sm text-gray-700 line-clamp-2">{post.content}</p>
+                  {/* A curated post comments on someone else's content (docs/curated-sources.md). */}
+                  {post.curated && (
+                    <p className="text-xs text-indigo-700 mt-1 truncate" title={post.curated.credit}>
+                      ↻ Curated · {curatedTreatmentLabel(post.curated.treatment)} · {post.curated.credit}
+                    </p>
+                  )}
                   {/* One-line "why" for a gate-held draft — the full reason + fix is in the editor. */}
                   {post.status === 'pending' && gateHold(post.gate_reason).length > 0 && (
                     <p className="text-xs text-amber-700 mt-1 truncate">
@@ -1124,6 +1145,34 @@ export default function ContentStudio() {
                       </button>
                     </div>
                     {nativeError && <p className="text-xs text-red-600 font-medium">{nativeError}</p>}
+                  </div>
+                )}
+
+                {/* The approval card for a curated post: what it comments on, how, and the exact
+                    credit it publishes with (docs/curated-sources.md). */}
+                {editingPost.curated && (
+                  <div className="rounded-lg border border-indigo-200 bg-indigo-50 p-3 text-sm space-y-1">
+                    <p className="font-medium text-indigo-900">
+                      Curated post — it publishes only after you approve it
+                    </p>
+                    <p className="text-indigo-800">
+                      Treatment: {curatedTreatmentLabel(editingPost.curated.treatment)}
+                      {editingPost.curated.link_only ? ' (no reshare ID — linked, not reshared)' : ''}
+                    </p>
+                    <p className="text-indigo-800">{editingPost.curated.credit}</p>
+                    {safeHttpUrl(editingPost.curated.url) && (
+                      <a
+                        href={safeHttpUrl(editingPost.curated.url)}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-indigo-700 underline break-all"
+                      >
+                        {editingPost.curated.url}
+                      </a>
+                    )}
+                    <p className="text-xs text-indigo-700">
+                      The credit line is added back when it publishes, even if you remove it here.
+                    </p>
                   </div>
                 )}
 

@@ -149,6 +149,7 @@ from cqc_lem.utilities.db import (
     insert_planned_post,
     mark_post_gate_demoted,
     normalize_posting_days,
+    post_is_curated,
     record_story_bank_use,
     update_db_post_authenticity_score,
     update_db_post_carousel_slides,
@@ -781,6 +782,12 @@ def create_content(user_id: int, post_type: str, stage: str, post_id: int = None
         # slots; every other slot falls through to the ordinary case-study post unchanged.
         content = _affiliate_promo_content(user_id, post_id, content_mix)
         if content is None:
+            # A curated outside source (docs/curated-sources.md) claims at most one value/authority
+            # slot in three. Its drafter owns the post's media — a re-chart image, the publisher's
+            # own link-card thumbnail, or nothing for a reshare — so no photo is generated for it.
+            curated = _curated_source_content(user_id, post_id, content_mix)
+            if curated:
+                return curated.strip(), video_url
             content = create_text_post(user_id, stage, post_id=post_id, content_mix=content_mix,
                                        day_weekday=day_weekday)
         if content:
@@ -845,6 +852,38 @@ def _affiliate_promo_content(user_id: int, post_id: Optional[int],
         log_warning("Affiliate promo generation failed — writing the ordinary promo post instead",
                     exc=e, user_id=user_id, post_id=post_id, task_name="create_content")
         return None
+
+
+def _curated_source_content(user_id: int, post_id: Optional[int],
+                            content_mix: Optional[str]) -> Optional[str]:
+    """The curated post that claims this slot, or None to write the author's own post.
+
+    Never raises (``curated_content_for_slot`` contains its own faults); OFF unless
+    ``CURATED_SOURCES_ENABLED`` for this user.
+    """
+    from cqc_lem.app.run_curated_sources import curated_content_for_slot
+
+    return curated_content_for_slot(
+        user_id, post_id, content_mix,
+        load_voice=lambda: (_engagement_prefs_or_empty(user_id),
+                            _profile_synthesis_or_none(user_id)))
+
+
+def _curated_post_needs_review(user_id: int, post_id: Optional[int]) -> bool:
+    """True when this post is (or may be) a curated draft — which is NEVER auto-approved.
+
+    Read only for a user with ``CURATED_SOURCES_ENABLED``, the only users who get curated drafts.
+    For them it fails CLOSED: an unreadable answer holds the post for review, which costs a click,
+    never a publish. The publish path refuses any curated post a human did not approve, so a draft
+    left over after the flag is switched off is still caught there.
+    """
+    if post_id is None:
+        return False
+    from cqc_lem.utilities.curated_collectors import curated_enabled
+
+    if not curated_enabled(user_id):
+        return False
+    return post_is_curated(post_id) is not False
 
 
 def _profile_synthesis_or_none(user_id: int) -> Optional[str]:
@@ -3061,6 +3100,11 @@ def _may_auto_approve(user_id: int, post_id: int, auto_schedule: bool,
         True when the post may go APPROVED without a human reading it.
     """
     if not auto_schedule or demoting_findings(findings):
+        return False
+    if _curated_post_needs_review(user_id, post_id):
+        # A curated post comments on someone else's content: only its owner approves it.
+        log_info("Holding a curated draft for the owner's approval", user_id=user_id,
+                 post_id=post_id, task_name="create_content")
         return False
     if post_id is None or not get_post_ever_gate_demoted(post_id):
         return True

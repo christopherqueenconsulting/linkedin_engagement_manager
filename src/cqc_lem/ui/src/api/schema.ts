@@ -851,6 +851,59 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/curated/source": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Act On Curated Source
+         * @description Approve or reject the PENDING post a drafted source became.
+         *
+         *     `approve` records the CALLER as the approver (`user:<id>`), which is the only approval the
+         *     curated publisher accepts. An agent session is refused before anything is read.
+         */
+        put: operations["act_on_curated_source_api_curated_source_put"];
+        /**
+         * Create Curated Source
+         * @description Queue a pasted URL as a curated candidate. It is screened exactly like a collected one.
+         *
+         *     A blocked candidate is still recorded and returned with its reason, so the owner sees WHY
+         *     (political, paywall, NC licence, excluded platform) instead of a silent no.
+         */
+        post: operations["create_curated_source_api_curated_source_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/curated/sources": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Curated Sources
+         * @description The caller's curated candidates and drafts, newest first, each with its guardrail verdict.
+         *
+         *     A read failure is a 503, never an empty list — "no sources" and "could not read them" are
+         *     different answers.
+         */
+        get: operations["list_curated_sources_api_curated_sources_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/dashboard/planned-tasks/": {
         parameters: {
             query?: never;
@@ -3762,6 +3815,59 @@ export interface components {
             session_token: string;
         };
         /**
+         * CuratedPostSummary
+         * @description The source a curated post comments on (docs/curated-sources.md) — the approval card's block.
+         *
+         *     `credit` is the exact `Source:` line the post publishes with; `treatment` is how the source
+         *     is presented (reshare / rechart / link).
+         */
+        CuratedPostSummary: {
+            /** Credit */
+            credit: string;
+            /** Link Only */
+            link_only: boolean;
+            /** Platform */
+            platform: string | null;
+            /** Source Id */
+            source_id: number;
+            /** Treatment */
+            treatment: string | null;
+            /** Url */
+            url: string | null;
+        };
+        /**
+         * CuratedSourceActionRequest
+         * @description Body of `PUT /api/curated/source` — approve or reject the post a source became.
+         */
+        CuratedSourceActionRequest: {
+            /** Action */
+            action: string;
+            /** Session Token */
+            session_token: string;
+            /** Source Id */
+            source_id: number;
+        };
+        /**
+         * CuratedSourceRequest
+         * @description Body of `POST /api/curated/source` — one URL the owner pasted, with who said what.
+         */
+        CuratedSourceRequest: {
+            /** Author */
+            author?: string | null;
+            /** Excerpt */
+            excerpt?: string | null;
+            /** Licence */
+            licence?: string | null;
+            /** Publisher */
+            publisher?: string | null;
+            /** Session Token */
+            session_token: string;
+            /** Title */
+            title?: string | null;
+            /** Url */
+            url: string;
+        };
+        /**
          * DashboardStats
          * @description `detail` of `GET /dashboard/stats/` — the three headline counters, SQL aggregates over all posts.
          */
@@ -5463,6 +5569,7 @@ export interface components {
             carousel_slides: string[] | null;
             /** Content */
             content: string;
+            curated: components["schemas"]["CuratedPostSummary"] | null;
             /** Gate Reason */
             gate_reason: components["schemas"]["GateFinding"][];
             /** Image Url */
@@ -7680,6 +7787,104 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+        };
+    };
+    act_on_curated_source_api_curated_source_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CuratedSourceActionRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResponseModel_dict_str__Any__"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_curated_source_api_curated_source_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CuratedSourceRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResponseModel_dict_str__Any__"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_curated_sources_api_curated_sources_get: {
+        parameters: {
+            query: {
+                session_token: string;
+                status_filter?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResponseModel_dict_str__Any__"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
             };
         };
     };

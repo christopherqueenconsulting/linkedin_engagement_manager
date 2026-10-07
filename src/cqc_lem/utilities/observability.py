@@ -559,6 +559,11 @@ EVENTS = {spec.event: spec for spec in (
     # `_emit(..., event=...)` supplies the concrete name from FUNNEL_EVENTS / AFFILIATE_EVENTS.
     EventSpec("funnel_event", (prop("user_id"),)),
     EventSpec("affiliate_event", (prop("user_id"),), DISTINCT_USER_STRICT),
+    # Curated outside sources (docs/curated-sources.md): one event per collect run, draft decision
+    # and publish. `stage` is collect | draft | publish; `status` the outcome at that stage.
+    EventSpec("curated_source", (
+        label("stage"), label("status"), label("platform"), label("treatment"), label("reason"),
+        count("new"), count("blocked"))),
 )}
 
 
@@ -2322,6 +2327,20 @@ def track_task(
     """
     _emit(EVENTS["celery_task"], {"task_name": task_name, "duration_ms": duration_ms,
                                   "success": success, "state": state, "user_id": user_id}, extra)
+
+
+def track_curated_source(stage: str, status: str, user_id: Optional[int] = None,
+                         platform: str = "", treatment: str = "", reason: str = "",
+                         new: int = 0, blocked: int = 0) -> None:
+    """One curated-sources decision (docs/curated-sources.md): a collect run, a draft, a publish.
+
+    `stage`, `status`, `platform`, `treatment` and `reason` are STRING labels so a tile can break
+    reach and refusals down per treatment; a run that collected nothing still emits, with zeros, so
+    "the collector ran and found nothing" is distinguishable from "the collector never ran".
+    """
+    _emit(EVENTS["curated_source"], {"stage": stage, "status": status, "platform": platform,
+                                     "treatment": treatment, "reason": reason, "new": new,
+                                     "blocked": blocked, "user_id": user_id})
 
 
 def track_inbound_email(verdict: str, user_id: Optional[int] = None) -> None:

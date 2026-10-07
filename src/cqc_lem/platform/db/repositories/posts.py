@@ -2404,7 +2404,7 @@ def get_posts(user_id: int, limit: int = 10, offset: int = 0,
         cursor.execute(
             f"SELECT id, content, video_url, image_url, scheduled_time, post_type, status, "
             f"carousel_slides, authenticity_score, gate_reason, rejection_reason, archetype, "
-            f"manual_publish "
+            f"manual_publish, curated_source_id, source_treatment "
             f"FROM posts {where} ORDER BY {sort_col} {order}, id {order} LIMIT %s OFFSET %s",
             params + [limit, offset]
         )
