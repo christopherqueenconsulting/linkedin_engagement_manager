@@ -18,6 +18,7 @@ import pytest
 from cqc_lem.utilities.ai.image_brief import (
     _STYLE_PRESETS,
     _SYSTEM_PROMPT,
+    _TREATMENT_TEMPLATES,
     DEAD_QUALITY_TAGS,
     DEAD_STYLE_WORDS,
     NEGATION_MARKERS,
@@ -55,6 +56,30 @@ class TestPresetsObeyTheSharedSystemPrompt:
             assert marker not in lowered, (
                 f"the {surface!r} preset uses {marker!r}; the renderer ignores negation and "
                 f"renders what the prompt names")
+
+    @pytest.mark.parametrize("treatment", sorted(_TREATMENT_TEMPLATES))
+    def test_no_treatment_template_breaks_the_shared_rules(self, treatment):
+        """Issue #2241: a treatment template is pasted into the same request as a preset."""
+        lowered = _TREATMENT_TEMPLATES[treatment].lower()
+        for word in DEAD_STYLE_WORDS + DEAD_QUALITY_TAGS:
+            assert word.lower() not in lowered, f"{treatment!r} asks for {word!r}"
+        for marker in _NEGATION_MARKERS:
+            assert marker not in lowered, f"{treatment!r} uses {marker!r}"
+
+    def test_photorealistic_is_allowed_again_and_only_that_word(self):
+        """Gauntlet round 1 of #2241 removed ONE word from the dead list, on evidence.
+
+        OpenAI's gpt-image prompting guide recommends "photorealistic" paired with real texture
+        (pores, fabric wear, imperfections) and no studio polish:
+        https://developers.openai.com/cookbook/examples/multimodal/image-gen-models-prompting-guide
+        Every other dead tag stays dead.
+        """
+        assert "photorealistic" not in DEAD_QUALITY_TAGS
+        assert set(DEAD_QUALITY_TAGS) == {"cinematic", "8k", "masterpiece", "ultra-detailed"}
+
+    def test_every_treatment_has_a_template(self):
+        from cqc_lem.utilities.ai.image_concept import TREATMENTS
+        assert set(_TREATMENT_TEMPLATES) == set(TREATMENTS)
 
     def test_the_deterministic_fallback_obeys_the_same_rules(self):
         """The fallback is a working code path — it renders when the author is down."""

@@ -82,6 +82,7 @@ from cqc_lem.utilities.auth_factors import (
     verify_totp_code,
 )
 from cqc_lem.utilities.auth_rate_limit import check_auth_init, check_auth_verify
+from cqc_lem.utilities.brand_kit import parse_brand_kit
 from cqc_lem.utilities.db import (
     CATCHUP_MAX_PER_CONTACT_DAYS_DEFAULT,
     CATCHUP_MAX_PER_CONTACT_DAYS_MAX,
@@ -681,6 +682,18 @@ class EngagementPreferencesRequest(BaseModel):
     # Per-contact catch-up frequency guard (issue #1078). 0 disables the guard.
     min_catchup_contact_interval_days: int = CATCHUP_MIN_CONTACT_INTERVAL_DAYS_DEFAULT
     max_catchup_touches_per_contact_days: int = CATCHUP_MAX_PER_CONTACT_DAYS_DEFAULT
+    # The brand kit image generation reads (`utilities/brand_kit.py`). None (omitted) means "leave
+    # what is stored"; `{}` clears it. Never a 422 for a bad field — the validator drops it, so an
+    # odd hex cannot fail the whole settings save.
+    brand_kit: Optional[Dict[str, Any]] = None
+
+    @field_validator("brand_kit")
+    @classmethod
+    def _clean_brand_kit(cls, v: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        if v is None:
+            return None
+        kit = parse_brand_kit(v)
+        return kit.to_dict() if kit else {}
 
     @field_validator("comment_length")
     @classmethod
@@ -1973,6 +1986,9 @@ def update_engagement_preferences_endpoint(request: EngagementPreferencesRequest
     # stored", never "store an empty list" — the saved subjects must survive a partial PUT.
     if prefs.get("forbidden_claim_terms") is None:
         prefs.pop("forbidden_claim_terms", None)
+    # Same rule for the brand kit: omitted or null keeps the stored kit; `{}` clears it.
+    if prefs.get("brand_kit") is None:
+        prefs.pop("brand_kit", None)
     if not update_engagement_preferences(user_id, prefs):
         raise HTTPException(status_code=500, detail="Could not update engagement preferences")
     detail = "Engagement preferences updated"
