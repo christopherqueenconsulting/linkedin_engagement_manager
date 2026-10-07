@@ -183,9 +183,11 @@ model_list:
   # gpt-image-2 is the hero renderer for every non-avatar image (covers, post images,
   # thumbnails); avatar likeness stays on the Replicate FLUX LoRA path, and base FLUX is the
   # code-side fallback when this whole group is down (utilities/ai/image_gen.py). gpt-image-2
-  # can require verified-org API access, so gpt-image-1 rides in the same group — latency
-  # routing plus num_retries lands calls there when -2 refuses. These models return b64_json
-  # only (no response_format='url'), which image_gen.py decodes and persists.
+  # can require verified-org API access, so gpt-image-2.5-sunburst rides in the same group —
+  # latency routing plus num_retries lands calls there when -2 refuses. It replaced gpt-image-1
+  # (OpenAI sunset 2026-10-23) after benchmark mm-20261007-9d8037 (docs/model-benchmarks/):
+  # rubric mean 4.90 vs gpt-image-2's 4.95, 3/3 accepted, ~30% of the render cost. These models
+  # return b64_json only (no response_format='url'), which image_gen.py decodes and persists.
   - model_name: lem-image
     litellm_params:
       model: openai/gpt-image-2
@@ -194,7 +196,7 @@ model_list:
 
   - model_name: lem-image
     litellm_params:
-      model: openai/gpt-image-1
+      model: openai/gpt-image-2.5-sunburst
       api_key: os.environ/OPENAI_API_KEY
       request_timeout: 180
 

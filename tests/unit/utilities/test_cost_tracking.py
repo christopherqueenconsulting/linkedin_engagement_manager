@@ -18,6 +18,15 @@ class TestImageCostUsd:
         assert image_cost_usd(1) == 0.08
         assert image_cost_usd(3) == pytest.approx(0.24)
 
+    def test_lem_image_fallback_is_priced(self, monkeypatch):
+        """The in-group fallback must bill at its own rate, never the unknown-model default."""
+        monkeypatch.delenv("IMAGE_COST_PER_IMAGE", raising=False)
+        from cqc_lem.utilities.observability import image_cost_usd
+        for quality in ("low", "medium", "high"):
+            assert image_cost_usd(1, model="gpt-image-2.5-sunburst", quality=quality) == \
+                image_cost_usd(1, model="gpt-image-2", quality=quality)
+        assert image_cost_usd(1, model="gpt-image-2.5-sunburst", quality="medium") != 0.08
+
     def test_env_override(self, monkeypatch):
         monkeypatch.setenv("IMAGE_COST_PER_IMAGE", "0.12")
         from cqc_lem.utilities.observability import image_cost_usd

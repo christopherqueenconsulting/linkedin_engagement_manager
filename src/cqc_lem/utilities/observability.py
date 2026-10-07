@@ -1167,6 +1167,12 @@ _IMAGE_COST_BY_MODEL = {
     "gpt-image-2:low": 0.006,
     "gpt-image-2:medium": 0.053,
     "gpt-image-2:high": 0.211,
+    # lem-image's in-group fallback since gpt-image-1's 2026-10-23 sunset. Its pinned token prices
+    # (.litellm/model_prices_snapshot.json) match gpt-image-2's, so -2's rates are the ceiling; a
+    # missing key would bill every fallback render at the $0.08 default instead.
+    "gpt-image-2.5-sunburst:low": 0.006,
+    "gpt-image-2.5-sunburst:medium": 0.053,
+    "gpt-image-2.5-sunburst:high": 0.211,
     "gpt-image-1:low": 0.011,
     "gpt-image-1:medium": 0.042,
     "gpt-image-1:high": 0.167,
