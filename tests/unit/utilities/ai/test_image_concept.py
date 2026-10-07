@@ -766,3 +766,73 @@ class TestRoundNineKickerAndHooks:
         source = "verification is much cheaper than a rework"
         assert _valid_hook("Verification is much cheaper", None, source, source) == ""
         assert _valid_hook("Verification is cheaper than rework", None, source, source)
+
+
+@pytest.mark.unit
+class TestRoundTenHookAlways:
+    _SOURCE = ("An audit exposed hidden AI tool spend, saving $30K quarterly. The billing review "
+               "found unused seats. Audits are much cheaper.")
+
+    def test_a_thesis_is_trimmed_at_its_clause_boundary(self):
+        from cqc_lem.utilities.ai.image_concept import derive_hook
+        hook = derive_hook("An audit exposed hidden AI tool spend, saving $30K quarterly.",
+                           self._SOURCE)
+        assert hook == "Audit exposed hidden AI tool spend"
+
+    def test_a_number_and_its_subject_when_the_thesis_cannot_be_a_hook(self):
+        from cqc_lem.utilities.ai.image_concept import derive_hook
+        source = "Unused seats cost $30K. The billing review found them."
+        hook = derive_hook("Stop paying!", source, facts=("$30K",),
+                           anchors=("the billing review",))
+        assert hook == "$30K billing review"
+
+    def test_a_derived_hook_is_never_empty(self):
+        from cqc_lem.utilities.ai.image_concept import derive_hook
+        assert derive_hook("", "", None)
+
+    def test_hook_rejection_names_the_reason(self):
+        from cqc_lem.utilities.ai.image_concept import hook_rejection
+        assert "than" in hook_rejection("Verification is much cheaper", None)
+        assert hook_rejection("Who buys the audit?", None) == ""
+
+    def _stage1(self, retry_reply):
+        payload = {"thesis": "An audit exposed hidden AI tool spend, saving $30K quarterly",
+                   "visual_anchors": ["billing review", "unused seats"],
+                   "hook_phrase": "Audits are much cheaper", "treatment": "people_scene"}
+        replies = [SimpleNamespace(choices=[SimpleNamespace(
+            message=SimpleNamespace(content=json.dumps(payload)), finish_reason="stop")])]
+        if isinstance(retry_reply, Exception):
+            replies.append(retry_reply)
+        else:
+            replies.append(SimpleNamespace(choices=[SimpleNamespace(
+                message=SimpleNamespace(content=json.dumps(retry_reply)), finish_reason="stop")]))
+        replies += [SimpleNamespace(choices=[SimpleNamespace(
+            message=SimpleNamespace(content="{}"), finish_reason="stop")])] * 3
+        return replies
+
+    def test_a_post_whose_hook_failed_is_retried_once_with_the_reason(self):
+        from cqc_lem.utilities.ai.image_concept import analyze_content_for_image
+        with patch("cqc_lem.utilities.ai.client.client") as client:
+            client.chat.completions.create.side_effect = self._stage1(
+                {"hook_phrase": "Unused seats cost $30K"})
+            concept = analyze_content_for_image(self._SOURCE, surface="post_image")
+        assert concept.hook_phrase == "Unused seats cost $30K"
+        retry = client.chat.completions.create.call_args_list[1][1]["messages"][1]["content"]
+        assert "Audits are much cheaper" in retry and "needs its reference" in retry
+
+    def test_a_failed_retry_derives_the_hook(self):
+        from cqc_lem.utilities.ai.image_concept import analyze_content_for_image
+        with patch("cqc_lem.utilities.ai.client.client") as client:
+            client.chat.completions.create.side_effect = self._stage1(RuntimeError("down"))
+            concept = analyze_content_for_image(self._SOURCE, surface="post_image")
+        assert concept.hook_phrase == "Audit exposed hidden AI tool spend"
+
+    def test_a_carousel_never_pays_for_a_hook_retry(self):
+        from cqc_lem.utilities.ai.image_concept import analyze_content_for_image
+        with patch("cqc_lem.utilities.ai.client.client") as client:
+            client.chat.completions.create.side_effect = self._stage1({"hook_phrase": "x"})
+            concept = analyze_content_for_image(self._SOURCE, surface="carousel")
+        assert concept.hook_phrase == ""
+        prompts = [c[1]["messages"][1]["content"] for c in
+                   client.chat.completions.create.call_args_list]
+        assert not any("Every hook you offered" in p for p in prompts)

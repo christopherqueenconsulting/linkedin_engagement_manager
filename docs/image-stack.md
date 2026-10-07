@@ -51,6 +51,29 @@ judge rightly scored specificity 1 on all four covers. So Stage 1 returns two li
   down. Briefs, Stage 3 and the vision judge's specificity all work from `usable_anchors()` — the
   anchors, or for a concept with none, its plain common-noun facts.
 
+## The render is only a photograph (round 10)
+
+- **Photo-only render prompts.** Told it was making "a LinkedIn newsletter cover" with "negative
+  space" for a headline, gpt-image designed a cover and typeset fake text into the empty side
+  ("ENGINEERING LEAD / Billing Dashboard"). On a composited surface (newsletter, post_image) the
+  render prompt now describes ONLY a photograph. `render_framing_failure` rejects an authored
+  prompt naming LinkedIn, a newsletter, cover, post, headline, title, text area, negative space,
+  a magazine, an editorial layout or typesetting, or repeating a hook/kicker word (a word that is
+  part of a visual anchor stays allowed: it is the subject, drawn rather than written). Every
+  brief that ships, the fallback included, then passes `photo_only_prompt`, which rewrites the
+  opening to "A candid documentary photograph", drops framing sentences and words, and appends
+  the square-frame instruction. The USE CASE stays author context in the brief author's prompt.
+  The square-scene directive no longer mentions a headline. Whitepapers, brochures and
+  dashboards joined the prop list.
+- **A hook always.** On a composited surface, when no Stage 1 hook passes `hook_rejection`,
+  Stage 1 is asked ONCE more for a hook with every rejection reason; if that fails too,
+  `derive_hook` takes the thesis up to its first clause boundary (at most 6 words), else a
+  grounded number plus the first anchor's noun.
+- **Video frames read with their caption.** `inspect_render_quality(..., surface="video",
+  hook_text=<the caption video_captions burns in>)` tells the judge the caption is burned into
+  the MP4 over the frame and is NOT in the still. Nothing is composited and the render prompt
+  never carries it. The wiring belongs in `_generate_video_src` (PR #2249).
+
 ## No labels, a kicker always, anchored comparatives (round 9)
 
 - **No painted captions.** gpt-image rendered the brief's role and group nouns as labels — a

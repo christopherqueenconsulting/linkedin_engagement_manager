@@ -261,6 +261,13 @@ by appearance rather than by group caption, a missing kicker is derived from the
 comparative hook must say "than" or carry a number (`docs/image-stack.md`, "No labels, a kicker
 always, anchored comparatives").
 
+### Gauntlet round 9 → the render is only a photograph
+
+Two covers failed only on stray text: told it was a "LinkedIn newsletter cover", the renderer
+typeset a fake cover into the empty side of the scene. The render prompt now describes only a
+photograph, checked deterministically and repaired before it ships (`docs/image-stack.md`, "The
+render is only a photograph").
+
 ### Rejections land for review, with their reason
 
 A definite judge failure on `no_cliche` or `specificity` after the attempt budget returns verdict

@@ -257,10 +257,12 @@ _GROUNDED_COVER = {"focal_concept": "an agency owner wincing before payroll",
                               "Portra 400 tones, subtle film grain.")}
 
 _HOOK = "Payroll eats first"
-_GRAPHIC = {"focal_concept": "an agency owner beside calm negative space",
-            "prompt": ('A designed editorial layout for a LinkedIn newsletter cover: a '
-                       'photographic cutout of an agency owner mid-wince on the right, on a flat '
-                       'charcoal color field with generous calm negative space on the left.'),
+# Round 10: even a graphic's RENDER prompt describes only the picture — never "a LinkedIn
+# newsletter cover" or "negative space" for a headline (gpt-image then designs a cover).
+_GRAPHIC = {"focal_concept": "an agency owner on a flat charcoal field",
+            "prompt": ('A candid documentary photograph: a photographic cutout of an agency owner '
+                       'mid-wince, centred on a flat charcoal color field and filling the square '
+                       'frame.'),
             "required_entities": ["agency owner"], "hook_text": None}
 
 
@@ -313,9 +315,8 @@ _FIVE_EDITIONS = (
               specific_entities=("outreach team", "routing rules", "42% cost drop"),
               treatment="editorial_graphic", hook_phrase="42% cheaper, same replies"),
      {"focal_concept": "the 42% hook beside an outreach team",
-      "prompt": ('A designed editorial layout for a LinkedIn newsletter cover: a photographic '
-                 'cutout of an outreach team trading relieved grins on the right, on a flat '
-                 'charcoal color field with generous calm negative space on the left, high '
+      "prompt": ('A candid documentary photograph: a photographic cutout of an outreach team '
+                 'trading relieved grins, centred on a flat charcoal color field, high '
                  'contrast.')}),
     ("My Multi-Agent Content System Broke Quietly",
      _concept(thesis="An automated content system failed silently for weeks",
@@ -1437,3 +1438,92 @@ class TestRoundNineBrief:
         brief = _fallback_brief("c", surface="video", ratio="16:9", context="", concept=concept,
                                 treatment="people_scene")
         assert "contract" not in brief.prompt.lower()
+
+
+# The exact round-9 fallback render prompts whose renders came back with typeset fake-cover text
+# ("ENGINEERING LEAD / Billing Dashboard", "AI GOVERNANCE / LinkedIn Newsletter").
+_R9_ED16 = ("A photorealistic candid editorial photograph for a LinkedIn newsletter cover of "
+            "engineering lead and billing dashboard in the real place this happens, with marketing "
+            "team meeting in the frame, shot on a 50mm lens at f/2.8, composed for a 1:1 aspect "
+            "ratio with the subject large in the frame, bright, high-key warm daylight with strong "
+            "subject contrast and one deliberate gold accent, subtle film grain, real texture with "
+            "fabric wear and everyday imperfections, plain unbranded surfaces, clean unmarked "
+            "walls, hands at rest or around a mug. Compose a SQUARE frame with the subject centred "
+            "and filling it, the headline is set beside the image, never on it.")
+_R9_ED19 = ("A photorealistic editorial photograph for a LinkedIn newsletter cover: small group of "
+            "operations professionals gathered around a conference table, their expressions a mix "
+            "of curiosity and caution, shot on a 50mm lens at f/2.8, bright, high-key warm "
+            "daylight. Compose a SQUARE frame with the subject centred and filling it, the "
+            "headline is set beside the image, never on it.")
+
+
+@pytest.mark.unit
+class TestRoundTenPhotoOnly:
+    @pytest.mark.parametrize("prompt", [_R9_ED16, _R9_ED19])
+    def test_the_r9_prompts_fail_the_framing_check(self, prompt):
+        from cqc_lem.utilities.ai.image_brief import render_framing_failure
+        assert render_framing_failure(prompt, "Unused tools vs hidden costs", "AI CONTENT AUDIT")
+
+    @pytest.mark.parametrize("prompt", [_R9_ED16, _R9_ED19])
+    def test_the_r9_prompts_are_repaired_to_a_photograph(self, prompt):
+        from cqc_lem.utilities.ai.image_brief import (
+            PHOTO_OPENING,
+            photo_only_prompt,
+            render_framing_failure,
+        )
+        hook, kicker = "Unused tools vs hidden costs", "AI CONTENT AUDIT"
+        out = photo_only_prompt(prompt, hook, kicker, ["engineering lead"])
+        assert out.startswith(PHOTO_OPENING)
+        for word in ("linkedin", "newsletter", "cover", "headline", "editorial photograph"):
+            assert word not in out.lower(), word
+        assert "centred" in out
+        assert render_framing_failure(out, hook, kicker, ["engineering lead"]) is None
+
+    @pytest.mark.parametrize("framing", ["a LinkedIn post", "a magazine layout",
+                                         "calm negative space for the title",
+                                         "a text area on the left", "an editorial layout"])
+    def test_any_framing_word_is_refused(self, framing):
+        from cqc_lem.utilities.ai.image_brief import render_framing_failure
+        assert render_framing_failure(f"A candid photograph of a man, {framing}.", "Who buys?")
+
+    def test_hook_and_kicker_words_are_refused_unless_they_are_an_anchor(self):
+        from cqc_lem.utilities.ai.image_brief import render_framing_failure
+        prompt = "A candid documentary photograph of an agency owner reviewing governance."
+        assert "governance" in render_framing_failure(prompt, "Who buys?", "AI GOVERNANCE")
+        assert render_framing_failure(prompt, "Who buys?", "AI GOVERNANCE",
+                                      ["governance review"]) is None
+        assert render_framing_failure(prompt, "Agency owners lose sleep", None,
+                                      ["an agency owner"]) is None
+
+    def test_an_authored_cover_brief_naming_its_use_is_retried(self):
+        framed = dict(_GROUNDED_COVER,
+                      prompt=_GROUNDED_COVER["prompt"] + " For a LinkedIn newsletter cover.")
+        with patch(_LLM, side_effect=[_resp(framed), _resp(_GROUNDED_COVER)]) as llm:
+            brief = build_image_brief("c", surface="newsletter", concept=_COVER_CONCEPT)
+        reason = llm.call_args_list[1][1]["messages"][1]["content"]
+        assert "the render is ONLY a photograph" in reason
+        assert "linkedin" not in brief.prompt.lower()
+
+    def test_the_fallback_is_a_photograph_on_a_composited_surface(self):
+        brief = _fallback_brief("c", surface="newsletter", ratio="16:9", context="",
+                                concept=_COVER_CONCEPT, treatment="people_scene")
+        assert brief.prompt.startswith("A candid documentary photograph")
+        assert "linkedin" not in brief.prompt.lower() and "cover" not in brief.prompt.lower()
+        assert "headline" not in brief.prompt.lower()
+
+    def test_an_uncomposited_surface_keeps_its_use_case(self):
+        brief = _fallback_brief("c", surface="carousel", ratio="1:1", context="",
+                                concept=_concept(), treatment="people_scene")
+        assert "carousel slide" in brief.prompt
+
+    def test_the_use_case_stays_author_context(self):
+        with patch(_LLM, return_value=_resp(_GROUNDED_COVER)) as llm:
+            brief = build_image_brief("c", surface="newsletter", concept=_COVER_CONCEPT)
+        assert brief.hook_text
+        assert "USE CASE: A LinkedIn newsletter cover" in llm.call_args[1]["messages"][1]["content"]
+        assert "LinkedIn" not in brief.prompt
+
+    @pytest.mark.parametrize("prop", ["a glossy AI governance whitepaper", "a billing dashboard"])
+    def test_whitepapers_and_dashboards_are_props(self, prop):
+        from cqc_lem.utilities.ai.image_brief import prop_failure
+        assert prop_failure(f"A team around a table with {prop}."), prop

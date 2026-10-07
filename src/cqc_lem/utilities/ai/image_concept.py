@@ -527,37 +527,114 @@ def hook_shape_of(hook: str) -> str:
     return "plain_claim"
 
 
-def _valid_hook(hook: str, title: Optional[str], topic_text: str = "",
-                source: Optional[str] = None) -> str:
-    """The hook if it is a usable curiosity gap; else ''.
+def hook_rejection(hook: str, title: Optional[str], topic_text: str = "",
+                   source: Optional[str] = None) -> str:
+    """Why ``hook`` is not a usable curiosity gap, or '' when it is.
 
-    2-5 words, at most ``_HOOK_MAX_CHARS``, no exclamation mark, no imperative opener, not Title
-    Case, not the title again — and a hook with a number in it must name its subject
-    (``names_its_subject``), so "45% less engagement" is refused and "45% less reach for AI posts"
-    is not.
+    2-6 words, at most ``_HOOK_MAX_CHARS``, no exclamation mark, no imperative opener, not Title
+    Case, not the title again — a hook with a number in it must name its subject
+    (``names_its_subject``), every word must come from the piece, and a comparative needs its
+    reference (``vague_comparative``).
+
+    Args:
+        hook: The candidate hook.
+        title: The piece's title.
+        topic_text: Thesis, facts and anchors — what a number's subject may be named from.
+        source: The analysed text, for faithfulness; None skips that check.
+
+    Returns:
+        The reason, phrased for the analyst; '' when the hook passes.
     """
-    hook = hook.strip().strip("\"'“”‘’").strip()
+    hook = (hook or "").strip().strip("\"'“”‘’").strip()
     words = hook.split()
     if not (_HOOK_MIN_WORDS <= len(words) <= _HOOK_MAX_WORDS) or len(hook) > _HOOK_MAX_CHARS:
-        return ""
+        return f"{_HOOK_MIN_WORDS}-{_HOOK_MAX_WORDS} words, at most {_HOOK_MAX_CHARS} characters"
     if "!" in hook or words[0].lower().strip(",.:;") in _IMPERATIVE_OPENERS:
-        return ""  # an order or a shout is an ad, not a curiosity gap
+        return "an order or a shout is an ad, not a curiosity gap"
     if is_title_case(hook):
-        return ""  # the brand sets headlines in sentence case
+        return "sentence case only, never Title Case"
     hook_tokens = set(_content_tokens(hook))
     title_tokens = set(_content_tokens(title or ""))
     if hook_tokens and title_tokens and (
             len(hook_tokens & title_tokens) / len(hook_tokens) >= _HOOK_TITLE_OVERLAP):
-        return ""  # a near-restatement of the title closes no gap
+        return "it restates the title"
     if any(ch.isdigit() for ch in hook) and not names_its_subject(
             hook, f"{title or ''} {topic_text}"):
-        return ""  # a number with no subject says how much, never of what
+        return "a number must name its subject (45% less reach for AI posts)"
     if source is not None and not hook_is_faithful(hook, source):
-        return ""  # a number or noun the piece never says
-    if vague_comparative(hook):
-        return ""  # "much cheaper" than what?
+        return "it uses a number or word the piece never says"
+    comparative = vague_comparative(hook)
+    if comparative:
+        return f"{comparative!r} needs its reference: say 'than …' or give the number"
+    return ""
+
+
+def _valid_hook(hook: str, title: Optional[str], topic_text: str = "",
+                source: Optional[str] = None) -> str:
+    """The hook, in sentence case, if ``hook_rejection`` passes it; else ''."""
+    hook = (hook or "").strip().strip("\"'“”‘’").strip()
+    if not hook or hook_rejection(hook, title, topic_text, source):
+        return ""
     # Sentence case: the first letter up (round 7: "audit stops AI waste"); acronyms untouched.
     return hook[:1].upper() + hook[1:] if hook[:1].islower() else hook
+
+
+_CLAUSE_BREAK = re.compile(r"[,;:—–]| - |\b(?:because|so|while|which|but|as|after|when)\b",
+                           re.IGNORECASE)
+_NUMBER = re.compile(r"[$€£]?\d[\d,.]*(?:%|[kKmMbB]\b)?")
+_TRAILING = frozenset({"and", "or", "but", "of", "to", "with", "for", "a", "an", "the", "by", "in",
+                       "on", "at", "its", "their", "your", "our", "is", "are", "was", "were"})
+
+
+def _sentence_cased(words: Sequence[str]) -> str:
+    out = [w if (len(w) >= 2 and w.isupper()) or i == 0 else w.lower()
+           if w[:1].isupper() and w[1:].islower() else w for i, w in enumerate(words)]
+    text = " ".join(out)
+    return text[:1].upper() + text[1:]
+
+
+def derive_hook(thesis: str, source: str, title: Optional[str] = None,
+                facts: Sequence[str] = (), anchors: Sequence[str] = ()) -> str:
+    """A deterministic hook for a composited surface when Stage 1 gave no valid one: never ''.
+
+    First the thesis trimmed at its first clause boundary to at most ``_HOOK_MAX_WORDS`` words
+    (a leading article and trailing function words dropped); if that fails the hook rules, a
+    grounded number from the facts plus the first anchor's noun ("$30K billing review"); and if
+    that fails too, the trimmed thesis anyway — a composited image always carries a headline.
+
+    Args:
+        thesis: Stage 1's thesis.
+        source: The analysed text.
+        title: The piece's title.
+        facts: Stage 1's grounded ``specific_entities``.
+        anchors: Stage 1's grounded visual anchors.
+
+    Returns:
+        The hook, in sentence case.
+    """
+    clause = _CLAUSE_BREAK.split(thesis or "", maxsplit=1)[0]
+    words = [w.strip(".!?\"'“”") for w in clause.split()]
+    words = [w for w in words if w]
+    if words and words[0].lower() in ("a", "an", "the"):
+        words = words[1:]
+    words = words[:_HOOK_MAX_WORDS]
+    while len(words) > _HOOK_MIN_WORDS and words[-1].lower() in _TRAILING:
+        words.pop()
+    trimmed = _sentence_cased(words) if words else ""
+    topic = " ".join((thesis or "", *facts, *anchors))
+    valid = _valid_hook(trimmed, title, topic, source)
+    if valid:
+        return valid
+    lowered = (source or "").lower()
+    noun = next((" ".join(a.split()[-2:]) for a in anchors if a and not any(
+        ch.isdigit() for ch in a)), "")
+    for fact in (*facts, thesis or ""):
+        number = _NUMBER.search(fact or "")
+        if number and number.group(0).lower() in lowered and noun:
+            candidate = _valid_hook(f"{number.group(0)} {noun}", title, topic, source)
+            if candidate:
+                return candidate
+    return trimmed or "What changed here"
 
 
 # Round 9: "Verification is much cheaper" — cheaper than what? A comparative needs its reference.
@@ -1059,6 +1136,71 @@ def assign_layout_and_cast(concept: ImageConcept, surface: str,
     return dataclasses.replace(concept, layout=layout, cast=cast)
 
 
+# Round 10 (#2241): the surfaces ``image_compose`` typesets a headline onto — each MUST have one.
+_HOOKED_SURFACES = frozenset({"newsletter", "post_image"})
+_HOOK_RETRY = """Every hook you offered for this piece was rejected:
+{reasons}
+
+The piece's thesis: {thesis}
+Write ONE new hook: 2-6 words, sentence case, no exclamation mark, never an order; every word
+from the piece; a number must name its subject; a comparative ("cheaper", "more", "faster")
+needs "than ..." or a number. Respond with ONLY a JSON object: {{"hook_phrase": "..."}}"""
+
+
+def _offered_hooks(payload: Any) -> list[str]:
+    if not isinstance(payload, dict):
+        return []
+    raw = payload.get("hook_candidates")
+    offered = list(raw.values()) if isinstance(raw, dict) else []
+    offered += [payload.get("hook_phrase")] + list(payload.get("hook_alternatives") or [])
+    return [_clean(h, 80) for h in offered if _clean(h, 80)]
+
+
+def _ensure_hook(concept: ImageConcept, payload: Any, source: str, title: Optional[str],
+                 surface: str, user_id: Optional[int]) -> ImageConcept:
+    """A composited surface's concept with a hook: Stage 1 retried ONCE, else ``derive_hook``.
+
+    The retry carries every rejection reason back to the analyst (round 10: two posts shipped
+    with no headline after the comparative rule refused their only hook). It fails OPEN to the
+    deterministic hook — a composite never goes out bare.
+    """
+    from cqc_lem.utilities.ai.ai_helper import _loads_json_object
+    from cqc_lem.utilities.ai.client import client
+
+    topic = " ".join((concept.thesis, *concept.specific_entities, *concept.visual_anchors))
+    offered = _offered_hooks(payload)
+    reasons = "\n".join(f'- "{h}": {hook_rejection(h, title, topic, source) or "unusable"}'
+                         for h in offered) or "- (no hook offered)"
+    hook = ""
+    try:
+        response = client.chat.completions.create(
+            model="lem-medium",
+            messages=[{"role": "system", "content": _SYSTEM_PROMPT},
+                      {"role": "user", "content": (
+                          f"<title>{title or ''}</title>\n<content>{source}</content>\n\n"
+                          + _HOOK_RETRY.format(reasons=reasons, thesis=concept.thesis))}],
+            response_format={"type": "json_object"},
+            temperature=0.3,
+            max_tokens=_CONCEPT_MAX_TOKENS,
+            reasoning_effort=REASONING_EFFORT,
+        )
+        retry = _loads_json_object(response.choices[0].message.content or "") or {}
+        hook = _valid_hook(_clean(retry.get("hook_phrase"), 80), title, topic, source)
+    except Exception as e:
+        log_debug("Hook retry unavailable — deriving one", error=str(e), user_id=user_id,
+                  surface=surface, action_type="image_concept")
+    source_of_hook = "retry"
+    if not hook:
+        hook = derive_hook(concept.thesis, source, title, concept.specific_entities,
+                           concept.visual_anchors)
+        source_of_hook = "derived"
+    log_debug("Composited surface hook recovered", user_id=user_id, surface=surface,
+              action_type="image_concept", hook_source=source_of_hook)
+    shape = hook_shape_of(hook)
+    return dataclasses.replace(concept, hook_phrase=hook, hook_shape=shape,
+                               hook_options={shape: hook})
+
+
 @llm_step("image_concept")
 def analyze_content_for_image(text: str, *, title: Optional[str] = None,
                               surface: str = "post_image",
@@ -1132,6 +1274,8 @@ def analyze_content_for_image(text: str, *, title: Optional[str] = None,
         log_debug("Image concept reply unusable", user_id=user_id, surface=surface,
                   action_type="image_concept", raw=json.dumps(payload)[:200] if payload else "")
         return None
+    if surface in _HOOKED_SURFACES and not concept.hook_phrase:
+        concept = _ensure_hook(concept, payload, source, title, surface, user_id)
     concept = pick_visual_idea(enforce_graphic_cap(concept, recent, surface), surface)
     concept = rotate_hook_shape(concept, recent_hook_shapes)
     return assign_layout_and_cast(concept, surface, recent_layouts, recent_casts)

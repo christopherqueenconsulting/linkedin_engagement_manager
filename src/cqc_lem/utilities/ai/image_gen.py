@@ -468,7 +468,7 @@ A viewer who knew nothing about its purpose described the photograph as:
 
 The image was made for a piece arguing: {thesis}
 The cover's kicker (topic tag, typeset by the system): {kicker}
-The cover's headline (typeset onto it by the system): {headline}
+{headline_line}
 Read the kicker, headline and scene together as one cover. Look at the image itself and answer:
 1. (Advisory only — never part of a score.) Is each of these things visibly depicted?
    {entities}
@@ -644,6 +644,22 @@ def advisory_issues(answer: dict, entities: list, hook_text: Optional[str]) -> l
     return notes
 
 
+def _headline_line(hook_text: Optional[str], surface: Optional[str]) -> str:
+    """How the judge is told about the headline this image is read with.
+
+    A cover or post has it typeset onto the composite. A VIDEO frame never does (round 10):
+    ``video_captions`` burns the post's opening line(s) into the stored MP4, so the frame is judged
+    WITH that caption as its headline — for specificity — while the still itself must carry none.
+    """
+    if not hook_text:
+        return "The cover's headline (typeset onto it by the system): (none — judge the image alone)"
+    if surface == "video":
+        return (f"The video's opening caption (burned into the video over this frame by the "
+                f"system; it is NOT in this still and must not be — judge the frame WITH it as "
+                f'its headline): "{hook_text}"')
+    return f'The cover\'s headline (typeset onto it by the system): "{hook_text}"'
+
+
 def _staged_inspect(image_path: str, concept: Any, hook_text: Optional[str],
                     surface: Optional[str], composite_path: Optional[str] = None
                     ) -> QualityVerdict:
@@ -670,7 +686,7 @@ def _staged_inspect(image_path: str, concept: Any, hook_text: Optional[str],
                     thesis=concept.thesis,
                     kicker=(f'"{getattr(concept, "kicker", "")}"' if getattr(concept, "kicker", "")
                             else "(none)"),
-                    headline=f'"{hook_text}"' if hook_text else "(none — judge the image alone)",
+                    headline_line=_headline_line(hook_text, surface),
                     emotional_beat=getattr(concept, "emotional_beat", "") or "the piece's mood",
                     valence=valence, valence_hint=_VALENCE_HINTS.get(valence, ""),
                     entities="; ".join(entities) or "(none named)",

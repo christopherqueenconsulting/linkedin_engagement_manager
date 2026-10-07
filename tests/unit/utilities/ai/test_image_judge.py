@@ -701,3 +701,26 @@ class TestRoundNineNoLabels:
                                specific_entities=(), emotional_beat="", hook_phrase="Who pays?",
                                treatment="people_scene", treatment_rationale="", weak=False)
         assert _kicker_for(concept) == "PAYROLL"
+
+
+@pytest.mark.unit
+class TestRoundTenVideoCaption:
+    def test_a_video_frame_is_judged_with_its_caption_as_the_headline(self, tmp_path):
+        verdict, create = _judge_on(tmp_path, "video", _answer(), hook_text="Payroll eats first")
+        text = create.call_args_list[1][1]["messages"][0]["content"][0]["text"]
+        assert "The video's opening caption" in text and '"Payroll eats first"' in text
+        assert "it is NOT in this still" in text
+        assert verdict.checked
+
+    def test_the_caption_is_never_composited_nor_squares_the_frame(self, tmp_path):
+        from cqc_lem.utilities.ai.image_gen import _composite, _scene_ratio
+        raw = tmp_path / "f.png"
+        raw.write_bytes(b"png")
+        assert _composite(str(raw), "Payroll eats first", "video", None, None) is None
+        assert _scene_ratio("16:9", "Payroll eats first", "video") == "16:9"
+
+    def test_a_cover_still_reads_its_typeset_headline(self):
+        from cqc_lem.utilities.ai.image_gen import _headline_line
+        assert _headline_line("Who buys?", "newsletter") == (
+            'The cover\'s headline (typeset onto it by the system): "Who buys?"')
+        assert "none — judge the image alone" in _headline_line(None, "video")
