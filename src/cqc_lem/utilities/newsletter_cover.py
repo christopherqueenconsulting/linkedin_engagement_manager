@@ -449,6 +449,7 @@ def generate_cover_for_edition(user_id: int, edition_id: int, title: Optional[st
             recent_layouts=_recent_concept_field(user_id, "layout", ROTATION_WINDOW),
             recent_casts=_recent_concept_field(user_id, "cast", ROTATION_WINDOW),
             recent_hook_shapes=_recent_concept_field(user_id, "hook_shape", ROTATION_WINDOW),
+            recent_shots=_recent_concept_field(user_id, "shot", ROTATION_WINDOW),
             recent_archetypes=_recent_cover_archetypes(user_id, ARCHETYPE_WINDOW),
             recent_art_styles=_recent_concept_field(user_id, "art_style", ROTATION_WINDOW))
         # Round 8: the avatar is resolved AFTER Stage 1, so the fit rule can read the concept.

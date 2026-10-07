@@ -31,7 +31,7 @@ def _editorial(**overrides) -> ImageConcept:
         specific_entities=(), emotional_beat="wry", hook_phrase="A day a week, gone",
         treatment=TREATMENT_EDITORIAL, treatment_rationale="abstract",
         visual_anchors=("an agency owner", "a shared inbox"),
-        chosen_idea="A galvanised bucket shaped like a card file, cards spilling from its holes.",
+        chosen_idea="A galvanised bucket with holes in its side, brass door keys spilling out.",
         archetype="editorial_concept", archetype_ranking=("editorial_concept",),
         art_style="risograph", layout="split_top")
     return dataclasses.replace(concept, **overrides)
@@ -47,11 +47,12 @@ class TestEditorialBrief:
     def test_the_author_is_told_objects_only_and_a_person_is_refused(self):
         person = {"focal_concept": "a leaking bucket", "prompt": (
             "A risograph print in charcoal and mustard gold: a man holding a galvanised bucket "
-            "shaped like a card file, cards spilling out, gold accent, flat calm ground.")}
+            "with holes punched in its side, brass door keys spilling out, gold accent, flat "
+            "calm ground.")}
         objects = {"focal_concept": "a leaking bucket", "prompt": (
-            "A risograph print in charcoal and mustard gold: a galvanised bucket shaped like a "
-            "card file, business cards spilling through holes in its side, one gold accent, "
-            "centred on a flat calm ground with generous space around it.")}
+            "A risograph print in charcoal and mustard gold: a galvanised bucket with holes "
+            "punched in its side, brass door keys spilling out across the floor, one gold "
+            "accent, centred on a flat calm ground with generous space around it.")}
         with patch(_LLM, side_effect=[_resp(person), _resp(objects)]) as llm, \
                 patch.object(ib, "check_prompt_against_concept", return_value=(True, "ok")):
             brief = ib.build_image_brief("A post about copy-paste.", surface="post_image",
@@ -69,13 +70,13 @@ class TestEditorialBrief:
         brief = ib._fallback_brief("x", surface="post_image", ratio="1:1", context="",
                                    concept=_editorial())
         assert brief.treatment == TREATMENT_EDITORIAL
-        assert brief.prompt.startswith("A 1970s risograph print")
+        assert brief.prompt.startswith("A vintage risograph print")
         assert "Objects only" in brief.prompt and "skin pores" not in brief.prompt
 
     def test_the_fallback_without_an_idea_is_an_object_photograph(self):
         brief = ib._fallback_brief("x", surface="post_image", ratio="1:1", context="",
                                    concept=_editorial(chosen_idea=""))
-        assert brief.treatment == "concrete_scene" and "still-life" in brief.prompt
+        assert brief.treatment == "concrete_scene" and "everyday objects" in brief.prompt
 
 
 class TestGaze:

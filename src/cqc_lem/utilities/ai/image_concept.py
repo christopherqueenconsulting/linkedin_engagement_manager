@@ -70,7 +70,7 @@ ARCHETYPE_ROTATION_PENALTY = 4.0
 # The text-free art styles an editorial_concept rotates through, least-recently-used. Phrased
 # without "paper", "printed" or "illustration": the brief's prop and vocabulary rules refuse those.
 ART_STYLES: dict[str, str] = {
-    "risograph": ("a 1970s risograph print in two spot inks, charcoal and mustard gold, with "
+    "risograph": ("a vintage risograph print in two spot inks, charcoal and mustard gold, with "
                   "visible grain and slight misregistration on a flat off-white ground"),
     "cut_collage": ("a torn-edge cut-out collage with halftone photo fragments and soft drop "
                     "shadows on a flat off-white ground"),
@@ -175,6 +175,8 @@ actions or situations>"],
  "hook_alternatives": ["<two more hooks, same rules>"],
  "hook_candidates": {{"number_claim": "<…>", "contrast": "<…>", "question": "<…>",
                      "plain_claim": "<…>"}},
+ "setting": "<WHERE the story happens, from the article: its own scene ('a billing review late \
+on a Tuesday', 'a conference hallway'), else the audience's real workplace the text implies>",
  "idea_nouns": ["<up to 20 concrete nouns from the piece and the reader's working day>"],
  "visual_ideas": ["<3 one-sentence object-only image ideas>"],
  "people_idea": "<ONE one-sentence people-led idea, for a human moment only>",
@@ -214,12 +216,19 @@ Case, 2-6 words. Every number and every noun in a hook comes from the article's 
 "engagement" stays "engagement", never "reach"; "hidden buyers" never becomes "influencers". A \
 numeric hook names its subject: "45% less engagement on AI posts", never "45% less \
 engagement". Give one hook in EACH shape in hook_candidates — number_claim ("45% less engagement \
-on AI posts"), contrast ("Search on, still wrong"), question ("Who really buys your AI?"), \
+on AI posts"), contrast ("Search is on, still wrong"), question ("Who really buys your AI?"), \
 plain_claim ("Your cheapest model is enough") — the series rotates through them. The hook \
-carries the THESIS; the image carries emotion and specificity.
+carries the THESIS; the image carries emotion and specificity. A hook is a CLAIM with a verb \
+("Routing cuts spend 60%"), never a descriptive label ("Routing prompts by complexity"), never \
+a caveat and never "X vs Y". When the piece leads with a stat, the hook carries it verbatim.
 
 Rules for valence: positive when the piece is about a saving, a win or relief; negative when it \
 is about a risk, a loss or a mistake; mixed otherwise. The face in the image follows it.
+
+Rules for setting: the place comes from the ARTICLE, never a stock backdrop — the story's own \
+scene when it has one, else the real workplace of its audience as the text describes it. A few \
+words, lowercase, with its article ("a client's open-plan office"). Never a warehouse or a \
+storeroom unless the piece is about one.
 
 Rules for kicker: the 1-3 word topic tag a magazine prints above a headline — "AI CONTENT AUDIT", \
 "LLM COSTS", "AI FACT-CHECKING", "B2B BUYING". Every word comes from the article. It is what tells \
@@ -234,9 +243,9 @@ hybrid. (4) Drop every cliché: gears, lightbulbs, puzzle pieces, robots, brains
 handshakes, targets, magnifying glasses, clouds, binary code, glowing networks. (5) Keep the 3 a \
 stranger would "get" within two seconds with the headline and that could NOT illustrate the \
 opposite argument. Each idea is ONE sentence naming its objects and its single oddity, with NO \
-person, face or hand in it — for "your CRM leaks leads": "A galvanised bucket shaped like a card \
-file, business cards spilling through holes in its side, seen from overhead." No names, no \
-numbers, no stock symbols.
+person, face or hand in it — for "your CRM leaks leads": "A galvanised bucket with holes \
+punched in its side, brass door keys spilling out across the floor, seen from overhead." No \
+names, no numbers, no stock symbols, no cards, tokens or figurines.
 
 Rules for people_idea and human_moment: human_moment is true ONLY when the piece is about a human \
 moment — a hire, a hard conversation, a client's reaction, a founder's own decision — where a \
@@ -390,6 +399,8 @@ class ImageConcept:
     hook_shape: str = ""
     hook_options: Optional[dict[str, str]] = None
     kicker: str = ""
+    setting: str = ""
+    shot: str = ""
     archetype: str = ""
     archetype_ranking: tuple[str, ...] = ()
     archetype_rationale: str = ""
@@ -656,37 +667,435 @@ def hook_shape_of(hook: str) -> str:
     return "plain_claim"
 
 
-def _valid_hook(hook: str, title: Optional[str], topic_text: str = "",
-                source: Optional[str] = None) -> str:
-    """The hook if it is a usable curiosity gap; else ''.
+def hook_rejection(hook: str, title: Optional[str], topic_text: str = "",
+                   source: Optional[str] = None) -> str:
+    """Why ``hook`` is not a usable curiosity gap, or '' when it is.
 
-    2-5 words, at most ``_HOOK_MAX_CHARS``, no exclamation mark, no imperative opener, not Title
-    Case, not the title again — and a hook with a number in it must name its subject
-    (``names_its_subject``), so "45% less engagement" is refused and "45% less reach for AI posts"
-    is not.
+    2-6 words, at most ``_HOOK_MAX_CHARS``, no exclamation mark, no imperative opener, not Title
+    Case, not the title again — a hook with a number in it must name its subject
+    (``names_its_subject``), every word must come from the piece, and a comparative needs its
+    reference (``vague_comparative``).
+
+    Args:
+        hook: The candidate hook.
+        title: The piece's title.
+        topic_text: Thesis, facts and anchors — what a number's subject may be named from.
+        source: The analysed text, for faithfulness; None skips that check.
+
+    Returns:
+        The reason, phrased for the analyst; '' when the hook passes.
     """
-    hook = hook.strip().strip("\"'“”‘’").strip()
+    hook = (hook or "").strip().strip("\"'“”‘’").strip()
     words = hook.split()
     if not (_HOOK_MIN_WORDS <= len(words) <= _HOOK_MAX_WORDS) or len(hook) > _HOOK_MAX_CHARS:
-        return ""
+        return f"{_HOOK_MIN_WORDS}-{_HOOK_MAX_WORDS} words, at most {_HOOK_MAX_CHARS} characters"
     if "!" in hook or words[0].lower().strip(",.:;") in _IMPERATIVE_OPENERS:
-        return ""  # an order or a shout is an ad, not a curiosity gap
+        return "an order or a shout is an ad, not a curiosity gap"
     if is_title_case(hook):
-        return ""  # the brand sets headlines in sentence case
+        return "sentence case only, never Title Case"
+    if _VERSUS.search(hook):
+        return "an 'X vs Y' hook takes no side — state the piece's claim"
+    if not any(ch.isdigit() for ch in hook) and not asserts_something(hook):
+        return "a descriptive label, not a claim — the hook needs a verb that asserts something"
     hook_tokens = set(_content_tokens(hook))
     title_tokens = set(_content_tokens(title or ""))
     if hook_tokens and title_tokens and (
             len(hook_tokens & title_tokens) / len(hook_tokens) >= _HOOK_TITLE_OVERLAP):
-        return ""  # a near-restatement of the title closes no gap
+        return "it restates the title"
     if any(ch.isdigit() for ch in hook) and not names_its_subject(
             hook, f"{title or ''} {topic_text}"):
-        return ""  # a number with no subject says how much, never of what
+        return "a number must name its subject (45% less reach for AI posts)"
     if source is not None and not hook_is_faithful(hook, source):
-        return ""  # a number or noun the piece never says
-    if vague_comparative(hook):
-        return ""  # "much cheaper" than what?
+        return "it uses a number or word the piece never says"
+    if source is not None:
+        mismatch = number_claim_mismatch(hook, source)
+        if mismatch:
+            return mismatch
+    comparative = vague_comparative(hook)
+    if comparative:
+        return f"{comparative!r} needs its reference: say 'than …' or give the number"
+    return ""
+
+
+# Round 13: "Routing prompts to models by complexity" is a label, not a claim. A hook (other than
+# a number_claim) needs a verb that ASSERTS something. Deterministic and conservative: a copula
+# or modal, a known business verb in any inflection, or a past-tense -ed form; a question passes.
+_ASSERTING = frozenset({
+    "is", "are", "was", "were", "be", "been", "isn", "aren", "wasn", "weren", "s", "can", "cannot",
+    "could", "will", "won", "would", "should", "must", "might", "may", "do", "does", "did", "don",
+    "doesn", "didn", "has", "have", "had", "hasn", "haven", "ll", "re", "ve", "d",
+})
+_VERBS = frozenset({
+    "beat", "break", "bring", "build", "buy", "catch", "change", "cost", "cut", "decide", "die",
+    "drain", "drive", "drop", "earn", "eat", "end", "fail", "fall", "find", "fix", "get", "give",
+    "go", "grow", "hide", "hit", "hold", "hurt", "keep", "kill", "know", "lag", "land", "last",
+    "lead", "leak", "learn", "leave", "lie", "lift", "lose", "make", "matter", "mean", "miss",
+    "move", "need", "outperform", "owe", "pay", "pick", "prove", "pull", "push", "quit", "raise",
+    "read", "rely", "rise", "rule", "run", "save", "say", "see", "sell", "send", "shift", "ship",
+    "show", "shrink", "sink", "skip", "slip", "slow", "solve", "spend", "stall", "starve", "stay",
+    "steal", "stop", "take", "talk", "tell", "think", "trust", "turn", "use", "waste", "want",
+    "win", "work", "write", "beats", "wins", "matters", "decides", "pays", "buys", "cuts", "saves",
+    "hurts", "kills", "costs", "breaks", "leaks", "lies", "outsell", "underperform", "doubt",
+    "fear", "ignore", "forget", "outgrow", "replace", "eats", "drains", "fails", "loses",
+    "misses", "needs", "works", "lose", "sees", "says", "knows", "wants", "uses", "runs",
+    "grows", "falls", "rises", "drops", "shows", "proves", "makes", "takes", "gets", "keeps",
+    "finds", "spends", "wastes", "starves", "stalls", "slips", "holds", "lands", "earns",
+})
+
+
+def asserts_something(hook: str) -> bool:
+    """Does ``hook`` carry a verb that asserts something (round 13)?
+
+    Args:
+        hook: The hook.
+
+    Returns:
+        True for a question, a copula or modal, a known verb in any inflection, or an -ed past
+        form; False for a noun-phrase label ("Routing prompts to models by complexity").
+    """
+    if (hook or "").rstrip().endswith("?"):
+        return True
+    for token in re.findall(r"[a-z]+", (hook or "").lower().replace("’", "'")):
+        if token in _ASSERTING or token in _VERBS or _root(token) in _VERBS:
+            return True
+        if len(token) > 4 and token.endswith("ed") and token not in ("unused", "need"):
+            return True
+    return False
+
+
+# Round 12: "Cheapest model everywhere vs hybrid routing" takes no side; the critic wants a claim.
+_VERSUS = re.compile(r"\b(?:vs|versus|v)\b\.?", re.IGNORECASE)
+
+
+# Round 14 (#2241): ed18 shipped "53.7% less engagement than humans" — 53.7% was the SHARE of
+# AI-generated posts; the engagement gap was 45%. A number in a hook is true only when the number
+# AND the claim it is attached to occur in the SAME source sentence.
+_HOOK_NUMBER = re.compile(r"[$€£]?\d[\d,.]*(?:%|[kKmMbB]\b|[xX×](?!\w))?")
+_CLAIM_SKIP = frozenset({
+    "less", "more", "fewer", "lower", "higher", "of", "the", "a", "an", "in", "on", "for", "to",
+    "by", "than", "about", "around", "nearly", "over", "under", "up", "down", "per", "cent",
+    "percent", "faster", "cheaper", "times", "x", "k", "m", "b",
+})
+_SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+|\n+")
+
+
+def source_sentences(source: str) -> list[str]:
+    """The source split into sentences (a title line counts as one).
+
+    Args:
+        source: The analysed text.
+
+    Returns:
+        The non-empty sentences, in order.
+    """
+    return [s.strip() for s in _SENTENCE_SPLIT.split(source or "") if s.strip()]
+
+
+def claim_noun(hook: str, number: str) -> str:
+    """The word ``number`` quantifies in ``hook``: the first content word after it, else before.
+
+    "45% less engagement on AI posts" gives "engagement"; "Routing cut spend by 60%" gives
+    "spend". Comparatives, prepositions, function words and verbs are skipped.
+
+    Args:
+        hook: The hook.
+        number: A number as it appears in the hook.
+
+    Returns:
+        The lowercase claim word, or '' when the hook has none.
+    """
+    lowered = (hook or "").lower()
+    at = lowered.find(number.lower())
+    if at < 0:
+        return ""
+
+    def usable(token: str) -> bool:
+        return (len(token) >= 3 and token not in _CLAIM_SKIP and token not in _STOPWORDS
+                and token not in _HOOK_FREE_WORDS)
+
+    # After the number, a verb is never its subject ("60% cuts spend"); before it, the nearest
+    # content word is ("Routing cut spend by 60%" — "spend" is the noun here, not the verb).
+    after = re.findall(r"[a-z]+", lowered[at + len(number):])
+    for token in after:
+        if usable(token) and token not in _VERBS and _root(token) not in _VERBS:
+            return token
+    before = re.findall(r"[a-z]+", lowered[:at])
+    for token in reversed(before):
+        if usable(token):
+            return token
+    return ""
+
+
+def number_claim_mismatch(hook: str, source: str) -> str:
+    """Why a number in ``hook`` is paired with a claim its source sentence does not make, or ''.
+
+    Args:
+        hook: The hook.
+        source: The analysed text.
+
+    Returns:
+        The reason, or '' when every number shares a source sentence with its claim word.
+    """
+    sentences = source_sentences(source)
+    for match in _HOOK_NUMBER.finditer(hook or ""):
+        number = match.group(0).rstrip(".,")
+        noun = claim_noun(hook, number)
+        if not noun:
+            continue
+        holders = [s.lower() for s in sentences if number.lower() in s.lower()]
+        if not holders:
+            return f"{number!r} never appears in the source"
+        if not any(re.search(rf"\b{re.escape(_root(noun))}", s) for s in holders):
+            return (f"{number!r} and {noun!r} never share a source sentence — that number "
+                    f"measures something else; use the number the source gives for {noun!r}, "
+                    f"or no number")
+    return ""
+
+
+def cited_sentence(hook: str, source: str) -> str:
+    """The source sentence a hook cites: the one holding its number, else the closest by words.
+
+    Args:
+        hook: The hook.
+        source: The analysed text.
+
+    Returns:
+        The sentence, or '' without a source.
+    """
+    sentences = source_sentences(source)
+    if not sentences:
+        return ""
+    for match in _HOOK_NUMBER.finditer(hook or ""):
+        number = match.group(0).rstrip(".,").lower()
+        noun = claim_noun(hook, number)
+        holders = [s for s in sentences if number in s.lower()]
+        if noun:
+            holders = [s for s in holders if re.search(rf"\b{re.escape(_root(noun))}",
+                                                       s.lower())] or holders
+        if holders:
+            return holders[0]
+    tokens = set(_content_tokens(hook))
+    return max(sentences, key=lambda s: len(tokens & set(_content_tokens(s))))
+
+
+_PRONOUN_CONTRACTIONS = frozenset({"it's", "that's", "what's", "who's", "here's", "there's",
+                                   "he's", "she's", "nobody's", "everyone's"})
+_PREPOSITIONS = frozenset({"to", "by", "for", "with", "on", "in", "of", "at", "from", "into",
+                           "across", "over", "under", "through", "without", "per", "via",
+                           "than", "because", "while", "when", "that", "which"})
+_FILLER = frozenset({"the", "a", "an", "everywhere", "anywhere", "always", "often", "now",
+                     "today", "again", "too", "very", "really", "just", "still"})
+_ADVERB_KEEP = frozenset({"only", "early", "family", "supply", "apply", "daily", "rely",
+                          "reply", "fly", "ally", "italy", "july"})
+
+
+def _is_verb_word(word: str) -> bool:
+    """Is this single word an asserting verb (copula, modal, known verb, or -ed form)?"""
+    w = word.lower().strip(".,;:!?\"'“”‘’")
+    if w in _PRONOUN_CONTRACTIONS or w.split("'")[0] in ("isn", "aren", "don", "doesn",
+                                                         "didn", "can", "won", "wasn"):
+        return True
+    if "'" in w or "’" in w:
+        return False  # "AI's" is a possessive, not "is"
+    if w in _ASSERTING - {"s", "d", "ll", "re", "ve"} or w in _VERBS:
+        return True
+    for cut in (1, 2, 3):
+        if len(w) - cut >= 3 and (w[:-cut] in _VERBS or f"{w[:-cut]}e" in _VERBS):
+            if w.endswith(("s", "ed", "es", "ies")):
+                return True
+    return len(w) > 4 and w.endswith("ed") and w not in ("unused", "need", "speed")
+
+
+def _clause_words(thesis: str) -> list[str]:
+    clause = _CLAUSE_BREAK.split(thesis or "", maxsplit=1)[0]
+    words = [w.strip(".!?\"“”") for w in clause.split()]
+    words = [w for w in words if w]
+    if words and words[0].lower() in ("a", "an", "the"):
+        words = words[1:]
+    # "-ly" adverbs carry no claim and cost words ("raises deal costs dramatically").
+    return [w for w in words if not (len(w) > 4 and w.lower().endswith("ly")
+                                     and w.lower() not in _ADVERB_KEEP)]
+
+
+def _fits(words: Sequence[str]) -> bool:
+    text = " ".join(words)
+    return _HOOK_MIN_WORDS <= len(words) <= _HOOK_MAX_WORDS and len(text) <= _HOOK_MAX_CHARS
+
+
+def _noun_phrase(words: Sequence[str]) -> list[str]:
+    """The words up to the first preposition or auxiliary — the phrase's own noun group.
+
+    Only an auxiliary ends it: "deal costs" and "AI spend" are nouns here, not verbs.
+    """
+    out: list[str] = []
+    for w in words:
+        if out and (w.lower() in _PREPOSITIONS or w.lower().strip(".,") in _ASSERTING):
+            break
+        out.append(w)
+    return out
+
+
+def clause_hook(thesis: str) -> str:
+    """A COMPLETE clause of at most ``_HOOK_MAX_WORDS`` words built from the thesis (round 15).
+
+    Never a truncation: "Ignoring AI's hidden buyers raises deal costs dramatically" becomes
+    "Ignoring AI's hidden buyers raises costs", not "… raises deal". The first clause wins when it
+    already fits and asserts something; otherwise subject + verb group + object are compressed to
+    their noun heads, in that order, until the clause fits. A thesis with no verb at all (a label)
+    is given one: its noun group plus "matters".
+
+    Args:
+        thesis: Stage 1's thesis.
+
+    Returns:
+        The clause, sentence-cased; '' only for an empty thesis.
+    """
+    words = _clause_words(thesis)
+    if not words:
+        return ""
+    if _fits(words) and any(_is_verb_word(w) for w in words):
+        return _sentence_cased(words)
+    index = next((i for i, w in enumerate(words) if i > 0 and _is_verb_word(w)), None)
+    if index is None:
+        # A label: take the verb from the WHOLE thesis if it has one, else assert it matters.
+        whole = [w.strip(".!?\"“”") for w in (thesis or "").split() if w.strip(".!?\"“”")]
+        index = next((i for i, w in enumerate(whole) if i > 0 and _is_verb_word(w)), None)
+        if index is None:
+            subject = _noun_phrase(words)[:_HOOK_MAX_WORDS - 1]
+            return _sentence_cased([*subject, "matters"])
+        words = whole
+    end = index + 1
+    while end < len(words) and (_is_verb_word(words[end]) or words[end].lower() in ("not",
+                                                                                   "never")):
+        end += 1
+    if end < len(words) and (words[end - 1].lower() in ("not", "never")
+                             or words[end - 1].lower() in _ASSERTING):
+        end += 1  # "does not guarantee": the main verb after an auxiliary belongs to the group
+    subject, verbs, rest = words[:index], words[index:end], words[end:]
+    obj = _noun_phrase(rest)
+    while obj and obj[-1].lower() in _TRAILING:
+        obj = obj[:-1]
+    subject_np = _noun_phrase(subject) or subject
+    lean = [w for w in obj if w.lower() not in _FILLER]
+    head = [next((w for w in reversed(lean) if w.lower() not in _FILLER), "")] if lean else []
+    head = [w for w in head if w]
+    candidates = (
+        [*subject, *verbs, *obj],
+        [*subject, *verbs, *lean],
+        [*subject, *verbs, *head],
+        [*subject_np, *verbs, *lean],
+        [*subject_np, *verbs, *head],
+        [*subject_np[-2:], *verbs, *head],
+        [*subject_np[-1:], *verbs, *head],
+        [*subject_np[-1:], *verbs[-1:], *head],
+    )
+    for candidate in candidates:
+        if _fits(candidate):
+            return _sentence_cased(candidate)
+    return _sentence_cased([*subject_np[-1:], verbs[-1]])
+
+
+def restore_number_casing(hook: str, source: str) -> str:
+    """Every number token in ``hook`` spelled exactly as the source spells it ("$30K", not "$30k").
+
+    Args:
+        hook: The hook.
+        source: The analysed text.
+
+    Returns:
+        The hook with each number restored; unchanged where the source has no match.
+    """
+    def restore(match: "re.Match[str]") -> str:
+        token = match.group(0)
+        found = re.search(rf"(?<![\w.$€£]){re.escape(token)}(?![\d])", source or "",
+                          re.IGNORECASE)
+        return found.group(0) if found else token
+
+    return _HOOK_NUMBER.sub(restore, hook or "")
+
+
+def fit_hook(hook: str, thesis: str) -> str:
+    """``hook`` when it is at most ``_HOOK_MAX_WORDS`` words, else ``clause_hook(thesis)``.
+
+    The backstop where a CALLER's concept reaches the brief without Stage 1's regeneration:
+    a long hook is replaced by a complete clause, never cut mid-phrase (round 15).
+
+    Args:
+        hook: The concept's hook.
+        thesis: The concept's thesis.
+
+    Returns:
+        A hook of at most ``_HOOK_MAX_WORDS`` words.
+    """
+    if len((hook or "").split()) <= _HOOK_MAX_WORDS:
+        return hook
+    return clause_hook(thesis) or clause_hook(hook)
+
+
+def _valid_hook(hook: str, title: Optional[str], topic_text: str = "",
+                source: Optional[str] = None) -> str:
+    """The hook, in sentence case, if ``hook_rejection`` passes it; else ''."""
+    hook = (hook or "").strip().strip("\"'“”‘’").strip()
+    if not hook or hook_rejection(hook, title, topic_text, source):
+        return ""
     # Sentence case: the first letter up (round 7: "audit stops AI waste"); acronyms untouched.
     return hook[:1].upper() + hook[1:] if hook[:1].islower() else hook
+
+
+_CLAUSE_BREAK = re.compile(r"[,;:—–]| - |\b(?:because|so|while|which|but|as|after|when)\b",
+                           re.IGNORECASE)
+_TRAILING = frozenset({"and", "or", "but", "of", "to", "with", "for", "a", "an", "the", "by", "in",
+                       "on", "at", "its", "their", "your", "our", "is", "are", "was", "were"})
+
+
+def _sentence_cased(words: Sequence[str]) -> str:
+    out = [w if (len(w) >= 2 and w.isupper()) or i == 0 else w.lower()
+           if w[:1].isupper() and w[1:].islower() else w for i, w in enumerate(words)]
+    text = " ".join(out)
+    return text[:1].upper() + text[1:]
+
+
+def derive_hook(thesis: str, source: str, title: Optional[str] = None,
+                facts: Sequence[str] = (), anchors: Sequence[str] = ()) -> str:
+    """A deterministic hook for a composited surface when Stage 1 gave no valid one: never ''.
+
+    First the thesis trimmed at its first clause boundary to at most ``_HOOK_MAX_WORDS`` words
+    (a leading article and trailing function words dropped); if that fails the hook rules, a
+    grounded number from the facts plus the first anchor's noun ("$30K billing review"); and if
+    that fails too, the trimmed thesis anyway — a composited image always carries a headline.
+
+    Args:
+        thesis: Stage 1's thesis.
+        source: The analysed text.
+        title: The piece's title.
+        facts: Stage 1's grounded ``specific_entities``.
+        anchors: Stage 1's grounded visual anchors.
+
+    Returns:
+        The hook, in sentence case.
+    """
+    # Round 15: a COMPLETE clause of at most six words — never a mid-phrase truncation, and
+    # never a label (``clause_hook`` gives a verbless thesis a verb).
+    trimmed = clause_hook(thesis)
+    if trimmed and number_claim_mismatch(trimmed, source):
+        # Round 14: never a false pairing, even in the last resort — drop the number.
+        trimmed = clause_hook(" ".join(w for w in (thesis or "").split()
+                                       if not _HOOK_NUMBER.fullmatch(w.strip(".,;:"))))
+    topic = " ".join((thesis or "", *facts, *anchors))
+    valid = _valid_hook(trimmed, title, topic, source)
+    if valid:
+        return valid
+    lowered = (source or "").lower()
+    noun = next((" ".join(a.split()[-2:]) for a in anchors if a and not any(
+        ch.isdigit() for ch in a)), "")
+    for fact in (*facts, thesis or ""):
+        for stat in stat_numbers(fact or ""):
+            if stat.lower() in lowered and noun:
+                candidate = _valid_hook(f"{_source_casing(stat, source)} {noun}", title, topic,
+                                        source)
+                if candidate:
+                    return candidate
+    return trimmed or "What changed here"
 
 
 # Round 9: "Verification is much cheaper" — cheaper than what? A comparative needs its reference.
@@ -800,9 +1209,50 @@ def anchor_rejection(anchor: str, facts: Sequence[str], source: Optional[str] = 
 
 def _prop_reason(anchor: str) -> str:
     """Why an anchor is a prop the brief would refuse to draw (round 8), or ''."""
-    from cqc_lem.utilities.ai.image_brief import prop_failure
+    from cqc_lem.utilities.ai.image_brief import prop_failure, tech_hardware
 
-    return prop_failure(anchor) or ""
+    hardware = tech_hardware(anchor)
+    return prop_failure(anchor) or (f"names tech hardware ({hardware!r})" if hardware else "")
+
+
+_CALENDAR_WORDS = re.compile(
+    r"\b(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday|January|February|March|"
+    r"April|May|June|July|August|September|October|November|December)\b")
+
+
+def _ground_setting(raw: Any, source: str, facts: Sequence[str]) -> str:
+    """Stage 1's setting, validated like an anchor (round 12), or '' when it is unusable.
+
+    The cast rotation once supplied the setting, and "warehouse floor" turned up on four of nine
+    gauntlet items whatever the topic. The setting now comes from the article: refused when it
+    names a name, a number, a prop, tech hardware or a stock symbol, or when nothing in it appears
+    in the source.
+
+    Args:
+        raw: The analyst's ``setting``.
+        source: The analysed text.
+        facts: The concept's ``specific_entities``.
+
+    Returns:
+        The setting, first letter lowercased, or ''.
+    """
+    from cqc_lem.utilities.ai.image_brief import cliche_hit
+
+    setting = _clean(raw, 100)
+    if not setting:
+        return ""
+    # A weekday or month is a time, not a name: "late on a Tuesday" is the story's own scene.
+    plain = _CALENDAR_WORDS.sub(lambda m: m.group(0).lower(), setting)
+    reason = (anchor_rejection(plain, facts, source) or _prop_reason(setting)
+              or ("a stock symbol" if cliche_hit(setting) else ""))
+    lowered = source.lower()
+    grounded = any(re.search(rf"\b{re.escape(_stem(t))}", lowered)
+                   for t in _content_tokens(setting))
+    if reason or not grounded:
+        log_debug("Image concept setting dropped", setting=setting, action_type="image_concept",
+                  reason=reason or "nothing in it appears in the source")
+        return ""
+    return setting[:1].lower() + setting[1:] if setting[:1].isupper() else setting
 
 
 def _ground_anchors(raw: Any, source: str, facts: Sequence[str]) -> tuple[str, ...]:
@@ -964,6 +1414,7 @@ def parse_concept(payload: Optional[dict[str, Any]], source: str,
         hook_shape=hook_shape_of(hook) if hook else "",
         hook_options=options or None,
         kicker=valid_kicker(payload.get("kicker"), source) or derive_kicker(source, title),
+        setting=_ground_setting(payload.get("setting"), source, entities),
         hook_phrase=hook,
         treatment=treatment,
         treatment_rationale=_clean(payload.get("treatment_rationale")),
@@ -1111,8 +1562,17 @@ CAST_DIMENSIONS: dict[str, tuple[str, ...]] = {
     "age": ("20s", "30s", "40s", "50s", "60s"),
     "ethnicity": ("Black", "East Asian", "South Asian", "Hispanic", "white", "Middle Eastern",
                   "Southeast Asian"),
-    "setting": ("office", "home office", "warehouse floor", "shop counter", "conference hallway"),
 }
+# Round 12 (#2241): the SETTING is no longer rotated — it comes from the article (``setting``).
+# Round 13: every scene was a medium shot of 2-4 people at a table in a beige office. The FRAMING
+# rotates least-recently-used from the receipts, like the cast; the place never does.
+SHOTS = (
+    "a close-up single portrait, one face filling the frame",
+    "an over-the-shoulder two-shot, the camera behind one person looking at the other",
+    "a walking-and-talking two-shot, two people mid-stride side by side",
+    "one person standing at a window, half-turned toward the camera",
+    "one person presenting to a small group, seen from behind the group",
+)
 _CAST_SURFACES = frozenset({"newsletter", "post_image", "video"})
 _ROLE_WORDS = re.compile(
     r"\b(?:owner|founder|lead|manager|editor|analyst|marketer|consultant|director|officer|"
@@ -1153,12 +1613,25 @@ def _role_from_anchors(concept: ImageConcept) -> str:
     return "professional"
 
 
-_SETTING_PREPOSITION = {"warehouse floor": "on", "shop counter": "behind",
-                        "conference hallway": "in"}
+_SETTING_LEAD = re.compile(r"^(?:in|on|at|during|behind|inside|outside|by|near)\b",
+                           re.IGNORECASE)
+_ARTICLE_LEAD = re.compile(r"^(?:a|an|the|her|his|their|our|its|\w+'s)\b", re.IGNORECASE)
+
+
+def _setting_clause(setting: str) -> str:
+    """", at a client's open-plan office" — or '' with no setting."""
+    setting = (setting or "").strip()
+    if not setting:
+        return ""
+    if _SETTING_LEAD.match(setting):
+        return f", {setting}"
+    if not _ARTICLE_LEAD.match(setting):
+        setting = f"{'an' if setting[:1].lower() in 'aeiou' else 'a'} {setting}"
+    return f", at {setting}"
 
 
 def cast_phrase(cast: Optional[dict[str, str]]) -> str:
-    """The brief's cast line: "a {ethnicity} {gender} in her/his {age}, a {role}, at a {setting}".
+    """The brief's cast line: "a {ethnicity} {gender} in her/his {age}, a {role}, at {setting}".
 
     Args:
         cast: The rotated cast dict, or None.
@@ -1169,11 +1642,10 @@ def cast_phrase(cast: Optional[dict[str, str]]) -> str:
     if not cast:
         return ""
     pronoun = "her" if cast.get("gender") == "woman" else "his"
-    preposition = _SETTING_PREPOSITION.get(cast["setting"], "in")
     role = cast["role"]
     article = "an" if role[:1].lower() in "aeiou" else "a"
     return (f"a {cast['ethnicity']} {cast['gender']} in {pronoun} {cast['age']}, {article} "
-            f"{role}, {preposition} a {cast['setting']}")
+            f"{role}{_setting_clause(cast.get('setting', ''))}")
 
 
 def rotate_hook_shape(concept: ImageConcept,
@@ -1198,7 +1670,8 @@ def rotate_hook_shape(concept: ImageConcept,
 
 def assign_layout_and_cast(concept: ImageConcept, surface: str,
                            recent_layouts: Optional[Sequence[str]] = None,
-                           recent_casts: Optional[Sequence[dict]] = None) -> ImageConcept:
+                           recent_casts: Optional[Sequence[dict]] = None,
+                           recent_shots: Optional[Sequence[str]] = None) -> ImageConcept:
     """Rotate the composition and (for a people_scene) the person, least-recently-used.
 
     Args:
@@ -1207,9 +1680,10 @@ def assign_layout_and_cast(concept: ImageConcept, surface: str,
             get a cast.
         recent_layouts: The last ``ROTATION_WINDOW`` layouts on this surface, most recent first.
         recent_casts: The last ``ROTATION_WINDOW`` cast dicts, most recent first.
+        recent_shots: The last ``ROTATION_WINDOW`` shots (``SHOTS``), most recent first.
 
     Returns:
-        The concept with ``layout`` and ``cast`` set (unchanged values when not applicable).
+        The concept with ``layout``, ``cast`` and ``shot`` set (unchanged when not applicable).
     """
     seed = concept.thesis
     layout = concept.layout
@@ -1222,7 +1696,348 @@ def assign_layout_and_cast(concept: ImageConcept, surface: str,
         cast = {dim: _least_recent(values, [h.get(dim, "") for h in history], seed + dim)
                 for dim, values in CAST_DIMENSIONS.items()}
         cast["role"] = _role_from_anchors(concept)
-    return dataclasses.replace(concept, layout=layout, cast=cast)
+        cast["setting"] = concept.setting
+    shot = concept.shot
+    if surface in _CAST_SURFACES and concept.treatment == TREATMENT_PEOPLE and not shot:
+        shot = _least_recent(SHOTS, list(recent_shots or [])[:ROTATION_WINDOW], seed + "shot")
+    return dataclasses.replace(concept, layout=layout, cast=cast, shot=shot)
+
+
+# Round 10 (#2241): the surfaces ``image_compose`` typesets a headline onto — each MUST have one.
+_HOOKED_SURFACES = frozenset({"newsletter", "post_image"})
+_HOOK_RETRY = """Every hook you offered for this piece was rejected:
+{reasons}
+
+The piece's thesis: {thesis}
+Write ONE new hook: 2-6 words, sentence case, no exclamation mark, never an order; every word
+from the piece; a number must name its subject; a comparative ("cheaper", "more", "faster")
+needs "than ..." or a number. Respond with ONLY a JSON object: {{"hook_phrase": "..."}}"""
+
+
+def _offered_hooks(payload: Any) -> list[str]:
+    if not isinstance(payload, dict):
+        return []
+    raw = payload.get("hook_candidates")
+    offered = list(raw.values()) if isinstance(raw, dict) else []
+    offered += [payload.get("hook_phrase")] + list(payload.get("hook_alternatives") or [])
+    return [_clean(h, 80) for h in offered if _clean(h, 80)]
+
+
+_SENTENCE = re.compile(r"(?<=[.!?])\s+|\n+")
+
+
+# Round 13 (#2241): the lead-number rule grabbed "4.5" from "Claude Opus 4.5". A headline number
+# is a STAT — a percentage, a currency amount, a multiplier, or a number followed by a unit or a
+# count noun — never a product/model version next to a capitalised name, and never a year.
+_COUNT_NOUNS = (
+    "posts|hours|days|weeks|months|years|minutes|customers|clients|users|people|teams|leads|"
+    "seats|tools|calls|replies|deals|buyers|employees|staff|percent|times|invoices|meetings|"
+    "comments|followers|views|signups|sales|orders|projects|steps|errors|tickets|subscribers")
+_STAT = re.compile(
+    r"[$€£]\d[\d,.]*\s?(?:[KkMmBb]n?\b|million\b|billion\b|thousand\b)?"
+    r"|\b\d[\d,.]*\s?%"
+    r"|\b\d+(?:\.\d+)?[xX×](?!\w)"
+    rf"|\b\d[\d,.]*(?=\s+(?:more\s+|fewer\s+|less\s+|new\s+)?(?:{_COUNT_NOUNS})\b)",
+    re.IGNORECASE)
+_YEAR = re.compile(r"^(?:19|20)\d\d$")
+_VERSIONED = re.compile(r"\b[A-Z][A-Za-z0-9]*[\s\-]?$")
+
+
+def stat_numbers(text: str) -> list[str]:
+    """The STATS ``text`` states, in order, as written.
+
+    Args:
+        text: Any text.
+
+    Returns:
+        Each stat ("$30K", "60%", "3x", "45" in "45 posts"); never a version next to a
+        capitalised name ("Opus 4.5", "GPT-5.2") or a bare year.
+    """
+    found = []
+    for match in _STAT.finditer(text or ""):
+        stat = match.group(0).strip().rstrip(".,")
+        before = (text or "")[:match.start()]
+        if not re.search(r"[$€£%]", stat) and _VERSIONED.search(before):
+            continue  # "Opus 4.5", "GPT-5.2": a version next to a name, not a stat
+        if _YEAR.match(stat):
+            continue
+        found.append(stat)
+    return found
+
+
+def _source_casing(stat: str, source: str) -> str:
+    """``stat`` as the SOURCE writes it ("$30K", never "$30k")."""
+    match = re.search(re.escape(stat), source or "", re.IGNORECASE)
+    return match.group(0) if match else stat
+
+
+def thesis_number(concept: ImageConcept, source: str, title: Optional[str] = None) -> str:
+    """The grounded number tied to the THESIS, or '' (round 12).
+
+    A number from the thesis or the facts that appears verbatim in the source AND in the title,
+    the first two sentences of the body, or the same source sentence as the thesis claim (one
+    sharing at least half of the thesis's content words).
+
+    Args:
+        concept: Stage 1's concept.
+        source: The analysed text (title first, as Stage 1 reads it).
+        title: The piece's title.
+
+    Returns:
+        The number as the source writes it ("$30K", "45%"), or ''.
+    """
+    lowered = (source or "").lower()
+    body = source or ""
+    if title and body.startswith(title):
+        body = body[len(title):]
+    sentences = [s for s in _SENTENCE.split(body.strip()) if s.strip()]
+    thesis_tokens = set(_content_tokens(concept.thesis))
+    claim_sentences = [s for s in sentences if thesis_tokens and len(
+        thesis_tokens & set(_content_tokens(s))) * 2 >= len(thesis_tokens)]
+    tied_text = " ".join([title or "", *sentences[:2], *claim_sentences]).lower()
+    # Round 14: among tied stats, the one whose OWN sentence best matches the thesis wins — ed18's
+    # title stat (53.7%, a share of posts) must not beat the engagement gap (45%).
+    claim = {t for t in thesis_tokens if t not in _HOOK_FREE_WORDS and len(t) >= 4}
+    best, best_score = "", -1
+    for text in (concept.thesis, *concept.specific_entities):
+        for number in stat_numbers(text):
+            if number.lower() not in lowered or number.lower() not in tied_text:
+                continue
+            holders = [s for s in source_sentences(source) if number.lower() in s.lower()]
+            score = max((len(claim & set(_content_tokens(s))) for s in holders), default=0)
+            if score > best_score:
+                best, best_score = _source_casing(number, source), score
+    return best
+
+
+def lead_with_number(concept: ImageConcept, source: str,
+                     title: Optional[str] = None, build: bool = True) -> ImageConcept:
+    """Force a ``number_claim`` hook carrying the thesis's lead number, when there is one.
+
+    Round 12: the critic's best cover led with its stat ("45%"); four others left theirs out. A
+    valid hook already carrying the number wins (Stage 1's hook first, then its options); else
+    the number plus the first anchor's noun, when that passes the hook rules. Shape rotation
+    stays in charge only when the thesis has no such number.
+
+    Args:
+        concept: The concept after shape rotation.
+        source: The analysed text.
+        title: The piece's title.
+        build: Whether to build "number + noun" when no offered hook carries the number;
+            ``_enforce_stat`` asks the analyst first and builds only as the last resort.
+
+    Returns:
+        The concept, its hook led by the number when one could be made.
+    """
+    number = thesis_number(concept, source, title)
+    if not number:
+        return concept
+    candidates = [concept.hook_phrase, *(concept.hook_options or {}).values()]
+    hook = next((h for h in candidates if h and number.lower() in h.lower()), "")
+    if not hook and build:
+        topic = " ".join((concept.thesis, *concept.specific_entities, *concept.visual_anchors))
+        noun = next((" ".join(a.split()[-2:]) for a in concept.visual_anchors
+                     if a and not any(ch.isdigit() for ch in a)), "")
+        hook = _valid_hook(f"{number} {noun}", title, topic, source) if noun else ""
+    if not hook:
+        return concept
+    options = dict(concept.hook_options or {})
+    options["number_claim"] = hook
+    return dataclasses.replace(concept, hook_phrase=hook, hook_shape="number_claim",
+                               hook_options=options)
+
+
+_HOOK_THESIS_CHECK = """A headline is set beside an image for a LinkedIn piece.
+
+The piece's main claim: {thesis}
+The source sentence the headline cites: "{cited}"
+The headline: "{hook}"
+
+1. Does the headline ASSERT the piece's main claim — not a caveat, a side point or a neutral
+   "X vs Y" that takes no side?
+2. Is this headline grammatical English, at most 6 words, and literally true according to the
+   source sentence it cites (every number measures what the headline says it measures)?
+3. What is the headline's own valence: positive (a saving, a win, relief), negative (a risk, a
+   loss, a mistake) or mixed?
+Respond with ONLY a JSON object:
+{{"asserts_thesis": true|false, "grammatical_and_true": true|false,
+ "valence": "positive|negative|mixed", "reason": "<one sentence>"}}"""
+
+
+def _enforce_stat(concept: ImageConcept, payload: Any, source: str, title: Optional[str],
+                  surface: str, user_id: Optional[int]) -> ImageConcept:
+    """The thesis stat MUST survive into the hook, verbatim (round 13).
+
+    Post 102 argued "cut AI spend by 60%" and shipped "Routing saves most spend". After
+    ``lead_with_number``, a hook still missing the stat is regenerated ONCE with that reason; if
+    the analyst still drops it, the hook is the stat plus the first anchor's noun.
+    """
+    number = thesis_number(concept, source, title)
+    concept = lead_with_number(concept, source, title, build=False)
+    if not number or number in concept.hook_phrase:
+        return concept
+    reason = f'the hook must contain the stat "{number}" verbatim — it is the piece\'s lead number'
+    retried = _ensure_hook(dataclasses.replace(concept, hook_phrase=""), payload, source, title,
+                           surface, user_id, extra_reasons=(reason,))
+    if number in retried.hook_phrase:
+        return dataclasses.replace(retried, hook_shape="number_claim")
+    built = lead_with_number(concept, source, title)
+    if number in built.hook_phrase:
+        return built
+    noun = next((" ".join(a.split()[-2:]) for a in concept.visual_anchors
+                 if a and not any(ch.isdigit() for ch in a)), "") or "saved"
+    hook = f"{number} {noun}"  # the stat survives even when no rule-passing hook could carry it
+    if number_claim_mismatch(hook, source):
+        return concept  # round 14: never a false pairing — the number is dropped instead
+    return dataclasses.replace(concept, hook_phrase=hook, hook_shape="number_claim",
+                               hook_options={**(concept.hook_options or {}), "number_claim": hook})
+
+
+def check_hook_against_thesis(hook: str, thesis: str, cited: str = "") -> tuple[bool, str, str]:
+    """ONE ``lem-simple`` call judging the hook: claim, grammar, length, truth and valence.
+
+    Does the hook assert the thesis, is it grammatical, at most 6 words and literally true
+    against the sentence it cites (round 14), and what is its own valence?
+
+    Fails OPEN — an unreachable or unreadable judge passes the hook with no valence; the
+    deterministic fidelity rule (``number_claim_mismatch``) already stands behind it.
+
+    Args:
+        hook: The headline.
+        thesis: Stage 1's thesis.
+        cited: The source sentence the hook cites (``cited_sentence``).
+
+    Returns:
+        ``(asserts_thesis, valence or '', reason)``.
+    """
+    from cqc_lem.utilities.ai.ai_helper import _loads_json_object
+    from cqc_lem.utilities.ai.client import client
+
+    try:
+        response = client.chat.completions.create(
+            model="lem-simple",
+            messages=[{"role": "user", "content": _HOOK_THESIS_CHECK.format(
+                thesis=thesis, hook=hook, cited=cited or "(none)")}],
+            response_format={"type": "json_object"},
+            temperature=0,
+            max_tokens=_CONCEPT_MAX_TOKENS,
+            reasoning_effort=REASONING_EFFORT,
+        )
+        answer = _loads_json_object(response.choices[0].message.content or "") or {}
+    except Exception as e:
+        log_debug("Hook-vs-thesis check unavailable — passing the hook", error=str(e),
+                  action_type="image_concept")
+        return True, "", "judge unavailable"
+    valence = str(answer.get("valence") or "").lower()
+    ok = (answer.get("asserts_thesis") is not False
+          and answer.get("grammatical_and_true") is not False)
+    return ok, valence if valence in VALENCES else "", str(answer.get("reason") or "")[:200]
+
+
+def _hook_asserts_thesis(concept: ImageConcept, payload: Any, source: str,
+                         title: Optional[str], surface: str,
+                         user_id: Optional[int]) -> ImageConcept:
+    """Regenerate a hook that states a caveat or a neutral "vs" (round 12); set its valence.
+
+    Post 140 headlined its closing caveat ("Cheap-first hurts precision") while arguing FOR
+    routing. ONE regeneration with the judge's reason, then the face's valence follows the hook
+    that ships — 140's subject grinned at "hurts".
+    """
+    if not concept.hook_phrase:
+        return concept
+    ok, valence, reason = check_hook_against_thesis(
+        concept.hook_phrase, concept.thesis, cited_sentence(concept.hook_phrase, source))
+    if not ok:
+        rejected = (f'"{concept.hook_phrase}": it does not assert the main claim, or is not '
+                    f'grammatical and literally true ({reason})')
+        concept = _ensure_hook(dataclasses.replace(concept, hook_phrase=""), payload, source,
+                               title, surface, user_id, extra_reasons=(rejected,))
+        concept = _enforce_stat(concept, payload, source, title, surface, user_id)
+        ok, again, _ = check_hook_against_thesis(
+            concept.hook_phrase, concept.thesis, cited_sentence(concept.hook_phrase, source))
+        valence = again or valence
+        if not ok:
+            # Round 14: a second failure takes the DETERMINISTIC hook — the thesis, trimmed.
+            hook = derive_hook(concept.thesis, source, title, concept.specific_entities,
+                               concept.visual_anchors)
+            concept = dataclasses.replace(concept, hook_phrase=hook, hook_shape=hook_shape_of(hook),
+                                          hook_options={hook_shape_of(hook): hook})
+    return dataclasses.replace(concept, valence=valence) if valence else concept
+
+
+def _final_hook(concept: ImageConcept, payload: Any, source: str, title: Optional[str],
+                surface: str, user_id: Optional[int]) -> ImageConcept:
+    """The last step of hook selection: <=6 words HARD, never truncated; source number casing.
+
+    Round 15: round 14's cap cut "Ignoring AI's hidden buyers raises deal costs" to "… raises
+    deal". A long hook is REGENERATED with the reason; still long, it takes ``clause_hook`` — a
+    complete clause by construction. Then every number is spelled as the source spells it.
+    """
+    if len(concept.hook_phrase.split()) > _HOOK_MAX_WORDS:
+        reason = (f'"{concept.hook_phrase}": {len(concept.hook_phrase.split())} words — the '
+                  f"hook is at most {_HOOK_MAX_WORDS} words, a complete claim")
+        concept = _ensure_hook(dataclasses.replace(concept, hook_phrase=""), payload, source,
+                               title, surface, user_id, extra_reasons=(reason,))
+        if len(concept.hook_phrase.split()) > _HOOK_MAX_WORDS:
+            hook = clause_hook(concept.thesis)
+            concept = dataclasses.replace(concept, hook_phrase=hook,
+                                          hook_shape=hook_shape_of(hook))
+    hook = concept.hook_phrase
+    if hook and not _HOOK_NUMBER.search(hook) and not asserts_something(hook):
+        # The claim-not-label rule holds on EVERY path, the fallbacks included (round 15).
+        hook = clause_hook(concept.thesis) or hook
+        concept = dataclasses.replace(concept, hook_phrase=hook, hook_shape=hook_shape_of(hook))
+    restored = restore_number_casing(concept.hook_phrase, source)
+    if restored != concept.hook_phrase:
+        concept = dataclasses.replace(concept, hook_phrase=restored)
+    return concept
+
+
+def _ensure_hook(concept: ImageConcept, payload: Any, source: str, title: Optional[str],
+                 surface: str, user_id: Optional[int],
+                 extra_reasons: Sequence[str] = ()) -> ImageConcept:
+    """A composited surface's concept with a hook: Stage 1 retried ONCE, else ``derive_hook``.
+
+    The retry carries every rejection reason back to the analyst (round 10: two posts shipped
+    with no headline after the comparative rule refused their only hook). It fails OPEN to the
+    deterministic hook — a composite never goes out bare.
+    """
+    from cqc_lem.utilities.ai.ai_helper import _loads_json_object
+    from cqc_lem.utilities.ai.client import client
+
+    topic = " ".join((concept.thesis, *concept.specific_entities, *concept.visual_anchors))
+    offered = _offered_hooks(payload)
+    reasons = "\n".join([f'- "{h}": {hook_rejection(h, title, topic, source) or "unusable"}'
+                          for h in offered if not extra_reasons]
+                         + [f"- {r}" for r in extra_reasons]) or "- (no hook offered)"
+    hook = ""
+    try:
+        response = client.chat.completions.create(
+            model="lem-medium",
+            messages=[{"role": "system", "content": _SYSTEM_PROMPT},
+                      {"role": "user", "content": (
+                          f"<title>{title or ''}</title>\n<content>{source}</content>\n\n"
+                          + _HOOK_RETRY.format(reasons=reasons, thesis=concept.thesis))}],
+            response_format={"type": "json_object"},
+            temperature=0.3,
+            max_tokens=_CONCEPT_MAX_TOKENS,
+            reasoning_effort=REASONING_EFFORT,
+        )
+        retry = _loads_json_object(response.choices[0].message.content or "") or {}
+        hook = _valid_hook(_clean(retry.get("hook_phrase"), 80), title, topic, source)
+    except Exception as e:
+        log_debug("Hook retry unavailable — deriving one", error=str(e), user_id=user_id,
+                  surface=surface, action_type="image_concept")
+    source_of_hook = "retry"
+    if not hook:
+        hook = derive_hook(concept.thesis, source, title, concept.specific_entities,
+                           concept.visual_anchors)
+        source_of_hook = "derived"
+    log_debug("Composited surface hook recovered", user_id=user_id, surface=surface,
+              action_type="image_concept", hook_source=source_of_hook)
+    shape = hook_shape_of(hook)
+    return dataclasses.replace(concept, hook_phrase=hook, hook_shape=shape,
+                               hook_options={shape: hook})
 
 
 def archetype_candidates(concept: ImageConcept) -> list[str]:
@@ -1360,6 +2175,7 @@ def analyze_content_for_image(text: str, *, title: Optional[str] = None,
                               recent_layouts: Optional[Sequence[str]] = None,
                               recent_casts: Optional[Sequence[dict]] = None,
                               recent_hook_shapes: Optional[Sequence[str]] = None,
+                              recent_shots: Optional[Sequence[str]] = None,
                               recent_archetypes: Optional[Sequence[str]] = None,
                               recent_art_styles: Optional[Sequence[str]] = None,
                               ) -> Optional[ImageConcept]:
@@ -1378,6 +2194,7 @@ def analyze_content_for_image(text: str, *, title: Optional[str] = None,
         recent_layouts: Layouts of the most recent images on this surface, most recent first.
         recent_casts: Cast dicts of the most recent images, most recent first.
         recent_hook_shapes: Hook shapes of the most recent images, most recent first.
+        recent_shots: Shots (framings) of the most recent images, most recent first.
         recent_archetypes: Archetypes of the most recent images, most recent first — the last
             ``ARCHETYPE_WINDOW`` are penalised (``select_archetype``).
         recent_art_styles: Art styles of the most recent editorial concepts, most recent first.
@@ -1399,7 +2216,7 @@ def analyze_content_for_image(text: str, *, title: Optional[str] = None,
         f"different treatment than {recent[0]} when the piece allows.\n" if recent else "")
     try:
         payload = None
-        for _attempt in (1, 2):
+        for _ in range(2):
             response = client.chat.completions.create(
                 model="lem-medium",
                 messages=[{"role": "system", "content": _SYSTEM_PROMPT},
@@ -1430,8 +2247,18 @@ def analyze_content_for_image(text: str, *, title: Optional[str] = None,
         log_debug("Image concept reply unusable", user_id=user_id, surface=surface,
                   action_type="image_concept", raw=json.dumps(payload)[:200] if payload else "")
         return None
-    concept = rotate_hook_shape(enforce_graphic_cap(concept, recent, surface),
-                                recent_hook_shapes)
-    concept = select_archetype(concept, surface, recent_archetypes)
+    if surface in _HOOKED_SURFACES and not concept.hook_phrase:
+        concept = _ensure_hook(concept, payload, source, title, surface, user_id)
+    # The archetype is chosen BEFORE the idea pick: the pick is for the chain's AI end.
+    concept = select_archetype(enforce_graphic_cap(concept, recent, surface), surface,
+                               recent_archetypes)
     concept = assign_art_style(pick_visual_idea(concept, surface), recent_art_styles)
-    return assign_layout_and_cast(concept, surface, recent_layouts, recent_casts)
+    concept = rotate_hook_shape(concept, recent_hook_shapes)
+    if surface in _HOOKED_SURFACES:
+        # Round 12: the lead number outranks shape rotation, and the hook must assert the thesis.
+        concept = _enforce_stat(concept, payload, source, title, surface, user_id)
+        concept = _hook_asserts_thesis(concept, payload, source, title, surface, user_id)
+        concept = _final_hook(concept, payload, source, title, surface, user_id)
+        # A code-drawn graphic needs the FINAL headline; re-rank against it (deterministic).
+        concept = select_archetype(concept, surface, recent_archetypes)
+    return assign_layout_and_cast(concept, surface, recent_layouts, recent_casts, recent_shots)

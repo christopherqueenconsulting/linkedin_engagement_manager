@@ -34,6 +34,7 @@ from dataclasses import dataclass, field
 from typing import Any, Optional
 
 from cqc_lem.utilities.ai.image_compose import (
+    CANVAS,
     DEFAULT_LAYOUT,
     LAYOUTS,
     SPLIT_LAYOUTS,
@@ -56,8 +57,9 @@ BEFORE_AFTER = "before_after"
 CHECKLIST = "checklist"
 CODE_DRAWN_ARCHETYPES = (STAT_CARD, HIGHLIGHT_CHART, RECEIPT, BEFORE_AFTER, CHECKLIST)
 
-# A 16:9 cover and a 4:5 feed post, both at the size LinkedIn shows them sharp.
-GRAPHIC_CANVAS = {"newsletter": (1920, 1080), "post_image": (1080, 1350)}
+# A 16:9 cover and a 4:5 feed post — the compositor's own canvas, so a graphic and a photo cover
+# can never drift apart in size.
+GRAPHIC_CANVAS = CANVAS
 # Legibility floors as fractions of the CANVAS WIDTH — what a 400px-wide feed thumbnail scales
 # by — so a body string reads at ~9px and the source line at ~6px there, on either surface.
 BODY_MIN = 0.024

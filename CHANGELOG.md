@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.181.6](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.181.5...v0.181.6) (2026-10-06)
+
+
+### Bug Fixes
+
+* **post-image:** image generation fails with Cloudflare origin error (closes [#2244](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2244)) ([#2245](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2245)) ([59fd209](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/59fd2096ea181c911a7314abb046c1bf8fd08db1))
+* **post-image:** never answer image generation with an origin 502 ([59fd209](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/59fd2096ea181c911a7314abb046c1bf8fd08db1)), closes [#2244](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2244)
+
 ## [0.181.5](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.181.4...v0.181.5) (2026-10-06)
 
 

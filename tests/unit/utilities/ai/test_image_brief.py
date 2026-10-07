@@ -257,10 +257,12 @@ _GROUNDED_COVER = {"focal_concept": "an agency owner wincing before payroll",
                               "Portra 400 tones, subtle film grain.")}
 
 _HOOK = "Payroll eats first"
-_GRAPHIC = {"focal_concept": "an agency owner beside calm negative space",
-            "prompt": ('A designed editorial layout for a LinkedIn newsletter cover: a '
-                       'photographic cutout of an agency owner mid-wince on the right, on a flat '
-                       'charcoal color field with generous calm negative space on the left.'),
+# Round 10: even a graphic's RENDER prompt describes only the picture — never "a LinkedIn
+# newsletter cover" or "negative space" for a headline (gpt-image then designs a cover).
+_GRAPHIC = {"focal_concept": "an agency owner on a flat charcoal field",
+            "prompt": ('A candid documentary photograph: a photographic cutout of an agency owner '
+                       'mid-wince, centred on a flat charcoal color field and filling the square '
+                       'frame.'),
             "required_entities": ["agency owner"], "hook_text": None}
 
 
@@ -313,9 +315,8 @@ _FIVE_EDITIONS = (
               specific_entities=("outreach team", "routing rules", "42% cost drop"),
               treatment="editorial_graphic", hook_phrase="42% cheaper, same replies"),
      {"focal_concept": "the 42% hook beside an outreach team",
-      "prompt": ('A designed editorial layout for a LinkedIn newsletter cover: a photographic '
-                 'cutout of an outreach team trading relieved grins on the right, on a flat '
-                 'charcoal color field with generous calm negative space on the left, high '
+      "prompt": ('A candid documentary photograph: a photographic cutout of an outreach team '
+                 'trading relieved grins, centred on a flat charcoal color field, high '
                  'contrast.')}),
     ("My Multi-Agent Content System Broke Quietly",
      _concept(thesis="An automated content system failed silently for weeks",
@@ -339,9 +340,10 @@ _FIVE_EDITIONS = (
               specific_entities=("API bill", "founder", "credit card statement"),
               visual_anchors=("a founder", "a credit card statement", "a printed usage bill")),
      {"focal_concept": "a founder wincing at the card in her hand",
-      "prompt": ("A candid editorial photograph of a founder at a cluttered table wincing at the "
-                 "credit card in her hand, warm evening gold lamp light, shot on a 50mm lens at "
-                 "f/2, tactile texture, subtle film grain.")}),
+      # Round 12: no credit card in hand — a held card is a symbolic prop.
+      "prompt": ("A candid editorial photograph of a founder at a cluttered table wincing, her "
+                 "hands empty, warm evening gold lamp light, shot on a 50mm lens at f/2, tactile "
+                 "texture, subtle film grain.")}),
     ("Spot the Leak in Your LinkedIn AI Budget",
      _concept(thesis="Unused seats are where an AI budget quietly goes",
               specific_entities=("budget spreadsheet", "finance manager", "unused seats")),
@@ -759,7 +761,7 @@ class TestFactsAreNeverDrawn:
                            visual_anchors=("a marketing team", "a printed survey"))
         ok = {"focal_concept": "a marketing team",
               "prompt": ("A photorealistic candid photograph of a marketing team around a "
-                         "table, one frowning, a gold mug, bright daylight, 35mm f/2.")}
+                         "table, one frowning, a gold scarf, bright daylight, 35mm f/2.")}
         with patch(_LLM, return_value=_resp(ok)) as llm:
             brief = build_image_brief("c", surface="carousel", concept=concept)
         assert llm.call_count == 1 and "53.7" not in brief.prompt
@@ -940,7 +942,7 @@ class TestTheChosenIdeaAndTheEmotion:
 
     def test_the_people_template_demands_a_visible_specific_reaction(self):
         template = _TREATMENT_TEMPLATES["people_scene"]
-        assert "a wince at a number, mid-laugh relief, a raised eyebrow at a colleague" in template
+        assert "a wince at a number, mid-laugh smile, a raised eyebrow at a colleague" in template
         assert "face reads at thumbnail size" in template and "no laptop or screen in frame" in template
 
     @pytest.mark.parametrize("text", [
@@ -1177,7 +1179,7 @@ class TestRoundFourBrief:
     def test_the_fallback_blanks_documents_and_states_the_type(self):
         brief = _fallback_brief("c", surface="newsletter", ratio="16:9", context="The author is x.",
                                 concept=_COVER_CONCEPT, treatment="people_scene")
-        assert "hands at rest or around a mug" in brief.prompt
+        assert "hands empty and relaxed" in brief.prompt and "mug" not in brief.prompt
         from cqc_lem.utilities.ai.image_brief import prop_failure
         assert prop_failure(brief.prompt) is None
         assert "sans-serif" not in brief.prompt, "type is set by image_compose, never rendered"
@@ -1206,7 +1208,7 @@ class TestNoPropsAnywhere:
         """Round 8: no screens at all — not even from behind (gpt-4.1: "laptop stock trope")."""
         from cqc_lem.utilities.ai.image_brief import prop_failure
         base = _GROUNDED_COVER["prompt"]
-        assert prop_failure(base + " A phone held face-down beside her mug.") is None
+        assert prop_failure(base + " A phone held face-down beside her.") is None
         for screen in ("the back of a laptop on the table", "a screen facing away from camera",
                        "a keyboard", "a monitor", "a phone in her hand"):
             assert prop_failure(f"{base} {screen}."), screen
@@ -1216,7 +1218,8 @@ class TestNoPropsAnywhere:
             build_image_brief("c", surface="carousel", concept=_concept())
         user = llm.call_args[1]["messages"][1]["content"]
         assert "PROPS: no paper of any kind in frame" in user
-        assert "Hands hold nothing, or a mug, pen or phone held face-down" in user
+        assert "No mugs, cups, coffee or tea. Hands are empty, gesturing, or a phone held " \
+            "face-down" in user
         assert "people interacting and gesturing in a real environment" in user
         assert "no screens at all: no laptop, monitor, keyboard, tablet or computer" in user
 
@@ -1306,15 +1309,15 @@ class TestRoundSixBrief:
     """Round 6 of #2241: cast rotation, valence, video frames, a headline never drawn."""
 
     _CAST = {"gender": "woman", "age": "50s", "ethnicity": "South Asian",
-             "setting": "warehouse floor", "role": "agency owner"}
+             "setting": "a client's open-plan office", "role": "agency owner"}
 
     def test_the_cast_reaches_the_author(self):
         concept = _concept(treatment="people_scene", cast=self._CAST, layout="panel_left")
         with patch(_LLM, return_value=_resp(_GROUNDED_COVER)) as llm:
             build_image_brief("c", surface="newsletter", concept=concept)
         user = llm.call_args[1]["messages"][1]["content"]
-        assert ("CAST: the person in frame is a South Asian woman in her 50s, an agency owner, on a "
-                "warehouse floor") in user
+        assert ("CAST: the person in frame is a South Asian woman in her 50s, an agency owner, at a "
+                "client's open-plan office") in user
 
     def test_an_avatar_is_never_recast(self):
         avatar = {"gender_presentation": "man", "age_band": "40s", "trigger_word": "TOK"}
@@ -1389,9 +1392,9 @@ class TestRoundSevenBrief:
         concept = _concept(valence="positive")
         with patch(_LLM, return_value=_resp(_GROUNDED)) as llm:
             build_image_brief("c", surface="carousel", concept=concept)
-        assert ("VALENCE: positive — a quiet, satisfied half-smile and relaxed shoulders, eyes "
-                "open, engaged with the other person or the task — never eyes closed, never a "
-                "hand on the chest, head or face") in \
+        assert ("VALENCE: positive — a relaxed, genuine smile, eyes bright, shoulders loose, "
+                "engaged with the other person or the task — never eyes closed, never a hand on "
+                "the chest, head or face") in \
             llm.call_args[1]["messages"][1]["content"]
 
     def test_lower_third_keeps_every_subject_up_top(self):
@@ -1504,3 +1507,186 @@ class TestRoundNineBrief:
         brief = _fallback_brief("c", surface="video", ratio="16:9", context="", concept=concept,
                                 treatment="people_scene")
         assert "contract" not in brief.prompt.lower()
+
+
+# The exact round-9 fallback render prompts whose renders came back with typeset fake-cover text
+# ("ENGINEERING LEAD / Billing Dashboard", "AI GOVERNANCE / LinkedIn Newsletter").
+_R9_ED16 = ("A photorealistic candid editorial photograph for a LinkedIn newsletter cover of "
+            "engineering lead and billing dashboard in the real place this happens, with marketing "
+            "team meeting in the frame, shot on a 50mm lens at f/2.8, composed for a 1:1 aspect "
+            "ratio with the subject large in the frame, bright, high-key warm daylight with strong "
+            "subject contrast and one deliberate gold accent, subtle film grain, real texture with "
+            "fabric wear and everyday imperfections, plain unbranded surfaces, clean unmarked "
+            "walls, hands empty and relaxed. Compose a SQUARE frame with the subject centred "
+            "and filling it, the headline is set beside the image, never on it.")
+_R9_ED19 = ("A photorealistic editorial photograph for a LinkedIn newsletter cover: small group of "
+            "operations professionals gathered around a conference table, their expressions a mix "
+            "of curiosity and caution, shot on a 50mm lens at f/2.8, bright, high-key warm "
+            "daylight. Compose a SQUARE frame with the subject centred and filling it, the "
+            "headline is set beside the image, never on it.")
+
+
+@pytest.mark.unit
+class TestRoundTenPhotoOnly:
+    @pytest.mark.parametrize("prompt", [_R9_ED16, _R9_ED19])
+    def test_the_r9_prompts_fail_the_framing_check(self, prompt):
+        from cqc_lem.utilities.ai.image_brief import render_framing_failure
+        assert render_framing_failure(prompt, "Unused tools vs hidden costs", "AI CONTENT AUDIT")
+
+    @pytest.mark.parametrize("prompt", [_R9_ED16, _R9_ED19])
+    def test_the_r9_prompts_are_repaired_to_a_photograph(self, prompt):
+        from cqc_lem.utilities.ai.image_brief import (
+            PHOTO_OPENING,
+            photo_only_prompt,
+            render_framing_failure,
+        )
+        hook, kicker = "Unused tools vs hidden costs", "AI CONTENT AUDIT"
+        out = photo_only_prompt(prompt, hook, kicker, ["engineering lead"])
+        assert out.startswith(PHOTO_OPENING)
+        for word in ("linkedin", "newsletter", "cover", "headline", "editorial photograph"):
+            assert word not in out.lower(), word
+        assert "centred" in out
+        assert render_framing_failure(out, hook, kicker, ["engineering lead"]) is None
+
+    @pytest.mark.parametrize("framing", ["a LinkedIn post", "a magazine layout",
+                                         "calm negative space for the title",
+                                         "a text area on the left", "an editorial layout"])
+    def test_any_framing_word_is_refused(self, framing):
+        from cqc_lem.utilities.ai.image_brief import render_framing_failure
+        assert render_framing_failure(f"A candid photograph of a man, {framing}.", "Who buys?")
+
+    def test_hook_and_kicker_words_are_refused_unless_they_are_an_anchor(self):
+        from cqc_lem.utilities.ai.image_brief import render_framing_failure
+        prompt = "A candid documentary photograph of an agency owner reviewing governance."
+        assert "governance" in render_framing_failure(prompt, "Who buys?", "AI GOVERNANCE")
+        assert render_framing_failure(prompt, "Who buys?", "AI GOVERNANCE",
+                                      ["governance review"]) is None
+        assert render_framing_failure(prompt, "Agency owners lose sleep", None,
+                                      ["an agency owner"]) is None
+
+    def test_an_authored_cover_brief_naming_its_use_is_retried(self):
+        framed = dict(_GROUNDED_COVER,
+                      prompt=_GROUNDED_COVER["prompt"] + " For a LinkedIn newsletter cover.")
+        with patch(_LLM, side_effect=[_resp(framed), _resp(_GROUNDED_COVER)]) as llm:
+            brief = build_image_brief("c", surface="newsletter", concept=_COVER_CONCEPT)
+        reason = llm.call_args_list[1][1]["messages"][1]["content"]
+        assert "the render is ONLY a photograph" in reason
+        assert "linkedin" not in brief.prompt.lower()
+
+    def test_the_fallback_is_a_photograph_on_a_composited_surface(self):
+        brief = _fallback_brief("c", surface="newsletter", ratio="16:9", context="",
+                                concept=_COVER_CONCEPT, treatment="people_scene")
+        assert brief.prompt.startswith("A candid documentary photograph")
+        assert "linkedin" not in brief.prompt.lower() and "cover" not in brief.prompt.lower()
+        assert "headline" not in brief.prompt.lower()
+
+    def test_an_uncomposited_surface_keeps_its_use_case(self):
+        brief = _fallback_brief("c", surface="carousel", ratio="1:1", context="",
+                                concept=_concept(), treatment="people_scene")
+        assert "carousel slide" in brief.prompt
+
+    def test_the_use_case_stays_author_context(self):
+        with patch(_LLM, return_value=_resp(_GROUNDED_COVER)) as llm:
+            brief = build_image_brief("c", surface="newsletter", concept=_COVER_CONCEPT)
+        assert brief.hook_text
+        assert "USE CASE: A LinkedIn newsletter cover" in llm.call_args[1]["messages"][1]["content"]
+        assert "LinkedIn" not in brief.prompt
+
+    @pytest.mark.parametrize("prop", ["a glossy AI governance whitepaper", "a billing dashboard"])
+    def test_whitepapers_and_dashboards_are_props(self, prop):
+        from cqc_lem.utilities.ai.image_brief import prop_failure
+        assert prop_failure(f"A team around a table with {prop}."), prop
+
+
+@pytest.mark.unit
+class TestRoundTwelveBrief:
+    @pytest.mark.parametrize("prop", ["toy figurines on the table", "blank placeholder cards",
+                                      "coloured pin flags", "a chess board", "wooden blocks",
+                                      "a sticky note", "a game token"])
+    def test_symbolic_props_are_refused(self, prop):
+        from cqc_lem.utilities.ai.image_brief import prop_failure
+        assert "symbolic prop" in (prop_failure(f"Two people beside {prop}.") or "")
+
+    @pytest.mark.parametrize("face", ["her mouth open in alarm", "a gasping founder",
+                                      "a furrowed brow", "brows furrowed", "an alarmed look",
+                                      "an open-mouthed stare"])
+    def test_overacted_faces_are_refused(self, face):
+        bad = dict(_GROUNDED_COVER, prompt=_GROUNDED_COVER["prompt"] + f" {face}.")
+        with patch(_LLM, side_effect=[_resp(bad), _resp(_GROUNDED_COVER)]) as llm:
+            build_image_brief("c", surface="newsletter", concept=_COVER_CONCEPT)
+        assert "overacts the face" in llm.call_args_list[1][1]["messages"][1]["content"]
+
+    @pytest.mark.parametrize("color,bad", [("bright red flags", True), ("a blue scarf", True),
+                                           ("a green folder chair", True),
+                                           ("a soft blue sweater", False),
+                                           ("green leaves outside", False),
+                                           ("blue hour light", False),
+                                           ("a navy blazer", False)])
+    def test_saturated_objects_are_refused(self, color, bad):
+        from cqc_lem.utilities.ai.image_brief import saturated_color
+        assert bool(saturated_color(f"A man with {color}.")) is bad
+
+    def test_the_brand_directive_bounds_every_color(self):
+        from cqc_lem.utilities.ai.image_brief import BRAND_ACCENT_DIRECTIVE
+        assert "gold, charcoal, off-white and natural tones" in BRAND_ACCENT_DIRECTIVE
+
+    def test_negative_valence_is_restrained(self):
+        from cqc_lem.utilities.ai.image_brief import _VALENCE_FACES
+        assert "mouth closed" in _VALENCE_FACES["negative"]
+
+    def test_a_video_frame_keeps_the_near_foreground_empty(self):
+        with patch(_LLM, return_value=_resp(_GROUNDED_COVER)) as llm:
+            build_image_brief("c", surface="video", concept=_concept())
+        assert "no hands or objects close to the camera" in \
+            llm.call_args[1]["messages"][1]["content"]
+
+    def test_a_cover_brief_has_no_video_directive(self):
+        with patch(_LLM, return_value=_resp(_GROUNDED_COVER)) as llm:
+            build_image_brief("c", surface="newsletter", concept=_COVER_CONCEPT)
+        assert "VIDEO FRAME" not in llm.call_args[1]["messages"][1]["content"]
+
+    def test_the_articles_setting_reaches_the_author(self):
+        concept = _concept(setting="a billing review late on a Tuesday")
+        with patch(_LLM, return_value=_resp(_GROUNDED_COVER)) as llm:
+            build_image_brief("c", surface="video", concept=concept)
+        assert "SETTING (from the article — use it): a billing review late on a Tuesday" in \
+            llm.call_args[1]["messages"][1]["content"]
+
+
+@pytest.mark.unit
+class TestRoundThirteenBrief:
+    @pytest.mark.parametrize("prop", ["a coffee mug", "a paper cup", "a latte", "a cup of tea",
+                                      "two mugs"])
+    def test_mugs_and_cups_are_refused(self, prop):
+        from cqc_lem.utilities.ai.image_brief import prop_failure
+        assert prop_failure(f"Two people talking beside {prop}.")
+
+    def test_relief_alone_is_refused_for_good_news(self):
+        concept = _concept(valence="positive", emotional_beat="relief")
+        bad = dict(_GROUNDED, prompt=_GROUNDED["prompt"] + " Her face shows relief.")
+        with patch(_LLM, side_effect=[_resp(bad), _resp(_GROUNDED)]) as llm:
+            build_image_brief("c", surface="post_image", concept=concept)
+        reason = llm.call_args_list[1][1]["messages"][1]["content"]
+        assert "a relaxed, genuine smile, eyes bright, shoulders loose" in reason
+
+    def test_relief_with_a_smile_passes(self):
+        from cqc_lem.utilities.ai.image_brief import _deterministic_failure
+        prompt = "A woman with a relaxed, genuine smile of relief, eyes bright, gold scarf."
+        assert _deterministic_failure(prompt, anchors=[], weak=True, hook_text=None,
+                                      positive=True) is None
+
+    def test_the_positive_face_is_literal(self):
+        from cqc_lem.utilities.ai.image_brief import _VALENCE_FACES
+        assert _VALENCE_FACES["positive"].startswith(
+            "a relaxed, genuine smile, eyes bright, shoulders loose")
+
+    def test_the_shot_reaches_the_author_and_the_fallback(self):
+        shot = "an over-the-shoulder two-shot, the camera behind one person looking at the other"
+        concept = _concept(treatment="people_scene", shot=shot,
+                           chosen_idea="an agency owner wincing at the payroll run")
+        with patch(_LLM, return_value=_resp(_GROUNDED)) as llm:
+            build_image_brief("c", surface="post_image", concept=concept)
+        assert f"SHOT (framing — use it): {shot}" in llm.call_args[1]["messages"][1]["content"]
+        brief = _fallback_brief("c", surface="post_image", ratio="4:5", context="",
+                                concept=concept, treatment="people_scene")
+        assert f"framed as {shot}" in brief.prompt

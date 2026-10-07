@@ -43,7 +43,7 @@ _PAYLOAD = {"thesis": "AI-written posts earn less engagement than human ones",
             "treatment": "people_scene", "treatment_rationale": "people",
             "kicker": "AI CONTENT", "graphic_facts": RAW,
             "visual_ideas": ["A shiny megaphone shrinking to the size of a thimble beside a "
-                             "full coffee urn, seen from overhead.",
+                             "full water jug, seen from overhead.",
                              "A founder frowning at a quiet room."]}
 
 
@@ -166,7 +166,7 @@ class TestPickVisualIdea:
 
     def test_the_editorial_ranker_scores_the_pop_rubric_and_demotes_a_desk(self):
         ideas = ("A brass bell resting on a desk under a lamp.",
-                 "A megaphone shrinking to a thimble beside a coffee urn.")
+                 "A megaphone shrinking to a thimble beside a water jug.")
         concept = select_archetype(_concept(visual_ideas=ideas), "newsletter")
         with patch(_CREATE, return_value=_resp({"ranking": [1, 2], "reason": "r"})) as create:
             picked = pick_visual_idea(concept)
