@@ -23,6 +23,8 @@ rather than an absolute claim about one model.
 | `lem-medium` | Feed comments (must satisfy the #617 comment quality contract), post refinement, blog summaries, DMs. |
 | `lem-complex` | Long-form thought leadership / personal story / industry news / carousels / newsletter editions — blueprint-shaped and slop-lint clean. |
 | `lem-router` | The `LEMComplexityRouter` classification contract, plus a clean answer at the router alias. |
+| `lem-vision` | Agreement with the ground truth of 10 synthetic, PIL-drawn fixtures: stray text, a cliché object, the emotion on a face (#2251, see *Media tiers* below). |
+| `lem-image` | The #2241/#2248 gauntlet rubric on synthetic briefs, judged by the `lem-vision` champion (#2251). |
 
 Two scoring layers, in this order:
 
@@ -603,6 +605,170 @@ The report is the deliverable — `--results-out` for the JSON a later `--render
 `--recommendations-out` for the swap list a follow-up config PR reads. Anything the standing spend
 policy marks `hold` is named in the report and belongs to the owner, not to the config PR.
 
+## Media tiers, provider scan and the registry (#2251)
+
+The text suites above cover four tiers. #2251 extended the loop to every tier the proxy serves: the
+two media tiers get a benchmark, OpenAI and Perplexity get the scan Ollama Cloud already had, and
+the table below is the one place a tier's whole standing is read.
+
+### `lem-vision` and `lem-image` (`scripts/benchmark_media.py`)
+
+```bash
+# Planned spend for the default roster. No network, no writes.
+poetry run python scripts/benchmark_models.py --dry-run --tiers lem-vision,lem-image
+# A real run (BENCHMARK_ENABLED=true, OPENAI_API_KEY). The cap is enforced before the first call.
+poetry run python scripts/benchmark_models.py --run --tiers lem-vision,lem-image --max-spend-usd 1.50
+```
+
+- **Vision.** Ten fixtures are drawn with PIL at run time. They are deterministic, nothing binary is
+  committed, and there is no customer content. Each fixture has ground truth for the three
+  questions the render gate leans on: is there **stray text**, is a stock **cliché object**
+  present (gears, pipes, a server rack), and what **emotion** does a drawn face show.
+  - A model is scored on per-field and overall agreement with that ground truth. The champion runs
+    the same fixtures alongside each candidate.
+  - Calls use `detail: high`, mirroring `image_gen._VISION_GATE_DETAIL`.
+  - An unparseable answer counts as wrong on every field, because production parses the same JSON.
+  - `recommend` needs at least 80% agreement **and** meeting or beating the champion.
+- **Image.** Three synthetic briefs are each rendered once per model at production's quality
+  (`medium`, 1024²). The `lem-vision` champion grades each render on the #2241/#2248 rubric:
+  `specificity`, `no_cliche`, `thumbnail_read`, `text_accuracy`, `craft`, `scroll_stop`,
+  `brand_fit`, each scored 1–5.
+  - A render is *accepted* when it clears #2248's floors (`no_cliche` 5; `specificity`,
+    `text_accuracy`, `craft` and `scroll_stop` ≥4; `brand_fit` ≥3).
+  - The rubric is **mirrored locally** rather than imported from `image_gen`: importing it builds
+    the app's LLM client, which needs credentials a `--dry-run` does not have. A unit test fails the
+    build if the mirror and `image_gen`'s rubric ever drift apart.
+  - A judge answer missing any criterion is **unscored**, never a zero. A side with unscored briefs
+    gets the verdict `inconclusive`.
+- **Spend is capped before the first call.** Every planned call is priced from the pinned cost map
+  at a deliberately conservative ceiling:
+  - vision: the worst known image-token charge (gpt-4o-mini's) plus the full completion budget;
+  - image: the largest known output-token count per quality.
+
+  A plan is **refused** (exit 1) if it exceeds `--max-spend-usd` (default
+  `BENCHMARK_MAX_SPEND_USD`, else $2.00), or if it names any model the snapshot does not price,
+  because an unpriced model has no spend bound. A running meter also stops the run if real usage
+  ever outruns the estimate.
+- **Default roster.** The champion is the tier's first deployment. Candidates are the in-group
+  fallbacks plus the newest same-family successor in the provider snapshot, at most two per tier.
+  Any candidate with a published sunset is dropped, since measuring a model weeks from removal buys
+  nothing. Override with `--vision-models` / `--image-models`.
+- Calls go to OpenAI directly through `AttributedOpenAI` (the one client), not the proxy, for the
+  same reason the text harness bypasses it: a candidate that is not in the config has no alias.
+- **Out of scope:** `lem-embedding` and `lem-tts` have no benchmark. Embeddings are a
+  dedup/clustering input with no quality contract to grade, and TTS output is audio that no judge
+  in this harness can hear. Both still appear in the registry with their price, sunset and newer
+  candidate, so a retirement there is still visible.
+
+### OpenAI and Perplexity scan (`scripts/provider_model_scan.py`, `model_health_check.py --provider-scan`)
+
+The scan follows #716's posture: alerts plus `agent:ready` issues, **never a swap**. It reports
+three things about every configured model that is not on Ollama:
+
+- a published **sunset**: alert when it is 45 days away or less, or already past;
+- a newer model **in its own family**:
+  - gpt-4o → gpt-4.1 / gpt-5-class;
+  - gpt-4o-mini → a newer mini;
+  - gpt-image-2 → gpt-image-2.5-\*;
+  - a mini or nano is never a successor to a full-size model;
+- an **unlisted** model, i.e. one the provider's own `/v1/models` no longer returns.
+
+Sources:
+
+- **OpenAI.**
+  - `/v1/models` with `OPENAI_API_KEY`. This list is authoritative: it is what our key can call.
+  - Without the key, the public LiteLLM cost map. That map lists only what LiteLLM prices, so it
+    can never be used to call a model gone.
+  - Sunsets come from the deprecations page (developers.openai.com/api/docs/deprecations) plus the
+    cost map's `deprecation_date`.
+- **Perplexity.**
+  - `/v1/models`.
+  - Perplexity publishes no machine-readable deprecation feed, so its sunsets are the curated
+    `PERPLEXITY_NOTICES`, each with the URL it was read from. Sonar ids have no version, so there
+    is no family-upgrade scan for them.
+
+The scan result is committed as `.litellm/provider_models_snapshot.json`.
+
+**What the first scan found (2026-10-07):**
+
+- `gpt-image-1`, the `lem-image` fallback, shuts down **2026-10-23**.
+- Perplexity's Sonar Chat Completions, which `lem-research` uses, **ended 2026-09-27**. Requests
+  still work while Perplexity "reformulates" them as Agent API calls, but that is borrowed time.
+- `tts-1` shuts down **2027-01-06**.
+
+All three are issues for a human. None of them is a config change made here.
+
+### Prices: how the cost map is pinned
+
+`.litellm/model_prices_snapshot.json` is the committed copy of BerriAI/litellm's
+`model_prices_and_context_window.json`:
+
+- `scripts/model_registry.py --refresh-prices` re-pins the configured OpenAI/Perplexity models
+  plus each one's newest family candidate.
+- The source URL and fetch date are recorded in the file's `_pinned` block.
+- Ollama shadow references are never touched.
+
+The spend estimate and the registry read **only** this file, so a price changes in a reviewed diff
+and never in the middle of a run.
+
+### Schedule: why the host orchestrator, not a workflow
+
+`scripts/model_eval_loop.py` runs from `scripts/weekly_model_check.sh`, which is the host cron,
+and decides what is due:
+
+- **Monthly.** The first run in a new month benchmarks main's roster and opens a docs PR with the
+  report and the regenerated registry.
+- **Config change on main.** A different blob for `.litellm/config.yaml` or
+  `.litellm/model_upgrades.yaml` triggers the same run.
+- **Open PRs.** A PR that touches either file and has a head SHA not yet benchmarked gets the run,
+  posted as an **advisory comment**.
+  - Upstream branches by OWNER/MEMBER/COLLABORATOR authors only. A fork never qualifies.
+  - At most `MODEL_EVAL_MAX_PR_RUNS` (default 2) per orchestrator run.
+  - Only the PR's *config* is used. Prices and the provider snapshot come from main, so a PR cannot
+    lower the spend bound of the run that measures it.
+
+It is deliberately **not a GitHub workflow**. A real run spends OpenAI money with a key that lives
+only in `/opt/lem/.env`, and the pipeline's credential has neither secrets nor `workflows` scope
+(`docs/contribution-security.md`). It is never a required check: its only voice on a PR is a
+comment.
+
+The orchestrator is weekly, so a PR is picked up within a week. For faster pickup, the owner can add
+a daily cron line for the loop alone:
+
+```
+17 6 * * * cd /home/lem/model-check-clone && BENCHMARK_ENABLED=true python scripts/model_eval_loop.py --state /home/lem/model-check/model-eval-state.json --results-dir /home/lem/model-check
+```
+
+That line needs `OPENAI_API_KEY` in its environment and is not installed by this change.
+
+## Model registry
+
+<!-- MODEL-REGISTRY:BEGIN -->
+Generated by `scripts/model_registry.py --write` - **do not hand-edit**; rerun it (the unit suite fails when this block is stale). Prices: `.litellm/model_prices_snapshot.json`, LiteLLM cost map pinned 2026-10-07 (https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json); image prices are a per-render CEILING at medium quality. Ollama catalog snapshot 2026-10-04; provider snapshot 2026-10-07 (OpenAI ids from litellm cost map). Verdicts are the newest leaderboard row for that tier and model.
+
+| Tier | Order | Provider | Model | Price | Last verdict | Sunset | Newer candidate? |
+|---|---|---|---|---|---|---|---|
+| lem-simple | 1 | ollama-cloud | `gpt-oss:20b` | plan-metered (shadow `gpt-4o-mini`) | baseline · 2026-08-02 | none published | no |
+| lem-simple | 2 | openai | `gpt-4o-mini` | $0.15 / $0.60 per 1M in/out | never measured | none published | yes: `gpt-5.4-mini` |
+| lem-medium | 1 | ollama-cloud | `gpt-oss:120b` | plan-metered (shadow `gpt-4o-mini`) | baseline · 2026-08-30 | none published | no |
+| lem-medium | 2 | ollama-cloud | `gemma4:31b` | plan-metered (shadow `gpt-4o-mini`) | reject · 2026-08-02 | none published | no |
+| lem-medium | 3 | openai | `gpt-4o-mini` | $0.15 / $0.60 per 1M in/out | never measured | none published | yes: `gpt-5.4-mini` |
+| lem-complex | 1 | openai | `gpt-4o` | $2.50 / $10.00 per 1M in/out | never measured | none published | yes: `gpt-6.1-sol` |
+| lem-research | 1 | perplexity | `sonar` | $1.00 / $1.00 per 1M in/out | never measured | **2026-09-27** (curated) | n/a (unversioned ids) |
+| lem-image | 1 | openai | `gpt-image-2` | ≤$0.055/image (medium, 1024²) | never measured | none published | yes: `gpt-image-2.5-sunburst` |
+| lem-image | 2 | openai | `gpt-image-1` | ≤$0.073/image (medium, 1024²) | never measured | **2026-10-23** (openai deprecations page) | yes: `gpt-image-2.5-sunburst` |
+| lem-vision | 1 | openai | `gpt-4.1` | $2.00 / $8.00 per 1M in/out | never measured | none published | yes: `gpt-6.1-sol` |
+| lem-vision | 2 | openai | `gpt-4o-mini` | $0.15 / $0.60 per 1M in/out | never measured | none published | yes: `gpt-5.4-mini` |
+| lem-tts | 1 | openai | `tts-1` | $15.00 per 1M chars | never measured | **2027-01-06** (openai deprecations page) | no |
+| lem-embedding | 1 | openai | `text-embedding-3-small` | $0.02 per 1M in | never measured | none published | no |
+| lem-router | 1 | ollama-cloud | `gpt-oss:20b` | plan-metered (shadow `gpt-4o-mini`) | never measured | none published | no |
+| lem-router | 2 | openai | `gpt-4o-mini` | $0.15 / $0.60 per 1M in/out | never measured | none published | yes: `gpt-5.4-mini` |
+| lem-agent-tier1 | 1 | ollama-cloud | `glm-5.3` | plan-metered (shadow `gpt-4o-mini`) | never measured | none published | no |
+| lem-agent-tier2 | 1 | ollama-cloud | `kimi-k2.7-code` | plan-metered (shadow `gpt-4o`) | never measured | none published | no |
+| lem-agent-tier2-alt | 1 | ollama-cloud | `minimax-m3` | plan-metered (shadow `gpt-4o-mini`) | never measured | none published | no |
+| lem-agent-tier3 | 1 | ollama-cloud | `nemotron-3-super` | plan-metered (shadow `gpt-4o-mini`) | never measured | none published | no |
+<!-- MODEL-REGISTRY:END -->
+
 ## Leaderboard
 
 Rows measured before #910 carry `n/a` under **Contract**: those runs computed one deterministic rate,
@@ -642,3 +808,12 @@ is the rate their report published.
 | 2026-08-02 | `bm-20260802-20ae40` | lem-medium | `minimax-m3` | candidate | n/a | 50% | 80% | 5405 ms | reject |
 | 2026-08-02 | `bm-20260802-20ae40` | lem-medium | `glm-5.2` | candidate | n/a | 40% | 75% | 6315 ms | reject |
 <!-- LEADERBOARD:END -->
+
+## Media leaderboard
+
+One row per model x media tier per run of `benchmark_models.py --tiers lem-vision,lem-image` (#2251). **Score** is fixture agreement for `lem-vision` and rubric acceptance for `lem-image`; **Cost** is what the run actually spent on that model.
+
+<!-- MEDIA-LEADERBOARD:BEGIN -->
+| Date | Run | Tier | Model | Role | Score | Detail | Cost | Verdict |
+|---|---|---|---|---|---|---|---|---|
+<!-- MEDIA-LEADERBOARD:END -->

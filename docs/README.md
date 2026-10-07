@@ -34,6 +34,7 @@ index and the `CLAUDE.md` row that points at it, or the pointer becomes a dead e
 - ★ [Newsletter cover images](newsletter-covers.md) — upload lands `approved`, generated lands `pending_review`; notify-and-publish at the slot
 - ★ [The image stack](image-stack.md) — one engine, two modules; staged concept → brief → prompt check → BLIND judge (#2241); `image_brief.py` authors, `image_gen.py` renders, `image_compose.py` typesets headlines, `image_graphics.py` draws verified data graphics, presets not per-type helpers
 - [Visual archetypes research](visual-archetypes-research.md) — why covers and post images carry the idea or the evidence, not stock people; the seven archetypes, the selection order and the "piques interest" rubric the engine implements
+- [Animated loop posts](animated-posts.md) — opt-in GIF cinemagraph of a text post's gated still via the Images API (`ANIMATED_POST_ENABLED`, OFF); needs a live grounding pass first
 - [Weekly group post](group-posts.md) — statuses, media, and what actually works inside a LinkedIn group
 - [Timezone contract](timezone-contract.md) — what is stored in UTC, what is rendered local, and where the boundary is
 - [Authenticity rubric](AUTHENTICITY_RUBRIC.md) — the A1 anti-slop gate and the 360Brew defense it is built against
@@ -96,7 +97,7 @@ index and the `CLAUDE.md` row that points at it, or the pointer becomes a dead e
 - ★ [Surveys](surveys.md) — NPS/CSAT as `api`-type PostHog surveys rendered headless
 - ★ [Content-quality telemetry](content-quality-telemetry.md) — the nightly trend line; unscored is never zero, and it gates nothing
 - ★ [Marketing attribution](marketing-attribution.md) — only owned destinations get UTMs; existing ones are never overwritten
-- ★ [Model-tier benchmarks](model-benchmarks/README.md) — the scoring suite, its contract floor, and how to read a scorecard
+- ★ [Model-tier benchmarks](model-benchmarks/README.md) — the scoring suite, its contract floor, and how to read a scorecard; since #2251 also the `lem-vision`/`lem-image` benchmark (spend-capped), the OpenAI/Perplexity provider scan, and the generated **model registry** (every tier: order, price, last verdict, sunset, newer candidate)
 - [Benchmark run — `bm-20260802-20ae40`](model-benchmarks/2026-08-02-bm-20260802-20ae40.md) — archived scorecard
 - [Benchmark run — `bm-20260802-5fff18`](model-benchmarks/2026-08-02-bm-20260802-5fff18.md) — archived scorecard
 - [Benchmark run — `bm-20260802-b84f19`](model-benchmarks/2026-08-02-bm-20260802-b84f19.md) — archived scorecard

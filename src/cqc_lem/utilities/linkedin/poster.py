@@ -626,6 +626,140 @@ def share_document_on_linkedin(user_id: int, content: str, slides: list[str],
             shutil.rmtree(tmp_pdf_dir, ignore_errors=True)
 
 
+# --- animated loop (GIF) posts -----------------------------------------------------
+# docs/animated-posts.md. A GIF is an IMAGE to LinkedIn: it goes through the versioned Images API
+# (/rest/images + /rest/posts), which documents GIF support up to 250 frames. It does NOT go
+# through the Videos API, and not through the legacy assets/feedshare-image path the still uses,
+# whose docs never name GIF. Any failure BEFORE /rest/posts answers falls back to the still.
+
+_VERSIONED_HEADERS_BASE = {"Content-Type": "application/json", "X-Restli-Protocol-Version": "2.0.0"}
+
+
+def upload_image_versioned(access_token: str, owner_sub_id: str, image_path: str) -> str:
+    """Upload one image (a GIF here) via the versioned Images API. Returns the urn:li:image URN.
+
+    Raises:
+        Exception: any failure — nothing is published by an upload, so the caller may fall back.
+    """
+    init_response = requests.post(
+        "https://api.linkedin.com/rest/images?action=initializeUpload",
+        headers={**_VERSIONED_HEADERS_BASE, "Authorization": f"Bearer {access_token}",
+                 "LinkedIn-Version": LI_API_VERSION},
+        json={"initializeUploadRequest": {"owner": f"urn:li:person:{owner_sub_id}"}},
+        timeout=REGISTER_UPLOAD_TIMEOUT,
+    )
+    init_response.raise_for_status()
+    value = init_response.json().get("value", {})
+    upload_url = value.get("uploadUrl")
+    image_urn = value.get("image")
+    if not upload_url or not image_urn:
+        raise ValueError("Images API returned no upload URL/URN")
+
+    with open(image_path, "rb") as image_file:
+        image_bytes = image_file.read()
+    # The Images API documents no Content-Type for the byte PUT — LinkedIn reads the format from
+    # the bytes. octet-stream matches every other upload this module makes.
+    upload_response = requests.put(
+        upload_url,
+        headers={"Authorization": f"Bearer {access_token}", "Content-Type": "application/octet-stream"},
+        data=image_bytes,
+        timeout=MEDIA_UPLOAD_TIMEOUT,
+    )
+    if upload_response.status_code not in (200, 201):
+        raise RuntimeError(f"Image upload failed with status {upload_response.status_code}")
+    return image_urn
+
+
+def _create_image_post_versioned(access_token: str, author: str, content: str,
+                                 image_urn: str) -> Optional[str]:
+    """Publish one uploaded image through the versioned /rest/posts endpoint."""
+    response = requests.post(
+        "https://api.linkedin.com/rest/posts",
+        headers={**_VERSIONED_HEADERS_BASE, "Authorization": f"Bearer {access_token}",
+                 "LinkedIn-Version": LI_API_VERSION},
+        json={
+            "author": author,
+            "commentary": content,
+            "visibility": "PUBLIC",
+            "distribution": {
+                "feedDistribution": "MAIN_FEED",
+                "targetEntities": [],
+                "thirdPartyDistributionChannels": [],
+            },
+            "content": {"media": {"id": image_urn}},
+            "lifecycleState": "PUBLISHED",
+            "isReshareDisabledByAuthor": False,
+        },
+        timeout=30,
+    )
+    response.raise_for_status()
+    urn = response.headers.get("x-restli-id")
+    if not urn:
+        try:
+            urn = response.json().get("id")
+        except ValueError:
+            urn = None
+    return urn
+
+
+def share_animated_image_on_linkedin(user_id: int, content: str, gif_path: str,
+                                     static_media_path: Optional[str]) -> Optional[str]:
+    """Publish a post with an animated GIF, falling back to the still on any pre-publish failure.
+
+    The GIF is re-checked against LinkedIn's limits (≤250 frames) right before upload — the file
+    on disk is the only thing this can trust. Every failure up to and including a /rest/posts
+    that ANSWERED with an error leaves nothing published, so the still is shared instead via
+    `share_on_linkedin`. The one exception is a /rest/posts READ timeout: LinkedIn may have
+    created the post, so falling back could publish it twice — that returns None and the caller
+    flags the post for a human, the same end as any other unconfirmed publish.
+
+    Returns:
+        The post URN, or None (no credentials, or an unconfirmed publish).
+    """
+    from cqc_lem.utilities.animated_loop import gif_within_limits
+
+    def _static() -> Optional[str]:
+        return share_on_linkedin(user_id, content, static_media_path) if static_media_path \
+            else share_on_linkedin(user_id, content)
+
+    if not gif_within_limits(gif_path):
+        log_info("Animated loop outside LinkedIn's GIF limits — publishing the still",
+                 user_id=user_id, api_provider="linkedin")
+        return _static()
+
+    linked_sub_id = get_user_linked_sub_id(user_id)
+    access_token = get_user_access_token(user_id)
+    if not linked_sub_id or not access_token:
+        return _static()  # share_on_linkedin owns the no-credentials answer
+
+    try:
+        image_urn = upload_image_versioned(access_token, linked_sub_id, gif_path)
+    except Exception as e:
+        log_warning("Animated GIF upload failed — publishing the still", exc=e,
+                    user_id=user_id, api_provider="linkedin")
+        return _static()
+
+    try:
+        urn = _create_image_post_versioned(access_token, f"urn:li:person:{linked_sub_id}",
+                                           content, image_urn)
+    except requests.exceptions.ReadTimeout as e:
+        log_error("Animated post publish timed out — not retrying, it may already be live",
+                  exc=e, user_id=user_id, api_provider="linkedin")
+        return None
+    except Exception as e:
+        log_warning("Animated post publish failed — publishing the still", exc=e,
+                    user_id=user_id, api_provider="linkedin")
+        return _static()
+    if not urn:
+        # A 2xx with no id: LinkedIn accepted SOMETHING, so a fallback could double-post.
+        log_error("Animated post returned no URN — not retrying", user_id=user_id,
+                  api_provider="linkedin")
+        return None
+    log_info(f"Animated post shared on LinkedIn: https://www.linkedin.com/feed/update/{urn}",
+             user_id=user_id, api_provider="linkedin")
+    return urn
+
+
 # --- socialActions comments API -------------------------------------------------
 # Comments on the MEMBER'S OWN posts go through LinkedIn's official socialActions API
 # (w_member_social scope — the same token that publishes posts), NOT Selenium. This is

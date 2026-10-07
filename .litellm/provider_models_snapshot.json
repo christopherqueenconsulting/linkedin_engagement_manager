@@ -1,0 +1,412 @@
+{
+  "_comment": "Written by scripts/model_health_check.py --provider-scan --provider-apply (issue #2251). Read by scripts/model_registry.py. Do not hand-edit: curated Perplexity notices live in scripts/provider_model_scan.py.",
+  "updated": "2026-10-07",
+  "openai": {
+    "source": "litellm cost map",
+    "models": [
+      "chat-latest",
+      "chatgpt-image-latest",
+      "computer-use-preview",
+      "daybreak-blue-latest",
+      "daybreak-red-latest",
+      "ft:gpt-3.5-turbo",
+      "gpt-3.5-turbo",
+      "gpt-3.5-turbo-16k",
+      "gpt-4",
+      "gpt-4-1106-preview",
+      "gpt-4-turbo",
+      "gpt-4.1",
+      "gpt-4.1-mini",
+      "gpt-4.1-nano",
+      "gpt-4o",
+      "gpt-4o-mini",
+      "gpt-4o-mini-search-preview",
+      "gpt-4o-mini-tts",
+      "gpt-4o-search-preview",
+      "gpt-5",
+      "gpt-5-chat",
+      "gpt-5-chat-latest",
+      "gpt-5-codex",
+      "gpt-5-mini",
+      "gpt-5-nano",
+      "gpt-5-pro",
+      "gpt-5-search-api",
+      "gpt-5.1",
+      "gpt-5.1-chat-latest",
+      "gpt-5.1-codex",
+      "gpt-5.1-codex-max",
+      "gpt-5.1-codex-mini",
+      "gpt-5.2",
+      "gpt-5.2-chat-latest",
+      "gpt-5.2-codex",
+      "gpt-5.2-pro",
+      "gpt-5.3-chat-latest",
+      "gpt-5.3-codex",
+      "gpt-5.4",
+      "gpt-5.4-mini",
+      "gpt-5.4-nano",
+      "gpt-5.4-pro",
+      "gpt-5.5",
+      "gpt-5.5-cyber",
+      "gpt-5.5-pro",
+      "gpt-5.6",
+      "gpt-5.6-cyber",
+      "gpt-5.6-luna",
+      "gpt-5.6-sol",
+      "gpt-5.6-terra",
+      "gpt-6-astra",
+      "gpt-6-luna",
+      "gpt-6-sol",
+      "gpt-6.1-sol",
+      "gpt-audio",
+      "gpt-audio-1.5",
+      "gpt-audio-mini",
+      "gpt-daybreak-blue-latest",
+      "gpt-daybreak-red-latest",
+      "gpt-image-1",
+      "gpt-image-1-mini",
+      "gpt-image-1.5",
+      "gpt-image-2",
+      "gpt-image-2.5-flare",
+      "gpt-image-2.5-sunburst",
+      "gpt-rosalind-research",
+      "o1",
+      "o1-pro",
+      "o3",
+      "o3-deep-research",
+      "o3-mini",
+      "o3-pro",
+      "o4-mini",
+      "o4-mini-deep-research",
+      "text-embedding-3-large",
+      "text-embedding-3-small",
+      "text-embedding-ada-002",
+      "text-embedding-ada-002-v2",
+      "tts-1",
+      "tts-1-hd"
+    ]
+  },
+  "perplexity": {
+    "source": null,
+    "models": []
+  },
+  "deprecations": [
+    {
+      "provider": "openai",
+      "model": "chatgpt-image-latest",
+      "date": "2026-12-01",
+      "replacement": [
+        "gpt-image-2.5-sunburst",
+        "gpt-image-2.5-flare"
+      ],
+      "source": "openai deprecations page"
+    },
+    {
+      "provider": "openai",
+      "model": "computer-use-preview",
+      "date": "2026-07-23",
+      "replacement": [
+        "gpt-5.6-terra"
+      ],
+      "source": "openai deprecations page"
+    },
+    {
+      "provider": "openai",
+      "model": "gpt-3.5-turbo",
+      "date": "2026-10-23",
+      "replacement": [
+        "gpt-5.6-terra"
+      ],
+      "source": "openai deprecations page"
+    },
+    {
+      "provider": "openai",
+      "model": "gpt-4",
+      "date": "2026-10-23",
+      "replacement": [
+        "gpt-5.6-sol"
+      ],
+      "source": "openai deprecations page"
+    },
+    {
+      "provider": "openai",
+      "model": "gpt-4-1106-preview",
+      "date": "2026-10-23",
+      "replacement": [
+        "gpt-5.6-sol"
+      ],
+      "source": "openai deprecations page"
+    },
+    {
+      "provider": "openai",
+      "model": "gpt-4-turbo",
+      "date": "2026-10-23",
+      "replacement": [
+        "gpt-5.6-sol"
+      ],
+      "source": "openai deprecations page"
+    },
+    {
+      "provider": "openai",
+      "model": "gpt-4.1-nano",
+      "date": "2026-10-23",
+      "replacement": [
+        "gpt-5.6-luna"
+      ],
+      "source": "openai deprecations page"
+    },
+    {
+      "provider": "openai",
+      "model": "gpt-5-chat-latest",
+      "date": "2026-07-23",
+      "replacement": [
+        "gpt-5.6-sol"
+      ],
+      "source": "openai deprecations page"
+    },
+    {
+      "provider": "openai",
+      "model": "gpt-5-codex",
+      "date": "2026-07-23",
+      "replacement": [
+        "gpt-5.6-sol"
+      ],
+      "source": "openai deprecations page"
+    },
+    {
+      "provider": "openai",
+      "model": "gpt-5.1",
+      "date": "2027-04-01",
+      "replacement": [
+        "gpt-6-sol"
+      ],
+      "source": "openai deprecations page"
+    },
+    {
+      "provider": "openai",
+      "model": "gpt-5.1-chat-latest",
+      "date": "2026-07-23",
+      "replacement": [
+        "gpt-5.6-sol"
+      ],
+      "source": "openai deprecations page"
+    },
+    {
+      "provider": "openai",
+      "model": "gpt-5.1-codex",
+      "date": "2026-07-23",
+      "replacement": [
+        "gpt-5.6-sol"
+      ],
+      "source": "openai deprecations page"
+    },
+    {
+      "provider": "openai",
+      "model": "gpt-5.1-codex-max",
+      "date": "2026-07-23",
+      "replacement": [
+        "gpt-5.6-sol"
+      ],
+      "source": "openai deprecations page"
+    },
+    {
+      "provider": "openai",
+      "model": "gpt-5.1-codex-mini",
+      "date": "2026-07-23",
+      "replacement": [
+        "gpt-5.6-terra"
+      ],
+      "source": "openai deprecations page"
+    },
+    {
+      "provider": "openai",
+      "model": "gpt-5.2-chat-latest",
+      "date": "2026-08-10",
+      "replacement": [
+        "gpt-5.6-sol"
+      ],
+      "source": "openai deprecations page"
+    },
+    {
+      "provider": "openai",
+      "model": "gpt-5.2-codex",
+      "date": "2026-07-23",
+      "replacement": [
+        "gpt-5.6-sol"
+      ],
+      "source": "openai deprecations page"
+    },
+    {
+      "provider": "openai",
+      "model": "gpt-5.3-chat-latest",
+      "date": "2026-08-10",
+      "replacement": [
+        "gpt-5.6-sol"
+      ],
+      "source": "openai deprecations page"
+    },
+    {
+      "provider": "openai",
+      "model": "gpt-5.3-codex",
+      "date": "2027-04-01",
+      "replacement": [
+        "gpt-6-sol"
+      ],
+      "source": "openai deprecations page"
+    },
+    {
+      "provider": "openai",
+      "model": "gpt-5.4-nano",
+      "date": "2027-04-01",
+      "replacement": [
+        "gpt-6-luna"
+      ],
+      "source": "openai deprecations page"
+    },
+    {
+      "provider": "openai",
+      "model": "gpt-audio",
+      "date": "2027-01-20",
+      "replacement": [
+        "gpt-audio-1.5"
+      ],
+      "source": "openai deprecations page"
+    },
+    {
+      "provider": "openai",
+      "model": "gpt-audio-mini",
+      "date": "2027-01-20",
+      "replacement": [
+        "gpt-audio-1.5"
+      ],
+      "source": "openai deprecations page"
+    },
+    {
+      "provider": "openai",
+      "model": "gpt-image-1",
+      "date": "2026-10-23",
+      "replacement": [],
+      "source": "litellm cost map"
+    },
+    {
+      "provider": "openai",
+      "model": "gpt-image-1",
+      "date": "2026-10-23",
+      "replacement": [
+        "gpt-image-2.5-sunburst",
+        "gpt-image-2.5-flare"
+      ],
+      "source": "openai deprecations page"
+    },
+    {
+      "provider": "openai",
+      "model": "gpt-image-1-mini",
+      "date": "2026-12-01",
+      "replacement": [
+        "gpt-image-2.5-sunburst",
+        "gpt-image-2.5-flare"
+      ],
+      "source": "openai deprecations page"
+    },
+    {
+      "provider": "openai",
+      "model": "gpt-image-1.5",
+      "date": "2026-12-01",
+      "replacement": [
+        "gpt-image-2.5-sunburst",
+        "gpt-image-2.5-flare"
+      ],
+      "source": "openai deprecations page"
+    },
+    {
+      "provider": "openai",
+      "model": "o1",
+      "date": "2026-10-23",
+      "replacement": [
+        "gpt-5.6-sol"
+      ],
+      "source": "openai deprecations page"
+    },
+    {
+      "provider": "openai",
+      "model": "o1-pro",
+      "date": "2026-10-23",
+      "replacement": [
+        "gpt-5.6-sol"
+      ],
+      "source": "openai deprecations page"
+    },
+    {
+      "provider": "openai",
+      "model": "o3-deep-research",
+      "date": "2026-07-23",
+      "replacement": [
+        "gpt-5.6-sol"
+      ],
+      "source": "openai deprecations page"
+    },
+    {
+      "provider": "openai",
+      "model": "o3-mini",
+      "date": "2026-10-23",
+      "replacement": [
+        "gpt-5.6-sol"
+      ],
+      "source": "openai deprecations page"
+    },
+    {
+      "provider": "openai",
+      "model": "o4-mini",
+      "date": "2026-10-23",
+      "replacement": [
+        "gpt-5.6-terra"
+      ],
+      "source": "openai deprecations page"
+    },
+    {
+      "provider": "openai",
+      "model": "o4-mini-deep-research",
+      "date": "2026-07-23",
+      "replacement": [
+        "gpt-5.6-sol"
+      ],
+      "source": "openai deprecations page"
+    },
+    {
+      "provider": "openai",
+      "model": "tts-1",
+      "date": "2027-01-06",
+      "replacement": [],
+      "source": "litellm cost map"
+    },
+    {
+      "provider": "openai",
+      "model": "tts-1",
+      "date": "2027-01-06",
+      "replacement": [
+        "gpt-realtime-2.1-mini"
+      ],
+      "source": "openai deprecations page"
+    },
+    {
+      "provider": "openai",
+      "model": "tts-1-hd",
+      "date": "2027-01-06",
+      "replacement": [
+        "gpt-realtime-2.1-mini"
+      ],
+      "source": "openai deprecations page"
+    },
+    {
+      "provider": "perplexity",
+      "model": "sonar",
+      "date": "2026-09-27",
+      "replacement": [
+        "Agent API (/v1/responses) `fast` preset"
+      ],
+      "source": "curated",
+      "detail": "Sonar Chat Completions support ended on September 27, 2026. Synchronous requests keep working while they are reformulated as Agent API requests, rolling out gradually by model; async Sonar requests are no longer supported.",
+      "url": "https://docs.perplexity.ai/docs/sonar/models"
+    }
+  ]
+}

@@ -125,7 +125,8 @@ on `specificity`, `scroll_stop` and `brand_fit` only — `text_accuracy` is n/a 
 the targeted prompt says so. A refusal or a rejection falls to the next archetype; past the last
 graphic the AI archetype renders through the normal gate loop, and the concept the judge sees is
 re-pointed at it. The admin variant tool compares renders, so it strips code-drawn archetypes
-(`ai_archetype_only`).
+(`ai_archetype_only`), and the animated loop (`animated_loop.produce_post_loop`) never animates a
+code-drawn still — an image-to-video model would re-draw its verified figures.
 
 **The editorial concept.** Stage 1's ideas are now the report's Idea Miner (§3.3): up to 20
 concrete `idea_nouns`, one operator (juxtaposition, scale shift, oxymoron, literal idiom,
@@ -589,6 +590,7 @@ user's brand clause (`brand_kit.brand_clause_for_user`):
 | Video source frame (`run_content_plan._generate_video_src`) | the post text | yes | every frame, ENFORCED (incl. the standard-tier no-avatar frame, which was ungated); a rejected frame is never animated; the judge reads the caption that will be burned on (`video_captions.burned_caption_text`) as its headline — judge-only, never composited; the likeness only when the post is about the author | tier's ratio |
 | Video motion prompt (`get_runway_ml_video_prompt_from_ai`) | the same concept: thesis + emotional beat reach the motion author, plus `MOTION_DISCIPLINE` | — | — | — |
 | Video clip (`utilities/video_clip_check.py`) | — | — | 3 sampled frames, one `lem-vision` call; a defect buys ONE re-render | — |
+| Animated loop (`animated_loop.produce_post_loop`, flag `ANIMATED_POST_ENABLED`, OFF) | NOTHING new — it animates the post image's STORED, already-gated still and reads that still's brief receipt for the motion author; the GIF is stored beside the still as `<stem>.loop.gif` ([animated-posts.md](animated-posts.md)) | — | the still's verdict | the still's |
 | Admin variants (`generate_variants`) | the source text, once per batch | yes | per variant | per combo |
 | Tutorial thumbnail (`video_tutorials`) | the title (no user, so no brand) | — | yes | 16:9 |
 

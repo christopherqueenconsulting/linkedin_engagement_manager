@@ -80,6 +80,7 @@ BRAND_SHOWCASE = "brand-showcase-enabled"
 VIDEO_MOTION_LINT_HOLD = "video-motion-lint-hold"
 VIDEO_CAPTIONS = "video-captions-enabled"
 OCCASION_NATIVE_PUBLISH = "occasion-native-publish-enabled"
+ANIMATED_POST = "animated-post-enabled"
 
 FLAGS: Dict[str, FlagSpec] = {
     spec.key: spec for spec in (
@@ -182,6 +183,18 @@ FLAGS: Dict[str, FlagSpec] = {
                          "chooser) and the owner authorised the flip on #1088, so it now "
                          "defaults ON. Set the env var false to silence it again; an unconfirmed "
                          "Post click is still held at `error`, never retried."),
+        ),
+        FlagSpec(
+            key=ANIMATED_POST,
+            env_var="ANIMATED_POST_ENABLED",
+            default=False,
+            owner="content",
+            description=("Animated loop posts (utilities/animated_loop.py, docs/animated-posts.md): "
+                         "a text post's gated still is also animated into a subtle cinemagraph GIF "
+                         "(one standard-tier Runway render per post) and published through the "
+                         "Images API in place of the still. OFF by default — it spends a render "
+                         "per post and there is no evidence yet that loops out-perform stills, so "
+                         "a rollout-% here is the A/B. Any loop failure ships the still."),
         ),
     )
 }
