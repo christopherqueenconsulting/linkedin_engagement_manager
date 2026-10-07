@@ -32,6 +32,7 @@ from cqc_lem.utilities.curated_collectors import collect_gov_data, collect_rss, 
 from cqc_lem.utilities.curated_sources import (
     BLOCK_NO_PROVENANCE,
     CEILING_WINDOW,
+    PUBLISHER_DIVERSITY_WINDOW,
     STATUS_BLOCKED,
     STATUS_DRAFTED,
     STATUS_PUBLISHED,
@@ -44,6 +45,7 @@ from cqc_lem.utilities.curated_sources import (
     pick_treatment,
     political_reason,
     provenance_reason,
+    rank_candidates,
     screen_candidate,
     slot_allows,
     treatment_allowed,
@@ -55,6 +57,7 @@ from cqc_lem.utilities.db import (
     get_active_user_ids,
     get_curated_neighbors,
     get_draftable_curated_sources,
+    get_recent_curated_publishers,
     update_curated_source_status,
     update_db_post_image_url,
 )
@@ -63,6 +66,9 @@ from cqc_lem.utilities.observability import track_curated_source
 
 # Each candidate that passes the gates costs a commentary call, so a slot tries a few, not all.
 DRAFT_CANDIDATES = 3
+# How many fresh candidates are RANKED to choose those few (`rank_candidates`): wide enough that a
+# second publisher and a non-vendor item are usually in reach, narrow enough to stay one query.
+CANDIDATE_POOL = 20
 # The post statuses a publish may start from: the scheduler moves APPROVED to SCHEDULED before
 # dispatch, so both are "approved" for this check.
 _PUBLISHABLE = (PostStatus.APPROVED.value, PostStatus.SCHEDULED.value)
@@ -224,9 +230,14 @@ def curated_content_for_slot(user_id: int, post_id: Optional[int], content_mix: 
             log_debug("Curated ceiling holds this slot for an original post", user_id=user_id,
                       post_id=post_id, task_name="curated_draft")
             return None
-        candidates = get_draftable_curated_sources(user_id, limit=DRAFT_CANDIDATES)
-        if not candidates:
+        pool = get_draftable_curated_sources(user_id, limit=CANDIDATE_POOL)
+        if not pool:
             return None
+        # Diversity (showcase round 4): a publisher the last few curated posts did not use, an
+        # item that talks to a small business, and government data or an independent writer ahead
+        # of a vendor's own announcement.
+        candidates = rank_candidates(pool, get_recent_curated_publishers(
+            user_id, limit=PUBLISHER_DIVERSITY_WINDOW))[:DRAFT_CANDIDATES]
         prefs, profile_synthesis = load_voice() if load_voice else (None, None)
         profile = None
         for source in candidates:

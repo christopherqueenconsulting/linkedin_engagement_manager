@@ -56,6 +56,7 @@ CHECK_SCAFFOLD = "canned_scaffold"
 CHECK_BLOG_ALIGNMENT = "blog_alignment"
 CHECK_SECOND_PERSON_AUTHOR = "second_person_author"
 CHECK_PREFERENCE_BANNED = "preference_banned_phrase"
+CHECK_FOLD_JARGON = "fold_jargon"
 
 # Default severities. HARD violations are regenerated and then block; WARN ones are recorded and
 # reported but never hold a draft.
@@ -88,6 +89,11 @@ DEFAULT_SEVERITIES: dict = {
     # `comment_style`, which is the user's guidance for COMMENTS, so no other surface is graded
     # against it.
     CHECK_PREFERENCE_BANNED: SEVERITY_OFF,
+    # Showcase round 4: engineering jargon above the '...more' fold of a post written for
+    # small-business owners. HARD so the review gate spends its ONE editor repair on the opening,
+    # but it only ever fires when the caller says the author's ICP is small-business
+    # (`lint_report(plain_fold=True)`), so no other surface or author is graded against it.
+    CHECK_FOLD_JARGON: SEVERITY_HARD,
 }
 
 # Per-SURFACE severity, applied on top of DEFAULT_SEVERITIES (issue #1285). A check's false-positive
@@ -726,6 +732,17 @@ def _check_second_person_author(text: str, sents: list, ctx: dict) -> Optional[d
             "evidence": hits[:5], "score": float(len(hits)), "threshold": 0.0}
 
 
+def _check_fold_jargon(text: str, sents: list, ctx: dict) -> Optional[dict]:
+    if not ctx.get("plain_fold"):
+        return None
+    from cqc_lem.utilities.ai.content_framework import fold_jargon_finding, fold_jargon_hits
+    hits = fold_jargon_hits(text)
+    if not hits:
+        return None
+    return {"detail": fold_jargon_finding(hits), "evidence": hits[:6], "score": float(len(hits)),
+            "threshold": 0.0}
+
+
 def _check_preference_banned(text: str, sents: list, ctx: dict) -> Optional[dict]:
     hits = find_preference_banned(text, ctx.get("preference_banned"))
     if not hits:
@@ -750,13 +767,14 @@ _CHECKS: tuple = (
     (CHECK_BLOG_ALIGNMENT, _check_blog_alignment),
     (CHECK_SECOND_PERSON_AUTHOR, _check_second_person_author),
     (CHECK_PREFERENCE_BANNED, _check_preference_banned),
+    (CHECK_FOLD_JARGON, _check_fold_jargon),
 )
 
 
 def lint_report(text: Optional[str], content_type: str = "post",
                 exempt_keyword: Optional[str] = None,
                 blog_content: Optional[str] = None,
-                prefs: Optional[dict] = None) -> dict:
+                prefs: Optional[dict] = None, plain_fold: bool = False) -> dict:
     """Grade one finished draft against every slop check. Deterministic, no LLM, no I/O — the same
     draft always gets the same verdict.
 
@@ -771,7 +789,9 @@ def lint_report(text: Optional[str], content_type: str = "post",
     bait, exactly as `strip_engagement_bait` treats it. `blog_content` is the newsletter source
     material for the optional blog-alignment fidelity gate (newsletter-only, skipped when absent).
     `prefs` are the author's engagement preferences; the phrases their `comment_style` bans by name
-    are graded on the comment surfaces (`preference_banned_phrases`).
+    are graded on the comment surfaces (`preference_banned_phrases`). `plain_fold` switches on
+    the fold-jargon check, for an author whose readers are small-business owners
+    (`content_framework.smb_audience`).
     """
     empty = {"passes": True, "violations": [], "hard": [], "warnings": [], "reasons": [],
              "checked": False}
@@ -783,7 +803,8 @@ def lint_report(text: Optional[str], content_type: str = "post",
     body = str(text)
     sents = sentences(body)
     ctx = {"exempt_keyword": exempt_keyword, "content_type": content_type,
-           "blog_content": blog_content, "preference_banned": preference_banned_phrases(prefs)}
+           "blog_content": blog_content, "preference_banned": preference_banned_phrases(prefs),
+           "plain_fold": plain_fold}
     violations = []
     for name, fn in _CHECKS:
         severity = check_severity(name, content_type)

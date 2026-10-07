@@ -80,9 +80,10 @@ _STEP_MAX_WORDS = 8
 _SUBJECT_MAX_WORDS = 4
 _SOURCE_NAME_MAX = 60
 _MIN_SENTENCE_CHARS = 12
-# Showcase round 4: a code-drawn card's source line is the CALLER's — a named source the text
-# cites ("Source: Gartner"), or nothing. "From the article" was printed on posts that have no
-# article, so no default line is ever invented here.
+# Showcase round 4: a code-drawn card or cover NEVER prints a generic "From the article" — a post
+# has no article, and on an edition's own cover the line reads as nonsense. The source line names
+# the source the concept cited (`graphic_facts.source_name`), or there is no source line at all.
+NO_SOURCE_LINE = ""
 _MONO_FONTS = ("/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf",
                "/usr/share/fonts/truetype/liberation/LiberationMono-Bold.ttf")
 _TIME_WORDS = ("minute", "hour", "day", "week", "month", "year")
@@ -450,7 +451,7 @@ def validate_graphic_facts(raw: Any, source: str) -> dict:
     out: dict[str, Any] = {}
     name = _norm(raw.get("source_name")).strip(" .,:;")
     out["source_line"] = (f"Source: {name}" if name and len(name) <= _SOURCE_NAME_MAX
-                          and name in _norm(source) else "")
+                          and name in _norm(source) else NO_SOURCE_LINE)
 
     stat, reason = validate_fact(raw.get("thesis_stat"), source) if raw.get("thesis_stat") \
         else (None, "")
@@ -669,7 +670,7 @@ class _Canvas:
         self.offset = offset
         self.placements: list[Placement] = []
         # A carousel slide element sits under the slide's own text, which IS its source: no
-        # source line at all (``render_slide_graphic``).
+        # source line (``render_slide_graphic``).
         self.no_source = False
 
     def floor(self, fraction: float) -> int:
@@ -725,15 +726,14 @@ def _safe(c: _Canvas) -> tuple:
     return (m, m, c.w - m, c.h - m)
 
 
-def _source_line(c: _Canvas, text: Optional[str], safe: tuple, pal: _Palette) -> int:
-    """Draw the caller's source line at the safe area's bottom; returns its top y.
+def _source_line(c: _Canvas, text: str, safe: tuple, pal: _Palette) -> int:
+    """Draw the source line at the safe area's bottom; returns its top y.
 
-    No line (``""``) or one that cannot be set on one legible line draws nothing and returns the
-    safe bottom — a source is never replaced by an invented one.
+    No named source (``NO_SOURCE_LINE``) draws nothing, and a named one too long for one line is
+    dropped rather than replaced with a generic placeholder.
     """
     left, _, right, bottom = safe
-    text = (text or "").strip()
-    if c.no_source or not text:
+    if c.no_source or not str(text or "").strip():
         return bottom
     fitted = _fit_block(c.draw, text, right - left, c.h, 1, c.floor(_SOURCE_MAX),
                         c.floor(SOURCE_MIN))
@@ -758,7 +758,7 @@ def _draw_stat_card(c: _Canvas, graphic: dict, pal: _Palette) -> None:
     safe = _safe(c)
     left, top, right, _ = safe
     width = right - left
-    source_top = _source_line(c, graphic.get("source_line"), safe, pal)
+    source_top = _source_line(c, graphic.get("source_line") or NO_SOURCE_LINE, safe, pal)
     area = source_top - top - c.floor(0.02)
     hero = _fit_block(c.draw, stat["display"], width, round(area * 0.48), 1,
                       round(c.basis * 0.3), c.floor(BODY_MIN) * 2)
@@ -783,7 +783,7 @@ def _draw_highlight_chart(c: _Canvas, graphic: dict, pal: _Palette) -> None:
     left, top, right, _ = safe
     width = right - left
     gap_s = c.floor(0.015)
-    bottom = _source_line(c, graphic.get("source_line"), safe, pal) - gap_s
+    bottom = _source_line(c, graphic.get("source_line") or NO_SOURCE_LINE, safe, pal) - gap_s
     if data.get("annotation") and not _repeats_label(data["annotation"],
                                                      items[highlight]["label"]):
         note = _fit_block(c.draw, data["annotation"], width - c.floor(0.03), c.h, 2,
@@ -877,7 +877,7 @@ def _draw_receipt(c: _Canvas, graphic: dict, pal: _Palette) -> None:
     items, total = costs["items"], costs.get("total")
     safe = _safe(c)
     left, top, right, _ = safe
-    bottom = _source_line(c, graphic.get("source_line"), safe, pal)
+    bottom = _source_line(c, graphic.get("source_line") or NO_SOURCE_LINE, safe, pal)
     bottom -= c.floor(0.025)
     area_w, area_h = right - left, bottom - top
     angle = -2.5
@@ -972,7 +972,7 @@ def _draw_before_after(c: _Canvas, graphic: dict, pal: _Palette) -> None:
     pair = graphic["before_after"]
     safe = _safe(c)
     left, top, right, _ = safe
-    bottom = _source_line(c, graphic.get("source_line"), safe, pal)
+    bottom = _source_line(c, graphic.get("source_line") or NO_SOURCE_LINE, safe, pal)
     bottom -= c.floor(0.03)
     side_by_side = c.w >= c.h * 0.8
     gutter = round(min(c.w, c.h) * 0.06)
@@ -1052,8 +1052,8 @@ def _draw_checklist(c: _Canvas, graphic: dict, pal: _Palette) -> None:
     states = checklist_states(len(steps))
     safe = _safe(c)
     left, top, right, _ = safe
-    # The steps are the piece's own advice; a caller that names a source for them passes it.
-    bottom = _source_line(c, graphic.get("source_line"), safe, pal) - c.floor(0.03)
+    # The steps are the piece's own advice, whoever it cites for its numbers: no source line.
+    bottom = _source_line(c, NO_SOURCE_LINE, safe, pal) - c.floor(0.03)
     chosen = None
     for size in range(c.floor(0.05), c.floor(BODY_MIN) - 1, -1):
         font = load_font(size)

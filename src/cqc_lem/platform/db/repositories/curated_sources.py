@@ -125,6 +125,25 @@ def get_draftable_curated_sources(user_id: int, limit: int = 10) -> list:
     return rows or []
 
 
+def get_recent_curated_publishers(user_id: int, limit: int = 3) -> list:
+    """The publishers of the user's `limit` most recently DRAFTED curated sources, newest first.
+
+    The curated pick's diversity rule (showcase round 4): two Google items in four posts read as a
+    news feed, so a candidate from a publisher in this list ranks behind one that is not. [] on
+    error — an unreadable history only loses the diversity preference.
+    """
+    try:
+        with db_cursor() as cursor:
+            cursor.execute(
+                "SELECT publisher FROM curated_sources WHERE user_id = %s "
+                "AND status IN ('drafted', 'approved', 'published') AND post_id IS NOT NULL "
+                "ORDER BY id DESC LIMIT %s", (user_id, int(limit)))
+            return [r[0] for r in cursor.fetchall() or [] if r and r[0]]
+    except mysql.connector.Error as err:
+        log_error("Could not read the recent curated publishers", exc=err, user_id=user_id)
+        return []
+
+
 def update_curated_source_status(source_id: int, status: str, block_reason: Optional[str] = None,
                                  post_id: Optional[int] = None) -> bool:
     """Move a source to `status`, recording a block reason and/or the post it became."""

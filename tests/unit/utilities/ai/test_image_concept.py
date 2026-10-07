@@ -1156,7 +1156,41 @@ class TestRoundFourteenFidelity:
             thesis="AI-generated posts get 45% less engagement than human-written ones",
             audience="", specific_entities=("53.7%", "45%"), emotional_beat="", hook_phrase="",
             treatment="people_scene", treatment_rationale="", weak=False)
-        assert thesis_number(concept, _ED18_SOURCE, _ED18_TITLE) == "45%"
+        # With no title, the claim sentence decides.
+        assert thesis_number(concept, _ED18_SOURCE.split("\n\n", 1)[1]) == "45%"
+
+    def test_a_title_stat_the_body_states_is_the_covers_number(self):
+        """Showcase round 4: ed18's title said 53.7% and its cover said 45%."""
+        from cqc_lem.utilities.ai.image_concept import thesis_number
+        concept = ImageConcept(
+            thesis="AI-generated posts get 45% less engagement than human-written ones",
+            audience="", specific_entities=("53.7%", "45%"), emotional_beat="", hook_phrase="",
+            treatment="people_scene", treatment_rationale="", weak=False)
+        assert thesis_number(concept, _ED18_SOURCE, _ED18_TITLE) == "53.7%"
+
+    def test_a_title_stat_the_body_never_states_is_not_used(self):
+        from cqc_lem.utilities.ai.image_concept import thesis_number
+        concept = ImageConcept(
+            thesis="AI-generated posts get 45% less engagement than human-written ones",
+            audience="", specific_entities=("45%",), emotional_beat="", hook_phrase="",
+            treatment="people_scene", treatment_rationale="", weak=False)
+        title = "99% of LinkedIn Posts Miss Their Mark"
+        source = title + "\n\n" + _ED18_SOURCE.split("\n\n", 1)[1]
+        assert thesis_number(concept, source, title) == "45%"
+
+    def test_a_hook_on_another_number_gives_way_to_a_number_free_option(self):
+        from cqc_lem.utilities.ai.image_concept import _enforce_stat
+        concept = ImageConcept(
+            thesis="AI-generated posts get 45% less engagement than human-written ones",
+            audience="", specific_entities=("53.7%", "45%"), emotional_beat="",
+            hook_phrase="45% less engagement on AI posts", treatment="people_scene",
+            treatment_rationale="", weak=False, visual_anchors=("an engagement dashboard",),
+            hook_shape="number_claim",
+            hook_options={"number_claim": "45% less engagement on AI posts",
+                          "question": "Who reads AI posts?"})
+        with patch(_CREATE, side_effect=RuntimeError("down")):
+            out = _enforce_stat(concept, {}, _ED18_SOURCE, _ED18_TITLE, "newsletter", 1)
+        assert "45%" not in out.hook_phrase
 
     @pytest.mark.parametrize("hook,noun", [("45% less engagement on AI posts", "engagement"),
                                            ("Routing cut spend by 60%", "spend"),

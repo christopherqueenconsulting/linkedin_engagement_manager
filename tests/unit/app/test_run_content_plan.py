@@ -520,7 +520,8 @@ class TestCreateContent:
         content, video_url = create_content(user_id=1, post_type="carousel", stage="consideration", post_id=42)
         assert content == "Carousel post content"
         assert video_url is None
-        mock_carousel.assert_called_once_with(1, "consideration", 42, day_weekday=None)
+        mock_carousel.assert_called_once_with(1, "consideration", 42, day_weekday=None,
+                                              post_type="carousel")
 
     @patch("cqc_lem.app.run_content_plan.create_video_content", return_value=("Video post content", "https://video.url"))
     def test_video_post_type(self, mock_video):

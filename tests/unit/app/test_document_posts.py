@@ -103,7 +103,8 @@ class TestDocumentContentPlanning:
 
         assert content == "Deck caption"
         assert video_url is None
-        mock_carousel.assert_called_once_with(1, "awareness", 42, day_weekday=None)
+        mock_carousel.assert_called_once_with(1, "awareness", 42, day_weekday=None,
+                                              post_type="document")
 
     def test_document_is_balanced_alongside_the_other_types(self):
         from cqc_lem.app.run_content_plan import PLANNED_POST_TYPES

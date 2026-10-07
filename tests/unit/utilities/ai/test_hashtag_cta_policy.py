@@ -20,10 +20,27 @@ class TestCtaMenusAreBaitFree:
                     f"{menu_name}[{key}].{field} reads as engagement bait: {meta[field]}"
 
     def test_every_menu_entry_still_drives_a_real_conversation(self):
+        # The CTA-type rotation's own closes (`ask: False` — share, no ask, DM offer; showcase
+        # round 4) deliberately invite no reply. They are never drawn at random (see
+        # test_rotation_only_closes_are_never_drawn_at_random), so every close a post can get
+        # outside the rotation still drives a real conversation.
         for key, meta in cf.POST_CTA_STYLES.items():
+            if meta.get("ask") is False:
+                continue
             text = meta["guidance"].lower()
             assert any(word in text for word in ("question", "comment", "reply", "why", "report back")), \
                 f"POST_CTA_STYLES[{key}] no longer invites a response"
+
+    def test_rotation_only_closes_are_never_drawn_at_random(self):
+        rotation_only = {k for k, v in cf.POST_CTA_STYLES.items() if v.get("ask") is False}
+        assert rotation_only == {"share_one", "no_ask", "dm_offer"}
+        drawn = {cf.select_blueprint("post")["cta_style"] for _ in range(200)}
+        assert drawn and not drawn & rotation_only
+
+    def test_rotation_only_closes_are_bait_free_and_never_a_meeting(self):
+        for key in ("share_one", "no_ask", "dm_offer"):
+            assert not contains_engagement_bait(cf.POST_CTA_STYLES[key]["guidance"]), key
+        assert "never a call" in cf.POST_CTA_STYLES["dm_offer"]["guidance"].lower()
 
     def test_format_structures_and_guidance_are_bait_free(self):
         for menu_name in ("NEWSLETTER_FORMATS", "POST_FORMATS", "COMMENT_FORMATS"):

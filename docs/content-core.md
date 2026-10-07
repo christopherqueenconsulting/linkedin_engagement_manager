@@ -158,6 +158,57 @@ traces to no supplied source regenerates once (`POST_FABRICATION_REGEN_ENABLED`)
 
 `profiles.synthesis` still feeds VOICE; the bank feeds FACTS.
 
+### Freshness rules (showcase round 4)
+
+The round-4 gauntlet ran the real `create_content` path on user 1's next ten slots, and an
+independent critic failed it on monotony and on engagement readiness. The bank had seven entries,
+all engineering build stories already used 12-18 times, so about 16 posts told five stories in
+engineer language to an audience of small-business owners. Each rule below is deterministic and
+lives in the shared core. None of them is a per-type prompt helper.
+
+- **Story cooldown** (`story_bank.select_story(cooldown_texts=…)`,
+  `STORY_COOLDOWN_POSTS`=10, `STORY_COOLDOWN_DAYS`=14). An entry anchors at most one post in the
+  window of the user's last 10 posts or last 14 days, whichever covers more posts. The window is
+  read off post texts with `entry_echoed_in` (`get_recent_post_texts(within_days=…)`), because
+  there is no per-post story column. When every entry is cooling, the post runs **without** an
+  anchor: `cooldown_story_directive` tells the writer to build on the research already in the
+  prompt plus up to three items from the user's curated-sources pool, credited by name. A
+  `personal_story` or `engagement_prompt` slot moves to a research-grounded type
+  (`thought_leadership` / `industry_news`). The story bank remains the ONLY source of a
+  first-person fact. Comments keep the soft rotation, since they pass no window.
+- **Topic diversity** (`content_framework.post_topic` / `repeated_topic`). Every post now records a
+  topic through `update_db_post_shape`: the blueprint's subject, or the post's keyword fingerprint.
+  A draft whose topic repeats one of the last three posts' topics is regenerated ONCE, with those
+  topics named as off-limits (`topic_avoidance_directive`). A second repeat falls back to a research
+  topic: `industry_news`, with the just-covered focus topics taken off its rotation. The bar is the
+  similarity toolbox's token overlap (`TOPIC_REPEAT_MIN`, default 0.6). A blueprint that pins a
+  subject is never second-guessed.
+- **Plain fold for a small-business ICP** (`smb_audience`, `fold_outcome_directive`,
+  `fold_jargon_hits`). When the author's goals, focus topics or voice brief name a small-business
+  audience, the blueprint carries `plain_fold`. The hook machinery then tells the writer that the
+  first two lines must state a business outcome (money, hours, customers, risk) in plain words,
+  with technical detail translated below the fold. Decks get the same rule, plus their rotated
+  close, through `carousel_blueprint_directive`; for a deck it also covers the cover slide. The
+  deterministic guard is the slop check
+  `fold_jargon` (`FOLD_JARGON_TERMS` in any case; `PR`/`API`/`RAG`/`LLM` only as written). It is
+  HARD on posts but fires only under `lint_report(plain_fold=True)`, so the review gate spends its
+  ONE editor repair on the opening and records the reason on the post. A fold that is still jargon
+  after that rewrite is logged at INFO and never holds the post: the gate pass does not re-grade it.
+- **CTA rotation** (`cta_type_of`, `select_cta_type`, `assign_cta_style`). The CTA types are
+  `comment_keyword` (artifact), `question`, `save`, `share`, `dm` and `none`. A post never repeats
+  the CTA type of either of the two posts before it. The artifact type goes to the promo slot only
+  (the 70/20/10 rule), and a classified post's lead-magnet ask follows the rotation instead of the
+  legacy 1-in-N cadence; unclassified posts keep the cadence. The DM ask is offered only where
+  `allow_dm` says policy allows it, and the content plan never sets that today. `share_one`,
+  `no_ask` and `dm_offer` are `ask: False` closes, which are never drawn at random and skip the
+  reply-driving CTA rule. The hook pass keeps the assigned close (`optimize_post_hook(cta_type=…)`),
+  and a draft that still closes on a recent type has its closing ask cut (`strip_closing_ask`).
+- **Bolted-on industries** (`story_bank.unsourced_industry_claims`). A sentence that attributes
+  something to the author (first person, or "client"/"story"/"case study") and names an industry
+  from `INDUSTRY_CLAIM_TERMS` that neither the bank nor the profile states is a fabricated
+  specific. It joins the fabrication repair. Research is NOT an allowed source here, because it
+  describes the market, not the author.
+
 ### Save-targeted archetypes (issue #619)
 
 Two save-targeted post archetypes live in the same `POST_FORMATS` menu: `build_receipt` and
@@ -439,6 +490,22 @@ Both fail OPEN on an empty side (no count claimed, no body slide, empty caption)
 note (#1512) stays advisory; these differ because a count or topic the post contradicts is a broken
 post, not a style reading.
 
+**Fixed before they are graded (showcase round 4).** `reconcile_deck_counts` runs in
+`create_carousel_content` before anything renders. The cover's promised count ("4 Steps" over three
+step slides) is ALWAYS rewritten to the number of item slides the deck carries, in the same digit or
+word form. The caption is rewritten only when it makes exactly one count claim and `deck_count`
+would fail, so a caption that also counts something about the author's past is left to the gate. A
+`document` post (published as a PDF) never calls itself a carousel: `document_wording` rewrites the
+caption and every slide string.
+
+**Code-drawn cards and covers (showcase round 4).** `image_graphics` no longer prints a generic
+"From the article". The source line names the source the concept cited
+(`graphic_facts.source_name`), or there is none (`NO_SOURCE_LINE`). A named source too long for one
+line is dropped rather than replaced. A cover's lead number follows the edition title when the
+title states a stat the body also states (`image_concept.thesis_number`). ed18's title said 53.7%
+and its cover said 45%. When no hook can carry the title's stat, a hook leading on a different
+number gives way to a number-free option.
+
 Both deck graders read the generated JSON, never the PNG that ships — which is the gap the audit
 below measures: the prompt allows a 200-char slide body, the schema 500, and the layouts the plan
 selects draw 99–193 before `_draw_block` silently stops.
@@ -543,6 +610,10 @@ its rejections in the log, not in `slop_retry` — so a `surface="comment"` brea
   -s, so "hit home" and "game-changers" count. Before this, the ban lived only in the prompt and
   13 of 102 comments shipped it. It grades the prefs the caller already holds (`_gated_comment`,
   `lint_repaired`), so it adds no DB read
+- Fold jargon (`fold_jargon`, showcase round 4) — POSTS only, and only when the caller passes
+  `plain_fold=True` (an author whose readers are small-business owners). It buys the review gate's
+  one editor repair of the opening. The gate pass never grades it, so it does not hold a post. See
+  "Freshness rules" above.
 
 A failing surface: post is held at PENDING behind the `ai_slop` quality gate with the exact
 constructions named; a feed comment is SKIPPED (shares the comment gate's retry budget); a DM /
