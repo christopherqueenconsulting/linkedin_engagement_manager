@@ -578,6 +578,10 @@ def hook_rejection(hook: str, title: Optional[str], topic_text: str = "",
         return "a number must name its subject (45% less reach for AI posts)"
     if source is not None and not hook_is_faithful(hook, source):
         return "it uses a number or word the piece never says"
+    if source is not None:
+        mismatch = number_claim_mismatch(hook, source)
+        if mismatch:
+            return mismatch
     comparative = vague_comparative(hook)
     if comparative:
         return f"{comparative!r} needs its reference: say 'than …' or give the number"
@@ -634,6 +638,138 @@ def asserts_something(hook: str) -> bool:
 _VERSUS = re.compile(r"\b(?:vs|versus|v)\b\.?", re.IGNORECASE)
 
 
+# Round 14 (#2241): ed18 shipped "53.7% less engagement than humans" — 53.7% was the SHARE of
+# AI-generated posts; the engagement gap was 45%. A number in a hook is true only when the number
+# AND the claim it is attached to occur in the SAME source sentence.
+_HOOK_NUMBER = re.compile(r"[$€£]?\d[\d,.]*(?:%|[kKmMbB]\b|[xX×](?!\w))?")
+_CLAIM_SKIP = frozenset({
+    "less", "more", "fewer", "lower", "higher", "of", "the", "a", "an", "in", "on", "for", "to",
+    "by", "than", "about", "around", "nearly", "over", "under", "up", "down", "per", "cent",
+    "percent", "faster", "cheaper", "times", "x", "k", "m", "b",
+})
+_SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+|\n+")
+
+
+def source_sentences(source: str) -> list[str]:
+    """The source split into sentences (a title line counts as one).
+
+    Args:
+        source: The analysed text.
+
+    Returns:
+        The non-empty sentences, in order.
+    """
+    return [s.strip() for s in _SENTENCE_SPLIT.split(source or "") if s.strip()]
+
+
+def claim_noun(hook: str, number: str) -> str:
+    """The word ``number`` quantifies in ``hook``: the first content word after it, else before.
+
+    "45% less engagement on AI posts" gives "engagement"; "Routing cut spend by 60%" gives
+    "spend". Comparatives, prepositions, function words and verbs are skipped.
+
+    Args:
+        hook: The hook.
+        number: A number as it appears in the hook.
+
+    Returns:
+        The lowercase claim word, or '' when the hook has none.
+    """
+    lowered = (hook or "").lower()
+    at = lowered.find(number.lower())
+    if at < 0:
+        return ""
+
+    def usable(token: str) -> bool:
+        return (len(token) >= 3 and token not in _CLAIM_SKIP and token not in _STOPWORDS
+                and token not in _HOOK_FREE_WORDS)
+
+    # After the number, a verb is never its subject ("60% cuts spend"); before it, the nearest
+    # content word is ("Routing cut spend by 60%" — "spend" is the noun here, not the verb).
+    after = re.findall(r"[a-z]+", lowered[at + len(number):])
+    for token in after:
+        if usable(token) and token not in _VERBS and _root(token) not in _VERBS:
+            return token
+    before = re.findall(r"[a-z]+", lowered[:at])
+    for token in reversed(before):
+        if usable(token):
+            return token
+    return ""
+
+
+def number_claim_mismatch(hook: str, source: str) -> str:
+    """Why a number in ``hook`` is paired with a claim its source sentence does not make, or ''.
+
+    Args:
+        hook: The hook.
+        source: The analysed text.
+
+    Returns:
+        The reason, or '' when every number shares a source sentence with its claim word.
+    """
+    sentences = source_sentences(source)
+    for match in _HOOK_NUMBER.finditer(hook or ""):
+        number = match.group(0).rstrip(".,")
+        noun = claim_noun(hook, number)
+        if not noun:
+            continue
+        holders = [s.lower() for s in sentences if number.lower() in s.lower()]
+        if not holders:
+            return f"{number!r} never appears in the source"
+        if not any(re.search(rf"\b{re.escape(_root(noun))}", s) for s in holders):
+            return (f"{number!r} and {noun!r} never share a source sentence — that number "
+                    f"measures something else; use the number the source gives for {noun!r}, "
+                    f"or no number")
+    return ""
+
+
+def cited_sentence(hook: str, source: str) -> str:
+    """The source sentence a hook cites: the one holding its number, else the closest by words.
+
+    Args:
+        hook: The hook.
+        source: The analysed text.
+
+    Returns:
+        The sentence, or '' without a source.
+    """
+    sentences = source_sentences(source)
+    if not sentences:
+        return ""
+    for match in _HOOK_NUMBER.finditer(hook or ""):
+        number = match.group(0).rstrip(".,").lower()
+        noun = claim_noun(hook, number)
+        holders = [s for s in sentences if number in s.lower()]
+        if noun:
+            holders = [s for s in holders if re.search(rf"\b{re.escape(_root(noun))}",
+                                                       s.lower())] or holders
+        if holders:
+            return holders[0]
+    tokens = set(_content_tokens(hook))
+    return max(sentences, key=lambda s: len(tokens & set(_content_tokens(s))))
+
+
+def cap_hook(hook: str) -> str:
+    """``hook`` cut to at most ``_HOOK_MAX_WORDS`` words and ``_HOOK_MAX_CHARS`` characters.
+
+    The HARD limit, applied after every rewrite (round 14: 7-9 word hooks shipped). Trailing
+    function words are dropped so the cut never ends on "and" or "the".
+
+    Args:
+        hook: The hook.
+
+    Returns:
+        The capped hook.
+    """
+    words = (hook or "").split()
+    words = words[:_HOOK_MAX_WORDS]
+    while len(" ".join(words)) > _HOOK_MAX_CHARS and len(words) > _HOOK_MIN_WORDS:
+        words.pop()
+    while len(words) > _HOOK_MIN_WORDS and words[-1].lower().strip(",.;:") in _TRAILING:
+        words.pop()
+    return " ".join(words).rstrip(",;:")
+
+
 def _valid_hook(hook: str, title: Optional[str], topic_text: str = "",
                 source: Optional[str] = None) -> str:
     """The hook, in sentence case, if ``hook_rejection`` passes it; else ''."""
@@ -686,6 +822,9 @@ def derive_hook(thesis: str, source: str, title: Optional[str] = None,
     while len(words) > _HOOK_MIN_WORDS and words[-1].lower() in _TRAILING:
         words.pop()
     trimmed = _sentence_cased(words) if words else ""
+    if trimmed and number_claim_mismatch(trimmed, source):
+        # Round 14: never a false pairing, even in the last resort — drop the number.
+        trimmed = _sentence_cased([w for w in words if not _HOOK_NUMBER.fullmatch(w)])
     topic = " ".join((thesis or "", *facts, *anchors))
     valid = _valid_hook(trimmed, title, topic, source)
     if valid:
@@ -1363,11 +1502,19 @@ def thesis_number(concept: ImageConcept, source: str, title: Optional[str] = Non
     claim_sentences = [s for s in sentences if thesis_tokens and len(
         thesis_tokens & set(_content_tokens(s))) * 2 >= len(thesis_tokens)]
     tied_text = " ".join([title or "", *sentences[:2], *claim_sentences]).lower()
+    # Round 14: among tied stats, the one whose OWN sentence best matches the thesis wins — ed18's
+    # title stat (53.7%, a share of posts) must not beat the engagement gap (45%).
+    claim = {t for t in thesis_tokens if t not in _HOOK_FREE_WORDS and len(t) >= 4}
+    best, best_score = "", -1
     for text in (concept.thesis, *concept.specific_entities):
         for number in stat_numbers(text):
-            if number.lower() in lowered and number.lower() in tied_text:
-                return _source_casing(number, source)
-    return ""
+            if number.lower() not in lowered or number.lower() not in tied_text:
+                continue
+            holders = [s for s in source_sentences(source) if number.lower() in s.lower()]
+            score = max((len(claim & set(_content_tokens(s))) for s in holders), default=0)
+            if score > best_score:
+                best, best_score = _source_casing(number, source), score
+    return best
 
 
 def lead_with_number(concept: ImageConcept, source: str,
@@ -1410,12 +1557,18 @@ def lead_with_number(concept: ImageConcept, source: str,
 _HOOK_THESIS_CHECK = """A headline is set beside an image for a LinkedIn piece.
 
 The piece's main claim: {thesis}
+The source sentence the headline cites: "{cited}"
 The headline: "{hook}"
 
-Does the headline ASSERT the piece's main claim — not a caveat, a side point or a neutral "X vs Y"
-that takes no side? And what is the headline's own valence: positive (a saving, a win, relief),
-negative (a risk, a loss, a mistake) or mixed? Respond with ONLY a JSON object:
-{{"asserts_thesis": true|false, "valence": "positive|negative|mixed", "reason": "<one sentence>"}}"""
+1. Does the headline ASSERT the piece's main claim — not a caveat, a side point or a neutral
+   "X vs Y" that takes no side?
+2. Is this headline grammatical English, at most 6 words, and literally true according to the
+   source sentence it cites (every number measures what the headline says it measures)?
+3. What is the headline's own valence: positive (a saving, a win, relief), negative (a risk, a
+   loss, a mistake) or mixed?
+Respond with ONLY a JSON object:
+{{"asserts_thesis": true|false, "grammatical_and_true": true|false,
+ "valence": "positive|negative|mixed", "reason": "<one sentence>"}}"""
 
 
 def _enforce_stat(concept: ImageConcept, payload: Any, source: str, title: Optional[str],
@@ -1441,18 +1594,25 @@ def _enforce_stat(concept: ImageConcept, payload: Any, source: str, title: Optio
     noun = next((" ".join(a.split()[-2:]) for a in concept.visual_anchors
                  if a and not any(ch.isdigit() for ch in a)), "") or "saved"
     hook = f"{number} {noun}"  # the stat survives even when no rule-passing hook could carry it
+    if number_claim_mismatch(hook, source):
+        return concept  # round 14: never a false pairing — the number is dropped instead
     return dataclasses.replace(concept, hook_phrase=hook, hook_shape="number_claim",
                                hook_options={**(concept.hook_options or {}), "number_claim": hook})
 
 
-def check_hook_against_thesis(hook: str, thesis: str) -> tuple[bool, str, str]:
-    """ONE ``lem-simple`` call: does the hook assert the thesis, and what is its valence?
+def check_hook_against_thesis(hook: str, thesis: str, cited: str = "") -> tuple[bool, str, str]:
+    """ONE ``lem-simple`` call judging the hook: claim, grammar, length, truth and valence.
 
-    Fails OPEN — an unreachable or unreadable judge passes the hook with no valence.
+    Does the hook assert the thesis, is it grammatical, at most 6 words and literally true
+    against the sentence it cites (round 14), and what is its own valence?
+
+    Fails OPEN — an unreachable or unreadable judge passes the hook with no valence; the
+    deterministic fidelity rule (``number_claim_mismatch``) already stands behind it.
 
     Args:
         hook: The headline.
         thesis: Stage 1's thesis.
+        cited: The source sentence the hook cites (``cited_sentence``).
 
     Returns:
         ``(asserts_thesis, valence or '', reason)``.
@@ -1464,7 +1624,7 @@ def check_hook_against_thesis(hook: str, thesis: str) -> tuple[bool, str, str]:
         response = client.chat.completions.create(
             model="lem-simple",
             messages=[{"role": "user", "content": _HOOK_THESIS_CHECK.format(
-                thesis=thesis, hook=hook)}],
+                thesis=thesis, hook=hook, cited=cited or "(none)")}],
             response_format={"type": "json_object"},
             temperature=0,
             max_tokens=_CONCEPT_MAX_TOKENS,
@@ -1476,8 +1636,9 @@ def check_hook_against_thesis(hook: str, thesis: str) -> tuple[bool, str, str]:
                   action_type="image_concept")
         return True, "", "judge unavailable"
     valence = str(answer.get("valence") or "").lower()
-    return (answer.get("asserts_thesis") is not False,
-            valence if valence in VALENCES else "", str(answer.get("reason") or "")[:200])
+    ok = (answer.get("asserts_thesis") is not False
+          and answer.get("grammatical_and_true") is not False)
+    return ok, valence if valence in VALENCES else "", str(answer.get("reason") or "")[:200]
 
 
 def _hook_asserts_thesis(concept: ImageConcept, payload: Any, source: str,
@@ -1491,13 +1652,23 @@ def _hook_asserts_thesis(concept: ImageConcept, payload: Any, source: str,
     """
     if not concept.hook_phrase:
         return concept
-    ok, valence, reason = check_hook_against_thesis(concept.hook_phrase, concept.thesis)
+    ok, valence, reason = check_hook_against_thesis(
+        concept.hook_phrase, concept.thesis, cited_sentence(concept.hook_phrase, source))
     if not ok:
-        rejected = f'"{concept.hook_phrase}": it does not assert the main claim ({reason})'
+        rejected = (f'"{concept.hook_phrase}": it does not assert the main claim, or is not '
+                    f'grammatical and literally true ({reason})')
         concept = _ensure_hook(dataclasses.replace(concept, hook_phrase=""), payload, source,
                                title, surface, user_id, extra_reasons=(rejected,))
         concept = _enforce_stat(concept, payload, source, title, surface, user_id)
-        _, valence, _ = check_hook_against_thesis(concept.hook_phrase, concept.thesis)
+        ok, again, _ = check_hook_against_thesis(
+            concept.hook_phrase, concept.thesis, cited_sentence(concept.hook_phrase, source))
+        valence = again or valence
+        if not ok:
+            # Round 14: a second failure takes the DETERMINISTIC hook — the thesis, trimmed.
+            hook = derive_hook(concept.thesis, source, title, concept.specific_entities,
+                               concept.visual_anchors)
+            concept = dataclasses.replace(concept, hook_phrase=hook, hook_shape=hook_shape_of(hook),
+                                          hook_options={hook_shape_of(hook): hook})
     return dataclasses.replace(concept, valence=valence) if valence else concept
 
 
@@ -1631,4 +1802,9 @@ def analyze_content_for_image(text: str, *, title: Optional[str] = None,
         # Round 12: the lead number outranks shape rotation, and the hook must assert the thesis.
         concept = _enforce_stat(concept, payload, source, title, surface, user_id)
         concept = _hook_asserts_thesis(concept, payload, source, title, surface, user_id)
+        # Round 14: <=6 words is HARD, after every rewrite.
+        capped = cap_hook(concept.hook_phrase)
+        if capped != concept.hook_phrase:
+            concept = dataclasses.replace(concept, hook_phrase=capped,
+                                          hook_shape=hook_shape_of(capped))
     return assign_layout_and_cast(concept, surface, recent_layouts, recent_casts, recent_shots)

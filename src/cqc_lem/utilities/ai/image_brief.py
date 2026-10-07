@@ -33,6 +33,7 @@ from cqc_lem.utilities.ai.image_concept import (
     ImageConcept,
     analyze_content_for_image,
     assign_layout_and_cast,
+    cap_hook,
     cast_phrase,
     concept_kicker,
     entity_mentioned,
@@ -1206,7 +1207,7 @@ def _fallback_brief(content: str, *, surface: str, ratio: str, context: str,
     if prop_failure(summary) or _GROUP_LABEL.search(summary):
         # Round 9: a thesis about "the pricing contract" rendered a sheet reading PRICING CONTRACT.
         summary = "the people this piece is about, working it through together"
-    hook = (concept.hook_phrase if concept and concept.hook_phrase
+    hook = (cap_hook(concept.hook_phrase) if concept and concept.hook_phrase
             and carries_hook(surface, treatment) else None)
     accent = sorted(brand_colors(brand_kit) & {"gold", "golden"}) or sorted(brand_colors(brand_kit))
     finish = (f"composed for a {ratio} aspect ratio with the subject large in the frame, "
@@ -1355,7 +1356,7 @@ def build_image_brief(content: str, *, surface: str, ratio: str = "1:1",
     anchors = usable_anchors(concept)
     weak = _concept_is_weak(concept, anchors)
     names = fact_name_tokens(concept)
-    hook = (concept.hook_phrase if concept and concept.hook_phrase
+    hook = (cap_hook(concept.hook_phrase) if concept and concept.hook_phrase
             and carries_hook(surface, treatment) else None)
     if hook:
         # Round 8: a composited surface renders a SQUARE scene that image_compose centre-crops

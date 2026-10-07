@@ -793,10 +793,14 @@ class TestRoundTenHookAlways:
 
     def test_a_number_and_its_subject_when_the_thesis_cannot_be_a_hook(self):
         from cqc_lem.utilities.ai.image_concept import derive_hook
-        source = "Unused seats cost $30K. The billing review found them."
+        # Round 14: the number and its subject share ONE source sentence, or it is never paired.
+        source = "The billing review found $30K in unused seats."
         hook = derive_hook("Stop paying!", source, facts=("$30K",),
                            anchors=("the billing review",))
         assert hook == "$30K billing review"
+        apart = "Unused seats cost $30K. The billing review found them."
+        assert "$30K" not in derive_hook("Stop paying!", apart, facts=("$30K",),
+                                         anchors=("the billing review",))
 
     def test_a_derived_hook_is_never_empty(self):
         from cqc_lem.utilities.ai.image_concept import derive_hook
@@ -826,9 +830,9 @@ class TestRoundTenHookAlways:
         from cqc_lem.utilities.ai.image_concept import analyze_content_for_image
         with patch("cqc_lem.utilities.ai.client.client") as client:
             client.chat.completions.create.side_effect = self._stage1(
-                {"hook_phrase": "Unused seats cost $30K"})
+                {"hook_phrase": "Audit saved $30K quarterly"})
             concept = analyze_content_for_image(self._SOURCE, surface="post_image")
-        assert concept.hook_phrase == "Unused seats cost $30K"
+        assert concept.hook_phrase == "Audit saved $30K quarterly"
         retry = client.chat.completions.create.call_args_list[1][1]["messages"][1]["content"]
         assert "Audits are much cheaper" in retry and "needs its reference" in retry
 
@@ -837,9 +841,9 @@ class TestRoundTenHookAlways:
         with patch("cqc_lem.utilities.ai.client.client") as client:
             client.chat.completions.create.side_effect = self._stage1(RuntimeError("down"))
             concept = analyze_content_for_image(self._SOURCE, surface="post_image")
-        # Derived from the thesis, then round 12's lead number ($30K, in the first sentence) wins.
-        assert concept.hook_phrase == "$30K billing review"
-        assert concept.hook_shape == "number_claim"
+        # Derived from the thesis. Round 12's lead number ($30K) cannot be paired with "billing
+        # review": they never share a source sentence (round 14), so the number is dropped.
+        assert concept.hook_phrase == "Audit exposed hidden AI tool spend"
 
     def test_a_carousel_never_pays_for_a_hook_retry(self):
         from cqc_lem.utilities.ai.image_concept import analyze_content_for_image
@@ -947,9 +951,15 @@ class TestRoundTwelveLeadNumber:
 
     def test_without_an_offered_number_hook_one_is_built(self):
         from cqc_lem.utilities.ai.image_concept import lead_with_number
-        concept = lead_with_number(self._concept(hook_options={"question": "Who pays?"}),
+        concept = lead_with_number(self._concept(hook_options={"question": "Who pays?"},
+                                                 visual_anchors=("routing spend",)),
                                    _R12_SOURCE)
-        assert concept.hook_phrase.startswith("85% ") and concept.hook_shape == "number_claim"
+        assert concept.hook_phrase == "85% routing spend" and concept.hook_shape == "number_claim"
+
+    def test_a_built_hook_never_pairs_the_number_with_another_sentences_noun(self):
+        from cqc_lem.utilities.ai.image_concept import lead_with_number
+        concept = self._concept(hook_options={"question": "Who pays?"})
+        assert lead_with_number(concept, _R12_SOURCE).hook_phrase == "Who pays for idle seats?"
 
     def test_rotation_stays_in_charge_without_a_thesis_number(self):
         from cqc_lem.utilities.ai.image_concept import lead_with_number
@@ -1106,3 +1116,120 @@ class TestRoundThirteenShot:
         from cqc_lem.utilities.ai.image_concept import assign_layout_and_cast
         concept = parse_concept(dict(_PAYLOAD, treatment="concrete_scene"), _SOURCE)
         assert assign_layout_and_cast(concept, "newsletter").shot == ""
+
+
+# ed18's exact title and stat sentences (round 14): 53.7% is a SHARE of posts; 45% is the gap.
+_ED18_TITLE = "53.7% of LinkedIn Posts Miss Their Mark - Why"
+_ED18_SOURCE = (_ED18_TITLE + "\n\n53.7% of long-form LinkedIn posts in 2025 were probably "
+                "AI-generated. Yet they got about 45% less engagement than human-written content.")
+
+
+@pytest.mark.unit
+class TestRoundFourteenFidelity:
+    def test_ed18_53_7_with_engagement_fails(self):
+        from cqc_lem.utilities.ai.image_concept import hook_rejection, number_claim_mismatch
+        hook = "53.7% less engagement than humans"
+        assert "never share a source sentence" in number_claim_mismatch(hook, _ED18_SOURCE)
+        assert hook_rejection(hook, None, "", _ED18_SOURCE)
+
+    def test_ed18_45_with_engagement_passes(self):
+        from cqc_lem.utilities.ai.image_concept import hook_rejection, number_claim_mismatch
+        hook = "45% less engagement on AI posts"
+        assert number_claim_mismatch(hook, _ED18_SOURCE) == ""
+        assert hook_rejection(hook, _ED18_TITLE, "AI posts", _ED18_SOURCE) == ""
+
+    def test_the_lead_stat_is_the_one_whose_sentence_makes_the_claim(self):
+        from cqc_lem.utilities.ai.image_concept import thesis_number
+        concept = ImageConcept(
+            thesis="AI-generated posts get 45% less engagement than human-written ones",
+            audience="", specific_entities=("53.7%", "45%"), emotional_beat="", hook_phrase="",
+            treatment="people_scene", treatment_rationale="", weak=False)
+        assert thesis_number(concept, _ED18_SOURCE, _ED18_TITLE) == "45%"
+
+    @pytest.mark.parametrize("hook,noun", [("45% less engagement on AI posts", "engagement"),
+                                           ("Routing cut spend by 60%", "spend"),
+                                           ("3x faster replies", "replies")])
+    def test_the_claim_noun(self, hook, noun):
+        from cqc_lem.utilities.ai.image_concept import _HOOK_NUMBER, claim_noun
+        assert claim_noun(hook, _HOOK_NUMBER.search(hook).group(0)) == noun
+
+    def test_the_cited_sentence_is_the_claims(self):
+        from cqc_lem.utilities.ai.image_concept import cited_sentence
+        assert cited_sentence("45% less engagement on AI posts", _ED18_SOURCE).startswith(
+            "Yet they got about 45% less engagement")
+
+    def test_the_stat_fallback_never_pairs_falsely(self):
+        from cqc_lem.utilities.ai.image_concept import _enforce_stat
+        concept = ImageConcept(thesis="53.7% of LinkedIn posts were AI-generated", audience="",
+                               specific_entities=("53.7%",), emotional_beat="",
+                               hook_phrase="AI writes most long posts", treatment="people_scene",
+                               treatment_rationale="", weak=False,
+                               visual_anchors=("an engagement dashboard review",))
+        with patch(_CREATE, side_effect=RuntimeError("down")):
+            out = _enforce_stat(concept, {}, _ED18_SOURCE, _ED18_TITLE, "post_image", 1)
+        assert "53.7%" not in out.hook_phrase or "engagement" not in out.hook_phrase
+
+
+@pytest.mark.unit
+class TestRoundFourteenJudgeAndCap:
+    def _concept(self, hook):
+        return ImageConcept(thesis="AI posts get 45% less engagement", audience="",
+                            specific_entities=("45%",), emotional_beat="", hook_phrase=hook,
+                            treatment="people_scene", treatment_rationale="", weak=False,
+                            visual_anchors=("a content lead",))
+
+    def test_the_judge_sees_the_cited_sentence_and_the_grammar_question(self):
+        from cqc_lem.utilities.ai.image_concept import _hook_asserts_thesis
+        with patch(_CREATE, return_value=_resp({"asserts_thesis": True,
+                                                "grammatical_and_true": True,
+                                                "valence": "negative"})) as create:
+            out = _hook_asserts_thesis(self._concept("45% less engagement on AI posts"), {},
+                                       _ED18_SOURCE, _ED18_TITLE, "newsletter", 1)
+        text = create.call_args[1]["messages"][0]["content"]
+        assert "grammatical English, at most 6 words, and literally true" in text
+        assert "Yet they got about 45% less engagement than human-written content." in text
+        assert out.valence == "negative"
+
+    def test_untrue_twice_takes_the_deterministic_hook(self):
+        from cqc_lem.utilities.ai.image_concept import _hook_asserts_thesis
+        bad = _resp({"asserts_thesis": True, "grammatical_and_true": False, "valence": "mixed",
+                     "reason": "ungrammatical"})
+        regen = _resp({"hook_phrase": "Hybrid routing cuts 60% than cheapest"})
+        with patch(_CREATE, side_effect=[bad, regen, bad]):
+            out = _hook_asserts_thesis(self._concept("Hybrid routing cuts 60% than cheapest"),
+                                       {}, _ED18_SOURCE, _ED18_TITLE, "post_image", 1)
+        assert out.hook_phrase and "than cheapest" not in out.hook_phrase
+        assert len(out.hook_phrase.split()) <= 6
+
+    @pytest.mark.parametrize("hook", [
+        "Web search does not guarantee AI-generated answers are right",
+        "Ignoring AI's hidden buyers raises deal costs dramatically",
+    ])
+    def test_the_cap_is_hard(self, hook):
+        from cqc_lem.utilities.ai.image_concept import cap_hook
+        capped = cap_hook(hook)
+        assert len(capped.split()) <= 6 and len(capped) <= 44
+
+    def test_analysis_never_ships_more_than_six_words(self):
+        from cqc_lem.utilities.ai.image_concept import analyze_content_for_image
+        payload = dict(_PAYLOAD, hook_phrase="Who covers your payroll?")
+        long_regen = "Late invoices quietly starve a small agency payroll"
+        replies = [_resp(payload),
+                   _resp({"asserts_thesis": False, "reason": "caveat"}),
+                   _resp({"hook_phrase": long_regen}),
+                   _resp({"asserts_thesis": True, "grammatical_and_true": True})]
+        with patch(_CREATE, side_effect=replies + [_resp({})] * 4):
+            concept = analyze_content_for_image(_SOURCE, surface="post_image")
+        assert len(concept.hook_phrase.split()) <= 6
+
+
+@pytest.mark.unit
+class TestRoundFourteenBriefCap:
+    def test_a_callers_long_hook_is_capped_in_the_brief(self):
+        from cqc_lem.utilities.ai.image_brief import build_image_brief
+        concept = ImageConcept(thesis="t", audience="", specific_entities=(), emotional_beat="",
+                               hook_phrase="Web search does not guarantee AI-generated answers",
+                               treatment="people_scene", treatment_rationale="", weak=False)
+        with patch("cqc_lem.utilities.ai.ai_helper._call_llm", side_effect=RuntimeError("x")):
+            brief = build_image_brief("c", surface="newsletter", concept=concept)
+        assert len(brief.hook_text.split()) <= 6

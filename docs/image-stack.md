@@ -51,6 +51,25 @@ judge rightly scored specificity 1 on all four covers. So Stage 1 returns two li
   down. Briefs, Stage 3 and the vision judge's specificity all work from `usable_anchors()` — the
   anchors, or for a concept with none, its plain common-noun facts.
 
+## A hook is true, grammatical and short (round 14)
+
+Round 13's stat-survival rule paired a number with the wrong claim: ed18 shipped "53.7% less
+engagement than humans", but 53.7% is the SHARE of AI-generated posts and the engagement gap is
+45%. That is now impossible:
+
+- **Fact fidelity, deterministic.** `number_claim_mismatch`: a number in a hook is valid only
+  when the number AND its claim word (`claim_noun`: the content word it quantifies) occur in the
+  SAME source sentence. It runs inside `hook_rejection`, so every Stage 1 option, regeneration and
+  built hook passes it; the stat fallback and `derive_hook` drop the number rather than pair it
+  falsely. `thesis_number` picks, among the tied stats, the one whose own sentence best matches
+  the thesis.
+- **Fidelity and grammar judge.** The end-of-Stage-1 `lem-simple` hook check now also asks
+  whether the headline is grammatical English, at most 6 words, and literally true against the
+  source sentence it cites (`cited_sentence`, passed to the judge). On no, the hook is
+  regenerated once with the reason; a second no takes the deterministic `derive_hook`.
+- **Six words is HARD.** `cap_hook` runs after every rewrite at the end of hook selection, and
+  again where the brief and the fallback read a concept's hook.
+
 ## Stats, not versions; framing rotates; good news smiles (round 13)
 
 - **A headline number is a STAT.** `stat_numbers` accepts a percentage, a currency amount

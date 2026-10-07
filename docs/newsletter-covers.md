@@ -284,6 +284,14 @@ stats in the source's casing and must survive into the hook, hooks must assert w
 are props, the framing rotates, and good news is a literal relaxed smile (`docs/image-stack.md`,
 "Stats, not versions; framing rotates; good news smiles").
 
+### Gauntlet round 13 → true hooks
+
+Images held, but a hook paired a number with the wrong claim ("53.7% less engagement" — 53.7%
+was the share of AI posts), one was ungrammatical and two ran past six words. A number now must
+share a source sentence with its claim, a judge checks grammar and truth against the cited
+sentence, and six words is a hard cap (`docs/image-stack.md`, "A hook is true, grammatical and
+short").
+
 ### Rejections land for review, with their reason
 
 A definite judge failure on `no_cliche` or `specificity` after the attempt budget returns verdict
