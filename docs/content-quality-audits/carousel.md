@@ -504,3 +504,28 @@ Until enough post-#1704 decks have shipped, #1515's 8–12-deck visual ask stays
 sample once they have, reading `carousel_frames.retained_carousel_keyframes()` instead of the
 `lem_assets` volume directly. This section is everything the production read path could answer as
 of the #1704 fix landing.
+
+---
+
+## 8. Showcase round (#2241) — the deck engine rules that replaced per-deck tuning
+
+A read-only showcase run against user 1's next ten slots found five deck defects. Each is fixed as an
+engine rule, not a per-deck tweak:
+
+| Defect | Rule | Where |
+|---|---|---|
+| 3 of 5 decision decks rendered NO slides: `ProductDemoCarousel additional_features` came back with 3-4 items against `max_length=2` and `model_cls(**carousel_dict)` raised | **Every construction site trims to the model's own limits first** — lists keep their FIRST N items (beats run cover-side first), strings are cut at a sentence end — and logs the trim at INFO. Read off `model_fields` recursively, so all seven carousel models (each has the same latent cap) and any limit added later are covered. The generator prompt also states each list's bound AFTER the archetype directive, which says "one slide per beat" and outranks the generic guidance | `carousel_creator.fit_carousel_to_model` / `build_carousel_model` / `carousel_limits_directive` |
+| Decks wore a navy/blue/green template palette in a system sans | **A template is a layout plus a SKIN, never a colour.** `themed_template` resolves the skin against `brand_kit.deck_theme` — the author's kit (charcoal/off-white grounds, light-gold/dark-gold accents for the reference brand) or a neutral charcoal/off-white/slate default without one. Title, body, cover text and every badge colour on its bar are held to **4.5:1** (`readable_on` pushes a failing colour toward the better ink). Headings are the bundled Montserrat ExtraBold, body Montserrat Medium (both SIL OFL, `resources/fonts/`) | `carousel_creator.themed_template`, `brand_kit.deck_theme` |
+| Body slides carried keyword Pexels stock — a hand on a button, a keyboard with a "ZOOM" logo | A body slide's picture is, in order: a **code-drawn element of its OWN text** (`image_graphics.slide_graphic` — a figure followed by a 2-8 word phrase → `stat_card`; "from X … to Y" in one unit → `before_after`; a 3-5 point body of 2-8-word points → `checklist`, which then REPLACES the body text so no point prints twice), validated by the same `validate_graphic_facts` / `assert_traceable` rules as a cover graphic with the slide as the source; else the opt-in sources; else **no picture** — a typographic slide with one brand accent shape. **Pexels is opt-in** (`CAROUSEL_PEXELS_ENABLED`, default **off**), and with every opt-in source off no image query (and no LLM call) is made | `carousel_creator._slide_element`, `image_graphics.render_slide_graphic` |
+
+A figure with nothing after it ("cut AI costs by 45%.") gets no stat card: the context line under a
+hero must be a complete phrase, never the sentence with a hole where the number was. Years, dates,
+"Step N" and counts under 10 are never figures. The render receipt records each body slide's
+`element` beside `band`.
+
+Not built, on purpose: the cover slide's optional single AI `editorial_concept` render. Covers stay
+typographic — the per-deck AI render would add a gpt-image call to every deck, and the issue made it
+optional.
+
+Offline samples (one re-skinned slide per template, plus each element) are rendered by
+`create_carousel_slide_images(..., theme=deck_theme(kit))` — `$0`, no model call.

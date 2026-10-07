@@ -14,9 +14,11 @@ PostNitro / Hootsuite analyses of high-engagement document posts):
 - The COVER and CTA slides are their own thing (bold title / clear ask); we leave
   those layouts as-is and only enrich the middle slides.
 
-Sourcing is deterministic and cheap-first: Pexels stock (a free API call) is the
-default; Replicate generation is opt-in, low-rate, and only used with the user's
-active avatar when a person likeness actually adds value (e.g. personal stories).
+Sourcing is deterministic and cheap-first (#2241 showcase): a code-drawn element of the
+slide's OWN figures or points comes first, a typographic slide is the default, Pexels stock
+is an explicit opt-in (CAROUSEL_PEXELS_ENABLED, off), and Replicate generation is opt-in,
+low-rate, and only used with the user's active avatar when a person likeness actually adds
+value (e.g. personal stories). Every template is skinned from the author's brand kit.
 Every whether/source decision is seeded by (post_id, slide_index) so regeneration
 is stable and unit-testable, and every step degrades gracefully to a text-only
 layout rather than crashing carousel generation.
