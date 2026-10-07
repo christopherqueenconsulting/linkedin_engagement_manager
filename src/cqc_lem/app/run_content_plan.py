@@ -84,6 +84,7 @@ from cqc_lem.utilities.ai.content_framework import (
     CTA_TYPE_ARTIFACT,
     CTA_TYPE_NONE,
     CTA_TYPE_WINDOW,
+    HOOK_SHAPE_QUESTION,
     TOPIC_CLUSTER_WINDOW,
     TOPIC_DIVERSITY_WINDOW,
     allowed_hook_shapes,
@@ -106,14 +107,18 @@ from cqc_lem.utilities.ai.content_framework import (
     dwell_score_min,
     fact_anchored_formats,
     fact_grounding_report,
+    finalize_deck_claims,
     has_first_person_proof,
     history_avoidance_directive,
     hook_shape_violation,
     hook_style_for_shape,
     occasion_stage,
+    opening_shape,
     post_similarity_report,
     post_topic,
+    question_hooks_capped,
     reconcile_deck_counts,
+    repeated_cta_phrase,
     repeated_topic,
     requires_fact_anchor,
     select_blueprint,
@@ -1366,6 +1371,15 @@ def create_carousel_content(user_id: int, stage: str, post_id: int = None,
     if count_fixes:
         log_info("Deck count promises rewritten to the slides it carries: " + "; ".join(count_fixes),
                  user_id=user_id, post_id=post_id, task_name="create_carousel_content")
+    # Showcase round 7: what the deck's one regeneration left — a template-label heading, a cover
+    # promise no slide shows, a slide figure the caption never backs — is fixed in code here.
+    carousel_dict, claim_fixes = finalize_deck_claims(carousel_dict, post_text,
+                                                      _fact_anchors(user_id))
+    if claim_fixes:
+        log_info("Deck claims fixed before render: " + "; ".join(claim_fixes),
+                 user_id=user_id, post_id=post_id, task_name="create_carousel_content")
+    # Batch variety (showcase round 7): a deck caption is a post in the same feed.
+    post_text = _enforce_batch_variety(user_id, post_id, post_text, _record_texts(history))
     if str(post_type or "").lower() == PostType.DOCUMENT.value:
         post_text = document_wording(post_text)
         carousel_dict = document_deck_wording(carousel_dict)
@@ -1778,7 +1792,8 @@ def _generate_video_src(user_id: int, text_content: str, profile, post_id: int =
         # ONE Stage 1 call per video: the frame brief, the frame's judge and the motion author all
         # read this same concept, and None (analysis unavailable) is passed on as-is so nothing
         # downstream pays for a second attempt (issue #2241).
-        concept = analyze_content_for_image(text_content, surface="video", user_id=user_id)
+        concept = analyze_content_for_image(text_content, surface="video", user_id=user_id,
+                                            facts=_fact_anchors(user_id))
         # The avatar is resolved BEFORE the image prompt is authored: its declared subject clause
         # is what stops the prompt LLM inventing a person of a different gender for the LoRA to
         # then contradict (issue #744). None here means the guardrails said no — or the post is
@@ -3224,6 +3239,7 @@ def evaluate_post_gates(post_id: int, content: str, post_type: Union[PostType, s
     # `previously_unverified` (issue #1971) narrows the author's credit: a re-score cannot tell an
     # edit from a bare click, so a figure the LAST grade already named as unbacked and the author
     # left untouched stays held — only the numbers they changed or added are theirs.
+    grounded_unverified: list = []
     if content and _grades_fact_grounding(archetype):
         anchors = list(fact_anchors or []) + [s for s in (extra_fact_sources or []) if s]
         if profile_synthesis:
@@ -3233,6 +3249,7 @@ def evaluate_post_gates(post_id: int, content: str, post_type: Union[PostType, s
         if author_edited:
             still_there = {str(v) for v in (previously_unverified or [])}
             unverified = [v for v in unverified if v in still_there]
+        grounded_unverified = report["unverified_values"]
         if unverified or report["placeholders"]:
             findings.append(fact_grounding_finding(unverified, report["placeholders"]))
 
@@ -3251,7 +3268,12 @@ def evaluate_post_gates(post_id: int, content: str, post_type: Union[PostType, s
     # story. The timeline half needs the story's date and is carried from the review gate's record
     # (`_carry_consistency_hold`).
     if content:
-        consistency = consistency_report(content)
+        # Round 7: a figure in the hook needs a story-bank fact or a named source in the body —
+        # live on every pass where numbers are graded, except over an author's own edit.
+        hook_facts = (list(fact_anchors or []) if _grades_fact_grounding(archetype)
+                      and not author_edited else None)
+        consistency = consistency_report(content, hook_facts=hook_facts,
+                                         hook_flagged=grounded_unverified)
         if not consistency["passes"]:
             findings.append(fact_consistency_finding(consistency["issues"]))
 
@@ -3834,7 +3856,12 @@ def _review_generated_post(ctx: PostDraftContext, content: str, recent_texts: li
     # Dates and timelines (showcase round 6): a weekday that is not the date's, a deadline before
     # the offer, more elapsed time than has passed since the anchoring story happened.
     happened_at = (story or {}).get("happened_at")
-    consistency = consistency_report(content, happened_at)["issues"]
+    # Showcase round 7: a figure in the hook needs a story-bank fact or a named source in the body
+    # (slot_141 opened on an unsourced "5.6 hours per week"). Checked wherever numbers are graded.
+    hook_facts = (bank_facts + [s for s in (lead_magnet_cta,) if s]) if grading_facts else None
+    consistency = consistency_report(
+        content, happened_at, hook_facts=hook_facts,
+        hook_flagged=(fact_report or {}).get("unverified_values"))["issues"]
 
     if (not too_similar and not proof_regen and not fabrication_regen and not unverified
             and not slopped and not forbidden and not consistency):
@@ -3895,8 +3922,10 @@ def _review_generated_post(ctx: PostDraftContext, content: str, recent_texts: li
     still_fabricated = _fabricated_specifics(second, story, profile_synthesis, lead_magnet_cta)
     still_fabricated += [t for t in _industry_claims(second, bank_facts, profile_terms)
                          if t not in still_fabricated]
-    still_inconsistent = consistency_report(second, happened_at)["issues"]
     second_fact_report = fact_grounding_report(second, anchors) if fact_report is not None else None
+    still_inconsistent = consistency_report(
+        second, happened_at, hook_facts=hook_facts,
+        hook_flagged=(second_fact_report or {}).get("unverified_values"))["issues"]
     second_forbidden = _story_bank.forbidden_claims(second, forbidden_terms)
     second_slop = slop_lint_report(second, "post", exempt_keyword=cta_keyword,
                                    plain_fold=plain_fold)
@@ -4784,12 +4813,52 @@ def _enforce_cta_rotation(ctx: PostDraftContext, content: Optional[str],
     window = [cta_type_of(t) for t in list(recent_texts or [])[:CTA_TYPE_WINDOW - 1]]
     shipped = cta_type_of(content)
     if shipped not in window or CTA_TYPE_NONE in window:
-        return content
+        return _cut_repeated_cta_phrase(ctx.user_id, ctx.post_id, content, recent_texts)
     trimmed = strip_closing_ask(content)
     if trimmed != content:
         log_info(f"Post closed on a '{shipped}' CTA its last posts already used — closing ask cut",
                  user_id=ctx.user_id, post_id=ctx.post_id, task_name="create_text_post")
     return trimmed
+
+
+def _cut_repeated_cta_phrase(user_id: int, post_id: Optional[int], content: Optional[str],
+                             recent_texts: Optional[list]) -> Optional[str]:
+    """Cut a closing ask whose WORDING one of the last few posts already used (showcase round 7).
+
+    The type rotation lets a "share" close follow a "question" close, but "share this with someone
+    hiring their first operations person" twice in two posts reads as a template. A close that
+    repeats a recent close's wording (`repeated_cta_phrase`) is cut when the post stands without
+    it (`strip_closing_ask`); the promo slot's artifact close is never touched.
+    """
+    if not content or cta_type_of(content) == CTA_TYPE_ARTIFACT:
+        return content
+    phrase = repeated_cta_phrase(content, recent_texts)
+    if not phrase:
+        return content
+    trimmed = strip_closing_ask(content)
+    if trimmed != content:
+        log_info(f"Post closed with wording a recent post used (\"{phrase}\") — closing ask cut",
+                 user_id=user_id, post_id=post_id, task_name="create_content")
+    return trimmed
+
+
+def _enforce_batch_variety(user_id: int, post_id: Optional[int], content: Optional[str],
+                           recent_texts: Optional[list]) -> Optional[str]:
+    """The batch rules for a caption that gets no hook pass of its own (a deck's, round 7).
+
+    A question opener over `QUESTION_HOOK_CAP` is cut when the post stands without it
+    (`drop_opening_question`), and a close that repeats a recent close's wording is cut
+    (`_cut_repeated_cta_phrase`). Deterministic; anything that cannot be cut ships as is.
+    """
+    if not content or recent_texts is None:
+        return content
+    if opening_shape(content) == HOOK_SHAPE_QUESTION and question_hooks_capped(recent_texts):
+        dropped = drop_opening_question(content)
+        if dropped != content:
+            log_info("Caption opened on one question too many in its window — opening cut",
+                     user_id=user_id, post_id=post_id, task_name="create_content")
+            content = dropped
+    return _cut_repeated_cta_phrase(user_id, post_id, content, recent_texts)
 
 
 def _apply_once_per_post_gates(ctx: PostDraftContext, content: str, recent_texts: list,

@@ -318,7 +318,7 @@ class TestDeckRhythm:
         (tmp_path / "broken" / "deck_render.json").write_text("{")
         got = cc.recent_deck_choices(str(tmp_path), 1)
         assert got == {"cover_treatment": ["code_drawn", "poster"], "motif": ["bracket", "arc"],
-                       "badge": [None, None]}
+                       "badge": [None, None], "template": [None, None]}
         assert cc.recent_deck_choices(str(tmp_path), None)["motif"] == []
         assert cc.recent_deck_choices(str(tmp_path / "missing"), 1)["motif"] == []
 

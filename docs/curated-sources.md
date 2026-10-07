@@ -144,6 +144,15 @@ with no described audience is not scored at all.
 `og:image`, fetched at draft time when the collector had none (`discover_og_image`). Otherwise the
 item is blocked as `link_no_preview_image` (`docs/image-stack.md`, showcase round 6).
 
+**Structure, close and faithfulness (showcase round 7).** All four round-7 drafts opened "For a
+small-business owner…", ran a 3-step checklist and closed on "Which…?", and three described features
+or tests the source never did. The structure now rotates (`CURATED_STRUCTURES`, least recently used
+against the author's recent curated posts); the opener and a "Which…?" close are cut in code; a
+named product or feature the snapshot does not contain gets one rewrite and then loses its sentence
+(`unsourced_names`, the source as the allow-list, like the number gate); and "In practice" / "I
+tested it" is re-attributed to the source unless a story-bank fact mentions it. Detail:
+`docs/content-core.md`, "Every printed figure has provenance".
+
 The same pool feeds original posts. When every story-bank entry is cooling down (see
 `docs/content-core.md`, "Freshness rules"), up to three `new` items ride into the post's prompt as
 outside material, credited by name.

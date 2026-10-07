@@ -839,7 +839,9 @@ class TestRoundTenHookAlways:
         with patch("cqc_lem.utilities.ai.client.client") as client:
             client.chat.completions.create.side_effect = self._stage1(
                 {"hook_phrase": "Audit saved $30K quarterly"})
-            concept = analyze_content_for_image(self._SOURCE, surface="post_image")
+            # $30K is the author's own fact (round 7: a printed figure needs one).
+            concept = analyze_content_for_image(self._SOURCE, surface="post_image",
+                                                facts=["The audit saved $30K quarterly."])
         assert concept.hook_phrase == "Audit saved $30K quarterly"
         retry = client.chat.completions.create.call_args_list[1][1]["messages"][1]["content"]
         assert "Audits are much cheaper" in retry and "needs its reference" in retry

@@ -2339,16 +2339,29 @@ def load_slide_font(size: int, bold: bool = True):
     return ImageFont.load_default(size=size)
 
 
+# Showcase round 7: slot_133's cover set "Honest AI" over "Planning" with the lines touching. Each
+# line advanced by its OWN ink height, so a line with no descenders ("Honest AI") left the next
+# line's ascenders a bare `spacing` below its baseline. Every line now advances at least this share
+# of the font size, so a cap-only line keeps a real gap under it.
+LINE_PITCH_MIN_EM = 1.0
+
+
+def line_pitch(line: str, font, draw) -> int:
+    """How far one line advances the cursor before ``spacing``: its ink, never under the em floor."""
+    bb = draw.textbbox((0, 0), line, font=font)
+    size = int(getattr(font, "size", 0) or 0)
+    return max(bb[3] - bb[1], int(round(size * LINE_PITCH_MIN_EM)))
+
+
 def _lines_height(lines: list[str], font, spacing: int, draw) -> int:
     """Pixel height a `_draw_block` pass would consume for `lines` at `font`.
 
-    Sums each line's own bounding box plus `spacing`, exactly as the renderer advances
+    Sums each line's pitch (`line_pitch`) plus `spacing`, exactly as the renderer advances
     its cursor — so a fit decision made here is the geometry the slide actually gets.
     """
     total = 0
     for line in lines:
-        bb = draw.textbbox((0, 0), line, font=font)
-        total += (bb[3] - bb[1]) + spacing
+        total += line_pitch(line, font, draw) + spacing
     return total
 
 
@@ -2731,12 +2744,13 @@ def recent_deck_choices(root_dir: Optional[str], user_id: Optional[int],
         limit: How many decks to read.
 
     Returns:
-        ``{"cover_treatment": [...], "motif": [...], "badge": [...]}``. A receipt from before the
-        round-5 badge rule names no badge; a listicle one is read as the numbered circle it drew.
+        ``{"cover_treatment": [...], "motif": [...], "badge": [...], "template": [...]}``. A
+        receipt from before the round-5 badge rule names no badge; a listicle one is read as the
+        numbered circle it drew.
     """
     import json
 
-    out: dict = {"cover_treatment": [], "motif": [], "badge": []}
+    out: dict = {"cover_treatment": [], "motif": [], "badge": [], "template": []}
     if not root_dir or user_id is None:
         return out
     found = []
@@ -2758,6 +2772,7 @@ def recent_deck_choices(root_dir: Optional[str], user_id: Optional[int],
     for _stamp, _path, receipt in found[:max(0, int(limit))]:
         out["cover_treatment"].append(receipt.get("cover_treatment"))
         out["motif"].append(receipt.get("motif"))
+        out["template"].append(receipt.get("template"))
         badge = receipt.get("badge")
         if badge is None and receipt.get("template") in _LISTICLE_TEMPLATES:
             badge = BADGE_NUMBERED_CIRCLE
@@ -2766,11 +2781,15 @@ def recent_deck_choices(root_dir: Optional[str], user_id: Optional[int],
 
 
 def deck_cover_chain(title: str, has_element: bool, ai_available: bool,
-                     recent: list, seed: str = "") -> list:
+                     recent: list, seed: str = "", template: Optional[str] = None,
+                     recent_templates: Optional[list] = None) -> list:
     """The cover treatments to try for one deck, least-recently-used first.
 
     ``number_led`` needs a title that LEADS with a figure; ``code_drawn`` a slide figure that
     validated; ``ai_concept`` an available render. The template's own cover always ends the chain.
+    Showcase round 7: slot_142 and slot_143 were the same template on the same poster cover. A
+    treatment that would repeat a ``(template, cover)`` pair from the last ``PAIR_WINDOW`` decks
+    moves behind every one that would not.
 
     Args:
         title: The cover title.
@@ -2778,6 +2797,8 @@ def deck_cover_chain(title: str, has_element: bool, ai_available: bool,
         ai_available: An editorial render may be made (or was handed in).
         recent: Recent decks' cover treatments, most recent first.
         seed: Stable per-deck text for the no-history case.
+        template: This deck's template key.
+        recent_templates: Recent decks' templates, aligned with ``recent``.
 
     Returns:
         The chain.
@@ -2792,8 +2813,13 @@ def deck_cover_chain(title: str, has_element: bool, ai_available: bool,
         available.append(DECK_COVER_NUMBER)
     if ai_available:
         available.append(DECK_COVER_CONCEPT)
-    ordered = [t for t in DECK_COVER_TREATMENTS if t in available]
-    return lru_order(ordered, [r for r in recent if r], seed) + [DECK_COVER_TEMPLATE]
+    from cqc_lem.utilities.ai.post_treatment import recent_pairs
+
+    ordered = lru_order([t for t in DECK_COVER_TREATMENTS if t in available],
+                        [r for r in recent if r], seed)
+    shown = recent_pairs(list(recent_templates or []), list(recent))
+    fresh = [t for t in ordered if (template, t) not in shown]
+    return fresh + [t for t in ordered if t not in fresh] + [DECK_COVER_TEMPLATE]
 
 
 def deck_motif(recent: list, seed: str = "") -> str:
@@ -3032,11 +3058,7 @@ def create_carousel_slide_images(
         return lines, fitted_font
 
     def _block_h(lines, font, spacing, draw) -> int:
-        total_h = 0
-        for ln in lines:
-            bb = draw.textbbox((0, 0), ln, font=font)
-            total_h += (bb[3] - bb[1]) + spacing
-        return total_h
+        return _lines_height(lines, font, spacing, draw)
 
     def _draw_block(draw, lines, font, x, y, fill, spacing=14, centered=False) -> int:
         # No line cap: `_fit` has already decided what fits, so nothing is dropped here — this
@@ -3045,10 +3067,10 @@ def create_carousel_slide_images(
         marks["drawn"] += sum(len(ln) for ln in lines)
         for ln in lines:
             bb = draw.textbbox((0, 0), ln, font=font)
-            lw, lh = bb[2] - bb[0], bb[3] - bb[1]
+            lw = bb[2] - bb[0]
             lx = (W - lw) // 2 if centered else x
             draw.text((lx, y), ln, font=font, fill=fill)
-            y += lh + spacing
+            y += line_pitch(ln, font, draw) + spacing
         return y
 
     def _rrect(draw, xy, radius, fill):
@@ -3889,7 +3911,8 @@ def create_carousel_slide_images(
             chain = [cover_treatment, DECK_COVER_TEMPLATE]
         else:
             chain = deck_cover_chain(_norm(title), element is not None, ai_available,
-                                     history["cover_treatment"], f"{post_id}:{title}")
+                                     history["cover_treatment"], f"{post_id}:{title}",
+                                     template=template_key, recent_templates=history["template"])
         try:
             for treatment in chain:
                 path = None
