@@ -115,8 +115,8 @@ class TestBirthPathRecordsTheBrief:
             "a steering wheel, not a brake pedal"
 
 
-class TestPexelsFallbackKeepsNoBrief:
-    def test_a_stock_clip_never_inherits_the_render_it_replaced(self):
+class TestFallbackKeepsNoBrief:
+    def test_a_title_card_never_inherits_the_render_it_replaced(self):
         brief_info: dict = {}
 
         def _prompt(*_args, brief_info=None, **_kwargs):
@@ -133,11 +133,11 @@ class TestPexelsFallbackKeepsNoBrief:
              patch(f"{_RCP}.create_runway_video", side_effect=RuntimeError("runway down")), \
              patch(f"{_RCP}._persist_video_model"), \
              patch(f"{_RCP}.create_folder_if_not_exists"), \
-             patch("cqc_lem.utilities.pexels_helper.download_pexels_video",
-                   return_value="/tmp/stock.mp4"):
+             patch("cqc_lem.utilities.video_title_card.create_title_card_video",
+                   return_value="/tmp/title_card_9.mp4"):
             from cqc_lem.app.run_content_plan import _generate_video_src
             src = _generate_video_src(1, "text", None, post_id=9, brief_info=brief_info)
-        assert src == "/tmp/stock.mp4"
+        assert src == "/tmp/title_card_9.mp4"
         assert brief_info == {}
 
     def test_a_successful_render_hands_the_brief_back(self):

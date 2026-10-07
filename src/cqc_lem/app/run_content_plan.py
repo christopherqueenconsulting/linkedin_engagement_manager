@@ -22,7 +22,7 @@ import json
 import os
 import random
 from datetime import datetime, timedelta
-from typing import Optional, Tuple, Union
+from typing import Any, Optional, Tuple, Union
 from urllib.parse import urlparse
 from xml.etree import ElementTree
 
@@ -1632,16 +1632,17 @@ def _generate_video_src(user_id: int, text_content: str, profile, post_id: int =
     on the avatar image to preserve likeness, else Veo text->video. The effective tier honors
     the post's video_quality, falling back to the user's default_video_quality preference.
     Premium credits are reserved up-front and refunded on failure; falls back to standard when
-    the user has no credits, and to Pexels stock on error.
+    the user has no credits, and on error to `_fallback_video_src` — the $0 branded title card,
+    or Pexels stock only behind its opt-in flag (showcase round 4).
     Records the model that actually ran on `posts.video_model` (issue #1410) — see
     `_persist_video_model` for why the write lives here and not at the storage step.
-    Returns the remote Runway URL (http) or a local Pexels path, or None.
+    Returns the remote Runway URL (http) or a local title-card / Pexels path, or None.
 
     `brief_info`, when passed, is filled with `{"brief": ImageBrief}` for the source frame — plus
     `gate_verdict` when the frame went through the vision gate — so the caller can record it beside
-    the stored MP4 (issue #1377). BOTH keys are CLEARED on the Pexels fallback: that clip is stock
-    footage this brief never described, and filing the brief (or a verdict passed on a frame that
-    never shipped) under it would be a fabricated provenance claim.
+    the stored MP4 (issue #1377). BOTH keys are CLEARED on the fallback: that clip is a card or
+    stock footage this brief never described, and filing the brief (or a verdict passed on a frame
+    that never shipped) under it would be a fabricated provenance claim.
 
     The staged image engine (issue #2241): Stage 1 reads the post ONCE. That one concept briefs the
     source frame (with the user's brand clause), grades it — the standard-tier no-avatar frame
@@ -1673,6 +1674,8 @@ def _generate_video_src(user_id: int, text_content: str, profile, post_id: int =
     tier = _premium_tier_for_quality(quality)
 
     model, audio, deducted = STANDARD_VIDEO_MODEL, False, 0
+    # Bound before the try: the fallback below reads Stage 1's anchors and hook when it ran.
+    concept = None
     if tier and user_id:
         pmodel, pcredits, paudio = tier
         if get_video_credit_balance(user_id) >= pcredits and \
@@ -1790,43 +1793,82 @@ def _generate_video_src(user_id: int, text_content: str, profile, post_id: int =
         log_info(f"_generate_video_src: model={model} audio={audio} -> {str(src)[:60]}")
         return src
     except Exception as e:
-        # A likeness hold lands here only to reuse the refund + stock-fallback path below; it is a
+        # A likeness hold lands here only to reuse the refund + fallback path below; it is a
         # decision, not a generation failure, so it never warns (issue #1279).
         if isinstance(e, AvatarLikenessHold):
-            log_info("Avatar likeness hold — refunding any credits and falling back to Pexels",
-                     user_id=user_id, post_id=post_id, task_name="create_video_content")
+            log_info("Avatar likeness hold — refunding any credits and falling back to the title "
+                     "card", user_id=user_id, post_id=post_id, task_name="create_video_content")
         elif isinstance(e, SourceFrameRejected):
-            log_info("Source frame rejected by the judge — not animating it; falling back to "
-                     "Pexels", user_id=user_id, post_id=post_id, task_name="create_video_content",
-                     issues=str(e))
+            log_info("Source frame rejected by the judge — not animating it; falling back to the "
+                     "title card", user_id=user_id, post_id=post_id,
+                     task_name="create_video_content", issues=str(e))
         else:
-            log_warning("Video generation failed — refunding any credits and falling back to Pexels",
-                        exc=e, user_id=user_id, post_id=post_id, task_name="create_video_content")
+            log_warning("Video generation failed — refunding any credits and falling back to the "
+                        "title card", exc=e, user_id=user_id, post_id=post_id,
+                        task_name="create_video_content")
         if deducted and user_id:
             refund_video_credits(user_id, deducted, post_id)
-        # Whatever ships from here is stock footage, not this brief's render (issue #1377).
+        # Whatever ships from here is a card or stock, not this brief's render (issue #1377).
         if brief_info is not None:
             brief_info.pop("brief", None)
             brief_info.pop("gate_verdict", None)
             brief_info.pop("clip_check", None)
-        try:
-            from cqc_lem.utilities.content_quality import VIDEO_MODEL_PEXELS
-            from cqc_lem.utilities.pexels_helper import download_pexels_video
-            videos_dir = os.path.join(assets_dir, 'videos', 'pexels')
-            create_folder_if_not_exists(videos_dir)
-            stock_src = download_pexels_video(text_content[:50], videos_dir)
-            # Cleared rather than left alone when the stock helper came back empty: this render
-            # produced no asset, and the key from a PREVIOUS render would then be read as the model
-            # of a video it never made.
-            _persist_video_model(post_id, VIDEO_MODEL_PEXELS if stock_src else None)
-            return stock_src
-        except Exception as pe:
-            # DEBUG: the OUTCOME — a video post with no asset — is already warned by the caller,
-            # which holds the post PENDING with a durable missing_asset finding. A second warning
-            # here forks a second grouped issue for the same lost video (issue #1038).
-            log_debug(f"_generate_video_src: Pexels fallback failed ({type(pe).__name__}: {pe})")
-            _persist_video_model(post_id, None)
-            return None
+        return _fallback_video_src(text_content, user_id=user_id, post_id=post_id,
+                                   concept=concept, ratio="9:16" if is_premium(model) else "1:1",
+                                   byline=getattr(profile, "full_name", None))
+
+
+def _fallback_video_src(text_content: str, *, user_id: int, post_id: Optional[int],
+                        concept: Any, ratio: str, byline: Optional[str]) -> Optional[str]:
+    """The video a post gets when its AI render did not happen. Never raises.
+
+    Showcase round 4: the default is the $0 code-drawn branded title card
+    (`utilities/video_title_card.py`). Pexels stock is tried first ONLY behind
+    `VIDEO_PEXELS_FALLBACK_ENABLED` (default off), and only with a query built from Stage 1's
+    concrete anchors — the raw post words gave "model retirement" an elderly couple. Records the
+    tier that shipped on `posts.video_model`, or clears it when nothing did.
+
+    Args:
+        text_content: The post.
+        user_id: The author.
+        post_id: The post.
+        concept: Stage 1's concept when it ran, else None.
+        ratio: ``"1:1"`` or ``"9:16"``, the ratio of the tier being replaced.
+        byline: The author's name for the card.
+
+    Returns:
+        A local MP4 path inside the assets volume, or None.
+    """
+    from cqc_lem.utilities.content_quality import VIDEO_MODEL_PEXELS, VIDEO_MODEL_TITLE_CARD
+    from cqc_lem.utilities.video_title_card import (
+        create_title_card_video,
+        pexels_fallback_enabled,
+        stock_query_from_concept,
+    )
+
+    if pexels_fallback_enabled():
+        query = stock_query_from_concept(concept)
+        if query:
+            try:
+                from cqc_lem.utilities.pexels_helper import download_pexels_video
+                videos_dir = os.path.join(assets_dir, 'videos', 'pexels')
+                create_folder_if_not_exists(videos_dir)
+                stock_src = download_pexels_video(query, videos_dir)
+                if stock_src:
+                    _persist_video_model(post_id, VIDEO_MODEL_PEXELS)
+                    return stock_src
+            except Exception as pe:
+                # DEBUG: the title card below still gives the post a video.
+                log_debug(f"_fallback_video_src: Pexels failed ({type(pe).__name__}: {pe})")
+        else:
+            log_debug("No pun-safe stock query for this post — skipping Pexels",
+                      user_id=user_id, post_id=post_id, task_name="create_video_content")
+    card = create_title_card_video(text_content, user_id=user_id, post_id=post_id,
+                                   concept=concept, ratio=ratio, byline=byline)
+    # Cleared rather than left alone when nothing rendered: the key from a PREVIOUS render would
+    # then be read as the model of a video this run never made.
+    _persist_video_model(post_id, VIDEO_MODEL_TITLE_CARD if card else None)
+    return card
 
 
 @attribute_llm_cost(FEATURE_CONTENT)
@@ -1840,7 +1882,7 @@ def create_video_content(user_id: int, stage: str, post_id: int = None,
     nothing here has one yet.
 
     Returns:
-        `(text_content, video_url)`. The URL is None when BOTH the generator and the Pexels stock
+        `(text_content, video_url)`. The URL is None when BOTH the generator and the title-card
         fallback came back empty — `_generate_video_src` never raises and refunds any video
         credits it spent, so this returns usable text with no asset rather than failing.
         `_post_missing_required_asset` is what turns that into a flagged post downstream.
@@ -2117,6 +2159,15 @@ def _recorded_deck_notes(post_id: int, content: Optional[str] = None) -> list[di
     return notes
 
 
+def _video_source_label(video_src_url: str) -> str:
+    """``runway`` for a remote render, ``title_card`` for the code-drawn card, else ``pexels``."""
+    if str(video_src_url).startswith("http"):
+        return "runway"
+    if os.path.basename(str(video_src_url)).startswith("title_card_"):
+        return "title_card"
+    return "pexels"
+
+
 def _accept_probed_video(post_id: int, video_file_path: str, video_src_url: str,
                          user_id: Optional[int] = None, task_name: str = "") -> bool:
     """Decide whether a just-downloaded video file may become the post's media (issue #1280).
@@ -2138,7 +2189,7 @@ def _accept_probed_video(post_id: int, video_file_path: str, video_src_url: str,
     """
     probe_ok, probe_reason = _probe_video_file(video_file_path)
     track_video_asset_probe(post_id=post_id, user_id=user_id, probe_ok=probe_ok, reason=probe_reason,
-                            source="runway" if str(video_src_url).startswith("http") else "pexels")
+                            source=_video_source_label(video_src_url))
     # The reason goes onto the post here, where it exists (issue #1402) — a passing probe clears any
     # note an earlier rejection left, so a healed post stops explaining a hold it no longer has.
     _record_video_probe_finding(post_id, probe_ok, probe_reason, user_id=user_id,

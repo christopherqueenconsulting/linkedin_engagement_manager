@@ -1249,7 +1249,8 @@ def render_code_drawn(concept: Any, *, surface: str, hook_text: Optional[str],
                       signature: Optional[str] = None, user_id: Optional[int] = None,
                       post_id: Optional[int] = None, render_info: Optional[dict] = None,
                       enforce: Optional[bool] = None,
-                      panel: Optional[str] = None) -> Optional[str]:
+                      panel: Optional[str] = None,
+                      source_line: Optional[str] = None) -> Optional[str]:
     """Draw the concept's code-drawn archetype(s) and grade the composite — $0 render spend.
 
     Walks the code-drawn head of ``concept.archetype_ranking``. Each is drawn by
@@ -1273,6 +1274,8 @@ def render_code_drawn(concept: Any, *, surface: str, hook_text: Optional[str],
             with its source sentence — the receipt's trace) and the gate fields.
         enforce: As for ``render_image_gated``.
         panel: The headline panel's variant (post ``typeset_card`` rotation); charcoal when None.
+        source_line: The caller's source line (a named source, or "" for none); None keeps the
+            named source the concept's graphic carries, else none — never an invented line.
 
     Returns:
         The composite's path, or None to fall back to the AI render.
@@ -1298,7 +1301,8 @@ def render_code_drawn(concept: Any, *, surface: str, hook_text: Optional[str],
                 archetype, getattr(concept, "graphic", None) or {}, surface=surface,
                 hook=hook_text or "", kicker=_kicker_for(concept), signature=signature or "",
                 brand=brand_style(brand_kit), layout=layout or getattr(concept, "layout", None),
-                out_path=os.path.join(out_dir, f"img_{secrets.token_hex(8)}.png"), panel=panel)
+                out_path=os.path.join(out_dir, f"img_{secrets.token_hex(8)}.png"), panel=panel,
+                source_line=source_line)
         except GraphicError as e:
             reasons.append(f"{archetype}: {e}")
             log_info("Code-drawn archetype refused — trying the next", user_id=user_id,

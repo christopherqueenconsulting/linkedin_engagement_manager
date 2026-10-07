@@ -65,10 +65,27 @@ def test_no_accent_box_intersects_any_text_box(template, length, tmp_path):
                 assert not cc.boxes_intersect(accent, text), (template, length, accent, text)
 
 
-def test_the_showcase_cover_keeps_its_glyph_clear_of_the_title(tmp_path):
-    cover = _render("stat_reveal", TITLES["showcase"], tmp_path)[0]
-    # The "?" still draws — moved, not dropped — and touches no text.
-    assert cover.decor_boxes
+@pytest.mark.parametrize("template", sorted(cc.CAROUSEL_TEMPLATES))
+def test_no_cover_ever_paints_the_question_mark_watermark(template, tmp_path):
+    """Showcase round 4: the "?" undercut every case study, so it is gone, not moved."""
+    painted: list = []
+    real = cc.make_ink_draw
+
+    def _capture(img):
+        draw = real(img)
+        original = draw.paint_glyph
+        draw.paint_glyph = lambda xy, glyph, font, fill: (painted.append(glyph),
+                                                          original(xy, glyph, font, fill))
+        return draw
+
+    for treatment in (*cc.DECK_COVER_TREATMENTS, cc.DECK_COVER_TEMPLATE):
+        with patch.object(cc, "make_ink_draw", _capture), \
+                patch.object(cc, "retain_carousel_keyframes"):
+            cc.create_carousel_slide_images(_deck(TITLES["showcase"]), post_id=128,
+                                            output_dir=str(tmp_path / template / treatment),
+                                            template=template, theme=deck_theme(None),
+                                            cover_treatment=treatment)
+    assert "?" not in painted
 
 
 def test_accents_still_draw_across_the_deck(tmp_path):

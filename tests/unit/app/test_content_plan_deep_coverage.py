@@ -430,8 +430,8 @@ class TestGenerateVideoSrcPremium:
                    return_value="/tmp/avatar.png") as gen_img, \
              patch(f"{_RCP}.create_runway_video",
                    return_value=create_video_return) as create_video, \
-             patch("cqc_lem.utilities.pexels_helper.download_pexels_video",
-                   return_value="/local/pexels.mp4") as pexels, \
+             patch("cqc_lem.utilities.video_title_card.create_title_card_video",
+                   return_value="/local/title_card_9.mp4") as pexels, \
              patch(f"{_RCP}.create_folder_if_not_exists"):
             result = rcp._generate_video_src(1, "text content", _profile(), post_id=9)
         return result, gen_img, create_video, refund, pexels
@@ -457,10 +457,11 @@ class TestGenerateVideoSrcPremium:
         gen_img.assert_not_called()
         assert create_video.call_args[0][0] is None  # text->video
 
-    def test_no_video_output_refunds_and_falls_back_to_pexels(self):
+    def test_no_video_output_refunds_and_falls_back_to_the_title_card(self):
         avatar = {"status": "succeeded", "model_ref": "owner/m:v1"}
         result, _, _, refund, pexels = self._run(avatar, create_video_return=None)
-        assert result == "/local/pexels.mp4"
+        assert result == "/local/title_card_9.mp4"
+        assert pexels.call_args.kwargs["ratio"] == "9:16"  # the premium tier's ratio
         refund.assert_called_once()
         assert refund.call_args[0][0] == 1
         pexels.assert_called_once()

@@ -227,9 +227,9 @@ and are now caught by the last-resort card below instead of shipping bare. This 
 **No post ships bare.** Posts 97 and 137 shipped with no image: the AI render was rejected and no
 data or quote card applied. `post_image._render_last_resort_card` is a guaranteed $0 last resort
 (`image_graphics.render_typeset_card`). It draws the post's hook — Stage 1's, else the post's own
-first sentence of at most 12 words — on the brand panel, using the rotated panel variant and
-layout. The scene region holds no photo, only a code-drawn accent shape (a gold ring and a
-dark-gold rule). It is not judged: its words are the already-gated hook. The receipt records
+first sentence of at most 12 words — on the brand panel, using the rotated panel variant. Its
+scene (a gold ring and a dark-gold rule) is retired by round 4: the card is now a full-canvas
+typographic layout (§ Showcase round 4). It is not judged: its words are the already-gated hook. The receipt records
 `gate_verdict = "last_resort"` and `render_path = "code_drawn_last_resort"`, so it is never
 mistaken for a graded image. A post goes imageless only when even this card cannot be drawn.
 
@@ -323,6 +323,52 @@ Text posts already go through `sanitize_for_linkedin` in `_refine_draft`, and cu
 already carry the same `post_writing_directive` length budget (1300–2000 characters). So the
 showcase's ~1,400-character drafts were within the shared budget, not over it.
 
+## Showcase round 4 — style, typographic cards, composed covers, deck rhythm
+
+An independent critic failed the showcase on monotony (`gauntlet/critic4/critic_scores.json`). The
+video half (title card, captions) is in `docs/content-quality-audits/video.md` § F3/F3b.
+
+**Visual style is a sameness dimension.** Two claymation renders ran back to back: posts never
+passed `recent_art_styles` to Stage 1. Now `post_treatment.style_of` gives every image ONE
+`style` — an `ART_STYLES` key (claymation, cut collage, risograph, editorial photo),
+`people_photo`, `code_drawn_card` or `quote_card` — recorded on the receipt's `rhythm` (read off
+`archetype_rendered` / `art_style` for older receipts). The rule:
+- the same style may not appear in two consecutive posts: `style_blocks` skips a quote card after
+  a quote card and a data card after a code-drawn card; `post_image._avoid_last_style` drops a
+  code-drawn head after a code-drawn card and turns a people tail into an object-only
+  `editorial_concept` (rotated art style) after a people photo; Stage 1 gets the recent art
+  styles, so an editorial never repeats the last one;
+- quote cards are capped at `QUOTE_CAP` (2) per `QUOTE_CAP_WINDOW` (6) posts;
+- the last-resort card is the ONE exception — it is the guarantee a post never ships bare.
+
+**The last-resort card is typographic.** The ring-and-bar scene read as unfinished and repeated.
+`image_graphics.render_typeset_card` draws one of `TYPESET_CARD_LAYOUTS` on the full canvas, in
+the rotated panel variant's colours: `poster` (poster-scale headline under its kicker),
+`grid_rule` (a minimal six-column grid between two rules), `quote_marks` (oversized marks over the
+pull line — only when the hook is the post's verbatim words) and `number_led` (only when a figure
+LEADS the hook, so lifting it leaves no hole). The layout rotates least-recently-used from the
+receipts (`rhythm.card_layout`). Every string is fitted inside the safe area or the card refuses.
+
+**Source lines are the caller's.** `image_graphics` printed "From the article" on posts with no
+article. `validate_graphic_facts` now records a named source the text cites ("Source: Gartner")
+or `""`; `render_graphic` / `render_code_drawn(source_line=)` take the caller's line, and a line
+that does not fit is dropped, never replaced. No default is ever invented.
+
+**Covers are always composed.** cover_19 shipped as a bare people photo: no hook survived Stage 1,
+so nothing was typeset. `newsletter_cover.cover_headline` falls back to the edition's own title
+(a complete clause, never cut mid-thought), and `ensure_composed_cover` composes any render that
+came back raw — else draws a typographic cover of the same headline. A cover is never
+`photo_only`; the receipt records `cover_composed` when the late path ran.
+
+**Deck rhythm.** Five decks used two templates with identical inside slides, and the stat cover
+carried a giant "?" watermark. The "?" is gone. Each deck takes a cover treatment from
+`DECK_COVER_TREATMENTS` — `poster`, `code_drawn` (an element of the deck's own verbatim figures),
+`number_led` (a title that leads with a figure) or `ai_concept` (the deck's ONE object-only,
+gated `editorial_concept` render, `render_deck_cover_concept`, behind `DECK_AI_COVER_ENABLED`) —
+and an inside accent motif from `DECK_MOTIFS`, both least-recently-used from the author's
+`deck_render.json` receipts. A treatment that cannot draw falls through to the template's own
+cover; every one draws the writer's title and subtitle whole.
+
 ## Post rhythm — treatments, panels, grades and the sameness gate (anti-monotony round)
 
 Every post image was the same composite — a photograph beside a charcoal type panel — so an
@@ -380,7 +426,8 @@ brightness rule positively worded (dusk is "warm … every face fully and evenly
 readable"); none may match `_DARK_SCENE`, because naming dark summons it on FLUX.
 
 **The sameness gate.** Over the last `SAMENESS_WINDOW` (5) receipts, no dimension — treatment,
-layout, panel, shot, grade — may run more than `MAX_RUN` (2) posts in a row: a pick that would is
+layout, panel, shot, grade — may run more than `MAX_RUN` (2) posts in a row (`style` is stricter:
+never twice in a row, § Showcase round 4): a pick that would is
 re-rolled to the next least-recently-used option (`sameness_pick`, `gate_value` for Stage 1's
 own layout and shot picks). The gate OUTRANKS `card_share` — a share of 1.0 still yields at most
 two typeset cards in a row. A dimension is recorded only where it shaped the image (a panel on a

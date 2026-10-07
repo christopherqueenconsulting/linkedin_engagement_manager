@@ -142,9 +142,12 @@ class TestValidateGraphicFacts:
         assert graphic["rejected"] == []
         assert g.available_archetypes(graphic) == g.CODE_DRAWN_ARCHETYPES
 
-    def test_a_source_the_article_never_names_reads_from_the_article(self):
+    def test_a_source_the_article_never_names_draws_no_source_line(self):
+        # Showcase round 4: "From the article" was printed on posts with no article. A source is
+        # a name the text cites, or nothing — never an invented default.
         out = g.validate_graphic_facts(dict(RAW, source_name="Gartner"), SOURCE)
-        assert out["source_line"] == g.FROM_THE_ARTICLE
+        assert out["source_line"] == ""
+        assert not hasattr(g, "FROM_THE_ARTICLE")
 
     def test_a_comparison_needs_two_like_values(self):
         raw = copy.deepcopy(RAW)
@@ -300,12 +303,21 @@ class TestRenderGraphic:
                 g.render_graphic(archetype, graphic, surface="post_image", hook="A hook",
                                  out_path=str(tmp_path / f"{archetype}.png"))
 
-    def test_an_overlong_source_name_falls_back_to_from_the_article(self, graphic, monkeypatch,
-                                                                    tmp_path):
+    def test_an_overlong_source_name_is_dropped_not_replaced(self, graphic, tmp_path):
         long_source = dict(graphic, source_line="Source: " + "Very Long Institute " * 8)
         render = g.render_graphic(g.STAT_CARD, long_source, surface="post_image", hook="A hook",
                                   out_path=str(tmp_path / "s.png"))
-        assert [p.text for p in render.placements if p.role == "source"] == [g.FROM_THE_ARTICLE]
+        assert [p.text for p in render.placements if p.role == "source"] == []
+
+    @pytest.mark.parametrize("archetype", list(g.CODE_DRAWN_ARCHETYPES))
+    def test_the_source_line_is_the_callers(self, graphic, archetype, tmp_path):
+        named = g.render_graphic(archetype, graphic, surface="post_image", hook="A hook",
+                                 source_line="Source: Example Co",
+                                 out_path=str(tmp_path / "a.png"))
+        assert [p.text for p in named.placements if p.role == "source"] == ["Source: Example Co"]
+        bare = g.render_graphic(archetype, graphic, surface="post_image", hook="A hook",
+                                source_line="", out_path=str(tmp_path / "b.png"))
+        assert [p.text for p in bare.placements if p.role == "source"] == []
 
     @pytest.mark.parametrize("archetype,hook", [("stock_photo", "A hook"), (g.STAT_CARD, " ")])
     def test_refusals(self, graphic, archetype, hook):

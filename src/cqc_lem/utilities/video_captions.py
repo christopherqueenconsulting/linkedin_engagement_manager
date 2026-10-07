@@ -2,9 +2,15 @@
 
 LinkedIn's feed player starts muted and the post's caption sits below the fold on mobile, so the
 first 2-3 seconds of the video have to communicate on their own. This module burns the post's own
-opening line into the rendered MP4 with ffmpeg's `subtitles` filter, and always writes the `.srt`
-sidecar it burned so the author can attach captions manually on LinkedIn if they want the native
-toggle too.
+opening line into the rendered MP4, and always writes the `.srt` sidecar it burned so the author
+can attach captions manually on LinkedIn if they want the native toggle too.
+
+The card is ON BRAND (showcase round 4): Montserrat in off-white on a translucent charcoal band
+with a gold rule, inside safe margins, drawn by Pillow and laid over the video with ffmpeg's
+`overlay` filter — so the burn needs no libass or system font. It carries the FULL first sentence
+or a complete clause of it, wrapped over at most `VIDEO_CAPTION_MAX_LINES` lines at the largest
+size that fits; it is never cut with an ellipsis mid-thought ("…turn into a hidden…" was the
+critic's exhibit). A post whose first clause cannot fit is not captioned at all.
 
 Three things this deliberately does NOT do:
 
@@ -26,11 +32,12 @@ caption is an enhancement, and the gate that decides whether a video post may sh
 (`_post_missing_required_asset`) is deliberately somewhere else.
 """
 import os
+import re
 import shutil
 import subprocess
 import textwrap
 from dataclasses import dataclass
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
 from cqc_lem.utilities.env_constants import (
     VIDEO_CAPTION_HOLD_SECONDS,
@@ -48,15 +55,17 @@ TASK_NAME = "apply_video_captions"
 # without pulling the Runway model registry in.
 _FALLBACK_DURATION_SECONDS = 5.0
 
-# libass style for the burned card: large, bold, white on a semi-opaque black box, bottom-centred
-# with a generous margin. Bottom-centred is the safe default for a 9:16 talking-head frame — the
-# face sits in the upper two thirds — but it is NOT why avatar videos are gated; that is the
-# user's own opt-in, because "safe" is not a promise this module gets to make about someone's
-# likeness. Colours are libass BGR, not RGB.
-CAPTION_STYLE = (
-    "FontName=DejaVu Sans,Fontsize=28,Bold=1,PrimaryColour=&H00FFFFFF,"
-    "BorderStyle=3,Outline=2,Shadow=0,BackColour=&H80000000,Alignment=2,MarginV=60"
-)
+# The burned band's geometry, as fractions of the frame (showcase round 4). Bottom-centred is the
+# safe default for a 9:16 talking-head frame — the face sits in the upper two thirds — but it is
+# NOT why avatar videos are gated; that is the user's own opt-in, because "safe" is not a promise
+# this module gets to make about someone's likeness. The bottom margin clears LinkedIn's player
+# controls; the side margins keep the type off the crop edge of every feed surface.
+CAPTION_SIDE_MARGIN = 0.07
+CAPTION_BOTTOM_MARGIN = 0.09
+CAPTION_FONT_MAX = 0.056
+CAPTION_FONT_MIN = 0.030
+# The band is charcoal at this opacity (0-255): the frame still reads through it.
+CAPTION_BAND_ALPHA = 205
 
 # Lines that are not the hook: a hashtag block, a bare link, or punctuation-only decoration.
 _SKIP_PREFIXES = ("#", "http://", "https://")
@@ -87,36 +96,93 @@ def srt_timestamp(seconds: float) -> str:
     return f"{hours:02d}:{minutes:02d}:{secs:02d},{ms:03d}"
 
 
+_SENTENCE_END = re.compile(r"(?<=[.!?])[\"'”’)]*\s+")
+_CLAUSE_BREAK = re.compile(r"\s*(?:[,;:]|\s[-–—]\s|[—–])\s*")
+# A clause ending on one of these is a fragment ("…pushing four releases with"), not a thought.
+_DANGLING_END = frozenset({"a", "an", "the", "and", "or", "but", "to", "of", "for", "with", "in",
+                           "on", "at", "by", "from", "into", "than", "that", "which", "who",
+                           "is", "are", "was", "were", "my", "our", "your", "their", "its"})
+
+
+def _hook_sentences(content: Optional[str]) -> list:
+    """The opening's sentences in order — each source line ends one, punctuated or not."""
+    text = strip_non_bmp(content or "").replace("*", "").replace("_", " ")
+    sentences: list = []
+    for raw in text.splitlines():
+        line = " ".join(raw.split())
+        if not line or line.startswith(_SKIP_PREFIXES) or not any(c.isalnum() for c in line):
+            continue
+        sentences += [part.strip() for part in _SENTENCE_END.split(line) if part.strip()]
+        # Two source lines is the cap the audit asked for; the clause rule below decides how much
+        # of them actually fits.
+        if len(sentences) >= 2:
+            break
+    return sentences
+
+
+def _clause_prefixes(sentence: str) -> list:
+    """Every complete leading run of ``sentence``'s clauses, longest first, never the whole."""
+    breaks = list(_CLAUSE_BREAK.finditer(sentence))
+    out: list = []
+    for match in reversed(breaks):
+        clause = sentence[:match.start()].rstrip(" ,;:-–—")
+        words = clause.split()
+        if len(words) >= 3 and words[-1].lower().strip(".,!?") not in _DANGLING_END:
+            out.append(clause)
+    return out
+
+
+def caption_candidates(content: Optional[str], budget: int) -> list:
+    """The texts a caption may carry, preferred first — each a COMPLETE thought within ``budget``.
+
+    The first sentence whole (with the next one too when the first is short); then the longest
+    leading runs of the first sentence's clauses that fit. Never a truncation: a first clause
+    longer than ``budget`` yields no candidate at all.
+
+    Args:
+        content: The post.
+        budget: The most characters the caption may hold.
+
+    Returns:
+        Candidate captions, best first; ``[]`` when no complete thought fits.
+    """
+    sentences = _hook_sentences(content)
+    if not sentences:
+        return []
+    first = sentences[0]
+    out: list = []
+    if len(sentences) > 1 and len(first) < 40:
+        both = f"{first} {sentences[1]}"
+        if len(both) <= budget:
+            out.append(both)
+    if len(first) <= budget:
+        out.append(first)
+    out += [clause for clause in _clause_prefixes(first) if len(clause) <= budget]
+    return out
+
+
 def caption_lines(content: Optional[str], *, max_lines: int = VIDEO_CAPTION_MAX_LINES,
                   max_chars: int = VIDEO_CAPTION_MAX_CHARS_PER_LINE) -> list:
-    """The post's opening, wrapped into at most `max_lines` burnable lines.
+    """The post's opening, as at most ``max_lines`` lines that carry a COMPLETE thought.
 
     The hook is whatever the post already opens with, minus the things that read as noise on a
     video frame: hashtag blocks, bare links, markdown emphasis, and emoji (non-BMP characters,
-    which libass renders as tofu even where `send_keys` would accept them). An over-long hook is
-    truncated with an ellipsis rather than dropped — a partial hook still communicates, a blank
-    frame does not.
+    which the burn would render as tofu). It is the FULL first sentence when that fits, else the
+    longest complete leading clause of it — never a cut with an ellipsis (showcase round 4:
+    "…turn into a hidden…"). A post whose first clause cannot fit is not captioned.
 
     Returns:
-        `[]` when the post has no usable prose at all, which is the caller's signal to skip.
+        `[]` when the post has no usable prose, or no complete thought that fits — the caller's
+        signal to skip.
     """
-    text = strip_non_bmp(content or "").replace("*", "").replace("_", " ")
-    hook_parts: list = []
-    for raw in text.splitlines():
-        line = raw.strip()
-        if not line or line.startswith(_SKIP_PREFIXES) or not any(c.isalnum() for c in line):
-            continue
-        hook_parts.append(line)
-        # Two source lines is the cap the audit asked for; the wrap below decides how much of
-        # them actually fits.
-        if len(hook_parts) >= 2:
-            break
-
-    hook = " ".join(hook_parts).strip()
-    if not hook:
-        return []
-    return textwrap.wrap(hook, width=max(8, int(max_chars)), max_lines=max(1, int(max_lines)),
-                         placeholder="...")
+    width = max(8, int(max_chars))
+    lines_cap = max(1, int(max_lines))
+    for candidate in caption_candidates(content, width * lines_cap):
+        # Never split "cost-saving" at its hyphen: the burn re-joins lines with a space.
+        lines = textwrap.wrap(candidate, width=width, break_on_hyphens=False)
+        if lines and len(lines) <= lines_cap:
+            return lines
+    return []
 
 
 def build_caption_srt(lines: list, out_path: str,
@@ -143,16 +209,6 @@ def _ffmpeg_bin(name: str = "ffmpeg") -> Optional[str]:
     return shutil.which(name)
 
 
-def _escape_filter_path(path: str) -> str:
-    """Escape a path for ffmpeg's filtergraph parser.
-
-    Backslash, colon and single quote all terminate or re-open a filter argument, so an unescaped
-    Windows-style or timestamped path silently becomes a different filter — the failure looks like
-    "no such file" on a file that exists.
-    """
-    return path.replace("\\", "\\\\").replace(":", r"\:").replace("'", r"\'")
-
-
 def video_duration_seconds(video_path: str) -> float:
     """Best-effort duration for cost attribution. Falls back to a nominal length, never raises."""
     ffprobe = _ffmpeg_bin("ffprobe")
@@ -169,36 +225,172 @@ def video_duration_seconds(video_path: str) -> float:
         return _FALLBACK_DURATION_SECONDS
 
 
-def burn_captions(video_path: str, srt_path: str, out_path: str, timeout: int = 600) -> bool:
-    """Burn `srt_path` into `video_path`, writing `out_path`. True only when the output is real.
+def video_dimensions(video_path: str) -> Optional[tuple]:
+    """``(width, height)`` of the video's first stream via ffprobe, or None. Never raises."""
+    ffprobe = _ffmpeg_bin("ffprobe")
+    if not ffprobe:
+        return None
+    try:
+        out = subprocess.run(
+            [ffprobe, "-v", "error", "-select_streams", "v:0", "-show_entries",
+             "stream=width,height", "-of", "csv=p=0:s=x", video_path],
+            capture_output=True, text=True, timeout=15)
+        width, height = (int(v) for v in str(out.stdout or "").strip().split("x")[:2])
+        return (width, height) if width > 0 and height > 0 else None
+    except (ValueError, TypeError, OSError, subprocess.SubprocessError):
+        return None
 
-    Video is re-encoded (libx264) because the burn paints pixels; audio is stream-copied, so a
-    premium Veo soundtrack survives untouched and a silent render costs nothing extra. A non-zero
-    exit, a missing ffmpeg, or a zero-byte output all return False — the caller then keeps the
+
+def read_srt_cue(srt_path: str) -> tuple:
+    """The ONE cue ``build_caption_srt`` wrote, as ``(lines, hold_seconds)``; ``([], 0.0)`` if none.
+
+    The sidecar is the single record of what is burned, so the burn reads it back rather than
+    being handed the text a second way that could drift from it.
+    """
+    try:
+        with open(srt_path, "r", encoding="utf-8") as handle:
+            rows = [row.rstrip("\n") for row in handle]
+    except OSError:
+        return [], 0.0
+    for index, row in enumerate(rows):
+        match = _CUE_TIMING.match(row)
+        if match:
+            h, m, sec, ms = (int(v) for v in match.groups())
+            lines = []
+            for text in rows[index + 1:]:
+                if not text.strip():
+                    break
+                lines.append(text.strip())
+            return lines, h * 3600 + m * 60 + sec + ms / 1000.0
+    return [], 0.0
+
+
+_CUE_TIMING = re.compile(r"\s*\d+:\d+:\d+,\d+\s*-->\s*(\d+):(\d+):(\d+),(\d+)")
+
+
+def fit_caption(draw: Any, text: str, max_width: int, max_lines: int, high: int,
+                low: int) -> Optional[tuple]:
+    """The largest Montserrat size in ``[low, high]`` that sets ``text`` in ``max_lines`` lines.
+
+    Returns:
+        ``(font, size, lines, line_height)``, or None when no size fits.
+    """
+    from cqc_lem.utilities.ai.image_compose import _line_height, _wrap, load_font
+
+    words = text.split()
+    for size in range(max(low, high), low - 1, -2):
+        font = load_font(size)
+        lines = _wrap(draw, words, font, max_width)
+        if lines and len(lines) <= max_lines:
+            return font, size, lines, _line_height(font, size)
+    return None
+
+
+def render_caption_overlay(lines: list, size: tuple, out_path: str, brand: Any = None,
+                           max_lines: Optional[int] = None) -> bool:
+    """Draw the on-brand caption band as a full-frame transparent PNG. True when it was drawn.
+
+    Off-white Montserrat on a translucent charcoal band, a gold rule on its leading edge, inside
+    the safe margins. The text is the caption's own lines re-wrapped by PIXEL width at the largest
+    size that fits — the character wrap that chose them is only a budget.
+
+    Args:
+        lines: ``caption_lines`` output.
+        size: The video's ``(width, height)``.
+        out_path: Where to write the PNG.
+        brand: An ``image_compose.BrandStyle``; the reference brand by default.
+        max_lines: The most lines; ``VIDEO_CAPTION_MAX_LINES`` by default.
+
+    Returns:
+        False when there is no text or it cannot be set legibly — the caller ships uncaptioned.
+    """
+    from PIL import Image, ImageDraw
+
+    from cqc_lem.utilities.ai.image_compose import BrandStyle, _hex
+
+    text = " ".join(str(line) for line in lines or []).strip()
+    if not text:
+        return False
+    brand = brand or BrandStyle()
+    width, height = int(size[0]), int(size[1])
+    basis = min(width, height)
+    side = round(width * CAPTION_SIDE_MARGIN)
+    pad_x, pad_y = round(basis * 0.035), round(basis * 0.025)
+    rule = max(4, round(basis * 0.008))
+    image = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(image)
+    fitted = fit_caption(draw, text, width - 2 * side - 2 * pad_x - rule,
+                         int(max_lines or VIDEO_CAPTION_MAX_LINES),
+                         round(basis * CAPTION_FONT_MAX), round(basis * CAPTION_FONT_MIN))
+    if fitted is None:
+        return False
+    font, _size, wrapped, line_h = fitted
+    bottom = height - round(height * CAPTION_BOTTOM_MARGIN)
+    top = bottom - line_h * len(wrapped) - 2 * pad_y
+    radius = round(basis * 0.018)
+    draw.rounded_rectangle((side, top, width - side, bottom), radius=radius,
+                           fill=(*_hex(brand.neutral_dark), CAPTION_BAND_ALPHA))
+    # The gold rule sits inside the band's rounded corners, never outside them.
+    draw.rectangle((side + radius // 3, top + radius, side + radius // 3 + rule - 1,
+                    bottom - radius), fill=(*_hex(brand.primary), 255))
+    y = top + pad_y
+    ink = (*_hex(brand.neutral_light), 255)
+    for line in wrapped:
+        left = draw.textbbox((0, 0), line, font=font)[0]
+        draw.text((side + rule + pad_x - left, y), line, font=font, fill=ink)
+        y += line_h
+    image.save(out_path, "PNG")
+    return True
+
+
+def burn_captions(video_path: str, srt_path: str, out_path: str, timeout: int = 600,
+                  brand: Any = None) -> bool:
+    """Burn `srt_path`'s cue into `video_path`, writing `out_path`. True only when the output is real.
+
+    The cue is drawn by `render_caption_overlay` and laid over the video for the cue's window by
+    ffmpeg's `overlay` filter. Video is re-encoded (libx264) because the burn paints pixels; audio
+    is stream-copied, so a premium Veo soundtrack survives untouched and a silent render costs
+    nothing extra. A missing ffmpeg, an unreadable cue or video size, a caption that cannot be set
+    legibly, a non-zero exit or a zero-byte output all return False — the caller then keeps the
     uncaptioned video.
     """
     ffmpeg = _ffmpeg_bin()
     if not ffmpeg:
         log_debug("ffmpeg is not installed — skipping video caption burn-in", task_name=TASK_NAME)
         return False
-
-    video_filter = f"subtitles='{_escape_filter_path(srt_path)}':force_style='{CAPTION_STYLE}'"
-    try:
-        result = subprocess.run(
-            [ffmpeg, "-y", "-i", video_path, "-vf", video_filter,
-             "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "copy", out_path],
-            capture_output=True, text=True, timeout=timeout)
-    except (OSError, subprocess.SubprocessError) as e:
-        log_warning("Caption burn-in could not run — shipping the video uncaptioned", exc=e,
-                    task_name=TASK_NAME)
+    lines, hold = read_srt_cue(srt_path)
+    size = video_dimensions(video_path)
+    if not lines or size is None:
+        log_warning("Caption burn-in could not read the cue or the video size — shipping the "
+                    "video uncaptioned", task_name=TASK_NAME)
         return False
+    overlay_path = f"{out_path}.band.png"
+    try:
+        if not render_caption_overlay(lines, size, overlay_path, brand=brand):
+            log_warning("The caption does not fit the frame legibly — shipping the video "
+                        "uncaptioned", task_name=TASK_NAME)
+            return False
+        graph = (f"[0:v][1:v]overlay=0:0:enable='between(t,0,{max(0.5, hold):.3f})'"
+                 ",format=yuv420p[v]")
+        try:
+            result = subprocess.run(
+                [ffmpeg, "-y", "-i", video_path, "-i", overlay_path, "-filter_complex", graph,
+                 "-map", "[v]", "-map", "0:a?", "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                 "-c:a", "copy", "-movflags", "+faststart", out_path],
+                capture_output=True, text=True, timeout=timeout)
+        except (OSError, subprocess.SubprocessError) as e:
+            log_warning("Caption burn-in could not run — shipping the video uncaptioned", exc=e,
+                        task_name=TASK_NAME)
+            return False
+    finally:
+        _discard(overlay_path)
 
     if result.returncode != 0:
         # The message stays a fixed template and the ffmpeg tail goes to DEBUG on purpose: the
         # recurrence key is built from the interpolated string, and a stderr tail (frame counts,
         # per-file paths) is unbounded in ways the masks do not catch — so interpolating it here
-        # would mean a systematically broken burn (an ffmpeg with no libass, say) never repeats a
-        # key, never escalates, and silently ships every video post uncaptioned forever.
+        # would mean a systematically broken burn never repeats a key, never escalates, and
+        # silently ships every video post uncaptioned forever.
         log_warning("Caption burn-in failed — shipping the video uncaptioned", task_name=TASK_NAME)
         log_debug(f"ffmpeg caption burn stderr: {(result.stderr or '')[-300:]}",
                   task_name=TASK_NAME)
@@ -243,6 +435,20 @@ def _track_burn_cost(video_path: str, user_id: Optional[int], post_id: Optional[
     except Exception as e:
         # Cost tracking must never cost us the caption that was already burned.
         log_debug(f"Caption burn cost not attributed ({type(e).__name__}: {e})")
+
+
+def _caption_brand(user_id: Optional[int]) -> Any:
+    """The author's exact brand colours for the band; the reference brand when unreadable."""
+    from cqc_lem.utilities.ai.image_compose import brand_style
+
+    try:
+        from cqc_lem.utilities.brand_kit import brand_clause_for_user
+        return brand_style(brand_clause_for_user(user_id) if user_id else None)
+    except Exception as e:
+        # The reference brand is a correct, on-brand fallback — never a reason to skip the burn.
+        log_debug("Brand kit unreadable for the caption band — reference brand", error=str(e),
+                  user_id=user_id, task_name=TASK_NAME)
+        return brand_style(None)
 
 
 def captions_allowed_on_avatar_video(user_id: Optional[int]) -> bool:
@@ -363,7 +569,7 @@ def apply_captions_to_video(video_path: str, content: Optional[str], *,
                                  caption_text=caption_text, skipped_reason="avatar_opt_out")
 
         burned_path = f"{video_path}.captioned.mp4"
-        if not burn_captions(video_path, srt_path, burned_path):
+        if not burn_captions(video_path, srt_path, burned_path, brand=_caption_brand(user_id)):
             # No warning here — burn_captions logged the reason where it detected it.
             _discard(burned_path)
             return CaptionResult(video_path=video_path, srt_path=srt_path,
